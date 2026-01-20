@@ -12,7 +12,8 @@ ARG BUILDER_IMAGE=joustmania/builder:latest
 # Download grpc-health-probe for health checks
 FROM busybox:1.36 AS healthprobe
 ARG GRPC_HEALTH_PROBE_VERSION=v0.4.25
-RUN wget -qO/grpc_health_probe https://github.com/grpc-ecosystem/grpc-health-probe/releases/download/${GRPC_HEALTH_PROBE_VERSION}/grpc_health_probe-linux-amd64 && \
+ARG TARGETARCH
+RUN wget -qO/grpc_health_probe https://github.com/grpc-ecosystem/grpc-health-probe/releases/download/${GRPC_HEALTH_PROBE_VERSION}/grpc_health_probe-linux-${TARGETARCH} && \
     chmod +x /grpc_health_probe
 
 # Build stage - uses pre-cached builder with common dependencies

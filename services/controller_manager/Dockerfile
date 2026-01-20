@@ -20,7 +20,8 @@ ARG PSMOVE_BUILDER_IMAGE=joustmania/psmove-builder:latest
 # =============================================================================
 FROM busybox:1.36 AS healthprobe
 ARG GRPC_HEALTH_PROBE_VERSION=v0.4.25
-RUN wget -qO/grpc_health_probe https://github.com/grpc-ecosystem/grpc-health-probe/releases/download/${GRPC_HEALTH_PROBE_VERSION}/grpc_health_probe-linux-amd64 && \
+ARG TARGETARCH
+RUN wget -qO/grpc_health_probe https://github.com/grpc-ecosystem/grpc-health-probe/releases/download/${GRPC_HEALTH_PROBE_VERSION}/grpc_health_probe-linux-${TARGETARCH} && \
     chmod +x /grpc_health_probe
 
 # =============================================================================
