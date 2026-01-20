@@ -89,11 +89,8 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 
-      - name: Install test dependencies
-        run: uv pip install pytest pytest-asyncio grpcio grpcio-health-checking pyyaml psutil
-
       - name: Run unit tests
-        run: make unit-test
+        run: uv run --group test pytest services/controller_manager/tests/ services/audio/tests/ -v
 
   # Build and push builder images to GHCR (Phase 75)
   # Multi-platform builds for amd64 (CI/dev) and arm64 (Raspberry Pi)
