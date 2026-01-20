@@ -12,16 +12,7 @@
 ARG BUILDER_IMAGE=joustmania/builder:latest
 
 # =============================================================================
-# Stage 0: Download grpc-health-probe binary
-# =============================================================================
-FROM busybox:1.36 AS healthprobe
-ARG GRPC_HEALTH_PROBE_VERSION=v0.4.25
-ARG TARGETARCH
-RUN wget -qO/grpc_health_probe https://github.com/grpc-ecosystem/grpc-health-probe/releases/download/${GRPC_HEALTH_PROBE_VERSION}/grpc_health_probe-linux-${TARGETARCH} && \
-    chmod +x /grpc_health_probe
-
-# =============================================================================
-# Stage 1: Extract ALSA shared libraries for distroless
+# Stage 0: Extract ALSA shared libraries for distroless
 # =============================================================================
 FROM debian:bookworm-slim AS alsa-libs
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -67,7 +58,8 @@ FROM gcr.io/distroless/python3-debian12
 WORKDIR /app
 
 # Copy grpc-health-probe binary
-COPY --from=healthprobe /grpc_health_probe /bin/grpc_health_probe
+# Copy grpc-health-probe from official multi-arch image
+COPY --from=ghcr.io/grpc-ecosystem/grpc-health-probe:v0.4.38 /ko-app/grpc-health-probe /bin/grpc_health_probe
 
 # Copy ALSA shared libraries for pyalsaaudio
 COPY --from=alsa-libs /usr/lib/x86_64-linux-gnu/libasound.so* /usr/lib/x86_64-linux-gnu/
