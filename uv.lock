@@ -356,6 +356,18 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
 ]
+test = [
+    { name = "grpcio" },
+    { name = "grpcio-health-checking" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-exporter-otlp" },
+    { name = "opentelemetry-sdk" },
+    { name = "prometheus-client" },
+    { name = "psutil" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pyyaml" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -369,15 +381,25 @@ requires-dist = [
     { name = "dbus-python", specifier = ">=1.2.0" },
     { name = "flask", specifier = ">=2.0.0" },
     { name = "flask-wtf", specifier = ">=1.0.0" },
+    { name = "grpcio", marker = "extra == 'test'", specifier = ">=1.70.0" },
+    { name = "grpcio-health-checking", marker = "extra == 'test'", specifier = ">=1.70.0" },
+    { name = "opentelemetry-api", marker = "extra == 'test'", specifier = ">=1.20.0" },
+    { name = "opentelemetry-exporter-otlp", marker = "extra == 'test'", specifier = ">=1.20.0" },
+    { name = "opentelemetry-sdk", marker = "extra == 'test'", specifier = ">=1.20.0" },
+    { name = "prometheus-client", marker = "extra == 'test'", specifier = ">=0.17.0" },
+    { name = "psutil", marker = "extra == 'test'", specifier = ">=5.9.0" },
     { name = "pyalsaaudio", specifier = ">=0.9.0" },
     { name = "pydub", specifier = ">=0.25.0" },
     { name = "pygame", specifier = ">=2.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
+    { name = "pytest", marker = "extra == 'test'", specifier = ">=7.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.23.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
     { name = "python-dotenv", specifier = ">=0.19.0" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "pyyaml", marker = "extra == 'test'", specifier = ">=6.0" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["dev", "test"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -90,7 +90,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
 
       - name: Run unit tests
-        run: uv run --group test pytest services/controller_manager/tests/ services/audio/tests/ -v
+        run: uv run --extra test python -m pytest services/controller_manager/tests/ services/audio/tests/ services/settings/tests/ services/game_coordinator/tests/ -v
 
   # Build and push builder images to GHCR (Phase 75)
   # Multi-platform builds for amd64 (CI/dev) and arm64 (Raspberry Pi)

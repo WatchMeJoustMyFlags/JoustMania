@@ -424,7 +424,7 @@ ci-build-test:
 .PHONY: unit-test
 unit-test:
 	@echo "Running service unit tests..."
-	@uv run --group test pytest services/controller_manager/tests/ services/audio/tests/ -v
+	@uv run --extra test python -m pytest services/controller_manager/tests/ services/audio/tests/ services/settings/tests/ services/game_coordinator/tests/ -v
 
 .PHONY: test
 test:
