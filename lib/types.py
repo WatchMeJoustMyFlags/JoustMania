@@ -163,6 +163,12 @@ class Sound(str, Enum):
     VOX_FIGHT_CLUB_GAME_OVER = "game_over"
     VOX_FIGHT_CLUB_TIE_GAME = "tie_game"
 
+    # Menu sensitivity sounds (in Menu/sounds/)
+    # Only 3 audio files exist, so ultra levels map to slow/fast
+    MENU_SFX_SENSITIVITY_SLOW = "slow_sensitivity"
+    MENU_SFX_SENSITIVITY_MID = "mid_sensitivity"
+    MENU_SFX_SENSITIVITY_FAST = "fast_sensitivity"
+
     # Menu voice announcements - game mode selection (in Menu/vox/)
     MENU_VOX_JOUST_FFA = "menu Joust FFA"
     MENU_VOX_JOUST_TEAMS = "menu Joust Teams"
