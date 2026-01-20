@@ -7,8 +7,6 @@ No hardware dependencies.
 
 from enum import Enum
 
-SETTINGSFILE = "joustsettings.yaml"
-
 
 class Games(Enum):
     """Available game modes."""
@@ -35,21 +33,6 @@ class Games(Enum):
         obj.pretty_name = pretty_name
         obj.minimum_players = min_players
         return obj
-
-    def next(self) -> "Games":
-        """Return the next game mode after this one in the list. Wraps around after hitting bottom."""
-        return Games((self.value + 1) % len(Games))
-
-    def previous(self) -> "Games":
-        """Return the previous game mode after this one in the list. Wraps around after hitting bottom."""
-        return Games((self.value - 1) % len(Games))
-
-    def find(self, str_name: str) -> "Games | None":
-        """Find game by pretty name."""
-        for game in Games:
-            if game.pretty_name == str_name:
-                return game
-        return None
 
 
 class Status(Enum):
@@ -179,11 +162,6 @@ class Sound(str, Enum):
     VOX_FIGHT_CLUB_LAST_ROUND = "last_round"
     VOX_FIGHT_CLUB_GAME_OVER = "game_over"
     VOX_FIGHT_CLUB_TIE_GAME = "tie_game"
-
-    # Menu sound effects (in Menu/sounds/)
-    MENU_SFX_SLOW_SENSITIVITY = "slow_sensitivity"
-    MENU_SFX_MID_SENSITIVITY = "mid_sensitivity"
-    MENU_SFX_FAST_SENSITIVITY = "fast_sensitivity"
 
     # Menu voice announcements - game mode selection (in Menu/vox/)
     MENU_VOX_JOUST_FFA = "menu Joust FFA"
