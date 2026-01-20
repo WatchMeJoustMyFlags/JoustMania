@@ -62,6 +62,7 @@ ignore = ["ANN"]
 "__init__.py" = ["F401"]  # Unused imports OK in __init__
 "server.py" = ["N802", "ARG002"]  # gRPC methods use PascalCase, context often unused
 "tests/*.py" = ["ARG002"]  # Test fixtures
+"piaudio.py" = ["W605", "ARG002", "N802", "N806", "E722", "SIM115"]  # Legacy code
 
 [tool.ruff.lint.isort]
 known-first-party = ["lib", "proto", "services"]
