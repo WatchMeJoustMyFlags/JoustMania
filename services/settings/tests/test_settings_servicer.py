@@ -12,8 +12,8 @@ from unittest.mock import Mock
 import pytest
 import yaml
 
-from services.settings import settings_pb2
-from services.settings.server import SETTINGS_SCHEMA, SettingsServicer
+from proto import settings_pb2
+from services.settings.servicer import SETTINGS_SCHEMA, SettingsServicer
 
 
 class TestSettingsServicer:

@@ -15,7 +15,7 @@ import grpc
 import pytest
 import yaml
 
-from services.settings import settings_pb2, settings_pb2_grpc
+from proto import settings_pb2, settings_pb2_grpc
 from services.settings.server import SettingsServicer
 
 
