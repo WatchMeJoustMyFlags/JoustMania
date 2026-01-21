@@ -26,6 +26,14 @@ controller_info = Gauge(
     ["serial", "name"],
 )
 
+# Combined LED color as hex integer (Phase 75: Per-player insights)
+# Value is (R << 16) | (G << 8) | B, e.g., 0xFF0000 for red
+controller_color_hex = Gauge(
+    "controller_color_hex",
+    "Controller LED color as hex integer (R<<16 | G<<8 | B)",
+    ["serial"],
+)
+
 controller_disconnect_total = Counter(
     "controller_disconnect_total", "Total number of controller disconnects", ["serial"]
 )

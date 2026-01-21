@@ -110,6 +110,9 @@ class FeedbackManager(ControllerEffectsBase):
                 metrics.controller_color_r.labels(serial=serial).set(color_rgb[0])
                 metrics.controller_color_g.labels(serial=serial).set(color_rgb[1])
                 metrics.controller_color_b.labels(serial=serial).set(color_rgb[2])
+                # Combined hex for single-panel color display
+                hex_color = (color_rgb[0] << 16) | (color_rgb[1] << 8) | color_rgb[2]
+                metrics.controller_color_hex.labels(serial=serial).set(hex_color)
             else:
                 logger.warning(f"Failed to set color on {serial}")
             return success
