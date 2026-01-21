@@ -409,6 +409,10 @@ services:
       - GF_SERVER_ROOT_URL=%(protocol)s://%(domain)s/grafana/
       - GF_SERVER_SERVE_FROM_SUB_PATH=true
       - GF_INSTALL_PLUGINS=
+      # Enable iframe embedding for dashboard integration
+      - GF_SECURITY_ALLOW_EMBEDDING=true
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
     volumes:
       - ./services/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./services/grafana/dashboards:/var/lib/grafana/dashboards:ro
