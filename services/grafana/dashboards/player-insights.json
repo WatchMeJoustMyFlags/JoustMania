@@ -166,7 +166,7 @@
               "mode": "none"
             },
             "thresholdsStyle": {
-              "mode": "off"
+              "mode": "area"
             }
           },
           "mappings": [],
@@ -174,8 +174,16 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "rgba(50, 172, 45, 0.15)",
                 "value": null
+              },
+              {
+                "color": "rgba(237, 129, 40, 0.15)",
+                "value": 1.6
+              },
+              {
+                "color": "rgba(245, 54, 54, 0.2)",
+                "value": 2.5
               }
             ]
           },
