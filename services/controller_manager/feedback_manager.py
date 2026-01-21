@@ -15,6 +15,7 @@ import threading
 from typing import TYPE_CHECKING
 
 from proto import controller_manager_pb2
+from services.controller_manager import metrics
 from services.controller_manager.effects_base import ControllerEffectsBase
 
 if TYPE_CHECKING:
@@ -105,6 +106,10 @@ class FeedbackManager(ControllerEffectsBase):
             success = await self.backend.set_led_color(serial, color_rgb[0], color_rgb[1], color_rgb[2])
             if success:
                 logger.debug(f"Set color on {serial}: RGB{color_rgb}")
+                # Emit color metrics for Grafana dashboard (Phase 75)
+                metrics.controller_color_r.labels(serial=serial).set(color_rgb[0])
+                metrics.controller_color_g.labels(serial=serial).set(color_rgb[1])
+                metrics.controller_color_b.labels(serial=serial).set(color_rgb[2])
             else:
                 logger.warning(f"Failed to set color on {serial}")
             return success

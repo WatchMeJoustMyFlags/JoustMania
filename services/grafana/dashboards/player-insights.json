@@ -332,22 +332,22 @@
                 "0": {
                   "color": "blue",
                   "index": 0,
-                  "text": "STILL"
+                  "text": "😴 STILL"
                 },
                 "1": {
                   "color": "green",
                   "index": 1,
-                  "text": "ACTIVE"
+                  "text": "✓ ACTIVE"
                 },
                 "2": {
-                  "color": "yellow",
+                  "color": "#FF9800",
                   "index": 2,
-                  "text": "WARNING"
+                  "text": "⚠ WARNING"
                 },
                 "3": {
-                  "color": "red",
+                  "color": "#F44336",
                   "index": 3,
-                  "text": "DANGER"
+                  "text": "☠ DANGER"
                 }
               },
               "type": "value"
@@ -378,14 +378,14 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 3,
+        "h": 4,
         "w": 2,
         "x": 16,
         "y": 1
       },
       "id": 2,
       "options": {
-        "colorMode": "background",
+        "colorMode": "background_solid",
         "graphMode": "none",
         "justifyMode": "center",
         "orientation": "auto",
@@ -408,7 +408,7 @@
           "refId": "A"
         }
       ],
-      "title": "Zone",
+      "title": "",
       "type": "stat"
     },
     {
@@ -445,7 +445,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 3,
+        "h": 4,
         "w": 2,
         "x": 18,
         "y": 1
@@ -551,7 +551,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 3,
+        "h": 4,
         "w": 2,
         "x": 20,
         "y": 1
@@ -624,7 +624,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 3,
+        "h": 4,
         "w": 2,
         "x": 22,
         "y": 1
@@ -721,10 +721,10 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 4,
+        "h": 3,
         "w": 2,
         "x": 16,
-        "y": 4
+        "y": 5
       },
       "id": 3,
       "options": {
@@ -822,10 +822,10 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 4,
+        "h": 3,
         "w": 6,
         "x": 18,
-        "y": 4
+        "y": 5
       },
       "id": 6,
       "options": {

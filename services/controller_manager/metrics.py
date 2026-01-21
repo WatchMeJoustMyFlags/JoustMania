@@ -13,6 +13,11 @@ controller_connected = Gauge(
     "controller_connected", "Controller connection status (0=disconnected, 1=connected)", ["serial"]
 )
 
+# Controller LED color metrics (Phase 75: Per-player insights)
+controller_color_r = Gauge("controller_color_r", "Controller LED red component (0-255)", ["serial"])
+controller_color_g = Gauge("controller_color_g", "Controller LED green component (0-255)", ["serial"])
+controller_color_b = Gauge("controller_color_b", "Controller LED blue component (0-255)", ["serial"])
+
 controller_disconnect_total = Counter(
     "controller_disconnect_total", "Total number of controller disconnects", ["serial"]
 )
