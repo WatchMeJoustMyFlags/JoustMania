@@ -48,7 +48,7 @@
       "panels": [],
       "repeat": "controller",
       "repeatDirection": "h",
-      "title": "$controller  |  🔋 ${__field.labels.battery:lastNotNull}",
+      "title": "🎮 $controller",
       "type": "row"
     },
     {
