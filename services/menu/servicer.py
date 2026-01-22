@@ -479,7 +479,8 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
                         # Wait for button monitor stream to be fully established
                         # This ensures LED color commands are sent via the stream (which updates base_colors)
                         # rather than falling back to RPC (which doesn't update base_colors)
-                        await asyncio.sleep(0.5)
+                        BUTTON_MONITOR_STREAM_READY_DELAY = 0.5  # seconds
+                        await asyncio.sleep(BUTTON_MONITOR_STREAM_READY_DELAY)
                         
                         # Re-apply controller colors to ensure they show menu colors
                         # This is needed because:

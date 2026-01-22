@@ -96,16 +96,13 @@ async def test_winner_controller_color_after_celebration(docker_compose):
         docker_compose, game_mode="JoustFFA", timeout=25.0
     )
     
-    # Kill all but one player to create a clear winner
+    # Kill all but one player to create a clear winner (mock_controller_3)
     for serial in ["mock_controller_0", "mock_controller_1", "mock_controller_2"]:
         await asyncio.sleep(0.5)
         death_response = await mock_client.SimulateDeath(
             controller_manager_mock_pb2.DeathRequest(serial=serial)
         )
         assert death_response.success
-    
-    # Winner is mock_controller_3
-    winner_serial = "mock_controller_3"
     
     # Wait for rainbow effect (3s) + game end + menu reconnect
     await asyncio.sleep(6)
