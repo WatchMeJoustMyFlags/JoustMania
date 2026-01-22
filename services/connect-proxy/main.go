@@ -308,6 +308,17 @@ func (p *ControllerManagerProxy) PlayControllerEffect(
 	return connect.NewResponse(resp), nil
 }
 
+func (p *ControllerManagerProxy) RenameController(
+	ctx context.Context,
+	req *connect.Request[controllerpb.RenameControllerRequest],
+) (*connect.Response[controllerpb.RenameControllerResponse], error) {
+	resp, err := p.client.RenameController(ctx, req.Msg)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
 // GameCoordinatorProxy implements the Connect handler by proxying to gRPC
 type GameCoordinatorProxy struct {
 	client gamepb.GameCoordinatorServiceClient
