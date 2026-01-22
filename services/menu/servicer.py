@@ -25,6 +25,12 @@ logger = logging.getLogger(__name__)
 # Initialize OpenTelemetry
 tracer = init_telemetry()
 
+# Stream initialization delay - time to wait for button monitor stream to be fully established
+# This ensures LED color commands are sent via the stream (which updates base_colors)
+# rather than falling back to RPC (which doesn't update base_colors)
+# Value determined empirically: stream typically establishes in ~100-200ms, 500ms provides margin
+BUTTON_MONITOR_STREAM_READY_DELAY = 0.5  # seconds
+
 
 class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
     """
@@ -476,10 +482,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
                         await self.audio.start_lobby_music()
                         await self.start_button_monitor()
                         
-                        # Wait for button monitor stream to be fully established
-                        # This ensures LED color commands are sent via the stream (which updates base_colors)
-                        # rather than falling back to RPC (which doesn't update base_colors)
-                        BUTTON_MONITOR_STREAM_READY_DELAY = 0.5  # seconds
+                        # Wait for button monitor stream to be fully established before setting colors
                         await asyncio.sleep(BUTTON_MONITOR_STREAM_READY_DELAY)
                         
                         # Re-apply controller colors to ensure they show menu colors

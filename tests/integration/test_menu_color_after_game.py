@@ -28,6 +28,11 @@ from tests.integration.helpers import (
     start_game_via_menu,
 )
 
+# Timing constants for game end sequence
+WINNER_RAINBOW_DURATION = 3.0  # Duration of winner rainbow effect (from FFA game)
+GAME_END_CELEBRATION = 2.0     # Time for game end + celebration
+MENU_RECONNECT_TIME = 1.0      # Time for menu to reconnect and restore colors
+
 
 @pytest.mark.asyncio
 async def test_controller_colors_restored_after_game_ends(docker_compose):
@@ -56,8 +61,9 @@ async def test_controller_colors_restored_after_game_ends(docker_compose):
         )
         assert death_response.success, f"Failed to kill {serial}"
     
-    # Wait for game to end and return to menu (including winner celebration)
-    await asyncio.sleep(5)  # 3s rainbow + 2s margin
+    # Wait for game to end and return to menu
+    # This includes: winner celebration + game end + menu reconnect + color restore
+    await asyncio.sleep(WINNER_RAINBOW_DURATION + GAME_END_CELEBRATION + MENU_RECONNECT_TIME)
     
     # Check menu state
     menu_channel = create_channel("localhost:50055")
@@ -104,8 +110,8 @@ async def test_winner_controller_color_after_celebration(docker_compose):
         )
         assert death_response.success
     
-    # Wait for rainbow effect (3s) + game end + menu reconnect
-    await asyncio.sleep(6)
+    # Wait for rainbow effect + game end + menu reconnect
+    await asyncio.sleep(WINNER_RAINBOW_DURATION + GAME_END_CELEBRATION + MENU_RECONNECT_TIME)
     
     # Verify menu is running
     menu_channel = create_channel("localhost:50055")
