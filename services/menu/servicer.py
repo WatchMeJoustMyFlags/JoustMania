@@ -475,6 +475,19 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
 
                         await self.audio.start_lobby_music()
                         await self.start_button_monitor()
+                        
+                        # Wait for button monitor stream to be fully established
+                        # This ensures LED color commands are sent via the stream (which updates base_colors)
+                        # rather than falling back to RPC (which doesn't update base_colors)
+                        await asyncio.sleep(0.5)
+                        
+                        # Re-apply controller colors to ensure they show menu colors
+                        # This is needed because:
+                        # 1. Game may have sent effects (e.g., rainbow) that are still running
+                        # 2. When effects finish, they restore to base_colors
+                        # 3. We need to ensure base_colors has the menu colors set
+                        await self._restore_menu_colors()
+                        
                         await self.event_publisher.publish(GameEvent.GAME_ENDED, event.data)
 
                 if self.game_event_monitor_running:
@@ -498,6 +511,38 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         await self.game_coordinator_channel.close()
         await self.audio_channel.close()
         logger.info("Menu service gRPC channels closed")
+
+    async def _restore_menu_colors(self):
+        """
+        Restore controller LED colors to menu game mode colors.
+        
+        Called when returning to menu from a game to ensure controllers
+        display the correct game mode colors. This is necessary because:
+        - Game effects (like rainbow on winner) may still be running
+        - When effects finish, they restore to base_colors in controller manager
+        - We need to ensure base_colors has the correct menu colors
+        """
+        from proto import controller_manager_pb2, controller_manager_pb2_grpc
+        
+        try:
+            stub = controller_manager_pb2_grpc.ControllerManagerServiceStub(self.controller_channel)
+            
+            # Get all connected controllers from the stream
+            # They should have been added via EVENT_CONNECT when button monitor restarted
+            connected = list(self.state_manager.connected_controllers)
+            
+            logger.info(f"Restoring menu colors for {len(connected)} connected controllers")
+            
+            # Set each controller to the connected state color (dim game mode color)
+            for serial in connected:
+                # Transition to CONNECTED state which will set the LED color
+                # This ensures both state_manager and LED are in sync
+                await self.state_manager.on_controller_connected(serial)
+                
+            logger.debug(f"Menu colors restored for game mode: {self.current_selection}")
+                
+        except Exception as e:
+            logger.error(f"Error restoring menu colors: {e}", exc_info=True)
 
     async def _start_game(self, serial: str):
         """Start the game when all players are ready."""
