@@ -29,6 +29,8 @@ from tests.integration.helpers import (
 )
 
 # Timing constants for game end sequence
+# NOTE: WINNER_RAINBOW_DURATION must match the duration in game_coordinator/games/ffa.py
+# (currently 3000ms as defined in GAME_EFFECT_WINNER_RAINBOW handler)
 WINNER_RAINBOW_DURATION = 3.0  # Duration of winner rainbow effect (from FFA game)
 GAME_END_CELEBRATION = 2.0     # Time for game end + celebration
 MENU_RECONNECT_TIME = 1.0      # Time for menu to reconnect and restore colors
@@ -48,10 +50,6 @@ async def test_controller_colors_restored_after_game_ends(docker_compose):
     game_client, game_channel, mock_client, mock_channel = await start_game_via_menu(
         docker_compose, game_mode="JoustFFA", timeout=25.0
     )
-    
-    # Create controller manager client to check colors
-    controller_channel = create_channel("localhost:50052")
-    controller_stub = controller_manager_pb2_grpc.ControllerManagerServiceStub(controller_channel)
     
     # Simulate deaths - kill 3 players to trigger win condition
     for serial in ["mock_controller_0", "mock_controller_1", "mock_controller_2"]:
@@ -91,7 +89,6 @@ async def test_controller_colors_restored_after_game_ends(docker_compose):
     # Success! Menu is running, game mode is correct, controllers are connected but not ready
     # This indicates LED colors have been restored to menu colors (dim game mode colors)
     
-    await controller_channel.close()
     await menu_channel.close()
     await game_channel.close()
     await mock_channel.close()
