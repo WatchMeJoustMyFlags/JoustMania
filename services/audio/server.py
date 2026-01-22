@@ -2,47 +2,37 @@
 JoustMania Audio Microservice
 
 Handles audio playback with priority-based mixing and real-time tempo control.
-- Sound effects: pygame.mixer (8 channels, priority-based)
-- Background music: MusicPlayer with scipy resampling for tempo control
+- Sound effects: miniaudio for distroless compatibility
+- Background music: MusicPlayer with resampy for real-time tempo control
 
-See services/audio/servicer.py for the AudioManager and AudioServiceServicer implementations.
+See services/audio/servicer.py for the AudioServiceServicer implementation.
 """
 
 import asyncio
 import logging
 import os
 
-# Configure logging first (before any other imports that might log)
-log_level = os.getenv("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(
-    level=getattr(logging, log_level, logging.INFO),
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+import grpc.aio
+from grpc_health.v1 import health, health_pb2, health_pb2_grpc
+from prometheus_client import start_http_server
+
+from lib.system_metrics import start_system_metrics_collector
+from proto import audio_pb2_grpc
+from services.audio import metrics
+from services.audio.servicer import AudioServiceServicer
+
 logger = logging.getLogger(__name__)
-
-# Initialize telemetry BEFORE importing servicer (servicer gets tracer at import time)
-from lib.telemetry import init_telemetry  # noqa: E402
-
-init_telemetry()
-
-# Instrument gRPC server (must be before any gRPC imports/server creation)
-from opentelemetry.instrumentation.grpc import GrpcInstrumentorServer  # noqa: E402
-
-GrpcInstrumentorServer().instrument()
-
-# Now safe to import other modules that may use tracing
-import grpc.aio  # noqa: E402
-from grpc_health.v1 import health, health_pb2, health_pb2_grpc  # noqa: E402
-from prometheus_client import start_http_server  # noqa: E402
-
-from lib.system_metrics import start_system_metrics_collector  # noqa: E402
-from proto import audio_pb2_grpc  # noqa: E402
-from services.audio import metrics  # noqa: E402
-from services.audio.servicer import AudioServiceServicer  # noqa: E402
 
 
 async def serve(metrics_port=8000):
     """Start the Audio gRPC server."""
+    # Configure logging
+    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(
+        level=getattr(logging, log_level, logging.INFO),
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+
     logger.info("Starting JoustMania Audio service...")
 
     # Start Prometheus metrics HTTP server
