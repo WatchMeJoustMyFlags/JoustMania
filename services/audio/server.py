@@ -12,22 +12,7 @@ import asyncio
 import logging
 import os
 
-import grpc.aio
-from grpc_health.v1 import health, health_pb2, health_pb2_grpc
-from opentelemetry import trace
-from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-from opentelemetry.instrumentation.grpc import GrpcInstrumentorServer
-from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from prometheus_client import start_http_server
-
-from lib.system_metrics import start_system_metrics_collector
-from proto import audio_pb2_grpc
-from services.audio import metrics
-from services.audio.servicer import AudioServiceServicer
-
-# Configure logging with environment variable support
+# Configure logging first (before any other imports that might log)
 log_level = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
     level=getattr(logging, log_level, logging.INFO),
@@ -35,19 +20,25 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# OpenTelemetry setup
-resource = Resource(attributes={"service.name": os.getenv("OTEL_SERVICE_NAME", "audio-service")})
-trace.set_tracer_provider(TracerProvider(resource=resource))
+# Initialize telemetry BEFORE importing servicer (servicer gets tracer at import time)
+from lib.telemetry import init_telemetry  # noqa: E402
 
-# Configure OTLP exporter
-otlp_exporter = OTLPSpanExporter(
-    endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317"),
-    insecure=True,
-)
-trace.get_tracer_provider().add_span_processor(BatchSpanProcessor(otlp_exporter))
+init_telemetry()
 
-# Instrument gRPC server
+# Instrument gRPC server (must be before any gRPC imports/server creation)
+from opentelemetry.instrumentation.grpc import GrpcInstrumentorServer  # noqa: E402
+
 GrpcInstrumentorServer().instrument()
+
+# Now safe to import other modules that may use tracing
+import grpc.aio  # noqa: E402
+from grpc_health.v1 import health, health_pb2, health_pb2_grpc  # noqa: E402
+from prometheus_client import start_http_server  # noqa: E402
+
+from lib.system_metrics import start_system_metrics_collector  # noqa: E402
+from proto import audio_pb2_grpc  # noqa: E402
+from services.audio import metrics  # noqa: E402
+from services.audio.servicer import AudioServiceServicer  # noqa: E402
 
 
 async def serve(metrics_port=8000):
