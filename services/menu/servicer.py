@@ -522,11 +522,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         - When effects finish, they restore to base_colors in controller manager
         - We need to ensure base_colors has the correct menu colors
         """
-        from proto import controller_manager_pb2, controller_manager_pb2_grpc
-        
         try:
-            stub = controller_manager_pb2_grpc.ControllerManagerServiceStub(self.controller_channel)
-            
             # Get all connected controllers from the stream
             # They should have been added via EVENT_CONNECT when button monitor restarted
             connected = list(self.state_manager.connected_controllers)
