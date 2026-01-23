@@ -19,7 +19,7 @@
 	# =========================================
 	handle /joustmania* {
 		reverse_proxy connect-proxy:8080 {
-			# Disable buffering for streaming support
+			# Enable immediate flushing for streaming support
 			flush_interval -1
 			# Extended timeout for long-running requests
 			transport http {
