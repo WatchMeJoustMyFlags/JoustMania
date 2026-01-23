@@ -27,18 +27,19 @@ echo ""
 test_endpoint() {
     local name="$1"
     local path="$2"
-    local expected_code="${3:-200}"
+    local expected_codes="${3:-200}"
     
     echo -n "Testing $name ($path)... "
     
     HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$DASHBOARD_URL$path" 2>/dev/null || echo "000")
     
-    if [ "$HTTP_CODE" = "$expected_code" ]; then
+    # Check if HTTP_CODE matches any of the expected codes (pipe-separated)
+    if echo "$expected_codes" | grep -qE "(^|\\|)$HTTP_CODE($|\\|)"; then
         echo -e "${GREEN}✓${NC} (HTTP $HTTP_CODE)"
         ((PASSED_TESTS++))
         return 0
     else
-        echo -e "${RED}✗${NC} (Expected HTTP $expected_code, got $HTTP_CODE)"
+        echo -e "${RED}✗${NC} (Expected HTTP $expected_codes, got $HTTP_CODE)"
         ((FAILED_TESTS++))
         return 1
     fi
@@ -120,9 +121,13 @@ fi
 echo ""
 echo "=== Redirect Tests ==="
 # These tests verify that services don't redirect to their internal ports
-if [ "$HTTP_CODE" != "502" ]; then
+# Only run if services are accessible (not 502)
+GRAFANA_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$DASHBOARD_URL/grafana/" 2>/dev/null || echo "000")
+if [ "$GRAFANA_CODE" != "502" ]; then
     test_no_localhost_redirect "Grafana" "/grafana/"
     test_no_localhost_redirect "Prometheus" "/prometheus/"
+else
+    echo -e "${YELLOW}Skipping redirect tests (services not available)${NC}"
 fi
 
 echo ""
