@@ -209,13 +209,8 @@ ci-validate-packages:
 	bash scripts/ci/validate-packages.sh
 
 # Lint Dockerfiles (CI uses hadolint container)
-.PHONY: ci-lint-dockerfiles lint-dockerfiles
-ci-lint-dockerfiles lint-dockerfiles:
+.PHONY: ci-lint-dockerfiles
+ci-lint-dockerfiles:
 	docker run --rm -v "$(PWD):/workspace:ro" -w /workspace \
 		hadolint/hadolint:latest-alpine \
 		sh -c 'find . -name "Dockerfile" -type f -exec hadolint {} \;'
-
-# Backwards-compatible aliases for CI workflow
-.PHONY: validate-protos validate-packages
-validate-protos: ci-validate-protos
-validate-packages: ci-validate-packages
