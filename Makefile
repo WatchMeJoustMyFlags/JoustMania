@@ -8,8 +8,11 @@ help:
 	@echo "========================"
 	@echo ""
 	@echo "Quick Start:"
-	@echo "  make up              - Build and start all services (uses --build)"
-	@echo "  make up-pull         - Pull from GHCR and start (no build)"
+	@echo "  make up              - Start all services (using existing images)"
+	@echo "  make up BUILD=1      - Start and build images"
+	@echo "  make up PULL=1       - Start and pull from GHCR"
+	@echo "  make up-build        - Alias for 'make up BUILD=1'"
+	@echo "  make up-pull         - Alias for 'make up PULL=1'"
 	@echo "  make down            - Stop all services"
 	@echo "  make logs            - Follow service logs"
 	@echo "  make restart         - Restart all services"
@@ -68,10 +71,21 @@ clean-protos:
 # Docker Compose Commands
 # ============================================================================
 
+# Default behavior for make up (can be overridden with BUILD=1 or PULL=1)
 .PHONY: up
 up:
 	@echo "Starting JoustMania stack..."
+ifdef PULL
+	@echo "→ Pulling images from GHCR..."
+	@docker compose pull
+	@docker compose up -d
+else ifdef BUILD
+	@echo "→ Building images..."
 	@docker compose up -d --build
+else
+	@echo "→ Using existing images (use BUILD=1 to rebuild or PULL=1 to pull)..."
+	@docker compose up -d
+endif
 	@echo ""
 	@echo "=========================================="
 	@echo "JoustMania is running!"
@@ -82,20 +96,14 @@ up:
 	@echo "  Grafana:    http://localhost:8080/grafana/"
 	@echo "  Legacy UI:  http://localhost:8080/legacy/"
 
+# Convenience aliases for common workflows
 .PHONY: up-pull
 up-pull:
-	@echo "Pulling and starting JoustMania stack from GHCR..."
-	@docker compose pull
-	@docker compose up -d
-	@echo ""
-	@echo "=========================================="
-	@echo "JoustMania is running (GHCR images)!"
-	@echo "=========================================="
-	@echo "  Dashboard:  http://localhost:8080"
-	@echo "  Jaeger:     http://localhost:8080/jaeger/"
-	@echo "  Prometheus: http://localhost:8080/prometheus/"
-	@echo "  Grafana:    http://localhost:8080/grafana/"
-	@echo "  Legacy UI:  http://localhost:8080/legacy/"
+	@$(MAKE) up PULL=1
+
+.PHONY: up-build
+up-build:
+	@$(MAKE) up BUILD=1
 
 .PHONY: down
 down:
@@ -117,7 +125,7 @@ ps:
 .PHONY: up-mock
 up-mock:
 	@echo "Starting JoustMania stack in MOCK mode..."
-	@CONTROLLER_BACKEND=mock AUDIO_MOCK_MODE=true docker compose up -d --build
+	@CONTROLLER_BACKEND=mock AUDIO_MOCK_MODE=true docker compose up -d $(if $(BUILD),--build,)
 	@echo ""
 	@echo "=========================================="
 	@echo "JoustMania is running (MOCK MODE)"

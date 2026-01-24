@@ -6,37 +6,32 @@ JoustMania uses Docker and Docker Compose for containerized deployment. All imag
 
 ## Quick Reference
 
-### Pull and Run (Fastest)
+### Start Services (Flexible)
 
 ```bash
-# Pull all images from GHCR
-docker compose pull
+# Start with existing images (default)
+make up
 
-# Start services
-docker compose up -d
+# Build and start
+make up BUILD=1
+# or
+make up-build
 
-# Or use Makefile shortcut
+# Pull from GHCR and start  
+make up PULL=1
+# or
 make up-pull
 ```
 
-### Build and Run (Local Development)
+### Build Images
 
 ```bash
-# Build and start (uses --build flag automatically)
-make up
-
-# Or manually:
-# 1. Build builder images (optional, one-time, or Docker pulls automatically)
-make builders
-
-# 2. Build all service images
+# Build all service images
 make images
 
-# 3. Start services
-docker compose up -d
+# Build builder images (optional, one-time, or Docker pulls automatically)
+make builders
 ```
-
-**Note:** When building service images, Docker automatically pulls builder images from GHCR if they don't exist locally. You only need `make builders` if you want to build them from source.
 
 ### Integration Testing
 
@@ -114,10 +109,10 @@ git clone https://github.com/WatchMeJoustMyFlags/JoustMania.git
 cd JoustMania
 
 # Option 1: Pull prebuilt images (fast)
-make up-pull
+make up PULL=1
 
 # Option 2: Build locally (tests your changes)
-make up  # Uses --build automatically
+make up BUILD=1
 ```
 
 **Daily development:**
@@ -126,8 +121,8 @@ make up  # Uses --build automatically
 # Make code changes
 vim services/settings/server.py
 
-# Rebuild and restart (--build ensures rebuild)
-make up
+# Rebuild and restart
+make up BUILD=1
 
 # View logs
 make logs
@@ -206,14 +201,11 @@ make images
 make up
 ```
 
-New workflow (simpler):
+New workflow (flexible):
 ```bash
-make up  # Builds automatically with --build flag
-```
-
-Or to pull from GHCR:
-```bash
-make up-pull  # Replaces old make up-from-ghcr
+make up           # Start with existing images
+make up BUILD=1   # Build and start
+make up PULL=1    # Pull and start
 ```
 
 ### Cleanup Old Images
@@ -345,17 +337,17 @@ docker image prune
 
 ## Summary
 
-The canonical GHCR naming and streamlined workflow simplifies everything:
+The canonical GHCR naming and flexible `make up` command simplify everything:
 
-✅ **Developers:** `make up` builds and starts with one command  
-✅ **Quick start:** `make up-pull` pulls and starts from GHCR  
+✅ **One command, multiple modes** - `make up` with BUILD=1 or PULL=1  
+✅ **Quick start:** `make up PULL=1` pulls and starts from GHCR  
+✅ **Development:** `make up BUILD=1` builds and starts  
 ✅ **CI/CD:** No changes needed, already using GHCR  
-✅ **Testing:** Can choose build or pull based on needs  
 ✅ **Consistency:** Same image names everywhere  
 
 Most common workflows:
-- **Development:** `make up` (builds automatically)
-- **Quick test:** `make up-pull` (uses published images)
-- **Pull images:** `docker compose pull` (no make wrapper needed)
+- **First time:** `make up PULL=1` (fast start with published images)
+- **Development:** `make up BUILD=1` (build your changes)
+- **Restart:** `make up` (use existing images)
 
-For most users, the change is transparent - everything just works with simpler commands.
+For most users, the change is transparent - everything just works with simpler, more flexible commands.

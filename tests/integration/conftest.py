@@ -55,10 +55,11 @@ def docker_compose():
         ],
         pull=use_prebuilt,
         build=not use_prebuilt,
-        env_file=None,  # Don't use .env file to avoid conflicts
+        env_file=None,  # Avoid conflicts with .env (e.g., IMAGE_TAG from development)
     )
 
     # Set IMAGE_TAG if using prebuilt images
+    # Note: This modifies the environment for docker-compose but is session-scoped
     if use_prebuilt:
         os.environ["IMAGE_TAG"] = image_tag
         print(f"\n🐳 Using prebuilt images from GHCR (tag: {image_tag})")

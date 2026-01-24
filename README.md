@@ -134,47 +134,42 @@ make format
 git clone <repository-url>
 cd JoustMania
 
-# Pull all images from GitHub Container Registry
-docker compose pull
-
-# Start all services
-docker compose up -d
-```
-
-Or use the convenience target:
-```bash
+# Start with GHCR images
+make up PULL=1
+# or
 make up-pull
 ```
 
 To use a specific version:
 ```bash
-IMAGE_TAG=dev-refactor docker compose pull
-IMAGE_TAG=dev-refactor docker compose up -d
+IMAGE_TAG=dev-refactor make up PULL=1
 ```
 
-### Option 2: Build Locally
+### Option 2: Build and Start
 
 ```bash
 git clone <repository-url>
 cd JoustMania
 
-# Build and start (uses docker compose --build)
+# Build and start
+make up BUILD=1
+# or
+make up-build
+```
+
+### Option 3: Start with Existing Images
+
+```bash
+# Just start services (no build, no pull)
 make up
 ```
 
-The `make up` target will automatically build images using `docker compose up -d --build`.
-
-For manual control:
-```bash
-# Build builder images first (optional, one-time)
-make builders
-
-# Build all services
-make images
-
-# Start services
-docker compose up -d
-```
+The `make up` target is flexible:
+- `make up` - Start with existing images
+- `make up BUILD=1` - Build and start
+- `make up PULL=1` - Pull and start
+- `make up-build` - Convenience alias for BUILD=1
+- `make up-pull` - Convenience alias for PULL=1
 
 ### GHCR Authentication (For Private Images)
 
