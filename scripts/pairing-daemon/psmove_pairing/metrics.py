@@ -34,20 +34,23 @@ calibration_duration_seconds = Histogram(
     buckets=[0.5, 1.0, 2.0, 5.0, 10.0, 30.0],
 )
 
-# Bluetooth monitoring metrics
-controller_rssi_dbm = Gauge(
-    "controller_rssi_dbm",
-    "Controller signal strength in dBm",
+# Bluetooth monitoring metrics (host-level HCI layer)
+# Note: These are distinct from controller_* metrics in controller-manager
+# which measure the application layer (psmoveapi). These measure the raw
+# Bluetooth HCI layer on the host.
+bluetooth_device_rssi_dbm = Gauge(
+    "bluetooth_device_rssi_dbm",
+    "Bluetooth device signal strength in dBm (host HCI layer)",
     ["serial", "hci_adapter"],
 )
-controller_connected = Gauge(
-    "controller_connected",
-    "Controller connection status (1=connected, 0=disconnected)",
+bluetooth_device_connected = Gauge(
+    "bluetooth_device_connected",
+    "Bluetooth device connection status at HCI layer (1=connected, 0=disconnected)",
     ["serial", "hci_adapter"],
 )
-controller_last_seen = Gauge(
-    "controller_last_seen_timestamp",
-    "Unix timestamp when controller was last seen connected",
+bluetooth_device_last_seen = Gauge(
+    "bluetooth_device_last_seen_timestamp",
+    "Unix timestamp when device was last seen connected at HCI layer",
     ["serial", "hci_adapter"],
 )
 bluetooth_adapter_connections = Gauge(

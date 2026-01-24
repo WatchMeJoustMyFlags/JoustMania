@@ -86,26 +86,33 @@ Access metrics at `http://localhost:8002/metrics`
 | `psmove_pairing_usb_controllers` | Gauge | Currently connected USB controllers |
 | `psmove_pairing_duration_seconds` | Histogram | Time to complete pairing |
 
-### Bluetooth Monitoring Metrics
+### Bluetooth Monitoring Metrics (Host HCI Layer)
+
+These metrics measure the raw Bluetooth HCI layer on the host, distinct from
+`controller_*` metrics in controller-manager which measure the application layer.
 
 | Metric | Labels | Description |
 |--------|--------|-------------|
-| `controller_rssi_dbm` | `serial`, `hci_adapter` | Signal strength in dBm |
-| `controller_connected` | `serial`, `hci_adapter` | Connection status (1=connected) |
-| `controller_last_seen_timestamp` | `serial`, `hci_adapter` | Unix timestamp when last seen |
+| `bluetooth_device_rssi_dbm` | `serial`, `hci_adapter` | Signal strength in dBm |
+| `bluetooth_device_connected` | `serial`, `hci_adapter` | HCI connection status (1=connected) |
+| `bluetooth_device_last_seen_timestamp` | `serial`, `hci_adapter` | Unix timestamp when last seen |
 | `bluetooth_adapter_connections` | `hci_adapter` | Controllers per adapter |
 
 ### Example Grafana Queries
 
 ```promql
-# RSSI over time per controller
-controller_rssi_dbm
+# RSSI over time per controller (host Bluetooth layer)
+bluetooth_device_rssi_dbm
 
 # Controllers per adapter
 bluetooth_adapter_connections
 
-# Time since last seen (staleness detection)
-time() - controller_last_seen_timestamp
+# Time since last seen at HCI layer (staleness detection)
+time() - bluetooth_device_last_seen_timestamp
+
+# Compare HCI vs application layer connection status
+# (useful for debugging connection issues)
+bluetooth_device_connected == 1 and controller_connected == 0
 ```
 
 ## Files

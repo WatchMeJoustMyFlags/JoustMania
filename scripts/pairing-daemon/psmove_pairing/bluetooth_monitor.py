@@ -9,9 +9,9 @@ from opentelemetry import trace
 from .config import BT_MONITOR_INTERVAL, PSMOVE_BT_PREFIX
 from .metrics import (
     bluetooth_adapter_connections,
-    controller_connected,
-    controller_last_seen,
-    controller_rssi_dbm,
+    bluetooth_device_connected,
+    bluetooth_device_last_seen,
+    bluetooth_device_rssi_dbm,
 )
 from .utils import run_command
 
@@ -111,11 +111,11 @@ class BluetoothMonitor:
                     rssi = await self.get_rssi(hci, serial)
 
                     # Update metrics
-                    controller_connected.labels(serial=serial, hci_adapter=hci).set(1)
-                    controller_last_seen.labels(serial=serial, hci_adapter=hci).set(now)
+                    bluetooth_device_connected.labels(serial=serial, hci_adapter=hci).set(1)
+                    bluetooth_device_last_seen.labels(serial=serial, hci_adapter=hci).set(now)
 
                     if rssi is not None:
-                        controller_rssi_dbm.labels(serial=serial, hci_adapter=hci).set(rssi)
+                        bluetooth_device_rssi_dbm.labels(serial=serial, hci_adapter=hci).set(rssi)
                         logger.debug(f"  {serial} on {hci}: RSSI={rssi} dBm")
                     else:
                         logger.debug(f"  {serial} on {hci}: RSSI unavailable")
@@ -127,7 +127,7 @@ class BluetoothMonitor:
             for (serial, hci), _last_seen in list(self._known_controllers.items()):
                 if (serial, hci) not in currently_seen:
                     # Controller disconnected
-                    controller_connected.labels(serial=serial, hci_adapter=hci).set(0)
+                    bluetooth_device_connected.labels(serial=serial, hci_adapter=hci).set(0)
                     logger.debug(f"Controller {serial} disconnected from {hci}")
                     # Keep last_seen timestamp as-is for staleness detection
 
