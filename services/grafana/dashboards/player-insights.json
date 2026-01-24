@@ -563,6 +563,76 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
+      "description": "Bluetooth signal strength (RSSI in dBm). Green: excellent (> -60), Yellow: good (-60 to -80), Red: weak (< -80)",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "max": -30,
+          "min": -100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": -80
+              },
+              {
+                "color": "green",
+                "value": -60
+              }
+            ]
+          },
+          "unit": "dB"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 2,
+        "w": 2,
+        "x": 20,
+        "y": 1
+      },
+      "id": 15,
+      "options": {
+        "minVizHeight": 50,
+        "minVizWidth": 50,
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true,
+        "sizing": "auto"
+      },
+      "pluginVersion": "10.2.3",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "controller_rssi_dbm{serial=\"$controller\"} != 0",
+          "legendFormat": "RSSI",
+          "refId": "A"
+        }
+      ],
+      "title": "Signal",
+      "type": "gauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "description": "Battery level (0-5)",
       "fieldConfig": {
         "defaults": {

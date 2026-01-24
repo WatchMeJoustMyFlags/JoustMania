@@ -682,6 +682,18 @@
                 "value": 180
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Adapter"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 80
+              }
+            ]
           }
         ]
       },
@@ -823,15 +835,17 @@
             "indexByName": {
               "name": 0,
               "serial": 1,
-              "Value #Status": 2,
-              "Value #Battery": 3,
-              "Value #RSSI": 4,
-              "Value #Reconnects24h": 5,
-              "Value #Reconnects7d": 6
+              "hci_adapter": 2,
+              "Value #Status": 3,
+              "Value #Battery": 4,
+              "Value #RSSI": 5,
+              "Value #Reconnects24h": 6,
+              "Value #Reconnects7d": 7
             },
             "renameByName": {
               "name": "Name",
               "serial": "Serial",
+              "hci_adapter": "Adapter",
               "Value #Status": "Status",
               "Value #Battery": "Battery",
               "Value #RSSI": "RSSI (dBm)",
