@@ -48,8 +48,68 @@
       "panels": [],
       "repeat": "controller",
       "repeatDirection": "h",
-      "title": "🎮 $controller",
+      "title": "Controller $controller",
       "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Human-readable controller name",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 2,
+        "w": 5,
+        "x": 0,
+        "y": 1
+      },
+      "id": 16,
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "/^name$/",
+          "values": false
+        },
+        "textMode": "name"
+      },
+      "pluginVersion": "10.2.3",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "controller_info{serial=\"$controller\"}",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "title": "",
+      "type": "stat"
     },
     {
       "datasource": {
@@ -175,9 +235,9 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 4,
+        "h": 2,
         "w": 1,
-        "x": 0,
+        "x": 5,
         "y": 1
       },
       "id": 14,
@@ -250,7 +310,7 @@
       "gridPos": {
         "h": 4,
         "w": 4,
-        "x": 1,
+        "x": 6,
         "y": 1
       },
       "id": 10,
@@ -432,8 +492,8 @@
       },
       "gridPos": {
         "h": 3,
-        "w": 13,
-        "x": 5,
+        "w": 8,
+        "x": 10,
         "y": 1
       },
       "id": 1,
@@ -525,7 +585,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 4,
+        "h": 2,
         "w": 2,
         "x": 18,
         "y": 1
@@ -597,7 +657,7 @@
         "h": 2,
         "w": 2,
         "x": 20,
-        "y": 1
+        "y": 3
       },
       "id": 15,
       "options": {
@@ -701,7 +761,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 4,
+        "h": 2,
         "w": 2,
         "x": 20,
         "y": 1
@@ -797,7 +857,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 4,
+        "h": 2,
         "w": 2,
         "x": 22,
         "y": 1
@@ -899,8 +959,8 @@
       },
       "gridPos": {
         "h": 1,
-        "w": 13,
-        "x": 5,
+        "w": 8,
+        "x": 10,
         "y": 4
       },
       "id": 6,
@@ -949,7 +1009,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values({__name__=~\"game_player_alive|menu_player_ready\"}, serial)",
+        "definition": "label_values(controller_connected == 1, serial)",
         "hide": 0,
         "includeAll": true,
         "label": "Controller",
@@ -957,7 +1017,7 @@
         "name": "controller",
         "options": [],
         "query": {
-          "query": "label_values({__name__=~\"game_player_alive|menu_player_ready\"}, serial)",
+          "query": "label_values(controller_connected == 1, serial)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
