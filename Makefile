@@ -8,20 +8,19 @@ help:
 	@echo "========================"
 	@echo ""
 	@echo "Quick Start:"
-	@echo "  make up              - Build images and start all services"
-	@echo "  make up-from-ghcr    - Pull images from GHCR and start"
+	@echo "  make up              - Build and start all services (uses --build)"
+	@echo "  make up-pull         - Pull from GHCR and start (no build)"
 	@echo "  make down            - Stop all services"
 	@echo "  make logs            - Follow service logs"
 	@echo "  make restart         - Restart all services"
 	@echo ""
 	@echo "Build:"
-	@echo "  make images          - Build all service images"
+	@echo "  make images          - Build all service images (via docker compose)"
 	@echo "  make builders        - Build base images (run once, ~15min on Pi)"
 	@echo ""
 	@echo "Pull from GHCR:"
-	@echo "  make pull            - Pull all service images from GHCR"
-	@echo "  make pull-all        - Pull all images (builders + services)"
 	@echo "  make pull-builders   - Pull builder images only"
+	@echo "  docker compose pull  - Pull all service images (use directly)"
 	@echo ""
 	@echo "Individual Services:"
 	@echo "  make image-settings  - Build settings service image"
@@ -74,12 +73,27 @@ clean-protos:
 # ============================================================================
 
 .PHONY: up
-up: images
+up:
 	@echo "Starting JoustMania stack..."
-	@docker compose up -d
+	@docker compose up -d --build
 	@echo ""
 	@echo "=========================================="
 	@echo "JoustMania is running!"
+	@echo "=========================================="
+	@echo "  Dashboard:  http://localhost:8080"
+	@echo "  Jaeger:     http://localhost:8080/jaeger/"
+	@echo "  Prometheus: http://localhost:8080/prometheus/"
+	@echo "  Grafana:    http://localhost:8080/grafana/"
+	@echo "  Legacy UI:  http://localhost:8080/legacy/"
+
+.PHONY: up-pull
+up-pull:
+	@echo "Pulling and starting JoustMania stack from GHCR..."
+	@docker compose pull
+	@docker compose up -d
+	@echo ""
+	@echo "=========================================="
+	@echo "JoustMania is running (GHCR images)!"
 	@echo "=========================================="
 	@echo "  Dashboard:  http://localhost:8080"
 	@echo "  Jaeger:     http://localhost:8080/jaeger/"
@@ -105,9 +119,9 @@ ps:
 
 # Mock mode for testing (no real hardware required)
 .PHONY: up-mock
-up-mock: images
+up-mock:
 	@echo "Starting JoustMania stack in MOCK mode..."
-	@CONTROLLER_BACKEND=mock AUDIO_MOCK_MODE=true docker compose up -d
+	@CONTROLLER_BACKEND=mock AUDIO_MOCK_MODE=true docker compose up -d --build
 	@echo ""
 	@echo "=========================================="
 	@echo "JoustMania is running (MOCK MODE)"
@@ -426,37 +440,12 @@ build-all-services:
 # Image tag for pulling/tagging (can be overridden for CI/CD)
 IMAGE_TAG ?= latest
 
-.PHONY: pull-all
-pull-all: pull-builders
-	@echo "Pulling all service images from GHCR..."
-	@docker compose pull
-	@echo "✓ All images pulled"
-
 .PHONY: pull-builders
 pull-builders:
 	@echo "Pulling builder images from GHCR..."
 	@docker pull ghcr.io/watchmejoustmyflags/joustmania/builder:$(IMAGE_TAG)
 	@docker pull ghcr.io/watchmejoustmyflags/joustmania/psmove-builder:$(IMAGE_TAG)
 	@echo "✓ Builder images pulled"
-
-.PHONY: pull
-pull:
-	@echo "Pulling all service images from GHCR..."
-	@docker compose pull
-	@echo "✓ All service images pulled from GHCR"
-
-.PHONY: up-from-ghcr
-up-from-ghcr: pull-all
-	@echo "Starting services with GHCR images..."
-	@docker compose up -d
-	@echo ""
-	@echo "=========================================="
-	@echo "JoustMania is running (GHCR images)!"
-	@echo "=========================================="
-	@echo "  Dashboard:  http://localhost:8080"
-	@echo "  Jaeger:     http://localhost:8080/jaeger/"
-	@echo "  Prometheus: http://localhost:8080/prometheus/"
-	@echo "  Grafana:    http://localhost:8080/grafana/"
 
 # ============================================================================
 # Testing Targets

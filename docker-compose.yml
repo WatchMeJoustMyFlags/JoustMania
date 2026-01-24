@@ -2,16 +2,14 @@ version: '3.8'
 
 # JoustMania Docker Compose Configuration
 #
-# Quick Start (local build):
-#   make builders   # Build base images once (~15min on Pi)
-#   make images     # Build all service images
-#   make up         # Start all services
-#
-# Quick Start (pull from GHCR - no local build needed):
+# Quick Start (pull from GHCR - no build needed):
 #   docker compose pull  # Pull all images from GHCR
 #   docker compose up -d # Start all services
+#   # Or: make up-pull
 #
-# Or just: make up (builds everything automatically)
+# Quick Start (local build):
+#   make builders        # Build base images once (~15min on Pi)
+#   make up              # Build and start all services
 #
 # Base config defaults to bluetooth mode (real hardware).
 # For mock mode (testing): CONTROLLER_BACKEND=mock AUDIO_MOCK_MODE=true make up

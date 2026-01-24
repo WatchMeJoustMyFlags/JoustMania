@@ -143,7 +143,7 @@ docker compose up -d
 
 Or use the convenience target:
 ```bash
-make up-from-ghcr
+make up-pull
 ```
 
 To use a specific version:
@@ -158,14 +158,22 @@ IMAGE_TAG=dev-refactor docker compose up -d
 git clone <repository-url>
 cd JoustMania
 
-# Build builder images (one-time, ~15min on Pi)
+# Build and start (uses docker compose --build)
+make up
+```
+
+The `make up` target will automatically build images using `docker compose up -d --build`.
+
+For manual control:
+```bash
+# Build builder images first (optional, one-time)
 make builders
 
-# Build all service images
+# Build all services
 make images
 
-# Start all services
-make up
+# Start services
+docker compose up -d
 ```
 
 ### GHCR Authentication (For Private Images)
