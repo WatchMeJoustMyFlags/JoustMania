@@ -26,7 +26,7 @@ make up-pull
 make up
 
 # Or manually:
-# 1. Build builder images (optional, one-time)
+# 1. Build builder images (optional, one-time, or Docker pulls automatically)
 make builders
 
 # 2. Build all service images
@@ -35,6 +35,8 @@ make images
 # 3. Start services
 docker compose up -d
 ```
+
+**Note:** When building service images, Docker automatically pulls builder images from GHCR if they don't exist locally. You only need `make builders` if you want to build them from source.
 
 ### Integration Testing
 
@@ -304,14 +306,15 @@ docker buildx build --platform linux/amd64,linux/arm64 \
 
 **Problem:** Service build fails with "builder image not found"
 
-**Solution:** Build or pull builder images first:
+**Solution:** Docker should automatically pull builder images. If it fails:
 
 ```bash
-# Build locally
+# Build builder images locally
 make builders
 
-# Or pull from GHCR
-make pull-builders
+# Or pull specific version manually
+docker pull ghcr.io/watchmejoustmyflags/joustmania/builder:latest
+docker pull ghcr.io/watchmejoustmyflags/joustmania/psmove-builder:latest
 ```
 
 ### Integration tests fail to start

@@ -18,10 +18,6 @@ help:
 	@echo "  make images          - Build all service images (via docker compose)"
 	@echo "  make builders        - Build base images (run once, ~15min on Pi)"
 	@echo ""
-	@echo "Pull from GHCR:"
-	@echo "  make pull-builders   - Pull builder images only"
-	@echo "  docker compose pull  - Pull all service images (use directly)"
-	@echo ""
 	@echo "Individual Services:"
 	@echo "  make image-settings  - Build settings service image"
 	@echo "  make image-audio     - Build audio service image"
@@ -439,13 +435,6 @@ build-all-services:
 
 # Image tag for pulling/tagging (can be overridden for CI/CD)
 IMAGE_TAG ?= latest
-
-.PHONY: pull-builders
-pull-builders:
-	@echo "Pulling builder images from GHCR..."
-	@docker pull ghcr.io/watchmejoustmyflags/joustmania/builder:$(IMAGE_TAG)
-	@docker pull ghcr.io/watchmejoustmyflags/joustmania/psmove-builder:$(IMAGE_TAG)
-	@echo "✓ Builder images pulled"
 
 # ============================================================================
 # Testing Targets
