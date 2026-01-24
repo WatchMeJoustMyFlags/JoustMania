@@ -33,7 +33,7 @@ services:
       context: .
       dockerfile: services/settings/Dockerfile
       args:
-        BUILDER_IMAGE: ghcr.io/watchmejoustmyflags/joustmania/builder:${IMAGE_TAG:-latest}
+        BUILDER_IMAGE: ${BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/builder:latest}
     container_name: joustmania-settings
     expose:
       - "50051"
@@ -63,8 +63,8 @@ services:
       context: .
       dockerfile: services/controller_manager/Dockerfile
       args:
-        BUILDER_IMAGE: ghcr.io/watchmejoustmyflags/joustmania/builder:${IMAGE_TAG:-latest}
-        PSMOVE_BUILDER_IMAGE: ghcr.io/watchmejoustmyflags/joustmania/psmove-builder:${IMAGE_TAG:-latest}
+        BUILDER_IMAGE: ${BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/builder:latest}
+        PSMOVE_BUILDER_IMAGE: ${PSMOVE_BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/psmove-builder:latest}
     container_name: joustmania-controller-manager
     privileged: true
     networks:
@@ -104,7 +104,7 @@ services:
       context: .
       dockerfile: services/game_coordinator/Dockerfile
       args:
-        BUILDER_IMAGE: ghcr.io/watchmejoustmyflags/joustmania/builder:${IMAGE_TAG:-latest}
+        BUILDER_IMAGE: ${BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/builder:latest}
     container_name: joustmania-game-coordinator
     expose:
       - "50053"
@@ -134,7 +134,7 @@ services:
       context: .
       dockerfile: services/menu/Dockerfile
       args:
-        BUILDER_IMAGE: ghcr.io/watchmejoustmyflags/joustmania/builder:${IMAGE_TAG:-latest}
+        BUILDER_IMAGE: ${BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/builder:latest}
     container_name: joustmania-menu
     expose:
       - "50054"
@@ -168,7 +168,7 @@ services:
       context: .
       dockerfile: services/supervisor/Dockerfile
       args:
-        BUILDER_IMAGE: ghcr.io/watchmejoustmyflags/joustmania/builder:${IMAGE_TAG:-latest}
+        BUILDER_IMAGE: ${BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/builder:latest}
     container_name: joustmania-supervisor
     expose:
       - "50055"
@@ -200,7 +200,7 @@ services:
       context: .
       dockerfile: services/webui/Dockerfile
       args:
-        BUILDER_IMAGE: ghcr.io/watchmejoustmyflags/joustmania/builder:${IMAGE_TAG:-latest}
+        BUILDER_IMAGE: ${BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/builder:latest}
     container_name: joustmania-webui
     ports:
       - "80:80"
@@ -236,7 +236,7 @@ services:
       context: .
       dockerfile: services/audio/Dockerfile
       args:
-        BUILDER_IMAGE: ghcr.io/watchmejoustmyflags/joustmania/builder:${IMAGE_TAG:-latest}
+        BUILDER_IMAGE: ${BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/builder:latest}
     container_name: joustmania-audio
     privileged: true
     volumes:
