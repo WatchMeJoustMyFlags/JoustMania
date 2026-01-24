@@ -128,68 +128,120 @@ make format
 - Docker Compose (v2.0+)
 - Optional: PS Move controllers for hardware testing
 
-### 1. Clone & Build
+### Option 1: Pull and Run (Fastest - No Build Required)
 
 ```bash
 git clone <repository-url>
 cd JoustMania
 
-# Build all services
-scripts/docker/build.sh
+# Pull all images from GitHub Container Registry
+docker compose pull
+
+# Start all services
+docker compose up -d
 ```
 
-### 2. Start the Stack
+Or use the convenience target:
+```bash
+make up-from-ghcr
+```
+
+To use a specific version:
+```bash
+IMAGE_TAG=dev-refactor docker compose pull
+IMAGE_TAG=dev-refactor docker compose up -d
+```
+
+### Option 2: Build Locally
 
 ```bash
+git clone <repository-url>
+cd JoustMania
+
+# Build builder images (one-time, ~15min on Pi)
+make builders
+
+# Build all service images
+make images
+
 # Start all services
-scripts/docker/start.sh
+make up
 ```
 
+### GHCR Authentication (For Private Images)
+
+If the repository uses private images, authenticate with GitHub Container Registry:
+
+```bash
+# Generate a GitHub Personal Access Token with read:packages scope
+# Then authenticate:
+echo $GITHUB_TOKEN | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
+```
+
+### What Gets Started
+
 This starts:
-- 7 microservices (Settings, ControllerManager, GameCoordinator, Menu, Supervisor, WebUI, Audio)
+- 9 microservices (Settings, ControllerManager, GameCoordinator, Menu, Supervisor, WebUI, Audio, Dashboard, Connect-Proxy)
 - Jaeger (distributed tracing)
 - OpenTelemetry Collector
 - Redis
 - Prometheus metrics
+- Grafana dashboards
+- Loki log aggregation
 
-### 3. Access Interfaces
+### Access Interfaces
 
 | Interface | URL | Purpose |
 |-----------|-----|---------|
-| **Web UI** | http://localhost:80 | Game control interface |
-| **Jaeger** | http://localhost:16686 | Distributed traces |
-| **Prometheus** | http://localhost:8888/metrics | Metrics endpoint |
+| **Dashboard** | http://localhost:8080 | Main entry point - controller visualization |
+| **Legacy Web UI** | http://localhost:8080/legacy/ | Game control interface |
+| **Jaeger** | http://localhost:8080/jaeger/ | Distributed traces |
+| **Prometheus** | http://localhost:8080/prometheus/ | Metrics UI |
+| **Grafana** | http://localhost:8080/grafana/ | Dashboards (admin/joustmania) |
 
-### 4. View Logs
+### View Logs
 
 ```bash
 # All services
-scripts/docker/logs.sh
+make logs
+
+# Or use docker compose directly
+docker compose logs -f
 
 # Specific service
-scripts/docker/logs.sh settings
+docker compose logs -f settings
 ```
 
-### 5. Test gRPC APIs
+### Test gRPC APIs
 
 ```bash
 # Install grpcurl
 brew install grpcurl  # macOS
 sudo apt-get install grpcurl  # Linux
 
-# List services
+# List services (via exposed ports in docker-compose.override.yml)
 grpcurl -plaintext localhost:50051 list
 
 # Call RPC
 grpcurl -plaintext -d '{}' localhost:50051 joustmania.SettingsService/GetSettings
 ```
 
-### 6. View Traces
+### View Traces
 
-1. Open http://localhost:16686
-2. Select service: `joustmania-settings`
+1. Open http://localhost:8080/jaeger/
+2. Select service: `settings-service`
 3. Click "Find Traces"
 4. Explore distributed traces across services
+
+### Stop Services
+
+```bash
+# Stop all services
+make down
+
+# Or use docker compose directly
+docker compose down
+```
 
 ---
 

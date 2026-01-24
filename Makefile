@@ -248,20 +248,11 @@ image-dashboard:
 		-t ghcr.io/watchmejoustmyflags/joustmania/dashboard:latest .
 	@echo "✓ dashboard:latest built"
 
-# Build all service images (parallel)
+# Build all service images using docker compose
 .PHONY: images
 images: builders
-	@echo "Building all service images in parallel..."
-	@docker build -f services/settings/Dockerfile -t ghcr.io/watchmejoustmyflags/joustmania/settings-service:latest --build-arg BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:latest . & \
-	docker build -f services/game_coordinator/Dockerfile -t ghcr.io/watchmejoustmyflags/joustmania/game-coordinator-service:latest --build-arg BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:latest . & \
-	docker build -f services/menu/Dockerfile -t ghcr.io/watchmejoustmyflags/joustmania/menu-service:latest --build-arg BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:latest . & \
-	docker build -f services/supervisor/Dockerfile -t ghcr.io/watchmejoustmyflags/joustmania/supervisor-service:latest --build-arg BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:latest . & \
-	docker build -f services/webui/Dockerfile -t ghcr.io/watchmejoustmyflags/joustmania/webui-service:latest --build-arg BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:latest . & \
-	docker build -f services/audio/Dockerfile -t ghcr.io/watchmejoustmyflags/joustmania/audio-service:latest --build-arg BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:latest . & \
-	docker build -f services/controller_manager/Dockerfile -t ghcr.io/watchmejoustmyflags/joustmania/controller-manager-service:latest --build-arg BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:latest --build-arg PSMOVE_BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/psmove-builder:latest . & \
-	docker build -f services/connect-proxy/Dockerfile -t ghcr.io/watchmejoustmyflags/joustmania/connect-proxy:latest . & \
-	docker build -f services/dashboard/Dockerfile -t ghcr.io/watchmejoustmyflags/joustmania/dashboard:latest . & \
-	wait
+	@echo "Building all service images using docker compose..."
+	@docker compose build
 	@echo ""
 	@echo "✓ All service images built!"
 
@@ -488,6 +479,12 @@ test:
 	@rm -rf .venv-test 2>/dev/null || true
 	@UV_PROJECT_ENVIRONMENT=.venv-test uv run --package joustmania-integration-tests pytest tests/integration/ -v
 
+.PHONY: test-with-pulled
+test-with-pulled:
+	@echo "Running integration tests with prebuilt GHCR images (tag: $(IMAGE_TAG))..."
+	@rm -rf .venv-test 2>/dev/null || true
+	@USE_PREBUILT_IMAGES=true IMAGE_TAG=$(IMAGE_TAG) UV_PROJECT_ENVIRONMENT=.venv-test uv run --package joustmania-integration-tests pytest tests/integration/ -v
+
 .PHONY: test-docker
 test-docker: ci-build-test
 	@echo "Running integration tests in Docker..."
@@ -583,7 +580,8 @@ test-help:
 	@echo ""
 	@echo "Run Tests (Local - Recommended):"
 	@echo "  make unit-test           - Run service unit tests (fast, no Docker)"
-	@echo "  make test                - Run all integration tests"
+	@echo "  make test                - Run all integration tests (builds images)"
+	@echo "  make test-with-pulled    - Run tests with prebuilt GHCR images"
 	@echo "  make test-mock-pause     - Run with pause before teardown (for Jaeger)"
 	@echo "  make test-ffa            - Run FFA integration test only"
 	@echo "  make test-teams          - Run Teams integration test only"
@@ -604,6 +602,7 @@ test-help:
 	@echo ""
 	@echo "Notes:"
 	@echo "  - Local tests use fresh venv (.venv-test) - no permission issues"
+	@echo "  - Use test-with-pulled to test with GHCR images (set IMAGE_TAG=dev-refactor)"
 	@echo "  - Docker tests may have TTY issues with pause mode - use local for Jaeger"
 	@echo "  - For Jaeger inspection: make test-mock-pause"
 	@echo "  - Requirements: uv installed (local tests) or Docker (Docker tests)"
