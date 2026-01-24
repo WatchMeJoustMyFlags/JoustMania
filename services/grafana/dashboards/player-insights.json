@@ -1009,7 +1009,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(controller_connected == 1, serial)",
+        "definition": "label_values({__name__=~\"game_player_alive|game_player_accel_magnitude|menu_player_ready\"}, serial)",
         "hide": 0,
         "includeAll": true,
         "label": "Controller",
@@ -1017,7 +1017,7 @@
         "name": "controller",
         "options": [],
         "query": {
-          "query": "label_values(controller_connected == 1, serial)",
+          "query": "label_values({__name__=~\"game_player_alive|game_player_accel_magnitude|menu_player_ready\"}, serial)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
