@@ -9,6 +9,7 @@ help:
 	@echo ""
 	@echo "Quick Start:"
 	@echo "  make up              - Build images and start all services"
+	@echo "  make up-from-ghcr    - Pull images from GHCR and start"
 	@echo "  make down            - Stop all services"
 	@echo "  make logs            - Follow service logs"
 	@echo "  make restart         - Restart all services"
@@ -16,6 +17,11 @@ help:
 	@echo "Build:"
 	@echo "  make images          - Build all service images"
 	@echo "  make builders        - Build base images (run once, ~15min on Pi)"
+	@echo ""
+	@echo "Pull from GHCR:"
+	@echo "  make pull            - Pull all service images from GHCR"
+	@echo "  make pull-all        - Pull all images (builders + services)"
+	@echo "  make pull-builders   - Pull builder images only"
 	@echo ""
 	@echo "Individual Services:"
 	@echo "  make image-settings  - Build settings service image"
@@ -126,7 +132,7 @@ builder: $(BUILDER_MARKER)
 
 $(BUILDER_MARKER): images/builder/Dockerfile images/builder/requirements-common.txt
 	@echo "Building shared Python builder image..."
-	@docker build -t joustmania/builder:latest images/builder/
+	@docker build -t ghcr.io/watchmejoustmyflags/joustmania/builder:latest images/builder/
 	@touch $(BUILDER_MARKER)
 	@echo "✓ Builder image ready"
 
@@ -135,7 +141,7 @@ psmove-builder: $(PSMOVE_BUILDER_MARKER)
 
 $(PSMOVE_BUILDER_MARKER): images/psmove-builder/Dockerfile
 	@echo "Building psmoveapi builder image (this takes 10-15 minutes on Pi)..."
-	@docker build -t joustmania/psmove-builder:latest images/psmove-builder/
+	@docker build -t ghcr.io/watchmejoustmyflags/joustmania/psmove-builder:latest images/psmove-builder/
 	@touch $(PSMOVE_BUILDER_MARKER)
 	@echo "✓ PS Move builder image ready"
 
@@ -147,14 +153,14 @@ builders: builder psmove-builder
 .PHONY: builder-force
 builder-force:
 	@echo "Force rebuilding shared Python builder image..."
-	@docker build --no-cache -t joustmania/builder:latest images/builder/
+	@docker build --no-cache -t ghcr.io/watchmejoustmyflags/joustmania/builder:latest images/builder/
 	@touch $(BUILDER_MARKER)
 	@echo "✓ Builder image rebuilt"
 
 .PHONY: psmove-builder-force
 psmove-builder-force:
 	@echo "Force rebuilding psmoveapi builder image..."
-	@docker build --no-cache -t joustmania/psmove-builder:latest images/psmove-builder/
+	@docker build --no-cache -t ghcr.io/watchmejoustmyflags/joustmania/psmove-builder:latest images/psmove-builder/
 	@touch $(PSMOVE_BUILDER_MARKER)
 	@echo "✓ PS Move builder image rebuilt"
 
@@ -168,93 +174,93 @@ clean-builders:
 # Service Images
 # ============================================================================
 # Build service images using the shared builder images.
-# Each service image is tagged as joustmania/<service>-service:latest
+# Each service image is tagged with canonical GHCR names for consistency.
 
 # Individual service image targets
 .PHONY: image-settings
 image-settings: builders
 	@echo "Building settings service..."
 	@docker build -f services/settings/Dockerfile \
-		-t joustmania/settings-service:latest \
-		--build-arg BUILDER_IMAGE=joustmania/builder:latest .
+		-t ghcr.io/watchmejoustmyflags/joustmania/settings-service:latest \
+		--build-arg BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:latest .
 	@echo "✓ settings-service:latest built"
 
 .PHONY: image-controller-manager
 image-controller-manager: builders
 	@echo "Building controller-manager service..."
 	@docker build -f services/controller_manager/Dockerfile \
-		-t joustmania/controller-manager-service:latest \
-		--build-arg BUILDER_IMAGE=joustmania/builder:latest \
-		--build-arg PSMOVE_BUILDER_IMAGE=joustmania/psmove-builder:latest .
+		-t ghcr.io/watchmejoustmyflags/joustmania/controller-manager-service:latest \
+		--build-arg BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:latest \
+		--build-arg PSMOVE_BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/psmove-builder:latest .
 	@echo "✓ controller-manager-service:latest built"
 
 .PHONY: image-game-coordinator
 image-game-coordinator: builders
 	@echo "Building game-coordinator service..."
 	@docker build -f services/game_coordinator/Dockerfile \
-		-t joustmania/game-coordinator-service:latest \
-		--build-arg BUILDER_IMAGE=joustmania/builder:latest .
+		-t ghcr.io/watchmejoustmyflags/joustmania/game-coordinator-service:latest \
+		--build-arg BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:latest .
 	@echo "✓ game-coordinator-service:latest built"
 
 .PHONY: image-menu
 image-menu: builders
 	@echo "Building menu service..."
 	@docker build -f services/menu/Dockerfile \
-		-t joustmania/menu-service:latest \
-		--build-arg BUILDER_IMAGE=joustmania/builder:latest .
+		-t ghcr.io/watchmejoustmyflags/joustmania/menu-service:latest \
+		--build-arg BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:latest .
 	@echo "✓ menu-service:latest built"
 
 .PHONY: image-supervisor
 image-supervisor: builders
 	@echo "Building supervisor service..."
 	@docker build -f services/supervisor/Dockerfile \
-		-t joustmania/supervisor-service:latest \
-		--build-arg BUILDER_IMAGE=joustmania/builder:latest .
+		-t ghcr.io/watchmejoustmyflags/joustmania/supervisor-service:latest \
+		--build-arg BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:latest .
 	@echo "✓ supervisor-service:latest built"
 
 .PHONY: image-webui
 image-webui: builders
 	@echo "Building webui service..."
 	@docker build -f services/webui/Dockerfile \
-		-t joustmania/webui-service:latest \
-		--build-arg BUILDER_IMAGE=joustmania/builder:latest .
+		-t ghcr.io/watchmejoustmyflags/joustmania/webui-service:latest \
+		--build-arg BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:latest .
 	@echo "✓ webui-service:latest built"
 
 .PHONY: image-audio
 image-audio: builders
 	@echo "Building audio service..."
 	@docker build -f services/audio/Dockerfile \
-		-t joustmania/audio-service:latest \
-		--build-arg BUILDER_IMAGE=joustmania/builder:latest .
+		-t ghcr.io/watchmejoustmyflags/joustmania/audio-service:latest \
+		--build-arg BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:latest .
 	@echo "✓ audio-service:latest built"
 
 .PHONY: image-connect-proxy
 image-connect-proxy:
 	@echo "Building connect-proxy service..."
 	@docker build -f services/connect-proxy/Dockerfile \
-		-t joustmania/connect-proxy:latest .
+		-t ghcr.io/watchmejoustmyflags/joustmania/connect-proxy:latest .
 	@echo "✓ connect-proxy:latest built"
 
 .PHONY: image-dashboard
 image-dashboard:
 	@echo "Building dashboard service..."
 	@docker build -f services/dashboard/Dockerfile \
-		-t joustmania/dashboard:latest .
+		-t ghcr.io/watchmejoustmyflags/joustmania/dashboard:latest .
 	@echo "✓ dashboard:latest built"
 
 # Build all service images (parallel)
 .PHONY: images
 images: builders
 	@echo "Building all service images in parallel..."
-	@docker build -f services/settings/Dockerfile -t joustmania/settings-service:latest --build-arg BUILDER_IMAGE=joustmania/builder:latest . & \
-	docker build -f services/game_coordinator/Dockerfile -t joustmania/game-coordinator-service:latest --build-arg BUILDER_IMAGE=joustmania/builder:latest . & \
-	docker build -f services/menu/Dockerfile -t joustmania/menu-service:latest --build-arg BUILDER_IMAGE=joustmania/builder:latest . & \
-	docker build -f services/supervisor/Dockerfile -t joustmania/supervisor-service:latest --build-arg BUILDER_IMAGE=joustmania/builder:latest . & \
-	docker build -f services/webui/Dockerfile -t joustmania/webui-service:latest --build-arg BUILDER_IMAGE=joustmania/builder:latest . & \
-	docker build -f services/audio/Dockerfile -t joustmania/audio-service:latest --build-arg BUILDER_IMAGE=joustmania/builder:latest . & \
-	docker build -f services/controller_manager/Dockerfile -t joustmania/controller-manager-service:latest --build-arg BUILDER_IMAGE=joustmania/builder:latest --build-arg PSMOVE_BUILDER_IMAGE=joustmania/psmove-builder:latest . & \
-	docker build -f services/connect-proxy/Dockerfile -t joustmania/connect-proxy:latest . & \
-	docker build -f services/dashboard/Dockerfile -t joustmania/dashboard:latest . & \
+	@docker build -f services/settings/Dockerfile -t ghcr.io/watchmejoustmyflags/joustmania/settings-service:latest --build-arg BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:latest . & \
+	docker build -f services/game_coordinator/Dockerfile -t ghcr.io/watchmejoustmyflags/joustmania/game-coordinator-service:latest --build-arg BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:latest . & \
+	docker build -f services/menu/Dockerfile -t ghcr.io/watchmejoustmyflags/joustmania/menu-service:latest --build-arg BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:latest . & \
+	docker build -f services/supervisor/Dockerfile -t ghcr.io/watchmejoustmyflags/joustmania/supervisor-service:latest --build-arg BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:latest . & \
+	docker build -f services/webui/Dockerfile -t ghcr.io/watchmejoustmyflags/joustmania/webui-service:latest --build-arg BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:latest . & \
+	docker build -f services/audio/Dockerfile -t ghcr.io/watchmejoustmyflags/joustmania/audio-service:latest --build-arg BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:latest . & \
+	docker build -f services/controller_manager/Dockerfile -t ghcr.io/watchmejoustmyflags/joustmania/controller-manager-service:latest --build-arg BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:latest --build-arg PSMOVE_BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/psmove-builder:latest . & \
+	docker build -f services/connect-proxy/Dockerfile -t ghcr.io/watchmejoustmyflags/joustmania/connect-proxy:latest . & \
+	docker build -f services/dashboard/Dockerfile -t ghcr.io/watchmejoustmyflags/joustmania/dashboard:latest . & \
 	wait
 	@echo ""
 	@echo "✓ All service images built!"
@@ -400,8 +406,8 @@ ci-help:
 # ============================================================================
 
 # Builder image defaults (can be overridden for CI/CD)
-BUILDER_IMAGE ?= joustmania/builder:latest
-PSMOVE_BUILDER_IMAGE ?= joustmania/psmove-builder:latest
+BUILDER_IMAGE ?= ghcr.io/watchmejoustmyflags/joustmania/builder:latest
+PSMOVE_BUILDER_IMAGE ?= ghcr.io/watchmejoustmyflags/joustmania/psmove-builder:latest
 
 .PHONY: build-service
 build-service:
@@ -412,10 +418,10 @@ endif
 	@docker build \
 		--build-arg BUILDER_IMAGE=$(BUILDER_IMAGE) \
 		--build-arg PSMOVE_BUILDER_IMAGE=$(PSMOVE_BUILDER_IMAGE) \
-		-t joustmania/$(SERVICE)-service:latest \
+		-t ghcr.io/watchmejoustmyflags/joustmania/$(SERVICE)-service:latest \
 		-f services/$(SERVICE)/Dockerfile \
 		.
-	@echo "✓ Built joustmania/$(SERVICE)-service:latest"
+	@echo "✓ Built ghcr.io/watchmejoustmyflags/joustmania/$(SERVICE)-service:latest"
 
 .PHONY: build-all-services
 build-all-services:
@@ -426,32 +432,40 @@ build-all-services:
 	done
 	@echo "✓ All services built"
 
-# GHCR image defaults (for pulling pre-built images)
-GHCR_PREFIX ?= ghcr.io/watchmejoustmyflags/joustmania
-GHCR_TAG ?= dev-refactor
+# Image tag for pulling/tagging (can be overridden for CI/CD)
+IMAGE_TAG ?= latest
 
-.PHONY: pull
-pull:
+.PHONY: pull-all
+pull-all: pull-builders
 	@echo "Pulling all service images from GHCR..."
-	@for service in $(SERVICES); do \
-		image_name=$$(echo $$service | tr '_' '-')-service; \
-		echo "Pulling $(GHCR_PREFIX)/$$image_name:$(GHCR_TAG)..."; \
-		docker pull $(GHCR_PREFIX)/$$image_name:$(GHCR_TAG) || exit 1; \
-	done
-	@echo "✓ All service images pulled from GHCR"
+	@docker compose pull
+	@echo "✓ All images pulled"
 
 .PHONY: pull-builders
 pull-builders:
 	@echo "Pulling builder images from GHCR..."
-	@docker pull $(GHCR_PREFIX)/builder:$(GHCR_TAG)
-	@docker pull $(GHCR_PREFIX)/psmove-builder:$(GHCR_TAG)
-	@echo "✓ All builder images pulled from GHCR"
+	@docker pull ghcr.io/watchmejoustmyflags/joustmania/builder:$(IMAGE_TAG)
+	@docker pull ghcr.io/watchmejoustmyflags/joustmania/psmove-builder:$(IMAGE_TAG)
+	@echo "✓ Builder images pulled"
 
-.PHONY: up-ghcr
-up-ghcr:
-	@echo "Starting services using GHCR images..."
-	IMAGE_PREFIX=$(GHCR_PREFIX) IMAGE_TAG=$(GHCR_TAG) docker compose up -d
-	@echo "✓ Services started with GHCR images"
+.PHONY: pull
+pull:
+	@echo "Pulling all service images from GHCR..."
+	@docker compose pull
+	@echo "✓ All service images pulled from GHCR"
+
+.PHONY: up-from-ghcr
+up-from-ghcr: pull-all
+	@echo "Starting services with GHCR images..."
+	@docker compose up -d
+	@echo ""
+	@echo "=========================================="
+	@echo "JoustMania is running (GHCR images)!"
+	@echo "=========================================="
+	@echo "  Dashboard:  http://localhost:8080"
+	@echo "  Jaeger:     http://localhost:8080/jaeger/"
+	@echo "  Prometheus: http://localhost:8080/prometheus/"
+	@echo "  Grafana:    http://localhost:8080/grafana/"
 
 # ============================================================================
 # Testing Targets
