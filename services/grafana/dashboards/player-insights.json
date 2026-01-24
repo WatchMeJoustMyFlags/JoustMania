@@ -680,7 +680,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "controller_rssi_dbm{serial=\"$controller\"} != 0",
+          "expr": "bluetooth_device_rssi_dbm{serial=\"$controller\"}",
           "legendFormat": "RSSI",
           "refId": "A"
         }

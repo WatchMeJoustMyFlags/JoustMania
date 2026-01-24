@@ -166,7 +166,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "avg by(hci_adapter) (controller_rssi_dbm != 0)",
+          "expr": "avg by(hci_adapter) (bluetooth_device_rssi_dbm)",
           "legendFormat": "{{hci_adapter}}",
           "refId": "A"
         }
@@ -331,7 +331,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "(controller_rssi_dbm != 0) * on(serial) group_left(name, hci_adapter) controller_info",
+          "expr": "bluetooth_device_rssi_dbm * on(serial) group_left(name) controller_info",
           "legendFormat": "{{hci_adapter}}: {{name}}",
           "refId": "A"
         }
@@ -538,7 +538,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "controller_rssi_dbm",
+          "expr": "bluetooth_device_rssi_dbm",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -854,7 +854,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "(controller_rssi_dbm != 0) * on(serial) group_left(name) controller_info",
+          "expr": "bluetooth_device_rssi_dbm * on(serial) group_left(name) controller_info",
           "legendFormat": "{{name}}",
           "refId": "A"
         }
