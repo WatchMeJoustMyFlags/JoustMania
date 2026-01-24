@@ -206,22 +206,26 @@ class Gauge(LabeledMetric):
                 labels = dict(key) if key else {}
                 yield metrics.Observation(value, labels)
 
-    def _ensure_initialized(self) -> None:
-        """Ensure the gauge is initialized before use."""
+    def _ensure_initialized(self) -> bool:
+        """Ensure the gauge is initialized before use. Returns False if not ready."""
         if not self._instrument_initialized:
             if not _is_initialized():
-                raise RuntimeError(f"Cannot use metric '{self.name}' before init_metrics() is called")
+                # Silently skip if not initialized (e.g., during tests)
+                return False
             self._initialize()
+        return True
 
     def set(self, value: float) -> None:
         """Set gauge value (no labels)."""
-        self._ensure_initialized()
+        if not self._ensure_initialized():
+            return
         with self._lock:
             self._values[frozenset()] = value
 
     def inc(self, amount: float = 1) -> None:
         """Increment gauge value (no labels)."""
-        self._ensure_initialized()
+        if not self._ensure_initialized():
+            return
         with self._lock:
             key = frozenset()
             self._values[key] = self._values.get(key, 0) + amount
@@ -256,14 +260,16 @@ class _LabeledGauge:
 
     def set(self, value: float) -> None:
         """Set the labeled gauge value."""
-        self._parent._ensure_initialized()
+        if not self._parent._ensure_initialized():
+            return
         with self._parent._lock:
             self._parent._values[self._key] = value
             self._parent._metrics[self._key] = True  # Track for removal
 
     def inc(self, amount: float = 1) -> None:
         """Increment the labeled gauge value."""
-        self._parent._ensure_initialized()
+        if not self._parent._ensure_initialized():
+            return
         with self._parent._lock:
             self._parent._values[self._key] = self._parent._values.get(self._key, 0) + amount
             self._parent._metrics[self._key] = True
@@ -303,16 +309,19 @@ class Counter(LabeledMetric):
         )
         self._instrument_initialized = True
 
-    def _ensure_initialized(self) -> None:
-        """Ensure the counter is initialized before use."""
+    def _ensure_initialized(self) -> bool:
+        """Ensure the counter is initialized before use. Returns False if not ready."""
         if not self._instrument_initialized:
             if not _is_initialized():
-                raise RuntimeError(f"Cannot use metric '{self.name}' before init_metrics() is called")
+                # Silently skip if not initialized (e.g., during tests)
+                return False
             self._initialize()
+        return True
 
     def inc(self, amount: float = 1) -> None:
         """Increment counter (no labels)."""
-        self._ensure_initialized()
+        if not self._ensure_initialized():
+            return
         self._counter.add(amount)
 
     def labels(self, **kwargs) -> _LabeledCounter:
@@ -330,7 +339,8 @@ class _LabeledCounter:
 
     def inc(self, amount: float = 1) -> None:
         """Increment the labeled counter."""
-        self._parent._ensure_initialized()
+        if not self._parent._ensure_initialized():
+            return
         self._parent._counter.add(amount, self._labels)
 
 
@@ -368,16 +378,19 @@ class Histogram(LabeledMetric):
         )
         self._instrument_initialized = True
 
-    def _ensure_initialized(self) -> None:
-        """Ensure the histogram is initialized before use."""
+    def _ensure_initialized(self) -> bool:
+        """Ensure the histogram is initialized before use. Returns False if not ready."""
         if not self._instrument_initialized:
             if not _is_initialized():
-                raise RuntimeError(f"Cannot use metric '{self.name}' before init_metrics() is called")
+                # Silently skip if not initialized (e.g., during tests)
+                return False
             self._initialize()
+        return True
 
     def observe(self, value: float) -> None:
         """Record a value in the histogram (no labels)."""
-        self._ensure_initialized()
+        if not self._ensure_initialized():
+            return
         self._histogram.record(value)
 
     def labels(self, **kwargs) -> _LabeledHistogram:
@@ -405,7 +418,8 @@ class _LabeledHistogram:
 
     def observe(self, value: float) -> None:
         """Record a value in the labeled histogram."""
-        self._parent._ensure_initialized()
+        if not self._parent._ensure_initialized():
+            return
         self._parent._histogram.record(value, self._labels)
 
     @contextmanager
