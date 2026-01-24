@@ -198,14 +198,19 @@ endif
 		-t ghcr.io/watchmejoustmyflags/joustmania/$(SERVICE)-service:latest \
 		-f services/$(SERVICE)/Dockerfile .
 
+# Build CI proto image (used by validation scripts)
+.PHONY: ci-proto-image
+ci-proto-image:
+	docker build -t joustmania/ci-proto:latest tools/ci-proto/
+
 # Validate proto files match generated code
 .PHONY: ci-validate-protos
-ci-validate-protos:
+ci-validate-protos: ci-proto-image
 	bash scripts/ci/validate-protos.sh
 
 # Validate Python package dependencies
 .PHONY: ci-validate-packages
-ci-validate-packages:
+ci-validate-packages: ci-proto-image
 	bash scripts/ci/validate-packages.sh
 
 # Lint Dockerfiles (CI uses hadolint container)
