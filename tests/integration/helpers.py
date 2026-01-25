@@ -23,6 +23,8 @@ from proto import (
     game_coordinator_pb2_grpc,
     menu_pb2,
     menu_pb2_grpc,
+    settings_pb2,
+    settings_pb2_grpc,
 )
 
 
@@ -53,6 +55,34 @@ async def get_game_client(docker_compose):
     port = docker_compose.get_service_port("game-coordinator", 50053)
     channel = grpc.aio.insecure_channel(f"{host}:{port}")
     return game_coordinator_pb2_grpc.GameCoordinatorServiceStub(channel), channel
+
+
+async def get_settings_client(docker_compose):
+    """Get Settings service gRPC client."""
+    host = docker_compose.get_service_host("settings", 50055)
+    port = docker_compose.get_service_port("settings", 50055)
+    channel = grpc.aio.insecure_channel(f"{host}:{port}")
+    return settings_pb2_grpc.SettingsServiceStub(channel), channel
+
+
+async def update_setting(docker_compose, key: str, value: str):
+    """Update a setting via the Settings service.
+
+    Args:
+        docker_compose: Docker compose fixture
+        key: Setting key (e.g., "werewolf_reveal_time")
+        value: Setting value as string (e.g., "5.0")
+    """
+    client, channel = await get_settings_client(docker_compose)
+    try:
+        response = await client.UpdateSetting(
+            settings_pb2.UpdateSettingRequest(key=key, value=value)
+        )
+        if not response.success:
+            print(f"Warning: Failed to update setting {key}: {response.error}")
+        return response.success
+    finally:
+        await channel.close()
 
 
 # =============================================================================
@@ -725,7 +755,12 @@ async def end_zombies_game(
 
 
 async def end_fight_club_game(
-    mock_client, serials: list[str], game_client, delay: float = 0.5
+    mock_client,
+    serials: list[str],
+    game_client,
+    delay: float = 0.2,
+    invincibility_wait: float = 4.2,
+    rounds: int = 11,
 ) -> list[str]:
     """End a Fight Club game by running through rounds until a winner emerges.
 
@@ -740,6 +775,8 @@ async def end_fight_club_game(
         serials: List of all controller serials
         game_client: GameCoordinator client (for game state queries)
         delay: Delay between kills in seconds
+        invincibility_wait: Time to wait for invincibility to end (default 4.2s)
+        rounds: Number of rounds to run (default 11: 10 minimum + 1)
 
     Returns:
         List of serials that were killed (defenders)
@@ -749,11 +786,11 @@ async def end_fight_club_game(
     # Each round is 22s max, but ends when someone dies
     # Need 10+ rounds for game to end
 
-    for round_num in range(12):  # 12 rounds to ensure we exceed minimum
-        print(f"Fight Club round {round_num + 1}/12")
+    for round_num in range(rounds):
+        print(f"Fight Club round {round_num + 1}/{rounds}")
 
-        # Wait for invincibility to end (4s) + small buffer
-        await asyncio.sleep(5.0)
+        # Wait for invincibility to end
+        await asyncio.sleep(invincibility_wait)
 
         # Kill the defender (first player in rotation)
         # Players rotate through the queue
@@ -775,7 +812,7 @@ async def end_fight_club_game(
 
 
 async def end_tournament_game(
-    mock_client, serials: list[str], delay: float = 0.5
+    mock_client, serials: list[str], delay: float = 0.2, invincibility_wait: float = 4.2
 ) -> list[str]:
     """End a Tournament game by running through bracket matches.
 
@@ -789,6 +826,7 @@ async def end_tournament_game(
         mock_client: Mock controller service gRPC client
         serials: List of all controller serials
         delay: Delay between kills in seconds
+        invincibility_wait: Time to wait for invincibility to end (default 4.2s)
 
     Returns:
         List of serials that were killed
@@ -802,8 +840,8 @@ async def end_tournament_game(
         round_num += 1
         print(f"Tournament round {round_num}, {len(active_players)} players remaining")
 
-        # Wait for invincibility (4s) + buffer
-        await asyncio.sleep(5.0)
+        # Wait for invincibility to end
+        await asyncio.sleep(invincibility_wait)
 
         # Kill first active player (eliminates them)
         loser = active_players[0]

@@ -36,9 +36,9 @@ MATCH_COLORS = [
 WINNER_COLOR = (0, 255, 0)  # Green for match winner
 ELIMINATED_COLOR = (0, 0, 0)  # Off when eliminated
 
-# Match timing
+# Match timing (defaults, can be overridden via settings)
 MATCH_DURATION = 22.0  # Seconds per match
-INVINCIBILITY_DURATION = 4.0  # Seconds at start of match
+DEFAULT_INVINCIBILITY_DURATION = 4.0  # Seconds at start of match
 TIME_BETWEEN_MATCHES = 5.0  # Pause between matches
 
 
@@ -122,10 +122,21 @@ class TournamentGame(BaseGameMode):
         self.total_rounds = 0
         self.match_task: asyncio.Task | None = None
         self.match_span: trace.Span | None = None
+        # Configurable timing (loaded from settings)
+        self._invincibility_duration: float = DEFAULT_INVINCIBILITY_DURATION
 
     def get_game_name(self) -> str:
         """Return game mode identifier."""
         return "Tournament"
+
+    async def _load_settings(self):
+        """Load settings including tournament-specific timing."""
+        await super()._load_settings()
+        # Load tournament-specific timing from settings
+        self._invincibility_duration = float(
+            self.settings.get("tournament_invincibility", str(DEFAULT_INVINCIBILITY_DURATION))
+        )
+        logger.info(f"Tournament invincibility: {self._invincibility_duration}s")
 
     def _generate_bracket(self, player_count: int) -> list[Match]:
         """
@@ -413,8 +424,8 @@ class TournamentGame(BaseGameMode):
                 )
                 await self.gameplay_stream.write(color_cmd)
 
-        # Set invincibility
-        invincible_until = time.time() + INVINCIBILITY_DURATION
+        # Set invincibility (duration configurable via tournament_invincibility setting)
+        invincible_until = time.time() + self._invincibility_duration
         p1.invincible_until = invincible_until
         p2.invincible_until = invincible_until
 

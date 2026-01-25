@@ -32,11 +32,36 @@ from tests.integration.helpers import (
     kill_players_for_team_win,
     kill_players_until_one_remains,
     start_game_via_menu,
+    update_setting,
     verify_controllers_have_color,
     verify_lobby_colors,
     verify_lobby_colors_restored,
     wait_for_game_end,
 )
+
+
+# =============================================================================
+# Test timing configuration (via Settings service)
+# =============================================================================
+# These values are passed to the Settings service before game start.
+# Games read them at initialization, allowing faster test execution.
+
+# Werewolf: Set reveal time to 0 for immediate reveal (skip 35s wait)
+# Setting key: werewolf_reveal_time (default: 35.0)
+WEREWOLF_REVEAL_TIME = "0.0"
+
+# FightClub invincibility: reduce from 4s to 0.5s for faster rounds
+# Setting key: fight_club_invincibility (default: 4.0)
+FIGHT_CLUB_INVINCIBILITY = "0.5"
+
+# FightClub minimum rounds: reduce from 10 to 3 for faster tests
+# Setting key: fight_club_min_rounds (default: 10)
+FIGHT_CLUB_MIN_ROUNDS = "3"
+FIGHT_CLUB_ROUNDS = 4  # Run 1 more than minimum to ensure clear winner
+
+# Tournament invincibility: reduce from 4s to 0.5s for faster matches
+# Setting key: tournament_invincibility (default: 4.0)
+TOURNAMENT_INVINCIBILITY = "0.5"
 
 
 # =============================================================================
@@ -46,6 +71,25 @@ from tests.integration.helpers import (
 # Type alias for end strategy functions
 # Signature: async def(mock_client, serials, game_client) -> None
 EndStrategy = Callable[[Any, list[str], Any], Any]
+
+
+async def configure_test_settings(docker_compose, game_mode: str):
+    """Configure game-specific settings for faster test execution.
+
+    Sets timing-related settings to reduce test duration while maintaining
+    valid game behavior. Called before starting a game.
+
+    Args:
+        docker_compose: Docker compose fixture
+        game_mode: The game mode being tested
+    """
+    if game_mode == "Werewolf":
+        await update_setting(docker_compose, "werewolf_reveal_time", WEREWOLF_REVEAL_TIME)
+    elif game_mode == "FightClub":
+        await update_setting(docker_compose, "fight_club_invincibility", FIGHT_CLUB_INVINCIBILITY)
+        await update_setting(docker_compose, "fight_club_min_rounds", FIGHT_CLUB_MIN_ROUNDS)
+    elif game_mode == "Tournament":
+        await update_setting(docker_compose, "tournament_invincibility", TOURNAMENT_INVINCIBILITY)
 
 
 async def end_ffa_game(mock_client, serials: list[str], game_client) -> None:
@@ -69,18 +113,42 @@ async def end_zombies(mock_client, serials: list[str], game_client) -> None:
 
 
 async def end_werewolf(mock_client, serials: list[str], game_client) -> None:
-    """End Werewolf by killing all werewolves after reveal."""
-    await end_werewolf_game(mock_client, serials, delay=0.3, wait_for_reveal=True)
+    """End Werewolf by killing all werewolves.
+
+    The game ends when all werewolves (or humans) are dead.
+    Test configures werewolf_reveal_time=0 so reveal is immediate.
+    """
+    # Small delay for reveal (configured to 0, so just need processing time)
+    await asyncio.sleep(0.5)
+    await end_werewolf_game(mock_client, serials, delay=0.3, wait_for_reveal=False)
 
 
 async def end_tournament(mock_client, serials: list[str], game_client) -> None:
-    """End Tournament by running through bracket."""
-    await end_tournament_game(mock_client, serials, delay=0.5)
+    """End Tournament by running through bracket.
+
+    Test configures tournament_invincibility=0.5 for faster matches.
+    """
+    # Invincibility is configured to 0.5s, wait slightly longer
+    await end_tournament_game(
+        mock_client, serials, delay=0.2, invincibility_wait=0.7  # 0.5s configured + buffer
+    )
 
 
 async def end_fight_club(mock_client, serials: list[str], game_client) -> None:
-    """End FightClub by running rounds until winner."""
-    await end_fight_club_game(mock_client, serials, game_client, delay=0.5)
+    """End FightClub by running minimum rounds until winner.
+
+    Test configures fight_club_invincibility=0.5 and fight_club_min_rounds=3
+    for faster execution.
+    """
+    # Invincibility is configured to 0.5s, wait slightly longer
+    await end_fight_club_game(
+        mock_client,
+        serials,
+        game_client,
+        delay=0.2,
+        invincibility_wait=0.7,  # 0.5s configured + buffer
+        rounds=FIGHT_CLUB_ROUNDS,
+    )
 
 
 async def end_with_force(mock_client, serials: list[str], game_client) -> None:
@@ -105,12 +173,12 @@ ALL_GAME_MODES = [
     pytest.param("Swapper", 4, end_swapper, 15, id="Swapper"),
     # Zombies - convert all humans
     pytest.param("Zombies", 4, end_zombies, 15, id="Zombies"),
-    # Werewolf - wait for reveal (35s), kill werewolves
-    pytest.param("Werewolf", 4, end_werewolf, 60, id="Werewolf"),
-    # Tournament - run bracket matches
-    pytest.param("Tournament", 4, end_tournament, 60, id="Tournament"),
-    # FightClub - run 10+ rounds
-    pytest.param("FightClub", 4, end_fight_club, 90, id="FightClub"),
+    # Werewolf - kill werewolves (reveal_time=0 via settings)
+    pytest.param("Werewolf", 4, end_werewolf, 15, id="Werewolf"),
+    # Tournament - run bracket matches (invincibility=0.5 via settings)
+    pytest.param("Tournament", 4, end_tournament, 15, id="Tournament"),
+    # FightClub - run 4 rounds (min_rounds=3, invincibility=0.5 via settings)
+    pytest.param("FightClub", 4, end_fight_club, 15, id="FightClub"),
     # NonStop - infinite respawns, must force-end
     pytest.param("NonStop", 2, end_with_force, 15, id="NonStop"),
     # Traitor - secret teams not exposed, must force-end
@@ -136,9 +204,9 @@ async def test_full_game_lifecycle(
     - Team games: Eliminate one team
     - Swapper: Swap all players to one team
     - Zombies: Convert all humans to zombies
-    - Werewolf: Wait for reveal, kill werewolves
-    - Tournament: Run through bracket matches
-    - FightClub: Run 10+ rounds until clear winner
+    - Werewolf: Kill werewolves (reveal_time=0 via settings for instant reveal)
+    - Tournament: Run bracket matches (invincibility=0.5s via settings)
+    - FightClub: Run 4 rounds (min_rounds=3, invincibility=0.5s via settings)
     - NonStop/Traitor: Force-end (no natural end in tests)
 
     Verifies:
@@ -154,6 +222,9 @@ async def test_full_game_lifecycle(
         end_strategy: Async function to trigger game end
         timeout: Timeout for game end in seconds
     """
+    # Configure game-specific settings for faster test execution
+    await configure_test_settings(docker_compose, game_mode)
+
     # Start observability stream first
     mock_client, mock_channel = await get_mock_client(docker_compose)
     observer = ObservabilityObserver(mock_client)

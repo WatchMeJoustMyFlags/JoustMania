@@ -23,8 +23,8 @@ from services.game_coordinator.games.base import BaseGameMode, Phase, Player, Se
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 
-# Game constants
-REVEAL_TIME = 35.0  # Seconds until werewolves are revealed
+# Game constants (defaults, can be overridden via settings)
+DEFAULT_REVEAL_TIME = 35.0  # Seconds until werewolves are revealed
 HUMAN_COLOR = (255, 255, 0)  # Yellow for humans (and all players before reveal)
 WEREWOLF_COLOR = (0, 100, 255)  # Blue for werewolves after reveal
 
@@ -95,6 +95,7 @@ class WerewolfGame(BaseGameMode):
         self.revealed = False
         self.reveal_task: asyncio.Task | None = None
         self.game_span: trace.Span | None = None
+        self._reveal_time: float = DEFAULT_REVEAL_TIME
 
     def get_game_name(self) -> str:
         """Return game mode identifier."""
@@ -256,8 +257,8 @@ class WerewolfGame(BaseGameMode):
 
         Called as a background task during gameplay.
         """
-        # Wait for reveal time
-        await asyncio.sleep(REVEAL_TIME)
+        # Wait for reveal time (configurable via werewolf_reveal_time setting)
+        await asyncio.sleep(self._reveal_time)
 
         if not self.running:
             return
@@ -301,7 +302,7 @@ class WerewolfGame(BaseGameMode):
         for serial in self.werewolf_serials:
             player = self.players.get(serial)
             if player and player.span:
-                player.span.add_event("werewolf_revealed", {"time_since_start": REVEAL_TIME})
+                player.span.add_event("werewolf_revealed", {"time_since_start": self._reveal_time})
 
         logger.info(f"Revealed {len(self.werewolf_serials)} werewolves")
 
@@ -503,6 +504,9 @@ class WerewolfGame(BaseGameMode):
                 # Initialization phase
                 with tracer.start_as_current_span("initialization_phase"):
                     await self._load_settings()
+                    # Load werewolf-specific timing from settings
+                    self._reveal_time = float(self.settings.get("werewolf_reveal_time", str(DEFAULT_REVEAL_TIME)))
+                    logger.info(f"Werewolf reveal time: {self._reveal_time}s")
                     await self._initialize_players()
                     self._create_player_spans()
 
