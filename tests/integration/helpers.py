@@ -401,6 +401,77 @@ async def verify_controllers_have_color(mock_client, serials: list[str]):
         assert total > 0, f"{serial} LED is off (color: {color})"
 
 
+def _color_matches(actual: tuple[int, int, int], expected: tuple[int, int, int], tolerance: int) -> bool:
+    """Check if actual color matches expected within tolerance."""
+    for a, e in zip(actual, expected):
+        if abs(a - e) > tolerance:
+            return False
+    return True
+
+
+async def wait_for_lobby_colors(
+    mock_client,
+    serials: list[str],
+    expected_color: tuple[int, int, int] | None = None,
+    tolerance: int = 30,
+    timeout: float = 3.0,
+    poll_interval: float = 0.1,
+):
+    """Wait for all controllers to show expected lobby colors.
+
+    Polls controller colors until they match expected values or timeout.
+    This handles timing variations in menu color reset after game ends.
+
+    Args:
+        mock_client: Mock controller service gRPC client
+        serials: List of controller serial numbers to check
+        expected_color: Expected RGB color tuple. If None, just checks non-zero.
+        tolerance: Max difference per channel (default 30 for dimming variations)
+        timeout: Maximum time to wait in seconds
+        poll_interval: Time between polls in seconds
+
+    Raises:
+        AssertionError: If colors don't match within timeout
+    """
+    start_time = asyncio.get_event_loop().time()
+    last_colors: dict[str, tuple[int, int, int]] = {}
+
+    while (asyncio.get_event_loop().time() - start_time) < timeout:
+        all_match = True
+
+        for serial in serials:
+            color = await get_controller_color(mock_client, serial)
+            last_colors[serial] = color
+
+            # Check if LED is on
+            if sum(color) == 0:
+                all_match = False
+                continue
+
+            # Check if color matches expected (if specified)
+            if expected_color is not None:
+                if not _color_matches(color, expected_color, tolerance):
+                    all_match = False
+
+        if all_match:
+            return  # All controllers match!
+
+        await asyncio.sleep(poll_interval)
+
+    # Timeout - report which controllers didn't match
+    mismatches = []
+    for serial in serials:
+        color = last_colors.get(serial, (0, 0, 0))
+        if sum(color) == 0:
+            mismatches.append(f"{serial}: LED is off (color: {color})")
+        elif expected_color is not None and not _color_matches(color, expected_color, tolerance):
+            mismatches.append(f"{serial}: got {color}, expected {expected_color}")
+
+    raise AssertionError(
+        f"Lobby colors not set within {timeout}s. Mismatches:\n" + "\n".join(mismatches)
+    )
+
+
 async def verify_lobby_colors(
     mock_client, serials: list[str], expected_color: tuple[int, int, int] | None = None, tolerance: int = 30
 ):

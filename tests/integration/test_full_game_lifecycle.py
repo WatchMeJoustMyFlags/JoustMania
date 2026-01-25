@@ -30,6 +30,7 @@ from tests.integration.helpers import (
     verify_lobby_colors,
     verify_lobby_colors_restored,
     wait_for_game_end,
+    wait_for_lobby_colors,
 )
 
 # Expected dim lobby colors per game mode (30% of full brightness)
@@ -128,13 +129,10 @@ async def test_full_lifecycle_standard(docker_compose, game_mode, min_players, g
         # 5. Wait for game to end naturally
         await wait_for_game_end(game_client, timeout=15)
 
-        # 6. Wait for menu to fully reset controller colors
-        # Rainbow duration is configurable (300ms in CI, 3s in production)
-        await asyncio.sleep(1.0)
-
-        # 7. Verify LED colors are restored to expected lobby color
+        # 6. Wait for menu to fully reset controller colors (polls until colors match)
+        # This handles timing variations in menu color reset after game ends
         expected_color = EXPECTED_LOBBY_COLORS.get(game_mode)
-        await verify_lobby_colors(mock_client, serials, expected_color=expected_color)
+        await wait_for_lobby_colors(mock_client, serials, expected_color=expected_color, timeout=3.0)
 
         # 8. Verify event sequence shows lobby colors restored
         events = observer.get_events()
@@ -257,10 +255,9 @@ async def test_back_to_back_games(docker_compose):
             # Wait for game end
             await wait_for_game_end(game_client, timeout=15)
 
-            # Verify return to menu with expected lobby color
-            await asyncio.sleep(1.0)
+            # Verify return to menu with expected lobby color (polls until colors match)
             expected_color = EXPECTED_LOBBY_COLORS.get(game_mode)
-            await verify_lobby_colors(mock_client, serials, expected_color=expected_color)
+            await wait_for_lobby_colors(mock_client, serials, expected_color=expected_color, timeout=3.0)
 
             await game_channel.close()
 
