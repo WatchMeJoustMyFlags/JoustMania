@@ -101,6 +101,11 @@ class FFAGame(BaseGameMode):
                 winner = alive_players[0]
                 logger.info(f"Winner: {winner.serial}")
 
+                # Send rainbow effect NOW while gameplay stream is still open
+                # This avoids the race condition where _end_game_impl sends it
+                # after the stream is closed
+                asyncio.create_task(self._show_winner_effect(winner.serial))
+
                 self.event_publisher(GameEvent.GAME_WINNER, {"serial": winner.serial})
 
             elif len(alive_players) == 0:
@@ -111,6 +116,24 @@ class FFAGame(BaseGameMode):
             return True
 
         return False
+
+    async def _show_winner_effect(self, serial: str):
+        """Send winner rainbow effect via gameplay stream.
+
+        Called from _check_win_condition when a winner is detected.
+        The gameplay stream is guaranteed to be open at this point.
+        """
+        from proto import controller_manager_pb2
+
+        if self.gameplay_stream:
+            effect_cmd = controller_manager_pb2.GameplayStreamControl(
+                game_effect=controller_manager_pb2.GameEffectCommand(
+                    serial=serial,
+                    effect=controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW,
+                )
+            )
+            await self.gameplay_stream.write(effect_cmd)
+            logger.info(f"Sent winner rainbow effect to {serial}")
 
     async def _kill_player_impl(self, serial: str, accel_mag: float):
         """
@@ -209,7 +232,6 @@ class FFAGame(BaseGameMode):
 
     async def _end_game_impl(self):
         """Handle game ending - show winner, cleanup."""
-        from proto import controller_manager_pb2
         from services.game_coordinator import metrics
         from services.game_coordinator.games.base import GameState
 
@@ -220,28 +242,9 @@ class FFAGame(BaseGameMode):
         alive_players = [p for p in self.players.values() if p.alive]
         winner_serial = alive_players[0].serial if len(alive_players) == 1 else None
 
-        # Phase XX: Show rainbow effect on winner's controller via game effect
+        # Rainbow effect is already sent in _check_win_condition via _show_winner_effect
+        # Just play the victory sound here
         if winner_serial:
-            if self.gameplay_stream:
-                effect_cmd = controller_manager_pb2.GameplayStreamControl(
-                    game_effect=controller_manager_pb2.GameEffectCommand(
-                        serial=winner_serial,
-                        effect=controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW,
-                    )
-                )
-                await self.gameplay_stream.write(effect_cmd)
-            else:
-                # Fallback to RPC
-                rainbow_request = controller_manager_pb2.PlayControllerEffectRequest(
-                    serial=winner_serial,
-                    effect=controller_manager_pb2.EFFECT_RAINBOW,
-                    color=controller_manager_pb2.RGB(r=255, g=255, b=255),
-                    duration_ms=3000,
-                    speed=1,  # Slow rainbow (1 cycle/second)
-                )
-                await self.controller_client.PlayControllerEffect(rainbow_request)
-
-            # Play victory sound (Phase 29)
             await self._play_sound(Sound.VOX_CONGRATULATIONS, priority=2)
 
         # Show winner for a bit (interruptible by force_end)
