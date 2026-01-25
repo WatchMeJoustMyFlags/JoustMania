@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import logging
 import math
+import os
 import random
 import time
 from abc import ABC, abstractmethod
@@ -40,7 +41,8 @@ logger = logging.getLogger(__name__)
 # Game constants (Phase 43: Now uses runtime config for dynamic adjustment)
 # Phase 72: Increased from 30Hz to 60Hz for better responsiveness
 UPDATE_FREQUENCY = 60  # Hz - default, overridden by runtime config
-COUNTDOWN_DURATION = 3  # seconds
+# CI_MODE reduces countdown for faster tests (set COUNTDOWN_DURATION_OVERRIDE=1)
+COUNTDOWN_DURATION = int(os.environ.get("COUNTDOWN_DURATION_OVERRIDE", "3"))
 
 # Phase 70: Music tempo constants (from original JoustMania)
 SLOW_MUSIC_SPEED = 1.0  # Normal playback

@@ -32,6 +32,12 @@ services:
       OTEL_SERVICE_NAME: controller-manager-service
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
 
+  # Game Coordinator - Reduced countdown for faster tests
+  game-coordinator:
+    environment:
+      # Reduce countdown from 3s to 1s for faster integration tests
+      COUNTDOWN_DURATION_OVERRIDE: "1"
+
   # Connect-proxy - Not required for integration tests
   connect-proxy:
     profiles:
