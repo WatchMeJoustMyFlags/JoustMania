@@ -80,7 +80,7 @@ services:
       loki:
         condition: service_healthy
       victoria-metrics:
-        condition: service_healthy
+        condition: service_started
       grafana-live-publisher:
         condition: service_healthy
     networks:
@@ -290,9 +290,6 @@ services:
       - "-storageDataPath=/victoria-metrics-data"
       - "-retentionPeriod=7d"
       - "-httpListenAddr=:8428"
-      # Enable Prometheus remote write endpoint
-      - "-httpAuth.username="
-      - "-httpAuth.password="
     # Port exposed only within Docker network (envoy proxies to it)
     expose:
       - "8428"
@@ -301,12 +298,8 @@ services:
     networks:
       - joustmania
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8428/-/healthy"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
+    # Note: VictoriaMetrics image is scratch-based, no shell/wget for healthcheck
+    # Service starts quickly and exposes /health endpoint for manual verification
 
   # Prometheus for metrics collection (Phase 38) - kept for alerting rules
   prometheus:
@@ -402,7 +395,7 @@ services:
       - grafana-data:/var/lib/grafana
     depends_on:
       victoria-metrics:
-        condition: service_healthy
+        condition: service_started
       prometheus:
         condition: service_healthy
       loki:
