@@ -12,6 +12,7 @@ members = [
     "joustmania-menu",
     "joustmania-proto",
     "joustmania-settings",
+    "joustmania-supervisor",
 ]
 
 [[package]]
@@ -696,6 +697,33 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
 ]
 provides-extras = ["test"]
+
+[[package]]
+name = "joustmania-supervisor"
+version = "1.0.0"
+source = { editable = "services/supervisor" }
+dependencies = [
+    { name = "grpcio" },
+    { name = "grpcio-health-checking" },
+    { name = "joustmania-proto" },
+    { name = "opentelemetry-distro" },
+    { name = "opentelemetry-exporter-otlp" },
+    { name = "opentelemetry-instrumentation-grpc" },
+    { name = "prometheus-client" },
+    { name = "psutil" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "grpcio", specifier = ">=1.70.0" },
+    { name = "grpcio-health-checking", specifier = ">=1.70.0" },
+    { name = "joustmania-proto", editable = "proto" },
+    { name = "opentelemetry-distro", specifier = ">=0.49b0" },
+    { name = "opentelemetry-exporter-otlp", specifier = ">=1.28.0" },
+    { name = "opentelemetry-instrumentation-grpc", specifier = ">=0.49b0" },
+    { name = "prometheus-client", specifier = ">=0.19.0" },
+    { name = "psutil", specifier = ">=5.9.0" },
+]
 
 [[package]]
 name = "llvmlite"

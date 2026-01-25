@@ -603,3 +603,220 @@ async def kill_players_for_team_win(
         assert response.success, f"Failed to kill {serial}"
         killed.append(serial)
     return killed
+
+
+# =============================================================================
+# Complex game mode kill helpers
+# =============================================================================
+
+
+async def end_swapper_game(
+    mock_client, serials: list[str], delay: float = 0.3
+) -> list[str]:
+    """End a Swapper game by swapping all players to one team.
+
+    In Swapper, death causes team swap instead of elimination.
+    Game ends when all players are on the same team.
+    The last player to swap is excluded from winners.
+
+    Strategy: Kill players on team 1 repeatedly until they're all on team 0.
+    With 4 players (2 per team), killing team 1 players twice each swaps them to team 0.
+
+    Args:
+        mock_client: Mock controller service gRPC client
+        serials: List of all controller serials
+        delay: Delay between kills in seconds
+
+    Returns:
+        List of serials that were swapped (killed)
+    """
+    killed = []
+    # Players start on alternating teams (0, 1, 0, 1...)
+    # Kill odd-indexed players (team 1) to swap them to team 0
+    team_1_serials = serials[1::2]  # Every other player starting at index 1
+
+    for serial in team_1_serials:
+        await asyncio.sleep(delay)
+        response = await mock_client.SimulateDeath(
+            controller_manager_mock_pb2.DeathRequest(serial=serial)
+        )
+        assert response.success, f"Failed to kill {serial}"
+        killed.append(serial)
+
+    return killed
+
+
+async def end_werewolf_game(
+    mock_client, serials: list[str], delay: float = 0.3, wait_for_reveal: bool = True
+) -> list[str]:
+    """End a Werewolf game by killing all werewolves (or all humans).
+
+    Werewolves are ~44% of players, revealed at 35 seconds.
+    Win conditions: all humans dead OR all werewolves dead.
+
+    Strategy: Wait for reveal, then kill werewolves (minority).
+    Werewolves are assigned to later players in the list.
+
+    Args:
+        mock_client: Mock controller service gRPC client
+        serials: List of all controller serials
+        delay: Delay between kills in seconds
+        wait_for_reveal: If True, wait 36s for werewolf reveal
+
+    Returns:
+        List of serials that were killed
+    """
+    if wait_for_reveal:
+        # Wait for werewolf reveal (35 seconds + buffer)
+        print("Waiting 36s for werewolf reveal...")
+        await asyncio.sleep(36)
+
+    killed = []
+    # Werewolves are ~44% of players, assigned from the end of player list
+    # For 4 players: 2 humans (56%), 2 werewolves (44%) - werewolves are players 2,3
+    num_werewolves = max(1, int(len(serials) * 0.44))
+    werewolf_serials = serials[-num_werewolves:]
+
+    print(f"Killing {len(werewolf_serials)} werewolves: {werewolf_serials}")
+    for serial in werewolf_serials:
+        await asyncio.sleep(delay)
+        response = await mock_client.SimulateDeath(
+            controller_manager_mock_pb2.DeathRequest(serial=serial)
+        )
+        assert response.success, f"Failed to kill {serial}"
+        killed.append(serial)
+
+    return killed
+
+
+async def end_zombies_game(
+    mock_client, serials: list[str], delay: float = 0.3
+) -> list[str]:
+    """End a Zombies game by converting all humans to zombies.
+
+    In Zombies, humans become zombies when killed (not eliminated).
+    Game ends when all humans are converted OR time expires.
+
+    Strategy: Kill all humans to convert them to zombies.
+    Zombies start as 2 players, rest are humans.
+
+    Args:
+        mock_client: Mock controller service gRPC client
+        serials: List of all controller serials
+        delay: Delay between kills in seconds
+
+    Returns:
+        List of serials that were converted (killed as humans)
+    """
+    killed = []
+    # First 2 players are zombies, rest are humans
+    human_serials = serials[2:] if len(serials) > 2 else []
+
+    print(f"Converting {len(human_serials)} humans to zombies: {human_serials}")
+    for serial in human_serials:
+        await asyncio.sleep(delay)
+        response = await mock_client.SimulateDeath(
+            controller_manager_mock_pb2.DeathRequest(serial=serial)
+        )
+        assert response.success, f"Failed to kill {serial}"
+        killed.append(serial)
+
+    return killed
+
+
+async def end_fight_club_game(
+    mock_client, serials: list[str], game_client, delay: float = 0.5
+) -> list[str]:
+    """End a Fight Club game by running through rounds until a winner emerges.
+
+    Fight Club is queue-based 1v1 matches. Minimum 10 rounds before game can end.
+    Rounds last 22s with 4s invincibility. Needs clear winner after min rounds.
+
+    Strategy: Let the first 2 players fight, kill defender repeatedly.
+    This gives fighter all the wins, creating a clear winner.
+
+    Args:
+        mock_client: Mock controller service gRPC client
+        serials: List of all controller serials
+        game_client: GameCoordinator client (for game state queries)
+        delay: Delay between kills in seconds
+
+    Returns:
+        List of serials that were killed (defenders)
+    """
+    killed = []
+    # Run through rounds - kill defender (first in queue) to let fighter win
+    # Each round is 22s max, but ends when someone dies
+    # Need 10+ rounds for game to end
+
+    for round_num in range(12):  # 12 rounds to ensure we exceed minimum
+        print(f"Fight Club round {round_num + 1}/12")
+
+        # Wait for invincibility to end (4s) + small buffer
+        await asyncio.sleep(5.0)
+
+        # Kill the defender (first player in rotation)
+        # Players rotate through the queue
+        defender_idx = round_num % len(serials)
+        defender = serials[defender_idx]
+
+        response = await mock_client.SimulateDeath(
+            controller_manager_mock_pb2.DeathRequest(serial=defender)
+        )
+        if response.success:
+            killed.append(defender)
+            print(f"  Killed defender: {defender}")
+        else:
+            print(f"  Failed to kill {defender}: {response.error}")
+
+        await asyncio.sleep(delay)
+
+    return killed
+
+
+async def end_tournament_game(
+    mock_client, serials: list[str], delay: float = 0.5
+) -> list[str]:
+    """End a Tournament game by running through bracket matches.
+
+    Tournament is single-elimination bracket with 1v1 matches.
+    Each match is 22s max with 4s invincibility.
+
+    Strategy: For each round, kill one of the fighters.
+    Continue until only one player remains.
+
+    Args:
+        mock_client: Mock controller service gRPC client
+        serials: List of all controller serials
+        delay: Delay between kills in seconds
+
+    Returns:
+        List of serials that were killed
+    """
+    killed = []
+    active_players = list(serials)
+
+    # Run bracket rounds until 1 player left
+    round_num = 0
+    while len(active_players) > 1:
+        round_num += 1
+        print(f"Tournament round {round_num}, {len(active_players)} players remaining")
+
+        # Wait for invincibility (4s) + buffer
+        await asyncio.sleep(5.0)
+
+        # Kill first active player (eliminates them)
+        loser = active_players[0]
+        response = await mock_client.SimulateDeath(
+            controller_manager_mock_pb2.DeathRequest(serial=loser)
+        )
+        if response.success:
+            killed.append(loser)
+            active_players.remove(loser)
+            print(f"  Eliminated: {loser}")
+        else:
+            print(f"  Failed to eliminate {loser}: {response.error}")
+
+        await asyncio.sleep(delay)
+
+    return killed

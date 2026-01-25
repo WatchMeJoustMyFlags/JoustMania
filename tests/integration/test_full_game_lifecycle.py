@@ -10,6 +10,8 @@ Requires PR #165 observability API: GetColor, StreamObservability
 import asyncio
 import os
 import sys
+from collections.abc import Callable
+from typing import Any
 
 import pytest
 
@@ -19,8 +21,12 @@ from proto import controller_manager_mock_pb2
 
 from tests.integration.helpers import (
     ObservabilityObserver,
+    end_fight_club_game,
+    end_swapper_game,
+    end_tournament_game,
+    end_werewolf_game,
+    end_zombies_game,
     force_end_game_and_wait,
-    get_controller_color,
     get_mock_client,
     get_mock_controller_serials,
     kill_players_for_team_win,
@@ -34,51 +40,119 @@ from tests.integration.helpers import (
 
 
 # =============================================================================
-# Game mode configurations
+# End strategy type and helpers
 # =============================================================================
 
-# Games that end naturally when players die (use kill flow)
-# Only includes games verified to work in integration tests
-STANDARD_GAME_MODES = [
-    pytest.param("JoustFFA", 2, "ffa", id="JoustFFA"),
-    pytest.param("JoustTeams", 3, "team", id="JoustTeams"),
-    pytest.param("JoustRandomTeams", 3, "team", id="JoustRandomTeams"),
-    # Note: Swapper, FightClub need debugging - timeout on game start
+# Type alias for end strategy functions
+# Signature: async def(mock_client, serials, game_client) -> None
+EndStrategy = Callable[[Any, list[str], Any], Any]
+
+
+async def end_ffa_game(mock_client, serials: list[str], game_client) -> None:
+    """End FFA game by killing all but one player."""
+    await kill_players_until_one_remains(mock_client, serials, delay=0.1)
+
+
+async def end_team_game(mock_client, serials: list[str], game_client) -> None:
+    """End team game by eliminating one team."""
+    await kill_players_for_team_win(mock_client, serials, delay=0.1)
+
+
+async def end_swapper(mock_client, serials: list[str], game_client) -> None:
+    """End Swapper by swapping all to one team."""
+    await end_swapper_game(mock_client, serials, delay=0.3)
+
+
+async def end_zombies(mock_client, serials: list[str], game_client) -> None:
+    """End Zombies by converting all humans."""
+    await end_zombies_game(mock_client, serials, delay=0.3)
+
+
+async def end_werewolf(mock_client, serials: list[str], game_client) -> None:
+    """End Werewolf by killing all werewolves after reveal."""
+    await end_werewolf_game(mock_client, serials, delay=0.3, wait_for_reveal=True)
+
+
+async def end_tournament(mock_client, serials: list[str], game_client) -> None:
+    """End Tournament by running through bracket."""
+    await end_tournament_game(mock_client, serials, delay=0.5)
+
+
+async def end_fight_club(mock_client, serials: list[str], game_client) -> None:
+    """End FightClub by running rounds until winner."""
+    await end_fight_club_game(mock_client, serials, game_client, delay=0.5)
+
+
+async def end_with_force(mock_client, serials: list[str], game_client) -> None:
+    """End game via ForceEndGame RPC."""
+    await asyncio.sleep(2.0)  # Let game run briefly
+    await force_end_game_and_wait(game_client, timeout=10)
+
+
+# =============================================================================
+# Game mode configurations - single list with callable end strategies
+# =============================================================================
+
+# All game modes with their end strategies and timeouts
+# Format: (game_mode, min_players, end_strategy_fn, timeout_seconds)
+ALL_GAME_MODES = [
+    # FFA games - kill until one remains
+    pytest.param("JoustFFA", 2, end_ffa_game, 15, id="JoustFFA"),
+    # Team games - eliminate one team
+    pytest.param("JoustTeams", 3, end_team_game, 15, id="JoustTeams"),
+    pytest.param("JoustRandomTeams", 3, end_team_game, 15, id="JoustRandomTeams"),
+    # Swapper - swap all to one team
+    pytest.param("Swapper", 4, end_swapper, 15, id="Swapper"),
+    # Zombies - convert all humans
+    pytest.param("Zombies", 4, end_zombies, 15, id="Zombies"),
+    # Werewolf - wait for reveal (35s), kill werewolves
+    pytest.param("Werewolf", 4, end_werewolf, 60, id="Werewolf"),
+    # Tournament - run bracket matches
+    pytest.param("Tournament", 4, end_tournament, 60, id="Tournament"),
+    # FightClub - run 10+ rounds
+    pytest.param("FightClub", 4, end_fight_club, 90, id="FightClub"),
+    # NonStop - infinite respawns, must force-end
+    pytest.param("NonStop", 2, end_with_force, 15, id="NonStop"),
+    # Traitor - secret teams not exposed, must force-end
+    pytest.param("Traitor", 4, end_with_force, 15, id="Traitor"),
     # Note: Ninja, Commander not implemented in GameFactory
 ]
 
-# Games that need force-end (complex win conditions, respawn, or brackets)
-# Temporarily disabled - these modes have initialization issues to debug
-FORCE_END_GAME_MODES = [
-    # pytest.param("Traitor", 4, id="Traitor"),
-    # pytest.param("Werewolf", 3, id="Werewolf"),
-    # pytest.param("Zombies", 4, id="Zombies"),
-    # pytest.param("Tournament", 3, id="Tournament"),
-    # pytest.param("NonStop", 2, id="NonStop"),
-]
-
 
 # =============================================================================
-# Standard game mode tests (end naturally via kill flow)
+# Main game lifecycle test
 # =============================================================================
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("game_mode,min_players,game_type", STANDARD_GAME_MODES)
-async def test_full_lifecycle_standard(docker_compose, game_mode, min_players, game_type):
-    """Test full game lifecycle for standard game modes.
+@pytest.mark.parametrize("game_mode,min_players,end_strategy,timeout", ALL_GAME_MODES)
+async def test_full_game_lifecycle(
+    docker_compose, game_mode: str, min_players: int, end_strategy: EndStrategy, timeout: int
+):
+    """Test full game lifecycle for all game modes.
+
+    Each game mode has its own end strategy:
+    - FFA games: Kill until one player remains
+    - Team games: Eliminate one team
+    - Swapper: Swap all players to one team
+    - Zombies: Convert all humans to zombies
+    - Werewolf: Wait for reveal, kill werewolves
+    - Tournament: Run through bracket matches
+    - FightClub: Run 10+ rounds until clear winner
+    - NonStop/Traitor: Force-end (no natural end in tests)
 
     Verifies:
     1. Game starts via Menu flow
     2. Players get game colors (non-zero)
-    3. Players can be killed to end game
-    4. Game ends naturally when win condition met
+    3. End strategy triggers win condition
+    4. Game ends (naturally or via force)
     5. Menu resets LED colors (not stuck at black)
 
     Args:
         game_mode: Name of the game mode to test
         min_players: Minimum players required (for documentation)
-        game_type: "ffa" for free-for-all or "team" for team games
+        end_strategy: Async function to trigger game end
+        timeout: Timeout for game end in seconds
     """
     # Start observability stream first
     mock_client, mock_channel = await get_mock_client(docker_compose)
@@ -95,23 +169,18 @@ async def test_full_lifecycle_standard(docker_compose, game_mode, min_players, g
         serials = await get_mock_controller_serials(docker_compose)
 
         # 2. Brief pause for game colors to be applied
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.5)
 
         # 3. Verify all controllers have some color (game assigned)
         await verify_controllers_have_color(mock_client, serials)
 
-        # 4. Kill players to end game
-        # Kill with minimal delay - death processing is async
-        if game_type == "team":
-            killed = await kill_players_for_team_win(mock_client, serials, delay=0.1)
-        else:
-            killed = await kill_players_until_one_remains(mock_client, serials, delay=0.1)
+        # 4. Apply end strategy
+        print(f"Applying end strategy for {game_mode}")
+        await end_strategy(mock_client, serials, game_client)
 
-        winner = [s for s in serials if s not in killed][0] if killed else serials[0]
-        print(f"Killed: {killed}, Winner: {winner}")
-
-        # 5. Wait for game to end naturally
-        await wait_for_game_end(game_client, timeout=15)
+        # 5. Wait for game to end (if not already ended by force)
+        if end_strategy != end_with_force:
+            await wait_for_game_end(game_client, timeout=timeout)
 
         # 6. Wait for menu to fully reset controller colors
         await asyncio.sleep(2.0)
@@ -120,75 +189,6 @@ async def test_full_lifecycle_standard(docker_compose, game_mode, min_players, g
         await verify_lobby_colors(mock_client, serials)
 
         # 8. Verify event sequence shows lobby colors restored
-        events = observer.get_events()
-        verify_lobby_colors_restored(events, serials)
-
-        await game_channel.close()
-
-    finally:
-        await observer.stop()
-        await mock_channel.close()
-
-
-# =============================================================================
-# Force-end game mode tests (complex win conditions)
-# =============================================================================
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("game_mode,min_players", FORCE_END_GAME_MODES)
-@pytest.mark.skip(reason="Force-end game modes need debugging")
-async def test_full_lifecycle_force_end(docker_compose, game_mode, min_players):
-    """Test game modes that require force-end.
-
-    These modes have complex win conditions (Traitor, Werewolf, Zombies),
-    bracket systems (Tournament), or respawn mechanics (NonStop) that
-    make natural ending unreliable in tests.
-
-    Verifies:
-    1. Game starts via Menu flow
-    2. Players get game colors
-    3. Game runs briefly
-    4. Force-end works correctly
-    5. Menu resets LED colors
-
-    Args:
-        game_mode: Name of the game mode to test
-        min_players: Minimum players required (for documentation)
-    """
-    # Start observability stream
-    mock_client, mock_channel = await get_mock_client(docker_compose)
-    observer = ObservabilityObserver(mock_client)
-    await observer.start()
-
-    try:
-        # 1. Start game via Menu flow
-        game_client, game_channel, _, _ = await start_game_via_menu(
-            docker_compose, game_mode=game_mode, timeout=25.0
-        )
-
-        # Get controller serials
-        serials = await get_mock_controller_serials(docker_compose)
-
-        # 2. Brief pause for game colors
-        await asyncio.sleep(0.3)
-
-        # 3. Verify all controllers have color
-        await verify_controllers_have_color(mock_client, serials)
-
-        # 4. Let game run briefly
-        await asyncio.sleep(1.0)
-
-        # 5. Force end game
-        await force_end_game_and_wait(game_client, timeout=10)
-
-        # 6. Wait for menu to reset colors
-        await asyncio.sleep(2.0)
-
-        # 7. Verify LED colors restored
-        await verify_lobby_colors(mock_client, serials)
-
-        # 8. Verify events
         events = observer.get_events()
         verify_lobby_colors_restored(events, serials)
 
@@ -211,13 +211,19 @@ async def test_back_to_back_games(docker_compose):
     Verifies no state leakage between games and that LED colors
     are properly reset after each game.
     """
-    game_sequence = ["JoustFFA", "JoustTeams", "JoustRandomTeams", "JoustFFA"]
+    # Use a mix of FFA and team games
+    game_sequence = [
+        ("JoustFFA", end_ffa_game),
+        ("JoustTeams", end_team_game),
+        ("JoustRandomTeams", end_team_game),
+        ("JoustFFA", end_ffa_game),
+    ]
 
     mock_client, mock_channel = await get_mock_client(docker_compose)
     serials = await get_mock_controller_serials(docker_compose)
 
     try:
-        for i, game_mode in enumerate(game_sequence):
+        for i, (game_mode, end_strategy) in enumerate(game_sequence):
             print(f"\n=== Game {i + 1}/{len(game_sequence)}: {game_mode} ===")
 
             # Start game
@@ -229,11 +235,8 @@ async def test_back_to_back_games(docker_compose):
             await asyncio.sleep(0.3)
             await verify_controllers_have_color(mock_client, serials)
 
-            # End game by killing players
-            if game_mode == "JoustTeams":
-                await kill_players_for_team_win(mock_client, serials, delay=0.1)
-            else:
-                await kill_players_until_one_remains(mock_client, serials, delay=0.1)
+            # End game using appropriate strategy
+            await end_strategy(mock_client, serials, game_client)
 
             # Wait for game end
             await wait_for_game_end(game_client, timeout=15)
