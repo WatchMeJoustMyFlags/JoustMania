@@ -248,7 +248,18 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                     elif control_msg.HasField("game_effect"):
                         # Phase XX: Trigger semantic game effect
                         cmd = control_msg.game_effect
-                        await self.feedback_manager.handle_game_effect(cmd.serial, cmd.effect, subscriber_id)
+                        # Extract optional color if provided
+                        effect_color = None
+                        if cmd.HasField("color"):
+                            effect_color = (cmd.color.r, cmd.color.g, cmd.color.b)
+                        await self.feedback_manager.handle_game_effect(
+                            cmd.serial,
+                            cmd.effect,
+                            subscriber_id,
+                            color=effect_color,
+                            duration_ms=cmd.duration_ms,
+                            speed=cmd.speed,
+                        )
 
                         effect_name = controller_manager_pb2.GameEffect.Name(cmd.effect)
                         logger.debug(
@@ -527,7 +538,18 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                     elif control_msg.HasField("game_effect"):
                         # Phase XX: Trigger semantic game effect (LED state ownership)
                         cmd = control_msg.game_effect
-                        await self.feedback_manager.handle_game_effect(cmd.serial, cmd.effect, subscriber_id)
+                        # Extract optional color if provided
+                        effect_color = None
+                        if cmd.HasField("color"):
+                            effect_color = (cmd.color.r, cmd.color.g, cmd.color.b)
+                        await self.feedback_manager.handle_game_effect(
+                            cmd.serial,
+                            cmd.effect,
+                            subscriber_id,
+                            color=effect_color,
+                            duration_ms=cmd.duration_ms,
+                            speed=cmd.speed,
+                        )
 
                         effect_name = controller_manager_pb2.GameEffect.Name(cmd.effect)
                         logger.debug(

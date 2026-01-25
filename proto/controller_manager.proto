@@ -247,12 +247,19 @@ enum GameEffect {
   GAME_EFFECT_LOW_BATTERY = 8;      // Red flash 2x warning
   GAME_EFFECT_FORCE_START_CHARGE = 9;  // Fade white→dim over 2s (force start countdown)
   GAME_EFFECT_SHOW_BATTERY = 10;    // Show battery level on ALL controllers (green/orange/red based on level)
+  GAME_EFFECT_RUMBLE = 11;          // Vibrate only (for secret signaling like traitor/werewolf)
+  GAME_EFFECT_PULSE = 12;           // Pulse with color, restore to base (for confirmations/announcements)
+  GAME_EFFECT_FLASH = 13;           // Brief flash with color, restore to base
 }
 
 // Trigger a game effect via stream
+// For effects that need customization, optional color/duration/speed can be provided
 message GameEffectCommand {
   string serial = 1;      // Controller serial (empty = all controllers for broadcast)
   GameEffect effect = 2;  // Effect to trigger
+  RGB color = 3;          // Optional: override effect color (for PULSE, FLASH, etc.)
+  int32 duration_ms = 4;  // Optional: override effect duration (0 = use default)
+  int32 speed = 5;        // Optional: override effect speed (0 = use default)
 }
 
 // Rename controller request/response (Issue #7)
