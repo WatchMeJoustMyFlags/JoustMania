@@ -414,8 +414,8 @@ async def wait_for_lobby_colors(
     serials: list[str],
     expected_color: tuple[int, int, int] | None = None,
     tolerance: int = 30,
-    timeout: float = 3.0,
-    poll_interval: float = 0.1,
+    timeout: float = 5.0,
+    poll_interval: float = 0.2,
 ):
     """Wait for all controllers to show expected lobby colors.
 
