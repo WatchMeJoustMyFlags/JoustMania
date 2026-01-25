@@ -298,7 +298,7 @@ export class AccelWaveform {
     field: "x" | "y" | "z" | "magnitude",
     color: string
   ): void {
-    const { width, height, durationSeconds, sampleRate } = this.options;
+    const { width, durationSeconds } = this.options;
     const ctx = this.ctx;
 
     if (samples.length < 2) return;
