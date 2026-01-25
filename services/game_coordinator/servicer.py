@@ -344,7 +344,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 # Cleanup via EventBus
                 await self.event_bus.unsubscribe(subscriber_id)
 
-    def GetGameState(self, request, context):  # noqa: N802, ARG002
+    async def GetGameState(self, request, context):  # noqa: N802, ARG002
         """
         Get current game state for testing and observability.
 
@@ -388,8 +388,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                         game_info.players.append(player_info)
 
             logger.debug(
-                f"GetGameState: mode={game_info.game_mode}, state={game_info.state}, "
-                f"players={len(game_info.players)}"
+                f"GetGameState: mode={game_info.game_mode}, state={game_info.state}, players={len(game_info.players)}"
             )
             return game_coordinator_pb2.GetGameStateResponse(
                 success=True,
