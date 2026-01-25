@@ -401,16 +401,19 @@ async def verify_controllers_have_color(mock_client, serials: list[str]):
         assert total > 0, f"{serial} LED is off (color: {color})"
 
 
-async def verify_lobby_colors(mock_client, serials: list[str], tolerance: int = 50):
-    """Verify all controllers show lobby colors (non-zero, dimmed).
+async def verify_lobby_colors(
+    mock_client, serials: list[str], expected_color: tuple[int, int, int] | None = None, tolerance: int = 30
+):
+    """Verify all controllers show the expected lobby color.
 
     After a game ends, the menu should reset all controllers to dim lobby colors.
-    We verify that all LEDs are on (not stuck at black from death effect).
+    We verify that LEDs match the expected color (or are at least non-zero).
 
     Args:
         mock_client: Mock controller service gRPC client
         serials: List of controller serial numbers to check
-        tolerance: Ignored (kept for API compatibility)
+        expected_color: Expected RGB color tuple. If None, just checks non-zero.
+        tolerance: Max difference per channel (default 30 for dimming variations)
     """
     for serial in serials:
         color = await get_controller_color(mock_client, serial)
@@ -418,6 +421,16 @@ async def verify_lobby_colors(mock_client, serials: list[str], tolerance: int = 
         assert total_brightness > 0, (
             f"{serial} LED is off (stuck at death effect), color: {color}"
         )
+
+        if expected_color is not None:
+            # Verify color matches expected (within tolerance for dimming)
+            for i, (actual, expected) in enumerate(zip(color, expected_color)):
+                diff = abs(actual - expected)
+                channel = ["R", "G", "B"][i]
+                assert diff <= tolerance, (
+                    f"{serial} {channel} channel mismatch: got {actual}, expected {expected} "
+                    f"(diff={diff}, tolerance={tolerance}). Full color: {color}, expected: {expected_color}"
+                )
 
 
 # =============================================================================
