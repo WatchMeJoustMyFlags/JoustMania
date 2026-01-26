@@ -162,7 +162,13 @@ class FeedbackManager(ControllerEffectsBase):
 
                 # Schedule vibration stop if duration is specified
                 if duration_ms > 0 and intensity > 0:
-                    asyncio.create_task(self._delayed_stop_vibration(serial, duration_ms))
+                    # Cancel any existing vibration task for this controller
+                    if serial in self.vibration_tasks:
+                        self.vibration_tasks[serial].cancel()
+                    # Store task reference to prevent garbage collection
+                    self.vibration_tasks[serial] = asyncio.create_task(
+                        self._delayed_stop_vibration(serial, duration_ms)
+                    )
             else:
                 logger.warning(f"Failed to set vibration on {serial}")
             return success

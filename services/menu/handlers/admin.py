@@ -101,6 +101,9 @@ class AdminModeHandler:
         self.last_button_time: dict[str, float] = {}
         self.button_debounce_interval = 0.3  # seconds
 
+        # Background tasks (to prevent garbage collection)
+        self._pending_tasks: set[asyncio.Task] = set()
+
     # ControllerHandler protocol methods
 
     @property
@@ -802,7 +805,10 @@ class AdminModeHandler:
                     if self.active and serial == self.controller_serial:
                         await self._send_base_color(serial, (255, 255, 255))
 
-                asyncio.create_task(restore_white())
+                # Track task to prevent garbage collection
+                task = asyncio.create_task(restore_white())
+                self._pending_tasks.add(task)
+                task.add_done_callback(self._pending_tasks.discard)
 
                 span.add_event(
                     "admin_option_changed",
