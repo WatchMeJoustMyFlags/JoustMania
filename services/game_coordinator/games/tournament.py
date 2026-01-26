@@ -350,7 +350,7 @@ class TournamentGame(BaseGameMode):
         for serial in self.players:
             if self.gameplay_stream:
                 color_cmd = controller_manager_pb2.GameplayStreamControl(
-                    color_update=controller_manager_pb2.ColorUpdate(
+                    base_color=controller_manager_pb2.ControllerColorConfig(
                         serial=serial,
                         color=controller_manager_pb2.RGB(r=WAITING_COLOR[0], g=WAITING_COLOR[1], b=WAITING_COLOR[2]),
                     )
@@ -417,7 +417,7 @@ class TournamentGame(BaseGameMode):
         if self.gameplay_stream:
             for serial, color in [(match.player1_serial, MATCH_COLORS[0]), (match.player2_serial, MATCH_COLORS[1])]:
                 color_cmd = controller_manager_pb2.GameplayStreamControl(
-                    color_update=controller_manager_pb2.ColorUpdate(
+                    base_color=controller_manager_pb2.ControllerColorConfig(
                         serial=serial,
                         color=controller_manager_pb2.RGB(r=color[0], g=color[1], b=color[2]),
                     )
@@ -432,8 +432,11 @@ class TournamentGame(BaseGameMode):
         # Play match start sound (use beep - no dedicated fight sound exists)
         await self._play_sound(Sound.SFX_BEEP_LOUD, priority=2)
 
-        # Run match with timer
+        # Run match: process controller states from gameplay stream
         match_start = time.time()
+
+        # Process gameplay stream updates during match
+        # Use anext with timeout to check for match completion and time limit
         while self.running and not match.is_complete:
             elapsed = time.time() - match_start
 
@@ -443,7 +446,22 @@ class TournamentGame(BaseGameMode):
                 logger.info(f"Match {match.match_id} timeout - random winner: {match.winner_serial}")
                 break
 
-            await asyncio.sleep(0.05)
+            # Process controller states from gameplay stream (with timeout)
+            try:
+                gameplay_update = await asyncio.wait_for(
+                    self.gameplay_stream.__anext__(),
+                    timeout=0.1,  # Check for match completion every 100ms
+                )
+                # Process each controller's state
+                for gameplay_data in gameplay_update.controllers:
+                    await self._process_controller_state(gameplay_data)
+            except TimeoutError:
+                # No data received, continue loop (check time/completion)
+                pass
+            except StopAsyncIteration:
+                # Stream ended
+                logger.warning("Gameplay stream ended during match")
+                break
 
         # Finalize match
         if not match.is_complete and match.winner_serial:
@@ -472,7 +490,7 @@ class TournamentGame(BaseGameMode):
 
                 # Turn off loser
                 off_cmd = controller_manager_pb2.GameplayStreamControl(
-                    color_update=controller_manager_pb2.ColorUpdate(
+                    base_color=controller_manager_pb2.ControllerColorConfig(
                         serial=loser_serial,
                         color=controller_manager_pb2.RGB(r=0, g=0, b=0),
                     )
@@ -696,3 +714,78 @@ class TournamentGame(BaseGameMode):
         )
 
         logger.info("Tournament game ended")
+
+    async def run(self):
+        """
+        Run the Tournament game.
+
+        Override to use bracket-based _gameplay_loop instead of standard _game_loop.
+        """
+        from services.game_coordinator.games.base import GameState
+
+        with tracer.start_as_current_span("tournament_game") as game_span:
+            self.game_span = game_span
+            game_span.set_attribute("game.id", self.game_id)
+            game_span.set_attribute("game.mode", self.get_game_name())
+
+            try:
+                self.running = True
+
+                # Initialization phase
+                with tracer.start_as_current_span("initialization_phase"):
+                    await self._load_settings()
+                    await self._initialize_players()
+                    self._create_player_spans(None)  # Uses current context
+
+                # Start gameplay stream before intro (needed for LED effects)
+                await self._start_gameplay_stream()
+
+                # Additional phases (tournament intro)
+                for phase in self._get_additional_phases():
+                    if not self.running:
+                        break
+                    with tracer.start_as_current_span(phase.name):
+                        await phase.execute()
+
+                if not self.running:
+                    return
+
+                # Countdown
+                with tracer.start_as_current_span("countdown_phase"):
+                    await self._countdown()
+
+                if not self.running:
+                    return
+
+                # Start gameplay
+                self.state = GameState.RUNNING
+                self.start_time = time.time()
+
+                # Emit game_started event (required for integration tests)
+                from lib.types import GameEvent
+
+                self.event_publisher(
+                    GameEvent.GAME_STARTED, {"game_id": self.game_id, "player_count": len(self.players)}
+                )
+
+                # Start music
+                await self._start_game_music()
+
+                # Tournament gameplay (bracket matches instead of standard game loop)
+                with tracer.start_as_current_span("gameplay_phase"):
+                    await self._gameplay_loop()
+
+                # End game
+                with tracer.start_as_current_span("teardown_phase"):
+                    await self._end_game_impl()
+
+                game_span.set_status(Status(StatusCode.OK))
+
+            except Exception as e:
+                logger.error(f"Game error: {e}", exc_info=True)
+                game_span.record_exception(e)
+                game_span.set_status(Status(StatusCode.ERROR, str(e)))
+                raise
+            finally:
+                self.running = False
+                await self._stop_game_music()

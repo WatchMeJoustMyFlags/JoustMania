@@ -59,8 +59,8 @@ async def get_game_client(docker_compose):
 
 async def get_settings_client(docker_compose):
     """Get Settings service gRPC client."""
-    host = docker_compose.get_service_host("settings", 50055)
-    port = docker_compose.get_service_port("settings", 50055)
+    host = docker_compose.get_service_host("settings", 50051)
+    port = docker_compose.get_service_port("settings", 50051)
     channel = grpc.aio.insecure_channel(f"{host}:{port}")
     return settings_pb2_grpc.SettingsServiceStub(channel), channel
 

@@ -178,7 +178,7 @@ class FightClubGame(BaseGameMode):
         for serial in self.players:
             if self.gameplay_stream:
                 color_cmd = controller_manager_pb2.GameplayStreamControl(
-                    color_update=controller_manager_pb2.ColorUpdate(
+                    base_color=controller_manager_pb2.ControllerColorConfig(
                         serial=serial,
                         color=controller_manager_pb2.RGB(r=WAITING_COLOR[0], g=WAITING_COLOR[1], b=WAITING_COLOR[2]),
                     )
@@ -327,7 +327,7 @@ class FightClubGame(BaseGameMode):
 
             if self.gameplay_stream:
                 color_cmd = controller_manager_pb2.GameplayStreamControl(
-                    color_update=controller_manager_pb2.ColorUpdate(
+                    base_color=controller_manager_pb2.ControllerColorConfig(
                         serial=serial,
                         color=controller_manager_pb2.RGB(r=color[0], g=color[1], b=color[2]),
                     )
