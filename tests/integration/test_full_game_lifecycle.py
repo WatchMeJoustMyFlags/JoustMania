@@ -90,27 +90,27 @@ async def configure_test_settings(docker_compose, game_mode: str):
         await update_setting(docker_compose, "tournament_invincibility", TOURNAMENT_INVINCIBILITY)
 
 
-async def end_ffa_game(mock_client, serials: list[str], game_client, event_collector) -> None:
+async def end_ffa_game(mock_client, serials: list[str], _game_client, _event_collector) -> None:
     """End FFA game by killing all but one player."""
     await kill_players_until_one_remains(mock_client, serials, delay=0.1)
 
 
-async def end_team_game(mock_client, serials: list[str], game_client, event_collector) -> None:
+async def end_team_game(mock_client, serials: list[str], _game_client, _event_collector) -> None:
     """End team game by eliminating one team."""
     await kill_players_for_team_win(mock_client, serials, delay=0.1)
 
 
-async def end_swapper(mock_client, serials: list[str], game_client, event_collector) -> None:
+async def end_swapper(mock_client, serials: list[str], game_client, _event_collector) -> None:
     """End Swapper by swapping all to one team."""
     await end_swapper_game(mock_client, serials, game_client, delay=0.3)
 
 
-async def end_zombies(mock_client, serials: list[str], game_client, event_collector) -> None:
+async def end_zombies(mock_client, serials: list[str], _game_client, _event_collector) -> None:
     """End Zombies by converting all humans."""
     await end_zombies_game(mock_client, serials, delay=0.3)
 
 
-async def end_werewolf(mock_client, serials: list[str], game_client, event_collector) -> None:
+async def end_werewolf(mock_client, serials: list[str], _game_client, _event_collector) -> None:
     """End Werewolf by killing all werewolves.
 
     The game ends when all werewolves (or humans) are dead.
@@ -121,7 +121,7 @@ async def end_werewolf(mock_client, serials: list[str], game_client, event_colle
     await end_werewolf_game(mock_client, serials, delay=0.3, wait_for_reveal=False)
 
 
-async def end_tournament(mock_client, serials: list[str], game_client, event_collector) -> None:
+async def end_tournament(mock_client, serials: list[str], _game_client, _event_collector) -> None:
     """End Tournament by running through bracket.
 
     Test configures tournament_invincibility=0.5 for faster matches.
@@ -132,7 +132,7 @@ async def end_tournament(mock_client, serials: list[str], game_client, event_col
     )
 
 
-async def end_fight_club(mock_client, serials: list[str], game_client, event_collector) -> None:
+async def end_fight_club(mock_client, serials: list[str], game_client, _event_collector) -> None:
     """End FightClub by running minimum rounds until winner.
 
     Test configures fight_club_invincibility=0.5 and fight_club_min_rounds=3
@@ -149,7 +149,7 @@ async def end_fight_club(mock_client, serials: list[str], game_client, event_col
     )
 
 
-async def end_with_force(mock_client, serials: list[str], game_client, event_collector) -> None:
+async def end_with_force(_mock_client, _serials: list[str], game_client, event_collector) -> None:
     """End game via ForceEndGame RPC."""
     await asyncio.sleep(2.0)  # Let game run briefly
     await force_end_game(game_client, event_collector, timeout=10)
@@ -185,9 +185,9 @@ ALL_GAME_MODES = [
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("game_mode,min_players,end_strategy,timeout", ALL_GAME_MODES)
+@pytest.mark.parametrize("game_mode,_min_players,end_strategy,game_timeout", ALL_GAME_MODES)
 async def test_full_game_lifecycle(
-    docker_compose, game_mode: str, min_players: int, end_strategy: EndStrategy, timeout: int
+    docker_compose, game_mode: str, _min_players: int, end_strategy: EndStrategy, game_timeout: int
 ):
     """Test full game lifecycle for all game modes.
 
@@ -210,9 +210,9 @@ async def test_full_game_lifecycle(
 
     Args:
         game_mode: Name of the game mode to test
-        min_players: Minimum players required (for documentation)
+        _min_players: Minimum players required (for documentation, unused in test)
         end_strategy: Async function to trigger game end
-        timeout: Timeout for game end in seconds
+        game_timeout: Timeout for game end in seconds
     """
     # Configure game-specific settings for faster test execution
     await configure_test_settings(docker_compose, game_mode)
@@ -251,7 +251,7 @@ async def test_full_game_lifecycle(
                 try:
                     await event_collector.wait_for_any_event(
                         ["game_ended", "game_force_ended", "game_error"],
-                        timeout=timeout
+                        timeout=game_timeout
                     )
                 except TimeoutError:
                     # Debug: print collected events before re-raising
