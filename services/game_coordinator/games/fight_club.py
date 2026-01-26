@@ -554,6 +554,9 @@ class FightClubGame(BaseGameMode):
                     await self._initialize_players()
                     self._create_player_spans()
 
+                # Start gameplay stream before intro (needed for LED effects)
+                await self._start_gameplay_stream()
+
                 # Additional phases (intro)
                 for phase in self._get_additional_phases():
                     if not self.running:
@@ -576,7 +579,7 @@ class FightClubGame(BaseGameMode):
                 self.start_time = time.time()
 
                 # Emit game_started event (required for integration tests)
-                from lib.game_event import GameEvent
+                from lib.types import GameEvent
 
                 self.event_publisher(
                     GameEvent.GAME_STARTED, {"game_id": self.game_id, "player_count": len(self.players)}
@@ -585,10 +588,7 @@ class FightClubGame(BaseGameMode):
                 # Start music
                 await self._start_game_music()
 
-                # Start gameplay stream
-                await self._start_gameplay_stream()
-
-                # Start first round
+                # Start first round (gameplay stream already started before intro)
                 await self._start_round()
 
                 # Game loop - process controller states

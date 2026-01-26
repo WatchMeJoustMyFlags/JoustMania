@@ -550,6 +550,9 @@ class ZombieGame(BaseGameMode):
                     await self._initialize_players()
                     self._create_player_spans()
 
+                # Start gameplay stream before intro (needed for LED effects)
+                await self._start_gameplay_stream()
+
                 # Additional phases (zombie intro)
                 for phase in self._get_additional_phases():
                     if not self.running:
@@ -572,7 +575,7 @@ class ZombieGame(BaseGameMode):
                 self.start_time = time.time()
 
                 # Emit game_started event (required for integration tests)
-                from lib.game_event import GameEvent
+                from lib.types import GameEvent
 
                 self.event_publisher(
                     GameEvent.GAME_STARTED, {"game_id": self.game_id, "player_count": len(self.players)}
@@ -584,10 +587,7 @@ class ZombieGame(BaseGameMode):
                 # Start game timer as background task
                 self.timer_task = asyncio.create_task(self._game_timer())
 
-                # Start gameplay stream
-                await self._start_gameplay_stream()
-
-                # Game loop
+                # Game loop (gameplay stream already started before intro)
                 with tracer.start_as_current_span("gameplay_phase"):
                     await self._game_loop()
 
