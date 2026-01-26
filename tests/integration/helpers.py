@@ -461,7 +461,14 @@ async def start_game_via_menu(
     print("Controllers marked as ready, waiting for game start...")
 
     # Wait for game_started event via collector
-    await event_collector.wait_for_event("game_started", timeout=timeout)
+    try:
+        await event_collector.wait_for_event("game_started", timeout=timeout)
+    except TimeoutError:
+        # Debug: print collected events before re-raising
+        print(f"DEBUG: Game start timeout. Collected {len(event_collector.events)} events:")
+        for event in event_collector.events:
+            print(f"  - {event.event_type}: {dict(event.data)}")
+        raise
 
     # Close menu channel (not needed anymore)
     await menu_channel.close()
@@ -813,7 +820,7 @@ async def kill_players_for_team_win(
 
 
 async def end_swapper_game(
-    mock_client, serials: list[str], delay: float = 0.3
+    mock_client, serials: list[str], game_client, delay: float = 0.3
 ) -> list[str]:
     """End a Swapper game by swapping all players to one team.
 
@@ -821,23 +828,31 @@ async def end_swapper_game(
     Game ends when all players are on the same team.
     The last player to swap is excluded from winners.
 
-    Strategy: Kill players on team 1 repeatedly until they're all on team 0.
-    With 4 players (2 per team), killing team 1 players twice each swaps them to team 0.
+    Strategy: Query actual team assignments via GetGameState, then kill
+    all players on one team to swap them to the other.
 
     Args:
         mock_client: Mock controller service gRPC client
-        serials: List of all controller serials
+        serials: List of all controller serials (unused, kept for API compat)
+        game_client: GameCoordinator client for GetGameState
         delay: Delay between kills in seconds
 
     Returns:
         List of serials that were swapped (killed)
     """
-    killed = []
-    # Players start on alternating teams (0, 1, 0, 1...)
-    # Kill odd-indexed players (team 1) to swap them to team 0
-    team_1_serials = serials[1::2]  # Every other player starting at index 1
+    # Get actual team assignments from game state
+    state_response = await game_client.GetGameState(
+        game_coordinator_pb2.GetGameStateRequest()
+    )
+    if not state_response.success:
+        raise RuntimeError(f"GetGameState failed: {state_response.error}")
 
-    for serial in team_1_serials:
+    # Find players on team 1 (we'll swap them all to team 0)
+    team_1_players = [p.serial for p in state_response.game_info.players if p.team == 1]
+    print(f"Swapper: Found {len(team_1_players)} players on team 1: {team_1_players}")
+
+    killed = []
+    for serial in team_1_players:
         await asyncio.sleep(delay)
         response = await mock_client.SimulateDeath(
             controller_manager_mock_pb2.DeathRequest(serial=serial)

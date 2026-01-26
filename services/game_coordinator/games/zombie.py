@@ -571,6 +571,13 @@ class ZombieGame(BaseGameMode):
                 self.state = GameState.RUNNING
                 self.start_time = time.time()
 
+                # Emit game_started event (required for integration tests)
+                from lib.game_event import GameEvent
+
+                self.event_publisher(
+                    GameEvent.GAME_STARTED, {"game_id": self.game_id, "player_count": len(self.players)}
+                )
+
                 # Start music
                 await self._start_game_music()
 

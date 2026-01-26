@@ -105,7 +105,7 @@ async def end_team_game(mock_client, serials: list[str], game_client, event_coll
 
 async def end_swapper(mock_client, serials: list[str], game_client, event_collector) -> None:
     """End Swapper by swapping all to one team."""
-    await end_swapper_game(mock_client, serials, delay=0.3)
+    await end_swapper_game(mock_client, serials, game_client, delay=0.3)
 
 
 async def end_zombies(mock_client, serials: list[str], game_client, event_collector) -> None:
