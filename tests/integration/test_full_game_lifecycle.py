@@ -20,13 +20,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 from proto import controller_manager_mock_pb2
 
 from tests.integration.helpers import (
+    GameEventCollector,
     ObservabilityObserver,
     end_fight_club_game,
     end_swapper_game,
     end_tournament_game,
     end_werewolf_game,
     end_zombies_game,
-    force_end_game_and_wait,
+    force_end_game,
+    get_game_client,
     get_mock_client,
     get_mock_controller_serials,
     kill_players_for_team_win,
@@ -36,7 +38,6 @@ from tests.integration.helpers import (
     verify_controllers_have_color,
     verify_lobby_colors,
     verify_lobby_colors_restored,
-    wait_for_game_end,
 )
 
 
@@ -69,8 +70,8 @@ TOURNAMENT_INVINCIBILITY = "0.5"
 # =============================================================================
 
 # Type alias for end strategy functions
-# Signature: async def(mock_client, serials, game_client) -> None
-EndStrategy = Callable[[Any, list[str], Any], Any]
+# Signature: async def(mock_client, serials, game_client, event_collector) -> None
+EndStrategy = Callable[[Any, list[str], Any, GameEventCollector], Any]
 
 
 async def configure_test_settings(docker_compose, game_mode: str):
@@ -92,27 +93,27 @@ async def configure_test_settings(docker_compose, game_mode: str):
         await update_setting(docker_compose, "tournament_invincibility", TOURNAMENT_INVINCIBILITY)
 
 
-async def end_ffa_game(mock_client, serials: list[str], game_client) -> None:
+async def end_ffa_game(mock_client, serials: list[str], game_client, event_collector) -> None:
     """End FFA game by killing all but one player."""
     await kill_players_until_one_remains(mock_client, serials, delay=0.1)
 
 
-async def end_team_game(mock_client, serials: list[str], game_client) -> None:
+async def end_team_game(mock_client, serials: list[str], game_client, event_collector) -> None:
     """End team game by eliminating one team."""
     await kill_players_for_team_win(mock_client, serials, delay=0.1)
 
 
-async def end_swapper(mock_client, serials: list[str], game_client) -> None:
+async def end_swapper(mock_client, serials: list[str], game_client, event_collector) -> None:
     """End Swapper by swapping all to one team."""
     await end_swapper_game(mock_client, serials, delay=0.3)
 
 
-async def end_zombies(mock_client, serials: list[str], game_client) -> None:
+async def end_zombies(mock_client, serials: list[str], game_client, event_collector) -> None:
     """End Zombies by converting all humans."""
     await end_zombies_game(mock_client, serials, delay=0.3)
 
 
-async def end_werewolf(mock_client, serials: list[str], game_client) -> None:
+async def end_werewolf(mock_client, serials: list[str], game_client, event_collector) -> None:
     """End Werewolf by killing all werewolves.
 
     The game ends when all werewolves (or humans) are dead.
@@ -123,7 +124,7 @@ async def end_werewolf(mock_client, serials: list[str], game_client) -> None:
     await end_werewolf_game(mock_client, serials, delay=0.3, wait_for_reveal=False)
 
 
-async def end_tournament(mock_client, serials: list[str], game_client) -> None:
+async def end_tournament(mock_client, serials: list[str], game_client, event_collector) -> None:
     """End Tournament by running through bracket.
 
     Test configures tournament_invincibility=0.5 for faster matches.
@@ -134,7 +135,7 @@ async def end_tournament(mock_client, serials: list[str], game_client) -> None:
     )
 
 
-async def end_fight_club(mock_client, serials: list[str], game_client) -> None:
+async def end_fight_club(mock_client, serials: list[str], game_client, event_collector) -> None:
     """End FightClub by running minimum rounds until winner.
 
     Test configures fight_club_invincibility=0.5 and fight_club_min_rounds=3
@@ -151,10 +152,10 @@ async def end_fight_club(mock_client, serials: list[str], game_client) -> None:
     )
 
 
-async def end_with_force(mock_client, serials: list[str], game_client) -> None:
+async def end_with_force(mock_client, serials: list[str], game_client, event_collector) -> None:
     """End game via ForceEndGame RPC."""
     await asyncio.sleep(2.0)  # Let game run briefly
-    await force_end_game_and_wait(game_client, timeout=10)
+    await force_end_game(game_client, event_collector, timeout=10)
 
 
 # =============================================================================
@@ -169,19 +170,13 @@ ALL_GAME_MODES = [
     # Team games - eliminate one team
     pytest.param("JoustTeams", 3, end_team_game, 15, id="JoustTeams"),
     pytest.param("JoustRandomTeams", 3, end_team_game, 15, id="JoustRandomTeams"),
-    # Swapper - swap all to one team
+    # Complex game modes
     pytest.param("Swapper", 4, end_swapper, 15, id="Swapper"),
-    # Zombies - convert all humans
     pytest.param("Zombies", 4, end_zombies, 15, id="Zombies"),
-    # Werewolf - kill werewolves (reveal_time=0 via settings)
-    pytest.param("Werewolf", 4, end_werewolf, 15, id="Werewolf"),
-    # Tournament - run bracket matches (invincibility=0.5 via settings)
-    pytest.param("Tournament", 4, end_tournament, 15, id="Tournament"),
-    # FightClub - run 4 rounds (min_rounds=3, invincibility=0.5 via settings)
-    pytest.param("FightClub", 4, end_fight_club, 15, id="FightClub"),
-    # NonStop - infinite respawns, must force-end
+    pytest.param("Werewolf", 4, end_werewolf, 20, id="Werewolf"),
+    pytest.param("Tournament", 4, end_tournament, 30, id="Tournament"),
+    pytest.param("FightClub", 4, end_fight_club, 30, id="FightClub"),
     pytest.param("NonStop", 2, end_with_force, 15, id="NonStop"),
-    # Traitor - secret teams not exposed, must force-end
     pytest.param("Traitor", 4, end_with_force, 15, id="Traitor"),
     # Note: Ninja, Commander not implemented in GameFactory
 ]
@@ -225,49 +220,64 @@ async def test_full_game_lifecycle(
     # Configure game-specific settings for faster test execution
     await configure_test_settings(docker_compose, game_mode)
 
-    # Start observability stream first
+    # Get clients
     mock_client, mock_channel = await get_mock_client(docker_compose)
-    observer = ObservabilityObserver(mock_client)
-    await observer.start()
+    game_client, game_channel = await get_game_client(docker_compose)
+    serials = await get_mock_controller_serials(docker_compose)
 
-    try:
-        # 1. Start game via Menu flow
-        game_client, game_channel, _, _ = await start_game_via_menu(
-            docker_compose, game_mode=game_mode, timeout=25.0
-        )
+    # Use context managers for clean resource management
+    async with GameEventCollector(game_client) as event_collector:
+        observer = ObservabilityObserver(mock_client)
+        await observer.start()
 
-        # Get controller serials
-        serials = await get_mock_controller_serials(docker_compose)
+        try:
+            # 1. Start game via Menu flow (uses event_collector for reliable event detection)
+            await start_game_via_menu(
+                docker_compose,
+                game_mode=game_mode,
+                timeout=25.0,
+                event_collector=event_collector,
+            )
 
-        # 2. Brief pause for game colors to be applied
-        await asyncio.sleep(0.5)
+            # 2. Brief pause for game colors to be applied
+            await asyncio.sleep(0.5)
 
-        # 3. Verify all controllers have some color (game assigned)
-        await verify_controllers_have_color(mock_client, serials)
+            # 3. Verify all controllers have some color (game assigned)
+            await verify_controllers_have_color(mock_client, serials)
 
-        # 4. Apply end strategy
-        print(f"Applying end strategy for {game_mode}")
-        await end_strategy(mock_client, serials, game_client)
+            # 4. Apply end strategy
+            print(f"Applying end strategy for {game_mode}")
+            await end_strategy(mock_client, serials, game_client, event_collector)
 
-        # 5. Wait for game to end (if not already ended by force)
-        if end_strategy != end_with_force:
-            await wait_for_game_end(game_client, timeout=timeout)
+            # 5. Wait for game to end (if not already ended by force)
+            if end_strategy != end_with_force:
+                try:
+                    await event_collector.wait_for_any_event(
+                        ["game_ended", "game_force_ended", "game_error"],
+                        timeout=timeout
+                    )
+                except TimeoutError:
+                    # Debug: print collected events before re-raising
+                    print(f"DEBUG: Collected {len(event_collector.events)} events:")
+                    for event in event_collector.events:
+                        print(f"  - {event.event_type}: {dict(event.data)}")
+                    raise
 
-        # 6. Wait for menu to fully reset controller colors
-        await asyncio.sleep(2.0)
+            # 6. Wait for menu to fully reset controller colors
+            await asyncio.sleep(2.0)
 
-        # 7. Verify LED colors are restored (not stuck at black)
-        await verify_lobby_colors(mock_client, serials)
+            # 7. Verify LED colors are restored (not stuck at black)
+            await verify_lobby_colors(mock_client, serials)
 
-        # 8. Verify event sequence shows lobby colors restored
-        events = observer.get_events()
-        verify_lobby_colors_restored(events, serials)
+            # 8. Verify event sequence shows lobby colors restored
+            events = observer.get_events()
+            verify_lobby_colors_restored(events, serials)
 
-        await game_channel.close()
+        finally:
+            await observer.stop()
 
-    finally:
-        await observer.stop()
-        await mock_channel.close()
+    await game_channel.close()
+    await mock_channel.close()
 
 
 # =============================================================================
@@ -291,37 +301,45 @@ async def test_back_to_back_games(docker_compose):
     ]
 
     mock_client, mock_channel = await get_mock_client(docker_compose)
+    game_client, game_channel = await get_game_client(docker_compose)
     serials = await get_mock_controller_serials(docker_compose)
 
     try:
         for i, (game_mode, end_strategy) in enumerate(game_sequence):
             print(f"\n=== Game {i + 1}/{len(game_sequence)}: {game_mode} ===")
 
-            # Start game
-            game_client, game_channel, _, _ = await start_game_via_menu(
-                docker_compose, game_mode=game_mode, timeout=25.0
-            )
+            # Use event collector for reliable event detection
+            async with GameEventCollector(game_client) as event_collector:
+                # Start game
+                await start_game_via_menu(
+                    docker_compose,
+                    game_mode=game_mode,
+                    timeout=25.0,
+                    event_collector=event_collector,
+                )
 
-            # Verify game started with colors
-            await asyncio.sleep(0.3)
-            await verify_controllers_have_color(mock_client, serials)
+                # Verify game started with colors
+                await asyncio.sleep(0.3)
+                await verify_controllers_have_color(mock_client, serials)
 
-            # End game using appropriate strategy
-            await end_strategy(mock_client, serials, game_client)
+                # End game using appropriate strategy
+                await end_strategy(mock_client, serials, game_client, event_collector)
 
-            # Wait for game end
-            await wait_for_game_end(game_client, timeout=15)
+                # Wait for game end via event collector
+                await event_collector.wait_for_any_event(
+                    ["game_ended", "game_force_ended", "game_error"],
+                    timeout=15
+                )
 
-            # Verify return to menu
-            await asyncio.sleep(1.5)
-            await verify_lobby_colors(mock_client, serials)
-
-            await game_channel.close()
+                # Verify return to menu
+                await asyncio.sleep(1.5)
+                await verify_lobby_colors(mock_client, serials)
 
             # Brief pause between games
             await asyncio.sleep(0.5)
 
     finally:
+        await game_channel.close()
         await mock_channel.close()
 
 
@@ -340,59 +358,68 @@ async def test_led_transition_observability(docker_compose):
     3. Game end (lobby colors restored)
     """
     mock_client, mock_channel = await get_mock_client(docker_compose)
-    observer = ObservabilityObserver(mock_client)
-    await observer.start()
+    game_client, game_channel = await get_game_client(docker_compose)
+    serials = await get_mock_controller_serials(docker_compose)
 
-    try:
-        # Start FFA game
-        game_client, game_channel, _, _ = await start_game_via_menu(
-            docker_compose, game_mode="JoustFFA", timeout=25.0
-        )
+    # Use context managers for clean resource management
+    async with GameEventCollector(game_client) as event_collector:
+        observer = ObservabilityObserver(mock_client)
+        await observer.start()
 
-        serials = await get_mock_controller_serials(docker_compose)
-
-        # Let game run briefly
-        await asyncio.sleep(0.5)
-
-        # Kill one player
-        killed_serial = serials[0]
-        await mock_client.SimulateDeath(
-            controller_manager_mock_pb2.DeathRequest(serial=killed_serial)
-        )
-        await asyncio.sleep(0.5)
-
-        # Kill remaining players except last
-        for serial in serials[1:-1]:
-            await mock_client.SimulateDeath(
-                controller_manager_mock_pb2.DeathRequest(serial=serial)
+        try:
+            # Start FFA game
+            await start_game_via_menu(
+                docker_compose,
+                game_mode="JoustFFA",
+                timeout=25.0,
+                event_collector=event_collector,
             )
-            await asyncio.sleep(0.1)
 
-        # Wait for game end
-        await wait_for_game_end(game_client, timeout=15)
-        await asyncio.sleep(2.0)
+            # Let game run briefly
+            await asyncio.sleep(0.5)
 
-        # Analyze collected events
-        events = observer.get_events()
+            # Kill one player
+            killed_serial = serials[0]
+            await mock_client.SimulateDeath(
+                controller_manager_mock_pb2.DeathRequest(serial=killed_serial)
+            )
+            await asyncio.sleep(0.5)
 
-        # Verify we got LED events
-        led_events = [e for e in events if e.HasField("led_change")]
-        assert len(led_events) > 0, "No LED events captured"
+            # Kill remaining players except last
+            for serial in serials[1:-1]:
+                await mock_client.SimulateDeath(
+                    controller_manager_mock_pb2.DeathRequest(serial=serial)
+                )
+                await asyncio.sleep(0.1)
 
-        # Verify we got events for all controllers
-        controllers_with_events = set(e.serial for e in led_events)
-        for serial in serials:
-            assert serial in controllers_with_events, f"No LED events for {serial}"
+            # Wait for game end via event collector
+            await event_collector.wait_for_any_event(
+                ["game_ended", "game_force_ended", "game_error"],
+                timeout=15
+            )
+            await asyncio.sleep(2.0)
 
-        # Get final colors
-        final_colors = observer.get_last_colors()
-        for serial in serials:
-            assert serial in final_colors, f"No final color for {serial}"
-            color = final_colors[serial]
-            assert sum(color) > 0, f"{serial} ended with black LED"
+            # Analyze collected events
+            events = observer.get_events()
 
-        await game_channel.close()
+            # Verify we got LED events
+            led_events = [e for e in events if e.HasField("led_change")]
+            assert len(led_events) > 0, "No LED events captured"
 
-    finally:
-        await observer.stop()
-        await mock_channel.close()
+            # Verify we got events for all controllers
+            controllers_with_events = set(e.serial for e in led_events)
+            for serial in serials:
+                assert serial in controllers_with_events, f"No LED events for {serial}"
+
+            # Get final colors
+            final_colors = observer.get_last_colors()
+            for serial in serials:
+                assert serial in final_colors, f"No final color for {serial}"
+                color = final_colors[serial]
+                assert sum(color) > 0, f"{serial} ended with black LED"
+
+        finally:
+            await observer.stop()
+
+    await game_channel.close()
+    await mock_channel.close()

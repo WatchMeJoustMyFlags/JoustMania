@@ -122,83 +122,167 @@ async def get_ready_players(docker_compose):
 
 
 # =============================================================================
-# Game event helpers
+# Game event stream collector
 # =============================================================================
 
 
-async def wait_for_game_event(game_client, target_events: list[str], timeout=10):
-    """Wait for a specific game event via StreamGameEvents.
+class GameEventCollector:
+    """Collects game events from StreamGameEvents for the entire test duration.
+
+    Start at test begin, events are collected in background, then wait for
+    specific events when needed. This avoids race conditions with event streams.
+
+    Usage with context manager:
+        async with GameEventCollector(game_client) as collector:
+            # ... trigger game start ...
+            await collector.wait_for_event("game_started", timeout=15)
+            # ... trigger game end ...
+            await collector.wait_for_event("game_ended", timeout=10)
+
+    Or manual usage:
+        collector = GameEventCollector(game_client)
+        await collector.start()
+        # ... test code ...
+        await collector.stop()
+    """
+
+    def __init__(self, game_client):
+        self.game_client = game_client
+        self.events: list = []
+        self._task: asyncio.Task | None = None
+        self._event_conditions: dict[str, asyncio.Event] = {}
+
+    async def __aenter__(self):
+        """Start collecting on context entry."""
+        await self.start()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Stop collecting on context exit."""
+        await self.stop()
+        return False
+
+    async def start(self):
+        """Start collecting game events in background."""
+        self._task = asyncio.create_task(self._collect())
+
+    async def _collect(self):
+        """Background task to collect events from stream."""
+        try:
+            async for event in self.game_client.StreamGameEvents(
+                game_coordinator_pb2.StreamEventsRequest()
+            ):
+                self.events.append(event)
+                # Signal any waiters for this event type
+                event_type = event.event_type
+                if event_type in self._event_conditions:
+                    self._event_conditions[event_type].set()
+        except asyncio.CancelledError:
+            pass
+
+    async def stop(self):
+        """Stop collecting events and cancel the background task."""
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+
+    async def wait_for_event(self, event_type: str, timeout: float = 10.0):
+        """Wait for a specific event type to be received.
+
+        Args:
+            event_type: Event type to wait for (e.g., "game_started", "game_ended")
+            timeout: Maximum time to wait in seconds
+
+        Raises:
+            TimeoutError: If the event is not received within timeout
+        """
+        # Check if we already have this event
+        for event in self.events:
+            if event.event_type == event_type:
+                return event
+
+        # Create condition for this event type if not exists
+        if event_type not in self._event_conditions:
+            self._event_conditions[event_type] = asyncio.Event()
+
+        # Wait for the event
+        try:
+            await asyncio.wait_for(
+                self._event_conditions[event_type].wait(),
+                timeout=timeout
+            )
+            # Find and return the event
+            for event in reversed(self.events):
+                if event.event_type == event_type:
+                    return event
+        except asyncio.TimeoutError:
+            raise TimeoutError(f"Game did not emit '{event_type}' within {timeout} seconds")
+
+    async def wait_for_any_event(self, event_types: list[str], timeout: float = 10.0):
+        """Wait for any of the specified event types.
+
+        Args:
+            event_types: List of event types to wait for
+            timeout: Maximum time to wait in seconds
+
+        Raises:
+            TimeoutError: If none of the events are received within timeout
+        """
+        import time
+
+        start = time.time()
+        while time.time() - start < timeout:
+            # Check if we already have any of these events
+            for event in self.events:
+                if event.event_type in event_types:
+                    return event
+            await asyncio.sleep(0.1)
+
+        raise TimeoutError(f"Game did not emit any of {event_types} within {timeout} seconds")
+
+    def get_events(self, event_type: str | None = None) -> list:
+        """Get collected events, optionally filtered by type."""
+        if event_type:
+            return [e for e in self.events if e.event_type == event_type]
+        return list(self.events)
+
+    def clear(self):
+        """Clear collected events."""
+        self.events.clear()
+        self._event_conditions.clear()
+
+
+# =============================================================================
+# Force end helpers
+# =============================================================================
+
+
+async def force_end_game(
+    game_client,
+    event_collector: GameEventCollector,
+    timeout: float = 10.0,
+):
+    """Force end game and wait for the end event via collector.
+
+    Uses the provided event collector (already listening) to wait for end event.
 
     Args:
-        game_client: The GameCoordinator gRPC client
-        target_events: List of event types to wait for (e.g., ["game_started"])
-        timeout: Maximum time to wait in seconds
-
-    Raises:
-        TimeoutError: If the event is not received within the timeout
+        game_client: GameCoordinator gRPC client
+        event_collector: GameEventCollector already started
+        timeout: Timeout for end event in seconds
     """
-
-    async def wait():
-        async for event in game_client.StreamGameEvents(
-            game_coordinator_pb2.StreamEventsRequest()
-        ):
-            if event.event_type in target_events:
-                return event
-
-    try:
-        return await asyncio.wait_for(wait(), timeout=timeout)
-    except asyncio.TimeoutError:
-        raise TimeoutError(f"Game did not emit event {target_events} within {timeout} seconds")
-
-
-async def wait_for_game_running(game_client, timeout=15):
-    """Wait for game to reach RUNNING state (after countdown).
-
-    Waits for the "game_started" event which is emitted when the game loop
-    begins after the countdown completes.
-    """
-    await wait_for_game_event(game_client, ["game_started"], timeout)
-
-
-async def wait_for_game_end(game_client, timeout=10):
-    """Wait for game to reach ENDED state.
-
-    Waits for "game_ended", "game_force_ended", or "game_error" events which
-    indicate the game has finished.
-    """
-    await wait_for_game_event(game_client, ["game_ended", "game_force_ended", "game_error"], timeout)
-
-
-async def force_end_game_and_wait(game_client, timeout=10):
-    """Force end game and wait for the end event.
-
-    Starts streaming before calling ForceEndGame to avoid race condition
-    where the event is published before the stream is established.
-    """
-    end_events = ["game_ended", "game_force_ended", "game_error"]
-
-    async def wait_for_end():
-        async for event in game_client.StreamGameEvents(
-            game_coordinator_pb2.StreamEventsRequest()
-        ):
-            if event.event_type in end_events:
-                return event
-
-    # Start the stream task, then call ForceEndGame
-    stream_task = asyncio.create_task(wait_for_end())
-
-    # Give the stream a moment to establish
-    await asyncio.sleep(0.1)
-
     # Force end game
     await game_client.ForceEndGame(game_coordinator_pb2.ForceEndGameRequest())
 
-    # Wait for the end event with timeout
-    try:
-        await asyncio.wait_for(stream_task, timeout=timeout)
-    except asyncio.TimeoutError:
-        stream_task.cancel()
-        raise TimeoutError(f"Game did not emit event {end_events} within {timeout} seconds")
+    # Wait for end event via collector
+    await event_collector.wait_for_any_event(
+        ["game_ended", "game_force_ended", "game_error"],
+        timeout=timeout
+    )
 
 
 # =============================================================================
@@ -309,8 +393,11 @@ async def reset_all_controllers(mock_client, serials: list[str]):
 
 
 async def start_game_via_menu(
-    docker_compose, game_mode: str = "JoustFFA", timeout: float = 20.0
-) -> tuple:
+    docker_compose,
+    game_mode: str = "JoustFFA",
+    timeout: float = 20.0,
+    event_collector: GameEventCollector = None,
+):
     """Start a game through the Menu service (full flow).
 
     This simulates the real user flow:
@@ -318,26 +405,31 @@ async def start_game_via_menu(
     2. Controllers connect and see menu
     3. Controllers mark themselves as ready (Move button)
     4. Game auto-starts when all controllers are ready
-    5. Menu requests game from Supervisor
-    6. Supervisor calls GameCoordinator.StartGame
+    5. Menu requests game from GameCoordinator
+
+    Requires a GameEventCollector started before this call to reliably
+    detect game start events.
 
     Args:
         docker_compose: Docker compose fixture
         game_mode: Game mode to select (default: "JoustFFA")
         timeout: Timeout for game to start
+        event_collector: GameEventCollector already started and listening.
+            Required for reliable event detection.
 
-    Returns:
-        Tuple of (game_client, game_channel, mock_client, mock_channel)
+    Raises:
+        ValueError: If event_collector is not provided
+        TimeoutError: If game does not start within timeout
     """
+    if event_collector is None:
+        raise ValueError("event_collector is required - start a GameEventCollector before calling")
+
     # Get clients
     menu_client, menu_channel = await get_menu_client(docker_compose)
-    mock_client, mock_channel = await get_mock_client(docker_compose)
+    mock_client, _ = await get_mock_client(docker_compose)
 
-    # Get game coordinator client to wait for game start
-    game_host = docker_compose.get_service_host("game-coordinator", 50053)
-    game_port = docker_compose.get_service_port("game-coordinator", 50053)
-    game_channel = grpc.aio.insecure_channel(f"{game_host}:{game_port}")
-    game_client = game_coordinator_pb2_grpc.GameCoordinatorServiceStub(game_channel)
+    # Get game coordinator client for cleanup
+    game_client, _ = await get_game_client(docker_compose)
 
     # Force-end any previous game to ensure clean state
     await game_client.ForceEndGame(game_coordinator_pb2.ForceEndGameRequest(reason="test_cleanup"))
@@ -367,16 +459,12 @@ async def start_game_via_menu(
     print(f"Marking {len(serials)} controllers as ready: {serials}")
     await mark_controllers_ready(mock_client, serials)
     print("Controllers marked as ready, waiting for game start...")
-    await asyncio.sleep(0.1)
 
-    # Wait for game to start (game_started event)
-    # Game auto-starts after 0.3s delay when all controllers become ready
-    await wait_for_game_running(game_client, timeout=timeout)
+    # Wait for game_started event via collector
+    await event_collector.wait_for_event("game_started", timeout=timeout)
 
     # Close menu channel (not needed anymore)
     await menu_channel.close()
-
-    return game_client, game_channel, mock_client, mock_channel
 
 
 # =============================================================================
