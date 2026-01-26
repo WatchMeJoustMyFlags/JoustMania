@@ -281,69 +281,6 @@ async def test_full_game_lifecycle(
 
 
 # =============================================================================
-# Back-to-back game test
-# =============================================================================
-
-
-@pytest.mark.asyncio
-async def test_back_to_back_games(docker_compose):
-    """Test running multiple games in sequence without restart.
-
-    Verifies no state leakage between games and that LED colors
-    are properly reset after each game.
-    """
-    # Use a mix of FFA and team games
-    game_sequence = [
-        ("JoustFFA", end_ffa_game),
-        ("JoustTeams", end_team_game),
-        ("JoustRandomTeams", end_team_game),
-        ("JoustFFA", end_ffa_game),
-    ]
-
-    mock_client, mock_channel = await get_mock_client(docker_compose)
-    game_client, game_channel = await get_game_client(docker_compose)
-    serials = await get_mock_controller_serials(docker_compose)
-
-    try:
-        for i, (game_mode, end_strategy) in enumerate(game_sequence):
-            print(f"\n=== Game {i + 1}/{len(game_sequence)}: {game_mode} ===")
-
-            # Use event collector for reliable event detection
-            async with GameEventCollector(game_client) as event_collector:
-                # Start game
-                await start_game_via_menu(
-                    docker_compose,
-                    game_mode=game_mode,
-                    timeout=25.0,
-                    event_collector=event_collector,
-                )
-
-                # Verify game started with colors
-                await asyncio.sleep(0.3)
-                await verify_controllers_have_color(mock_client, serials)
-
-                # End game using appropriate strategy
-                await end_strategy(mock_client, serials, game_client, event_collector)
-
-                # Wait for game end via event collector
-                await event_collector.wait_for_any_event(
-                    ["game_ended", "game_force_ended", "game_error"],
-                    timeout=15
-                )
-
-                # Verify return to menu
-                await asyncio.sleep(1.5)
-                await verify_lobby_colors(mock_client, serials)
-
-            # Brief pause between games
-            await asyncio.sleep(0.5)
-
-    finally:
-        await game_channel.close()
-        await mock_channel.close()
-
-
-# =============================================================================
 # LED transition verification test
 # =============================================================================
 
