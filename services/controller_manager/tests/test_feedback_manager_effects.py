@@ -287,9 +287,9 @@ class TestEffectCancellation:
         )
 
         # Verify warning effect was cancelled
-        assert (
-            warning_task.cancelled() or warning_task.done()
-        ), "Warning effect task should be cancelled or done after death effect starts"
+        assert warning_task.cancelled() or warning_task.done(), (
+            "Warning effect task should be cancelled or done after death effect starts"
+        )
 
         # The color should now be red (death effect), not white (warning)
         current_color = mock_backend.get_current_color(serial)
@@ -331,6 +331,6 @@ class TestEffectCancellation:
         await feedback_manager.cancel_effect(serial)
 
         # Verify cleanup
-        assert (
-            serial not in feedback_manager.active_effects
-        ), "cancel_effect should remove controller from active_effects"
+        assert serial not in feedback_manager.active_effects, (
+            "cancel_effect should remove controller from active_effects"
+        )
