@@ -9,7 +9,7 @@
 
 SERVICE=${1:-""}
 
-if [ -z "$SERVICE" ]; then
+if [[ -z "$SERVICE" ]]; then
     echo "Following logs for all services (Ctrl+C to exit)..."
     echo ""
     docker compose logs -f

@@ -24,13 +24,13 @@ POLL_INTERVAL=${POLL_INTERVAL:-10}
 DEBUG=${DEBUG:-0}
 
 # Find psmove binary
-if [ -n "$PSMOVE_PATH" ]; then
+if [[ -n "$PSMOVE_PATH" ]]; then
     PSMOVE="$PSMOVE_PATH"
 elif command -v psmove &>/dev/null; then
     PSMOVE="psmove"
-elif [ -x "$HOME/psmoveapi/build/psmove" ]; then
+elif [[ -x "$HOME/psmoveapi/build/psmove" ]]; then
     PSMOVE="$HOME/psmoveapi/build/psmove"
-elif [ -x "/home/$(logname 2>/dev/null)/psmoveapi/build/psmove" ]; then
+elif [[ -x "/home/$(logname 2>/dev/null)/psmoveapi/build/psmove" ]]; then
     PSMOVE="/home/$(logname 2>/dev/null)/psmoveapi/build/psmove"
 else
     echo "ERROR: psmove binary not found. Install psmoveapi or set PSMOVE_PATH"
@@ -42,7 +42,7 @@ log() {
 }
 
 debug() {
-    if [ "$DEBUG" = "1" ]; then
+    if [[ "$DEBUG" = "1" ]]; then
         log "[DEBUG] $*"
     fi
 }
@@ -82,7 +82,7 @@ while true; do
     debug "USB PS Move detected, checking with psmove..."
 
     # Get raw psmove output (suppress library debug messages unless DEBUG=1)
-    if [ "$DEBUG" = "1" ]; then
+    if [[ "$DEBUG" = "1" ]]; then
         psmove_output=$($PSMOVE list 2>&1)
     else
         psmove_output=$($PSMOVE list 2>/dev/null)
@@ -90,14 +90,14 @@ while true; do
     psmove_exit=$?
 
     debug "psmove list exit code: $psmove_exit"
-    if [ "$DEBUG" = "1" ]; then
+    if [[ "$DEBUG" = "1" ]]; then
         echo "$psmove_output" | while read -r line; do
             debug "psmove: $line"
         done
     fi
 
     # Check for errors
-    if [ $psmove_exit -ne 0 ]; then
+    if [[ $psmove_exit -ne 0 ]]; then
         debug "psmove list failed"
         sleep "$POLL_INTERVAL"
         continue
@@ -109,7 +109,7 @@ while true; do
     usb_count=${usb_count:-0}
     debug "USB controllers detected: $usb_count"
 
-    if [ "$usb_count" = "0" ] || [ -z "$usb_count" ]; then
+    if [[ "$usb_count" = "0" ]] || [[ -z "$usb_count" ]]; then
         debug "No USB controllers found"
         sleep "$POLL_INTERVAL"
         continue
@@ -120,7 +120,7 @@ while true; do
     # Format 2: just MAC addresses with USB indicator
     usb_controllers=$(echo "$psmove_output" | grep -i "USB" | grep -oE '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}')
 
-    if [ -z "$usb_controllers" ]; then
+    if [[ -z "$usb_controllers" ]]; then
         log "USB controller detected but couldn't extract serial"
         log "Raw output: $psmove_output"
         sleep "$POLL_INTERVAL"
@@ -177,7 +177,7 @@ while true; do
             fi
         fi
 
-        if [ "$pair_failed" = "false" ]; then
+        if [[ "$pair_failed" = "false" ]]; then
             # Success - either explicit success message, exit 0, or no failure indicators
             debug "Pair appears successful, trusting device in BlueZ: $serial_upper"
             bluetoothctl trust "$serial_upper" &>/dev/null
