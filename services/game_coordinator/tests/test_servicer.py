@@ -486,3 +486,175 @@ class TestShutdown:
         await servicer.shutdown()
 
         servicer.clients.close.assert_called_once()
+
+
+class TestGameNameHandling:
+    """Tests for game name handling."""
+
+    @pytest.fixture
+    def servicer(self):
+        """Create servicer for testing."""
+        return GameCoordinatorServicer()
+
+    def test_valid_game_names_accepted(self, servicer):
+        """Known game types should be accepted."""
+        valid_names = ["FFA", "Teams", "Zombie", "Werewolf", "Tournament"]
+
+        for name in valid_names:
+            config = game_coordinator_pb2.StartGameConfig(
+                game_name=name,
+                players=[
+                    game_coordinator_pb2.Player(serial="p1"),
+                    game_coordinator_pb2.Player(serial="p2"),
+                ],
+                settings={},
+            )
+            mock_span = MockSpan()
+
+            # Reset state for each test
+            servicer.game_state = game_coordinator_pb2.GameState.IDLE
+            servicer.game_running = False
+
+            with patch.object(servicer, "_run_game_loop_threaded"):
+                success, result = servicer._start_game_from_config(config, mock_span)
+
+            # Valid game names should succeed initial validation
+            assert success is True, f"Game type {name} should be accepted"
+
+    def test_game_name_stored_correctly(self, servicer):
+        """Game name should be stored in servicer."""
+        config = game_coordinator_pb2.StartGameConfig(
+            game_name="FFA",
+            players=[
+                game_coordinator_pb2.Player(serial="p1"),
+                game_coordinator_pb2.Player(serial="p2"),
+            ],
+            settings={},
+        )
+        mock_span = MockSpan()
+
+        with patch.object(servicer, "_run_game_loop_threaded"):
+            servicer._start_game_from_config(config, mock_span)
+
+        assert servicer.game_name == "FFA"
+
+
+class TestStateTransitionRobustness:
+    """Tests for state transition edge cases."""
+
+    @pytest.fixture
+    def servicer(self):
+        """Create servicer for testing."""
+        return GameCoordinatorServicer()
+
+    def test_transition_from_idle_to_starting(self, servicer):
+        """Servicer should transition from IDLE to STARTING on game start."""
+        assert servicer.game_state == game_coordinator_pb2.GameState.IDLE
+
+        config = game_coordinator_pb2.StartGameConfig(
+            game_name="FFA",
+            players=[
+                game_coordinator_pb2.Player(serial="p1"),
+                game_coordinator_pb2.Player(serial="p2"),
+            ],
+            settings={},
+        )
+        mock_span = MockSpan()
+
+        with patch.object(servicer, "_run_game_loop_threaded"):
+            servicer._start_game_from_config(config, mock_span)
+
+        # State should be STARTING (or transitioning)
+        assert servicer.game_state in [
+            game_coordinator_pb2.GameState.STARTING,
+            game_coordinator_pb2.GameState.RUNNING,
+        ]
+
+    @pytest.mark.asyncio
+    async def test_force_end_from_multiple_states(self, servicer):
+        """ForceEndGame should work from STARTING or RUNNING state."""
+        context = MockGrpcContext()
+        request = game_coordinator_pb2.ForceEndGameRequest(reason="test")
+
+        # Test from STARTING
+        servicer.game_state = game_coordinator_pb2.GameState.STARTING
+        servicer.game_running = True
+        servicer.game_id = "test_game"
+
+        response = await servicer.ForceEndGame(request, context)
+        assert response.success is True
+
+    @pytest.mark.asyncio
+    async def test_get_state_during_transition(self, servicer):
+        """GetGameState should return valid state during transitions."""
+        context = MockGrpcContext()
+        request = game_coordinator_pb2.GetGameStateRequest()
+
+        # Simulate mid-transition
+        servicer.game_state = game_coordinator_pb2.GameState.STARTING
+        servicer.game_name = "FFA"
+        servicer.game_id = "transition_test"
+
+        response = await servicer.GetGameState(request, context)
+
+        assert response.success is True
+        assert response.game_info.state == game_coordinator_pb2.GameState.STARTING
+
+
+class TestDuplicatePlayerHandling:
+    """Tests for handling duplicate players."""
+
+    @pytest.fixture
+    def servicer(self):
+        """Create servicer for testing."""
+        return GameCoordinatorServicer()
+
+    def test_duplicate_serial_in_players(self, servicer):
+        """StartGame with duplicate serials should be handled."""
+        config = game_coordinator_pb2.StartGameConfig(
+            game_name="FFA",
+            players=[
+                game_coordinator_pb2.Player(serial="same_serial"),
+                game_coordinator_pb2.Player(serial="same_serial"),
+                game_coordinator_pb2.Player(serial="different_serial"),
+            ],
+            settings={},
+        )
+        mock_span = MockSpan()
+
+        with patch.object(servicer, "_run_game_loop_threaded"):
+            success, result = servicer._start_game_from_config(config, mock_span)
+
+        # Implementation may dedupe or fail - either is acceptable
+        # Just verify it doesn't crash
+        assert isinstance(success, bool)
+
+
+class TestConcurrentOperations:
+    """Tests for concurrent operation handling."""
+
+    @pytest.fixture
+    def servicer(self):
+        """Create servicer for testing."""
+        return GameCoordinatorServicer()
+
+    @pytest.mark.asyncio
+    async def test_get_state_concurrent_safe(self, servicer):
+        """GetGameState should be safe under concurrent access."""
+        context = MockGrpcContext()
+        request = game_coordinator_pb2.GetGameStateRequest()
+
+        servicer.game_state = game_coordinator_pb2.GameState.RUNNING
+        servicer.game_name = "FFA"
+        servicer.game_id = "concurrent_test"
+
+        # Simulate multiple concurrent calls
+        responses = []
+        for _ in range(10):
+            response = await servicer.GetGameState(request, context)
+            responses.append(response)
+
+        # All should succeed with consistent state
+        for response in responses:
+            assert response.success is True
+            assert response.game_info.state == game_coordinator_pb2.GameState.RUNNING

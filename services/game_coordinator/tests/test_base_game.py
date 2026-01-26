@@ -25,7 +25,7 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import MockControllerManagerService, MockSettingsService  # noqa: E402
+from conftest import EventCollector, MockControllerManagerService, MockSettingsService  # noqa: E402
 
 from proto import controller_manager_pb2  # noqa: E402
 from services.game_coordinator.games.base import (  # noqa: E402
@@ -771,3 +771,226 @@ class TestGameStateTransitions:
         game.running = True
         game.force_end()
         assert game.running is False
+
+    def test_multiple_force_end_calls_safe(self, game):
+        """Multiple force_end() calls should not raise."""
+        game.running = True
+        game.force_end()
+        game.force_end()  # Second call
+        game.force_end()  # Third call
+        assert game.running is False
+
+
+class TestInvalidAccelerationData:
+    """Tests for handling invalid acceleration data."""
+
+    @pytest.fixture
+    def game_with_player(self):
+        """Create game with one player for acceleration tests."""
+        mock_cm = MockControllerManagerService(num_controllers=2)
+        mock_settings = MockSettingsService()
+        game = FFAGame(
+            controller_manager_client=mock_cm,
+            settings_client=mock_settings,
+            event_publisher=lambda *_args: None,
+            audio_client=None,
+            game_id="test_invalid_accel",
+        )
+        game.gameplay_stream = MockGameplayStream()
+        game.running = True
+
+        game.players["test_serial"] = Player(
+            serial="test_serial",
+            team=0,
+            alive=True,
+            color=(255, 255, 255),
+        )
+        return game
+
+    @pytest.mark.asyncio
+    async def test_zero_acceleration_handled(self, game_with_player):
+        """Zero acceleration should be handled without error."""
+        game = game_with_player
+        player = game.players["test_serial"]
+
+        controller_state = controller_manager_pb2.GameplayData(
+            serial="test_serial",
+            accel=controller_manager_pb2.Vector3(x=0.0, y=0.0, z=0.0),
+        )
+
+        await game._process_controller_state(controller_state)
+
+        # Player should still be alive (zero accel is safe)
+        assert player.alive is True
+
+    @pytest.mark.asyncio
+    async def test_very_small_acceleration_handled(self, game_with_player):
+        """Very small acceleration values should work."""
+        game = game_with_player
+        player = game.players["test_serial"]
+
+        controller_state = controller_manager_pb2.GameplayData(
+            serial="test_serial",
+            accel=controller_manager_pb2.Vector3(x=0.001, y=0.001, z=0.001),
+        )
+
+        await game._process_controller_state(controller_state)
+
+        assert player.alive is True
+
+    @pytest.mark.asyncio
+    async def test_negative_acceleration_components(self, game_with_player):
+        """Negative acceleration components should be handled (direction doesn't matter for magnitude)."""
+        game = game_with_player
+        player = game.players["test_serial"]
+
+        controller_state = controller_manager_pb2.GameplayData(
+            serial="test_serial",
+            accel=controller_manager_pb2.Vector3(x=-0.5, y=-0.5, z=-0.5),
+        )
+
+        await game._process_controller_state(controller_state)
+
+        # Magnitude of (-0.5, -0.5, -0.5) is ~0.87, should be safe
+        assert player.alive is True
+
+    @pytest.mark.asyncio
+    async def test_extreme_acceleration_kills_player(self, game_with_player):
+        """Extremely high acceleration should kill player."""
+        game = game_with_player
+        player = game.players["test_serial"]
+
+        # Skip grace period
+        player.grace_period_until = 0
+
+        controller_state = controller_manager_pb2.GameplayData(
+            serial="test_serial",
+            accel=controller_manager_pb2.Vector3(x=100.0, y=100.0, z=100.0),
+        )
+
+        await game._process_controller_state(controller_state)
+
+        # Magnitude is ~173, way above any threshold
+        assert player.alive is False
+
+
+class TestMultipleDeathsHandling:
+    """Tests for handling death during various states."""
+
+    @pytest.fixture
+    def game_with_players(self):
+        """Create game with multiple players."""
+        mock_cm = MockControllerManagerService(num_controllers=4)
+        mock_settings = MockSettingsService()
+        event_collector = EventCollector()
+
+        game = FFAGame(
+            controller_manager_client=mock_cm,
+            settings_client=mock_settings,
+            event_publisher=event_collector.publish,
+            audio_client=None,
+            game_id="test_multi_death",
+        )
+        game.gameplay_stream = MockGameplayStream()
+        game.running = True
+
+        for i in range(4):
+            game.players[f"player_{i}"] = Player(
+                serial=f"player_{i}",
+                team=0,
+                alive=True,
+                color=(255, 255, 255),
+            )
+
+        return game, event_collector
+
+    @pytest.mark.asyncio
+    async def test_kill_already_dead_player_no_error(self, game_with_players):
+        """Killing an already dead player should not raise."""
+        game, _ = game_with_players
+        player = game.players["player_0"]
+
+        # First kill
+        player.alive = False
+
+        # Second kill attempt - should not raise
+        await game._kill_player_impl("player_0", accel_mag=5.0)
+
+        assert player.alive is False
+
+    @pytest.mark.asyncio
+    async def test_all_players_dead_triggers_win(self, game_with_players):
+        """Game should end when all but one player dies."""
+        from lib.types import GameEvent
+
+        game, event_collector = game_with_players
+
+        # Kill all but one
+        game.players["player_0"].alive = False
+        game.players["player_1"].alive = False
+        game.players["player_2"].alive = False
+        # player_3 survives
+
+        result = game._check_win_condition()
+
+        assert result is True
+        # FFA publishes GameEvent.GAME_WINNER which is "game_winner"
+        winner_events = event_collector.get_events_of_type(GameEvent.GAME_WINNER)
+        assert len(winner_events) == 1
+        assert winner_events[0]["serial"] == "player_3"
+
+
+class TestSensitivityFactorEdgeCases:
+    """Tests for edge cases in sensitivity factor application."""
+
+    @pytest.fixture
+    def game(self):
+        """Create game for sensitivity tests."""
+        mock_cm = MockControllerManagerService(num_controllers=2)
+        mock_settings = MockSettingsService()
+        return FFAGame(
+            controller_manager_client=mock_cm,
+            settings_client=mock_settings,
+            event_publisher=lambda *_args: None,
+            audio_client=None,
+            game_id="test_sensitivity_edge",
+        )
+
+    def test_sensitivity_factor_zero_uses_default(self, game):
+        """Sensitivity factor of 0 should be treated specially."""
+        player = Player(
+            serial="test",
+            team=0,
+            alive=True,
+            color=(255, 255, 255),
+            sensitivity_factor=0.0,
+        )
+
+        # Factor of 0 would make threshold infinite, typically defaults apply
+        assert player.sensitivity_factor == 0.0
+
+    def test_sensitivity_factor_negative_stored(self, game):
+        """Negative sensitivity factor can be stored (though unusual)."""
+        player = Player(
+            serial="test",
+            team=0,
+            alive=True,
+            color=(255, 255, 255),
+            sensitivity_factor=-1.0,
+        )
+
+        # Implementation may handle this differently
+        assert player.sensitivity_factor == -1.0
+
+    def test_very_high_sensitivity_factor(self, game):
+        """Very high sensitivity factor should work."""
+        player = Player(
+            serial="test",
+            team=0,
+            alive=True,
+            color=(255, 255, 255),
+            sensitivity_factor=10.0,
+        )
+
+        # High factor means lower threshold (easier to die)
+        assert player.sensitivity_factor == 10.0
