@@ -994,3 +994,207 @@ class TestSensitivityFactorEdgeCases:
 
         # High factor means lower threshold (easier to die)
         assert player.sensitivity_factor == 10.0
+
+
+class TestGamePhaseTransitions:
+    """Tests for game phase transitions (setup → countdown → gameplay → end)."""
+
+    @pytest.fixture
+    def game(self):
+        """Create game for phase tests."""
+        mock_cm = MockControllerManagerService(num_controllers=2)
+        mock_settings = MockSettingsService()
+        event_collector = EventCollector()
+        return FFAGame(
+            controller_manager_client=mock_cm,
+            settings_client=mock_settings,
+            event_publisher=event_collector.publish,
+            audio_client=None,
+            game_id="test_phase",
+        ), event_collector
+
+    def test_initial_state_is_idle(self, game):
+        """Game should start in IDLE state."""
+        game_instance, _ = game
+        assert game_instance.state == GameState.IDLE
+
+    def test_game_state_enum_values(self, game):
+        """GameState enum should have expected values."""
+        assert GameState.IDLE.value == "idle"
+        assert GameState.RUNNING.value == "running"
+        assert GameState.ENDED.value == "ended"
+
+    def test_running_flag_initially_false(self, game):
+        """Game running flag should be False initially."""
+        game_instance, _ = game
+        assert game_instance.running is False
+
+    def test_force_end_transitions_to_not_running(self, game):
+        """force_end should set running to False."""
+        game_instance, _ = game
+        game_instance.running = True
+        game_instance.force_end()
+        assert game_instance.running is False
+
+
+class TestEventPublishing:
+    """Tests for event publishing during game lifecycle."""
+
+    @pytest.fixture
+    def game_with_events(self):
+        """Create game with event tracking."""
+        mock_cm = MockControllerManagerService(num_controllers=2)
+        mock_settings = MockSettingsService()
+        event_collector = EventCollector()
+
+        game = FFAGame(
+            controller_manager_client=mock_cm,
+            settings_client=mock_settings,
+            event_publisher=event_collector.publish,
+            audio_client=None,
+            game_id="test_events",
+        )
+        game.gameplay_stream = MockGameplayStream()
+        game.running = True
+
+        return game, mock_cm, event_collector
+
+    @pytest.mark.asyncio
+    async def test_player_death_marks_not_alive(self, game_with_events):
+        """Player death should mark player as not alive."""
+        game, mock_cm, _ = game_with_events
+
+        await game._initialize_players_impl(mock_cm.controllers)
+
+        serial = list(game.players.keys())[0]
+        player = game.players[serial]
+        assert player.alive is True
+
+        await game._kill_player_impl(serial, accel_mag=5.0)
+
+        assert player.alive is False
+
+    @pytest.mark.asyncio
+    async def test_winner_publishes_game_winner_event(self, game_with_events):
+        """Last player standing should trigger winner event."""
+        from lib.types import GameEvent
+
+        game, mock_cm, event_collector = game_with_events
+
+        await game._initialize_players_impl(mock_cm.controllers)
+
+        serials = list(game.players.keys())
+        # Kill all but one
+        for serial in serials[:-1]:
+            game.players[serial].alive = False
+
+        result = game._check_win_condition()
+
+        assert result is True
+        winner_events = event_collector.get_events_of_type(GameEvent.GAME_WINNER)
+        assert len(winner_events) == 1
+
+    @pytest.mark.asyncio
+    async def test_death_increments_dead_count(self, game_with_events):
+        """Player death should increment dead_count."""
+        game, mock_cm, _ = game_with_events
+
+        await game._initialize_players_impl(mock_cm.controllers)
+        initial_dead_count = game.dead_count
+
+        serial = list(game.players.keys())[0]
+
+        # Use _kill_player which increments dead_count
+        await game._kill_player(serial, accel_mag=5.0)
+
+        assert game.dead_count == initial_dead_count + 1
+
+
+class TestGameStartValidation:
+    """Tests for game start validation."""
+
+    @pytest.fixture
+    def game(self):
+        """Create game for validation tests."""
+        mock_cm = MockControllerManagerService(num_controllers=2)
+        mock_settings = MockSettingsService()
+        return FFAGame(
+            controller_manager_client=mock_cm,
+            settings_client=mock_settings,
+            event_publisher=lambda *_args: None,
+            audio_client=None,
+            game_id="test_validation",
+        )
+
+    @pytest.mark.asyncio
+    async def test_initialize_players_sets_count(self, game):
+        """_initialize_players_impl should set correct player count."""
+        mock_cm = MockControllerManagerService(num_controllers=4)
+
+        await game._initialize_players_impl(mock_cm.controllers)
+
+        assert len(game.players) == 4
+
+    @pytest.mark.asyncio
+    async def test_initialize_players_sets_alive(self, game):
+        """All players should start alive."""
+        mock_cm = MockControllerManagerService(num_controllers=3)
+
+        await game._initialize_players_impl(mock_cm.controllers)
+
+        for player in game.players.values():
+            assert player.alive is True
+
+    @pytest.mark.asyncio
+    async def test_initialize_players_creates_players(self, game):
+        """Initialize should create player objects for all controllers."""
+        mock_cm = MockControllerManagerService(num_controllers=2)
+
+        await game._initialize_players_impl(mock_cm.controllers)
+
+        # Each player should have a serial and be alive
+        for serial, player in game.players.items():
+            assert player.serial == serial
+            assert player.alive is True
+
+
+class TestMusicTempoThresholds:
+    """Tests for music tempo affecting thresholds."""
+
+    @pytest.fixture
+    def game(self):
+        """Create game for lerp tests."""
+        mock_cm = MockControllerManagerService(num_controllers=2)
+        mock_settings = MockSettingsService()
+        return FFAGame(
+            controller_manager_client=mock_cm,
+            settings_client=mock_settings,
+            event_publisher=lambda *_args: None,
+            audio_client=None,
+            game_id="test_lerp",
+        )
+
+    def test_lerp_at_zero_returns_start(self, game):
+        """LERP at t=0 should return start value."""
+        result = game._lerp(1.0, 2.0, 0.0)
+        assert result == 1.0
+
+    def test_lerp_at_one_returns_end(self, game):
+        """LERP at t=1 should return end value."""
+        result = game._lerp(1.0, 2.0, 1.0)
+        assert result == 2.0
+
+    def test_lerp_at_half_returns_midpoint(self, game):
+        """LERP at t=0.5 should return midpoint."""
+        result = game._lerp(1.0, 2.0, 0.5)
+        assert result == 1.5
+
+    def test_lerp_extrapolates_beyond_one(self, game):
+        """LERP with t>1 should extrapolate."""
+        result = game._lerp(1.0, 2.0, 1.5)
+        assert result == 2.5
+
+    def test_lerp_extrapolates_below_zero(self, game):
+        """LERP with t<0 should extrapolate."""
+        result = game._lerp(1.0, 2.0, -0.5)
+        assert result == 0.5
