@@ -87,10 +87,6 @@ cd JoustMania
 ### 2. Build Docker Images
 
 ```bash
-# Using helper script
-scripts/docker/build.sh
-
-# Or directly with docker-compose
 docker-compose build --parallel
 ```
 
