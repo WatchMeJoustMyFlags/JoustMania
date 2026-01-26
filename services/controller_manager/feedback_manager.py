@@ -330,7 +330,7 @@ class FeedbackManager(ControllerEffectsBase):
         await self.set_vibration(serial, intensity, effect_duration)
         self.active_effect_types.pop(serial, None)
 
-    async def _effect_pulse(
+    async def _game_effect_pulse(
         self,
         serial: str,
         restore_color: tuple | None,
@@ -345,7 +345,7 @@ class FeedbackManager(ControllerEffectsBase):
         effect_speed = speed if speed > 0 else 3
         await self.play_effect_with_restore(serial, "pulse", effect_color, effect_duration, effect_speed, restore_color)
 
-    async def _effect_flash(
+    async def _game_effect_flash(
         self,
         serial: str,
         restore_color: tuple | None,
@@ -382,8 +382,8 @@ class FeedbackManager(ControllerEffectsBase):
             controller_manager_pb2.GAME_EFFECT_FORCE_START_CHARGE: self._effect_force_start_charge,
             controller_manager_pb2.GAME_EFFECT_SHOW_BATTERY: self._effect_show_battery,
             controller_manager_pb2.GAME_EFFECT_RUMBLE: self._effect_rumble,
-            controller_manager_pb2.GAME_EFFECT_PULSE: self._effect_pulse,
-            controller_manager_pb2.GAME_EFFECT_FLASH: self._effect_flash,
+            controller_manager_pb2.GAME_EFFECT_PULSE: self._game_effect_pulse,
+            controller_manager_pb2.GAME_EFFECT_FLASH: self._game_effect_flash,
         }
 
     async def handle_game_effect(
