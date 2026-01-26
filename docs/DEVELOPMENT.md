@@ -93,10 +93,6 @@ docker-compose build --parallel
 ### 3. Start the Stack
 
 ```bash
-# Using helper script
-scripts/docker/start.sh
-
-# Or directly with docker-compose
 docker-compose up -d
 ```
 
@@ -119,19 +115,15 @@ docker-compose ps
 
 ```bash
 # All services
-scripts/docker/logs.sh
+docker-compose logs -f
 
 # Specific service
-scripts/docker/logs.sh controller-manager
+docker-compose logs -f controller-manager
 ```
 
 ### 7. Stop the Stack
 
 ```bash
-# Using helper script
-scripts/docker/stop.sh
-
-# Or directly with docker-compose
 docker-compose down
 ```
 
