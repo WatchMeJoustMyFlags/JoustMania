@@ -301,7 +301,7 @@ function formatSettingKey(key: string): string {
   // Convert snake_case or camelCase to Title Case
   return key
     .replaceAll("_", " ")
-    .replaceAll(/([A-Z])/g, " $1")
+    .replace(/([A-Z])/g, " $1")
     .replace(/^./, (str) => str.toUpperCase())
     .trim();
 }
