@@ -468,14 +468,18 @@ class FeedbackManager(ControllerEffectsBase):
 
     async def cancel_effect(self, serial: str) -> None:
         """Cancel any active effect on a controller."""
+        task = None
         async with self.effect_lock:
             if serial in self.active_effects:
-                self.active_effects[serial].cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await self.active_effects[serial]
+                task = self.active_effects[serial]
+                task.cancel()
                 del self.active_effects[serial]
                 self.active_effect_types.pop(serial, None)
                 self.backend.set_effect_active(serial, False)
+        # Await cancelled task outside lock to avoid deadlock with task's finally block
+        if task:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
     async def cancel_if_cancellable(self, serial: str) -> bool:
         """
@@ -487,18 +491,22 @@ class FeedbackManager(ControllerEffectsBase):
         Returns:
             True if effect was cancelled, False otherwise
         """
+        task = None
         async with self.effect_lock:
             if serial in self.active_effects:
                 effect_type = self.active_effect_types.get(serial)
                 if effect_type in self.cancellable_effects:
-                    self.active_effects[serial].cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await self.active_effects[serial]
+                    task = self.active_effects[serial]
+                    task.cancel()
                     del self.active_effects[serial]
                     self.active_effect_types.pop(serial, None)
                     self.backend.set_effect_active(serial, False)
                     logger.debug(f"Cancelled cancellable effect for {serial}")
-                    return True
+        # Await cancelled task outside lock to avoid deadlock with task's finally block
+        if task:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            return True
         return False
 
     def clear_controller(self, serial: str) -> None:
