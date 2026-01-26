@@ -248,6 +248,7 @@ class FeedbackManager(ControllerEffectsBase):
 
     async def _effect_none(self, serial: str, **_kwargs) -> None:
         """No-op - clear tracking."""
+        # Note: async kept for interface consistency with other effect handlers
         self.active_effect_types.pop(serial, None)
 
     async def _effect_player_warning(self, serial: str, restore_color: tuple | None, **_kwargs) -> None:
@@ -289,7 +290,7 @@ class FeedbackManager(ControllerEffectsBase):
     async def _effect_admin_enter(self, serial: str, **_kwargs) -> None:
         """White flash, then persistent white."""
         self.base_colors[serial] = (255, 255, 255)
-        await self.play_effect_with_restore(serial, "flash", (255, 255, 255), 600, 5, True)
+        await self.play_effect_with_restore(serial, "flash", (255, 255, 255), 600, 5, (255, 255, 255))
 
     async def _effect_admin_exit(self, serial: str, restore_color: tuple | None, **_kwargs) -> None:
         """Restore to base color (instant)."""
