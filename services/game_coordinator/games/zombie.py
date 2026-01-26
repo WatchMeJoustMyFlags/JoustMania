@@ -120,6 +120,8 @@ class ZombieGame(BaseGameMode):
         self.time_remaining: float = 0.0
         self.timer_task: asyncio.Task | None = None
         self.game_span: trace.Span | None = None
+        # Track respawn tasks to prevent garbage collection
+        self._respawn_tasks: set[asyncio.Task] = set()
 
     def get_game_name(self) -> str:
         """Return game mode identifier."""
@@ -354,8 +356,10 @@ class ZombieGame(BaseGameMode):
 
             logger.info(f"Zombie {serial} killed, respawning in {respawn_delay:.1f}s")
 
-            # Start respawn task
-            asyncio.create_task(self._respawn_zombie(serial, respawn_delay))
+            # Start respawn task (track to prevent garbage collection)
+            task = asyncio.create_task(self._respawn_zombie(serial, respawn_delay))
+            self._respawn_tasks.add(task)
+            task.add_done_callback(self._respawn_tasks.discard)
 
             if player.span:
                 player.span.add_event(
@@ -550,6 +554,9 @@ class ZombieGame(BaseGameMode):
                     await self._initialize_players()
                     self._create_player_spans()
 
+                # Start gameplay stream before intro (needed for LED effects)
+                await self._start_gameplay_stream()
+
                 # Additional phases (zombie intro)
                 for phase in self._get_additional_phases():
                     if not self.running:
@@ -571,16 +578,20 @@ class ZombieGame(BaseGameMode):
                 self.state = GameState.RUNNING
                 self.start_time = time.time()
 
+                # Emit game_started event (required for integration tests)
+                from lib.types import GameEvent
+
+                self.event_publisher(
+                    GameEvent.GAME_STARTED, {"game_id": self.game_id, "player_count": len(self.players)}
+                )
+
                 # Start music
                 await self._start_game_music()
 
                 # Start game timer as background task
                 self.timer_task = asyncio.create_task(self._game_timer())
 
-                # Start gameplay stream
-                await self._start_gameplay_stream()
-
-                # Game loop
+                # Game loop (gameplay stream already started before intro)
                 with tracer.start_as_current_span("gameplay_phase"):
                     await self._game_loop()
 
