@@ -180,81 +180,6 @@ class FeedbackManager(ControllerEffectsBase):
         except Exception as e:
             logger.error(f"Error in delayed vibration stop for {serial}: {e}")
 
-    async def play_effect(
-        self,
-        serial: str,
-        effect: int,
-        color_rgb: tuple[int, int, int] = (255, 255, 255),
-        duration_ms: int = 1000,
-        speed: int = 5,
-    ) -> bool:
-        """
-        Play a visual effect on a controller.
-
-        Args:
-            serial: Controller serial number
-            effect: Effect enum value
-            color_rgb: RGB color tuple for effect
-            duration_ms: Effect duration in milliseconds
-            speed: Effect speed (1-10)
-
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            if serial not in self.tracked_controllers:
-                logger.warning(f"Controller {serial} not found for effect")
-                return False
-
-            # Cancel any existing effect on this controller
-            async with self.effect_lock:
-                if serial in self.active_effects:
-                    self.active_effects[serial].cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await self.active_effects[serial]
-                    del self.active_effects[serial]
-
-            # Start the appropriate effect
-            if effect == controller_manager_pb2.EFFECT_NONE:
-                await self._set_led_color(serial, color_rgb)
-
-            elif effect == controller_manager_pb2.EFFECT_FLASH:
-                task = asyncio.create_task(self._effect_flash(serial, color_rgb, duration_ms, speed))
-                async with self.effect_lock:
-                    self.active_effects[serial] = task
-
-            elif effect == controller_manager_pb2.EFFECT_PULSE:
-                task = asyncio.create_task(self._effect_pulse(serial, color_rgb, duration_ms, speed))
-                async with self.effect_lock:
-                    self.active_effects[serial] = task
-
-            elif effect == controller_manager_pb2.EFFECT_RAINBOW:
-                task = asyncio.create_task(self._effect_rainbow(serial, duration_ms, speed))
-                async with self.effect_lock:
-                    self.active_effects[serial] = task
-
-            elif effect == controller_manager_pb2.EFFECT_FADE_OUT:
-                task = asyncio.create_task(self._effect_fade_out(serial, color_rgb, duration_ms))
-                async with self.effect_lock:
-                    self.active_effects[serial] = task
-
-            elif effect == controller_manager_pb2.EFFECT_FADE_IN:
-                task = asyncio.create_task(self._effect_fade_in(serial, color_rgb, duration_ms))
-                async with self.effect_lock:
-                    self.active_effects[serial] = task
-
-            else:
-                effect_name = controller_manager_pb2.ControllerEffect.Name(effect)
-                logger.warning(f"Unknown effect: {effect_name}")
-                return False
-
-            logger.debug(f"Playing effect {effect} on {serial}")
-            return True
-
-        except Exception as e:
-            logger.error(f"Error playing effect on {serial}: {e}", exc_info=True)
-            return False
-
     async def play_effect_with_restore(
         self,
         serial: str,
@@ -362,12 +287,9 @@ class FeedbackManager(ControllerEffectsBase):
             self.active_effects[serial] = task
 
     async def _effect_admin_enter(self, serial: str, **_kwargs) -> None:
-        """White flash 3x, then persistent white."""
-        await self.play_effect(serial, controller_manager_pb2.EFFECT_FLASH, (255, 255, 255), 600, 5)
-        await asyncio.sleep(0.7)
-        self.active_effect_types.pop(serial, None)
-        await self.set_controller_color(serial, (255, 255, 255))
+        """White flash, then persistent white."""
         self.base_colors[serial] = (255, 255, 255)
+        await self.play_effect_with_restore(serial, "flash", (255, 255, 255), 600, 5, True)
 
     async def _effect_admin_exit(self, serial: str, restore_color: tuple | None, **_kwargs) -> None:
         """Restore to base color (instant)."""
