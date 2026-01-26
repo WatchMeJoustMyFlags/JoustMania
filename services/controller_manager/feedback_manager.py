@@ -266,9 +266,21 @@ class FeedbackManager(ControllerEffectsBase):
         await self.set_vibration(serial, 100, 200)
 
     async def _effect_player_death(self, serial: str, **_kwargs) -> None:
-        """Red + vibrate, then LED off to signal player is out."""
-        await self.set_vibration(serial, 255, 250)
-        await self.play_effect_with_restore(serial, "flash", (255, 0, 0), 1500, 1, (0, 0, 0))
+        """Red + vibrate, then fade to off to signal player is out.
+
+        Improved transition: short sharp rumble + solid red briefly + fade to black.
+        This feels more immediate and satisfying than slow blinking.
+        """
+        # Cancel any active effect (e.g., warning flash) immediately for clean transition
+        await self.cancel_effect(serial)
+
+        # Short, sharp rumble (150ms feels snappier than 250ms)
+        await self.set_vibration(serial, 255, 150)
+        # Solid red briefly (300ms) then fade to black (700ms) - total 1000ms
+        # This replaces the awkward slow blink (1Hz over 1500ms)
+        await self._set_led_color(serial, (255, 0, 0))
+        await asyncio.sleep(0.3)
+        await self.play_effect_with_restore(serial, "fade_out", (255, 0, 0), 700, 1, (0, 0, 0))
         self.base_colors[serial] = (0, 0, 0)
 
     async def _effect_player_respawn(self, serial: str, **_kwargs) -> None:
