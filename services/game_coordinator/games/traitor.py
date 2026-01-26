@@ -208,25 +208,17 @@ class TraitorGame(TeamsGameBase):
         await self._set_team_colors(pulse_effect=True, duration_ms=5000)
 
         # Rumble traitors to signal their role
-        for serial in self.traitor_serials:
-            if self.gameplay_stream:
+        if self.gameplay_stream:
+            for serial in self.traitor_serials:
                 rumble_cmd = controller_manager_pb2.GameplayStreamControl(
                     game_effect=controller_manager_pb2.GameEffectCommand(
                         serial=serial,
                         effect=controller_manager_pb2.GAME_EFFECT_RUMBLE,
-                    )
-                )
-                await self.gameplay_stream.write(rumble_cmd)
-            else:
-                # Fallback to direct RPC
-                await self.controller_client.PlayControllerEffect(
-                    controller_manager_pb2.PlayControllerEffectRequest(
-                        serial=serial,
-                        effect=controller_manager_pb2.EFFECT_RUMBLE,
                         duration_ms=2000,
                         speed=5,
                     )
                 )
+                await self.gameplay_stream.write(rumble_cmd)
 
         logger.info(f"Signaled {len(self.traitor_serials)} traitors with rumble")
 
@@ -385,27 +377,17 @@ class TraitorGame(TeamsGameBase):
         winning_team = list(alive_teams)[0] if len(alive_teams) == 1 else None
 
         # Show rainbow effect on winners
-        if winning_team is not None:
+        if winning_team is not None and self.gameplay_stream:
             for serial, player in self.players.items():
                 traitor_player = player
                 if player.alive and traitor_player.secret_team == winning_team:
-                    if self.gameplay_stream:
-                        effect_cmd = controller_manager_pb2.GameplayStreamControl(
-                            game_effect=controller_manager_pb2.GameEffectCommand(
-                                serial=serial,
-                                effect=controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW,
-                            )
-                        )
-                        await self.gameplay_stream.write(effect_cmd)
-                    else:
-                        rainbow_request = controller_manager_pb2.PlayControllerEffectRequest(
+                    effect_cmd = controller_manager_pb2.GameplayStreamControl(
+                        game_effect=controller_manager_pb2.GameEffectCommand(
                             serial=serial,
-                            effect=controller_manager_pb2.EFFECT_RAINBOW,
-                            color=controller_manager_pb2.RGB(r=255, g=255, b=255),
-                            duration_ms=3000,
-                            speed=1,  # Slow rainbow (1 cycle/second)
+                            effect=controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW,
                         )
-                        await self.controller_client.PlayControllerEffect(rainbow_request)
+                    )
+                    await self.gameplay_stream.write(effect_cmd)
 
             # Play victory sound (audio service handles voice selection)
             await self._play_sound(Sound.VOX_TRAITOR_WIN, priority=2)

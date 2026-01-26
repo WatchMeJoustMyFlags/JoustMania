@@ -191,21 +191,22 @@ class TeamsGameBase(BaseGameMode):
                 team_color = self.team_colors[player.team]["rgb"]
                 player.color = team_color  # Phase XX: Store color for stream init
 
-                if pulse_effect:
-                    # Use pulse effect for team announcement
-                    await self.controller_client.PlayControllerEffect(
-                        controller_manager_pb2.PlayControllerEffectRequest(
+                if pulse_effect and self.gameplay_stream:
+                    # Use pulse effect for team announcement via stream
+                    pulse_cmd = controller_manager_pb2.GameplayStreamControl(
+                        game_effect=controller_manager_pb2.GameEffectCommand(
                             serial=serial,
-                            effect=controller_manager_pb2.ControllerEffect.EFFECT_PULSE,
+                            effect=controller_manager_pb2.GAME_EFFECT_PULSE,
                             color=controller_manager_pb2.RGB(r=team_color[0], g=team_color[1], b=team_color[2]),
                             duration_ms=duration_ms,
                             speed=3,  # Medium pulse speed
                         )
                     )
+                    await self.gameplay_stream.write(pulse_cmd)
                     logger.debug(
                         f"Set {serial} to team {player.team} ({self.team_colors[player.team]['name']}) with pulse"
                     )
-                else:
+                elif self.gameplay_stream:
                     # Set persistent team color via stream
                     base_color_cmd = controller_manager_pb2.GameplayStreamControl(
                         base_color=controller_manager_pb2.ControllerColorConfig(
@@ -410,9 +411,9 @@ class TeamsGameBase(BaseGameMode):
             from proto import controller_manager_pb2
 
             # Play rainbow effect on all winning team members
-            for serial, player in self.players.items():
-                if player.alive and player.team == winning_team_num:
-                    if self.gameplay_stream:
+            if self.gameplay_stream:
+                for serial, player in self.players.items():
+                    if player.alive and player.team == winning_team_num:
                         effect_cmd = controller_manager_pb2.GameplayStreamControl(
                             game_effect=controller_manager_pb2.GameEffectCommand(
                                 serial=serial,
@@ -420,16 +421,6 @@ class TeamsGameBase(BaseGameMode):
                             )
                         )
                         await self.gameplay_stream.write(effect_cmd)
-                    else:
-                        # Fallback to RPC
-                        rainbow_request = controller_manager_pb2.PlayControllerEffectRequest(
-                            serial=serial,
-                            effect=controller_manager_pb2.EFFECT_RAINBOW,
-                            color=controller_manager_pb2.RGB(r=255, g=255, b=255),
-                            duration_ms=3000,
-                            speed=1,  # Slow rainbow (1 cycle/second)
-                        )
-                        await self.controller_client.PlayControllerEffect(rainbow_request)
 
             # Play team victory sound (Phase 29)
             winning_team = self.teams.get(winning_team_num)
