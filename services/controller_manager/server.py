@@ -93,7 +93,7 @@ async def serve(port=50052):
         await server.wait_for_termination()
     except KeyboardInterrupt:
         logger.info("Shutting down ControllerManager server...")
-        controller_servicer.shutdown()
+        await controller_servicer.shutdown()
         await server.stop(grace=5)
 
         # Stop mock server if running
