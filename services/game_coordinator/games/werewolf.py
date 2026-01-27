@@ -20,7 +20,6 @@ from lib.colors import Colors
 from lib.types import Sound
 from proto import controller_manager_pb2
 from services.game_coordinator.games.base import BaseGameMode, Phase, Player, Sensitivity
-from services.game_coordinator.runtime_config import get_config_manager
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -430,14 +429,8 @@ class WerewolfGame(BaseGameMode):
         else:
             await self._play_sound(Sound.SFX_WOLFDOWN, priority=2)
 
-        # Wait for rainbow effect to complete (interruptible by force_end)
-        config = get_config_manager().get_config()
-        rainbow_duration_s = config.winner_rainbow_duration_ms / 1000.0
-        iterations = int(rainbow_duration_s * 10)  # 0.1s increments
-        for _ in range(iterations):
-            if not self.running:
-                break
-            await asyncio.sleep(0.1)
+        # Wait for rainbow effect to complete
+        await self._wait_for_rainbow_effect()
 
         # End surviving player spans
         for serial, player in self.players.items():

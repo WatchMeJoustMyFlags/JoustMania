@@ -7,7 +7,6 @@ async/await patterns, proper state machine, and event publishing.
 Phase 36b: Refactored to extend BaseGameMode, eliminating ~550 lines of duplicate code.
 """
 
-import asyncio
 import logging
 import time
 
@@ -243,18 +242,8 @@ class FFAGame(BaseGameMode):
                 f"stream_valid={self.gameplay_stream is not None}"
             )
 
-        # Wait for rainbow effect to complete (interruptible by force_end)
-        # Duration from runtime config (default 3000ms, matches controller_manager)
-        config = get_config_manager().get_config()
-        rainbow_duration_s = config.winner_rainbow_duration_ms / 1000.0
-        iterations = int(rainbow_duration_s * 10)  # 0.1s increments
-        logger.info(f"Waiting {rainbow_duration_s}s for rainbow effect ({iterations} iterations)")
-        for i in range(iterations):
-            if not self.running:
-                logger.info(f"End game interrupted by force_end at iteration {i}/{iterations}")
-                break
-            await asyncio.sleep(0.1)
-        logger.info("Rainbow wait complete")
+        # Wait for rainbow effect to complete
+        await self._wait_for_rainbow_effect()
 
         # Note: Player spans are already closed by _close_all_player_spans()
         # at the end of gameplay_phase (before teardown_phase starts)
