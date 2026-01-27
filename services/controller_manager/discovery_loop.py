@@ -107,6 +107,7 @@ class DiscoveryLoop:
         self.running = True
         self.backend_initialized = False
         self._task: asyncio.Task | None = None
+        self._initialized_event: asyncio.Event | None = None
 
         # LED update timing (Phase 72: separated from polling)
         self._last_led_update = 0.0
@@ -135,8 +136,27 @@ class DiscoveryLoop:
 
         Must be called from an async context (after event loop is running).
         """
+        self._initialized_event = asyncio.Event()
         self._task = asyncio.create_task(self._discovery_loop())
         logger.info("Discovery loop started as async task")
+
+    async def wait_initialized(self, timeout_seconds: float = 10.0) -> bool:
+        """Wait for the backend to be initialized.
+
+        Args:
+            timeout_seconds: Maximum time to wait for initialization.
+
+        Returns:
+            True if initialized successfully, False if timed out or failed.
+        """
+        if self._initialized_event is None:
+            return False
+        try:
+            await asyncio.wait_for(self._initialized_event.wait(), timeout=timeout_seconds)
+            return self.backend_initialized
+        except TimeoutError:
+            logger.error(f"Backend initialization timed out after {timeout_seconds}s")
+            return False
 
     def enter_gameplay_mode(self) -> None:
         """Enter gameplay mode - enables faster polling (100Hz)."""
@@ -184,10 +204,16 @@ class DiscoveryLoop:
             self.backend_initialized = await self.backend.initialize()
             if not self.backend_initialized:
                 logger.error("Backend initialization failed - discovery loop will not run")
+                if self._initialized_event:
+                    self._initialized_event.set()  # Signal even on failure so waiters don't hang
                 return
             logger.info("Backend initialized successfully")
+            if self._initialized_event:
+                self._initialized_event.set()
         except Exception as e:
             logger.error(f"Failed to initialize backend: {e}", exc_info=True)
+            if self._initialized_event:
+                self._initialized_event.set()  # Signal even on failure so waiters don't hang
             return
 
         # Fixed interval scheduling

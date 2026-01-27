@@ -61,7 +61,13 @@ async def serve(port=50052):
     # This ensures controllers are discovered before any clients connect
     controller_servicer.discovery_loop.start()
     controller_servicer._discovery_started = True
-    logger.info("Discovery loop started")
+
+    # Wait for backend initialization before accepting connections
+    init_success = await controller_servicer.discovery_loop.wait_initialized(timeout_seconds=10.0)
+    if init_success:
+        logger.info("Discovery loop started and backend initialized")
+    else:
+        logger.warning("Discovery loop started but backend initialization may have failed")
 
     # Add health checking service
     health_servicer = health.aio.HealthServicer()
