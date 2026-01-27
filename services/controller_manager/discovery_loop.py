@@ -112,15 +112,9 @@ class DiscoveryLoop:
         # LED update timing (Phase 72: separated from polling)
         self._last_led_update = 0.0
 
-        # Fixed interval polling configuration
-        # Gameplay mode (streams active): 100Hz for faster button detection
-        # Idle mode (no streams): 10Hz to save resources
-        self._gameplay_poll_interval = 0.010  # 100Hz
-        self._idle_poll_interval = 0.100  # 10Hz
-
-        # Gameplay mode: when > 0, use faster polling rate
-        # Counter incremented by enter_gameplay_mode() and decremented by exit_gameplay_mode()
-        self._gameplay_stream_count = 0
+        # Fixed interval polling configuration - always 100Hz
+        # There's always either a menu or game stream active, so no need for idle mode
+        self._poll_interval = 0.010  # 100Hz
 
         # Activity tracking for metrics
         self._last_activity_time: dict[str, float] = {}
@@ -157,20 +151,6 @@ class DiscoveryLoop:
         except TimeoutError:
             logger.error(f"Backend initialization timed out after {timeout_seconds}s")
             return False
-
-    def enter_gameplay_mode(self) -> None:
-        """Enter gameplay mode - enables faster polling (100Hz)."""
-        self._gameplay_stream_count += 1
-        logger.info(f"Gameplay mode entered (active streams: {self._gameplay_stream_count})")
-
-    def exit_gameplay_mode(self) -> None:
-        """Exit gameplay mode - re-enables slower polling if no streams remain."""
-        self._gameplay_stream_count = max(0, self._gameplay_stream_count - 1)
-        logger.info(f"Gameplay mode exited (active streams: {self._gameplay_stream_count})")
-
-    def is_gameplay_mode(self) -> bool:
-        """Check if gameplay mode is active (any gameplay streams running)."""
-        return self._gameplay_stream_count > 0
 
     def stop(self) -> None:
         """Stop the discovery loop."""
@@ -223,13 +203,12 @@ class DiscoveryLoop:
             try:
                 current_time = time.time()
 
-                # Determine poll interval based on mode
-                gameplay_mode = self.is_gameplay_mode()
-                poll_interval = self._gameplay_poll_interval if gameplay_mode else self._idle_poll_interval
+                # Fixed 100Hz polling - there's always either a menu or game stream active
+                poll_interval = self._poll_interval
 
-                # Update polling mode metrics
-                metrics.polling_mode.set(1 if gameplay_mode else 0)
-                metrics.polling_target_hz.set(int(1.0 / poll_interval))
+                # Update polling metrics
+                metrics.polling_mode.set(1)  # Always in "gameplay mode" now
+                metrics.polling_target_hz.set(100)
 
                 # Check for new controllers (metrics, no span)
                 # Run in thread pool since get_connected_controllers() has blocking USB calls
@@ -386,11 +365,8 @@ class DiscoveryLoop:
 
             # Debug: Log tracked controller count periodically (every 5 seconds)
             if current_time - self._last_controller_count_log >= 5.0:
-                mode = "gameplay" if self.is_gameplay_mode() else "idle"
-                hz = int(1.0 / (self._gameplay_poll_interval if self.is_gameplay_mode() else self._idle_poll_interval))
                 logger.info(
-                    f"Polling {len(all_serials)} controllers at {hz}Hz ({mode} mode), "
-                    f"active={active_count}, idle={idle_count}"
+                    f"Polling {len(all_serials)} controllers at 100Hz, active={active_count}, idle={idle_count}"
                 )
                 self._last_controller_count_log = current_time
 

@@ -245,15 +245,10 @@ class TestAdaptivePollingLogic:
         loop = self._create_discovery_loop()
         assert loop._idle_threshold_seconds == 5.0
 
-    def test_gameplay_poll_interval_default(self):
-        """Default gameplay poll interval is 100Hz (10ms)."""
+    def test_poll_interval_default(self):
+        """Default poll interval is 100Hz (10ms) - always fast polling."""
         loop = self._create_discovery_loop()
-        assert loop._gameplay_poll_interval == 0.010
-
-    def test_idle_poll_interval_default(self):
-        """Default idle poll interval is ~10Hz (100ms)."""
-        loop = self._create_discovery_loop()
-        assert loop._idle_poll_interval == 0.100
+        assert loop._poll_interval == 0.010
 
     def test_accel_movement_threshold_default(self):
         """Default accelerometer movement threshold is 0.05."""

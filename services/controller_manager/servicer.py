@@ -189,10 +189,6 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         # Update stream metrics (Phase 38)
         metrics.active_streams.inc()
 
-        # Enter gameplay mode for faster polling (100Hz instead of 10Hz)
-        # Required for reliable button detection - 10Hz polling can miss 50ms button presses
-        self.discovery_loop.enter_gameplay_mode()
-
         # Note: Don't clear base_colors here - effects may still be running and need
         # to restore to current base color. Menu will overwrite colors when it sends
         # new base_color commands for each controller.
@@ -328,9 +324,6 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                 if subscriber_id in self.button_event_subscribers:
                     del self.button_event_subscribers[subscriber_id]
 
-            # Exit gameplay mode to re-enable slower polling if no streams remain
-            self.discovery_loop.exit_gameplay_mode()
-
             # Update stream metrics (Phase 38)
             metrics.active_streams.dec()
 
@@ -363,9 +356,6 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
 
         # Update stream metrics
         metrics.active_streams.inc()
-
-        # Enter gameplay mode for faster polling (100Hz instead of 10Hz)
-        self.discovery_loop.enter_gameplay_mode()
 
         # Stream state (updated by client messages)
         current_hz = 30  # Default Hz
@@ -570,9 +560,6 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             update_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await update_task
-
-            # Exit gameplay mode to re-enable adaptive polling
-            self.discovery_loop.exit_gameplay_mode()
 
             # Update stream metrics
             metrics.active_streams.dec()
