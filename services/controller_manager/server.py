@@ -57,6 +57,12 @@ async def serve(port=50052):
     controller_servicer = ControllerManagerServicer()
     controller_manager_pb2_grpc.add_ControllerManagerServiceServicer_to_server(controller_servicer, server)
 
+    # Start discovery loop immediately (don't defer to first stream connection)
+    # This ensures controllers are discovered before any clients connect
+    controller_servicer.discovery_loop.start()
+    controller_servicer._discovery_started = True
+    logger.info("Discovery loop started")
+
     # Add health checking service
     health_servicer = health.aio.HealthServicer()
     health_pb2_grpc.add_HealthServicer_to_server(health_servicer, server)
