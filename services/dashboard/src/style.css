@@ -293,10 +293,19 @@ body {
   box-shadow: 0 0 20px rgba(255, 255, 255, 0.3);
 }
 
+.controller-name {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  text-align: center;
+  min-height: 1.2em;
+}
+
 .controller-id {
-  font-size: 0.9rem;
-  font-weight: 600;
+  font-size: 0.7rem;
+  font-weight: 500;
   color: var(--text-secondary);
+  opacity: 0.6;
 }
 
 /* LED Color Circle */

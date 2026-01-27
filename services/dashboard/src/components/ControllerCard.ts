@@ -12,6 +12,7 @@ export class ControllerCard {
   private readonly batteryElement: HTMLElement;
   private readonly accelDot: HTMLElement;
   private readonly statusBadge: HTMLElement;
+  private readonly nameElement: HTMLElement;
 
   constructor(serial: string) {
     this.serial = serial;
@@ -21,12 +22,14 @@ export class ControllerCard {
     this.batteryElement = this.element.querySelector(".battery-level")!;
     this.accelDot = this.element.querySelector(".accel-dot")!;
     this.statusBadge = this.element.querySelector(".status-badge")!;
+    this.nameElement = this.element.querySelector(".controller-name")!;
   }
 
   private createElement(): HTMLElement {
     const card = document.createElement("div");
     card.className = "controller-card connected";
     card.innerHTML = `
+      <div class="controller-name"></div>
       <div class="controller-id">P${this.getShortId()}</div>
       <div class="led-color"></div>
       <div class="battery-bar">
@@ -46,6 +49,11 @@ export class ControllerCard {
   }
 
   update(data: GameplayData) {
+    // Update controller name (human-readable)
+    if (data.name) {
+      this.nameElement.textContent = data.name;
+    }
+
     // Update LED color
     this.updateLedColor(data.color);
 
