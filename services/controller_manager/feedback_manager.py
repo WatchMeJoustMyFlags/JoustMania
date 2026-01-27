@@ -208,12 +208,16 @@ class FeedbackManager(ControllerEffectsBase):
             restore_color: Color to restore to after effect (None = no restore)
         """
         # Cancel any existing effect
+        existing_task = None
         async with self.effect_lock:
             if serial in self.active_effects:
-                self.active_effects[serial].cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await self.active_effects[serial]
+                existing_task = self.active_effects[serial]
+                existing_task.cancel()
                 del self.active_effects[serial]
+        # Await cancelled task outside lock to avoid deadlock with task's finally block
+        if existing_task:
+            with contextlib.suppress(asyncio.CancelledError):
+                await existing_task
 
         # Mark effect as active (polling skips LED refresh)
         self.backend.set_effect_active(serial, True)
