@@ -5,11 +5,8 @@ Tests activity tracking and adaptive polling logic.
 """
 
 import sys
-import threading
 import time
 from unittest.mock import MagicMock
-
-import pytest
 
 # Mock external dependencies before importing modules that use them
 # These must be mocked before any imports that use them
@@ -49,7 +46,6 @@ class TestActivityTracking:
         backend = MagicMock()
         tracked_controllers = {}
         controller_states = {}
-        state_lock = threading.RLock()
         button_detector = MagicMock()
         state_cache_manager = MagicMock()
         feedback_manager = MagicMock()
@@ -60,12 +56,11 @@ class TestActivityTracking:
         base_colors = {}
         event_publisher = MagicMock()
 
-        # Don't start the thread - just return the instance
+        # Don't start the task - just return the instance
         return DiscoveryLoop(
             backend=backend,
             tracked_controllers=tracked_controllers,
             controller_states=controller_states,
-            state_lock=state_lock,
             button_detector=button_detector,
             state_cache_manager=state_cache_manager,
             feedback_manager=feedback_manager,
@@ -220,7 +215,6 @@ class TestAdaptivePollingLogic:
         backend = MagicMock()
         tracked_controllers = {}
         controller_states = {}
-        state_lock = threading.RLock()
         button_detector = MagicMock()
         state_cache_manager = MagicMock()
         feedback_manager = MagicMock()
@@ -235,7 +229,6 @@ class TestAdaptivePollingLogic:
             backend=backend,
             tracked_controllers=tracked_controllers,
             controller_states=controller_states,
-            state_lock=state_lock,
             button_detector=button_detector,
             state_cache_manager=state_cache_manager,
             feedback_manager=feedback_manager,
@@ -251,10 +244,10 @@ class TestAdaptivePollingLogic:
         loop = self._create_discovery_loop()
         assert loop._idle_threshold_seconds == 5.0
 
-    def test_active_poll_interval_default(self):
-        """Default active poll interval is ~60Hz (16ms)."""
+    def test_gameplay_poll_interval_default(self):
+        """Default gameplay poll interval is 100Hz (10ms)."""
         loop = self._create_discovery_loop()
-        assert loop._active_poll_interval == 0.016
+        assert loop._gameplay_poll_interval == 0.010
 
     def test_idle_poll_interval_default(self):
         """Default idle poll interval is ~10Hz (100ms)."""
@@ -314,7 +307,6 @@ class TestDiscoveryLoopLifecycle:
         backend.initialize = MagicMock(return_value=False)  # Prevent actual init
         tracked_controllers = {}
         controller_states = {}
-        state_lock = threading.RLock()
         button_detector = MagicMock()
         state_cache_manager = MagicMock()
         feedback_manager = MagicMock()
@@ -329,7 +321,6 @@ class TestDiscoveryLoopLifecycle:
             backend=backend,
             tracked_controllers=tracked_controllers,
             controller_states=controller_states,
-            state_lock=state_lock,
             button_detector=button_detector,
             state_cache_manager=state_cache_manager,
             feedback_manager=feedback_manager,
@@ -356,16 +347,6 @@ class TestDiscoveryLoopLifecycle:
         loop.stop()
         assert loop.running is False
 
-    def test_run_coroutine_without_init_raises(self):
-        """run_coroutine raises if loop not initialized."""
-        loop = self._create_discovery_loop()
-
-        async def dummy_coro():
-            return "result"
-
-        with pytest.raises(RuntimeError, match="not initialized"):
-            loop.run_coroutine(dummy_coro())
-
 
 class TestPollingStateCleanup:
     """Tests for polling state cleanup on controller disconnect."""
@@ -377,7 +358,6 @@ class TestPollingStateCleanup:
         backend = MagicMock()
         tracked_controllers = {}
         controller_states = {}
-        state_lock = threading.RLock()
         button_detector = MagicMock()
         state_cache_manager = MagicMock()
         feedback_manager = MagicMock()
@@ -392,7 +372,6 @@ class TestPollingStateCleanup:
             backend=backend,
             tracked_controllers=tracked_controllers,
             controller_states=controller_states,
-            state_lock=state_lock,
             button_detector=button_detector,
             state_cache_manager=state_cache_manager,
             feedback_manager=feedback_manager,
@@ -409,7 +388,6 @@ class TestPollingStateCleanup:
 
         assert loop._last_activity_time == {}
         assert loop._previous_accel == {}
-        assert loop._last_poll_time == {}
 
     def test_activity_state_can_be_cleaned_up(self):
         """Activity tracking state can be removed using dict.pop()."""
@@ -419,16 +397,13 @@ class TestPollingStateCleanup:
         # Set up state
         loop._last_activity_time[serial] = time.time()
         loop._previous_accel[serial] = (0.0, 0.0, 1.0)
-        loop._last_poll_time[serial] = time.time()
 
         # Cleanup (as done in _check_for_new_controllers for disconnects)
         loop._last_activity_time.pop(serial, None)
         loop._previous_accel.pop(serial, None)
-        loop._last_poll_time.pop(serial, None)
 
         assert serial not in loop._last_activity_time
         assert serial not in loop._previous_accel
-        assert serial not in loop._last_poll_time
 
     def test_cleanup_nonexistent_serial_safe(self):
         """Cleanup is safe for non-existent serials."""
@@ -438,7 +413,6 @@ class TestPollingStateCleanup:
         # Should not raise
         loop._last_activity_time.pop(serial, None)
         loop._previous_accel.pop(serial, None)
-        loop._last_poll_time.pop(serial, None)
 
 
 class TestAccelerometerMovementCalculation:
@@ -451,7 +425,6 @@ class TestAccelerometerMovementCalculation:
         backend = MagicMock()
         tracked_controllers = {}
         controller_states = {}
-        state_lock = threading.RLock()
         button_detector = MagicMock()
         state_cache_manager = MagicMock()
         feedback_manager = MagicMock()
@@ -466,7 +439,6 @@ class TestAccelerometerMovementCalculation:
             backend=backend,
             tracked_controllers=tracked_controllers,
             controller_states=controller_states,
-            state_lock=state_lock,
             button_detector=button_detector,
             state_cache_manager=state_cache_manager,
             feedback_manager=feedback_manager,

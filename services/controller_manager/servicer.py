@@ -583,14 +583,13 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
 
         async def stop_after_delay():
             await asyncio.sleep(duration_ms / 1000.0)
-            with self.state_lock:
-                # Clean up task tracking
-                if serial in self.vibration_tasks:
-                    del self.vibration_tasks[serial]
-                # Skip if controller was removed
-                if serial not in self.tracked_controllers:
-                    logger.debug(f"Vibration task expired for removed controller {serial}")
-                    return
+            # Clean up task tracking
+            if serial in self.vibration_tasks:
+                del self.vibration_tasks[serial]
+            # Skip if controller was removed
+            if serial not in self.tracked_controllers:
+                logger.debug(f"Vibration task expired for removed controller {serial}")
+                return
             await self.backend.set_rumble(serial, 0)
             logger.debug(f"Vibration stopped on {serial} (duration expired)")
 
@@ -619,9 +618,8 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                 self.name_manager.set_name(request.serial, request.name)
 
                 # Update tracked_controllers if the controller is currently connected
-                with self.state_lock:
-                    if request.serial in self.tracked_controllers:
-                        self.tracked_controllers[request.serial][ControllerInfoKey.NAME] = request.name
+                if request.serial in self.tracked_controllers:
+                    self.tracked_controllers[request.serial][ControllerInfoKey.NAME] = request.name
 
                 logger.info(f"Renamed controller {request.serial} to '{request.name}'")
                 return controller_manager_pb2.RenameControllerResponse(success=True, error="")
