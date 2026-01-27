@@ -20,6 +20,7 @@ from opentelemetry.trace import Status, StatusCode
 from lib.colors import Colors
 from lib.types import GameEvent, Sound
 from services.game_coordinator.games.base import BaseGameMode
+from services.game_coordinator.runtime_config import get_config_manager
 
 tracer = trace.get_tracer(__name__)
 logger = logging.getLogger(__name__)
@@ -429,8 +430,12 @@ class TeamsGameBase(BaseGameMode):
                 sound = TEAM_WIN_SOUNDS.get(winning_team.name, Sound.VOX_CONGRATULATIONS)
                 await self._play_sound(sound, priority=2)
 
-        # Show winner for a bit (interruptible by force_end)
-        for _ in range(20):  # 2 seconds in 0.1s increments
+        # Wait for rainbow effect to complete (interruptible by force_end)
+        # Duration from runtime config (default 3000ms, matches controller_manager)
+        config = get_config_manager().get_config()
+        rainbow_duration_s = config.winner_rainbow_duration_ms / 1000.0
+        iterations = int(rainbow_duration_s * 10)  # 0.1s increments
+        for _ in range(iterations):
             if not self.running:
                 logger.info("End game interrupted by force_end")
                 break
