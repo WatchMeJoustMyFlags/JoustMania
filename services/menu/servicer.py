@@ -501,6 +501,14 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
                         logger.info(f"Game started successfully: {event.event_type}")
                         span.set_attribute("game.started", True)
 
+                        # Clear ready state now that game has started (Issue #256)
+                        # This ensures dead players don't show in player insights dashboard
+                        self.ready_controllers.clear()
+                        self.ready_controller_count = 0
+                        metrics.player_ready._metrics.clear()
+                        metrics.player_ready._values.clear()
+                        logger.info("Ready state cleared on game start confirmation")
+
                     logger.info(f"Game event received: {event.event_type}")
 
                     if GameEvent.is_game_ending(event.event_type):
