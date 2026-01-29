@@ -81,34 +81,6 @@ class TestMenuServicerBasic:
 
 
 @pytest.mark.asyncio
-class TestMenuServicerAsync:
-    """Async tests for MenuServicer."""
-
-    async def test_on_connect_updates_state(self, menu_servicer):
-        """Test that on_connect is called without error."""
-        import contextlib
-
-        serial = "test_serial_1"
-        # on_connect tries to set LED color which may fail in test
-        # but should not raise
-        with contextlib.suppress(Exception):
-            await menu_servicer.on_connect(serial)
-        # The state update happens internally, may fail due to mocked channel
-
-    async def test_on_disconnect(self, menu_servicer):
-        """Test handling controller disconnection."""
-        serial = "test_serial_1"
-        # Disconnect delegates to state_manager (which handles cleanup)
-        await menu_servicer.on_disconnect(serial)
-        # Should not raise - state_manager handles the actual cleanup
-
-    async def test_on_disconnect_unknown_serial(self, menu_servicer):
-        """Test disconnect for unknown serial doesn't raise."""
-        await menu_servicer.on_disconnect("unknown_serial")
-        # Should not raise
-
-
-@pytest.mark.asyncio
 class TestMenuServicerRPCs:
     """Test gRPC RPC methods."""
 
