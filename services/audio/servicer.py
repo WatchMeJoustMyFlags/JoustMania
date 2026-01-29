@@ -38,7 +38,7 @@ class SoundChannel:
         self.priority = 0
         self._lock = threading.Lock()
 
-    def play(self, file_path: str, _volume: float = 1.0, priority: int = 2) -> bool:
+    def play(self, file_path: str, volume: float = 1.0, priority: int = 2) -> bool:  # noqa: ARG002
         """
         Play a sound on this channel.
 
