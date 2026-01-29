@@ -60,7 +60,6 @@ class TestMenuServicerBasic:
         """Test servicer initializes correctly."""
         assert menu_servicer.state == menu_pb2.MenuState.STOPPED
         assert menu_servicer.current_selection is not None
-        assert menu_servicer.controller_lobby_state == {}
 
     def test_set_menu_state(self, menu_servicer):
         """Test setting menu state."""
@@ -99,9 +98,9 @@ class TestMenuServicerAsync:
     async def test_on_disconnect(self, menu_servicer):
         """Test handling controller disconnection."""
         serial = "test_serial_1"
-        menu_servicer.controller_lobby_state[serial] = "connected"
+        # Disconnect delegates to state_manager (which handles cleanup)
         await menu_servicer.on_disconnect(serial)
-        assert serial not in menu_servicer.controller_lobby_state
+        # Should not raise - state_manager handles the actual cleanup
 
     async def test_on_disconnect_unknown_serial(self, menu_servicer):
         """Test disconnect for unknown serial doesn't raise."""
