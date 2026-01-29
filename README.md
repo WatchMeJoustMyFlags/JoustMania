@@ -65,7 +65,7 @@ docker compose up -d
 └───────────────┘                         └───────────────┘
 ```
 
-7 microservices communicating via gRPC with full distributed tracing.
+**For detailed architecture:** See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 ## Development
 
