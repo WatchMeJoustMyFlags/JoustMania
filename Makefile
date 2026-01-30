@@ -28,9 +28,8 @@ help:
 	@echo "  make check           - Run all checks (lint + format)"
 	@echo ""
 	@echo "Testing:"
-	@echo "  make test            - Run integration tests"
-	@echo "  make test-unit       - Run unit tests (fast)"
-	@echo "  make test TEST=name  - Run specific test"
+	@echo "  make test            - Run all tests (unit + integration)"
+	@echo "  make test TEST=name  - Run specific test by name"
 	@echo ""
 	@echo "Protos:"
 	@echo "  make protos          - Generate Python protobuf files"
@@ -162,12 +161,11 @@ clean-test-venv:
 
 .PHONY: test
 test: clean-test-venv
+	@echo "Running unit tests..."
+	uv run pytest services/*/tests/ lib/tests/ -v $(if $(TEST),-k "$(TEST)")
+	@echo "Running integration tests..."
 	$(TEST_ENV) uv run --package joustmania-integration-tests \
 		pytest tests/integration/ -v $(if $(TEST),-k "$(TEST)")
-
-.PHONY: test-unit
-test-unit:
-	uv run pytest services/*/tests/ lib/tests/ -v $(if $(TEST),-k "$(TEST)")
 
 # Run with prebuilt images from GHCR instead of building
 .PHONY: test-pulled
