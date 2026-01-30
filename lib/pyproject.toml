@@ -24,6 +24,7 @@ dependencies = [
 test = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
 ]
 
 [build-system]
@@ -48,3 +49,9 @@ ignore = ["ANN"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["lib"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
