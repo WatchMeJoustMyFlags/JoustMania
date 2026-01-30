@@ -36,6 +36,11 @@ jobs:
           uv sync --extra test
           uv build
 
+      - name: Lint lib
+        run: |
+          cd lib
+          uv run ruff check .
+
       - name: Run lib unit tests with coverage
         run: |
           cd lib
