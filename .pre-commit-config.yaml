@@ -6,8 +6,8 @@ repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.14.13
     hooks:
-      # Run the linter (explicit config for uv workspace compatibility)
+      # Run the linter - ruff discovers config from file's directory (pyproject.toml)
       - id: ruff
-        args: [--fix, --config, pyproject.toml]
+        args: [--fix]
       # Run the formatter
       - id: ruff-format

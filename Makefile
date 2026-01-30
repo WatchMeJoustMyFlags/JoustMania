@@ -97,9 +97,16 @@ clean-builders:
 # Code Quality (using uv directly - fast, no Docker overhead)
 # ============================================================================
 
+# Workspace members to lint (each has its own ruff config)
+LINT_PACKAGES := lib proto services/audio services/controller_manager services/game_coordinator services/menu services/settings
+
 .PHONY: lint
 lint:
-	uv run ruff check . --config pyproject.toml
+	@for pkg in $(LINT_PACKAGES); do \
+		echo "Linting $$pkg..."; \
+		(cd $$pkg && uv run ruff check .) || exit 1; \
+	done
+	@echo "✓ All packages pass lint"
 
 .PHONY: format
 format:
