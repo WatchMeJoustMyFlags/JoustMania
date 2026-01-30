@@ -471,7 +471,7 @@ jobs:
         env:
           BUILDER_IMAGE: ${{ env.IMAGE_PREFIX }}/builder:${{ github.sha }}
           PSMOVE_BUILDER_IMAGE: ${{ env.IMAGE_PREFIX }}/psmove-builder:${{ github.sha }}
-        run: make test
+        run: make test-integration
 
   # Final status check job for branch protection
   # This job depends on all other jobs and provides a single status check

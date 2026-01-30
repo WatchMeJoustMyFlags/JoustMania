@@ -29,6 +29,7 @@ help:
 	@echo ""
 	@echo "Testing:"
 	@echo "  make test            - Run all tests (unit + integration)"
+	@echo "  make test-integration - Run integration tests only (CI)"
 	@echo "  make test TEST=name  - Run specific test by name"
 	@echo ""
 	@echo "Protos:"
@@ -159,9 +160,16 @@ clean-test-venv:
 		sudo rm -rf $(TEST_VENV); \
 	fi
 
+# Run all tests (unit + integration) - requires system deps for audio (libasound2-dev)
 .PHONY: test
 test: clean-test-venv
 	uv run --all-packages pytest $(if $(TEST),-k "$(TEST)")
+
+# Integration tests only (used by CI - unit tests run separately in service-checks)
+.PHONY: test-integration
+test-integration: clean-test-venv
+	$(TEST_ENV) uv run --package joustmania-integration-tests \
+		pytest tests/integration/ -v $(if $(TEST),-k "$(TEST)")
 
 # Run with prebuilt images from GHCR instead of building
 .PHONY: test-pulled
