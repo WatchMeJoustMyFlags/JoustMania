@@ -15,22 +15,20 @@ env:
   MAIN_BRANCH: dev-refactor
 
 jobs:
-  # Lint shared code (lib/, root files) and check formatting
-  lint-shared:
-    name: Lint Shared Code & Format
+  # Lint all workspace members (each has its own ruff config)
+  lint:
+    name: Lint & Format
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: astral-sh/setup-uv@v5
 
-      - name: Lint lib/
-        run: |
-          uv tool install ruff
-          ruff check lib/ --output-format=github
+      - name: Lint
+        run: make lint
 
-      - name: Format check (entire codebase)
-        run: ruff format --check .
+      - name: Format check
+        run: uv run ruff format --check .
 
   # Build and test shared packages (proto, lib)
   lib-tests:
@@ -487,7 +485,7 @@ jobs:
     name: CI Complete
     runs-on: ubuntu-latest
     needs:
-      - lint-shared
+      - lint
       - lib-tests
       - service-checks
       - lint-dockerfiles
@@ -509,7 +507,7 @@ jobs:
           if [[ "$FAILED" == "true" || "$CANCELLED" == "true" ]]; then
             echo "❌ One or more CI jobs failed or were cancelled"
             echo "Job results:"
-            echo "  lint-shared: ${{ needs.lint-shared.result }}"
+            echo "  lint: ${{ needs.lint.result }}"
             echo "  lib-tests: ${{ needs.lib-tests.result }}"
             echo "  service-checks: ${{ needs.service-checks.result }}"
             echo "  lint-dockerfiles: ${{ needs.lint-dockerfiles.result }}"
