@@ -30,6 +30,11 @@ jobs:
           uv sync
           uv build
 
+      - name: Lint proto
+        run: |
+          cd proto
+          uv tool run ruff check .
+
       - name: Build lib package
         run: |
           cd lib
@@ -39,7 +44,7 @@ jobs:
       - name: Lint lib
         run: |
           cd lib
-          uv run ruff check .
+          uv tool run ruff check .
 
       - name: Run lib unit tests with coverage
         run: |
