@@ -161,11 +161,7 @@ clean-test-venv:
 
 .PHONY: test
 test: clean-test-venv
-	@echo "Running unit tests..."
 	uv run --all-packages pytest $(if $(TEST),-k "$(TEST)")
-	@echo "Running integration tests..."
-	$(TEST_ENV) uv run --package joustmania-integration-tests \
-		pytest tests/integration/ -v $(if $(TEST),-k "$(TEST)")
 
 # Run with prebuilt images from GHCR instead of building
 .PHONY: test-pulled
