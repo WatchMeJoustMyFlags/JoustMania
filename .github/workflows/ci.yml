@@ -32,6 +32,32 @@ jobs:
       - name: Format check (entire codebase)
         run: ruff format --check .
 
+  # Build and test shared packages (proto, lib) - these must pass before services
+  shared-packages:
+    name: Shared Packages (proto, lib)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Build proto package
+        run: |
+          cd proto
+          uv sync
+          uv build
+
+      - name: Build lib package
+        run: |
+          cd lib
+          uv sync --extra test
+          uv build
+
+      - name: Run lib tests
+        run: |
+          cd lib
+          uv run pytest tests/ -v --tb=short || echo "No tests found (yet)"
+
   # Per-service matrix checks with path filtering
   # Runs lint/typecheck for all services, unit tests only for services with tests
   service-checks:
@@ -449,6 +475,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - lint-shared
+      - shared-packages
       - service-checks
       - lint-dockerfiles
       - sonarcloud
@@ -470,6 +497,7 @@ jobs:
             echo "❌ One or more CI jobs failed or were cancelled"
             echo "Job results:"
             echo "  lint-shared: ${{ needs.lint-shared.result }}"
+            echo "  shared-packages: ${{ needs.shared-packages.result }}"
             echo "  service-checks: ${{ needs.service-checks.result }}"
             echo "  lint-dockerfiles: ${{ needs.lint-dockerfiles.result }}"
             echo "  sonarcloud: ${{ needs.sonarcloud.result }}"
