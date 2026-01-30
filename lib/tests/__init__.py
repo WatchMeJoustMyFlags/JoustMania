@@ -1,1 +1,1 @@
-"""Tests for lib modules."""
+# Tests for joustmania-lib
