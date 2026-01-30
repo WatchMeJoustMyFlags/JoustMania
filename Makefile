@@ -99,7 +99,7 @@ clean-builders:
 
 .PHONY: lint
 lint:
-	uv run ruff check .
+	uv run ruff check . --config pyproject.toml
 
 .PHONY: format
 format:

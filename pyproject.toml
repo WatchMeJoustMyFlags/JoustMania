@@ -111,8 +111,28 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]  # Unused imports OK in __init__
 
-# Test fixtures often have unused arguments
-"services/*/tests/*.py" = ["ARG002"]
+# gRPC servicers use PascalCase method names (protocol requirement)
+"services/*/servicer.py" = ["N802"]
+"services/controller_manager/mock_control_service.py" = ["N802"]
+
+# Test conftest files: gRPC mock classes use PascalCase, sys.path manipulation, unused mock args
+"services/*/tests/conftest.py" = ["N802", "E402", "ARG002"]
+"lib/tests/*.py" = ["ARG002"]  # Test fixtures with mock decorators have injected args
+
+# Server files need sys.path manipulation before imports
+"services/*/server.py" = ["E402"]
+
+# Test files: sys.path manipulation, unused fixture args from mocks
+"services/*/tests/test_*.py" = ["E402", "ARG002"]
+
+# music_player.py uses wave.open with generators, can't easily use context manager
+"services/audio/music_player.py" = ["SIM115"]
+
+# piaudio.py is legacy code with many style issues
+"services/audio/piaudio.py" = ["W605", "ARG002", "N802", "N806", "E722", "SIM115"]
+
+# backend.py has intentional no-op methods that subclasses can optionally override
+"services/controller_manager/backend.py" = ["B027"]
 
 [tool.ruff.lint.isort]
 # Define first-party packages for proper import sorting
