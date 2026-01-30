@@ -71,5 +71,9 @@ members = [
 # index-out-of-bounds = "error"
 # division-by-zero = "error"
 
-# NOTE: ruff config is in each workspace member's pyproject.toml
-# Run `make lint` to lint all packages with their respective configs
+# ruff - Only exclusions here; rules are in each workspace member's pyproject.toml
+[tool.ruff]
+exclude = [
+    "tools",             # Utility scripts (not part of main codebase)
+    "tests/integration", # Integration tests (separate package)
+]
