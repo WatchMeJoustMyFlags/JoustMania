@@ -167,7 +167,7 @@ test: clean-test-venv
 
 .PHONY: test-unit
 test-unit:
-	uv run pytest services/*/tests/ -v $(if $(TEST),-k "$(TEST)")
+	uv run pytest services/*/tests/ lib/tests/ -v $(if $(TEST),-k "$(TEST)")
 
 # Run with prebuilt images from GHCR instead of building
 .PHONY: test-pulled
