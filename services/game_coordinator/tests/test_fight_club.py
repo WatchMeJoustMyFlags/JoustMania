@@ -22,7 +22,7 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService, MockSettingsService  # noqa: E402
+from conftest import EventCollector, MockControllerManagerService  # noqa: E402
 
 from services.game_coordinator.games.fight_club import (  # noqa: E402
     DEFAULT_INVINCIBILITY_DURATION,
@@ -54,12 +54,10 @@ class TestFightClubGameMode:
             death_schedule={},
             max_duration=10.0,
         )
-        mock_settings = MockSettingsService()
         event_collector = EventCollector()
 
         game = FightClubGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=event_collector.publish,
             audio_client=None,
             game_id="test_fight_club_001",

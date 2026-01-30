@@ -27,29 +27,6 @@ services:
       retries: 3
       start_period: 2s
 
-  # Settings Service
-  settings:
-    image: ghcr.io/watchmejoustmyflags/joustmania/settings-service:${IMAGE_TAG:-latest}
-    build:
-      context: .
-      dockerfile: services/settings/Dockerfile
-      args:
-        BUILDER_IMAGE: ${BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/builder:latest}
-    container_name: joustmania-settings
-    expose:
-      - "50051"
-    environment:
-      - OTEL_SDK_DISABLED=true
-    volumes:
-      - ./joustsettings.yaml:/app/joustsettings.yaml
-    depends_on:
-      redis:
-        condition: service_healthy
-    networks:
-      - joustmania
-    restart: unless-stopped
-    # Healthcheck defined in Dockerfile
-
   # Controller Manager Service
   controller-manager:
     image: ghcr.io/watchmejoustmyflags/joustmania/controller-manager-service:${IMAGE_TAG:-latest}
@@ -171,7 +148,6 @@ services:
       - CONTROLLER_MANAGER_SERVICE=controller-manager:50052
       - GAME_COORDINATOR_SERVICE=game-coordinator:50053
       - MENU_SERVICE=menu:50054
-      - SETTINGS_SERVICE=settings:50051
     networks:
       - joustmania
     restart: unless-stopped

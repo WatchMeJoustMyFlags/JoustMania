@@ -17,7 +17,6 @@ Usage:
 
     # Access clients
     clients.controller_manager  # ControllerManagerServiceStub
-    clients.settings           # SettingsServiceStub
     clients.audio              # AudioServiceStub
 
     # Cleanup
@@ -36,7 +35,6 @@ class GrpcClientManager:
 
     Handles:
     - ControllerManager service (controller state, effects)
-    - Settings service (game configuration)
     - Audio service (sound playback)
     """
 
@@ -45,16 +43,12 @@ class GrpcClientManager:
         # Service addresses from environment
         self._controller_manager_host = os.getenv("CONTROLLER_MANAGER_HOST", "controller-manager")
         self._controller_manager_port = os.getenv("CONTROLLER_MANAGER_PORT", "50052")
-        self._settings_host = os.getenv("SETTINGS_HOST", "settings")
-        self._settings_port = os.getenv("SETTINGS_PORT", "50051")
         self._audio_host = os.getenv("AUDIO_HOST", "audio")
         self._audio_port = os.getenv("AUDIO_PORT", "50056")
 
         # Channels and stubs (initialized on connect)
         self._controller_manager_channel = None
         self._controller_manager_stub = None
-        self._settings_channel = None
-        self._settings_stub = None
         self._audio_channel = None
         self._audio_stub = None
 
@@ -64,11 +58,6 @@ class GrpcClientManager:
         return self._controller_manager_stub
 
     @property
-    def settings(self):
-        """Get Settings service stub."""
-        return self._settings_stub
-
-    @property
     def audio(self):
         """Get Audio service stub."""
         return self._audio_stub
@@ -76,7 +65,7 @@ class GrpcClientManager:
     @property
     def is_connected(self) -> bool:
         """Check if essential clients are connected."""
-        return self._controller_manager_stub is not None and self._settings_stub is not None
+        return self._controller_manager_stub is not None
 
     async def connect(self):
         """
@@ -86,7 +75,7 @@ class GrpcClientManager:
         On failure, clients are set to None for graceful degradation.
         """
         from lib.grpc_utils import create_channel
-        from proto import audio_pb2_grpc, controller_manager_pb2_grpc, settings_pb2_grpc
+        from proto import audio_pb2_grpc, controller_manager_pb2_grpc
 
         try:
             # ControllerManager client
@@ -96,12 +85,6 @@ class GrpcClientManager:
                 self._controller_manager_channel
             )
             logger.info(f"Connected to ControllerManager at {cm_address}")
-
-            # Settings client
-            settings_address = f"{self._settings_host}:{self._settings_port}"
-            self._settings_channel = create_channel(settings_address)
-            self._settings_stub = settings_pb2_grpc.SettingsServiceStub(self._settings_channel)
-            logger.info(f"Connected to Settings at {settings_address}")
 
             # Audio client
             audio_address = f"{self._audio_host}:{self._audio_port}"
@@ -113,7 +96,6 @@ class GrpcClientManager:
             logger.error(f"Failed to initialize gRPC clients: {e}")
             # Set to None for graceful degradation
             self._controller_manager_stub = None
-            self._settings_stub = None
             self._audio_stub = None
 
     async def close(self):
@@ -136,16 +118,6 @@ class GrpcClientManager:
                 logger.warning(f"Error closing controller_manager channel: {e}")
             self._controller_manager_channel = None
             self._controller_manager_stub = None
-
-        if self._settings_channel:
-            try:
-                await asyncio.wait_for(self._settings_channel.close(), timeout=close_timeout)
-            except TimeoutError:
-                logger.warning("Timeout closing settings channel")
-            except Exception as e:
-                logger.warning(f"Error closing settings channel: {e}")
-            self._settings_channel = None
-            self._settings_stub = None
 
         if self._audio_channel:
             try:

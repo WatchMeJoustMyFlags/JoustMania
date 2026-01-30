@@ -172,7 +172,6 @@ class BaseGameMode(ABC):
     def __init__(
         self,
         controller_manager_client: Any,  # controller_manager_pb2_grpc.ControllerManagerServiceStub
-        settings_client: Any,  # settings_pb2_grpc.SettingsServiceStub
         event_publisher: Callable[[str, dict[str, str]], None],
         audio_client: Any | None = None,  # audio_pb2_grpc.AudioServiceStub
         game_id: str = "",
@@ -180,19 +179,17 @@ class BaseGameMode(ABC):
         sensitivity: int = 2,  # 0-4, passed from StartGameConfig (default MEDIUM)
     ) -> None:
         """
-        Initialize base game mode (Phase 33 - added type hints).
+        Initialize base game mode.
 
         Args:
             controller_manager_client: gRPC stub for ControllerManager service
-            settings_client: gRPC stub for Settings service
             event_publisher: Callback function to publish game events (event_type, data)
-            audio_client: gRPC stub for Audio service (Phase 29)
+            audio_client: gRPC stub for Audio service
             initial_players: Optional list of Player protobuf messages from StartGame RPC
             game_id: Unique identifier for this game instance
             sensitivity: Sensitivity level 0-4 (passed from StartGameConfig)
         """
         self.controller_client = controller_manager_client
-        self.settings_client = settings_client
         self.event_publisher = event_publisher
         self.audio_client = audio_client
 

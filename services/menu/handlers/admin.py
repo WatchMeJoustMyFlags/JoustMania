@@ -182,13 +182,6 @@ class AdminModeHandler:
     # Helper properties for StateManager access
 
     @property
-    def _settings_channel(self):
-        """Get settings channel from StateManager."""
-        if self._state_manager is None:
-            raise RuntimeError("StateManager not set")
-        return self._state_manager.settings.settings_channel
-
-    @property
     def _connected_controllers(self) -> set[str]:
         """Get connected controllers from StateManager."""
         if self._state_manager is None:
@@ -868,41 +861,30 @@ class AdminModeHandler:
         """
         Handle instruction toggle in admin mode.
 
-        Toggles instruction display on/off.
+        Toggles instruction display on/off using state_manager.game_settings.
 
         Args:
             serial: Controller serial number
         """
-        from proto import (
-            controller_manager_pb2,
-            settings_pb2,
-            settings_pb2_grpc,
-        )
+        from proto import controller_manager_pb2
+
+        if self._state_manager is None:
+            return
 
         ctx = self._get_span_context()
         with self.tracer.start_as_current_span("admin_instructions", context=ctx) as span:
             span.set_attribute(SpanAttr.CONTROLLER_SERIAL, serial)
 
             try:
-                settings_stub = settings_pb2_grpc.SettingsServiceStub(self._settings_channel)
+                settings = self._state_manager.game_settings
+                current = bool(settings.get("instructions", True))
 
-                # Get current instruction state
-                get_request = settings_pb2.GetSettingRequest(key="instructions")
-                get_response = await settings_stub.GetSetting(get_request)
-                current = get_response.value if get_response.value else "true"
-
-                # Toggle: true <-> false
-                new_value = "false" if current == "true" else "true"
-
-                # Update setting
-                update_request = settings_pb2.UpdateSettingRequest(
-                    key="instructions", value=new_value, source="admin_mode"
-                )
-                await settings_stub.UpdateSetting(update_request)
+                # Toggle
+                new_value = not current
+                settings["instructions"] = new_value
 
                 # Visual feedback: Green (enabled) or Red (disabled)
-                # GAME_EFFECT_PULSE restores to base color automatically
-                pulse_color = (0, 255, 0) if new_value == "true" else (255, 0, 0)
+                pulse_color = Colors.Green.value if new_value else Colors.Red.value
                 await self._send_game_effect(
                     serial,
                     controller_manager_pb2.GAME_EFFECT_PULSE,
@@ -912,12 +894,12 @@ class AdminModeHandler:
                 )
 
                 # Play instructions toggle voice announcement
-                voice = Sound.MENU_VOX_INSTRUCTIONS_ON if new_value == "true" else Sound.MENU_VOX_INSTRUCTIONS_OFF
+                voice = Sound.MENU_VOX_INSTRUCTIONS_ON if new_value else Sound.MENU_VOX_INSTRUCTIONS_OFF
                 await self._play_voice(voice)
 
                 span.add_event(
                     "instructions_toggled",
-                    {"old_value": current, "new_value": new_value, "enabled": new_value == "true"},
+                    {"old_value": current, "new_value": new_value, "enabled": new_value},
                 )
                 logger.info(f"Instructions toggled by admin controller {serial}: {current} -> {new_value}")
 

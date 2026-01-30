@@ -21,7 +21,7 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService, MockSettingsService  # noqa: E402
+from conftest import EventCollector, MockControllerManagerService  # noqa: E402
 
 from services.game_coordinator.games.nonstop_joust import (  # noqa: E402
     RESPAWN_DURATION,
@@ -49,12 +49,10 @@ class TestNonstopJoustGameMode:
             death_schedule={},
             max_duration=10.0,
         )
-        mock_settings = MockSettingsService()
         event_collector = EventCollector()
 
         game = NonstopJoustGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=event_collector.publish,
             audio_client=None,
             game_id="test_nonstop_001",
@@ -260,12 +258,10 @@ class TestNonstopRespawn:
     def nonstop_game(self):
         """Create a Nonstop Joust game."""
         mock_controller_manager = MockControllerManagerService(num_controllers=4)
-        mock_settings = MockSettingsService()
         event_collector = EventCollector()
 
         game = NonstopJoustGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=event_collector.publish,
             audio_client=None,
             game_id="test_nonstop_respawn",
@@ -356,11 +352,9 @@ class TestNonstopSpawnProtection:
     def nonstop_game(self):
         """Create a Nonstop Joust game."""
         mock_controller_manager = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
 
         game = NonstopJoustGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=lambda *_args: None,
             audio_client=None,
             game_id="test_nonstop_protection",
@@ -406,12 +400,10 @@ class TestNonstopScoring:
     def nonstop_game(self):
         """Create a Nonstop Joust game."""
         mock_controller_manager = MockControllerManagerService(num_controllers=4)
-        mock_settings = MockSettingsService()
         event_collector = EventCollector()
 
         game = NonstopJoustGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=event_collector.publish,
             audio_client=None,
             game_id="test_nonstop_scoring",
@@ -478,22 +470,20 @@ class TestNonstopSettings:
     def nonstop_game(self):
         """Create a Nonstop Joust game."""
         mock_controller_manager = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
 
         game = NonstopJoustGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=lambda *_args: None,
             audio_client=None,
             game_id="test_nonstop_settings",
         )
 
-        return game, mock_controller_manager, mock_settings
+        return game, mock_controller_manager
 
     @pytest.mark.asyncio
     async def test_default_time_limit_zero(self, nonstop_game):
         """Test default time limit is 0 (unlimited)."""
-        game, _, _ = nonstop_game
+        game, _ = nonstop_game
 
         # Default before loading settings
         assert game.time_limit == 0
@@ -501,7 +491,7 @@ class TestNonstopSettings:
     @pytest.mark.asyncio
     async def test_load_settings_parses_time_limit(self, nonstop_game):
         """Test that time_limit is parsed from settings dict."""
-        game, _, mock_settings = nonstop_game
+        game, _ = nonstop_game
 
         # Directly set settings (simulating what would be loaded)
         game.settings = {"nonstop_time_limit": "120"}
@@ -517,11 +507,9 @@ class TestNonstopRespawnCountdown:
     def nonstop_game(self):
         """Create a Nonstop Joust game."""
         mock_controller_manager = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
 
         game = NonstopJoustGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=lambda *_args: None,
             audio_client=None,
             game_id="test_nonstop_countdown",

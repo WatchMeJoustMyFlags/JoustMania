@@ -23,18 +23,13 @@ JoustMania is a party game system for PS Move controllers, built as a collection
     │                             │                             │
     ▼                             ▼                             ▼
 ┌──────────────┐          ┌──────────────┐          ┌──────────────────┐
-│   Settings   │◄─────────│    Menu      │─────────►│ Game Coordinator │
-│   :50051     │          │   :50054     │          │     :50053       │
+│    Audio     │◄─────────│    Menu      │─────────►│ Game Coordinator │
+│   :50056     │          │   :50054     │          │     :50053       │
 └──────────────┘          └──────┬───────┘          └────────┬─────────┘
-       ▲                         │                           │
-       │                         │ StreamGameEvents          │
-       │                         │ (start_config)            │
-       │                         ▼                           │
-       │                 ┌──────────────┐                    │
-       └─────────────────│    Audio     │◄───────────────────┤
-                         │   :50056     │                    │
-                         └──────────────┘                    │
-                                                             │
+                                 │                           │
+                                 │ StreamGameEvents          │
+                                 │ (start_config)            │
+                                 ▼                           │
                          ┌──────────────────┐                │
                          │ Controller Mgr   │◄───────────────┘
                          │     :50052       │
@@ -49,32 +44,6 @@ JoustMania is a party game system for PS Move controllers, built as a collection
 ```
 
 ## Services
-
-### Settings Service (Port 50051)
-
-**Purpose**: Centralized configuration management for persistent settings
-
-**Responsibilities**:
-- Load/save settings from YAML file
-- Schema-based validation
-- Publish setting changes via streaming
-- Voice actor preference, audio settings
-
-**Note**: Game-specific settings (sensitivity, num_teams, etc.) are stored locally
-in Menu service's `state_manager.game_settings` and passed via typed proto config
-when starting games. See [Game Configuration](#game-configuration) below.
-
-**Key RPCs**:
-| RPC | Type | Description |
-|-----|------|-------------|
-| `GetSettings` | Unary | Get all settings |
-| `GetSetting` | Unary | Get single setting by key |
-| `UpdateSetting` | Unary | Update a setting value |
-| `SubscribeToChanges` | Server Stream | Real-time setting change notifications |
-
-**Dependencies**: None (foundational service)
-
----
 
 ### Controller Manager Service (Port 50052)
 
@@ -105,7 +74,7 @@ when starting games. See [Game Configuration](#game-configuration) below.
 - LED batch updates at 20Hz
 - Effect priority system (cancellable vs non-cancellable)
 
-**Dependencies**: Settings
+**Dependencies**: None
 
 ---
 
@@ -175,7 +144,7 @@ when starting games. See [Game Configuration](#game-configuration) below.
 - Configurable options: sensitivity, num_teams, random_assignment, nonstop_time_limit,
   invincibility, fight_club_min_rounds, werewolf_reveal_time, force_all_start
 
-**Dependencies**: Settings, ControllerManager, GameCoordinator
+**Dependencies**: ControllerManager, GameCoordinator, Audio
 
 ---
 
@@ -243,7 +212,6 @@ JoustMania uses gRPC for all inter-service communication:
 
 Services discover each other via Docker Compose DNS:
 ```
-settings:50051
 controller-manager:50052
 game-coordinator:50053
 menu:50054
@@ -253,7 +221,6 @@ audio:50056
 ### Streaming Patterns
 
 **Server Streaming** (Service → Client):
-- `SubscribeToChanges` - Setting notifications
 - `StreamGameplayData` - Controller motion
 - `StreamGameEvents` - Game lifecycle
 - `StreamMenuEvents` - Menu state
@@ -293,15 +260,15 @@ audio:50056
 8. Menu receives "game_ended", resets to lobby
 ```
 
-### Settings Update
+### Settings Update (Admin Mode)
 
 ```
-1. Web UI calls Settings.UpdateSetting
-2. Settings validates against schema
-3. Settings saves to YAML file
-4. Settings publishes SettingChangeEvent
-5. Subscribed services receive notification
-6. Services update cached settings
+1. User enters admin mode (hold all 4 face buttons on controller)
+2. Navigate options with Move button
+3. Adjust values with Trigger/Cross buttons
+4. Menu updates state_manager.game_settings in memory
+5. Settings passed to Game Coordinator via typed proto config at game start
+6. Settings reset on Menu service restart (no persistence)
 ```
 
 ---
@@ -373,8 +340,8 @@ Settings are configured via admin mode (hold all 4 face buttons):
 
 ### Persistence
 
-- `joustsettings.yaml` - Settings storage (Docker volume)
 - `~/.psmoveapi/` - Controller calibration (Linux)
+- Game settings stored in memory (reset on Menu service restart)
 
 ---
 
@@ -454,7 +421,6 @@ Located in `/proto/`:
 
 | File | Service |
 |------|---------|
-| `settings.proto` | SettingsService |
 | `controller_manager.proto` | ControllerManagerService |
 | `game_coordinator.proto` | GameCoordinatorService |
 | `menu.proto` | MenuService |

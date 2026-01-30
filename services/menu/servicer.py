@@ -48,22 +48,19 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
 
         controller_host = os.getenv("CONTROLLER_MANAGER_HOST", "controller-manager")
         controller_port = os.getenv("CONTROLLER_MANAGER_PORT", "50052")
-        settings_host = os.getenv("SETTINGS_HOST", "settings")
-        settings_port = os.getenv("SETTINGS_PORT", "50051")
         game_coordinator_host = os.getenv("GAME_COORDINATOR_HOST", "game-coordinator")
         game_coordinator_port = os.getenv("GAME_COORDINATOR_PORT", "50053")
         audio_host = os.getenv("AUDIO_HOST", "audio")
         audio_port = os.getenv("AUDIO_PORT", "50056")
 
         self.controller_channel = create_channel(f"{controller_host}:{controller_port}")
-        self.settings_channel = create_channel(f"{settings_host}:{settings_port}")
         self.game_coordinator_channel = create_channel(f"{game_coordinator_host}:{game_coordinator_port}")
         self.audio_channel = create_channel(f"{audio_host}:{audio_port}")
 
         # Utility classes
         self.led = LedController(self.controller_channel)
         self.audio = AudioHelper(self.audio_channel)
-        self.settings_helper = SettingsHelper(self.settings_channel)
+        self.settings_helper = SettingsHelper()
 
         # Event publisher for streaming menu events
         self.event_publisher = EventPublisher(tracer, metrics)
@@ -199,10 +196,9 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
                 self.state = menu_pb2.MenuState.RUNNING
                 self._clear_ready_state()
 
-                # Load settings
-                self.voice_actor = await self.settings_helper.load_voice_actor()
-                self.current_selection = await self.settings_helper.load_current_game()
-                self.state_manager.set_game_mode(self.current_selection)
+                # Use defaults from state_manager (no persistence)
+                self.voice_actor = self.state_manager.voice_actor
+                self.current_selection = self.state_manager.current_game_mode
 
                 await self.audio.start_lobby_music()
                 await self.event_publisher.publish("menu_started", {})
@@ -321,7 +317,6 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             self.current_selection = self.settings_helper.get_next_game_mode(self.current_selection)
             self.state_manager.set_game_mode(self.current_selection)
             await self.event_publisher.publish("selection_changed", {"game_name": self.current_selection.name})
-            await self.settings_helper.save_current_game(self.current_selection)
             logger.info(f"Selection changed to: {self.current_selection.name}")
 
     async def _handle_web_command(self, data: dict, span) -> None:
@@ -339,7 +334,6 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
                 self.current_selection = game_mode
                 self.state_manager.set_game_mode(game_mode)
                 await self.event_publisher.publish("selection_changed", {"game_name": game_mode.name, "source": "web"})
-                await self.settings_helper.save_current_game(game_mode)
                 voice_file = GAME_MODE_VOICE.get(game_mode.name)
                 if voice_file:
                     await self.audio.play_voice(voice_file)
@@ -383,7 +377,6 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         """Cleanup resources on shutdown."""
         logger.info("Shutting down Menu service, closing gRPC channels...")
         await self.controller_channel.close()
-        await self.settings_channel.close()
         await self.game_coordinator_channel.close()
         await self.audio_channel.close()
         logger.info("Menu service gRPC channels closed")

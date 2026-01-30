@@ -20,7 +20,7 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService, MockSettingsService  # noqa: E402
+from conftest import EventCollector, MockControllerManagerService  # noqa: E402
 
 from services.game_coordinator.games.werewolf import (  # noqa: E402
     HUMAN_COLOR,
@@ -48,12 +48,10 @@ class TestWerewolfGameMode:
             death_schedule={},
             max_duration=10.0,
         )
-        mock_settings = MockSettingsService()
         event_collector = EventCollector()
 
         game = WerewolfGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=event_collector.publish,
             audio_client=None,
             game_id="test_werewolf_001",
@@ -253,11 +251,9 @@ class TestWerewolfThresholds:
     def werewolf_game(self):
         """Create a Werewolf game."""
         mock_controller_manager = MockControllerManagerService(num_controllers=4)
-        mock_settings = MockSettingsService()
 
         game = WerewolfGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=lambda *_args: None,
             audio_client=None,
             game_id="test_werewolf_thresh",
@@ -309,12 +305,10 @@ class TestWerewolfReveal:
     def werewolf_game(self):
         """Create a Werewolf game."""
         mock_controller_manager = MockControllerManagerService(num_controllers=4)
-        mock_settings = MockSettingsService()
         event_collector = EventCollector()
 
         game = WerewolfGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=event_collector.publish,
             audio_client=None,
             game_id="test_werewolf_reveal",
@@ -340,11 +334,9 @@ class TestWerewolfEdgeCases:
     async def test_larger_player_count_werewolf_ratio(self):
         """Test werewolf ratio with more players."""
         mock_controller_manager = MockControllerManagerService(num_controllers=9)
-        mock_settings = MockSettingsService()
 
         game = WerewolfGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=lambda *_args: None,
             audio_client=None,
             game_id="test_werewolf_ratio",
@@ -360,11 +352,9 @@ class TestWerewolfEdgeCases:
     async def test_minimum_one_werewolf(self):
         """Even with 2 players, should have at least 1 werewolf."""
         mock_controller_manager = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
 
         game = WerewolfGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=lambda *_args: None,
             audio_client=None,
             game_id="test_min_werewolf",
@@ -379,12 +369,10 @@ class TestWerewolfEdgeCases:
     async def test_win_condition_all_dead(self):
         """Test when all players are dead (draw condition)."""
         mock_controller_manager = MockControllerManagerService(num_controllers=4)
-        mock_settings = MockSettingsService()
         event_collector = EventCollector()
 
         game = WerewolfGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=event_collector.publish,
             audio_client=None,
             game_id="test_werewolf_draw",
@@ -407,11 +395,9 @@ class TestWerewolfEdgeCases:
     async def test_reveal_state_tracks_correctly(self):
         """Test that game reveal state can be toggled."""
         mock_controller_manager = MockControllerManagerService(num_controllers=4)
-        mock_settings = MockSettingsService()
 
         game = WerewolfGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=lambda *_args: None,
             audio_client=None,
             game_id="test_reveal_state",

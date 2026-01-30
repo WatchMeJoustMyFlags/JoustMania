@@ -20,7 +20,7 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService, MockSettingsService  # noqa: E402
+from conftest import EventCollector, MockControllerManagerService  # noqa: E402
 
 from services.game_coordinator.games.tournament import (  # noqa: E402
     Match,
@@ -49,12 +49,10 @@ class TestTournamentGameMode:
             death_schedule={},
             max_duration=10.0,
         )
-        mock_settings = MockSettingsService()
         event_collector = EventCollector()
 
         game = TournamentGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=event_collector.publish,
             audio_client=None,
             game_id="test_tournament_001",
@@ -215,11 +213,9 @@ class TestTournamentBracket:
     def tournament_game(self):
         """Create a Tournament game."""
         mock_controller_manager = MockControllerManagerService(num_controllers=8)
-        mock_settings = MockSettingsService()
 
         game = TournamentGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=lambda *_args: None,
             audio_client=None,
             game_id="test_tournament_bracket",
@@ -306,12 +302,10 @@ class TestTournamentWinCondition:
     def tournament_game(self):
         """Create a Tournament game."""
         mock_controller_manager = MockControllerManagerService(num_controllers=4)
-        mock_settings = MockSettingsService()
         event_collector = EventCollector()
 
         game = TournamentGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=event_collector.publish,
             audio_client=None,
             game_id="test_tournament_win",

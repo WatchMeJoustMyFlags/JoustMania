@@ -124,44 +124,16 @@ class TestLedController:
 
 
 class TestSettingsHelper:
-    """Tests for SettingsHelper."""
+    """Tests for SettingsHelper.
+
+    SettingsHelper is now a simple utility for game mode navigation.
+    Settings are stored in StateManager (in-memory, no persistence).
+    """
 
     @pytest.fixture
     def settings(self):
         """Create SettingsHelper instance."""
-        return SettingsHelper(MagicMock())
-
-    @pytest.mark.asyncio
-    async def test_get_setting(self, settings):
-        """get_setting should return setting value."""
-        with patch("proto.settings_pb2_grpc.SettingsServiceStub") as mock_stub_class:
-            mock_stub = MagicMock()
-            mock_response = MagicMock()
-            mock_response.value = "test_value"
-            mock_stub.GetSetting = AsyncMock(return_value=mock_response)
-            mock_stub_class.return_value = mock_stub
-
-            result = await settings.get_setting("test_key")
-
-            assert result == "test_value"
-
-    @pytest.mark.asyncio
-    async def test_load_voice_actor_valid(self, settings):
-        """load_voice_actor should return valid voice actor."""
-        settings.get_setting = AsyncMock(return_value="aaron")
-
-        result = await settings.load_voice_actor()
-
-        assert result == "aaron"
-
-    @pytest.mark.asyncio
-    async def test_load_voice_actor_default(self, settings):
-        """load_voice_actor should return default when missing."""
-        settings.get_setting = AsyncMock(return_value=None)
-
-        result = await settings.load_voice_actor()
-
-        assert result == "ivy"
+        return SettingsHelper()
 
     def test_get_next_game_mode_forward(self, settings):
         """get_next_game_mode should cycle forward."""

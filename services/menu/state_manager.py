@@ -58,6 +58,9 @@ class StateManager:
         # Current game mode (for LED colors)
         self.current_game_mode: Games = Games.JoustFFA
 
+        # Voice actor for announcements
+        self.voice_actor: str = "ivy"  # "ivy" or "aaron"
+
         # Game settings (configured via admin mode)
         self.game_settings: dict[str, int | float | bool] = {
             "sensitivity": 2,  # 0-4, default MEDIUM
@@ -68,6 +71,7 @@ class StateManager:
             "fight_club_min_rounds": 10,
             "werewolf_reveal_time": 35.0,
             "force_all_start": False,  # Force start with all connected controllers
+            "instructions": True,  # Play instruction voice lines
         }
 
     @property
