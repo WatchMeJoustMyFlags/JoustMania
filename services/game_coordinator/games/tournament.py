@@ -134,12 +134,6 @@ class TournamentGame(BaseGameMode):
         """Return game mode identifier."""
         return "Tournament"
 
-    async def _load_settings(self):
-        """Load settings - invincibility is now passed via config."""
-        await super()._load_settings()
-        # invincibility_duration is now set in __init__ from StartGameConfig
-        logger.info(f"Tournament invincibility: {self._invincibility_duration}s")
-
     def _generate_bracket(self, player_count: int) -> list[Match]:
         """
         Generate tournament bracket for given player count.
@@ -736,7 +730,6 @@ class TournamentGame(BaseGameMode):
 
                 # Initialization phase
                 with tracer.start_as_current_span("initialization_phase"):
-                    await self._load_settings()
                     await self._initialize_players()
                     self._create_player_spans(None)  # Uses current context
 
