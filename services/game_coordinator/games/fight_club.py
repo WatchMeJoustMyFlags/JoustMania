@@ -556,7 +556,6 @@ class FightClubGame(BaseGameMode):
 
                 # Initialization phase
                 with tracer.start_as_current_span("initialization_phase"):
-                    await self._load_settings()
                     # invincibility and min_rounds are now set in __init__ from StartGameConfig
                     logger.info(
                         f"Fight Club config: invincibility={self._invincibility_duration}s, "

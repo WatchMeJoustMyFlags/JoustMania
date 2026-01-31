@@ -548,7 +548,6 @@ class ZombieGame(BaseGameMode):
 
                 # Initialization phase
                 with tracer.start_as_current_span("initialization_phase"):
-                    await self._load_settings()
                     await self._initialize_players()
                     self._create_player_spans()
 

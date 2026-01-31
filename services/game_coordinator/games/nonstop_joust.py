@@ -109,11 +109,6 @@ class NonstopJoustGame(BaseGameMode):
         """Return game mode identifier."""
         return "Nonstop Joust"
 
-    async def _load_settings(self):
-        """Emit metrics - time_limit is now passed via config."""
-        await super()._load_settings()
-        logger.info(f"Nonstop settings: time_limit={self.time_limit}s")
-
     async def _initialize_players_impl(self, controllers: list):
         """
         Initialize players using NonstopPlayer with scoring fields.

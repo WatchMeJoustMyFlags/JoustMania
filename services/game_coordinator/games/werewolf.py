@@ -487,7 +487,6 @@ class WerewolfGame(BaseGameMode):
 
                 # Initialization phase
                 with tracer.start_as_current_span("initialization_phase"):
-                    await self._load_settings()
                     # reveal_time is now set in __init__ from StartGameConfig
                     logger.info(f"Werewolf reveal time: {self._reveal_time}s")
                     await self._initialize_players()
