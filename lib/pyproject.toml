@@ -9,19 +9,16 @@ dependencies = [
     "opentelemetry-sdk>=1.28.0",
     "opentelemetry-exporter-otlp>=1.28.0",
     "opentelemetry-instrumentation-grpc>=0.49b0",
-
     # Prometheus metrics
     "prometheus-client>=0.19.0",
-
     # gRPC utilities
     "grpcio>=1.70.0",
-
     # System metrics
     "psutil>=5.9.0",
-
     # Feature Flags
     "openfeature-sdk>=0.6.0",
     "openfeature-provider-flagd>=0.1.0",
+    "redis>=7.1.0",
 ]
 
 [project.optional-dependencies]

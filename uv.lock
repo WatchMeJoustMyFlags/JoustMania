@@ -549,6 +549,7 @@ dependencies = [
     { name = "opentelemetry-sdk" },
     { name = "prometheus-client" },
     { name = "psutil" },
+    { name = "redis" },
 ]
 
 [package.optional-dependencies]
@@ -572,6 +573,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.23.0" },
     { name = "pytest-cov", marker = "extra == 'test'", specifier = ">=4.1.0" },
+    { name = "redis", specifier = ">=7.1.0" },
 ]
 provides-extras = ["test"]
 
