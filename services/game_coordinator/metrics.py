@@ -251,3 +251,35 @@ def clear_all_player_analytics() -> None:
     game_sensitivity.set(0)
     effective_warning_threshold.set(0)
     effective_death_threshold.set(0)
+
+
+# Adaptive reward metrics (Phase 52)
+adaptive_threshold_adjustment = Gauge(
+    "game_adaptive_threshold_adjustment",
+    "Adaptive death threshold adjustment applied to player (g-force, +easier/-harder)",
+    ["serial"],
+)
+
+feedback_intensity_multiplier = Gauge(
+    "game_feedback_intensity_multiplier",
+    "Feedback intensity multiplier for player (vibration/LED, 1.0=normal)",
+    ["serial"],
+)
+
+adaptive_rewards_enabled = Gauge(
+    "game_adaptive_rewards_enabled",
+    "Whether adaptive rewards are currently enabled (0=off, 1=on)",
+)
+
+# A/B testing experiment metrics (Part of #21)
+experiment_variant_assigned = Counter(
+    "game_experiment_variant_assigned",
+    "Experiment variant assignments",
+    ["experiment", "variant"],  # Track which experiments and variants are active
+)
+
+experiment_active_participants = Gauge(
+    "game_experiment_active_participants",
+    "Number of players currently in an experiment",
+    ["experiment"],  # Track participants per experiment
+)

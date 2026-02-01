@@ -34,6 +34,178 @@
         "off": false
       },
       "defaultVariant": "off"
+    },
+    "ffa_death_threshold_adjustment": {
+      "state": "ENABLED",
+      "variants": {
+        "nerf_strong_players": -0.3,
+        "slight_nerf": -0.15,
+        "neutral": 0.0,
+        "slight_buff": 0.15,
+        "buff_weak_players": 0.3
+      },
+      "defaultVariant": "neutral",
+      "targeting": [
+        {
+          "if": [
+            {
+              ">=": [
+                {
+                  "var": "win_rate"
+                },
+                0.7
+              ]
+            },
+            "nerf_strong_players",
+            null
+          ]
+        },
+        {
+          "if": [
+            {
+              ">=": [
+                {
+                  "var": "win_rate"
+                },
+                0.5
+              ]
+            },
+            "slight_nerf",
+            null
+          ]
+        },
+        {
+          "if": [
+            {
+              "<=": [
+                {
+                  "var": "win_rate"
+                },
+                0.2
+              ]
+            },
+            "buff_weak_players",
+            null
+          ]
+        },
+        {
+          "if": [
+            {
+              "<=": [
+                {
+                  "var": "win_rate"
+                },
+                0.35
+              ]
+            },
+            "slight_buff",
+            null
+          ]
+        }
+      ]
+    },
+    "feedback_intensity_multiplier": {
+      "state": "ENABLED",
+      "variants": {
+        "intense": 2.0,
+        "normal": 1.0,
+        "subtle": 0.5
+      },
+      "defaultVariant": "normal",
+      "targeting": [
+        {
+          "if": [
+            {
+              ">=": [
+                {
+                  "var": "warnings_per_minute"
+                },
+                5.0
+              ]
+            },
+            "intense",
+            null
+          ]
+        },
+        {
+          "if": [
+            {
+              "<=": [
+                {
+                  "var": "warnings_per_minute"
+                },
+                1.0
+              ]
+            },
+            "subtle",
+            null
+          ]
+        }
+      ]
+    },
+    "experiment_high_frequency_rollout": {
+      "state": "ENABLED",
+      "variants": {
+        "control": false,
+        "treatment": true
+      },
+      "defaultVariant": "control",
+      "targeting": [
+        {
+          "variant": "treatment",
+          "percentage": 10
+        },
+        {
+          "variant": "control",
+          "percentage": 90
+        }
+      ]
+    },
+    "experiment_aggressive_thresholds": {
+      "state": "ENABLED",
+      "variants": {
+        "control": 0.0,
+        "treatment_mild": -0.1,
+        "treatment_aggressive": -0.2
+      },
+      "defaultVariant": "control",
+      "targeting": [
+        {
+          "variant": "treatment_aggressive",
+          "percentage": 10
+        },
+        {
+          "variant": "treatment_mild",
+          "percentage": 20
+        },
+        {
+          "variant": "control",
+          "percentage": 70
+        }
+      ]
+    },
+    "experiment_grace_period_duration": {
+      "state": "ENABLED",
+      "variants": {
+        "control": 0.5,
+        "short": 0.3,
+        "long": 0.8
+      },
+      "defaultVariant": "control",
+      "targeting": [
+        {
+          "variant": "short",
+          "percentage": 25
+        },
+        {
+          "variant": "long",
+          "percentage": 25
+        },
+        {
+          "variant": "control",
+          "percentage": 50
+        }
+      ]
     }
   }
 }

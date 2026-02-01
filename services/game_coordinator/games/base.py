@@ -123,6 +123,8 @@ class Player:
     # Warning state: when > 0, player is in warning feedback (flash + rumble)
     # This is purely visual - player CAN still die during warning (matches original)
     warning_until: float = 0.0
+    # Warning count: number of warnings this player has received (Phase 52: for adaptive rewards)
+    warning_count: int = 0
     # Analytics tracker for this player (initialized when game starts)
     analytics: "PlayerAnalytics | None" = None
     # Per-player sensitivity multiplier (Phase 3: Per-Player Sensitivity Infrastructure)
@@ -656,6 +658,9 @@ class BaseGameMode(ABC):
         smoothed = player.smoothed_accel
         current_time = time.time()
 
+        # Phase 52: Apply adaptive reward adjustments based on feature flags
+        effective_death = self._apply_adaptive_threshold_adjustment(player, effective_death, current_time)
+
         # Analytics: Record sample if analytics is enabled and initialized
         config = get_config_manager().get_config()
         if config.analytics.enabled and player.analytics is not None:
@@ -727,6 +732,8 @@ class BaseGameMode(ABC):
         # Set warning feedback duration (prevents repeated warnings during flash)
         # This is NOT protection - player can still die during this time!
         player.warning_until = time.time() + WARNING_DURATION
+        # Increment warning count (Phase 52: for adaptive rewards context)
+        player.warning_count += 1
 
         # Analytics: Record warning event
         if player.analytics is not None:
@@ -1039,6 +1046,77 @@ class BaseGameMode(ABC):
             logger.debug(f"Playing sound: {sound_name}")
         except Exception as e:
             logger.warning(f"Failed to play sound {sound_name}: {e}")
+
+    # ========================================================================
+    # Phase 52: Adaptive Reward System
+    # ========================================================================
+
+    def _apply_adaptive_threshold_adjustment(
+        self, player: "Player", base_threshold: float, current_time: float
+    ) -> float:
+        """
+        Apply feature flag-based adaptive adjustments to death threshold.
+
+        Phase 52: Evaluates flags with player context (win_rate, K/D, warnings)
+        to dynamically adjust difficulty per player.
+
+        Args:
+            player: Player object with stats
+            base_threshold: Base death threshold before adjustment
+            current_time: Current time for calculating game duration
+
+        Returns:
+            Adjusted death threshold
+        """
+        try:
+            # Check if adaptive rewards are enabled
+            from lib.feature_flags import get_feature_flag_client
+
+            flag_client = get_feature_flag_client()
+            adaptive_enabled = flag_client.get_boolean_value("enable_adaptive_rewards", False)
+
+            if not adaptive_enabled:
+                return base_threshold
+
+            # Build player context for flag evaluation
+            from lib.player_context import build_player_context
+
+            game_duration = current_time - self.start_time if self.start_time else 0.0
+            context = build_player_context(
+                player=player,
+                game_mode=self.get_game_name(),
+                controller_count=len(self.players),
+                game_duration_seconds=game_duration,
+            )
+
+            # Evaluate threshold adjustment flag
+            # Positive = easier (higher threshold)
+            # Negative = harder (lower threshold)
+            adjustment = flag_client.get_float_value("ffa_death_threshold_adjustment", 0.0, context)
+
+            # Apply adjustment (additive)
+            adjusted_threshold = base_threshold + adjustment
+
+            # Clamp to sane range (0.5 to 5.0)
+            adjusted_threshold = max(0.5, min(5.0, adjusted_threshold))
+
+            # Log significant adjustments
+            if abs(adjustment) > 0.01:
+                logger.debug(
+                    f"Adaptive threshold for {player.serial}: "
+                    f"{base_threshold:.2f} → {adjusted_threshold:.2f} "
+                    f"(adjustment: {adjustment:+.2f})"
+                )
+
+            # Emit metric
+            metrics.adaptive_threshold_adjustment.labels(serial=player.serial).set(adjustment)
+
+            return adjusted_threshold
+
+        except Exception as e:
+            # Fallback to base threshold on any error
+            logger.warning(f"Failed to apply adaptive threshold adjustment: {e}")
+            return base_threshold
 
     # ========================================================================
     # Phase 70: Music Tempo Control
