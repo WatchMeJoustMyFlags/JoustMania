@@ -34,6 +34,7 @@ from services.game_coordinator import metrics
 from services.game_coordinator.runtime_config import get_config_manager
 
 if TYPE_CHECKING:
+    from lib.player_profile import PlayerProfile
     from services.game_coordinator.games.analytics import PlayerAnalytics
 
 tracer = trace.get_tracer(__name__)
@@ -129,6 +130,10 @@ class Player:
     # 1.0 = default, >1.0 = more sensitive (easier to die), <1.0 = less sensitive (harder to die)
     # Thresholds are divided by this factor: higher factor = lower threshold = easier to trigger
     sensitivity_factor: float = 1.0
+    # Player profile from Redis (Issue #23: persistent player tracking)
+    profile: "PlayerProfile | None" = None
+    # Death timestamp for survival time tracking (Issue #23)
+    death_time: float = 0.0
 
 
 @dataclass
@@ -314,6 +319,18 @@ class BaseGameMode(ABC):
         """
         pass
 
+    def _get_winners(self) -> list[str]:
+        """
+        Get list of winning player serials (Issue #23).
+
+        Returns:
+            List of winning player serials, empty list for no winner/tie
+
+        Default implementation: returns alive players (for FFA-style games).
+        Subclasses can override for game-specific winner determination.
+        """
+        return [p.serial for p in self.players.values() if p.alive]
+
     @abstractmethod
     async def _end_game_impl(self):
         """
@@ -347,6 +364,18 @@ class BaseGameMode(ABC):
             controllers = [ControllerStub(p.serial) for p in self.initial_players]
             await self._initialize_players_impl(controllers)
 
+            # Issue #23: Load player profiles from Redis
+            from lib.player_profile_manager import get_profile_manager
+
+            profile_manager = get_profile_manager()
+            for serial, player in self.players.items():
+                player.profile = profile_manager.load_profile(serial)
+                logger.debug(
+                    f"Loaded profile for {serial}: "
+                    f"{player.profile.total_games} games, "
+                    f"performance={player.profile.performance_score:.1f}"
+                )
+
             # Set alive metric for all initialized players (Phase 75: filter dead from dashboard)
             for serial in self.players:
                 metrics.player_alive.labels(serial=serial).set(1)
@@ -365,6 +394,65 @@ class BaseGameMode(ABC):
         except Exception as e:
             logger.error(f"Error initializing players: {e}", exc_info=True)
             raise
+
+    def _save_player_profiles(self, winner_serials: list[str] | None = None):
+        """
+        Save player profiles to Redis at game end (Issue #23).
+
+        Args:
+            winner_serials: List of winning player serials (None for tie/no winner)
+
+        Subclasses can override this method for game-specific stat tracking.
+        Base implementation handles FFA-style games.
+        """
+        from lib.player_profile_manager import get_profile_manager
+
+        profile_manager = get_profile_manager()
+        game_mode = self.get_game_name()
+        game_end_time = time.time()
+
+        for serial, player in self.players.items():
+            if not player.profile:
+                logger.warning(f"No profile loaded for {serial}, skipping save")
+                continue
+
+            # Calculate survival time
+            if player.death_time > 0:
+                # Player died during game
+                survival_time = player.death_time - (self.start_time or 0)
+            else:
+                # Player survived to the end
+                survival_time = game_end_time - (self.start_time or 0)
+
+            # Determine if player won
+            won = winner_serials is not None and serial in winner_serials
+
+            # Update stats based on game mode
+            # Default: treat as FFA-style game
+            if game_mode in ["FFA", "JoustFFA", "Werewolf", "Traitor", "Zombie"]:
+                profile_manager.update_ffa_stats(
+                    serial=serial,
+                    won=won,
+                    warnings=player.warning_count,
+                    survival_time=survival_time,
+                )
+                logger.debug(
+                    f"Saved FFA stats for {serial}: won={won}, "
+                    f"warnings={player.warning_count}, survival={survival_time:.1f}s"
+                )
+            elif game_mode in ["Teams", "RandomTeams", "Swapper", "Commander"]:
+                profile_manager.update_team_stats(
+                    serial=serial,
+                    won=won,
+                    warnings=player.warning_count,
+                )
+                logger.debug(
+                    f"Saved team stats for {serial}: won={won}, warnings={player.warning_count}"
+                )
+            # Note: Nonstop mode needs special handling (kills/deaths tracking)
+            # This will be overridden in nonstop_joust.py
+
+        logger.info(f"Saved profiles for {len(self.players)} players")
 
     async def _countdown(self):
         """Run countdown before game starts using unified countdown effect."""
@@ -776,6 +864,9 @@ class BaseGameMode(ABC):
         alive_count_before = len([p for p in self.players.values() if p.alive])
         logger.info(f"Player died: {serial}, {alive_count_before - 1} players remaining")
 
+        # Issue #23: Track death time for survival time calculation
+        player.death_time = time.time()
+
         # Phase 70: Track deaths for music tempo timing
         self.dead_count += 1
 
@@ -933,6 +1024,10 @@ class BaseGameMode(ABC):
             with tracer.start_as_current_span("teardown_phase"):
                 # Stop game music first (inside teardown_phase so StopMusic span is a child)
                 await self._stop_game_music()
+
+                # Issue #23: Save player profiles before game ends
+                winner_serials = self._get_winners()
+                self._save_player_profiles(winner_serials)
 
                 await self._end_game_impl()
 

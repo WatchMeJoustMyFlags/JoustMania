@@ -482,6 +482,52 @@ class NonstopJoustGame(BaseGameMode):
         """
         return [Phase(name="color_assignment", execute=self._set_unique_colors)]
 
+    def _get_winners(self) -> list[str]:
+        """
+        Get winner based on highest score (Issue #23).
+
+        Returns:
+            List with single winner serial, or empty list if tie
+        """
+        # Calculate final scores (same logic as _end_game_impl)
+        for player in self.players.values():
+            player.score = max(0, 100 - (player.deaths * 10))
+
+        # Determine winner (highest score, tie-break by fewest deaths)
+        winner = max(self.players.values(), key=lambda p: (p.score, -p.deaths), default=None)
+        return [winner.serial] if winner else []
+
+    def _save_player_profiles(self, _winner_serials: list[str] | None = None):
+        """
+        Save Nonstop Joust player profiles with kills/deaths stats (Issue #23).
+
+        Overrides base implementation to use Nonstop-specific stats.
+        Note: winner_serials not used in Nonstop (no win/loss concept).
+        """
+        from lib.player_profile_manager import get_profile_manager
+
+        profile_manager = get_profile_manager()
+
+        for serial, player in self.players.items():
+            if not player.profile:
+                logger.warning(f"No profile loaded for {serial}, skipping save")
+                continue
+
+            # Update Nonstop stats with kills, deaths, warnings, and best streak
+            profile_manager.update_nonstop_stats(
+                serial=serial,
+                kills=player.kills,
+                deaths=player.deaths,
+                warnings=player.warning_count,
+                best_streak=player.best_streak,
+            )
+            logger.debug(
+                f"Saved Nonstop stats for {serial}: "
+                f"K={player.kills} D={player.deaths} streak={player.best_streak}"
+            )
+
+        logger.info(f"Saved Nonstop profiles for {len(self.players)} players")
+
     async def _end_game_impl(self):
         """Handle game ending with scoring calculation."""
         from proto import controller_manager_pb2
