@@ -6,12 +6,30 @@ Manages loading, saving, and updating player profiles in Redis.
 
 import logging
 import time
-from typing import Optional
 
+from lib.otel_metrics import Counter, Histogram
 from lib.player_profile import PlayerProfile, RoundResult
 from lib.redis_client import RedisClient, get_redis_client
 
 logger = logging.getLogger(__name__)
+
+# Metrics (Issue #23: Task #14)
+profile_operations_total = Counter(
+    "profile_operations_total",
+    "Total profile operations",
+    ["operation", "status"],  # operation=load/save/update, status=success/failure
+)
+profile_operation_duration_seconds = Histogram(
+    "profile_operation_duration_seconds",
+    "Profile operation duration in seconds",
+    ["operation"],  # operation=load/save/update
+    buckets=[0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0],
+)
+profile_cache_total = Counter(
+    "profile_cache_total",
+    "Profile cache operations",
+    ["result"],  # result=hit/miss/new
+)
 
 # Redis key patterns
 PROFILE_KEY_PREFIX = "player:{serial}:profile"
@@ -29,7 +47,7 @@ class PlayerProfileManager:
     Provides CRUD operations, stats updates, and performance calculations.
     """
 
-    def __init__(self, redis_client: Optional[RedisClient] = None):
+    def __init__(self, redis_client: RedisClient | None = None):
         """
         Initialize profile manager.
 
@@ -70,18 +88,26 @@ class PlayerProfileManager:
                 # Create new profile
                 profile = PlayerProfile.create_new(serial)
                 logger.info(f"Created new profile for {serial}")
+                profile_cache_total.labels(result="new").inc()
             else:
                 # Load existing profile
                 profile = PlayerProfile.from_dict(data)
                 logger.debug(f"Loaded profile for {serial} ({profile.total_games} games)")
+                profile_cache_total.labels(result="hit").inc()
 
             load_duration = time.time() - start_time
             logger.debug(f"Profile load took {load_duration*1000:.1f}ms")
+
+            # Record metrics
+            profile_operation_duration_seconds.labels(operation="load").observe(load_duration)
+            profile_operations_total.labels(operation="load", status="success").inc()
 
             return profile
 
         except Exception as e:
             logger.error(f"Failed to load profile for {serial}: {e}")
+            # Record failure
+            profile_operations_total.labels(operation="load", status="failure").inc()
             # Return new profile as fallback
             return PlayerProfile.create_new(serial)
 
@@ -105,15 +131,21 @@ class PlayerProfileManager:
             save_duration = time.time() - start_time
             logger.debug(f"Profile save took {save_duration*1000:.1f}ms")
 
+            # Record metrics
+            profile_operation_duration_seconds.labels(operation="save").observe(save_duration)
+
             if success:
                 logger.debug(f"Saved profile for {profile.serial}")
+                profile_operations_total.labels(operation="save", status="success").inc()
             else:
                 logger.warning(f"Failed to save profile for {profile.serial}")
+                profile_operations_total.labels(operation="save", status="failure").inc()
 
             return success
 
         except Exception as e:
             logger.error(f"Failed to save profile for {profile.serial}: {e}")
+            profile_operations_total.labels(operation="save", status="failure").inc()
             return False
 
     def update_ffa_stats(
@@ -135,13 +167,27 @@ class PlayerProfileManager:
         Returns:
             True if successful, False otherwise
         """
+        start_time = time.time()
         try:
             profile = self.load_profile(serial)
             profile.add_ffa_result(won, warnings, survival_time)
             profile.update_performance_metrics()
-            return self.save_profile(profile)
+            success = self.save_profile(profile)
+
+            # Record metrics
+            update_duration = time.time() - start_time
+            profile_operation_duration_seconds.labels(operation="update_ffa").observe(
+                update_duration
+            )
+            profile_operations_total.labels(
+                operation="update_ffa",
+                status="success" if success else "failure",
+            ).inc()
+
+            return success
         except Exception as e:
             logger.error(f"Failed to update FFA stats for {serial}: {e}")
+            profile_operations_total.labels(operation="update_ffa", status="failure").inc()
             return False
 
     def update_nonstop_stats(
@@ -165,13 +211,27 @@ class PlayerProfileManager:
         Returns:
             True if successful, False otherwise
         """
+        start_time = time.time()
         try:
             profile = self.load_profile(serial)
             profile.add_nonstop_result(kills, deaths, warnings, best_streak)
             profile.update_performance_metrics()
-            return self.save_profile(profile)
+            success = self.save_profile(profile)
+
+            # Record metrics
+            update_duration = time.time() - start_time
+            profile_operation_duration_seconds.labels(operation="update_nonstop").observe(
+                update_duration
+            )
+            profile_operations_total.labels(
+                operation="update_nonstop",
+                status="success" if success else "failure",
+            ).inc()
+
+            return success
         except Exception as e:
             logger.error(f"Failed to update Nonstop stats for {serial}: {e}")
+            profile_operations_total.labels(operation="update_nonstop", status="failure").inc()
             return False
 
     def update_team_stats(
@@ -191,13 +251,27 @@ class PlayerProfileManager:
         Returns:
             True if successful, False otherwise
         """
+        start_time = time.time()
         try:
             profile = self.load_profile(serial)
             profile.add_team_result(won, warnings)
             profile.update_performance_metrics()
-            return self.save_profile(profile)
+            success = self.save_profile(profile)
+
+            # Record metrics
+            update_duration = time.time() - start_time
+            profile_operation_duration_seconds.labels(operation="update_team").observe(
+                update_duration
+            )
+            profile_operations_total.labels(
+                operation="update_team",
+                status="success" if success else "failure",
+            ).inc()
+
+            return success
         except Exception as e:
             logger.error(f"Failed to update team stats for {serial}: {e}")
+            profile_operations_total.labels(operation="update_team", status="failure").inc()
             return False
 
     def add_round_to_history(
@@ -333,9 +407,8 @@ class PlayerProfileManager:
             if profile_deleted or history_deleted:
                 logger.info(f"Deleted profile and history for {serial}")
                 return True
-            else:
-                logger.warning(f"No profile found to delete for {serial}")
-                return False
+            logger.warning(f"No profile found to delete for {serial}")
+            return False
 
         except Exception as e:
             logger.error(f"Failed to delete profile for {serial}: {e}")
@@ -346,7 +419,7 @@ class PlayerProfileManager:
 _profile_manager: PlayerProfileManager | None = None
 
 
-def get_profile_manager(redis_client: Optional[RedisClient] = None) -> PlayerProfileManager:
+def get_profile_manager(redis_client: RedisClient | None = None) -> PlayerProfileManager:
     """
     Get or create the global profile manager instance.
 
