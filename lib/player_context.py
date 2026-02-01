@@ -47,22 +47,33 @@ def build_player_context(
     if game_duration_seconds > 0:
         warnings_per_minute = (player.warning_count * 60.0) / game_duration_seconds
 
-    # Win rate and K/D - default to neutral values if no history
-    # In Phase 49 (Redis Player Profiles), these will come from persistent storage
+    # Win rate and K/D from player profile (Issue #23)
+    # If profile is available, use real stats; otherwise default to neutral
     win_rate = 0.5  # Default to 50% (neutral)
     kill_death_ratio = 1.0  # Default to 1.0 (neutral)
 
-    # If player has analytics, we can use in-game stats
-    if player.analytics:
-        # Use playstyle as a proxy for performance in current game
-        # This is a temporary heuristic until Phase 49 adds persistent profiles
-        peak_accel = player.analytics.peak_accel
-        if peak_accel > 3.0:
-            # Very aggressive player - might be strong
-            win_rate = 0.6
-        elif peak_accel < 1.5:
-            # Very passive player - might be struggling
-            win_rate = 0.4
+    if hasattr(player, "profile") and player.profile is not None:
+        # Use real stats from Redis player profile
+        # Choose win_rate based on game mode
+        if game_mode in ["FFA", "JoustFFA", "Werewolf", "Traitor", "Zombie"]:
+            win_rate = player.profile.ffa_win_rate
+        elif game_mode in ["NonstopJoust", "Nonstop"]:
+            # For Nonstop, use K/D as proxy for "win rate"
+            # Map K/D (0-3) to win_rate (0-1)
+            kd_capped = min(player.profile.nonstop_kd_ratio, 3.0)
+            win_rate = kd_capped / 3.0
+            kill_death_ratio = player.profile.nonstop_kd_ratio
+        else:
+            # Team-based modes
+            win_rate = player.profile.team_win_rate
+
+        # Use Nonstop K/D for kill_death_ratio
+        kill_death_ratio = player.profile.nonstop_kd_ratio
+
+        logger.debug(
+            f"Using profile stats for {player.serial}: "
+            f"win_rate={win_rate:.2f}, K/D={kill_death_ratio:.2f}"
+        )
 
     # Build context
     context = EvaluationContext(
