@@ -364,17 +364,24 @@ class BaseGameMode(ABC):
             controllers = [ControllerStub(p.serial) for p in self.initial_players]
             await self._initialize_players_impl(controllers)
 
-            # Issue #23: Load player profiles from Redis
-            from lib.player_profile_manager import get_profile_manager
+            # Issue #23: Load player profiles from Redis (graceful degradation if unavailable)
+            try:
+                from lib.player_profile_manager import get_profile_manager
 
-            profile_manager = get_profile_manager()
-            for serial, player in self.players.items():
-                player.profile = profile_manager.load_profile(serial)
-                logger.debug(
-                    f"Loaded profile for {serial}: "
-                    f"{player.profile.total_games} games, "
-                    f"performance={player.profile.performance_score:.1f}"
+                profile_manager = get_profile_manager()
+                for serial, player in self.players.items():
+                    player.profile = profile_manager.load_profile(serial)
+                    logger.debug(
+                        f"Loaded profile for {serial}: "
+                        f"{player.profile.total_games} games, "
+                        f"performance={player.profile.performance_score:.1f}"
+                    )
+                logger.info("Player profiles loaded from Redis")
+            except Exception as e:
+                logger.warning(
+                    f"Failed to load player profiles from Redis (continuing without profiles): {e}"
                 )
+                # Profiles will remain None, which is handled gracefully by player_context.py
 
             # Set alive metric for all initialized players (Phase 75: filter dead from dashboard)
             for serial in self.players:
@@ -1025,9 +1032,13 @@ class BaseGameMode(ABC):
                 # Stop game music first (inside teardown_phase so StopMusic span is a child)
                 await self._stop_game_music()
 
-                # Issue #23: Save player profiles before game ends
-                winner_serials = self._get_winners()
-                self._save_player_profiles(winner_serials)
+                # Issue #23: Save player profiles before game ends (graceful degradation)
+                try:
+                    winner_serials = self._get_winners()
+                    self._save_player_profiles(winner_serials)
+                except Exception as e:
+                    logger.warning(f"Failed to save player profiles to Redis: {e}")
+                    # Continue with game end even if profile save fails
 
                 await self._end_game_impl()
 
