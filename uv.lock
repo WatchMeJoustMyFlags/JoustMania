@@ -518,6 +518,7 @@ version = "1.0.0"
 source = { editable = "tests/integration" }
 dependencies = [
     { name = "grpcio" },
+    { name = "joustmania-lib" },
     { name = "joustmania-proto" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -528,6 +529,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "grpcio", specifier = ">=1.50.0" },
+    { name = "joustmania-lib", editable = "lib" },
     { name = "joustmania-proto", editable = "proto" },
     { name = "pytest", specifier = ">=7.0.0" },
     { name = "pytest-asyncio", specifier = ">=0.23.0" },
