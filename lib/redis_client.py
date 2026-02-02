@@ -120,7 +120,7 @@ class RedisClient:
             self._reconnect_if_needed()
             serialized = json.dumps(value)
             return bool(self._client.set(key, serialized, ex=ex))
-        except (RedisError, json.JSONEncodeError) as e:
+        except (RedisError, TypeError) as e:
             logger.error(f"Failed to set JSON key {key}: {e}")
             return False
 
@@ -196,7 +196,7 @@ class RedisClient:
             self._reconnect_if_needed()
             serialized = [json.dumps(v) for v in values]
             return int(self._client.lpush(key, *serialized))
-        except (RedisError, json.JSONEncodeError) as e:
+        except (RedisError, TypeError) as e:
             logger.error(f"Failed to lpush to {key}: {e}")
             return 0
 
