@@ -234,6 +234,9 @@ services:
     # Sound device access for real audio output
     devices:
       - /dev/snd:/dev/snd
+    # Add audio group (GID 29 on Raspberry Pi) for device access
+    group_add:
+      - "29"
     volumes:
       - ./services/audio/assets:/app/services/audio/assets:ro  # Audio files (read-only)
     # Ports exposed only within Docker network (no host binding)
