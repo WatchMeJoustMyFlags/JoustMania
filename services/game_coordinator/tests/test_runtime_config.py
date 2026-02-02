@@ -1,5 +1,7 @@
 import logging
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
+
+from openfeature.evaluation_context import EvaluationContext
 
 from services.game_coordinator.runtime_config import GamePerformanceConfig, RuntimeConfigManager
 
@@ -24,32 +26,37 @@ def test_runtime_config_env_overrides():
         assert config.winner_rainbow_duration_ms == 500
 
 
+@patch("openfeature.api.add_handler")
 @patch("lib.feature_flags.get_feature_flag_client")
-def test_runtime_config_flag_updates(mock_get_client):
+def test_runtime_config_flag_updates(mock_get_client, mock_add_handler):
     """Test that config updates when flags are evaluated."""
     # Setup mock client
     mock_client = MagicMock()
     mock_get_client.return_value = mock_client
 
     # Configure mock evaluations
-    # get_integer_value(flag_key, default_value)
+    # get_integer_value(flag_key, default_value, context)
     mock_client.get_integer_value.return_value = 30
-    # get_string_value(flag_key, default_value)
+    # get_string_value(flag_key, default_value, context)
     mock_client.get_string_value.return_value = "HIGH"
 
     manager = RuntimeConfigManager()
     config = manager.get_config()
 
-    # Verify mock was called with correct keys
-    mock_client.get_integer_value.assert_any_call("update_frequency_hz", 60)
-    mock_client.get_string_value.assert_any_call("sensitivity_mode", "MEDIUM")
+    # Verify event handler was registered
+    mock_add_handler.assert_called_once()
+
+    # Verify mock was called with correct keys and EvaluationContext
+    mock_client.get_integer_value.assert_any_call("update_frequency_hz", 60, ANY)
+    mock_client.get_string_value.assert_any_call("sensitivity_mode", "MEDIUM", ANY)
 
     # Verify values were updated
     assert config.update_frequency_hz == 30
     assert config.sensitivity_mode == "HIGH"
 
 
-def test_runtime_config_flag_error_fallback(caplog):
+@patch("openfeature.api.add_handler")
+def test_runtime_config_flag_error_fallback(mock_add_handler, caplog):
     """Test that config stays at default if flag evaluation fails."""
     with patch("lib.feature_flags.get_feature_flag_client") as mock_get_client:
         mock_client = MagicMock()
