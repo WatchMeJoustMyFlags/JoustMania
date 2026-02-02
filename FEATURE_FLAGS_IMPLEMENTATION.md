@@ -1,122 +1,119 @@
-# Event-Driven Feature Flags Implementation
+# Feature Flags with Event-Driven Updates
 
-**Date:** 2026-02-02
-**Status:** ✅ Complete and Tested
+## Overview
 
-## Summary
+JoustMania uses [OpenFeature](https://openfeature.dev/) with [flagd](https://flagd.dev/) for runtime configuration management. Feature flags allow changing game behavior without redeploying code.
 
-Implemented event-driven configuration system using OpenFeature's `PROVIDER_CONFIGURATION_CHANGED` events. This eliminates polling overhead and provides instant flag updates.
+**Key Features:**
+- **Event-driven updates** - Changes propagate instantly via gRPC streams (no polling)
+- **Type-safe evaluation** - Flags are strongly typed (boolean, string, integer)
+- **Observable** - Metrics and logging for flag evaluations and changes
+- **Developer-friendly** - Edit `services/flagd/flags.json` and see changes in <100ms
 
-## What Changed
+## Architecture
 
-### 1. Event-Driven Architecture (`runtime_config.py`)
-
-**Before:**
-- Called `_refresh_from_flags()` on every `get_config()` access
-- Evaluated flags 60+ times per second (game loop frequency)
-- Caused "too_many_pings" error from flagd
-
-**After:**
-- Registers `PROVIDER_CONFIGURATION_CHANGED` event listener on startup
-- Only refreshes when flagd pushes flag changes via gRPC stream
-- Zero polling overhead, instant updates
-
-### 2. INFO-Level Logging
-
-**Before:**
-```python
-logger.debug(f"Config update: update_frequency_hz = {hz}")
-```
-
-**After:**
-```python
-logger.info(f"🎯 Config updated: update_frequency_hz {old_hz} → {new_hz} Hz")
-```
-
-Flag changes now visible at default log level with clear before/after values.
-
-### 3. Metrics (`metrics.py`)
-
-Added three new metrics:
-
-- **`game_flag_evaluations_total{flag_key}`** - Counter tracking how many times each flag is evaluated
-- **`game_flag_configuration_changes_total`** - Counter tracking PROVIDER_CONFIGURATION_CHANGED events
-- **`game_current_update_frequency_hz`** - Gauge showing current configured Hz value
-
-### 4. Thread Safety
-
-Added `threading.RLock()` to protect config reads/writes since event handler runs in separate thread.
-
-## How It Works
+### Components
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  flagd (file watcher on port 8015)                     │
-│  - Watches services/flagd/flags.json                    │
-│  - Detects file changes via inotify/polling             │
+│  services/flagd/flags.json                              │
+│  - JSON file with flag definitions                      │
+│  - Watched by flagd via inotify (Linux) or polling      │
 └──────────────────┬──────────────────────────────────────┘
                    │
-                   │ gRPC Stream (push)
-                   │ SyncFlags()
+                   │ File change detected
                    ▼
 ┌─────────────────────────────────────────────────────────┐
-│  OpenFeature flagd Provider (IN_PROCESS)                │
-│  - GrpcWatcher monitors sync stream                     │
-│  - Calls flag_store.update() on changes                 │
+│  flagd service (port 8015)                              │
+│  - gRPC server implementing OpenFeature Flagd Protocol  │
+│  - Maintains active SyncFlags() streams to clients      │
+│  - Pushes flag updates when file changes                │
+└──────────────────┬──────────────────────────────────────┘
+                   │
+                   │ gRPC bidirectional stream
+                   │ SyncFlags() RPC
+                   ▼
+┌─────────────────────────────────────────────────────────┐
+│  OpenFeature flagd Provider (in game-coordinator)       │
+│  - Connects to flagd via IN_PROCESS resolver            │
+│  - Receives flag updates via gRPC stream                │
 │  - Emits PROVIDER_CONFIGURATION_CHANGED event           │
 └──────────────────┬──────────────────────────────────────┘
                    │
-                   │ Event (push)
+                   │ Event callback
                    │ PROVIDER_CONFIGURATION_CHANGED
                    ▼
 ┌─────────────────────────────────────────────────────────┐
-│  RuntimeConfigManager._on_flags_changed()               │
-│  - Logs changed flags at INFO level                     │
-│  - Increments metrics counter                           │
-│  - Calls _refresh_from_flags()                          │
-│  - Thread-safe config update                            │
+│  RuntimeConfigManager (services/game_coordinator/)      │
+│  - Registers event handler on startup                   │
+│  - Re-evaluates flags when event fires                  │
+│  - Updates internal config cache                        │
+│  - Logs changes and increments metrics                  │
 └─────────────────────────────────────────────────────────┘
 ```
 
-**Update Latency:** <100ms from file save to config update
+**Latency:** Flag file change → Config update = **<100ms**
 
-## Testing on Raspberry Pi
+### How Event-Driven Updates Work
 
-### 1. Deploy Changes
+1. **Startup:** RuntimeConfigManager registers a callback for `PROVIDER_CONFIGURATION_CHANGED` events
+2. **Normal Operation:** Config is cached and served from memory (zero overhead)
+3. **Flag Change:** When `flags.json` is edited:
+   - flagd detects the file change
+   - flagd pushes update to all connected clients via gRPC stream
+   - OpenFeature provider emits `PROVIDER_CONFIGURATION_CHANGED` event
+   - RuntimeConfigManager callback fires, re-evaluates flags, updates cache
+   - Logs show `🚩 Feature flags changed: ['update_frequency_hz']`
+   - Metrics increment `game_flag_configuration_changes_total`
 
-```bash
-# On your local machine
-git add services/game_coordinator/runtime_config.py
-git add services/game_coordinator/metrics.py
-git add services/game_coordinator/tests/test_runtime_config.py
-git commit -m "feat: implement event-driven feature flags with metrics"
+**Why event-driven?**
+- **No polling overhead** - Config is read from cache, not from flagd on every game loop iteration
+- **Instant updates** - Changes propagate in <100ms instead of waiting for next poll interval
+- **Lower CPU usage** - No periodic flag evaluations
+- **No rate limiting** - Avoids "too_many_pings" errors from excessive gRPC keepalives
 
-# Push to remote
-git push origin feat/issue-23-redis-player-profiles
+### Thread Safety
 
-# On Raspberry Pi
-ssh manuel@himbeere.local
-cd /home/manuel/JoustMania
-git pull
-docker compose up -d --build game-coordinator
-```
+Flag change events fire in a background thread. RuntimeConfigManager uses `threading.RLock()` to protect the config cache during reads/writes.
 
-### 2. Watch Logs
+## How to Test
 
-```bash
-# Follow game-coordinator logs
-docker compose logs -f game-coordinator | grep -E "🎯|🚩|Flag|Config"
-```
+### 1. Start the System
 
-### 3. Test Flag Changes
-
-**Edit the flags file:**
 ```bash
 # On Raspberry Pi
-nano /home/manuel/JoustMania/services/flagd/flags.json
+cd ~/JoustMania
+docker compose up -d
+
+# Verify flagd is running
+docker compose ps flagd
 ```
 
-**Change `update_frequency_hz` from `low` (15) to `high` (60):**
+### 2. Watch for Flag Events
+
+Open a terminal and follow logs:
+
+```bash
+docker compose logs -f game-coordinator | grep -E "🎯|🚩|Flag"
+```
+
+You should see on startup:
+```
+INFO - Feature flag client initialized
+INFO - Registered PROVIDER_CONFIGURATION_CHANGED event handler
+```
+
+### 3. Edit Flag Values
+
+Open the flags file:
+
+```bash
+# On Raspberry Pi
+nano services/flagd/flags.json
+```
+
+Change a flag value (e.g., `update_frequency_hz` from `low` to `high`):
+
 ```json
 {
   "flags": {
@@ -133,86 +130,270 @@ nano /home/manuel/JoustMania/services/flagd/flags.json
 }
 ```
 
-**Expected logs (within 1 second):**
+Save the file (Ctrl+O, Enter, Ctrl+X).
+
+### 4. Verify Event Detection
+
+Within **1 second**, you should see in the logs:
+
 ```
-🚩 Feature flags changed: ['update_frequency_hz']
+🚩 Feature flags changed: ['update_frequency_hz', 'streaming_mode', 'sensitivity_mode', 'enable_adaptive_rewards']
 🎯 Config updated: update_frequency_hz 15 → 60 Hz
 ```
 
-### 4. Check Metrics
+**Note:** All flags are listed in the change event, but only modified flags show before/after values.
 
-View in Prometheus at `http://himbeere.local:9090`:
+### 5. Test During Gameplay
 
+Start a game and edit flags while playing:
+
+1. Start a game with 2+ controllers
+2. In another terminal, change `update_frequency_hz` to `low` (15 Hz)
+3. Observe gameplay becomes less responsive
+4. Change back to `high` (60 Hz)
+5. Observe gameplay becomes more responsive
+
+The game will adapt in real-time without restarting.
+
+### 6. Check Metrics
+
+View metrics in Prometheus at `http://localhost:9090`:
+
+**Flag evaluations by key:**
 ```promql
-# Flag evaluations
-game_flag_evaluations_total
+rate(game_flag_evaluations_total[1m])
+```
 
-# Config changes
+**Configuration change events:**
+```promql
 game_flag_configuration_changes_total
+```
 
-# Current Hz value
+**Current update frequency:**
+```promql
 game_current_update_frequency_hz
 ```
 
-Or query via CLI:
-```bash
-ssh manuel@himbeere.local
-curl -s localhost:9090/api/v1/query?query=game_flag_evaluations_total
+Or view in Grafana's **Feature Flags** dashboard at `http://localhost:3000`.
+
+## Available Flags
+
+Current flags in `services/flagd/flags.json`:
+
+| Flag | Type | Values | Description |
+|------|------|--------|-------------|
+| `update_frequency_hz` | integer | 15, 30, 60 | Game loop update frequency |
+| `streaming_mode` | string | low, medium, high | Controller data streaming mode |
+| `sensitivity_mode` | string | slow, normal, fast | Death detection sensitivity |
+| `enable_adaptive_rewards` | boolean | true, false | Enable dynamic reward scaling |
+
+### Adding New Flags
+
+1. Edit `services/flagd/flags.json`:
+   ```json
+   {
+     "flags": {
+       "my_new_flag": {
+         "state": "ENABLED",
+         "variants": {
+           "option_a": "value_a",
+           "option_b": "value_b"
+         },
+         "defaultVariant": "option_a"
+       }
+     }
+   }
+   ```
+
+2. Evaluate in `runtime_config.py`:
+   ```python
+   my_value = self.flags.get_string_value("my_new_flag", "default")
+   ```
+
+3. No restart required - flagd will detect the file change automatically.
+
+## Metrics
+
+The following metrics are exported to Prometheus:
+
+### `game_flag_evaluations_total{flag_key}`
+
+**Type:** Counter
+**Labels:** `flag_key` (e.g., "update_frequency_hz")
+**Description:** Total number of times each flag has been evaluated
+
+**Usage:**
+```promql
+# Evaluation rate per flag
+rate(game_flag_evaluations_total[1m])
+
+# Most frequently evaluated flags
+topk(5, sum by (flag_key) (game_flag_evaluations_total))
 ```
 
-### 5. Expected Behavior
+### `game_flag_configuration_changes_total`
 
-✅ **No "too_many_pings" errors** in logs
-✅ **Flag changes visible at INFO level** within 1 second
-✅ **Metrics show evaluations and changes**
-✅ **Game runs smoothly** with dynamic Hz updates
+**Type:** Counter
+**Description:** Total number of PROVIDER_CONFIGURATION_CHANGED events received
 
-## Verification Checklist
+**Usage:**
+```promql
+# Configuration changes over time
+increase(game_flag_configuration_changes_total[1h])
 
-- [ ] `docker compose logs game-coordinator` shows no "too_many_pings" errors
-- [ ] Edit `flags.json` and see `🚩 Feature flags changed` log within 1s
-- [ ] See `🎯 Config updated` with before/after values
-- [ ] Metrics in Prometheus show flag evaluations and changes
-- [ ] Game responds to Hz changes during gameplay
+# Alert on unexpected changes
+rate(game_flag_configuration_changes_total[5m]) > 2
+```
+
+### `game_current_update_frequency_hz`
+
+**Type:** Gauge
+**Description:** Current configured update frequency in Hz (15, 30, or 60)
+
+**Usage:**
+```promql
+# Current value
+game_current_update_frequency_hz
+
+# Alert if too low
+game_current_update_frequency_hz < 30
+```
 
 ## Troubleshooting
 
-**Q: Logs show "Could not import FeatureFlagClient"**
-A: Check that `openfeature-sdk` and `openfeature-provider-flagd` are installed
+### No flag change events detected
 
-**Q: No flag change events detected**
-A: Verify flagd is running: `docker compose ps | grep flagd`
+**Symptoms:** Edit `flags.json` but no `🚩 Feature flags changed` log appears
 
-**Q: "Failed to evaluate flags" errors**
-A: Check flagd connectivity: `docker compose logs flagd`
+**Diagnosis:**
+```bash
+# Check flagd is running
+docker compose ps flagd
 
-**Q: Metrics not showing up**
-A: Wait 10 seconds (metrics export interval) and refresh Prometheus
+# Check flagd logs
+docker compose logs flagd --tail=50
 
-## Files Changed
+# Verify file is being watched
+docker compose exec flagd ls -l /flags/flags.json
+```
 
-- `services/game_coordinator/runtime_config.py` - Event-driven architecture
-- `services/game_coordinator/metrics.py` - New flag metrics
-- `services/game_coordinator/tests/test_runtime_config.py` - Updated tests
-- `FEATURE_FLAGS_IMPLEMENTATION.md` - This document
+**Solutions:**
+- Ensure flagd container is healthy
+- Verify `flags.json` is mounted correctly in docker-compose.yml
+- Check file permissions (must be readable by flagd)
 
-## Performance Impact
+### "Could not import FeatureFlagClient" error
 
-**Before:**
-- 60 flag evaluations/second (polling)
-- gRPC keepalive every 1ms
-- "too_many_pings" errors
+**Symptoms:** Game coordinator starts but shows import error
 
-**After:**
-- 2 flag evaluations total (startup + each change)
-- No unnecessary gRPC calls
-- Zero errors
-- <100ms update latency
+**Diagnosis:**
+```bash
+# Check if openfeature packages are installed
+docker compose exec game-coordinator pip list | grep openfeature
+```
 
-## Next Steps
+**Solutions:**
+- Rebuild image: `docker compose up -d --build game-coordinator`
+- Verify `pyproject.toml` includes `openfeature-sdk` and `openfeature-provider-flagd`
 
-1. Deploy to Raspberry Pi ✅
-2. Test flag changes during gameplay ✅
-3. Monitor metrics in Grafana
-4. Add more flags (streaming_mode, enable_adaptive_rewards, etc.)
-5. Create Grafana dashboard for flag changes
+### "too_many_pings" errors (HTTP 429)
+
+**Symptoms:** Logs show rate limiting errors from flagd
+
+**Root Cause:** This should NOT happen with event-driven updates. If you see this:
+
+**Diagnosis:**
+```bash
+# Check if event handler is registered
+docker compose logs game-coordinator | grep "Registered PROVIDER_CONFIGURATION_CHANGED"
+```
+
+**Solutions:**
+- Verify RuntimeConfigManager registers the event handler on startup
+- Check that `get_config()` returns cached values, not re-evaluating flags
+
+### Metrics not showing up in Prometheus
+
+**Symptoms:** Queries return no data
+
+**Diagnosis:**
+```bash
+# Check metrics endpoint
+curl -s localhost:9090/api/v1/label/__name__/values | jq -r '.data[]' | grep game_flag
+
+# Check OTEL collector is receiving metrics
+docker compose logs otel-collector | grep game-coordinator
+```
+
+**Solutions:**
+- Wait 10 seconds (metrics export interval)
+- Verify Prometheus is scraping the service (check Targets page)
+- Check OTEL_EXPORTER_OTLP_ENDPOINT is set correctly
+
+### Flag changes don't affect gameplay
+
+**Symptoms:** Edit flags but game behavior doesn't change
+
+**Diagnosis:**
+```bash
+# Verify event is detected
+docker compose logs game-coordinator | tail -20
+
+# Check if config is being applied
+# Should see "🎯 Config updated" logs
+```
+
+**Solutions:**
+- Ensure flag key matches exactly in code and JSON
+- Verify the config value is actually being used in game logic
+- Check if game needs restart to pick up initial config
+
+## Development
+
+### Running Tests
+
+```bash
+# Unit tests
+cd services/game_coordinator
+uv run pytest tests/test_runtime_config.py -v
+
+# Integration tests with flagd
+docker compose -f docker-compose.test.yml up --abort-on-container-exit
+```
+
+### Local Development Without flagd
+
+If flagd is unavailable, the system gracefully degrades:
+
+```python
+try:
+    from lib.feature_flags import FeatureFlagClient
+    self.flags = FeatureFlagClient()
+except ImportError:
+    logger.warning("Feature flags disabled - using defaults")
+    self.flags = None
+```
+
+Default values are used when flags can't be evaluated.
+
+### Debugging Flag Evaluation
+
+Enable DEBUG logging to see every flag evaluation:
+
+```bash
+# In docker-compose.yml
+environment:
+  - LOG_LEVEL=DEBUG
+```
+
+```
+DEBUG - Evaluating flag: update_frequency_hz
+DEBUG - Flag value: 60
+```
+
+## References
+
+- [OpenFeature Documentation](https://openfeature.dev/docs)
+- [flagd Documentation](https://flagd.dev/reference/overview/)
+- [OpenFeature Python SDK](https://github.com/open-feature/python-sdk)
+- [flagd Provider for Python](https://github.com/open-feature/python-sdk-contrib/tree/main/providers/openfeature-provider-flagd)
