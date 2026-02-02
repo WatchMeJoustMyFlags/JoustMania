@@ -5,20 +5,16 @@ Tests Redis client wrapper with retry logic and JSON serialization.
 """
 
 import json
-import pytest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 
+import pytest
 from redis.exceptions import ConnectionError as RedisConnectionError
-from redis.exceptions import TimeoutError as RedisTimeoutError
 from redis.exceptions import RedisError
 
 from lib.redis_client import (
+    RETRY_ATTEMPTS,
     RedisClient,
     get_redis_client,
-    DEFAULT_HOST,
-    DEFAULT_PORT,
-    DEFAULT_DB,
-    RETRY_ATTEMPTS,
 )
 
 
