@@ -210,8 +210,8 @@ class TestRedisConnectionHandling:
             # Expected to fail - connection should raise exception
             pass
 
-    def test_profile_manager_singleton(self):
-        """Test profile manager singleton pattern."""
+    def test_profile_manager_singleton(self, redis_client):
+        """Test profile manager singleton pattern with Redis client."""
         # Reset singleton for test
         import lib.player_profile_manager as ppm
 
@@ -219,10 +219,9 @@ class TestRedisConnectionHandling:
         ppm._profile_manager = None
 
         try:
-            # This should create a singleton even if Redis fails
-            # (will be caught by graceful degradation in game coordinator)
-            manager1 = get_profile_manager()
-            manager2 = get_profile_manager()
+            # Create singleton with explicit Redis client (avoids connection attempt to missing host)
+            manager1 = get_profile_manager(redis_client=redis_client)
+            manager2 = get_profile_manager(redis_client=redis_client)
             assert manager1 is manager2
         finally:
             # Restore original singleton
