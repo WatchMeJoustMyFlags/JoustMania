@@ -60,6 +60,12 @@ def _linux_audio_loop(fname: dict, ratio: Value, volume: Value, stop_proc: Value
     period = 1024 * 4
     period_bytes = period * 2 * 2  # Two channels, two bytes per sample
 
+    # Get ALSA device from environment or use default
+    # Use hw:CARD,DEV for direct hardware access (avoids dmix issues in containers)
+    # Examples: "hw:2,0" for USB Audio, "default" for dmix
+    alsa_device = os.getenv("ALSA_DEVICE", "default")
+    logger.info(f"Using ALSA device: {alsa_device}")
+
     time.sleep(0.1)  # Brief startup delay
 
     # Try to set higher process priority for smoother audio
@@ -130,7 +136,7 @@ def _linux_audio_loop(fname: dict, ratio: Value, volume: Value, stop_proc: Value
                         rate=wf.getframerate(),
                         format=alsaaudio.PCM_FORMAT_S16_LE,
                         periodsize=period,
-                        device="default",
+                        device=alsa_device,
                     )
 
                     def read_samples(wf, read_size):

@@ -11,6 +11,12 @@ services:
   audio:
     devices:
       - /dev/snd:/dev/snd
+    environment:
+      # Use direct hardware access to avoid dmix issues in containers
+      # hw:CARD,DEV format - adjust card number based on your system
+      # Run "aplay -l" or "cat /proc/asound/cards" to find your audio device
+      # Common values: hw:0,0 (first card), hw:1,0 (HDMI), hw:2,0 (USB audio)
+      - ALSA_DEVICE=hw:2,0
 
   # Controller Manager - Bluetooth hardware access
   controller-manager:
