@@ -107,8 +107,9 @@ class RuntimeConfigManager:
     def _setup_feature_flags(self):
         """Initialize feature flag client and event listeners."""
         try:
-            from lib.feature_flags import get_feature_flag_client
             from openfeature import api
+
+            from lib.feature_flags import get_feature_flag_client
 
             self.flag_client = get_feature_flag_client()
             logger.info("Feature flag client initialized")

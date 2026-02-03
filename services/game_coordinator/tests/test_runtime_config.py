@@ -1,8 +1,6 @@
 import logging
 from unittest.mock import ANY, MagicMock, patch
 
-from openfeature.evaluation_context import EvaluationContext
-
 from services.game_coordinator.runtime_config import GamePerformanceConfig, RuntimeConfigManager
 
 
@@ -56,7 +54,7 @@ def test_runtime_config_flag_updates(mock_get_client, mock_add_handler):
 
 
 @patch("openfeature.api.add_handler")
-def test_runtime_config_flag_error_fallback(mock_add_handler, caplog):
+def test_runtime_config_flag_error_fallback(_mock_add_handler, caplog):
     """Test that config stays at default if flag evaluation fails."""
     with patch("lib.feature_flags.get_feature_flag_client") as mock_get_client:
         mock_client = MagicMock()
