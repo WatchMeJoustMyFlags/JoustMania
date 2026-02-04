@@ -9,14 +9,25 @@
       },
       "defaultVariant": "high"
     },
-    "sensitivity_mode": {
+    "sensitivity": {
       "state": "ENABLED",
       "variants": {
-        "low": "low",
-        "medium": "medium",
-        "high": "high"
+        "ultra_slow": 0,
+        "slow": 1,
+        "medium": 2,
+        "fast": 3,
+        "ultra_fast": 4
       },
-      "defaultVariant": "medium"
+      "defaultVariant": null,
+      "targeting": {
+        "if": [
+          {"==": [{"var": "game_mode"}, "Werewolf"]},
+          "fast",
+          {"==": [{"var": "game_mode"}, "Zombie"]},
+          "fast",
+          null
+        ]
+      }
     },
     "streaming_mode": {
       "state": "ENABLED",

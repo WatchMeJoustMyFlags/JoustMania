@@ -27,6 +27,22 @@ logger = logging.getLogger(__name__)
 # Lazy telemetry initialization - defers OTLP setup until first span
 tracer = get_tracer(__name__)
 
+# Feature flags - lazy import to avoid startup issues if flagd unavailable
+_flag_client = None
+
+
+def _get_flag_client():
+    """Get feature flag client lazily."""
+    global _flag_client
+    if _flag_client is None:
+        try:
+            from lib.feature_flags import get_feature_flag_client
+
+            _flag_client = get_feature_flag_client()
+        except Exception as e:
+            logger.warning(f"Could not initialize feature flag client: {e}")
+    return _flag_client
+
 
 class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
     """
@@ -560,6 +576,58 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
 
         logger.info("Lobby restarted after game")
 
+    def _evaluate_sensitivity(self, game_mode, player_count: int, admin_setting: int) -> int:
+        """
+        Evaluate sensitivity from feature flag with context.
+
+        Uses flagd's defaultVariant: null pattern - if no targeting rule matches,
+        the admin_setting (code default) is used. This allows:
+        - Targeting rules to override for specific game modes (e.g., Werewolf → fast)
+        - Admin setting to be the fallback when no rule matches
+
+        Args:
+            game_mode: Games enum value
+            player_count: Number of players in the game
+            admin_setting: Sensitivity set via admin mode (0-4)
+
+        Returns:
+            Sensitivity level 0-4
+        """
+        from openfeature.evaluation_context import EvaluationContext
+
+        flag_client = _get_flag_client()
+        if flag_client is None:
+            logger.debug("Feature flags unavailable, using admin setting")
+            return admin_setting
+
+        try:
+            # Build context for targeting rules
+            context = EvaluationContext(
+                attributes={
+                    "game_mode": game_mode.name,
+                    "player_count": player_count,
+                }
+            )
+
+            # Evaluate flag - admin_setting is used when no targeting rule matches
+            # (flagd returns ERROR reason when defaultVariant is null and no rule matches)
+            sensitivity = flag_client.get_integer_value("sensitivity", admin_setting, context)
+
+            # Clamp to valid range
+            sensitivity = max(0, min(4, sensitivity))
+
+            if sensitivity != admin_setting:
+                logger.info(
+                    f"Sensitivity override from feature flag: {sensitivity} "
+                    f"(admin={admin_setting}, game={game_mode.name})"
+                )
+
+            return sensitivity
+
+        except Exception as e:
+            logger.warning(f"Error evaluating sensitivity flag, using admin setting: {e}")
+            return admin_setting
+
     def _build_game_config(self, game_mode, players: list):
         """
         Build typed StartGameConfig for a game mode.
@@ -575,7 +643,11 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
 
         # Get game settings from state_manager (set via admin mode)
         settings = getattr(self.state_manager, "game_settings", {})
-        sensitivity = settings.get("sensitivity", 2)
+        admin_sensitivity = settings.get("sensitivity", 2)
+
+        # Evaluate sensitivity from feature flag with context
+        # Admin setting is used as code default (when no targeting rule matches)
+        sensitivity = self._evaluate_sensitivity(game_mode, len(players), admin_sensitivity)
 
         # Build base config with the game mode's name
         config = game_coordinator_pb2.StartGameConfig(

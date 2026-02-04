@@ -1,10 +1,11 @@
 """
-Runtime Configuration System for JoustMania (Phase 43)
+Runtime Configuration System for JoustMania
 
-Simple configuration holder for game performance parameters.
-Provides default values that can be read by game loop.
+Configuration holder for game performance parameters with OpenFeature integration.
+Provides default values that can be overridden via feature flags (flagd).
 
-Phase 44 will add OpenFeature integration for dynamic flag-based configuration.
+Note: Game sensitivity is NOT managed here - it's passed via StartGameConfig proto
+from the menu service, which evaluates feature flags with context.
 """
 
 import logging
@@ -44,7 +45,6 @@ class GamePerformanceConfig:
     # Core performance
     # Phase 72: Increased from 30Hz to 60Hz for better responsiveness
     update_frequency_hz: int = 60  # Game loop frequency
-    enable_delta_compression: bool = True
 
     # Countdown duration (seconds) - configurable for faster tests
     # Set COUNTDOWN_DURATION_SECONDS=0 to skip countdown entirely
@@ -62,34 +62,13 @@ class GamePerformanceConfig:
     # Analytics configuration
     analytics: AnalyticsConfig = field(default_factory=AnalyticsConfig)
 
-    # Monitoring
-    enable_metrics: bool = True
-    enable_tracing: bool = True
-    metrics_interval_sec: int = 5
-
-    # Performance thresholds
-    max_latency_ms: float = 100.0
-    target_cpu_percent: float = 50.0
-
-    # USB/Streaming
-    stream_buffer_size: int = 100
-    usb_check_interval_sec: float = 30.0
-
-    # Sensitivity
-    sensitivity_mode: str = "MEDIUM"  # SLOW, MEDIUM, FAST
-
-    # Experimental features
-    adaptive_hz: bool = False
-    adaptive_min_hz: int = 15
-    adaptive_max_hz: int = 60
-
 
 class RuntimeConfigManager:
     """
-    Manages runtime configuration.
+    Manages runtime configuration with OpenFeature integration.
 
-    Phase 43: Simple configuration holder with defaults.
-    Phase 44: Integrated with OpenFeature for dynamic flag evaluation.
+    Provides game performance settings (update frequency, countdown timing, etc.)
+    that can be dynamically updated via feature flags from flagd.
     """
 
     def __init__(self):
@@ -149,12 +128,6 @@ class RuntimeConfigManager:
             if hz != self.config.update_frequency_hz:
                 logger.debug(f"Config update: update_frequency_hz = {hz}")
                 self.config.update_frequency_hz = hz
-
-            # Sensitivity mode (LOW, MEDIUM, HIGH)
-            sensitivity = self.flag_client.get_string_value("sensitivity_mode", self.config.sensitivity_mode)
-            if sensitivity != self.config.sensitivity_mode:
-                logger.debug(f"Config update: sensitivity_mode = {sensitivity}")
-                self.config.sensitivity_mode = sensitivity
 
         except Exception as e:
             # Don't crash on flag evaluation failure, just log and keep defaults

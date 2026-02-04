@@ -11,7 +11,8 @@ def test_runtime_config_defaults():
 
     assert isinstance(config, GamePerformanceConfig)
     assert config.update_frequency_hz == 60
-    assert config.sensitivity_mode == "MEDIUM"
+    assert config.countdown_duration_seconds == 3
+    assert config.winner_rainbow_duration_ms == 3000
 
 
 def test_runtime_config_env_overrides():
@@ -34,19 +35,15 @@ def test_runtime_config_flag_updates(mock_get_client):
     # Configure mock evaluations
     # get_integer_value(flag_key, default_value)
     mock_client.get_integer_value.return_value = 30
-    # get_string_value(flag_key, default_value)
-    mock_client.get_string_value.return_value = "HIGH"
 
     manager = RuntimeConfigManager()
     config = manager.get_config()
 
     # Verify mock was called with correct keys
     mock_client.get_integer_value.assert_any_call("update_frequency_hz", 60)
-    mock_client.get_string_value.assert_any_call("sensitivity_mode", "MEDIUM")
 
     # Verify values were updated
     assert config.update_frequency_hz == 30
-    assert config.sensitivity_mode == "HIGH"
 
 
 def test_runtime_config_flag_error_fallback(caplog):
