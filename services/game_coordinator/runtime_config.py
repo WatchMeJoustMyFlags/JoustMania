@@ -49,7 +49,6 @@ class GamePerformanceConfig:
     # Core performance
     # Phase 72: Increased from 30Hz to 60Hz for better responsiveness
     update_frequency_hz: int = 60  # Game loop frequency
-    enable_delta_compression: bool = True
 
     # Countdown duration (seconds) - configurable for faster tests
     # Set COUNTDOWN_DURATION_SECONDS=0 to skip countdown entirely
@@ -59,29 +58,16 @@ class GamePerformanceConfig:
     # Set WINNER_RAINBOW_DURATION_MS=300 for fast tests (default 3000ms = 3s)
     winner_rainbow_duration_ms: int = 3000
 
+    # Countdown phase duration (milliseconds) - each LED phase (red/yellow/green)
+    # This value is shared between game_coordinator (beep timing) and controller_manager (LED timing)
+    # Set COUNTDOWN_PHASE_DURATION_MS to override (default 750ms per phase)
+    countdown_phase_duration_ms: int = 750
+
     # Analytics configuration
     analytics: AnalyticsConfig = field(default_factory=AnalyticsConfig)
 
-    # Monitoring
-    enable_metrics: bool = True
-    enable_tracing: bool = True
-    metrics_interval_sec: int = 5
-
-    # Performance thresholds
-    max_latency_ms: float = 100.0
-    target_cpu_percent: float = 50.0
-
-    # USB/Streaming
-    stream_buffer_size: int = 100
-    usb_check_interval_sec: float = 30.0
-
     # Sensitivity
     sensitivity_mode: str = "MEDIUM"  # SLOW, MEDIUM, FAST
-
-    # Experimental features
-    adaptive_hz: bool = False
-    adaptive_min_hz: int = 15
-    adaptive_max_hz: int = 60
 
 
 class RuntimeConfigManager:
@@ -147,6 +133,15 @@ class RuntimeConfigManager:
                 logger.info(f"Winner rainbow duration overridden to {self.config.winner_rainbow_duration_ms}ms")
             except ValueError:
                 logger.warning(f"Invalid WINNER_RAINBOW_DURATION_MS: {rainbow_env}")
+
+        # Countdown phase duration override (for faster tests or tuning)
+        phase_env = os.environ.get("COUNTDOWN_PHASE_DURATION_MS")
+        if phase_env is not None:
+            try:
+                self.config.countdown_phase_duration_ms = int(phase_env)
+                logger.info(f"Countdown phase duration overridden to {self.config.countdown_phase_duration_ms}ms")
+            except ValueError:
+                logger.warning(f"Invalid COUNTDOWN_PHASE_DURATION_MS: {phase_env}")
 
     def _on_flags_changed(self, event_details):
         """
