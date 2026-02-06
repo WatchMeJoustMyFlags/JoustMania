@@ -21,6 +21,7 @@ from opentelemetry import trace
 from lib.telemetry import SpanAttr, get_tracer
 from lib.types import Games, Sensitivity
 from proto import settings_pb2, settings_pb2_grpc
+from services.settings import metrics
 
 logger = logging.getLogger(__name__)
 
@@ -292,6 +293,7 @@ class SettingsServicer(settings_pb2_grpc.SettingsServiceServicer):
                         event_queue.put_nowait(event)
                         logger.debug(f"Published change to subscriber {sub_id}")
                     except asyncio.QueueFull:
+                        metrics.stream_publish_drops_total.labels(key=key).inc()
                         logger.warning(f"Subscriber {sub_id} queue full, skipping")
                     except Exception as e:
                         logger.error(f"Error publishing to subscriber {sub_id}: {e}")
@@ -424,6 +426,7 @@ class SettingsServicer(settings_pb2_grpc.SettingsServiceServicer):
         # Register subscriber
         async with self.subscriber_lock:
             self.subscribers[subscriber_id] = event_queue
+        metrics.stream_active_subscribers.inc()
 
         try:
             # Stream events to client
@@ -442,3 +445,5 @@ class SettingsServicer(settings_pb2_grpc.SettingsServiceServicer):
                 if subscriber_id in self.subscribers:
                     del self.subscribers[subscriber_id]
                     logger.info(f"Subscriber disconnected: {subscriber_id}")
+            metrics.stream_active_subscribers.dec()
+            metrics.stream_disconnections_total.inc()

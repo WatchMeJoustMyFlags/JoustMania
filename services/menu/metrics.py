@@ -64,3 +64,15 @@ player_ready = Gauge(
     "Player ready status in lobby (1=ready, 0=not ready)",
     ["serial"],
 )
+
+# Stream health metrics (Issue #337)
+stream_publish_drops_total = Counter(
+    "menu_stream_publish_drops_total",
+    "Total menu events dropped due to full subscriber queues",
+    ["event_type"],
+)
+
+stream_disconnections_total = Counter(
+    "menu_stream_disconnections_total",
+    "Total menu event stream disconnections",
+)

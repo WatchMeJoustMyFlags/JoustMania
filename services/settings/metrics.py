@@ -22,3 +22,20 @@ grpc_request_duration_seconds = Histogram(
     ["method"],
     buckets=[0.001, 0.005, 0.010, 0.025, 0.050, 0.100, 0.250, 0.500, 1.0],
 )
+
+# Stream health metrics (Issue #337)
+stream_publish_drops_total = Counter(
+    "settings_stream_publish_drops_total",
+    "Total setting change notifications dropped due to full subscriber queues",
+    ["key"],
+)
+
+stream_active_subscribers = Gauge(
+    "settings_stream_active_subscribers",
+    "Number of active settings change subscribers",
+)
+
+stream_disconnections_total = Counter(
+    "settings_stream_disconnections_total",
+    "Total settings stream disconnections",
+)

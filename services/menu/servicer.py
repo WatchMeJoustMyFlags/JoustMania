@@ -310,6 +310,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             finally:
                 await self.event_publisher.unsubscribe(subscriber_id)
                 metrics.stream_connections_active.dec()
+                metrics.stream_disconnections_total.inc()
 
     # Input handlers
 

@@ -31,6 +31,7 @@ from opentelemetry import trace
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 from proto import game_coordinator_pb2
+from services.game_coordinator import metrics
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,7 @@ class EventBus:
         event_queue: asyncio.Queue = asyncio.Queue(maxsize=max_queue_size)
         async with self._event_lock:
             self._subscribers[subscriber_id] = event_queue
+            metrics.event_bus_active_subscribers.set(len(self._subscribers))
         logger.info(f"New event subscriber: {subscriber_id}")
         return event_queue
 
@@ -94,6 +96,7 @@ class EventBus:
         async with self._event_lock:
             if subscriber_id in self._subscribers:
                 del self._subscribers[subscriber_id]
+                metrics.event_bus_active_subscribers.set(len(self._subscribers))
                 logger.info(f"Event subscriber removed: {subscriber_id}")
                 return True
         return False
@@ -150,8 +153,10 @@ class EventBus:
                 event_queue.put_nowait(event)
                 logger.debug(f"Published {event_type} to subscriber {sub_id}")
             except asyncio.QueueFull:
+                metrics.event_bus_publish_drops_total.labels(event_type=event_type).inc()
                 logger.warning(f"Subscriber {sub_id} queue full, skipping event")
             except Exception as e:
+                metrics.event_bus_publish_errors_total.labels(event_type=event_type).inc()
                 logger.error(f"Error publishing to subscriber {sub_id}: {e}")
 
     async def get_subscriber_ids(self) -> list[str]:
