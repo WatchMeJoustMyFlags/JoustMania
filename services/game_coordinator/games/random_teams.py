@@ -172,7 +172,7 @@ class RandomTeamsGame(TeamsGameBase):
         logger.info(f"Initialized {len(self.players)} players across {self.num_teams} teams (random assignment)")
 
         # Publish event with team assignments
-        self.event_publisher(
+        await self.event_publisher(
             "players_initialized",
             {
                 "player_count": len(self.players),
@@ -192,7 +192,7 @@ class RandomTeamsGame(TeamsGameBase):
         """
         logger.info("Starting team formation phase...")
 
-        self.event_publisher(
+        await self.event_publisher(
             "team_formation_start",
             {
                 "duration": TEAM_FORMATION_DURATION,
@@ -216,7 +216,7 @@ class RandomTeamsGame(TeamsGameBase):
         # Set persistent team colors after pulse completes
         await self._set_team_colors(pulse_effect=False, duration_ms=0)
 
-        self.event_publisher("team_formation_end", {})
+        await self.event_publisher("team_formation_end", {})
         logger.info("Team formation complete")
 
     def _get_additional_phases(self) -> list:

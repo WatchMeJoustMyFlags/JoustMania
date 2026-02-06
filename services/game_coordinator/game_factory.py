@@ -81,7 +81,7 @@ class GameFactory:
         game_name: str,
         controller_manager_client,
         settings_client,
-        event_publisher: Callable[[str, dict], None],
+        event_publisher: Callable[[str, dict], Any],
         audio_client,
         game_id: str,
         initial_players: list,

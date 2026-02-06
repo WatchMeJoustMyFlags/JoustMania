@@ -86,7 +86,7 @@ class FFAGame(BaseGameMode):
             player.span = self._create_player_lifecycle_span(serial, game_context)
             logger.debug(f"Started lifecycle span for player {serial}")
 
-    def _check_win_condition(self) -> bool:
+    async def _check_win_condition(self) -> bool:
         """
         Check if game has a winner (last player standing).
 
@@ -101,12 +101,12 @@ class FFAGame(BaseGameMode):
                 winner = alive_players[0]
                 logger.info(f"Winner: {winner.serial}")
 
-                self.event_publisher(GameEvent.GAME_WINNER, {"serial": winner.serial})
+                await self.event_publisher(GameEvent.GAME_WINNER, {"serial": winner.serial})
 
             elif len(alive_players) == 0:
                 logger.info("No winner - all players died simultaneously")
 
-                self.event_publisher(GameEvent.GAME_TIE, {})
+                await self.event_publisher(GameEvent.GAME_TIE, {})
 
             return True
 
@@ -258,7 +258,7 @@ class FFAGame(BaseGameMode):
                 summary["survival_time_ms"] = player.analytics.total_time_ms
 
                 # Publish player analytics event
-                self.event_publisher(GameEvent.PLAYER_ANALYTICS, summary)
+                await self.event_publisher(GameEvent.PLAYER_ANALYTICS, summary)
 
                 # Update Prometheus metrics
                 metrics.game_analytics_samples_total.labels(game_mode=self.get_game_name()).inc(
@@ -274,7 +274,7 @@ class FFAGame(BaseGameMode):
                 )
 
         self.state = GameState.ENDED
-        self.event_publisher(
+        await self.event_publisher(
             GameEvent.GAME_ENDED,
             {
                 "game_id": self.game_id,

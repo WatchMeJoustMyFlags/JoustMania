@@ -172,7 +172,7 @@ class ZombieGame(BaseGameMode):
             f"{len(self.zombie_serials)} zombies. Game duration: {self.game_duration:.0f}s"
         )
 
-        self.event_publisher(
+        await self.event_publisher(
             "players_initialized",
             {
                 "player_count": num_players,
@@ -227,7 +227,7 @@ class ZombieGame(BaseGameMode):
         """
         logger.info("Starting zombie intro phase...")
 
-        self.event_publisher(
+        await self.event_publisher(
             "zombie_intro_start",
             {
                 "zombie_count": len(self.zombie_serials),
@@ -257,7 +257,7 @@ class ZombieGame(BaseGameMode):
                 return
             await asyncio.sleep(0.1)
 
-        self.event_publisher("zombie_intro_end", {})
+        await self.event_publisher("zombie_intro_end", {})
         logger.info("Zombie intro phase complete")
 
     def _get_effective_thresholds(self, player: Player) -> tuple[float, float]:
@@ -287,7 +287,7 @@ class ZombieGame(BaseGameMode):
             for seconds in announcements:
                 if abs(self.time_remaining - seconds) < 0.5:
                     logger.info(f"Time announcement: {seconds} seconds remaining")
-                    self.event_publisher("time_announcement", {"seconds_remaining": seconds})
+                    await self.event_publisher("time_announcement", {"seconds_remaining": seconds})
                     # Play time announcement sound (Zombie/vox/ directory)
                     if seconds == 60:
                         await self._play_sound(Sound.VOX_ZOMBIE_ONE_MINUTE, priority=2)
@@ -301,7 +301,7 @@ class ZombieGame(BaseGameMode):
         if self.running and self.time_remaining <= 0:
             logger.info("Time's up! Checking for human survivors...")
 
-    def _check_win_condition(self) -> bool:
+    async def _check_win_condition(self) -> bool:
         """
         Check if the game should end.
 
@@ -314,7 +314,7 @@ class ZombieGame(BaseGameMode):
         # Check if all humans converted
         if len(alive_humans) == 0:
             logger.info("All humans converted! Zombies win!")
-            self.event_publisher(
+            await self.event_publisher(
                 "zombie_winner",
                 {
                     "winner": "zombies",
@@ -326,7 +326,7 @@ class ZombieGame(BaseGameMode):
         # Check if time expired
         if self.time_remaining <= 0:
             logger.info(f"Time's up! Humans win with {len(alive_humans)} survivors!")
-            self.event_publisher(
+            await self.event_publisher(
                 "zombie_winner",
                 {
                     "winner": "humans",
@@ -419,7 +419,7 @@ class ZombieGame(BaseGameMode):
                     },
                 )
 
-            self.event_publisher(
+            await self.event_publisher(
                 "human_converted",
                 {
                     "serial": serial,
@@ -521,7 +521,7 @@ class ZombieGame(BaseGameMode):
                 player.span.end()
 
         self.state = self.state.__class__.ENDED
-        self.event_publisher(
+        await self.event_publisher(
             "game_ended",
             {
                 "game_id": self.game_id,
@@ -581,7 +581,7 @@ class ZombieGame(BaseGameMode):
                 # Emit game_started event (required for integration tests)
                 from lib.types import GameEvent
 
-                self.event_publisher(
+                await self.event_publisher(
                     GameEvent.GAME_STARTED, {"game_id": self.game_id, "player_count": len(self.players)}
                 )
 

@@ -91,7 +91,8 @@ class TestStartGameValidation:
         """Create servicer for testing."""
         return GameCoordinatorServicer()
 
-    def test_rejects_less_than_two_players(self, servicer):
+    @pytest.mark.asyncio
+    async def test_rejects_less_than_two_players(self, servicer):
         """Should reject game start with less than 2 players."""
         config = game_coordinator_pb2.StartGameConfig(
             game_name="FFA",
@@ -100,12 +101,13 @@ class TestStartGameValidation:
         )
         mock_span = MockSpan()
 
-        success, error = servicer._start_game_from_config(config, mock_span)
+        success, error = await servicer._start_game_from_config(config, mock_span)
 
         assert success is False
         assert "at least 2 players" in error.lower()
 
-    def test_rejects_zero_players(self, servicer):
+    @pytest.mark.asyncio
+    async def test_rejects_zero_players(self, servicer):
         """Should reject game start with zero players."""
         config = game_coordinator_pb2.StartGameConfig(
             game_name="FFA",
@@ -114,12 +116,13 @@ class TestStartGameValidation:
         )
         mock_span = MockSpan()
 
-        success, error = servicer._start_game_from_config(config, mock_span)
+        success, error = await servicer._start_game_from_config(config, mock_span)
 
         assert success is False
         assert "at least 2 players" in error.lower()
 
-    def test_accepts_two_players(self, servicer):
+    @pytest.mark.asyncio
+    async def test_accepts_two_players(self, servicer):
         """Should accept game start with exactly 2 players."""
         config = game_coordinator_pb2.StartGameConfig(
             game_name="FFA",
@@ -133,12 +136,13 @@ class TestStartGameValidation:
 
         # Patch the background thread to not actually start
         with patch.object(servicer, "_run_game_loop_threaded"):
-            success, game_id = servicer._start_game_from_config(config, mock_span)
+            success, game_id = await servicer._start_game_from_config(config, mock_span)
 
         assert success is True
         assert game_id.startswith("game_")
 
-    def test_accepts_many_players(self, servicer):
+    @pytest.mark.asyncio
+    async def test_accepts_many_players(self, servicer):
         """Should accept game start with many players."""
         config = game_coordinator_pb2.StartGameConfig(
             game_name="FFA",
@@ -148,12 +152,13 @@ class TestStartGameValidation:
         mock_span = MockSpan()
 
         with patch.object(servicer, "_run_game_loop_threaded"):
-            success, game_id = servicer._start_game_from_config(config, mock_span)
+            success, game_id = await servicer._start_game_from_config(config, mock_span)
 
         assert success is True
         assert len(servicer.players) == 8
 
-    def test_rejects_start_when_already_running(self, servicer):
+    @pytest.mark.asyncio
+    async def test_rejects_start_when_already_running(self, servicer):
         """Should reject second game start when game already running."""
         # First game start
         config1 = game_coordinator_pb2.StartGameConfig(
@@ -167,7 +172,7 @@ class TestStartGameValidation:
         mock_span = MockSpan()
 
         with patch.object(servicer, "_run_game_loop_threaded"):
-            success1, _ = servicer._start_game_from_config(config1, mock_span)
+            success1, _ = await servicer._start_game_from_config(config1, mock_span)
             assert success1 is True
 
         # Simulate game is running
@@ -183,12 +188,13 @@ class TestStartGameValidation:
             sensitivity=2,
         )
 
-        success2, error = servicer._start_game_from_config(config2, mock_span)
+        success2, error = await servicer._start_game_from_config(config2, mock_span)
 
         assert success2 is False
         assert "already in progress" in error.lower()
 
-    def test_rejects_start_when_starting(self, servicer):
+    @pytest.mark.asyncio
+    async def test_rejects_start_when_starting(self, servicer):
         """Should reject game start when another game is starting."""
         servicer.game_state = game_coordinator_pb2.GameState.STARTING
 
@@ -202,12 +208,13 @@ class TestStartGameValidation:
         )
         mock_span = MockSpan()
 
-        success, error = servicer._start_game_from_config(config, mock_span)
+        success, error = await servicer._start_game_from_config(config, mock_span)
 
         assert success is False
         assert "already in progress" in error.lower()
 
-    def test_generates_unique_game_id(self, servicer):
+    @pytest.mark.asyncio
+    async def test_generates_unique_game_id(self, servicer):
         """Should generate unique game IDs."""
         config = game_coordinator_pb2.StartGameConfig(
             game_name="FFA",
@@ -220,7 +227,7 @@ class TestStartGameValidation:
         mock_span = MockSpan()
 
         with patch.object(servicer, "_run_game_loop_threaded"):
-            success, game_id = servicer._start_game_from_config(config, mock_span)
+            success, game_id = await servicer._start_game_from_config(config, mock_span)
 
         assert success is True
         assert game_id is not None
@@ -228,7 +235,8 @@ class TestStartGameValidation:
         # Game ID should contain timestamp
         assert servicer.game_id == game_id
 
-    def test_stores_game_config(self, servicer):
+    @pytest.mark.asyncio
+    async def test_stores_game_config(self, servicer):
         """Should store game configuration on start."""
         config = game_coordinator_pb2.StartGameConfig(
             game_name="JoustTeams",
@@ -242,7 +250,7 @@ class TestStartGameValidation:
         mock_span = MockSpan()
 
         with patch.object(servicer, "_run_game_loop_threaded"):
-            servicer._start_game_from_config(config, mock_span)
+            await servicer._start_game_from_config(config, mock_span)
 
         assert servicer.game_name == "JoustTeams"
         assert len(servicer.players) == 2
@@ -498,7 +506,8 @@ class TestGameNameHandling:
         """Create servicer for testing."""
         return GameCoordinatorServicer()
 
-    def test_valid_game_names_accepted(self, servicer):
+    @pytest.mark.asyncio
+    async def test_valid_game_names_accepted(self, servicer):
         """Known game types should be accepted."""
         valid_names = ["FFA", "Teams", "Zombie", "Werewolf", "Tournament"]
 
@@ -518,12 +527,13 @@ class TestGameNameHandling:
             servicer.game_running = False
 
             with patch.object(servicer, "_run_game_loop_threaded"):
-                success, result = servicer._start_game_from_config(config, mock_span)
+                success, result = await servicer._start_game_from_config(config, mock_span)
 
             # Valid game names should succeed initial validation
             assert success is True, f"Game type {name} should be accepted"
 
-    def test_game_name_stored_correctly(self, servicer):
+    @pytest.mark.asyncio
+    async def test_game_name_stored_correctly(self, servicer):
         """Game name should be stored in servicer."""
         config = game_coordinator_pb2.StartGameConfig(
             game_name="FFA",
@@ -536,7 +546,7 @@ class TestGameNameHandling:
         mock_span = MockSpan()
 
         with patch.object(servicer, "_run_game_loop_threaded"):
-            servicer._start_game_from_config(config, mock_span)
+            await servicer._start_game_from_config(config, mock_span)
 
         assert servicer.game_name == "FFA"
 
@@ -549,7 +559,8 @@ class TestStateTransitionRobustness:
         """Create servicer for testing."""
         return GameCoordinatorServicer()
 
-    def test_transition_from_idle_to_starting(self, servicer):
+    @pytest.mark.asyncio
+    async def test_transition_from_idle_to_starting(self, servicer):
         """Servicer should transition from IDLE to STARTING on game start."""
         assert servicer.game_state == game_coordinator_pb2.GameState.IDLE
 
@@ -564,7 +575,7 @@ class TestStateTransitionRobustness:
         mock_span = MockSpan()
 
         with patch.object(servicer, "_run_game_loop_threaded"):
-            servicer._start_game_from_config(config, mock_span)
+            await servicer._start_game_from_config(config, mock_span)
 
         # State should be STARTING (or transitioning)
         assert servicer.game_state in [
@@ -611,7 +622,8 @@ class TestDuplicatePlayerHandling:
         """Create servicer for testing."""
         return GameCoordinatorServicer()
 
-    def test_duplicate_serial_in_players(self, servicer):
+    @pytest.mark.asyncio
+    async def test_duplicate_serial_in_players(self, servicer):
         """StartGame with duplicate serials should be handled."""
         config = game_coordinator_pb2.StartGameConfig(
             game_name="FFA",
@@ -625,7 +637,7 @@ class TestDuplicatePlayerHandling:
         mock_span = MockSpan()
 
         with patch.object(servicer, "_run_game_loop_threaded"):
-            success, result = servicer._start_game_from_config(config, mock_span)
+            success, result = await servicer._start_game_from_config(config, mock_span)
 
         # Implementation may dedupe or fail - either is acceptable
         # Just verify it doesn't crash

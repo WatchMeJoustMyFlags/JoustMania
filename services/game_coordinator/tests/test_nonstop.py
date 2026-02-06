@@ -21,7 +21,7 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService, MockSettingsService
+from conftest import EventCollector, MockControllerManagerService, MockSettingsService, async_noop
 
 from services.game_coordinator.games.nonstop_joust import (
     RESPAWN_DURATION,
@@ -180,7 +180,7 @@ class TestNonstopJoustGameMode:
         game.time_limit = 0
 
         # Should never end
-        assert not game._check_win_condition()
+        assert not await game._check_win_condition()
 
     @pytest.mark.asyncio
     async def test_check_win_condition_time_not_expired(self, nonstop_game):
@@ -194,7 +194,7 @@ class TestNonstopJoustGameMode:
         game.start_time = time.time()  # Just started
 
         # Time hasn't expired
-        assert not game._check_win_condition()
+        assert not await game._check_win_condition()
 
     @pytest.mark.asyncio
     async def test_check_win_condition_time_expired(self, nonstop_game):
@@ -208,7 +208,7 @@ class TestNonstopJoustGameMode:
         game.start_time = time.time() - 70  # 70 seconds ago
 
         # Time expired
-        assert game._check_win_condition()
+        assert await game._check_win_condition()
 
     @pytest.mark.asyncio
     async def test_nonstop_player_dataclass(self, nonstop_game):
@@ -361,7 +361,7 @@ class TestNonstopSpawnProtection:
         game = NonstopJoustGame(
             controller_manager_client=mock_controller_manager,
             settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_nonstop_protection",
         )
@@ -483,7 +483,7 @@ class TestNonstopSettings:
         game = NonstopJoustGame(
             controller_manager_client=mock_controller_manager,
             settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_nonstop_settings",
         )
@@ -522,7 +522,7 @@ class TestNonstopRespawnCountdown:
         game = NonstopJoustGame(
             controller_manager_client=mock_controller_manager,
             settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_nonstop_countdown",
         )

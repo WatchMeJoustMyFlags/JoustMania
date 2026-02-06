@@ -20,7 +20,7 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService, MockSettingsService
+from conftest import EventCollector, MockControllerManagerService, MockSettingsService, async_noop
 
 from services.game_coordinator.games.zombie import (
     HUMAN_COLOR,
@@ -127,7 +127,7 @@ class TestZombieGameMode:
 
         # Initially no win
         game.time_remaining = 100  # Plenty of time
-        assert not game._check_win_condition()
+        assert not await game._check_win_condition()
 
         # Convert all humans to zombies
         for serial in list(game.human_serials):
@@ -137,7 +137,7 @@ class TestZombieGameMode:
         game.human_serials.clear()
 
         # Zombies should win
-        assert game._check_win_condition()
+        assert await game._check_win_condition()
 
         # Verify zombie_winner event
         winner_events = event_collector.get_events_of_type("zombie_winner")
@@ -155,7 +155,7 @@ class TestZombieGameMode:
         game.time_remaining = 0
 
         # Humans should win (still have humans alive)
-        assert game._check_win_condition()
+        assert await game._check_win_condition()
 
         # Verify zombie_winner event
         winner_events = event_collector.get_events_of_type("zombie_winner")
@@ -173,7 +173,7 @@ class TestZombieGameMode:
         game.time_remaining = 100
 
         # Game should continue
-        assert not game._check_win_condition()
+        assert not await game._check_win_condition()
 
     @pytest.mark.asyncio
     async def test_human_conversion_updates_lists(self, zombie_game):
@@ -350,7 +350,7 @@ class TestZombieThresholds:
         game = ZombieGame(
             controller_manager_client=mock_controller_manager,
             settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_zombie_thresh",
         )
@@ -414,7 +414,7 @@ class TestZombieEdgeCases:
         game = ZombieGame(
             controller_manager_client=mock_controller_manager,
             settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_min_human",
         )
@@ -434,7 +434,7 @@ class TestZombieEdgeCases:
         game = ZombieGame(
             controller_manager_client=mock_controller_manager,
             settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_name",
         )

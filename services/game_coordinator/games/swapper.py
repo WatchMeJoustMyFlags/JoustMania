@@ -100,7 +100,7 @@ class SwapperGame(TeamsGameBase):
 
         # Publish event with team assignments
         team_assignments = {serial: player.team for serial, player in self.players.items()}
-        self.event_publisher(
+        await self.event_publisher(
             "players_initialized",
             {
                 "player_count": len(self.players),
@@ -244,7 +244,7 @@ class SwapperGame(TeamsGameBase):
         logger.debug(f"Player {serial} respawned on team {new_team}")
 
         # Publish swap event
-        self.event_publisher(
+        await self.event_publisher(
             "player_swapped",
             {
                 "serial": serial,
@@ -274,7 +274,7 @@ class SwapperGame(TeamsGameBase):
             counts[player.team] = counts.get(player.team, 0) + 1
         return counts
 
-    def _check_win_condition(self) -> bool:
+    async def _check_win_condition(self) -> bool:
         """
         Check if all players are on the same team.
 
@@ -298,7 +298,7 @@ class SwapperGame(TeamsGameBase):
                 f"Team {winning_team} ({team_name}) wins! Winners: {len(winners)}, Excluded: {self.last_death_serial}"
             )
 
-            self.event_publisher(
+            await self.event_publisher(
                 "swapper_winner",
                 {
                     "team": winning_team,
@@ -397,7 +397,7 @@ class SwapperGame(TeamsGameBase):
                 team.span.end()
 
         self.state = self.state.__class__.ENDED
-        self.event_publisher(
+        await self.event_publisher(
             "game_ended",
             {
                 "game_id": self.game_id,

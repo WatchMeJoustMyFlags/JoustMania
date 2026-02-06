@@ -130,14 +130,14 @@ class TestTeamsGameMode:
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
         # Both teams alive - no winner
-        assert not game._check_win_condition()
+        assert not await game._check_win_condition()
 
         # Kill all players on team 1
         game.players["mock_controller_1"].alive = False
         game.players["mock_controller_3"].alive = False
 
         # Now team 0 wins
-        assert game._check_win_condition()
+        assert await game._check_win_condition()
 
     @pytest.mark.asyncio
     async def test_win_condition_both_teams_alive(self, teams_game):
@@ -152,7 +152,7 @@ class TestTeamsGameMode:
         game.players["mock_controller_1"].alive = False  # Team 1
 
         # Still both teams alive - no winner
-        assert not game._check_win_condition()
+        assert not await game._check_win_condition()
 
     @pytest.mark.asyncio
     async def test_team_eliminated_detection(self, teams_game):
@@ -189,7 +189,7 @@ class TestTeamsGameMode:
         game.players["mock_controller_3"].alive = False
 
         # Check win condition (should publish event)
-        assert game._check_win_condition()
+        assert await game._check_win_condition()
 
         # Verify team_winner event
         winner_events = event_collector.get_events_of_type("team_winner")

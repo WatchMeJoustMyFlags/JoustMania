@@ -149,7 +149,7 @@ class WerewolfGame(BaseGameMode):
         )
 
         # Publish event (not revealing who is werewolf)
-        self.event_publisher(
+        await self.event_publisher(
             "players_initialized",
             {
                 "player_count": num_players,
@@ -203,7 +203,7 @@ class WerewolfGame(BaseGameMode):
         """
         logger.info("Starting werewolf intro phase...")
 
-        self.event_publisher(
+        await self.event_publisher(
             "werewolf_intro_start",
             {"werewolf_count": len(self.werewolf_serials)},
         )
@@ -235,7 +235,7 @@ class WerewolfGame(BaseGameMode):
                 return
             await asyncio.sleep(0.1)
 
-        self.event_publisher("werewolf_intro_end", {})
+        await self.event_publisher("werewolf_intro_end", {})
         logger.info("Werewolf intro phase complete")
 
     async def _set_all_colors(self, color: tuple):
@@ -265,7 +265,7 @@ class WerewolfGame(BaseGameMode):
         logger.info("Revealing werewolves!")
         self.revealed = True
 
-        self.event_publisher("werewolf_reveal", {"werewolf_serials": self.werewolf_serials})
+        await self.event_publisher("werewolf_reveal", {"werewolf_serials": self.werewolf_serials})
 
         # Play reveal sound (Joust/vox/)
         await self._play_sound(Sound.VOX_WEREWOLF_REVEAL, priority=2)
@@ -323,7 +323,7 @@ class WerewolfGame(BaseGameMode):
         # Use standard thresholds from sensitivity
         return self.sensitivity.value
 
-    def _check_win_condition(self) -> bool:
+    async def _check_win_condition(self) -> bool:
         """
         Check if one team has won.
 
@@ -347,7 +347,7 @@ class WerewolfGame(BaseGameMode):
 
             logger.info(f"{winner.capitalize()} win! {len(winners)} survivors")
 
-            self.event_publisher(
+            await self.event_publisher(
                 "werewolf_winner",
                 {
                     "winner": winner,
@@ -455,7 +455,7 @@ class WerewolfGame(BaseGameMode):
                 player.span.end()
 
         self.state = self.state.__class__.ENDED
-        self.event_publisher(
+        await self.event_publisher(
             "game_ended",
             {
                 "game_id": self.game_id,
@@ -522,7 +522,7 @@ class WerewolfGame(BaseGameMode):
                 # Emit game_started event (required for integration tests)
                 from lib.types import GameEvent
 
-                self.event_publisher(
+                await self.event_publisher(
                     GameEvent.GAME_STARTED, {"game_id": self.game_id, "player_count": len(self.players)}
                 )
 

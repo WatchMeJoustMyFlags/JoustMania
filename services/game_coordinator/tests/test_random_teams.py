@@ -139,7 +139,7 @@ class TestRandomTeamsGameMode:
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
         # Both teams alive initially - no winner
-        assert not game._check_win_condition()
+        assert not await game._check_win_condition()
 
         # Kill all players on team 0
         for _serial, player in game.players.items():
@@ -149,7 +149,7 @@ class TestRandomTeamsGameMode:
         # Now check - if any team 1 players exist, team 1 wins
         alive_teams = game._get_alive_teams()
         if len(alive_teams) == 1:
-            assert game._check_win_condition()
+            assert await game._check_win_condition()
 
     @pytest.mark.asyncio
     async def test_get_alive_teams(self, random_teams_game):
