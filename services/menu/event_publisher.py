@@ -100,6 +100,7 @@ class EventPublisher:
                         event_queue.put_nowait(event)
                         logger.debug(f"Published {event_type} to subscriber {sub_id}")
                     except asyncio.QueueFull:
+                        self._metrics.stream_publish_drops_total.labels(event_type=event_type).inc()
                         logger.warning(f"Subscriber {sub_id} queue full, skipping event")
                     except Exception as e:
                         logger.error(f"Error publishing to subscriber {sub_id}: {e}")
