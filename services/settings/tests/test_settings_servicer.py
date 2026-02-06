@@ -428,3 +428,345 @@ class TestSettingsServicerRPCsAsync:
         event = await sub_queue.get()
         assert event.key == "sensitivity"
         assert event.new_value == "4"
+
+
+class TestFileIOEdgeCases:
+    """Test file I/O edge cases for settings persistence."""
+
+    @pytest.fixture
+    def temp_settings_file(self):
+        fd, path = tempfile.mkstemp(suffix=".yaml")
+        os.close(fd)
+        yield path
+        if os.path.exists(path):
+            os.remove(path)
+        if os.path.exists(path + ".tmp"):
+            os.remove(path + ".tmp")
+
+    def test_corrupt_yaml_falls_back_to_defaults(self, temp_settings_file):
+        """Test that corrupt YAML causes fallback to defaults."""
+        with open(temp_settings_file, "w") as f:
+            f.write("{{invalid yaml: [")
+
+        servicer = SettingsServicer(settings_file=temp_settings_file)
+
+        defaults = servicer.get_default_settings()
+        assert servicer.settings == defaults
+
+    def test_empty_yaml_file_uses_defaults(self, temp_settings_file):
+        """Test that an empty YAML file uses defaults."""
+        with open(temp_settings_file, "w") as f:
+            f.write("")
+
+        servicer = SettingsServicer(settings_file=temp_settings_file)
+
+        defaults = servicer.get_default_settings()
+        assert servicer.settings == defaults
+
+    def test_extra_keys_in_yaml_ignored(self, temp_settings_file):
+        """Test that extra keys in YAML are ignored, valid ones loaded."""
+        test_settings = {"extra_key": "value", "sensitivity": 3}
+        with open(temp_settings_file, "w") as f:
+            yaml.dump(test_settings, f)
+
+        servicer = SettingsServicer(settings_file=temp_settings_file)
+
+        assert "extra_key" not in servicer.settings
+        assert servicer.settings["sensitivity"] == 3
+
+    def test_save_creates_file_if_missing(self, temp_settings_file):
+        """Test that save creates the file if it was missing."""
+        if os.path.exists(temp_settings_file):
+            os.remove(temp_settings_file)
+
+        servicer = SettingsServicer(settings_file=temp_settings_file)
+
+        assert os.path.exists(temp_settings_file)
+        with open(temp_settings_file) as f:
+            saved = yaml.safe_load(f)
+        assert saved["sensitivity"] == servicer.settings["sensitivity"]
+
+    def test_permission_error_handled_gracefully(self, temp_settings_file):
+        """Test that PermissionError on load doesn't crash, uses defaults."""
+        from unittest.mock import patch
+
+        with patch("builtins.open", side_effect=PermissionError("Permission denied")):
+            servicer = SettingsServicer(settings_file=temp_settings_file)
+
+        defaults = servicer.get_default_settings()
+        assert servicer.settings == defaults
+
+
+class TestValidationEdgeCases:
+    """Test validation boundary conditions and edge cases."""
+
+    @pytest.fixture
+    def servicer(self):
+        fd, path = tempfile.mkstemp(suffix=".yaml")
+        os.close(fd)
+        servicer = SettingsServicer(settings_file=path)
+        yield servicer
+        if os.path.exists(path):
+            os.remove(path)
+        if os.path.exists(path + ".tmp"):
+            os.remove(path + ".tmp")
+
+    def test_sensitivity_boundary_min(self, servicer):
+        """Test sensitivity at minimum boundary (0) is valid."""
+        valid, error = servicer.validate_setting_value("sensitivity", 0)
+        assert valid is True
+        assert error == ""
+
+    def test_sensitivity_boundary_max(self, servicer):
+        """Test sensitivity at maximum boundary (4) is valid."""
+        valid, error = servicer.validate_setting_value("sensitivity", 4)
+        assert valid is True
+        assert error == ""
+
+    def test_num_teams_boundary_min(self, servicer):
+        """Test num_teams at minimum boundary (2) is valid."""
+        valid, error = servicer.validate_setting_value("num_teams", 2)
+        assert valid is True
+        assert error == ""
+
+    def test_num_teams_boundary_max(self, servicer):
+        """Test num_teams at maximum boundary (6) is valid."""
+        valid, error = servicer.validate_setting_value("num_teams", 6)
+        assert valid is True
+        assert error == ""
+
+    def test_nonstop_time_limit_boundary_max(self, servicer):
+        """Test nonstop_time_limit at maximum boundary (3600) is valid."""
+        valid, error = servicer.validate_setting_value("nonstop_time_limit", 3600)
+        assert valid is True
+        assert error == ""
+
+    def test_negative_int_fails_validation(self, servicer):
+        """Test that negative integer fails validation with below minimum."""
+        valid, error = servicer.validate_setting_value("sensitivity", -1)
+        assert valid is False
+        assert "below minimum" in error.lower()
+
+    def test_empty_string_rejected_for_menu_voice(self, servicer):
+        """Test that empty string is rejected for menu_voice."""
+        valid, error = servicer.validate_setting_value("menu_voice", "")
+        assert valid is False
+        assert "not in allowed values" in error.lower()
+
+    def test_whitespace_string_rejected_for_menu_voice(self, servicer):
+        """Test that whitespace string is rejected for menu_voice."""
+        valid, error = servicer.validate_setting_value("menu_voice", "  ")
+        assert valid is False
+        assert "not in allowed values" in error.lower()
+
+    def test_empty_list_valid_for_random_modes(self, servicer):
+        """Test that empty list is valid for random_modes."""
+        valid, error = servicer.validate_setting_value("random_modes", [])
+        assert valid is True
+        assert error == ""
+
+    def test_excluded_games_rejected_in_random_modes(self, servicer):
+        """Test that JoustTeams is rejected in random_modes."""
+        valid, error = servicer.validate_setting_value("random_modes", ["JoustTeams"])
+        assert valid is False
+        assert "invalid game mode" in error.lower()
+
+    def test_random_rejected_in_random_modes(self, servicer):
+        """Test that Random is rejected in random_modes."""
+        valid, error = servicer.validate_setting_value("random_modes", ["Random"])
+        assert valid is False
+        assert "invalid game mode" in error.lower()
+
+
+@pytest.mark.asyncio
+class TestMultipleSubscribers:
+    """Test multiple subscriber behavior."""
+
+    @pytest.fixture
+    def servicer(self):
+        fd, path = tempfile.mkstemp(suffix=".yaml")
+        os.close(fd)
+        servicer = SettingsServicer(settings_file=path)
+        yield servicer
+        if os.path.exists(path):
+            os.remove(path)
+        if os.path.exists(path + ".tmp"):
+            os.remove(path + ".tmp")
+
+    async def test_three_subscribers_all_receive_event(self, servicer):
+        """Test that all three subscribers receive a published event."""
+        queues = []
+        for i in range(3):
+            q = asyncio.Queue(maxsize=10)
+            servicer.subscribers[f"sub_{i}"] = q
+            queues.append(q)
+
+        await servicer.publish_change("sensitivity", 2, 3, "test")
+
+        for i, q in enumerate(queues):
+            assert not q.empty(), f"Subscriber sub_{i} did not receive event"
+            event = await q.get()
+            assert event.key == "sensitivity"
+            assert event.old_value == "2"
+            assert event.new_value == "3"
+
+    async def test_broken_subscriber_cleaned_up(self, servicer):
+        """Test that a broken subscriber is removed after publish."""
+        good_queue = asyncio.Queue(maxsize=10)
+        servicer.subscribers["good"] = good_queue
+
+        broken_queue = Mock()
+        broken_queue.put_nowait = Mock(side_effect=Exception("broken"))
+        servicer.subscribers["broken"] = broken_queue
+
+        await servicer.publish_change("sensitivity", 2, 3, "test")
+
+        assert "broken" not in servicer.subscribers
+        assert "good" in servicer.subscribers
+        assert not good_queue.empty()
+        event = await good_queue.get()
+        assert event.key == "sensitivity"
+
+    async def test_subscriber_removed_after_disconnect(self, servicer):
+        """Test that publishing after subscriber removal causes no error."""
+        q = asyncio.Queue(maxsize=10)
+        servicer.subscribers["temp"] = q
+
+        del servicer.subscribers["temp"]
+
+        await servicer.publish_change("sensitivity", 2, 3, "test")
+        assert "temp" not in servicer.subscribers
+
+
+@pytest.mark.asyncio
+class TestSubscribeToChangesStreaming:
+    """Test the SubscribeToChanges streaming RPC."""
+
+    @pytest.fixture
+    def servicer(self):
+        fd, path = tempfile.mkstemp(suffix=".yaml")
+        os.close(fd)
+        servicer = SettingsServicer(settings_file=path)
+        yield servicer
+        if os.path.exists(path):
+            os.remove(path)
+        if os.path.exists(path + ".tmp"):
+            os.remove(path + ".tmp")
+
+    async def test_async_generator_yields_events(self, servicer):
+        """Test that SubscribeToChanges yields events from the queue."""
+        call_count = 0
+
+        mock_context = Mock()
+
+        def mock_cancelled():
+            nonlocal call_count
+            call_count += 1
+            return call_count > 1
+
+        mock_context.cancelled = mock_cancelled
+
+        request = settings_pb2.SubscribeRequest()
+
+        async def inject_event():
+            for _ in range(50):
+                if len(servicer.subscribers) > 0:
+                    sub_id = next(iter(servicer.subscribers))
+                    event = settings_pb2.SettingChangeEvent(
+                        key="sensitivity",
+                        old_value="2",
+                        new_value="3",
+                        source="test",
+                    )
+                    servicer.subscribers[sub_id].put_nowait(event)
+                    return
+                await asyncio.sleep(0.02)
+
+        task = asyncio.create_task(inject_event())
+
+        events = []
+        async for event in servicer.SubscribeToChanges(request, mock_context):
+            events.append(event)
+            break
+
+        await task
+
+        assert len(events) == 1
+        assert events[0].key == "sensitivity"
+        assert events[0].new_value == "3"
+
+    async def test_subscriber_cleaned_up_on_context_cancel(self, servicer):
+        """Test subscriber is removed when context is cancelled."""
+        mock_context = Mock()
+        mock_context.cancelled = Mock(return_value=True)
+
+        request = settings_pb2.SubscribeRequest()
+
+        events = []
+        async for event in servicer.SubscribeToChanges(request, mock_context):
+            events.append(event)
+
+        assert len(events) == 0
+        assert len(servicer.subscribers) == 0
+
+
+@pytest.mark.asyncio
+class TestConcurrentUpdates:
+    """Test concurrent update behavior."""
+
+    @pytest.fixture
+    def temp_settings_file(self):
+        fd, path = tempfile.mkstemp(suffix=".yaml")
+        os.close(fd)
+        yield path
+        if os.path.exists(path):
+            os.remove(path)
+        if os.path.exists(path + ".tmp"):
+            os.remove(path + ".tmp")
+
+    @pytest.fixture
+    def servicer(self, temp_settings_file):
+        return SettingsServicer(settings_file=temp_settings_file)
+
+    @pytest.fixture
+    def mock_context(self):
+        context = Mock()
+        context.is_active = Mock(return_value=True)
+        context.cancelled = Mock(return_value=False)
+        return context
+
+    async def test_concurrent_updates_all_succeed(self, servicer, mock_context):
+        """Test that concurrent updates all succeed."""
+        values = ["0", "1", "2", "3", "4"]
+
+        async def update(val):
+            request = settings_pb2.UpdateSettingRequest(key="sensitivity", value=val, source="test")
+            return await servicer.UpdateSetting(request, mock_context)
+
+        responses = await asyncio.gather(*[update(v) for v in values])
+
+        for resp in responses:
+            assert resp.success is True
+
+        assert servicer.settings["sensitivity"] in [0, 1, 2, 3, 4]
+
+    async def test_event_published_for_each_update(self, servicer, mock_context):
+        """Test that each sequential update publishes an event."""
+        sub_queue = asyncio.Queue()
+        servicer.subscribers["test"] = sub_queue
+
+        values = ["0", "3", "4"]
+        for val in values:
+            request = settings_pb2.UpdateSettingRequest(key="sensitivity", value=val, source="test")
+            await servicer.UpdateSetting(request, mock_context)
+
+        assert sub_queue.qsize() == 3
+
+        events = []
+        while not sub_queue.empty():
+            events.append(await sub_queue.get())
+
+        assert events[0].key == "sensitivity"
+        assert events[0].new_value == "0"
+        assert events[1].new_value == "3"
+        assert events[2].new_value == "4"
