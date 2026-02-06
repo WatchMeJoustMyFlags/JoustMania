@@ -22,7 +22,7 @@
 #
 # Notes:
 # - All images default to ghcr.io/watchmejoustmyflags/joustmania registry
-# - Use IMAGE_TAG to specify version (e.g., IMAGE_TAG=dev-refactor docker compose up)
+# - Use IMAGE_TAG to specify version (e.g., IMAGE_TAG=main docker compose up)
 # - Local builds tag images with GHCR names for consistency
 
 services:

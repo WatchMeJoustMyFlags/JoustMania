@@ -75,9 +75,9 @@ ghcr.io/watchmejoustmyflags/joustmania/<service>:<tag>
 Controls which image tag to use. Defaults to `latest`.
 
 ```bash
-# Use dev-refactor branch images
-IMAGE_TAG=dev-refactor docker compose pull
-IMAGE_TAG=dev-refactor docker compose up -d
+# Use main branch images
+IMAGE_TAG=main docker compose pull
+IMAGE_TAG=main docker compose up -d
 ```
 
 ### BUILDER_IMAGE / PSMOVE_BUILDER_IMAGE
@@ -137,7 +137,7 @@ make test-debug
 
 # Test with prebuilt GHCR images
 make test-pulled
-IMAGE_TAG=dev-refactor make test-pulled
+IMAGE_TAG=main make test-pulled
 ```
 
 ### CI/CD Workflow

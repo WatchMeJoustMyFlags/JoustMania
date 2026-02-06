@@ -4,7 +4,7 @@
 # Build the builder first: docker build -t ghcr.io/watchmejoustmyflags/joustmania/builder:latest images/builder/
 #
 # Phase 75: Builder image can be overridden for CI/CD
-# --build-arg BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:dev-refactor
+# --build-arg BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:main
 
 # Builder image - override with --build-arg BUILDER_IMAGE=...
 ARG BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:latest
