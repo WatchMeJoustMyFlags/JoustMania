@@ -28,6 +28,9 @@ fi
 # Remove files
 echo "  Removing files..."
 rm -f /etc/systemd/system/psmove-pairing.service
+# Binary install location
+rm -f /opt/joustmania/bin/psmove-pairing-daemon
+# Legacy venv install location
 rm -rf /opt/joustmania/scripts/pairing-daemon
 
 # Reload systemd

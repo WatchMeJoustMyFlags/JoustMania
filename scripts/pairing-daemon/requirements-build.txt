@@ -1,0 +1,3 @@
+# Build-only dependencies for PyInstaller bundling
+# Not needed at runtime - the output is a standalone binary.
+pyinstaller>=6.0

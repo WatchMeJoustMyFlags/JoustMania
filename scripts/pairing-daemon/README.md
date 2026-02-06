@@ -12,11 +12,37 @@ This daemon runs on the host system and provides:
 
 ## Installation
 
+### Binary install (recommended)
+
+The daemon ships as a pre-built binary — no Python or pip required on the host.
+
 ```bash
-sudo ./install.sh
+# Download latest release and install (auto-detects architecture)
+sudo ./scripts/pairing-daemon/install.sh
+
+# Or install from a locally built binary
+sudo ./scripts/pairing-daemon/install.sh --local ./dist/pairing-daemon/psmove-pairing-daemon
 ```
 
-This installs Python dependencies, copies the daemon to `/usr/local/bin/`, and enables the systemd service.
+### Legacy install (Python venv)
+
+If the binary doesn't work for your platform, fall back to the venv-based install:
+
+```bash
+sudo ./scripts/pairing-daemon/install.sh --legacy
+# or directly:
+sudo ./scripts/pairing-daemon/install-legacy.sh
+```
+
+This requires Python 3.10+, pip, and system headers for dbus-python.
+
+### Building the binary locally
+
+```bash
+make builders                  # Build base images (once)
+make build-pairing-daemon      # Build binary for native arch
+# Output: ./dist/pairing-daemon/psmove-pairing-daemon
+```
 
 ## Usage
 
@@ -56,7 +82,6 @@ Environment variables (set via systemd override):
 | `BT_MONITOR_INTERVAL` | `5` | Seconds between Bluetooth monitoring |
 | `DEBUG` | `0` | Set to `1` for verbose logging |
 | `METRICS_PORT` | `8002` | Prometheus metrics port |
-| `PSMOVE_PATH` | auto-detect | Path to psmove binary |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | OTLP collector endpoint |
 
 To override:
@@ -115,6 +140,37 @@ time() - bluetooth_device_last_seen_timestamp
 bluetooth_device_connected == 1 and controller_connected == 0
 ```
 
+## Architecture
+
+### Binary distribution
+
+The daemon is built with [PyInstaller](https://pyinstaller.org/) into a single
+self-contained executable. The build runs inside Docker to ensure matching glibc
+(Bookworm 2.36) and Python 3.11 ABI with the psmove-builder image.
+
+The binary bundles:
+- `psmove_pairing` Python package (the daemon logic)
+- `_psmove.so` + `libpsmoveapi.so` (psmoveapi SWIG bindings)
+- OpenTelemetry, gRPC, protobuf, prometheus-client
+
+CI builds for both `amd64` and `arm64` on every push to `main`, and creates
+GitHub Releases on `pairing-daemon-v*` tags.
+
+### Host requirements (binary install)
+
+- Raspberry Pi OS Bookworm (or any Linux with glibc >= 2.36)
+- `bluez`, `bluez-tools` (BlueZ stack)
+- `usbutils` (lsusb)
+- `systemd`
+- D-Bus daemon (always present with BlueZ)
+
+### Host requirements (legacy install)
+
+All of the above, plus:
+- Python 3.10+
+- `python3-dev`, `libdbus-1-dev` (for dbus-python compilation)
+- pip, venv
+
 ## Files
 
 | File | Purpose |
@@ -129,16 +185,13 @@ bluetooth_device_connected == 1 and controller_connected == 0
 | `psmove_pairing/bluetooth_monitor.py` | Bluetooth monitoring |
 | `psmove_pairing/daemon.py` | Main daemon class |
 | `psmove-pairing.service` | systemd unit file |
-| `install.sh` | Installation script |
+| `psmove_pairing_daemon.spec` | PyInstaller build spec |
+| `Dockerfile.build` | Docker build for standalone binary |
+| `requirements.txt` | Python runtime dependencies |
+| `requirements-build.txt` | PyInstaller build dependency |
+| `install.sh` | Binary installer |
+| `install-legacy.sh` | Legacy venv-based installer |
 | `uninstall.sh` | Removal script |
-| `requirements.txt` | Python dependencies |
-
-## Requirements
-
-- Python 3.10+
-- psmoveapi (`psmove` CLI)
-- BlueZ (`bluetoothctl`, `hciconfig`, `hcitool`)
-- systemd
 
 ## Uninstallation
 

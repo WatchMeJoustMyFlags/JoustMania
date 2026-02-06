@@ -1,0 +1,142 @@
+name: Build Pairing Daemon
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/pairing-daemon/**"
+      - ".github/workflows/build-pairing-daemon.yml"
+    tags:
+      - "pairing-daemon-v*"
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/watchmejoustmyflags/joustmania
+
+jobs:
+  build:
+    name: Build (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # for creating releases
+      packages: read   # for pulling psmove-builder image
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+          - arch: arm64
+            platform: linux/arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build binary
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: scripts/pairing-daemon/Dockerfile.build
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            PSMOVE_BUILDER_IMAGE=${{ env.IMAGE_PREFIX }}/psmove-builder:latest
+          outputs: type=local,dest=./dist
+          cache-from: type=gha,scope=pairing-daemon-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=pairing-daemon-${{ matrix.arch }}
+
+      - name: Rename binary with arch suffix
+        run: mv ./dist/psmove-pairing-daemon ./dist/psmove-pairing-daemon-${{ matrix.arch }}
+
+      - name: Smoke test (amd64 only)
+        if: matrix.arch == 'amd64'
+        run: |
+          chmod +x ./dist/psmove-pairing-daemon-amd64
+          # Verify the binary starts and prints usage/version (will fail to bind psmove, but shouldn't segfault)
+          timeout 5 ./dist/psmove-pairing-daemon-amd64 --help || true
+          file ./dist/psmove-pairing-daemon-amd64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: psmove-pairing-daemon-${{ matrix.arch }}
+          path: ./dist/psmove-pairing-daemon-${{ matrix.arch }}
+          retention-days: 30
+
+  release:
+    name: Create Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/pairing-daemon-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          cp artifacts/psmove-pairing-daemon-amd64/psmove-pairing-daemon-amd64 release/
+          cp artifacts/psmove-pairing-daemon-arm64/psmove-pairing-daemon-arm64 release/
+          chmod +x release/*
+          # Generate checksums
+          cd release && sha256sum * > SHA256SUMS
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#pairing-daemon-}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Pairing Daemon ${{ steps.version.outputs.version }}"
+          body: |
+            ## PS Move Pairing Daemon ${{ steps.version.outputs.version }}
+
+            Pre-built binaries for the PS Move pairing daemon. No Python installation required.
+
+            ### Installation
+
+            ```bash
+            # Download and run the installer (auto-detects architecture)
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/pairing-daemon/install.sh | sudo bash
+            ```
+
+            Or install manually:
+            ```bash
+            # Download binary for your architecture
+            curl -fsSLo psmove-pairing-daemon https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/psmove-pairing-daemon-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+            chmod +x psmove-pairing-daemon
+            sudo mv psmove-pairing-daemon /opt/joustmania/bin/
+            ```
+
+            ### Supported Architectures
+
+            | File | Architecture |
+            |------|-------------|
+            | `psmove-pairing-daemon-amd64` | x86_64 / amd64 |
+            | `psmove-pairing-daemon-arm64` | aarch64 / arm64 (Raspberry Pi) |
+
+            ### Requirements
+
+            - Raspberry Pi OS Bookworm (or any Linux with glibc >= 2.36)
+            - BlueZ (`bluez`, `bluez-tools`)
+            - systemd
+          files: release/*
+          generate_release_notes: false

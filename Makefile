@@ -32,6 +32,9 @@ help:
 	@echo "  make test-integration - Run integration tests only (CI)"
 	@echo "  make test TEST=name  - Run specific test by name"
 	@echo ""
+	@echo "Pairing Daemon:"
+	@echo "  make build-pairing-daemon - Build standalone binary"
+	@echo ""
 	@echo "Protos:"
 	@echo "  make protos          - Generate Python protobuf files"
 	@echo "  make protos-all      - Generate all protobuf files (Python, TS, Go)"
@@ -183,6 +186,23 @@ test-pulled: clean-test-venv
 test-debug: clean-test-venv
 	PAUSE_BEFORE_TEARDOWN=1 $(TEST_ENV) uv run --package joustmania-integration-tests \
 		pytest tests/integration/ -v -s $(if $(TEST),-k "$(TEST)")
+
+# ============================================================================
+# Pairing Daemon Binary
+# ============================================================================
+# Builds a standalone PyInstaller binary for the PS Move pairing daemon.
+# Requires the psmove-builder image (run 'make builders' first).
+
+.PHONY: build-pairing-daemon
+build-pairing-daemon:
+	docker buildx build \
+		--platform linux/$$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') \
+		--build-arg PSMOVE_BUILDER_IMAGE=$(PSMOVE_BUILDER_IMAGE) \
+		--output type=local,dest=./dist/pairing-daemon \
+		-f scripts/pairing-daemon/Dockerfile.build .
+	@echo ""
+	@echo "Binary built: ./dist/pairing-daemon/psmove-pairing-daemon"
+	@ls -lh ./dist/pairing-daemon/psmove-pairing-daemon
 
 # ============================================================================
 # CI Targets (used by GitHub Actions)

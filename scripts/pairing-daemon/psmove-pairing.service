@@ -6,7 +6,7 @@ Wants=bluetooth.service
 
 [Service]
 Type=simple
-ExecStart=/opt/joustmania/scripts/pairing-daemon/venv/bin/python /opt/joustmania/scripts/pairing-daemon/psmove_pairing_daemon.py
+ExecStart=/opt/joustmania/bin/psmove-pairing-daemon
 Restart=always
 RestartSec=10
 
@@ -17,12 +17,14 @@ ExecStartPost=/bin/sh -c 'sleep 5 && curl -sf http://localhost:8002/healthz || e
 # Environment
 Environment=POLL_INTERVAL=10
 Environment=DEBUG=0
-# psmoveapi CLI location (Python bindings are auto-detected)
-Environment=PSMOVE_PATH=/home/joustmania/psmoveapi/build/psmove
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 # Metrics and tracing
 Environment=METRICS_PORT=8002
 Environment=OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+
+# PyInstaller onefile extraction directory (avoids /tmp issues on locked-down systems)
+RuntimeDirectory=psmove-pairing
+Environment=TMPDIR=/run/psmove-pairing
 
 # Logging
 StandardOutput=journal

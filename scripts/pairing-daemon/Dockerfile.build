@@ -1,0 +1,58 @@
+# Build PS Move Pairing Daemon as a standalone PyInstaller binary.
+#
+# Multi-stage build:
+#   1. Copy psmoveapi artifacts from psmove-builder image
+#   2. Install PyInstaller + runtime deps, bundle into single executable
+#
+# Usage:
+#   docker buildx build \
+#     --build-arg PSMOVE_BUILDER_IMAGE=ghcr.io/.../psmove-builder:latest \
+#     --output type=local,dest=./dist/pairing-daemon \
+#     -f scripts/pairing-daemon/Dockerfile.build .
+#
+# Output: dist/pairing-daemon/psmove-pairing-daemon (single binary)
+
+# -- Stage 1: Source psmoveapi artifacts --
+ARG PSMOVE_BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/psmove-builder:latest
+FROM ${PSMOVE_BUILDER_IMAGE} AS psmove-builder
+
+# -- Stage 2: PyInstaller build --
+FROM python:3.11-slim AS builder
+
+# Install system dependencies needed for:
+# - dbus-python (libdbus-1-dev, pkg-config) — imported at build-time analysis
+# - PyInstaller (binutils for strip, upx for compression)
+# hadolint ignore=DL3008
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    binutils \
+    libdbus-1-dev \
+    pkg-config \
+    upx-ucl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Copy psmoveapi artifacts from builder
+COPY --from=psmove-builder /psmove/ /psmove/
+
+# Install Python build dependencies first (cache-friendly layer)
+COPY scripts/pairing-daemon/requirements.txt /build/requirements.txt
+COPY scripts/pairing-daemon/requirements-build.txt /build/requirements-build.txt
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-build.txt
+
+# Copy daemon source
+COPY scripts/pairing-daemon/psmove_pairing_daemon.py /build/
+COPY scripts/pairing-daemon/psmove_pairing/ /build/psmove_pairing/
+COPY scripts/pairing-daemon/psmove_pairing_daemon.spec /build/
+
+# Build the binary
+ENV PSMOVE_DIR=/psmove
+RUN pyinstaller psmove_pairing_daemon.spec --noconfirm
+
+# Verify the binary was created and is executable
+RUN test -f /build/dist/psmove-pairing-daemon && \
+    ls -lh /build/dist/psmove-pairing-daemon
+
+# -- Output stage: just the binary --
+FROM scratch
+COPY --from=builder /build/dist/psmove-pairing-daemon /psmove-pairing-daemon
