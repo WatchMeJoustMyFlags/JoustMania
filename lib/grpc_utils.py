@@ -117,11 +117,12 @@ def create_channel(
     address: str,
     options: list[tuple[str, Any]] | None = None,
     enable_tracing: bool = True,
+    enable_metrics: bool = True,
     enable_compression: bool | None = None,
     **kwargs,
 ) -> grpc.aio.Channel:
     """
-    Create an async gRPC channel with standard JoustMania options and tracing.
+    Create an async gRPC channel with standard JoustMania options, metrics, and tracing.
 
     Args:
         address: Target address in format "host:port"
@@ -129,18 +130,21 @@ def create_channel(
         enable_tracing: Whether to add OpenTelemetry tracing interceptors (default: True).
                        When enabled, all RPC calls through this channel will create
                        spans and propagate trace context to downstream services.
+        enable_metrics: Whether to add gRPC client metrics interceptors (default: True).
+                       When enabled, all RPC calls record latency histograms and error
+                       counters via OpenTelemetry.
         enable_compression: Whether to enable Gzip compression (default: auto-detect).
                            When None, compression is automatically disabled for local
                            addresses (localhost, 127.x.x.x) to reduce CPU overhead.
         **kwargs: Additional arguments passed to grpc.aio.insecure_channel
 
     Returns:
-        Configured async gRPC channel with optional tracing interceptors
+        Configured async gRPC channel with optional metrics and tracing interceptors
 
     Example:
         >>> channel = create_channel("localhost:50051")
         >>> stub = MyServiceStub(channel)
-        >>> # All calls through stub will now be traced (compression auto-disabled for localhost)
+        >>> # All calls through stub will now be traced and metered
     """
     if options is None:
         # Auto-detect compression setting based on address if not explicitly specified
@@ -148,10 +152,19 @@ def create_channel(
             enable_compression = not is_local_address(address)
         options = get_optimized_channel_options(enable_compression=enable_compression)
 
+    # Build interceptor list: metrics outermost (first) so they measure full
+    # call time including tracing overhead, then tracing interceptors.
+    interceptors = []
+    if enable_metrics:
+        from lib.grpc_metrics import get_metrics_interceptors
+
+        interceptors.extend(get_metrics_interceptors())
     if enable_tracing:
         from lib.grpc_tracing import get_tracing_interceptors
 
-        interceptors = get_tracing_interceptors()
+        interceptors.extend(get_tracing_interceptors())
+
+    if interceptors:
         return grpc.aio.insecure_channel(address, options=options, interceptors=interceptors, **kwargs)
 
     return grpc.aio.insecure_channel(address, options=options, **kwargs)
