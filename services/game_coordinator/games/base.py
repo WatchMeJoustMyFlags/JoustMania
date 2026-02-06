@@ -495,6 +495,9 @@ class BaseGameMode(ABC):
             last_alive_serials = {p.serial for p in self.players.values() if p.alive}
             logger.info(f"Initial alive players: {len(last_alive_serials)}")
 
+            # Track frequency changes for dynamic updates
+            last_update_frequency_hz = update_frequency_hz
+
             # Track loop timing for actual Hz calculation (Phase 43)
             loop_start_time = time.time()
             loop_iterations = 0
@@ -555,6 +558,46 @@ class BaseGameMode(ABC):
                     metrics.filtered_controllers.set(len(self.players) - len(current_alive_serials))
 
                     last_alive_serials = current_alive_serials
+
+                # Check for frequency changes (dynamic frequency adjustment)
+                config = get_config_manager().get_config()
+                current_frequency = config.update_frequency_hz
+
+                if current_frequency != last_update_frequency_hz:
+                    # Validate frequency bounds (1-100 Hz)
+                    if 1 <= current_frequency <= 100:
+                        # Send frequency update to controller manager
+                        freq_start = time.time()
+                        freq_msg = controller_manager_pb2.GameplayStreamControl(
+                            frequency_update=controller_manager_pb2.FrequencyUpdate(frequency_hz=current_frequency)
+                        )
+                        await self.gameplay_stream.write(freq_msg)
+                        freq_latency = time.time() - freq_start
+
+                        logger.info(
+                            f"Frequency change: {last_update_frequency_hz}Hz → "
+                            f"{current_frequency}Hz (latency: {freq_latency*1000:.1f}ms)"
+                        )
+
+                        # Update metrics
+                        metrics.frequency_changes_total.labels(
+                            game_mode=self.get_game_name(),
+                            old_hz=str(last_update_frequency_hz),
+                            new_hz=str(current_frequency),
+                        ).inc()
+                        metrics.frequency_change_latency_seconds.observe(freq_latency)
+                        metrics.current_update_frequency_hz.set(current_frequency)
+
+                        # Reset frame tracking for new frequency
+                        target_frame_time_ms = 1000.0 / current_frequency
+                        loop_start_time = time.time()
+                        loop_iterations = 0
+                        frames_on_target = 0
+                        recent_frame_times.clear()
+
+                        last_update_frequency_hz = current_frequency
+                    else:
+                        logger.warning(f"Invalid frequency {current_frequency}Hz (must be 1-100), ignoring")
 
                 # Note: Win condition is now checked after EACH controller (above)
                 # to prevent simultaneous deaths - the last player standing can never die

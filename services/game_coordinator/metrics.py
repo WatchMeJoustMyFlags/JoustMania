@@ -125,6 +125,19 @@ current_update_frequency_hz = Gauge(
     "Current configured update frequency from feature flags (Hz)",
 )
 
+# Dynamic frequency change metrics
+frequency_changes_total = Counter(
+    "game_frequency_changes_total",
+    "Total number of frequency changes during gameplay",
+    ["game_mode", "old_hz", "new_hz"],
+)
+
+frequency_change_latency_seconds = Histogram(
+    "game_frequency_change_latency_seconds",
+    "Latency of frequency change requests to controller manager",
+    buckets=[0.001, 0.005, 0.010, 0.025, 0.050, 0.100, 0.250],
+)
+
 # Frame consistency metrics (Issue #183)
 game_loop_frame_consistency_percent = Gauge(
     "game_loop_frame_consistency_percent",

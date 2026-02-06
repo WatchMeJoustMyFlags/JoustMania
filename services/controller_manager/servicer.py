@@ -365,7 +365,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
 
         # Background task to read client updates
         async def read_client_updates():
-            nonlocal current_hz, current_filter
+            nonlocal current_hz, current_filter, span
 
             try:
                 async for control_msg in request_iterator:
@@ -483,6 +483,32 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                         )
 
                         metrics.stream_commands_total.labels(command_type="game_effect").inc()
+
+                    elif control_msg.HasField("frequency_update"):
+                        # Dynamic frequency update during gameplay
+                        freq_update = control_msg.frequency_update
+                        new_hz = freq_update.frequency_hz
+
+                        # Validate frequency bounds
+                        if 1 <= new_hz <= 100:
+                            with tracer.start_as_current_span("frequency_update") as span:
+                                span.set_attribute("new_frequency_hz", new_hz)
+                                span.set_attribute("old_frequency_hz", current_hz)
+                                span.add_event(
+                                    "frequency_changed",
+                                    {"old_hz": current_hz, "new_hz": new_hz, "subscriber": subscriber_id},
+                                )
+
+                                current_hz = new_hz
+                                logger.info(f"[{subscriber_id}] Frequency updated to {new_hz}Hz")
+
+                                # Update metrics
+                                metrics.stream_frequency_changes_total.labels(stream_type="gameplay_data").inc()
+                                metrics.stream_current_frequency_hz.set(new_hz)
+                        else:
+                            logger.warning(f"[{subscriber_id}] Invalid frequency {new_hz}Hz (must be 1-100)")
+
+                        metrics.stream_commands_total.labels(command_type="frequency_update").inc()
 
             except Exception as e:
                 logger.error(f"[{subscriber_id}] Error reading client updates: {e}", exc_info=True)

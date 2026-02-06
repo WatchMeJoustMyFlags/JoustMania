@@ -146,6 +146,7 @@ message GameplayStreamControl {
     FilterUpdate filter_update = 2;            // Mid-stream filter change
     ControllerColorConfig base_color = 7;      // Set base color for a controller
     GameEffectCommand game_effect = 8;         // Trigger semantic game effect
+    FrequencyUpdate frequency_update = 9;      // Mid-stream frequency change
   }
 }
 
@@ -160,6 +161,11 @@ message GameplayStreamConfig {
 // Filter update (sent when alive players change)
 message FilterUpdate {
   repeated string serials = 1;              // New filter list (empty = all controllers)
+}
+
+// Mid-stream frequency update
+message FrequencyUpdate {
+  int32 update_frequency_hz = 1;  // New frequency (1-100 Hz)
 }
 
 // Phase XX: LED State Ownership

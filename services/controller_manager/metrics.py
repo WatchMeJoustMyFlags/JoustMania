@@ -218,6 +218,18 @@ controller_accel_z = Gauge(
     ["serial"],
 )
 
+# Dynamic frequency change metrics
+stream_frequency_changes_total = Counter(
+    "controller_stream_frequency_changes_total",
+    "Total number of stream frequency changes",
+    ["stream_type"],  # 'button_events' or 'gameplay_data'
+)
+
+stream_current_frequency_hz = Gauge(
+    "controller_stream_current_frequency_hz",
+    "Current stream frequency in Hz",
+)
+
 # Stream timing metrics (jitter optimization)
 stream_frame_overruns_total = Counter(
     "controller_stream_frame_overruns_total",
