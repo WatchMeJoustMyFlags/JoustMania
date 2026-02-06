@@ -295,7 +295,7 @@ class TournamentGame(BaseGameMode):
 
         logger.info(f"Initialized {len(controllers)} players for tournament")
 
-        self.event_publisher(
+        await self.event_publisher(
             "players_initialized",
             {
                 "player_count": len(controllers),
@@ -333,7 +333,7 @@ class TournamentGame(BaseGameMode):
         """Show bracket and prepare for first matches."""
         logger.info("Starting tournament intro phase...")
 
-        self.event_publisher(
+        await self.event_publisher(
             "tournament_intro",
             {
                 "total_players": len(self.players),
@@ -399,7 +399,7 @@ class TournamentGame(BaseGameMode):
 
         logger.info(f"Match {match.match_id} starting: {match.player1_serial} vs {match.player2_serial}")
 
-        self.event_publisher(
+        await self.event_publisher(
             "match_start",
             {
                 "match_id": match.match_id,
@@ -507,7 +507,7 @@ class TournamentGame(BaseGameMode):
                 loser.span.end()
                 loser.span = None  # Mark as closed to prevent double-ending
 
-            self.event_publisher(
+            await self.event_publisher(
                 "match_end",
                 {
                     "match_id": match.match_id,
@@ -554,7 +554,7 @@ class TournamentGame(BaseGameMode):
             if next_match.round_number > self.current_round:
                 self.current_round = next_match.round_number
                 logger.info(f"Starting round {self.current_round}")
-                self.event_publisher(
+                await self.event_publisher(
                     "round_start",
                     {"round": self.current_round, "total_rounds": self.total_rounds},
                 )
@@ -572,7 +572,7 @@ class TournamentGame(BaseGameMode):
                     break
                 await asyncio.sleep(0.1)
 
-    def _check_win_condition(self) -> bool:
+    async def _check_win_condition(self) -> bool:
         """
         Check if tournament is complete.
 
@@ -589,7 +589,7 @@ class TournamentGame(BaseGameMode):
 
                 logger.info(f"Tournament champion: {champion_serial} with {champion.wins} wins!")
 
-                self.event_publisher(
+                await self.event_publisher(
                     "tournament_champion",
                     {
                         "champion": champion_serial,
@@ -599,7 +599,7 @@ class TournamentGame(BaseGameMode):
                 )
             else:
                 logger.info("Tournament ended with no winner")
-                self.event_publisher("tournament_no_winner", {})
+                await self.event_publisher("tournament_no_winner", {})
 
             return True
 
@@ -700,7 +700,7 @@ class TournamentGame(BaseGameMode):
                 player.span.end()
 
         self.state = self.state.__class__.ENDED
-        self.event_publisher(
+        await self.event_publisher(
             "game_ended",
             {
                 "game_id": self.game_id,
@@ -760,7 +760,7 @@ class TournamentGame(BaseGameMode):
                 # Emit game_started event (required for integration tests)
                 from lib.types import GameEvent
 
-                self.event_publisher(
+                await self.event_publisher(
                     GameEvent.GAME_STARTED, {"game_id": self.game_id, "player_count": len(self.players)}
                 )
 

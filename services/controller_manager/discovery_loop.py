@@ -456,6 +456,7 @@ class DiscoveryLoop:
 
             magnitude = math.sqrt(ax * ax + ay * ay + az * az)
             metrics.controller_accel_magnitude.labels(serial=serial).set(magnitude)
+            metrics.prom_controller_accel_magnitude.labels(serial=serial).set(magnitude)
             metrics.controller_accel_x.labels(serial=serial).set(ax)
             metrics.controller_accel_y.labels(serial=serial).set(ay)
             metrics.controller_accel_z.labels(serial=serial).set(az)

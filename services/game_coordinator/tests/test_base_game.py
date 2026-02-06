@@ -25,7 +25,7 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService, MockSettingsService
+from conftest import EventCollector, MockControllerManagerService, MockSettingsService, async_noop
 
 from proto import controller_manager_pb2
 from services.game_coordinator.games.base import (
@@ -63,7 +63,7 @@ class TestLerpFunction:
         return FFAGame(
             controller_manager_client=mock_cm,
             settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_lerp",
         )
@@ -109,7 +109,7 @@ class TestThresholdCalculation:
         return FFAGame(
             controller_manager_client=mock_cm,
             settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_threshold",
         )
@@ -203,7 +203,7 @@ class TestWarningBehavior:
         game = FFAGame(
             controller_manager_client=mock_cm,
             settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_warning",
         )
@@ -316,7 +316,7 @@ class TestDeathDetection:
         game = FFAGame(
             controller_manager_client=mock_cm,
             settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_death",
         )
@@ -436,7 +436,7 @@ class TestSensitivityFactor:
         game = FFAGame(
             controller_manager_client=mock_cm,
             settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_sens_factor",
         )
@@ -501,7 +501,7 @@ class TestEMAFilter:
         game = FFAGame(
             controller_manager_client=mock_cm,
             settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_ema",
         )
@@ -570,7 +570,7 @@ class TestDeadPlayerIgnored:
         game = FFAGame(
             controller_manager_client=mock_cm,
             settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_dead",
         )
@@ -615,7 +615,7 @@ class TestUnknownControllerIgnored:
         game = FFAGame(
             controller_manager_client=mock_cm,
             settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_unknown",
         )
@@ -648,7 +648,7 @@ class TestGameStateTransitions:
         return FFAGame(
             controller_manager_client=mock_cm,
             settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_state",
         )
@@ -683,7 +683,7 @@ class TestInvalidAccelerationData:
         game = FFAGame(
             controller_manager_client=mock_cm,
             settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_invalid_accel",
         )
@@ -822,7 +822,7 @@ class TestMultipleDeathsHandling:
         game.players["player_2"].alive = False
         # player_3 survives
 
-        result = game._check_win_condition()
+        result = await game._check_win_condition()
 
         assert result is True
         # FFA publishes GameEvent.GAME_WINNER which is "game_winner"
@@ -842,7 +842,7 @@ class TestSensitivityFactorEdgeCases:
         return FFAGame(
             controller_manager_client=mock_cm,
             settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_sensitivity_edge",
         )
@@ -979,7 +979,7 @@ class TestEventPublishing:
         for serial in serials[:-1]:
             game.players[serial].alive = False
 
-        result = game._check_win_condition()
+        result = await game._check_win_condition()
 
         assert result is True
         winner_events = event_collector.get_events_of_type(GameEvent.GAME_WINNER)
@@ -1012,7 +1012,7 @@ class TestGameStartValidation:
         return FFAGame(
             controller_manager_client=mock_cm,
             settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_validation",
         )
@@ -1060,7 +1060,7 @@ class TestMusicTempoThresholds:
         return FFAGame(
             controller_manager_client=mock_cm,
             settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_lerp",
         )

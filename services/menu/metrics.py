@@ -52,6 +52,12 @@ stream_events_published_total = Counter(
     ["event_type"],
 )
 
+# Stream reconnection metrics (Issue #330)
+game_event_stream_reconnects_total = Counter(
+    "menu_game_event_stream_reconnects_total",
+    "Total game event stream reconnection attempts",
+)
+
 # Player ready state metrics (Phase 75: Per-player insights)
 player_ready = Gauge(
     "menu_player_ready",

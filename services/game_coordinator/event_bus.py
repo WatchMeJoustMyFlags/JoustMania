@@ -15,8 +15,8 @@ Usage:
     # Subscribe (returns queue for receiving events)
     queue = await event_bus.subscribe("subscriber_1")
 
-    # Publish events (thread-safe)
-    event_bus.publish("game_started", {"game_id": "123"})
+    # Publish events
+    await event_bus.publish("game_started", {"game_id": "123"})
 
     # Unsubscribe
     await event_bus.unsubscribe("subscriber_1")
@@ -24,7 +24,6 @@ Usage:
 
 import asyncio
 import logging
-import threading
 import time
 from collections.abc import Callable
 
@@ -56,8 +55,8 @@ class EventBus:
                                  Called while holding the state lock.
         """
         self._subscribers: dict[str, asyncio.Queue] = {}
+        # Single asyncio.Lock for all _subscribers access (subscribe, unsubscribe, publish)
         self._event_lock = asyncio.Lock()
-        self._state_lock = threading.Lock()
         self._state_sync_callback = state_sync_callback
 
     @property
@@ -99,18 +98,16 @@ class EventBus:
                 return True
         return False
 
-    def publish(self, event_type: str, data: dict[str, str]):
+    async def publish(self, event_type: str, data: dict[str, str]):
         """
-        Publish an event to all subscribers (thread-safe).
-
-        This method is safe to call from any thread.
+        Publish an event to all subscribers.
 
         Args:
             event_type: Type of event (e.g., "game_started", "player_death")
             data: Event data as string key-value pairs
         """
-        # Thread-safe subscriber snapshot and state sync
-        with self._state_lock:
+        # Subscriber snapshot and state sync under single async lock
+        async with self._event_lock:
             # Call state sync callback if provided
             if self._state_sync_callback:
                 self._state_sync_callback(event_type)
@@ -157,12 +154,12 @@ class EventBus:
             except Exception as e:
                 logger.error(f"Error publishing to subscriber {sub_id}: {e}")
 
-    def get_subscriber_ids(self) -> list[str]:
+    async def get_subscriber_ids(self) -> list[str]:
         """
         Get list of current subscriber IDs.
 
         Returns:
             List of subscriber IDs
         """
-        with self._state_lock:
+        async with self._event_lock:
             return list(self._subscribers.keys())
