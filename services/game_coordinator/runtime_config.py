@@ -10,7 +10,11 @@ from the menu service, which evaluates feature flags with context.
 
 import logging
 import os
+import threading
 from dataclasses import dataclass, field
+
+from openfeature.evaluation_context import EvaluationContext
+from openfeature.provider import ProviderEvent
 
 logger = logging.getLogger(__name__)
 
@@ -73,14 +77,30 @@ class RuntimeConfigManager:
 
     def __init__(self):
         self.config = GamePerformanceConfig()
+        self._config_lock = threading.RLock()  # Protect config updates
         self._apply_environment_overrides()
 
         # Initialize feature flag client
+        self.flag_client = None
+        self._setup_feature_flags()
+
+    def _setup_feature_flags(self):
+        """Initialize feature flag client and event listeners."""
         try:
+            from openfeature import api
+
             from lib.feature_flags import get_feature_flag_client
 
             self.flag_client = get_feature_flag_client()
             logger.info("Feature flag client initialized")
+
+            # Register event handler for configuration changes
+            api.add_handler(ProviderEvent.PROVIDER_CONFIGURATION_CHANGED, self._on_flags_changed)
+            logger.info("Registered PROVIDER_CONFIGURATION_CHANGED event handler")
+
+            # Do initial refresh to load current flag values
+            self._refresh_from_flags()
+
         except ImportError:
             self.flag_client = None
             logger.warning("Could not import FeatureFlagClient, using defaults")
@@ -117,8 +137,37 @@ class RuntimeConfigManager:
             except ValueError:
                 logger.warning(f"Invalid COUNTDOWN_PHASE_DURATION_MS: {phase_env}")
 
+    def _on_flags_changed(self, event_details):
+        """
+        Event handler called when feature flags change.
+
+        This is triggered by flagd's gRPC sync stream when flag configurations
+        are updated, providing instant updates without polling.
+        """
+        # Import metrics (lazy to avoid circular dependency)
+        try:
+            from services.game_coordinator import metrics
+
+            metrics.flag_configuration_changes_total.inc()
+        except ImportError:
+            pass
+
+        changed_flags = getattr(event_details, "flags_changed", [])
+        if changed_flags:
+            logger.info(f"🚩 Feature flags changed: {changed_flags}")
+        else:
+            logger.info("🚩 Feature flags changed (unspecified flags)")
+
+        # Refresh configuration from updated flags
+        self._refresh_from_flags()
+
     def _refresh_from_flags(self):
-        """Update configuration from feature flags."""
+        """
+        Update configuration from feature flags.
+
+        Called during initialization and when PROVIDER_CONFIGURATION_CHANGED
+        event fires. Thread-safe and includes metrics tracking.
+        """
         if not self.flag_client:
             return
 
@@ -134,21 +183,24 @@ class RuntimeConfigManager:
             logger.warning(f"Failed to evaluate flags: {e}")
 
     def get_config(self) -> GamePerformanceConfig:
-        """Get current configuration (with fresh flag values)."""
-        # Refresh flags on every access (OpenFeature client handles caching/evaluation)
-        self._refresh_from_flags()
-        return self.config
+        """
+        Get current configuration.
+
+        Configuration is kept up-to-date automatically via event-driven updates,
+        so no polling is needed. Thread-safe access via lock.
+        """
+        with self._config_lock:
+            return self.config
 
     async def get_update_interval(self) -> float:
-        """Get current update interval in seconds."""
-        # Ensure we're using fresh config
-        self._refresh_from_flags()
-        return 1.0 / self.config.update_frequency_hz
+        """Get current update interval in seconds (1/Hz)."""
+        with self._config_lock:
+            return 1.0 / self.config.update_frequency_hz
 
     def export_config(self) -> dict:
         """Export current configuration as dict (for reports/logs)."""
-        self._refresh_from_flags()
-        return self.config.__dict__.copy()
+        with self._config_lock:
+            return self.config.__dict__.copy()
 
 
 # Global singleton instance
