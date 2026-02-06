@@ -1,6 +1,7 @@
 """Menu gRPC Servicer for JoustMania."""
 
 import asyncio
+import contextlib
 import logging
 import os
 import time
@@ -101,6 +102,9 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             callbacks=self,
             metrics=metrics,
         )
+
+        # Track game lifecycle task for clean shutdown
+        self._game_lifecycle_task: asyncio.Task | None = None
 
         logger.info("Menu service initialized")
 
@@ -376,12 +380,30 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         logger.info("Game event monitor: events handled by game stream")
 
     async def stop_game_event_monitor(self):
-        """Stop the game event monitoring task (no-op, kept for compatibility)."""
-        logger.info("Game event monitor stopped")
+        """Stop the game lifecycle task if running."""
+        if self._game_lifecycle_task is not None and not self._game_lifecycle_task.done():
+            logger.info("Cancelling game lifecycle task...")
+            self._game_lifecycle_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._game_lifecycle_task
+            self._game_lifecycle_task = None
+            logger.info("Game lifecycle task cancelled")
+        else:
+            logger.info("No active game lifecycle task to stop")
 
     async def shutdown(self):
         """Cleanup resources on shutdown."""
-        logger.info("Shutting down Menu service, closing gRPC channels...")
+        logger.info("Shutting down Menu service...")
+
+        # Cancel game lifecycle task before closing channels
+        if self._game_lifecycle_task is not None and not self._game_lifecycle_task.done():
+            logger.info("Cancelling game lifecycle task during shutdown...")
+            self._game_lifecycle_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._game_lifecycle_task
+            self._game_lifecycle_task = None
+
+        logger.info("Closing gRPC channels...")
         await self.controller_channel.close()
         await self.settings_channel.close()
         await self.game_coordinator_channel.close()
@@ -400,8 +422,15 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             serial: Controller serial that triggered the start (for logging)
             source: Source of the start request ("controller" or "web")
         """
+        # Cancel any existing game lifecycle task (defensive)
+        if self._game_lifecycle_task is not None and not self._game_lifecycle_task.done():
+            logger.warning("Cancelling existing game lifecycle task before starting new one")
+            self._game_lifecycle_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._game_lifecycle_task
+
         # Schedule game lifecycle as background task to avoid blocking button monitor
-        task = asyncio.create_task(self._run_game_lifecycle(serial, source))
+        self._game_lifecycle_task = asyncio.create_task(self._run_game_lifecycle(serial, source))
 
         # Log any exceptions from the background task
         def _log_exception(t):
@@ -411,7 +440,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             if exc:
                 logger.error(f"Game lifecycle task failed: {exc}", exc_info=exc)
 
-        task.add_done_callback(_log_exception)
+        self._game_lifecycle_task.add_done_callback(_log_exception)
 
     async def _run_game_lifecycle(self, serial: str, source: str = "controller"):
         """
