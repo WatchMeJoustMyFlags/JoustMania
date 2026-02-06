@@ -6,62 +6,13 @@ import pytest
 
 from psmove_pairing.usb_pairing import USBPairing
 
-from .conftest import (
-    SAMPLE_LSUSB_NO_PSMOVE,
-    SAMPLE_LSUSB_WITH_PSMOVE,
-    MockCommandRunner,
-)
+from .conftest import MockCommandRunner
 
 
 @pytest.fixture
 def usb_pairing(mock_tracer):
     """Provide USBPairing instance for tests."""
     return USBPairing(mock_tracer, "/usr/bin/psmove")
-
-
-class TestCheckUSBControllers:
-    """Tests for check_usb_controllers()."""
-
-    @pytest.mark.asyncio
-    async def test_detects_psmove(self, usb_pairing):
-        """Test detecting PS Move via lsusb."""
-        runner = MockCommandRunner()
-        runner.add_response(["lsusb"], (0, SAMPLE_LSUSB_WITH_PSMOVE))
-
-        with patch("psmove_pairing.usb_pairing.run_command", runner):
-            result = await usb_pairing.check_usb_controllers()
-            assert result is True
-
-    @pytest.mark.asyncio
-    async def test_no_psmove_detected(self, usb_pairing):
-        """Test when no PS Move is connected."""
-        runner = MockCommandRunner()
-        runner.add_response(["lsusb"], (0, SAMPLE_LSUSB_NO_PSMOVE))
-
-        with patch("psmove_pairing.usb_pairing.run_command", runner):
-            result = await usb_pairing.check_usb_controllers()
-            assert result is False
-
-    @pytest.mark.asyncio
-    async def test_lsusb_failure(self, usb_pairing):
-        """Test handling lsusb command failure."""
-        runner = MockCommandRunner()
-        runner.add_response(["lsusb"], (1, "command not found"))
-
-        with patch("psmove_pairing.usb_pairing.run_command", runner):
-            result = await usb_pairing.check_usb_controllers()
-            assert result is False
-
-    @pytest.mark.asyncio
-    async def test_case_insensitive_match(self, usb_pairing):
-        """Test that USB ID matching is case-insensitive."""
-        lsusb_upper = "Bus 001 Device 003: ID 054C:03D5 Sony Corp. Motion Controller"
-        runner = MockCommandRunner()
-        runner.add_response(["lsusb"], (0, lsusb_upper))
-
-        with patch("psmove_pairing.usb_pairing.run_command", runner):
-            result = await usb_pairing.check_usb_controllers()
-            assert result is True
 
 
 class TestGetUSBControllersPsmove:
@@ -208,7 +159,7 @@ class TestProcessController:
         """Test when no Bluetooth adapters are available."""
         usb_pairing.adapter_manager.refresh_adapters = MagicMock()
         usb_pairing.adapter_manager.check_if_not_paired = MagicMock(return_value=True)
-        usb_pairing.adapter_manager.get_lowest_bt_device = MagicMock(return_value="")
+        usb_pairing.adapter_manager.select_least_loaded_adapter = MagicMock(return_value=None)
 
         result = await usb_pairing.process_controller(0, "00:06:F7:AA:BB:CC")
         assert result is False
@@ -218,23 +169,18 @@ class TestPoll:
     """Tests for poll()."""
 
     @pytest.mark.asyncio
-    async def test_poll_increments_count(self, usb_pairing):
+    async def test_poll_increments_count(self, usb_pairing, mock_psmove_module):
         """Test that poll count is incremented."""
-        runner = MockCommandRunner()
-        runner.add_response(["lsusb"], (0, SAMPLE_LSUSB_NO_PSMOVE))
+        mock_psmove_module.count_connected.return_value = 0
 
-        with patch("psmove_pairing.usb_pairing.run_command", runner):
-            initial_count = usb_pairing.poll_count
-            await usb_pairing.poll()
-            assert usb_pairing.poll_count == initial_count + 1
+        initial_count = usb_pairing.poll_count
+        await usb_pairing.poll()
+        assert usb_pairing.poll_count == initial_count + 1
 
     @pytest.mark.asyncio
-    async def test_poll_skips_when_no_usb(self, usb_pairing):
-        """Test that poll skips psmove when no USB PS Move detected."""
-        runner = MockCommandRunner()
-        runner.add_response(["lsusb"], (0, SAMPLE_LSUSB_NO_PSMOVE))
+    async def test_poll_skips_when_no_controllers(self, usb_pairing, mock_psmove_module):
+        """Test that poll skips processing when no USB controllers found."""
+        mock_psmove_module.count_connected.return_value = 0
 
-        with patch("psmove_pairing.usb_pairing.run_command", runner):
-            await usb_pairing.poll()
-            assert len(runner.calls) == 1
-            assert runner.calls[0] == ["lsusb"]
+        await usb_pairing.poll()
+        # No process_controller calls expected

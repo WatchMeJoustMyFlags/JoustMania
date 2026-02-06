@@ -2,7 +2,7 @@
 name = "joustmania-pairing-daemon"
 version = "1.0.0"
 description = "PS Move controller pairing daemon for JoustMania"
-requires-python = ">=3.9,<3.13"
+requires-python = ">=3.11,<3.13"
 dependencies = [
     # Prometheus metrics (pull model)
     "prometheus-client>=0.17.0",

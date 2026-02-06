@@ -11,7 +11,7 @@ from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
 # Import config first to set up psmoveapi path
-from .config import DEBUG, POLL_INTERVAL, PSMOVE_USB_IDS
+from .config import DEBUG, POLL_INTERVAL
 
 # Now import psmove (path was set up by config)
 try:
@@ -57,15 +57,6 @@ class USBPairing:
         self.psmove_cli = psmove_path  # Keep for calibration
         self.poll_count = 0
         self.adapter_manager = AdapterManager()
-
-    async def check_usb_controllers(self) -> bool:
-        """Check if any PS Move controller is connected via USB."""
-        exit_code, output = await run_command(["lsusb"])
-        if exit_code != 0:
-            logger.debug("lsusb failed")
-            return False
-
-        return any(usb_id in output.lower() for usb_id in PSMOVE_USB_IDS)
 
     def get_usb_controllers_psmove(self) -> list[tuple[int, str]]:
         """Get list of USB-connected controllers using psmove library.
@@ -211,30 +202,26 @@ class USBPairing:
             pairing_attempts_total.inc()
 
             # Select least-loaded adapter for load balancing
-            adapter_address = self.adapter_manager.get_lowest_bt_device()
+            adapter = self.adapter_manager.select_least_loaded_adapter()
 
-            if not adapter_address:
+            if not adapter:
                 logger.error("No Bluetooth adapters available for pairing")
                 pairing_failed_total.inc()
                 span.set_status(Status(StatusCode.ERROR, "No adapters available"))
                 return False
 
-            # Get adapter info for logging
-            adapter = self.adapter_manager.select_least_loaded_adapter()
-            if adapter:
-                logger.info(
-                    f"Load balancing: selected adapter {adapter.address} "
-                    f"({adapter.hci}) with {adapter.device_count} existing devices"
-                )
-                span.set_attribute(_ATTR_ADAPTER_ADDRESS, adapter.address)
-                span.set_attribute("adapter.device_count", adapter.device_count)
-                span.set_attribute("adapter.hci", adapter.hci)
-                # Record metrics
-                pairing_adapter_selected_total.labels(adapter=adapter.address).inc()
-                pairing_adapter_device_count.labels(adapter=adapter.address).set(adapter.device_count)
+            logger.info(
+                f"Load balancing: selected adapter {adapter.address} "
+                f"({adapter.hci}) with {adapter.device_count} existing devices"
+            )
+            span.set_attribute(_ATTR_ADAPTER_ADDRESS, adapter.address)
+            span.set_attribute("adapter.device_count", adapter.device_count)
+            span.set_attribute("adapter.hci", adapter.hci)
+            pairing_adapter_selected_total.labels(adapter=adapter.address).inc()
+            pairing_adapter_device_count.labels(adapter=adapter.address).set(adapter.device_count)
 
             # Pair controller to selected adapter using Python bindings
-            if not self.pair_controller_psmove(move_index, serial, adapter_address):
+            if not self.pair_controller_psmove(move_index, serial, adapter.address):
                 logger.error(f"PAIRING FAILED: Controller {serial} could not be paired")
                 pairing_failed_total.inc()
                 span.set_status(Status(StatusCode.ERROR, "Pairing failed"))
@@ -249,7 +236,7 @@ class USBPairing:
             # Success message
             logger.info(
                 f"PAIRING SUCCESS: Controller {serial} paired to adapter "
-                f"{adapter_address} - unplug USB and press PS button"
+                f"{adapter.address} - unplug USB and press PS button"
             )
 
             pairing_success_total.inc()
@@ -265,22 +252,12 @@ class USBPairing:
         with self.tracer.start_as_current_span("poll_cycle") as span:
             span.set_attribute("poll.count", self.poll_count)
 
-            # Quick USB check first
-            if not await self.check_usb_controllers():
-                logger.debug("No USB PS Move detected, skipping")
-                pairing_usb_controllers.set(0)
-                span.set_attribute("usb_detected", False)
-                return
-
-            logger.debug("USB PS Move detected, checking with psmove...")
-            span.set_attribute("usb_detected", True)
-
             # Get USB controllers using psmove library
             controllers = self.get_usb_controllers_psmove()
             span.set_attribute("controllers.count", len(controllers))
 
             if not controllers:
-                logger.debug("No USB controllers found via psmove")
+                logger.debug("No USB controllers found")
                 return
 
             # Process each controller

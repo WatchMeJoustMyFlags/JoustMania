@@ -165,13 +165,13 @@ The daemon batches Bluetooth restarts, so you don't need to wait between control
 **Controller not detected:**
 ```bash
 # Check if daemon is running
-systemctl status psmove-pairing
+docker compose ps pairing-daemon
 
 # Check USB device detected
 lsusb | grep Sony
 
 # View daemon logs
-journalctl -u psmove-pairing -n 50
+docker compose logs --tail=50 pairing-daemon
 ```
 
 **Pairing succeeds but Bluetooth won't connect:**
@@ -209,8 +209,8 @@ This is automatically configured by `setup_host.sh`.
 If the daemon isn't working, you can pair manually:
 
 ```bash
-# Pair via psmove CLI
-psmove pair
+# Pair via psmove CLI (inside the container)
+docker compose exec pairing-daemon psmove pair
 
 # Trust the controller in BlueZ
 bluetoothctl trust AA:BB:CC:DD:EE:FF
@@ -426,7 +426,7 @@ If using adapters with adjustable antennas:
 
 | Cause | Solution |
 |-------|----------|
-| Pairing daemon not running | `systemctl status psmove-pairing` |
+| Pairing daemon not running | `docker compose ps pairing-daemon` |
 | USB device not detected | `lsusb \| grep Sony` - check cable |
 | ClassicBondedOnly=true | Edit `/etc/bluetooth/input.conf`, set to `false` |
 | Adapter limit reached | Max 7 per adapter, add more adapters |

@@ -48,7 +48,7 @@ RUN mkdir -p services/pairing_daemon/psmove_pairing && \
 
 # Install service dependencies (standalone - no proto/lib deps)
 WORKDIR /app
-RUN uv pip install --system -e services/pairing_daemon/
+RUN uv pip install --system --no-cache-dir -e services/pairing_daemon/
 
 # =============================================================================
 # Stage 3: Runtime image
@@ -62,7 +62,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libdbus-1-3 \
     libglib2.0-0 \
     libusb-1.0-0 \
-    usbutils \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
