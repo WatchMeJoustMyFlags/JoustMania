@@ -490,42 +490,73 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             )
 
             stream = None
+            game_started = False
+            max_reconnect_attempts = 3
+
             try:
-                # Create stream and iterate through events
-                stream = stub.StreamGameEvents(request, metadata=metadata)
-                first_event_received = False
+                for attempt in range(max_reconnect_attempts + 1):
+                    try:
+                        # First attempt sends start_config; reconnections subscribe without it
+                        if attempt == 0:
+                            stream = stub.StreamGameEvents(request, metadata=metadata)
+                        else:
+                            metrics.game_event_stream_reconnects_total.inc()
+                            logger.warning(
+                                f"Reconnecting game event stream (attempt {attempt}/{max_reconnect_attempts})"
+                            )
+                            subscribe_request = game_coordinator_pb2.StreamEventsRequest()
+                            stream = stub.StreamGameEvents(subscribe_request, metadata=metadata)
 
-                async for event in stream:
-                    if not first_event_received:
-                        # First event - check if game started successfully
-                        first_event_received = True
+                        async for event in stream:
+                            if not game_started:
+                                if event.event_type == "game_start_error":
+                                    error = event.data.get("error", "Unknown error")
+                                    logger.error(f"Game start failed: {error}")
+                                    span.set_attribute("error", error)
+                                    self.state = menu_pb2.MenuState.RUNNING
+                                    await self._restart_lobby()
+                                    return
 
-                        if event.event_type == "game_start_error":
-                            error = event.data.get("error", "Unknown error")
-                            logger.error(f"Game start failed: {error}")
-                            span.set_attribute("error", error)
-                            self.state = menu_pb2.MenuState.RUNNING
-                            # Restart lobby on error
-                            await self._restart_lobby()
-                            return
+                                logger.info(f"Game started successfully: {event.event_type}")
+                                span.set_attribute("game.started", True)
+                                game_started = True
 
-                        logger.info(f"Game started successfully: {event.event_type}")
-                        span.set_attribute("game.started", True)
+                                # Clear ready state now that game has started (Issue #256)
+                                self._clear_ready_state()
+                                logger.info("Ready state cleared on game start confirmation")
 
-                        # Clear ready state now that game has started (Issue #256)
-                        # This ensures dead players don't show in player insights dashboard
-                        self._clear_ready_state()
-                        logger.info("Ready state cleared on game start confirmation")
+                            logger.info(f"Game event received: {event.event_type}")
 
-                    logger.info(f"Game event received: {event.event_type}")
+                            if GameEvent.is_game_ending(event.event_type):
+                                logger.info(f"Game ended: {event.event_type}")
+                                await self.event_publisher.publish(GameEvent.GAME_ENDED, event.data)
+                                await self._restart_lobby()
+                                return
 
-                    if GameEvent.is_game_ending(event.event_type):
-                        logger.info(f"Game ended: {event.event_type}")
-                        # Publish game ended event for other subscribers
-                        await self.event_publisher.publish(GameEvent.GAME_ENDED, event.data)
+                        # Stream ended normally without game_ended event
                         break
 
-                # Game ended normally - restart lobby
+                    except asyncio.CancelledError:
+                        raise  # Never retry on cancellation
+
+                    except Exception as e:
+                        if stream is not None:
+                            stream.cancel()
+                            stream = None
+
+                        # Don't retry if game never started
+                        if not game_started:
+                            raise
+
+                        if attempt >= max_reconnect_attempts:
+                            logger.error(f"Game event stream failed after {max_reconnect_attempts} attempts: {e}")
+                            raise
+
+                        backoff = attempt + 1
+                        logger.warning(f"Game event stream error: {e}. Reconnecting in {backoff}s...")
+                        await asyncio.sleep(backoff)
+
+                # Restart lobby after stream ends
                 await self._restart_lobby()
 
             except asyncio.CancelledError:
@@ -534,10 +565,8 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             except Exception as e:
                 logger.error(f"Game stream error: {e}", exc_info=True)
                 span.record_exception(e)
-                # Restart lobby on error
                 await self._restart_lobby()
             finally:
-                # Ensure stream is closed
                 if stream is not None:
                     stream.cancel()
 
