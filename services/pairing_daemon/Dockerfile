@@ -40,6 +40,12 @@ COPY pyproject.toml /app/
 # Copy service dependencies
 COPY services/pairing_daemon/pyproject.toml /app/services/pairing_daemon/
 
+# Create minimal package structure for editable install (deps caching layer)
+# Real source is copied in the runtime stage; stubs satisfy setuptools discovery
+RUN mkdir -p services/pairing_daemon/psmove_pairing && \
+    touch services/pairing_daemon/psmove_pairing/__init__.py && \
+    touch services/pairing_daemon/server.py
+
 # Install service dependencies (standalone - no proto/lib deps)
 WORKDIR /app
 RUN uv pip install --system -e services/pairing_daemon/
