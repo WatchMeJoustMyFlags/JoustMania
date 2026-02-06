@@ -25,62 +25,47 @@ scrape_configs:
         regex: (.+)
         replacement: $1
 
-  # Controller Manager Service
-  - job_name: 'controller-manager'
+  # Controller Manager direct pull (pipeline comparison)
+  - job_name: 'controller-manager-pull'
+    scrape_interval: 10s
     static_configs:
       - targets: ['controller-manager:8000']
         labels:
           service: 'controller-manager'
+          pipeline: 'prometheus-pull'
 
-  # Game Coordinator Service
-  - job_name: 'game-coordinator'
-    static_configs:
-      - targets: ['game-coordinator:8000']
-        labels:
-          service: 'game-coordinator'
-
-  # Menu Service
+  # Menu Service (still uses prometheus_client pull)
   - job_name: 'menu'
     static_configs:
       - targets: ['menu:8000']
         labels:
           service: 'menu'
 
-  # Settings Service
+  # Settings Service (still uses prometheus_client pull)
   - job_name: 'settings'
     static_configs:
       - targets: ['settings:8000']
         labels:
           service: 'settings'
 
-  # Audio Service
+  # WebUI Service (still uses prometheus_client pull)
+  - job_name: 'webui'
+    static_configs:
+      - targets: ['webui:8000']
+        labels:
+          service: 'webui'
+
+  # Audio Service (still uses prometheus_client pull)
   - job_name: 'audio'
     static_configs:
       - targets: ['audio:8000']
         labels:
           service: 'audio'
 
-  # --- Observability Stack ---
-
   # Prometheus itself
   - job_name: 'prometheus'
     static_configs:
       - targets: ['localhost:9090']
-
-  # Grafana
-  - job_name: 'grafana'
-    static_configs:
-      - targets: ['grafana:3000']
-
-  # Loki
-  - job_name: 'loki'
-    static_configs:
-      - targets: ['loki:3100']
-
-  # VictoriaMetrics
-  - job_name: 'victoria-metrics'
-    static_configs:
-      - targets: ['victoria-metrics:8428']
 
   # Node Exporter (host metrics - CPU, memory, disk, temperature)
   - job_name: 'node'
