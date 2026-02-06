@@ -146,7 +146,7 @@ class FightClubGame(BaseGameMode):
 
         logger.info(f"Initialized {len(self.players)} players in Fight Club")
 
-        self.event_publisher(
+        await self.event_publisher(
             "players_initialized",
             {
                 "player_count": len(self.players),
@@ -265,7 +265,7 @@ class FightClubGame(BaseGameMode):
         # Play round start sound
         await self._play_sound(Sound.SFX_BEEP, priority=2)
 
-        self.event_publisher(
+        await self.event_publisher(
             "round_start",
             {
                 "round": self.round_number,
@@ -319,7 +319,7 @@ class FightClubGame(BaseGameMode):
         self.current_defender = None
         self.current_fighter = None
 
-        self.event_publisher(
+        await self.event_publisher(
             "round_timeout",
             {"round": self.round_number},
         )
@@ -352,7 +352,7 @@ class FightClubGame(BaseGameMode):
                 )
                 await self.gameplay_stream.write(color_cmd)
 
-    def _check_win_condition(self) -> bool:
+    async def _check_win_condition(self) -> bool:
         """Check if game should end."""
         return self.game_over
 
@@ -454,7 +454,7 @@ class FightClubGame(BaseGameMode):
                 },
             )
 
-        self.event_publisher(
+        await self.event_publisher(
             "round_end",
             {
                 "round": self.round_number,
@@ -527,7 +527,7 @@ class FightClubGame(BaseGameMode):
                 player.span.end()
 
         self.state = self.state.__class__.ENDED
-        self.event_publisher(
+        await self.event_publisher(
             "game_ended",
             {
                 "game_id": self.game_id,
@@ -594,7 +594,7 @@ class FightClubGame(BaseGameMode):
                 # Emit game_started event (required for integration tests)
                 from lib.types import GameEvent
 
-                self.event_publisher(
+                await self.event_publisher(
                     GameEvent.GAME_STARTED, {"game_id": self.game_id, "player_count": len(self.players)}
                 )
 

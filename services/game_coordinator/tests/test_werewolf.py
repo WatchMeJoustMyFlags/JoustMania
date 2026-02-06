@@ -20,7 +20,7 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService, MockSettingsService
+from conftest import EventCollector, MockControllerManagerService, MockSettingsService, async_noop
 
 from services.game_coordinator.games.werewolf import (
     HUMAN_COLOR,
@@ -132,14 +132,14 @@ class TestWerewolfGameMode:
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
         # Initially no win
-        assert not game._check_win_condition()
+        assert not await game._check_win_condition()
 
         # Kill all humans
         for serial in game.human_serials:
             game.players[serial].alive = False
 
         # Werewolves should win
-        assert game._check_win_condition()
+        assert await game._check_win_condition()
 
         # Verify winner event
         winner_events = event_collector.get_events_of_type("werewolf_winner")
@@ -154,14 +154,14 @@ class TestWerewolfGameMode:
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
         # Initially no win
-        assert not game._check_win_condition()
+        assert not await game._check_win_condition()
 
         # Kill all werewolves
         for serial in game.werewolf_serials:
             game.players[serial].alive = False
 
         # Humans should win
-        assert game._check_win_condition()
+        assert await game._check_win_condition()
 
         # Verify winner event
         winner_events = event_collector.get_events_of_type("werewolf_winner")
@@ -176,7 +176,7 @@ class TestWerewolfGameMode:
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
         # All alive - no win
-        assert not game._check_win_condition()
+        assert not await game._check_win_condition()
 
         # Kill one from each team (if possible)
         if len(game.human_serials) > 1:
@@ -189,7 +189,7 @@ class TestWerewolfGameMode:
         alive_wolves = [s for s in game.werewolf_serials if game.players[s].alive]
 
         if alive_humans and alive_wolves:
-            assert not game._check_win_condition()
+            assert not await game._check_win_condition()
 
     @pytest.mark.asyncio
     async def test_kill_player_marks_dead(self, werewolf_game):
@@ -258,7 +258,7 @@ class TestWerewolfThresholds:
         game = WerewolfGame(
             controller_manager_client=mock_controller_manager,
             settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_werewolf_thresh",
         )
@@ -345,7 +345,7 @@ class TestWerewolfEdgeCases:
         game = WerewolfGame(
             controller_manager_client=mock_controller_manager,
             settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_werewolf_ratio",
         )
@@ -365,7 +365,7 @@ class TestWerewolfEdgeCases:
         game = WerewolfGame(
             controller_manager_client=mock_controller_manager,
             settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_min_werewolf",
         )
@@ -397,7 +397,7 @@ class TestWerewolfEdgeCases:
             player.alive = False
 
         # Should trigger win condition (with winner="none")
-        assert game._check_win_condition()
+        assert await game._check_win_condition()
 
         winner_events = event_collector.get_events_of_type("werewolf_winner")
         assert len(winner_events) == 1
@@ -412,7 +412,7 @@ class TestWerewolfEdgeCases:
         game = WerewolfGame(
             controller_manager_client=mock_controller_manager,
             settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_reveal_state",
         )

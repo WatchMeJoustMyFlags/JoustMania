@@ -173,7 +173,7 @@ class BaseGameMode(ABC):
         self,
         controller_manager_client: Any,  # controller_manager_pb2_grpc.ControllerManagerServiceStub
         settings_client: Any,  # settings_pb2_grpc.SettingsServiceStub
-        event_publisher: Callable[[str, dict[str, str]], None],
+        event_publisher: Callable[[str, dict[str, str]], Any],
         audio_client: Any | None = None,  # audio_pb2_grpc.AudioServiceStub
         game_id: str = "",
         initial_players: list | None = None,  # List of Player protobuf messages
@@ -185,7 +185,7 @@ class BaseGameMode(ABC):
         Args:
             controller_manager_client: gRPC stub for ControllerManager service
             settings_client: gRPC stub for Settings service
-            event_publisher: Callback function to publish game events (event_type, data)
+            event_publisher: Async callback function to publish game events (event_type, data)
             audio_client: gRPC stub for Audio service (Phase 29)
             initial_players: Optional list of Player protobuf messages from StartGame RPC
             game_id: Unique identifier for this game instance
@@ -274,7 +274,7 @@ class BaseGameMode(ABC):
         pass
 
     @abstractmethod
-    def _check_win_condition(self) -> bool:
+    async def _check_win_condition(self) -> bool:
         """
         Check if game should end.
 
@@ -354,7 +354,7 @@ class BaseGameMode(ABC):
             logger.info(f"Initialized {len(self.players)} players from StartGame RPC")
 
             # Publish event
-            self.event_publisher(
+            await self.event_publisher(
                 GameEvent.PLAYERS_INITIALIZED,
                 {
                     "player_count": len(self.players),
@@ -375,7 +375,7 @@ class BaseGameMode(ABC):
         countdown_seconds = config.countdown_duration_seconds
 
         logger.info(f"Starting countdown ({countdown_seconds}s)...")
-        self.event_publisher(GameEvent.COUNTDOWN_START, {"duration": countdown_seconds})
+        await self.event_publisher(GameEvent.COUNTDOWN_START, {"duration": countdown_seconds})
 
         if not self.running:
             logger.info(_MSG_COUNTDOWN_INTERRUPTED)
@@ -384,7 +384,7 @@ class BaseGameMode(ABC):
         # Skip countdown entirely if duration is 0 (for fast tests)
         if countdown_seconds == 0:
             logger.info("Countdown skipped (duration=0)")
-            self.event_publisher(GameEvent.COUNTDOWN_END, {})
+            await self.event_publisher(GameEvent.COUNTDOWN_END, {})
             return
 
         # Get phase duration from config (shared with controller_manager for sync)
@@ -430,7 +430,7 @@ class BaseGameMode(ABC):
         # Play start sound (Phase 29 - GO!)
         await self._play_sound(Sound.SFX_START3, priority=2)
 
-        self.event_publisher(GameEvent.COUNTDOWN_END, {})
+        await self.event_publisher(GameEvent.COUNTDOWN_END, {})
         logger.info("Countdown complete")
 
     async def _start_gameplay_stream(self):
@@ -524,7 +524,7 @@ class BaseGameMode(ABC):
                     await self._process_controller_state(gameplay_data)
 
                     # Check after each controller - stop processing if we have a winner
-                    if self._check_win_condition():
+                    if await self._check_win_condition():
                         game_over = True
                         break
 
@@ -870,7 +870,7 @@ class BaseGameMode(ABC):
             # State transitions
             self.state = GameState.STARTING
             self.running = True  # Set early to allow force_end during countdown
-            self.event_publisher(GameEvent.GAME_STARTING, {"game_id": self.game_id})
+            await self.event_publisher(GameEvent.GAME_STARTING, {"game_id": self.game_id})
 
             # Phase 1: Initialization (includes all pre-gameplay setup)
             with tracer.start_as_current_span("initialization_phase") as init_span:
@@ -909,7 +909,10 @@ class BaseGameMode(ABC):
             # Game starts
             self.state = GameState.RUNNING
             # Note: self.start_time is set in _game_loop when first data is received
-            self.event_publisher(GameEvent.GAME_STARTED, {"game_id": self.game_id, "player_count": len(self.players)})
+            await self.event_publisher(
+                GameEvent.GAME_STARTED,
+                {"game_id": self.game_id, "player_count": len(self.players)},
+            )
 
             # Phase 2: Gameplay (with music loop running alongside)
             with tracer.start_as_current_span("gameplay_phase") as gameplay_span:
@@ -949,7 +952,7 @@ class BaseGameMode(ABC):
         except Exception as e:
             logger.error(f"{self.get_game_name()} game error: {e}", exc_info=True)
             self.state = GameState.ENDED
-            self.event_publisher(GameEvent.GAME_ERROR, {"game_id": self.game_id, "error": str(e)})
+            await self.event_publisher(GameEvent.GAME_ERROR, {"game_id": self.game_id, "error": str(e)})
             raise
 
         finally:

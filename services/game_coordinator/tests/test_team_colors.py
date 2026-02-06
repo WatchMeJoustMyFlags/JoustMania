@@ -4,7 +4,7 @@ Unit tests for team color assignment (Phase 39 - Task 3).
 Tests team color functionality in TeamsGameBase and subclasses.
 """
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -54,7 +54,7 @@ def mock_settings_client():
 @pytest.fixture
 def mock_event_publisher():
     """Create mock event publisher."""
-    return MagicMock()
+    return AsyncMock()
 
 
 @pytest.fixture

@@ -92,14 +92,14 @@ class TestSubscription:
         await bus.subscribe("sub1")
         await bus.subscribe("sub2")
 
-        ids = bus.get_subscriber_ids()
+        ids = await bus.get_subscriber_ids()
 
         assert set(ids) == {"sub1", "sub2"}
 
     @pytest.mark.asyncio
     async def test_get_subscriber_ids_empty(self, bus):
         """get_subscriber_ids should return empty list when no subscribers."""
-        ids = bus.get_subscriber_ids()
+        ids = await bus.get_subscriber_ids()
         assert ids == []
 
 
@@ -116,7 +116,7 @@ class TestEventPublishing:
         """Published events should be delivered to subscribers."""
         queue = await bus.subscribe("sub1")
 
-        bus.publish("test_event", {"key": "value"})
+        await bus.publish("test_event", {"key": "value"})
 
         # Get event from queue
         event = queue.get_nowait()
@@ -129,7 +129,7 @@ class TestEventPublishing:
         queue1 = await bus.subscribe("sub1")
         queue2 = await bus.subscribe("sub2")
 
-        bus.publish("broadcast_event", {"msg": "hello"})
+        await bus.publish("broadcast_event", {"msg": "hello"})
 
         event1 = queue1.get_nowait()
         event2 = queue2.get_nowait()
@@ -144,7 +144,7 @@ class TestEventPublishing:
         """Published event data should have string values."""
         queue = await bus.subscribe("sub1")
 
-        bus.publish("typed_event", {"number": 42, "boolean": True})
+        await bus.publish("typed_event", {"number": 42, "boolean": True})
 
         event = queue.get_nowait()
         assert event.data["number"] == "42"
@@ -155,7 +155,7 @@ class TestEventPublishing:
         """Published events should have timestamp."""
         queue = await bus.subscribe("sub1")
 
-        bus.publish("timed_event", {})
+        await bus.publish("timed_event", {})
 
         event = queue.get_nowait()
         assert event.timestamp > 0
@@ -164,7 +164,7 @@ class TestEventPublishing:
     async def test_publish_no_subscribers_no_error(self, bus):
         """Publishing with no subscribers should not raise error."""
         # Should not raise
-        bus.publish("lonely_event", {"data": "ignored"})
+        await bus.publish("lonely_event", {"data": "ignored"})
 
     @pytest.mark.asyncio
     async def test_publish_queue_full_skips_subscriber(self, bus):
@@ -173,11 +173,11 @@ class TestEventPublishing:
         queue = await bus.subscribe("sub1", max_queue_size=1)
 
         # Fill the queue
-        bus.publish("event1", {})
+        await bus.publish("event1", {})
 
         # This should not raise, just skip
-        bus.publish("event2", {})
-        bus.publish("event3", {})
+        await bus.publish("event2", {})
+        await bus.publish("event3", {})
 
         # Only first event should be in queue
         assert queue.qsize() == 1
@@ -198,8 +198,8 @@ class TestStateSyncCallback:
 
         bus = EventBus(state_sync_callback=callback)
 
-        bus.publish("event1", {})
-        bus.publish("event2", {})
+        await bus.publish("event1", {})
+        await bus.publish("event2", {})
 
         assert events_received == ["event1", "event2"]
 
@@ -213,7 +213,7 @@ class TestStateSyncCallback:
 
         bus = EventBus(state_sync_callback=callback)
 
-        bus.publish("game_started", {"game_id": "123"})
+        await bus.publish("game_started", {"game_id": "123"})
 
         assert received_type == ["game_started"]
 
@@ -231,7 +231,7 @@ class TestTraceContextInjection:
         """Published events may include trace context."""
         queue = await bus.subscribe("sub1")
 
-        bus.publish("traced_event", {})
+        await bus.publish("traced_event", {})
 
         event = queue.get_nowait()
         # Trace context is injected when there's an active span
@@ -271,9 +271,9 @@ class TestThreadSafety:
         queue = await bus.subscribe("sub1")
 
         # Publish and unsubscribe concurrently (simulated)
-        bus.publish("event1", {})
+        await bus.publish("event1", {})
         await bus.unsubscribe("sub1")
-        bus.publish("event2", {})  # After unsubscribe
+        await bus.publish("event2", {})  # After unsubscribe
 
         # First event should be received
         event = queue.get_nowait()

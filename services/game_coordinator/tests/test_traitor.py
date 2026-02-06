@@ -20,7 +20,7 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService, MockSettingsService
+from conftest import EventCollector, MockControllerManagerService, MockSettingsService, async_noop
 
 from services.game_coordinator.games.traitor import TraitorGame, TraitorPlayer
 
@@ -142,7 +142,7 @@ class TestTraitorGameMode:
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
         # Initially no win
-        assert not game._check_win_condition()
+        assert not await game._check_win_condition()
 
         # Kill all players with secret_team == 1
         for _serial, player in game.players.items():
@@ -150,7 +150,7 @@ class TestTraitorGameMode:
                 player.alive = False
 
         # Team 0 should win
-        assert game._check_win_condition()
+        assert await game._check_win_condition()
 
         # Verify winner event
         winner_events = event_collector.get_events_of_type("traitor_winner")
@@ -176,7 +176,7 @@ class TestTraitorGameMode:
                 player.alive = False
 
         # Traitor's secret team wins
-        assert game._check_win_condition()
+        assert await game._check_win_condition()
 
         winner_events = event_collector.get_events_of_type("traitor_winner")
         assert len(winner_events) == 1
@@ -223,7 +223,7 @@ class TestTraitorGameMode:
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
         # All alive - no win
-        assert not game._check_win_condition()
+        assert not await game._check_win_condition()
 
         # Kill one player, but keep both secret teams alive
         # Find players from each secret team
@@ -234,7 +234,7 @@ class TestTraitorGameMode:
             game.players[team0_players[0]].alive = False
 
         # Still both teams alive - no win
-        assert not game._check_win_condition()
+        assert not await game._check_win_condition()
 
     @pytest.mark.asyncio
     async def test_get_game_name(self, traitor_game):
@@ -255,7 +255,7 @@ class TestTraitorCount:
         game = TraitorGame(
             controller_manager_client=mock_controller_manager,
             settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_traitor_count",
         )
@@ -293,7 +293,7 @@ class TestTraitorLargeGame:
         game = TraitorGame(
             controller_manager_client=mock_controller_manager,
             settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_traitor_8",
         )
@@ -312,7 +312,7 @@ class TestTraitorLargeGame:
         game = TraitorGame(
             controller_manager_client=mock_controller_manager,
             settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_traitor_10",
         )
@@ -350,7 +350,7 @@ class TestTraitorEdgeCases:
 
         # Should trigger win (draw scenario - all dead)
         # Note: Traitor checks alive teams, if none alive, might return True
-        result = game._check_win_condition()
+        result = await game._check_win_condition()
         assert result is True  # Game ends when no alive teams
 
     @pytest.mark.asyncio
@@ -362,7 +362,7 @@ class TestTraitorEdgeCases:
         game = TraitorGame(
             controller_manager_client=mock_controller_manager,
             settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_traitor_dist",
         )

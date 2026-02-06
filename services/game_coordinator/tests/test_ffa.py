@@ -98,14 +98,14 @@ class TestFFAGameMode:
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
         # All alive - no winner
-        assert not game._check_win_condition()
+        assert not await game._check_win_condition()
 
         # Kill 3 players, leaving 1
         for serial in ["mock_controller_0", "mock_controller_1", "mock_controller_2"]:
             game.players[serial].alive = False
 
         # Now should have winner
-        assert game._check_win_condition()
+        assert await game._check_win_condition()
 
     @pytest.mark.asyncio
     async def test_win_condition_two_alive(self, ffa_game):
@@ -120,7 +120,7 @@ class TestFFAGameMode:
         game.players["mock_controller_1"].alive = False
 
         # Should NOT have winner yet
-        assert not game._check_win_condition()
+        assert not await game._check_win_condition()
 
     @pytest.mark.asyncio
     async def test_get_alive_count(self, ffa_game):

@@ -180,7 +180,7 @@ class TraitorGame(TeamsGameBase):
 
         # Publish event with team assignments (not revealing traitors)
         team_assignments = {serial: player.team for serial, player in self.players.items()}
-        self.event_publisher(
+        await self.event_publisher(
             "players_initialized",
             {
                 "player_count": num_players,
@@ -206,7 +206,7 @@ class TraitorGame(TeamsGameBase):
         """
         logger.info("Starting traitor signal phase...")
 
-        self.event_publisher(
+        await self.event_publisher(
             "traitor_signal_start",
             {"traitor_count": len(self.traitor_serials)},
         )
@@ -242,10 +242,10 @@ class TraitorGame(TeamsGameBase):
         # Set persistent team colors
         await self._set_team_colors(pulse_effect=False)
 
-        self.event_publisher("traitor_signal_end", {})
+        await self.event_publisher("traitor_signal_end", {})
         logger.info("Traitor signal phase complete")
 
-    def _check_win_condition(self) -> bool:
+    async def _check_win_condition(self) -> bool:
         """
         Check if a team has won, accounting for traitors.
 
@@ -280,7 +280,7 @@ class TraitorGame(TeamsGameBase):
                 traitor_winners = [s for s in winners if s in self.traitor_serials]
                 loyal_winners = [s for s in winners if s not in self.traitor_serials]
 
-                self.event_publisher(
+                await self.event_publisher(
                     "traitor_winner",
                     {
                         "team": winning_team,
@@ -293,7 +293,7 @@ class TraitorGame(TeamsGameBase):
 
             else:
                 logger.info("No winner - all players died")
-                self.event_publisher("game_tie", {})
+                await self.event_publisher("game_tie", {})
 
             return True
 
@@ -431,7 +431,7 @@ class TraitorGame(TeamsGameBase):
                 team.span.end()
 
         self.state = self.state.__class__.ENDED
-        self.event_publisher(
+        await self.event_publisher(
             "game_ended",
             {
                 "game_id": self.game_id,
