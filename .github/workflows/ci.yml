@@ -11,24 +11,58 @@ env:
   REGISTRY: ghcr.io
   # Repository name in lowercase for GHCR
   IMAGE_PREFIX: ghcr.io/watchmejoustmyflags/joustmania
+  # Main branch - used for :latest Docker tag
+  MAIN_BRANCH: dev-refactor
 
 jobs:
-  # Lint shared code (lib/, root files) and check formatting
-  lint-shared:
-    name: Lint Shared Code & Format
+  # Build and test shared packages (proto, lib)
+  lib-tests:
+    name: Lib Unit Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: astral-sh/setup-uv@v5
 
-      - name: Lint lib/
+      - name: Build proto package
         run: |
-          uv tool install ruff
-          ruff check lib/ --output-format=github
+          cd proto
+          uv sync
+          uv build
 
-      - name: Format check (entire codebase)
-        run: ruff format --check .
+      - name: Lint proto
+        run: |
+          cd proto
+          uv tool run ruff check .
+
+      - name: Build lib package
+        run: |
+          cd lib
+          uv sync --extra test
+          uv build
+
+      - name: Lint lib
+        run: |
+          cd lib
+          uv tool run ruff check .
+
+      - name: Run lib unit tests with coverage
+        run: |
+          cd lib
+          uv run pytest tests/ -v --tb=short \
+            --cov=. \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing
+          # Fix paths in coverage.xml for SonarCloud
+          sed -i 's|<source>.*</source>|<source>.</source>|g' coverage.xml
+          sed -i 's|filename="|filename="lib/|g' coverage.xml
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lib
+          path: lib/coverage.xml
+          retention-days: 1
 
   # Per-service matrix checks with path filtering
   # Runs lint/typecheck for all services, unit tests only for services with tests
@@ -44,20 +78,6 @@ jobs:
           - settings
           - menu
           - audio
-          - supervisor
-        include:
-          - service: controller_manager
-            has_tests: true
-          - service: game_coordinator
-            has_tests: true
-          - service: settings
-            has_tests: true
-          - service: menu
-            has_tests: true
-          - service: audio
-            has_tests: true
-          - service: supervisor
-            has_tests: false
     steps:
       - uses: actions/checkout@v4
 
@@ -99,12 +119,37 @@ jobs:
           uv sync
           ty check .
 
-      - name: Unit tests
-        if: steps.changes.outputs.service == 'true' && matrix.has_tests
+      # Always run tests with coverage for SonarCloud (no path filter)
+      - name: Install uv for tests
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install system dependencies for tests
+        if: matrix.service == 'controller_manager' || matrix.service == 'audio'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev libglib2.0-dev libasound2-dev pkg-config
+
+      - name: Unit tests with coverage
         run: |
           cd services/${{ matrix.service }}
           uv sync --extra test
-          uv run pytest tests/ -v --tb=short
+          # Run with coverage, using repo-relative paths for SonarCloud
+          uv run pytest tests/ -v --tb=short \
+            --cov=. \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing
+          # Fix paths in coverage.xml for SonarCloud:
+          # 1. Set source to "." (repo root) - SonarCloud resolves paths relative to sonar.sources
+          # 2. Prefix filenames with services/<name>/ to match repo structure
+          sed -i 's|<source>.*</source>|<source>.</source>|g' coverage.xml
+          sed -i 's|filename="|filename="services/${{ matrix.service }}/|g' coverage.xml
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.service }}
+          path: services/${{ matrix.service }}/coverage.xml
+          retention-days: 1
 
   lint-dockerfiles:
     name: Lint Dockerfiles
@@ -114,6 +159,50 @@ jobs:
 
       - name: Lint Dockerfiles
         run: make ci-lint-dockerfiles
+
+  # SonarCloud analysis with coverage
+  sonarcloud:
+    name: SonarCloud Analysis
+    runs-on: ubuntu-latest
+    needs: [service-checks, lib-tests]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for better analysis
+
+      - name: Download coverage reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*
+          path: coverage-reports
+        continue-on-error: true  # Don't fail if no coverage artifacts
+
+      - name: List and combine coverage reports
+        run: |
+          echo "=== Looking for coverage reports ==="
+          find coverage-reports -name "*.xml" -type f 2>/dev/null || echo "No coverage directory"
+          ls -la coverage-reports/ 2>/dev/null || echo "No coverage-reports dir"
+
+          # Find all coverage.xml files (they're in subdirectories per artifact)
+          COVERAGE_FILES=$(find coverage-reports -name "coverage.xml" -type f 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+
+          if [ -n "$COVERAGE_FILES" ]; then
+            echo "Found coverage files: $COVERAGE_FILES"
+            # SonarCloud can accept multiple coverage files via comma-separated list
+            echo "SONAR_COVERAGE_PATHS=$COVERAGE_FILES" >> $GITHUB_ENV
+          else
+            echo "No coverage files found"
+            echo "SONAR_COVERAGE_PATHS=" >> $GITHUB_ENV
+          fi
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.python.coverage.reportPaths=${{ env.SONAR_COVERAGE_PATHS }}
 
   validate-protos:
     name: Validate Proto Files
@@ -194,6 +283,7 @@ jobs:
           tags: |
             ${{ env.IMAGE_PREFIX }}/builder:${{ github.sha }}
             ${{ github.event_name != 'pull_request' && format('{0}/builder:{1}', env.IMAGE_PREFIX, github.ref_name) || '' }}
+            ${{ github.ref_name == env.MAIN_BRANCH && format('{0}/builder:latest', env.IMAGE_PREFIX) || '' }}
           cache-from: type=gha,scope=builder
           cache-to: type=gha,mode=max,scope=builder
 
@@ -240,6 +330,7 @@ jobs:
           tags: |
             ${{ env.IMAGE_PREFIX }}/psmove-builder:${{ github.sha }}
             ${{ github.event_name != 'pull_request' && format('{0}/psmove-builder:{1}', env.IMAGE_PREFIX, github.ref_name) || '' }}
+            ${{ github.ref_name == env.MAIN_BRANCH && format('{0}/psmove-builder:latest', env.IMAGE_PREFIX) || '' }}
           cache-from: type=gha,scope=psmove-builder
           cache-to: type=gha,mode=max,scope=psmove-builder
 
@@ -265,7 +356,6 @@ jobs:
           - controller_manager
           - game_coordinator
           - settings
-          - supervisor
           - menu
           - audio
     steps:
@@ -302,6 +392,7 @@ jobs:
           tags: |
             ${{ env.IMAGE_PREFIX }}/${{ steps.image_name.outputs.name }}:${{ github.sha }}
             ${{ github.event_name != 'pull_request' && format('{0}/{1}:{2}', env.IMAGE_PREFIX, steps.image_name.outputs.name, github.ref_name) || '' }}
+            ${{ github.ref_name == env.MAIN_BRANCH && format('{0}/{1}:latest', env.IMAGE_PREFIX, steps.image_name.outputs.name) || '' }}
           build-args: |
             BUILDER_IMAGE=${{ env.IMAGE_PREFIX }}/builder:${{ github.sha }}
             PSMOVE_BUILDER_IMAGE=${{ env.IMAGE_PREFIX }}/psmove-builder:${{ github.sha }}
@@ -355,6 +446,7 @@ jobs:
           tags: |
             ${{ env.IMAGE_PREFIX }}/${{ matrix.image_name }}:${{ github.sha }}
             ${{ github.event_name != 'pull_request' && format('{0}/{1}:{2}', env.IMAGE_PREFIX, matrix.image_name, github.ref_name) || '' }}
+            ${{ github.ref_name == env.MAIN_BRANCH && format('{0}/{1}:latest', env.IMAGE_PREFIX, matrix.image_name) || '' }}
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
 
@@ -382,7 +474,7 @@ jobs:
         env:
           BUILDER_IMAGE: ${{ env.IMAGE_PREFIX }}/builder:${{ github.sha }}
           PSMOVE_BUILDER_IMAGE: ${{ env.IMAGE_PREFIX }}/psmove-builder:${{ github.sha }}
-        run: make test
+        run: make test-integration
 
   # Final status check job for branch protection
   # This job depends on all other jobs and provides a single status check
@@ -391,9 +483,10 @@ jobs:
     name: CI Complete
     runs-on: ubuntu-latest
     needs:
-      - lint-shared
+      - lib-tests
       - service-checks
       - lint-dockerfiles
+      - sonarcloud
       - validate-protos
       - validate-packages
       - build-builder
@@ -411,12 +504,11 @@ jobs:
           if [[ "$FAILED" == "true" || "$CANCELLED" == "true" ]]; then
             echo "❌ One or more CI jobs failed or were cancelled"
             echo "Job results:"
-            echo "  lint-shared: ${{ needs.lint-shared.result }}"
+            echo "  lib-tests: ${{ needs.lib-tests.result }}"
             echo "  service-checks: ${{ needs.service-checks.result }}"
-            echo "  lint-dockerfiles: \
-          ${{ needs.lint-dockerfiles.result }}"
-            echo "  validate-protos: \
-          ${{ needs.validate-protos.result }}"
+            echo "  lint-dockerfiles: ${{ needs.lint-dockerfiles.result }}"
+            echo "  sonarcloud: ${{ needs.sonarcloud.result }}"
+            echo "  validate-protos: ${{ needs.validate-protos.result }}"
             echo "  validate-packages: \
           ${{ needs.validate-packages.result }}"
             echo "  build-builder: ${{ needs.build-builder.result }}"

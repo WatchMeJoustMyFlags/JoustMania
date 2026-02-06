@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from typing import TYPE_CHECKING
 
-from services.menu.handlers.base import ControllerState
+from services.menu.handlers.base import ButtonDebouncer, ControllerState
 
 if TYPE_CHECKING:
     from services.menu.state_manager import StateManager
@@ -37,9 +36,10 @@ class ReadyHandler:
         """
         self._state_manager: StateManager | None = None
         self._start_game_callback = start_game_callback
+        self._debouncer = ButtonDebouncer(default_interval=0.1)
 
-        # Debounce tracking
-        self._last_button_press: dict[str, dict[str, float]] = {}
+        # Prevent duplicate game start attempts (Issue #230)
+        self._game_start_in_progress = False
 
     @property
     def state(self) -> ControllerState:
@@ -62,15 +62,13 @@ class ReadyHandler:
             logger.error("StateManager not set")
             return
 
-        current_time = time.time()
-
         if button == "trigger":
-            if not self._should_process_button(serial, "trigger", current_time):
+            if not self._debouncer.should_process(serial, "trigger"):
                 return
             await self._handle_trigger(serial)
 
         elif button == "move":
-            if not self._should_process_button(serial, "move", current_time):
+            if not self._debouncer.should_process(serial, "move"):
                 return
             await self._handle_move(serial)
 
@@ -86,7 +84,7 @@ class ReadyHandler:
         # Set bright LED color
         await self._state_manager.led.set_ready_color(
             serial,
-            self._state_manager.current_game_mode,
+            self._state_manager.current_game_mode.name,
         )
 
         logger.info(
@@ -95,7 +93,8 @@ class ReadyHandler:
         )
 
         # Check if all ready - auto start with feedback delay
-        if self._state_manager.all_ready():
+        if self._state_manager.all_ready() and not self._game_start_in_progress:
+            self._game_start_in_progress = True
             logger.info("All controllers ready - showing feedback before game start")
             # Brief delay so last player sees their LED go bright
             await asyncio.sleep(0.3)
@@ -108,27 +107,14 @@ class ReadyHandler:
         """
         logger.debug(f"Controller {serial} exiting ready state")
 
-    def _should_process_button(self, serial: str, button: str, current_time: float) -> bool:
+    def reset_game_start_flag(self) -> None:
         """
-        Check if button press should be processed (debouncing).
+        Reset the game start flag when returning to lobby.
 
-        Args:
-            serial: Controller serial number
-            button: Button name
-            current_time: Current timestamp
-
-        Returns:
-            True if button press should be processed
+        Called by StateManager.reset() to allow new game starts after
+        a game ends or fails.
         """
-        if serial not in self._last_button_press:
-            self._last_button_press[serial] = {}
-
-        last_press = self._last_button_press[serial].get(button, 0)
-        if current_time - last_press < 0.1:  # 100ms debounce
-            return False
-
-        self._last_button_press[serial][button] = current_time
-        return True
+        self._game_start_in_progress = False
 
     async def _handle_trigger(self, serial: str) -> None:
         """
@@ -140,10 +126,13 @@ class ReadyHandler:
         if self._state_manager is None:
             return
 
-        # Check if all ready
-        if self._state_manager.all_ready():
+        # Check if all ready and no start already in progress
+        if self._state_manager.all_ready() and not self._game_start_in_progress:
+            self._game_start_in_progress = True
             logger.info(f"All ready, starting game via trigger from {serial}")
             await self._start_game_callback(serial)
+        elif self._game_start_in_progress:
+            logger.debug(f"Trigger press from {serial} ignored - game start already in progress")
         else:
             logger.debug(
                 f"Trigger press from {serial} but not all ready "

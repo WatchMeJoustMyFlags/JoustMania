@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
+from lib.colors import Colors
 from lib.types import Sound
 from proto import controller_manager_pb2
 from services.game_coordinator.games.base import BaseGameMode, Phase, Player, Sensitivity
@@ -23,10 +24,10 @@ from services.game_coordinator.games.base import BaseGameMode, Phase, Player, Se
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 
-# Game constants
-REVEAL_TIME = 35.0  # Seconds until werewolves are revealed
-HUMAN_COLOR = (255, 255, 0)  # Yellow for humans (and all players before reveal)
-WEREWOLF_COLOR = (0, 100, 255)  # Blue for werewolves after reveal
+# Game constants (defaults, can be overridden via settings)
+DEFAULT_REVEAL_TIME = 35.0  # Seconds until werewolves are revealed
+HUMAN_COLOR = Colors.Yellow.value  # Yellow for humans (and all players before reveal)
+WEREWOLF_COLOR = Colors.LightBlue.value  # Blue for werewolves after reveal
 
 # Werewolf thresholds - slightly harder to kill than humans
 # Format: (warn_threshold, death_threshold)
@@ -69,6 +70,8 @@ class WerewolfGame(BaseGameMode):
         audio_client=None,
         game_id: str = "",
         initial_players: list | None = None,
+        sensitivity: int = 2,
+        reveal_time_seconds: float = DEFAULT_REVEAL_TIME,
     ):
         """
         Initialize Werewolf game.
@@ -80,6 +83,8 @@ class WerewolfGame(BaseGameMode):
             audio_client: gRPC stub for Audio service
             game_id: Unique identifier for this game instance
             initial_players: Optional list of Player protobuf messages
+            sensitivity: Sensitivity level 0-4 (passed from StartGameConfig)
+            reveal_time_seconds: Seconds until werewolves are revealed
         """
         super().__init__(
             controller_manager_client=controller_manager_client,
@@ -88,6 +93,7 @@ class WerewolfGame(BaseGameMode):
             audio_client=audio_client,
             game_id=game_id,
             initial_players=initial_players,
+            sensitivity=sensitivity,
         )
 
         self.werewolf_serials: list[str] = []
@@ -95,6 +101,7 @@ class WerewolfGame(BaseGameMode):
         self.revealed = False
         self.reveal_task: asyncio.Task | None = None
         self.game_span: trace.Span | None = None
+        self._reveal_time: float = reveal_time_seconds
 
     def get_game_name(self) -> str:
         """Return game mode identifier."""
@@ -208,24 +215,17 @@ class WerewolfGame(BaseGameMode):
         await self._play_sound(Sound.VOX_WEREWOLF_INTRO, priority=2)
 
         # Rumble werewolves to signal their role
-        for serial in self.werewolf_serials:
-            if self.gameplay_stream:
+        if self.gameplay_stream:
+            for serial in self.werewolf_serials:
                 rumble_cmd = controller_manager_pb2.GameplayStreamControl(
                     game_effect=controller_manager_pb2.GameEffectCommand(
                         serial=serial,
                         effect=controller_manager_pb2.GAME_EFFECT_RUMBLE,
-                    )
-                )
-                await self.gameplay_stream.write(rumble_cmd)
-            else:
-                await self.controller_client.PlayControllerEffect(
-                    controller_manager_pb2.PlayControllerEffectRequest(
-                        serial=serial,
-                        effect=controller_manager_pb2.EFFECT_RUMBLE,
                         duration_ms=2000,
                         speed=5,
                     )
                 )
+                await self.gameplay_stream.write(rumble_cmd)
 
         logger.info(f"Signaled {len(self.werewolf_serials)} werewolves with rumble")
 
@@ -256,8 +256,8 @@ class WerewolfGame(BaseGameMode):
 
         Called as a background task during gameplay.
         """
-        # Wait for reveal time
-        await asyncio.sleep(REVEAL_TIME)
+        # Wait for reveal time (configurable via werewolf_reveal_time setting)
+        await asyncio.sleep(self._reveal_time)
 
         if not self.running:
             return
@@ -301,7 +301,7 @@ class WerewolfGame(BaseGameMode):
         for serial in self.werewolf_serials:
             player = self.players.get(serial)
             if player and player.span:
-                player.span.add_event("werewolf_revealed", {"time_since_start": REVEAL_TIME})
+                player.span.add_event("werewolf_revealed", {"time_since_start": self._reveal_time})
 
         logger.info(f"Revealed {len(self.werewolf_serials)} werewolves")
 
@@ -391,6 +391,7 @@ class WerewolfGame(BaseGameMode):
             )
             player.span.set_status(Status(StatusCode.OK))
             player.span.end()
+            player.span = None  # Mark as closed to prevent double-ending
 
     async def _end_game_impl(self):
         """Handle game ending."""
@@ -416,8 +417,8 @@ class WerewolfGame(BaseGameMode):
             winner_serials = []
 
         # Show rainbow effect on winners
-        for serial in winner_serials:
-            if self.gameplay_stream:
+        if self.gameplay_stream:
+            for serial in winner_serials:
                 effect_cmd = controller_manager_pb2.GameplayStreamControl(
                     game_effect=controller_manager_pb2.GameEffectCommand(
                         serial=serial,
@@ -425,16 +426,6 @@ class WerewolfGame(BaseGameMode):
                     )
                 )
                 await self.gameplay_stream.write(effect_cmd)
-            else:
-                await self.controller_client.PlayControllerEffect(
-                    controller_manager_pb2.PlayControllerEffectRequest(
-                        serial=serial,
-                        effect=controller_manager_pb2.EFFECT_RAINBOW,
-                        color=controller_manager_pb2.RGB(r=255, g=255, b=255),
-                        duration_ms=3000,
-                        speed=1,  # Slow rainbow (1 cycle/second)
-                    )
-                )
 
         # Play appropriate victory sound (Joust/vox/)
         if winner == "werewolves":
@@ -444,11 +435,8 @@ class WerewolfGame(BaseGameMode):
         else:
             await self._play_sound(Sound.SFX_WOLFDOWN, priority=2)
 
-        # Wait for celebration
-        for _ in range(20):  # 2 seconds
-            if not self.running:
-                break
-            await asyncio.sleep(0.1)
+        # Wait for rainbow effect to complete
+        await self._wait_for_rainbow_effect()
 
         # End surviving player spans
         for serial, player in self.players.items():
@@ -502,9 +490,13 @@ class WerewolfGame(BaseGameMode):
 
                 # Initialization phase
                 with tracer.start_as_current_span("initialization_phase"):
-                    await self._load_settings()
+                    # reveal_time is now set in __init__ from StartGameConfig
+                    logger.info(f"Werewolf reveal time: {self._reveal_time}s")
                     await self._initialize_players()
                     self._create_player_spans()
+
+                # Start gameplay stream before intro (needed for LED effects)
+                await self._start_gameplay_stream()
 
                 # Additional phases (werewolf intro)
                 for phase in self._get_additional_phases():
@@ -527,16 +519,20 @@ class WerewolfGame(BaseGameMode):
                 self.state = GameState.RUNNING
                 self.start_time = time.time()
 
+                # Emit game_started event (required for integration tests)
+                from lib.types import GameEvent
+
+                self.event_publisher(
+                    GameEvent.GAME_STARTED, {"game_id": self.game_id, "player_count": len(self.players)}
+                )
+
                 # Start music
                 await self._start_game_music()
 
                 # Start reveal timer as background task
                 self.reveal_task = asyncio.create_task(self._reveal_werewolves())
 
-                # Start gameplay stream
-                await self._start_gameplay_stream()
-
-                # Game loop
+                # Game loop (gameplay stream already started before intro)
                 with tracer.start_as_current_span("gameplay_phase"):
                     await self._game_loop()
 

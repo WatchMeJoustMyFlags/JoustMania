@@ -30,8 +30,8 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-HOMENAME=$(logname 2>/dev/null || echo $USER)
-HOMEDIR=/home/$HOMENAME
+HOMENAME=$(logname 2>/dev/null || echo "$USER")
+HOMEDIR="/home/$HOMENAME"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JOUSTMANIA_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
@@ -58,7 +58,7 @@ if ! command -v docker &> /dev/null; then
     rm /tmp/get-docker.sh
 
     # Add user to docker group
-    sudo usermod -aG docker $USER
+    sudo usermod -aG docker "$USER"
     echo -e "  → ${GREEN}Docker installed${NC}"
     echo -e "  → ${YELLOW}NOTE: Log out and back in for docker group to take effect${NC}"
     DOCKER_GROUP_CHANGED=true
@@ -67,8 +67,8 @@ else
 fi
 
 # Check docker-compose
-if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
-    echo "  → Installing docker-compose plugin..."
+if ! command -v docker compose &> /dev/null && ! docker compose version &> /dev/null; then
+    echo "  → Installing docker compose plugin..."
     sudo apt-get update -y
     sudo apt-get install -y docker-compose-plugin
 fi
@@ -80,6 +80,7 @@ sudo apt-get install -y \
     bluez \
     bluez-tools \
     alsa-utils \
+    jq \
     || exit 1
 echo -e "  → ${GREEN}Dependencies installed${NC}"
 
@@ -148,16 +149,16 @@ else
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         echo ""
-        echo "  → Building psmoveapi (this takes ~10 minutes)..."
-        BUILD_SCRIPT="$JOUSTMANIA_DIR/scripts/setup/build_psmoveapi.sh"
-        if [ -f "$BUILD_SCRIPT" ]; then
+        echo "  → Installing psmoveapi..."
+        BUILD_SCRIPT="$JOUSTMANIA_DIR/scripts/setup/install_psmoveapi.sh"
+        if [[ -f "$BUILD_SCRIPT" ]]; then
             bash "$BUILD_SCRIPT"
-            if [ $? -eq 0 ]; then
-                echo -e "  → ${GREEN}psmoveapi built successfully${NC}"
+            if [[ $? -eq 0 ]]; then
+                echo -e "  → ${GREEN}psmoveapi installed successfully${NC}"
                 export PATH="$HOMEDIR/psmoveapi/build:$PATH"
                 PSMOVE_AVAILABLE=true
             else
-                echo -e "  → ${RED}psmoveapi build failed${NC}"
+                echo -e "  → ${RED}psmoveapi installation failed${NC}"
             fi
         else
             echo -e "  → ${RED}Build script not found: $BUILD_SCRIPT${NC}"
@@ -165,7 +166,7 @@ else
     else
         echo ""
         echo "    Skipping psmoveapi build."
-        echo "    You can build it later with: ./scripts/setup/build_psmoveapi.sh"
+        echo "    You can install it later with: ./scripts/setup/install_psmoveapi.sh"
         echo ""
     fi
 fi
@@ -216,8 +217,8 @@ echo ""
 
 if [ "$PSMOVE_AVAILABLE" = false ]; then
     echo -e "${YELLOW}Note: Pairing daemon not installed (psmove CLI missing)${NC}"
-    echo "  To enable automatic controller pairing, build psmoveapi:"
-    echo "  ./scripts/setup/build_psmoveapi.sh"
+    echo "  To enable automatic controller pairing, install psmoveapi:"
+    echo "  ./scripts/setup/install_psmoveapi.sh"
     echo ""
 fi
 

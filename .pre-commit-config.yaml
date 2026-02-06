@@ -4,9 +4,9 @@
 
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.4
+    rev: v0.14.13
     hooks:
-      # Run the linter
+      # Run the linter - ruff discovers config from file's directory (pyproject.toml)
       - id: ruff
         args: [--fix]
       # Run the formatter

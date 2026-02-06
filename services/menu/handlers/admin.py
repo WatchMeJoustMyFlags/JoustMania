@@ -4,13 +4,16 @@ Admin mode handler for Menu service.
 Manages the admin mode state, commands, and visual feedback when a controller
 holds all 4 face buttons (Cross + Circle + Square + Triangle) simultaneously.
 
-Admin mode allows changing settings like:
-- Sensitivity level (Circle button)
-- Battery display (Triangle button)
-- Instructions toggle (Square button)
-- Game mode selection (L1/R1 or Cross for backward)
-- Force start game (Trigger hold for 2 seconds)
-- Cycle options / adjust values (Move button / Trigger / Cross)
+Button mappings in admin mode:
+- Cross: Cycle game mode (flash color + voice)
+- Circle: Cycle sensitivity (unchanged)
+- Square: Toggle instructions (unchanged)
+- Triangle: Show battery (unchanged)
+- Move: Cycle between options (num_teams / force_all_start)
+- Trigger: Hold 3s = Force start game (LED dims during hold)
+- Select: Increase current option value
+- Start: Decrease current option value
+- PS: Exit admin mode (unchanged)
 """
 
 from __future__ import annotations
@@ -23,8 +26,11 @@ from typing import TYPE_CHECKING, Protocol
 
 from opentelemetry import trace
 
+from lib.colors import Colors
+from lib.controller_constants import ButtonTrackingKey
+from lib.telemetry import SpanAttr
 from lib.types import Sound
-from services.menu.handlers.base import ControllerState
+from services.menu.handlers.base import ButtonDebouncer, ControllerState
 
 if TYPE_CHECKING:
     from services.menu.state_manager import StateManager
@@ -90,16 +96,43 @@ class AdminModeHandler:
         self.session_span_context = None
 
         # Admin option navigation
-        self.current_option = 0  # 0=num_teams, 1=force_all_start
-        self.option_names = ["num_teams", "force_all_start"]
+        # Options cycle through all game settings configurable via admin mode
+        self.current_option = 0
+        self.option_names = [
+            "sensitivity",  # 0-4 (Ultra Slow to Ultra Fast)
+            "num_teams",  # 2-6 teams (for Teams, RandomTeams, Traitor)
+            "random_assignment",  # True/False for Teams mode
+            "nonstop_time_limit",  # 0=unlimited, 60-300 seconds
+            "invincibility",  # 2.0-8.0 seconds (Tournament, FightClub)
+            "fight_club_min_rounds",  # 5-20 rounds
+            "werewolf_reveal_time",  # 20.0-60.0 seconds
+            "force_all_start",  # True/False
+        ]
         self.option_colors = [
-            (0, 255, 255),  # Cyan for num_teams
-            (255, 165, 0),  # Orange for force_all_start
+            Colors.Blue,  # sensitivity
+            Colors.Turquoise,  # num_teams
+            Colors.Magenta,  # random_assignment
+            Colors.Yellow,  # nonstop_time_limit
+            Colors.Green,  # invincibility
+            Colors.Orange,  # fight_club_min_rounds
+            Colors.Purple,  # werewolf_reveal_time
+            Colors.Orange,  # force_all_start
         ]
 
-        # Button debouncing
-        self.last_button_time: dict[str, float] = {}
-        self.button_debounce_interval = 0.3  # seconds
+        # Button debouncing (300ms for admin mode)
+        self._debouncer = ButtonDebouncer(default_interval=0.3)
+
+        # Background tasks (to prevent garbage collection)
+        self._pending_tasks: set[asyncio.Task] = set()
+
+        # Timeout task for auto-exit after 60 seconds
+        self._timeout_task: asyncio.Task | None = None
+        self._timeout_seconds = 60
+
+        # Trigger hold tracking for force start
+        self._trigger_press_time: float | None = None
+        self._trigger_hold_task: asyncio.Task | None = None
+        self._force_start_threshold = 3.0  # seconds
 
     # ControllerHandler protocol methods
 
@@ -135,7 +168,7 @@ class AdminModeHandler:
         """
         await self.enter(serial)
 
-    async def on_exit(self, serial: str) -> None:  # noqa: ARG002
+    async def on_exit(self, _serial: str) -> None:
         """
         Called when a controller exits admin mode (ControllerHandler protocol).
 
@@ -171,16 +204,25 @@ class AdminModeHandler:
 
     @property
     def _current_game_mode(self) -> str:
-        """Get current game mode from StateManager."""
+        """Get current game mode name from StateManager."""
         if self._state_manager is None:
             return "JoustFFA"
-        return self._state_manager.current_game_mode
+        return self._state_manager.current_game_mode.name
 
-    async def _send_game_effect(self, serial: str, effect: int) -> bool:
+    async def _send_game_effect(
+        self,
+        serial: str,
+        effect: int,
+        color: tuple[int, int, int] | None = None,
+        duration_ms: int = 0,
+        speed: int = 0,
+    ) -> bool:
         """Send game effect via StateManager's LED controller."""
         if self._state_manager is None:
             return False
-        return await self._state_manager.led.send_game_effect(serial, effect)
+        return await self._state_manager.led.send_game_effect(
+            serial, effect, color=color, duration_ms=duration_ms, speed=speed
+        )
 
     async def _send_base_color(self, serial: str, color: tuple[int, int, int]) -> bool:
         """Send base color via StateManager's LED controller."""
@@ -256,27 +298,6 @@ class AdminModeHandler:
             and controller.triangle_pressed
         )
 
-    def _should_process_button(self, serial: str, button: str, current_time: float) -> bool:
-        """
-        Check if a button press should be processed (debouncing).
-
-        Args:
-            serial: Controller serial
-            button: Button name
-            current_time: Current timestamp
-
-        Returns:
-            True if button should be processed
-        """
-        key = f"{serial}:{button}"
-        last_time = self.last_button_time.get(key, 0)
-
-        if current_time - last_time < self.button_debounce_interval:
-            return False
-
-        self.last_button_time[key] = current_time
-        return True
-
     def _get_span_context(self):
         """Get the admin mode span context for child spans."""
         return self.session_span_context if self.session_span_context else None
@@ -297,12 +318,12 @@ class AdminModeHandler:
 
         # Create parent span for entire admin mode session (ended in exit)
         self.session_span = self.tracer.start_span("admin_mode_session")
-        self.session_span.set_attribute("controller.serial", serial)
+        self.session_span.set_attribute(SpanAttr.CONTROLLER_SERIAL, serial)
         self.session_span_context = trace.set_span_in_context(self.session_span)
 
         # Create child span for the entry operation
         with self.tracer.start_as_current_span("enter_admin_mode", context=self.session_span_context) as span:
-            span.set_attribute("controller.serial", serial)
+            span.set_attribute(SpanAttr.CONTROLLER_SERIAL, serial)
 
             self.active = True
             self.controller_serial = serial
@@ -316,6 +337,26 @@ class AdminModeHandler:
             else:
                 logger.warning(f"Failed to signal admin mode entry for {serial} - stream not available")
 
+            # Start timeout task to auto-exit after 60 seconds
+            self._start_timeout_task(serial)
+
+    def _start_timeout_task(self, serial: str) -> None:
+        """Start background task to auto-exit admin mode after timeout."""
+        # Cancel existing timeout task if any
+        if self._timeout_task and not self._timeout_task.done():
+            self._timeout_task.cancel()
+
+        async def timeout_exit():
+            try:
+                await asyncio.sleep(self._timeout_seconds)
+                if self.active and self.controller_serial == serial:
+                    logger.info(f"Admin mode auto-exit after {self._timeout_seconds}s timeout")
+                    await self._exit_to_connected(serial)
+            except asyncio.CancelledError:
+                pass  # Normal cancellation when exiting early
+
+        self._timeout_task = asyncio.create_task(timeout_exit())
+
     async def exit(self) -> None:
         """
         Exit admin mode and restore lobby color.
@@ -325,13 +366,18 @@ class AdminModeHandler:
         if not self.active:
             return
 
+        # Cancel timeout task
+        if self._timeout_task and not self._timeout_task.done():
+            self._timeout_task.cancel()
+            self._timeout_task = None
+
         from proto import controller_manager_pb2
 
         duration = time.time() - self.entry_time
 
         # Create child span for exit operation (under admin_mode_session)
         with self.tracer.start_as_current_span("exit_admin_mode", context=self.session_span_context) as span:
-            span.set_attribute("controller.serial", self.controller_serial)
+            span.set_attribute(SpanAttr.CONTROLLER_SERIAL, self.controller_serial)
             span.set_attribute("duration_seconds", duration)
 
             logger.info(f"Admin mode exited by controller {self.controller_serial}")
@@ -364,31 +410,34 @@ class AdminModeHandler:
             serial: Controller serial number
             button: Button name (trigger, move, cross, circle, square, triangle, ps)
         """
-        current_time = time.time()
-
         # Check for admin mode timeout (60 seconds)
-        if current_time - self.entry_time > 60:
+        if time.time() - self.entry_time > 60:
             logger.info("Admin mode timed out after 60 seconds")
             await self._exit_to_connected(serial)
             return
 
-        if not self._should_process_button(serial, button, current_time):
+        if not self._debouncer.should_process(serial, button):
             return
 
-        if button == "move":
-            await self.handle_cycle_option(serial)
-        elif button == "trigger":
-            await self.handle_increase_value(serial)
-        elif button == "cross":
-            await self.handle_decrease_value(serial)
-        elif button == "circle":
-            await self.handle_sensitivity(serial)
-        elif button == "triangle":
-            await self.handle_battery(serial)
-        elif button == "square":
-            await self.handle_instructions(serial)
-        elif button == "ps":
-            await self._exit_to_connected(serial)
+        match button:
+            case ButtonTrackingKey.MOVE:
+                await self.handle_cycle_option(serial)
+            case ButtonTrackingKey.TRIGGER:
+                await self._start_trigger_hold_tracking(serial)
+            case ButtonTrackingKey.SELECT:
+                await self.handle_increase_value(serial)
+            case ButtonTrackingKey.START:
+                await self.handle_decrease_value(serial)
+            case ButtonTrackingKey.CROSS:
+                await self.handle_game_mode(serial)
+            case ButtonTrackingKey.CIRCLE:
+                await self.handle_sensitivity(serial)
+            case ButtonTrackingKey.TRIANGLE:
+                await self.handle_battery(serial)
+            case ButtonTrackingKey.SQUARE:
+                await self.handle_instructions(serial)
+            case ButtonTrackingKey.PS:
+                await self._exit_to_connected(serial)
 
     async def _exit_to_connected(self, serial: str) -> None:
         """
@@ -405,6 +454,129 @@ class AdminModeHandler:
             # Fallback if StateManager not set
             await self.exit()
 
+    async def _start_trigger_hold_tracking(self, serial: str) -> None:
+        """
+        Start tracking trigger hold for force start.
+
+        Begins 3-second timer with LED dim effect. If trigger is held
+        for full duration, triggers force start.
+
+        Args:
+            serial: Controller serial number
+        """
+        # Cancel any existing hold task
+        if self._trigger_hold_task and not self._trigger_hold_task.done():
+            self._trigger_hold_task.cancel()
+
+        self._trigger_press_time = time.time()
+
+        # Start the dimming effect
+        await self.start_force_start_effect(serial)
+
+        # Create task to fire force start after threshold
+        async def trigger_hold_timer():
+            try:
+                await asyncio.sleep(self._force_start_threshold)
+                # If we get here, trigger was held long enough
+                if self.active and serial == self.controller_serial:
+                    logger.info(f"Trigger hold completed, triggering force start for {serial}")
+                    await self.handle_force_start(serial)
+            except asyncio.CancelledError:
+                pass  # Normal cancellation when trigger released early
+
+        self._trigger_hold_task = asyncio.create_task(trigger_hold_timer())
+        self._pending_tasks.add(self._trigger_hold_task)
+        self._trigger_hold_task.add_done_callback(self._pending_tasks.discard)
+
+    async def handle_trigger_release(self, serial: str) -> None:
+        """
+        Handle trigger release in admin mode.
+
+        Cancels force start if trigger released before 3 seconds.
+
+        Args:
+            serial: Controller serial number
+        """
+        if not self.is_admin_controller(serial):
+            return
+
+        # Cancel hold task if running
+        if self._trigger_hold_task and not self._trigger_hold_task.done():
+            self._trigger_hold_task.cancel()
+            self._trigger_hold_task = None
+            logger.debug(f"Trigger released early, cancelled force start for {serial}")
+
+            # Cancel the dimming effect and restore white
+            await self.cancel_force_start_effect(serial)
+
+        self._trigger_press_time = None
+
+    async def handle_game_mode(self, serial: str) -> None:
+        """
+        Handle game mode cycling (Cross button).
+
+        Cycles through game modes forward, shows game color flash and plays voice.
+
+        Args:
+            serial: Controller serial number
+        """
+        from proto import controller_manager_pb2
+        from services.menu.utils.led import GAME_MODE_COLORS
+
+        ctx = self._get_span_context()
+        with self.tracer.start_as_current_span("admin_game_mode", context=ctx) as span:
+            span.set_attribute(SpanAttr.CONTROLLER_SERIAL, serial)
+
+            try:
+                game_options = self.callbacks.get_game_options()
+                current_selection = self._current_game_mode
+
+                if not game_options:
+                    logger.warning("No game options available for mode change")
+                    return
+
+                # Find current index
+                try:
+                    current_idx = game_options.index(current_selection)
+                except ValueError:
+                    current_idx = 0
+
+                # Cycle forward
+                new_idx = (current_idx + 1) % len(game_options)
+                new_selection = game_options[new_idx]
+
+                span.set_attribute("old_selection", current_selection)
+                span.set_attribute("new_selection", new_selection)
+
+                # Publish selection change
+                await self._publish_event(
+                    "game_selection_changed",
+                    {"game_name": new_selection, "source": "admin_mode", "serial": serial},
+                )
+
+                # Visual feedback: flash game mode color
+                game_color = GAME_MODE_COLORS.get(new_selection, (255, 165, 0))  # Default orange
+                await self._send_game_effect(
+                    serial,
+                    controller_manager_pb2.GAME_EFFECT_PULSE,
+                    color=game_color,
+                    duration_ms=600,
+                    speed=6,
+                )
+
+                # Play game mode voice announcement
+                if self._state_manager is not None:
+                    await self._state_manager.audio.play_game_mode_voice(new_selection)
+
+                span.add_event(
+                    "game_mode_changed",
+                    {"old_selection": current_selection, "new_selection": new_selection},
+                )
+                logger.info(f"Game mode changed by admin {serial}: {current_selection} -> {new_selection}")
+
+            except Exception as e:
+                logger.error(f"Error changing game mode: {e}", exc_info=True)
+
     async def handle_game_mode_change(self, serial: str, forward: bool = True) -> None:
         """
         Change game mode from admin mode.
@@ -415,11 +587,11 @@ class AdminModeHandler:
             serial: Controller serial number
             forward: True to go forward through modes, False to go backward
         """
-        from proto import controller_manager_pb2, controller_manager_pb2_grpc
+        from proto import controller_manager_pb2
 
         ctx = self._get_span_context()
         with self.tracer.start_as_current_span("admin_game_mode_change", context=ctx) as span:
-            span.set_attribute("controller.serial", serial)
+            span.set_attribute(SpanAttr.CONTROLLER_SERIAL, serial)
             span.set_attribute("direction", "forward" if forward else "backward")
 
             try:
@@ -450,31 +622,16 @@ class AdminModeHandler:
                     {"game_name": new_selection, "source": "admin_mode", "serial": serial},
                 )
 
-                # Visual feedback: brief color flash
-                stub = controller_manager_pb2_grpc.ControllerManagerServiceStub(self.controller_channel)
-
-                # Flash green for forward, blue for backward
-                if forward:
-                    color = controller_manager_pb2.RGB(r=0, g=255, b=0)
-                else:
-                    color = controller_manager_pb2.RGB(r=0, g=0, b=255)
-
-                effect_request = controller_manager_pb2.PlayControllerEffectRequest(
-                    serial=serial,
-                    effect=controller_manager_pb2.ControllerEffect.EFFECT_PULSE,
-                    color=color,
+                # Visual feedback: brief color pulse (green for forward, blue for backward)
+                # GAME_EFFECT_PULSE restores to base color automatically
+                pulse_color = (0, 255, 0) if forward else (0, 0, 255)
+                await self._send_game_effect(
+                    serial,
+                    controller_manager_pb2.GAME_EFFECT_PULSE,
+                    color=pulse_color,
                     duration_ms=400,
                     speed=6,
                 )
-                await stub.PlayControllerEffect(effect_request)
-
-                # Restore white after flash
-                async def restore_white():
-                    await asyncio.sleep(0.5)
-                    if self.active and serial == self.controller_serial:
-                        await self._send_base_color(serial, (255, 255, 255))
-
-                asyncio.create_task(restore_white())
 
             except Exception as e:
                 logger.error(f"Error changing game mode: {e}", exc_info=True)
@@ -489,25 +646,19 @@ class AdminModeHandler:
         Args:
             serial: Controller serial number
         """
-        from proto import (
-            controller_manager_pb2,
-            controller_manager_pb2_grpc,
-            settings_pb2,
-            settings_pb2_grpc,
-        )
+        from proto import controller_manager_pb2
+
+        if self._state_manager is None:
+            return
 
         ctx = self._get_span_context()
         with self.tracer.start_as_current_span("admin_force_start", context=ctx) as span:
-            span.set_attribute("controller.serial", serial)
+            span.set_attribute(SpanAttr.CONTROLLER_SERIAL, serial)
             span.set_attribute("game.name", self._current_game_mode)
 
             try:
-                # Check force_all_start setting
-                settings_stub = settings_pb2_grpc.SettingsServiceStub(self._settings_channel)
-                force_all_response = await settings_stub.GetSetting(
-                    settings_pb2.GetSettingRequest(key="force_all_start")
-                )
-                force_all = force_all_response.value == "true"
+                # Check force_all_start from local game settings
+                force_all = bool(self._state_manager.game_settings.get("force_all_start", False))
                 span.set_attribute("force_all_start", force_all)
 
                 # Determine which controllers to include
@@ -523,15 +674,13 @@ class AdminModeHandler:
                 span.set_attribute("controller.count", len(controllers))
 
                 # Visual feedback: White flash before starting
-                stub = controller_manager_pb2_grpc.ControllerManagerServiceStub(self.controller_channel)
-                effect_request = controller_manager_pb2.PlayControllerEffectRequest(
-                    serial=serial,
-                    effect=controller_manager_pb2.ControllerEffect.EFFECT_FLASH,
-                    color=controller_manager_pb2.RGB(r=255, g=255, b=255),
+                await self._send_game_effect(
+                    serial,
+                    controller_manager_pb2.GAME_EFFECT_FLASH,
+                    color=(255, 255, 255),
                     duration_ms=500,
                     speed=10,
                 )
-                await stub.PlayControllerEffect(effect_request)
 
                 # Exit admin mode
                 await self.exit()
@@ -612,27 +761,23 @@ class AdminModeHandler:
         Cycles through all 5 levels:
         Ultra Slow (0) -> Slow (1) -> Medium (2) -> Fast (3) -> Ultra Fast (4) -> Ultra Slow
 
+        Uses state_manager.game_settings for local storage.
+
         Args:
             serial: Controller serial number
         """
-        from proto import (
-            controller_manager_pb2,
-            controller_manager_pb2_grpc,
-            settings_pb2,
-            settings_pb2_grpc,
-        )
+        from proto import controller_manager_pb2
+
+        if self._state_manager is None:
+            return
 
         ctx = self._get_span_context()
         with self.tracer.start_as_current_span("admin_sensitivity", context=ctx) as span:
-            span.set_attribute("controller.serial", serial)
+            span.set_attribute(SpanAttr.CONTROLLER_SERIAL, serial)
 
             try:
-                settings_stub = settings_pb2_grpc.SettingsServiceStub(self._settings_channel)
-
-                # Get current sensitivity
-                get_request = settings_pb2.GetSettingRequest(key="sensitivity")
-                get_response = await settings_stub.GetSetting(get_request)
-                current = int(get_response.value) if get_response.value else 2
+                settings = self._state_manager.game_settings
+                current = int(settings.get("sensitivity", 2))
 
                 # Validate current value is in range (0-4)
                 if current < 0 or current > 4:
@@ -640,35 +785,29 @@ class AdminModeHandler:
                     current = 2
 
                 # Cycle through all 5 levels: 0 -> 1 -> 2 -> 3 -> 4 -> 0
-                new_value = str((current + 1) % 5)
+                new_value = (current + 1) % 5
 
-                # Update setting
-                update_request = settings_pb2.UpdateSettingRequest(
-                    key="sensitivity", value=new_value, source="admin_mode"
-                )
-                await settings_stub.UpdateSetting(update_request)
+                # Update local setting
+                settings["sensitivity"] = new_value
 
                 # Visual feedback: Color by sensitivity level (5 distinct colors)
                 sensitivity_colors = [
-                    (0, 0, 255),  # Blue - Ultra Slow (0)
-                    (0, 255, 255),  # Cyan - Slow (1)
-                    (0, 255, 0),  # Green - Medium (2)
-                    (255, 165, 0),  # Orange - Fast (3)
-                    (255, 0, 0),  # Red - Ultra Fast (4)
+                    Colors.Blue,  # Ultra Slow (0)
+                    Colors.Turquoise,  # Slow (1)
+                    Colors.Green,  # Medium (2)
+                    Colors.Orange,  # Fast (3)
+                    Colors.Red,  # Ultra Fast (4)
                 ]
-                color = sensitivity_colors[int(new_value)]
+                color = sensitivity_colors[new_value].value
 
-                controller_stub = controller_manager_pb2_grpc.ControllerManagerServiceStub(self.controller_channel)
-
-                # Show sensitivity color
-                effect_request = controller_manager_pb2.PlayControllerEffectRequest(
-                    serial=serial,
-                    effect=controller_manager_pb2.ControllerEffect.EFFECT_PULSE,
-                    color=controller_manager_pb2.RGB(r=color[0], g=color[1], b=color[2]),
+                # Show sensitivity color (GAME_EFFECT_PULSE restores to base automatically)
+                await self._send_game_effect(
+                    serial,
+                    controller_manager_pb2.GAME_EFFECT_PULSE,
+                    color=color,
                     duration_ms=800,
                     speed=5,
                 )
-                await controller_stub.PlayControllerEffect(effect_request)
 
                 # Play voice for sensitivity level (matches original JoustMania)
                 # Note: "ultra_high" = ultra-high sensitivity (detects slow movement)
@@ -679,19 +818,11 @@ class AdminModeHandler:
                     Sound.MENU_VOX_SENSITIVITY_LOW,  # FAST (3)
                     Sound.MENU_VOX_SENSITIVITY_ULTRA_LOW,  # ULTRA_FAST (4)
                 ]
-                await self._play_voice(sensitivity_voices[int(new_value)])
-
-                # Restore white after feedback
-                async def restore_white():
-                    await asyncio.sleep(1.0)
-                    if self.active and serial == self.controller_serial:
-                        await self._send_base_color(serial, (255, 255, 255))
-
-                asyncio.create_task(restore_white())
+                await self._play_voice(sensitivity_voices[new_value])
 
                 span.add_event(
                     "sensitivity_changed",
-                    {"old_value": current, "new_value": int(new_value)},
+                    {"old_value": current, "new_value": new_value},
                 )
                 logger.info(f"Sensitivity changed by admin controller {serial}: {current} -> {new_value}")
 
@@ -720,7 +851,7 @@ class AdminModeHandler:
 
         ctx = self._get_span_context()
         with self.tracer.start_as_current_span("admin_battery_display", context=ctx) as span:
-            span.set_attribute("controller.serial", serial)
+            span.set_attribute(SpanAttr.CONTROLLER_SERIAL, serial)
 
             try:
                 # Send SHOW_BATTERY effect with empty serial to affect all controllers
@@ -744,14 +875,13 @@ class AdminModeHandler:
         """
         from proto import (
             controller_manager_pb2,
-            controller_manager_pb2_grpc,
             settings_pb2,
             settings_pb2_grpc,
         )
 
         ctx = self._get_span_context()
         with self.tracer.start_as_current_span("admin_instructions", context=ctx) as span:
-            span.set_attribute("controller.serial", serial)
+            span.set_attribute(SpanAttr.CONTROLLER_SERIAL, serial)
 
             try:
                 settings_stub = settings_pb2_grpc.SettingsServiceStub(self._settings_channel)
@@ -771,22 +901,15 @@ class AdminModeHandler:
                 await settings_stub.UpdateSetting(update_request)
 
                 # Visual feedback: Green (enabled) or Red (disabled)
-                if new_value == "true":
-                    color = controller_manager_pb2.RGB(r=0, g=255, b=0)  # Green - enabled
-                else:
-                    color = controller_manager_pb2.RGB(r=255, g=0, b=0)  # Red - disabled
-
-                controller_stub = controller_manager_pb2_grpc.ControllerManagerServiceStub(self.controller_channel)
-
-                # Show color pulse
-                effect_request = controller_manager_pb2.PlayControllerEffectRequest(
-                    serial=serial,
-                    effect=controller_manager_pb2.ControllerEffect.EFFECT_PULSE,
-                    color=color,
+                # GAME_EFFECT_PULSE restores to base color automatically
+                pulse_color = (0, 255, 0) if new_value == "true" else (255, 0, 0)
+                await self._send_game_effect(
+                    serial,
+                    controller_manager_pb2.GAME_EFFECT_PULSE,
+                    color=pulse_color,
                     duration_ms=800,
                     speed=5,
                 )
-                await controller_stub.PlayControllerEffect(effect_request)
 
                 # Play instructions toggle voice announcement
                 voice = Sound.MENU_VOX_INSTRUCTIONS_ON if new_value == "true" else Sound.MENU_VOX_INSTRUCTIONS_OFF
@@ -812,26 +935,29 @@ class AdminModeHandler:
         """
         ctx = self._get_span_context()
         with self.tracer.start_as_current_span("admin_cycle_option", context=ctx) as span:
-            span.set_attribute("controller.serial", serial)
+            span.set_attribute(SpanAttr.CONTROLLER_SERIAL, serial)
 
             # Cycle to next option
             self.current_option = (self.current_option + 1) % len(self.option_names)
             option_name = self.option_names[self.current_option]
             option_color = self.option_colors[self.current_option]
 
-            span.set_attribute("admin.option", option_name)
+            span.set_attribute(SpanAttr.ADMIN_OPTION, option_name)
 
             try:
                 # Show option color for 1 second
-                await self._send_base_color(serial, option_color)
+                await self._send_base_color(serial, option_color.value)
 
                 # Restore white after option color finishes
                 async def restore_white():
                     await asyncio.sleep(1.1)
                     if self.active and serial == self.controller_serial:
-                        await self._send_base_color(serial, (255, 255, 255))
+                        await self._send_base_color(serial, Colors.White.value)
 
-                asyncio.create_task(restore_white())
+                # Track task to prevent garbage collection
+                task = asyncio.create_task(restore_white())
+                self._pending_tasks.add(task)
+                task.add_done_callback(self._pending_tasks.discard)
 
                 span.add_event(
                     "admin_option_changed",
@@ -846,56 +972,80 @@ class AdminModeHandler:
         """
         Increase the value of the current admin option.
 
+        Uses state_manager.game_settings for local storage.
+
         Args:
             serial: Controller serial number
         """
-        from proto import settings_pb2, settings_pb2_grpc
+        if self._state_manager is None:
+            return
 
         ctx = self._get_span_context()
         with self.tracer.start_as_current_span("admin_increase_value", context=ctx) as span:
-            span.set_attribute("controller.serial", serial)
+            span.set_attribute(SpanAttr.CONTROLLER_SERIAL, serial)
 
             option_name = self.option_names[self.current_option]
-            span.set_attribute("admin.option", option_name)
+            span.set_attribute(SpanAttr.ADMIN_OPTION, option_name)
 
             try:
-                stub = settings_pb2_grpc.SettingsServiceStub(self._settings_channel)
+                settings = self._state_manager.game_settings
+                current_value = settings.get(option_name)
 
-                # Get current value
-                get_request = settings_pb2.GetSettingRequest(key=option_name)
-                get_response = await stub.GetSetting(get_request)
-                current_value = get_response.value
+                # Calculate new value using pattern matching
+                match option_name:
+                    case "sensitivity":
+                        # Cycle: 0 -> 1 -> 2 -> 3 -> 4 -> 0
+                        current = int(current_value) if current_value is not None else 2
+                        new_value = (current + 1) % 5
 
-                # Calculate new value based on option type
-                if option_name == "num_teams":
-                    # Cycle: 2 -> 3 -> 4 -> 5 -> 6 -> 2
-                    current = int(current_value) if current_value else 2
-                    # Validate range
-                    if current < 2 or current > 6:
-                        logger.warning(f"Invalid num_teams value {current}, resetting to 2")
-                        current = 2
-                    new_value = str((current % 6) + 1) if current < 6 else "2"
-                elif option_name == "force_all_start":
-                    # Toggle: true <-> false
-                    if current_value not in ["true", "false"]:
-                        logger.warning(f"Invalid force_all_start value {current_value}, resetting to false")
-                        current_value = "false"
-                    new_value = "true" if current_value == "false" else "false"
-                else:
-                    new_value = current_value
+                    case "num_teams":
+                        # Cycle: 2 -> 3 -> 4 -> 5 -> 6 -> 2
+                        current = int(current_value) if current_value is not None else 2
+                        new_value = current + 1 if current < 6 else 2
 
-                # Update setting
-                update_request = settings_pb2.UpdateSettingRequest(
-                    key=option_name, value=new_value, source="admin_mode"
-                )
-                await stub.UpdateSetting(update_request)
+                    case "random_assignment" | "force_all_start":
+                        # Toggle boolean
+                        new_value = not bool(current_value)
+
+                    case "nonstop_time_limit":
+                        # Cycle: 0 -> 60 -> 120 -> 180 -> 240 -> 300 -> 0
+                        current = int(current_value) if current_value is not None else 0
+                        steps = [0, 60, 120, 180, 240, 300]
+                        idx = (steps.index(current) + 1) % len(steps) if current in steps else 0
+                        new_value = steps[idx]
+
+                    case "invincibility":
+                        # Increment: 2.0 -> 3.0 -> 4.0 -> ... -> 8.0 -> 2.0
+                        current = float(current_value) if current_value is not None else 4.0
+                        new_value = current + 1.0 if current < 8.0 else 2.0
+
+                    case "fight_club_min_rounds":
+                        # Increment: 5 -> 10 -> 15 -> 20 -> 5
+                        current = int(current_value) if current_value is not None else 10
+                        steps = [5, 10, 15, 20]
+                        idx = (steps.index(current) + 1) % len(steps) if current in steps else 1
+                        new_value = steps[idx]
+
+                    case "werewolf_reveal_time":
+                        # Increment: 20 -> 25 -> 30 -> 35 -> 40 -> 45 -> 50 -> 55 -> 60 -> 20
+                        current = float(current_value) if current_value is not None else 35.0
+                        new_value = current + 5.0 if current < 60.0 else 20.0
+
+                    case _:
+                        new_value = current_value
+
+                # Update local setting
+                settings[option_name] = new_value
 
                 # Visual feedback
                 await self._show_value_feedback(serial, option_name, new_value)
 
+                # Voice feedback
+                await self._play_value_voice(option_name, new_value)
+
                 span.add_event(
                     "admin_value_increased",
-                    {"option": option_name, "old_value": current_value, "new_value": new_value},
+                    {"option": option_name, "old_value": str(current_value), "new_value": str(new_value)},
                 )
                 logger.info(f"Admin increased {option_name}: {current_value} -> {new_value}")
 
@@ -906,113 +1056,184 @@ class AdminModeHandler:
         """
         Decrease the value of the current admin option.
 
+        Uses state_manager.game_settings for local storage.
+
         Args:
             serial: Controller serial number
         """
-        from proto import settings_pb2, settings_pb2_grpc
+        if self._state_manager is None:
+            return
 
         ctx = self._get_span_context()
         with self.tracer.start_as_current_span("admin_decrease_value", context=ctx) as span:
-            span.set_attribute("controller.serial", serial)
+            span.set_attribute(SpanAttr.CONTROLLER_SERIAL, serial)
 
             option_name = self.option_names[self.current_option]
-            span.set_attribute("admin.option", option_name)
+            span.set_attribute(SpanAttr.ADMIN_OPTION, option_name)
 
             try:
-                stub = settings_pb2_grpc.SettingsServiceStub(self._settings_channel)
+                settings = self._state_manager.game_settings
+                current_value = settings.get(option_name)
 
-                # Get current value
-                get_request = settings_pb2.GetSettingRequest(key=option_name)
-                get_response = await stub.GetSetting(get_request)
-                current_value = get_response.value
+                # Calculate new value using pattern matching
+                match option_name:
+                    case "sensitivity":
+                        # Cycle backward: 0 -> 4 -> 3 -> 2 -> 1 -> 0
+                        current = int(current_value) if current_value is not None else 2
+                        new_value = (current - 1) % 5
 
-                # Calculate new value based on option type
-                if option_name == "num_teams":
-                    # Cycle backward: 2 -> 6 -> 5 -> 4 -> 3 -> 2
-                    current = int(current_value) if current_value else 2
-                    # Validate range
-                    if current < 2 or current > 6:
-                        logger.warning(f"Invalid num_teams value {current}, resetting to 2")
-                        current = 2
-                    new_value = str(current - 1) if current > 2 else "6"
-                elif option_name == "force_all_start":
-                    # Toggle: true <-> false (same as increase)
-                    if current_value not in ["true", "false"]:
-                        logger.warning(f"Invalid force_all_start value {current_value}, resetting to false")
-                        current_value = "false"
-                    new_value = "true" if current_value == "false" else "false"
-                else:
-                    new_value = current_value
+                    case "num_teams":
+                        # Cycle backward: 2 -> 6 -> 5 -> 4 -> 3 -> 2
+                        current = int(current_value) if current_value is not None else 2
+                        new_value = current - 1 if current > 2 else 6
 
-                # Update setting
-                update_request = settings_pb2.UpdateSettingRequest(
-                    key=option_name, value=new_value, source="admin_mode"
-                )
-                await stub.UpdateSetting(update_request)
+                    case "random_assignment" | "force_all_start":
+                        # Toggle boolean (same as increase)
+                        new_value = not bool(current_value)
+
+                    case "nonstop_time_limit":
+                        # Cycle backward: 0 -> 300 -> 240 -> 180 -> 120 -> 60 -> 0
+                        current = int(current_value) if current_value is not None else 0
+                        steps = [0, 60, 120, 180, 240, 300]
+                        idx = (steps.index(current) - 1) % len(steps) if current in steps else 0
+                        new_value = steps[idx]
+
+                    case "invincibility":
+                        # Decrement: 2.0 -> 8.0 -> 7.0 -> ... -> 3.0 -> 2.0
+                        current = float(current_value) if current_value is not None else 4.0
+                        new_value = current - 1.0 if current > 2.0 else 8.0
+
+                    case "fight_club_min_rounds":
+                        # Decrement: 5 -> 20 -> 15 -> 10 -> 5
+                        current = int(current_value) if current_value is not None else 10
+                        steps = [5, 10, 15, 20]
+                        idx = (steps.index(current) - 1) % len(steps) if current in steps else 1
+                        new_value = steps[idx]
+
+                    case "werewolf_reveal_time":
+                        # Decrement: 20 -> 60 -> 55 -> 50 -> ... -> 25 -> 20
+                        current = float(current_value) if current_value is not None else 35.0
+                        new_value = current - 5.0 if current > 20.0 else 60.0
+
+                    case _:
+                        new_value = current_value
+
+                # Update local setting
+                settings[option_name] = new_value
 
                 # Visual feedback
                 await self._show_value_feedback(serial, option_name, new_value)
 
+                # Voice feedback
+                await self._play_value_voice(option_name, new_value)
+
                 span.add_event(
                     "admin_value_decreased",
-                    {"option": option_name, "old_value": current_value, "new_value": new_value},
+                    {"option": option_name, "old_value": str(current_value), "new_value": str(new_value)},
                 )
                 logger.info(f"Admin decreased {option_name}: {current_value} -> {new_value}")
 
             except Exception as e:
                 logger.error(f"Error decreasing admin value: {e}", exc_info=True)
 
-    async def _show_value_feedback(self, serial: str, option_name: str, value: str) -> None:
+    async def _show_value_feedback(self, serial: str, option_name: str, value: int | float | bool) -> None:
         """
         Show visual feedback for admin value change.
 
         Args:
             serial: Controller serial number
             option_name: Name of the option that changed
-            value: New value
+            value: New value (typed)
         """
-        from proto import controller_manager_pb2, controller_manager_pb2_grpc
+        from proto import controller_manager_pb2
 
         try:
-            stub = controller_manager_pb2_grpc.ControllerManagerServiceStub(self.controller_channel)
+            # Determine feedback color using pattern matching
+            match option_name:
+                case "sensitivity":
+                    # 5-color gradient for sensitivity levels (0-4)
+                    sensitivity_colors = [
+                        Colors.Blue,  # Ultra Slow (0)
+                        Colors.Turquoise,  # Slow (1)
+                        Colors.Green,  # Medium (2)
+                        Colors.Orange,  # Fast (3)
+                        Colors.Red,  # Ultra Fast (4)
+                    ]
+                    pulse_color = sensitivity_colors[int(value)].value
 
-            # Determine feedback color based on option and value
-            if option_name == "num_teams":
-                # Color intensity based on team count (2-6)
-                num = int(value)
-                # Gradient from green (2 teams) to red (6 teams)
-                r = int(255 * (num - 2) / 4)
-                g = int(255 * (6 - num) / 4)
-                color = controller_manager_pb2.RGB(r=r, g=g, b=0)
-            elif option_name == "force_all_start":
-                # Green for true, red for false
-                if value == "true":
-                    color = controller_manager_pb2.RGB(r=0, g=255, b=0)
-                else:
-                    color = controller_manager_pb2.RGB(r=255, g=0, b=0)
-            else:
-                color = controller_manager_pb2.RGB(r=255, g=255, b=255)
+                case "num_teams":
+                    # Gradient from green (2 teams) to red (6 teams)
+                    num = int(value)
+                    r = int(255 * (num - 2) / 4)
+                    g = int(255 * (6 - num) / 4)
+                    pulse_color = (r, g, 0)
 
-            # Show feedback color
-            effect_request = controller_manager_pb2.PlayControllerEffectRequest(
-                serial=serial,
-                effect=controller_manager_pb2.ControllerEffect.EFFECT_PULSE,
-                color=color,
+                case "random_assignment" | "force_all_start":
+                    # Green for True, red for False
+                    pulse_color = Colors.Green.value if value else Colors.Red.value
+
+                case "nonstop_time_limit":
+                    # Purple intensity based on time (0=dim, 300=bright)
+                    intensity = int(255 * int(value) / 300) if int(value) > 0 else 50
+                    pulse_color = (intensity, 0, intensity)
+
+                case "invincibility":
+                    # Green intensity based on duration (2s=dim, 8s=bright)
+                    intensity = int(255 * (float(value) - 2.0) / 6.0)
+                    pulse_color = (0, intensity + 50, 0)
+
+                case "fight_club_min_rounds":
+                    # Orange intensity based on rounds (5=dim, 20=bright)
+                    intensity = int(255 * (int(value) - 5) / 15)
+                    pulse_color = (255, intensity + 50, 0)
+
+                case "werewolf_reveal_time":
+                    # Purple intensity based on time (20s=dim, 60s=bright)
+                    intensity = int(255 * (float(value) - 20.0) / 40.0)
+                    pulse_color = (intensity + 50, 0, 255)
+
+                case _:
+                    pulse_color = Colors.White.value
+
+            # Show feedback color (GAME_EFFECT_PULSE restores to base automatically)
+            await self._send_game_effect(
+                serial,
+                controller_manager_pb2.GAME_EFFECT_PULSE,
+                color=pulse_color,
                 duration_ms=600,
                 speed=6,
             )
-            await stub.PlayControllerEffect(effect_request)
-
-            # Restore white after feedback
-            async def restore_white():
-                await asyncio.sleep(0.7)
-                if self.active and serial == self.controller_serial:
-                    await self._send_base_color(serial, (255, 255, 255))
-
-            asyncio.create_task(restore_white())
 
         except Exception as e:
             logger.error(f"Error showing value feedback: {e}", exc_info=True)
+
+    async def _play_value_voice(self, option_name: str, value: str) -> None:
+        """
+        Play voice feedback for admin option value change.
+
+        Args:
+            option_name: Name of the option that changed
+            value: New value
+        """
+        try:
+            if option_name == "num_teams":
+                # Play number voice (adminop_2 through adminop_6)
+                num_teams_voices = {
+                    "2": Sound.MENU_VOX_ADMINOP_2,
+                    "3": Sound.MENU_VOX_ADMINOP_3,
+                    "4": Sound.MENU_VOX_ADMINOP_4,
+                    "5": Sound.MENU_VOX_ADMINOP_5,
+                    "6": Sound.MENU_VOX_ADMINOP_6,
+                }
+                voice = num_teams_voices.get(value)
+                if voice:
+                    await self._play_voice(voice)
+            elif option_name == "force_all_start":
+                # Play true/false voice
+                voice = Sound.MENU_VOX_ADMINOP_TRUE if value == "true" else Sound.MENU_VOX_ADMINOP_FALSE
+                await self._play_voice(voice)
+        except Exception as e:
+            logger.error(f"Error playing value voice: {e}", exc_info=True)
 
     def reset_on_disconnect(self, serial: str) -> None:
         """
@@ -1023,6 +1244,12 @@ class AdminModeHandler:
         """
         if self.active and serial == self.controller_serial:
             logger.info(f"Admin controller {serial} disconnected, resetting admin mode")
+
+            # Cancel timeout task
+            if self._timeout_task and not self._timeout_task.done():
+                self._timeout_task.cancel()
+                self._timeout_task = None
+
             self.active = False
             self.controller_serial = None
             self.entry_time = 0

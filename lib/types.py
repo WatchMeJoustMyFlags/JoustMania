@@ -5,7 +5,7 @@ Pure data types and enums used across the application.
 No hardware dependencies.
 """
 
-from enum import Enum
+from enum import Enum, StrEnum
 
 
 class Games(Enum):
@@ -210,7 +210,7 @@ class Sensitivity(Enum):
     ULTRA_FAST = 4  # Least sensitive, loosest thresholds
 
 
-class Sound(str, Enum):
+class Sound(StrEnum):
     """
     Sound names for the audio service.
 
@@ -334,8 +334,19 @@ class Sound(str, Enum):
     MENU_VOX_SENSITIVITY_LOW = "low"
     MENU_VOX_SENSITIVITY_ULTRA_LOW = "ultra_low"
 
+    # Admin option voice announcements (in Menu/vox/)
+    MENU_VOX_ADMINOP_2 = "adminop_2"
+    MENU_VOX_ADMINOP_3 = "adminop_3"
+    MENU_VOX_ADMINOP_4 = "adminop_4"
+    MENU_VOX_ADMINOP_5 = "adminop_5"
+    MENU_VOX_ADMINOP_6 = "adminop_6"
+    MENU_VOX_ADMINOP_TRUE = "adminop_True"
+    MENU_VOX_ADMINOP_FALSE = "adminop_False"
+    MENU_VOX_ADMINOP_FORCE_ALL_START = "adminop_force_all_start"
+    MENU_VOX_ADMINOP_RANDOM_TEAM_SIZE = "adminop_random_team_size"
 
-class GameEvent(str, Enum):
+
+class GameEvent(StrEnum):
     """
     Game lifecycle event types.
 

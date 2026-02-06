@@ -37,9 +37,24 @@ services:
       - joustmania
     healthcheck:
       test: [ "CMD", "redis-cli", "ping" ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      interval: 2s
+      timeout: 2s
+      retries: 3
+      start_period: 1s
+
+  # flagd for feature flag evaluation
+  flagd:
+    image: ghcr.io/open-feature/flagd:v0.10.0
+    container_name: joustmania-flagd
+    command: [ "start", "--uri", "file:/etc/flagd/flags.json" ]
+    volumes:
+      - ./services/flagd/flags.json:/etc/flagd/flags.json:ro
+    expose:
+      - "8013"  # flagd evaluation port (gRPC)
+      - "8015"  # flagd sync port (for in-process evaluation)
+    networks:
+      - joustmania
+    restart: unless-stopped
 
   # Jaeger for distributed tracing UI
   jaeger:
@@ -175,13 +190,13 @@ services:
       - "50053"  # gRPC service
       - "8000"   # Prometheus metrics (Phase 38)
     environment:
-      - OTEL_SERVICE_NAME=game-coordinator-service
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME_GAME_COORDINATOR:-game-coordinator-service}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
     depends_on:
       redis:
         condition: service_healthy
-      settings:
-        condition: service_healthy
+      flagd:
+        condition: service_started
     networks:
       - joustmania
     restart: unless-stopped
@@ -208,46 +223,6 @@ services:
       - AUDIO_PORT=50056
     depends_on:
       redis:
-        condition: service_healthy
-      settings:
-        condition: service_healthy
-      controller-manager:
-        condition: service_healthy
-      game-coordinator:
-        condition: service_healthy
-      audio:
-        condition: service_healthy
-    networks:
-      - joustmania
-    restart: unless-stopped
-    # Healthcheck defined in Dockerfile (uses grpc_health_probe)
-
-  # Supervisor Service
-  supervisor:
-    image: ghcr.io/watchmejoustmyflags/joustmania/supervisor-service:${IMAGE_TAG:-latest}
-    build:
-      context: .
-      dockerfile: services/supervisor/Dockerfile
-      args:
-        BUILDER_IMAGE: ${BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/builder:latest}
-    container_name: joustmania-supervisor
-    # Ports exposed only within Docker network (no host binding)
-    expose:
-      - "50055"  # gRPC service
-      - "8000"   # Prometheus metrics (Phase 38)
-    environment:
-      - OTEL_SERVICE_NAME=supervisor-service
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
-    volumes:
-      - /tmp/joustmania:/tmp/joustmania:ro  # Host startup status (read-only)
-    depends_on:
-      settings:
-        condition: service_healthy
-      controller-manager:
-        condition: service_healthy
-      game-coordinator:
-        condition: service_healthy
-      menu:
         condition: service_healthy
     networks:
       - joustmania
@@ -276,6 +251,9 @@ services:
       - MOCK_MODE=${AUDIO_MOCK_MODE:-false}
       - OTEL_SERVICE_NAME=audio-service
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+    depends_on:
+      redis:
+        condition: service_healthy
     networks:
       - joustmania
     restart: unless-stopped
@@ -457,6 +435,7 @@ services:
     # Healthcheck defined in Dockerfile
 
   # Connect-Web Proxy (gRPC to Connect protocol translation)
+  # No dependencies - proxy handles connection failures gracefully
   connect-proxy:
     image: ghcr.io/watchmejoustmyflags/joustmania/connect-proxy:${IMAGE_TAG:-latest}
     build:
@@ -471,24 +450,15 @@ services:
       - GAME_COORDINATOR_SERVICE=game-coordinator:50053
       - MENU_SERVICE=menu:50054
       - SETTINGS_SERVICE=settings:50051
-    depends_on:
-      controller-manager:
-        condition: service_healthy
-      game-coordinator:
-        condition: service_healthy
-      menu:
-        condition: service_healthy
-      settings:
-        condition: service_healthy
     networks:
       - joustmania
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 5s
+      interval: 2s
+      timeout: 2s
+      retries: 3
+      start_period: 1s
 
   # Dashboard (Real-time controller visualization SPA)
   dashboard:
@@ -506,6 +476,7 @@ services:
     # Healthcheck defined in Dockerfile
 
   # Envoy - Main entry point (reverse proxy)
+  # No dependencies - envoy uses STRICT_DNS and handles unavailable backends with 503
   envoy:
     image: envoyproxy/envoy:v1.31-latest
     container_name: joustmania-envoy
@@ -513,20 +484,11 @@ services:
       - "80:80"  # Main entry point (all services proxied through envoy)
     volumes:
       - ./services/envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
-    depends_on:
-      connect-proxy:
-        condition: service_healthy
-      dashboard:
-        condition: service_healthy
     networks:
       - joustmania
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:80/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 5s
+    # No healthcheck - distroless image has no shell utilities
+    # Envoy starts quickly and handles backend unavailability gracefully
 
 networks:
   joustmania:

@@ -49,7 +49,9 @@ class TestStateManagerInit:
         assert state_manager.controller_states == {}
         assert state_manager.connected_controllers == set()
         assert state_manager.ready_controllers == set()
-        assert state_manager.current_game_mode == "JoustFFA"
+        from lib.types import Games
+
+        assert state_manager.current_game_mode == Games.JoustFFA
 
 
 class TestStateManagerHandlerRegistration:
@@ -151,27 +153,26 @@ class TestStateManagerHelpers:
 
     def test_all_ready_true(self, state_manager):
         """all_ready should return True when all connected are ready (min 2)."""
-        state_manager.connected_controllers = {"s1", "s2"}
-        state_manager.ready_controllers = {"s1", "s2"}
+        state_manager.controller_states = {"s1": ControllerState.READY, "s2": ControllerState.READY}
         assert state_manager.all_ready() is True
 
     def test_all_ready_false_not_enough(self, state_manager):
         """all_ready should return False when less than 2 ready."""
-        state_manager.connected_controllers = {"s1"}
-        state_manager.ready_controllers = {"s1"}
+        state_manager.controller_states = {"s1": ControllerState.READY}
         assert state_manager.all_ready() is False
 
     def test_set_game_mode(self, state_manager):
         """set_game_mode should update current game mode."""
-        state_manager.set_game_mode("Werewolf")
-        assert state_manager.current_game_mode == "Werewolf"
+        from lib.types import Games
+
+        state_manager.set_game_mode(Games.Werewolf)
+        assert state_manager.current_game_mode == Games.Werewolf
 
     @pytest.mark.asyncio
     @patch("services.menu.state_manager.metrics")
     async def test_reset(self, mock_metrics, state_manager):
         """reset should clear ready state and re-register controllers."""
-        state_manager.connected_controllers = {"s1", "s2"}
-        state_manager.ready_controllers = {"s1"}
+        # Set up state via controller_states (single source of truth)
         state_manager.controller_states = {"s1": ControllerState.READY, "s2": ControllerState.CONNECTED}
         state_manager.button_states = {"s1": {"trigger": True}}
 

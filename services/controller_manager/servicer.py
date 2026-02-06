@@ -11,7 +11,6 @@ import os
 
 # Import protobuf
 import sys
-import threading
 import time
 from typing import Any
 
@@ -20,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 import contextlib
 
 from lib.controller_constants import ControllerInfoKey
-from lib.telemetry import init_telemetry
+from lib.telemetry import get_tracer
 from proto import controller_manager_pb2, controller_manager_pb2_grpc
 from services.controller_manager import metrics
 
@@ -38,9 +37,8 @@ from services.controller_manager.state_cache import StateCache
 
 logger = logging.getLogger(__name__)
 
-
-# Initialize OpenTelemetry
-tracer = init_telemetry()
+# Lazy telemetry initialization - defers OTLP setup until first span
+tracer = get_tracer(__name__)
 
 
 class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerServiceServicer, ControllerEffectsBase):
@@ -69,9 +67,8 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         self.paired_serials: list[str] = []
         self.controller_processes: dict[str, Any] = {}  # serial -> process (for cleanup)
 
-        # Thread safety: RLock for shared state accessed by discovery thread and gRPC handlers
-        # Protects: tracked_controllers, controller_states, button_states
-        self.state_lock = threading.RLock()
+        # Note: state_lock removed - no longer needed with async discovery loop
+        # All operations run on the same event loop, so no cross-thread coordination required
 
         # Streaming subscribers (Phase 34: async queue and lock)
         self.stream_subscribers: dict[str, asyncio.Queue] = {}
@@ -108,7 +105,6 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         self.feedback_manager = FeedbackManager(
             backend=self.backend,
             tracked_controllers=self.tracked_controllers,
-            state_lock=self.state_lock,
         )
 
         # Vibration tasks - tracks active asyncio vibration tasks per controller (Phase 57)
@@ -121,11 +117,11 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         self.name_manager = NameManager()
 
         # Discovery loop (extracted to discovery_loop.py)
+        # Note: start() must be called from async context (done in first stream handler)
         self.discovery_loop = DiscoveryLoop(
             backend=self.backend,
             tracked_controllers=self.tracked_controllers,
             controller_states=self.controller_states,
-            state_lock=self.state_lock,
             button_detector=self.button_detector,
             state_cache_manager=self.state_cache_manager,
             feedback_manager=self.feedback_manager,
@@ -136,9 +132,18 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             event_publisher=self.event_publisher,
             name_manager=self.name_manager,
         )
-        self.discovery_loop.start()
+        self._discovery_started = False
 
         logger.info("ControllerManager initialized")
+
+    def _ensure_discovery_started(self) -> None:
+        """Start discovery loop if not already started.
+
+        Must be called from async context (event loop must be running).
+        """
+        if not self._discovery_started:
+            self.discovery_loop.start()
+            self._discovery_started = True
 
     async def _set_led_color(self, serial: str, color: tuple[int, int, int]):
         """Set LED color on a controller (async).
@@ -152,7 +157,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         """
         await self.feedback_manager._set_led_color(serial, color)
 
-    async def StreamButtonEvents(self, request_iterator, context):  # noqa: N802, ARG002
+    async def StreamButtonEvents(self, request_iterator, context):
         """
         Stream button press/release events as they occur (Phase 41).
         Phase XX: Made bidirectional for LED state ownership - menu can send base colors and effects.
@@ -160,10 +165,12 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         This is an event-driven stream - events are only sent when buttons
         change state (press or release), not on every frame.
         """
+        # Ensure discovery loop is running (async task, needs event loop)
+        self._ensure_discovery_started()
+
         subscriber_id = f"button_stream_{time.time()}"
 
-        # Capture main event loop for cross-thread queue operations
-        # The discovery thread needs this to safely publish events to async queues
+        # Set main event loop reference for event publisher (used by button detector)
         if self.event_publisher.main_loop is None:
             self.event_publisher.set_main_loop(asyncio.get_running_loop())
 
@@ -173,7 +180,8 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         span.set_attribute("subscriber.id", subscriber_id)
 
         # Create queue for this subscriber (Phase 34: asyncio.Queue)
-        event_queue = asyncio.Queue(maxsize=100)
+        # Increased from 100 to 500 to prevent event drops with many controllers
+        event_queue = asyncio.Queue(maxsize=500)
 
         async with self.button_event_lock:  # Phase 34: async lock
             self.button_event_subscribers[subscriber_id] = event_queue
@@ -181,10 +189,9 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         # Update stream metrics (Phase 38)
         metrics.active_streams.inc()
 
-        # Clear stale base_colors from previous session (e.g., game that just ended)
-        # This ensures fresh color state when menu reconnects after a game
-        self.feedback_manager.base_colors.clear()
-        logger.debug(f"[{subscriber_id}] Cleared stale base_colors for fresh session")
+        # Note: Don't clear base_colors here - effects may still be running and need
+        # to restore to current base color. Menu will overwrite colors when it sends
+        # new base_color commands for each controller.
 
         # Send initial connection events for all currently tracked controllers
         # This allows new subscribers to immediately know about existing controllers
@@ -241,6 +248,12 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                             # Only set LED immediately if no effect is running
                             if serial not in self.feedback_manager.active_effects:
                                 await self.feedback_manager.set_controller_color(serial, color)
+                                logger.info(f"[ButtonStream] Applied base color for {serial}: {color}")
+                            else:
+                                effect_type = self.feedback_manager.active_effect_types.get(serial, "unknown")
+                                logger.warning(
+                                    f"[ButtonStream] Base color for {serial} blocked by active effect: {effect_type}"
+                                )
 
                             logger.debug(f"[{subscriber_id}] Base color set: serial={serial}, rgb={color}")
 
@@ -249,7 +262,20 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                     elif control_msg.HasField("game_effect"):
                         # Phase XX: Trigger semantic game effect
                         cmd = control_msg.game_effect
-                        await self.feedback_manager.handle_game_effect(cmd.serial, cmd.effect, subscriber_id)
+                        # Extract optional color if provided
+                        effect_color = None
+                        if cmd.HasField("color"):
+                            effect_color = (cmd.color.r, cmd.color.g, cmd.color.b)
+                        await self.feedback_manager.handle_game_effect(
+                            cmd.serial,
+                            cmd.effect,
+                            subscriber_id,
+                            color=effect_color,
+                            duration_ms=cmd.duration_ms,
+                            speed=cmd.speed,
+                            trace_parent=cmd.trace_parent,
+                            trace_state=cmd.trace_state,
+                        )
 
                         effect_name = controller_manager_pb2.GameEffect.Name(cmd.effect)
                         logger.debug(
@@ -303,7 +329,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
 
             logger.info(f"Button event subscriber disconnected: {subscriber_id}")
 
-    async def StreamGameplayData(self, request_iterator, context):  # noqa: N802, ARG002
+    async def StreamGameplayData(self, request_iterator, context):
         """
         Stream gameplay data with dynamic filtering via bidirectional communication (Phase 45).
 
@@ -318,6 +344,9 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         Yields:
             GameplayDataUpdate messages with filtered controller data
         """
+        # Ensure discovery loop is running (async task, needs event loop)
+        self._ensure_discovery_started()
+
         subscriber_id = f"gameplay_stream_{time.time()}"
 
         # Note: We manually manage the span instead of using context manager
@@ -389,110 +418,6 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                                 },
                             )
 
-                    elif control_msg.HasField("color_command"):
-                        # Phase 46: Process color command via stream
-                        cmd = control_msg.color_command
-                        target_serial = cmd.serial if cmd.serial else None
-
-                        # Apply to target serial or all controllers (broadcast)
-                        serials_to_update = [target_serial] if target_serial else list(self.tracked_controllers.keys())
-
-                        for serial in serials_to_update:
-                            if serial in self.tracked_controllers:
-                                await self.feedback_manager.set_controller_color(
-                                    serial, (cmd.color.r, cmd.color.g, cmd.color.b)
-                                )
-
-                        logger.debug(
-                            f"[{subscriber_id}] Color command: "
-                            f"serial={cmd.serial or 'all'}, "
-                            f"rgb=({cmd.color.r},{cmd.color.g},{cmd.color.b})"
-                        )
-
-                        # Metric (Phase 46)
-                        metrics.stream_commands_total.labels(command_type="color").inc()
-
-                    elif control_msg.HasField("effect_command"):
-                        # Phase 46: Process effect command via stream
-                        cmd = control_msg.effect_command
-                        target_serial = cmd.serial if cmd.serial else None
-
-                        # Apply to target serial or all controllers (broadcast)
-                        serials_to_update = [target_serial] if target_serial else list(self.tracked_controllers.keys())
-
-                        color_rgb = (
-                            (cmd.color.r, cmd.color.g, cmd.color.b)
-                            if cmd.color.r or cmd.color.g or cmd.color.b
-                            else (255, 255, 255)
-                        )
-                        duration_ms = cmd.duration_ms or 1000
-
-                        for serial in serials_to_update:
-                            if serial in self.tracked_controllers:
-                                await self.feedback_manager.play_effect(
-                                    serial, cmd.effect, color_rgb, duration_ms, speed=5
-                                )
-
-                        effect_name = controller_manager_pb2.ControllerEffect.Name(cmd.effect)
-                        logger.debug(
-                            f"[{subscriber_id}] Effect command: serial={cmd.serial or 'all'}, effect={effect_name}"
-                        )
-
-                        # Metric (Phase 46)
-                        metrics.stream_commands_total.labels(command_type="effect").inc()
-
-                    elif control_msg.HasField("vibration_command"):
-                        # Phase 46: Process vibration command via stream
-                        cmd = control_msg.vibration_command
-                        target_serial = cmd.serial if cmd.serial else None
-
-                        # Apply to target serial or all controllers (broadcast)
-                        serials_to_update = [target_serial] if target_serial else list(self.tracked_controllers.keys())
-
-                        for serial in serials_to_update:
-                            if serial in self.tracked_controllers:
-                                await self.feedback_manager.set_vibration(serial, cmd.intensity, cmd.duration_ms)
-
-                        logger.debug(
-                            f"[{subscriber_id}] Vibration command: "
-                            f"serial={cmd.serial or 'all'}, "
-                            f"intensity={cmd.intensity}, duration={cmd.duration_ms}ms"
-                        )
-
-                        # Metric (Phase 46)
-                        metrics.stream_commands_total.labels(command_type="vibration").inc()
-
-                    elif control_msg.HasField("combined_feedback"):
-                        # Phase 46: Process combined color + vibration command
-                        cmd = control_msg.combined_feedback
-                        target_serial = cmd.serial if cmd.serial else None
-
-                        # Apply to target serial or all controllers (broadcast)
-                        serials_to_update = [target_serial] if target_serial else list(self.tracked_controllers.keys())
-
-                        for serial in serials_to_update:
-                            if serial in self.tracked_controllers:
-                                # Set color and vibration atomically
-                                await self.feedback_manager.set_controller_color(
-                                    serial, (cmd.color.r, cmd.color.g, cmd.color.b)
-                                )
-                                if cmd.vibration_intensity > 0:
-                                    await self.feedback_manager.set_vibration(
-                                        serial,
-                                        cmd.vibration_intensity,
-                                        cmd.vibration_duration_ms,
-                                    )
-
-                        logger.debug(
-                            f"[{subscriber_id}] Combined feedback: "
-                            f"serial={cmd.serial or 'all'}, "
-                            f"rgb=({cmd.color.r},{cmd.color.g},{cmd.color.b}), "
-                            f"vib={cmd.vibration_intensity}@{cmd.vibration_duration_ms}ms"
-                        )
-
-                        # Metric (Phase 46)
-                        metrics.stream_commands_total.labels(command_type="combined").inc()
-
                     elif control_msg.HasField("base_color"):
                         # Phase XX: Set base color for a controller (LED state ownership)
                         cmd = control_msg.base_color
@@ -520,6 +445,12 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                             # Only set LED immediately if no effect is running
                             if serial not in self.feedback_manager.active_effects:
                                 await self.feedback_manager.set_controller_color(serial, color)
+                                logger.info(f"[GameplayStream] Applied base color for {serial}: {color}")
+                            else:
+                                effect_type = self.feedback_manager.active_effect_types.get(serial, "unknown")
+                                logger.warning(
+                                    f"[GameplayStream] Base color for {serial} blocked by active effect: {effect_type}"
+                                )
 
                             logger.debug(f"[{subscriber_id}] Base color set: serial={serial}, rgb={color}")
 
@@ -528,7 +459,20 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                     elif control_msg.HasField("game_effect"):
                         # Phase XX: Trigger semantic game effect (LED state ownership)
                         cmd = control_msg.game_effect
-                        await self.feedback_manager.handle_game_effect(cmd.serial, cmd.effect, subscriber_id)
+                        # Extract optional color if provided
+                        effect_color = None
+                        if cmd.HasField("color"):
+                            effect_color = (cmd.color.r, cmd.color.g, cmd.color.b)
+                        await self.feedback_manager.handle_game_effect(
+                            cmd.serial,
+                            cmd.effect,
+                            subscriber_id,
+                            color=effect_color,
+                            duration_ms=cmd.duration_ms,
+                            speed=cmd.speed,
+                            trace_parent=cmd.trace_parent,
+                            trace_state=cmd.trace_state,
+                        )
 
                         effect_name = controller_manager_pb2.GameEffect.Name(cmd.effect)
                         logger.debug(
@@ -546,7 +490,10 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         logger.info(f"New gameplay subscriber: {subscriber_id}")
 
         try:
-            # Stream gameplay data
+            # Stream gameplay data with consistent frame timing
+            # Uses monotonic clock to account for processing time, reducing jitter
+            next_frame_time = time.monotonic()
+
             while not context.cancelled():
                 try:
                     # Calculate interval from current Hz
@@ -588,7 +535,18 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                         # Track number of controllers streamed per frame (Phase 45)
                         metrics.streamed_controllers.observe(len(gameplay_data))
 
-                    await asyncio.sleep(interval)
+                    # Fixed frame timing: sleep until next scheduled frame time
+                    # This accounts for processing time to maintain consistent frame rate
+                    next_frame_time += interval
+                    sleep_time = next_frame_time - time.monotonic()
+
+                    # If we're behind schedule, reset timing (prevents spiral of catch-up)
+                    if sleep_time < 0:
+                        next_frame_time = time.monotonic() + interval
+                        sleep_time = interval
+                        metrics.stream_frame_overruns_total.inc()
+
+                    await asyncio.sleep(sleep_time)
 
                 except Exception as e:
                     logger.error(f"[{subscriber_id}] Gameplay stream error: {e}", exc_info=True)
@@ -618,106 +576,24 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
 
         async def stop_after_delay():
             await asyncio.sleep(duration_ms / 1000.0)
-            with self.state_lock:
-                # Clean up task tracking
-                if serial in self.vibration_tasks:
-                    del self.vibration_tasks[serial]
-                # Skip if controller was removed
-                if serial not in self.tracked_controllers:
-                    logger.debug(f"Vibration task expired for removed controller {serial}")
-                    return
+            # Clean up task tracking
+            if serial in self.vibration_tasks:
+                del self.vibration_tasks[serial]
+            # Skip if controller was removed
+            if serial not in self.tracked_controllers:
+                logger.debug(f"Vibration task expired for removed controller {serial}")
+                return
             await self.backend.set_rumble(serial, 0)
             logger.debug(f"Vibration stopped on {serial} (duration expired)")
 
         self.vibration_tasks[serial] = asyncio.create_task(stop_after_delay())
-
-    async def PlayControllerEffect(self, request, context):  # noqa: N802, ARG002
-        """Play visual effect on controller(s) - Phase 31/40 implementation.
-
-        Uses effect methods inherited from ControllerEffectsBase.
-        Adds tracing and thread-safe task management.
-        """
-        with tracer.start_as_current_span("PlayControllerEffect") as span:
-            effect_name = controller_manager_pb2.ControllerEffect.Name(request.effect)
-            span.set_attribute("serial", request.serial or "all")
-            span.set_attribute("effect", effect_name)
-            span.set_attribute("duration_ms", request.duration_ms)
-            span.set_attribute("speed", request.speed)
-
-            try:
-                # Determine which controllers to update
-                serials = [request.serial] if request.serial else list(self.tracked_controllers.keys())
-
-                # Color as tuple for effect methods
-                color = (request.color.r, request.color.g, request.color.b) if request.color else (255, 255, 255)
-                duration_ms = request.duration_ms or 1000  # Default 1 second
-                speed = request.speed or 5  # Default medium speed
-
-                controllers_updated = 0
-                for serial in serials:
-                    if serial not in self.tracked_controllers:
-                        continue
-
-                    # Cancel any existing effect on this controller (Phase 34: async lock)
-                    async with self.feedback_manager.effect_lock:
-                        if serial in self.feedback_manager.active_effects:
-                            self.feedback_manager.active_effects[serial].cancel()
-                            with contextlib.suppress(asyncio.CancelledError):
-                                await self.feedback_manager.active_effects[serial]
-                            del self.feedback_manager.active_effects[serial]
-
-                    # Start the appropriate effect (methods inherited from ControllerEffectsBase - Phase 40)
-                    if request.effect == controller_manager_pb2.EFFECT_NONE:
-                        # Solid color (no animation)
-                        await self.feedback_manager._set_led_color(serial, color)
-
-                    elif request.effect == controller_manager_pb2.EFFECT_FLASH:
-                        task = asyncio.create_task(self._effect_flash(serial, color, duration_ms, speed))
-                        async with self.feedback_manager.effect_lock:  # Phase 34: async lock
-                            self.feedback_manager.active_effects[serial] = task
-
-                    elif request.effect == controller_manager_pb2.EFFECT_PULSE:
-                        task = asyncio.create_task(self._effect_pulse(serial, color, duration_ms, speed))
-                        async with self.feedback_manager.effect_lock:  # Phase 34: async lock
-                            self.feedback_manager.active_effects[serial] = task
-
-                    elif request.effect == controller_manager_pb2.EFFECT_RAINBOW:
-                        task = asyncio.create_task(self._effect_rainbow(serial, duration_ms, speed))
-                        async with self.feedback_manager.effect_lock:  # Phase 34: async lock
-                            self.feedback_manager.active_effects[serial] = task
-
-                    elif request.effect == controller_manager_pb2.EFFECT_FADE_OUT:
-                        task = asyncio.create_task(self._effect_fade_out(serial, color, duration_ms))
-                        async with self.feedback_manager.effect_lock:  # Phase 34: async lock
-                            self.feedback_manager.active_effects[serial] = task
-
-                    elif request.effect == controller_manager_pb2.EFFECT_FADE_IN:
-                        task = asyncio.create_task(self._effect_fade_in(serial, color, duration_ms))
-                        async with self.feedback_manager.effect_lock:  # Phase 34: async lock
-                            self.feedback_manager.active_effects[serial] = task
-
-                    else:
-                        logger.warning(f"Unknown effect: {effect_name}")
-                        continue
-
-                    controllers_updated += 1
-
-                span.set_attribute("controllers_updated", controllers_updated)
-                logger.info(f"PlayControllerEffect: {effect_name} on {controllers_updated} controller(s)")
-
-                return controller_manager_pb2.PlayControllerEffectResponse(success=True, error="")
-
-            except Exception as e:
-                span.record_exception(e)
-                logger.error(f"PlayControllerEffect error: {e}", exc_info=True)
-                return controller_manager_pb2.PlayControllerEffectResponse(success=False, error=str(e))
 
     # NOTE: Internal feedback methods moved to feedback_manager.py
     # NOTE: State cache methods moved to state_cache.py
     # NOTE: Button detection methods moved to button_detector.py
     # NOTE: Event publishing methods moved to event_publisher.py
 
-    async def RenameController(self, request, context):  # noqa: N802, ARG002
+    async def RenameController(self, request, _context):
         """Rename a controller with a custom human-readable name (Issue #7)."""
         with tracer.start_as_current_span("RenameController") as span:
             span.set_attribute("serial", request.serial)
@@ -735,9 +611,8 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                 self.name_manager.set_name(request.serial, request.name)
 
                 # Update tracked_controllers if the controller is currently connected
-                with self.state_lock:
-                    if request.serial in self.tracked_controllers:
-                        self.tracked_controllers[request.serial][ControllerInfoKey.NAME] = request.name
+                if request.serial in self.tracked_controllers:
+                    self.tracked_controllers[request.serial][ControllerInfoKey.NAME] = request.name
 
                 logger.info(f"Renamed controller {request.serial} to '{request.name}'")
                 return controller_manager_pb2.RenameControllerResponse(success=True, error="")
@@ -747,7 +622,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                 logger.error(f"RenameController error: {e}", exc_info=True)
                 return controller_manager_pb2.RenameControllerResponse(success=False, error=str(e))
 
-    def shutdown(self):
+    async def shutdown(self):
         """Shutdown the controller manager."""
         logger.info("Shutting down ControllerManager...")
 
@@ -760,4 +635,4 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                 proc.terminate()
                 proc.join(timeout=2.0)
 
-        self.discovery_loop.join(timeout=5.0)
+        await self.discovery_loop.wait_stopped(timeout_seconds=5.0)

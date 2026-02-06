@@ -22,8 +22,8 @@ ARG BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:latest
 FROM debian:bookworm-slim AS system-libs
 ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libasound2 \
     libasound2-data \
+    libasound2 \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir /extra-libs \
     && if [ "$TARGETARCH" = "arm64" ]; then \
@@ -31,7 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        else \
          LIB_DIR=/usr/lib/x86_64-linux-gnu; \
        fi \
-    && cp $LIB_DIR/libasound.so* /extra-libs/ \
+    && cp "$LIB_DIR"/libasound.so* /extra-libs/ \
     && mkdir -p /extra-etc \
     && grep -E "^(root|audio):" /etc/group > /extra-etc/group
 
@@ -55,22 +55,23 @@ COPY proto/pyproject.toml /app/proto/
 COPY proto/*.py /app/proto/
 RUN python -m compileall -q proto/
 
+# Copy lib package (shared utilities)
+COPY lib/pyproject.toml /app/lib/
+COPY lib/*.py /app/lib/
+RUN python -m compileall -q lib/
+
 # Copy service dependencies
 COPY services/audio/pyproject.toml /app/services/audio/
 
-# Install proto package from local workspace
-WORKDIR /app/proto
-RUN pip install --no-cache-dir -e .
-
-# Install service-specific dependencies (miniaudio + resampy instead of pygame + scipy)
+# Install workspace packages and service dependencies (miniaudio + resampy instead of pygame + scipy)
 # Disable GCC auto-vectorization to prevent libmvec.so dependency on ARM64 cross-compile
 # (libmvec is x86-only in glibc, but QEMU cross-compilation incorrectly links to it)
-WORKDIR /app/services/audio
+WORKDIR /app
 ARG TARGETARCH
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
       export CFLAGS="-fno-tree-loop-vectorize -fno-tree-slp-vectorize"; \
     fi && \
-    uv pip install --system --no-binary miniaudio -e .
+    uv pip install --system -e proto/ -e lib/ --no-binary miniaudio -e services/audio/
 
 # =============================================================================
 # Stage 3: Runtime image - distroless for minimal size
@@ -125,7 +126,7 @@ EXPOSE 50056
 EXPOSE 8000
 
 # Health check using grpc-health-probe
-HEALTHCHECK --interval=5s --timeout=5s --start-period=3s --retries=3 \
+HEALTHCHECK --interval=2s --timeout=2s --start-period=1s --retries=3 \
     CMD ["/bin/grpc_health_probe", "-addr=:50056"]
 
 # Run the server

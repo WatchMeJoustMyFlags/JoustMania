@@ -14,12 +14,14 @@ from pathlib import Path
 
 import miniaudio
 
-from lib.telemetry import init_telemetry
+from lib.telemetry import get_tracer
 from proto import audio_pb2, audio_pb2_grpc
 from services.audio.music_player import DummyMusicPlayer, MusicPlayer
 
 logger = logging.getLogger(__name__)
-tracer = init_telemetry()
+
+# Lazy telemetry initialization - defers OTLP setup until first span
+tracer = get_tracer(__name__)
 
 
 class SoundChannel:
@@ -36,7 +38,7 @@ class SoundChannel:
         self.priority = 0
         self._lock = threading.Lock()
 
-    def play(self, file_path: str, volume: float = 1.0, priority: int = 2) -> bool:  # noqa: ARG002
+    def play(self, file_path: str, volume: float = 1.0, priority: int = 2) -> bool:
         """
         Play a sound on this channel.
 
@@ -60,23 +62,68 @@ class SoundChannel:
                 self.priority = priority
                 self.is_playing = True
 
+                # Clamp volume to valid range
+                volume = max(0.0, min(1.0, volume))
+
                 def play_thread():
+                    import array
                     import time
 
                     try:
-                        # Use stream_file - it handles decoding and format matching
-                        stream = miniaudio.stream_file(file_path)
+                        if volume < 1.0:
+                            # Decode file to apply volume scaling
+                            decoded = miniaudio.decode_file(file_path)
+                            samples = array.array("h", decoded.samples)  # 16-bit signed
 
-                        # Create device without specifying format - let miniaudio handle it
-                        device = miniaudio.PlaybackDevice()
-                        with device:
-                            device.start(stream)
-                            # Wait for playback to complete based on duration
-                            duration = file_info.duration
-                            elapsed = 0.0
-                            while self.is_playing and elapsed < duration + 0.5:
-                                time.sleep(0.05)
-                                elapsed += 0.05
+                            # Apply volume scaling
+                            for i in range(len(samples)):
+                                samples[i] = int(samples[i] * volume)
+
+                            # Convert back to bytes for playback
+                            scaled_data = samples.tobytes()
+
+                            # Calculate bytes per frame for proper alignment
+                            # Frame = one sample per channel
+                            bytes_per_sample = decoded.sample_width
+                            bytes_per_frame = bytes_per_sample * decoded.nchannels
+
+                            # Create generator that responds to framecount requests
+                            # miniaudio calls send(framecount) to request specific frames
+                            def scaled_stream():
+                                idx = 0
+                                required_frames = yield b""  # Priming yield
+                                while idx < len(scaled_data) and self.is_playing:
+                                    # Calculate bytes needed for requested frames
+                                    bytes_needed = required_frames * bytes_per_frame
+                                    end = min(idx + bytes_needed, len(scaled_data))
+                                    required_frames = yield scaled_data[idx:end]
+                                    idx = end
+
+                            device = miniaudio.PlaybackDevice(
+                                output_format=decoded.sample_format,
+                                nchannels=decoded.nchannels,
+                                sample_rate=decoded.sample_rate,
+                            )
+                            stream = scaled_stream()
+                            next(stream)  # Prime the generator for send()
+                            with device:
+                                device.start(stream)
+                                duration = file_info.duration
+                                elapsed = 0.0
+                                while self.is_playing and elapsed < duration + 0.5:
+                                    time.sleep(0.05)
+                                    elapsed += 0.05
+                        else:
+                            # Full volume - use streaming for efficiency
+                            stream = miniaudio.stream_file(file_path)
+                            device = miniaudio.PlaybackDevice()
+                            with device:
+                                device.start(stream)
+                                duration = file_info.duration
+                                elapsed = 0.0
+                                while self.is_playing and elapsed < duration + 0.5:
+                                    time.sleep(0.05)
+                                    elapsed += 0.05
                     except Exception as e:
                         logger.warning(f"Playback error on channel {self.channel_id}: {e}")
                     finally:
@@ -127,7 +174,7 @@ class AudioManager:
             self.music_player = MusicPlayer("background")
 
         self.current_music_file: str | None = None
-        self.master_volume: float = 0.7
+        self.master_volume: float = 1.0
         self.music_lock = threading.Lock()
         self.event_loop: asyncio.AbstractEventLoop | None = None  # Set from async context
 
@@ -355,8 +402,9 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
     def __init__(self):
         """Initialize audio servicer."""
         self.audio_manager = AudioManager()
-        self.audio_enabled = True  # Controlled by play_audio setting
+        self.audio_enabled = True  # Controlled by play_audio setting (default: enabled)
         self.menu_voice = "ivy"  # Controlled by menu_voice setting
+        self._settings_loaded = False  # Lazy load settings on first audio request
         self.sound_registry: dict[str, tuple[str, str]] = {}  # sound_name -> (type, base_dir)
         self._build_sound_registry()
         logger.info("AudioServiceServicer initialized")
@@ -449,6 +497,9 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
 
     async def _load_audio_setting(self):
         """Load audio settings from settings service."""
+        if self._settings_loaded:
+            return  # Already loaded
+
         try:
             from lib.grpc_utils import create_channel
             from proto import settings_pb2, settings_pb2_grpc
@@ -473,11 +524,17 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
                 except Exception as voice_err:
                     logger.debug(f"Could not load menu_voice setting: {voice_err}, using default: ivy")
 
+            self._settings_loaded = True
         except Exception as e:
             logger.debug(f"Could not load audio settings: {e}, using defaults")
+            # Mark as loaded even on failure to avoid repeated attempts
+            self._settings_loaded = True
 
-    def PlaySound(self, request, context):  # noqa: N802, ARG002
+    async def PlaySound(self, request, _context):
         """Play a sound effect."""
+        # Lazy load settings on first audio request (avoids blocking startup)
+        await self._load_audio_setting()
+
         # Resolve sound name/path to full path with voice selection
         resolved_path = self._resolve_sound_path(request.file_path)
 
@@ -498,8 +555,11 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
 
             return audio_pb2.PlaySoundResponse(success=success, error="" if success else "Failed to play sound")
 
-    def PlayMusic(self, request, context):  # noqa: N802, ARG002
+    async def PlayMusic(self, request, _context):
         """Play background music."""
+        # Lazy load settings on first audio request (avoids blocking startup)
+        await self._load_audio_setting()
+
         # Extract music directory for span (e.g., "Joust" from "Joust/music/*.wav")
         music_dir = request.file_pattern.split("/")[0] if "/" in request.file_pattern else "music"
 
@@ -522,13 +582,13 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
                 return audio_pb2.PlayMusicResponse(track_id=track_id, success=True, error="")
             return audio_pb2.PlayMusicResponse(track_id="", success=False, error="Failed to play music")
 
-    def StopMusic(self, request, context):  # noqa: N802, ARG002
+    async def StopMusic(self, request, _context):
         """Stop music track."""
         with tracer.start_as_current_span("StopMusic"):
             success = self.audio_manager.stop_music(request.track_id)
             return audio_pb2.StopMusicResponse(success=success, error="" if success else "Failed to stop music")
 
-    def ChangeTempo(self, request, context):  # noqa: N802, ARG002
+    def ChangeTempo(self, request, _context):
         """Change music tempo."""
         with tracer.start_as_current_span(f"ChangeTempo:{request.new_tempo:.1f}x") as span:
             span.set_attribute("audio.new_tempo", request.new_tempo)
@@ -539,7 +599,7 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
             )
             return audio_pb2.ChangeTempoResponse(success=success, error="" if success else "Failed to change tempo")
 
-    def SetVolume(self, request, context):  # noqa: N802, ARG002
+    def SetVolume(self, request, _context):
         """Set master volume."""
         with tracer.start_as_current_span(f"SetVolume:{request.volume:.0%}"):
             success = self.audio_manager.set_volume(request.volume)

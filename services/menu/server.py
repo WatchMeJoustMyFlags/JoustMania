@@ -24,14 +24,15 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 
-import grpc.aio  # noqa: E402
-from grpc_health.v1 import health, health_pb2, health_pb2_grpc  # noqa: E402
-from prometheus_client import start_http_server  # noqa: E402
+import grpc.aio
+from grpc_health.v1 import health, health_pb2, health_pb2_grpc
+from prometheus_client import start_http_server
 
-from lib.system_metrics import start_system_metrics_collector  # noqa: E402
-from proto import menu_pb2, menu_pb2_grpc  # noqa: E402
-from services.menu import metrics  # noqa: E402
-from services.menu.servicer import MenuServicer  # noqa: E402
+from lib.system_metrics import start_system_metrics_collector
+from lib.types import Games
+from proto import menu_pb2, menu_pb2_grpc
+from services.menu import metrics
+from services.menu.servicer import MenuServicer
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +90,7 @@ async def serve(port=50054, metrics_port=8000):
     auto_start = os.getenv("MENU_AUTO_START", "true").lower() == "true"
     if auto_start:
         menu_servicer.state = menu_pb2.MenuState.RUNNING
-        menu_servicer.current_selection = "JoustFFA"
+        menu_servicer.current_selection = Games.JoustFFA
         logger.info("Menu auto-started (MENU_AUTO_START=true)")
 
     try:

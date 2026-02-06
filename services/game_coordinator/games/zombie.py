@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
+from lib.colors import Colors
 from lib.types import Sound
 from proto import controller_manager_pb2
 from services.game_coordinator.games.base import BaseGameMode, Phase, Player, Sensitivity
@@ -33,8 +34,8 @@ ZOMBIE_RESPAWN_MIN = 2.0  # Minimum respawn delay for zombies
 ZOMBIE_RESPAWN_MAX = 10.0  # Maximum respawn delay for zombies
 
 # Colors
-HUMAN_COLOR = (255, 255, 255)  # White for humans
-ZOMBIE_COLOR = (80, 80, 120)  # Blue-gray for zombies
+HUMAN_COLOR = Colors.White.value  # White for humans
+ZOMBIE_COLOR = Colors.ZombieGray.value  # Blue-gray for zombies
 
 # Zombie thresholds - zombies are harder to kill
 ZOMBIE_THRESHOLDS = {
@@ -93,6 +94,7 @@ class ZombieGame(BaseGameMode):
         audio_client=None,
         game_id: str = "",
         initial_players: list | None = None,
+        sensitivity: int = 2,
     ):
         """
         Initialize Zombie game.
@@ -104,6 +106,7 @@ class ZombieGame(BaseGameMode):
             audio_client: gRPC stub for Audio service
             game_id: Unique identifier for this game instance
             initial_players: Optional list of Player protobuf messages
+            sensitivity: Sensitivity level 0-4 (passed from StartGameConfig)
         """
         super().__init__(
             controller_manager_client=controller_manager_client,
@@ -112,6 +115,7 @@ class ZombieGame(BaseGameMode):
             audio_client=audio_client,
             game_id=game_id,
             initial_players=initial_players,
+            sensitivity=sensitivity,
         )
 
         self.zombie_serials: list[str] = []
@@ -120,6 +124,8 @@ class ZombieGame(BaseGameMode):
         self.time_remaining: float = 0.0
         self.timer_task: asyncio.Task | None = None
         self.game_span: trace.Span | None = None
+        # Track respawn tasks to prevent garbage collection
+        self._respawn_tasks: set[asyncio.Task] = set()
 
     def get_game_name(self) -> str:
         """Return game mode identifier."""
@@ -354,8 +360,10 @@ class ZombieGame(BaseGameMode):
 
             logger.info(f"Zombie {serial} killed, respawning in {respawn_delay:.1f}s")
 
-            # Start respawn task
-            asyncio.create_task(self._respawn_zombie(serial, respawn_delay))
+            # Start respawn task (track to prevent garbage collection)
+            task = asyncio.create_task(self._respawn_zombie(serial, respawn_delay))
+            self._respawn_tasks.add(task)
+            task.add_done_callback(self._respawn_tasks.discard)
 
             if player.span:
                 player.span.add_event(
@@ -475,10 +483,10 @@ class ZombieGame(BaseGameMode):
             winner_serials = self.zombie_serials
 
         # Show rainbow effect on winners
-        for serial in winner_serials:
-            player = self.players.get(serial)
-            if player and player.alive:
-                if self.gameplay_stream:
+        if self.gameplay_stream:
+            for serial in winner_serials:
+                player = self.players.get(serial)
+                if player and player.alive:
                     effect_cmd = controller_manager_pb2.GameplayStreamControl(
                         game_effect=controller_manager_pb2.GameEffectCommand(
                             serial=serial,
@@ -486,16 +494,6 @@ class ZombieGame(BaseGameMode):
                         )
                     )
                     await self.gameplay_stream.write(effect_cmd)
-                else:
-                    await self.controller_client.PlayControllerEffect(
-                        controller_manager_pb2.PlayControllerEffectRequest(
-                            serial=serial,
-                            effect=controller_manager_pb2.EFFECT_RAINBOW,
-                            color=controller_manager_pb2.RGB(r=255, g=255, b=255),
-                            duration_ms=3000,
-                            speed=1,  # Slow rainbow (1 cycle/second)
-                        )
-                    )
 
         # Play victory sound (Zombie/vox/ directory)
         if winner == "humans":
@@ -503,11 +501,8 @@ class ZombieGame(BaseGameMode):
         else:
             await self._play_sound(Sound.VOX_ZOMBIE_VICTORY, priority=2)
 
-        # Wait for celebration
-        for _ in range(20):  # 2 seconds
-            if not self.running:
-                break
-            await asyncio.sleep(0.1)
+        # Wait for rainbow effect to complete
+        await self._wait_for_rainbow_effect()
 
         # End all player spans
         for serial, player in self.players.items():
@@ -556,9 +551,11 @@ class ZombieGame(BaseGameMode):
 
                 # Initialization phase
                 with tracer.start_as_current_span("initialization_phase"):
-                    await self._load_settings()
                     await self._initialize_players()
                     self._create_player_spans()
+
+                # Start gameplay stream before intro (needed for LED effects)
+                await self._start_gameplay_stream()
 
                 # Additional phases (zombie intro)
                 for phase in self._get_additional_phases():
@@ -581,16 +578,20 @@ class ZombieGame(BaseGameMode):
                 self.state = GameState.RUNNING
                 self.start_time = time.time()
 
+                # Emit game_started event (required for integration tests)
+                from lib.types import GameEvent
+
+                self.event_publisher(
+                    GameEvent.GAME_STARTED, {"game_id": self.game_id, "player_count": len(self.players)}
+                )
+
                 # Start music
                 await self._start_game_music()
 
                 # Start game timer as background task
                 self.timer_task = asyncio.create_task(self._game_timer())
 
-                # Start gameplay stream
-                await self._start_gameplay_stream()
-
-                # Game loop
+                # Game loop (gameplay stream already started before intro)
                 with tracer.start_as_current_span("gameplay_phase"):
                     await self._game_loop()
 

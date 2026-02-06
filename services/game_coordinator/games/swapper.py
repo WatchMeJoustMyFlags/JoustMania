@@ -43,6 +43,7 @@ class SwapperGame(TeamsGameBase):
         audio_client=None,
         game_id: str = "",
         initial_players: list | None = None,
+        sensitivity: int = 2,
     ):
         """
         Initialize Swapper game.
@@ -54,6 +55,7 @@ class SwapperGame(TeamsGameBase):
             audio_client: gRPC stub for Audio service
             game_id: Unique identifier for this game instance
             initial_players: Optional list of Player protobuf messages
+            sensitivity: Sensitivity level 0-4 (passed from StartGameConfig)
         """
         # Swapper always uses 2 teams
         super().__init__(
@@ -64,6 +66,8 @@ class SwapperGame(TeamsGameBase):
             game_id=game_id,
             num_teams=2,  # Force 2 teams for swapper
             initial_players=initial_players,
+            sensitivity=sensitivity,
+            random_assignment=True,
         )
 
         # Track the last player to die (excluded from winners)
@@ -134,7 +138,8 @@ class SwapperGame(TeamsGameBase):
         Handle player death by switching their team.
 
         Instead of dying, players switch to the opposing team.
-        The player is given a brief grace period on their new team.
+        The player is temporarily marked as dead (to stop base class processing),
+        then respawned on the new team after the death animation.
 
         Span handling:
         - End the player's span under the old team with "team_swap_out" event
@@ -148,6 +153,10 @@ class SwapperGame(TeamsGameBase):
         old_team = player.team
         old_team_obj = self.teams[old_team]
 
+        # Mark player as temporarily dead to stop base class from processing
+        # the held high-acceleration data from SimulateDeath
+        player.alive = False
+
         # Switch teams
         new_team = 1 - old_team  # Toggle between 0 and 1
         new_team_obj = self.teams[new_team]
@@ -157,8 +166,9 @@ class SwapperGame(TeamsGameBase):
         # Track last death for winner exclusion
         self.last_death_serial = serial
 
-        # Give grace period on new team
-        player.grace_until = time.time() + 2.0
+        # Set grace period for after respawn (2.0s total from now)
+        grace_duration = 2.0
+        player.grace_until = time.time() + grace_duration
 
         # Log the swap
         swap_count = getattr(player, "swap_count", 0) + 1
@@ -183,6 +193,7 @@ class SwapperGame(TeamsGameBase):
             )
             player.span.set_status(Status(StatusCode.OK))
             player.span.end()
+            player.span = None  # Mark as closed before creating new span
             logger.debug(f"Ended player {serial} span under team {old_team}")
 
         # Create new span under new team
@@ -212,18 +223,25 @@ class SwapperGame(TeamsGameBase):
                 logger.debug(f"Created new player {serial} span under team {new_team}")
 
         # Update controller LED to new team color
-        # Death flash effect
+        # Use flash effect (not death effect) since player is swapping, not dying
+        # Death effect would set base_colors to black which causes race conditions
         effect_cmd = controller_manager_pb2.GameplayStreamControl(
             game_effect=controller_manager_pb2.GameEffectCommand(
                 serial=serial,
-                effect=controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH,
+                effect=controller_manager_pb2.GAME_EFFECT_FLASH,
+                duration_ms=400,
             )
         )
         await self.gameplay_stream.write(effect_cmd)
 
-        # After death flash, set new team color
+        # After flash, set new team color
         await asyncio.sleep(0.5)
         await self._set_player_color(serial, player.color)
+
+        # Respawn the player on their new team
+        # This re-enables base class processing for this player
+        player.alive = True
+        logger.debug(f"Player {serial} respawned on team {new_team}")
 
         # Publish swap event
         self.event_publisher(
@@ -319,9 +337,9 @@ class SwapperGame(TeamsGameBase):
         winning_team = list(teams)[0] if teams else 0
 
         # Show rainbow effect on winners (excluding last swapper)
-        for serial, player in self.players.items():
-            if player.team == winning_team and serial != self.last_death_serial:
-                if self.gameplay_stream:
+        if self.gameplay_stream:
+            for serial, player in self.players.items():
+                if player.team == winning_team and serial != self.last_death_serial:
                     effect_cmd = controller_manager_pb2.GameplayStreamControl(
                         game_effect=controller_manager_pb2.GameEffectCommand(
                             serial=serial,
@@ -329,20 +347,11 @@ class SwapperGame(TeamsGameBase):
                         )
                     )
                     await self.gameplay_stream.write(effect_cmd)
-                else:
-                    rainbow_request = controller_manager_pb2.PlayControllerEffectRequest(
-                        serial=serial,
-                        effect=controller_manager_pb2.EFFECT_RAINBOW,
-                        color=controller_manager_pb2.RGB(r=255, g=255, b=255),
-                        duration_ms=3000,
-                        speed=1,  # Slow rainbow (1 cycle/second)
-                    )
-                    await self.controller_client.PlayControllerEffect(rainbow_request)
 
         # Show loser effect on excluded player (dim gray color)
         if self.last_death_serial and self.gameplay_stream:
             color_cmd = controller_manager_pb2.GameplayStreamControl(
-                color_update=controller_manager_pb2.ColorUpdate(
+                base_color=controller_manager_pb2.ControllerColorConfig(
                     serial=self.last_death_serial,
                     color=controller_manager_pb2.RGB(r=50, g=50, b=50),  # Dim gray
                 )

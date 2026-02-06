@@ -17,6 +17,7 @@ from enum import Enum
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
+from lib.colors import Colors
 from lib.types import Sound
 from proto import controller_manager_pb2
 from services.game_coordinator.games.base import BaseGameMode, Phase, Player
@@ -24,16 +25,16 @@ from services.game_coordinator.games.base import BaseGameMode, Phase, Player
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 
-# Game constants
+# Game constants (defaults, can be overridden via settings)
 ROUND_DURATION = 22.0  # Seconds per round
-INVINCIBILITY_DURATION = 4.0  # Seconds of invincibility at round start
-MIN_ROUNDS = 10  # Minimum rounds before game can end
+DEFAULT_INVINCIBILITY_DURATION = 4.0  # Seconds of invincibility at round start
+DEFAULT_MIN_ROUNDS = 10  # Minimum rounds before game can end
 COUNTDOWN_BEEPS = 3  # Beeps in last 3 seconds of round
 
 # Colors
-DEFENDER_COLOR = (255, 0, 0)  # Red for defender
-FIGHTER_COLOR = (0, 255, 0)  # Green for challenger
-WAITING_COLOR = (50, 50, 50)  # Dim gray for waiting
+DEFENDER_COLOR = Colors.Red.value  # Red for defender
+FIGHTER_COLOR = Colors.Green.value  # Green for challenger
+WAITING_COLOR = Colors.White20.value  # Dim gray for waiting
 
 
 class FightState(Enum):
@@ -77,8 +78,24 @@ class FightClubGame(BaseGameMode):
         audio_client=None,
         game_id: str = "",
         initial_players: list | None = None,
+        sensitivity: int = 2,
+        invincibility_seconds: float = DEFAULT_INVINCIBILITY_DURATION,
+        min_rounds: int = DEFAULT_MIN_ROUNDS,
     ):
-        """Initialize Fight Club game."""
+        """
+        Initialize Fight Club game.
+
+        Args:
+            controller_manager_client: gRPC stub for ControllerManager service
+            settings_client: gRPC stub for Settings service
+            event_publisher: Callback function to publish game events
+            audio_client: gRPC stub for Audio service
+            game_id: Unique identifier for this game instance
+            initial_players: Optional list of Player protobuf messages
+            sensitivity: Sensitivity level 0-4 (passed from StartGameConfig)
+            invincibility_seconds: Seconds of invincibility at round start
+            min_rounds: Minimum rounds before game can end
+        """
         super().__init__(
             controller_manager_client=controller_manager_client,
             settings_client=settings_client,
@@ -86,6 +103,7 @@ class FightClubGame(BaseGameMode):
             audio_client=audio_client,
             game_id=game_id,
             initial_players=initial_players,
+            sensitivity=sensitivity,
         )
 
         self.queue: list[str] = []  # Queue of player serials
@@ -97,6 +115,9 @@ class FightClubGame(BaseGameMode):
         self.game_over: bool = False
         self.face_off_mode: bool = False
         self.game_span: trace.Span | None = None
+        # Configurable timing - now passed via config
+        self._invincibility_duration: float = invincibility_seconds
+        self._min_rounds: int = min_rounds
 
     def get_game_name(self) -> str:
         """Return game mode identifier."""
@@ -175,7 +196,7 @@ class FightClubGame(BaseGameMode):
         for serial in self.players:
             if self.gameplay_stream:
                 color_cmd = controller_manager_pb2.GameplayStreamControl(
-                    color_update=controller_manager_pb2.ColorUpdate(
+                    base_color=controller_manager_pb2.ControllerColorConfig(
                         serial=serial,
                         color=controller_manager_pb2.RGB(r=WAITING_COLOR[0], g=WAITING_COLOR[1], b=WAITING_COLOR[2]),
                     )
@@ -219,12 +240,12 @@ class FightClubGame(BaseGameMode):
         defender.state = FightState.DEFENDER
         defender.color = DEFENDER_COLOR
         defender.alive = True
-        defender.invincible_until = time.time() + INVINCIBILITY_DURATION
+        defender.invincible_until = time.time() + self._invincibility_duration
 
         fighter.state = FightState.FIGHTER
         fighter.color = FIGHTER_COLOR
         fighter.alive = True
-        fighter.invincible_until = time.time() + INVINCIBILITY_DURATION
+        fighter.invincible_until = time.time() + self._invincibility_duration
 
         # Set round end time
         if not self.face_off_mode:
@@ -324,7 +345,7 @@ class FightClubGame(BaseGameMode):
 
             if self.gameplay_stream:
                 color_cmd = controller_manager_pb2.GameplayStreamControl(
-                    color_update=controller_manager_pb2.ColorUpdate(
+                    base_color=controller_manager_pb2.ControllerColorConfig(
                         serial=serial,
                         color=controller_manager_pb2.RGB(r=color[0], g=color[1], b=color[2]),
                     )
@@ -341,7 +362,7 @@ class FightClubGame(BaseGameMode):
 
         Game ends after minimum rounds if there's a clear winner.
         """
-        if self.round_number < MIN_ROUNDS:
+        if self.round_number < self._min_rounds:
             return False
 
         # Check if anyone has a clear lead
@@ -471,25 +492,14 @@ class FightClubGame(BaseGameMode):
         logger.info(f"Winner: {winner_serial} with score {winner_score}")
 
         # Show rainbow effect on winner
-        if winner_serial:
-            if self.gameplay_stream:
-                effect_cmd = controller_manager_pb2.GameplayStreamControl(
-                    game_effect=controller_manager_pb2.GameEffectCommand(
-                        serial=winner_serial,
-                        effect=controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW,
-                    )
+        if winner_serial and self.gameplay_stream:
+            effect_cmd = controller_manager_pb2.GameplayStreamControl(
+                game_effect=controller_manager_pb2.GameEffectCommand(
+                    serial=winner_serial,
+                    effect=controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW,
                 )
-                await self.gameplay_stream.write(effect_cmd)
-            else:
-                await self.controller_client.PlayControllerEffect(
-                    controller_manager_pb2.PlayControllerEffectRequest(
-                        serial=winner_serial,
-                        effect=controller_manager_pb2.EFFECT_RAINBOW,
-                        color=controller_manager_pb2.RGB(r=255, g=255, b=255),
-                        duration_ms=3000,
-                        speed=1,  # Slow rainbow (1 cycle/second)
-                    )
-                )
+            )
+            await self.gameplay_stream.write(effect_cmd)
 
         # Play victory sound (audio service handles voice selection)
         await self._play_sound(Sound.VOX_CONGRATULATIONS, priority=2)
@@ -549,9 +559,16 @@ class FightClubGame(BaseGameMode):
 
                 # Initialization phase
                 with tracer.start_as_current_span("initialization_phase"):
-                    await self._load_settings()
+                    # invincibility and min_rounds are now set in __init__ from StartGameConfig
+                    logger.info(
+                        f"Fight Club config: invincibility={self._invincibility_duration}s, "
+                        f"min_rounds={self._min_rounds}"
+                    )
                     await self._initialize_players()
                     self._create_player_spans()
+
+                # Start gameplay stream before intro (needed for LED effects)
+                await self._start_gameplay_stream()
 
                 # Additional phases (intro)
                 for phase in self._get_additional_phases():
@@ -574,13 +591,17 @@ class FightClubGame(BaseGameMode):
                 self.state = GameState.RUNNING
                 self.start_time = time.time()
 
+                # Emit game_started event (required for integration tests)
+                from lib.types import GameEvent
+
+                self.event_publisher(
+                    GameEvent.GAME_STARTED, {"game_id": self.game_id, "player_count": len(self.players)}
+                )
+
                 # Start music
                 await self._start_game_music()
 
-                # Start gameplay stream
-                await self._start_gameplay_stream()
-
-                # Start first round
+                # Start first round (gameplay stream already started before intro)
                 await self._start_round()
 
                 # Game loop - process controller states
@@ -630,7 +651,7 @@ class FightClubGame(BaseGameMode):
         accel_mag = (state.accel_x**2 + state.accel_y**2 + state.accel_z**2) ** 0.5
 
         # Apply EMA filter
-        if fc_player.smoothed_accel == 0.0:
+        if fc_player.smoothed_accel < 1e-9:  # Check for uninitialized (avoids float equality)
             fc_player.smoothed_accel = accel_mag
         else:
             fc_player.smoothed_accel = (fc_player.smoothed_accel * 4 + accel_mag) / 5

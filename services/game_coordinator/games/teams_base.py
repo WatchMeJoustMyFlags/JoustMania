@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
+from lib.colors import Colors
 from lib.types import GameEvent, Sound
 from services.game_coordinator.games.base import BaseGameMode
 
@@ -24,16 +25,16 @@ tracer = trace.get_tracer(__name__)
 logger = logging.getLogger(__name__)
 
 
-# Team colors (from utils/colors.py - first 8 colors)
+# Team colors (from lib/colors.py - first 8 colors)
 TEAM_COLORS = [
-    {"name": "Pink", "rgb": (255, 108, 108)},
-    {"name": "Magenta", "rgb": (255, 0, 192)},
-    {"name": "Orange", "rgb": (255, 64, 0)},
-    {"name": "Yellow", "rgb": (255, 255, 0)},
-    {"name": "Green", "rgb": (0, 255, 0)},
-    {"name": "Turquoise", "rgb": (0, 255, 255)},
-    {"name": "Blue", "rgb": (0, 0, 255)},
-    {"name": "Purple", "rgb": (96, 0, 255)},
+    {"name": "Pink", "rgb": Colors.Pink.value},
+    {"name": "Magenta", "rgb": Colors.Magenta.value},
+    {"name": "Orange", "rgb": Colors.Orange.value},
+    {"name": "Yellow", "rgb": Colors.Yellow.value},
+    {"name": "Green", "rgb": Colors.Green.value},
+    {"name": "Turquoise", "rgb": Colors.Turquoise.value},
+    {"name": "Blue", "rgb": Colors.Blue.value},
+    {"name": "Purple", "rgb": Colors.Purple.value},
 ]
 
 # Map team names to victory sounds
@@ -83,6 +84,8 @@ class TeamsGameBase(BaseGameMode):
         game_id: str = "",
         num_teams: int = 2,
         initial_players: list | None = None,
+        sensitivity: int = 2,
+        random_assignment: bool = True,
     ):
         """
         Initialize team-based game mode.
@@ -95,6 +98,8 @@ class TeamsGameBase(BaseGameMode):
             game_id: Unique identifier for this game instance
             num_teams: Number of teams (default 2)
             initial_players: Optional list of Player protobuf messages from StartGame RPC
+            sensitivity: Sensitivity level 0-4 (passed from StartGameConfig)
+            random_assignment: Whether to randomize player order before round-robin assignment
         """
         super().__init__(
             controller_manager_client=controller_manager_client,
@@ -103,7 +108,10 @@ class TeamsGameBase(BaseGameMode):
             audio_client=audio_client,
             game_id=game_id,
             initial_players=initial_players,
+            sensitivity=sensitivity,
         )
+        # Override random_teams from base class with passed parameter
+        self.random_teams = random_assignment
 
         self.num_teams = num_teams
         self.teams: dict[int, Team] = {}
@@ -191,21 +199,22 @@ class TeamsGameBase(BaseGameMode):
                 team_color = self.team_colors[player.team]["rgb"]
                 player.color = team_color  # Phase XX: Store color for stream init
 
-                if pulse_effect:
-                    # Use pulse effect for team announcement
-                    await self.controller_client.PlayControllerEffect(
-                        controller_manager_pb2.PlayControllerEffectRequest(
+                if pulse_effect and self.gameplay_stream:
+                    # Use pulse effect for team announcement via stream
+                    pulse_cmd = controller_manager_pb2.GameplayStreamControl(
+                        game_effect=controller_manager_pb2.GameEffectCommand(
                             serial=serial,
-                            effect=controller_manager_pb2.ControllerEffect.EFFECT_PULSE,
+                            effect=controller_manager_pb2.GAME_EFFECT_PULSE,
                             color=controller_manager_pb2.RGB(r=team_color[0], g=team_color[1], b=team_color[2]),
                             duration_ms=duration_ms,
                             speed=3,  # Medium pulse speed
                         )
                     )
+                    await self.gameplay_stream.write(pulse_cmd)
                     logger.debug(
                         f"Set {serial} to team {player.team} ({self.team_colors[player.team]['name']}) with pulse"
                     )
-                else:
+                elif self.gameplay_stream:
                     # Set persistent team color via stream
                     base_color_cmd = controller_manager_pb2.GameplayStreamControl(
                         base_color=controller_manager_pb2.ControllerColorConfig(
@@ -249,12 +258,12 @@ class TeamsGameBase(BaseGameMode):
             },
             {
                 "name": "white_flash",
-                "color": (255, 255, 255),
+                "color": Colors.White.value,
                 "duration": 1.0,
             },
             {
                 "name": "green_go",
-                "color": (0, 255, 0),
+                "color": Colors.Green.value,
                 "duration": 1.0,
             },
         ]
@@ -382,6 +391,7 @@ class TeamsGameBase(BaseGameMode):
             )
             player.span.set_status(Status(StatusCode.OK))
             player.span.end()
+            player.span = None  # Mark as closed to prevent double-ending
             logger.debug(f"Ended lifecycle span for player {serial}")
 
         # If team eliminated, end team span
@@ -392,6 +402,7 @@ class TeamsGameBase(BaseGameMode):
             )
             team.span.set_status(Status(StatusCode.OK))
             team.span.end()
+            team.span = None  # Mark as closed to prevent double-ending
             logger.info(f"Team {team.name} eliminated! Ended team lifecycle span")
 
     async def _end_game_impl(self):
@@ -410,9 +421,9 @@ class TeamsGameBase(BaseGameMode):
             from proto import controller_manager_pb2
 
             # Play rainbow effect on all winning team members
-            for serial, player in self.players.items():
-                if player.alive and player.team == winning_team_num:
-                    if self.gameplay_stream:
+            if self.gameplay_stream:
+                for serial, player in self.players.items():
+                    if player.alive and player.team == winning_team_num:
                         effect_cmd = controller_manager_pb2.GameplayStreamControl(
                             game_effect=controller_manager_pb2.GameEffectCommand(
                                 serial=serial,
@@ -420,16 +431,6 @@ class TeamsGameBase(BaseGameMode):
                             )
                         )
                         await self.gameplay_stream.write(effect_cmd)
-                    else:
-                        # Fallback to RPC
-                        rainbow_request = controller_manager_pb2.PlayControllerEffectRequest(
-                            serial=serial,
-                            effect=controller_manager_pb2.EFFECT_RAINBOW,
-                            color=controller_manager_pb2.RGB(r=255, g=255, b=255),
-                            duration_ms=3000,
-                            speed=1,  # Slow rainbow (1 cycle/second)
-                        )
-                        await self.controller_client.PlayControllerEffect(rainbow_request)
 
             # Play team victory sound (Phase 29)
             winning_team = self.teams.get(winning_team_num)
@@ -437,12 +438,8 @@ class TeamsGameBase(BaseGameMode):
                 sound = TEAM_WIN_SOUNDS.get(winning_team.name, Sound.VOX_CONGRATULATIONS)
                 await self._play_sound(sound, priority=2)
 
-        # Show winner for a bit (interruptible by force_end)
-        for _ in range(20):  # 2 seconds in 0.1s increments
-            if not self.running:
-                logger.info("End game interrupted by force_end")
-                break
-            await asyncio.sleep(0.1)
+        # Wait for rainbow effect to complete
+        await self._wait_for_rainbow_effect()
 
         # End spans for surviving players AFTER the celebration
         # This ensures winners' spans are longer than losers'

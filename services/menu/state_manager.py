@@ -3,6 +3,8 @@
 import logging
 from collections.abc import Callable, Coroutine
 
+from lib.controller_constants import ButtonTrackingKey
+from lib.types import Games
 from services.menu import metrics
 from services.menu.handlers.base import ControllerHandler, ControllerState
 from services.menu.utils import AudioHelper, LedController, SettingsHelper
@@ -40,10 +42,9 @@ class StateManager:
         self.settings = settings
         self.publish_event = publish_event
 
-        # Controller state tracking
+        # Controller state tracking - single source of truth
+        # Keys = connected controllers, values = their current state
         self.controller_states: dict[str, ControllerState] = {}
-        self.connected_controllers: set[str] = set()
-        self.ready_controllers: set[str] = set()
 
         # Battery level tracking (0-5 scale, updated from button events)
         self.battery_levels: dict[str, int] = {}
@@ -55,7 +56,29 @@ class StateManager:
         self._handlers: dict[ControllerState, ControllerHandler] = {}
 
         # Current game mode (for LED colors)
-        self.current_game_mode: str = "JoustFFA"
+        self.current_game_mode: Games = Games.JoustFFA
+
+        # Game settings (configured via admin mode)
+        self.game_settings: dict[str, int | float | bool] = {
+            "sensitivity": 2,  # 0-4, default MEDIUM
+            "num_teams": 2,  # For team-based modes (Teams, RandomTeams, Traitor)
+            "random_assignment": True,  # For Teams mode
+            "nonstop_time_limit": 0,  # 0 = unlimited
+            "invincibility": 4.0,  # Seconds of invincibility (Tournament, FightClub)
+            "fight_club_min_rounds": 10,
+            "werewolf_reveal_time": 35.0,
+            "force_all_start": False,  # Force start with all connected controllers
+        }
+
+    @property
+    def connected_controllers(self) -> set[str]:
+        """All connected controller serials (computed from controller_states)."""
+        return set(self.controller_states.keys())
+
+    @property
+    def ready_controllers(self) -> set[str]:
+        """Controller serials in READY state (computed from controller_states)."""
+        return {serial for serial, state in self.controller_states.items() if state == ControllerState.READY}
 
     def register_handler(self, handler: ControllerHandler) -> None:
         """
@@ -122,8 +145,14 @@ class StateManager:
             }
         self.button_states[serial][button] = is_press
 
-        # Handle release events - no action needed for handlers
+        # Handle release events - forward trigger releases in admin mode
         if not is_press:
+            if button == ButtonTrackingKey.TRIGGER:
+                state = self.get_controller_state(serial)
+                if state == ControllerState.ADMIN:
+                    handler = self._handlers.get(state)
+                    if handler and hasattr(handler, "handle_trigger_release"):
+                        await handler.handle_trigger_release(serial)
             return
 
         # Dispatch to appropriate handler
@@ -158,15 +187,12 @@ class StateManager:
         # Update state
         self.controller_states[serial] = new_state
 
-        # Update ready set and emit metrics
+        # Emit metrics for ready state changes
         if new_state == ControllerState.READY:
-            self.ready_controllers.add(serial)
             metrics.player_ready.labels(serial=serial).set(1)
-        else:
-            self.ready_controllers.discard(serial)
+        elif old_state == ControllerState.READY:
             # Only set to 0 if transitioning FROM ready
-            if old_state == ControllerState.READY:
-                metrics.player_ready.labels(serial=serial).set(0)
+            metrics.player_ready.labels(serial=serial).set(0)
 
         # Call enter handler
         new_handler = self._handlers.get(new_state)
@@ -182,7 +208,6 @@ class StateManager:
         Args:
             serial: Controller serial number
         """
-        self.connected_controllers.add(serial)
         self.controller_states[serial] = ControllerState.CONNECTED
 
         # Call enter handler for CONNECTED state
@@ -206,12 +231,10 @@ class StateManager:
             await handler.on_exit(serial)
 
         # Clear ready metric if player was ready
-        if serial in self.ready_controllers:
+        if state == ControllerState.READY:
             metrics.player_ready.labels(serial=serial).set(0)
 
-        # Clean up state
-        self.connected_controllers.discard(serial)
-        self.ready_controllers.discard(serial)
+        # Clean up state (removing from controller_states also removes from computed properties)
         self.controller_states.pop(serial, None)
         self.button_states.pop(serial, None)
         self.battery_levels.pop(serial, None)
@@ -240,12 +263,12 @@ class StateManager:
         """Check if all connected controllers are ready (minimum 2)."""
         return len(self.ready_controllers) >= 2 and len(self.ready_controllers) == len(self.connected_controllers)
 
-    def set_game_mode(self, game_mode: str) -> None:
+    def set_game_mode(self, game_mode: Games) -> None:
         """
         Set the current game mode.
 
         Args:
-            game_mode: Game mode name
+            game_mode: Games enum value
         """
         self.current_game_mode = game_mode
 
@@ -262,14 +285,17 @@ class StateManager:
         # Remember which controllers were connected before clearing
         serials = list(self.controller_states.keys())
 
-        # Clear all state completely
+        # Clear all state (controller_states is the single source of truth)
         self.controller_states.clear()
-        self.connected_controllers.clear()
-        self.ready_controllers.clear()
         self.button_states.clear()
 
         # Clear all player ready metrics
-        metrics.player_ready._metrics.clear()
+        metrics.player_ready.clear()
+
+        # Reset ready handler's game start flag (Issue #230)
+        ready_handler = self._handlers.get(ControllerState.READY)
+        if ready_handler and hasattr(ready_handler, "reset_game_start_flag"):
+            ready_handler.reset_game_start_flag()
 
         # Re-register each controller as CONNECTED (triggers on_enter → sets colors)
         for serial in serials:

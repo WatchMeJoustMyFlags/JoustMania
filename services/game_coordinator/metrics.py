@@ -35,20 +35,6 @@ player_kills_total = Counter("game_player_kills_total", "Total player kills", ["
 
 player_respawns_total = Counter("game_player_respawns_total", "Total player respawns (Nonstop Joust only)", ["serial"])
 
-# Game performance metrics
-frame_time_seconds = Histogram(
-    "game_frame_time_seconds",
-    "Game loop frame time",
-    buckets=[0.010, 0.016, 0.020, 0.030, 0.050, 0.100, 0.200, 0.500],
-)
-
-frame_rate_hz = Gauge("game_frame_rate_hz", "Current game loop frame rate")
-
-game_loop_lag_seconds = Histogram(
-    "game_loop_lag_seconds",
-    "Time between expected and actual frame",
-    buckets=[0.001, 0.005, 0.010, 0.020, 0.050, 0.100, 0.200],
-)
 
 # Audio playback metrics (Phase 29)
 audio_sounds_played_total = Counter(
@@ -111,11 +97,7 @@ effective_death_threshold = Gauge(
     "Current effective death threshold after LERP (g-force)",
 )
 
-# Runtime configuration metrics (Phase 43)
-configured_update_frequency_hz = Gauge(
-    "game_configured_update_frequency_hz", "Configured update frequency from runtime config"
-)
-
+# Runtime metrics (Phase 43)
 actual_update_frequency_hz = Gauge(
     "game_actual_update_frequency_hz", "Actual measured update frequency during gameplay"
 )
@@ -123,16 +105,41 @@ actual_update_frequency_hz = Gauge(
 config_changes_total = Counter(
     "game_config_changes_total",
     "Total number of configuration changes",
-    ["parameter"],  # 'update_frequency_hz', 'sensitivity_mode', etc.
+    ["parameter"],  # 'sensitivity_mode', 'update_frequency_hz', etc.
 )
 
-game_loop_iterations_total = Counter("game_loop_iterations_total", "Total number of game loop iterations", ["mode"])
+# Feature flag metrics (Phase 44)
+flag_evaluations_total = Counter(
+    "game_flag_evaluations_total",
+    "Total number of feature flag evaluations",
+    ["flag_key"],  # 'update_frequency_hz', 'sensitivity_mode', etc.
+)
 
-game_loop_latency_ms = Histogram(
-    "game_loop_latency_ms",
-    "Game loop iteration latency in milliseconds",
+flag_configuration_changes_total = Counter(
+    "game_flag_configuration_changes_total",
+    "Total number of PROVIDER_CONFIGURATION_CHANGED events received",
+)
+
+current_update_frequency_hz = Gauge(
+    "game_current_update_frequency_hz",
+    "Current configured update frequency from feature flags (Hz)",
+)
+
+# Frame consistency metrics (Issue #183)
+game_loop_frame_consistency_percent = Gauge(
+    "game_loop_frame_consistency_percent",
+    "Percentage of frames within target timing (within 50% of target frame time)",
+)
+
+game_loop_jitter_ms = Gauge(
+    "game_loop_jitter_ms",
+    "Standard deviation of frame times in milliseconds",
+)
+
+game_loop_frames_dropped_total = Counter(
+    "game_loop_frames_dropped_total",
+    "Total number of frames that exceeded 2x the target frame time",
     ["mode"],
-    buckets=[10, 20, 30, 40, 50, 75, 100, 150, 200, 300, 500],
 )
 
 # Adaptive controller filtering metrics (Phase 45)

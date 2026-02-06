@@ -27,11 +27,11 @@ FROM ${BUILDER_IMAGE} AS python-builder
 
 # Install additional bluetooth build dependencies (not in common builder)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config \
     libbluetooth-dev \
-    libusb-dev \
     libdbus-1-dev \
     libglib2.0-dev \
+    libusb-dev \
+    pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -44,12 +44,17 @@ COPY proto/pyproject.toml /app/proto/
 COPY proto/*.py /app/proto/
 RUN python -m compileall -q proto/
 
+# Copy lib package (shared utilities)
+COPY lib/pyproject.toml /app/lib/
+COPY lib/*.py /app/lib/
+RUN python -m compileall -q lib/
+
 # Copy service dependencies
 COPY services/controller_manager/pyproject.toml /app/services/controller_manager/
 
-# Install service-specific dependencies
-WORKDIR /app/services/controller_manager
-RUN uv pip install --system -e .
+# Install workspace packages and service dependencies
+WORKDIR /app
+RUN uv pip install --system -e proto/ -e lib/ -e services/controller_manager/
 
 # =============================================================================
 # Stage 3: Runtime image
@@ -58,11 +63,11 @@ FROM python:3.11-slim
 
 # Install runtime dependencies (bluetooth for PS Move controllers)
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    bluez \
     libbluetooth3 \
-    libusb-1.0-0 \
     libdbus-1-3 \
     libglib2.0-0 \
-    bluez \
+    libusb-1.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -111,7 +116,7 @@ EXPOSE 8000
 # Run with: docker run --privileged or docker-compose privileged: true
 
 # Health check using grpc-health-probe
-HEALTHCHECK --interval=5s --timeout=5s --start-period=3s --retries=3 \
+HEALTHCHECK --interval=2s --timeout=2s --start-period=1s --retries=3 \
     CMD ["/bin/grpc_health_probe", "-addr=:50052"]
 
 # Run the server

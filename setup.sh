@@ -29,13 +29,13 @@ read -p "Select option [1-3]: " -n 1 -r
 echo
 echo ""
 
-case $REPLY in
+case "$REPLY" in
     1)
         echo "=========================================="
         echo "Runtime Setup"
         echo "=========================================="
         bash "$SCRIPT_DIR/scripts/setup/setup_runtime.sh" 2>&1 | tee setup_runtime.log
-        if [ $? -ne 0 ]; then
+        if [[ $? -ne 0 ]]; then
             echo "ERROR: Runtime setup failed. Check setup_runtime.log for details."
             exit 1
         fi
@@ -44,8 +44,8 @@ case $REPLY in
         if ! command -v psmove &> /dev/null; then
             echo ""
             echo "Note: psmove CLI not found. To enable automatic pairing,"
-            echo "you'll need to build psmoveapi:"
-            echo "  ./scripts/setup/build_psmoveapi.sh"
+            echo "you'll need to install psmoveapi:"
+            echo "  ./scripts/setup/install_psmoveapi.sh"
             echo ""
         fi
         ;;
@@ -57,7 +57,7 @@ case $REPLY in
         echo ""
         echo "This will:"
         echo "  1. Install system dependencies and configure host"
-        echo "  2. Build PS Move API from source (~10 min)"
+        echo "  2. Install PS Move API (extracts prebuilt binaries)"
         echo ""
         echo "This process requires a reboot when complete."
         echo ""
@@ -74,19 +74,19 @@ case $REPLY in
         echo "Step 1/2: Host System Setup"
         echo "=========================================="
         bash "$SCRIPT_DIR/scripts/setup/setup_host.sh" 2>&1 | tee setup_host.log
-        if [ $? -ne 0 ]; then
+        if [[ $? -ne 0 ]]; then
             echo "ERROR: Host setup failed. Check setup_host.log for details."
             exit 1
         fi
 
-        # Run PS Move API build
+        # Run PS Move API install
         echo ""
         echo "=========================================="
-        echo "Step 2/2: PS Move API Build"
+        echo "Step 2/2: PS Move API Install"
         echo "=========================================="
-        bash "$SCRIPT_DIR/scripts/setup/build_psmoveapi.sh" 2>&1 | tee setup_psmoveapi.log
-        if [ $? -ne 0 ]; then
-            echo "ERROR: PS Move API build failed. Check setup_psmoveapi.log for details."
+        bash "$SCRIPT_DIR/scripts/setup/install_psmoveapi.sh" 2>&1 | tee setup_psmoveapi.log
+        if [[ $? -ne 0 ]]; then
+            echo "ERROR: PS Move API install failed. Check setup_psmoveapi.log for details."
             exit 1
         fi
 

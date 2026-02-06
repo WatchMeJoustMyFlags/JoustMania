@@ -17,6 +17,7 @@ import contextlib
 import logging
 import math
 import random
+import statistics
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -27,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 from opentelemetry import context as otel_context
 from opentelemetry import trace
 
+from lib.telemetry import inject_trace_context
 from lib.types import GameEvent, Sensitivity, Sound
 from services.game_coordinator import metrics
 from services.game_coordinator.runtime_config import get_config_manager
@@ -46,6 +48,9 @@ COUNTDOWN_DURATION = 3  # seconds (legacy constant, use runtime config instead)
 SLOW_MUSIC_SPEED = 1.0  # Normal playback
 FAST_MUSIC_SPEED = 1.3  # 30% faster
 MUSIC_TRANSITION_DURATION = 1.5  # Seconds to smoothly transition
+
+# Log messages (S1192 - avoid duplicate strings)
+_MSG_COUNTDOWN_INTERRUPTED = "%s"
 
 # Threshold Scaling: LERP approach (matches original JoustMania)
 # ===============================================================
@@ -92,12 +97,11 @@ FAST_MAX = [1.6, 1.8, 2.8, 3.2, 3.5]  # Death thresholds when music is fast
 # This is purely visual feedback, NOT protection (player can still die during warning)
 WARNING_DURATION = 0.5
 
-# Grace periods - no death or warning during these times (matches original JoustMania)
-GAME_START_GRACE_PERIOD = 2.0  # seconds of invincibility at game start
+# Grace period for respawn modes (no death or warning during this time)
 DEATH_GRACE_PERIOD = 0.5  # seconds of invincibility after death (for respawn modes)
 
 # Log at import time to verify correct version is deployed
-logger.info(f"base.py loaded: WARNING_DURATION={WARNING_DURATION}s, GAME_START_GRACE={GAME_START_GRACE_PERIOD}s")
+logger.info(f"base.py loaded: WARNING_DURATION={WARNING_DURATION}s")
 
 
 @dataclass
@@ -114,7 +118,7 @@ class Player:
     smoothed_accel: float = 0.0
     span: trace.Span | None = None  # OpenTelemetry span for this player's lifecycle
     # Grace period: no death or warning checks until this timestamp
-    # Set at game start (2s) and after death (0.5s) - matches original JoustMania
+    # Used for respawn modes (e.g., after team swap or zombie respawn)
     grace_until: float = 0.0
     # Warning state: when > 0, player is in warning feedback (flash + rumble)
     # This is purely visual - player CAN still die during warning (matches original)
@@ -173,6 +177,7 @@ class BaseGameMode(ABC):
         audio_client: Any | None = None,  # audio_pb2_grpc.AudioServiceStub
         game_id: str = "",
         initial_players: list | None = None,  # List of Player protobuf messages
+        sensitivity: int = 2,  # 0-4, passed from StartGameConfig (default MEDIUM)
     ) -> None:
         """
         Initialize base game mode (Phase 33 - added type hints).
@@ -184,6 +189,7 @@ class BaseGameMode(ABC):
             audio_client: gRPC stub for Audio service (Phase 29)
             initial_players: Optional list of Player protobuf messages from StartGame RPC
             game_id: Unique identifier for this game instance
+            sensitivity: Sensitivity level 0-4 (passed from StartGameConfig)
         """
         self.controller_client = controller_manager_client
         self.settings_client = settings_client
@@ -204,10 +210,13 @@ class BaseGameMode(ABC):
         self.running = False
         self.gameplay_stream = None  # Phase 46: Bidirectional stream for feedback commands
 
-        # Settings (will be fetched from Settings service)
-        self.sensitivity = Sensitivity.MEDIUM
-        self.random_teams = True  # Randomize team assignments (vs sequential)
-        self.settings = {}  # Store raw settings dict
+        # Settings - sensitivity is now passed via StartGameConfig
+        # Validate and convert to Sensitivity enum
+        if 0 <= sensitivity <= 4:
+            self.sensitivity = Sensitivity(sensitivity)
+        else:
+            logger.warning(f"Sensitivity {sensitivity} out of range, using MEDIUM")
+            self.sensitivity = Sensitivity.MEDIUM
 
         # Phase 70: Music tempo control state
         self.music_track_id = None
@@ -322,39 +331,6 @@ class BaseGameMode(ABC):
     # Concrete Methods - Shared implementation used by all subclasses
     # ========================================================================
 
-    async def _load_settings(self):
-        """Fetch game settings from Settings service."""
-        try:
-            from proto import settings_pb2
-
-            response = await self.settings_client.GetSettings(settings_pb2.GetSettingsRequest())
-
-            if response.success:
-                self.settings = dict(response.settings)
-                logger.info(f"Loaded settings: {len(self.settings)} keys")
-
-                # Parse sensitivity (integer 0-4)
-                sens_value = int(self.settings.get("sensitivity", "2"))
-                if 0 <= sens_value <= 4:
-                    self.sensitivity = Sensitivity(sens_value)
-                else:
-                    logger.warning(f"Sensitivity {sens_value} out of range, using MEDIUM")
-                    self.sensitivity = Sensitivity.MEDIUM
-                logger.info(f"Sensitivity: {self.sensitivity.name} ({self.sensitivity.value})")
-
-                # Emit sensitivity metric for dashboard (Phase 80)
-                metrics.game_sensitivity.set(self.sensitivity.value)
-
-                # Parse random_teams setting (for team-based games)
-                self.random_teams = self.settings.get("random_teams", "true").lower() == "true"
-
-            else:
-                logger.warning(f"Failed to load settings: {response.error}")
-
-        except Exception as e:
-            logger.error(f"Error loading settings: {e}", exc_info=True)
-            # Use defaults
-
     async def _initialize_players(self):
         """Initialize players from StartGame RPC payload."""
         try:
@@ -402,7 +378,7 @@ class BaseGameMode(ABC):
         self.event_publisher(GameEvent.COUNTDOWN_START, {"duration": countdown_seconds})
 
         if not self.running:
-            logger.info("Countdown interrupted by force_end")
+            logger.info(_MSG_COUNTDOWN_INTERRUPTED)
             return
 
         # Skip countdown entirely if duration is 0 (for fast tests)
@@ -411,26 +387,33 @@ class BaseGameMode(ABC):
             self.event_publisher(GameEvent.COUNTDOWN_END, {})
             return
 
+        # Get phase duration from config (shared with controller_manager for sync)
+        phase_duration_ms = config.countdown_phase_duration_ms
+
         # Send unified countdown effect via gameplay stream (broadcast to all controllers)
-        # Controller manager handles the full Red(750ms)→Yellow(750ms)→Green(750ms) sequence
+        # Controller manager handles the full Red→Yellow→Green sequence using the provided duration
         if self.gameplay_stream:
+            trace_parent, trace_state = inject_trace_context()
             effect_cmd = controller_manager_pb2.GameplayStreamControl(
                 game_effect=controller_manager_pb2.GameEffectCommand(
                     serial="",  # Empty = all controllers
                     effect=controller_manager_pb2.GAME_EFFECT_COUNTDOWN,
+                    duration_ms=phase_duration_ms,  # Pass phase duration for LED sync
+                    trace_parent=trace_parent,
+                    trace_state=trace_state,
                 )
             )
             await self.gameplay_stream.write(effect_cmd)
 
         # Play countdown beeps in sync with the visual countdown
         # Default: Red (3), Yellow (2), Green (1 - GO!)
-        # Each beep takes 0.75s, so countdown_seconds=1 means 1 beep
+        # Use same phase duration as LEDs to keep audio/visual synchronized
         beep_count = min(countdown_seconds, 3)  # Max 3 beeps even for longer countdowns
-        beep_interval_ms = (countdown_seconds * 1000) // max(beep_count, 1)
+        beep_interval_ms = phase_duration_ms  # Match LED phase duration
 
         for _ in range(beep_count):
             if not self.running:
-                logger.info("Countdown interrupted by force_end")
+                logger.info(_MSG_COUNTDOWN_INTERRUPTED)
                 return
 
             # Play countdown beep (Phase 29)
@@ -440,7 +423,7 @@ class BaseGameMode(ABC):
             wait_iterations = beep_interval_ms // 50  # 50ms per iteration
             for _ in range(wait_iterations):
                 if not self.running:
-                    logger.info("Countdown interrupted by force_end")
+                    logger.info(_MSG_COUNTDOWN_INTERRUPTED)
                     return
                 await asyncio.sleep(0.05)
 
@@ -499,14 +482,11 @@ class BaseGameMode(ABC):
             # Pass None to use current active span context (we're inside gameplay_phase)
             self._create_player_spans(None)
 
-            # Get runtime config (Phase 43: Dynamic Hz adjustment)
+            # Get runtime config for frame timing calculations
             config = get_config_manager().get_config()
             update_frequency_hz = config.update_frequency_hz
 
-            # Emit configured Hz metric (Phase 43)
-            metrics.configured_update_frequency_hz.set(update_frequency_hz)
-
-            logger.info(f"Starting game loop at {update_frequency_hz}Hz (stream already started)")
+            logger.info("Starting game loop (stream rate controlled by controller-manager)")
 
             # Stream was already created in _start_gameplay_stream() before countdown
             # EMA filter was primed during countdown by _warmup_ema()
@@ -520,20 +500,17 @@ class BaseGameMode(ABC):
             loop_iterations = 0
             last_iteration_time = loop_start_time
 
+            # Track frame consistency (Issue #183)
+            target_frame_time_ms = 1000.0 / update_frequency_hz
+            recent_frame_times: list[float] = []  # Store recent frame times for jitter calculation
+            frames_on_target = 0  # Frames within 50% of target time
+
             # Stream gameplay data and process game logic
             logger.info("Starting gameplay data stream loop, waiting for first update...")
             async for gameplay_update in self.gameplay_stream:
                 if loop_iterations == 0:
                     logger.info("✅ Received first gameplay update from stream!")
-                    # Set start_time here, not before game_loop, so grace period is accurate
                     self.start_time = time.time()
-
-                    # Set grace period for all players (2 seconds at game start)
-                    # Matches original JoustMania: no_rumble = time.time() + 2
-                    grace_end = self.start_time + GAME_START_GRACE_PERIOD
-                    for player in self.players.values():
-                        player.grace_until = grace_end
-                    logger.info(f"Set {GAME_START_GRACE_PERIOD}s grace period for {len(self.players)} players")
 
                 if not self.running:
                     logger.info("Game running=False, breaking loop")
@@ -582,38 +559,50 @@ class BaseGameMode(ABC):
                 # Note: Win condition is now checked after EACH controller (above)
                 # to prevent simultaneous deaths - the last player standing can never die
 
-                # Check if config changed (Phase 43: Live Hz adjustment)
-                current_hz = get_config_manager().get_config().update_frequency_hz
-                if current_hz != update_frequency_hz:
-                    logger.info(
-                        f"Update frequency changed: {update_frequency_hz}Hz → {current_hz}Hz (will apply on next game)"
-                    )
-
-                # Emit metrics (Phase 43)
+                # Track loop timing for metrics
                 loop_iterations += 1
                 iteration_end = time.time()
                 iteration_latency_ms = (iteration_end - last_iteration_time) * 1000
 
-                metrics.game_loop_iterations_total.labels(mode=self.get_game_name()).inc()
-                metrics.game_loop_latency_ms.labels(mode=self.get_game_name()).observe(iteration_latency_ms)
+                # Track frame consistency (Issue #183)
+                recent_frame_times.append(iteration_latency_ms)
+                if len(recent_frame_times) > 60:  # Keep last 60 frames (1 second at 60Hz)
+                    recent_frame_times.pop(0)
 
-                # Calculate actual Hz every 10 iterations
+                # Check if frame is within target (50% tolerance)
+                if iteration_latency_ms <= target_frame_time_ms * 1.5:
+                    frames_on_target += 1
+
+                # Check for dropped frames (>2x target time)
+                if iteration_latency_ms > target_frame_time_ms * 2:
+                    metrics.game_loop_frames_dropped_total.labels(mode=self.get_game_name()).inc()
+
+                # Calculate actual Hz and frame consistency every 10 iterations
                 if loop_iterations % 10 == 0:
                     elapsed = time.time() - loop_start_time
                     actual_hz = loop_iterations / elapsed if elapsed > 0 else 0
                     metrics.actual_update_frequency_hz.set(actual_hz)
 
+                    # Calculate frame consistency percentage
+                    consistency_percent = (frames_on_target / loop_iterations) * 100
+                    metrics.game_loop_frame_consistency_percent.set(consistency_percent)
+
+                    # Calculate jitter (standard deviation of recent frame times)
+                    if len(recent_frame_times) >= 2:
+                        jitter_ms = statistics.stdev(recent_frame_times)
+                        metrics.game_loop_jitter_ms.set(jitter_ms)
+
                 last_iteration_time = iteration_end
 
-                # Small sleep to maintain tick rate
-                await asyncio.sleep(1.0 / update_frequency_hz)
+                # Note: No sleep needed here - the stream itself is rate-limited by
+                # controller-manager at 60Hz. The async for loop naturally blocks
+                # waiting for the next message.
 
         except Exception as e:
             logger.error(f"Game loop error: {e}", exc_info=True)
             raise
-        finally:
-            # Cleanup stream reference (Phase 46)
-            self.gameplay_stream = None
+        # Note: Don't set gameplay_stream = None here - it's needed by _end_game_impl
+        # for sending winner effects. Stream cleanup happens after teardown phase.
 
     async def _process_controller_state(self, controller_state):
         """
@@ -642,7 +631,7 @@ class BaseGameMode(ABC):
         # Formula: smoothed = (smoothed * 4 + raw) / 5
         # This gives 80% weight to previous value, 20% to current - smooths sensor noise
         # Phase 73: Initialize with first reading to prevent false deaths at game start
-        if player.smoothed_accel == 0.0:
+        if player.smoothed_accel < 1e-9:  # Check for uninitialized (avoids float equality)
             player.smoothed_accel = accel_mag  # Prime filter with first real reading
         else:
             player.smoothed_accel = (player.smoothed_accel * 4 + accel_mag) / 5
@@ -763,11 +752,15 @@ class BaseGameMode(ABC):
         logger.info(f"Player {serial} triggered warning (accel: {accel_mag:.2f}, threshold: {threshold:.2f})")
 
         # Send warning effect via stream (white flash + vibrate, auto-restore)
+        # Use player's span as parent so effect appears under player_lifecycle in traces
         if self.gameplay_stream:
+            trace_parent, trace_state = inject_trace_context(player.span)
             effect_cmd = controller_manager_pb2.GameplayStreamControl(
                 game_effect=controller_manager_pb2.GameEffectCommand(
                     serial=serial,
                     effect=controller_manager_pb2.GAME_EFFECT_PLAYER_WARNING,
+                    trace_parent=trace_parent,
+                    trace_state=trace_state,
                 )
             )
             await self.gameplay_stream.write(effect_cmd)
@@ -815,17 +808,43 @@ class BaseGameMode(ABC):
         # Call subclass-specific death handling
         await self._kill_player_impl(serial, accel_mag)
 
-        # Phase XX: Send death effect via stream (red + vibrate, no restore)
+        # Send death effect via stream (red + vibrate, no restore)
+        # Use player's span as parent so effect appears under player_lifecycle in traces
         from proto import controller_manager_pb2
 
         if self.gameplay_stream:
+            trace_parent, trace_state = inject_trace_context(player.span)
             effect_cmd = controller_manager_pb2.GameplayStreamControl(
                 game_effect=controller_manager_pb2.GameEffectCommand(
                     serial=serial,
                     effect=controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH,
+                    trace_parent=trace_parent,
+                    trace_state=trace_state,
                 )
             )
             await self.gameplay_stream.write(effect_cmd)
+
+    async def _wait_for_rainbow_effect(self) -> bool:
+        """
+        Wait for the winner rainbow effect to complete.
+
+        Uses runtime config for duration. Interruptible by force_end.
+
+        Returns:
+            True if wait completed normally, False if interrupted
+        """
+        config = get_config_manager().get_config()
+        rainbow_duration_s = config.winner_rainbow_duration_ms / 1000.0
+        iterations = int(rainbow_duration_s * 10)  # 0.1s increments
+
+        logger.debug(f"Waiting {rainbow_duration_s}s for rainbow effect")
+        for i in range(iterations):
+            if not self.running:
+                logger.info(f"Rainbow wait interrupted at {i * 0.1:.1f}s/{rainbow_duration_s}s")
+                return False
+            await asyncio.sleep(0.1)
+
+        return True
 
     def force_end(self):
         """Force the game to end (called externally)."""
@@ -841,11 +860,9 @@ class BaseGameMode(ABC):
         Main entry point to run the game (Template Method).
 
         Orchestrates all game phases with consistent span hierarchy:
-        1. initialization_phase
-        2. Additional phases (e.g., team_formation)
-        3. countdown_phase
-        4. gameplay_phase
-        5. teardown_phase
+        1. initialization_phase (contains color_assignment, countdown_phase)
+        2. gameplay_phase
+        3. teardown_phase
 
         Phase spans are automatically children of the current game span.
         """
@@ -855,13 +872,14 @@ class BaseGameMode(ABC):
             self.running = True  # Set early to allow force_end during countdown
             self.event_publisher(GameEvent.GAME_STARTING, {"game_id": self.game_id})
 
-            # Phase 1: Initialization
+            # Phase 1: Initialization (includes all pre-gameplay setup)
             with tracer.start_as_current_span("initialization_phase") as init_span:
                 init_span.set_attribute("game.id", self.game_id)
                 init_span.set_attribute("game.mode", self.get_game_name())
 
-                # Load settings
-                await self._load_settings()
+                # Emit sensitivity metric for dashboard
+                metrics.game_sensitivity.set(self.sensitivity.value)
+                logger.info(f"Sensitivity: {self.sensitivity.name} ({self.sensitivity.value})")
 
                 # Initialize players
                 await self._initialize_players()
@@ -872,28 +890,28 @@ class BaseGameMode(ABC):
 
                 init_span.set_attribute("player_count", len(self.players))
 
-            # Phase 2+: Additional phases (e.g., team_formation for Random Teams)
-            for phase in self._get_additional_phases():
-                with tracer.start_as_current_span(phase.name):
-                    await phase.execute()
+                # Additional phases (e.g., color_assignment, team_formation)
+                # These are children of initialization_phase
+                for phase in self._get_additional_phases():
+                    with tracer.start_as_current_span(phase.name):
+                        await phase.execute()
 
-            # Start gameplay stream before countdown (needed for countdown effects)
-            # EMA will be primed with first readings in game loop
-            await self._start_gameplay_stream()
+                # Start gameplay stream before countdown (needed for countdown effects)
+                await self._start_gameplay_stream()
 
-            # Phase 3: Countdown (uses game effects via stream)
-            with tracer.start_as_current_span("countdown_phase"):
-                await self._countdown()
+                # Countdown phase (child of initialization_phase)
+                with tracer.start_as_current_span("countdown_phase"):
+                    await self._countdown()
 
-            # Phase 4: Game starts
+                # Start game music (after countdown, still part of initialization)
+                await self._start_game_music()
+
+            # Game starts
             self.state = GameState.RUNNING
             # Note: self.start_time is set in _game_loop when first data is received
             self.event_publisher(GameEvent.GAME_STARTED, {"game_id": self.game_id, "player_count": len(self.players)})
 
-            # Phase 70: Start game music
-            await self._start_game_music()
-
-            # Phase 5: Gameplay (with music loop running alongside)
+            # Phase 2: Gameplay (with music loop running alongside)
             with tracer.start_as_current_span("gameplay_phase") as gameplay_span:
                 # Store span reference and context for background tasks
                 self.gameplay_span = gameplay_span
@@ -915,12 +933,15 @@ class BaseGameMode(ABC):
                     # This ensures player spans are children of gameplay_phase, not teardown
                     self._close_all_player_spans()
 
-            # Phase 70: Stop game music
-            await self._stop_game_music()
-
-            # Phase 6: Teardown
+            # Phase 3: Teardown
             with tracer.start_as_current_span("teardown_phase"):
+                # Stop game music first (inside teardown_phase so StopMusic span is a child)
+                await self._stop_game_music()
+
                 await self._end_game_impl()
+
+                # Cleanup stream reference after winner effects are sent
+                self.gameplay_stream = None
 
                 # Clear all analytics metrics so dashboards show no data when game is over
                 metrics.clear_all_player_analytics()
@@ -1208,6 +1229,7 @@ class BaseGameMode(ABC):
                 await asyncio.sleep(0.1)  # Check every 100ms
         except asyncio.CancelledError:
             logger.info("Music loop cancelled")
+            raise  # Re-raise to properly propagate cancellation
         except Exception as e:
             logger.warning(f"Music loop error: {e}")
         finally:

@@ -77,6 +77,9 @@ class NonstopJoustGame(BaseGameMode):
         event_publisher,
         audio_client=None,
         game_id: str = "",
+        initial_players: list | None = None,
+        sensitivity: int = 2,
+        time_limit_seconds: int = 0,
     ):
         """
         Initialize Nonstop Joust game.
@@ -87,6 +90,9 @@ class NonstopJoustGame(BaseGameMode):
             event_publisher: Callback function to publish game events
             audio_client: gRPC stub for Audio service (Phase 29)
             game_id: Unique identifier for this game instance
+            initial_players: List of Player protobuf messages from StartGame RPC
+            sensitivity: Sensitivity level 0-4 (passed from StartGameConfig)
+            time_limit_seconds: Game duration in seconds (0 = unlimited)
         """
         super().__init__(
             controller_manager_client=controller_manager_client,
@@ -94,24 +100,17 @@ class NonstopJoustGame(BaseGameMode):
             event_publisher=event_publisher,
             audio_client=audio_client,
             game_id=game_id,
+            initial_players=initial_players,
+            sensitivity=sensitivity,
         )
 
-        # Nonstop-specific settings
-        self.time_limit = 0  # 0 = unlimited, otherwise seconds
+        # Nonstop-specific settings - now passed via config
+        self.time_limit = time_limit_seconds  # 0 = unlimited, otherwise seconds
         self.players: dict[str, NonstopPlayer] = {}  # Override type hint
 
     def get_game_name(self) -> str:
         """Return game mode identifier."""
         return "Nonstop Joust"
-
-    async def _load_settings(self):
-        """Load settings with Nonstop-specific time_limit."""
-        # Call parent to load base settings (sensitivity, play_audio)
-        await super()._load_settings()
-
-        # Parse Nonstop-specific time limit (0 = unlimited)
-        self.time_limit = int(self.settings.get("nonstop_time_limit", "0"))
-        logger.info(f"Loaded Nonstop settings: time_limit={self.time_limit}s")
 
     async def _initialize_players_impl(self, controllers: list):
         """
@@ -504,7 +503,7 @@ class NonstopJoustGame(BaseGameMode):
         if winner:
             logger.info(f"Winner: {winner.serial} with score {winner.score} (K:{winner.kills} D:{winner.deaths})")
 
-            # Phase XX: Show rainbow effect on winner's controller via game effect
+            # Show rainbow effect on winner's controller via game effect
             if self.gameplay_stream:
                 effect_cmd = controller_manager_pb2.GameplayStreamControl(
                     game_effect=controller_manager_pb2.GameEffectCommand(
@@ -513,16 +512,6 @@ class NonstopJoustGame(BaseGameMode):
                     )
                 )
                 await self.gameplay_stream.write(effect_cmd)
-            else:
-                # Fallback to RPC
-                rainbow_request = controller_manager_pb2.PlayControllerEffectRequest(
-                    serial=winner.serial,
-                    effect=controller_manager_pb2.EFFECT_RAINBOW,
-                    color=controller_manager_pb2.RGB(r=255, g=255, b=255),
-                    duration_ms=3000,
-                    speed=1,  # Slow rainbow (1 cycle/second)
-                )
-                await self.controller_client.PlayControllerEffect(rainbow_request)
 
             # Play victory sound (Phase 29)
             await self._play_sound(Sound.VOX_CONGRATULATIONS, priority=2)

@@ -92,15 +92,15 @@ scripts/setup/setup_host.sh
 
 **Duration:** ~10-15 minutes
 
-### build_psmoveapi.sh
+### install_psmoveapi.sh
 
-Builds PS Move API from source.
+Installs PS Move API by extracting prebuilt binaries from the controller-manager Docker image.
 
 ```bash
-scripts/setup/build_psmoveapi.sh
+scripts/setup/install_psmoveapi.sh
 ```
 
-**Duration:** ~5-15 minutes (depending on Pi model)
+**Duration:** ~30 seconds (just extracts prebuilt binaries)
 
 ### install_autostart.sh / uninstall_autostart.sh
 
@@ -109,29 +109,6 @@ Install/remove systemd service for autostart on boot.
 ```bash
 sudo scripts/setup/install_autostart.sh
 sudo scripts/setup/uninstall_autostart.sh
-```
-
----
-
-## Docker Scripts
-
-Located in `scripts/docker/` - Also available via Makefile.
-
-| Script | Make Target | Description |
-|--------|-------------|-------------|
-| `build.sh` | `make docker-build` | Build all Docker images |
-| `start.sh` | `make docker-start` | Start Docker stack |
-| `stop.sh` | `make docker-stop` | Stop Docker stack |
-| `logs.sh` | - | Follow service logs |
-
-### logs.sh
-
-Follow logs for all or specific services:
-
-```bash
-scripts/docker/logs.sh              # All services
-scripts/docker/logs.sh audio        # Specific service
-scripts/docker/logs.sh game-coordinator
 ```
 
 ---
@@ -193,8 +170,8 @@ python interactive_colortest.py
 # 1. Run host setup
 scripts/setup/setup_host.sh
 
-# 2. Build PS Move API
-scripts/setup/build_psmoveapi.sh
+# 2. Install PS Move API
+scripts/setup/install_psmoveapi.sh
 
 # 3. (Optional) Enable autostart
 sudo scripts/setup/install_autostart.sh

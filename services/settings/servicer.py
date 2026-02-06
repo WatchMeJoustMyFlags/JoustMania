@@ -18,14 +18,14 @@ from typing import Any
 import yaml
 from opentelemetry import trace
 
-from lib.telemetry import init_telemetry
+from lib.telemetry import SpanAttr, get_tracer
 from lib.types import Games, Sensitivity
 from proto import settings_pb2, settings_pb2_grpc
 
 logger = logging.getLogger(__name__)
 
-# Initialize OpenTelemetry
-tracer = init_telemetry()
+# Lazy telemetry initialization - defers OTLP setup until first span
+tracer = get_tracer(__name__)
 
 # Settings schema with validation rules
 SETTINGS_SCHEMA = {
@@ -182,6 +182,29 @@ class SettingsServicer(settings_pb2_grpc.SettingsServiceServicer):
                 span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
                 logger.error(f"Error saving settings: {e}", exc_info=True)
 
+    def _validate_int_range(self, value: int, schema: dict) -> tuple[bool, str, str]:
+        """Validate integer is within schema min/max range."""
+        if "min" in schema and value < schema["min"]:
+            return False, f"Value {value} below minimum {schema['min']}", "below_min"
+        if "max" in schema and value > schema["max"]:
+            return False, f"Value {value} above maximum {schema['max']}", "above_max"
+        return True, "", ""
+
+    def _validate_str_allowed(self, value: str, schema: dict) -> tuple[bool, str, str]:
+        """Validate string is in allowed values list."""
+        if "allowed_values" in schema and value not in schema["allowed_values"]:
+            return False, f"Value '{value}' not in allowed values: {schema['allowed_values']}", "not_allowed"
+        return True, "", ""
+
+    def _validate_list_items(self, value: list, key: str) -> tuple[bool, str, str]:
+        """Validate list items for specific keys like random_modes."""
+        if key == "random_modes":
+            valid_games = [g.name for g in Games if g != Games.JoustTeams and g != Games.Random]
+            for item in value:
+                if item not in valid_games:
+                    return False, f"Invalid game mode: {item}", "invalid_list_item"
+        return True, "", ""
+
     def validate_setting_value(self, key: str, value: Any) -> tuple[bool, str]:
         """
         Validate a setting value against schema.
@@ -197,56 +220,42 @@ class SettingsServicer(settings_pb2_grpc.SettingsServiceServicer):
             span.set_attribute("setting.key", key)
             span.set_attribute("setting.value_type", type(value).__name__)
 
+            # Check key exists
             if key not in SETTINGS_SCHEMA:
-                span.set_attribute("validation.result", "invalid")
-                span.set_attribute("validation.reason", "unknown_key")
+                span.set_attribute(SpanAttr.VALIDATION_RESULT, "invalid")
+                span.set_attribute(SpanAttr.VALIDATION_REASON, "unknown_key")
                 return False, f"Unknown setting: {key}"
 
             schema = SETTINGS_SCHEMA[key]
 
             # Check if immutable
             if schema.get("immutable", False):
-                span.set_attribute("validation.result", "invalid")
-                span.set_attribute("validation.reason", "immutable")
+                span.set_attribute(SpanAttr.VALIDATION_RESULT, "invalid")
+                span.set_attribute(SpanAttr.VALIDATION_REASON, "immutable")
                 return False, f"Setting '{key}' is immutable"
 
             # Check type
             expected_type = schema["type"]
             if not isinstance(value, expected_type):
-                span.set_attribute("validation.result", "invalid")
-                span.set_attribute("validation.reason", "type_mismatch")
+                span.set_attribute(SpanAttr.VALIDATION_RESULT, "invalid")
+                span.set_attribute(SpanAttr.VALIDATION_REASON, "type_mismatch")
                 return False, f"Expected {expected_type.__name__}, got {type(value).__name__}"
 
-            # Check range (for int)
+            # Type-specific validation
+            valid, error, reason = True, "", ""
             if expected_type is int:
-                if "min" in schema and value < schema["min"]:
-                    span.set_attribute("validation.result", "invalid")
-                    span.set_attribute("validation.reason", "below_min")
-                    return False, f"Value {value} below minimum {schema['min']}"
-                if "max" in schema and value > schema["max"]:
-                    span.set_attribute("validation.result", "invalid")
-                    span.set_attribute("validation.reason", "above_max")
-                    return False, f"Value {value} above maximum {schema['max']}"
+                valid, error, reason = self._validate_int_range(value, schema)
+            elif expected_type is str:
+                valid, error, reason = self._validate_str_allowed(value, schema)
+            elif expected_type is list:
+                valid, error, reason = self._validate_list_items(value, key)
 
-            # Check allowed values (for str)
-            if expected_type is str and "allowed_values" in schema and value not in schema["allowed_values"]:
-                span.set_attribute("validation.result", "invalid")
-                span.set_attribute("validation.reason", "not_allowed")
-                return (
-                    False,
-                    f"Value '{value}' not in allowed values: {schema['allowed_values']}",
-                )
+            if not valid:
+                span.set_attribute(SpanAttr.VALIDATION_RESULT, "invalid")
+                span.set_attribute(SpanAttr.VALIDATION_REASON, reason)
+                return False, error
 
-            # Check list items (for list)
-            if expected_type is list and key == "random_modes":
-                valid_games = [g.name for g in Games if g != Games.JoustTeams and g != Games.Random]
-                for item in value:
-                    if item not in valid_games:
-                        span.set_attribute("validation.result", "invalid")
-                        span.set_attribute("validation.reason", "invalid_list_item")
-                        return False, f"Invalid game mode: {item}"
-
-            span.set_attribute("validation.result", "valid")
+            span.set_attribute(SpanAttr.VALIDATION_RESULT, "valid")
             return True, ""
 
     async def publish_change(self, key: str, old_value: Any, new_value: Any, source: str):
@@ -308,7 +317,7 @@ class SettingsServicer(settings_pb2_grpc.SettingsServiceServicer):
             return "true" if value else "false"
         return str(value)
 
-    def GetSettings(self, request, context):  # noqa: N802, ARG002
+    def GetSettings(self, _request, _context):
         """Get all settings."""
         logger.debug("GetSettings called")
 
@@ -322,7 +331,7 @@ class SettingsServicer(settings_pb2_grpc.SettingsServiceServicer):
             logger.error(f"GetSettings error: {e}", exc_info=True)
             return settings_pb2.GetSettingsResponse(settings={}, success=False, error=str(e))
 
-    def GetSetting(self, request, context):  # noqa: N802, ARG002
+    def GetSetting(self, request, _context):
         """Get a specific setting."""
         logger.debug(f"GetSetting called: key={request.key}")
 
@@ -342,7 +351,7 @@ class SettingsServicer(settings_pb2_grpc.SettingsServiceServicer):
             logger.error(f"GetSetting error: {e}", exc_info=True)
             return settings_pb2.GetSettingResponse(key=request.key, value="", success=False, error=str(e))
 
-    async def UpdateSetting(self, request, context):  # noqa: N802, ARG002
+    async def UpdateSetting(self, request, _context):
         """Update a setting."""
         logger.info(f"UpdateSetting called: key={request.key}, value={request.value}, source={request.source}")
 
@@ -403,7 +412,7 @@ class SettingsServicer(settings_pb2_grpc.SettingsServiceServicer):
             logger.error(f"UpdateSetting error: {e}", exc_info=True)
             return settings_pb2.UpdateSettingResponse(success=False, error=str(e), old_value="", new_value="")
 
-    async def SubscribeToChanges(self, request, context):  # noqa: N802, ARG002
+    async def SubscribeToChanges(self, _request, context):
         """Subscribe to setting change events (server-side streaming)."""
         import uuid
 

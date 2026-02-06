@@ -6,13 +6,12 @@ option go_package = "github.com/joustmania/connect-proxy/gen/game_coordinator";
 
 // GameCoordinator Service - Manages game lifecycle and coordination
 service GameCoordinatorService {
-  // Start a game
-  rpc StartGame(StartGameRequest) returns (StartGameResponse);
-
   // Force end current game
   rpc ForceEndGame(ForceEndGameRequest) returns (ForceEndGameResponse);
 
   // Stream game events (deaths, scoring, etc.)
+  // If start_config is provided, starts a new game before streaming events.
+  // If start_config is empty, subscribes to current/upcoming game events.
   rpc StreamGameEvents(StreamEventsRequest) returns (stream GameEvent);
 
   // Get current game state (for testing/observability)
@@ -35,17 +34,73 @@ message Player {
   int32 score = 4;
 }
 
-// Request/Response messages
-message StartGameRequest {
+// Configuration for starting a game via stream
+message StartGameConfig {
   string game_name = 1;  // e.g., "JoustFFA", "Werewolf"
   repeated Player players = 2;
-  map<string, string> settings = 3;  // Game-specific settings
+  int32 sensitivity = 3;  // 0-4, common to all modes (0=ULTRA_SLOW, 2=MEDIUM, 4=ULTRA_FAST)
+
+  // Mode-specific configuration
+  oneof game_config {
+    FFAConfig ffa_config = 10;
+    TeamsConfig teams_config = 11;
+    NonstopConfig nonstop_config = 12;
+    TournamentConfig tournament_config = 13;
+    FightClubConfig fight_club_config = 14;
+    WerewolfConfig werewolf_config = 15;
+    ZombieConfig zombie_config = 16;
+    SwapperConfig swapper_config = 17;
+    TraitorConfig traitor_config = 18;
+    RandomTeamsConfig random_teams_config = 19;
+  }
 }
 
-message StartGameResponse {
-  bool success = 1;
-  string error = 2;
-  string game_id = 3;  // Unique game identifier
+// Mode-specific configuration messages
+
+// FFA (Free-For-All) - no additional config needed
+message FFAConfig {}
+
+// Teams - fixed team assignment
+message TeamsConfig {
+  int32 num_teams = 1;  // Number of teams (2-6, default 2)
+  bool random_assignment = 2;  // Randomize player order before round-robin (default true)
+}
+
+// Random Teams - random team assignment with team formation phase
+message RandomTeamsConfig {
+  int32 num_teams = 1;  // Number of teams (2-6, default 2)
+}
+
+// Nonstop Joust - endless respawn with scoring
+message NonstopConfig {
+  int32 time_limit_seconds = 1;  // 0 = unlimited, otherwise game duration in seconds
+}
+
+// Tournament - single elimination bracket
+message TournamentConfig {
+  float invincibility_seconds = 1;  // Seconds of invincibility at match start (default 4.0)
+}
+
+// Fight Club - 1v1 arena with queue
+message FightClubConfig {
+  float invincibility_seconds = 1;  // Seconds of invincibility at round start (default 4.0)
+  int32 min_rounds = 2;  // Minimum rounds before game can end (default 10)
+}
+
+// Werewolf - hidden werewolves revealed after timer
+message WerewolfConfig {
+  float reveal_time_seconds = 1;  // Seconds until werewolves are revealed (default 35.0)
+}
+
+// Zombie - humans vs zombies with time limit
+message ZombieConfig {}  // Duration calculated based on player count
+
+// Swapper - teams swap on death
+message SwapperConfig {}  // Always 2 teams, no config needed
+
+// Traitor - teams with hidden traitors
+message TraitorConfig {
+  int32 num_teams = 1;  // Number of teams (auto-calculated based on player count if 0)
 }
 
 message ForceEndGameRequest {
@@ -57,7 +112,11 @@ message ForceEndGameResponse {
   string error = 2;
 }
 
-message StreamEventsRequest {}
+message StreamEventsRequest {
+  // If provided, starts a new game before streaming events.
+  // If empty, subscribes to current/upcoming game events.
+  optional StartGameConfig start_config = 1;
+}
 
 message GameEvent {
   string event_type = 1;  // "player_death", "game_start", "game_end", "score_update"
