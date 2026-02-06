@@ -27,7 +27,9 @@ echo "Fixing imports in generated files..."
 for file in proto/*_pb2_grpc.py; do
     if [[ -f "$file" ]]; then
         # Replace relative imports with absolute imports
-        sed -i 's/^import \([a-z_]*\)_pb2 as/from proto import \1_pb2 as/' "$file"
+        # Use -i.bak for cross-platform compatibility (works on both macOS and Linux)
+        sed -i.bak 's/^import \([a-z_]*\)_pb2 as/from proto import \1_pb2 as/' "$file"
+        rm -f "${file}.bak"
         echo "  ✓ Fixed imports in $(basename "$file")"
     fi
 done
