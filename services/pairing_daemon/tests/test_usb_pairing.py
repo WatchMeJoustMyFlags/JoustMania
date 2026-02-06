@@ -164,29 +164,31 @@ class TestCalibrateController:
             assert result is False
 
 
-class TestRestartBluetooth:
-    """Tests for restart_bluetooth()."""
+class TestResetBluetoothAdapter:
+    """Tests for reset_bluetooth_adapter()."""
 
     @pytest.mark.asyncio
-    async def test_successful_restart(self, usb_pairing):
-        """Test successful Bluetooth restart."""
-        runner = MockCommandRunner()
-        runner.add_response(["sudo", "systemctl", "restart", "bluetooth"], (0, ""))
+    async def test_power_cycles_adapter(self, usb_pairing):
+        """Test that adapter is power-cycled via DBus."""
+        mock_iface = MagicMock()
+        mock_iface.Get.return_value = True  # Adapter is powered
 
-        with patch("psmove_pairing.usb_pairing.run_command", runner):
-            with patch("asyncio.sleep", return_value=None):
-                await usb_pairing.restart_bluetooth()
-                assert ["sudo", "systemctl", "restart", "bluetooth"] in runner.calls
+        with patch("psmove_pairing.usb_pairing.get_hci_dict", return_value={"hci0": "AA:BB:CC:DD:EE:FF"}):
+            with patch("psmove_pairing.usb_pairing._get_adapter_proxy") as mock_proxy:
+                with patch("psmove_pairing.usb_pairing.dbus") as mock_dbus_mod:
+                    mock_dbus_mod.Interface.return_value = mock_iface
+                    with patch("asyncio.sleep", return_value=None):
+                        await usb_pairing.reset_bluetooth_adapter()
+                        # Should have called Set twice (off then on)
+                        assert mock_iface.Set.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_restart_failure_logged(self, usb_pairing):
-        """Test that restart failure is logged but doesn't raise."""
-        runner = MockCommandRunner()
-        runner.add_response(["sudo", "systemctl", "restart", "bluetooth"], (1, "Permission denied"))
-
-        with patch("psmove_pairing.usb_pairing.run_command", runner):
-            # Should not raise
-            await usb_pairing.restart_bluetooth()
+    async def test_handles_dbus_failure(self, usb_pairing):
+        """Test that DBus failure is logged but doesn't raise."""
+        with patch("psmove_pairing.usb_pairing.get_hci_dict", return_value={"hci0": "AA:BB:CC:DD:EE:FF"}):
+            with patch("psmove_pairing.usb_pairing._get_adapter_proxy", side_effect=Exception("DBus error")):
+                # Should not raise
+                await usb_pairing.reset_bluetooth_adapter()
 
 
 class TestProcessController:

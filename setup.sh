@@ -13,14 +13,12 @@ echo ""
 echo "Choose setup type:"
 echo ""
 echo "  1) Runtime Only (5 min)"
-echo "     - Docker, Bluetooth config, pairing daemon"
+echo "     - Docker, Bluetooth config"
 echo "     - For running JoustMania on a Pi"
-echo "     - Requires existing psmoveapi (from old install) for pairing"
 echo ""
 echo "  2) Full Development Setup (15-30 min)"
 echo "     - Everything in Runtime, plus:"
-echo "     - Python/uv, build psmoveapi from source"
-echo "     - For development and testing outside Docker"
+echo "     - Python/uv for development and testing outside Docker"
 echo ""
 echo "  3) Cancel"
 echo ""
@@ -40,14 +38,6 @@ case "$REPLY" in
             exit 1
         fi
 
-        # Check if psmove is available
-        if ! command -v psmove &> /dev/null; then
-            echo ""
-            echo "Note: psmove CLI not found. To enable automatic pairing,"
-            echo "you'll need to install psmoveapi:"
-            echo "  ./scripts/setup/install_psmoveapi.sh"
-            echo ""
-        fi
         ;;
 
     2)
@@ -57,7 +47,6 @@ case "$REPLY" in
         echo ""
         echo "This will:"
         echo "  1. Install system dependencies and configure host"
-        echo "  2. Install PS Move API (extracts prebuilt binaries)"
         echo ""
         echo "This process requires a reboot when complete."
         echo ""
@@ -71,22 +60,11 @@ case "$REPLY" in
         # Run host setup
         echo ""
         echo "=========================================="
-        echo "Step 1/2: Host System Setup"
+        echo "Host System Setup"
         echo "=========================================="
         bash "$SCRIPT_DIR/scripts/setup/setup_host.sh" 2>&1 | tee setup_host.log
         if [[ $? -ne 0 ]]; then
             echo "ERROR: Host setup failed. Check setup_host.log for details."
-            exit 1
-        fi
-
-        # Run PS Move API install
-        echo ""
-        echo "=========================================="
-        echo "Step 2/2: PS Move API Install"
-        echo "=========================================="
-        bash "$SCRIPT_DIR/scripts/setup/install_psmoveapi.sh" 2>&1 | tee setup_psmoveapi.log
-        if [[ $? -ne 0 ]]; then
-            echo "ERROR: PS Move API install failed. Check setup_psmoveapi.log for details."
             exit 1
         fi
 

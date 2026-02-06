@@ -50,7 +50,7 @@ if [ "$EUID" -eq 0 ]; then
 fi
 
 # Step 1: Install Docker
-echo "[1/5] Checking Docker..."
+echo "[1/4] Checking Docker..."
 if ! command -v docker &> /dev/null; then
     echo "  → Installing Docker..."
     curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
@@ -74,7 +74,7 @@ if ! command -v docker compose &> /dev/null && ! docker compose version &> /dev/
 fi
 
 # Step 2: Install minimal system dependencies
-echo "[2/5] Installing system dependencies..."
+echo "[2/4] Installing system dependencies..."
 sudo apt-get update -y
 sudo apt-get install -y \
     bluez \
@@ -85,7 +85,7 @@ sudo apt-get install -y \
 echo -e "  → ${GREEN}Dependencies installed${NC}"
 
 # Step 3: Configure Bluetooth
-echo "[3/5] Configuring Bluetooth..."
+echo "[3/4] Configuring Bluetooth..."
 
 # Detect config.txt location based on distribution
 DIST_REL=$(lsb_release -r -s 2>/dev/null | cut -d. -f1 || echo "12")
@@ -124,68 +124,8 @@ else
 fi
 echo -e "  → ${GREEN}Bluetooth configured${NC}"
 
-# Step 4: Check for psmove CLI (needed for pairing daemon)
-echo "[4/5] Checking for psmove CLI..."
-PSMOVE_AVAILABLE=false
-if command -v psmove &> /dev/null; then
-    echo -e "  → ${GREEN}psmove CLI found${NC}"
-    PSMOVE_AVAILABLE=true
-elif [ -f "$HOMEDIR/psmoveapi/build/psmove" ]; then
-    echo "  → Found psmove in ~/psmoveapi/build/"
-    echo "  → Adding to PATH..."
-    export PATH="$HOMEDIR/psmoveapi/build:$PATH"
-    # Add to .bashrc for persistence
-    if ! grep -q "psmoveapi/build" "$HOMEDIR/.bashrc" 2>/dev/null; then
-        echo 'export PATH="$HOME/psmoveapi/build:$PATH"' >> "$HOMEDIR/.bashrc"
-    fi
-    PSMOVE_AVAILABLE=true
-else
-    echo -e "  → ${YELLOW}psmove CLI not found${NC}"
-    echo ""
-    echo "    The pairing daemon needs the psmove CLI to pair controllers."
-    echo "    Building psmoveapi takes ~10 minutes but is required for automatic pairing."
-    echo ""
-    read -p "    Build psmoveapi now? (y/n) " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        echo ""
-        echo "  → Installing psmoveapi..."
-        BUILD_SCRIPT="$JOUSTMANIA_DIR/scripts/setup/install_psmoveapi.sh"
-        if [[ -f "$BUILD_SCRIPT" ]]; then
-            bash "$BUILD_SCRIPT"
-            if [[ $? -eq 0 ]]; then
-                echo -e "  → ${GREEN}psmoveapi installed successfully${NC}"
-                export PATH="$HOMEDIR/psmoveapi/build:$PATH"
-                PSMOVE_AVAILABLE=true
-            else
-                echo -e "  → ${RED}psmoveapi installation failed${NC}"
-            fi
-        else
-            echo -e "  → ${RED}Build script not found: $BUILD_SCRIPT${NC}"
-        fi
-    else
-        echo ""
-        echo "    Skipping psmoveapi build."
-        echo "    You can install it later with: ./scripts/setup/install_psmoveapi.sh"
-        echo ""
-    fi
-fi
-
-# Step 5: Install pairing daemon
-echo "[5/5] Installing PS Move pairing daemon..."
-PAIRING_SCRIPT="$JOUSTMANIA_DIR/scripts/pairing-daemon/install.sh"
-if [ -f "$PAIRING_SCRIPT" ]; then
-    if [ "$PSMOVE_AVAILABLE" = true ]; then
-        sudo bash "$PAIRING_SCRIPT"
-        echo -e "  → ${GREEN}Pairing daemon installed${NC}"
-    else
-        echo -e "  → ${YELLOW}Skipping pairing daemon (psmove CLI not available)${NC}"
-        echo "    Install psmoveapi first, then run:"
-        echo "    sudo $PAIRING_SCRIPT"
-    fi
-else
-    echo -e "  → ${RED}Pairing daemon script not found${NC}"
-fi
+# Step 4: Done (pairing daemon and psmoveapi are built into Docker images)
+echo "[4/4] Pairing daemon and psmoveapi run via Docker Compose (no host install needed)"
 
 # Configure audio - set all devices to max volume
 echo ""
@@ -221,14 +161,7 @@ echo "  cd $JOUSTMANIA_DIR"
 echo "  docker compose -f docker-compose.lite.yml up -d"
 echo ""
 
-if [ "$PSMOVE_AVAILABLE" = false ]; then
-    echo -e "${YELLOW}Note: Pairing daemon not installed (psmove CLI missing)${NC}"
-    echo "  To enable automatic controller pairing, install psmoveapi:"
-    echo "  ./scripts/setup/install_psmoveapi.sh"
-    echo ""
-fi
-
-echo "To pair controllers (if pairing daemon is running):"
+echo "To pair controllers:"
 echo "  1. Connect controller via USB"
 echo "  2. Wait for white LED flash (success)"
 echo "  3. Unplug USB, press PS button"

@@ -30,6 +30,7 @@ members = [
     "services/settings",
     "services/menu",
     "services/audio",
+    "services/pairing_daemon",
     "tests/integration",
 ]
 

@@ -1,5 +1,5 @@
 [project]
-name = "psmove-pairing"
+name = "joustmania-pairing-daemon"
 version = "1.0.0"
 description = "PS Move controller pairing daemon for JoustMania"
 requires-python = ">=3.9,<3.13"
@@ -27,14 +27,14 @@ test = [
 ]
 
 [project.scripts]
-psmove-pairing = "psmove_pairing_daemon:main"
+psmove-pairing = "server:main"
 
 [build-system]
 requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["psmove_pairing_daemon"]
+py-modules = ["server"]
 packages = ["psmove_pairing"]
 
 [tool.pytest.ini_options]
@@ -53,7 +53,7 @@ ignore = ["ANN"]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]  # Unused imports OK in __init__
-"psmove_pairing_daemon.py" = ["N802"]  # HTTP handler do_GET is from parent class
+"server.py" = ["N802"]  # HTTP handler do_GET is from parent class
 "tests/*.py" = ["ARG001", "ARG002", "E402", "SIM105", "SIM117", "F841"]  # Test fixtures, test patterns
 
 [tool.ruff.lint.isort]

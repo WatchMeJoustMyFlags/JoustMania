@@ -114,23 +114,18 @@ PS Move controllers must be paired to your Raspberry Pi before they can connect 
 
 ### Pairing Daemon
 
-The pairing daemon (`psmove-pairing`) runs as a systemd service on the host and automatically detects USB-connected controllers.
+The pairing daemon runs as a Docker container (`pairing-daemon`) and automatically detects USB-connected controllers.
 
-**Installation** (included in setup):
+**Management**:
 ```bash
-sudo ./scripts/pairing-daemon/install.sh
-```
-
-**Service Management**:
-```bash
-# Check status
-systemctl status psmove-pairing
-
 # View logs (live)
-journalctl -u psmove-pairing -f
+docker compose logs -f pairing-daemon
 
 # Restart daemon
-sudo systemctl restart psmove-pairing
+docker compose restart pairing-daemon
+
+# Check metrics
+curl http://localhost:8002/metrics
 ```
 
 ### Pairing a Controller

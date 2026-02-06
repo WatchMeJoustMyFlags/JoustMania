@@ -91,12 +91,43 @@ services:
     volumes:
       - /var/run/dbus:/var/run/dbus:ro
       - /var/lib/bluetooth:/var/lib/bluetooth:ro
-      - ${HOME}/.psmoveapi:/root/.psmoveapi:ro
+      - psmoveapi-data:/root/.psmoveapi:ro
       - /dev:/dev:rslave
       - controller-names:/app/data
     depends_on:
       redis:
         condition: service_healthy
+    restart: unless-stopped
+    # Healthcheck defined in Dockerfile
+
+  # Pairing Daemon - USB controller pairing and Bluetooth monitoring
+  pairing-daemon:
+    image: ghcr.io/watchmejoustmyflags/joustmania/pairing-daemon-service:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: services/pairing_daemon/Dockerfile
+      args:
+        BUILDER_IMAGE: ${BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/builder:latest}
+        PSMOVE_BUILDER_IMAGE: ${PSMOVE_BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/psmove-builder:latest}
+    container_name: joustmania-pairing-daemon
+    privileged: true
+    pid: "host"
+    volumes:
+      - /var/run/dbus:/var/run/dbus
+      - /var/lib/bluetooth:/var/lib/bluetooth
+      - /dev:/dev:rslave
+      - psmoveapi-data:/root/.psmoveapi
+    networks:
+      - joustmania
+    expose:
+      - "8002"
+    environment:
+      - POLL_INTERVAL=10
+      - BT_MONITOR_INTERVAL=5
+      - METRICS_PORT=8002
+      - PSMOVE_PATH=/usr/local/bin/psmove
+      - DBUS_SYSTEM_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket
+      - OTEL_SDK_DISABLED=true
     restart: unless-stopped
     # Healthcheck defined in Dockerfile
 
@@ -232,3 +263,4 @@ networks:
 volumes:
   redis-data:
   controller-names:
+  psmoveapi-data:

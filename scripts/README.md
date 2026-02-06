@@ -92,16 +92,6 @@ scripts/setup/setup_host.sh
 
 **Duration:** ~10-15 minutes
 
-### install_psmoveapi.sh
-
-Installs PS Move API by extracting prebuilt binaries from the controller-manager Docker image.
-
-```bash
-scripts/setup/install_psmoveapi.sh
-```
-
-**Duration:** ~30 seconds (just extracts prebuilt binaries)
-
 ### install_autostart.sh / uninstall_autostart.sh
 
 Install/remove systemd service for autostart on boot.
@@ -170,10 +160,7 @@ python interactive_colortest.py
 # 1. Run host setup
 scripts/setup/setup_host.sh
 
-# 2. Install PS Move API
-scripts/setup/install_psmoveapi.sh
-
-# 3. (Optional) Enable autostart
+# 2. (Optional) Enable autostart
 sudo scripts/setup/install_autostart.sh
 ```
 

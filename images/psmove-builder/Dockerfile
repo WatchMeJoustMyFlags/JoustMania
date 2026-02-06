@@ -9,12 +9,13 @@
 # Build with specific commit:
 #   docker build --build-arg PSMOVE_COMMIT=abc123 -t joustmania/psmove-builder:abc123 images/psmove-builder/
 #
-# Usage in controller_manager Dockerfile:
+# Usage in service Dockerfiles:
 #   FROM joustmania/psmove-builder:latest AS psmove-builder
 #   ...
 #   COPY --from=psmove-builder /psmove/psmove.py /usr/local/lib/python3.11/site-packages/
 #   COPY --from=psmove-builder /psmove/_psmove.so /usr/local/lib/python3.11/site-packages/
 #   COPY --from=psmove-builder /psmove/libpsmoveapi.so /usr/local/lib/
+#   COPY --from=psmove-builder /psmove/psmove-cli /usr/local/bin/psmove  # CLI tool (calibration)
 #
 # Build time: ~10-15 minutes on Pi, ~2-3 minutes on fast hardware
 # Output size: ~2MB of compiled libraries
@@ -67,7 +68,9 @@ RUN cmake .. \
 RUN mkdir -p /psmove && \
     cp /build/psmoveapi/build/psmove.py /psmove/ && \
     cp /build/psmoveapi/build/_psmove.so /psmove/ && \
-    cp /build/psmoveapi/build/libpsmoveapi.so /psmove/
+    cp /build/psmoveapi/build/libpsmoveapi.so /psmove/ && \
+    # CLI tool for calibration (used by pairing daemon)
+    cp /build/psmoveapi/build/psmove /psmove/psmove-cli
 
 # Verify the build
 RUN ls -la /psmove/ && \

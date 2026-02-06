@@ -91,9 +91,9 @@ scrape_configs:
         labels:
           instance: 'raspberry-pi'
 
-  # PS Move Pairing Daemon (runs on host, not in Docker)
+  # PS Move Pairing Daemon
   - job_name: 'psmove-pairing'
     static_configs:
-      - targets: ['host.docker.internal:8002']
+      - targets: ['pairing-daemon:8002']
         labels:
           service: 'psmove-pairing'

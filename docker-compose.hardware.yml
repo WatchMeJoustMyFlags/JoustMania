@@ -20,9 +20,9 @@ services:
     volumes:
       # D-Bus socket for BlueZ communication
       - /var/run/dbus:/var/run/dbus:ro
-      # Bluetooth device info (read-only, pairing handled by host daemon)
+      # Bluetooth device info (read-only, pairing handled by pairing daemon)
       - /var/lib/bluetooth:/var/lib/bluetooth:ro
-      # PS Move calibration data (created by host pairing daemon)
-      - ${HOME}/.psmoveapi:/root/.psmoveapi:ro
+      # PS Move calibration data (shared with pairing daemon)
+      - psmoveapi-data:/root/.psmoveapi:ro
     environment:
       - DBUS_SYSTEM_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket

@@ -6,7 +6,7 @@ Polls for USB-connected PS Move controllers and pairs them automatically.
 Monitors Bluetooth-connected controllers for signal strength and connection status.
 Provides Prometheus metrics and OpenTelemetry tracing for observability.
 
-Run as a systemd service on the host (not in Docker).
+Runs as a Docker container alongside other JoustMania services.
 
 LED Feedback:
   - Yellow solid: Pairing in progress

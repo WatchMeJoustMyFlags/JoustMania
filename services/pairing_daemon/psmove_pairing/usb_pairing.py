@@ -22,7 +22,9 @@ except ImportError as e:
         "and psmoveapi is built with Python bindings."
     ) from e
 
-from .adapter_manager import AdapterManager
+import dbus
+
+from .adapter_manager import AdapterManager, _get_adapter_proxy, get_hci_dict
 from .metrics import (
     calibration_duration_seconds,
     pairing_adapter_device_count,
@@ -165,21 +167,30 @@ class USBPairing:
 
             return exit_code == 0
 
-    async def restart_bluetooth(self) -> None:
-        """Restart Bluetooth service to recognize new pairing.
+    async def reset_bluetooth_adapter(self) -> None:
+        """Power-cycle Bluetooth adapters via DBus to recognize new pairing.
 
-        The original JoustMania does this after each pairing to ensure
-        BlueZ recognizes the newly paired controller.
+        Uses DBus to toggle the adapter power, which works from within Docker
+        (unlike systemctl restart bluetooth). This ensures BlueZ recognizes
+        newly paired controllers.
         """
-        logger.info("Restarting Bluetooth service...")
-        exit_code, output = await run_command(["sudo", "systemctl", "restart", "bluetooth"])
-        if exit_code != 0:
-            logger.warning(f"Failed to restart bluetooth: {output}")
-        else:
-            # Give BlueZ time to reinitialize
-            import asyncio
+        import asyncio
 
-            await asyncio.sleep(2)
+        hci_dict = get_hci_dict()
+        for hci in hci_dict:
+            try:
+                proxy = _get_adapter_proxy(hci)
+                iface = dbus.Interface(proxy, "org.freedesktop.DBus.Properties")
+                powered = iface.Get("org.bluez.Adapter1", "Powered")
+                if powered:
+                    logger.info(f"Power-cycling adapter {hci}...")
+                    iface.Set("org.bluez.Adapter1", "Powered", False)
+                    await asyncio.sleep(1)
+                    iface.Set("org.bluez.Adapter1", "Powered", True)
+                    await asyncio.sleep(1)
+                    logger.info(f"Adapter {hci} power-cycled successfully")
+            except Exception as e:
+                logger.warning(f"Failed to power-cycle adapter {hci}: {e}")
 
     async def process_controller(self, move_index: int, serial: str) -> bool:
         """Process a single USB-connected controller with load-balanced adapter selection."""
@@ -229,8 +240,8 @@ class USBPairing:
                 span.set_status(Status(StatusCode.ERROR, "Pairing failed"))
                 return False
 
-            # Restart Bluetooth to recognize new pairing (like original JoustMania)
-            await self.restart_bluetooth()
+            # Power-cycle Bluetooth adapter to recognize new pairing
+            await self.reset_bluetooth_adapter()
 
             # Calibrate
             await self.calibrate_controller(serial)

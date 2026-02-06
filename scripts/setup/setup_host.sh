@@ -123,14 +123,8 @@ fi
 echo "  → Configuring Bluetooth input.conf..."
 sudo sed -i '/^#\?ClassicBondedOnly=\(true\|false\)$/s/.*/ClassicBondedOnly=false/' '/etc/bluetooth/input.conf' || exit 1
 
-# Install PS Move pairing daemon
-echo "[9/9] Installing PS Move pairing daemon..."
-if [[ -f "$HOMEDIR/JoustMania/scripts/pairing-daemon/install.sh" ]]; then
-    sudo bash "$HOMEDIR/JoustMania/scripts/pairing-daemon/install.sh"
-    echo "  → Pairing daemon installed"
-else
-    echo "  → Pairing daemon script not found, skipping"
-fi
+# Pairing daemon now runs as a Docker container (docker compose up pairing-daemon)
+echo "[9/9] Pairing daemon runs via Docker Compose (no host install needed)"
 
 # Fix permissions
 echo "Fixing JoustMania directory permissions..."
@@ -157,5 +151,5 @@ echo "=========================================="
 echo "Host system setup complete!"
 echo "=========================================="
 echo ""
-echo "Next step: Run scripts/setup/install_psmoveapi.sh to install PS Move API"
+echo "Next step: Run 'docker compose up -d' to start JoustMania"
 echo ""
