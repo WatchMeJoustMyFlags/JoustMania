@@ -160,14 +160,14 @@ class TestSwapperTeamSwapping:
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
         # Initial state: team 0 has [0, 2], team 1 has [1, 3]
-        assert not game._check_win_condition()
+        assert not await game._check_win_condition()
 
         # Move all players to team 1
         for serial in game.players:
             game.players[serial].team = 1
 
         # Now should trigger win condition
-        assert game._check_win_condition()
+        assert await game._check_win_condition()
 
     @pytest.mark.asyncio
     async def test_get_alive_teams(self, swapper_game):

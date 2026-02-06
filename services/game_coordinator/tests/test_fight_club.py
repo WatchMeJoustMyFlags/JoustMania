@@ -283,8 +283,8 @@ class TestFightClubGameMode:
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
         # Initially not over
-        assert game._check_win_condition() is False
+        assert await game._check_win_condition() is False
 
         # Set game over
         game.game_over = True
-        assert game._check_win_condition() is True
+        assert await game._check_win_condition() is True

@@ -31,6 +31,11 @@ disable_metrics_for_tests()
 from proto import controller_manager_pb2, settings_pb2
 
 
+async def async_noop(*_args, **_kwargs):
+    """Async no-op function for use as a dummy event_publisher."""
+    pass
+
+
 class MockBidirectionalStream:
     """Mock bidirectional gRPC stream for StreamGameplayData."""
 
@@ -190,7 +195,7 @@ class EventCollector:
     def __init__(self):
         self.events: list[tuple] = []
 
-    def publish(self, event_type: str, data: dict):
+    async def publish(self, event_type: str, data: dict):
         """Collect published event."""
         self.events.append((event_type, data))
 
