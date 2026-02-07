@@ -559,7 +559,6 @@ services:
       - CONTROLLER_MANAGER_SERVICE=controller-manager:50052
       - GAME_COORDINATOR_SERVICE=game-coordinator:50053
       - MENU_SERVICE=menu:50054
-      - SETTINGS_SERVICE=settings:50051
     networks:
       - joustmania
     restart: unless-stopped

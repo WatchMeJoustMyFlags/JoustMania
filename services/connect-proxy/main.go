@@ -20,13 +20,11 @@ import (
 	controllerpb "github.com/joustmania/connect-proxy/gen/controller_manager"
 	gamepb "github.com/joustmania/connect-proxy/gen/game_coordinator"
 	menupb "github.com/joustmania/connect-proxy/gen/menu"
-	settingspb "github.com/joustmania/connect-proxy/gen/settings"
 
 	// Connect handlers
 	"github.com/joustmania/connect-proxy/gen/controller_manager/controller_managerconnect"
 	"github.com/joustmania/connect-proxy/gen/game_coordinator/game_coordinatorconnect"
 	"github.com/joustmania/connect-proxy/gen/menu/menuconnect"
-	"github.com/joustmania/connect-proxy/gen/settings/settingsconnect"
 )
 
 // Service addresses from environment or defaults
@@ -34,7 +32,6 @@ var (
 	controllerManagerAddr = getEnv("CONTROLLER_MANAGER_SERVICE", "controller-manager:50052")
 	gameCoordinatorAddr   = getEnv("GAME_COORDINATOR_SERVICE", "game-coordinator:50053")
 	menuAddr              = getEnv("MENU_SERVICE", "menu:50054")
-	settingsAddr          = getEnv("SETTINGS_SERVICE", "settings:50051")
 	listenAddr            = getEnv("LISTEN_ADDR", ":8080")
 )
 
@@ -50,7 +47,6 @@ func main() {
 	log.Printf("Controller Manager: %s", controllerManagerAddr)
 	log.Printf("Game Coordinator: %s", gameCoordinatorAddr)
 	log.Printf("Menu: %s", menuAddr)
-	log.Printf("Settings: %s", settingsAddr)
 
 	// Create gRPC connections to backend services
 	controllerConn, err := grpc.NewClient(controllerManagerAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -71,17 +67,10 @@ func main() {
 	}
 	defer menuConn.Close()
 
-	settingsConn, err := grpc.NewClient(settingsAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		log.Fatalf("Failed to connect to settings: %v", err)
-	}
-	defer settingsConn.Close()
-
 	// Create gRPC clients
 	controllerClient := controllerpb.NewControllerManagerServiceClient(controllerConn)
 	gameClient := gamepb.NewGameCoordinatorServiceClient(gameConn)
 	menuClient := menupb.NewMenuServiceClient(menuConn)
-	settingsClient := settingspb.NewSettingsServiceClient(settingsConn)
 
 	// Create HTTP mux with Connect handlers
 	mux := http.NewServeMux()
@@ -101,11 +90,6 @@ func main() {
 		&MenuProxy{client: menuClient},
 	)
 	mux.Handle(menuPath, menuHandler)
-
-	settingsPath, settingsHandler := settingsconnect.NewSettingsServiceHandler(
-		&SettingsProxy{client: settingsClient},
-	)
-	mux.Handle(settingsPath, settingsHandler)
 
 	// Health check endpoint
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -372,66 +356,4 @@ func (p *MenuProxy) ProcessInput(
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	return connect.NewResponse(resp), nil
-}
-
-// SettingsProxy implements the Connect handler by proxying to gRPC
-type SettingsProxy struct {
-	client settingspb.SettingsServiceClient
-}
-
-func (p *SettingsProxy) GetSettings(
-	ctx context.Context,
-	req *connect.Request[settingspb.GetSettingsRequest],
-) (*connect.Response[settingspb.GetSettingsResponse], error) {
-	resp, err := p.client.GetSettings(ctx, req.Msg)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	return connect.NewResponse(resp), nil
-}
-
-func (p *SettingsProxy) GetSetting(
-	ctx context.Context,
-	req *connect.Request[settingspb.GetSettingRequest],
-) (*connect.Response[settingspb.GetSettingResponse], error) {
-	resp, err := p.client.GetSetting(ctx, req.Msg)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	return connect.NewResponse(resp), nil
-}
-
-func (p *SettingsProxy) UpdateSetting(
-	ctx context.Context,
-	req *connect.Request[settingspb.UpdateSettingRequest],
-) (*connect.Response[settingspb.UpdateSettingResponse], error) {
-	resp, err := p.client.UpdateSetting(ctx, req.Msg)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	return connect.NewResponse(resp), nil
-}
-
-func (p *SettingsProxy) SubscribeToChanges(
-	ctx context.Context,
-	req *connect.Request[settingspb.SubscribeRequest],
-	stream *connect.ServerStream[settingspb.SettingChangeEvent],
-) error {
-	grpcStream, err := p.client.SubscribeToChanges(ctx, req.Msg)
-	if err != nil {
-		return connect.NewError(connect.CodeInternal, err)
-	}
-
-	for {
-		msg, err := grpcStream.Recv()
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return connect.NewError(connect.CodeInternal, err)
-		}
-		if err := stream.Send(msg); err != nil {
-			return err
-		}
-	}
 }
