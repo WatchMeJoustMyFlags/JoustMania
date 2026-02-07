@@ -216,6 +216,32 @@ class USBPairing:
         except Exception as e:
             logger.error(f"Failed to restart bluetooth service: {e}")
 
+    async def bluez_pair_controller(self, serial: str) -> bool:
+        """Trust and pair a controller via bluetoothctl.
+
+        Required for ZCM2 (PS4-era) controllers which need a proper BlueZ
+        pairing handshake (PIN exchange). Harmless for ZCM1 controllers
+        which are already paired at this point.
+        """
+        logger.info(f"Running bluetoothctl trust + pair for {serial}...")
+        try:
+            # Trust the device first
+            exit_code, output = await run_command(["bluetoothctl", "trust", serial])
+            if exit_code != 0:
+                logger.warning(f"bluetoothctl trust failed: {output}")
+
+            # Pair — for ZCM2 this triggers the PIN exchange via the agent
+            exit_code, output = await run_command(["bluetoothctl", "pair", serial])
+            if exit_code != 0:
+                logger.warning(f"bluetoothctl pair failed: {output}")
+                return False
+
+            logger.info(f"bluetoothctl pair succeeded for {serial}")
+            return True
+        except Exception as e:
+            logger.error(f"bluetoothctl pair error: {e}")
+            return False
+
     async def process_controller(self, move_index: int, serial: str) -> bool:
         """Process a single USB-connected controller with load-balanced adapter selection."""
         with self.tracer.start_as_current_span("process_controller") as span:
@@ -262,6 +288,9 @@ class USBPairing:
 
             # Restart BlueZ so it re-reads the new device files
             await self.restart_bluetooth_service()
+
+            # Trust + pair via bluetoothctl (required for ZCM2 PIN exchange)
+            await self.bluez_pair_controller(serial)
 
             # Calibrate
             await self.calibrate_controller(serial)
