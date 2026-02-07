@@ -88,8 +88,9 @@ def start_http_server_with_health(port: int) -> None:
     from http.server import HTTPServer
     from threading import Thread
 
-    def handler(*args, **kwargs):
-        return HealthHandler(*args, registry=REGISTRY, **kwargs)
+    # Set registry as class attribute — MetricsHandler reads it from self.registry,
+    # and HTTPServer passes only positional args to the handler constructor.
+    handler = type("HealthHandlerWithRegistry", (HealthHandler,), {"registry": REGISTRY})
 
     server = HTTPServer(("", port), handler)
     thread = Thread(target=server.serve_forever)
