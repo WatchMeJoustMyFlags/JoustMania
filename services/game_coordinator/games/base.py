@@ -549,7 +549,7 @@ class BaseGameMode(ABC):
                             await self._process_controller_state(gameplay_data)
 
                             # Check after each controller - stop processing if we have a winner
-                            if self._check_win_condition():
+                            if await self._check_win_condition():
                                 game_over = True
                                 break
 
