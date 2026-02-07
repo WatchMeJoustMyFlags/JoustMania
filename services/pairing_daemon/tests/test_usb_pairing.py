@@ -1,6 +1,6 @@
 """Tests for psmove_pairing.usb_pairing module."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -53,41 +53,67 @@ class TestGetUSBControllersPsmove:
 class TestPairControllerPsmove:
     """Tests for pair_controller_psmove()."""
 
-    def test_successful_pairing(self, usb_pairing, mock_psmove_module):
-        """Test successful pairing via pair_custom."""
+    @pytest.mark.asyncio
+    async def test_successful_pairing(self, usb_pairing, mock_psmove_module):
+        """Test successful pairing via subprocess."""
         mock_move = MagicMock()
         mock_move.connection_type = mock_psmove_module.Conn_USB
-        mock_move.pair_custom.return_value = True
         mock_psmove_module.PSMove.return_value = mock_move
 
-        result = usb_pairing.pair_controller_psmove(0, "AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66")
-        assert result is True
-        mock_move.pair_custom.assert_called_once_with("11:22:33:44:55:66")
+        mock_proc = AsyncMock()
+        mock_proc.communicate.return_value = (b"OK\n", b"")
 
-    def test_pairing_failure(self, usb_pairing, mock_psmove_module):
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            result = await usb_pairing.pair_controller_psmove(0, "AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66")
+            assert result is True
+
+    @pytest.mark.asyncio
+    async def test_pairing_failure(self, usb_pairing, mock_psmove_module):
         """Test pairing failure."""
         mock_move = MagicMock()
         mock_move.connection_type = mock_psmove_module.Conn_USB
-        mock_move.pair_custom.return_value = False
         mock_psmove_module.PSMove.return_value = mock_move
 
-        result = usb_pairing.pair_controller_psmove(0, "AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66")
-        assert result is False
+        mock_proc = AsyncMock()
+        mock_proc.communicate.return_value = (b"FAIL\n", b"")
 
-    def test_not_usb_connected(self, usb_pairing, mock_psmove_module):
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            result = await usb_pairing.pair_controller_psmove(0, "AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66")
+            assert result is False
+
+    @pytest.mark.asyncio
+    async def test_not_usb_connected(self, usb_pairing, mock_psmove_module):
         """Test when controller is not USB connected."""
         mock_move = MagicMock()
         mock_move.connection_type = mock_psmove_module.Conn_Bluetooth
         mock_psmove_module.PSMove.return_value = mock_move
 
-        result = usb_pairing.pair_controller_psmove(0, "AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66")
+        result = await usb_pairing.pair_controller_psmove(0, "AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66")
         assert result is False
 
-    def test_exception_handling(self, usb_pairing, mock_psmove_module):
+    @pytest.mark.asyncio
+    async def test_timeout_treated_as_success(self, usb_pairing, mock_psmove_module):
+        """Test that timeout (ZCM2 PIN agent blocking) is treated as success."""
+        mock_move = MagicMock()
+        mock_move.connection_type = mock_psmove_module.Conn_USB
+        mock_psmove_module.PSMove.return_value = mock_move
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate.side_effect = TimeoutError()
+        mock_proc.kill = MagicMock()
+        mock_proc.wait = AsyncMock()
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            result = await usb_pairing.pair_controller_psmove(0, "AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66")
+            assert result is True
+            mock_proc.kill.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_exception_handling(self, usb_pairing, mock_psmove_module):
         """Test exception handling during pairing."""
         mock_psmove_module.PSMove.side_effect = RuntimeError("Hardware error")
 
-        result = usb_pairing.pair_controller_psmove(0, "AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66")
+        result = await usb_pairing.pair_controller_psmove(0, "AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66")
         assert result is False
 
 

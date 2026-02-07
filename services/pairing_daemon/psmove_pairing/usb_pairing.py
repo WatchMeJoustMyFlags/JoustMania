@@ -83,22 +83,17 @@ class USBPairing:
         pairing_usb_controllers.set(len(usb_controllers))
         return usb_controllers
 
-    def _pair_custom_blocking(self, move_index: int, adapter_address: str) -> bool:
-        """Call pair_custom() synchronously. May block for ZCM2 (PIN agent)."""
-        move = psmove.PSMove(move_index)
-        if move.connection_type != psmove.Conn_USB:
-            return False
-        return move.pair_custom(adapter_address)
-
-    def pair_controller_psmove(self, move_index: int, serial: str, adapter_address: str) -> bool:
+    async def pair_controller_psmove(self, move_index: int, serial: str, adapter_address: str) -> bool:
         """Pair a controller using psmove Python library's pair_custom().
 
         For ZCM2 (PS4-era) controllers, pair_custom() blocks indefinitely in
         its internal PIN agent (which can't work in Docker because systemctl
-        fails). We run it with a timeout — the controller's BT address and
-        BlueZ device files are written before the PIN agent starts, so a
-        timeout is safe. Our own bluetoothctl agent handles PIN after BlueZ
-        is restarted.
+        fails). Since the C code holds the GIL, threading timeouts don't work.
+
+        We run pair_custom() in a subprocess with a timeout. The controller's
+        BT address and BlueZ device files are written before the PIN agent
+        starts, so killing the subprocess after timeout is safe. Our own
+        bluetoothctl agent handles PIN after BlueZ is restarted.
 
         Args:
             move_index: Controller index from psmove.count_connected()
@@ -108,7 +103,7 @@ class USBPairing:
         Returns:
             True if pairing succeeded (or timed out after address was written)
         """
-        import concurrent.futures
+        import asyncio
 
         logger.info(f"Pairing controller {serial} to adapter {adapter_address}...")
 
@@ -123,21 +118,37 @@ class USBPairing:
                     logger.warning(f"Controller {serial} not connected via USB")
                     span.set_status(Status(StatusCode.ERROR, "Not USB connected"))
                     return False
+                # Release the PSMove handle before subprocess uses it
+                del move
 
-                # Run pair_custom with a timeout — ZCM2 controllers cause it
-                # to block in the C PIN agent. The BT address and BlueZ files
-                # are written before the agent starts, so timeout is safe.
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(self._pair_custom_blocking, move_index, adapter_address)
-                    try:
-                        result = future.result(timeout=10)
-                    except concurrent.futures.TimeoutError:
-                        logger.info(
-                            f"pair_custom() timed out for {serial} (ZCM2 PIN agent blocking) "
-                            "- address written, will handle PIN via bluetoothctl agent"
-                        )
-                        # Timeout is expected for ZCM2 — address was already written
-                        result = True
+                # Run pair_custom in a subprocess to avoid GIL blocking
+                script = (
+                    "import psmove; "
+                    f"m = psmove.PSMove({move_index}); "
+                    f"r = m.pair_custom('{adapter_address}'); "
+                    "print('OK' if r else 'FAIL')"
+                )
+                proc = await asyncio.create_subprocess_exec(
+                    "python",
+                    "-c",
+                    script,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+
+                try:
+                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+                    output = stdout.decode().strip()
+                    result = output == "OK"
+                except TimeoutError:
+                    logger.info(
+                        f"pair_custom() timed out for {serial} (ZCM2 PIN agent blocking) "
+                        "- address written, will handle PIN via bluetoothctl agent"
+                    )
+                    proc.kill()
+                    await proc.wait()
+                    # Timeout is expected for ZCM2 — address was already written
+                    result = True
 
                 duration = time.time() - start_time
                 pairing_duration_seconds.observe(duration)
@@ -243,7 +254,7 @@ class USBPairing:
             pairing_adapter_device_count.labels(adapter=adapter.address).set(adapter.device_count)
 
             # Pair controller to selected adapter using Python bindings
-            if not self.pair_controller_psmove(move_index, serial, adapter.address):
+            if not await self.pair_controller_psmove(move_index, serial, adapter.address):
                 logger.error(f"PAIRING FAILED: Controller {serial} could not be paired")
                 pairing_failed_total.inc()
                 span.set_status(Status(StatusCode.ERROR, "Pairing failed"))
