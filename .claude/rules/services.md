@@ -20,8 +20,7 @@ services/<service-name>/
 
 ```python
 class MyServiceServicer(my_pb2_grpc.MyServiceServicer):
-    def __init__(self, settings_client, ...):
-        self.settings = settings_client
+    def __init__(self, ...):
         # Initialize state
 
     async def MyMethod(self, request, context):
@@ -47,21 +46,6 @@ active_connections = Gauge("my_active_connections", "Active connections")
 3. Import from `proto import <service>_pb2, <service>_pb2_grpc`
 
 ## Common Patterns
-
-### Settings Integration
-
-```python
-# Get setting
-response = await settings_stub.GetSetting(
-    settings_pb2.GetSettingRequest(key="sensitivity")
-)
-value = response.value
-
-# Subscribe to changes
-async for event in settings_stub.SubscribeToChanges(...):
-    if event.key == "sensitivity":
-        self.update_sensitivity(event.new_value)
-```
 
 ### Controller Manager Integration
 

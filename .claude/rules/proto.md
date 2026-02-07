@@ -6,7 +6,6 @@ All `.proto` files are in the `proto/` directory:
 
 ```
 proto/
-├── settings.proto           # Configuration service
 ├── controller_manager.proto # Hardware control
 ├── game_coordinator.proto   # Game lifecycle
 ├── menu.proto               # Menu/lobby service

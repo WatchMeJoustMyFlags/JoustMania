@@ -12,15 +12,9 @@
 # (connect-proxy, dashboard, grafana-live-publisher) are unchanged.
 #
 # After changing code, restart the affected service to pick up changes:
-#   docker compose restart settings
+#   docker compose restart game-coordinator
 
 services:
-  settings:
-    volumes:
-      - ./services/settings:/app/services/settings
-      - ./lib:/app/lib
-      - ./proto:/app/proto
-
   controller-manager:
     volumes:
       - ./services/controller_manager:/app/services/controller_manager

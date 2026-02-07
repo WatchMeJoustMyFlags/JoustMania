@@ -59,7 +59,7 @@ dev:
 	@echo "=========================================="
 	@echo "  Source directories are volume-mounted."
 	@echo "  Restart a service after code changes:"
-	@echo "    docker compose restart settings"
+	@echo "    docker compose restart game-coordinator"
 	@echo ""
 	@echo "  Dashboard:  http://localhost/"
 	@echo "  Jaeger:     http://localhost/jaeger/"
@@ -214,7 +214,7 @@ PSMOVE_BUILDER_IMAGE ?= ghcr.io/watchmejoustmyflags/joustmania/psmove-builder:la
 .PHONY: ci-build-service
 ci-build-service:
 ifndef SERVICE
-	$(error SERVICE is required. Usage: make ci-build-service SERVICE=settings)
+	$(error SERVICE is required. Usage: make ci-build-service SERVICE=game_coordinator)
 endif
 	docker build \
 		--build-arg BUILDER_IMAGE=$(BUILDER_IMAGE) \
