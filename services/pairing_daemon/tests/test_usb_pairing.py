@@ -166,17 +166,62 @@ class TestRestartBluetoothService:
             await usb_pairing.restart_bluetooth_service()
 
 
+class TestBluezTrustController:
+    """Tests for bluez_trust_controller()."""
+
+    @pytest.mark.asyncio
+    async def test_trust_succeeds(self, usb_pairing):
+        """Test successful trust."""
+        runner = MockCommandRunner()
+        runner.add_response(["bluetoothctl", "trust", "AA:BB:CC:DD:EE:FF"], (0, "trust succeeded"))
+
+        with patch("psmove_pairing.usb_pairing.run_command", runner):
+            result = await usb_pairing.bluez_trust_controller("AA:BB:CC:DD:EE:FF")
+            assert result is True
+
+    @pytest.mark.asyncio
+    async def test_trust_retries_on_failure(self, usb_pairing):
+        """Test that trust retries once after failure."""
+        call_count = 0
+
+        async def mock_run_command(cmd):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return (1, "Unable to open mgmt_socket")
+            return (0, "trust succeeded")
+
+        with patch("psmove_pairing.usb_pairing.run_command", mock_run_command):
+            with patch("asyncio.sleep", return_value=None):
+                result = await usb_pairing.bluez_trust_controller("AA:BB:CC:DD:EE:FF")
+                assert result is True
+                assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_trust_failure_is_non_fatal(self, usb_pairing):
+        """Test that trust failure returns False but doesn't raise."""
+        runner = MockCommandRunner()
+        runner.add_response(["bluetoothctl", "trust", "AA:BB:CC:DD:EE:FF"], (1, "failed"))
+
+        with patch("psmove_pairing.usb_pairing.run_command", runner):
+            with patch("asyncio.sleep", return_value=None):
+                result = await usb_pairing.bluez_trust_controller("AA:BB:CC:DD:EE:FF")
+                assert result is False
+
+
 class TestProcessController:
     """Tests for process_controller()."""
 
     @pytest.mark.asyncio
-    async def test_skip_already_paired(self, usb_pairing):
-        """Test skipping controller already paired."""
+    async def test_skip_already_paired_but_still_trusts(self, usb_pairing):
+        """Test skipping pairing for already-paired controller but still trusting."""
         usb_pairing.adapter_manager.refresh_adapters = MagicMock()
         usb_pairing.adapter_manager.check_if_not_paired = MagicMock(return_value=False)
+        usb_pairing.bluez_trust_controller = AsyncMock(return_value=True)
 
         result = await usb_pairing.process_controller(0, "00:06:F7:AA:BB:CC")
         assert result is False
+        usb_pairing.bluez_trust_controller.assert_called_once_with("00:06:F7:AA:BB:CC")
 
     @pytest.mark.asyncio
     async def test_no_adapters_available(self, usb_pairing):
