@@ -76,3 +76,29 @@ stream_disconnections_total = Counter(
     "menu_stream_disconnections_total",
     "Total menu event stream disconnections",
 )
+
+# Idle mode metrics
+idle_mode_active = Gauge(
+    "menu_idle_mode_active",
+    "Whether idle mode is currently engaged (1=active, 0=inactive)",
+)
+
+idle_controllers_count = Gauge(
+    "menu_idle_controllers_count",
+    "Number of controllers currently in idle state",
+)
+
+sentinel_controllers_count = Gauge(
+    "menu_sentinel_controllers_count",
+    "Number of active sentinel controllers",
+)
+
+idle_mode_entries_total = Counter(
+    "menu_idle_mode_entries_total",
+    "Total times idle mode has been entered",
+)
+
+idle_mode_wake_total = Counter(
+    "menu_idle_mode_wake_total",
+    "Total times controllers have been woken from idle mode",
+)
