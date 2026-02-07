@@ -72,3 +72,11 @@ scrape_configs:
       - targets: ['pairing-daemon:8002']
         labels:
           service: 'psmove-pairing'
+
+  # flagd feature flag service (management port exposes Prometheus metrics)
+  - job_name: 'flagd'
+    scrape_interval: 30s
+    static_configs:
+      - targets: ['flagd:8014']
+        labels:
+          service: 'flagd'
