@@ -83,11 +83,22 @@ class USBPairing:
         pairing_usb_controllers.set(len(usb_controllers))
         return usb_controllers
 
+    def _pair_custom_blocking(self, move_index: int, adapter_address: str) -> bool:
+        """Call pair_custom() synchronously. May block for ZCM2 (PIN agent)."""
+        move = psmove.PSMove(move_index)
+        if move.connection_type != psmove.Conn_USB:
+            return False
+        return move.pair_custom(adapter_address)
+
     def pair_controller_psmove(self, move_index: int, serial: str, adapter_address: str) -> bool:
         """Pair a controller using psmove Python library's pair_custom().
 
-        This directly specifies the target adapter, matching the original
-        JoustMania's approach which is more reliable than environment variables.
+        For ZCM2 (PS4-era) controllers, pair_custom() blocks indefinitely in
+        its internal PIN agent (which can't work in Docker because systemctl
+        fails). We run it with a timeout — the controller's BT address and
+        BlueZ device files are written before the PIN agent starts, so a
+        timeout is safe. Our own bluetoothctl agent handles PIN after BlueZ
+        is restarted.
 
         Args:
             move_index: Controller index from psmove.count_connected()
@@ -95,8 +106,10 @@ class USBPairing:
             adapter_address: Target Bluetooth adapter address
 
         Returns:
-            True if pairing succeeded
+            True if pairing succeeded (or timed out after address was written)
         """
+        import concurrent.futures
+
         logger.info(f"Pairing controller {serial} to adapter {adapter_address}...")
 
         with self.tracer.start_as_current_span("pair_controller") as span:
@@ -111,8 +124,21 @@ class USBPairing:
                     span.set_status(Status(StatusCode.ERROR, "Not USB connected"))
                     return False
 
-                # Use pair_custom with the target adapter address
-                result = move.pair_custom(adapter_address)
+                # Run pair_custom with a timeout — ZCM2 controllers cause it
+                # to block in the C PIN agent. The BT address and BlueZ files
+                # are written before the agent starts, so timeout is safe.
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(self._pair_custom_blocking, move_index, adapter_address)
+                    try:
+                        result = future.result(timeout=10)
+                    except concurrent.futures.TimeoutError:
+                        logger.info(
+                            f"pair_custom() timed out for {serial} (ZCM2 PIN agent blocking) "
+                            "- address written, will handle PIN via bluetoothctl agent"
+                        )
+                        # Timeout is expected for ZCM2 — address was already written
+                        result = True
+
                 duration = time.time() - start_time
                 pairing_duration_seconds.observe(duration)
 
