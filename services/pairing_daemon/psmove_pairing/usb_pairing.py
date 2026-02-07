@@ -254,9 +254,12 @@ class USBPairing:
             self.adapter_manager.refresh_adapters()
 
             if not self.adapter_manager.check_if_not_paired(serial):
-                logger.info(f"Controller {serial} already paired, skipping")
+                logger.info(f"Controller {serial} already paired, ensuring trusted")
                 span.set_attribute("skipped", True)
                 span.set_attribute("skip_reason", "already_paired")
+                # Still trust — controller may be paired but not yet trusted
+                # (e.g. trust failed on a previous attempt due to BlueZ timing)
+                await self.bluez_trust_controller(serial)
                 return False
 
             logger.info(f"Found unpaired USB controller: {serial}")

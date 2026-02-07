@@ -213,13 +213,15 @@ class TestProcessController:
     """Tests for process_controller()."""
 
     @pytest.mark.asyncio
-    async def test_skip_already_paired(self, usb_pairing):
-        """Test skipping controller already paired."""
+    async def test_skip_already_paired_but_still_trusts(self, usb_pairing):
+        """Test skipping pairing for already-paired controller but still trusting."""
         usb_pairing.adapter_manager.refresh_adapters = MagicMock()
         usb_pairing.adapter_manager.check_if_not_paired = MagicMock(return_value=False)
+        usb_pairing.bluez_trust_controller = AsyncMock(return_value=True)
 
         result = await usb_pairing.process_controller(0, "00:06:F7:AA:BB:CC")
         assert result is False
+        usb_pairing.bluez_trust_controller.assert_called_once_with("00:06:F7:AA:BB:CC")
 
     @pytest.mark.asyncio
     async def test_no_adapters_available(self, usb_pairing):
