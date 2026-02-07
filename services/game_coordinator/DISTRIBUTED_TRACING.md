@@ -15,7 +15,6 @@ GameCoordinator now has **full distributed tracing** with OpenTelemetry, trackin
 **Client-Side (Outgoing RPCs):**
 - `GrpcInstrumentorClient()` - Automatically traces all outgoing gRPC calls
 - Creates spans for calls to:
-  - **Settings service**: `GetSettings`
   - **ControllerManager service**: `GetReadyControllers`, `StreamGameplayData`
 
 ### Trace Hierarchy

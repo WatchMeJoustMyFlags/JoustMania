@@ -75,7 +75,6 @@ jobs:
         service:
           - controller_manager
           - game_coordinator
-          - settings
           - menu
           - audio
     steps:
@@ -419,7 +418,6 @@ jobs:
         service:
           - controller_manager
           - game_coordinator
-          - settings
           - menu
           - audio
     steps:

@@ -27,7 +27,6 @@ members = [
     "proto",
     "services/controller_manager",
     "services/game_coordinator",
-    "services/settings",
     "services/menu",
     "services/audio",
     "tests/integration",

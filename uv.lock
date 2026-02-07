@@ -12,7 +12,6 @@ members = [
     "joustmania-lib",
     "joustmania-menu",
     "joustmania-proto",
-    "joustmania-settings",
 ]
 
 [[package]]
@@ -633,48 +632,6 @@ requires-dist = [
     { name = "grpcio-tools", specifier = ">=1.70.0" },
     { name = "protobuf", specifier = ">=5.29.0" },
 ]
-
-[[package]]
-name = "joustmania-settings"
-version = "1.0.0"
-source = { editable = "services/settings" }
-dependencies = [
-    { name = "grpcio" },
-    { name = "grpcio-health-checking" },
-    { name = "joustmania-lib" },
-    { name = "joustmania-proto" },
-    { name = "opentelemetry-distro" },
-    { name = "opentelemetry-exporter-otlp" },
-    { name = "opentelemetry-instrumentation-grpc" },
-    { name = "prometheus-client" },
-    { name = "psutil" },
-    { name = "pyyaml" },
-]
-
-[package.optional-dependencies]
-test = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "grpcio", specifier = ">=1.70.0" },
-    { name = "grpcio-health-checking", specifier = ">=1.70.0" },
-    { name = "joustmania-lib", editable = "lib" },
-    { name = "joustmania-proto", editable = "proto" },
-    { name = "opentelemetry-distro", specifier = ">=0.49b0" },
-    { name = "opentelemetry-exporter-otlp", specifier = ">=1.28.0" },
-    { name = "opentelemetry-instrumentation-grpc", specifier = ">=0.49b0" },
-    { name = "prometheus-client", specifier = ">=0.19.0" },
-    { name = "psutil", specifier = ">=5.9.0" },
-    { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0.0" },
-    { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.21.0" },
-    { name = "pytest-cov", marker = "extra == 'test'", specifier = ">=4.1.0" },
-    { name = "pyyaml", specifier = ">=6.0" },
-]
-provides-extras = ["test"]
 
 [[package]]
 name = "llvmlite"
