@@ -78,7 +78,6 @@ class TeamsGameBase(BaseGameMode):
     def __init__(
         self,
         controller_manager_client,
-        settings_client,
         event_publisher,
         audio_client=None,
         game_id: str = "",
@@ -92,7 +91,6 @@ class TeamsGameBase(BaseGameMode):
 
         Args:
             controller_manager_client: gRPC stub for ControllerManager service
-            settings_client: gRPC stub for Settings service
             event_publisher: Callback function to publish game events
             audio_client: gRPC stub for Audio service (Phase 29)
             game_id: Unique identifier for this game instance
@@ -103,7 +101,6 @@ class TeamsGameBase(BaseGameMode):
         """
         super().__init__(
             controller_manager_client=controller_manager_client,
-            settings_client=settings_client,
             event_publisher=event_publisher,
             audio_client=audio_client,
             game_id=game_id,

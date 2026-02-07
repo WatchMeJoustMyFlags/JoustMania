@@ -20,7 +20,7 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService, MockSettingsService, async_noop
+from conftest import EventCollector, MockControllerManagerService, async_noop
 
 from services.game_coordinator.games.zombie import (
     HUMAN_COLOR,
@@ -51,12 +51,10 @@ class TestZombieGameMode:
             death_schedule={},
             max_duration=10.0,
         )
-        mock_settings = MockSettingsService()
         event_collector = EventCollector()
 
         game = ZombieGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=event_collector.publish,
             audio_client=None,
             game_id="test_zombie_001",
@@ -238,12 +236,10 @@ class TestZombieKillMechanics:
             death_schedule={},
             max_duration=10.0,
         )
-        mock_settings = MockSettingsService()
         event_collector = EventCollector()
 
         game = ZombieGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=event_collector.publish,
             audio_client=None,
             game_id="test_zombie_kill",
@@ -345,11 +341,9 @@ class TestZombieThresholds:
     def zombie_game(self):
         """Create a Zombie game."""
         mock_controller_manager = MockControllerManagerService(num_controllers=4)
-        mock_settings = MockSettingsService()
 
         game = ZombieGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=async_noop,
             audio_client=None,
             game_id="test_zombie_thresh",
@@ -409,11 +403,9 @@ class TestZombieEdgeCases:
     async def test_minimum_one_human(self):
         """Even with many players, should have at least 1 human."""
         mock_controller_manager = MockControllerManagerService(num_controllers=3)
-        mock_settings = MockSettingsService()
 
         game = ZombieGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=async_noop,
             audio_client=None,
             game_id="test_min_human",
@@ -429,11 +421,9 @@ class TestZombieEdgeCases:
     async def test_get_game_name(self):
         """get_game_name should return 'Zombie'."""
         mock_controller_manager = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
 
         game = ZombieGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=async_noop,
             audio_client=None,
             game_id="test_name",

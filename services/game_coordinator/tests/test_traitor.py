@@ -20,7 +20,7 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService, MockSettingsService, async_noop
+from conftest import EventCollector, MockControllerManagerService, async_noop
 
 from services.game_coordinator.games.traitor import TraitorGame, TraitorPlayer
 
@@ -44,12 +44,10 @@ class TestTraitorGameMode:
             death_schedule={},
             max_duration=10.0,
         )
-        mock_settings = MockSettingsService()
         event_collector = EventCollector()
 
         game = TraitorGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=event_collector.publish,
             audio_client=None,
             game_id="test_traitor_001",
@@ -250,11 +248,9 @@ class TestTraitorCount:
     def traitor_game(self):
         """Create a Traitor game."""
         mock_controller_manager = MockControllerManagerService(num_controllers=4)
-        mock_settings = MockSettingsService()
 
         game = TraitorGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=async_noop,
             audio_client=None,
             game_id="test_traitor_count",
@@ -288,11 +284,9 @@ class TestTraitorLargeGame:
     async def test_8_players_has_2_traitors(self):
         """Test 8 players has 2 traitors."""
         mock_controller_manager = MockControllerManagerService(num_controllers=8)
-        mock_settings = MockSettingsService()
 
         game = TraitorGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=async_noop,
             audio_client=None,
             game_id="test_traitor_8",
@@ -307,11 +301,9 @@ class TestTraitorLargeGame:
     async def test_10_players_has_3_traitors(self):
         """Test 10 players has 3 traitors."""
         mock_controller_manager = MockControllerManagerService(num_controllers=10)
-        mock_settings = MockSettingsService()
 
         game = TraitorGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=async_noop,
             audio_client=None,
             game_id="test_traitor_10",
@@ -330,12 +322,10 @@ class TestTraitorEdgeCases:
     async def test_all_dead_triggers_win_condition(self):
         """Test that all players dead triggers win condition."""
         mock_controller_manager = MockControllerManagerService(num_controllers=4)
-        mock_settings = MockSettingsService()
         event_collector = EventCollector()
 
         game = TraitorGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=event_collector.publish,
             audio_client=None,
             game_id="test_traitor_draw",
@@ -357,11 +347,9 @@ class TestTraitorEdgeCases:
     async def test_traitors_distributed_across_visible_teams(self):
         """Test traitors can be on different visible teams."""
         mock_controller_manager = MockControllerManagerService(num_controllers=6)
-        mock_settings = MockSettingsService()
 
         game = TraitorGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=async_noop,
             audio_client=None,
             game_id="test_traitor_dist",
