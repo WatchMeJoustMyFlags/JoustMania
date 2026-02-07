@@ -124,8 +124,6 @@ class ZombieGame(BaseGameMode):
         self.time_remaining: float = 0.0
         self.timer_task: asyncio.Task | None = None
         self.game_span: trace.Span | None = None
-        # Track respawn tasks to prevent garbage collection
-        self._respawn_tasks: set[asyncio.Task] = set()
 
     def get_game_name(self) -> str:
         """Return game mode identifier."""
@@ -360,10 +358,8 @@ class ZombieGame(BaseGameMode):
 
             logger.info(f"Zombie {serial} killed, respawning in {respawn_delay:.1f}s")
 
-            # Start respawn task (track to prevent garbage collection)
-            task = asyncio.create_task(self._respawn_zombie(serial, respawn_delay))
-            self._respawn_tasks.add(task)
-            task.add_done_callback(self._respawn_tasks.discard)
+            # Start respawn task (tracked for automatic cleanup)
+            self._track_task(asyncio.create_task(self._respawn_zombie(serial, respawn_delay)))
 
             if player.span:
                 player.span.add_event(
@@ -533,6 +529,12 @@ class ZombieGame(BaseGameMode):
 
         logger.info("Zombie game ended")
 
+    async def cleanup(self) -> None:
+        """Cancel timer task, respawn tasks, and any tracked tasks."""
+        if self.timer_task and not self.timer_task.done():
+            self.timer_task.cancel()
+        await super().cleanup()
+
     async def run(self):
         """
         Run the zombie game with timer.
@@ -589,7 +591,7 @@ class ZombieGame(BaseGameMode):
                 await self._start_game_music()
 
                 # Start game timer as background task
-                self.timer_task = asyncio.create_task(self._game_timer())
+                self.timer_task = self._track_task(asyncio.create_task(self._game_timer()))
 
                 # Game loop (gameplay stream already started before intro)
                 with tracer.start_as_current_span("gameplay_phase"):
@@ -607,7 +609,9 @@ class ZombieGame(BaseGameMode):
                 game_span.set_status(Status(StatusCode.ERROR, str(e)))
                 raise
             finally:
+                force_ended = not self.running
                 self.running = False
                 await self._stop_game_music()
-                if self.timer_task and not self.timer_task.done():
-                    self.timer_task.cancel()
+                if force_ended:
+                    await self.on_force_end()
+                await self.cleanup()

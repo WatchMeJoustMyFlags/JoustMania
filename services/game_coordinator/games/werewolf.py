@@ -467,6 +467,12 @@ class WerewolfGame(BaseGameMode):
 
         logger.info("Werewolf game ended")
 
+    async def cleanup(self) -> None:
+        """Cancel reveal task and any tracked tasks."""
+        if self.reveal_task and not self.reveal_task.done():
+            self.reveal_task.cancel()
+        await super().cleanup()
+
     async def run(self):
         """
         Run the werewolf game with reveal timer.
@@ -530,7 +536,7 @@ class WerewolfGame(BaseGameMode):
                 await self._start_game_music()
 
                 # Start reveal timer as background task
-                self.reveal_task = asyncio.create_task(self._reveal_werewolves())
+                self.reveal_task = self._track_task(asyncio.create_task(self._reveal_werewolves()))
 
                 # Game loop (gameplay stream already started before intro)
                 with tracer.start_as_current_span("gameplay_phase"):
@@ -548,7 +554,9 @@ class WerewolfGame(BaseGameMode):
                 game_span.set_status(Status(StatusCode.ERROR, str(e)))
                 raise
             finally:
+                force_ended = not self.running
                 self.running = False
                 await self._stop_game_music()
-                if self.reveal_task and not self.reveal_task.done():
-                    self.reveal_task.cancel()
+                if force_ended:
+                    await self.on_force_end()
+                await self.cleanup()
