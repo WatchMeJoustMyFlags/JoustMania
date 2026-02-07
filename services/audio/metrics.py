@@ -1,10 +1,10 @@
 """
-Prometheus metrics for Audio Service (Phase 38).
+OTEL push metrics for Audio Service.
 
 Tracks system resources and gRPC request performance.
 """
 
-from prometheus_client import Counter, Gauge, Histogram
+from lib.otel_metrics import Counter, Gauge, Histogram
 
 # System metrics
 process_cpu_percent = Gauge("process_cpu_percent", "Process CPU usage percentage")

@@ -279,7 +279,6 @@ services:
     # Ports exposed only within Docker network (no host binding)
     expose:
       - "50054"  # gRPC service
-      - "8000"   # Prometheus metrics (Phase 38)
     environment:
       - OTEL_SERVICE_NAME=menu-service
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
@@ -327,7 +326,6 @@ services:
     # Ports exposed only within Docker network (no host binding)
     expose:
       - "50056"  # gRPC service
-      - "8000"   # Prometheus metrics
     environment:
       - MOCK_MODE=${AUDIO_MOCK_MODE:-false}
       - OTEL_SERVICE_NAME=audio-service
