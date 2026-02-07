@@ -27,7 +27,7 @@ def test_runtime_config_env_overrides():
 
 
 @patch("openfeature.api.add_handler")
-@patch("lib.feature_flags.get_feature_flag_client")
+@patch("lib.feature_flags.get_flag_client")
 def test_runtime_config_flag_updates(mock_get_client, mock_add_handler):
     """Test that config updates when flags are evaluated."""
     # Setup mock client
@@ -58,7 +58,7 @@ def test_runtime_config_flag_updates(mock_get_client, mock_add_handler):
 @patch("openfeature.api.add_handler")
 def test_runtime_config_flag_error_fallback(_mock_add_handler, caplog):
     """Test that config stays at default if flag evaluation fails."""
-    with patch("lib.feature_flags.get_feature_flag_client") as mock_get_client:
+    with patch("lib.feature_flags.get_flag_client") as mock_get_client:
         mock_client = MagicMock()
         mock_get_client.return_value = mock_client
         mock_client.get_integer_value.side_effect = Exception("flagd unreachable")
@@ -72,7 +72,7 @@ def test_runtime_config_flag_error_fallback(_mock_add_handler, caplog):
 
 
 @patch("openfeature.api.add_handler")
-@patch("lib.feature_flags.get_feature_flag_client")
+@patch("lib.feature_flags.get_flag_client")
 def test_on_flags_changed_event(mock_get_client, _mock_add_handler, caplog):
     """Test that _on_flags_changed updates config when event fires."""
     mock_client = MagicMock()
@@ -105,7 +105,7 @@ def test_on_flags_changed_event(mock_get_client, _mock_add_handler, caplog):
 
 
 @patch("openfeature.api.add_handler")
-@patch("lib.feature_flags.get_feature_flag_client")
+@patch("lib.feature_flags.get_flag_client")
 def test_on_flags_changed_no_flag_list(mock_get_client, _mock_add_handler, caplog):
     """Test that _on_flags_changed works when flags_changed is empty."""
     mock_client = MagicMock()
@@ -198,18 +198,18 @@ def test_env_override_invalid_rainbow(caplog):
 
 def test_setup_feature_flags_import_error(caplog):
     """Test that ImportError in _setup_feature_flags is handled."""
-    with patch("lib.feature_flags.get_feature_flag_client", side_effect=ImportError("no module")):
+    with patch("lib.feature_flags.get_flag_client", side_effect=ImportError("no module")):
         with caplog.at_level(logging.WARNING):
             manager = RuntimeConfigManager()
 
         assert manager.flag_client is None
-        assert "Could not import FeatureFlagClient" in caplog.text
+        assert "Could not initialize feature flags" in caplog.text
 
 
 @patch("openfeature.api.add_handler")
 def test_setup_feature_flags_generic_error(_mock_add_handler, caplog):
     """Test that generic exceptions in _setup_feature_flags are handled."""
-    with patch("lib.feature_flags.get_feature_flag_client", side_effect=RuntimeError("startup failed")):
+    with patch("lib.feature_flags.get_flag_client", side_effect=RuntimeError("startup failed")):
         with caplog.at_level(logging.ERROR):
             manager = RuntimeConfigManager()
 
@@ -218,7 +218,7 @@ def test_setup_feature_flags_generic_error(_mock_add_handler, caplog):
 
 
 @patch("openfeature.api.add_handler")
-@patch("lib.feature_flags.get_feature_flag_client")
+@patch("lib.feature_flags.get_flag_client")
 def test_refresh_from_flags_with_metrics(mock_get_client, _mock_add_handler):
     """Test that _refresh_from_flags tracks metrics on changes."""
     mock_client = MagicMock()
@@ -228,9 +228,11 @@ def test_refresh_from_flags_with_metrics(mock_get_client, _mock_add_handler):
     mock_client.get_integer_value.side_effect = [60, 45]
     mock_client.get_string_value.side_effect = ["MEDIUM", "HIGH"]
 
-    with patch("services.game_coordinator.metrics.config_changes_total") as mock_changes, patch(
-        "services.game_coordinator.metrics.flag_evaluations_total"
-    ) as mock_evaluations, patch("services.game_coordinator.metrics.current_update_frequency_hz") as mock_gauge:
+    with (
+        patch("services.game_coordinator.metrics.config_changes_total") as mock_changes,
+        patch("services.game_coordinator.metrics.flag_evaluations_total") as mock_evaluations,
+        patch("services.game_coordinator.metrics.current_update_frequency_hz") as mock_gauge,
+    ):
         manager = RuntimeConfigManager()
 
         # Verify initial setup called metrics
@@ -246,7 +248,7 @@ def test_refresh_from_flags_with_metrics(mock_get_client, _mock_add_handler):
 
 
 @patch("openfeature.api.add_handler")
-@patch("lib.feature_flags.get_feature_flag_client")
+@patch("lib.feature_flags.get_flag_client")
 def test_on_flags_changed_with_metrics(mock_get_client, _mock_add_handler):
     """Test that _on_flags_changed increments metrics."""
     mock_client = MagicMock()

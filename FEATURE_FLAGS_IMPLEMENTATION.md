@@ -305,9 +305,9 @@ docker compose exec flagd ls -l /etc/flagd/
 - Verify flag files are mounted correctly in docker-compose.yml
 - Check file permissions (must be readable by flagd)
 
-### "Could not import FeatureFlagClient" error
+### "Could not initialize feature flags" error
 
-**Symptoms:** Game coordinator starts but shows import error
+**Symptoms:** Service starts but shows import error
 
 **Diagnosis:**
 ```bash
@@ -390,8 +390,9 @@ If flagd is unavailable, the system gracefully degrades:
 
 ```python
 try:
-    from lib.feature_flags import FeatureFlagClient
-    self.flags = FeatureFlagClient()
+    from lib.feature_flags import init_flag_domain, get_flag_client
+    init_flag_domain("performance")
+    self.flags = get_flag_client("performance")
 except ImportError:
     logger.warning("Feature flags disabled - using defaults")
     self.flags = None
