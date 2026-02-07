@@ -19,6 +19,10 @@ receivers:
             - targets: ['node-exporter:9100']
               labels:
                 instance: 'raspberry-pi'
+        - job_name: 'victoria-metrics'
+          scrape_interval: 30s
+          static_configs:
+            - targets: ['victoria-metrics:8428']
 
 processors:
   # Batch processor for better performance (traces/logs)
