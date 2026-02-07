@@ -183,14 +183,11 @@ def create_ffa_game(num_controllers: int) -> tuple[FFAGame, list[str]]:
     test_conftest = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(test_conftest)
     MockControllerManagerService = test_conftest.MockControllerManagerService
-    MockSettingsService = test_conftest.MockSettingsService
 
     mock_cm = MockControllerManagerService(num_controllers=num_controllers)
-    mock_settings = MockSettingsService()
 
     game = FFAGame(
         controller_manager_client=mock_cm,
-        settings_client=mock_settings,
         event_publisher=async_noop,
         audio_client=None,
         game_id=f"perf_test_{int(time.time())}",
