@@ -320,6 +320,8 @@ services:
     # Sound device access for real audio output
     devices:
       - /dev/snd:/dev/snd
+    group_add:
+      - "29"  # host 'audio' group GID — required for ALSA device access
     volumes:
       - ./services/audio/assets:/app/services/audio/assets:ro  # Audio files (read-only)
     # Ports exposed only within Docker network (no host binding)
