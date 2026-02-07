@@ -228,6 +228,9 @@ class BaseGameMode(ABC):
         self.gameplay_span: trace.Span | None = None  # Reference for span events
         self.gameplay_span_context = None  # Context for child spans in background tasks
 
+        # Tracked async tasks for automatic cleanup on game end
+        self._tasks: set[asyncio.Task] = set()
+
         logger.info(f"{self.get_game_name()} game initialized: {self.game_id}")
 
     # ========================================================================
@@ -898,6 +901,57 @@ class BaseGameMode(ABC):
         self.running = False
 
     # ========================================================================
+    # Task Tracking and Lifecycle Hooks
+    # ========================================================================
+
+    def _track_task(self, task: asyncio.Task) -> asyncio.Task:
+        """
+        Register an async task for automatic cleanup.
+
+        Tracked tasks are cancelled when cleanup() is called, preventing
+        dangling tasks after game end.
+
+        Args:
+            task: The asyncio.Task to track
+
+        Returns:
+            The same task (for chaining with asyncio.create_task)
+        """
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
+
+    async def cleanup(self) -> None:
+        """
+        Clean up game resources. Called in finally block after game ends.
+
+        Cancels any tracked async tasks registered via _track_task().
+        Subclasses should override to add mode-specific cleanup
+        (e.g., cancel timers, close connections) and call super().cleanup().
+        """
+        if self._tasks:
+            # Snapshot tasks before cancelling (done callbacks remove from set)
+            tasks_to_cancel = list(self._tasks)
+            logger.info(f"Cleaning up {len(tasks_to_cancel)} tracked tasks")
+            for task in tasks_to_cancel:
+                if not task.done():
+                    task.cancel()
+            # Wait for all tasks to complete cancellation
+            await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+            self._tasks.clear()
+        logger.info(f"{self.get_game_name()} cleanup complete")
+
+    async def on_force_end(self) -> None:
+        """
+        Hook called when game is force-ended (not natural completion).
+
+        Called before cleanup(). Use for mode-specific force-end logic
+        like announcing forced end or saving partial results.
+        Subclasses can override to add custom behavior.
+        """
+        logger.info(f"{self.get_game_name()} force-ended")
+
+    # ========================================================================
     # Template Method - Orchestrates entire game lifecycle with spans
     # ========================================================================
 
@@ -1002,7 +1056,13 @@ class BaseGameMode(ABC):
             raise
 
         finally:
+            force_ended = not self.running
             self.running = False
+            # Call force-end hook if game was externally stopped
+            if force_ended:
+                await self.on_force_end()
+            # Always call cleanup to cancel tracked tasks
+            await self.cleanup()
             # Ensure analytics are always cleared, even on error
             metrics.clear_all_player_analytics()
             logger.info(f"{self.get_game_name()} game finished: {self.game_id}")

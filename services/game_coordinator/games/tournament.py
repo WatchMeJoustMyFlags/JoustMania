@@ -712,6 +712,13 @@ class TournamentGame(BaseGameMode):
 
         logger.info("Tournament game ended")
 
+    async def cleanup(self) -> None:
+        """Cancel match timer and any tracked tasks."""
+        if self.match_span:
+            self.match_span.end()
+            self.match_span = None
+        await super().cleanup()
+
     async def run(self):
         """
         Run the Tournament game.
@@ -783,5 +790,9 @@ class TournamentGame(BaseGameMode):
                 game_span.set_status(Status(StatusCode.ERROR, str(e)))
                 raise
             finally:
+                force_ended = not self.running
                 self.running = False
                 await self._stop_game_music()
+                if force_ended:
+                    await self.on_force_end()
+                await self.cleanup()

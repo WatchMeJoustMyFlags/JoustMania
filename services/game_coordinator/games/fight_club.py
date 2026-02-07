@@ -279,7 +279,7 @@ class FightClubGame(BaseGameMode):
 
         # Start round timer task (unless face-off)
         if not self.face_off_mode:
-            self.round_task = asyncio.create_task(self._round_timer())
+            self.round_task = self._track_task(asyncio.create_task(self._round_timer()))
 
     async def _round_timer(self):
         """
@@ -541,6 +541,17 @@ class FightClubGame(BaseGameMode):
 
         logger.info("Fight Club game ended")
 
+    async def cleanup(self) -> None:
+        """Cancel round timer and any tracked tasks."""
+        if self.round_task and not self.round_task.done():
+            self.round_task.cancel()
+        await super().cleanup()
+
+    async def on_force_end(self) -> None:
+        """Handle force-end by marking game as over."""
+        self.game_over = True
+        await super().on_force_end()
+
     async def run(self):
         """
         Run the Fight Club game.
@@ -620,10 +631,12 @@ class FightClubGame(BaseGameMode):
                 game_span.set_status(Status(StatusCode.ERROR, str(e)))
                 raise
             finally:
+                force_ended = not self.running
                 self.running = False
                 await self._stop_game_music()
-                if self.round_task and not self.round_task.done():
-                    self.round_task.cancel()
+                if force_ended:
+                    await self.on_force_end()
+                await self.cleanup()
 
     async def _process_controller_state(self, state):
         """

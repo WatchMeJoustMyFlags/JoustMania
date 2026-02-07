@@ -1089,3 +1089,200 @@ class TestMusicTempoThresholds:
         """LERP with t<0 should extrapolate."""
         result = game._lerp(1.0, 2.0, -0.5)
         assert result == 0.5
+
+
+class TestTaskTracking:
+    """Tests for _track_task() and automatic task cleanup."""
+
+    @pytest.fixture
+    def game(self):
+        """Create a minimal FFA game for testing task tracking."""
+        mock_cm = MockControllerManagerService(num_controllers=2)
+        mock_settings = MockSettingsService()
+        return FFAGame(
+            controller_manager_client=mock_cm,
+            settings_client=mock_settings,
+            event_publisher=async_noop,
+            audio_client=None,
+            game_id="test_tasks",
+        )
+
+    def test_tasks_set_initialized_empty(self, game):
+        """_tasks set should be empty on init."""
+        assert isinstance(game._tasks, set)
+        assert len(game._tasks) == 0
+
+    @pytest.mark.asyncio
+    async def test_track_task_registers_task(self, game):
+        """_track_task should add task to the _tasks set."""
+        import asyncio
+        import contextlib
+
+        async def dummy():
+            await asyncio.sleep(100)
+
+        task = asyncio.create_task(dummy())
+        result = game._track_task(task)
+
+        assert result is task
+        assert task in game._tasks
+
+        # Cleanup
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    @pytest.mark.asyncio
+    async def test_track_task_auto_removes_on_completion(self, game):
+        """Completed tasks should be automatically removed from _tasks."""
+        import asyncio
+
+        async def quick():
+            return "done"
+
+        task = asyncio.create_task(quick())
+        game._track_task(task)
+        assert task in game._tasks
+
+        # Wait for task to complete
+        await task
+        # Allow done callback to fire
+        await asyncio.sleep(0)
+
+        assert task not in game._tasks
+
+    @pytest.mark.asyncio
+    async def test_track_task_auto_removes_on_cancel(self, game):
+        """Cancelled tasks should be automatically removed from _tasks."""
+        import asyncio
+        import contextlib
+
+        async def slow():
+            await asyncio.sleep(100)
+
+        task = asyncio.create_task(slow())
+        game._track_task(task)
+        assert task in game._tasks
+
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        # Allow done callback to fire
+        await asyncio.sleep(0)
+
+        assert task not in game._tasks
+
+    @pytest.mark.asyncio
+    async def test_cleanup_cancels_tracked_tasks(self, game):
+        """cleanup() should cancel all tracked tasks."""
+        import asyncio
+
+        started = []
+
+        async def wait_forever():
+            started.append(True)
+            await asyncio.sleep(100)
+
+        task1 = game._track_task(asyncio.create_task(wait_forever()))
+        task2 = game._track_task(asyncio.create_task(wait_forever()))
+
+        # Let tasks start running
+        await asyncio.sleep(0)
+        assert len(started) == 2
+        assert len(game._tasks) == 2
+
+        await game.cleanup()
+
+        assert task1.cancelled()
+        assert task2.cancelled()
+        assert len(game._tasks) == 0
+
+    @pytest.mark.asyncio
+    async def test_cleanup_handles_already_done_tasks(self, game):
+        """cleanup() should handle tasks that completed before cleanup."""
+        import asyncio
+
+        async def quick():
+            return "done"
+
+        task = asyncio.create_task(quick())
+        game._track_task(task)
+        await task  # Complete before cleanup
+        await asyncio.sleep(0)  # Let callback fire
+
+        # Should not raise even though task is already done
+        await game.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_idempotent(self, game):
+        """cleanup() should be safe to call multiple times."""
+        await game.cleanup()
+        await game.cleanup()  # Should not raise
+
+
+class TestOnForceEnd:
+    """Tests for on_force_end() lifecycle hook."""
+
+    @pytest.fixture
+    def game(self):
+        """Create a minimal FFA game for testing force-end."""
+        mock_cm = MockControllerManagerService(num_controllers=2)
+        mock_settings = MockSettingsService()
+        return FFAGame(
+            controller_manager_client=mock_cm,
+            settings_client=mock_settings,
+            event_publisher=async_noop,
+            audio_client=None,
+            game_id="test_force_end",
+        )
+
+    @pytest.mark.asyncio
+    async def test_on_force_end_default_does_not_raise(self, game):
+        """Default on_force_end() should complete without error."""
+        await game.on_force_end()
+
+    @pytest.mark.asyncio
+    async def test_force_end_sets_running_false(self, game):
+        """force_end() should set running to False."""
+        game.running = True
+        game.force_end()
+        assert game.running is False
+
+
+class TestGameLifecycleCleanup:
+    """Tests for cleanup integration in run() finally block."""
+
+    @pytest.fixture
+    def game(self):
+        """Create a minimal FFA game for lifecycle testing."""
+        mock_cm = MockControllerManagerService(num_controllers=3)
+        mock_settings = MockSettingsService()
+        events = EventCollector()
+        return FFAGame(
+            controller_manager_client=mock_cm,
+            settings_client=mock_settings,
+            event_publisher=events.publish,
+            audio_client=None,
+            game_id="test_lifecycle",
+            initial_players=[type("P", (), {"serial": f"mock_controller_{i}"})() for i in range(3)],
+        )
+
+    @pytest.mark.asyncio
+    async def test_cleanup_called_after_run(self, game):
+        """cleanup() should be called even when run() completes normally."""
+        import contextlib
+
+        cleanup_called = []
+        original_cleanup = game.cleanup
+
+        async def track_cleanup():
+            cleanup_called.append(True)
+            await original_cleanup()
+
+        game.cleanup = track_cleanup
+
+        # Run game (will complete because mock stream ends)
+        with contextlib.suppress(Exception):
+            await game.run()
+
+        assert len(cleanup_called) >= 1
