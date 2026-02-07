@@ -95,12 +95,17 @@ services:
       loki:
         condition: service_healthy
       victoria-metrics:
-        condition: service_started
+        condition: service_healthy
       grafana-live-publisher:
         condition: service_healthy
     networks:
       - joustmania
-    # No healthcheck: distroless image has no shell/wget/curl
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:13133 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   # Settings Service
   settings:
@@ -276,8 +281,12 @@ services:
     networks:
       - joustmania
     restart: unless-stopped
-    # Note: VictoriaMetrics image is scratch-based, no shell/wget for healthcheck
-    # Service starts quickly and exposes /health endpoint for manual verification
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8428/-/healthy || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
   # Prometheus for metrics collection (Phase 38) - kept for alerting rules
   prometheus:
@@ -373,7 +382,7 @@ services:
       - grafana-data:/var/lib/grafana
     depends_on:
       victoria-metrics:
-        condition: service_started
+        condition: service_healthy
       prometheus:
         condition: service_healthy
       loki:
@@ -390,7 +399,7 @@ services:
       retries: 5
       start_period: 10s
 
-  # Loki for log aggregation with 1h retention
+  # Loki for log aggregation with 24h retention
   loki:
     image: grafana/loki:2.9.3
     container_name: joustmania-loki
