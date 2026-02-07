@@ -384,9 +384,12 @@ class TestIdleMonitorSentinelRotation:
     @patch("services.menu.idle_monitor.metrics")
     async def test_rotation_selects_new_sentinels(self, mock_metrics, idle_monitor, mock_state_manager):
         """Rotation should select different controllers when possible."""
+        import time as _time
+
         idle_monitor._idle_active = True
         idle_monitor._sentinel_serials = ["s1", "s2"]
-        idle_monitor._last_rotation_time = 0  # Force rotation
+        # Force rotation by setting last rotation far enough in the past
+        idle_monitor._last_rotation_time = _time.monotonic() - 600
 
         mock_state_manager.controller_states = {
             "s1": ControllerState.IDLE,
