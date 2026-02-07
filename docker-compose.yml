@@ -29,6 +29,12 @@
 # - Total memory budget ~3.2GB, designed for 4GB Raspberry Pi (leaving ~800MB for OS)
 # - CPU limits: 1.0 for real-time app services, 0.5 for standard services, 0.25 for lightweight
 
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   # Redis for pub/sub messaging
   redis:
@@ -50,6 +56,7 @@ services:
         limits:
           memory: 128m
           cpus: '0.25'
+    logging: *default-logging
 
   # flagd for feature flag evaluation
   flagd:
@@ -69,6 +76,7 @@ services:
         limits:
           memory: 128m
           cpus: '0.25'
+    logging: *default-logging
 
   # Jaeger for distributed tracing UI
   jaeger:
@@ -95,6 +103,7 @@ services:
         limits:
           memory: 384m
           cpus: '0.5'
+    logging: *default-logging
 
   # OpenTelemetry Collector
   otel-collector:
@@ -125,6 +134,7 @@ services:
         limits:
           memory: 256m
           cpus: '0.5'
+    logging: *default-logging
 
   # Settings Service
   settings:
@@ -157,6 +167,7 @@ services:
         limits:
           memory: 128m
           cpus: '0.5'
+    logging: *default-logging
 
   # Controller Manager Service
   controller-manager:
@@ -209,6 +220,7 @@ services:
         limits:
           memory: 256m
           cpus: '1.0'
+    logging: *default-logging
 
   # Game Coordinator Service
   game-coordinator:
@@ -240,6 +252,7 @@ services:
         limits:
           memory: 256m
           cpus: '1.0'
+    logging: *default-logging
 
   # Menu Service
   menu:
@@ -272,6 +285,7 @@ services:
         limits:
           memory: 192m
           cpus: '0.5'
+    logging: *default-logging
 
   # Audio Service
   audio:
@@ -307,6 +321,7 @@ services:
         limits:
           memory: 192m
           cpus: '0.5'
+    logging: *default-logging
 
   # VictoriaMetrics for high-frequency metrics storage (replaces Prometheus for storage)
   # Receives metrics via Prometheus remote write protocol from OTEL Collector
@@ -332,6 +347,7 @@ services:
         limits:
           memory: 256m
           cpus: '0.5'
+    logging: *default-logging
 
   # Prometheus for metrics collection (Phase 38) - kept for alerting rules
   prometheus:
@@ -368,6 +384,7 @@ services:
         limits:
           memory: 384m
           cpus: '0.5'
+    logging: *default-logging
 
   # Node Exporter for host metrics (CPU, memory, disk, temperature)
   node-exporter:
@@ -421,6 +438,7 @@ services:
         limits:
           memory: 64m
           cpus: '0.25'
+    logging: *default-logging
 
   # Grafana for metrics visualization (Phase 38)
   grafana:
@@ -458,6 +476,7 @@ services:
         limits:
           memory: 256m
           cpus: '0.5'
+    logging: *default-logging
 
   # Loki for log aggregation with 1h retention
   loki:
@@ -485,6 +504,7 @@ services:
         limits:
           memory: 192m
           cpus: '0.5'
+    logging: *default-logging
 
   # Grafana Live Publisher - OTLP to Grafana Live WebSocket bridge
   # Receives OTLP metrics from OTEL Collector and pushes to Grafana Live for real-time streaming
@@ -512,6 +532,7 @@ services:
         limits:
           memory: 128m
           cpus: '0.25'
+    logging: *default-logging
 
   # Connect-Web Proxy (gRPC to Connect protocol translation)
   # No dependencies - proxy handles connection failures gracefully
@@ -543,6 +564,7 @@ services:
         limits:
           memory: 128m
           cpus: '0.5'
+    logging: *default-logging
 
   # Dashboard (Real-time controller visualization SPA)
   dashboard:
@@ -563,6 +585,7 @@ services:
         limits:
           memory: 64m
           cpus: '0.25'
+    logging: *default-logging
 
   # Envoy - Main entry point (reverse proxy)
   # No dependencies - envoy uses STRICT_DNS and handles unavailable backends with 503
@@ -583,6 +606,7 @@ services:
         limits:
           memory: 128m
           cpus: '0.5'
+    logging: *default-logging
 
 networks:
   joustmania:
