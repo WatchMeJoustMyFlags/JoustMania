@@ -54,7 +54,7 @@ Use git worktrees to isolate work on different issues:
 
 ```bash
 # Create worktree for an issue
-git worktree add ../JoustMania-issue-<NUMBER> -b issue-<NUMBER> origin/dev-refactor
+git worktree add ../JoustMania-issue-<NUMBER> -b issue-<NUMBER> origin/main
 
 # Work in the isolated directory
 cd ../JoustMania-issue-<NUMBER>

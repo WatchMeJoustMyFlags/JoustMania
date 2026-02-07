@@ -1,0 +1,46 @@
+# Development Override - Hot-reload source mounting
+#
+# Volume-mounts Python service source directories so code changes are
+# reflected immediately without rebuilding images.
+#
+# Usage:
+#   make dev                          # Recommended shortcut
+#   docker compose -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.dev.yml up -d
+#
+# Note: Only Python application services are mounted. Infrastructure
+# services (redis, prometheus, grafana, etc.) and non-Python services
+# (connect-proxy, dashboard, grafana-live-publisher) are unchanged.
+#
+# After changing code, restart the affected service to pick up changes:
+#   docker compose restart settings
+
+services:
+  settings:
+    volumes:
+      - ./services/settings:/app/services/settings
+      - ./lib:/app/lib
+      - ./proto:/app/proto
+
+  controller-manager:
+    volumes:
+      - ./services/controller_manager:/app/services/controller_manager
+      - ./lib:/app/lib
+      - ./proto:/app/proto
+
+  game-coordinator:
+    volumes:
+      - ./services/game_coordinator:/app/services/game_coordinator
+      - ./lib:/app/lib
+      - ./proto:/app/proto
+
+  menu:
+    volumes:
+      - ./services/menu:/app/services/menu
+      - ./lib:/app/lib
+      - ./proto:/app/proto
+
+  audio:
+    volumes:
+      - ./services/audio:/app/services/audio
+      - ./lib:/app/lib
+      - ./proto:/app/proto

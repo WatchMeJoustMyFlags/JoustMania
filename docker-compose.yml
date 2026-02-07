@@ -22,8 +22,14 @@
 #
 # Notes:
 # - All images default to ghcr.io/watchmejoustmyflags/joustmania registry
-# - Use IMAGE_TAG to specify version (e.g., IMAGE_TAG=dev-refactor docker compose up)
+# - Use IMAGE_TAG to specify version (e.g., IMAGE_TAG=main docker compose up)
 # - Local builds tag images with GHCR names for consistency
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
 
 services:
   # Redis for pub/sub messaging
@@ -35,12 +41,14 @@ services:
       - "6379"
     networks:
       - joustmania
+    restart: unless-stopped
     healthcheck:
       test: [ "CMD", "redis-cli", "ping" ]
       interval: 2s
       timeout: 2s
       retries: 3
       start_period: 1s
+    logging: *default-logging
 
   # flagd for feature flag evaluation
   flagd:
@@ -55,6 +63,7 @@ services:
     networks:
       - joustmania
     restart: unless-stopped
+    logging: *default-logging
 
   # Jaeger for distributed tracing UI
   jaeger:
@@ -76,6 +85,7 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    logging: *default-logging
 
   # OpenTelemetry Collector
   otel-collector:
@@ -83,7 +93,7 @@ services:
     container_name: joustmania-otel-collector
     command: [ "--config=/etc/otel-collector-config.yaml" ]
     volumes:
-      - ./services/otel-collector/config.yaml:/etc/otel-collector-config.yaml
+      - ./services/otel-collector/config.yaml:/etc/otel-collector-config.yaml:ro
     ports:
       # Only expose Prometheus metrics for external monitoring
       - "8889:8889"   # Prometheus metrics (Jaeger uses 8888)
@@ -102,6 +112,8 @@ services:
       - joustmania
     # No healthcheck: otel-collector-contrib is a scratch image with no shell/wget/curl.
     # The health_check extension exposes :13133 but we can't probe it from within the container.
+    # No healthcheck: distroless image has no shell/wget/curl
+    logging: *default-logging
 
   # Settings Service
   settings:
@@ -129,6 +141,7 @@ services:
       - joustmania
     restart: unless-stopped
     # Healthcheck defined in Dockerfile (uses grpc_health_probe)
+    logging: *default-logging
 
   # Controller Manager Service
   controller-manager:
@@ -176,6 +189,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     # Healthcheck defined in Dockerfile (uses grpc_health_probe)
+    logging: *default-logging
 
   # Game Coordinator Service
   game-coordinator:
@@ -201,7 +215,9 @@ services:
     networks:
       - joustmania
     restart: unless-stopped
+    stop_grace_period: 30s
     # Healthcheck defined in Dockerfile (uses grpc_health_probe)
+    logging: *default-logging
 
   # Menu Service
   menu:
@@ -229,6 +245,7 @@ services:
       - joustmania
     restart: unless-stopped
     # Healthcheck defined in Dockerfile (uses grpc_health_probe)
+    logging: *default-logging
 
   # Audio Service
   audio:
@@ -259,6 +276,7 @@ services:
       - joustmania
     restart: unless-stopped
     # Healthcheck defined in Dockerfile (uses grpc_health_probe)
+    logging: *default-logging
 
   # VictoriaMetrics for high-frequency metrics storage (replaces Prometheus for storage)
   # Receives metrics via Prometheus remote write protocol from OTEL Collector
@@ -283,6 +301,7 @@ services:
       timeout: 5s
       retries: 3
       start_period: 5s
+    logging: *default-logging
 
   # Prometheus for metrics collection (Phase 38) - kept for alerting rules
   prometheus:
@@ -314,6 +333,7 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    logging: *default-logging
 
   # Node Exporter for host metrics (CPU, memory, disk, temperature)
   node-exporter:
@@ -362,6 +382,7 @@ services:
       timeout: 5s
       retries: 3
       start_period: 5s
+    logging: *default-logging
 
   # Grafana for metrics visualization (Phase 38)
   grafana:
@@ -394,6 +415,7 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    logging: *default-logging
 
   # Loki for log aggregation with 24h retention
   loki:
@@ -416,6 +438,7 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    logging: *default-logging
 
   # Grafana Live Publisher - OTLP to Grafana Live WebSocket bridge
   # Receives OTLP metrics from OTEL Collector and pushes to Grafana Live for real-time streaming
@@ -438,6 +461,7 @@ services:
       - joustmania
     restart: unless-stopped
     # Healthcheck defined in Dockerfile
+    logging: *default-logging
 
   # Connect-Web Proxy (gRPC to Connect protocol translation)
   # No dependencies - proxy handles connection failures gracefully
@@ -464,6 +488,7 @@ services:
       timeout: 2s
       retries: 3
       start_period: 1s
+    logging: *default-logging
 
   # Dashboard (Real-time controller visualization SPA)
   dashboard:
@@ -479,11 +504,12 @@ services:
       - joustmania
     restart: unless-stopped
     # Healthcheck defined in Dockerfile
+    logging: *default-logging
 
   # Envoy - Main entry point (reverse proxy)
   # No dependencies - envoy uses STRICT_DNS and handles unavailable backends with 503
   envoy:
-    image: envoyproxy/envoy:v1.31-latest
+    image: envoyproxy/envoy:v1.31.10
     container_name: joustmania-envoy
     ports:
       - "80:80"  # Main entry point (all services proxied through envoy)
@@ -494,6 +520,7 @@ services:
     restart: unless-stopped
     # No healthcheck - distroless image has no shell utilities
     # Envoy starts quickly and handles backend unavailability gracefully
+    logging: *default-logging
 
 networks:
   joustmania:

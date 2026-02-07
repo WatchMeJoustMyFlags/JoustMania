@@ -2,7 +2,7 @@
 
 Multiplayer motion-controlled party game system using PS Move controllers.
 
-**Main branch: `dev-refactor`** (not master)
+**Main branch: `main`**
 
 ## Quick Reference
 
@@ -31,7 +31,7 @@ uv run pytest
 **Always create a new worktree for changes.** Never commit directly to the main checkout directory.
 
 ```bash
-git worktree add ../JoustMania-issue-<NUMBER> -b fix/description origin/dev-refactor
+git worktree add ../JoustMania-issue-<NUMBER> -b fix/description origin/main
 cd ../JoustMania-issue-<NUMBER>
 ```
 
