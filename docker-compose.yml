@@ -25,6 +25,12 @@
 # - Use IMAGE_TAG to specify version (e.g., IMAGE_TAG=dev-refactor docker compose up)
 # - Local builds tag images with GHCR names for consistency
 
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   # Redis for pub/sub messaging
   redis:
@@ -41,6 +47,7 @@ services:
       timeout: 2s
       retries: 3
       start_period: 1s
+    logging: *default-logging
 
   # flagd for feature flag evaluation
   flagd:
@@ -55,6 +62,7 @@ services:
     networks:
       - joustmania
     restart: unless-stopped
+    logging: *default-logging
 
   # Jaeger for distributed tracing UI
   jaeger:
@@ -76,6 +84,7 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    logging: *default-logging
 
   # OpenTelemetry Collector
   otel-collector:
@@ -101,6 +110,7 @@ services:
     networks:
       - joustmania
     # No healthcheck: distroless image has no shell/wget/curl
+    logging: *default-logging
 
   # Settings Service
   settings:
@@ -128,6 +138,7 @@ services:
       - joustmania
     restart: unless-stopped
     # Healthcheck defined in Dockerfile (uses grpc_health_probe)
+    logging: *default-logging
 
   # Controller Manager Service
   controller-manager:
@@ -175,6 +186,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     # Healthcheck defined in Dockerfile (uses grpc_health_probe)
+    logging: *default-logging
 
   # Game Coordinator Service
   game-coordinator:
@@ -201,6 +213,7 @@ services:
       - joustmania
     restart: unless-stopped
     # Healthcheck defined in Dockerfile (uses grpc_health_probe)
+    logging: *default-logging
 
   # Menu Service
   menu:
@@ -228,6 +241,7 @@ services:
       - joustmania
     restart: unless-stopped
     # Healthcheck defined in Dockerfile (uses grpc_health_probe)
+    logging: *default-logging
 
   # Audio Service
   audio:
@@ -258,6 +272,7 @@ services:
       - joustmania
     restart: unless-stopped
     # Healthcheck defined in Dockerfile (uses grpc_health_probe)
+    logging: *default-logging
 
   # VictoriaMetrics for high-frequency metrics storage (replaces Prometheus for storage)
   # Receives metrics via Prometheus remote write protocol from OTEL Collector
@@ -278,6 +293,7 @@ services:
     restart: unless-stopped
     # Note: VictoriaMetrics image is scratch-based, no shell/wget for healthcheck
     # Service starts quickly and exposes /health endpoint for manual verification
+    logging: *default-logging
 
   # Prometheus for metrics collection (Phase 38) - kept for alerting rules
   prometheus:
@@ -309,6 +325,7 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    logging: *default-logging
 
   # Node Exporter for host metrics (CPU, memory, disk, temperature)
   node-exporter:
@@ -357,6 +374,7 @@ services:
       timeout: 5s
       retries: 3
       start_period: 5s
+    logging: *default-logging
 
   # Grafana for metrics visualization (Phase 38)
   grafana:
@@ -389,6 +407,7 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    logging: *default-logging
 
   # Loki for log aggregation with 1h retention
   loki:
@@ -411,6 +430,7 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    logging: *default-logging
 
   # Grafana Live Publisher - OTLP to Grafana Live WebSocket bridge
   # Receives OTLP metrics from OTEL Collector and pushes to Grafana Live for real-time streaming
@@ -433,6 +453,7 @@ services:
       - joustmania
     restart: unless-stopped
     # Healthcheck defined in Dockerfile
+    logging: *default-logging
 
   # Connect-Web Proxy (gRPC to Connect protocol translation)
   # No dependencies - proxy handles connection failures gracefully
@@ -459,6 +480,7 @@ services:
       timeout: 2s
       retries: 3
       start_period: 1s
+    logging: *default-logging
 
   # Dashboard (Real-time controller visualization SPA)
   dashboard:
@@ -474,6 +496,7 @@ services:
       - joustmania
     restart: unless-stopped
     # Healthcheck defined in Dockerfile
+    logging: *default-logging
 
   # Envoy - Main entry point (reverse proxy)
   # No dependencies - envoy uses STRICT_DNS and handles unavailable backends with 503
@@ -489,6 +512,7 @@ services:
     restart: unless-stopped
     # No healthcheck - distroless image has no shell utilities
     # Envoy starts quickly and handles backend unavailability gracefully
+    logging: *default-logging
 
 networks:
   joustmania:
