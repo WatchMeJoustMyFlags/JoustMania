@@ -357,3 +357,4 @@ func (p *MenuProxy) ProcessInput(
 	}
 	return connect.NewResponse(resp), nil
 }
+

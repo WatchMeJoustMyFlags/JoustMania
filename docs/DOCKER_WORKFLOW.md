@@ -111,7 +111,7 @@ docker compose up -d --build
 
 ```bash
 # Make code changes
-vim services/settings/server.py
+vim services/menu/server.py
 
 # Rebuild and restart
 docker compose up -d --build

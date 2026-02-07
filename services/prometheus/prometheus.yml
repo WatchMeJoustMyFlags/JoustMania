@@ -41,13 +41,6 @@ scrape_configs:
         labels:
           service: 'menu'
 
-  # Settings Service (still uses prometheus_client pull)
-  - job_name: 'settings'
-    static_configs:
-      - targets: ['settings:8000']
-        labels:
-          service: 'settings'
-
   # Audio Service (still uses prometheus_client pull)
   - job_name: 'audio'
     static_configs:

@@ -41,7 +41,6 @@ docs/
 Thumbs.db
 
 # JoustMania specific
-joustsettings.yaml
 *.tmp
 
 # Docker

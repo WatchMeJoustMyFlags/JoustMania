@@ -121,10 +121,10 @@ Example: Add custom Joust music to `services/audio/assets/Joust/music/`
 | `MOCK_MODE` | `false` | Silent mode for testing |
 | `LOG_LEVEL` | `INFO` | Logging verbosity |
 
-### Settings Service
+### Configuration (flagd)
 
-- **Voice actor:** Selectable via admin mode or settings API
-- **Play audio:** Can be disabled entirely via settings
+- **Voice actor:** Selectable via admin mode (persisted in `user_preferences.json`)
+- **Play audio:** Can be disabled entirely via admin mode
 - **Volume:** Controlled per-game by the game coordinator
 
 ## Limitations
