@@ -95,9 +95,10 @@ class RuntimeConfigManager:
         try:
             from openfeature import api
 
-            from lib.feature_flags import get_feature_flag_client
+            from lib.feature_flags import get_flag_client, init_flag_domain
 
-            self.flag_client = get_feature_flag_client()
+            init_flag_domain("performance")
+            self.flag_client = get_flag_client("performance")
             logger.info("Feature flag client initialized")
 
             # Register event handler for configuration changes
@@ -109,7 +110,7 @@ class RuntimeConfigManager:
 
         except ImportError:
             self.flag_client = None
-            logger.warning("Could not import FeatureFlagClient, using defaults")
+            logger.warning("Could not initialize feature flags, using defaults")
         except Exception as e:
             self.flag_client = None
             logger.error(f"Failed to initialize feature flags: {e}")

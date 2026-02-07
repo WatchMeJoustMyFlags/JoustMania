@@ -38,6 +38,8 @@ services:
       - ./services/menu:/app/services/menu
       - ./lib:/app/lib
       - ./proto:/app/proto
+      - ./services/flagd/game_settings.json:/etc/flagd/game_settings.json
+      - ./services/flagd/user_preferences.json:/etc/flagd/user_preferences.json
 
   audio:
     volumes:

@@ -1,4 +1,7 @@
 {
+  "metadata": {
+    "flagSetId": "performance"
+  },
   "flags": {
     "update_frequency_hz": {
       "state": "ENABLED",

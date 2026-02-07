@@ -7,7 +7,7 @@ import pytest
 
 from services.menu.utils.audio import GAME_MODE_VOICE, AudioHelper
 from services.menu.utils.led import DEFAULT_COLOR, GAME_MODE_COLORS, LedController
-from services.menu.utils.settings import GAME_MODES, SettingsHelper
+from services.menu.utils.settings import GAME_MODES, get_next_game_mode, is_valid_game_mode
 
 
 class TestAudioHelper:
@@ -123,74 +123,37 @@ class TestLedController:
         led.set_color.assert_called_once_with("serial1", GAME_MODE_COLORS["JoustFFA"])
 
 
-class TestSettingsHelper:
-    """Tests for SettingsHelper."""
+class TestSettingsModuleFunctions:
+    """Tests for settings module-level functions (replaced SettingsHelper)."""
 
-    @pytest.fixture
-    def settings(self):
-        """Create SettingsHelper instance."""
-        return SettingsHelper(MagicMock())
-
-    @pytest.mark.asyncio
-    async def test_get_setting(self, settings):
-        """get_setting should return setting value."""
-        with patch("proto.settings_pb2_grpc.SettingsServiceStub") as mock_stub_class:
-            mock_stub = MagicMock()
-            mock_response = MagicMock()
-            mock_response.value = "test_value"
-            mock_stub.GetSetting = AsyncMock(return_value=mock_response)
-            mock_stub_class.return_value = mock_stub
-
-            result = await settings.get_setting("test_key")
-
-            assert result == "test_value"
-
-    @pytest.mark.asyncio
-    async def test_load_voice_actor_valid(self, settings):
-        """load_voice_actor should return valid voice actor."""
-        settings.get_setting = AsyncMock(return_value="aaron")
-
-        result = await settings.load_voice_actor()
-
-        assert result == "aaron"
-
-    @pytest.mark.asyncio
-    async def test_load_voice_actor_default(self, settings):
-        """load_voice_actor should return default when missing."""
-        settings.get_setting = AsyncMock(return_value=None)
-
-        result = await settings.load_voice_actor()
-
-        assert result == "ivy"
-
-    def test_get_next_game_mode_forward(self, settings):
+    def test_get_next_game_mode_forward(self):
         """get_next_game_mode should cycle forward."""
         from lib.types import Games
 
         current_idx = GAME_MODES.index("JoustFFA")
         expected_name = GAME_MODES[(current_idx + 1) % len(GAME_MODES)]
 
-        result = settings.get_next_game_mode(Games.JoustFFA, forward=True)
+        result = get_next_game_mode(Games.JoustFFA, forward=True)
 
         assert result.name == expected_name
 
-    def test_get_next_game_mode_backward(self, settings):
+    def test_get_next_game_mode_backward(self):
         """get_next_game_mode should cycle backward."""
         from lib.types import Games
 
         current_idx = GAME_MODES.index("JoustFFA")
         expected_name = GAME_MODES[(current_idx - 1) % len(GAME_MODES)]
 
-        result = settings.get_next_game_mode(Games.JoustFFA, forward=False)
+        result = get_next_game_mode(Games.JoustFFA, forward=False)
 
         assert result.name == expected_name
 
-    def test_is_valid_game_mode(self, settings):
+    def test_is_valid_game_mode(self):
         """is_valid_game_mode should validate game modes."""
         from lib.types import Games
 
-        assert settings.is_valid_game_mode(Games.JoustFFA) is True
-        assert settings.is_valid_game_mode(Games.Werewolf) is True
+        assert is_valid_game_mode(Games.JoustFFA) is True
+        assert is_valid_game_mode(Games.Werewolf) is True
 
 
 class TestGameModesConstant:
