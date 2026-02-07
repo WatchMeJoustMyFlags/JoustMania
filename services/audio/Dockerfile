@@ -133,9 +133,6 @@ ENV OTEL_LOGS_EXPORTER=none
 # Expose gRPC port
 EXPOSE 50056
 
-# Expose Prometheus metrics port (Phase 38)
-EXPOSE 8000
-
 # Health check using grpc-health-probe
 HEALTHCHECK --interval=2s --timeout=2s --start-period=1s --retries=3 \
     CMD ["/bin/grpc_health_probe", "-addr=:50056"]

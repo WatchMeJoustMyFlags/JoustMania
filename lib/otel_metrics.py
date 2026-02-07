@@ -277,6 +277,12 @@ class Gauge(LabeledMetric):
             self._values.pop(key, None)
             self._metrics.pop(key, None)
 
+    def clear(self) -> None:
+        """Clear all label combinations (matches prometheus_client API)."""
+        with self._lock:
+            self._values.clear()
+            self._metrics.clear()
+
 
 class _LabeledGauge:
     """Helper class for labeled gauge operations."""
