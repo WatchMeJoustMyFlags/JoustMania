@@ -12,6 +12,17 @@ make test          # Run integration tests (docker compose)
 make protos        # Regenerate proto files after .proto changes
 ```
 
+## Git LFS
+
+Audio assets under `services/audio/assets/` are tracked with [Git LFS](https://git-lfs.com/).
+Run this once per dev machine after cloning:
+
+```bash
+git lfs install
+```
+
+After that, `git pull` and `git checkout` will automatically fetch LFS objects.
+
 ## Testing
 
 **Integration tests** run with docker compose:
