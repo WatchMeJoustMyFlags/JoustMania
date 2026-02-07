@@ -508,7 +508,7 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         try:
             from lib.feature_flags import get_flag_client, init_flag_domain
 
-            init_flag_domain("user_preferences", "user_preferences")
+            init_flag_domain("user_preferences")
             client = get_flag_client("user_preferences")
 
             # Load play_audio setting

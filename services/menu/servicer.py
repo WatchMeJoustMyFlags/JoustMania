@@ -61,8 +61,8 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         self.audio_channel = create_channel(f"{audio_host}:{audio_port}")
 
         # Initialize flagd domains for game_settings and user_preferences
-        init_flag_domain("game_settings", "game_settings")
-        init_flag_domain("user_preferences", "user_preferences")
+        init_flag_domain("game_settings")
+        init_flag_domain("user_preferences")
 
         # FlagConfigWriter instances for persisting settings changes
         flagd_dir = os.getenv("FLAGD_DIR", "/etc/flagd")

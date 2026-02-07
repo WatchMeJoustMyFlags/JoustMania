@@ -22,16 +22,16 @@ logger = logging.getLogger(__name__)
 _initialized_domains: set[str] = set()
 
 
-def init_flag_domain(domain: str, flag_set_id: str) -> None:
+def init_flag_domain(domain: str) -> None:
     """
-    Initialize an OpenFeature domain with a flagd provider scoped to a flagSetId.
+    Initialize an OpenFeature domain with a flagd provider.
 
-    Each domain gets its own provider that only sees flags with the matching
-    flagSetId in their metadata. This allows multiple flag files to coexist.
+    The domain name doubles as the flagSetId selector — each flag file must
+    have ``"metadata": {"flagSetId": "<domain>"}`` so flagd routes flags to
+    the correct provider.
 
     Args:
-        domain: OpenFeature domain name (e.g., "game_settings")
-        flag_set_id: flagd flagSetId to scope to (e.g., "game_settings")
+        domain: Domain name and flagSetId (e.g., "game_settings")
     """
     if domain in _initialized_domains:
         logger.debug(f"Domain '{domain}' already initialized, skipping")
@@ -41,14 +41,12 @@ def init_flag_domain(domain: str, flag_set_id: str) -> None:
     flagd_port = int(os.environ.get("FLAGD_PORT", "8015"))
 
     try:
-        logger.info(
-            f"Initializing OpenFeature domain '{domain}' (flagSetId={flag_set_id}) at {flagd_host}:{flagd_port}"
-        )
+        logger.info(f"Initializing OpenFeature domain '{domain}' at {flagd_host}:{flagd_port}")
         provider = FlagdProvider(
             host=flagd_host,
             port=flagd_port,
             resolver_type=ResolverType.IN_PROCESS,
-            selector=f"flagSetId={flag_set_id}",
+            selector=f"flagSetId={domain}",
         )
         api.set_provider(provider, domain=domain)
         _initialized_domains.add(domain)
@@ -101,7 +99,7 @@ class FeatureFlagClient:
             return
 
         self._initialized = True
-        init_flag_domain("performance", "performance")
+        init_flag_domain("performance")
         self.client = get_flag_client("performance")
 
     def get_boolean_value(self, flag_key: str, default_value: bool, context: EvaluationContext | None = None) -> bool:

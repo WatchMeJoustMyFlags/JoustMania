@@ -228,7 +228,7 @@ Or view in Grafana's **Feature Flags** dashboard at `http://localhost:3000`.
    ```python
    from lib.feature_flags import init_flag_domain, get_flag_client
 
-   init_flag_domain("game_settings", "game_settings")
+   init_flag_domain("game_settings")
    client = get_flag_client("game_settings")
    value = client.get_integer_value("my_new_flag", default_value)
    ```
