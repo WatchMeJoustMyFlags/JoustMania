@@ -18,8 +18,9 @@ from proto import menu_pb2, menu_pb2_grpc
 from services.menu import metrics
 from services.menu.controller_events import ControllerEventLoop
 from services.menu.event_publisher import EventPublisher
-from services.menu.handlers import AdminModeHandler, ConnectedHandler, ReadyHandler
+from services.menu.handlers import AdminModeHandler, ConnectedHandler, IdleHandler, ReadyHandler
 from services.menu.handlers.base import ControllerState
+from services.menu.idle_monitor import IdleMonitor
 from services.menu.state_manager import StateManager
 from services.menu.utils import AudioHelper, LedController
 from services.menu.utils.audio import GAME_MODE_VOICE
@@ -60,9 +61,10 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         self.game_coordinator_channel = create_channel(f"{game_coordinator_host}:{game_coordinator_port}")
         self.audio_channel = create_channel(f"{audio_host}:{audio_port}")
 
-        # Initialize flagd domains for game_settings and user_preferences
+        # Initialize flagd domains for game_settings, user_preferences, and performance
         init_flag_domain("game_settings")
         init_flag_domain("user_preferences")
+        init_flag_domain("performance")
 
         # FlagConfigWriter instances for persisting settings changes
         flagd_dir = os.getenv("FLAGD_DIR", "/etc/flagd")
@@ -72,6 +74,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         # OpenFeature clients for reading settings
         self.game_settings_client = get_flag_client("game_settings")
         self.user_prefs_client = get_flag_client("user_preferences")
+        self.performance_client = get_flag_client("performance")
 
         # Utility classes
         self.led = LedController(self.controller_channel)
@@ -106,6 +109,21 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             metrics=metrics,
         )
         self.state_manager.register_handler(self.admin_handler)
+
+        # Idle handler and monitor
+        self.idle_handler = IdleHandler()
+        self.state_manager.register_handler(self.idle_handler)
+
+        self.idle_monitor = IdleMonitor(
+            state_manager=self.state_manager,
+            get_idle_enabled=lambda: self.performance_client.get_boolean_value("idle_mode_enabled", True),
+            get_idle_timeout=lambda: self.performance_client.get_integer_value("idle_timeout_minutes", 15),
+            get_sentinel_count=lambda: self.performance_client.get_integer_value("sentinel_count", 2),
+            get_rotation_minutes=lambda: self.performance_client.get_integer_value("sentinel_rotation_minutes", 5),
+        )
+
+        # Wire idle handler's wake callback to idle monitor
+        self.idle_handler.set_wake_callback(self.idle_monitor.wake_all)
 
         # Controller event loop (handles button and connection events)
         self.controller_events = ControllerEventLoop(
@@ -150,6 +168,9 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
 
     async def on_button(self, serial: str, button: str, is_press: bool) -> None:
         """Handle button event (ControllerEventCallbacks)."""
+        # Reset idle timer on any button activity
+        self.idle_monitor.reset_activity()
+
         # Check for admin mode combo (all 4 face buttons pressed)
         button_state = self.state_manager.button_states.get(serial, {})
         if is_press and button in ["cross", "circle", "square", "triangle"]:
@@ -223,6 +244,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
                 self.state_manager.set_game_mode(self.current_selection)
 
                 await self.audio.start_lobby_music()
+                self.idle_monitor.start()
                 await self.event_publisher.publish("menu_started", {})
 
                 logger.info("Menu started")
@@ -250,6 +272,9 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
                     return menu_pb2.StopMenuResponse(success=False, error="Menu already stopped")
 
                 self.state = menu_pb2.MenuState.STOPPED
+
+                # Stop idle monitor
+                self.idle_monitor.stop()
 
                 # Clear all lobby state
                 self._clear_ready_state()
@@ -412,6 +437,9 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         """Cleanup resources on shutdown."""
         logger.info("Shutting down Menu service...")
 
+        # Stop idle monitor
+        self.idle_monitor.stop()
+
         # Cancel game lifecycle task before closing channels
         if self._game_lifecycle_task is not None and not self._game_lifecycle_task.done():
             logger.info("Cancelling game lifecycle task during shutdown...")
@@ -497,7 +525,9 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
                 logger.warning(f"Not enough players to start game: {len(controllers)}")
                 return
 
-            # Stop button monitor and lobby music before starting game
+            # Stop idle monitor and lobby music before starting game
+            self.idle_monitor.stop()
+
             with tracer.start_as_current_span("stop_lobby_music"):
                 await self.audio.stop_lobby_music()
 
@@ -631,6 +661,9 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
 
         with tracer.start_as_current_span("restart_lobby_music"):
             await self.audio.start_lobby_music()
+
+        # Restart idle monitor with fresh timer
+        self.idle_monitor.start()
 
         logger.info("Lobby restarted after game")
 

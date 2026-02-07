@@ -37,6 +37,43 @@
         "off": false
       },
       "defaultVariant": "off"
+    },
+    "idle_mode_enabled": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "on"
+    },
+    "idle_timeout_minutes": {
+      "state": "ENABLED",
+      "variants": {
+        "5min": 5,
+        "10min": 10,
+        "15min": 15,
+        "30min": 30
+      },
+      "defaultVariant": "15min"
+    },
+    "sentinel_count": {
+      "state": "ENABLED",
+      "variants": {
+        "none": 0,
+        "one": 1,
+        "two": 2
+      },
+      "defaultVariant": "two"
+    },
+    "sentinel_rotation_minutes": {
+      "state": "ENABLED",
+      "variants": {
+        "off": 0,
+        "3min": 3,
+        "5min": 5,
+        "10min": 10
+      },
+      "defaultVariant": "5min"
     }
   }
 }
