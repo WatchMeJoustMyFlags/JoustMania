@@ -116,16 +116,11 @@ class DiscoveryLoop:
         # There's always either a menu or game stream active, so no need for idle mode
         self._poll_interval = 0.010  # 100Hz
 
-        # Activity tracking for metrics and adaptive polling
+        # Activity tracking for metrics
         self._last_activity_time: dict[str, float] = {}
         self._previous_accel: dict[str, tuple[float, float, float]] = {}
         self._idle_threshold_seconds = 5.0
         self._accel_movement_threshold = 0.05
-
-        # Adaptive polling: skip idle controllers on most poll cycles
-        # Active: poll every cycle (100Hz), Idle: poll every 50th cycle (2Hz)
-        self._idle_poll_skip = 50
-        self._poll_cycle_count: int = 0
 
         # Debug logging throttle
         self._last_controller_count_log = 0.0
@@ -375,32 +370,20 @@ class DiscoveryLoop:
                 )
                 self._last_controller_count_log = current_time
 
-            self._poll_cycle_count += 1
-
-            # Adaptive polling: skip idle controllers on most cycles to save CPU
-            # Active controllers poll every cycle (100Hz), idle ones every 50th (2Hz)
-            poll_idle_this_cycle = (self._poll_cycle_count % self._idle_poll_skip) == 0
-
-            serials_to_poll = []
-            for serial in all_serials:
-                last_activity = self._last_activity_time.get(serial, current_time)
-                is_idle = (current_time - last_activity) > self._idle_threshold_seconds
-                if not is_idle or poll_idle_this_cycle:
-                    serials_to_poll.append(serial)
-
-            # Parallel polling - read selected controllers concurrently
+            # Parallel polling - read all controllers concurrently
             start_time = time.time()
 
-            coros = [self.backend.get_controller_state(serial) for serial in serials_to_poll]
+            # Gather all states in parallel
+            coros = [self.backend.get_controller_state(serial) for serial in all_serials]
             results = await asyncio.gather(*coros, return_exceptions=True)
 
             # Record metrics
             poll_duration = time.time() - start_time
             metrics.poll_batch_duration_seconds.observe(poll_duration)
-            metrics.poll_batch_size.observe(len(serials_to_poll))
+            metrics.poll_batch_size.observe(len(all_serials))
 
             # Process all results
-            for serial, state in zip(serials_to_poll, results, strict=False):
+            for serial, state in zip(all_serials, results, strict=False):
                 # Skip if controller was removed during polling
                 if serial not in self.tracked_controllers:
                     continue
