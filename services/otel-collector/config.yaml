@@ -19,6 +19,10 @@ receivers:
             - targets: ['node-exporter:9100']
               labels:
                 instance: 'raspberry-pi'
+        - job_name: 'prometheus'
+          scrape_interval: 30s
+          static_configs:
+            - targets: ['prometheus:9090']
 
 processors:
   # Batch processor for better performance (traces/logs)
