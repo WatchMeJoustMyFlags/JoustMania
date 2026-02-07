@@ -100,12 +100,8 @@ services:
         condition: service_healthy
     networks:
       - joustmania
-    healthcheck:
-      test: ["CMD-SHELL", "wget --spider -q http://localhost:13133 || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
+    # No healthcheck: otel-collector-contrib is a scratch image with no shell/wget/curl.
+    # The health_check extension exposes :13133 but we can't probe it from within the container.
 
   # Settings Service
   settings:
@@ -282,7 +278,7 @@ services:
       - joustmania
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8428/-/healthy || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8428/-/healthy || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 3
