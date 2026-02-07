@@ -44,6 +44,20 @@ logger = logging.getLogger(__name__)
 _CREATE_CLIENT_SPANS = os.getenv("OTEL_GRPC_CLIENT_SPANS", "false").lower() == "true"
 
 
+def _safe_detach(token: object) -> None:
+    """Detach an OpenTelemetry context token, ignoring ValueError.
+
+    When a gRPC stream disconnects (e.g., GeneratorExit during cleanup),
+    the token may have been created in a different async context. The detach
+    raises ValueError in this case, but it's harmless because the context
+    is being cleaned up anyway.
+    """
+    try:
+        otel_context.detach(token)
+    except ValueError:
+        logger.debug("OTEL context detach failed (token from different context) - safe to ignore")
+
+
 def _prepare_metadata(existing_metadata: Any) -> tuple:
     """Prepare metadata with trace context injection.
 
@@ -336,7 +350,7 @@ class ServerUnaryUnaryInterceptor(grpc.aio.ServerInterceptor):
                         return await result
                     return result
                 finally:
-                    otel_context.detach(token)
+                    _safe_detach(token)
 
             return grpc.unary_unary_rpc_method_handler(
                 wrapped_unary_unary,
@@ -354,7 +368,7 @@ class ServerUnaryUnaryInterceptor(grpc.aio.ServerInterceptor):
                     async for response in original_handler(request, context):
                         yield response
                 finally:
-                    otel_context.detach(token)
+                    _safe_detach(token)
 
             return grpc.unary_stream_rpc_method_handler(
                 wrapped_unary_stream,
@@ -375,7 +389,7 @@ class ServerUnaryUnaryInterceptor(grpc.aio.ServerInterceptor):
                         return await result
                     return result
                 finally:
-                    otel_context.detach(token)
+                    _safe_detach(token)
 
             return grpc.stream_unary_rpc_method_handler(
                 wrapped_stream_unary,
@@ -393,7 +407,7 @@ class ServerUnaryUnaryInterceptor(grpc.aio.ServerInterceptor):
                     async for response in original_handler(request_iterator, context):
                         yield response
                 finally:
-                    otel_context.detach(token)
+                    _safe_detach(token)
 
             return grpc.stream_stream_rpc_method_handler(
                 wrapped_stream_stream,
