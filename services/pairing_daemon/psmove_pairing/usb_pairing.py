@@ -216,6 +216,35 @@ class USBPairing:
         except Exception as e:
             logger.error(f"Failed to restart bluetooth service: {e}")
 
+    async def bluez_trust_controller(self, serial: str) -> bool:
+        """Trust a controller in BlueZ so it can connect later.
+
+        Pre-registers the device as trusted so when the user unplugs USB and
+        presses PS, BlueZ will accept the incoming connection. For ZCM2
+        controllers, the bluetoothctl agent (registered at daemon startup)
+        handles the PIN exchange at connection time.
+
+        We only run ``trust`` here — ``pair`` cannot work because the
+        controller is still on USB and not broadcasting over Bluetooth.
+
+        Retries once after a short delay since BlueZ may still be restarting.
+        """
+        import asyncio
+
+        logger.info(f"Running bluetoothctl trust for {serial}...")
+        for attempt in range(2):
+            exit_code, output = await run_command(["bluetoothctl", "trust", serial])
+            if exit_code == 0:
+                logger.info(f"bluetoothctl trust succeeded for {serial}")
+                return True
+            logger.warning(f"bluetoothctl trust attempt {attempt + 1} failed: {output}")
+            if attempt == 0:
+                await asyncio.sleep(2)
+
+        # Trust failure is non-fatal — the agent can still handle PIN at connect time
+        logger.warning(f"bluetoothctl trust failed for {serial}, continuing anyway")
+        return False
+
     async def process_controller(self, move_index: int, serial: str) -> bool:
         """Process a single USB-connected controller with load-balanced adapter selection."""
         with self.tracer.start_as_current_span("process_controller") as span:
@@ -262,6 +291,9 @@ class USBPairing:
 
             # Restart BlueZ so it re-reads the new device files
             await self.restart_bluetooth_service()
+
+            # Trust device in BlueZ (for ZCM2, agent handles PIN at connect time)
+            await self.bluez_trust_controller(serial)
 
             # Calibrate
             await self.calibrate_controller(serial)
