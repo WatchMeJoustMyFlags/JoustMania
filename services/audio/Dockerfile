@@ -11,7 +11,7 @@
 # - Fix: disable GCC auto-vectorization for ARM64 builds
 #
 # Phase 75: Builder images can be overridden for CI/CD
-# --build-arg BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:dev-refactor
+# --build-arg BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:main
 
 # Builder image - override with --build-arg for CI/CD
 ARG BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:latest
