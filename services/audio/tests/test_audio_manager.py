@@ -35,7 +35,7 @@ class TestAudioManagerPlaySound:
     """Tests for AudioManager.play_sound."""
 
     def test_play_sound_mock_mode(self, mock_audio_manager):
-        result = mock_audio_manager.play_sound("test/sound.wav", volume=1.0, priority=2)
+        result = mock_audio_manager.play_sound("test/sound.ogg", volume=1.0, priority=2)
         assert result is True
 
     def test_play_sound_no_channels_available(self):
@@ -49,7 +49,7 @@ class TestAudioManagerPlaySound:
                 channel._playing.set()
                 channel.priority = 3  # High priority so they can't be stolen
             # Try to play a sound with a real file
-            result = manager.play_sound("nonexistent.wav", volume=1.0, priority=2)
+            result = manager.play_sound("nonexistent.ogg", volume=1.0, priority=2)
             # File doesn't exist so it fails before channel check
             assert result is False
 
@@ -59,13 +59,13 @@ class TestAudioManagerPlaySound:
             from services.audio.servicer import AudioManager
 
             manager = AudioManager()
-            result = manager.play_sound("definitely_not_a_real_file.wav", volume=1.0, priority=2)
+            result = manager.play_sound("definitely_not_a_real_file.ogg", volume=1.0, priority=2)
             assert result is False
 
     def test_play_sound_volume_scaling(self, mock_audio_manager):
         """In mock mode, play_sound succeeds regardless of volume."""
         mock_audio_manager.master_volume = 0.5
-        result = mock_audio_manager.play_sound("test.wav", volume=0.8, priority=2)
+        result = mock_audio_manager.play_sound("test.ogg", volume=0.8, priority=2)
         assert result is True
 
 
@@ -119,28 +119,28 @@ class TestAudioManagerMusic:
     """Tests for AudioManager music playback."""
 
     def test_play_music_returns_track_id(self, mock_audio_manager):
-        track_id = mock_audio_manager.play_music("Joust/music/*.wav")
+        track_id = mock_audio_manager.play_music("Joust/music/*.ogg")
         assert track_id is not None
         assert isinstance(track_id, str)
         assert len(track_id) > 0
 
     def test_stop_music_success(self, mock_audio_manager):
-        track_id = mock_audio_manager.play_music("Joust/music/*.wav")
+        track_id = mock_audio_manager.play_music("Joust/music/*.ogg")
         result = mock_audio_manager.stop_music(track_id)
         assert result is True
 
     def test_stop_music_empty_track_id(self, mock_audio_manager):
-        mock_audio_manager.play_music("Joust/music/*.wav")
+        mock_audio_manager.play_music("Joust/music/*.ogg")
         result = mock_audio_manager.stop_music("")
         assert result is True
 
     def test_stop_music_wrong_track_id(self, mock_audio_manager):
-        mock_audio_manager.play_music("Joust/music/*.wav")
+        mock_audio_manager.play_music("Joust/music/*.ogg")
         result = mock_audio_manager.stop_music("wrong-id")
         assert result is False
 
     def test_change_tempo_no_event_loop(self, mock_audio_manager):
-        mock_audio_manager.play_music("Joust/music/*.wav")
+        mock_audio_manager.play_music("Joust/music/*.ogg")
         assert mock_audio_manager.event_loop is None
         result = mock_audio_manager.change_tempo("track-123", 1.3)
         assert result is False

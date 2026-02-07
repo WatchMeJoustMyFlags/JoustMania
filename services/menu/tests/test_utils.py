@@ -30,7 +30,7 @@ class TestAudioHelper:
             mock_stub.PlaySound = AsyncMock()
             mock_stub_class.return_value = mock_stub
 
-            await audio.play_sound("test/sound.wav", volume=0.5)
+            await audio.play_sound("test/sound.ogg", volume=0.5)
 
             mock_stub.PlaySound.assert_called_once()
 

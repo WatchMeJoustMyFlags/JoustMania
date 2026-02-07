@@ -91,7 +91,7 @@ class TestPlayMusic:
     @pytest.mark.asyncio
     async def test_play_music_success(self, servicer, mock_grpc_context):
         servicer.audio_manager.play_music = MagicMock(return_value="track-123")
-        request = audio_pb2.PlayMusicRequest(file_pattern="Joust/music/*.wav", loop=True, tempo=1.0)
+        request = audio_pb2.PlayMusicRequest(file_pattern="Joust/music/*.ogg", loop=True, tempo=1.0)
         response = await servicer.PlayMusic(request, mock_grpc_context)
         assert response.success is True
         assert response.track_id == "track-123"
@@ -99,7 +99,7 @@ class TestPlayMusic:
     @pytest.mark.asyncio
     async def test_play_music_audio_disabled(self, servicer, mock_grpc_context):
         servicer.audio_enabled = False
-        request = audio_pb2.PlayMusicRequest(file_pattern="Joust/music/*.wav", loop=True, tempo=1.0)
+        request = audio_pb2.PlayMusicRequest(file_pattern="Joust/music/*.ogg", loop=True, tempo=1.0)
         response = await servicer.PlayMusic(request, mock_grpc_context)
         assert response.success is True
         assert response.track_id == "muted"
@@ -107,7 +107,7 @@ class TestPlayMusic:
     @pytest.mark.asyncio
     async def test_play_music_with_tempo(self, servicer, mock_grpc_context):
         servicer.audio_manager.play_music = MagicMock(return_value="track-456")
-        request = audio_pb2.PlayMusicRequest(file_pattern="Joust/music/*.wav", loop=True, tempo=1.3)
+        request = audio_pb2.PlayMusicRequest(file_pattern="Joust/music/*.ogg", loop=True, tempo=1.3)
         await servicer.PlayMusic(request, mock_grpc_context)
         call_args = servicer.audio_manager.play_music.call_args
         assert call_args.kwargs.get("tempo") == pytest.approx(1.3)
@@ -115,7 +115,7 @@ class TestPlayMusic:
     @pytest.mark.asyncio
     async def test_play_music_failure(self, servicer, mock_grpc_context):
         servicer.audio_manager.play_music = MagicMock(return_value=None)
-        request = audio_pb2.PlayMusicRequest(file_pattern="Joust/music/*.wav", loop=True, tempo=1.0)
+        request = audio_pb2.PlayMusicRequest(file_pattern="Joust/music/*.ogg", loop=True, tempo=1.0)
         response = await servicer.PlayMusic(request, mock_grpc_context)
         assert response.success is False
         assert response.track_id == ""
@@ -197,24 +197,24 @@ class TestSoundPathResolution:
             path = servicer._resolve_sound_path("congratulations")
             assert "vox" in path
             assert "ivy" in path
-            assert path.endswith("congratulations.wav")
+            assert path.endswith("congratulations.ogg")
 
     def test_resolve_sfx_name(self, servicer):
         # "Explosion34" should be in registry as sound
         if "Explosion34" in servicer.sound_registry:
             path = servicer._resolve_sound_path("Explosion34")
             assert "sounds" in path
-            assert path.endswith("Explosion34.wav")
+            assert path.endswith("Explosion34.ogg")
             assert "vox" not in path
 
     def test_resolve_path_with_vox_inserts_voice(self, servicer):
         servicer.menu_voice = "ivy"
-        path = servicer._resolve_sound_path("Joust/vox/congratulations.wav")
+        path = servicer._resolve_sound_path("Joust/vox/congratulations.ogg")
         assert "ivy" in path
 
     def test_resolve_path_with_voice_already_present(self, servicer):
-        path = servicer._resolve_sound_path("Joust/vox/aaron/congratulations.wav")
-        assert path == "Joust/vox/aaron/congratulations.wav"
+        path = servicer._resolve_sound_path("Joust/vox/aaron/congratulations.ogg")
+        assert path == "Joust/vox/aaron/congratulations.ogg"
 
     def test_resolve_unknown_sound_falls_back(self, servicer):
         servicer.menu_voice = "ivy"
