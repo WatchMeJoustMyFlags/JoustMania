@@ -37,6 +37,8 @@ echo "Checking for code updates..."
 GIT_PULL_STATUS="success"
 if git pull --ff-only 2>&1; then
     echo "Code updated successfully"
+    # Fetch LFS objects (audio assets) after pull
+    git lfs pull 2>&1 || echo "Could not fetch LFS objects"
 else
     echo "Could not update code (offline or conflict) - continuing with current version"
     GIT_PULL_STATUS="failed"
