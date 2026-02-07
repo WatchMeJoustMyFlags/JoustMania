@@ -45,6 +45,7 @@ def init_flag_domain(domain: str) -> None:
             port=flagd_port,
             resolver_type=ResolverType.IN_PROCESS,
             selector=f"flagSetId={domain}",
+            keep_alive_time=30000,
         )
         api.set_provider(provider, domain=domain)
         _initialized_domains.add(domain)
