@@ -23,7 +23,7 @@ class TestSoundChannel:
 
     def test_play_nonexistent_file_returns_false(self):
         channel = SoundChannel(channel_id=0)
-        result = channel.play("/nonexistent/path/to/file.wav", volume=1.0, priority=2)
+        result = channel.play("/nonexistent/path/to/file.ogg", volume=1.0, priority=2)
         assert result is False
         assert channel.is_playing is False
 

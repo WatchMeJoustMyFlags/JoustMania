@@ -229,7 +229,7 @@ class AudioManager:
         Play a sound effect (one-shot).
 
         Args:
-            file_path: Relative path to audio file (e.g., "Joust/sounds/beep.wav")
+            file_path: Relative path to audio file (e.g., "Joust/sounds/beep.ogg")
             volume: Volume level (0.0 to 1.0)
             priority: Priority level (0=LOW, 3=CRITICAL)
 
@@ -277,7 +277,7 @@ class AudioManager:
         Play background music with tempo control.
 
         Args:
-            file_pattern: Glob pattern for music files (e.g., "Joust/music/*.wav")
+            file_pattern: Glob pattern for music files (e.g., "Joust/music/*.ogg")
             loop: Whether to loop the music (always True for MusicPlayer)
             tempo: Playback speed (1.0 = normal, 1.3 = 30% faster)
             priority: Priority level (not used for music)
@@ -432,8 +432,8 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
             # Scan vox directory (use aaron as reference - all voices should have same files)
             vox_dir = assets_dir / "vox" / "aaron"
             if vox_dir.exists():
-                for wav_file in vox_dir.glob("*.wav"):
-                    sound_name = wav_file.stem  # filename without extension
+                for ogg_file in vox_dir.glob("*.ogg"):
+                    sound_name = ogg_file.stem  # filename without extension
                     # Don't overwrite existing entries - first found wins
                     if sound_name not in self.sound_registry:
                         self.sound_registry[sound_name] = ("vox", base_dir)
@@ -443,8 +443,8 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
             # Scan sounds directory
             sounds_dir = assets_dir / "sounds"
             if sounds_dir.exists():
-                for wav_file in sounds_dir.glob("*.wav"):
-                    sound_name = wav_file.stem
+                for ogg_file in sounds_dir.glob("*.ogg"):
+                    sound_name = ogg_file.stem
                     # Don't overwrite existing entries
                     if sound_name not in self.sound_registry:
                         self.sound_registry[sound_name] = ("sound", base_dir)
@@ -458,10 +458,10 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         Resolve a sound name or path to a full file path.
 
         Accepts multiple input formats:
-        - Simple name: "congratulations" -> {base_dir}/vox/{voice}/congratulations.wav
-        - Name with extension: "congratulations.wav" -> {base_dir}/vox/{voice}/congratulations.wav
-        - Partial path: "Joust/vox/congratulations.wav" -> Joust/vox/{voice}/congratulations.wav
-        - Full path with voice: "Joust/vox/aaron/congratulations.wav" -> used as-is
+        - Simple name: "congratulations" -> {base_dir}/vox/{voice}/congratulations.ogg
+        - Name with extension: "congratulations.ogg" -> {base_dir}/vox/{voice}/congratulations.ogg
+        - Partial path: "Joust/vox/congratulations.ogg" -> Joust/vox/{voice}/congratulations.ogg
+        - Full path with voice: "Joust/vox/aaron/congratulations.ogg" -> used as-is
 
         The registry tracks both sound type (vox/sound) and base directory (Joust/Menu).
 
@@ -471,9 +471,9 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         Returns:
             Full resolved path to the sound file
         """
-        # Strip .wav extension if present for lookup
+        # Strip .ogg extension if present for lookup
         lookup_name = sound_input
-        if lookup_name.endswith(".wav"):
+        if lookup_name.endswith(".ogg"):
             lookup_name = lookup_name[:-4]
 
         # If it's a simple name (no path separators), look up in registry
@@ -482,12 +482,12 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
             if registry_entry:
                 sound_type, base_dir = registry_entry
                 if sound_type == "vox":
-                    return f"{base_dir}/vox/{self.menu_voice}/{lookup_name}.wav"
+                    return f"{base_dir}/vox/{self.menu_voice}/{lookup_name}.ogg"
                 # sound_type == "sound"
-                return f"{base_dir}/sounds/{lookup_name}.wav"
+                return f"{base_dir}/sounds/{lookup_name}.ogg"
             # Unknown sound - try Joust vox first with current voice
             logger.warning(f"Sound '{lookup_name}' not in registry, trying Joust vox path")
-            return f"Joust/vox/{self.menu_voice}/{lookup_name}.wav"
+            return f"Joust/vox/{self.menu_voice}/{lookup_name}.ogg"
 
         # Handle paths - check if it needs voice insertion
         if "/vox/" in sound_input:
@@ -543,7 +543,7 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         # Resolve sound name/path to full path with voice selection
         resolved_path = self._resolve_sound_path(request.file_path)
 
-        # Extract sound name for span (e.g., "congratulations" from "Joust/vox/ivy/congratulations.wav")
+        # Extract sound name for span (e.g., "congratulations" from "Joust/vox/ivy/congratulations.ogg")
         sound_name = Path(resolved_path).stem
 
         with tracer.start_as_current_span(f"PlaySound:{sound_name}") as span:
@@ -565,7 +565,7 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         # Lazy load settings on first audio request (avoids blocking startup)
         await self._load_audio_setting()
 
-        # Extract music directory for span (e.g., "Joust" from "Joust/music/*.wav")
+        # Extract music directory for span (e.g., "Joust" from "Joust/music/*.ogg")
         music_dir = request.file_pattern.split("/")[0] if "/" in request.file_pattern else "music"
 
         with tracer.start_as_current_span(f"PlayMusic:{music_dir}") as span:
