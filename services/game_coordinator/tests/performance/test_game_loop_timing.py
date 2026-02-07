@@ -27,8 +27,9 @@ tests_dir = test_dir.parent
 service_dir = tests_dir.parent
 project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(test_dir))
 
-from tests.performance.conftest import (
+from helpers import (
     TimingResult,
     create_ffa_game,
     generate_mock_accel,
@@ -84,6 +85,78 @@ class TestGameLoopTiming:
         print(f"  P99:    {result.p99_ms:.3f}ms")
         print(f"  Max:    {result.max_ms:.3f}ms")
         print(f"  Min:    {result.min_ms:.3f}ms")
+
+        assert result.mean_ms < MEAN_ITERATION_BUDGET_MS, (
+            f"Mean iteration time ({result.mean_ms:.3f}ms) exceeds budget ({MEAN_ITERATION_BUDGET_MS}ms)"
+        )
+        assert result.max_ms < MAX_ITERATION_MS, (
+            f"Max iteration time ({result.max_ms:.3f}ms) exceeds 3-frame limit ({MAX_ITERATION_MS}ms)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_iteration_timing_18_players(self):
+        """Measure per-iteration timing with 18 players (common party size)."""
+        num_controllers = 18
+        num_iterations = 500
+        game, serials = create_ffa_game(num_controllers)
+        result = TimingResult()
+
+        for _ in range(20):
+            warmup_data = generate_mock_accel(num_controllers, movement="idle")
+            for cd in warmup_data:
+                await game._process_controller_state(cd)
+
+        for _ in range(num_iterations):
+            mock_data = generate_mock_accel(num_controllers, movement="random")
+            with measure_time() as timer:
+                for controller_data in mock_data:
+                    await game._process_controller_state(controller_data)
+                await game._check_win_condition()
+            result.frame_times_ms.append(timer.elapsed_ms)
+
+        result.frame_count = num_iterations
+
+        print(f"\n--- Game loop timing: {num_controllers} players, {num_iterations} iterations ---")
+        print(f"  Mean:   {result.mean_ms:.3f}ms")
+        print(f"  P95:    {result.p95_ms:.3f}ms")
+        print(f"  P99:    {result.p99_ms:.3f}ms")
+        print(f"  Max:    {result.max_ms:.3f}ms")
+
+        assert result.mean_ms < MEAN_ITERATION_BUDGET_MS, (
+            f"Mean iteration time ({result.mean_ms:.3f}ms) exceeds budget ({MEAN_ITERATION_BUDGET_MS}ms)"
+        )
+        assert result.max_ms < MAX_ITERATION_MS, (
+            f"Max iteration time ({result.max_ms:.3f}ms) exceeds 3-frame limit ({MAX_ITERATION_MS}ms)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_iteration_timing_32_players(self):
+        """Measure per-iteration timing with 32 players (large event)."""
+        num_controllers = 32
+        num_iterations = 500
+        game, serials = create_ffa_game(num_controllers)
+        result = TimingResult()
+
+        for _ in range(20):
+            warmup_data = generate_mock_accel(num_controllers, movement="idle")
+            for cd in warmup_data:
+                await game._process_controller_state(cd)
+
+        for _ in range(num_iterations):
+            mock_data = generate_mock_accel(num_controllers, movement="random")
+            with measure_time() as timer:
+                for controller_data in mock_data:
+                    await game._process_controller_state(controller_data)
+                await game._check_win_condition()
+            result.frame_times_ms.append(timer.elapsed_ms)
+
+        result.frame_count = num_iterations
+
+        print(f"\n--- Game loop timing: {num_controllers} players, {num_iterations} iterations ---")
+        print(f"  Mean:   {result.mean_ms:.3f}ms")
+        print(f"  P95:    {result.p95_ms:.3f}ms")
+        print(f"  P99:    {result.p99_ms:.3f}ms")
+        print(f"  Max:    {result.max_ms:.3f}ms")
 
         assert result.mean_ms < MEAN_ITERATION_BUDGET_MS, (
             f"Mean iteration time ({result.mean_ms:.3f}ms) exceeds budget ({MEAN_ITERATION_BUDGET_MS}ms)"

@@ -24,8 +24,9 @@ tests_dir = test_dir.parent
 service_dir = tests_dir.parent
 project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(test_dir))
 
-from tests.performance.conftest import (
+from helpers import (
     create_ffa_game,
     generate_mock_accel,
 )
@@ -180,10 +181,10 @@ class TestMemoryStability:
     async def test_high_controller_count_memory(self):
         """Verify memory usage with a high controller count (stress test).
 
-        Tests with 20 controllers to check for any per-controller memory leaks
+        Tests with 32 controllers to check for any per-controller memory leaks
         that might be masked at lower counts.
         """
-        num_controllers = 20
+        num_controllers = 32
         num_iterations = 500
         game, serials = create_ffa_game(num_controllers)
 

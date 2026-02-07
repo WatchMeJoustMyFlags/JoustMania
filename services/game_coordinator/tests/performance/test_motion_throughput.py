@@ -21,8 +21,9 @@ tests_dir = test_dir.parent
 service_dir = tests_dir.parent
 project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(test_dir))
 
-from tests.performance.conftest import (
+from helpers import (
     TimingResult,
     create_ffa_game,
     generate_mock_accel,
@@ -43,7 +44,7 @@ class TestMotionThroughput:
     """Test motion data processing throughput at 60Hz."""
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("num_controllers", [4, 8, 10])
+    @pytest.mark.parametrize("num_controllers", [4, 8, 10, 18, 32])
     async def test_frame_processing_within_budget(self, num_controllers: int):
         """Process 60 frames/second for N controllers and verify frame times.
 
