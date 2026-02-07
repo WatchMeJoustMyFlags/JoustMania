@@ -12,6 +12,8 @@ Tests the core game physics and death detection logic:
 Issue #209: Improve test coverage for critical game flow
 """
 
+from __future__ import annotations
+
 import sys
 import time
 from pathlib import Path

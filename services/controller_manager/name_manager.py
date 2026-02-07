@@ -6,6 +6,8 @@ Provides deterministic name generation from controller serial numbers
 and persistent storage of custom names.
 """
 
+from __future__ import annotations
+
 import hashlib
 import logging
 import os

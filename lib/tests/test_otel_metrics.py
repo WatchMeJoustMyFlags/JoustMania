@@ -1,5 +1,7 @@
 """Unit tests for the OTEL metrics wrapper library."""
 
+from __future__ import annotations
+
 import time
 from threading import Thread
 from unittest.mock import MagicMock, patch

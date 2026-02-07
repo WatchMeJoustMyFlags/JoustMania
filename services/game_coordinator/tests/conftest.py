@@ -5,6 +5,8 @@ Provides MockControllerManagerService, MockSettingsService, and EventCollector
 for testing game modes without real hardware or gRPC services.
 """
 
+from __future__ import annotations
+
 import asyncio
 import sys
 import time

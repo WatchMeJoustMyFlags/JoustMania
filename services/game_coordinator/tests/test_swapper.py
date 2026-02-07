@@ -7,6 +7,8 @@ Tests the core swapper mechanics:
 - Win condition detection (all players on same team)
 """
 
+from __future__ import annotations
+
 import sys
 import time
 from pathlib import Path

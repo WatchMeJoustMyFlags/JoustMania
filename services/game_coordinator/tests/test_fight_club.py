@@ -9,6 +9,8 @@ Tests the core Fight Club mechanics:
 - Win condition (highest score after minimum rounds)
 """
 
+from __future__ import annotations
+
 import sys
 import time
 from pathlib import Path

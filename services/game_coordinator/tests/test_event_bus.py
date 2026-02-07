@@ -11,6 +11,8 @@ Tests event publishing and subscription:
 Issue #209: Improve test coverage for critical game flow
 """
 
+from __future__ import annotations
+
 import asyncio
 import sys
 from pathlib import Path

@@ -8,6 +8,8 @@ Manages settings as a gRPC service:
 - Publish change events via streaming
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import os

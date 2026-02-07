@@ -5,6 +5,8 @@ Provides control RPCs for simulating controller behavior during tests.
 Only active when using MockBackend (Phase 57).
 """
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import logging
@@ -23,7 +25,7 @@ logger = logging.getLogger(__name__)
 class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServiceServicer):
     """Service for controlling mock controllers during integration tests."""
 
-    def __init__(self, backend: "MockBackend"):
+    def __init__(self, backend: MockBackend):
         """
         Initialize mock control service.
 

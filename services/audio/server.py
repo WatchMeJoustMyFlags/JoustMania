@@ -8,6 +8,8 @@ Handles audio playback with priority-based mixing and real-time tempo control.
 See services/audio/servicer.py for the AudioServiceServicer implementation.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import os

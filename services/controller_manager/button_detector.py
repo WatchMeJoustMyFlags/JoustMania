@@ -7,6 +7,8 @@ to stream subscribers. Also handles connection/disconnection events.
 Phase 41: Button event streaming.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import time

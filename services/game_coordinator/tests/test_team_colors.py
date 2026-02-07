@@ -4,6 +4,8 @@ Unit tests for team color assignment (Phase 39 - Task 3).
 Tests team color functionality in TeamsGameBase and subclasses.
 """
 
+from __future__ import annotations
+
 from unittest.mock import AsyncMock
 
 import pytest

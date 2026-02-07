@@ -2,6 +2,8 @@
 Pytest fixtures for controller_manager tests.
 """
 
+from __future__ import annotations
+
 import pytest
 
 # Disable OpenTelemetry for tests - must be done before importing service modules

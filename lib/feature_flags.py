@@ -3,6 +3,8 @@ Feature Flag Wrapper for JoustMania
 Integrates OpenFeature with flagd provider.
 """
 
+from __future__ import annotations
+
 import logging
 import os
 from typing import Any

@@ -8,6 +8,8 @@ as gRPC handlers (not in a separate thread), we use direct queue.put_nowait()
 instead of call_soon_threadsafe().
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 from typing import Any

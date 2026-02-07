@@ -4,6 +4,8 @@ Unit tests for EventPublisher.
 Tests thread-safe event publishing to asyncio queues.
 """
 
+from __future__ import annotations
+
 import asyncio
 import threading
 from unittest.mock import patch

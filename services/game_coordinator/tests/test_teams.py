@@ -8,6 +8,8 @@ Tests the core Teams mechanics:
 - Win condition (last team standing)
 """
 
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 

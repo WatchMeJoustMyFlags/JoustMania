@@ -5,6 +5,8 @@ Pure data types and enums used across the application.
 No hardware dependencies.
 """
 
+from __future__ import annotations
+
 from enum import Enum, StrEnum
 
 
@@ -34,7 +36,7 @@ class Games(Enum):
     Ninja = (11, "Ninja Bomb", 2)
     Random = (12, "Random", 2)
 
-    def __new__(cls, value: int, pretty_name: str, min_players: int) -> "Games":
+    def __new__(cls, value: int, pretty_name: str, min_players: int) -> Games:
         """This odd constructor lets us keep Foo.value as an integer, but also
         add some extra properties to each option."""
         obj = object.__new__(cls)
@@ -44,7 +46,7 @@ class Games(Enum):
         return obj
 
     @classmethod
-    def from_name(cls, name: str) -> "Games | None":
+    def from_name(cls, name: str) -> Games | None:
         """
         Resolve any game name alias to a Games enum member.
 
@@ -101,7 +103,7 @@ class Games(Enum):
 
 # Alias mappings for Games.from_name() - maps lowercase aliases to Games members
 # Built after class definition to reference enum members
-_GAME_ALIASES: dict[str, "Games"] = {}
+_GAME_ALIASES: dict[str, Games] = {}
 
 
 def _init_game_aliases() -> None:

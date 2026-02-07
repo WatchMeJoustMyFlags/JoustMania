@@ -8,6 +8,8 @@ Tests the core Random Teams mechanics:
 - Team elimination detection
 """
 
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 

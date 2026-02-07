@@ -16,6 +16,8 @@ Memory footprint:
 - Replay mode: +48 bytes per sample x 60Hz x duration (~170KB/3min game)
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import math
@@ -125,7 +127,7 @@ class PlayerAnalytics:
         raw_accel_mag: float,
         smoothed_accel: float,
         death_threshold: float,
-        config: "AnalyticsConfig",
+        config: AnalyticsConfig,
         gyro_x: float = 0.0,
         gyro_y: float = 0.0,
         gyro_z: float = 0.0,
@@ -207,7 +209,7 @@ class PlayerAnalytics:
         """Record that a warning was triggered for this player."""
         self.warning_count += 1
 
-    def _classify_zone(self, accel_mag: float, config: "AnalyticsConfig") -> MovementZone:
+    def _classify_zone(self, accel_mag: float, config: AnalyticsConfig) -> MovementZone:
         """Classify acceleration magnitude into movement zone."""
         if accel_mag < config.zone_still_max:
             return MovementZone.STILL

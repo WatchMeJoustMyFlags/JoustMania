@@ -11,6 +11,8 @@ Features:
 Phase 36b: Refactored to extend BaseGameMode, eliminating ~450 lines of duplicate code.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import time

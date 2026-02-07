@@ -5,6 +5,8 @@ Uses psmoveapi library for controller access on Windows.
 Designed for development/debugging on Windows with WSL.
 """
 
+from __future__ import annotations
+
 import logging
 
 from services.controller_manager.backend import ControllerBackend

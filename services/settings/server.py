@@ -10,6 +10,8 @@ Manages settings as a gRPC service:
 See services/settings/servicer.py for the SettingsServicer implementation.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import os

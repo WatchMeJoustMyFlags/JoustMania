@@ -1,5 +1,7 @@
 """LED control utilities for the Menu service."""
 
+from __future__ import annotations
+
 import asyncio
 import logging
 

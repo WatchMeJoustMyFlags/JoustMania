@@ -8,6 +8,8 @@ Uses resampy for real-time tempo changes without pitch shifting.
 Runs audio playback in a separate process to avoid blocking the gRPC server.
 """
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import glob

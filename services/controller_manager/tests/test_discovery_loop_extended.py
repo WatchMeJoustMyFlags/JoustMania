@@ -10,6 +10,8 @@ Tests controller discovery, disconnection detection, and state management:
 Issue #209: Improve test coverage for critical game flow
 """
 
+from __future__ import annotations
+
 import sys
 import time
 from pathlib import Path

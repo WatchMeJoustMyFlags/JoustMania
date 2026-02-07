@@ -10,6 +10,8 @@ Tests game instance creation:
 Issue #209: Improve test coverage for critical game flow
 """
 
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 

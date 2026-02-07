@@ -8,6 +8,8 @@ Tests the core Werewolf mechanics:
 - Win conditions (team elimination)
 """
 
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 

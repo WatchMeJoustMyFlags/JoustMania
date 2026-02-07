@@ -11,6 +11,8 @@ Phase XX: Made compression conditional - disabled for local connections
 to reduce CPU overhead when bandwidth is not a concern.
 """
 
+from __future__ import annotations
+
 from typing import Any
 
 import grpc

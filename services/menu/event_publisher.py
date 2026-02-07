@@ -1,5 +1,7 @@
 """Event publishing and streaming for the Menu service."""
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import time

@@ -7,6 +7,8 @@ async/await patterns, proper state machine, and event publishing.
 Phase 36b: Refactored to extend BaseGameMode, eliminating ~550 lines of duplicate code.
 """
 
+from __future__ import annotations
+
 import logging
 import time
 

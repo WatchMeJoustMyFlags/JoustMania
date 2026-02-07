@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -26,6 +28,7 @@ def test_initialization(mock_api, mock_provider):
     # Check if provider was set with expected defaults for in-process
     mock_api.set_provider.assert_called_once()
     from openfeature.contrib.provider.flagd.config import ResolverType
+
     mock_provider.assert_called_once()
     args, kwargs = mock_provider.call_args
     assert kwargs["port"] == 8015

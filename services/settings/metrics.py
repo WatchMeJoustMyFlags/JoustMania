@@ -4,6 +4,8 @@ Prometheus metrics for Settings Service (Phase 38).
 Tracks system resources and gRPC request performance.
 """
 
+from __future__ import annotations
+
 from prometheus_client import Counter, Gauge, Histogram
 
 # System metrics

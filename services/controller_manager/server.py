@@ -5,6 +5,8 @@ This module provides the entry point for the ControllerManager service.
 The actual servicer implementation is in servicer.py.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import os

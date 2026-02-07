@@ -10,6 +10,8 @@ Manages Move controller lifecycle as a separate process:
 This is part of the microservices refactoring to separate concerns.
 """
 
+from __future__ import annotations
+
 import logging
 import queue
 import time

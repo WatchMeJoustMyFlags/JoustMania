@@ -5,6 +5,8 @@ Centralized string constants for controller state dict keys, button names,
 and other shared values to prevent typos and key mismatches across files.
 """
 
+from __future__ import annotations
+
 from enum import StrEnum
 
 

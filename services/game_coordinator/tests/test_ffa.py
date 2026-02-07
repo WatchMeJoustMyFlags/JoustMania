@@ -7,6 +7,8 @@ Tests the core FFA mechanics:
 - Win condition detection (last player standing)
 """
 
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 

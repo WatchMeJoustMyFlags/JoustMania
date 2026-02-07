@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import colorsys
 import random
 from enum import Enum
@@ -34,7 +36,7 @@ def generate_colors(color_num: int) -> list[tuple[int, int, int]]:
 
 def generate_team_colors(
     num_teams: int, color_lock: bool = False, color_lock_choices: dict[int, list[str]] | None = None
-) -> list["Colors"]:
+) -> list[Colors]:
     if color_lock and color_lock_choices is not None and num_teams in [2, 3, 4]:
         temp_colors = color_lock_choices[num_teams]
         return [Colors[c] for c in temp_colors]

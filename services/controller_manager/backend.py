@@ -6,6 +6,8 @@ Each backend implements this interface to provide platform-specific
 controller access while maintaining a consistent API.
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 
 

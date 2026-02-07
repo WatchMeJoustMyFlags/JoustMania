@@ -9,6 +9,8 @@ to ensure controllers paired externally (via pairing daemon, bluetoothctl, etc.)
 are discovered promptly.
 """
 
+from __future__ import annotations
+
 import logging
 import time
 

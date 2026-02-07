@@ -8,6 +8,8 @@ Phase 46: Internal feedback methods.
 Phase 57: Backend abstraction for platform independence.
 """
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import logging
@@ -48,7 +50,7 @@ class FeedbackManager(ControllerEffectsBase):
 
     def __init__(
         self,
-        backend: "ControllerBackend",
+        backend: ControllerBackend,
         tracked_controllers: dict[str, dict],
     ):
         """

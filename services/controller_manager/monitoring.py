@@ -6,6 +6,8 @@ Note: RSSI monitoring is handled by the host pairing-daemon which has
 direct access to hcitool for reliable signal strength readings.
 """
 
+from __future__ import annotations
+
 import logging
 
 from services.controller_manager import metrics

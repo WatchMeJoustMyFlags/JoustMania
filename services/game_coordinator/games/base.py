@@ -12,6 +12,8 @@ Uses Template Method pattern:
 Phase 70: Added dynamic music tempo system.
 """
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import logging
@@ -124,7 +126,7 @@ class Player:
     # This is purely visual - player CAN still die during warning (matches original)
     warning_until: float = 0.0
     # Analytics tracker for this player (initialized when game starts)
-    analytics: "PlayerAnalytics | None" = None
+    analytics: PlayerAnalytics | None = None
     # Per-player sensitivity multiplier (Phase 3: Per-Player Sensitivity Infrastructure)
     # 1.0 = default, >1.0 = more sensitive (easier to die), <1.0 = less sensitive (harder to die)
     # Thresholds are divided by this factor: higher factor = lower threshold = easier to trigger

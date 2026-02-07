@@ -14,6 +14,8 @@ These tests mock at method level rather than trying to mock the entire __init__.
 Issue #209: Improve test coverage for critical game flow
 """
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import sys

@@ -8,6 +8,8 @@ Tests the core Nonstop mechanics:
 - Time-based win condition
 """
 
+from __future__ import annotations
+
 import sys
 import time
 from pathlib import Path

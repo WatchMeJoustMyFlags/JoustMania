@@ -16,6 +16,8 @@ Benefits:
     - Better observability
 """
 
+from __future__ import annotations
+
 import logging
 import time
 from multiprocessing import Value

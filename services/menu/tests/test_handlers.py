@@ -1,5 +1,7 @@
 """Unit tests for controller state handlers."""
 
+from __future__ import annotations
+
 import time
 from unittest.mock import AsyncMock, MagicMock
 

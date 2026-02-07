@@ -8,6 +8,8 @@ These tests verify that:
 4. All asset directories are scanned (Joust, Menu, Zombie, Fight_Club, Commander)
 """
 
+from __future__ import annotations
+
 from pathlib import Path
 
 import pytest

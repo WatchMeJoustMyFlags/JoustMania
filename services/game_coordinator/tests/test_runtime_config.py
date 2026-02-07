@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 from unittest.mock import ANY, MagicMock, patch
 
@@ -228,9 +230,11 @@ def test_refresh_from_flags_with_metrics(mock_get_client, _mock_add_handler):
     mock_client.get_integer_value.side_effect = [60, 45]
     mock_client.get_string_value.side_effect = ["MEDIUM", "HIGH"]
 
-    with patch("services.game_coordinator.metrics.config_changes_total") as mock_changes, patch(
-        "services.game_coordinator.metrics.flag_evaluations_total"
-    ) as mock_evaluations, patch("services.game_coordinator.metrics.current_update_frequency_hz") as mock_gauge:
+    with (
+        patch("services.game_coordinator.metrics.config_changes_total") as mock_changes,
+        patch("services.game_coordinator.metrics.flag_evaluations_total") as mock_evaluations,
+        patch("services.game_coordinator.metrics.current_update_frequency_hz") as mock_gauge,
+    ):
         manager = RuntimeConfigManager()
 
         # Verify initial setup called metrics

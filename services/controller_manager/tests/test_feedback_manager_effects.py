@@ -5,6 +5,8 @@ Tests the critical behavior where base_color is updated DURING an effect,
 and verifies that the effect restores to the NEW base_color, not the old one.
 """
 
+from __future__ import annotations
+
 import asyncio
 from unittest.mock import patch
 

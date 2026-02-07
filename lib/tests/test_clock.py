@@ -4,6 +4,8 @@ Tests for the Clock abstraction.
 Verifies that FakeClock works correctly for testing time-dependent code.
 """
 
+from __future__ import annotations
+
 import asyncio
 import time
 

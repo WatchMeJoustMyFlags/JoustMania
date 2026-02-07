@@ -1,5 +1,7 @@
 """Unit tests for the gRPC client metrics interceptors."""
 
+from __future__ import annotations
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import grpc

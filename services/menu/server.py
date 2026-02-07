@@ -11,6 +11,8 @@ Manages the game selection menu and lobby experience:
 See services/menu/README.md for full documentation.
 """
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import logging

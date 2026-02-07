@@ -2,6 +2,8 @@
 Unit tests for Audio gRPC Servicer.
 """
 
+from __future__ import annotations
+
 import os
 from unittest.mock import MagicMock, patch
 

@@ -5,6 +5,8 @@ Contains the ControllerManagerServicer class that handles all gRPC methods
 for managing PS Move controllers.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import os

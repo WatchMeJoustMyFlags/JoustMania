@@ -7,6 +7,8 @@ or integration test infrastructure.
 Uses FakeClock for time control - no patching required!
 """
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 

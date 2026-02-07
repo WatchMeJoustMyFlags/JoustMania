@@ -11,6 +11,8 @@ Usage:
     channel = grpc.aio.insecure_channel("service:50051", interceptors=interceptors)
 """
 
+from __future__ import annotations
+
 import time
 from collections.abc import Callable
 from typing import Any

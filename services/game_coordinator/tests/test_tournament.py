@@ -8,6 +8,8 @@ Tests the core Tournament mechanics:
 - Win condition (last player standing)
 """
 
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 

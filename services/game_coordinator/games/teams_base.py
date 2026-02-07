@@ -9,6 +9,8 @@ Subclasses:
 - RandomTeamsGame (Random Teams): Random team assignment with team_formation_phase
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import time

@@ -2,6 +2,8 @@
 This module handles interacting with Bluez over DBus for JoustMania
 """
 
+from __future__ import annotations
+
 import logging
 import os
 import subprocess

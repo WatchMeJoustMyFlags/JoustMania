@@ -27,6 +27,8 @@ Usage in tests:
         # No patching needed!
 """
 
+from __future__ import annotations
+
 import asyncio
 import time
 from typing import Protocol

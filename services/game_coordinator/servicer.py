@@ -8,6 +8,8 @@ Manages game lifecycle:
 - Stream game events (deaths, scoring, game end)
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import threading

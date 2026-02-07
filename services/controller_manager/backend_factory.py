@@ -4,6 +4,8 @@ Backend Factory for Controller Manager
 Detects platform and creates appropriate backend instance.
 """
 
+from __future__ import annotations
+
 import logging
 import os
 import platform

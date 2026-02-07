@@ -14,6 +14,8 @@ Note: Requires mocking psmove library as hardware is not available in tests.
 Issue #209: Improve test coverage for critical game flow
 """
 
+from __future__ import annotations
+
 import sys
 import time
 from pathlib import Path

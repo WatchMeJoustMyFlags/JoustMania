@@ -8,6 +8,8 @@ Last team standing wins.
 Phase 36b: Refactored to extend TeamsGameBase, eliminating ~550 lines of duplicate code.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import random

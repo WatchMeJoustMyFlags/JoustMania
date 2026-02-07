@@ -4,6 +4,8 @@ Unit tests for DiscoveryLoop.
 Tests activity tracking and adaptive polling logic.
 """
 
+from __future__ import annotations
+
 import time
 from unittest.mock import MagicMock
 

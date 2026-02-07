@@ -4,6 +4,8 @@ Linux/BlueZ Backend for PS Move Controllers
 Uses psmove library + BlueZ/DBus for controller access on Raspberry Pi/Linux.
 """
 
+from __future__ import annotations
+
 import contextlib
 import logging
 import os
@@ -264,7 +266,7 @@ class BluetoothBackend(ControllerBackend):
             logger.error(f"Error disconnecting controller {serial}: {e}", exc_info=True)
             return False
 
-    def _get_move_by_serial(self, serial: str) -> "psmove.PSMove | None":
+    def _get_move_by_serial(self, serial: str) -> psmove.PSMove | None:
         """Get a fresh PSMove handle for a serial number."""
         count = psmove.count_connected()
         for i in range(count):

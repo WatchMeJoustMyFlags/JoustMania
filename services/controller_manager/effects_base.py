@@ -8,6 +8,8 @@ which must be implemented by subclasses.
 Phase 40: Refactoring to eliminate code duplication between real and mock servers.
 """
 
+from __future__ import annotations
+
 import asyncio
 import colorsys
 import logging

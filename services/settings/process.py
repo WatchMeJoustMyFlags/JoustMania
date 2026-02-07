@@ -10,6 +10,8 @@ Manages settings as a separate process:
 This is part of the microservices refactoring (Phase 3).
 """
 
+from __future__ import annotations
+
 import contextlib
 import fnmatch
 import logging

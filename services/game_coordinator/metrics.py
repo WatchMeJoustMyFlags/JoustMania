@@ -5,6 +5,8 @@ Tracks game state, player performance, audio playback, and game quality metrics.
 Uses OTLP push at 100ms intervals for real-time dashboard updates.
 """
 
+from __future__ import annotations
+
 from contextlib import suppress
 
 from lib.otel_metrics import Counter, Gauge, Histogram

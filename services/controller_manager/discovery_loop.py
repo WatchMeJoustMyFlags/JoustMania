@@ -14,6 +14,8 @@ Note: RSSI monitoring is handled by the host pairing-daemon which has
 direct access to hcitool for reliable signal strength readings.
 """
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import logging
@@ -60,18 +62,18 @@ class DiscoveryLoop:
 
     def __init__(
         self,
-        backend: "ControllerBackend",
+        backend: ControllerBackend,
         tracked_controllers: dict[str, dict],
         controller_states: dict[str, dict],
-        button_detector: "ButtonDetector",
-        state_cache_manager: "StateCache",
-        feedback_manager: "FeedbackManager",
-        monitoring: "ControllerMonitoring",
-        rescan_timer: "PeriodicRescanTimer",
+        button_detector: ButtonDetector,
+        state_cache_manager: StateCache,
+        feedback_manager: FeedbackManager,
+        monitoring: ControllerMonitoring,
+        rescan_timer: PeriodicRescanTimer,
         paired_serials: list[str],
         base_colors: dict[str, tuple[int, int, int]],
-        event_publisher: "EventPublisher",
-        name_manager: "NameManager | None" = None,
+        event_publisher: EventPublisher,
+        name_manager: NameManager | None = None,
     ):
         """
         Initialize the discovery loop.

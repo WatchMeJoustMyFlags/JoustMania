@@ -11,6 +11,8 @@ Manages menu UI and game selection as a separate process:
 This is part of the microservices refactoring (Phase 5).
 """
 
+from __future__ import annotations
+
 import logging
 import queue
 import time

@@ -8,6 +8,8 @@ Phase 44: OpenFeature integration with event-driven flag updates.
 Uses PROVIDER_CONFIGURATION_CHANGED events to reactively update config.
 """
 
+from __future__ import annotations
+
 import logging
 import os
 import threading

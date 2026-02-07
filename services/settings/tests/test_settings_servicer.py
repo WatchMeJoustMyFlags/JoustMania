@@ -4,6 +4,8 @@ Unit tests for Settings gRPC Servicer.
 Tests the core SettingsServicer functionality without full gRPC server.
 """
 
+from __future__ import annotations
+
 import asyncio
 import os
 import tempfile

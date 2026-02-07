@@ -1,5 +1,7 @@
 """Audio utilities for the Menu service."""
 
+from __future__ import annotations
+
 import logging
 
 import grpc.aio

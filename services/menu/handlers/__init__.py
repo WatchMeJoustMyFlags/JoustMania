@@ -1,5 +1,7 @@
 """Menu service controller state handlers."""
 
+from __future__ import annotations
+
 from services.menu.handlers.admin import AdminModeHandler
 from services.menu.handlers.base import ControllerHandler, ControllerState
 from services.menu.handlers.connected import ConnectedHandler

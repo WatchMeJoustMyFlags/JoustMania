@@ -8,6 +8,8 @@ Supports both:
 - gRPC (server.py, settings_pb2, settings_pb2_grpc)
 """
 
+from __future__ import annotations
+
 # gRPC exports (always available)
 try:
     from . import settings_pb2, settings_pb2_grpc

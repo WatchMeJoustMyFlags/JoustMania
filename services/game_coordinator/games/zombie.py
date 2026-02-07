@@ -11,6 +11,8 @@ event support in gameplay stream - not yet implemented.
 Original JoustMania behavior preserved (minus weapon system).
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import random

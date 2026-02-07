@@ -7,6 +7,8 @@ controller state messages on every frame.
 Phase 18: Object pooling and state caching for performance.
 """
 
+from __future__ import annotations
+
 import logging
 from typing import TYPE_CHECKING
 
@@ -33,7 +35,7 @@ class StateCache:
     the underlying state hasn't changed.
     """
 
-    def __init__(self, monitoring: "ControllerMonitoring"):
+    def __init__(self, monitoring: ControllerMonitoring):
         """
         Initialize state cache.
 

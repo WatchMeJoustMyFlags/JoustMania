@@ -2,6 +2,8 @@
 Unit tests for SoundChannel.
 """
 
+from __future__ import annotations
+
 from services.audio.servicer import SoundChannel
 
 

@@ -8,6 +8,8 @@ Tests the core Zombie mechanics:
 - Win conditions (all converted vs time expired)
 """
 
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 

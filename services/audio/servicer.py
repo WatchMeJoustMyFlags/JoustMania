@@ -6,6 +6,8 @@ Handles audio playback with priority-based mixing and real-time tempo control.
 - Background music: MusicPlayer with resampy for real-time tempo control
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import os

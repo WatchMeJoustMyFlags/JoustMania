@@ -7,6 +7,8 @@ but after 35 seconds the werewolves are revealed. Last team standing wins.
 Original JoustMania behavior preserved.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import random

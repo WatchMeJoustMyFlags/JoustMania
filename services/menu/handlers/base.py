@@ -1,5 +1,7 @@
 """Base handler protocol for controller state handlers."""
 
+from __future__ import annotations
+
 import time
 from enum import Enum
 from typing import TYPE_CHECKING, Protocol
@@ -113,7 +115,7 @@ class ControllerHandler(Protocol):
         """
         ...
 
-    def set_state_manager(self, manager: "StateManager") -> None:
+    def set_state_manager(self, manager: StateManager) -> None:
         """
         Set the state manager reference for state transitions.
 

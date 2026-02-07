@@ -5,6 +5,8 @@ Simulates controllers for testing without hardware.
 Useful for CI/CD, development without controllers, and automated testing.
 """
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import logging

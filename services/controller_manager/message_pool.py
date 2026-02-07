@@ -4,6 +4,8 @@ Message pool for reusable protobuf messages.
 Extracted from server.py to reduce file size (Phase 18 - Task 3).
 """
 
+from __future__ import annotations
+
 import threading
 from collections import deque
 

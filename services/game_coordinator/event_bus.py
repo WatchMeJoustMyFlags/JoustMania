@@ -22,6 +22,8 @@ Usage:
     await event_bus.unsubscribe("subscriber_1")
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import time

@@ -7,6 +7,8 @@ but the last player to die is excluded from winners.
 Original JoustMania behavior preserved.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import time

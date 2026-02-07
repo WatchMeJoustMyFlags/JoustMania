@@ -10,6 +10,8 @@ Manages game lifecycle as a gRPC service:
 See services/game_coordinator/servicer.py for the GameCoordinatorServicer implementation.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import os
