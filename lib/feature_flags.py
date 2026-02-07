@@ -1,6 +1,10 @@
 """
 Feature Flag Wrapper for JoustMania
-Integrates OpenFeature with flagd provider.
+Integrates OpenFeature with flagd provider using domain-scoped providers.
+
+Supports multiple flag domains (performance, game_settings, user_preferences)
+via flagd's flagSetId-based domain scoping. Each domain maps to a separate
+flag file and OpenFeature provider.
 """
 
 import logging
@@ -14,10 +18,74 @@ from openfeature.evaluation_context import EvaluationContext
 
 logger = logging.getLogger(__name__)
 
+# Track initialized domains to avoid re-initialization
+_initialized_domains: set[str] = set()
+
+
+def init_flag_domain(domain: str, flag_set_id: str) -> None:
+    """
+    Initialize an OpenFeature domain with a flagd provider scoped to a flagSetId.
+
+    Each domain gets its own provider that only sees flags with the matching
+    flagSetId in their metadata. This allows multiple flag files to coexist.
+
+    Args:
+        domain: OpenFeature domain name (e.g., "game_settings")
+        flag_set_id: flagd flagSetId to scope to (e.g., "game_settings")
+    """
+    if domain in _initialized_domains:
+        logger.debug(f"Domain '{domain}' already initialized, skipping")
+        return
+
+    flagd_host = os.environ.get("FLAGD_HOST", "flagd")
+    flagd_port = int(os.environ.get("FLAGD_PORT", "8015"))
+
+    try:
+        logger.info(
+            f"Initializing OpenFeature domain '{domain}' (flagSetId={flag_set_id}) at {flagd_host}:{flagd_port}"
+        )
+        provider = FlagdProvider(
+            host=flagd_host,
+            port=flagd_port,
+            resolver_type=ResolverType.IN_PROCESS,
+            selector=f"flagSetId={flag_set_id}",
+        )
+        api.set_provider(provider, domain=domain)
+        _initialized_domains.add(domain)
+    except Exception as e:
+        logger.error(f"Failed to initialize domain '{domain}': {e}")
+
+
+def get_flag_client(domain: str):
+    """
+    Get an OpenFeature client for a specific domain.
+
+    The client will only evaluate flags from the flag file whose metadata
+    contains the matching flagSetId.
+
+    Args:
+        domain: OpenFeature domain name
+
+    Returns:
+        OpenFeature client for the domain
+    """
+    return api.get_client(domain=domain)
+
+
+# ---------------------------------------------------------------------------
+# Legacy backwards-compatible wrapper for the "performance" domain.
+# Used by game_coordinator/runtime_config.py which was written before
+# domain-scoped providers were introduced.
+# ---------------------------------------------------------------------------
+
 
 class FeatureFlagClient:
     """
-    Wrapper around OpenFeature SDK to provide simplified access to feature flags.
+    Backwards-compatible wrapper around OpenFeature SDK.
+
+    Initializes the "performance" domain and provides simplified access
+    to feature flags. Existing callers (RuntimeConfigManager) continue
+    to work without changes.
     """
 
     _instance = None
@@ -33,34 +101,8 @@ class FeatureFlagClient:
             return
 
         self._initialized = True
-        self._setup_provider()
-        # Use default client as suggested in PR review
-        self.client = api.get_client()
-
-    def _setup_provider(self):
-        """Initialize the flagd provider."""
-        # Check if running in a context where we want to use the real provider
-        # or if we should fallback to a no-op/in-memory provider (default behavior if no provider set)
-
-        # In a real deployment, flagd is available at the specified host/port
-        # Defaulting to IN_PROCESS on port 8015 as suggested in PR review
-        flagd_host = os.environ.get("FLAGD_HOST", "flagd")
-        flagd_port = int(os.environ.get("FLAGD_PORT", "8015"))
-        flagd_deadline = int(os.environ.get("FLAGD_DEADLINE_MS", "5000"))
-
-        try:
-            logger.info(f"Initializing OpenFeature with flagd (IN_PROCESS) at {flagd_host}:{flagd_port}")
-            provider = FlagdProvider(
-                host=flagd_host,
-                port=flagd_port,
-                deadline_ms=flagd_deadline,
-                resolver_type=ResolverType.IN_PROCESS,
-            )
-            api.set_provider(provider)
-        except Exception as e:
-            logger.error(f"Failed to initialize flagd provider: {e}")
-            # OpenFeature defaults to NoOpProvider which returns defaults,
-            # so strict error handling might not be needed depending on requirements.
+        init_flag_domain("performance", "performance")
+        self.client = get_flag_client("performance")
 
     def get_boolean_value(self, flag_key: str, default_value: bool, context: EvaluationContext | None = None) -> bool:
         """Evaluate a boolean flag."""

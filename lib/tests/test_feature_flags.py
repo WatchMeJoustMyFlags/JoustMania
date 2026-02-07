@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 # Add lib to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+import lib.feature_flags as ff_module
 from lib.feature_flags import FeatureFlagClient, get_feature_flag_client
 
 
@@ -19,26 +20,31 @@ def test_singleton():
 @patch("lib.feature_flags.api")
 def test_initialization(mock_api, mock_provider):
     """Test client initialization."""
-    # Reset singleton for test
+    # Reset singleton and initialized domains for test
     FeatureFlagClient._instance = None
+    FeatureFlagClient._initialized = False
+    ff_module._initialized_domains.discard("performance")
     _client = FeatureFlagClient()
 
     # Check if provider was set with expected defaults for in-process
     mock_api.set_provider.assert_called_once()
     from openfeature.contrib.provider.flagd.config import ResolverType
+
     mock_provider.assert_called_once()
     args, kwargs = mock_provider.call_args
     assert kwargs["port"] == 8015
     assert kwargs["resolver_type"] == ResolverType.IN_PROCESS
 
-    mock_api.get_client.assert_called_with()
+    mock_api.get_client.assert_called_with(domain="performance")
 
 
 @patch("lib.feature_flags.api")
 def test_evaluation_methods(mock_api):
     """Test evaluation helper methods."""
-    # Reset singleton
+    # Reset singleton and initialized domains
     FeatureFlagClient._instance = None
+    FeatureFlagClient._initialized = False
+    ff_module._initialized_domains.discard("performance")
     mock_client = MagicMock()
     mock_api.get_client.return_value = mock_client
 

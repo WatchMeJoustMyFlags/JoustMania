@@ -24,8 +24,14 @@ def mock_audio():
 
 
 @pytest.fixture
-def mock_settings():
-    """Create mock SettingsHelper."""
+def mock_game_settings_writer():
+    """Create mock FlagConfigWriter for game_settings."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_user_prefs_writer():
+    """Create mock FlagConfigWriter for user_preferences."""
     return MagicMock()
 
 
@@ -36,9 +42,9 @@ def mock_publish_event():
 
 
 @pytest.fixture
-def state_manager(mock_led, mock_audio, mock_settings, mock_publish_event):
+def state_manager(mock_led, mock_audio, mock_game_settings_writer, mock_user_prefs_writer, mock_publish_event):
     """Create StateManager instance."""
-    return StateManager(mock_led, mock_audio, mock_settings, mock_publish_event)
+    return StateManager(mock_led, mock_audio, mock_game_settings_writer, mock_user_prefs_writer, mock_publish_event)
 
 
 class TestStateManagerInit:
@@ -87,7 +93,6 @@ class TestStateManagerConnection:
     @pytest.mark.asyncio
     async def test_on_controller_disconnected(self, state_manager):
         """Disconnecting a controller should clean up state."""
-        state_manager.connected_controllers.add("serial1")
         state_manager.controller_states["serial1"] = ControllerState.CONNECTED
 
         handler = MagicMock()
@@ -108,7 +113,6 @@ class TestStateManagerTransition:
     @patch("services.menu.state_manager.metrics")
     async def test_transition_to_ready(self, mock_metrics, state_manager):
         """Transitioning to READY should update ready_controllers."""
-        state_manager.connected_controllers.add("serial1")
         state_manager.controller_states["serial1"] = ControllerState.CONNECTED
 
         old_handler = MagicMock()

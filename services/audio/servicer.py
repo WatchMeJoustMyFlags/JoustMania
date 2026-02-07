@@ -501,37 +501,29 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         return sound_input
 
     async def _load_audio_setting(self):
-        """Load audio settings from settings service."""
+        """Load audio settings from flagd (user_preferences domain)."""
         if self._settings_loaded:
             return  # Already loaded
 
         try:
-            from lib.grpc_utils import create_channel
-            from proto import settings_pb2, settings_pb2_grpc
+            from lib.feature_flags import get_flag_client, init_flag_domain
 
-            settings_host = os.getenv("SETTINGS_HOST", "settings")
-            settings_port = os.getenv("SETTINGS_PORT", "50051")
+            init_flag_domain("user_preferences", "user_preferences")
+            client = get_flag_client("user_preferences")
 
-            async with create_channel(f"{settings_host}:{settings_port}") as channel:
-                stub = settings_pb2_grpc.SettingsServiceStub(channel)
+            # Load play_audio setting
+            self.audio_enabled = client.get_boolean_value("play_audio", True)
+            logger.info(f"Audio enabled setting loaded: {self.audio_enabled}")
 
-                # Load play_audio setting
-                response = await stub.GetSetting(settings_pb2.GetSettingRequest(key="play_audio"))
-                self.audio_enabled = response.value.lower() != "false" if response.value else True
-                logger.info(f"Audio enabled setting loaded: {self.audio_enabled}")
-
-                # Load menu_voice setting
-                try:
-                    voice_response = await stub.GetSetting(settings_pb2.GetSettingRequest(key="menu_voice"))
-                    if voice_response.value and voice_response.value in ("aaron", "ivy"):
-                        self.menu_voice = voice_response.value
-                    logger.info(f"Menu voice setting loaded: {self.menu_voice}")
-                except Exception as voice_err:
-                    logger.debug(f"Could not load menu_voice setting: {voice_err}, using default: ivy")
+            # Load menu_voice setting
+            voice = client.get_string_value("menu_voice", "ivy")
+            if voice in ("aaron", "ivy"):
+                self.menu_voice = voice
+            logger.info(f"Menu voice setting loaded: {self.menu_voice}")
 
             self._settings_loaded = True
         except Exception as e:
-            logger.debug(f"Could not load audio settings: {e}, using defaults")
+            logger.debug(f"Could not load audio settings from flagd: {e}, using defaults")
             # Mark as loaded even on failure to avoid repeated attempts
             self._settings_loaded = True
 

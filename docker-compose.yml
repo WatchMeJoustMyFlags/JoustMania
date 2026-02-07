@@ -61,11 +61,20 @@ services:
 
   # flagd for feature flag evaluation
   flagd:
-    image: ghcr.io/open-feature/flagd:v0.10.0
+    image: ghcr.io/open-feature/flagd:v0.13.2
     container_name: joustmania-flagd
-    command: [ "start", "--uri", "file:/etc/flagd/flags.json" ]
+    command:
+      - "start"
+      - "--uri"
+      - "file:/etc/flagd/performance.json"
+      - "--uri"
+      - "file:/etc/flagd/game_settings.json"
+      - "--uri"
+      - "file:/etc/flagd/user_preferences.json"
     volumes:
-      - ./services/flagd/flags.json:/etc/flagd/flags.json:ro
+      - ./services/flagd/performance.json:/etc/flagd/performance.json
+      - ./services/flagd/game_settings.json:/etc/flagd/game_settings.json
+      - ./services/flagd/user_preferences.json:/etc/flagd/user_preferences.json
     expose:
       - "8013"  # flagd evaluation port (gRPC)
       - "8015"  # flagd sync port (for in-process evaluation)
@@ -277,9 +286,17 @@ services:
       # Phase 60: Audio service connection
       - AUDIO_HOST=audio
       - AUDIO_PORT=50056
+      - FLAGD_HOST=flagd
+      - FLAGD_PORT=8015
+      - FLAGD_DIR=/etc/flagd
+    volumes:
+      - ./services/flagd/game_settings.json:/etc/flagd/game_settings.json
+      - ./services/flagd/user_preferences.json:/etc/flagd/user_preferences.json
     depends_on:
       redis:
         condition: service_healthy
+      flagd:
+        condition: service_started
     networks:
       - joustmania
     restart: unless-stopped
@@ -313,9 +330,13 @@ services:
       - MOCK_MODE=${AUDIO_MOCK_MODE:-false}
       - OTEL_SERVICE_NAME=audio-service
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - FLAGD_HOST=flagd
+      - FLAGD_PORT=8015
     depends_on:
       redis:
         condition: service_healthy
+      flagd:
+        condition: service_started
     networks:
       - joustmania
     restart: unless-stopped

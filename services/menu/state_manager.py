@@ -4,10 +4,11 @@ import logging
 from collections.abc import Callable, Coroutine
 
 from lib.controller_constants import ButtonTrackingKey
+from lib.flag_config_writer import FlagConfigWriter
 from lib.types import Games
 from services.menu import metrics
 from services.menu.handlers.base import ControllerHandler, ControllerState
-from services.menu.utils import AudioHelper, LedController, SettingsHelper
+from services.menu.utils import AudioHelper, LedController
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,8 @@ class StateManager:
         self,
         led: LedController,
         audio: AudioHelper,
-        settings: SettingsHelper,
+        game_settings_writer: FlagConfigWriter,
+        user_prefs_writer: FlagConfigWriter,
         publish_event: Callable[[str, dict], Coroutine],
     ):
         """
@@ -34,12 +36,14 @@ class StateManager:
         Args:
             led: LED controller utility
             audio: Audio helper utility
-            settings: Settings helper utility
+            game_settings_writer: FlagConfigWriter for game_settings.json
+            user_prefs_writer: FlagConfigWriter for user_preferences.json
             publish_event: Async function to publish events
         """
         self.led = led
         self.audio = audio
-        self.settings = settings
+        self.game_settings_writer = game_settings_writer
+        self.user_prefs_writer = user_prefs_writer
         self.publish_event = publish_event
 
         # Controller state tracking - single source of truth
@@ -57,18 +61,6 @@ class StateManager:
 
         # Current game mode (for LED colors)
         self.current_game_mode: Games = Games.JoustFFA
-
-        # Game settings (configured via admin mode)
-        self.game_settings: dict[str, int | float | bool] = {
-            "sensitivity": 2,  # 0-4, default MEDIUM
-            "num_teams": 2,  # For team-based modes (Teams, RandomTeams, Traitor)
-            "random_assignment": True,  # For Teams mode
-            "nonstop_time_limit": 0,  # 0 = unlimited
-            "invincibility": 4.0,  # Seconds of invincibility (Tournament, FightClub)
-            "fight_club_min_rounds": 10,
-            "werewolf_reveal_time": 35.0,
-            "force_all_start": False,  # Force start with all connected controllers
-        }
 
     @property
     def connected_controllers(self) -> set[str]:
@@ -297,7 +289,7 @@ class StateManager:
         if ready_handler and hasattr(ready_handler, "reset_game_start_flag"):
             ready_handler.reset_game_start_flag()
 
-        # Re-register each controller as CONNECTED (triggers on_enter → sets colors)
+        # Re-register each controller as CONNECTED (triggers on_enter -> sets colors)
         for serial in serials:
             await self.on_controller_connected(serial)
 

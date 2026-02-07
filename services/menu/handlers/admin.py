@@ -182,13 +182,6 @@ class AdminModeHandler:
     # Helper properties for StateManager access
 
     @property
-    def _settings_channel(self):
-        """Get settings channel from StateManager."""
-        if self._state_manager is None:
-            raise RuntimeError("StateManager not set")
-        return self._state_manager.settings.settings_channel
-
-    @property
     def _connected_controllers(self) -> set[str]:
         """Get connected controllers from StateManager."""
         if self._state_manager is None:
@@ -657,8 +650,11 @@ class AdminModeHandler:
             span.set_attribute("game.name", self._current_game_mode)
 
             try:
-                # Check force_all_start from local game settings
-                force_all = bool(self._state_manager.game_settings.get("force_all_start", False))
+                # Check force_all_start from flagd via OpenFeature
+                from lib.feature_flags import get_flag_client
+
+                gs_client = get_flag_client("game_settings")
+                force_all = gs_client.get_boolean_value("force_all_start", False)
                 span.set_attribute("force_all_start", force_all)
 
                 # Determine which controllers to include
@@ -758,10 +754,7 @@ class AdminModeHandler:
         """
         Handle sensitivity cycling in admin mode.
 
-        Cycles through all 5 levels:
-        Ultra Slow (0) -> Slow (1) -> Medium (2) -> Fast (3) -> Ultra Fast (4) -> Ultra Slow
-
-        Uses state_manager.game_settings for local storage.
+        Cycles through sensitivity variants via FlagConfigWriter.
 
         Args:
             serial: Controller serial number
@@ -776,19 +769,23 @@ class AdminModeHandler:
             span.set_attribute(SpanAttr.CONTROLLER_SERIAL, serial)
 
             try:
-                settings = self._state_manager.game_settings
-                current = int(settings.get("sensitivity", 2))
+                writer = self._state_manager.game_settings_writer
+                old_variant = writer.get_current_variant("sensitivity")
+                new_variant = writer.cycle_variant("sensitivity", forward=True)
 
-                # Validate current value is in range (0-4)
-                if current < 0 or current > 4:
-                    logger.warning(f"Invalid sensitivity value {current}, resetting to 2")
-                    current = 2
+                if new_variant is None:
+                    logger.warning("Failed to cycle sensitivity variant")
+                    return
 
-                # Cycle through all 5 levels: 0 -> 1 -> 2 -> 3 -> 4 -> 0
-                new_value = (current + 1) % 5
-
-                # Update local setting
-                settings["sensitivity"] = new_value
+                # Map variant name to numeric value for visual feedback
+                variant_to_value = {
+                    "ultra_slow": 0,
+                    "slow": 1,
+                    "medium": 2,
+                    "fast": 3,
+                    "ultra_fast": 4,
+                }
+                new_value = variant_to_value.get(new_variant, 2)
 
                 # Visual feedback: Color by sensitivity level (5 distinct colors)
                 sensitivity_colors = [
@@ -810,7 +807,6 @@ class AdminModeHandler:
                 )
 
                 # Play voice for sensitivity level (matches original JoustMania)
-                # Note: "ultra_high" = ultra-high sensitivity (detects slow movement)
                 sensitivity_voices = [
                     Sound.MENU_VOX_SENSITIVITY_ULTRA_HIGH,  # ULTRA_SLOW (0)
                     Sound.MENU_VOX_SENSITIVITY_HIGH,  # SLOW (1)
@@ -822,9 +818,9 @@ class AdminModeHandler:
 
                 span.add_event(
                     "sensitivity_changed",
-                    {"old_value": current, "new_value": new_value},
+                    {"old_variant": old_variant, "new_variant": new_variant},
                 )
-                logger.info(f"Sensitivity changed by admin controller {serial}: {current} -> {new_value}")
+                logger.info(f"Sensitivity changed by admin controller {serial}: {old_variant} -> {new_variant}")
 
             except Exception as e:
                 logger.error(f"Error changing sensitivity: {e}", exc_info=True)
@@ -868,41 +864,34 @@ class AdminModeHandler:
         """
         Handle instruction toggle in admin mode.
 
-        Toggles instruction display on/off.
+        Toggles instruction display on/off via FlagConfigWriter.
 
         Args:
             serial: Controller serial number
         """
-        from proto import (
-            controller_manager_pb2,
-            settings_pb2,
-            settings_pb2_grpc,
-        )
+        from proto import controller_manager_pb2
+
+        if self._state_manager is None:
+            return
 
         ctx = self._get_span_context()
         with self.tracer.start_as_current_span("admin_instructions", context=ctx) as span:
             span.set_attribute(SpanAttr.CONTROLLER_SERIAL, serial)
 
             try:
-                settings_stub = settings_pb2_grpc.SettingsServiceStub(self._settings_channel)
+                writer = self._state_manager.user_prefs_writer
+                old_variant = writer.get_current_variant("game_instructions")
+                new_variant = writer.cycle_variant("game_instructions", forward=True)
 
-                # Get current instruction state
-                get_request = settings_pb2.GetSettingRequest(key="instructions")
-                get_response = await settings_stub.GetSetting(get_request)
-                current = get_response.value if get_response.value else "true"
+                if new_variant is None:
+                    logger.warning("Failed to cycle game_instructions variant")
+                    return
 
-                # Toggle: true <-> false
-                new_value = "false" if current == "true" else "true"
-
-                # Update setting
-                update_request = settings_pb2.UpdateSettingRequest(
-                    key="instructions", value=new_value, source="admin_mode"
-                )
-                await settings_stub.UpdateSetting(update_request)
+                enabled = new_variant == "on"
 
                 # Visual feedback: Green (enabled) or Red (disabled)
                 # GAME_EFFECT_PULSE restores to base color automatically
-                pulse_color = (0, 255, 0) if new_value == "true" else (255, 0, 0)
+                pulse_color = (0, 255, 0) if enabled else (255, 0, 0)
                 await self._send_game_effect(
                     serial,
                     controller_manager_pb2.GAME_EFFECT_PULSE,
@@ -912,14 +901,14 @@ class AdminModeHandler:
                 )
 
                 # Play instructions toggle voice announcement
-                voice = Sound.MENU_VOX_INSTRUCTIONS_ON if new_value == "true" else Sound.MENU_VOX_INSTRUCTIONS_OFF
+                voice = Sound.MENU_VOX_INSTRUCTIONS_ON if enabled else Sound.MENU_VOX_INSTRUCTIONS_OFF
                 await self._play_voice(voice)
 
                 span.add_event(
                     "instructions_toggled",
-                    {"old_value": current, "new_value": new_value, "enabled": new_value == "true"},
+                    {"old_variant": old_variant, "new_variant": new_variant, "enabled": enabled},
                 )
-                logger.info(f"Instructions toggled by admin controller {serial}: {current} -> {new_value}")
+                logger.info(f"Instructions toggled by admin controller {serial}: {old_variant} -> {new_variant}")
 
             except Exception as e:
                 logger.error(f"Error toggling instructions: {e}", exc_info=True)
@@ -972,7 +961,7 @@ class AdminModeHandler:
         """
         Increase the value of the current admin option.
 
-        Uses state_manager.game_settings for local storage.
+        Cycles through flag variants via FlagConfigWriter.
 
         Args:
             serial: Controller serial number
@@ -988,54 +977,16 @@ class AdminModeHandler:
             span.set_attribute(SpanAttr.ADMIN_OPTION, option_name)
 
             try:
-                settings = self._state_manager.game_settings
-                current_value = settings.get(option_name)
+                writer = self._state_manager.game_settings_writer
+                old_variant = writer.get_current_variant(option_name)
+                new_variant = writer.cycle_variant(option_name, forward=True)
 
-                # Calculate new value using pattern matching
-                match option_name:
-                    case "sensitivity":
-                        # Cycle: 0 -> 1 -> 2 -> 3 -> 4 -> 0
-                        current = int(current_value) if current_value is not None else 2
-                        new_value = (current + 1) % 5
+                if new_variant is None:
+                    logger.warning(f"Failed to cycle variant for {option_name}")
+                    return
 
-                    case "num_teams":
-                        # Cycle: 2 -> 3 -> 4 -> 5 -> 6 -> 2
-                        current = int(current_value) if current_value is not None else 2
-                        new_value = current + 1 if current < 6 else 2
-
-                    case "random_assignment" | "force_all_start":
-                        # Toggle boolean
-                        new_value = not bool(current_value)
-
-                    case "nonstop_time_limit":
-                        # Cycle: 0 -> 60 -> 120 -> 180 -> 240 -> 300 -> 0
-                        current = int(current_value) if current_value is not None else 0
-                        steps = [0, 60, 120, 180, 240, 300]
-                        idx = (steps.index(current) + 1) % len(steps) if current in steps else 0
-                        new_value = steps[idx]
-
-                    case "invincibility":
-                        # Increment: 2.0 -> 3.0 -> 4.0 -> ... -> 8.0 -> 2.0
-                        current = float(current_value) if current_value is not None else 4.0
-                        new_value = current + 1.0 if current < 8.0 else 2.0
-
-                    case "fight_club_min_rounds":
-                        # Increment: 5 -> 10 -> 15 -> 20 -> 5
-                        current = int(current_value) if current_value is not None else 10
-                        steps = [5, 10, 15, 20]
-                        idx = (steps.index(current) + 1) % len(steps) if current in steps else 1
-                        new_value = steps[idx]
-
-                    case "werewolf_reveal_time":
-                        # Increment: 20 -> 25 -> 30 -> 35 -> 40 -> 45 -> 50 -> 55 -> 60 -> 20
-                        current = float(current_value) if current_value is not None else 35.0
-                        new_value = current + 5.0 if current < 60.0 else 20.0
-
-                    case _:
-                        new_value = current_value
-
-                # Update local setting
-                settings[option_name] = new_value
+                # Get the actual value for visual/voice feedback
+                new_value = self._variant_to_value(option_name, new_variant)
 
                 # Visual feedback
                 await self._show_value_feedback(serial, option_name, new_value)
@@ -1045,9 +996,9 @@ class AdminModeHandler:
 
                 span.add_event(
                     "admin_value_increased",
-                    {"option": option_name, "old_value": str(current_value), "new_value": str(new_value)},
+                    {"option": option_name, "old_variant": str(old_variant), "new_variant": str(new_variant)},
                 )
-                logger.info(f"Admin increased {option_name}: {current_value} -> {new_value}")
+                logger.info(f"Admin increased {option_name}: {old_variant} -> {new_variant}")
 
             except Exception as e:
                 logger.error(f"Error increasing admin value: {e}", exc_info=True)
@@ -1056,7 +1007,7 @@ class AdminModeHandler:
         """
         Decrease the value of the current admin option.
 
-        Uses state_manager.game_settings for local storage.
+        Cycles through flag variants backward via FlagConfigWriter.
 
         Args:
             serial: Controller serial number
@@ -1072,54 +1023,16 @@ class AdminModeHandler:
             span.set_attribute(SpanAttr.ADMIN_OPTION, option_name)
 
             try:
-                settings = self._state_manager.game_settings
-                current_value = settings.get(option_name)
+                writer = self._state_manager.game_settings_writer
+                old_variant = writer.get_current_variant(option_name)
+                new_variant = writer.cycle_variant(option_name, forward=False)
 
-                # Calculate new value using pattern matching
-                match option_name:
-                    case "sensitivity":
-                        # Cycle backward: 0 -> 4 -> 3 -> 2 -> 1 -> 0
-                        current = int(current_value) if current_value is not None else 2
-                        new_value = (current - 1) % 5
+                if new_variant is None:
+                    logger.warning(f"Failed to cycle variant backward for {option_name}")
+                    return
 
-                    case "num_teams":
-                        # Cycle backward: 2 -> 6 -> 5 -> 4 -> 3 -> 2
-                        current = int(current_value) if current_value is not None else 2
-                        new_value = current - 1 if current > 2 else 6
-
-                    case "random_assignment" | "force_all_start":
-                        # Toggle boolean (same as increase)
-                        new_value = not bool(current_value)
-
-                    case "nonstop_time_limit":
-                        # Cycle backward: 0 -> 300 -> 240 -> 180 -> 120 -> 60 -> 0
-                        current = int(current_value) if current_value is not None else 0
-                        steps = [0, 60, 120, 180, 240, 300]
-                        idx = (steps.index(current) - 1) % len(steps) if current in steps else 0
-                        new_value = steps[idx]
-
-                    case "invincibility":
-                        # Decrement: 2.0 -> 8.0 -> 7.0 -> ... -> 3.0 -> 2.0
-                        current = float(current_value) if current_value is not None else 4.0
-                        new_value = current - 1.0 if current > 2.0 else 8.0
-
-                    case "fight_club_min_rounds":
-                        # Decrement: 5 -> 20 -> 15 -> 10 -> 5
-                        current = int(current_value) if current_value is not None else 10
-                        steps = [5, 10, 15, 20]
-                        idx = (steps.index(current) - 1) % len(steps) if current in steps else 1
-                        new_value = steps[idx]
-
-                    case "werewolf_reveal_time":
-                        # Decrement: 20 -> 60 -> 55 -> 50 -> ... -> 25 -> 20
-                        current = float(current_value) if current_value is not None else 35.0
-                        new_value = current - 5.0 if current > 20.0 else 60.0
-
-                    case _:
-                        new_value = current_value
-
-                # Update local setting
-                settings[option_name] = new_value
+                # Get the actual value for visual/voice feedback
+                new_value = self._variant_to_value(option_name, new_variant)
 
                 # Visual feedback
                 await self._show_value_feedback(serial, option_name, new_value)
@@ -1129,12 +1042,63 @@ class AdminModeHandler:
 
                 span.add_event(
                     "admin_value_decreased",
-                    {"option": option_name, "old_value": str(current_value), "new_value": str(new_value)},
+                    {"option": option_name, "old_variant": str(old_variant), "new_variant": str(new_variant)},
                 )
-                logger.info(f"Admin decreased {option_name}: {current_value} -> {new_value}")
+                logger.info(f"Admin decreased {option_name}: {old_variant} -> {new_variant}")
 
             except Exception as e:
                 logger.error(f"Error decreasing admin value: {e}", exc_info=True)
+
+    @staticmethod
+    def _variant_to_value(option_name: str, variant_name: str) -> int | float | bool:
+        """
+        Convert a flag variant name to a typed value for display feedback.
+
+        Args:
+            option_name: Flag key name
+            variant_name: Variant name from the flag file
+
+        Returns:
+            Typed value corresponding to the variant
+        """
+        # Map variant names to their values for feedback purposes
+        variant_maps = {
+            "sensitivity": {"ultra_slow": 0, "slow": 1, "medium": 2, "fast": 3, "ultra_fast": 4},
+            "num_teams": {"two": 2, "three": 3, "four": 4, "five": 5, "six": 6},
+            "random_assignment": {"on": True, "off": False},
+            "nonstop_time_limit": {
+                "unlimited": 0,
+                "one_min": 60,
+                "two_min": 120,
+                "three_min": 180,
+                "four_min": 240,
+                "five_min": 300,
+            },
+            "invincibility": {
+                "2s": 2.0,
+                "3s": 3.0,
+                "4s": 4.0,
+                "5s": 5.0,
+                "6s": 6.0,
+                "7s": 7.0,
+                "8s": 8.0,
+            },
+            "fight_club_min_rounds": {"five": 5, "ten": 10, "fifteen": 15, "twenty": 20},
+            "werewolf_reveal_time": {
+                "20s": 20.0,
+                "25s": 25.0,
+                "30s": 30.0,
+                "35s": 35.0,
+                "40s": 40.0,
+                "45s": 45.0,
+                "50s": 50.0,
+                "55s": 55.0,
+                "60s": 60.0,
+            },
+            "force_all_start": {"on": True, "off": False},
+        }
+        mapping = variant_maps.get(option_name, {})
+        return mapping.get(variant_name, 0)
 
     async def _show_value_feedback(self, serial: str, option_name: str, value: int | float | bool) -> None:
         """
