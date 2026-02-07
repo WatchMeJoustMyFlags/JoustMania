@@ -1,6 +1,7 @@
 """Menu gRPC Servicer for JoustMania."""
 
 import asyncio
+import contextlib
 import logging
 import os
 import time
@@ -9,6 +10,8 @@ from opentelemetry import context as otel_context
 from opentelemetry import trace
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
+from lib.feature_flags import get_flag_client, init_flag_domain
+from lib.flag_config_writer import FlagConfigWriter
 from lib.telemetry import get_tracer
 from lib.types import Games
 from proto import menu_pb2, menu_pb2_grpc
@@ -18,9 +21,9 @@ from services.menu.event_publisher import EventPublisher
 from services.menu.handlers import AdminModeHandler, ConnectedHandler, ReadyHandler
 from services.menu.handlers.base import ControllerState
 from services.menu.state_manager import StateManager
-from services.menu.utils import AudioHelper, LedController, SettingsHelper
+from services.menu.utils import AudioHelper, LedController
 from services.menu.utils.audio import GAME_MODE_VOICE
-from services.menu.utils.settings import GAME_MODES
+from services.menu.utils.settings import DEFAULT_GAME_MODE, DEFAULT_VOICE_ACTOR, GAME_MODES, get_next_game_mode
 
 logger = logging.getLogger(__name__)
 
@@ -48,22 +51,31 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
 
         controller_host = os.getenv("CONTROLLER_MANAGER_HOST", "controller-manager")
         controller_port = os.getenv("CONTROLLER_MANAGER_PORT", "50052")
-        settings_host = os.getenv("SETTINGS_HOST", "settings")
-        settings_port = os.getenv("SETTINGS_PORT", "50051")
         game_coordinator_host = os.getenv("GAME_COORDINATOR_HOST", "game-coordinator")
         game_coordinator_port = os.getenv("GAME_COORDINATOR_PORT", "50053")
         audio_host = os.getenv("AUDIO_HOST", "audio")
         audio_port = os.getenv("AUDIO_PORT", "50056")
 
         self.controller_channel = create_channel(f"{controller_host}:{controller_port}")
-        self.settings_channel = create_channel(f"{settings_host}:{settings_port}")
         self.game_coordinator_channel = create_channel(f"{game_coordinator_host}:{game_coordinator_port}")
         self.audio_channel = create_channel(f"{audio_host}:{audio_port}")
+
+        # Initialize flagd domains for game_settings and user_preferences
+        init_flag_domain("game_settings")
+        init_flag_domain("user_preferences")
+
+        # FlagConfigWriter instances for persisting settings changes
+        flagd_dir = os.getenv("FLAGD_DIR", "/etc/flagd")
+        self.game_settings_writer = FlagConfigWriter(os.path.join(flagd_dir, "game_settings.json"))
+        self.user_prefs_writer = FlagConfigWriter(os.path.join(flagd_dir, "user_preferences.json"))
+
+        # OpenFeature clients for reading settings
+        self.game_settings_client = get_flag_client("game_settings")
+        self.user_prefs_client = get_flag_client("user_preferences")
 
         # Utility classes
         self.led = LedController(self.controller_channel)
         self.audio = AudioHelper(self.audio_channel)
-        self.settings_helper = SettingsHelper(self.settings_channel)
 
         # Event publisher for streaming menu events
         self.event_publisher = EventPublisher(tracer, metrics)
@@ -72,7 +84,8 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         self.state_manager = StateManager(
             led=self.led,
             audio=self.audio,
-            settings=self.settings_helper,
+            game_settings_writer=self.game_settings_writer,
+            user_prefs_writer=self.user_prefs_writer,
             publish_event=self.event_publisher.publish,
         )
 
@@ -101,6 +114,9 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             callbacks=self,
             metrics=metrics,
         )
+
+        # Track game lifecycle task for clean shutdown
+        self._game_lifecycle_task: asyncio.Task | None = None
 
         logger.info("Menu service initialized")
 
@@ -199,9 +215,11 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
                 self.state = menu_pb2.MenuState.RUNNING
                 self._clear_ready_state()
 
-                # Load settings
-                self.voice_actor = await self.settings_helper.load_voice_actor()
-                self.current_selection = await self.settings_helper.load_current_game()
+                # Load settings from flagd (user_preferences domain)
+                self.voice_actor = self.user_prefs_client.get_string_value("menu_voice", DEFAULT_VOICE_ACTOR)
+                current_game_name = self.user_prefs_client.get_string_value("current_game", DEFAULT_GAME_MODE.name)
+                game = Games.from_name(current_game_name)
+                self.current_selection = game if game and game.name in GAME_MODES else DEFAULT_GAME_MODE
                 self.state_manager.set_game_mode(self.current_selection)
 
                 await self.audio.start_lobby_music()
@@ -306,6 +324,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             finally:
                 await self.event_publisher.unsubscribe(subscriber_id)
                 metrics.stream_connections_active.dec()
+                metrics.stream_disconnections_total.inc()
 
     # Input handlers
 
@@ -318,10 +337,11 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             await self._start_game(serial="process_input", source="button_input")
 
         elif button == "select":
-            self.current_selection = self.settings_helper.get_next_game_mode(self.current_selection)
+            self.current_selection = get_next_game_mode(self.current_selection)
             self.state_manager.set_game_mode(self.current_selection)
             await self.event_publisher.publish("selection_changed", {"game_name": self.current_selection.name})
-            await self.settings_helper.save_current_game(self.current_selection)
+            # Persist to flagd
+            self.user_prefs_writer.update_default_variant("current_game", self.current_selection.name)
             logger.info(f"Selection changed to: {self.current_selection.name}")
 
     async def _handle_web_command(self, data: dict, span) -> None:
@@ -339,7 +359,8 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
                 self.current_selection = game_mode
                 self.state_manager.set_game_mode(game_mode)
                 await self.event_publisher.publish("selection_changed", {"game_name": game_mode.name, "source": "web"})
-                await self.settings_helper.save_current_game(game_mode)
+                # Persist to flagd
+                self.user_prefs_writer.update_default_variant("current_game", game_mode.name)
                 voice_file = GAME_MODE_VOICE.get(game_mode.name)
                 if voice_file:
                     await self.audio.play_voice(voice_file)
@@ -376,14 +397,31 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         logger.info("Game event monitor: events handled by game stream")
 
     async def stop_game_event_monitor(self):
-        """Stop the game event monitoring task (no-op, kept for compatibility)."""
-        logger.info("Game event monitor stopped")
+        """Stop the game lifecycle task if running."""
+        if self._game_lifecycle_task is not None and not self._game_lifecycle_task.done():
+            logger.info("Cancelling game lifecycle task...")
+            self._game_lifecycle_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._game_lifecycle_task
+            self._game_lifecycle_task = None
+            logger.info("Game lifecycle task cancelled")
+        else:
+            logger.info("No active game lifecycle task to stop")
 
     async def shutdown(self):
         """Cleanup resources on shutdown."""
-        logger.info("Shutting down Menu service, closing gRPC channels...")
+        logger.info("Shutting down Menu service...")
+
+        # Cancel game lifecycle task before closing channels
+        if self._game_lifecycle_task is not None and not self._game_lifecycle_task.done():
+            logger.info("Cancelling game lifecycle task during shutdown...")
+            self._game_lifecycle_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._game_lifecycle_task
+            self._game_lifecycle_task = None
+
+        logger.info("Closing gRPC channels...")
         await self.controller_channel.close()
-        await self.settings_channel.close()
         await self.game_coordinator_channel.close()
         await self.audio_channel.close()
         logger.info("Menu service gRPC channels closed")
@@ -400,8 +438,15 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             serial: Controller serial that triggered the start (for logging)
             source: Source of the start request ("controller" or "web")
         """
+        # Cancel any existing game lifecycle task (defensive)
+        if self._game_lifecycle_task is not None and not self._game_lifecycle_task.done():
+            logger.warning("Cancelling existing game lifecycle task before starting new one")
+            self._game_lifecycle_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._game_lifecycle_task
+
         # Schedule game lifecycle as background task to avoid blocking button monitor
-        task = asyncio.create_task(self._run_game_lifecycle(serial, source))
+        self._game_lifecycle_task = asyncio.create_task(self._run_game_lifecycle(serial, source))
 
         # Log any exceptions from the background task
         def _log_exception(t):
@@ -411,7 +456,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             if exc:
                 logger.error(f"Game lifecycle task failed: {exc}", exc_info=exc)
 
-        task.add_done_callback(_log_exception)
+        self._game_lifecycle_task.add_done_callback(_log_exception)
 
     async def _run_game_lifecycle(self, serial: str, source: str = "controller"):
         """
@@ -490,42 +535,73 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             )
 
             stream = None
+            game_started = False
+            max_reconnect_attempts = 3
+
             try:
-                # Create stream and iterate through events
-                stream = stub.StreamGameEvents(request, metadata=metadata)
-                first_event_received = False
+                for attempt in range(max_reconnect_attempts + 1):
+                    try:
+                        # First attempt sends start_config; reconnections subscribe without it
+                        if attempt == 0:
+                            stream = stub.StreamGameEvents(request, metadata=metadata)
+                        else:
+                            metrics.game_event_stream_reconnects_total.inc()
+                            logger.warning(
+                                f"Reconnecting game event stream (attempt {attempt}/{max_reconnect_attempts})"
+                            )
+                            subscribe_request = game_coordinator_pb2.StreamEventsRequest()
+                            stream = stub.StreamGameEvents(subscribe_request, metadata=metadata)
 
-                async for event in stream:
-                    if not first_event_received:
-                        # First event - check if game started successfully
-                        first_event_received = True
+                        async for event in stream:
+                            if not game_started:
+                                if event.event_type == "game_start_error":
+                                    error = event.data.get("error", "Unknown error")
+                                    logger.error(f"Game start failed: {error}")
+                                    span.set_attribute("error", error)
+                                    self.state = menu_pb2.MenuState.RUNNING
+                                    await self._restart_lobby()
+                                    return
 
-                        if event.event_type == "game_start_error":
-                            error = event.data.get("error", "Unknown error")
-                            logger.error(f"Game start failed: {error}")
-                            span.set_attribute("error", error)
-                            self.state = menu_pb2.MenuState.RUNNING
-                            # Restart lobby on error
-                            await self._restart_lobby()
-                            return
+                                logger.info(f"Game started successfully: {event.event_type}")
+                                span.set_attribute("game.started", True)
+                                game_started = True
 
-                        logger.info(f"Game started successfully: {event.event_type}")
-                        span.set_attribute("game.started", True)
+                                # Clear ready state now that game has started (Issue #256)
+                                self._clear_ready_state()
+                                logger.info("Ready state cleared on game start confirmation")
 
-                        # Clear ready state now that game has started (Issue #256)
-                        # This ensures dead players don't show in player insights dashboard
-                        self._clear_ready_state()
-                        logger.info("Ready state cleared on game start confirmation")
+                            logger.info(f"Game event received: {event.event_type}")
 
-                    logger.info(f"Game event received: {event.event_type}")
+                            if GameEvent.is_game_ending(event.event_type):
+                                logger.info(f"Game ended: {event.event_type}")
+                                await self.event_publisher.publish(GameEvent.GAME_ENDED, event.data)
+                                await self._restart_lobby()
+                                return
 
-                    if GameEvent.is_game_ending(event.event_type):
-                        logger.info(f"Game ended: {event.event_type}")
-                        # Publish game ended event for other subscribers
-                        await self.event_publisher.publish(GameEvent.GAME_ENDED, event.data)
+                        # Stream ended normally without game_ended event
                         break
 
-                # Game ended normally - restart lobby
+                    except asyncio.CancelledError:
+                        raise  # Never retry on cancellation
+
+                    except Exception as e:
+                        if stream is not None:
+                            stream.cancel()
+                            stream = None
+
+                        # Don't retry if game never started
+                        if not game_started:
+                            raise
+
+                        if attempt >= max_reconnect_attempts:
+                            logger.error(f"Game event stream failed after {max_reconnect_attempts} attempts: {e}")
+                            raise
+
+                        backoff = attempt + 1
+                        logger.warning(f"Game event stream error: {e}. Reconnecting in {backoff}s...")
+                        await asyncio.sleep(backoff)
+
+                # Restart lobby after stream ends
                 await self._restart_lobby()
 
             except asyncio.CancelledError:
@@ -534,10 +610,8 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             except Exception as e:
                 logger.error(f"Game stream error: {e}", exc_info=True)
                 span.record_exception(e)
-                # Restart lobby on error
                 await self._restart_lobby()
             finally:
-                # Ensure stream is closed
                 if stream is not None:
                     stream.cancel()
 
@@ -573,9 +647,8 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         """
         from proto import game_coordinator_pb2
 
-        # Get game settings from state_manager (set via admin mode)
-        settings = getattr(self.state_manager, "game_settings", {})
-        sensitivity = settings.get("sensitivity", 2)
+        # Read game settings from flagd (game_settings domain)
+        sensitivity = self.game_settings_client.get_integer_value("sensitivity", 2)
 
         # Build base config with the game mode's name
         config = game_coordinator_pb2.StartGameConfig(
@@ -592,44 +665,44 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             case Games.JoustTeams:
                 config.teams_config.CopyFrom(
                     game_coordinator_pb2.TeamsConfig(
-                        num_teams=settings.get("num_teams", 2),
-                        random_assignment=settings.get("random_assignment", True),
+                        num_teams=self.game_settings_client.get_integer_value("num_teams", 2),
+                        random_assignment=self.game_settings_client.get_boolean_value("random_assignment", True),
                     )
                 )
 
             case Games.JoustRandomTeams:
                 config.random_teams_config.CopyFrom(
                     game_coordinator_pb2.RandomTeamsConfig(
-                        num_teams=settings.get("num_teams", 2),
+                        num_teams=self.game_settings_client.get_integer_value("num_teams", 2),
                     )
                 )
 
             case Games.NonStop:
                 config.nonstop_config.CopyFrom(
                     game_coordinator_pb2.NonstopConfig(
-                        time_limit_seconds=settings.get("nonstop_time_limit", 0),
+                        time_limit_seconds=self.game_settings_client.get_integer_value("nonstop_time_limit", 0),
                     )
                 )
 
             case Games.Tournament:
                 config.tournament_config.CopyFrom(
                     game_coordinator_pb2.TournamentConfig(
-                        invincibility_seconds=settings.get("invincibility", 4.0),
+                        invincibility_seconds=self.game_settings_client.get_float_value("invincibility", 4.0),
                     )
                 )
 
             case Games.FightClub:
                 config.fight_club_config.CopyFrom(
                     game_coordinator_pb2.FightClubConfig(
-                        invincibility_seconds=settings.get("invincibility", 4.0),
-                        min_rounds=settings.get("fight_club_min_rounds", 10),
+                        invincibility_seconds=self.game_settings_client.get_float_value("invincibility", 4.0),
+                        min_rounds=self.game_settings_client.get_integer_value("fight_club_min_rounds", 10),
                     )
                 )
 
             case Games.Werewolf:
                 config.werewolf_config.CopyFrom(
                     game_coordinator_pb2.WerewolfConfig(
-                        reveal_time_seconds=settings.get("werewolf_reveal_time", 35.0),
+                        reveal_time_seconds=self.game_settings_client.get_float_value("werewolf_reveal_time", 35.0),
                     )
                 )
 
@@ -642,7 +715,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             case Games.Traitor:
                 config.traitor_config.CopyFrom(
                     game_coordinator_pb2.TraitorConfig(
-                        num_teams=settings.get("traitor_num_teams", 0),
+                        num_teams=self.game_settings_client.get_integer_value("num_teams", 0),
                     )
                 )
 

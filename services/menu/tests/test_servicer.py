@@ -72,10 +72,27 @@ class FakeMenuServicer:
         self.audio.stop_lobby_music = AsyncMock()
         self.audio.play_voice = AsyncMock()
 
-        self.settings_helper = MagicMock()
-        self.settings_helper.load_voice_actor = AsyncMock(return_value="ivy")
-        self.settings_helper.load_current_game = AsyncMock(return_value="JoustFFA")
-        self.settings_helper.save_current_game = AsyncMock()
+        # FlagConfigWriter mocks (replacing SettingsHelper)
+        self.game_settings_writer = MagicMock()
+        self.game_settings_writer.update_default_variant = MagicMock(return_value=True)
+        self.game_settings_writer.cycle_variant = MagicMock(return_value="medium")
+        self.game_settings_writer.get_current_variant = MagicMock(return_value="medium")
+
+        self.user_prefs_writer = MagicMock()
+        self.user_prefs_writer.update_default_variant = MagicMock(return_value=True)
+        self.user_prefs_writer.cycle_variant = MagicMock(return_value="on")
+        self.user_prefs_writer.get_current_variant = MagicMock(return_value="on")
+
+        # OpenFeature client mocks (for reading settings)
+        self.game_settings_client = MagicMock()
+        self.game_settings_client.get_integer_value = MagicMock(return_value=2)
+        self.game_settings_client.get_boolean_value = MagicMock(return_value=True)
+        self.game_settings_client.get_float_value = MagicMock(return_value=4.0)
+        self.game_settings_client.get_string_value = MagicMock(return_value="medium")
+
+        self.user_prefs_client = MagicMock()
+        self.user_prefs_client.get_string_value = MagicMock(return_value="ivy")
+        self.user_prefs_client.get_boolean_value = MagicMock(return_value=True)
 
         self.event_publisher = MagicMock()
         self.event_publisher.publish = AsyncMock()
@@ -113,11 +130,9 @@ class FakeMenuServicer:
         self.voice_actor = "ivy"
         self.game_options = []
 
-        # Mock channels
+        # Mock channels (no settings_channel - settings moved to flagd)
         self.controller_channel = MagicMock()
         self.controller_channel.close = AsyncMock()
-        self.settings_channel = MagicMock()
-        self.settings_channel.close = AsyncMock()
         self.game_coordinator_channel = MagicMock()
         self.game_coordinator_channel.close = AsyncMock()
         self.audio_channel = MagicMock()
@@ -322,7 +337,7 @@ class TestMenuServicerStartMenu:
         # Add some ready controllers to verify they get cleared
         servicer.state_manager.controller_states = {"s1": ControllerState.READY}
 
-        # Simulate the real StartMenu logic
+        # Simulate the real StartMenu logic (uses flagd clients instead of settings_helper)
         if servicer.state == menu_pb2.MenuState.RUNNING:
             success = False
             error = "Menu already running"
@@ -332,8 +347,9 @@ class TestMenuServicerStartMenu:
             for serial in list(servicer.state_manager.controller_states.keys()):
                 if servicer.state_manager.controller_states[serial] == ControllerState.READY:
                     servicer.state_manager.controller_states[serial] = ControllerState.CONNECTED
-            await servicer.settings_helper.load_voice_actor()
-            await servicer.settings_helper.load_current_game()
+            # Load settings from flagd (user_preferences domain)
+            servicer.voice_actor = servicer.user_prefs_client.get_string_value("menu_voice", "ivy")
+            servicer.user_prefs_client.get_string_value("current_game", "JoustFFA")
             await servicer.audio.start_lobby_music()
             await servicer.event_publisher.publish("menu_started", {})
             success = True
@@ -416,14 +432,17 @@ class TestMenuServicerHandleButtonInput:
     @pytest.mark.asyncio
     async def test_button_select_cycles_game_mode(self, servicer):
         """Select button should cycle to next game mode."""
+        from services.menu.utils.settings import get_next_game_mode
+
         servicer.current_selection = Games.JoustFFA
 
-        # Simulate the real logic using settings helper
-        next_mode = servicer.settings_helper.get_next_game_mode(servicer.current_selection)
+        # Simulate the real logic using module-level function + FlagConfigWriter
+        next_mode = get_next_game_mode(servicer.current_selection)
         servicer.current_selection = next_mode
         servicer.state_manager.set_game_mode(servicer.current_selection)
         await servicer.event_publisher.publish("selection_changed", {"game_name": servicer.current_selection.name})
-        await servicer.settings_helper.save_current_game(servicer.current_selection)
+        # Persist to flagd via writer
+        servicer.user_prefs_writer.update_default_variant("current_game", servicer.current_selection.name)
 
         assert servicer.current_selection != Games.JoustFFA
         servicer.state_manager.set_game_mode.assert_called()
@@ -445,13 +464,14 @@ class TestMenuServicerHandleWebCommand:
         servicer.current_selection = Games.JoustFFA
         game_name = "Tournament"
 
-        # Simulate the real logic
+        # Simulate the real logic (uses FlagConfigWriter instead of settings_helper)
         game_mode = Games.from_name(game_name)
         if game_mode is not None and game_name in GAME_MODES:
             servicer.current_selection = game_mode
             servicer.state_manager.set_game_mode(game_mode)
             await servicer.event_publisher.publish("selection_changed", {"game_name": game_mode.name, "source": "web"})
-            await servicer.settings_helper.save_current_game(game_mode)
+            # Persist to flagd via writer
+            servicer.user_prefs_writer.update_default_variant("current_game", game_mode.name)
 
         assert servicer.current_selection == Games.Tournament
         servicer.state_manager.set_game_mode.assert_called_with(Games.Tournament)
@@ -606,14 +626,12 @@ class TestMenuServicerLifecycle:
 
     @pytest.mark.asyncio
     async def test_shutdown_closes_channels(self, servicer):
-        """shutdown should close all gRPC channels."""
+        """shutdown should close all gRPC channels (no settings channel - moved to flagd)."""
         await servicer.controller_channel.close()
-        await servicer.settings_channel.close()
         await servicer.game_coordinator_channel.close()
         await servicer.audio_channel.close()
 
         servicer.controller_channel.close.assert_called_once()
-        servicer.settings_channel.close.assert_called_once()
         servicer.game_coordinator_channel.close.assert_called_once()
         servicer.audio_channel.close.assert_called_once()
 

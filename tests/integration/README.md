@@ -83,7 +83,7 @@ make test TEST=test_ffa
 make test-pulled
 
 # Using specific image tag
-IMAGE_TAG=dev-refactor make test-pulled
+IMAGE_TAG=main make test-pulled
 
 # With pause for Jaeger inspection
 make test-debug
@@ -99,7 +99,7 @@ uv run --package joustmania-integration-tests pytest tests/integration/ -v
 USE_PREBUILT_IMAGES=true uv run --package joustmania-integration-tests pytest tests/integration/ -v
 
 # Using specific image tag
-USE_PREBUILT_IMAGES=true IMAGE_TAG=dev-refactor uv run --package joustmania-integration-tests pytest tests/integration/ -v
+USE_PREBUILT_IMAGES=true IMAGE_TAG=main uv run --package joustmania-integration-tests pytest tests/integration/ -v
 
 # With pause for Jaeger inspection
 PAUSE_BEFORE_TEARDOWN=1 uv run --package joustmania-integration-tests pytest tests/integration/ -v -s

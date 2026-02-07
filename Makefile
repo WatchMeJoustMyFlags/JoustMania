@@ -19,6 +19,7 @@ help:
 	@echo "=============================="
 	@echo ""
 	@echo "Docker (use docker compose directly for most operations):"
+	@echo "  make dev             - Start with hot-reload source mounting"
 	@echo "  make up-mock         - Start in mock mode (no hardware)"
 	@echo "  make builders        - Build base images (run once)"
 	@echo ""
@@ -47,6 +48,22 @@ help:
 # ============================================================================
 # Docker Convenience Targets
 # ============================================================================
+
+# Hot-reload mode: volume-mounts Python source for live code changes without rebuilds
+.PHONY: dev
+dev:
+	docker compose -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.dev.yml up -d $(if $(BUILD),--build)
+	@echo ""
+	@echo "=========================================="
+	@echo "JoustMania is running (DEV MODE)"
+	@echo "=========================================="
+	@echo "  Source directories are volume-mounted."
+	@echo "  Restart a service after code changes:"
+	@echo "    docker compose restart game-coordinator"
+	@echo ""
+	@echo "  Dashboard:  http://localhost/"
+	@echo "  Jaeger:     http://localhost/jaeger/"
+	@echo "  Grafana:    http://localhost/grafana/"
 
 # Mock mode sets environment variables - this is the main value-add over raw docker compose
 .PHONY: up-mock
@@ -197,7 +214,7 @@ PSMOVE_BUILDER_IMAGE ?= ghcr.io/watchmejoustmyflags/joustmania/psmove-builder:la
 .PHONY: ci-build-service
 ci-build-service:
 ifndef SERVICE
-	$(error SERVICE is required. Usage: make ci-build-service SERVICE=settings)
+	$(error SERVICE is required. Usage: make ci-build-service SERVICE=game_coordinator)
 endif
 	docker build \
 		--build-arg BUILDER_IMAGE=$(BUILDER_IMAGE) \

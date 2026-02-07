@@ -25,7 +25,7 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService, MockSettingsService
+from conftest import EventCollector, MockControllerManagerService, async_noop
 
 from proto import controller_manager_pb2
 from services.game_coordinator.games.base import (
@@ -59,11 +59,10 @@ class TestLerpFunction:
     def game(self):
         """Create a minimal FFA game for testing base class methods."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         return FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_lerp",
         )
@@ -105,11 +104,10 @@ class TestThresholdCalculation:
     def game(self):
         """Create game for threshold testing."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         return FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_threshold",
         )
@@ -199,11 +197,10 @@ class TestWarningBehavior:
     def game_with_player(self):
         """Create game with player for warning tests."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         game = FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_warning",
         )
@@ -312,11 +309,10 @@ class TestDeathDetection:
     def game_with_player(self):
         """Create game with player for death detection tests."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         game = FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_death",
         )
@@ -432,11 +428,10 @@ class TestSensitivityFactor:
     def game_with_player(self):
         """Create game with player for sensitivity factor tests."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         game = FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_sens_factor",
         )
@@ -497,11 +492,10 @@ class TestEMAFilter:
     def game_with_player(self):
         """Create game with player for EMA tests."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         game = FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_ema",
         )
@@ -566,11 +560,10 @@ class TestDeadPlayerIgnored:
     def game_with_dead_player(self):
         """Create game with dead player."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         game = FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_dead",
         )
@@ -611,11 +604,10 @@ class TestUnknownControllerIgnored:
     def game(self):
         """Create game with no players."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         game = FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_unknown",
         )
@@ -644,11 +636,10 @@ class TestGameStateTransitions:
     def game(self):
         """Create game for state transition tests."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         return FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_state",
         )
@@ -679,11 +670,10 @@ class TestInvalidAccelerationData:
     def game_with_player(self):
         """Create game with one player for acceleration tests."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         game = FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_invalid_accel",
         )
@@ -772,12 +762,11 @@ class TestMultipleDeathsHandling:
     def game_with_players(self):
         """Create game with multiple players."""
         mock_cm = MockControllerManagerService(num_controllers=4)
-        mock_settings = MockSettingsService()
+
         event_collector = EventCollector()
 
         game = FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
             event_publisher=event_collector.publish,
             audio_client=None,
             game_id="test_multi_death",
@@ -822,7 +811,7 @@ class TestMultipleDeathsHandling:
         game.players["player_2"].alive = False
         # player_3 survives
 
-        result = game._check_win_condition()
+        result = await game._check_win_condition()
 
         assert result is True
         # FFA publishes GameEvent.GAME_WINNER which is "game_winner"
@@ -838,11 +827,10 @@ class TestSensitivityFactorEdgeCases:
     def game(self):
         """Create game for sensitivity tests."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         return FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_sensitivity_edge",
         )
@@ -894,11 +882,10 @@ class TestGamePhaseTransitions:
     def game(self):
         """Create game for phase tests."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         event_collector = EventCollector()
         return FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
             event_publisher=event_collector.publish,
             audio_client=None,
             game_id="test_phase",
@@ -935,12 +922,11 @@ class TestEventPublishing:
     def game_with_events(self):
         """Create game with event tracking."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         event_collector = EventCollector()
 
         game = FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
             event_publisher=event_collector.publish,
             audio_client=None,
             game_id="test_events",
@@ -979,7 +965,7 @@ class TestEventPublishing:
         for serial in serials[:-1]:
             game.players[serial].alive = False
 
-        result = game._check_win_condition()
+        result = await game._check_win_condition()
 
         assert result is True
         winner_events = event_collector.get_events_of_type(GameEvent.GAME_WINNER)
@@ -1008,11 +994,10 @@ class TestGameStartValidation:
     def game(self):
         """Create game for validation tests."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         return FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_validation",
         )
@@ -1056,11 +1041,10 @@ class TestMusicTempoThresholds:
     def game(self):
         """Create game for lerp tests."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         return FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_lerp",
         )
@@ -1089,3 +1073,197 @@ class TestMusicTempoThresholds:
         """LERP with t<0 should extrapolate."""
         result = game._lerp(1.0, 2.0, -0.5)
         assert result == 0.5
+
+
+class TestTaskTracking:
+    """Tests for _track_task() and automatic task cleanup."""
+
+    @pytest.fixture
+    def game(self):
+        """Create a minimal FFA game for testing task tracking."""
+        mock_cm = MockControllerManagerService(num_controllers=2)
+
+        return FFAGame(
+            controller_manager_client=mock_cm,
+            event_publisher=async_noop,
+            audio_client=None,
+            game_id="test_tasks",
+        )
+
+    def test_tasks_set_initialized_empty(self, game):
+        """_tasks set should be empty on init."""
+        assert isinstance(game._tasks, set)
+        assert len(game._tasks) == 0
+
+    @pytest.mark.asyncio
+    async def test_track_task_registers_task(self, game):
+        """_track_task should add task to the _tasks set."""
+        import asyncio
+        import contextlib
+
+        async def dummy():
+            await asyncio.sleep(100)
+
+        task = asyncio.create_task(dummy())
+        result = game._track_task(task)
+
+        assert result is task
+        assert task in game._tasks
+
+        # Cleanup
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    @pytest.mark.asyncio
+    async def test_track_task_auto_removes_on_completion(self, game):
+        """Completed tasks should be automatically removed from _tasks."""
+        import asyncio
+
+        async def quick():
+            return "done"
+
+        task = asyncio.create_task(quick())
+        game._track_task(task)
+        assert task in game._tasks
+
+        # Wait for task to complete
+        await task
+        # Allow done callback to fire
+        await asyncio.sleep(0)
+
+        assert task not in game._tasks
+
+    @pytest.mark.asyncio
+    async def test_track_task_auto_removes_on_cancel(self, game):
+        """Cancelled tasks should be automatically removed from _tasks."""
+        import asyncio
+        import contextlib
+
+        async def slow():
+            await asyncio.sleep(100)
+
+        task = asyncio.create_task(slow())
+        game._track_task(task)
+        assert task in game._tasks
+
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        # Allow done callback to fire
+        await asyncio.sleep(0)
+
+        assert task not in game._tasks
+
+    @pytest.mark.asyncio
+    async def test_cleanup_cancels_tracked_tasks(self, game):
+        """cleanup() should cancel all tracked tasks."""
+        import asyncio
+
+        started = []
+
+        async def wait_forever():
+            started.append(True)
+            await asyncio.sleep(100)
+
+        task1 = game._track_task(asyncio.create_task(wait_forever()))
+        task2 = game._track_task(asyncio.create_task(wait_forever()))
+
+        # Let tasks start running
+        await asyncio.sleep(0)
+        assert len(started) == 2
+        assert len(game._tasks) == 2
+
+        await game.cleanup()
+
+        assert task1.cancelled()
+        assert task2.cancelled()
+        assert len(game._tasks) == 0
+
+    @pytest.mark.asyncio
+    async def test_cleanup_handles_already_done_tasks(self, game):
+        """cleanup() should handle tasks that completed before cleanup."""
+        import asyncio
+
+        async def quick():
+            return "done"
+
+        task = asyncio.create_task(quick())
+        game._track_task(task)
+        await task  # Complete before cleanup
+        await asyncio.sleep(0)  # Let callback fire
+
+        # Should not raise even though task is already done
+        await game.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_idempotent(self, game):
+        """cleanup() should be safe to call multiple times."""
+        await game.cleanup()
+        await game.cleanup()  # Should not raise
+
+
+class TestOnForceEnd:
+    """Tests for on_force_end() lifecycle hook."""
+
+    @pytest.fixture
+    def game(self):
+        """Create a minimal FFA game for testing force-end."""
+        mock_cm = MockControllerManagerService(num_controllers=2)
+
+        return FFAGame(
+            controller_manager_client=mock_cm,
+            event_publisher=async_noop,
+            audio_client=None,
+            game_id="test_force_end",
+        )
+
+    @pytest.mark.asyncio
+    async def test_on_force_end_default_does_not_raise(self, game):
+        """Default on_force_end() should complete without error."""
+        await game.on_force_end()
+
+    @pytest.mark.asyncio
+    async def test_force_end_sets_running_false(self, game):
+        """force_end() should set running to False."""
+        game.running = True
+        game.force_end()
+        assert game.running is False
+
+
+class TestGameLifecycleCleanup:
+    """Tests for cleanup integration in run() finally block."""
+
+    @pytest.fixture
+    def game(self):
+        """Create a minimal FFA game for lifecycle testing."""
+        mock_cm = MockControllerManagerService(num_controllers=3)
+
+        events = EventCollector()
+        return FFAGame(
+            controller_manager_client=mock_cm,
+            event_publisher=events.publish,
+            audio_client=None,
+            game_id="test_lifecycle",
+            initial_players=[type("P", (), {"serial": f"mock_controller_{i}"})() for i in range(3)],
+        )
+
+    @pytest.mark.asyncio
+    async def test_cleanup_called_after_run(self, game):
+        """cleanup() should be called even when run() completes normally."""
+        import contextlib
+
+        cleanup_called = []
+        original_cleanup = game.cleanup
+
+        async def track_cleanup():
+            cleanup_called.append(True)
+            await original_cleanup()
+
+        game.cleanup = track_cleanup
+
+        # Run game (will complete because mock stream ends)
+        with contextlib.suppress(Exception):
+            await game.run()
+
+        assert len(cleanup_called) >= 1

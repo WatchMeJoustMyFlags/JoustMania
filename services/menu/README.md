@@ -333,8 +333,8 @@ Admin mode automatically exits after 60 seconds of inactivity.
 | `LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 | `CONTROLLER_MANAGER_HOST` | `controller-manager` | Controller manager hostname |
 | `CONTROLLER_MANAGER_PORT` | `50052` | Controller manager port |
-| `SETTINGS_HOST` | `settings` | Settings service hostname |
-| `SETTINGS_PORT` | `50051` | Settings service port |
+| `FLAGD_HOST` | `flagd` | flagd service hostname |
+| `FLAGD_PORT` | `8015` | flagd gRPC port |
 | `GAME_COORDINATOR_HOST` | `game-coordinator` | Game coordinator hostname |
 | `GAME_COORDINATOR_PORT` | `50053` | Game coordinator port |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | OpenTelemetry endpoint |

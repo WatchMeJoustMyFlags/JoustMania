@@ -20,7 +20,7 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService, MockSettingsService
+from conftest import EventCollector, MockControllerManagerService
 
 from services.game_coordinator.games.swapper import SwapperGame
 
@@ -36,12 +36,10 @@ class TestSwapperTeamSwapping:
             death_schedule={},  # No auto-deaths, we'll trigger manually
             max_duration=10.0,
         )
-        mock_settings = MockSettingsService()
         event_collector = EventCollector()
 
         game = SwapperGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=event_collector.publish,
             audio_client=None,
             game_id="test_swapper_001",
@@ -160,14 +158,14 @@ class TestSwapperTeamSwapping:
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
         # Initial state: team 0 has [0, 2], team 1 has [1, 3]
-        assert not game._check_win_condition()
+        assert not await game._check_win_condition()
 
         # Move all players to team 1
         for serial in game.players:
             game.players[serial].team = 1
 
         # Now should trigger win condition
-        assert game._check_win_condition()
+        assert await game._check_win_condition()
 
     @pytest.mark.asyncio
     async def test_get_alive_teams(self, swapper_game):

@@ -65,7 +65,6 @@ class WerewolfGame(BaseGameMode):
     def __init__(
         self,
         controller_manager_client,
-        settings_client,
         event_publisher,
         audio_client=None,
         game_id: str = "",
@@ -78,7 +77,6 @@ class WerewolfGame(BaseGameMode):
 
         Args:
             controller_manager_client: gRPC stub for ControllerManager service
-            settings_client: gRPC stub for Settings service
             event_publisher: Callback function to publish game events
             audio_client: gRPC stub for Audio service
             game_id: Unique identifier for this game instance
@@ -88,7 +86,6 @@ class WerewolfGame(BaseGameMode):
         """
         super().__init__(
             controller_manager_client=controller_manager_client,
-            settings_client=settings_client,
             event_publisher=event_publisher,
             audio_client=audio_client,
             game_id=game_id,
@@ -149,7 +146,7 @@ class WerewolfGame(BaseGameMode):
         )
 
         # Publish event (not revealing who is werewolf)
-        self.event_publisher(
+        await self.event_publisher(
             "players_initialized",
             {
                 "player_count": num_players,
@@ -203,7 +200,7 @@ class WerewolfGame(BaseGameMode):
         """
         logger.info("Starting werewolf intro phase...")
 
-        self.event_publisher(
+        await self.event_publisher(
             "werewolf_intro_start",
             {"werewolf_count": len(self.werewolf_serials)},
         )
@@ -235,7 +232,7 @@ class WerewolfGame(BaseGameMode):
                 return
             await asyncio.sleep(0.1)
 
-        self.event_publisher("werewolf_intro_end", {})
+        await self.event_publisher("werewolf_intro_end", {})
         logger.info("Werewolf intro phase complete")
 
     async def _set_all_colors(self, color: tuple):
@@ -265,7 +262,7 @@ class WerewolfGame(BaseGameMode):
         logger.info("Revealing werewolves!")
         self.revealed = True
 
-        self.event_publisher("werewolf_reveal", {"werewolf_serials": self.werewolf_serials})
+        await self.event_publisher("werewolf_reveal", {"werewolf_serials": self.werewolf_serials})
 
         # Play reveal sound (Joust/vox/)
         await self._play_sound(Sound.VOX_WEREWOLF_REVEAL, priority=2)
@@ -323,7 +320,7 @@ class WerewolfGame(BaseGameMode):
         # Use standard thresholds from sensitivity
         return self.sensitivity.value
 
-    def _check_win_condition(self) -> bool:
+    async def _check_win_condition(self) -> bool:
         """
         Check if one team has won.
 
@@ -347,7 +344,7 @@ class WerewolfGame(BaseGameMode):
 
             logger.info(f"{winner.capitalize()} win! {len(winners)} survivors")
 
-            self.event_publisher(
+            await self.event_publisher(
                 "werewolf_winner",
                 {
                     "winner": winner,
@@ -455,7 +452,7 @@ class WerewolfGame(BaseGameMode):
                 player.span.end()
 
         self.state = self.state.__class__.ENDED
-        self.event_publisher(
+        await self.event_publisher(
             "game_ended",
             {
                 "game_id": self.game_id,
@@ -466,6 +463,12 @@ class WerewolfGame(BaseGameMode):
         )
 
         logger.info("Werewolf game ended")
+
+    async def cleanup(self) -> None:
+        """Cancel reveal task and any tracked tasks."""
+        if self.reveal_task and not self.reveal_task.done():
+            self.reveal_task.cancel()
+        await super().cleanup()
 
     async def run(self):
         """
@@ -522,7 +525,7 @@ class WerewolfGame(BaseGameMode):
                 # Emit game_started event (required for integration tests)
                 from lib.types import GameEvent
 
-                self.event_publisher(
+                await self.event_publisher(
                     GameEvent.GAME_STARTED, {"game_id": self.game_id, "player_count": len(self.players)}
                 )
 
@@ -530,7 +533,7 @@ class WerewolfGame(BaseGameMode):
                 await self._start_game_music()
 
                 # Start reveal timer as background task
-                self.reveal_task = asyncio.create_task(self._reveal_werewolves())
+                self.reveal_task = self._track_task(asyncio.create_task(self._reveal_werewolves()))
 
                 # Game loop (gameplay stream already started before intro)
                 with tracer.start_as_current_span("gameplay_phase"):
@@ -548,7 +551,9 @@ class WerewolfGame(BaseGameMode):
                 game_span.set_status(Status(StatusCode.ERROR, str(e)))
                 raise
             finally:
+                force_ended = not self.running
                 self.running = False
                 await self._stop_game_music()
-                if self.reveal_task and not self.reveal_task.done():
-                    self.reveal_task.cancel()
+                if force_ended:
+                    await self.on_force_end()
+                await self.cleanup()

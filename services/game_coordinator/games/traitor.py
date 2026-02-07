@@ -56,7 +56,6 @@ class TraitorGame(TeamsGameBase):
     def __init__(
         self,
         controller_manager_client,
-        settings_client,
         event_publisher,
         audio_client=None,
         game_id: str = "",
@@ -69,7 +68,6 @@ class TraitorGame(TeamsGameBase):
 
         Args:
             controller_manager_client: gRPC stub for ControllerManager service
-            settings_client: gRPC stub for Settings service
             event_publisher: Callback function to publish game events
             audio_client: gRPC stub for Audio service
             game_id: Unique identifier for this game instance
@@ -84,7 +82,6 @@ class TraitorGame(TeamsGameBase):
 
         super().__init__(
             controller_manager_client=controller_manager_client,
-            settings_client=settings_client,
             event_publisher=event_publisher,
             audio_client=audio_client,
             game_id=game_id,
@@ -180,7 +177,7 @@ class TraitorGame(TeamsGameBase):
 
         # Publish event with team assignments (not revealing traitors)
         team_assignments = {serial: player.team for serial, player in self.players.items()}
-        self.event_publisher(
+        await self.event_publisher(
             "players_initialized",
             {
                 "player_count": num_players,
@@ -206,7 +203,7 @@ class TraitorGame(TeamsGameBase):
         """
         logger.info("Starting traitor signal phase...")
 
-        self.event_publisher(
+        await self.event_publisher(
             "traitor_signal_start",
             {"traitor_count": len(self.traitor_serials)},
         )
@@ -242,10 +239,10 @@ class TraitorGame(TeamsGameBase):
         # Set persistent team colors
         await self._set_team_colors(pulse_effect=False)
 
-        self.event_publisher("traitor_signal_end", {})
+        await self.event_publisher("traitor_signal_end", {})
         logger.info("Traitor signal phase complete")
 
-    def _check_win_condition(self) -> bool:
+    async def _check_win_condition(self) -> bool:
         """
         Check if a team has won, accounting for traitors.
 
@@ -280,7 +277,7 @@ class TraitorGame(TeamsGameBase):
                 traitor_winners = [s for s in winners if s in self.traitor_serials]
                 loyal_winners = [s for s in winners if s not in self.traitor_serials]
 
-                self.event_publisher(
+                await self.event_publisher(
                     "traitor_winner",
                     {
                         "team": winning_team,
@@ -293,7 +290,7 @@ class TraitorGame(TeamsGameBase):
 
             else:
                 logger.info("No winner - all players died")
-                self.event_publisher("game_tie", {})
+                await self.event_publisher("game_tie", {})
 
             return True
 
@@ -431,7 +428,7 @@ class TraitorGame(TeamsGameBase):
                 team.span.end()
 
         self.state = self.state.__class__.ENDED
-        self.event_publisher(
+        await self.event_publisher(
             "game_ended",
             {
                 "game_id": self.game_id,

@@ -22,7 +22,7 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService, MockSettingsService
+from conftest import EventCollector, MockControllerManagerService
 
 from services.game_coordinator.games.fight_club import (
     DEFAULT_INVINCIBILITY_DURATION,
@@ -54,12 +54,10 @@ class TestFightClubGameMode:
             death_schedule={},
             max_duration=10.0,
         )
-        mock_settings = MockSettingsService()
         event_collector = EventCollector()
 
         game = FightClubGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=event_collector.publish,
             audio_client=None,
             game_id="test_fight_club_001",
@@ -283,8 +281,8 @@ class TestFightClubGameMode:
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
         # Initially not over
-        assert game._check_win_condition() is False
+        assert await game._check_win_condition() is False
 
         # Set game over
         game.game_over = True
-        assert game._check_win_condition() is True
+        assert await game._check_win_condition() is True

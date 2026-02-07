@@ -259,7 +259,7 @@ class Sound(StrEnum):
     # Sound effects (SFX)
     SFX_EXPLOSION = "Explosion34"
     SFX_EXPLOSION_22 = "Explosion22"
-    SFX_BEEP = "beep_loud"  # No separate beep.wav exists, use beep_loud
+    SFX_BEEP = "beep_loud"  # No separate beep.ogg exists, use beep_loud
     SFX_BEEP_LOUD = "beep_loud"
     SFX_START = "start"
     SFX_START3 = "start3"

@@ -153,6 +153,13 @@ filter_updates_total = Counter(
 
 active_controllers = Gauge("game_active_controllers", "Number of controllers currently being monitored (alive players)")
 
+# Stream reconnection metrics (Issue #330)
+gameplay_stream_reconnects_total = Counter(
+    "game_gameplay_stream_reconnects_total",
+    "Total gameplay stream reconnection attempts",
+    ["game_mode"],
+)
+
 # Controller analytics metrics (Phase XX - Analytics)
 # Real-time gauges (updated every ~1 second during gameplay)
 player_accel_magnitude = Gauge(
@@ -268,3 +275,22 @@ def clear_all_player_analytics() -> None:
     game_sensitivity.set(0)
     effective_warning_threshold.set(0)
     effective_death_threshold.set(0)
+
+
+# EventBus stream health metrics (Issue #337)
+event_bus_publish_drops_total = Counter(
+    "event_bus_publish_drops_total",
+    "Total events dropped due to full subscriber queues",
+    ["event_type"],
+)
+
+event_bus_active_subscribers = Gauge(
+    "event_bus_active_subscribers",
+    "Number of active EventBus subscribers",
+)
+
+event_bus_publish_errors_total = Counter(
+    "event_bus_publish_errors_total",
+    "Total errors during event publishing",
+    ["event_type"],
+)

@@ -52,9 +52,27 @@ stream_events_published_total = Counter(
     ["event_type"],
 )
 
+# Stream reconnection metrics (Issue #330)
+game_event_stream_reconnects_total = Counter(
+    "menu_game_event_stream_reconnects_total",
+    "Total game event stream reconnection attempts",
+)
+
 # Player ready state metrics (Phase 75: Per-player insights)
 player_ready = Gauge(
     "menu_player_ready",
     "Player ready status in lobby (1=ready, 0=not ready)",
     ["serial"],
+)
+
+# Stream health metrics (Issue #337)
+stream_publish_drops_total = Counter(
+    "menu_stream_publish_drops_total",
+    "Total menu events dropped due to full subscriber queues",
+    ["event_type"],
+)
+
+stream_disconnections_total = Counter(
+    "menu_stream_disconnections_total",
+    "Total menu event stream disconnections",
 )

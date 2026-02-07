@@ -172,8 +172,7 @@ class BaseGameMode(ABC):
     def __init__(
         self,
         controller_manager_client: Any,  # controller_manager_pb2_grpc.ControllerManagerServiceStub
-        settings_client: Any,  # settings_pb2_grpc.SettingsServiceStub
-        event_publisher: Callable[[str, dict[str, str]], None],
+        event_publisher: Callable[[str, dict[str, str]], Any],
         audio_client: Any | None = None,  # audio_pb2_grpc.AudioServiceStub
         game_id: str = "",
         initial_players: list | None = None,  # List of Player protobuf messages
@@ -184,15 +183,13 @@ class BaseGameMode(ABC):
 
         Args:
             controller_manager_client: gRPC stub for ControllerManager service
-            settings_client: gRPC stub for Settings service
-            event_publisher: Callback function to publish game events (event_type, data)
+            event_publisher: Async callback function to publish game events (event_type, data)
             audio_client: gRPC stub for Audio service (Phase 29)
             initial_players: Optional list of Player protobuf messages from StartGame RPC
             game_id: Unique identifier for this game instance
             sensitivity: Sensitivity level 0-4 (passed from StartGameConfig)
         """
         self.controller_client = controller_manager_client
-        self.settings_client = settings_client
         self.event_publisher = event_publisher
         self.audio_client = audio_client
 
@@ -227,6 +224,9 @@ class BaseGameMode(ABC):
         self.dead_count = 0  # Track deaths for tempo timing
         self.gameplay_span: trace.Span | None = None  # Reference for span events
         self.gameplay_span_context = None  # Context for child spans in background tasks
+
+        # Tracked async tasks for automatic cleanup on game end
+        self._tasks: set[asyncio.Task] = set()
 
         logger.info(f"{self.get_game_name()} game initialized: {self.game_id}")
 
@@ -274,7 +274,7 @@ class BaseGameMode(ABC):
         pass
 
     @abstractmethod
-    def _check_win_condition(self) -> bool:
+    async def _check_win_condition(self) -> bool:
         """
         Check if game should end.
 
@@ -354,7 +354,7 @@ class BaseGameMode(ABC):
             logger.info(f"Initialized {len(self.players)} players from StartGame RPC")
 
             # Publish event
-            self.event_publisher(
+            await self.event_publisher(
                 GameEvent.PLAYERS_INITIALIZED,
                 {
                     "player_count": len(self.players),
@@ -375,7 +375,7 @@ class BaseGameMode(ABC):
         countdown_seconds = config.countdown_duration_seconds
 
         logger.info(f"Starting countdown ({countdown_seconds}s)...")
-        self.event_publisher(GameEvent.COUNTDOWN_START, {"duration": countdown_seconds})
+        await self.event_publisher(GameEvent.COUNTDOWN_START, {"duration": countdown_seconds})
 
         if not self.running:
             logger.info(_MSG_COUNTDOWN_INTERRUPTED)
@@ -384,7 +384,7 @@ class BaseGameMode(ABC):
         # Skip countdown entirely if duration is 0 (for fast tests)
         if countdown_seconds == 0:
             logger.info("Countdown skipped (duration=0)")
-            self.event_publisher(GameEvent.COUNTDOWN_END, {})
+            await self.event_publisher(GameEvent.COUNTDOWN_END, {})
             return
 
         # Get phase duration from config (shared with controller_manager for sync)
@@ -430,19 +430,18 @@ class BaseGameMode(ABC):
         # Play start sound (Phase 29 - GO!)
         await self._play_sound(Sound.SFX_START3, priority=2)
 
-        self.event_publisher(GameEvent.COUNTDOWN_END, {})
+        await self.event_publisher(GameEvent.COUNTDOWN_END, {})
         logger.info("Countdown complete")
 
-    async def _start_gameplay_stream(self):
+    async def _create_gameplay_stream(self):
         """
-        Create and configure the gameplay stream.
+        Create gameplay stream, send config, and update alive filter.
 
-        Called before countdown to allow EMA warmup during countdown phase.
-        The stream is stored in self.gameplay_stream for use by _game_loop().
+        Encapsulates stream creation so it can be called for both initial
+        connection and reconnection.
         """
         from proto import controller_manager_pb2
 
-        # Get runtime config
         config = get_config_manager().get_config()
         update_frequency_hz = config.update_frequency_hz
 
@@ -469,7 +468,25 @@ class BaseGameMode(ABC):
             )
         )
         await self.gameplay_stream.write(initial_config)
-        logger.info(f"Gameplay stream started with {len(player_colors)} players")
+
+        # Send current alive filter so reconnected stream only gets alive players
+        current_alive = [s for s, p in self.players.items() if p.alive]
+        if len(current_alive) < len(self.players):
+            filter_msg = controller_manager_pb2.GameplayStreamControl(
+                filter_update=controller_manager_pb2.FilterUpdate(serials=current_alive)
+            )
+            await self.gameplay_stream.write(filter_msg)
+
+        logger.info(f"Gameplay stream created with {len(player_colors)} players ({len(current_alive)} alive)")
+
+    async def _start_gameplay_stream(self):
+        """
+        Create and configure the gameplay stream.
+
+        Called before countdown to allow EMA warmup during countdown phase.
+        The stream is stored in self.gameplay_stream for use by _game_loop().
+        """
+        await self._create_gameplay_stream()
 
     async def _game_loop(self):
         """Main game loop - processes controller states and checks for deaths."""
@@ -505,98 +522,127 @@ class BaseGameMode(ABC):
             recent_frame_times: list[float] = []  # Store recent frame times for jitter calculation
             frames_on_target = 0  # Frames within 50% of target time
 
-            # Stream gameplay data and process game logic
-            logger.info("Starting gameplay data stream loop, waiting for first update...")
-            async for gameplay_update in self.gameplay_stream:
-                if loop_iterations == 0:
-                    logger.info("✅ Received first gameplay update from stream!")
-                    self.start_time = time.time()
+            # Stream gameplay data and process game logic with reconnection
+            max_reconnect_attempts = 3
+            reconnect_attempt = 0
 
-                if not self.running:
-                    logger.info("Game running=False, breaking loop")
+            logger.info("Starting gameplay data stream loop, waiting for first update...")
+            while self.running:
+                try:
+                    async for gameplay_update in self.gameplay_stream:
+                        if loop_iterations == 0:
+                            logger.info("Received first gameplay update from stream!")
+                            self.start_time = time.time()
+
+                        # Reset reconnect counter on successful data
+                        reconnect_attempt = 0
+
+                        if not self.running:
+                            logger.info("Game running=False, breaking loop")
+                            break
+
+                        # Process each controller's gameplay data
+                        # Check win condition after EACH controller to prevent simultaneous deaths
+                        # This ensures the last player standing can never die
+                        game_over = False
+                        for gameplay_data in gameplay_update.controllers:
+                            await self._process_controller_state(gameplay_data)
+
+                            # Check after each controller - stop processing if we have a winner
+                            if self._check_win_condition():
+                                game_over = True
+                                break
+
+                        if game_over:
+                            # Keep game running for 1 second to clearly show winner in traces
+                            logger.info("Win condition met, keeping game active for 1 second to show winner")
+                            await asyncio.sleep(1.0)
+                            return  # Exit the while loop
+
+                        # Check if alive players changed (Phase 45 - dynamic filtering)
+                        current_alive_serials = {p.serial for p in self.players.values() if p.alive}
+
+                        if current_alive_serials != last_alive_serials:
+                            # Send filter update to server
+                            filter_msg = controller_manager_pb2.GameplayStreamControl(
+                                filter_update=controller_manager_pb2.FilterUpdate(serials=list(current_alive_serials))
+                            )
+                            await self.gameplay_stream.write(filter_msg)
+
+                            logger.info(
+                                f"Updated controller filter: {len(last_alive_serials)} → "
+                                f"{len(current_alive_serials)} alive players"
+                            )
+
+                            # Emit filter metrics (Phase 45)
+                            metrics.filter_updates_total.labels(game_mode=self.get_game_name()).inc()
+                            metrics.active_controllers.set(len(current_alive_serials))
+                            metrics.filtered_controllers.set(len(self.players) - len(current_alive_serials))
+
+                            last_alive_serials = current_alive_serials
+
+                        # Track loop timing for metrics
+                        loop_iterations += 1
+                        iteration_end = time.time()
+                        iteration_latency_ms = (iteration_end - last_iteration_time) * 1000
+
+                        # Track frame consistency (Issue #183)
+                        recent_frame_times.append(iteration_latency_ms)
+                        if len(recent_frame_times) > 60:  # Keep last 60 frames (1 second at 60Hz)
+                            recent_frame_times.pop(0)
+
+                        # Check if frame is within target (50% tolerance)
+                        if iteration_latency_ms <= target_frame_time_ms * 1.5:
+                            frames_on_target += 1
+
+                        # Check for dropped frames (>2x target time)
+                        if iteration_latency_ms > target_frame_time_ms * 2:
+                            metrics.game_loop_frames_dropped_total.labels(mode=self.get_game_name()).inc()
+
+                        # Calculate actual Hz and frame consistency every 10 iterations
+                        if loop_iterations % 10 == 0:
+                            elapsed = time.time() - loop_start_time
+                            actual_hz = loop_iterations / elapsed if elapsed > 0 else 0
+                            metrics.actual_update_frequency_hz.set(actual_hz)
+
+                            # Calculate frame consistency percentage
+                            consistency_percent = (frames_on_target / loop_iterations) * 100
+                            metrics.game_loop_frame_consistency_percent.set(consistency_percent)
+
+                            # Calculate jitter (standard deviation of recent frame times)
+                            if len(recent_frame_times) >= 2:
+                                jitter_ms = statistics.stdev(recent_frame_times)
+                                metrics.game_loop_jitter_ms.set(jitter_ms)
+
+                        last_iteration_time = iteration_end
+
+                    # Stream ended normally (server closed it) — exit loop
                     break
 
-                # Process each controller's gameplay data
-                # Check win condition after EACH controller to prevent simultaneous deaths
-                # This ensures the last player standing can never die
-                game_over = False
-                for gameplay_data in gameplay_update.controllers:
-                    await self._process_controller_state(gameplay_data)
+                except asyncio.CancelledError:
+                    raise  # Never retry on cancellation
 
-                    # Check after each controller - stop processing if we have a winner
-                    if self._check_win_condition():
-                        game_over = True
+                except Exception as e:
+                    if not self.running:
                         break
 
-                if game_over:
-                    # Keep game running for 1 second to clearly show winner in traces
-                    logger.info("Win condition met, keeping game active for 1 second to show winner")
-                    await asyncio.sleep(1.0)
-                    break
+                    reconnect_attempt += 1
+                    if reconnect_attempt > max_reconnect_attempts:
+                        logger.error(
+                            f"Gameplay stream failed after {max_reconnect_attempts} reconnect attempts, ending game"
+                        )
+                        raise
 
-                # Check if alive players changed (Phase 45 - dynamic filtering)
-                current_alive_serials = {p.serial for p in self.players.values() if p.alive}
-
-                if current_alive_serials != last_alive_serials:
-                    # Send filter update to server
-                    filter_msg = controller_manager_pb2.GameplayStreamControl(
-                        filter_update=controller_manager_pb2.FilterUpdate(serials=list(current_alive_serials))
+                    backoff = reconnect_attempt  # Linear backoff: 1s, 2s, 3s
+                    logger.warning(
+                        f"Gameplay stream error (attempt {reconnect_attempt}/{max_reconnect_attempts}): {e}. "
+                        f"Reconnecting in {backoff}s..."
                     )
-                    await self.gameplay_stream.write(filter_msg)
+                    metrics.gameplay_stream_reconnects_total.labels(game_mode=self.get_game_name()).inc()
+                    await asyncio.sleep(backoff)
 
-                    logger.info(
-                        f"Updated controller filter: {len(last_alive_serials)} → "
-                        f"{len(current_alive_serials)} alive players"
-                    )
-
-                    # Emit filter metrics (Phase 45)
-                    metrics.filter_updates_total.labels(game_mode=self.get_game_name()).inc()
-                    metrics.active_controllers.set(len(current_alive_serials))
-                    metrics.filtered_controllers.set(len(self.players) - len(current_alive_serials))
-
-                    last_alive_serials = current_alive_serials
-
-                # Note: Win condition is now checked after EACH controller (above)
-                # to prevent simultaneous deaths - the last player standing can never die
-
-                # Track loop timing for metrics
-                loop_iterations += 1
-                iteration_end = time.time()
-                iteration_latency_ms = (iteration_end - last_iteration_time) * 1000
-
-                # Track frame consistency (Issue #183)
-                recent_frame_times.append(iteration_latency_ms)
-                if len(recent_frame_times) > 60:  # Keep last 60 frames (1 second at 60Hz)
-                    recent_frame_times.pop(0)
-
-                # Check if frame is within target (50% tolerance)
-                if iteration_latency_ms <= target_frame_time_ms * 1.5:
-                    frames_on_target += 1
-
-                # Check for dropped frames (>2x target time)
-                if iteration_latency_ms > target_frame_time_ms * 2:
-                    metrics.game_loop_frames_dropped_total.labels(mode=self.get_game_name()).inc()
-
-                # Calculate actual Hz and frame consistency every 10 iterations
-                if loop_iterations % 10 == 0:
-                    elapsed = time.time() - loop_start_time
-                    actual_hz = loop_iterations / elapsed if elapsed > 0 else 0
-                    metrics.actual_update_frequency_hz.set(actual_hz)
-
-                    # Calculate frame consistency percentage
-                    consistency_percent = (frames_on_target / loop_iterations) * 100
-                    metrics.game_loop_frame_consistency_percent.set(consistency_percent)
-
-                    # Calculate jitter (standard deviation of recent frame times)
-                    if len(recent_frame_times) >= 2:
-                        jitter_ms = statistics.stdev(recent_frame_times)
-                        metrics.game_loop_jitter_ms.set(jitter_ms)
-
-                last_iteration_time = iteration_end
-
-                # Note: No sleep needed here - the stream itself is rate-limited by
-                # controller-manager at 60Hz. The async for loop naturally blocks
-                # waiting for the next message.
+                    # Re-create stream with current player state
+                    await self._create_gameplay_stream()
 
         except Exception as e:
             logger.error(f"Game loop error: {e}", exc_info=True)
@@ -852,6 +898,57 @@ class BaseGameMode(ABC):
         self.running = False
 
     # ========================================================================
+    # Task Tracking and Lifecycle Hooks
+    # ========================================================================
+
+    def _track_task(self, task: asyncio.Task) -> asyncio.Task:
+        """
+        Register an async task for automatic cleanup.
+
+        Tracked tasks are cancelled when cleanup() is called, preventing
+        dangling tasks after game end.
+
+        Args:
+            task: The asyncio.Task to track
+
+        Returns:
+            The same task (for chaining with asyncio.create_task)
+        """
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
+
+    async def cleanup(self) -> None:
+        """
+        Clean up game resources. Called in finally block after game ends.
+
+        Cancels any tracked async tasks registered via _track_task().
+        Subclasses should override to add mode-specific cleanup
+        (e.g., cancel timers, close connections) and call super().cleanup().
+        """
+        if self._tasks:
+            # Snapshot tasks before cancelling (done callbacks remove from set)
+            tasks_to_cancel = list(self._tasks)
+            logger.info(f"Cleaning up {len(tasks_to_cancel)} tracked tasks")
+            for task in tasks_to_cancel:
+                if not task.done():
+                    task.cancel()
+            # Wait for all tasks to complete cancellation
+            await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+            self._tasks.clear()
+        logger.info(f"{self.get_game_name()} cleanup complete")
+
+    async def on_force_end(self) -> None:
+        """
+        Hook called when game is force-ended (not natural completion).
+
+        Called before cleanup(). Use for mode-specific force-end logic
+        like announcing forced end or saving partial results.
+        Subclasses can override to add custom behavior.
+        """
+        logger.info(f"{self.get_game_name()} force-ended")
+
+    # ========================================================================
     # Template Method - Orchestrates entire game lifecycle with spans
     # ========================================================================
 
@@ -870,7 +967,7 @@ class BaseGameMode(ABC):
             # State transitions
             self.state = GameState.STARTING
             self.running = True  # Set early to allow force_end during countdown
-            self.event_publisher(GameEvent.GAME_STARTING, {"game_id": self.game_id})
+            await self.event_publisher(GameEvent.GAME_STARTING, {"game_id": self.game_id})
 
             # Phase 1: Initialization (includes all pre-gameplay setup)
             with tracer.start_as_current_span("initialization_phase") as init_span:
@@ -909,7 +1006,10 @@ class BaseGameMode(ABC):
             # Game starts
             self.state = GameState.RUNNING
             # Note: self.start_time is set in _game_loop when first data is received
-            self.event_publisher(GameEvent.GAME_STARTED, {"game_id": self.game_id, "player_count": len(self.players)})
+            await self.event_publisher(
+                GameEvent.GAME_STARTED,
+                {"game_id": self.game_id, "player_count": len(self.players)},
+            )
 
             # Phase 2: Gameplay (with music loop running alongside)
             with tracer.start_as_current_span("gameplay_phase") as gameplay_span:
@@ -949,11 +1049,17 @@ class BaseGameMode(ABC):
         except Exception as e:
             logger.error(f"{self.get_game_name()} game error: {e}", exc_info=True)
             self.state = GameState.ENDED
-            self.event_publisher(GameEvent.GAME_ERROR, {"game_id": self.game_id, "error": str(e)})
+            await self.event_publisher(GameEvent.GAME_ERROR, {"game_id": self.game_id, "error": str(e)})
             raise
 
         finally:
+            force_ended = not self.running
             self.running = False
+            # Call force-end hook if game was externally stopped
+            if force_ended:
+                await self.on_force_end()
+            # Always call cleanup to cancel tracked tasks
+            await self.cleanup()
             # Ensure analytics are always cleared, even on error
             metrics.clear_all_player_analytics()
             logger.info(f"{self.get_game_name()} game finished: {self.game_id}")
@@ -1084,7 +1190,7 @@ class BaseGameMode(ABC):
             # Start game music
             response = await self.audio_client.PlayMusic(
                 audio_pb2.PlayMusicRequest(
-                    file_pattern="Joust/music/*.wav",
+                    file_pattern="Joust/music/*.ogg",
                     loop=True,
                     tempo=SLOW_MUSIC_SPEED,
                     priority=audio_pb2.AudioPriority.MEDIUM,

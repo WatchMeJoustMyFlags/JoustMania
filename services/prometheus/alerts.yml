@@ -113,3 +113,12 @@ groups:
         annotations:
           summary: "Service files have been updated"
           description: "Run 'sudo ./scripts/setup/install_autostart.sh' to apply the new service configuration."
+
+      - alert: HighGRPCClientErrorRate
+        expr: rate(grpc_client_errors_total[2m]) > 0.5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High gRPC client error rate on {{ $labels.service }}/{{ $labels.method }}"
+          description: "Service {{ $labels.service }} method {{ $labels.method }} has error rate {{ $value }}/s for 2+ minutes"

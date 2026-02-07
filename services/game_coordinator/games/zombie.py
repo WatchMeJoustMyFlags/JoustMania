@@ -89,7 +89,6 @@ class ZombieGame(BaseGameMode):
     def __init__(
         self,
         controller_manager_client,
-        settings_client,
         event_publisher,
         audio_client=None,
         game_id: str = "",
@@ -101,7 +100,6 @@ class ZombieGame(BaseGameMode):
 
         Args:
             controller_manager_client: gRPC stub for ControllerManager service
-            settings_client: gRPC stub for Settings service
             event_publisher: Callback function to publish game events
             audio_client: gRPC stub for Audio service
             game_id: Unique identifier for this game instance
@@ -110,7 +108,6 @@ class ZombieGame(BaseGameMode):
         """
         super().__init__(
             controller_manager_client=controller_manager_client,
-            settings_client=settings_client,
             event_publisher=event_publisher,
             audio_client=audio_client,
             game_id=game_id,
@@ -124,8 +121,6 @@ class ZombieGame(BaseGameMode):
         self.time_remaining: float = 0.0
         self.timer_task: asyncio.Task | None = None
         self.game_span: trace.Span | None = None
-        # Track respawn tasks to prevent garbage collection
-        self._respawn_tasks: set[asyncio.Task] = set()
 
     def get_game_name(self) -> str:
         """Return game mode identifier."""
@@ -172,7 +167,7 @@ class ZombieGame(BaseGameMode):
             f"{len(self.zombie_serials)} zombies. Game duration: {self.game_duration:.0f}s"
         )
 
-        self.event_publisher(
+        await self.event_publisher(
             "players_initialized",
             {
                 "player_count": num_players,
@@ -227,7 +222,7 @@ class ZombieGame(BaseGameMode):
         """
         logger.info("Starting zombie intro phase...")
 
-        self.event_publisher(
+        await self.event_publisher(
             "zombie_intro_start",
             {
                 "zombie_count": len(self.zombie_serials),
@@ -257,7 +252,7 @@ class ZombieGame(BaseGameMode):
                 return
             await asyncio.sleep(0.1)
 
-        self.event_publisher("zombie_intro_end", {})
+        await self.event_publisher("zombie_intro_end", {})
         logger.info("Zombie intro phase complete")
 
     def _get_effective_thresholds(self, player: Player) -> tuple[float, float]:
@@ -287,7 +282,7 @@ class ZombieGame(BaseGameMode):
             for seconds in announcements:
                 if abs(self.time_remaining - seconds) < 0.5:
                     logger.info(f"Time announcement: {seconds} seconds remaining")
-                    self.event_publisher("time_announcement", {"seconds_remaining": seconds})
+                    await self.event_publisher("time_announcement", {"seconds_remaining": seconds})
                     # Play time announcement sound (Zombie/vox/ directory)
                     if seconds == 60:
                         await self._play_sound(Sound.VOX_ZOMBIE_ONE_MINUTE, priority=2)
@@ -301,7 +296,7 @@ class ZombieGame(BaseGameMode):
         if self.running and self.time_remaining <= 0:
             logger.info("Time's up! Checking for human survivors...")
 
-    def _check_win_condition(self) -> bool:
+    async def _check_win_condition(self) -> bool:
         """
         Check if the game should end.
 
@@ -314,7 +309,7 @@ class ZombieGame(BaseGameMode):
         # Check if all humans converted
         if len(alive_humans) == 0:
             logger.info("All humans converted! Zombies win!")
-            self.event_publisher(
+            await self.event_publisher(
                 "zombie_winner",
                 {
                     "winner": "zombies",
@@ -326,7 +321,7 @@ class ZombieGame(BaseGameMode):
         # Check if time expired
         if self.time_remaining <= 0:
             logger.info(f"Time's up! Humans win with {len(alive_humans)} survivors!")
-            self.event_publisher(
+            await self.event_publisher(
                 "zombie_winner",
                 {
                     "winner": "humans",
@@ -360,10 +355,8 @@ class ZombieGame(BaseGameMode):
 
             logger.info(f"Zombie {serial} killed, respawning in {respawn_delay:.1f}s")
 
-            # Start respawn task (track to prevent garbage collection)
-            task = asyncio.create_task(self._respawn_zombie(serial, respawn_delay))
-            self._respawn_tasks.add(task)
-            task.add_done_callback(self._respawn_tasks.discard)
+            # Start respawn task (tracked for automatic cleanup)
+            self._track_task(asyncio.create_task(self._respawn_zombie(serial, respawn_delay)))
 
             if player.span:
                 player.span.add_event(
@@ -419,7 +412,7 @@ class ZombieGame(BaseGameMode):
                     },
                 )
 
-            self.event_publisher(
+            await self.event_publisher(
                 "human_converted",
                 {
                     "serial": serial,
@@ -521,7 +514,7 @@ class ZombieGame(BaseGameMode):
                 player.span.end()
 
         self.state = self.state.__class__.ENDED
-        self.event_publisher(
+        await self.event_publisher(
             "game_ended",
             {
                 "game_id": self.game_id,
@@ -532,6 +525,12 @@ class ZombieGame(BaseGameMode):
         )
 
         logger.info("Zombie game ended")
+
+    async def cleanup(self) -> None:
+        """Cancel timer task, respawn tasks, and any tracked tasks."""
+        if self.timer_task and not self.timer_task.done():
+            self.timer_task.cancel()
+        await super().cleanup()
 
     async def run(self):
         """
@@ -581,7 +580,7 @@ class ZombieGame(BaseGameMode):
                 # Emit game_started event (required for integration tests)
                 from lib.types import GameEvent
 
-                self.event_publisher(
+                await self.event_publisher(
                     GameEvent.GAME_STARTED, {"game_id": self.game_id, "player_count": len(self.players)}
                 )
 
@@ -589,7 +588,7 @@ class ZombieGame(BaseGameMode):
                 await self._start_game_music()
 
                 # Start game timer as background task
-                self.timer_task = asyncio.create_task(self._game_timer())
+                self.timer_task = self._track_task(asyncio.create_task(self._game_timer()))
 
                 # Game loop (gameplay stream already started before intro)
                 with tracer.start_as_current_span("gameplay_phase"):
@@ -607,7 +606,9 @@ class ZombieGame(BaseGameMode):
                 game_span.set_status(Status(StatusCode.ERROR, str(e)))
                 raise
             finally:
+                force_ended = not self.running
                 self.running = False
                 await self._stop_game_music()
-                if self.timer_task and not self.timer_task.done():
-                    self.timer_task.cancel()
+                if force_ended:
+                    await self.on_force_end()
+                await self.cleanup()

@@ -155,16 +155,16 @@ Currently, services require rebuild after code changes. Future: Add volume mount
 
 ```bash
 # Rebuild specific service
-docker compose build settings
+docker compose build game-coordinator
 
 # Restart specific service
-docker compose restart settings
+docker compose restart game-coordinator
 
 # Rebuild and restart
-docker compose up -d --build settings
+docker compose up -d --build game-coordinator
 
 # View logs in real-time
-docker compose logs -f settings
+docker compose logs -f game-coordinator
 ```
 
 ---
@@ -184,7 +184,6 @@ docker compose build <service-name>
 ```
 
 **Service names:**
-- `settings`
 - `controller-manager`
 - `game-coordinator`
 - `menu`
@@ -195,10 +194,10 @@ docker compose build <service-name>
 
 ```bash
 # No cache (clean build)
-docker compose build --no-cache settings
+docker compose build --no-cache game-coordinator
 
 # Pull latest base images
-docker compose build --pull settings
+docker compose build --pull game-coordinator
 ```
 
 ### Understanding Multi-Stage Builds
@@ -241,7 +240,7 @@ docker compose up -d
 docker compose up -d redis jaeger otel-collector
 
 # Only application services
-docker compose up -d settings controller-manager game-coordinator menu
+docker compose up -d controller-manager game-coordinator menu
 ```
 
 ### Run in Foreground (with logs)
@@ -304,41 +303,13 @@ docker compose -f docker-compose.test.yml down
 #### List Services
 
 ```bash
-grpcurl -plaintext localhost:50051 list
-# Output: joustmania.SettingsService
-```
-
-#### List Methods
-
-```bash
-grpcurl -plaintext localhost:50051 list joustmania.SettingsService
-# Output:
-# joustmania.SettingsService.GetSettings
-# joustmania.SettingsService.UpdateSetting
-# joustmania.SettingsService.SubscribeToChanges
-```
-
-#### Call RPC
-
-```bash
-# GetSettings
-grpcurl -plaintext -d '{}' localhost:50051 joustmania.SettingsService/GetSettings
-
-# UpdateSetting
-grpcurl -plaintext -d '{"key":"sensitivity","value":"3"}' \
-    localhost:50051 joustmania.SettingsService/UpdateSetting
-
-# Stream SubscribeToChanges
-grpcurl -plaintext -d '{"pattern":"*"}' \
-    localhost:50051 joustmania.SettingsService/SubscribeToChanges
+grpcurl -plaintext localhost:50052 list
+# Output: joustmania.ControllerManagerService
 ```
 
 #### Test All Services
 
 ```bash
-# Settings (50051)
-grpcurl -plaintext localhost:50051 list
-
 # ControllerManager (50052)
 grpcurl -plaintext localhost:50052 list
 
@@ -373,65 +344,65 @@ python tools/clear_devices.py
 docker compose logs -f
 
 # Specific service
-docker compose logs -f settings
+docker compose logs -f game-coordinator
 
 # Last N lines
-docker compose logs --tail=100 settings
+docker compose logs --tail=100 game-coordinator
 
 # With timestamps
-docker compose logs -f -t settings
+docker compose logs -f -t game-coordinator
 ```
 
 ### Access Container
 
 ```bash
 # Get shell in running container
-docker compose exec settings bash
+docker compose exec game-coordinator bash
 
 # Or if bash not available
-docker compose exec settings sh
+docker compose exec game-coordinator sh
 
 # Run command in container
-docker compose exec settings python -c "import sys; print(sys.version)"
+docker compose exec game-coordinator python -c "import sys; print(sys.version)"
 ```
 
 ### Inspect Container
 
 ```bash
 # View container details
-docker inspect joustmania-settings
+docker inspect joustmania-game-coordinator
 
 # View environment variables
-docker inspect joustmania-settings | jq '.[0].Config.Env'
+docker inspect joustmania-game-coordinator | jq '.[0].Config.Env'
 
 # View mounts
-docker inspect joustmania-settings | jq '.[0].Mounts'
+docker inspect joustmania-game-coordinator | jq '.[0].Mounts'
 ```
 
 ### Debug gRPC Issues
 
 ```bash
 # Enable gRPC debug logging
-docker compose exec settings python -c "
+docker compose exec game-coordinator python -c "
 import grpc
 import logging
 logging.basicConfig(level=logging.DEBUG)
 "
 
 # Test connection
-grpcurl -plaintext -v localhost:50051 list
+grpcurl -plaintext -v localhost:50052 list
 ```
 
 ### View Traces in Jaeger
 
 1. Open http://localhost:8080/jaeger/
-2. Select service from dropdown (e.g., "joustmania-settings")
+2. Select service from dropdown (e.g., "game-coordinator-service")
 3. Click "Find Traces"
 4. Click on trace to see details
 
 **Useful filters:**
-- Service: `joustmania-settings`
-- Operation: `joustmania.SettingsService/GetSettings`
+- Service: `game-coordinator-service`
+- Operation: `joustmania.GameCoordinatorService/StreamGameEvents`
 - Min Duration: `100ms` (find slow requests)
 - Tags: `error=true` (find failures)
 
@@ -452,25 +423,25 @@ grpcurl -plaintext localhost:4317 list
 
 ```bash
 # Test service connectivity
-docker compose exec settings nc -zv controller-manager 50052
+docker compose exec game-coordinator nc -zv controller-manager 50052
 
 # View network
 docker network ls
 docker network inspect joustmania_default
 
 # DNS resolution
-docker compose exec settings nslookup settings
+docker compose exec game-coordinator nslookup game-coordinator
 ```
 
 ### Performance Profiling
 
 ```bash
 # Python profiling
-docker compose exec settings python -m cProfile -s cumtime server.py
+docker compose exec game-coordinator python -m cProfile -s cumtime server.py
 
 # Memory profiling
 pip install memory_profiler
-python -m memory_profiler services/settings/server.py
+python -m memory_profiler services/game_coordinator/server.py
 ```
 
 ---
@@ -489,13 +460,11 @@ JoustMania/
 │   ├── grpc_tracing.py     # gRPC interceptors
 │   └── feature_flags.py    # Feature flag client
 ├── proto/                   # Protocol buffer definitions
-│   ├── settings.proto
 │   ├── controller_manager.proto
 │   ├── game_coordinator.proto
 │   ├── menu.proto
 │   └── audio.proto
 ├── services/                # Microservices
-│   ├── settings/
 │   ├── controller_manager/
 │   ├── game_coordinator/
 │   ├── menu/
@@ -560,8 +529,8 @@ from lib.telemetry import setup_tracing
 from lib.otel_metrics import Counter, Gauge
 
 # Proto definitions
-from proto import settings_pb2, settings_pb2_grpc
 from proto import controller_manager_pb2
+from proto import game_coordinator_pb2
 
 # gRPC
 import grpc
@@ -740,9 +709,9 @@ See `services/game_coordinator/games/README.md` for the game mode implementation
 
 3. **Add deadlines/timeouts**
    ```python
-   with grpc.insecure_channel('localhost:50051') as channel:
-       stub = SettingsStub(channel)
-       response = stub.GetSettings(request, timeout=5.0)
+   with grpc.insecure_channel('localhost:50053') as channel:
+       stub = GameCoordinatorStub(channel)
+       response = stub.GetGameState(request, timeout=5.0)
    ```
 
 ### OpenTelemetry Best Practices
@@ -814,10 +783,10 @@ docker compose up -d
 docker compose ps
 
 # Test with grpcurl
-grpcurl -plaintext localhost:50051 list
+grpcurl -plaintext localhost:50053 list
 
 # Check service logs for errors
-docker compose logs settings
+docker compose logs game-coordinator
 ```
 
 #### Permission denied (hardware access)
@@ -837,7 +806,7 @@ devices:
 docker compose logs otel-collector
 
 # Verify OTLP endpoint
-docker compose exec settings env | grep OTEL
+docker compose exec game-coordinator env | grep OTEL
 
 # Test trace export
 grpcurl -plaintext localhost:4317 list

@@ -78,7 +78,6 @@ class TeamsGameBase(BaseGameMode):
     def __init__(
         self,
         controller_manager_client,
-        settings_client,
         event_publisher,
         audio_client=None,
         game_id: str = "",
@@ -92,7 +91,6 @@ class TeamsGameBase(BaseGameMode):
 
         Args:
             controller_manager_client: gRPC stub for ControllerManager service
-            settings_client: gRPC stub for Settings service
             event_publisher: Callback function to publish game events
             audio_client: gRPC stub for Audio service (Phase 29)
             game_id: Unique identifier for this game instance
@@ -103,7 +101,6 @@ class TeamsGameBase(BaseGameMode):
         """
         super().__init__(
             controller_manager_client=controller_manager_client,
-            settings_client=settings_client,
             event_publisher=event_publisher,
             audio_client=audio_client,
             game_id=game_id,
@@ -247,7 +244,7 @@ class TeamsGameBase(BaseGameMode):
         from services.game_coordinator.games.base import COUNTDOWN_DURATION
 
         logger.info("Starting team countdown...")
-        self.event_publisher(GameEvent.COUNTDOWN_START, {"duration": COUNTDOWN_DURATION})
+        await self.event_publisher(GameEvent.COUNTDOWN_START, {"duration": COUNTDOWN_DURATION})
 
         # Countdown sequence specific to team-based games
         countdown_phases = [
@@ -301,7 +298,7 @@ class TeamsGameBase(BaseGameMode):
         # Play start sound (Phase 29)
         await self._play_sound(Sound.SFX_START3, priority=2)
 
-        self.event_publisher(GameEvent.COUNTDOWN_END, {})
+        await self.event_publisher(GameEvent.COUNTDOWN_END, {})
         logger.info("Team countdown complete")
 
     def _get_alive_teams(self) -> set[int]:
@@ -317,7 +314,7 @@ class TeamsGameBase(BaseGameMode):
                 alive_teams.add(player.team)
         return alive_teams
 
-    def _check_win_condition(self) -> bool:
+    async def _check_win_condition(self) -> bool:
         """
         Check if a team has won.
 
@@ -337,7 +334,7 @@ class TeamsGameBase(BaseGameMode):
 
                 logger.info(f"Team {winning_team} ({team_name}) wins with {len(winners)} players!")
 
-                self.event_publisher(
+                await self.event_publisher(
                     "team_winner",
                     {
                         "team": winning_team,
@@ -350,7 +347,7 @@ class TeamsGameBase(BaseGameMode):
 
             elif len(alive_teams) == 0:
                 logger.info("No winner - all players died simultaneously")
-                self.event_publisher(GameEvent.GAME_TIE, {})
+                await self.event_publisher(GameEvent.GAME_TIE, {})
 
             return True
 
@@ -476,7 +473,7 @@ class TeamsGameBase(BaseGameMode):
                 summary["survival_time_ms"] = player.analytics.total_time_ms
 
                 # Publish player analytics event
-                self.event_publisher(GameEvent.PLAYER_ANALYTICS, summary)
+                await self.event_publisher(GameEvent.PLAYER_ANALYTICS, summary)
 
                 # Update Prometheus metrics
                 metrics.game_analytics_samples_total.labels(game_mode=self.get_game_name()).inc(
@@ -509,7 +506,7 @@ class TeamsGameBase(BaseGameMode):
                 )
 
         self.state = self.state.__class__.ENDED
-        self.event_publisher(
+        await self.event_publisher(
             GameEvent.GAME_ENDED,
             {
                 "game_id": self.game_id,

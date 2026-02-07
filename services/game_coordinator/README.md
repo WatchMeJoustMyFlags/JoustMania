@@ -88,7 +88,6 @@ grpcurl -plaintext localhost:50053 \
 └──────────┬───────────┘     └─────────────────┘
            │
            ├──► Audio Service (sounds/music)
-           ├──► Settings Service (sensitivity)
            └──► Controller Mgr (LED feedback)
 ```
 

@@ -91,7 +91,7 @@ class SimpleTeamsGame(TeamsGameBase):
         # Publish event with team assignments
         team_assignments = {serial: player.team for serial, player in self.players.items()}
 
-        self.event_publisher(
+        await self.event_publisher(
             "players_initialized",
             {
                 "player_count": len(self.players),

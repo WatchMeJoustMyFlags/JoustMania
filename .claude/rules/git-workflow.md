@@ -5,11 +5,11 @@
 Never commit directly to the main checkout. Always use git worktrees:
 
 ```bash
-git worktree add ../JoustMania-issue-<NUMBER> -b fix/description origin/dev-refactor
+git worktree add ../JoustMania-issue-<NUMBER> -b fix/description origin/main
 cd ../JoustMania-issue-<NUMBER>
 # ... make changes ...
 git push -u origin fix/description
-gh pr create --base dev-refactor
+gh pr create --base main
 ```
 
 This keeps the main checkout clean for:
@@ -19,9 +19,9 @@ This keeps the main checkout clean for:
 
 ## Main Branch
 
-The main development branch is **`dev-refactor`** (not `master`).
+The main development branch is **`main`**.
 
-All PRs target `dev-refactor`.
+All PRs target `main`.
 
 ## Branch Naming
 
@@ -60,7 +60,7 @@ make lint
 
 ## Pull Requests
 
-1. Create via `gh pr create --base dev-refactor`
+1. Create via `gh pr create --base main`
 2. Include issue reference: `Fixes #123`
 3. Add test plan with checkboxes
 4. Wait for CI to pass

@@ -4,7 +4,6 @@
 
 | Service | Port | Role |
 |---------|------|------|
-| Settings | 50051 | Configuration management, persists to `joustsettings.yaml` |
 | Controller Manager | 50052 | PS Move hardware, button events, motion streaming |
 | Game Coordinator | 50053 | Game lifecycle, death detection, scoring |
 | Menu | 50054 | Lobby, game selection, ready state, admin mode |
@@ -54,7 +53,6 @@ Game ends → "game_ended" event → Menu restarts lobby
 **Server streams**:
 - `StreamGameEvents`: Game lifecycle events
 - `StreamMenuEvents`: Menu state changes
-- `SubscribeToChanges`: Settings change notifications
 
 ## Key Concepts
 
@@ -82,9 +80,8 @@ IDLE → STARTING → RUNNING → ENDING → ENDED
 ## Service Dependencies
 
 ```
-Settings ← foundational (no deps)
 Audio ← foundational (no deps)
-Controller Manager ← Settings
-Game Coordinator ← Settings, Controller Manager, Audio
-Menu ← Settings, Controller Manager, Game Coordinator, Audio
+Controller Manager ← foundational (no deps)
+Game Coordinator ← Controller Manager, Audio
+Menu ← Controller Manager, Game Coordinator, Audio
 ```

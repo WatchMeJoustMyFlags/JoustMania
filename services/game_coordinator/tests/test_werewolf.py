@@ -20,7 +20,7 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService, MockSettingsService
+from conftest import EventCollector, MockControllerManagerService, async_noop
 
 from services.game_coordinator.games.werewolf import (
     HUMAN_COLOR,
@@ -48,12 +48,10 @@ class TestWerewolfGameMode:
             death_schedule={},
             max_duration=10.0,
         )
-        mock_settings = MockSettingsService()
         event_collector = EventCollector()
 
         game = WerewolfGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=event_collector.publish,
             audio_client=None,
             game_id="test_werewolf_001",
@@ -132,14 +130,14 @@ class TestWerewolfGameMode:
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
         # Initially no win
-        assert not game._check_win_condition()
+        assert not await game._check_win_condition()
 
         # Kill all humans
         for serial in game.human_serials:
             game.players[serial].alive = False
 
         # Werewolves should win
-        assert game._check_win_condition()
+        assert await game._check_win_condition()
 
         # Verify winner event
         winner_events = event_collector.get_events_of_type("werewolf_winner")
@@ -154,14 +152,14 @@ class TestWerewolfGameMode:
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
         # Initially no win
-        assert not game._check_win_condition()
+        assert not await game._check_win_condition()
 
         # Kill all werewolves
         for serial in game.werewolf_serials:
             game.players[serial].alive = False
 
         # Humans should win
-        assert game._check_win_condition()
+        assert await game._check_win_condition()
 
         # Verify winner event
         winner_events = event_collector.get_events_of_type("werewolf_winner")
@@ -176,7 +174,7 @@ class TestWerewolfGameMode:
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
         # All alive - no win
-        assert not game._check_win_condition()
+        assert not await game._check_win_condition()
 
         # Kill one from each team (if possible)
         if len(game.human_serials) > 1:
@@ -189,7 +187,7 @@ class TestWerewolfGameMode:
         alive_wolves = [s for s in game.werewolf_serials if game.players[s].alive]
 
         if alive_humans and alive_wolves:
-            assert not game._check_win_condition()
+            assert not await game._check_win_condition()
 
     @pytest.mark.asyncio
     async def test_kill_player_marks_dead(self, werewolf_game):
@@ -253,12 +251,9 @@ class TestWerewolfThresholds:
     def werewolf_game(self):
         """Create a Werewolf game."""
         mock_controller_manager = MockControllerManagerService(num_controllers=4)
-        mock_settings = MockSettingsService()
-
         game = WerewolfGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_werewolf_thresh",
         )
@@ -309,12 +304,10 @@ class TestWerewolfReveal:
     def werewolf_game(self):
         """Create a Werewolf game."""
         mock_controller_manager = MockControllerManagerService(num_controllers=4)
-        mock_settings = MockSettingsService()
         event_collector = EventCollector()
 
         game = WerewolfGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=event_collector.publish,
             audio_client=None,
             game_id="test_werewolf_reveal",
@@ -340,12 +333,9 @@ class TestWerewolfEdgeCases:
     async def test_larger_player_count_werewolf_ratio(self):
         """Test werewolf ratio with more players."""
         mock_controller_manager = MockControllerManagerService(num_controllers=9)
-        mock_settings = MockSettingsService()
-
         game = WerewolfGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_werewolf_ratio",
         )
@@ -360,12 +350,9 @@ class TestWerewolfEdgeCases:
     async def test_minimum_one_werewolf(self):
         """Even with 2 players, should have at least 1 werewolf."""
         mock_controller_manager = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
-
         game = WerewolfGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_min_werewolf",
         )
@@ -379,12 +366,10 @@ class TestWerewolfEdgeCases:
     async def test_win_condition_all_dead(self):
         """Test when all players are dead (draw condition)."""
         mock_controller_manager = MockControllerManagerService(num_controllers=4)
-        mock_settings = MockSettingsService()
         event_collector = EventCollector()
 
         game = WerewolfGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=event_collector.publish,
             audio_client=None,
             game_id="test_werewolf_draw",
@@ -397,7 +382,7 @@ class TestWerewolfEdgeCases:
             player.alive = False
 
         # Should trigger win condition (with winner="none")
-        assert game._check_win_condition()
+        assert await game._check_win_condition()
 
         winner_events = event_collector.get_events_of_type("werewolf_winner")
         assert len(winner_events) == 1
@@ -407,12 +392,9 @@ class TestWerewolfEdgeCases:
     async def test_reveal_state_tracks_correctly(self):
         """Test that game reveal state can be toggled."""
         mock_controller_manager = MockControllerManagerService(num_controllers=4)
-        mock_settings = MockSettingsService()
-
         game = WerewolfGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_reveal_state",
         )

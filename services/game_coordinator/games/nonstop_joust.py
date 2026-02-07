@@ -73,7 +73,6 @@ class NonstopJoustGame(BaseGameMode):
     def __init__(
         self,
         controller_manager_client,
-        settings_client,
         event_publisher,
         audio_client=None,
         game_id: str = "",
@@ -86,7 +85,6 @@ class NonstopJoustGame(BaseGameMode):
 
         Args:
             controller_manager_client: gRPC stub for ControllerManager service
-            settings_client: gRPC stub for Settings service
             event_publisher: Callback function to publish game events
             audio_client: gRPC stub for Audio service (Phase 29)
             game_id: Unique identifier for this game instance
@@ -96,7 +94,6 @@ class NonstopJoustGame(BaseGameMode):
         """
         super().__init__(
             controller_manager_client=controller_manager_client,
-            settings_client=settings_client,
             event_publisher=event_publisher,
             audio_client=audio_client,
             game_id=game_id,
@@ -154,7 +151,7 @@ class NonstopJoustGame(BaseGameMode):
             player.span = self._create_player_lifecycle_span(serial, game_context)
             logger.debug(f"Started lifecycle span for player {serial} (stays open)")
 
-    def _check_win_condition(self) -> bool:
+    async def _check_win_condition(self) -> bool:
         """
         Check if time limit has been reached.
 
@@ -232,7 +229,7 @@ class NonstopJoustGame(BaseGameMode):
             )
 
         # Publish death event (unique to Nonstop)
-        self.event_publisher(
+        await self.event_publisher(
             "player_death",
             {
                 "serial": serial,
@@ -318,7 +315,7 @@ class NonstopJoustGame(BaseGameMode):
                     last_alive_serials = current_alive_serials
 
                 # Check win condition (time limit)
-                if self._check_win_condition():
+                if await self._check_win_condition():
                     break
 
                 # Small sleep to maintain tick rate
@@ -438,7 +435,7 @@ class NonstopJoustGame(BaseGameMode):
         await self.gameplay_stream.write(base_color_cmd)
 
         # Publish respawn event
-        self.event_publisher(
+        await self.event_publisher(
             "player_respawned",
             {
                 "serial": serial,
@@ -516,7 +513,7 @@ class NonstopJoustGame(BaseGameMode):
             # Play victory sound (Phase 29)
             await self._play_sound(Sound.VOX_CONGRATULATIONS, priority=2)
 
-            self.event_publisher(
+            await self.event_publisher(
                 GameEvent.GAME_WINNER,
                 {
                     "serial": winner.serial,
@@ -567,7 +564,7 @@ class NonstopJoustGame(BaseGameMode):
                 summary["deaths"] = player.deaths
 
                 # Publish player analytics event
-                self.event_publisher(GameEvent.PLAYER_ANALYTICS, summary)
+                await self.event_publisher(GameEvent.PLAYER_ANALYTICS, summary)
 
                 # Update Prometheus metrics
                 metrics.game_analytics_samples_total.labels(game_mode=self.get_game_name()).inc(
@@ -583,7 +580,7 @@ class NonstopJoustGame(BaseGameMode):
                 )
 
         self.state = GameState.ENDED
-        self.event_publisher(
+        await self.event_publisher(
             GameEvent.GAME_ENDED,
             {
                 "game_id": self.game_id,

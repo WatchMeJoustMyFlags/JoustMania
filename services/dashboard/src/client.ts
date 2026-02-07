@@ -14,14 +14,6 @@ import type {
   GameEvent,
 } from "./gen/game_coordinator_pb.js";
 import type {
-  GetSettingsRequest,
-  GetSettingsResponse,
-  GetSettingRequest,
-  GetSettingResponse,
-  UpdateSettingRequest,
-  UpdateSettingResponse,
-} from "./gen/settings_pb.js";
-import type {
   ProcessInputRequest,
   ProcessInputResponse,
 } from "./gen/menu_pb.js";
@@ -126,31 +118,6 @@ export const gameClient = {
     return serverStream<StreamEventsRequest, GameEvent>(
       "joustmania.game_coordinator.GameCoordinatorService",
       "StreamGameEvents",
-      request
-    );
-  },
-};
-
-// Settings Client
-export const settingsClient = {
-  getSettings(request: GetSettingsRequest): Promise<GetSettingsResponse> {
-    return unaryCall(
-      "joustmania.settings.SettingsService",
-      "GetSettings",
-      request
-    );
-  },
-  getSetting(request: GetSettingRequest): Promise<GetSettingResponse> {
-    return unaryCall(
-      "joustmania.settings.SettingsService",
-      "GetSetting",
-      request
-    );
-  },
-  updateSetting(request: UpdateSettingRequest): Promise<UpdateSettingResponse> {
-    return unaryCall(
-      "joustmania.settings.SettingsService",
-      "UpdateSetting",
       request
     );
   },

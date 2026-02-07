@@ -5,6 +5,8 @@ Tracks controller health, input latency, stream performance, and cache efficienc
 Uses OTLP push at 100ms intervals for real-time dashboard updates.
 """
 
+from prometheus_client import Gauge as PromGauge
+
 from lib.otel_metrics import Counter, Gauge, Histogram
 
 # Controller health metrics
@@ -187,6 +189,14 @@ led_controllers_updated_per_batch = Histogram(
 controller_accel_magnitude = Gauge(
     "controller_accel_magnitude",
     "Controller acceleration magnitude in g (100Hz)",
+    ["serial"],
+)
+
+# Duplicate gauge via prometheus_client for direct Prometheus pull scraping (pipeline comparison)
+# Same metric name is safe — prometheus_client and OTEL use independent registries on different ports
+prom_controller_accel_magnitude = PromGauge(
+    "controller_accel_magnitude",
+    "Controller acceleration magnitude in g (prometheus_client pull)",
     ["serial"],
 )
 

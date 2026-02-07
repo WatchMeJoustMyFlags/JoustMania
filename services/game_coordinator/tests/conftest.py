@@ -1,7 +1,7 @@
 """
 Shared fixtures and mocks for game coordinator tests.
 
-Provides MockControllerManagerService, MockSettingsService, and EventCollector
+Provides MockControllerManagerService and EventCollector
 for testing game modes without real hardware or gRPC services.
 """
 
@@ -28,7 +28,12 @@ disable_telemetry_for_tests()
 disable_metrics_for_tests()
 
 # Import protobufs from proto package (must be after path setup)
-from proto import controller_manager_pb2, settings_pb2
+from proto import controller_manager_pb2
+
+
+async def async_noop(*_args, **_kwargs):
+    """Async no-op function for use as a dummy event_publisher."""
+    pass
 
 
 class MockBidirectionalStream:
@@ -167,30 +172,13 @@ class MockControllerManagerService:
         return controller_manager_pb2.SetControllerColorResponse(success=True)
 
 
-class MockSettingsService:
-    """Mock Settings gRPC service for testing."""
-
-    def __init__(self):
-        """Initialize mock settings."""
-        self.settings = {
-            "sensitivity": "MEDIUM",
-            "play_audio": "false",
-            "color_lock": "false",
-            "random_teams": "false",
-        }
-
-    def GetSettings(self, request):
-        """Mock GetSettings RPC."""
-        return settings_pb2.GetSettingsResponse(settings=self.settings, success=True, error="")
-
-
 class EventCollector:
     """Collects events published by the game."""
 
     def __init__(self):
         self.events: list[tuple] = []
 
-    def publish(self, event_type: str, data: dict):
+    async def publish(self, event_type: str, data: dict):
         """Collect published event."""
         self.events.append((event_type, data))
 
@@ -217,12 +205,6 @@ def mock_controller_manager():
         num_controllers=3,
         death_schedule={2.0: 1, 3.0: 2},  # Controllers 1 and 2 die
     )
-
-
-@pytest.fixture
-def mock_settings():
-    """Fixture providing mock Settings service."""
-    return MockSettingsService()
 
 
 @pytest.fixture

@@ -1,0 +1,47 @@
+{
+  "metadata": {
+    "flagSetId": "user_preferences"
+  },
+  "flags": {
+    "menu_voice": {
+      "state": "ENABLED",
+      "variants": {
+        "aaron": "aaron",
+        "ivy": "ivy"
+      },
+      "defaultVariant": "ivy"
+    },
+    "play_audio": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "on"
+    },
+    "current_game": {
+      "state": "ENABLED",
+      "variants": {
+        "JoustFFA": "JoustFFA",
+        "JoustTeams": "JoustTeams",
+        "JoustRandomTeams": "JoustRandomTeams",
+        "Traitor": "Traitor",
+        "Werewolf": "Werewolf",
+        "Zombies": "Zombies",
+        "Tournament": "Tournament",
+        "FightClub": "FightClub",
+        "Swapper": "Swapper",
+        "NonStop": "NonStop"
+      },
+      "defaultVariant": "JoustFFA"
+    },
+    "game_instructions": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "on"
+    }
+  }
+}

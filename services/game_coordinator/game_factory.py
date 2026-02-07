@@ -20,7 +20,6 @@ Usage:
     game = GameFactory.create_game(
         game_name=config.game_name,
         controller_manager_client=cm_client,
-        settings_client=settings_client,
         event_publisher=publish_fn,
         audio_client=audio_client,
         game_id="game_123",
@@ -80,8 +79,7 @@ class GameFactory:
     def create_game(
         game_name: str,
         controller_manager_client,
-        settings_client,
-        event_publisher: Callable[[str, dict], None],
+        event_publisher: Callable[[str, dict], Any],
         audio_client,
         game_id: str,
         initial_players: list,
@@ -94,7 +92,6 @@ class GameFactory:
         Args:
             game_name: Game mode name (case-insensitive, supports aliases)
             controller_manager_client: gRPC stub for controller manager service
-            settings_client: gRPC stub for settings service
             event_publisher: Callback for publishing game events
             audio_client: gRPC stub for audio service
             game_id: Unique game identifier
@@ -121,7 +118,6 @@ class GameFactory:
         # Common arguments for all game types
         common_args = {
             "controller_manager_client": controller_manager_client,
-            "settings_client": settings_client,
             "event_publisher": event_publisher,
             "audio_client": audio_client,
             "game_id": game_id,

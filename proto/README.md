@@ -15,7 +15,6 @@ proto/
 ├── __init__.py                         # Package initialization
 ├── generate_proto.sh                   # Script to generate Python code from .proto files
 │
-├── settings.proto                      # Settings service schema
 ├── controller_manager.proto            # Controller manager service schema
 ├── controller_manager_mock.proto       # Mock controller control API
 ├── game_coordinator.proto              # Game coordinator service schema
@@ -27,23 +26,7 @@ proto/
 
 ## Protocol Buffer Schemas
 
-### 1. Settings Service (`settings.proto`)
-**Port:** 50051
-**Purpose:** Centralized configuration management with validation and change notifications
-
-**Key RPCs:**
-- `GetSettings` - Retrieve all settings
-- `GetSetting` - Get a specific setting by key
-- `UpdateSetting` - Update a setting value with validation
-- `SubscribeToChanges` - Stream setting change events (server streaming)
-
-**Features:**
-- Schema-based validation
-- Atomic YAML file saves
-- Real-time change notifications
-- Pattern-based subscriptions
-
-### 2. Controller Manager Service (`controller_manager.proto`)
+### 1. Controller Manager Service (`controller_manager.proto`)
 **Port:** 50052
 **Purpose:** PS Move controller lifecycle management and real-time state streaming
 
@@ -59,7 +42,7 @@ proto/
 - Automatic controller health monitoring
 - LED state ownership via bidirectional streaming
 
-### 3. Controller Manager Mock API (`controller_manager_mock.proto`)
+### 2. Controller Manager Mock API (`controller_manager_mock.proto`)
 **Port:** 50062
 **Purpose:** Control mock controllers for testing without hardware
 
@@ -71,7 +54,7 @@ proto/
 
 **Use Case:** Testing and development without physical PS Move hardware
 
-### 4. Game Coordinator Service (`game_coordinator.proto`)
+### 3. Game Coordinator Service (`game_coordinator.proto`)
 **Port:** 50053
 **Purpose:** Game lifecycle management and event streaming
 
@@ -88,7 +71,7 @@ proto/
 - Team changes
 - Score updates
 
-### 5. Menu Service (`menu.proto`)
+### 4. Menu Service (`menu.proto`)
 **Port:** 50054
 **Purpose:** Menu UI state management and input processing
 
@@ -102,7 +85,7 @@ proto/
 - Button presses (trigger, select, middle)
 - Web commands (start game, mode selection)
 
-### 6. Audio Service (`audio.proto`)
+### 5. Audio Service (`audio.proto`)
 **Port:** 50056
 **Purpose:** Audio playback management
 
@@ -186,14 +169,14 @@ python -m grpc_tools.protoc \
   --proto_path=. \
   --python_out=. \
   --grpc_python_out=. \
-  settings.proto
+  game_coordinator.proto
 ```
 
 ### What Gets Generated
 
-For each `.proto` file (e.g., `settings.proto`), two files are generated:
-- `settings_pb2.py` - Message classes (requests, responses, data structures)
-- `settings_pb2_grpc.py` - Service stubs and servicers (client and server interfaces)
+For each `.proto` file (e.g., `game_coordinator.proto`), two files are generated:
+- `game_coordinator_pb2.py` - Message classes (requests, responses, data structures)
+- `game_coordinator_pb2_grpc.py` - Service stubs and servicers (client and server interfaces)
 
 ## Using in Services
 
@@ -213,18 +196,18 @@ Import generated code directly:
 
 ```python
 # Import message classes
-from proto import settings_pb2
+from proto import game_coordinator_pb2
 
 # Import service stubs
-from proto import settings_pb2_grpc
+from proto import game_coordinator_pb2_grpc
 
 # Create a gRPC channel
-channel = grpc.insecure_channel('localhost:50051')
-stub = settings_pb2_grpc.SettingsServiceStub(channel)
+channel = grpc.insecure_channel('localhost:50053')
+stub = game_coordinator_pb2_grpc.GameCoordinatorServiceStub(channel)
 
 # Make RPC calls
-request = settings_pb2.GetSettingsRequest()
-response = stub.GetSettings(request)
+request = game_coordinator_pb2.GetGameStateRequest()
+response = stub.GetGameState(request)
 ```
 
 ### In Dockerfiles
@@ -251,7 +234,7 @@ RUN uv sync --frozen
 ## Protobuf Best Practices
 
 ### Message Naming
-- Use PascalCase for messages: `GetSettingsRequest`, `ControllerState`
+- Use PascalCase for messages: `GetGameStateRequest`, `ControllerState`
 - Use snake_case for fields: `controller_count`, `is_ready`
 
 ### Field Numbering
@@ -260,8 +243,8 @@ RUN uv sync --frozen
 - Use field numbers 1-15 for frequently used fields (1 byte encoding)
 
 ### Service Naming
-- Service names match the microservice: `SettingsService`, `MenuService`
-- RPC names use imperative verbs: `GetSettings`, `StartGame`, `UpdateSetting`
+- Service names match the microservice: `GameCoordinatorService`, `MenuService`
+- RPC names use imperative verbs: `GetGameState`, `StartGame`, `ForceEndGame`
 
 ### Streaming RPCs
 - Server streaming for real-time updates (e.g., `StreamGameEvents`, `StreamMenuEvents`)
@@ -313,29 +296,29 @@ Test services using grpcurl (requires reflection enabled):
 
 ```bash
 # List services
-grpcurl -plaintext localhost:50051 list
+grpcurl -plaintext localhost:50053 list
 
 # List methods
-grpcurl -plaintext localhost:50051 list joustmania.SettingsService
+grpcurl -plaintext localhost:50053 list joustmania.GameCoordinatorService
 
 # Call RPC
 grpcurl -plaintext -d '{}' \
-  localhost:50051 \
-  joustmania.SettingsService/GetSettings
+  localhost:50053 \
+  joustmania.GameCoordinatorService/GetGameState
 ```
 
 ### With Python Client
 
 ```python
 import grpc
-from proto import settings_pb2, settings_pb2_grpc
+from proto import game_coordinator_pb2, game_coordinator_pb2_grpc
 
-channel = grpc.insecure_channel('localhost:50051')
-stub = settings_pb2_grpc.SettingsServiceStub(channel)
+channel = grpc.insecure_channel('localhost:50053')
+stub = game_coordinator_pb2_grpc.GameCoordinatorServiceStub(channel)
 
-request = settings_pb2.GetSettingsRequest()
-response = stub.GetSettings(request)
-print(response.settings)
+request = game_coordinator_pb2.GetGameStateRequest()
+response = stub.GetGameState(request)
+print(response.state)
 ```
 
 ## Documentation
@@ -376,7 +359,7 @@ If services can't connect:
 - Verify ports are correct (see port numbers above)
 - Check that services are running: `docker compose ps`
 - Use `docker compose logs <service>` to check for errors
-- Ensure services use correct hostnames (e.g., `settings:50051` not `localhost:50051`)
+- Ensure services use correct hostnames (e.g., `game-coordinator:50053` not `localhost:50053`)
 
 ## Related Documentation
 

@@ -19,7 +19,7 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService, MockSettingsService
+from conftest import EventCollector, MockControllerManagerService
 
 from services.game_coordinator.games.ffa import FFAGame
 
@@ -43,12 +43,10 @@ class TestFFAGameMode:
             death_schedule={},
             max_duration=10.0,
         )
-        mock_settings = MockSettingsService()
         event_collector = EventCollector()
 
         game = FFAGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=event_collector.publish,
             audio_client=None,
             game_id="test_ffa_001",
@@ -98,14 +96,14 @@ class TestFFAGameMode:
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
         # All alive - no winner
-        assert not game._check_win_condition()
+        assert not await game._check_win_condition()
 
         # Kill 3 players, leaving 1
         for serial in ["mock_controller_0", "mock_controller_1", "mock_controller_2"]:
             game.players[serial].alive = False
 
         # Now should have winner
-        assert game._check_win_condition()
+        assert await game._check_win_condition()
 
     @pytest.mark.asyncio
     async def test_win_condition_two_alive(self, ffa_game):
@@ -120,7 +118,7 @@ class TestFFAGameMode:
         game.players["mock_controller_1"].alive = False
 
         # Should NOT have winner yet
-        assert not game._check_win_condition()
+        assert not await game._check_win_condition()
 
     @pytest.mark.asyncio
     async def test_get_alive_count(self, ffa_game):

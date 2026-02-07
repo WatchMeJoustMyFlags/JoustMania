@@ -32,8 +32,8 @@ class TestSoundRegistry:
             # Scan vox directory (use aaron as reference)
             vox_dir = assets_path / "vox" / "aaron"
             if vox_dir.exists():
-                for wav_file in vox_dir.glob("*.wav"):
-                    sound_name = wav_file.stem
+                for ogg_file in vox_dir.glob("*.ogg"):
+                    sound_name = ogg_file.stem
                     if sound_name not in sound_registry:
                         sound_registry[sound_name] = ("vox", base_dir)
                     if sound_name.lower() not in sound_registry:
@@ -42,8 +42,8 @@ class TestSoundRegistry:
             # Scan sounds directory
             sounds_dir = assets_path / "sounds"
             if sounds_dir.exists():
-                for wav_file in sounds_dir.glob("*.wav"):
-                    sound_name = wav_file.stem
+                for ogg_file in sounds_dir.glob("*.ogg"):
+                    sound_name = ogg_file.stem
                     if sound_name not in sound_registry:
                         sound_registry[sound_name] = ("sound", base_dir)
                     if sound_name.lower() not in sound_registry:
@@ -128,7 +128,7 @@ class TestPathResolution:
     def resolve_sound_path(self, sound_input: str, registry: dict, menu_voice: str = "ivy") -> str:
         """Simulate the audio service's _resolve_sound_path method."""
         lookup_name = sound_input
-        if lookup_name.endswith(".wav"):
+        if lookup_name.endswith(".ogg"):
             lookup_name = lookup_name[:-4]
 
         if "/" not in lookup_name and "\\" not in lookup_name:
@@ -136,9 +136,9 @@ class TestPathResolution:
             if registry_entry:
                 sound_type, base_dir = registry_entry
                 if sound_type == "vox":
-                    return f"{base_dir}/vox/{menu_voice}/{lookup_name}.wav"
-                return f"{base_dir}/sounds/{lookup_name}.wav"
-            return f"Joust/vox/{menu_voice}/{lookup_name}.wav"
+                    return f"{base_dir}/vox/{menu_voice}/{lookup_name}.ogg"
+                return f"{base_dir}/sounds/{lookup_name}.ogg"
+            return f"Joust/vox/{menu_voice}/{lookup_name}.ogg"
 
         if "/vox/" in sound_input:
             parts = sound_input.split("/vox/")
@@ -152,26 +152,26 @@ class TestPathResolution:
     def test_vox_sound_uses_voice_directory(self, registry):
         """Verify vox sounds include voice folder in path."""
         path = self.resolve_sound_path("congratulations", registry, menu_voice="ivy")
-        assert path == "Joust/vox/ivy/congratulations.wav"
+        assert path == "Joust/vox/ivy/congratulations.ogg"
 
         path = self.resolve_sound_path("congratulations", registry, menu_voice="aaron")
-        assert path == "Joust/vox/aaron/congratulations.wav"
+        assert path == "Joust/vox/aaron/congratulations.ogg"
 
     def test_sfx_sound_uses_sounds_directory(self, registry):
         """Verify sound effects use sounds folder, not vox."""
         path = self.resolve_sound_path("Explosion34", registry)
-        assert path == "Joust/sounds/Explosion34.wav"
+        assert path == "Joust/sounds/Explosion34.ogg"
         assert "/vox/" not in path
 
     def test_zombie_vox_uses_zombie_directory(self, registry):
         """Verify zombie vox sounds use Zombie base directory."""
         path = self.resolve_sound_path("zombie_victory", registry, menu_voice="ivy")
-        assert path == "Zombie/vox/ivy/zombie_victory.wav"
+        assert path == "Zombie/vox/ivy/zombie_victory.ogg"
 
     def test_menu_vox_uses_menu_directory(self, registry):
         """Verify menu vox sounds use Menu base directory."""
         path = self.resolve_sound_path("menu Joust FFA", registry, menu_voice="ivy")
-        assert path == "Menu/vox/ivy/menu Joust FFA.wav"
+        assert path == "Menu/vox/ivy/menu Joust FFA.ogg"
 
 
 class TestSoundEnumValues:
@@ -187,8 +187,8 @@ class TestSoundEnumValues:
 
             vox_dir = assets_path / "vox" / "aaron"
             if vox_dir.exists():
-                for wav_file in vox_dir.glob("*.wav"):
-                    sound_name = wav_file.stem
+                for ogg_file in vox_dir.glob("*.ogg"):
+                    sound_name = ogg_file.stem
                     if sound_name not in sound_registry:
                         sound_registry[sound_name] = ("vox", base_dir)
                     if sound_name.lower() not in sound_registry:
@@ -196,8 +196,8 @@ class TestSoundEnumValues:
 
             sounds_dir = assets_path / "sounds"
             if sounds_dir.exists():
-                for wav_file in sounds_dir.glob("*.wav"):
-                    sound_name = wav_file.stem
+                for ogg_file in sounds_dir.glob("*.ogg"):
+                    sound_name = ogg_file.stem
                     if sound_name not in sound_registry:
                         sound_registry[sound_name] = ("sound", base_dir)
                     if sound_name.lower() not in sound_registry:
@@ -206,7 +206,7 @@ class TestSoundEnumValues:
         return sound_registry
 
     def test_sfx_beep_points_to_existing_file(self, registry):
-        """SFX_BEEP should point to beep_loud (beep.wav doesn't exist)."""
+        """SFX_BEEP should point to beep_loud (beep.ogg doesn't exist)."""
         assert Sound.SFX_BEEP.value == "beep_loud", "SFX_BEEP should be 'beep_loud'"
         assert "beep_loud" in registry
 
@@ -267,15 +267,15 @@ class TestActualFileExistence:
 
             vox_dir = assets_path / "vox" / "aaron"
             if vox_dir.exists():
-                for wav_file in vox_dir.glob("*.wav"):
-                    sound_name = wav_file.stem
+                for ogg_file in vox_dir.glob("*.ogg"):
+                    sound_name = ogg_file.stem
                     if sound_name not in registry:
                         registry[sound_name] = ("vox", base_dir)
 
             sounds_dir = assets_path / "sounds"
             if sounds_dir.exists():
-                for wav_file in sounds_dir.glob("*.wav"):
-                    sound_name = wav_file.stem
+                for ogg_file in sounds_dir.glob("*.ogg"):
+                    sound_name = ogg_file.stem
                     if sound_name not in registry:
                         registry[sound_name] = ("sound", base_dir)
 
@@ -285,8 +285,8 @@ class TestActualFileExistence:
 
         sound_type, base_dir = entry
         if sound_type == "vox":
-            return ASSETS_DIR / base_dir / "vox" / "ivy" / f"{sound_value}.wav"
-        return ASSETS_DIR / base_dir / "sounds" / f"{sound_value}.wav"
+            return ASSETS_DIR / base_dir / "vox" / "ivy" / f"{sound_value}.ogg"
+        return ASSETS_DIR / base_dir / "sounds" / f"{sound_value}.ogg"
 
     def test_all_sound_enum_files_exist(self):
         """Every Sound enum value should resolve to an existing file."""
@@ -301,17 +301,17 @@ class TestActualFileExistence:
         assert not missing_files, "Missing sound files:\n" + "\n".join(missing_files)
 
     def test_explosion34_file_exists(self):
-        """Explosion34.wav should exist."""
-        path = ASSETS_DIR / "Joust" / "sounds" / "Explosion34.wav"
-        assert path.exists(), f"Explosion34.wav not found at {path}"
+        """Explosion34.ogg should exist."""
+        path = ASSETS_DIR / "Joust" / "sounds" / "Explosion34.ogg"
+        assert path.exists(), f"Explosion34.ogg not found at {path}"
 
     def test_beep_loud_file_exists(self):
-        """beep_loud.wav should exist."""
-        path = ASSETS_DIR / "Joust" / "sounds" / "beep_loud.wav"
-        assert path.exists(), f"beep_loud.wav not found at {path}"
+        """beep_loud.ogg should exist."""
+        path = ASSETS_DIR / "Joust" / "sounds" / "beep_loud.ogg"
+        assert path.exists(), f"beep_loud.ogg not found at {path}"
 
     def test_congratulations_file_exists_for_both_voices(self):
-        """congratulations.wav should exist for both aaron and ivy."""
+        """congratulations.ogg should exist for both aaron and ivy."""
         for voice in ["aaron", "ivy"]:
-            path = ASSETS_DIR / "Joust" / "vox" / voice / "congratulations.wav"
-            assert path.exists(), f"congratulations.wav not found for voice '{voice}' at {path}"
+            path = ASSETS_DIR / "Joust" / "vox" / voice / "congratulations.ogg"
+            assert path.exists(), f"congratulations.ogg not found for voice '{voice}' at {path}"

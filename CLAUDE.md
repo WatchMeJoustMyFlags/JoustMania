@@ -2,7 +2,7 @@
 
 Multiplayer motion-controlled party game system using PS Move controllers.
 
-**Main branch: `dev-refactor`** (not master)
+**Main branch: `main`**
 
 ## Quick Reference
 
@@ -11,6 +11,17 @@ make lint          # Lint code
 make test          # Run integration tests (docker compose)
 make protos        # Regenerate proto files after .proto changes
 ```
+
+## Git LFS
+
+Audio assets under `services/audio/assets/` are tracked with [Git LFS](https://git-lfs.com/).
+Run this once per dev machine after cloning:
+
+```bash
+git lfs install
+```
+
+After that, `git pull` and `git checkout` will automatically fetch LFS objects.
 
 ## Testing
 
@@ -31,7 +42,7 @@ uv run pytest
 **Always create a new worktree for changes.** Never commit directly to the main checkout directory.
 
 ```bash
-git worktree add ../JoustMania-issue-<NUMBER> -b fix/description origin/dev-refactor
+git worktree add ../JoustMania-issue-<NUMBER> -b fix/description origin/main
 cd ../JoustMania-issue-<NUMBER>
 ```
 

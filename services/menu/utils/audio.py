@@ -107,7 +107,7 @@ class AudioHelper:
             # Start lobby music
             response = await stub.PlayMusic(
                 audio_pb2.PlayMusicRequest(
-                    file_pattern="Menu/music/*.wav",
+                    file_pattern="Menu/music/*.ogg",
                     loop=True,
                     tempo=1.0,
                     priority=audio_pb2.AudioPriority.LOW,

@@ -74,7 +74,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         """
         Callback for EventBus to sync game state on lifecycle events.
 
-        Called by EventBus.publish() while holding state lock.
+        Called by EventBus.publish() while holding event lock.
         Updates game_state based on event type.
         """
         if event_type == GameEvent.GAME_STARTED:
@@ -84,7 +84,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             self.game_state = game_coordinator_pb2.GameState.ENDED
             logger.info("Game state transitioned to ENDED")
 
-    def _start_game_from_config(self, config, parent_span) -> tuple[bool, str]:
+    async def _start_game_from_config(self, config, parent_span) -> tuple[bool, str]:
         """
         Start a game from StartGameConfig (internal helper).
 
@@ -128,7 +128,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             metrics.active_players.set(len(self.players))
 
             # Publish game_start event
-            self.event_bus.publish(
+            await self.event_bus.publish(
                 GameEvent.GAME_START,
                 {
                     "game_name": self.game_name,
@@ -197,12 +197,12 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             try:
                 # Check if gRPC clients are available
                 if not self.clients.is_connected:
-                    error_msg = "gRPC clients not initialized - ControllerManager and Settings services must be running"
+                    error_msg = "gRPC clients not initialized - ControllerManager service must be running"
                     logger.error(error_msg)
                     # Thread-safe state transition
                     with self._state_lock:
                         self.game_state = game_coordinator_pb2.GameState.ENDED
-                    self.event_bus.publish("game_error", {"error": error_msg})
+                    await self.event_bus.publish("game_error", {"error": error_msg})
                     # Cleanup any partially initialized channels
                     await self.clients.close()
                     return
@@ -212,7 +212,6 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                     game = GameFactory.create_game(
                         game_name=self.game_name,
                         controller_manager_client=self.clients.controller_manager,
-                        settings_client=self.clients.settings,
                         event_publisher=self.event_bus.publish,
                         audio_client=self.clients.audio,
                         game_id=self.game_id,
@@ -226,7 +225,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                     logger.error(error_msg)
                     with self._state_lock:
                         self.game_state = game_coordinator_pb2.GameState.ENDED
-                    self.event_bus.publish("game_error", {"error": error_msg})
+                    await self.event_bus.publish("game_error", {"error": error_msg})
                     await self.clients.close()
                     return
 
@@ -240,7 +239,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 # Thread-safe state transition
                 with self._state_lock:
                     self.game_state = game_coordinator_pb2.GameState.ENDED
-                self.event_bus.publish("game_error", {"error": str(e)})
+                await self.event_bus.publish("game_error", {"error": str(e)})
             finally:
                 # Thread-safe state cleanup
                 with self._state_lock:
@@ -292,7 +291,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 self.game_state = game_coordinator_pb2.GameState.ENDED
 
             # Publish event
-            self.event_bus.publish(
+            await self.event_bus.publish(
                 "game_force_ended",
                 {"reason": request.reason, "game_id": game_id or "unknown"},
             )
@@ -333,7 +332,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 span.set_attribute("game.start_via_stream", True)
 
                 # Start the game
-                success, result = self._start_game_from_config(config, span)
+                success, result = await self._start_game_from_config(config, span)
 
                 if not success:
                     # Yield error event and close stream

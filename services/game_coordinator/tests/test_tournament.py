@@ -20,7 +20,7 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService, MockSettingsService
+from conftest import EventCollector, MockControllerManagerService, async_noop
 
 from services.game_coordinator.games.tournament import (
     Match,
@@ -49,12 +49,10 @@ class TestTournamentGameMode:
             death_schedule={},
             max_duration=10.0,
         )
-        mock_settings = MockSettingsService()
         event_collector = EventCollector()
 
         game = TournamentGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=event_collector.publish,
             audio_client=None,
             game_id="test_tournament_001",
@@ -124,7 +122,7 @@ class TestTournamentGameMode:
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
         # All players active - no win
-        assert not game._check_win_condition()
+        assert not await game._check_win_condition()
 
     @pytest.mark.asyncio
     async def test_check_win_condition_one_remaining(self, tournament_game):
@@ -139,7 +137,7 @@ class TestTournamentGameMode:
             game.players[serial].tournament_state = TournamentState.ELIMINATED
 
         # Should have winner
-        assert game._check_win_condition()
+        assert await game._check_win_condition()
 
         # Last player should be champion
         last_serial = serials[-1]
@@ -215,12 +213,10 @@ class TestTournamentBracket:
     def tournament_game(self):
         """Create a Tournament game."""
         mock_controller_manager = MockControllerManagerService(num_controllers=8)
-        mock_settings = MockSettingsService()
 
         game = TournamentGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
-            event_publisher=lambda *_args: None,
+            event_publisher=async_noop,
             audio_client=None,
             game_id="test_tournament_bracket",
         )
@@ -306,12 +302,10 @@ class TestTournamentWinCondition:
     def tournament_game(self):
         """Create a Tournament game."""
         mock_controller_manager = MockControllerManagerService(num_controllers=4)
-        mock_settings = MockSettingsService()
         event_collector = EventCollector()
 
         game = TournamentGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=event_collector.publish,
             audio_client=None,
             game_id="test_tournament_win",
@@ -327,7 +321,7 @@ class TestTournamentWinCondition:
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
         # All waiting - no win
-        assert not game._check_win_condition()
+        assert not await game._check_win_condition()
 
     @pytest.mark.asyncio
     async def test_no_win_multiple_non_eliminated(self, tournament_game):
@@ -344,7 +338,7 @@ class TestTournamentWinCondition:
         game.players[serials[3]].tournament_state = TournamentState.WAITING
 
         # Multiple non-eliminated - no win
-        assert not game._check_win_condition()
+        assert not await game._check_win_condition()
 
     @pytest.mark.asyncio
     async def test_champion_receives_event(self, tournament_game):
@@ -360,7 +354,7 @@ class TestTournamentWinCondition:
         for serial in serials[:-1]:
             game.players[serial].tournament_state = TournamentState.ELIMINATED
 
-        game._check_win_condition()
+        await game._check_win_condition()
 
         champion_events = event_collector.get_events_of_type("tournament_champion")
         assert len(champion_events) == 1

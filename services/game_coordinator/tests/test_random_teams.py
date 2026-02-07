@@ -20,7 +20,7 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService, MockSettingsService
+from conftest import EventCollector, MockControllerManagerService
 
 from services.game_coordinator.games.random_teams import RandomTeamsGame
 
@@ -44,12 +44,10 @@ class TestRandomTeamsGameMode:
             death_schedule={},
             max_duration=10.0,
         )
-        mock_settings = MockSettingsService()
         event_collector = EventCollector()
 
         game = RandomTeamsGame(
             controller_manager_client=mock_controller_manager,
-            settings_client=mock_settings,
             event_publisher=event_collector.publish,
             audio_client=None,
             game_id="test_random_teams_001",
@@ -139,7 +137,7 @@ class TestRandomTeamsGameMode:
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
         # Both teams alive initially - no winner
-        assert not game._check_win_condition()
+        assert not await game._check_win_condition()
 
         # Kill all players on team 0
         for _serial, player in game.players.items():
@@ -149,7 +147,7 @@ class TestRandomTeamsGameMode:
         # Now check - if any team 1 players exist, team 1 wins
         alive_teams = game._get_alive_teams()
         if len(alive_teams) == 1:
-            assert game._check_win_condition()
+            assert await game._check_win_condition()
 
     @pytest.mark.asyncio
     async def test_get_alive_teams(self, random_teams_game):
