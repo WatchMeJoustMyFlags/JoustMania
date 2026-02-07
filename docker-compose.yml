@@ -35,6 +35,7 @@ services:
       - "6379"
     networks:
       - joustmania
+    restart: unless-stopped
     healthcheck:
       test: [ "CMD", "redis-cli", "ping" ]
       interval: 2s
@@ -83,7 +84,7 @@ services:
     container_name: joustmania-otel-collector
     command: [ "--config=/etc/otel-collector-config.yaml" ]
     volumes:
-      - ./services/otel-collector/config.yaml:/etc/otel-collector-config.yaml
+      - ./services/otel-collector/config.yaml:/etc/otel-collector-config.yaml:ro
     ports:
       # Only expose Prometheus metrics for external monitoring
       - "8889:8889"   # Prometheus metrics (Jaeger uses 8888)
@@ -200,6 +201,7 @@ services:
     networks:
       - joustmania
     restart: unless-stopped
+    stop_grace_period: 30s
     # Healthcheck defined in Dockerfile (uses grpc_health_probe)
 
   # Menu Service
@@ -478,7 +480,7 @@ services:
   # Envoy - Main entry point (reverse proxy)
   # No dependencies - envoy uses STRICT_DNS and handles unavailable backends with 503
   envoy:
-    image: envoyproxy/envoy:v1.31-latest
+    image: envoyproxy/envoy:v1.31.10
     container_name: joustmania-envoy
     ports:
       - "80:80"  # Main entry point (all services proxied through envoy)
