@@ -1,0 +1,74 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+env:
+  IMAGE_PREFIX: ghcr.io/watchmejoustmyflags/joustmania
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    name: Release Please
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+      sha: ${{ steps.release.outputs.sha }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  tag-images:
+    name: Tag Docker images with release version
+    runs-on: ubuntu-latest
+    needs: [release-please]
+    if: needs.release-please.outputs.release_created == 'true'
+    permissions:
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - controller-manager-service
+          - game-coordinator-service
+          - menu-service
+          - audio-service
+          - connect-proxy
+          - dashboard
+          - grafana-live-publisher
+    steps:
+      - name: Wait for CI images to be available
+        uses: lewagon/wait-on-check-action@v1.3.4
+        with:
+          ref: ${{ github.sha }}
+          check-name: CI Complete
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-interval: 30
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag image with release version
+        env:
+          IMAGE: ${{ env.IMAGE_PREFIX }}/${{ matrix.image }}
+          VERSION: ${{ needs.release-please.outputs.version }}
+        run: |
+          docker buildx imagetools create \
+            --tag "${IMAGE}:${VERSION}" \
+            "${IMAGE}:${GITHUB_SHA}"
