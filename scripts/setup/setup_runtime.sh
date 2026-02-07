@@ -80,9 +80,15 @@ sudo apt-get install -y \
     bluez \
     bluez-tools \
     alsa-utils \
+    git-lfs \
     jq \
     || exit 1
 echo -e "  → ${GREEN}Dependencies installed${NC}"
+
+# Initialize Git LFS (audio assets are stored in LFS)
+echo "  → Initializing Git LFS..."
+git lfs install --skip-repo 2>/dev/null || true
+(cd "$JOUSTMANIA_DIR" && git lfs pull) || echo "  → Could not fetch LFS objects (offline?)"
 
 # Step 3: Configure Bluetooth
 echo "[3/4] Configuring Bluetooth..."
