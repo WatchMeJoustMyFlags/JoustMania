@@ -24,6 +24,10 @@
 # - All images default to ghcr.io/watchmejoustmyflags/joustmania registry
 # - Use IMAGE_TAG to specify version (e.g., IMAGE_TAG=main docker compose up)
 # - Local builds tag images with GHCR names for consistency
+#
+# Resource Limits:
+# - Total memory budget ~3.2GB, designed for 4GB Raspberry Pi (leaving ~800MB for OS)
+# - CPU limits: 1.0 for real-time app services, 0.5 for standard services, 0.25 for lightweight
 
 x-logging: &default-logging
   driver: json-file
@@ -48,6 +52,11 @@ services:
       timeout: 2s
       retries: 3
       start_period: 1s
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: '0.25'
     logging: *default-logging
 
   # flagd for feature flag evaluation
@@ -63,6 +72,11 @@ services:
     networks:
       - joustmania
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: '0.25'
     logging: *default-logging
 
   # Jaeger for distributed tracing UI
@@ -85,6 +99,11 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 384m
+          cpus: '0.5'
     logging: *default-logging
 
   # OpenTelemetry Collector
@@ -111,6 +130,11 @@ services:
     networks:
       - joustmania
     # No healthcheck: distroless image has no shell/wget/curl
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: '0.5'
     logging: *default-logging
 
   # Settings Service
@@ -139,6 +163,11 @@ services:
       - joustmania
     restart: unless-stopped
     # Healthcheck defined in Dockerfile (uses grpc_health_probe)
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: '0.5'
     logging: *default-logging
 
   # Controller Manager Service
@@ -187,6 +216,11 @@ services:
         condition: service_healthy
     restart: unless-stopped
     # Healthcheck defined in Dockerfile (uses grpc_health_probe)
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: '1.0'
     logging: *default-logging
 
   # Game Coordinator Service
@@ -215,6 +249,11 @@ services:
     restart: unless-stopped
     stop_grace_period: 30s
     # Healthcheck defined in Dockerfile (uses grpc_health_probe)
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: '1.0'
     logging: *default-logging
 
   # Menu Service
@@ -243,6 +282,11 @@ services:
       - joustmania
     restart: unless-stopped
     # Healthcheck defined in Dockerfile (uses grpc_health_probe)
+    deploy:
+      resources:
+        limits:
+          memory: 192m
+          cpus: '0.5'
     logging: *default-logging
 
   # Audio Service
@@ -274,6 +318,11 @@ services:
       - joustmania
     restart: unless-stopped
     # Healthcheck defined in Dockerfile (uses grpc_health_probe)
+    deploy:
+      resources:
+        limits:
+          memory: 192m
+          cpus: '0.5'
     logging: *default-logging
 
   # VictoriaMetrics for high-frequency metrics storage (replaces Prometheus for storage)
@@ -295,6 +344,11 @@ services:
     restart: unless-stopped
     # Note: VictoriaMetrics image is scratch-based, no shell/wget for healthcheck
     # Service starts quickly and exposes /health endpoint for manual verification
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: '0.5'
     logging: *default-logging
 
   # Prometheus for metrics collection (Phase 38) - kept for alerting rules
@@ -327,6 +381,11 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 384m
+          cpus: '0.5'
     logging: *default-logging
 
   # Node Exporter for host metrics (CPU, memory, disk, temperature)
@@ -376,6 +435,11 @@ services:
       timeout: 5s
       retries: 3
       start_period: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 64m
+          cpus: '0.25'
     logging: *default-logging
 
   # Grafana for metrics visualization (Phase 38)
@@ -409,6 +473,11 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: '0.5'
     logging: *default-logging
 
   # Loki for log aggregation with 1h retention
@@ -432,6 +501,11 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 192m
+          cpus: '0.5'
     logging: *default-logging
 
   # Grafana Live Publisher - OTLP to Grafana Live WebSocket bridge
@@ -455,6 +529,11 @@ services:
       - joustmania
     restart: unless-stopped
     # Healthcheck defined in Dockerfile
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: '0.25'
     logging: *default-logging
 
   # Connect-Web Proxy (gRPC to Connect protocol translation)
@@ -482,6 +561,11 @@ services:
       timeout: 2s
       retries: 3
       start_period: 1s
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: '0.5'
     logging: *default-logging
 
   # Dashboard (Real-time controller visualization SPA)
@@ -498,6 +582,11 @@ services:
       - joustmania
     restart: unless-stopped
     # Healthcheck defined in Dockerfile
+    deploy:
+      resources:
+        limits:
+          memory: 64m
+          cpus: '0.25'
     logging: *default-logging
 
   # Envoy - Main entry point (reverse proxy)
@@ -514,6 +603,11 @@ services:
     restart: unless-stopped
     # No healthcheck - distroless image has no shell utilities
     # Envoy starts quickly and handles backend unavailability gracefully
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: '0.5'
     logging: *default-logging
 
 networks:
