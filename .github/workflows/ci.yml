@@ -84,6 +84,7 @@ jobs:
       - uses: dorny/paths-filter@v3
         id: changes
         with:
+          base: main
           filters: |
             service:
               - 'services/${{ matrix.service }}/**'
@@ -214,6 +215,7 @@ jobs:
       - uses: dorny/paths-filter@v3
         id: changes
         with:
+          base: main
           filters: |
             pairing:
               - 'scripts/pairing-daemon/**'
@@ -296,6 +298,7 @@ jobs:
       - uses: dorny/paths-filter@v3
         id: filter
         with:
+          base: main
           filters: |
             builder:
               - 'images/builder/**'
