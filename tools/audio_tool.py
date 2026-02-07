@@ -12,7 +12,7 @@ from services.audio.music_player import MusicPlayer
 
 async def main():
     music = MusicPlayer("test")
-    music.load("services/audio/assets/Joust/music/*.wav")
+    music.load("services/audio/assets/Joust/music/*.ogg")
     music.start()
 
     print("Music started. Enter a tempo ratio (0.5-2.0) or 'q' to quit:")

@@ -1193,7 +1193,7 @@ class BaseGameMode(ABC):
             # Start game music
             response = await self.audio_client.PlayMusic(
                 audio_pb2.PlayMusicRequest(
-                    file_pattern="Joust/music/*.wav",
+                    file_pattern="Joust/music/*.ogg",
                     loop=True,
                     tempo=SLOW_MUSIC_SPEED,
                     priority=audio_pb2.AudioPriority.MEDIUM,
