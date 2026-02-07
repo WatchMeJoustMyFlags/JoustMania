@@ -24,7 +24,7 @@ except ImportError as e:
 
 import dbus
 
-from .adapter_manager import AdapterManager, _get_adapter_proxy, get_hci_dict
+from .adapter_manager import AdapterManager
 from .metrics import (
     calibration_duration_seconds,
     pairing_adapter_device_count,
@@ -158,30 +158,26 @@ class USBPairing:
 
             return exit_code == 0
 
-    async def reset_bluetooth_adapter(self) -> None:
-        """Power-cycle Bluetooth adapters via DBus to recognize new pairing.
+    async def restart_bluetooth_service(self) -> None:
+        """Restart the host's BlueZ bluetooth service via D-Bus systemd interface.
 
-        Uses DBus to toggle the adapter power, which works from within Docker
-        (unlike systemctl restart bluetooth). This ensures BlueZ recognizes
-        newly paired controllers.
+        BlueZ only reads device files from /var/lib/bluetooth/ at startup,
+        so a full service restart is needed after writing new pairing data.
+        Adapter power-cycling alone is not sufficient.
         """
         import asyncio
 
-        hci_dict = get_hci_dict()
-        for hci in hci_dict:
-            try:
-                proxy = _get_adapter_proxy(hci)
-                iface = dbus.Interface(proxy, "org.freedesktop.DBus.Properties")
-                powered = iface.Get("org.bluez.Adapter1", "Powered")
-                if powered:
-                    logger.info(f"Power-cycling adapter {hci}...")
-                    iface.Set("org.bluez.Adapter1", "Powered", False)
-                    await asyncio.sleep(1)
-                    iface.Set("org.bluez.Adapter1", "Powered", True)
-                    await asyncio.sleep(1)
-                    logger.info(f"Adapter {hci} power-cycled successfully")
-            except Exception as e:
-                logger.warning(f"Failed to power-cycle adapter {hci}: {e}")
+        logger.info("Restarting bluetooth service via D-Bus...")
+        try:
+            bus = dbus.SystemBus()
+            systemd = bus.get_object("org.freedesktop.systemd1", "/org/freedesktop/systemd1")
+            manager = dbus.Interface(systemd, "org.freedesktop.systemd1.Manager")
+            manager.RestartUnit("bluetooth.service", "replace")
+            # Wait for BlueZ to fully restart and re-read device files
+            await asyncio.sleep(3)
+            logger.info("Bluetooth service restarted successfully")
+        except Exception as e:
+            logger.error(f"Failed to restart bluetooth service: {e}")
 
     async def process_controller(self, move_index: int, serial: str) -> bool:
         """Process a single USB-connected controller with load-balanced adapter selection."""
@@ -227,8 +223,8 @@ class USBPairing:
                 span.set_status(Status(StatusCode.ERROR, "Pairing failed"))
                 return False
 
-            # Power-cycle Bluetooth adapter to recognize new pairing
-            await self.reset_bluetooth_adapter()
+            # Restart BlueZ so it re-reads the new device files
+            await self.restart_bluetooth_service()
 
             # Calibrate
             await self.calibrate_controller(serial)
