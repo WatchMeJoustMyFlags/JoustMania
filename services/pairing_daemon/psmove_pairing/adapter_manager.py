@@ -12,9 +12,18 @@ import dbus
 
 logger = logging.getLogger("psmove-pairing")
 
-BUS = dbus.SystemBus()
 ORG_BLUEZ = "org.bluez"
 ORG_BLUEZ_PATH = "/org/bluez"
+
+_BUS = None
+
+
+def _get_bus():
+    """Lazily connect to the DBus system bus on first use."""
+    global _BUS
+    if _BUS is None:
+        _BUS = dbus.SystemBus()
+    return _BUS
 
 
 @dataclass
@@ -29,7 +38,7 @@ class AdapterInfo:
 
 def _get_root_proxy():
     """Get root Bluez DBus node."""
-    return BUS.get_object(ORG_BLUEZ, ORG_BLUEZ_PATH)
+    return _get_bus().get_object(ORG_BLUEZ, ORG_BLUEZ_PATH)
 
 
 def _get_adapter_proxy(hci: str):
@@ -37,7 +46,7 @@ def _get_adapter_proxy(hci: str):
     import os
 
     hci_path = os.path.join(ORG_BLUEZ_PATH, hci)
-    return BUS.get_object(ORG_BLUEZ, hci_path)
+    return _get_bus().get_object(ORG_BLUEZ, hci_path)
 
 
 def _introspect_tree(proxy):
@@ -108,7 +117,7 @@ def get_attached_addresses(hci: str) -> list[str]:
                 import os
 
                 device_path = os.path.join(ORG_BLUEZ_PATH, hci, dev)
-                dev_proxy = BUS.get_object(ORG_BLUEZ, device_path)
+                dev_proxy = _get_bus().get_object(ORG_BLUEZ, device_path)
                 iface = dbus.Interface(dev_proxy, "org.freedesktop.DBus.Properties")
                 dev_addr = str(iface.Get("org.bluez.Device1", "Address"))
                 known_devices.append(dev_addr)
@@ -152,12 +161,11 @@ class AdapterManager:
         """Get the address of the adapter with the fewest paired devices.
 
         This matches the original JoustMania's get_lowest_bt_device() method.
+        Call refresh_adapters() first to ensure data is current.
 
         Returns:
             Bluetooth address of the least-loaded adapter, or empty string if none
         """
-        self.refresh_adapters()
-
         if not self._bt_devices:
             logger.warning("No Bluetooth adapters found")
             return ""
@@ -176,11 +184,11 @@ class AdapterManager:
     def select_least_loaded_adapter(self) -> AdapterInfo | None:
         """Select the adapter with the fewest paired devices.
 
+        Call refresh_adapters() first to ensure data is current.
+
         Returns:
             AdapterInfo for the least-loaded adapter, or None if no adapters
         """
-        self.refresh_adapters()
-
         if not self._bt_devices:
             logger.warning("No Bluetooth adapters found")
             return None

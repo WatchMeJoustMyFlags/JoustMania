@@ -19,16 +19,16 @@ echo "=========================================="
 cd "$HOMEDIR"
 
 # Remove conflicting software
-echo "[1/8] Removing conflicting software..."
+echo "[1/9] Removing conflicting software..."
 sudo apt-get remove realvnc-vnc-server -y
 
 # Update system
-echo "[2/8] Updating system packages..."
+echo "[2/9] Updating system packages..."
 sudo apt-get update -y || exit 1
 sudo apt-get upgrade -y || exit 1
 
 # Install core dependencies
-echo "[3/8] Installing system dependencies..."
+echo "[3/9] Installing system dependencies..."
 sudo apt-get install -y  \
     python3 python3-dev python3-pip \
     python3-pkg-resources python3-setuptools libdpkg-perl \
@@ -43,7 +43,7 @@ sudo apt-get install -y  \
     python3-pyaudio python3-psutil jq || exit 1
 
 # Install Docker
-echo "[4/8] Installing Docker..."
+echo "[4/9] Installing Docker..."
 if ! command -v docker &> /dev/null; then
     curl -fsSL https://get.docker.com -o get-docker.sh
     sudo sh get-docker.sh
@@ -57,7 +57,7 @@ else
 fi
 
 # Install Python virtual environment tools
-echo "[5/8] Installing Python development tools..."
+echo "[5/9] Installing Python development tools..."
 sudo apt-get install -y python3-dev python3-virtualenv libasound2-dev libasound2 python3-scipy cmake || exit 1
 
 # Create virtual environment
@@ -71,7 +71,7 @@ fi
 PYTHON="$VENV/bin/python3"
 
 # Install uv for dependency management
-echo "[6/8] Installing uv package manager..."
+echo "[6/9] Installing uv package manager..."
 if ! command -v uv &> /dev/null; then
     curl -LsSf https://astral.sh/uv/install.sh | sh
     export PATH="$HOME/.local/bin:$PATH"
@@ -123,14 +123,8 @@ fi
 echo "  → Configuring Bluetooth input.conf..."
 sudo sed -i '/^#\?ClassicBondedOnly=\(true\|false\)$/s/.*/ClassicBondedOnly=false/' '/etc/bluetooth/input.conf' || exit 1
 
-# Install PS Move pairing daemon
-echo "[9/9] Installing PS Move pairing daemon..."
-if [[ -f "$HOMEDIR/JoustMania/scripts/pairing-daemon/install.sh" ]]; then
-    sudo bash "$HOMEDIR/JoustMania/scripts/pairing-daemon/install.sh"
-    echo "  → Pairing daemon installed"
-else
-    echo "  → Pairing daemon script not found, skipping"
-fi
+# Pairing daemon now runs as a Docker container (docker compose up pairing-daemon)
+echo "[9/9] Pairing daemon runs via Docker Compose (no host install needed)"
 
 # Fix permissions
 echo "Fixing JoustMania directory permissions..."
@@ -157,5 +151,5 @@ echo "=========================================="
 echo "Host system setup complete!"
 echo "=========================================="
 echo ""
-echo "Next step: Run scripts/setup/install_psmoveapi.sh to install PS Move API"
+echo "Next step: Run 'docker compose up -d' to start JoustMania"
 echo ""

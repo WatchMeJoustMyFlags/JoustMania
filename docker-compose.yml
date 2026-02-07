@@ -125,8 +125,6 @@ services:
     ports:
       # Only expose Prometheus metrics for external monitoring
       - "8889:8889"   # Prometheus metrics (Jaeger uses 8888)
-      # OTLP port exposed for host services (e.g., psmove-pairing daemon)
-      - "4317:4317"   # OTLP gRPC receiver
     depends_on:
       jaeger:
         condition: service_healthy
@@ -165,8 +163,8 @@ services:
       - /var/run/dbus:/var/run/dbus:ro
       # Bluetooth device info (read-only, pairing handled by host daemon)
       - /var/lib/bluetooth:/var/lib/bluetooth:ro
-      # PS Move calibration data (created by host pairing daemon)
-      - ${HOME}/.psmoveapi:/root/.psmoveapi:ro
+      # PS Move calibration data (shared with pairing daemon)
+      - psmoveapi-data:/root/.psmoveapi:ro
       # Mount devtmpfs with rslave for hot-plug device visibility
       - /dev:/dev:rslave
       # Persist controller names across restarts
@@ -199,6 +197,42 @@ services:
           memory: 256m
           cpus: '1.0'
     logging: *default-logging
+
+  # Pairing Daemon - USB controller pairing and Bluetooth monitoring
+  pairing-daemon:
+    image: ghcr.io/watchmejoustmyflags/joustmania/pairing-daemon-service:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: services/pairing_daemon/Dockerfile
+      args:
+        BUILDER_IMAGE: ${BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/builder:latest}
+        PSMOVE_BUILDER_IMAGE: ${PSMOVE_BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/psmove-builder:latest}
+    container_name: joustmania-pairing-daemon
+    privileged: true
+    pid: "host"
+    volumes:
+      # D-Bus socket for BlueZ communication (RW for adapter power-cycle)
+      - /var/run/dbus:/var/run/dbus
+      # Bluetooth device info (RW for pairing)
+      - /var/lib/bluetooth:/var/lib/bluetooth
+      # USB device access
+      - /dev:/dev:rslave
+      # PS Move calibration data (shared with controller-manager)
+      - psmoveapi-data:/root/.psmoveapi
+    networks:
+      - joustmania
+    expose:
+      - "8002"  # Prometheus metrics + healthz
+    environment:
+      - POLL_INTERVAL=10
+      - BT_MONITOR_INTERVAL=5
+      - METRICS_PORT=8002
+      - PSMOVE_PATH=/usr/local/bin/psmove
+      - DBUS_SYSTEM_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket
+      - OTEL_SERVICE_NAME=psmove-pairing
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+    restart: unless-stopped
+    # Healthcheck defined in Dockerfile (uses HTTP /healthz)
 
   # Game Coordinator Service
   game-coordinator:
@@ -365,8 +399,6 @@ services:
       - ./services/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./services/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus-data:/prometheus
-    extra_hosts:
-      - "host.docker.internal:host-gateway"  # Access host services (e.g., psmove-pairing daemon)
     networks:
       - joustmania
     restart: unless-stopped
@@ -616,3 +648,4 @@ volumes:
   grafana-data:
   loki-data:
   controller-names:
+  psmoveapi-data:

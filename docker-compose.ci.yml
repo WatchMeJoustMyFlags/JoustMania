@@ -40,6 +40,11 @@ services:
       OTEL_SERVICE_NAME: game-coordinator-service
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
 
+  # Pairing Daemon - Requires hardware, excluded from CI
+  pairing-daemon:
+    profiles:
+      - hardware  # Only starts when 'hardware' profile is active
+
   # Connect-proxy - Not required for integration tests
   connect-proxy:
     profiles:

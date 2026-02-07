@@ -11,6 +11,7 @@ members = [
     "joustmania-integration-tests",
     "joustmania-lib",
     "joustmania-menu",
+    "joustmania-pairing-daemon",
     "joustmania-proto",
 ]
 
@@ -613,6 +614,38 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.23.0" },
     { name = "pytest-cov", marker = "extra == 'test'", specifier = ">=4.1.0" },
     { name = "pyyaml", specifier = ">=6.0" },
+]
+provides-extras = ["test"]
+
+[[package]]
+name = "joustmania-pairing-daemon"
+version = "1.0.0"
+source = { editable = "services/pairing_daemon" }
+dependencies = [
+    { name = "dbus-python", marker = "sys_platform == 'linux'" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-exporter-otlp-proto-grpc" },
+    { name = "opentelemetry-sdk" },
+    { name = "prometheus-client" },
+]
+
+[package.optional-dependencies]
+test = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dbus-python", marker = "sys_platform == 'linux'", specifier = ">=1.2.0" },
+    { name = "opentelemetry-api", specifier = ">=1.20.0" },
+    { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.20.0" },
+    { name = "opentelemetry-sdk", specifier = ">=1.20.0" },
+    { name = "prometheus-client", specifier = ">=0.17.0" },
+    { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.23.0" },
+    { name = "pytest-cov", marker = "extra == 'test'", specifier = ">=4.1.0" },
 ]
 provides-extras = ["test"]
 

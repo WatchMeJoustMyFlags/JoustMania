@@ -11,7 +11,7 @@ from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
 # Import config first to set up psmoveapi path
-from .config import DEBUG, POLL_INTERVAL, PSMOVE_USB_IDS
+from .config import DEBUG, POLL_INTERVAL
 
 # Now import psmove (path was set up by config)
 try:
@@ -21,6 +21,8 @@ except ImportError as e:
         "psmove module not found. Ensure PSMOVEAPI_BUILD_PATH is set correctly "
         "and psmoveapi is built with Python bindings."
     ) from e
+
+import dbus
 
 from .adapter_manager import AdapterManager
 from .metrics import (
@@ -56,15 +58,6 @@ class USBPairing:
         self.poll_count = 0
         self.adapter_manager = AdapterManager()
 
-    async def check_usb_controllers(self) -> bool:
-        """Check if any PS Move controller is connected via USB."""
-        exit_code, output = await run_command(["lsusb"])
-        if exit_code != 0:
-            logger.debug("lsusb failed")
-            return False
-
-        return any(usb_id in output.lower() for usb_id in PSMOVE_USB_IDS)
-
     def get_usb_controllers_psmove(self) -> list[tuple[int, str]]:
         """Get list of USB-connected controllers using psmove library.
 
@@ -90,11 +83,17 @@ class USBPairing:
         pairing_usb_controllers.set(len(usb_controllers))
         return usb_controllers
 
-    def pair_controller_psmove(self, move_index: int, serial: str, adapter_address: str) -> bool:
+    async def pair_controller_psmove(self, move_index: int, serial: str, adapter_address: str) -> bool:
         """Pair a controller using psmove Python library's pair_custom().
 
-        This directly specifies the target adapter, matching the original
-        JoustMania's approach which is more reliable than environment variables.
+        For ZCM2 (PS4-era) controllers, pair_custom() blocks indefinitely in
+        its internal PIN agent (which can't work in Docker because systemctl
+        fails). Since the C code holds the GIL, threading timeouts don't work.
+
+        We run pair_custom() in a subprocess with a timeout. The controller's
+        BT address and BlueZ device files are written before the PIN agent
+        starts, so killing the subprocess after timeout is safe. Our own
+        bluetoothctl agent handles PIN after BlueZ is restarted.
 
         Args:
             move_index: Controller index from psmove.count_connected()
@@ -102,8 +101,10 @@ class USBPairing:
             adapter_address: Target Bluetooth adapter address
 
         Returns:
-            True if pairing succeeded
+            True if pairing succeeded (or timed out after address was written)
         """
+        import asyncio
+
         logger.info(f"Pairing controller {serial} to adapter {adapter_address}...")
 
         with self.tracer.start_as_current_span("pair_controller") as span:
@@ -117,9 +118,38 @@ class USBPairing:
                     logger.warning(f"Controller {serial} not connected via USB")
                     span.set_status(Status(StatusCode.ERROR, "Not USB connected"))
                     return False
+                # Release the PSMove handle before subprocess uses it
+                del move
 
-                # Use pair_custom with the target adapter address
-                result = move.pair_custom(adapter_address)
+                # Run pair_custom in a subprocess to avoid GIL blocking
+                script = (
+                    "import psmove; "
+                    f"m = psmove.PSMove({move_index}); "
+                    f"r = m.pair_custom('{adapter_address}'); "
+                    "print('OK' if r else 'FAIL')"
+                )
+                proc = await asyncio.create_subprocess_exec(
+                    "python",
+                    "-c",
+                    script,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+
+                try:
+                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+                    output = stdout.decode().strip()
+                    result = output == "OK"
+                except TimeoutError:
+                    logger.info(
+                        f"pair_custom() timed out for {serial} (ZCM2 PIN agent blocking) "
+                        "- address written, will handle PIN via bluetoothctl agent"
+                    )
+                    proc.kill()
+                    await proc.wait()
+                    # Timeout is expected for ZCM2 — address was already written
+                    result = True
+
                 duration = time.time() - start_time
                 pairing_duration_seconds.observe(duration)
 
@@ -165,21 +195,26 @@ class USBPairing:
 
             return exit_code == 0
 
-    async def restart_bluetooth(self) -> None:
-        """Restart Bluetooth service to recognize new pairing.
+    async def restart_bluetooth_service(self) -> None:
+        """Restart the host's BlueZ bluetooth service via D-Bus systemd interface.
 
-        The original JoustMania does this after each pairing to ensure
-        BlueZ recognizes the newly paired controller.
+        BlueZ only reads device files from /var/lib/bluetooth/ at startup,
+        so a full service restart is needed after writing new pairing data.
+        Adapter power-cycling alone is not sufficient.
         """
-        logger.info("Restarting Bluetooth service...")
-        exit_code, output = await run_command(["sudo", "systemctl", "restart", "bluetooth"])
-        if exit_code != 0:
-            logger.warning(f"Failed to restart bluetooth: {output}")
-        else:
-            # Give BlueZ time to reinitialize
-            import asyncio
+        import asyncio
 
-            await asyncio.sleep(2)
+        logger.info("Restarting bluetooth service via D-Bus...")
+        try:
+            bus = dbus.SystemBus()
+            systemd = bus.get_object("org.freedesktop.systemd1", "/org/freedesktop/systemd1")
+            manager = dbus.Interface(systemd, "org.freedesktop.systemd1.Manager")
+            manager.RestartUnit("bluetooth.service", "replace")
+            # Wait for BlueZ to fully restart and re-read device files
+            await asyncio.sleep(3)
+            logger.info("Bluetooth service restarted successfully")
+        except Exception as e:
+            logger.error(f"Failed to restart bluetooth service: {e}")
 
     async def process_controller(self, move_index: int, serial: str) -> bool:
         """Process a single USB-connected controller with load-balanced adapter selection."""
@@ -200,37 +235,33 @@ class USBPairing:
             pairing_attempts_total.inc()
 
             # Select least-loaded adapter for load balancing
-            adapter_address = self.adapter_manager.get_lowest_bt_device()
+            adapter = self.adapter_manager.select_least_loaded_adapter()
 
-            if not adapter_address:
+            if not adapter:
                 logger.error("No Bluetooth adapters available for pairing")
                 pairing_failed_total.inc()
                 span.set_status(Status(StatusCode.ERROR, "No adapters available"))
                 return False
 
-            # Get adapter info for logging
-            adapter = self.adapter_manager.select_least_loaded_adapter()
-            if adapter:
-                logger.info(
-                    f"Load balancing: selected adapter {adapter.address} "
-                    f"({adapter.hci}) with {adapter.device_count} existing devices"
-                )
-                span.set_attribute(_ATTR_ADAPTER_ADDRESS, adapter.address)
-                span.set_attribute("adapter.device_count", adapter.device_count)
-                span.set_attribute("adapter.hci", adapter.hci)
-                # Record metrics
-                pairing_adapter_selected_total.labels(adapter=adapter.address).inc()
-                pairing_adapter_device_count.labels(adapter=adapter.address).set(adapter.device_count)
+            logger.info(
+                f"Load balancing: selected adapter {adapter.address} "
+                f"({adapter.hci}) with {adapter.device_count} existing devices"
+            )
+            span.set_attribute(_ATTR_ADAPTER_ADDRESS, adapter.address)
+            span.set_attribute("adapter.device_count", adapter.device_count)
+            span.set_attribute("adapter.hci", adapter.hci)
+            pairing_adapter_selected_total.labels(adapter=adapter.address).inc()
+            pairing_adapter_device_count.labels(adapter=adapter.address).set(adapter.device_count)
 
             # Pair controller to selected adapter using Python bindings
-            if not self.pair_controller_psmove(move_index, serial, adapter_address):
+            if not await self.pair_controller_psmove(move_index, serial, adapter.address):
                 logger.error(f"PAIRING FAILED: Controller {serial} could not be paired")
                 pairing_failed_total.inc()
                 span.set_status(Status(StatusCode.ERROR, "Pairing failed"))
                 return False
 
-            # Restart Bluetooth to recognize new pairing (like original JoustMania)
-            await self.restart_bluetooth()
+            # Restart BlueZ so it re-reads the new device files
+            await self.restart_bluetooth_service()
 
             # Calibrate
             await self.calibrate_controller(serial)
@@ -238,7 +269,7 @@ class USBPairing:
             # Success message
             logger.info(
                 f"PAIRING SUCCESS: Controller {serial} paired to adapter "
-                f"{adapter_address} - unplug USB and press PS button"
+                f"{adapter.address} - unplug USB and press PS button"
             )
 
             pairing_success_total.inc()
@@ -254,22 +285,12 @@ class USBPairing:
         with self.tracer.start_as_current_span("poll_cycle") as span:
             span.set_attribute("poll.count", self.poll_count)
 
-            # Quick USB check first
-            if not await self.check_usb_controllers():
-                logger.debug("No USB PS Move detected, skipping")
-                pairing_usb_controllers.set(0)
-                span.set_attribute("usb_detected", False)
-                return
-
-            logger.debug("USB PS Move detected, checking with psmove...")
-            span.set_attribute("usb_detected", True)
-
             # Get USB controllers using psmove library
             controllers = self.get_usb_controllers_psmove()
             span.set_attribute("controllers.count", len(controllers))
 
             if not controllers:
-                logger.debug("No USB controllers found via psmove")
+                logger.debug("No USB controllers found")
                 return
 
             # Process each controller

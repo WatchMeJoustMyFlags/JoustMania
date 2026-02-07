@@ -8,6 +8,7 @@ import time
 from opentelemetry import trace
 
 from .bluetooth_monitor import BluetoothMonitor
+from .bluez_agent import register_pairing_agent
 from .config import BT_MONITOR_INTERVAL, DEBUG, METRICS_PORT, POLL_INTERVAL
 from .usb_pairing import USBPairing
 from .utils import run_command
@@ -147,6 +148,9 @@ class PairingDaemon:
         # Validate prerequisites
         if not await self.validate_prerequisites():
             logger.warning("Some prerequisites failed - daemon may not work correctly")
+
+        # Register BlueZ pairing agent for ZCM2 (PS4-era) controllers
+        await register_pairing_agent()
 
         # Run both loops concurrently
         await asyncio.gather(

@@ -29,6 +29,7 @@ members = [
     "services/game_coordinator",
     "services/menu",
     "services/audio",
+    "services/pairing_daemon",
     "tests/integration",
 ]
 
