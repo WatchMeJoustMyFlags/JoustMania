@@ -26,8 +26,6 @@ GameCoordinator now has **full distributed tracing** with OpenTelemetry, trackin
 StartGame (incoming RPC to GameCoordinator)
 ├── Free-For-All (game session)
 │   ├── initialization_phase
-│   │   ├── GetSettings → Settings service (outgoing RPC)
-│   │   │   └── settings.validate_and_get
 │   │   └── GetReadyControllers → ControllerManager (outgoing RPC)
 │   │       └── controller_manager.get_ready_controllers
 │   ├── countdown_phase
@@ -51,7 +49,6 @@ StartGame (incoming RPC to GameCoordinator)
 StartGame (incoming RPC to GameCoordinator)
 ├── Teams (or "Random Teams") (game session)
 │   ├── initialization_phase
-│   │   ├── GetSettings → Settings service
 │   │   └── GetReadyControllers → ControllerManager
 │   ├── team_formation_phase (Random Teams only)
 │   │   └── display_team_colors (event)
@@ -79,7 +76,6 @@ StartGame (incoming RPC to GameCoordinator)
 StartGame (incoming RPC to GameCoordinator)
 ├── Nonstop Joust (game session)
 │   ├── initialization_phase
-│   │   ├── GetSettings → Settings service
 │   │   └── GetReadyControllers → ControllerManager
 │   ├── countdown_phase
 │   ├── gameplay_phase
@@ -150,7 +146,6 @@ async def run(self, game_context=None):
     with tracer.start_as_current_span(span_name, context=game_context) as game_span:
         # initialization_phase span
         with tracer.start_as_current_span("initialization_phase", ...):
-            await self._load_settings()  # GetSettings RPC automatically traced
             await self._initialize_players()  # GetReadyControllers RPC automatically traced
             self._create_player_spans(game_context)
 
@@ -239,7 +234,7 @@ You should see:
 - **Root span**: `StartGame` (incoming RPC to GameCoordinator)
 - **Game session span**: Human-readable name (`Free-For-All`, `Teams`, `Random Teams`, `Nonstop Joust`)
 - **Phase spans**: Consistent across all modes
-  - `initialization_phase` (contains Settings and ControllerManager RPCs)
+  - `initialization_phase` (contains ControllerManager RPCs)
   - `team_formation_phase` (Random Teams only)
   - `countdown_phase`
   - `gameplay_phase` (contains player/team lifecycle spans)
@@ -248,7 +243,6 @@ You should see:
   - FFA/Nonstop: `player_{serial}_lifecycle` (flat hierarchy)
   - Teams/Random Teams: `team_{number}_lifecycle` → `player_{serial}_lifecycle` (hierarchical)
 - **RPC spans** (automatic from instrumentation):
-  - `GetSettings` (outgoing to Settings service)
   - `GetReadyControllers` (outgoing to ControllerManager)
   - `StreamGameplayData` (streaming from ControllerManager)
 
@@ -257,12 +251,11 @@ You should see:
 ### Latency Metrics
 
 **Cross-Service Latency:**
-- Time from `initialization_phase` to `GetSettings` response
 - Time from `initialization_phase` to `GetReadyControllers` response
 - Time from `gameplay_phase` to first `StreamGameplayData` frame
 
 **Game Phase Latency:**
-- `initialization_phase` duration (settings + player setup)
+- `initialization_phase` duration (player setup)
 - `team_formation_phase` duration (Random Teams: ~3 seconds)
 - `countdown_phase` duration (typically 3 seconds)
 - `gameplay_phase` duration (entire game, varies by mode)
@@ -282,7 +275,6 @@ You should see:
 ### Error Tracking
 
 **Service Errors:**
-- Settings service unavailable
 - ControllerManager service unavailable
 - gRPC call failures
 
@@ -390,11 +382,7 @@ provider = TracerProvider(
 
 ### GameCoordinator Makes Client Calls To:
 
-1. **Settings Service** (localhost:50051)
-   - `GetSettings` - Load game configuration
-   - Called once per game in `_load_settings()`
-
-2. **ControllerManager Service** (localhost:50052)
+1. **ControllerManager Service** (localhost:50052)
    - `GetReadyControllers` - Get available controllers
    - `StreamGameplayData` - Stream controller states at 60Hz
    - Called in `_initialize_players()` and `_game_loop()`
@@ -417,12 +405,12 @@ provider = TracerProvider(
 ### Also Have Client Instrumentation:
 
 **WebUI** (`services/webui/server.py`)
-- Calls: Settings, ControllerManager, Menu, Supervisor, GameCoordinator
+- Calls: ControllerManager, Menu, Supervisor, GameCoordinator
 - Instrumented with: `GrpcInstrumentorClient()`
 
 ### Server-Only Instrumentation:
 
-**Settings, ControllerManager, Menu, Supervisor, Audio**
+**ControllerManager, Menu, Supervisor, Audio**
 - Only receive requests, don't make gRPC client calls
 - Instrumented with: `GrpcInstrumentorServer()` only
 
