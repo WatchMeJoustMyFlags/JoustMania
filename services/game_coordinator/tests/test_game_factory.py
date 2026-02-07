@@ -37,12 +37,6 @@ class MockControllerManagerClient:
     pass
 
 
-class MockSettingsClient:
-    """Mock settings client."""
-
-    pass
-
-
 class MockAudioClient:
     """Mock audio client."""
 
@@ -57,7 +51,6 @@ class TestGameFactoryCreateGame:
         game = GameFactory.create_game(
             game_name="FFA",
             controller_manager_client=MockControllerManagerClient(),
-            settings_client=MockSettingsClient(),
             event_publisher=async_noop,
             audio_client=MockAudioClient(),
             game_id="test_001",
@@ -71,7 +64,6 @@ class TestGameFactoryCreateGame:
         game = GameFactory.create_game(
             game_name="Tournament",
             controller_manager_client=MockControllerManagerClient(),
-            settings_client=MockSettingsClient(),
             event_publisher=async_noop,
             audio_client=MockAudioClient(),
             game_id="test_002",
@@ -85,7 +77,6 @@ class TestGameFactoryCreateGame:
         game = GameFactory.create_game(
             game_name="Zombies",
             controller_manager_client=MockControllerManagerClient(),
-            settings_client=MockSettingsClient(),
             event_publisher=async_noop,
             audio_client=MockAudioClient(),
             game_id="test_003",
@@ -99,7 +90,6 @@ class TestGameFactoryCreateGame:
         game = GameFactory.create_game(
             game_name="Swapper",
             controller_manager_client=MockControllerManagerClient(),
-            settings_client=MockSettingsClient(),
             event_publisher=async_noop,
             audio_client=MockAudioClient(),
             game_id="test_004",
@@ -113,7 +103,6 @@ class TestGameFactoryCreateGame:
         game = GameFactory.create_game(
             game_name="FightClub",
             controller_manager_client=MockControllerManagerClient(),
-            settings_client=MockSettingsClient(),
             event_publisher=async_noop,
             audio_client=MockAudioClient(),
             game_id="test_005",
@@ -127,7 +116,6 @@ class TestGameFactoryCreateGame:
         game = GameFactory.create_game(
             game_name="Traitor",
             controller_manager_client=MockControllerManagerClient(),
-            settings_client=MockSettingsClient(),
             event_publisher=async_noop,
             audio_client=MockAudioClient(),
             game_id="test_006",
@@ -141,7 +129,6 @@ class TestGameFactoryCreateGame:
         game = GameFactory.create_game(
             game_name="Werewolf",
             controller_manager_client=MockControllerManagerClient(),
-            settings_client=MockSettingsClient(),
             event_publisher=async_noop,
             audio_client=MockAudioClient(),
             game_id="test_007",
@@ -165,7 +152,6 @@ class TestGameFactoryTeamGames:
         game = GameFactory.create_game(
             game_name="JoustTeams",
             controller_manager_client=MockControllerManagerClient(),
-            settings_client=MockSettingsClient(),
             event_publisher=async_noop,
             audio_client=MockAudioClient(),
             game_id="test_teams_001",
@@ -187,7 +173,6 @@ class TestGameFactoryTeamGames:
         game = GameFactory.create_game(
             game_name="JoustTeams",
             controller_manager_client=MockControllerManagerClient(),
-            settings_client=MockSettingsClient(),
             event_publisher=async_noop,
             audio_client=MockAudioClient(),
             game_id="test_teams_002",
@@ -211,7 +196,6 @@ class TestGameFactoryTeamGames:
         game = GameFactory.create_game(
             game_name="JoustRandomTeams",
             controller_manager_client=MockControllerManagerClient(),
-            settings_client=MockSettingsClient(),
             event_publisher=async_noop,
             audio_client=MockAudioClient(),
             game_id="test_random_teams",
@@ -231,7 +215,6 @@ class TestGameFactoryCaseInsensitive:
         game = GameFactory.create_game(
             game_name="ffa",
             controller_manager_client=MockControllerManagerClient(),
-            settings_client=MockSettingsClient(),
             event_publisher=async_noop,
             audio_client=MockAudioClient(),
             game_id="test_lower",
@@ -245,7 +228,6 @@ class TestGameFactoryCaseInsensitive:
         game = GameFactory.create_game(
             game_name="TOURNAMENT",
             controller_manager_client=MockControllerManagerClient(),
-            settings_client=MockSettingsClient(),
             event_publisher=async_noop,
             audio_client=MockAudioClient(),
             game_id="test_upper",
@@ -259,7 +241,6 @@ class TestGameFactoryCaseInsensitive:
         game = GameFactory.create_game(
             game_name="ZoMbIeS",
             controller_manager_client=MockControllerManagerClient(),
-            settings_client=MockSettingsClient(),
             event_publisher=async_noop,
             audio_client=MockAudioClient(),
             game_id="test_mixed",
@@ -278,7 +259,6 @@ class TestGameFactoryErrors:
             GameFactory.create_game(
                 game_name="NonexistentMode",
                 controller_manager_client=MockControllerManagerClient(),
-                settings_client=MockSettingsClient(),
                 event_publisher=async_noop,
                 audio_client=MockAudioClient(),
                 game_id="test_error",
@@ -291,7 +271,6 @@ class TestGameFactoryErrors:
             GameFactory.create_game(
                 game_name="",
                 controller_manager_client=MockControllerManagerClient(),
-                settings_client=MockSettingsClient(),
                 event_publisher=async_noop,
                 audio_client=MockAudioClient(),
                 game_id="test_empty",

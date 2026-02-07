@@ -8,7 +8,8 @@ JoustMania uses [OpenFeature](https://openfeature.dev/) with [flagd](https://fla
 - **Event-driven updates** - Changes propagate instantly via gRPC streams (no polling)
 - **Type-safe evaluation** - Flags are strongly typed (boolean, string, integer)
 - **Observable** - Metrics and logging for flag evaluations and changes
-- **Developer-friendly** - Edit `services/flagd/flags.json` and see changes in <100ms
+- **Domain-scoped** - Three flag files with `flagSetId` metadata for isolation
+- **Developer-friendly** - Edit flag files in `services/flagd/` and see changes in <100ms
 
 ## Architecture
 
@@ -16,8 +17,10 @@ JoustMania uses [OpenFeature](https://openfeature.dev/) with [flagd](https://fla
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  services/flagd/flags.json                              │
-│  - JSON file with flag definitions                      │
+│  Flag Files (services/flagd/)                           │
+│  - performance.json    (flagSetId: "performance")       │
+│  - game_settings.json  (flagSetId: "game_settings")     │
+│  - user_preferences.json (flagSetId: "user_preferences")│
 │  - Watched by flagd via inotify (Linux) or polling      │
 └──────────────────┬──────────────────────────────────────┘
                    │
@@ -26,29 +29,32 @@ JoustMania uses [OpenFeature](https://openfeature.dev/) with [flagd](https://fla
 ┌─────────────────────────────────────────────────────────┐
 │  flagd service (port 8015)                              │
 │  - gRPC server implementing OpenFeature Flagd Protocol  │
-│  - Maintains active SyncFlags() streams to clients      │
-│  - Pushes flag updates when file changes                │
+│  - Loads all 3 flag files via --uri arguments            │
+│  - Uses flagSetId metadata for domain scoping           │
+│  - Pushes flag updates when any file changes            │
 └──────────────────┬──────────────────────────────────────┘
                    │
                    │ gRPC bidirectional stream
                    │ SyncFlags() RPC
                    ▼
 ┌─────────────────────────────────────────────────────────┐
-│  OpenFeature flagd Provider (in game-coordinator)       │
+│  OpenFeature Domain-Scoped Providers                    │
+│  - "performance" domain (game-coordinator)              │
+│  - "game_settings" domain (menu)                        │
+│  - "user_preferences" domain (menu, audio)              │
+│  - Each provider uses selector="flagSetId=<id>"         │
 │  - Connects to flagd via IN_PROCESS resolver            │
-│  - Receives flag updates via gRPC stream                │
 │  - Emits PROVIDER_CONFIGURATION_CHANGED event           │
 └──────────────────┬──────────────────────────────────────┘
                    │
-                   │ Event callback
-                   │ PROVIDER_CONFIGURATION_CHANGED
+                   │ Event callback / Direct reads
                    ▼
 ┌─────────────────────────────────────────────────────────┐
-│  RuntimeConfigManager (services/game_coordinator/)      │
-│  - Registers event handler on startup                   │
-│  - Re-evaluates flags when event fires                  │
-│  - Updates internal config cache                        │
-│  - Logs changes and increments metrics                  │
+│  Service Consumers                                      │
+│  - RuntimeConfigManager: event-driven cache (perf)      │
+│  - Menu: reads game_settings + user_preferences         │
+│  - Audio: reads user_preferences (voice, audio on/off)  │
+│  - FlagConfigWriter: atomic writes to flag files        │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -58,7 +64,7 @@ JoustMania uses [OpenFeature](https://openfeature.dev/) with [flagd](https://fla
 
 1. **Startup:** RuntimeConfigManager registers a callback for `PROVIDER_CONFIGURATION_CHANGED` events
 2. **Normal Operation:** Config is cached and served from memory (zero overhead)
-3. **Flag Change:** When `flags.json` is edited:
+3. **Flag Change:** When any flag file is edited:
    - flagd detects the file change
    - flagd pushes update to all connected clients via gRPC stream
    - OpenFeature provider emits `PROVIDER_CONFIGURATION_CHANGED` event
@@ -109,7 +115,7 @@ Open the flags file:
 
 ```bash
 # On Raspberry Pi
-nano services/flagd/flags.json
+nano services/flagd/performance.json
 ```
 
 Change a flag value (e.g., `update_frequency_hz` from `low` to `high`):
@@ -178,39 +184,56 @@ Or view in Grafana's **Feature Flags** dashboard at `http://localhost:3000`.
 
 ## Available Flags
 
-Current flags in `services/flagd/flags.json`:
+### Performance Flags (`services/flagd/performance.json`)
 
 | Flag | Type | Values | Description |
 |------|------|--------|-------------|
 | `update_frequency_hz` | integer | 15, 30, 60 | Game loop update frequency |
-| `streaming_mode` | string | low, medium, high | Controller data streaming mode |
-| `sensitivity_mode` | string | slow, normal, fast | Death detection sensitivity |
+| `streaming_mode` | string | standard, filtered, aggressive | Controller data streaming mode |
+| `sensitivity_mode` | string | low, medium, high | Death detection sensitivity |
 | `enable_adaptive_rewards` | boolean | true, false | Enable dynamic reward scaling |
+
+### Game Settings Flags (`services/flagd/game_settings.json`)
+
+| Flag | Type | Values | Description |
+|------|------|--------|-------------|
+| `sensitivity` | integer | 0-4 | Death detection sensitivity (ultra_slow to ultra_fast) |
+| `num_teams` | integer | 2-6 | Number of teams for team modes |
+| `random_assignment` | boolean | true, false | Random team assignment |
+| `nonstop_time_limit` | integer | 0, 60-300 | Nonstop Joust time limit in seconds |
+| `invincibility` | float | 2.0-8.0 | Invincibility duration for tournament modes |
+| `fight_club_min_rounds` | integer | 5-20 | Minimum rounds for Fight Club |
+| `werewolf_reveal_time` | float | 20.0-60.0 | Werewolf reveal time in seconds |
+| `force_all_start` | boolean | true, false | Force start with all connected controllers |
+
+### User Preferences Flags (`services/flagd/user_preferences.json`)
+
+| Flag | Type | Values | Description |
+|------|------|--------|-------------|
+| `menu_voice` | string | aaron, ivy | Voice actor for announcements |
+| `play_audio` | boolean | true, false | Enable/disable audio output |
+| `current_game` | string | game mode names | Currently selected game mode |
+| `game_instructions` | boolean | true, false | Show game instructions |
 
 ### Adding New Flags
 
-1. Edit `services/flagd/flags.json`:
-   ```json
-   {
-     "flags": {
-       "my_new_flag": {
-         "state": "ENABLED",
-         "variants": {
-           "option_a": "value_a",
-           "option_b": "value_b"
-         },
-         "defaultVariant": "option_a"
-       }
-     }
-   }
-   ```
+1. Choose the appropriate flag file based on domain:
+   - `performance.json` - Runtime performance tuning
+   - `game_settings.json` - Game configuration (admin-adjustable)
+   - `user_preferences.json` - User preferences (persist across sessions)
 
-2. Evaluate in `runtime_config.py`:
+2. Add the flag definition with `"state": "ENABLED"` and variants.
+
+3. In your service code, initialize the domain and get a client:
    ```python
-   my_value = self.flags.get_string_value("my_new_flag", "default")
+   from lib.feature_flags import init_flag_domain, get_flag_client
+
+   init_flag_domain("game_settings")
+   client = get_flag_client("game_settings")
+   value = client.get_integer_value("my_new_flag", default_value)
    ```
 
-3. No restart required - flagd will detect the file change automatically.
+4. No restart required - flagd will detect the file change automatically.
 
 ## Metrics
 
@@ -263,7 +286,7 @@ game_current_update_frequency_hz < 30
 
 ### No flag change events detected
 
-**Symptoms:** Edit `flags.json` but no `🚩 Feature flags changed` log appears
+**Symptoms:** Edit a flag file but no `🚩 Feature flags changed` log appears
 
 **Diagnosis:**
 ```bash
@@ -274,17 +297,17 @@ docker compose ps flagd
 docker compose logs flagd --tail=50
 
 # Verify file is being watched
-docker compose exec flagd ls -l /flags/flags.json
+docker compose exec flagd ls -l /etc/flagd/
 ```
 
 **Solutions:**
 - Ensure flagd container is healthy
-- Verify `flags.json` is mounted correctly in docker-compose.yml
+- Verify flag files are mounted correctly in docker-compose.yml
 - Check file permissions (must be readable by flagd)
 
-### "Could not import FeatureFlagClient" error
+### "Could not initialize feature flags" error
 
-**Symptoms:** Game coordinator starts but shows import error
+**Symptoms:** Service starts but shows import error
 
 **Diagnosis:**
 ```bash
@@ -367,8 +390,9 @@ If flagd is unavailable, the system gracefully degrades:
 
 ```python
 try:
-    from lib.feature_flags import FeatureFlagClient
-    self.flags = FeatureFlagClient()
+    from lib.feature_flags import init_flag_domain, get_flag_client
+    init_flag_domain("performance")
+    self.flags = get_flag_client("performance")
 except ImportError:
     logger.warning("Feature flags disabled - using defaults")
     self.flags = None

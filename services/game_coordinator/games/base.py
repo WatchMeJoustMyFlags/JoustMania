@@ -172,7 +172,6 @@ class BaseGameMode(ABC):
     def __init__(
         self,
         controller_manager_client: Any,  # controller_manager_pb2_grpc.ControllerManagerServiceStub
-        settings_client: Any,  # settings_pb2_grpc.SettingsServiceStub
         event_publisher: Callable[[str, dict[str, str]], Any],
         audio_client: Any | None = None,  # audio_pb2_grpc.AudioServiceStub
         game_id: str = "",
@@ -184,7 +183,6 @@ class BaseGameMode(ABC):
 
         Args:
             controller_manager_client: gRPC stub for ControllerManager service
-            settings_client: gRPC stub for Settings service
             event_publisher: Async callback function to publish game events (event_type, data)
             audio_client: gRPC stub for Audio service (Phase 29)
             initial_players: Optional list of Player protobuf messages from StartGame RPC
@@ -192,7 +190,6 @@ class BaseGameMode(ABC):
             sensitivity: Sensitivity level 0-4 (passed from StartGameConfig)
         """
         self.controller_client = controller_manager_client
-        self.settings_client = settings_client
         self.event_publisher = event_publisher
         self.audio_client = audio_client
 
@@ -1193,7 +1190,7 @@ class BaseGameMode(ABC):
             # Start game music
             response = await self.audio_client.PlayMusic(
                 audio_pb2.PlayMusicRequest(
-                    file_pattern="Joust/music/*.wav",
+                    file_pattern="Joust/music/*.ogg",
                     loop=True,
                     tempo=SLOW_MUSIC_SPEED,
                     priority=audio_pb2.AudioPriority.MEDIUM,

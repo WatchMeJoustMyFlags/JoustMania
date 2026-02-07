@@ -8,6 +8,7 @@ Thank you for your interest in contributing to JoustMania! This guide will help 
 
 - **Docker** - All development tooling runs in containers
 - **Git** - Version control
+- **Git LFS** - Audio assets are stored with [Git Large File Storage](https://git-lfs.com/)
 - **VS Code** (optional) - Recommended for dev container support
 
 ### Quick Start
@@ -35,12 +36,18 @@ The dev container includes:
    cd JoustMania
    ```
 
-2. Install uv (Python package manager):
+2. Install Git LFS (once per machine) and fetch audio assets:
+   ```bash
+   git lfs install
+   git lfs pull
+   ```
+
+3. Install uv (Python package manager):
    ```bash
    curl -LsSf https://astral.sh/uv/install.sh | sh
    ```
 
-3. Run linting/formatting checks:
+4. Run linting/formatting checks:
    ```bash
    make lint      # Check code
    make format    # Auto-format code

@@ -60,6 +60,8 @@ ignore = ["ANN"]
 "server.py" = ["E402"]  # sys.path manipulation before imports
 "tests/*.py" = ["ARG002", "E402"]  # Test fixtures, sys.path manipulation
 "tests/conftest.py" = ["N802", "E402", "ARG002"]  # Mock gRPC classes use PascalCase
+"tests/performance/*.py" = ["ARG002", "E402", "N806"]  # Performance tests, sys.path manipulation
+"tests/performance/conftest.py" = ["N802", "E402", "ARG002"]  # Mock classes use PascalCase
 
 [tool.ruff.lint.isort]
 known-first-party = ["lib", "proto", "services"]

@@ -25,7 +25,7 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService, MockSettingsService, async_noop
+from conftest import EventCollector, MockControllerManagerService, async_noop
 
 from proto import controller_manager_pb2
 from services.game_coordinator.games.base import (
@@ -59,10 +59,9 @@ class TestLerpFunction:
     def game(self):
         """Create a minimal FFA game for testing base class methods."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         return FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
             event_publisher=async_noop,
             audio_client=None,
             game_id="test_lerp",
@@ -105,10 +104,9 @@ class TestThresholdCalculation:
     def game(self):
         """Create game for threshold testing."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         return FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
             event_publisher=async_noop,
             audio_client=None,
             game_id="test_threshold",
@@ -199,10 +197,9 @@ class TestWarningBehavior:
     def game_with_player(self):
         """Create game with player for warning tests."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         game = FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
             event_publisher=async_noop,
             audio_client=None,
             game_id="test_warning",
@@ -312,10 +309,9 @@ class TestDeathDetection:
     def game_with_player(self):
         """Create game with player for death detection tests."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         game = FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
             event_publisher=async_noop,
             audio_client=None,
             game_id="test_death",
@@ -432,10 +428,9 @@ class TestSensitivityFactor:
     def game_with_player(self):
         """Create game with player for sensitivity factor tests."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         game = FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
             event_publisher=async_noop,
             audio_client=None,
             game_id="test_sens_factor",
@@ -497,10 +492,9 @@ class TestEMAFilter:
     def game_with_player(self):
         """Create game with player for EMA tests."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         game = FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
             event_publisher=async_noop,
             audio_client=None,
             game_id="test_ema",
@@ -566,10 +560,9 @@ class TestDeadPlayerIgnored:
     def game_with_dead_player(self):
         """Create game with dead player."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         game = FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
             event_publisher=async_noop,
             audio_client=None,
             game_id="test_dead",
@@ -611,10 +604,9 @@ class TestUnknownControllerIgnored:
     def game(self):
         """Create game with no players."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         game = FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
             event_publisher=async_noop,
             audio_client=None,
             game_id="test_unknown",
@@ -644,10 +636,9 @@ class TestGameStateTransitions:
     def game(self):
         """Create game for state transition tests."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         return FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
             event_publisher=async_noop,
             audio_client=None,
             game_id="test_state",
@@ -679,10 +670,9 @@ class TestInvalidAccelerationData:
     def game_with_player(self):
         """Create game with one player for acceleration tests."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         game = FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
             event_publisher=async_noop,
             audio_client=None,
             game_id="test_invalid_accel",
@@ -772,12 +762,11 @@ class TestMultipleDeathsHandling:
     def game_with_players(self):
         """Create game with multiple players."""
         mock_cm = MockControllerManagerService(num_controllers=4)
-        mock_settings = MockSettingsService()
+
         event_collector = EventCollector()
 
         game = FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
             event_publisher=event_collector.publish,
             audio_client=None,
             game_id="test_multi_death",
@@ -838,10 +827,9 @@ class TestSensitivityFactorEdgeCases:
     def game(self):
         """Create game for sensitivity tests."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         return FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
             event_publisher=async_noop,
             audio_client=None,
             game_id="test_sensitivity_edge",
@@ -894,11 +882,10 @@ class TestGamePhaseTransitions:
     def game(self):
         """Create game for phase tests."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         event_collector = EventCollector()
         return FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
             event_publisher=event_collector.publish,
             audio_client=None,
             game_id="test_phase",
@@ -935,12 +922,11 @@ class TestEventPublishing:
     def game_with_events(self):
         """Create game with event tracking."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         event_collector = EventCollector()
 
         game = FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
             event_publisher=event_collector.publish,
             audio_client=None,
             game_id="test_events",
@@ -1008,10 +994,9 @@ class TestGameStartValidation:
     def game(self):
         """Create game for validation tests."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         return FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
             event_publisher=async_noop,
             audio_client=None,
             game_id="test_validation",
@@ -1056,10 +1041,9 @@ class TestMusicTempoThresholds:
     def game(self):
         """Create game for lerp tests."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         return FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
             event_publisher=async_noop,
             audio_client=None,
             game_id="test_lerp",
@@ -1098,10 +1082,9 @@ class TestTaskTracking:
     def game(self):
         """Create a minimal FFA game for testing task tracking."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         return FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
             event_publisher=async_noop,
             audio_client=None,
             game_id="test_tasks",
@@ -1227,10 +1210,9 @@ class TestOnForceEnd:
     def game(self):
         """Create a minimal FFA game for testing force-end."""
         mock_cm = MockControllerManagerService(num_controllers=2)
-        mock_settings = MockSettingsService()
+
         return FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
             event_publisher=async_noop,
             audio_client=None,
             game_id="test_force_end",
@@ -1256,11 +1238,10 @@ class TestGameLifecycleCleanup:
     def game(self):
         """Create a minimal FFA game for lifecycle testing."""
         mock_cm = MockControllerManagerService(num_controllers=3)
-        mock_settings = MockSettingsService()
+
         events = EventCollector()
         return FFAGame(
             controller_manager_client=mock_cm,
-            settings_client=mock_settings,
             event_publisher=events.publish,
             audio_client=None,
             game_id="test_lifecycle",

@@ -3,7 +3,7 @@
  *
  * Real-time controller visualization and game controls using Connect-Web.
  */
-import { controllerClient, gameClient, menuClient, settingsClient } from "./client.js";
+import { controllerClient, gameClient, menuClient } from "./client.js";
 import { ControllerGrid } from "./components/ControllerGrid.js";
 import { GameStatus } from "./components/GameStatus.js";
 import { Controls } from "./components/Controls.js";
@@ -48,9 +48,6 @@ async function init() {
 
   // Set up tab navigation
   setupTabs();
-
-  // Set up settings modal
-  setupSettingsModal();
 
   // Start streaming controller data
   startControllerStream();
@@ -223,87 +220,6 @@ async function handleStopGame() {
 
 function handleModeChange(mode: string) {
   console.log("Mode changed to:", mode);
-}
-
-// Settings modal
-function setupSettingsModal() {
-  const settingsBtn = document.getElementById("settings-btn");
-  const settingsModal = document.getElementById("settings-modal");
-  const closeSettings = document.getElementById("close-settings");
-
-  settingsBtn?.addEventListener("click", async () => {
-    settingsModal?.classList.remove("hidden");
-    await loadSettings();
-  });
-
-  closeSettings?.addEventListener("click", () => {
-    settingsModal?.classList.add("hidden");
-  });
-
-  settingsModal?.addEventListener("click", (e) => {
-    if (e.target === settingsModal) {
-      settingsModal.classList.add("hidden");
-    }
-  });
-}
-
-async function loadSettings() {
-  const settingsList = document.getElementById("settings-list");
-  if (!settingsList) return;
-
-  try {
-    const response = await settingsClient.getSettings({});
-    if (!response.success) {
-      settingsList.innerHTML = `<div class="error">Failed to load settings: ${response.error}</div>`;
-      return;
-    }
-
-    settingsList.innerHTML = "";
-    for (const [key, value] of Object.entries(response.settings)) {
-      const item = document.createElement("div");
-      item.className = "setting-item";
-      item.innerHTML = `
-        <label>${formatSettingKey(key)}</label>
-        <input type="text" value="${value}" data-key="${key}" />
-      `;
-      settingsList.appendChild(item);
-
-      // Handle setting change
-      const input = item.querySelector("input");
-      input?.addEventListener("change", async (e) => {
-        const target = e.target as HTMLInputElement;
-        const settingKey = target.dataset.key!;
-        const newValue = target.value;
-
-        try {
-          await settingsClient.updateSetting({
-            key: settingKey,
-            value: newValue,
-            source: "dashboard",
-          });
-        } catch (error) {
-          console.error("Failed to update setting:", error);
-          // Revert to old value
-          const oldResponse = await settingsClient.getSetting({ key: settingKey });
-          if (oldResponse.success) {
-            target.value = oldResponse.value;
-          }
-        }
-      });
-    }
-  } catch (error) {
-    console.error("Failed to load settings:", error);
-    settingsList.innerHTML = '<div class="error">Failed to connect to settings service</div>';
-  }
-}
-
-function formatSettingKey(key: string): string {
-  // Convert snake_case or camelCase to Title Case
-  return key
-    .replaceAll("_", " ")
-    .replace(/([A-Z])/g, " $1")
-    .replace(/^./, (str) => str.toUpperCase())
-    .trim();
 }
 
 // Start the app

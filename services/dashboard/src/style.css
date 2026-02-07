@@ -49,26 +49,6 @@ body {
   letter-spacing: -0.5px;
 }
 
-.header-controls {
-  display: flex;
-  gap: 8px;
-}
-
-.icon-btn {
-  background: transparent;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  border-radius: var(--border-radius);
-  color: var(--text-primary);
-  padding: 8px 12px;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.icon-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
-  border-color: rgba(255, 255, 255, 0.3);
-}
-
 .icon {
   font-size: 1.2rem;
 }
@@ -439,93 +419,6 @@ body {
     opacity: 1;
     transform: translateY(0);
   }
-}
-
-/* Modal */
-.modal {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.7);
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  z-index: 1000;
-}
-
-.modal.hidden {
-  display: none;
-}
-
-.modal-content {
-  background: var(--bg-secondary);
-  border-radius: var(--border-radius);
-  width: 90%;
-  max-width: 600px;
-  max-height: 80vh;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
-
-.modal-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 16px 20px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.modal-header h2 {
-  font-size: 1.2rem;
-}
-
-.close-btn {
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  font-size: 1.5rem;
-  cursor: pointer;
-  padding: 0;
-  line-height: 1;
-}
-
-.close-btn:hover {
-  color: var(--text-primary);
-}
-
-.settings-list {
-  padding: 20px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.setting-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 12px;
-  background: var(--bg-card);
-  border-radius: var(--border-radius);
-}
-
-.setting-item label {
-  font-weight: 500;
-}
-
-.setting-item input {
-  background: var(--bg-primary);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  border-radius: 4px;
-  color: var(--text-primary);
-  padding: 6px 12px;
-  width: 120px;
-}
-
-.setting-item input:focus {
-  outline: none;
-  border-color: var(--accent-primary);
 }
 
 /* Responsive */
