@@ -434,6 +434,48 @@ If using adapters with adjustable antennas:
 
 See [Controller Pairing](#controller-pairing) for detailed troubleshooting.
 
+### ZCM2 (PS4-era) Controllers Won't Connect After Pairing
+
+PS Move controllers come in two hardware revisions:
+
+| Model | USB Connector | Product ID | Pairing |
+|-------|--------------|------------|---------|
+| ZCM1 (PS3-era) | Mini USB | 0x03d5 | Automatic via daemon |
+| ZCM2 (PS4-era) | Micro USB | 0x0c5e | Requires manual step |
+
+ZCM2 controllers need a PIN-based Bluetooth pairing handshake that the
+automatic daemon cannot fully complete. After the daemon reports
+`PAIRING SUCCESS`, you must manually pair via `bluetoothctl`:
+
+```bash
+# 1. Unplug the controller from USB
+
+# 2. Start bluetoothctl with a PIN agent
+bluetoothctl
+  agent KeyboardOnly
+  default-agent
+
+# 3. Press the PS button on the controller, then quickly run:
+  trust <MAC_ADDRESS>
+  pair <MAC_ADDRESS>
+
+# 4. When prompted for PIN, enter: 0000
+
+# 5. Exit bluetoothctl
+  quit
+```
+
+Replace `<MAC_ADDRESS>` with the controller's address shown in the
+pairing daemon logs (e.g. `DC:0C:2D:09:4D:7B`).
+
+You only need to do this once per ZCM2 controller. After the initial
+manual pairing, the controller will reconnect automatically when you
+press the PS button.
+
+**Tip**: You can identify your controller model by the USB connector —
+mini USB (wider, trapezoidal) is ZCM1, micro USB (smaller, rectangular)
+is ZCM2.
+
 ### Controllers Not Detected After Container Start (Hot-Plug)
 
 The Docker container-manager requires specific configuration for controller hot-plug:

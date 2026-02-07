@@ -24,6 +24,7 @@ ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libasound2-data \
     libasound2 \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir /extra-libs \
     && if [ "$TARGETARCH" = "arm64" ]; then \
@@ -32,6 +33,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
          LIB_DIR=/usr/lib/x86_64-linux-gnu; \
        fi \
     && cp "$LIB_DIR"/libasound.so* /extra-libs/ \
+    # Copy all shared libraries needed by ffmpeg/ffprobe (discovered via ldd)
+    # This auto-resolves all transitive deps (libavcodec, libavformat, libx264, etc.)
+    && ldd /usr/bin/ffmpeg /usr/bin/ffprobe \
+       | awk '/=>/ && $3 != "" {print $3}' \
+       | sort -u \
+       | while read -r lib; do cp -n "$lib" /extra-libs/ 2>/dev/null || true; done \
     && mkdir -p /extra-etc \
     && grep -E "^(root|audio):" /etc/group > /extra-etc/group
 
@@ -84,8 +91,12 @@ WORKDIR /app
 # Copy grpc-health-probe from official multi-arch image
 COPY --from=ghcr.io/grpc-ecosystem/grpc-health-probe:v0.4.38 /ko-app/grpc-health-probe /bin/grpc_health_probe
 
-# Copy system shared libraries (ALSA libs for miniaudio/pyalsaaudio)
+# Copy system shared libraries (ALSA + ffmpeg deps for miniaudio/pyalsaaudio/pydub)
 COPY --from=system-libs /extra-libs/ /usr/lib/
+
+# Copy ffmpeg/ffprobe binaries (required by pydub for OGG audio decoding)
+COPY --from=system-libs /usr/bin/ffmpeg /usr/bin/ffmpeg
+COPY --from=system-libs /usr/bin/ffprobe /usr/bin/ffprobe
 
 # Copy ALSA configuration files (required for PCM device resolution)
 COPY --from=system-libs /usr/share/alsa/ /usr/share/alsa/
