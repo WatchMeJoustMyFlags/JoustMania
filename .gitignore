@@ -5,6 +5,7 @@ conf/supervisor/conf.d/joust.conf
 # Environment files (local overrides)
 .env
 !.env.mock
+docker-compose.override.yml
 
 .python_history
 # Byte-compiled / optimized / DLL files

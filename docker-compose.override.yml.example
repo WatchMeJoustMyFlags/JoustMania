@@ -1,0 +1,39 @@
+# Docker Compose Override Example
+#
+# Copy this file to docker-compose.override.yml and customize for your environment:
+#   cp docker-compose.override.yml.example docker-compose.override.yml
+#
+# This file is automatically loaded by Docker Compose when present.
+# See: https://docs.docker.com/compose/multiple-compose-files/extends/
+#
+# Note: docker-compose.override.yml is git-ignored to prevent committing
+# environment-specific configuration.
+
+services:
+  # Audio Service - ALSA Configuration
+  # Uncomment and customize the following settings if you need ALSA dmix support
+  # or other audio-specific configuration on your Raspberry Pi/Linux system.
+
+  audio:
+    # Required for ALSA dmix shared memory access
+    # Allows the container to use dmix plugin for software audio mixing
+    # ipc: host
+
+    # Mount your ALSA configuration file (if you have custom audio setup)
+    # This is typically needed when using dmix or other ALSA plugins
+    # volumes:
+    #   - /etc/asound.conf:/etc/asound.conf:ro
+
+    # Example: Custom ALSA device configuration
+    # environment:
+    #   - ALSA_CARD=PCM
+
+  # Example: Controller Manager - Custom Bluetooth Adapter
+  # controller-manager:
+  #   environment:
+  #     - BLUETOOTH_HCI=hci1  # Use hci1 instead of default hci0
+
+  # Example: Enable debug logging for specific service
+  # game-coordinator:
+  #   environment:
+  #     - LOG_LEVEL=DEBUG

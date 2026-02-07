@@ -258,8 +258,29 @@ docker compose up -d --scale game-coordinator=3
 
 ### Override Configuration
 
+Docker Compose automatically loads `docker-compose.override.yml` if present, allowing you to customize settings without modifying the main `docker-compose.yml` file.
+
 ```bash
-# Use custom compose file
+# Create override file from template
+cp docker-compose.override.yml.example docker-compose.override.yml
+
+# Edit with your environment-specific settings
+nano docker-compose.override.yml
+
+# Docker Compose automatically merges the override file
+docker compose up -d
+```
+
+**Common use cases for overrides:**
+- ALSA audio configuration (dmix, custom sound devices)
+- Custom Bluetooth adapter selection
+- Debug logging for specific services
+- Development-specific volume mounts
+
+See `docker-compose.override.yml.example` for examples and [Troubleshooting - Audio issues](#audio-issues-alsa-errors-no-sound-device-busy) for audio setup.
+
+```bash
+# Use additional custom compose file
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 ```
 
@@ -811,6 +832,115 @@ docker compose exec game-coordinator env | grep OTEL
 # Test trace export
 grpcurl -plaintext localhost:4317 list
 ```
+
+#### Audio issues (ALSA errors, no sound, device busy)
+
+If you encounter ALSA errors like:
+
+```
+ALSA lib ... Unknown PCM default
+Device or resource busy
+Cannot open audio device
+```
+
+This typically happens when:
+1. Multiple processes try to access the same audio device
+2. Your audio device doesn't support hardware mixing
+3. ALSA dmix (software mixing) is not configured
+
+**Solution:** Configure ALSA dmix and use docker-compose.override.yml
+
+1. **Create ALSA configuration** on your host system:
+
+```bash
+sudo nano /etc/asound.conf
+```
+
+Add the following configuration (adjust `card` and `device` for your hardware):
+
+```conf
+# Use dmix (software mixing) to allow multiple processes to share audio
+pcm.!default {
+    type plug
+    slave.pcm "dmixer"
+}
+
+pcm.dmixer {
+    type dmix
+    ipc_key 1024
+    ipc_perm 0666
+    slave {
+        pcm "hw:0,0"    # Adjust for your hardware (card 0, device 0)
+        period_time 0
+        period_size 1024
+        buffer_size 8192
+        rate 44100
+    }
+    bindings {
+        0 0
+        1 1
+    }
+}
+
+ctl.dmixer {
+    type hw
+    card 0              # Adjust for your hardware
+}
+```
+
+2. **Find your audio hardware:**
+
+```bash
+# List audio devices
+aplay -l
+
+# Example output:
+# card 0: Headphones [bcm2835 Headphones], device 0: bcm2835 Headphones [bcm2835 Headphones]
+# Use hw:0,0 in the config above
+```
+
+3. **Test ALSA configuration:**
+
+```bash
+# Test playback
+speaker-test -t wav -c 2
+
+# If this works, proceed to Docker configuration
+```
+
+4. **Create docker-compose override:**
+
+```bash
+cp docker-compose.override.yml.example docker-compose.override.yml
+```
+
+Edit `docker-compose.override.yml` and uncomment the audio configuration:
+
+```yaml
+services:
+  audio:
+    # Required for ALSA dmix shared memory access
+    ipc: host
+    volumes:
+      - /etc/asound.conf:/etc/asound.conf:ro
+```
+
+5. **Restart the audio service:**
+
+```bash
+docker compose up -d audio
+docker compose logs -f audio
+```
+
+**Why this is needed:**
+
+- `ipc: host` - Allows the container to access the host's IPC namespace for dmix shared memory
+- `/etc/asound.conf` mount - Provides the container with your custom ALSA configuration
+- dmix - Enables software mixing so multiple processes (or containers) can use audio simultaneously
+
+**Alternative:** If you don't need multiple audio streams, you can use direct hardware access without dmix, but this may cause "device busy" errors when multiple services try to play audio.
+
+**Docker memory limits:** If you see errors about cgroup memory limits, see the [Docker cgroup memory troubleshooting guide](https://github.com/docker/for-linux/issues/1112).
 
 ---
 
