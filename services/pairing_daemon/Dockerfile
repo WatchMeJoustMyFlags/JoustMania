@@ -61,6 +61,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libbluetooth3 \
     libdbus-1-3 \
     libglib2.0-0 \
+    libusb-0.1-4 \
     libusb-1.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
