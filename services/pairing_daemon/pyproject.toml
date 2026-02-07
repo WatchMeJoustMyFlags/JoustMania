@@ -54,6 +54,7 @@ ignore = ["ANN"]
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]  # Unused imports OK in __init__
 "server.py" = ["N802"]  # HTTP handler do_GET is from parent class
+"psmove_pairing/bluez_agent.py" = ["N802"]  # D-Bus method names (RequestPinCode etc.) come from BlueZ spec
 "tests/*.py" = ["ARG001", "ARG002", "E402", "SIM105", "SIM117", "F841"]  # Test fixtures, test patterns
 
 [tool.ruff.lint.isort]
