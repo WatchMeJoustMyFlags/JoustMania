@@ -24,9 +24,9 @@ ruler:
     local:
       directory: /tmp/loki/rules
 
-# 1 hour retention
+# 24 hour retention for post-game debugging
 limits_config:
-  retention_period:  1h
+  retention_period:  24h
   enforce_metric_name:  false
   reject_old_samples: true
   reject_old_samples_max_age: 168h
@@ -36,7 +36,7 @@ limits_config:
 # Enable table manager for retention
 table_manager:
   retention_deletes_enabled: true
-  retention_period: 1h
+  retention_period: 24h
 
 schema_config:
   configs:
@@ -49,7 +49,7 @@ schema_config:
         period: 24h
 
 chunk_store_config:
-  max_look_back_period: 1h
+  max_look_back_period: 24h
 
 compactor:
   working_directory: /tmp/loki/compactor

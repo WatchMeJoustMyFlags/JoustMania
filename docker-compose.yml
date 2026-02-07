@@ -124,11 +124,13 @@ services:
       loki:
         condition: service_healthy
       victoria-metrics:
-        condition: service_started
+        condition: service_healthy
       grafana-live-publisher:
         condition: service_healthy
     networks:
       - joustmania
+    # No healthcheck: otel-collector-contrib is a scratch image with no shell/wget/curl.
+    # The health_check extension exposes :13133 but we can't probe it from within the container.
     # No healthcheck: distroless image has no shell/wget/curl
     deploy:
       resources:
@@ -342,6 +344,12 @@ services:
     networks:
       - joustmania
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8428/-/healthy || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
     # Note: VictoriaMetrics image is scratch-based, no shell/wget for healthcheck
     # Service starts quickly and exposes /health endpoint for manual verification
     deploy:
@@ -457,7 +465,7 @@ services:
       - grafana-data:/var/lib/grafana
     depends_on:
       victoria-metrics:
-        condition: service_started
+        condition: service_healthy
       prometheus:
         condition: service_healthy
       loki:
@@ -480,7 +488,7 @@ services:
           cpus: '0.5'
     logging: *default-logging
 
-  # Loki for log aggregation with 1h retention
+  # Loki for log aggregation with 24h retention
   loki:
     image: grafana/loki:2.9.3
     container_name: joustmania-loki

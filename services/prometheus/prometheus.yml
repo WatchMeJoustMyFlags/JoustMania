@@ -48,13 +48,6 @@ scrape_configs:
         labels:
           service: 'settings'
 
-  # WebUI Service (still uses prometheus_client pull)
-  - job_name: 'webui'
-    static_configs:
-      - targets: ['webui:8000']
-        labels:
-          service: 'webui'
-
   # Audio Service (still uses prometheus_client pull)
   - job_name: 'audio'
     static_configs:
