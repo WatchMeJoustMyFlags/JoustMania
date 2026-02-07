@@ -22,7 +22,6 @@ Players try to keep their controllers still. Last player standing wins.
 
 **Features:**
 - Streams controller states at 60Hz from ControllerManager
-- Fetches settings (sensitivity, audio) from Settings service
 - Detects deaths based on acceleration thresholds
 - Publishes real-time events (deaths, winner, game end)
 - Full OpenTelemetry instrumentation
@@ -45,7 +44,6 @@ Players are divided into teams and compete against other teams. Last team standi
 - Automatic team assignment (round-robin)
 - Team colors from predefined palette (Pink, Magenta, Orange, Yellow, Green, Turquoise, Blue, Purple)
 - Streams controller states at 60Hz from ControllerManager
-- Fetches settings (sensitivity, audio, num_teams) from Settings service
 - Detects deaths based on acceleration thresholds
 - Publishes real-time events with team information
 - Full OpenTelemetry instrumentation
@@ -72,7 +70,6 @@ Players are randomly assigned to teams and compete against other teams. Team col
 - **Random team colors** (shuffled from predefined palette)
 - **Team formation phase** (5 seconds showing team colors before game starts)
 - Streams controller states at 60Hz from ControllerManager
-- Fetches settings (sensitivity, audio, random_team_size) from Settings service
 - Detects deaths based on acceleration thresholds
 - Publishes real-time events with team information
 - Full OpenTelemetry instrumentation
@@ -105,7 +102,6 @@ class GameMode:
     def __init__(
         self,
         controller_manager_client,  # gRPC stub
-        settings_client,            # gRPC stub
         event_publisher: Callable,  # Event callback
         game_id: str
     ):
@@ -116,7 +112,6 @@ class GameMode:
     async def run(self):
         """Main game entry point (async)."""
         # IDLE → STARTING
-        await self._load_settings()
         await self._initialize_players()
         await self._countdown()
 
@@ -145,8 +140,6 @@ GameCoordinator
 GameMode
     ↓ (streams controller states)
 ControllerManager → Real/Mock PS Move controllers
-    ↓ (fetches settings)
-Settings Service → joustsettings.yaml
 ```
 
 ## Testing
@@ -163,24 +156,21 @@ pytest test_ffa_integration.py -v -s
 
 **Test structure:**
 - `MockControllerManagerService` - Simulates controller states
-- `MockSettingsService` - Provides mock settings
 - `EventCollector` - Captures published events
 
 **What tests verify:**
 - ✅ Full game lifecycle (start → deaths → winner → end)
 - ✅ Event publishing (all expected events published)
 - ✅ Win conditions (correct winner determined)
-- ✅ Settings loading (sensitivity, audio, etc.)
 - ✅ Force end (graceful shutdown)
 
 ### Example Test
 
 ```python
 @pytest.mark.asyncio
-async def test_ffa_game_full_lifecycle(mock_controller_manager, mock_settings, event_collector):
+async def test_ffa_game_full_lifecycle(mock_controller_manager, event_collector):
     game = ffa_grpc.FFAGame(
         controller_manager_client=mock_controller_manager,
-        settings_client=mock_settings,
         event_publisher=event_collector.publish,
         game_id="test_game_1"
     )
@@ -211,7 +201,6 @@ async def test_ffa_game_full_lifecycle(mock_controller_manager, mock_settings, e
 
 - [ ] Async `run()` method
 - [ ] State machine (IDLE → STARTING → RUNNING → ENDING → ENDED)
-- [ ] `_load_settings()` from Settings service
 - [ ] `_initialize_players()` from ControllerManager
 - [ ] `_game_loop()` with StreamGameplayData
 - [ ] Event publishing for all game events
@@ -242,9 +231,6 @@ self.game_loop()  # Blocks
 # gRPC communication ✅
 controller_states = await self.controller_client.StreamGameplayData()
 
-# Settings via gRPC ✅
-settings = await self.settings_client.GetSettings()
-
 # Event publishing ✅
 self.event_publisher("player_death", {...})
 
@@ -263,7 +249,6 @@ await self._game_loop()  # Non-blocking
 
 ### gRPC Services (Required)
 - **ControllerManager** (localhost:50052) - Controller states
-- **Settings** (localhost:50051) - Game settings
 
 ### Python Packages
 - `grpcio` - gRPC client
@@ -298,7 +283,6 @@ All game modes follow a consistent span hierarchy. The root span is created in `
 ```
 Free-For-All (game span)
 ├── initialization_phase
-│   ├── load_settings
 │   └── initialize_players
 ├── ffa_colors_phase (player colors shown)
 ├── countdown_phase
@@ -325,7 +309,6 @@ Free-For-All (game span)
 ```
 Teams (game span)
 ├── initialization_phase
-│   ├── load_settings
 │   └── initialize_players (with team assignment)
 ├── countdown_phase
 ├── gameplay_phase
@@ -359,7 +342,6 @@ Teams (game span)
 ```
 Random Teams (game span)
 ├── initialization_phase
-│   ├── load_settings
 │   └── initialize_players (with random team assignment)
 ├── team_formation_phase (5 seconds showing team colors)
 ├── countdown_phase
