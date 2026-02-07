@@ -465,6 +465,34 @@ Both settings are required:
 
 These are already configured in the default `docker-compose.yml`.
 
+### Docker Memory Limit Warning
+
+**Symptom:** `Your kernel does not support memory limit capabilities or the cgroup is not mounted. Limitation discarded.`
+
+This means Docker's per-service memory limits (from `docker-compose.yml`) are being silently ignored because cgroup memory support isn't enabled in the kernel.
+
+**Fix:** Enable cgroups in the kernel boot parameters:
+
+```bash
+# Raspberry Pi OS Bookworm (Debian 12+):
+sudo sed -i 's/$/ cgroup_memory=1 cgroup_enable=memory/' /boot/firmware/cmdline.txt
+
+# Raspberry Pi OS Bullseye (Debian 11):
+sudo sed -i 's/$/ cgroup_memory=1 cgroup_enable=memory/' /boot/cmdline.txt
+```
+
+Then reboot:
+```bash
+sudo reboot
+```
+
+Verify after reboot:
+```bash
+docker info | grep -i cgroup
+```
+
+**Note:** On 8GB Pi models, memory limits are less critical since there's ample headroom. The system will run fine without them — you'll just see the warning.
+
 ### High Latency
 
 | Cause | Solution |
