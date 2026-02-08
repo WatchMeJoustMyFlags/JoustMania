@@ -562,7 +562,7 @@ services:
     expose:
       - "4318"  # OTLP HTTP receiver
     environment:
-      - GRAFANA_URL=http://grafana:3000
+      - GRAFANA_URL=http://grafana:3000/grafana
       - GRAFANA_PUSH_PATH=joustmania/accel
     depends_on:
       grafana:
