@@ -109,7 +109,6 @@ def init_metrics(
             attributes={
                 SERVICE_NAME: resolved_service_name,
                 SERVICE_VERSION: version,
-                "service.namespace": "joustmania",
             }
         )
 

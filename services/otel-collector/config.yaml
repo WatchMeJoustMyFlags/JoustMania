@@ -69,9 +69,10 @@ processors:
       - key: deployment.environment
         value: development
         action: insert
-      # NOTE: service.namespace removed — when set, the prometheusremotewrite
-      # exporter prefixes the job label (e.g. "joustmania/controller-manager")
-      # which breaks dashboard queries expecting just "controller-manager".
+      # NOTE: service.namespace must NOT be set here or in the Python SDK
+      # Resource attributes. The prometheusremotewrite exporter prefixes the
+      # job label with the namespace (e.g. "joustmania/controller-manager"),
+      # breaking dashboard queries that expect just "controller-manager".
 
 exporters:
   # OTLP exporter to send traces to Jaeger
