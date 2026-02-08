@@ -974,7 +974,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(controller_info * on(serial) group_left(name) ((menu_player_ready == 1) or (game_player_alive == 1)))",
+        "definition": "query_result(controller_info * on(serial) group_left() ((menu_player_ready == 1) or (game_player_alive == 1)))",
         "hide": 0,
         "includeAll": true,
         "label": "Player",
@@ -982,7 +982,7 @@
         "name": "player",
         "options": [],
         "query": {
-          "query": "query_result(controller_info * on(serial) group_left(name) ((menu_player_ready == 1) or (game_player_alive == 1)))",
+          "query": "query_result(controller_info * on(serial) group_left() ((menu_player_ready == 1) or (game_player_alive == 1)))",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
@@ -997,7 +997,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(controller_info{name=~\"$player\"} * on(serial) group_left(name) ((menu_player_ready == 1) or (game_player_alive == 1)))",
+        "definition": "query_result(controller_info{name=~\"$player\"} * on(serial) group_left() ((menu_player_ready == 1) or (game_player_alive == 1)))",
         "hide": 2,
         "includeAll": true,
         "label": "Serial",
@@ -1005,7 +1005,7 @@
         "name": "serial",
         "options": [],
         "query": {
-          "query": "query_result(controller_info{name=~\"$player\"} * on(serial) group_left(name) ((menu_player_ready == 1) or (game_player_alive == 1)))",
+          "query": "query_result(controller_info{name=~\"$player\"} * on(serial) group_left() ((menu_player_ready == 1) or (game_player_alive == 1)))",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
