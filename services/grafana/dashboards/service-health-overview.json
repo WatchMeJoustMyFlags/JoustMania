@@ -96,7 +96,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count(count by(job) (process_cpu_seconds_total{job=~\"controller-manager|game-coordinator|menu|audio|psmove-pairing|otel-collector|victoria-metrics|prometheus|flagd\"}))",
+          "expr": "count(count by(job) (process_cpu_seconds_total{job=~\"joustmania/controller-manager|joustmania/game-coordinator|joustmania/menu|joustmania/audio|joustmania/psmove-pairing|observability/otel-collector|observability/victoria-metrics|observability/prometheus|observability/flagd\"}))",
           "legendFormat": "Services",
           "refId": "A"
         }
@@ -389,7 +389,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count by(job) (process_cpu_seconds_total{job=~\"controller-manager|game-coordinator|menu|audio|psmove-pairing|otel-collector|victoria-metrics|prometheus|flagd\"}) > 0",
+          "expr": "count by(job) (process_cpu_seconds_total{job=~\"joustmania/controller-manager|joustmania/game-coordinator|joustmania/menu|joustmania/audio|joustmania/psmove-pairing|observability/otel-collector|observability/victoria-metrics|observability/prometheus|observability/flagd\"}) > 0",
           "format": "table",
           "instant": true,
           "refId": "A"
@@ -475,7 +475,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count(up{job=~\"prometheus|grafana|loki|victoria-metrics|otel-collector|node\"} == 1)",
+          "expr": "count(up{job=~\"observability/prometheus|observability/grafana|observability/loki|observability/victoria-metrics|observability/otel-collector|observability/node\"} == 1)",
           "legendFormat": "Observability",
           "refId": "A"
         }
@@ -560,7 +560,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "up{job=~\"prometheus|grafana|loki|victoria-metrics|otel-collector|node\"}",
+          "expr": "up{job=~\"observability/prometheus|observability/grafana|observability/loki|observability/victoria-metrics|observability/otel-collector|observability/node\"}",
           "format": "table",
           "instant": true,
           "refId": "A"
@@ -676,7 +676,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(process_cpu_seconds_total[5m]) * 100",
+          "expr": "rate(process_cpu_seconds_total{job=~\"joustmania/controller-manager|joustmania/game-coordinator|joustmania/menu|joustmania/audio|joustmania/psmove-pairing|observability/otel-collector|observability/victoria-metrics|observability/prometheus|observability/flagd|observability/node\"}[5m]) * 100",
           "legendFormat": "{{job}}",
           "refId": "A"
         }
@@ -768,7 +768,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_resident_memory_bytes",
+          "expr": "process_resident_memory_bytes{job=~\"joustmania/controller-manager|joustmania/game-coordinator|joustmania/menu|joustmania/audio|joustmania/psmove-pairing|observability/otel-collector|observability/victoria-metrics|observability/prometheus|observability/flagd|observability/node\"}",
           "legendFormat": "{{job}}",
           "refId": "A"
         }

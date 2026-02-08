@@ -80,7 +80,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "node_hwmon_temp_celsius{job=\"node\"}",
+          "expr": "node_hwmon_temp_celsius{job=\"observability/node\"}",
           "legendFormat": "CPU Temp",
           "refId": "A"
         }
@@ -146,7 +146,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "100 - (avg(irate(node_cpu_seconds_total{mode=\"idle\",job=\"node\"}[5m])) * 100)",
+          "expr": "100 - (avg(irate(node_cpu_seconds_total{mode=\"idle\",job=\"observability/node\"}[5m])) * 100)",
           "legendFormat": "CPU Usage",
           "refId": "A"
         }
@@ -212,7 +212,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "100 * (1 - ((node_memory_MemAvailable_bytes{job=\"node\"} or node_memory_MemFree_bytes{job=\"node\"}) / node_memory_MemTotal_bytes{job=\"node\"}))",
+          "expr": "100 * (1 - ((node_memory_MemAvailable_bytes{job=\"observability/node\"} or node_memory_MemFree_bytes{job=\"observability/node\"}) / node_memory_MemTotal_bytes{job=\"observability/node\"}))",
           "legendFormat": "Memory Usage",
           "refId": "A"
         }
@@ -278,7 +278,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "100 - ((node_filesystem_avail_bytes{job=\"node\",mountpoint=\"/\",fstype!=\"rootfs\"} / node_filesystem_size_bytes{job=\"node\",mountpoint=\"/\",fstype!=\"rootfs\"}) * 100)",
+          "expr": "100 - ((node_filesystem_avail_bytes{job=\"observability/node\",mountpoint=\"/\",fstype!=\"rootfs\"} / node_filesystem_size_bytes{job=\"observability/node\",mountpoint=\"/\",fstype!=\"rootfs\"}) * 100)",
           "legendFormat": "Disk Usage",
           "refId": "A"
         }
@@ -336,7 +336,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "node_time_seconds{job=\"node\"} - node_boot_time_seconds{job=\"node\"}",
+          "expr": "node_time_seconds{job=\"observability/node\"} - node_boot_time_seconds{job=\"observability/node\"}",
           "legendFormat": "Uptime",
           "refId": "A"
         }
@@ -402,7 +402,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "node_load1{job=\"node\"}",
+          "expr": "node_load1{job=\"observability/node\"}",
           "legendFormat": "Load 1m",
           "refId": "A"
         }
@@ -553,7 +553,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by(mode) (irate(node_cpu_seconds_total{job=\"node\"}[5m])) * 100",
+          "expr": "sum by(mode) (irate(node_cpu_seconds_total{job=\"observability/node\"}[5m])) * 100",
           "legendFormat": "{{mode}}",
           "refId": "A"
         }
@@ -702,7 +702,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "node_memory_MemTotal_bytes{job=\"node\"} - node_memory_MemFree_bytes{job=\"node\"} - node_memory_Buffers_bytes{job=\"node\"} - node_memory_Cached_bytes{job=\"node\"}",
+          "expr": "node_memory_MemTotal_bytes{job=\"observability/node\"} - node_memory_MemFree_bytes{job=\"observability/node\"} - node_memory_Buffers_bytes{job=\"observability/node\"} - node_memory_Cached_bytes{job=\"observability/node\"}",
           "legendFormat": "Used",
           "refId": "A"
         },
@@ -711,7 +711,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "node_memory_Buffers_bytes{job=\"node\"}",
+          "expr": "node_memory_Buffers_bytes{job=\"observability/node\"}",
           "legendFormat": "Buffers",
           "refId": "B"
         },
@@ -720,7 +720,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "node_memory_Cached_bytes{job=\"node\"}",
+          "expr": "node_memory_Cached_bytes{job=\"observability/node\"}",
           "legendFormat": "Cached",
           "refId": "C"
         },
@@ -729,7 +729,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "node_memory_MemFree_bytes{job=\"node\"}",
+          "expr": "node_memory_MemFree_bytes{job=\"observability/node\"}",
           "legendFormat": "Free",
           "refId": "D"
         }
@@ -827,7 +827,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "node_hwmon_temp_celsius{job=\"node\"}",
+          "expr": "node_hwmon_temp_celsius{job=\"observability/node\"}",
           "legendFormat": "CPU Temperature",
           "refId": "A"
         }
@@ -915,7 +915,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "node_load1{job=\"node\"}",
+          "expr": "node_load1{job=\"observability/node\"}",
           "legendFormat": "1 min",
           "refId": "A"
         },
@@ -924,7 +924,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "node_load5{job=\"node\"}",
+          "expr": "node_load5{job=\"observability/node\"}",
           "legendFormat": "5 min",
           "refId": "B"
         },
@@ -933,7 +933,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "node_load15{job=\"node\"}",
+          "expr": "node_load15{job=\"observability/node\"}",
           "legendFormat": "15 min",
           "refId": "C"
         }
@@ -1034,7 +1034,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "irate(node_network_receive_bytes_total{job=\"node\",device!~\"lo|veth.*|docker.*|br-.*\"}[5m])",
+          "expr": "irate(node_network_receive_bytes_total{job=\"observability/node\",device!~\"lo|veth.*|docker.*|br-.*\"}[5m])",
           "legendFormat": "{{device}} Receive",
           "refId": "A"
         },
@@ -1043,7 +1043,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "irate(node_network_transmit_bytes_total{job=\"node\",device!~\"lo|veth.*|docker.*|br-.*\"}[5m])",
+          "expr": "irate(node_network_transmit_bytes_total{job=\"observability/node\",device!~\"lo|veth.*|docker.*|br-.*\"}[5m])",
           "legendFormat": "{{device}} Transmit",
           "refId": "B"
         }
@@ -1144,7 +1144,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "irate(node_disk_read_bytes_total{job=\"node\",device!~\"loop.*\"}[5m])",
+          "expr": "irate(node_disk_read_bytes_total{job=\"observability/node\",device!~\"loop.*\"}[5m])",
           "legendFormat": "{{device}} Read",
           "refId": "A"
         },
@@ -1153,7 +1153,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "irate(node_disk_written_bytes_total{job=\"node\",device!~\"loop.*\"}[5m])",
+          "expr": "irate(node_disk_written_bytes_total{job=\"observability/node\",device!~\"loop.*\"}[5m])",
           "legendFormat": "{{device}} Write",
           "refId": "B"
         }
@@ -1219,7 +1219,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "100 - ((node_filesystem_avail_bytes{job=\"node\",fstype!~\"tmpfs|overlay\",mountpoint!~\"/run.*|/sys.*|/proc.*\"} / node_filesystem_size_bytes{job=\"node\",fstype!~\"tmpfs|overlay\",mountpoint!~\"/run.*|/sys.*|/proc.*\"}) * 100)",
+          "expr": "100 - ((node_filesystem_avail_bytes{job=\"observability/node\",fstype!~\"tmpfs|overlay\",mountpoint!~\"/run.*|/sys.*|/proc.*\"} / node_filesystem_size_bytes{job=\"observability/node\",fstype!~\"tmpfs|overlay\",mountpoint!~\"/run.*|/sys.*|/proc.*\"}) * 100)",
           "legendFormat": "{{mountpoint}}",
           "refId": "A"
         }

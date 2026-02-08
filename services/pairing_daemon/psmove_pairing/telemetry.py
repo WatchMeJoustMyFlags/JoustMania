@@ -21,6 +21,7 @@ def init_telemetry() -> trace.Tracer:
         attributes={
             SERVICE_NAME: service_name,
             SERVICE_VERSION: "1.0.0",
+            "service.namespace": "joustmania",
         }
     )
 

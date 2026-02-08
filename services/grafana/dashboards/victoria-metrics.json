@@ -119,7 +119,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "up{job=\"victoria-metrics\"}",
+          "expr": "up{job=\"observability/victoria-metrics\"}",
           "legendFormat": "Status",
           "refId": "A"
         }
@@ -180,7 +180,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "vm_app_uptime_seconds{job=\"victoria-metrics\"}",
+          "expr": "vm_app_uptime_seconds{job=\"observability/victoria-metrics\"}",
           "legendFormat": "Uptime",
           "refId": "A"
         }
@@ -249,7 +249,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_resident_memory_bytes{job=\"victoria-metrics\"}",
+          "expr": "process_resident_memory_bytes{job=\"observability/victoria-metrics\"}",
           "legendFormat": "RSS",
           "refId": "A"
         }
@@ -318,7 +318,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "vm_data_size_bytes{job=\"victoria-metrics\"}",
+          "expr": "vm_data_size_bytes{job=\"observability/victoria-metrics\"}",
           "legendFormat": "Storage",
           "refId": "A"
         }
@@ -387,7 +387,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "vm_free_disk_space_bytes{job=\"victoria-metrics\"}",
+          "expr": "vm_free_disk_space_bytes{job=\"observability/victoria-metrics\"}",
           "legendFormat": "Free",
           "refId": "A"
         }
@@ -455,7 +455,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "vm_cache_entries{type=\"storage/tsid\", job=\"victoria-metrics\"}",
+          "expr": "vm_cache_entries{type=\"storage/tsid\", job=\"observability/victoria-metrics\"}",
           "legendFormat": "Active Series",
           "refId": "A"
         }
@@ -560,7 +560,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(vm_rows_inserted_total{job=\"victoria-metrics\"}[5m])",
+          "expr": "rate(vm_rows_inserted_total{job=\"observability/victoria-metrics\"}[5m])",
           "legendFormat": "{{type}}",
           "refId": "A"
         }
@@ -651,7 +651,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(vm_new_timeseries_created_total{job=\"victoria-metrics\"}[5m])",
+          "expr": "rate(vm_new_timeseries_created_total{job=\"observability/victoria-metrics\"}[5m])",
           "legendFormat": "New Series",
           "refId": "A"
         }
@@ -755,7 +755,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(vm_http_requests_total{job=\"victoria-metrics\"}[5m])",
+          "expr": "rate(vm_http_requests_total{job=\"observability/victoria-metrics\"}[5m])",
           "legendFormat": "{{path}}",
           "refId": "A"
         }
@@ -847,7 +847,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "vm_request_duration_seconds{job=\"victoria-metrics\", quantile=\"0.95\"}",
+          "expr": "vm_request_duration_seconds{job=\"observability/victoria-metrics\", quantile=\"0.95\"}",
           "legendFormat": "p95 {{path}}",
           "refId": "A"
         },
@@ -856,7 +856,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "vm_request_duration_seconds{job=\"victoria-metrics\", quantile=\"0.5\"}",
+          "expr": "vm_request_duration_seconds{job=\"observability/victoria-metrics\", quantile=\"0.5\"}",
           "legendFormat": "p50 {{path}}",
           "refId": "B"
         }
@@ -971,7 +971,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "100 * rate(vm_cache_requests_total{type=~\".*\", job=\"victoria-metrics\"}[5m]) / (rate(vm_cache_requests_total{type=~\".*\", job=\"victoria-metrics\"}[5m]) + rate(vm_cache_misses_total{type=~\".*\", job=\"victoria-metrics\"}[5m]))",
+          "expr": "100 * rate(vm_cache_requests_total{type=~\".*\", job=\"observability/victoria-metrics\"}[5m]) / (rate(vm_cache_requests_total{type=~\".*\", job=\"observability/victoria-metrics\"}[5m]) + rate(vm_cache_misses_total{type=~\".*\", job=\"observability/victoria-metrics\"}[5m]))",
           "legendFormat": "{{type}}",
           "refId": "A"
         }
@@ -1061,7 +1061,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "vm_cache_entries{job=\"victoria-metrics\"}",
+          "expr": "vm_cache_entries{job=\"observability/victoria-metrics\"}",
           "legendFormat": "{{type}}",
           "refId": "A"
         }
@@ -1166,7 +1166,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_resident_memory_bytes{job=\"victoria-metrics\"}",
+          "expr": "process_resident_memory_bytes{job=\"observability/victoria-metrics\"}",
           "legendFormat": "RSS",
           "refId": "A"
         },
@@ -1175,7 +1175,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "go_memstats_heap_inuse_bytes{job=\"victoria-metrics\"}",
+          "expr": "go_memstats_heap_inuse_bytes{job=\"observability/victoria-metrics\"}",
           "legendFormat": "Heap In-Use",
           "refId": "B"
         },
@@ -1184,7 +1184,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "go_memstats_stack_inuse_bytes{job=\"victoria-metrics\"}",
+          "expr": "go_memstats_stack_inuse_bytes{job=\"observability/victoria-metrics\"}",
           "legendFormat": "Stack In-Use",
           "refId": "C"
         }
@@ -1276,7 +1276,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "vm_data_size_bytes{job=\"victoria-metrics\"}",
+          "expr": "vm_data_size_bytes{job=\"observability/victoria-metrics\"}",
           "legendFormat": "Storage Used",
           "refId": "A"
         },
@@ -1285,7 +1285,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "vm_free_disk_space_bytes{job=\"victoria-metrics\"}",
+          "expr": "vm_free_disk_space_bytes{job=\"observability/victoria-metrics\"}",
           "legendFormat": "Free Disk Space",
           "refId": "B"
         }
@@ -1377,7 +1377,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(process_cpu_seconds_total{job=\"victoria-metrics\"}[5m])",
+          "expr": "rate(process_cpu_seconds_total{job=\"observability/victoria-metrics\"}[5m])",
           "legendFormat": "CPU Usage",
           "refId": "A"
         }
@@ -1468,7 +1468,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "go_goroutines{job=\"victoria-metrics\"}",
+          "expr": "go_goroutines{job=\"observability/victoria-metrics\"}",
           "legendFormat": "Goroutines",
           "refId": "A"
         }

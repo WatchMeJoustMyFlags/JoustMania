@@ -63,16 +63,26 @@ processors:
     check_interval: 1s
     limit_mib: 512
 
+  # Resource processor for infrastructure metrics (node, victoria-metrics, etc.)
+  # Sets service.namespace to "observability" so prometheusremotewrite produces
+  # job labels like "observability/node", "observability/victoria-metrics".
+  resource/infra:
+    attributes:
+      - key: service.namespace
+        value: observability
+        action: insert
+
   # Resource processor to add common attributes
   resource:
     attributes:
       - key: deployment.environment
         value: development
         action: insert
-      # NOTE: service.namespace must NOT be set here or in the Python SDK
-      # Resource attributes. The prometheusremotewrite exporter prefixes the
-      # job label with the namespace (e.g. "joustmania/controller-manager"),
-      # breaking dashboard queries that expect just "controller-manager".
+      # service.namespace is intentionally set in the Python SDK ("joustmania")
+      # and via the resource/infra processor ("observability"). The
+      # prometheusremotewrite exporter prefixes job labels with the namespace
+      # (e.g. "joustmania/controller-manager", "observability/node").
+      # All dashboard queries use these prefixed job names.
 
 exporters:
   # OTLP exporter to send traces to Jaeger
@@ -126,11 +136,11 @@ service:
 
     # Infrastructure metrics pipeline — scraped targets (node-exporter, etc.)
     # Only exports to VictoriaMetrics since Prometheus already scrapes these directly.
-    # Does NOT use the resource processor (no need to tag host metrics with
-    # deployment.environment, and avoids any future service.namespace issues).
+    # Uses resource/infra to tag with service.namespace="observability" so job
+    # labels become "observability/node", "observability/victoria-metrics", etc.
     metrics/infra:
       receivers: [prometheus/infra]
-      processors: [memory_limiter, batch/fast]
+      processors: [memory_limiter, resource/infra, batch/fast]
       exporters: [prometheusremotewrite]
 
     # Logs pipeline

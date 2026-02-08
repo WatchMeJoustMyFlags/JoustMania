@@ -92,6 +92,7 @@ def _do_init(service_name: str, version: str) -> None:
         attributes={
             SERVICE_NAME: service_name,
             SERVICE_VERSION: version,
+            "service.namespace": "joustmania",
         }
     )
 
