@@ -1,10 +1,10 @@
 """
-Prometheus metrics for Menu Service (Phase 38).
+OTEL push metrics for Menu Service.
 
 Tracks system resources and gRPC request performance.
 """
 
-from prometheus_client import Counter, Gauge, Histogram
+from lib.otel_metrics import Counter, Gauge, Histogram
 
 # System metrics
 process_cpu_percent = Gauge("process_cpu_percent", "Process CPU usage percentage")
@@ -75,4 +75,30 @@ stream_publish_drops_total = Counter(
 stream_disconnections_total = Counter(
     "menu_stream_disconnections_total",
     "Total menu event stream disconnections",
+)
+
+# Idle mode metrics
+idle_mode_active = Gauge(
+    "menu_idle_mode_active",
+    "Whether idle mode is currently engaged (1=active, 0=inactive)",
+)
+
+idle_controllers_count = Gauge(
+    "menu_idle_controllers_count",
+    "Number of controllers currently in idle state",
+)
+
+sentinel_controllers_count = Gauge(
+    "menu_sentinel_controllers_count",
+    "Number of active sentinel controllers",
+)
+
+idle_mode_entries_total = Counter(
+    "menu_idle_mode_entries_total",
+    "Total times idle mode has been entered",
+)
+
+idle_mode_wake_total = Counter(
+    "menu_idle_mode_wake_total",
+    "Total times controllers have been woken from idle mode",
 )

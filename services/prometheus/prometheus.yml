@@ -38,20 +38,6 @@ scrape_configs:
           service: 'controller-manager'
           pipeline: 'prometheus-pull'
 
-  # Menu Service (still uses prometheus_client pull)
-  - job_name: 'menu'
-    static_configs:
-      - targets: ['menu:8000']
-        labels:
-          service: 'menu'
-
-  # Audio Service (still uses prometheus_client pull)
-  - job_name: 'audio'
-    static_configs:
-      - targets: ['audio:8000']
-        labels:
-          service: 'audio'
-
   # Prometheus itself
   - job_name: 'prometheus'
     static_configs:
@@ -72,3 +58,11 @@ scrape_configs:
       - targets: ['pairing-daemon:8002']
         labels:
           service: 'psmove-pairing'
+
+  # flagd feature flag service (management port exposes Prometheus metrics)
+  - job_name: 'flagd'
+    scrape_interval: 30s
+    static_configs:
+      - targets: ['flagd:8014']
+        labels:
+          service: 'flagd'

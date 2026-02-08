@@ -71,12 +71,19 @@ services:
       - "file:/etc/flagd/game_settings.json"
       - "--uri"
       - "file:/etc/flagd/user_preferences.json"
+      - "--metrics-exporter"
+      - "otel"
+      - "--otel-collector-uri"
+      - "otel-collector:4317"
+    environment:
+      - OTEL_SERVICE_NAME=flagd
     volumes:
       - ./services/flagd/performance.json:/etc/flagd/performance.json
       - ./services/flagd/game_settings.json:/etc/flagd/game_settings.json
       - ./services/flagd/user_preferences.json:/etc/flagd/user_preferences.json
     expose:
       - "8013"  # flagd evaluation port (gRPC)
+      - "8014"  # flagd management port (metrics)
       - "8015"  # flagd sync port (for in-process evaluation)
     networks:
       - joustmania
@@ -279,7 +286,6 @@ services:
     # Ports exposed only within Docker network (no host binding)
     expose:
       - "50054"  # gRPC service
-      - "8000"   # Prometheus metrics (Phase 38)
     environment:
       - OTEL_SERVICE_NAME=menu-service
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
@@ -327,7 +333,6 @@ services:
     # Ports exposed only within Docker network (no host binding)
     expose:
       - "50056"  # gRPC service
-      - "8000"   # Prometheus metrics
     environment:
       - MOCK_MODE=${AUDIO_MOCK_MODE:-false}
       - OTEL_SERVICE_NAME=audio-service
