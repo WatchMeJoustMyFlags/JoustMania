@@ -33,9 +33,8 @@ dependencies = [
     "prometheus-client>=0.19.0",
     "psutil>=5.9.0",
 
-    # Feature Flags (OpenFeature + flagd for runtime config)
+    # Feature Flags (OpenFeature SDK for flag evaluation; provider comes via joustmania-lib)
     "openfeature-sdk>=0.6.0",
-    "openfeature-provider-flagd>=0.1.0",
 
     # Performance: uvloop for faster event loop (Linux only)
     "uvloop>=0.19.0; sys_platform == 'linux'",
