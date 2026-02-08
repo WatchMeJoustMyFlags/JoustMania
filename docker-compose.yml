@@ -229,7 +229,7 @@ services:
     networks:
       - joustmania
     expose:
-      - "8002"  # Prometheus metrics + healthz
+      - "8002"  # Health check endpoint
     environment:
       - POLL_INTERVAL=10
       - BT_MONITOR_INTERVAL=5

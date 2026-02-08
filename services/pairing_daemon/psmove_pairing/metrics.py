@@ -1,6 +1,6 @@
-"""Prometheus metrics for PS Move pairing daemon."""
+"""OTEL push metrics for PS Move pairing daemon."""
 
-from prometheus_client import Counter, Gauge, Histogram
+from lib.otel_metrics import Counter, Gauge, Histogram
 
 # Pairing metrics
 pairing_attempts_total = Counter(

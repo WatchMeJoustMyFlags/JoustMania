@@ -4,8 +4,8 @@ version = "1.0.0"
 description = "PS Move controller pairing daemon for JoustMania"
 requires-python = ">=3.11,<3.13"
 dependencies = [
-    # Prometheus metrics (pull model)
-    "prometheus-client>=0.17.0",
+    # Shared OTEL metrics + telemetry library
+    "joustmania-lib",
 
     # OpenTelemetry tracing
     "opentelemetry-api>=1.20.0",
@@ -28,6 +28,9 @@ test = [
 
 [project.scripts]
 psmove-pairing = "server:main"
+
+[tool.uv.sources]
+joustmania-lib = { workspace = true }
 
 [build-system]
 requires = ["setuptools>=45", "wheel"]
@@ -58,7 +61,7 @@ ignore = ["ANN"]
 "tests/*.py" = ["ARG001", "ARG002", "E402", "SIM105", "SIM117", "F841"]  # Test fixtures, test patterns
 
 [tool.ruff.lint.isort]
-known-first-party = ["psmove_pairing"]
+known-first-party = ["psmove_pairing", "lib"]
 
 [tool.coverage.run]
 source = ["psmove_pairing"]
