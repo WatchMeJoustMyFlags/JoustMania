@@ -15,13 +15,13 @@ logger = logging.getLogger("psmove-pairing")
 
 def init_telemetry() -> trace.Tracer:
     """Initialize OpenTelemetry with OTLP exporter."""
-    service_name = "psmove-pairing"
+    service_name = "pairing-daemon"
 
     resource = Resource(
         attributes={
             SERVICE_NAME: service_name,
             SERVICE_VERSION: "1.0.0",
-            "service.namespace": "joustmania",
+            "service.namespace": "infrastructure",
         }
     )
 

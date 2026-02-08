@@ -96,7 +96,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count(count by(job) (process_cpu_seconds_total{job=~\"joustmania/controller-manager|joustmania/game-coordinator|joustmania/menu|joustmania/audio|joustmania/psmove-pairing|observability/otel-collector|observability/victoria-metrics|observability/prometheus|observability/flagd\"}))",
+          "expr": "count(count by(job) (process_cpu_seconds_total{job=~\"infrastructure/controller-manager|joustmania/game-coordinator|joustmania/menu|joustmania/audio|infrastructure/pairing-daemon|observability/otel-collector|observability/victoria-metrics|observability/prometheus|infrastructure/flagd\"}))",
           "legendFormat": "Services",
           "refId": "A"
         }
@@ -389,7 +389,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count by(job) (process_cpu_seconds_total{job=~\"joustmania/controller-manager|joustmania/game-coordinator|joustmania/menu|joustmania/audio|joustmania/psmove-pairing|observability/otel-collector|observability/victoria-metrics|observability/prometheus|observability/flagd\"}) > 0",
+          "expr": "count by(job) (process_cpu_seconds_total{job=~\"infrastructure/controller-manager|joustmania/game-coordinator|joustmania/menu|joustmania/audio|infrastructure/pairing-daemon|observability/otel-collector|observability/victoria-metrics|observability/prometheus|infrastructure/flagd\"}) > 0",
           "format": "table",
           "instant": true,
           "refId": "A"
@@ -475,7 +475,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count(up{job=~\"observability/prometheus|observability/grafana|observability/loki|observability/victoria-metrics|observability/otel-collector|observability/node\"} == 1)",
+          "expr": "count(up{job=~\"observability/prometheus|observability/grafana|observability/loki|observability/victoria-metrics|observability/otel-collector|host/node\"} == 1)",
           "legendFormat": "Observability",
           "refId": "A"
         }
@@ -560,7 +560,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "up{job=~\"observability/prometheus|observability/grafana|observability/loki|observability/victoria-metrics|observability/otel-collector|observability/node\"}",
+          "expr": "up{job=~\"observability/prometheus|observability/grafana|observability/loki|observability/victoria-metrics|observability/otel-collector|host/node\"}",
           "format": "table",
           "instant": true,
           "refId": "A"

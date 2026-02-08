@@ -250,7 +250,7 @@
             "uid": "prometheus-direct"
           },
           "editorMode": "code",
-          "expr": "controller_accel_magnitude{job=\"joustmania/controller-manager\", serial=~\"$serial\"}",
+          "expr": "controller_accel_magnitude{job=\"infrastructure/controller-manager\", serial=~\"$serial\"}",
           "instant": false,
           "legendFormat": "{{serial}}",
           "range": true,
@@ -528,7 +528,7 @@
             "uid": "prometheus-direct"
           },
           "editorMode": "code",
-          "expr": "controller_accel_magnitude{job=\"joustmania/controller-manager\", serial=~\"$serial\"}",
+          "expr": "controller_accel_magnitude{job=\"infrastructure/controller-manager\", serial=~\"$serial\"}",
           "instant": false,
           "legendFormat": "{{serial}} (OTEL→Prom 500ms)",
           "range": true,
@@ -683,7 +683,7 @@
             "uid": "prometheus-direct"
           },
           "editorMode": "code",
-          "expr": "count_over_time(controller_accel_magnitude{job=\"joustmania/controller-manager\", serial=~\"$serial\"}[1m])",
+          "expr": "count_over_time(controller_accel_magnitude{job=\"infrastructure/controller-manager\", serial=~\"$serial\"}[1m])",
           "instant": true,
           "legendFormat": "OTEL→Prom 500ms",
           "refId": "B"
@@ -823,7 +823,7 @@
             "uid": "prometheus-direct"
           },
           "editorMode": "code",
-          "expr": "time() - controller_accel_magnitude{job=\"joustmania/controller-manager\", serial=~\"$serial\"}",
+          "expr": "time() - controller_accel_magnitude{job=\"infrastructure/controller-manager\", serial=~\"$serial\"}",
           "instant": true,
           "legendFormat": "OTEL→Prom 500ms",
           "refId": "B"

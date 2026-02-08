@@ -189,6 +189,7 @@ services:
       - BLUETOOTH_HCI=${BLUETOOTH_HCI:-hci0}
       - DBUS_SYSTEM_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket
       - OTEL_SERVICE_NAME=controller-manager-service
+      - OTEL_SERVICE_NAMESPACE=infrastructure
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       # Issue #62: 100Hz acceleration metrics for real-time visualization
       # Default 100ms; set to 10ms for 100Hz demo
@@ -236,7 +237,8 @@ services:
       - METRICS_PORT=8002
       - PSMOVE_PATH=/usr/local/bin/psmove
       - DBUS_SYSTEM_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket
-      - OTEL_SERVICE_NAME=psmove-pairing
+      - OTEL_SERVICE_NAME=pairing-daemon
+      - OTEL_SERVICE_NAMESPACE=infrastructure
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
     restart: unless-stopped
     # Healthcheck defined in Dockerfile (uses HTTP /healthz)
