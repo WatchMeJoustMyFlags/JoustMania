@@ -4,7 +4,7 @@ PS Move Controller Pairing Daemon.
 
 Polls for USB-connected PS Move controllers and pairs them automatically.
 Monitors Bluetooth-connected controllers for signal strength and connection status.
-Provides Prometheus metrics and OpenTelemetry tracing for observability.
+Provides OTEL push metrics and OpenTelemetry tracing for observability.
 
 Runs as a Docker container alongside other JoustMania services.
 
@@ -18,21 +18,22 @@ Environment:
   BT_MONITOR_INTERVAL - seconds between Bluetooth monitoring (default: 5)
   PSMOVE_PATH   - path to psmove binary (default: auto-detect)
   DEBUG         - set to 1 for verbose logging
-  METRICS_PORT  - port for Prometheus metrics (default: 8002)
+  HEALTH_PORT   - port for health check endpoint (default: 8002)
   OTEL_EXPORTER_OTLP_ENDPOINT - OTLP collector endpoint (default: http://localhost:4317)
 
 Endpoints:
-  GET /metrics  - Prometheus metrics
   GET /healthz  - Health check (200 if healthy, 503 if unhealthy)
 """
 
 import asyncio
 import json
 import logging
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from threading import Thread
 
-from prometheus_client import REGISTRY, MetricsHandler
-
-from psmove_pairing import PairingDaemon, find_psmove_binary, init_telemetry
+from lib.otel_metrics import init_metrics
+from lib.system_metrics import start_system_metrics_collector_thread
+from psmove_pairing import PairingDaemon, find_psmove_binary, init_telemetry, metrics
 from psmove_pairing.config import DEBUG, METRICS_PORT
 
 # Global daemon reference for health checks
@@ -47,19 +48,16 @@ logging.basicConfig(
 logger = logging.getLogger("psmove-pairing")
 
 
-class HealthHandler(MetricsHandler):
-    """HTTP handler that adds /healthz endpoint to prometheus metrics."""
+class HealthHandler(BaseHTTPRequestHandler):
+    """HTTP handler for /healthz endpoint."""
 
     def do_GET(self):
         """Handle GET requests."""
-        if self.path == "/healthz" or self.path == "/healthz/":
-            self._handle_healthz()
-        elif self.path == "/health" or self.path == "/health/":
-            # Alias for /healthz
+        if self.path in ("/healthz", "/healthz/", "/health", "/health/"):
             self._handle_healthz()
         else:
-            # Delegate to prometheus metrics handler
-            super().do_GET()
+            self.send_response(404)
+            self.end_headers()
 
     def _handle_healthz(self):
         """Handle health check request."""
@@ -82,19 +80,14 @@ class HealthHandler(MetricsHandler):
         self.end_headers()
         self.wfile.write(json.dumps(status).encode())
 
+    def log_message(self, format, *args):
+        """Suppress default request logging."""
 
-def start_http_server_with_health(port: int) -> None:
-    """Start HTTP server with both metrics and health endpoints."""
-    from http.server import HTTPServer
-    from threading import Thread
 
-    # Set registry as class attribute — MetricsHandler reads it from self.registry,
-    # and HTTPServer passes only positional args to the handler constructor.
-    handler = type("HealthHandlerWithRegistry", (HealthHandler,), {"registry": REGISTRY})
-
-    server = HTTPServer(("", port), handler)
-    thread = Thread(target=server.serve_forever)
-    thread.daemon = True
+def start_health_server(port: int) -> None:
+    """Start HTTP server with health endpoint."""
+    server = HTTPServer(("", port), HealthHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
 
@@ -102,11 +95,22 @@ def main() -> None:
     """Entry point."""
     global _daemon
 
-    # Start HTTP server with metrics and health endpoints
-    logger.info(f"Starting HTTP server on port {METRICS_PORT} (metrics + healthz)")
-    start_http_server_with_health(METRICS_PORT)
+    # Initialize OTEL push metrics
+    init_metrics(service_name="psmove-pairing")
+    logger.info("OTEL push metrics initialized for pairing daemon")
 
-    # Initialize OpenTelemetry
+    # Start process-level system metrics collection (CPU, memory, threads)
+    start_system_metrics_collector_thread(
+        cpu_counter=metrics.process_cpu_seconds_total,
+        memory_gauge=metrics.process_resident_memory_bytes,
+        threads_gauge=metrics.process_threads,
+    )
+
+    # Start health check HTTP server
+    logger.info(f"Starting health server on port {METRICS_PORT}")
+    start_health_server(METRICS_PORT)
+
+    # Initialize OpenTelemetry tracing
     tracer = init_telemetry()
 
     # Find psmove binary

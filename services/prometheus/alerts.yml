@@ -32,7 +32,7 @@ groups:
 
       # System alerts
       - alert: HighCPUUsage
-        expr: process_cpu_percent > 80
+        expr: rate(process_cpu_seconds_total[5m]) * 100 > 80
         for: 2m
         labels:
           severity: warning
@@ -41,13 +41,13 @@ groups:
           description: "CPU usage is {{$value}}% for 2 minutes (>80% threshold)."
 
       - alert: HighMemoryUsage
-        expr: process_memory_mb > 500
+        expr: process_resident_memory_bytes > 524288000
         for: 2m
         labels:
           severity: warning
         annotations:
           summary: "High memory usage on {{$labels.job}}"
-          description: "Memory usage is {{$value}}MB (>500MB threshold)."
+          description: "Memory usage is {{$value | humanize1024}}B (>500MB threshold)."
 
       - alert: LowGameLoopHz
         expr: game_actual_update_frequency_hz < 55

@@ -273,7 +273,7 @@ histogram_quantile(0.99, game_loop_latency_ms_bucket{mode="FFA"})
 
 **Panel 3: CPU Usage**
 ```promql
-process_cpu_percent
+rate(process_cpu_seconds_total[5m]) * 100
 ```
 
 ### Alerting (Optional)

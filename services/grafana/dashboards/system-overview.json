@@ -448,7 +448,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_cpu_percent",
+          "expr": "rate(process_cpu_seconds_total[5m]) * 100",
           "legendFormat": "{{job}}",
           "refId": "A"
         }
@@ -510,7 +510,7 @@
               }
             ]
           },
-          "unit": "decmbytes"
+          "unit": "bytes"
         },
         "overrides": []
       },
@@ -543,7 +543,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_memory_mb",
+          "expr": "process_resident_memory_bytes",
           "legendFormat": "{{job}}",
           "refId": "A"
         }

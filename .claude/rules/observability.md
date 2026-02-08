@@ -70,6 +70,25 @@ with metrics.my_latency_seconds.time():
 - End histograms with `_seconds`, `_bytes`, etc.
 - Include units in name
 
+### Standard Process Metrics
+
+All services (Python and infra) use the Prometheus/Go naming convention:
+
+```python
+# In each service's metrics.py
+process_cpu_seconds_total = Counter("process_cpu_seconds_total", "Total user and system CPU time spent in seconds")
+process_resident_memory_bytes = Gauge("process_resident_memory_bytes", "Resident memory size in bytes")
+process_threads = Gauge("process_threads", "Number of active threads")
+```
+
+Dashboard PromQL patterns:
+- CPU %: `rate(process_cpu_seconds_total[5m]) * 100`
+- Memory: `process_resident_memory_bytes` (Grafana auto-formats bytes)
+
+Infra services (OTel Collector, VictoriaMetrics, Prometheus, flagd) expose these natively.
+The OTel Collector's own metrics (`otelcol_process_*`) are relabeled to standard names
+in the `prometheus/infra` scrape config.
+
 ## Dashboard Updates
 
 After adding metrics:

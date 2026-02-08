@@ -370,8 +370,8 @@ Prometheus metrics are exposed at `http://localhost:8000/metrics`.
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `process_cpu_percent` | Gauge | CPU usage percentage |
-| `process_memory_mb` | Gauge | Memory usage in MB |
+| `process_cpu_seconds_total` | Counter | Total user and system CPU time in seconds |
+| `process_resident_memory_bytes` | Gauge | Resident memory size in bytes |
 | `process_threads` | Gauge | Active thread count |
 
 ## Testing

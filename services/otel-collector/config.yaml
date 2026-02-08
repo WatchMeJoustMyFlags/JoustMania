@@ -27,6 +27,25 @@ receivers:
           scrape_interval: 30s
           static_configs:
             - targets: ['prometheus:9090']
+        - job_name: 'flagd'
+          scrape_interval: 30s
+          static_configs:
+            - targets: ['flagd:8014']
+        # Self-telemetry: the collector exposes its own metrics on :8888.
+        # Rename otelcol_process_* to standard process_* for unified dashboards.
+        - job_name: 'otel-collector'
+          scrape_interval: 30s
+          static_configs:
+            - targets: ['localhost:8888']
+          metric_relabel_configs:
+            - source_labels: [__name__]
+              regex: 'otelcol_process_cpu_seconds'
+              target_label: __name__
+              replacement: 'process_cpu_seconds_total'
+            - source_labels: [__name__]
+              regex: 'otelcol_process_memory_rss'
+              target_label: __name__
+              replacement: 'process_resident_memory_bytes'
 
 processors:
   # Batch processor for better performance (traces/logs)

@@ -96,12 +96,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count(count by(job) (process_cpu_percent{job=~\"controller-manager|game-coordinator|menu|audio\"}))",
+          "expr": "count(count by(job) (process_cpu_seconds_total{job=~\"controller-manager|game-coordinator|menu|audio|psmove-pairing|otel-collector|victoria-metrics|prometheus|flagd\"}))",
           "legendFormat": "Services",
           "refId": "A"
         }
       ],
-      "title": "App Services Up",
+      "title": "Services Up",
       "type": "stat"
     },
     {
@@ -389,13 +389,13 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count by(job) (process_cpu_percent{job=~\"controller-manager|game-coordinator|menu|audio\"}) > 0",
+          "expr": "count by(job) (process_cpu_seconds_total{job=~\"controller-manager|game-coordinator|menu|audio|psmove-pairing|otel-collector|victoria-metrics|prometheus|flagd\"}) > 0",
           "format": "table",
           "instant": true,
           "refId": "A"
         }
       ],
-      "title": "Application Services",
+      "title": "All Services",
       "transformations": [
         {
           "id": "organize",
@@ -676,7 +676,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_cpu_percent",
+          "expr": "rate(process_cpu_seconds_total[5m]) * 100",
           "legendFormat": "{{job}}",
           "refId": "A"
         }
@@ -735,7 +735,7 @@
               }
             ]
           },
-          "unit": "decmbytes"
+          "unit": "bytes"
         },
         "overrides": []
       },
@@ -768,7 +768,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_memory_mb",
+          "expr": "process_resident_memory_bytes",
           "legendFormat": "{{job}}",
           "refId": "A"
         }
