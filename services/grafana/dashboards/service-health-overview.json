@@ -676,7 +676,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(process_cpu_seconds_total{job=~\"joustmania/controller-manager|joustmania/game-coordinator|joustmania/menu|joustmania/audio|joustmania/psmove-pairing|observability/otel-collector|observability/victoria-metrics|observability/prometheus|observability/flagd|observability/node\"}[5m]) * 100",
+          "expr": "rate(process_cpu_seconds_total[5m]) * 100",
           "legendFormat": "{{job}}",
           "refId": "A"
         }
@@ -768,7 +768,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_resident_memory_bytes{job=~\"joustmania/controller-manager|joustmania/game-coordinator|joustmania/menu|joustmania/audio|joustmania/psmove-pairing|observability/otel-collector|observability/victoria-metrics|observability/prometheus|observability/flagd|observability/node\"}",
+          "expr": "process_resident_memory_bytes",
           "legendFormat": "{{job}}",
           "refId": "A"
         }
