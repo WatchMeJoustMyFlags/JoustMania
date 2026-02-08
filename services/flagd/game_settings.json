@@ -12,7 +12,21 @@
         "fast": 3,
         "ultra_fast": 4
       },
-      "defaultVariant": "medium"
+      "defaultVariant": "medium",
+      "targeting": {
+        "if": [
+          {
+            "==": [
+              {
+                "var": "game_mode"
+              },
+              "Werewolf"
+            ]
+          },
+          "fast",
+          null
+        ]
+      }
     },
     "num_teams": {
       "state": "ENABLED",

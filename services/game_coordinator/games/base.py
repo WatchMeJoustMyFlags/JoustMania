@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 from opentelemetry import context as otel_context
 from opentelemetry import trace
 
+from lib.feature_flags import set_game_transaction_context
 from lib.telemetry import inject_trace_context
 from lib.types import GameEvent, Sensitivity, Sound
 from services.game_coordinator import metrics
@@ -986,6 +987,13 @@ class BaseGameMode(ABC):
                     raise ValueError(f"Need at least 2 players, got {len(self.players)}")
 
                 init_span.set_attribute("player_count", len(self.players))
+
+                # Set transaction context for flag evaluations during this game
+                set_game_transaction_context(
+                    game_mode=self.get_game_name(),
+                    controller_count=len(self.players),
+                    sensitivity=self.sensitivity.value,
+                )
 
                 # Additional phases (e.g., color_assignment, team_formation)
                 # These are children of initialization_phase
