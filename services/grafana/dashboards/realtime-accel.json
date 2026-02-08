@@ -123,13 +123,13 @@
       "pluginVersion": "10.2.3",
       "targets": [
         {
-          "channel": "stream/joustmania/accel",
+          "channel": "stream/joustmania-accel",
           "datasource": {
             "type": "grafana",
             "uid": "-- Grafana --"
           },
           "filter": {
-            "fields": ["time", "serial", "magnitude"]
+            "fields": ["time", "magnitude"]
           },
           "queryType": "streaming",
           "refId": "A"
