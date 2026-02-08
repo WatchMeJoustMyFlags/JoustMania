@@ -974,7 +974,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(controller_info * on(serial) group_left(name) ((menu_player_ready == 1) or (game_player_alive == 1)), name)",
+        "definition": "query_result(controller_info * on(serial) group_left() ((menu_player_ready == 1) or (game_player_alive == 1)))",
         "hide": 0,
         "includeAll": true,
         "label": "Player",
@@ -982,11 +982,11 @@
         "name": "player",
         "options": [],
         "query": {
-          "query": "label_values(controller_info * on(serial) group_left(name) ((menu_player_ready == 1) or (game_player_alive == 1)), name)",
+          "query": "query_result(controller_info * on(serial) group_left() ((menu_player_ready == 1) or (game_player_alive == 1)))",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
-        "regex": "",
+        "regex": "/name=\"([^\"]+)\"/",
         "skipUrlSync": false,
         "sort": 1,
         "type": "query"
@@ -997,7 +997,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(controller_info{name=~\"$player\"} * on(serial) group_left(name) ((menu_player_ready == 1) or (game_player_alive == 1)), serial)",
+        "definition": "query_result(controller_info{name=~\"$player\"} * on(serial) group_left() ((menu_player_ready == 1) or (game_player_alive == 1)))",
         "hide": 2,
         "includeAll": true,
         "label": "Serial",
@@ -1005,11 +1005,11 @@
         "name": "serial",
         "options": [],
         "query": {
-          "query": "label_values(controller_info{name=~\"$player\"} * on(serial) group_left(name) ((menu_player_ready == 1) or (game_player_alive == 1)), serial)",
+          "query": "query_result(controller_info{name=~\"$player\"} * on(serial) group_left() ((menu_player_ready == 1) or (game_player_alive == 1)))",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
-        "regex": "",
+        "regex": "/serial=\"([^\"]+)\"/",
         "skipUrlSync": false,
         "sort": 1,
         "type": "query"
