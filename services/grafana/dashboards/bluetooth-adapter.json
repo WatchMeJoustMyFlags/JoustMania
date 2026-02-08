@@ -238,8 +238,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by(hci_adapter) (increase(controller_disconnect_total[24h]))",
-          "legendFormat": "{{hci_adapter}}",
+          "expr": "sum(increase(controller_disconnect_total[24h]))",
+          "legendFormat": "Total",
           "refId": "A"
         }
       ],
