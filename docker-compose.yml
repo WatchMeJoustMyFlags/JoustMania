@@ -130,6 +130,8 @@ services:
     volumes:
       - ./services/otel-collector/config.yaml:/etc/otel-collector-config.yaml:ro
     ports:
+      # OTLP gRPC - exposed for host-network containers (pairing-daemon)
+      - "4317:4317"
       # Only expose Prometheus metrics for external monitoring
       - "8889:8889"   # Prometheus metrics (Jaeger uses 8888)
     depends_on:
@@ -218,6 +220,9 @@ services:
     container_name: joustmania-pairing-daemon
     privileged: true
     pid: "host"
+    # Host network required for AF_BLUETOOTH HCI sockets (hciconfig/hcitool).
+    # D-Bus works in bridge mode, but raw HCI needs the host network namespace.
+    network_mode: host
     volumes:
       # D-Bus socket for BlueZ communication (RW for adapter power-cycle)
       - /var/run/dbus:/var/run/dbus
@@ -227,10 +232,7 @@ services:
       - /dev:/dev:rslave
       # PS Move calibration data (shared with controller-manager)
       - psmoveapi-data:/root/.psmoveapi
-    networks:
-      - joustmania
-    expose:
-      - "8002"  # Health check endpoint
+    # Port 8002 (health) binds directly on host via network_mode: host
     environment:
       - POLL_INTERVAL=10
       - BT_MONITOR_INTERVAL=5
@@ -239,7 +241,8 @@ services:
       - DBUS_SYSTEM_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket
       - OTEL_SERVICE_NAME=pairing-daemon
       - OTEL_SERVICE_NAMESPACE=infrastructure
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      # localhost because network_mode:host can't use Docker DNS
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
     restart: unless-stopped
     # Healthcheck defined in Dockerfile (uses HTTP /healthz)
 
