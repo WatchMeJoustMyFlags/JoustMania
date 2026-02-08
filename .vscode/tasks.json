@@ -4,7 +4,7 @@
     {
       "label": "Lint Code",
       "type": "shell",
-      "command": "bash scripts/ci/lint.sh",
+      "command": "make lint",
       "group": "test",
       "presentation": {
         "reveal": "always",
@@ -23,7 +23,7 @@
     {
       "label": "Type Check",
       "type": "shell",
-      "command": "bash scripts/ci/typecheck.sh",
+      "command": "make check",
       "group": "test",
       "presentation": {
         "reveal": "always",
@@ -42,7 +42,7 @@
     {
       "label": "Build All Services",
       "type": "shell",
-      "command": "bash scripts/ci/build-all.sh",
+      "command": "docker compose build",
       "group": "build",
       "presentation": {
         "reveal": "always",
@@ -52,7 +52,7 @@
     {
       "label": "Run All CI Checks",
       "type": "shell",
-      "command": "bash scripts/ci/lint.sh && bash scripts/ci/format-check.sh && bash scripts/ci/typecheck.sh && bash scripts/ci/lint-dockerfiles.sh",
+      "command": "make check && make ci-lint-dockerfiles",
       "group": {
         "kind": "test",
         "isDefault": true
