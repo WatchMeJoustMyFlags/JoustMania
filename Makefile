@@ -157,7 +157,6 @@ protos-all: protos protos-ts protos-go
 clean-protos:
 	rm -f proto/*_pb2.py proto/*_pb2_grpc.py
 	rm -rf proto/__pycache__
-	rm -rf services/dashboard/src/gen/*
 	rm -rf services/connect-proxy/gen/*
 
 # ============================================================================
@@ -205,22 +204,6 @@ test-debug: clean-test-venv
 # CI Targets (used by GitHub Actions)
 # ============================================================================
 # These are optimized for CI - local development should use targets above.
-
-# Builder image defaults (CI overrides these)
-BUILDER_IMAGE ?= ghcr.io/watchmejoustmyflags/joustmania/builder:latest
-PSMOVE_BUILDER_IMAGE ?= ghcr.io/watchmejoustmyflags/joustmania/psmove-builder:latest
-
-# Build a single service (used by CI matrix)
-.PHONY: ci-build-service
-ci-build-service:
-ifndef SERVICE
-	$(error SERVICE is required. Usage: make ci-build-service SERVICE=game_coordinator)
-endif
-	docker build \
-		--build-arg BUILDER_IMAGE=$(BUILDER_IMAGE) \
-		--build-arg PSMOVE_BUILDER_IMAGE=$(PSMOVE_BUILDER_IMAGE) \
-		-t ghcr.io/watchmejoustmyflags/joustmania/$(SERVICE)-service:latest \
-		-f services/$(SERVICE)/Dockerfile .
 
 # Build CI proto image (used by validation scripts)
 .PHONY: ci-proto-image

@@ -41,8 +41,5 @@ docker run --rm -v "$(pwd):/workspace" -w /workspace \
 
 ## Integration
 
-This image is used by:
-- `scripts/ci/lint.sh`
-- `scripts/ci/format-check.sh`
-- `scripts/ci/typecheck.sh`
-- GitHub Actions CI workflow
+This image can be used for local linting without installing tools.
+CI uses `uv run ruff check .` directly (see `make lint`).

@@ -32,9 +32,8 @@ docker run --rm -v "$(pwd):/workspace" -w /workspace \
 
 ## Integration
 
-This image is used by:
-- `scripts/ci/lint-dockerfiles.sh`
-- GitHub Actions CI workflow
+This image can be used for local Dockerfile linting.
+CI uses `hadolint/hadolint:latest-alpine` directly (see `make ci-lint-dockerfiles`).
 
 ## Configuration
 
