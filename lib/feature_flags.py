@@ -11,6 +11,7 @@ import logging
 import os
 
 from openfeature import api
+from openfeature.contrib.hook.opentelemetry import TracingHook
 from openfeature.contrib.provider.flagd import FlagdProvider
 from openfeature.contrib.provider.flagd.config import ResolverType
 
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 # Track initialized domains to avoid re-initialization
 _initialized_domains: set[str] = set()
+_hooks_registered: bool = False
 
 
 def init_flag_domain(domain: str) -> None:
@@ -34,6 +36,12 @@ def init_flag_domain(domain: str) -> None:
     if domain in _initialized_domains:
         logger.debug(f"Domain '{domain}' already initialized, skipping")
         return
+
+    global _hooks_registered
+    if not _hooks_registered:
+        api.add_hooks([TracingHook()])
+        _hooks_registered = True
+        logger.info("Registered OpenFeature TracingHook for OTEL integration")
 
     flagd_host = os.environ.get("FLAGD_HOST", "flagd")
     flagd_port = int(os.environ.get("FLAGD_PORT", "8015"))
