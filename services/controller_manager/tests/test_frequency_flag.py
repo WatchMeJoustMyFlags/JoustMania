@@ -129,3 +129,35 @@ class TestOnPerformanceFlagsChanged:
             mock_logger.warning.assert_called_once()
         finally:
             self._restore()
+
+    @patch("lib.feature_flags.get_flag_client")
+    def test_skipped_when_other_flag_changed(self, mock_get_client):
+        """Handler skips evaluation when a different flag changed."""
+        self._reset()
+        try:
+            event = MagicMock()
+            event.flags_changed = ["sensitivity_mode"]
+
+            servicer_mod._on_performance_flags_changed(event)
+            assert servicer_mod._frequency_override is None
+            mock_get_client.assert_not_called()
+        finally:
+            self._restore()
+
+    @patch("services.controller_manager.servicer.metrics")
+    @patch("lib.feature_flags.get_flag_client")
+    def test_evaluates_when_our_flag_changed(self, mock_get_client, mock_metrics):
+        """Handler evaluates when update_frequency_hz is in changed flags."""
+        self._reset()
+        try:
+            mock_client = MagicMock()
+            mock_client.get_integer_value.return_value = 45
+            mock_get_client.return_value = mock_client
+
+            event = MagicMock()
+            event.flags_changed = ["sensitivity_mode", "update_frequency_hz"]
+
+            servicer_mod._on_performance_flags_changed(event)
+            assert servicer_mod._frequency_override == 45
+        finally:
+            self._restore()

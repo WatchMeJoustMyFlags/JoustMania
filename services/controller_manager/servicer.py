@@ -674,8 +674,13 @@ def init_frequency_listener() -> None:
     logger.info("Frequency flag listener registered on performance client")
 
 
-def _on_performance_flags_changed(_event_details) -> None:
+def _on_performance_flags_changed(event_details) -> None:
     """Update frequency override when flagd config changes."""
+    # Skip if event specifies changed flags and ours isn't among them
+    changed = getattr(event_details, "flags_changed", None)
+    if changed is not None and "update_frequency_hz" not in changed:
+        return
+
     global _frequency_override
     try:
         from openfeature.evaluation_context import EvaluationContext
