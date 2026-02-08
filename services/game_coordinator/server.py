@@ -65,7 +65,7 @@ async def serve(port=50053):
 
     # Initialize OTEL push metrics (Issue #103)
     # 100ms export interval for real-time gameplay visualization
-    init_metrics(service_name="game-coordinator", export_interval_ms=100)
+    init_metrics(export_interval_ms=100)
     logger.info("OTEL push metrics initialized (100ms export interval)")
 
     # Start system metrics collection
