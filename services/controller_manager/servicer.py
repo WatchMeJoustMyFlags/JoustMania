@@ -31,6 +31,7 @@ from services.controller_manager.discovery_loop import DiscoveryLoop
 from services.controller_manager.effects_base import ControllerEffectsBase
 from services.controller_manager.event_publisher import EventPublisher as EventPublisherHelper
 from services.controller_manager.feedback_manager import FeedbackManager
+from services.controller_manager.frequency_flag import get_flag_frequency
 from services.controller_manager.monitoring import ControllerMonitoring
 from services.controller_manager.name_manager import NameManager
 from services.controller_manager.state_cache import StateCache
@@ -499,6 +500,12 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
 
             while not context.cancelled():
                 try:
+                    # Check for flagd frequency override
+                    flag_hz = get_flag_frequency()
+                    if flag_hz is not None and flag_hz != current_hz:
+                        logger.info(f"[{subscriber_id}] Frequency override from flagd: {current_hz} -> {flag_hz} Hz")
+                        current_hz = flag_hz
+
                     # Calculate interval from current Hz
                     interval = 1.0 / current_hz
 

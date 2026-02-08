@@ -38,6 +38,11 @@ async def serve(port=50052):
     init_metrics(service_name="controller-manager", export_interval_ms=export_interval_ms)
     logger.info(f"OTEL push metrics initialized ({export_interval_ms}ms export interval)")
 
+    # Initialize direct flagd integration for dynamic streaming frequency
+    from services.controller_manager.frequency_flag import init_frequency_flag
+
+    init_frequency_flag()
+
     # Start prometheus_client HTTP server for direct pull scraping (pipeline comparison)
     from prometheus_client import start_http_server
 
