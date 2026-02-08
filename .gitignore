@@ -1,12 +1,9 @@
-
-#joustmania specific files
-conf/supervisor/conf.d/joust.conf
-
 # Environment files (local overrides)
 .env
 !.env.mock
 
 .python_history
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -38,8 +35,6 @@ var/
 .local
 
 # PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
 
@@ -61,7 +56,7 @@ coverage.xml
 *.mo
 *.pot
 
-# Django stuff:
+# Logs
 *.log
 
 # Sphinx documentation
@@ -70,32 +65,28 @@ docs/_build/
 # PyBuilder
 target/
 
-#music files, but not the classical theme
-audio/Joust/music
-audio/Commander/music/
-audio/Zombie/music/
-audio/Menu/music
-!audio/Joust/music/classical.wav
-
-#other stuff
+# OS
 *.DS_Store
-apfiles/ap_active
-
 
 # Python virtualenv
 venv
+.venv/
 
-#The joust.conf will change with a different username
-conf/supervisor/conf.d/joust.conf
-
+# Docker setup
 get-docker.sh
 
-# Builder marker files (Phase 69)
+# Builder marker files
 .builder-built
 .psmove-builder-built
 
 # Linter cache
 .ruff_cache/
+
+# Local notes
 *.local.md
+
+# Runtime data
 controller_names.txt
-.venv/
+
+# Git worktrees
+worktrees/

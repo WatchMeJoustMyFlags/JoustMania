@@ -21,7 +21,7 @@ Validate protobuf file generation and bytecode compilation.
 - Verifies bytecode compilation (.opt-2.pyc files)
 
 ```bash
-make validate-protos  # Recommended
+make ci-validate-protos  # Recommended
 # or
 bash scripts/ci/validate-protos.sh
 ```
@@ -35,7 +35,7 @@ Validate Python package installation and imports.
 - Checks for dependency conflicts
 
 ```bash
-make validate-packages  # Recommended
+make ci-validate-packages  # Recommended
 # or
 bash scripts/ci/validate-packages.sh
 ```
@@ -45,25 +45,23 @@ bash scripts/ci/validate-packages.sh
 All CI operations are available as Make targets:
 
 ```bash
-# Code Quality (inlined in Makefile)
-make lint              # Run ruff linting
-make format            # Format code with ruff
-make format-check      # Check formatting
-make typecheck         # Type check all services
-make lint-dockerfiles  # Lint Dockerfiles with hadolint
+# Code Quality
+make lint                  # Run ruff linting
+make format                # Format code with ruff
+make format-check          # Check formatting without modifying
+make check                 # Run lint + type check
 
 # Validation (uses these scripts)
-make validate-protos   # Validate proto generation
-make validate-packages # Validate package installation
+make ci-validate-protos    # Validate proto generation
+make ci-validate-packages  # Validate package installation
+make ci-lint-dockerfiles   # Lint Dockerfiles with hadolint
 
-# Building (inlined in Makefile)
-make build-service SERVICE=<name>  # Build single service
-make build-all-services            # Build all services
+# Testing
+make test                  # Run integration tests
+make test-integration      # Run integration tests (alias)
 
-# Combined
-make ci-all    # Run all quality checks
-make ci-quick  # Run quick checks (lint + format)
-make test      # Run integration tests
+# Building
+make ci-build-service SERVICE=<name>  # Build single service
 ```
 
 ## Local Development
@@ -72,9 +70,6 @@ make test      # Run integration tests
 # Format code before committing
 make format
 
-# Run quick pre-commit checks
-make ci-quick
-
-# Run all CI checks (same as GitHub Actions)
-make ci-all
+# Run pre-commit checks
+make lint
 ```

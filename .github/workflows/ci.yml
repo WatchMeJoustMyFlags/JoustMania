@@ -229,7 +229,6 @@ jobs:
     outputs:
       builder: ${{ steps.filter.outputs.builder }}
       psmove: ${{ steps.filter.outputs.psmove }}
-      pygame: ${{ steps.filter.outputs.pygame }}
     steps:
       - uses: actions/checkout@v4
 
@@ -241,8 +240,6 @@ jobs:
               - 'images/builder/**'
             psmove:
               - 'images/psmove-builder/**'
-            pygame:
-              - 'images/pygame-builder/**'
 
   # Build and push builder images to GHCR (Phase 75)
   # Multi-platform builds for amd64 (CI/dev) and arm64 (Raspberry Pi)

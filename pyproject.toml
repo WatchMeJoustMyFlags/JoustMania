@@ -33,6 +33,14 @@ members = [
     "tests/integration",
 ]
 
+# pytest configuration (migrated from pytest.ini)
+[tool.pytest.ini_options]
+testpaths = ["services", "lib", "tests/integration"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+addopts = "-v"
+
 # ty - Type checking configuration
 [tool.ty]
 # Start permissive, tighten gradually
