@@ -32,7 +32,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
 
 from lib.otel_metrics import init_metrics
-from psmove_pairing import PairingDaemon, find_psmove_binary, init_telemetry
+from lib.system_metrics import start_system_metrics_collector_thread
+from psmove_pairing import PairingDaemon, find_psmove_binary, init_telemetry, metrics
 from psmove_pairing.config import DEBUG, METRICS_PORT
 
 # Global daemon reference for health checks
@@ -97,6 +98,13 @@ def main() -> None:
     # Initialize OTEL push metrics
     init_metrics(service_name="psmove-pairing")
     logger.info("OTEL push metrics initialized for pairing daemon")
+
+    # Start process-level system metrics collection (CPU, memory, threads)
+    start_system_metrics_collector_thread(
+        cpu_gauge=metrics.process_cpu_percent,
+        memory_gauge=metrics.process_memory_mb,
+        threads_gauge=metrics.process_threads,
+    )
 
     # Start health check HTTP server
     logger.info(f"Starting health server on port {METRICS_PORT}")

@@ -68,3 +68,8 @@ bluetooth_adapter_connections = Gauge(
     "Number of controllers per adapter",
     ["hci_adapter"],
 )
+
+# Process-level system metrics (shared with other services via lib/system_metrics.py)
+process_cpu_percent = Gauge("process_cpu_percent", "Process CPU usage percentage")
+process_memory_mb = Gauge("process_memory_mb", "Process memory usage in MB")
+process_threads = Gauge("process_threads", "Number of active threads")

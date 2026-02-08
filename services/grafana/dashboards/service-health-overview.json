@@ -96,7 +96,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count(count by(job) (process_cpu_percent{job=~\"controller-manager|game-coordinator|menu|audio\"}))",
+          "expr": "count(count by(job) (process_cpu_percent{job=~\"controller-manager|game-coordinator|menu|audio|psmove-pairing\"}))",
           "legendFormat": "Services",
           "refId": "A"
         }
@@ -389,7 +389,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count by(job) (process_cpu_percent{job=~\"controller-manager|game-coordinator|menu|audio\"}) > 0",
+          "expr": "count by(job) (process_cpu_percent{job=~\"controller-manager|game-coordinator|menu|audio|psmove-pairing\"}) > 0",
           "format": "table",
           "instant": true,
           "refId": "A"
