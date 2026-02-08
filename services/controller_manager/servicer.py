@@ -661,15 +661,17 @@ def init_frequency_listener() -> None:
     if _frequency_listener_initialized:
         return
 
-    from openfeature import api
     from openfeature.provider import ProviderEvent
 
-    api.add_handler(ProviderEvent.PROVIDER_CONFIGURATION_CHANGED, _on_performance_flags_changed)
+    from lib.feature_flags import get_flag_client
+
+    client = get_flag_client("performance")
+    client.add_handler(ProviderEvent.PROVIDER_CONFIGURATION_CHANGED, _on_performance_flags_changed)
     _frequency_listener_initialized = True
 
     # Initial read
     _on_performance_flags_changed(None)
-    logger.info("Frequency flag listener registered")
+    logger.info("Frequency flag listener registered on performance client")
 
 
 def _on_performance_flags_changed(_event_details) -> None:
