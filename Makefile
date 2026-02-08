@@ -31,6 +31,7 @@ help:
 	@echo "Testing:"
 	@echo "  make test            - Run all tests (unit + integration)"
 	@echo "  make test-integration - Run integration tests only (CI)"
+	@echo "  make test-dev        - Run integration tests with pre-built images (fast)"
 	@echo "  make test TEST=name  - Run specific test by name"
 	@echo ""
 	@echo "Protos:"
@@ -193,6 +194,13 @@ test-integration: clean-test-venv
 test-pulled: clean-test-venv
 	USE_PREBUILT_IMAGES=true IMAGE_TAG=$(or $(IMAGE_TAG),latest) \
 		$(TEST_ENV) uv run --package joustmania-integration-tests \
+		pytest tests/integration/ -v $(if $(TEST),-k "$(TEST)")
+
+# Integration tests with pre-built images + volume-mounted source (no rebuild)
+# Requires images: run `docker compose pull` or `make dev` first
+.PHONY: test-dev
+test-dev: clean-test-venv
+	USE_PREBUILT_IMAGES=true USE_DEV_MOUNTS=true $(TEST_ENV) uv run --package joustmania-integration-tests \
 		pytest tests/integration/ -v $(if $(TEST),-k "$(TEST)")
 
 # Pause before teardown for Jaeger inspection
