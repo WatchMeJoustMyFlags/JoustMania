@@ -277,6 +277,25 @@ def clear_all_player_analytics() -> None:
     effective_death_threshold.set(0)
 
 
+# Adaptive reward metrics
+adaptive_threshold_adjustment = Gauge(
+    "game_adaptive_threshold_adjustment",
+    "Adaptive death threshold adjustment applied to player (g-force, +easier/-harder)",
+    ["serial"],
+)
+
+feedback_intensity_multiplier = Gauge(
+    "game_feedback_intensity_multiplier",
+    "Feedback intensity multiplier for player (vibration/LED, 1.0=normal)",
+    ["serial"],
+)
+
+adaptive_rewards_enabled = Gauge(
+    "game_adaptive_rewards_enabled",
+    "Whether adaptive rewards are currently enabled (0=off, 1=on)",
+)
+
+
 # EventBus stream health metrics (Issue #337)
 event_bus_publish_drops_total = Counter(
     "event_bus_publish_drops_total",

@@ -90,6 +90,122 @@
         "off": false
       },
       "defaultVariant": "off"
+    },
+    "enable_adaptive_rewards": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "off"
+    },
+    "ffa_death_threshold_adjustment": {
+      "state": "ENABLED",
+      "variants": {
+        "nerf_strong_players": -0.3,
+        "slight_nerf": -0.15,
+        "neutral": 0.0,
+        "slight_buff": 0.15,
+        "buff_weak_players": 0.3
+      },
+      "defaultVariant": "neutral",
+      "targeting": [
+        {
+          "if": [
+            {
+              ">=": [
+                {
+                  "var": "win_rate"
+                },
+                0.7
+              ]
+            },
+            "nerf_strong_players",
+            null
+          ]
+        },
+        {
+          "if": [
+            {
+              ">=": [
+                {
+                  "var": "win_rate"
+                },
+                0.5
+              ]
+            },
+            "slight_nerf",
+            null
+          ]
+        },
+        {
+          "if": [
+            {
+              "<=": [
+                {
+                  "var": "win_rate"
+                },
+                0.2
+              ]
+            },
+            "buff_weak_players",
+            null
+          ]
+        },
+        {
+          "if": [
+            {
+              "<=": [
+                {
+                  "var": "win_rate"
+                },
+                0.35
+              ]
+            },
+            "slight_buff",
+            null
+          ]
+        }
+      ]
+    },
+    "feedback_intensity_multiplier": {
+      "state": "ENABLED",
+      "variants": {
+        "intense": 2.0,
+        "normal": 1.0,
+        "subtle": 0.5
+      },
+      "defaultVariant": "normal",
+      "targeting": [
+        {
+          "if": [
+            {
+              ">=": [
+                {
+                  "var": "warnings_per_minute"
+                },
+                5.0
+              ]
+            },
+            "intense",
+            null
+          ]
+        },
+        {
+          "if": [
+            {
+              "<=": [
+                {
+                  "var": "warnings_per_minute"
+                },
+                1.0
+              ]
+            },
+            "subtle",
+            null
+          ]
+        }
+      ]
     }
   }
 }
