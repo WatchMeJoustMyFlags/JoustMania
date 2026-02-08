@@ -39,6 +39,49 @@ if TYPE_CHECKING:
 tracer = trace.get_tracer(__name__)
 logger = logging.getLogger(__name__)
 
+# ========================================================================
+# Adaptive Rewards: Cached flag state (module-level, updated by listener)
+# ========================================================================
+_adaptive_rewards_enabled: bool = False
+_adaptive_rewards_listener_initialized: bool = False
+
+
+def init_adaptive_rewards_listener() -> None:
+    """Register event handler for enable_adaptive_rewards flag changes on game_settings client."""
+    global _adaptive_rewards_listener_initialized
+    if _adaptive_rewards_listener_initialized:
+        return
+
+    from openfeature.provider import ProviderEvent
+
+    from lib.feature_flags import get_flag_client
+
+    client = get_flag_client("game_settings")
+    client.add_handler(ProviderEvent.PROVIDER_CONFIGURATION_CHANGED, _on_game_settings_flags_changed)
+    _adaptive_rewards_listener_initialized = True
+    _on_game_settings_flags_changed(None)
+    logger.info("Adaptive rewards flag listener registered on game_settings client")
+
+
+def _on_game_settings_flags_changed(event_details) -> None:
+    """Update cached adaptive rewards enabled state when flags change."""
+    changed = getattr(event_details, "flags_changed", None)
+    if changed is not None and "enable_adaptive_rewards" not in changed:
+        return
+
+    global _adaptive_rewards_enabled
+    try:
+        from lib.feature_flags import get_flag_client
+
+        client = get_flag_client("game_settings")
+        new_value = client.get_boolean_value("enable_adaptive_rewards", False)
+        if new_value != _adaptive_rewards_enabled:
+            logger.info(f"Adaptive rewards enabled: {_adaptive_rewards_enabled} -> {new_value}")
+            _adaptive_rewards_enabled = new_value
+    except Exception as e:
+        logger.warning(f"Failed to read adaptive rewards flag: {e}")
+
+
 # Game constants (Phase 43: Now uses runtime config for dynamic adjustment)
 # Phase 72: Increased from 30Hz to 60Hz for better responsiveness
 UPDATE_FREQUENCY = 60  # Hz - default, overridden by runtime config
@@ -229,6 +272,10 @@ class BaseGameMode(ABC):
 
         # Tracked async tasks for automatic cleanup on game end
         self._tasks: set[asyncio.Task] = set()
+
+        # Adaptive rewards: per-player adjustment cache (populated by background task)
+        self._player_adjustments: dict[str, float] = {}
+        self._adaptive_rewards_task: asyncio.Task | None = None
 
         logger.info(f"{self.get_game_name()} game initialized: {self.game_id}")
 
@@ -1027,10 +1074,18 @@ class BaseGameMode(ABC):
                 # Start music loop as background task
                 self.music_loop_task = asyncio.create_task(self._music_loop())
 
+                # Start adaptive rewards background task (~1Hz flag evaluation)
+                self._adaptive_rewards_task = asyncio.create_task(self._adaptive_rewards_loop())
+
                 try:
                     await self._game_loop()
                 finally:
-                    # Stop music loop
+                    # Stop background tasks
+                    if self._adaptive_rewards_task:
+                        self._adaptive_rewards_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await self._adaptive_rewards_task
+
                     if self.music_loop_task:
                         self.music_loop_task.cancel()
                         with contextlib.suppress(asyncio.CancelledError):
@@ -1162,67 +1217,80 @@ class BaseGameMode(ABC):
     # ========================================================================
 
     def _apply_adaptive_threshold_adjustment(
-        self, player: "Player", base_threshold: float, current_time: float
+        self, player: "Player", base_threshold: float, _current_time: float
     ) -> float:
         """
-        Apply feature flag-based adaptive adjustments to death threshold.
+        Apply cached adaptive threshold adjustment (hot path - dict lookup only).
 
-        Evaluates flags with player context (win_rate, K/D, warnings)
-        to dynamically adjust difficulty per player.
+        The actual flag evaluation happens in _adaptive_rewards_loop() at ~1Hz.
+        This method just reads from the pre-computed _player_adjustments cache.
 
         Args:
             player: Player object with stats
             base_threshold: Base death threshold before adjustment
-            current_time: Current time for calculating game duration
+            _current_time: Unused, kept for API compatibility
 
         Returns:
             Adjusted death threshold
         """
+        if not _adaptive_rewards_enabled:
+            return base_threshold
+
+        adjustment = self._player_adjustments.get(player.serial, 0.0)
+        if adjustment == 0.0:
+            return base_threshold
+
+        return max(0.5, min(5.0, base_threshold + adjustment))
+
+    async def _adaptive_rewards_loop(self):
+        """
+        Background task to compute per-player threshold adjustments at ~1Hz.
+
+        Evaluates feature flags with player context and caches the results
+        in _player_adjustments for the hot path to read.
+        """
+        logger.info("Adaptive rewards loop started")
+        try:
+            while self.running:
+                if _adaptive_rewards_enabled:
+                    self._compute_player_adjustments()
+                await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            logger.info("Adaptive rewards loop cancelled")
+            raise
+        except Exception as e:
+            logger.warning(f"Adaptive rewards loop error: {e}")
+        finally:
+            logger.info("Adaptive rewards loop ended")
+
+    def _compute_player_adjustments(self):
+        """Compute threshold adjustments for all alive players from feature flags."""
         try:
             from lib.feature_flags import get_flag_client
-
-            flag_client = get_flag_client("game_settings")
-            adaptive_enabled = flag_client.get_boolean_value("enable_adaptive_rewards", False)
-
-            if not adaptive_enabled:
-                return base_threshold
-
-            # Build player context for flag evaluation
             from lib.player_context import build_player_context
 
+            flag_client = get_flag_client("game_settings")
+            current_time = time.time()
             game_duration = current_time - self.start_time if self.start_time else 0.0
-            context = build_player_context(
-                player=player,
-                game_duration_seconds=game_duration,
-            )
 
-            # Evaluate threshold adjustment flag
-            # Positive = easier (higher threshold), Negative = harder (lower threshold)
-            adjustment = flag_client.get_float_value("ffa_death_threshold_adjustment", 0.0, context)
+            for serial, player in self.players.items():
+                if not player.alive:
+                    continue
 
-            # Apply adjustment (additive)
-            adjusted_threshold = base_threshold + adjustment
-
-            # Clamp to sane range (0.5 to 5.0)
-            adjusted_threshold = max(0.5, min(5.0, adjusted_threshold))
-
-            # Log significant adjustments
-            if abs(adjustment) > 0.01:
-                logger.debug(
-                    f"Adaptive threshold for {player.serial}: "
-                    f"{base_threshold:.2f} -> {adjusted_threshold:.2f} "
-                    f"(adjustment: {adjustment:+.2f})"
+                context = build_player_context(
+                    player=player,
+                    game_duration_seconds=game_duration,
                 )
 
-            # Emit metric
-            metrics.adaptive_threshold_adjustment.labels(serial=player.serial).set(adjustment)
+                adjustment = flag_client.get_float_value("ffa_death_threshold_adjustment", 0.0, context)
+                self._player_adjustments[serial] = adjustment
 
-            return adjusted_threshold
+                if abs(adjustment) > 0.01:
+                    logger.debug(f"Adaptive adjustment for {serial}: {adjustment:+.2f}")
+                    metrics.adaptive_threshold_adjustment.labels(serial=serial).set(adjustment)
 
         except Exception as e:
-            # Fallback to base threshold on any error
-            logger.warning(f"Failed to apply adaptive threshold adjustment: {e}")
-            return base_threshold
+            logger.warning(f"Failed to compute adaptive adjustments: {e}")
 
     # ========================================================================
     # Phase 70: Music Tempo Control

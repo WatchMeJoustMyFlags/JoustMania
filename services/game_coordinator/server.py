@@ -63,6 +63,15 @@ async def serve(port=50053):
     # Note: logging.basicConfig() is now called at module level (top of file)
     # to ensure INFO level is enabled before any logging calls
 
+    # Initialize feature flag domain and adaptive rewards listener
+    from lib.feature_flags import init_flag_domain
+
+    init_flag_domain("game_settings")
+
+    from services.game_coordinator.games.base import init_adaptive_rewards_listener
+
+    init_adaptive_rewards_listener()
+
     # Initialize OTEL push metrics (Issue #103)
     # 100ms export interval for real-time gameplay visualization
     init_metrics(service_name="game-coordinator", export_interval_ms=100)
