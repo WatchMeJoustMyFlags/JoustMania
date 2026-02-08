@@ -84,7 +84,7 @@ class SpanAttr:
     VALIDATION_REASON = "validation.reason"
 
 
-def _do_init(service_name: str, version: str) -> None:
+def _do_init(service_name: str, version: str, namespace: str = "joustmania") -> None:
     """Perform actual OpenTelemetry initialization (internal)."""
     otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
 
@@ -92,7 +92,7 @@ def _do_init(service_name: str, version: str) -> None:
         attributes={
             SERVICE_NAME: service_name,
             SERVICE_VERSION: version,
-            "service.namespace": "joustmania",
+            "service.namespace": namespace,
         }
     )
 
@@ -116,7 +116,8 @@ def _ensure_initialized() -> None:
             return
 
         service_name = os.getenv("OTEL_SERVICE_NAME", "unknown-service")
-        _do_init(service_name, "1.0.0")
+        namespace = os.getenv("OTEL_SERVICE_NAMESPACE", "joustmania")
+        _do_init(service_name, "1.0.0", namespace)
         _initialized = True
 
 
@@ -145,6 +146,7 @@ def get_tracer(name: str | None = None) -> trace.Tracer:
 def init_telemetry(
     service_name: str | None = None,
     version: str = "1.0.0",
+    namespace: str | None = None,
 ) -> trace.Tracer:
     """
     Initialize OpenTelemetry with OTLP exporter (legacy API).
@@ -156,6 +158,8 @@ def init_telemetry(
         service_name: Service name for traces. Defaults to OTEL_SERVICE_NAME env var,
                       or "unknown-service" if not set.
         version: Service version for resource attributes.
+        namespace: Service namespace (e.g. "joustmania", "infrastructure").
+                   Defaults to OTEL_SERVICE_NAMESPACE env var, or "joustmania".
 
     Returns:
         Configured tracer instance for creating spans.
@@ -163,14 +167,16 @@ def init_telemetry(
     Environment Variables:
         OTEL_EXPORTER_OTLP_ENDPOINT: OTLP collector endpoint (default: http://localhost:4317)
         OTEL_SERVICE_NAME: Default service name if not provided as argument
+        OTEL_SERVICE_NAMESPACE: Default namespace if not provided as argument
     """
     global _initialized
 
     resolved_service_name = service_name or os.getenv("OTEL_SERVICE_NAME", "unknown-service")
+    resolved_namespace = namespace or os.getenv("OTEL_SERVICE_NAMESPACE", "joustmania")
 
     with _init_lock:
         if not _initialized:
-            _do_init(resolved_service_name, version)
+            _do_init(resolved_service_name, version, resolved_namespace)
             _initialized = True
 
     return trace.get_tracer(resolved_service_name)

@@ -76,6 +76,7 @@ def init_metrics(
     service_name: str | None = None,
     version: str = "1.0.0",
     export_interval_ms: int = 100,
+    namespace: str | None = None,
 ) -> metrics.Meter:
     """
     Initialize OpenTelemetry metrics with OTLP push exporter.
@@ -87,6 +88,8 @@ def init_metrics(
         service_name: Service name for metrics. Defaults to OTEL_SERVICE_NAME env var.
         version: Service version for resource attributes.
         export_interval_ms: How often to push metrics (default 100ms for real-time).
+        namespace: Service namespace (e.g. "joustmania", "infrastructure").
+                   Defaults to OTEL_SERVICE_NAMESPACE env var, or "joustmania".
 
     Returns:
         Configured meter instance.
@@ -94,6 +97,7 @@ def init_metrics(
     Environment Variables:
         OTEL_EXPORTER_OTLP_ENDPOINT: OTLP collector endpoint (default: http://otel-collector:4317)
         OTEL_SERVICE_NAME: Default service name if not provided as argument
+        OTEL_SERVICE_NAMESPACE: Default namespace if not provided as argument
     """
     global _meter, _initialized
 
@@ -104,12 +108,13 @@ def init_metrics(
 
         otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4317")
         resolved_service_name = service_name or os.getenv("OTEL_SERVICE_NAME", "unknown-service")
+        resolved_namespace = namespace or os.getenv("OTEL_SERVICE_NAMESPACE", "joustmania")
 
         resource = Resource(
             attributes={
                 SERVICE_NAME: resolved_service_name,
                 SERVICE_VERSION: version,
-                "service.namespace": "joustmania",
+                "service.namespace": resolved_namespace,
             }
         )
 
