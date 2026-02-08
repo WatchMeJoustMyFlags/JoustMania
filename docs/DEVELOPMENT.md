@@ -96,6 +96,13 @@ docker compose build --parallel
 docker compose up -d
 ```
 
+> **Note:** By default, `docker compose up` uses the pinned release version from `.env` (e.g., `0.2.0`).
+> For development with the latest builds, override with:
+> ```bash
+> IMAGE_TAG=latest docker compose up -d
+> ```
+> Or set `IMAGE_TAG=latest` in your local `.env` (don't commit this change).
+
 ### 4. Verify Services
 
 ```bash
