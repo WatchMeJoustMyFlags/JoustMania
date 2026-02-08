@@ -79,11 +79,7 @@ jobs:
           - audio
           - pairing_daemon
     steps:
-      # Git LFS: Audio assets are stored in LFS. Only fetch them for the
-      # audio service to save bandwidth. Other services don't need audio files.
       - uses: actions/checkout@v4
-        with:
-          lfs: ${{ matrix.service == 'audio' }}
 
       - uses: dorny/paths-filter@v3
         id: changes
@@ -363,11 +359,7 @@ jobs:
           - audio
           - pairing_daemon
     steps:
-      # Git LFS: Audio service Docker build copies audio assets into the image,
-      # so we need LFS for the audio service. Other services don't need it.
       - uses: actions/checkout@v4
-        with:
-          lfs: ${{ matrix.service == 'audio' }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3

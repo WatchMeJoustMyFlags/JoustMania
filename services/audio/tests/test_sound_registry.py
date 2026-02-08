@@ -2,10 +2,12 @@
 Unit tests for audio service sound registry and path resolution.
 
 These tests verify that:
-1. All Sound enum values can be resolved to existing files
-2. The registry correctly categorizes vox vs sound effects
-3. Path resolution uses correct voice directories for vox sounds
-4. All asset directories are scanned (Joust, Menu, Zombie, Fight_Club, Commander)
+1. The registry correctly scans directories and categorizes vox vs sound effects
+2. Path resolution uses correct voice directories for vox sounds
+3. Sound enum values have expected string values
+
+These tests use temporary files instead of real audio assets (which are in Git LFS).
+Asset-completeness (do real .ogg files match Sound enum?) is verified by integration tests.
 """
 
 from pathlib import Path
@@ -14,101 +16,166 @@ import pytest
 
 from lib.types import Sound
 
-# Get the assets directory relative to this test file
-ASSETS_DIR = Path(__file__).parent.parent / "assets"
+
+@pytest.fixture
+def assets_dir(tmp_path):
+    """Create a fake asset directory tree with empty .ogg files.
+
+    Mirrors the real layout with a representative subset of files
+    across all base directories and both sound types (vox and sfx).
+    """
+    structure = {
+        "Joust": {
+            "vox": ["congratulations", "game_over", "blue team win", "Fakedout"],
+            "sounds": ["Explosion34", "Explosion22", "beep_loud", "death", "start"],
+        },
+        "Menu": {
+            "vox": ["menu Joust FFA", "notenoughplayers", "high", "medium"],
+            "sounds": ["slow_sensitivity", "mid_sensitivity", "fast_sensitivity"],
+        },
+        "Zombie": {
+            "vox": ["zombie_victory", "zombie_death", "human_victory"],
+            "sounds": ["death", "shotgun"],
+        },
+        "Fight_Club": {
+            "vox": ["5_rounds", "last_round", "game_over"],
+            "sounds": [],
+        },
+        "Commander": {
+            "vox": ["commander intro", "blue winner"],
+            "sounds": ["overdrive", "shift"],
+        },
+    }
+
+    for base_dir, categories in structure.items():
+        for voice in ["aaron", "ivy"]:
+            vox_dir = tmp_path / base_dir / "vox" / voice
+            vox_dir.mkdir(parents=True)
+            for name in categories["vox"]:
+                (vox_dir / f"{name}.ogg").touch()
+
+        sounds_dir = tmp_path / base_dir / "sounds"
+        sounds_dir.mkdir(parents=True, exist_ok=True)
+        for name in categories["sounds"]:
+            (sounds_dir / f"{name}.ogg").touch()
+
+    return tmp_path
+
+
+def build_registry(assets_dir: Path) -> dict[str, tuple[str, str]]:
+    """Build a sound registry from an assets directory, same logic as the audio service."""
+    sound_registry: dict[str, tuple[str, str]] = {}
+
+    for base_dir in ["Joust", "Menu", "Zombie", "Fight_Club", "Commander"]:
+        assets_path = assets_dir / base_dir
+
+        vox_dir = assets_path / "vox" / "aaron"
+        if vox_dir.exists():
+            for ogg_file in vox_dir.glob("*.ogg"):
+                sound_name = ogg_file.stem
+                if sound_name not in sound_registry:
+                    sound_registry[sound_name] = ("vox", base_dir)
+                if sound_name.lower() not in sound_registry:
+                    sound_registry[sound_name.lower()] = ("vox", base_dir)
+
+        sounds_dir = assets_path / "sounds"
+        if sounds_dir.exists():
+            for ogg_file in sounds_dir.glob("*.ogg"):
+                sound_name = ogg_file.stem
+                if sound_name not in sound_registry:
+                    sound_registry[sound_name] = ("sound", base_dir)
+                if sound_name.lower() not in sound_registry:
+                    sound_registry[sound_name.lower()] = ("sound", base_dir)
+
+    return sound_registry
 
 
 class TestSoundRegistry:
     """Test the sound registry building and lookup."""
 
     @pytest.fixture
-    def registry(self):
-        """Build a sound registry like the audio service does."""
-        sound_registry: dict[str, tuple[str, str]] = {}
-
-        for base_dir in ["Joust", "Menu", "Zombie", "Fight_Club", "Commander"]:
-            assets_path = ASSETS_DIR / base_dir
-
-            # Scan vox directory (use aaron as reference)
-            vox_dir = assets_path / "vox" / "aaron"
-            if vox_dir.exists():
-                for ogg_file in vox_dir.glob("*.ogg"):
-                    sound_name = ogg_file.stem
-                    if sound_name not in sound_registry:
-                        sound_registry[sound_name] = ("vox", base_dir)
-                    if sound_name.lower() not in sound_registry:
-                        sound_registry[sound_name.lower()] = ("vox", base_dir)
-
-            # Scan sounds directory
-            sounds_dir = assets_path / "sounds"
-            if sounds_dir.exists():
-                for ogg_file in sounds_dir.glob("*.ogg"):
-                    sound_name = ogg_file.stem
-                    if sound_name not in sound_registry:
-                        sound_registry[sound_name] = ("sound", base_dir)
-                    if sound_name.lower() not in sound_registry:
-                        sound_registry[sound_name.lower()] = ("sound", base_dir)
-
-        return sound_registry
+    def registry(self, assets_dir):
+        return build_registry(assets_dir)
 
     def test_registry_scans_all_directories(self, registry):
         """Verify all asset directories are scanned."""
-        base_dirs_found = set()
-        for _sound_name, (_, base_dir) in registry.items():
-            base_dirs_found.add(base_dir)
-
-        # At minimum, Joust and Menu should have sounds
-        assert "Joust" in base_dirs_found, "Joust directory not scanned"
-        assert "Menu" in base_dirs_found, "Menu directory not scanned"
+        base_dirs_found = {base_dir for _, (_, base_dir) in registry.items()}
+        for expected in ["Joust", "Menu", "Zombie", "Fight_Club", "Commander"]:
+            assert expected in base_dirs_found, f"{expected} directory not scanned"
 
     def test_registry_has_sounds(self, registry):
-        """Verify registry contains sounds."""
         assert len(registry) > 0, "Registry is empty"
-        # Should have at least 100 sounds
-        assert len(registry) > 100, f"Registry has only {len(registry)} sounds"
 
-    def test_all_sound_enum_values_resolve(self, registry):
-        """Verify every Sound enum value can be found in the registry."""
-        missing = []
-        for sound in Sound:
-            value = sound.value
-            if value not in registry and value.lower() not in registry:
-                missing.append(f"{sound.name}: {value}")
-
-        assert not missing, "Missing sounds in registry:\n" + "\n".join(missing)
-
-    def test_explosion_sounds_registered(self, registry):
-        """Verify explosion sounds are in the registry."""
-        assert "Explosion34" in registry, "Explosion34 not in registry"
-        assert "Explosion22" in registry, "Explosion22 not in registry"
-
-        # Check they're registered as sound effects, not vox
-        sound_type, base_dir = registry["Explosion34"]
-        assert sound_type == "sound", f"Explosion34 should be 'sound', got '{sound_type}'"
-        assert base_dir == "Joust", f"Explosion34 should be in 'Joust', got '{base_dir}'"
-
-    def test_congratulations_is_vox(self, registry):
-        """Verify congratulations is registered as vox sound."""
-        assert "congratulations" in registry, "congratulations not in registry"
-
+    def test_vox_categorized_correctly(self, registry):
+        """Verify vox sounds are categorized as vox."""
+        assert "congratulations" in registry
         sound_type, base_dir = registry["congratulations"]
-        assert sound_type == "vox", f"congratulations should be 'vox', got '{sound_type}'"
-        assert base_dir == "Joust", f"congratulations should be in 'Joust', got '{base_dir}'"
+        assert sound_type == "vox"
+        assert base_dir == "Joust"
 
-    def test_beep_loud_exists(self, registry):
-        """Verify beep_loud is in registry (SFX_BEEP points to this)."""
-        assert "beep_loud" in registry, "beep_loud not in registry"
+    def test_sfx_categorized_correctly(self, registry):
+        """Verify sound effects are categorized as sound."""
+        assert "Explosion34" in registry
+        sound_type, base_dir = registry["Explosion34"]
+        assert sound_type == "sound"
+        assert base_dir == "Joust"
 
-        sound_type, base_dir = registry["beep_loud"]
-        assert sound_type == "sound", f"beep_loud should be 'sound', got '{sound_type}'"
+    def test_case_insensitive_lookup(self, registry):
+        """Verify lowercase aliases are created."""
+        assert "fakedout" in registry
+        sound_type, _ = registry["fakedout"]
+        assert sound_type == "vox"
 
-    def test_zombie_sounds_registered(self, registry):
-        """Verify zombie game sounds are registered."""
-        zombie_sounds = ["zombie_victory", "zombie_death", "human_victory"]
-        for sound_name in zombie_sounds:
-            assert sound_name in registry, f"{sound_name} not in registry"
-            sound_type, base_dir = registry[sound_name]
-            assert base_dir == "Zombie", f"{sound_name} should be in 'Zombie', got '{base_dir}'"
+    def test_first_directory_wins(self, registry):
+        """Verify that when the same sound name appears in multiple dirs, first wins.
+
+        'death' exists in both Joust/sounds and Zombie/sounds. Joust is scanned first.
+        """
+        sound_type, base_dir = registry["death"]
+        assert base_dir == "Joust"
+        assert sound_type == "sound"
+
+    def test_zombie_sounds_in_correct_directory(self, registry):
+        """Verify zombie-specific sounds are found in Zombie directory."""
+        for name in ["zombie_victory", "zombie_death", "human_victory"]:
+            assert name in registry, f"{name} not in registry"
+            _, base_dir = registry[name]
+            assert base_dir == "Zombie", f"{name} should be in Zombie, got {base_dir}"
+
+    def test_menu_sounds_registered(self, registry):
+        """Verify menu sounds are found."""
+        assert "menu Joust FFA" in registry
+        sound_type, base_dir = registry["menu Joust FFA"]
+        assert sound_type == "vox"
+        assert base_dir == "Menu"
+
+    def test_menu_sfx_registered(self, registry):
+        """Verify menu sound effects are found."""
+        assert "slow_sensitivity" in registry
+        sound_type, base_dir = registry["slow_sensitivity"]
+        assert sound_type == "sound"
+        assert base_dir == "Menu"
+
+    def test_empty_directory_handled(self, assets_dir):
+        """Verify directories with no sounds don't cause errors."""
+        empty_dir = assets_dir / "Empty"
+        empty_dir.mkdir()
+        (empty_dir / "vox" / "aaron").mkdir(parents=True)
+        (empty_dir / "sounds").mkdir()
+
+        # Should not raise
+        registry = build_registry(assets_dir)
+        assert len(registry) > 0
+
+    def test_missing_directory_handled(self, tmp_path):
+        """Verify completely missing directories don't cause errors."""
+        # Only create Joust with one file
+        vox_dir = tmp_path / "Joust" / "vox" / "aaron"
+        vox_dir.mkdir(parents=True)
+        (vox_dir / "test.ogg").touch()
+
+        registry = build_registry(tmp_path)
+        assert "test" in registry
 
 
 class TestPathResolution:
@@ -175,143 +242,65 @@ class TestPathResolution:
 
 
 class TestSoundEnumValues:
-    """Test that Sound enum values match actual file names."""
+    """Test that Sound enum values have expected string values.
 
-    @pytest.fixture
-    def registry(self):
-        """Build full registry."""
-        sound_registry: dict[str, tuple[str, str]] = {}
+    These are pure enum assertions — no filesystem access needed.
+    """
 
-        for base_dir in ["Joust", "Menu", "Zombie", "Fight_Club", "Commander"]:
-            assets_path = ASSETS_DIR / base_dir
-
-            vox_dir = assets_path / "vox" / "aaron"
-            if vox_dir.exists():
-                for ogg_file in vox_dir.glob("*.ogg"):
-                    sound_name = ogg_file.stem
-                    if sound_name not in sound_registry:
-                        sound_registry[sound_name] = ("vox", base_dir)
-                    if sound_name.lower() not in sound_registry:
-                        sound_registry[sound_name.lower()] = ("vox", base_dir)
-
-            sounds_dir = assets_path / "sounds"
-            if sounds_dir.exists():
-                for ogg_file in sounds_dir.glob("*.ogg"):
-                    sound_name = ogg_file.stem
-                    if sound_name not in sound_registry:
-                        sound_registry[sound_name] = ("sound", base_dir)
-                    if sound_name.lower() not in sound_registry:
-                        sound_registry[sound_name.lower()] = ("sound", base_dir)
-
-        return sound_registry
-
-    def test_sfx_beep_points_to_existing_file(self, registry):
+    def test_sfx_beep_points_to_beep_loud(self):
         """SFX_BEEP should point to beep_loud (beep.ogg doesn't exist)."""
-        assert Sound.SFX_BEEP.value == "beep_loud", "SFX_BEEP should be 'beep_loud'"
-        assert "beep_loud" in registry
+        assert Sound.SFX_BEEP.value == "beep_loud"
 
-    def test_vox_congratulations_exists(self, registry):
-        """VOX_CONGRATULATIONS should resolve."""
-        assert Sound.VOX_CONGRATULATIONS.value in registry
+    def test_vox_congratulations_value(self):
+        assert Sound.VOX_CONGRATULATIONS.value == "congratulations"
 
-    def test_explosion_sounds_exist(self, registry):
-        """Explosion sounds should resolve."""
-        assert Sound.SFX_EXPLOSION.value in registry
-        assert Sound.SFX_EXPLOSION_22.value in registry
+    def test_explosion_sound_values(self):
+        assert Sound.SFX_EXPLOSION.value == "Explosion34"
+        assert Sound.SFX_EXPLOSION_22.value == "Explosion22"
 
-    def test_team_win_sounds_exist(self, registry):
-        """Team win sounds should all resolve."""
-        team_sounds = [
-            Sound.VOX_BLUE_TEAM_WIN,
-            Sound.VOX_RED_TEAM_WIN,
-            Sound.VOX_GREEN_TEAM_WIN,
-            Sound.VOX_YELLOW_TEAM_WIN,
-        ]
-        for sound in team_sounds:
-            assert sound.value in registry, f"{sound.name} ({sound.value}) not in registry"
+    def test_team_win_sound_values(self):
+        expected = {
+            Sound.VOX_BLUE_TEAM_WIN: "blue team win",
+            Sound.VOX_RED_TEAM_WIN: "red team win",
+            Sound.VOX_GREEN_TEAM_WIN: "green team win",
+            Sound.VOX_YELLOW_TEAM_WIN: "yellow team win",
+        }
+        for sound, value in expected.items():
+            assert sound.value == value, f"{sound.name} should be '{value}'"
 
-    def test_zombie_sounds_exist(self, registry):
-        """Zombie game sounds should resolve."""
-        zombie_sounds = [
-            Sound.VOX_ZOMBIE_VICTORY,
-            Sound.VOX_ZOMBIE_DEATH,
-            Sound.VOX_HUMAN_VICTORY,
-            Sound.VOX_ZOMBIE_ONE_MINUTE,
-            Sound.VOX_ZOMBIE_THIRTY_SECONDS,
-            Sound.VOX_ZOMBIE_TEN_SECONDS,
-        ]
-        for sound in zombie_sounds:
-            assert sound.value in registry, f"{sound.name} ({sound.value}) not in registry"
+    def test_zombie_sound_values(self):
+        expected = {
+            Sound.VOX_ZOMBIE_VICTORY: "zombie_victory",
+            Sound.VOX_ZOMBIE_DEATH: "zombie_death",
+            Sound.VOX_HUMAN_VICTORY: "human_victory",
+        }
+        for sound, value in expected.items():
+            assert sound.value == value, f"{sound.name} should be '{value}'"
 
-    def test_werewolf_vox_sounds_exist(self, registry):
-        """Werewolf VOX sounds should resolve."""
-        werewolf_sounds = [
-            Sound.VOX_WEREWOLF_INTRO,
-            Sound.VOX_WEREWOLF_REVEAL,
-            Sound.VOX_WEREWOLF_WIN,
-            Sound.VOX_HUMAN_WIN,
-        ]
-        for sound in werewolf_sounds:
-            assert sound.value in registry, f"{sound.name} ({sound.value}) not in registry"
+    def test_werewolf_sound_values(self):
+        expected = {
+            Sound.VOX_WEREWOLF_INTRO: "werewolf intro",
+            Sound.VOX_WEREWOLF_REVEAL: "werewolf reveal",
+            Sound.VOX_WEREWOLF_WIN: "werewolf win",
+            Sound.VOX_HUMAN_WIN: "human win",
+        }
+        for sound, value in expected.items():
+            assert sound.value == value, f"{sound.name} should be '{value}'"
 
+    def test_fight_club_sound_values(self):
+        expected = {
+            Sound.VOX_FIGHT_CLUB_5_ROUNDS: "5_rounds",
+            Sound.VOX_FIGHT_CLUB_LAST_ROUND: "last_round",
+            Sound.VOX_FIGHT_CLUB_GAME_OVER: "game_over",
+        }
+        for sound, value in expected.items():
+            assert sound.value == value, f"{sound.name} should be '{value}'"
 
-class TestActualFileExistence:
-    """Test that resolved paths point to actual files."""
-
-    def resolve_full_path(self, sound_value: str) -> Path | None:
-        """Resolve a sound value to its full file path."""
-        registry: dict[str, tuple[str, str]] = {}
-
-        for base_dir in ["Joust", "Menu", "Zombie", "Fight_Club", "Commander"]:
-            assets_path = ASSETS_DIR / base_dir
-
-            vox_dir = assets_path / "vox" / "aaron"
-            if vox_dir.exists():
-                for ogg_file in vox_dir.glob("*.ogg"):
-                    sound_name = ogg_file.stem
-                    if sound_name not in registry:
-                        registry[sound_name] = ("vox", base_dir)
-
-            sounds_dir = assets_path / "sounds"
-            if sounds_dir.exists():
-                for ogg_file in sounds_dir.glob("*.ogg"):
-                    sound_name = ogg_file.stem
-                    if sound_name not in registry:
-                        registry[sound_name] = ("sound", base_dir)
-
-        entry = registry.get(sound_value) or registry.get(sound_value.lower())
-        if not entry:
-            return None
-
-        sound_type, base_dir = entry
-        if sound_type == "vox":
-            return ASSETS_DIR / base_dir / "vox" / "ivy" / f"{sound_value}.ogg"
-        return ASSETS_DIR / base_dir / "sounds" / f"{sound_value}.ogg"
-
-    def test_all_sound_enum_files_exist(self):
-        """Every Sound enum value should resolve to an existing file."""
-        missing_files = []
-        for sound in Sound:
-            path = self.resolve_full_path(sound.value)
-            if path is None:
-                missing_files.append(f"{sound.name}: {sound.value} - not in registry")
-            elif not path.exists():
-                missing_files.append(f"{sound.name}: {sound.value} - file not found at {path}")
-
-        assert not missing_files, "Missing sound files:\n" + "\n".join(missing_files)
-
-    def test_explosion34_file_exists(self):
-        """Explosion34.ogg should exist."""
-        path = ASSETS_DIR / "Joust" / "sounds" / "Explosion34.ogg"
-        assert path.exists(), f"Explosion34.ogg not found at {path}"
-
-    def test_beep_loud_file_exists(self):
-        """beep_loud.ogg should exist."""
-        path = ASSETS_DIR / "Joust" / "sounds" / "beep_loud.ogg"
-        assert path.exists(), f"beep_loud.ogg not found at {path}"
-
-    def test_congratulations_file_exists_for_both_voices(self):
-        """congratulations.ogg should exist for both aaron and ivy."""
-        for voice in ["aaron", "ivy"]:
-            path = ASSETS_DIR / "Joust" / "vox" / voice / "congratulations.ogg"
-            assert path.exists(), f"congratulations.ogg not found for voice '{voice}' at {path}"
+    def test_menu_sensitivity_sfx_values(self):
+        expected = {
+            Sound.MENU_SFX_SENSITIVITY_SLOW: "slow_sensitivity",
+            Sound.MENU_SFX_SENSITIVITY_MID: "mid_sensitivity",
+            Sound.MENU_SFX_SENSITIVITY_FAST: "fast_sensitivity",
+        }
+        for sound, value in expected.items():
+            assert sound.value == value, f"{sound.name} should be '{value}'"
