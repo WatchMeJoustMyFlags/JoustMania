@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 async def serve(port=50054):
     """Start the Menu gRPC server."""
     # Initialize OTEL push metrics
-    init_metrics(service_name="menu")
+    init_metrics()
     logger.info("OTEL push metrics initialized for menu service")
 
     # Start system metrics collection

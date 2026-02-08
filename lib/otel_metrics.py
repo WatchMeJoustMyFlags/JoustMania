@@ -11,8 +11,8 @@ Usage:
     gauge = Gauge("metric_name", "description", ["serial"])
     counter = Counter("events_total", "description", ["type"])
 
-    # Initialize in server startup (100ms for real-time services)
-    init_metrics(service_name="game-coordinator", export_interval_ms=100)
+    # Initialize in server startup (service identity from env vars)
+    init_metrics(export_interval_ms=100)
 
     # Use same API as prometheus_client
     gauge.labels(serial="ABC").set(1.5)
@@ -73,31 +73,25 @@ def is_test_mode() -> bool:
 
 
 def init_metrics(
-    service_name: str | None = None,
-    version: str = "1.0.0",
     export_interval_ms: int = 100,
-    namespace: str | None = None,
 ) -> metrics.Meter:
     """
     Initialize OpenTelemetry metrics with OTLP push exporter.
 
     This must be called during service startup, after metric objects are defined
-    but before they are used.
+    but before they are used. Service identity is configured via environment
+    variables set in docker-compose.yml.
 
     Args:
-        service_name: Service name for metrics. Defaults to OTEL_SERVICE_NAME env var.
-        version: Service version for resource attributes.
         export_interval_ms: How often to push metrics (default 100ms for real-time).
-        namespace: Service namespace (e.g. "joustmania", "infrastructure").
-                   Defaults to OTEL_SERVICE_NAMESPACE env var, or "joustmania".
 
     Returns:
         Configured meter instance.
 
     Environment Variables:
+        OTEL_SERVICE_NAME: Service name (required in docker-compose.yml)
+        OTEL_SERVICE_NAMESPACE: Service namespace (default: "joustmania")
         OTEL_EXPORTER_OTLP_ENDPOINT: OTLP collector endpoint (default: http://otel-collector:4317)
-        OTEL_SERVICE_NAME: Default service name if not provided as argument
-        OTEL_SERVICE_NAMESPACE: Default namespace if not provided as argument
     """
     global _meter, _initialized
 
@@ -107,14 +101,14 @@ def init_metrics(
             return _meter
 
         otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4317")
-        resolved_service_name = service_name or os.getenv("OTEL_SERVICE_NAME", "unknown-service")
-        resolved_namespace = namespace or os.getenv("OTEL_SERVICE_NAMESPACE", "joustmania")
+        service_name = os.getenv("OTEL_SERVICE_NAME", "unknown-service")
+        namespace = os.getenv("OTEL_SERVICE_NAMESPACE", "joustmania")
 
         resource = Resource(
             attributes={
-                SERVICE_NAME: resolved_service_name,
-                SERVICE_VERSION: version,
-                "service.namespace": resolved_namespace,
+                SERVICE_NAME: service_name,
+                SERVICE_VERSION: "1.0.0",
+                "service.namespace": namespace,
             }
         )
 
@@ -130,7 +124,7 @@ def init_metrics(
         provider = MeterProvider(resource=resource, metric_readers=[reader])
         metrics.set_meter_provider(provider)
 
-        _meter = metrics.get_meter(resolved_service_name, version)
+        _meter = metrics.get_meter(service_name, "1.0.0")
         _initialized = True
 
         # Initialize any metrics that were created before init_metrics() was called
@@ -139,8 +133,7 @@ def init_metrics(
         _pending_metrics.clear()
 
         logger.info(
-            f"OTEL metrics initialized: {resolved_service_name} -> {otlp_endpoint} "
-            f"(export interval: {export_interval_ms}ms)"
+            f"OTEL metrics initialized: {service_name} -> {otlp_endpoint} (export interval: {export_interval_ms}ms)"
         )
         return _meter
 

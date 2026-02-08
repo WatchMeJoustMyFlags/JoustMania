@@ -96,7 +96,7 @@ def main() -> None:
     global _daemon
 
     # Initialize OTEL push metrics
-    init_metrics(service_name="pairing-daemon", namespace="infrastructure")
+    init_metrics()
     logger.info("OTEL push metrics initialized for pairing daemon")
 
     # Start process-level system metrics collection (CPU, memory, threads)

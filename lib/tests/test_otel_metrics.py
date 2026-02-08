@@ -257,7 +257,7 @@ class TestInitMetricsWithMock:
         mock_meter = MagicMock()
         mock_metrics.get_meter.return_value = mock_meter
 
-        result = otel_metrics.init_metrics(service_name="test-service")
+        result = otel_metrics.init_metrics()
 
         assert result == mock_meter
         mock_exporter.assert_called_once()
@@ -288,7 +288,7 @@ class TestInitMetricsWithMock:
         mock_meter = MagicMock()
         mock_metrics.get_meter.return_value = mock_meter
 
-        otel_metrics.init_metrics(service_name="test", export_interval_ms=500)
+        otel_metrics.init_metrics(export_interval_ms=500)
 
         mock_reader.assert_called_once()
         call_kwargs = mock_reader.call_args[1]
@@ -305,8 +305,8 @@ class TestInitMetricsWithMock:
         mock_meter = MagicMock()
         mock_metrics.get_meter.return_value = mock_meter
 
-        result1 = otel_metrics.init_metrics(service_name="test")
-        result2 = otel_metrics.init_metrics(service_name="test")
+        result1 = otel_metrics.init_metrics()
+        result2 = otel_metrics.init_metrics()
 
         assert result1 == result2
         # Provider should only be created once
@@ -326,7 +326,7 @@ class TestInitMetricsWithMock:
         counter = otel_metrics.Counter("pending_counter", "Test")
         assert len(otel_metrics._pending_metrics) == 2
 
-        otel_metrics.init_metrics(service_name="test")
+        otel_metrics.init_metrics()
 
         # Pending metrics should be cleared
         assert len(otel_metrics._pending_metrics) == 0

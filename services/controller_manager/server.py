@@ -35,7 +35,7 @@ async def serve(port=50052):
     # Default 100ms for real-time acceleration visualization
     # Use METRICS_EXPORT_INTERVAL_MS env var to configure (10ms for 100Hz)
     export_interval_ms = int(os.getenv("METRICS_EXPORT_INTERVAL_MS", "100"))
-    init_metrics(service_name="controller-manager", export_interval_ms=export_interval_ms, namespace="infrastructure")
+    init_metrics(export_interval_ms=export_interval_ms)
     logger.info(f"OTEL push metrics initialized ({export_interval_ms}ms export interval)")
 
     # Start prometheus_client HTTP server for direct pull scraping (pipeline comparison)
