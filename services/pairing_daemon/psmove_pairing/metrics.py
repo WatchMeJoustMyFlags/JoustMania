@@ -69,7 +69,7 @@ bluetooth_adapter_connections = Gauge(
     ["hci_adapter"],
 )
 
-# Process-level system metrics (shared with other services via lib/system_metrics.py)
-process_cpu_percent = Gauge("process_cpu_percent", "Process CPU usage percentage")
-process_memory_mb = Gauge("process_memory_mb", "Process memory usage in MB")
+# Process-level system metrics (standard Prometheus naming convention)
+process_cpu_seconds_total = Counter("process_cpu_seconds_total", "Total user and system CPU time spent in seconds")
+process_resident_memory_bytes = Gauge("process_resident_memory_bytes", "Resident memory size in bytes")
 process_threads = Gauge("process_threads", "Number of active threads")

@@ -101,8 +101,8 @@ def main() -> None:
 
     # Start process-level system metrics collection (CPU, memory, threads)
     start_system_metrics_collector_thread(
-        cpu_gauge=metrics.process_cpu_percent,
-        memory_gauge=metrics.process_memory_mb,
+        cpu_counter=metrics.process_cpu_seconds_total,
+        memory_gauge=metrics.process_resident_memory_bytes,
         threads_gauge=metrics.process_threads,
     )
 

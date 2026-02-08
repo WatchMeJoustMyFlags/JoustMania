@@ -47,8 +47,8 @@ async def serve(port=50052):
 
     # Start system metrics collection (Phase 61: extracted to lib/system_metrics.py)
     start_system_metrics_collector(
-        cpu_gauge=metrics.process_cpu_percent,
-        memory_gauge=metrics.process_memory_mb,
+        cpu_counter=metrics.process_cpu_seconds_total,
+        memory_gauge=metrics.process_resident_memory_bytes,
         threads_gauge=metrics.process_threads,
     )
 
