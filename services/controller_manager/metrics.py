@@ -223,3 +223,14 @@ stream_frame_overruns_total = Counter(
     "controller_stream_frame_overruns_total",
     "Total number of stream frames that took longer than target interval",
 )
+
+# Streaming frequency flag metrics (direct flagd integration)
+stream_frequency_changes_total = Counter(
+    "controller_stream_frequency_changes_total",
+    "Total number of streaming frequency changes from flagd",
+)
+
+stream_current_frequency_hz = Gauge(
+    "controller_stream_current_frequency_hz",
+    "Current streaming frequency in Hz (from flagd override)",
+)

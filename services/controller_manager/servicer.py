@@ -499,6 +499,11 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
 
             while not context.cancelled():
                 try:
+                    # Check for flagd frequency override
+                    if _frequency_override is not None and _frequency_override != current_hz:
+                        logger.info(f"[{subscriber_id}] Frequency override: {current_hz} -> {_frequency_override} Hz")
+                        current_hz = _frequency_override
+
                     # Calculate interval from current Hz
                     interval = 1.0 / current_hz
 
@@ -640,3 +645,57 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                 proc.join(timeout=2.0)
 
         await self.discovery_loop.wait_stopped(timeout_seconds=5.0)
+
+
+# ---------------------------------------------------------------------------
+# Flagd frequency override — simple listener using lib/feature_flags
+# ---------------------------------------------------------------------------
+
+_frequency_override: int | None = None
+_frequency_listener_initialized = False
+
+
+def init_frequency_listener() -> None:
+    """Register event handler for update_frequency_hz flag changes."""
+    global _frequency_listener_initialized
+    if _frequency_listener_initialized:
+        return
+
+    from openfeature.provider import ProviderEvent
+
+    from lib.feature_flags import get_flag_client
+
+    client = get_flag_client("performance")
+    client.add_handler(ProviderEvent.PROVIDER_CONFIGURATION_CHANGED, _on_performance_flags_changed)
+    _frequency_listener_initialized = True
+
+    # Initial read
+    _on_performance_flags_changed(None)
+    logger.info("Frequency flag listener registered on performance client")
+
+
+def _on_performance_flags_changed(event_details) -> None:
+    """Update frequency override when flagd config changes."""
+    # Skip if event specifies changed flags and ours isn't among them
+    changed = getattr(event_details, "flags_changed", None)
+    if changed is not None and "update_frequency_hz" not in changed:
+        return
+
+    global _frequency_override
+    try:
+        from openfeature.evaluation_context import EvaluationContext
+
+        from lib.feature_flags import get_flag_client
+
+        client = get_flag_client("performance")
+        hz = client.get_integer_value("update_frequency_hz", 0, EvaluationContext())
+        if hz <= 0:
+            return
+        new_hz = max(1, min(100, hz))
+        if new_hz != _frequency_override:
+            logger.info(f"Streaming frequency override from flagd: {_frequency_override} -> {new_hz} Hz")
+            _frequency_override = new_hz
+            metrics.stream_frequency_changes_total.inc()
+            metrics.stream_current_frequency_hz.set(new_hz)
+    except Exception as e:
+        logger.warning(f"Failed to read frequency flag: {e}")
