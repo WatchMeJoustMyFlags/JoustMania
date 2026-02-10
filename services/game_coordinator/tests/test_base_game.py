@@ -1267,3 +1267,127 @@ class TestGameLifecycleCleanup:
             await game.run()
 
         assert len(cleanup_called) >= 1
+
+
+class TestAdaptiveObservability:
+    """Tests for adaptive threshold observability on span events."""
+
+    @pytest.fixture
+    def game_with_player(self):
+        """Create game with player and mock span for adaptive observability tests."""
+        from unittest.mock import MagicMock
+
+        mock_cm = MockControllerManagerService(num_controllers=2)
+
+        game = FFAGame(
+            controller_manager_client=mock_cm,
+            event_publisher=async_noop,
+            audio_client=None,
+            game_id="test_adaptive_obs",
+        )
+
+        mock_span = MagicMock()
+        game.players["test_serial"] = Player(
+            serial="test_serial",
+            team=0,
+            alive=True,
+            color=(255, 0, 0),
+            smoothed_accel=1.0,
+            span=mock_span,
+        )
+        game.gameplay_stream = MockGameplayStream()
+        game.music_speed = SLOW_MUSIC_SPEED
+        game.start_time = time.time()
+
+        return game, mock_span
+
+    @pytest.mark.asyncio
+    async def test_death_warning_includes_adaptive_adjustment(self, game_with_player):
+        """death_warning span event should include adaptive_adjustment attribute."""
+        game, mock_span = game_with_player
+
+        # Set an adaptive adjustment for the player
+        game._player_adjustments["test_serial"] = 0.15
+
+        await game._warn_player("test_serial", accel_mag=1.7, threshold=1.6)
+
+        # Verify span event was added with adaptive_adjustment
+        mock_span.add_event.assert_called_once()
+        call_args = mock_span.add_event.call_args
+        assert call_args[0][0] == "death_warning"
+        assert call_args[1]["attributes"]["adaptive_adjustment"] == 0.15
+
+    @pytest.mark.asyncio
+    async def test_death_warning_zero_adjustment_when_none_set(self, game_with_player):
+        """death_warning should show 0.0 adjustment when no adaptive adjustment exists."""
+        game, mock_span = game_with_player
+
+        # No adaptive adjustment set
+        await game._warn_player("test_serial", accel_mag=1.7, threshold=1.6)
+
+        call_args = mock_span.add_event.call_args
+        assert call_args[1]["attributes"]["adaptive_adjustment"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_player_death_includes_adaptive_adjustment(self, game_with_player):
+        """player_death span event should include adaptive_adjustment attribute."""
+        game, mock_span = game_with_player
+
+        # Set an adaptive adjustment
+        game._player_adjustments["test_serial"] = -0.2
+
+        await game._kill_player("test_serial", accel_mag=3.5)
+
+        # Find the player_death event from base class (has adaptive_adjustment)
+        death_event_calls = [
+            c
+            for c in mock_span.add_event.call_args_list
+            if c[0][0] == "player_death" and "adaptive_adjustment" in c[1].get("attributes", {})
+        ]
+        assert len(death_event_calls) == 1
+        assert death_event_calls[0][1]["attributes"]["adaptive_adjustment"] == -0.2
+
+    @pytest.mark.asyncio
+    async def test_adjustment_change_adds_span_event(self, game_with_player):
+        """_compute_player_adjustments should add span event when adjustment changes."""
+        from unittest.mock import MagicMock, patch
+
+        game, mock_span = game_with_player
+
+        # Set initial adjustment
+        game._player_adjustments["test_serial"] = 0.0
+
+        mock_flag_client = MagicMock()
+        mock_flag_client.get_float_value.return_value = 0.25
+
+        with patch("lib.feature_flags.api") as mock_api:
+            mock_api.get_client.return_value = mock_flag_client
+            game._compute_player_adjustments()
+
+        # Should have added adaptive_adjustment_changed event
+        change_events = [c for c in mock_span.add_event.call_args_list if c[0][0] == "adaptive_adjustment_changed"]
+        assert len(change_events) == 1
+        attrs = change_events[0][1]["attributes"]
+        assert attrs["old_adjustment"] == 0.0
+        assert attrs["new_adjustment"] == 0.25
+
+    @pytest.mark.asyncio
+    async def test_adjustment_no_event_when_unchanged(self, game_with_player):
+        """_compute_player_adjustments should NOT add event when adjustment stays the same."""
+        from unittest.mock import MagicMock, patch
+
+        game, mock_span = game_with_player
+
+        # Set initial adjustment same as what flag will return
+        game._player_adjustments["test_serial"] = 0.25
+
+        mock_flag_client = MagicMock()
+        mock_flag_client.get_float_value.return_value = 0.25
+
+        with patch("lib.feature_flags.api") as mock_api:
+            mock_api.get_client.return_value = mock_flag_client
+            game._compute_player_adjustments()
+
+        # Should NOT have added adaptive_adjustment_changed event
+        change_events = [c for c in mock_span.add_event.call_args_list if c[0][0] == "adaptive_adjustment_changed"]
+        assert len(change_events) == 0

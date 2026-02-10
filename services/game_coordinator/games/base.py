@@ -759,6 +759,11 @@ class BaseGameMode(ABC):
 
         # Apply adaptive reward adjustments based on feature flags
         effective_death = self._apply_adaptive_threshold_adjustment(player, effective_death, current_time)
+        effective_warn = self._apply_adaptive_threshold_adjustment(player, effective_warn, current_time)
+
+        # Emit per-player effective threshold metrics
+        metrics.player_effective_death_threshold.labels(serial=serial).set(effective_death)
+        metrics.player_effective_warning_threshold.labels(serial=serial).set(effective_warn)
 
         # Analytics: Record sample if analytics is enabled and initialized
         config = get_config_manager().get_config()
@@ -849,6 +854,7 @@ class BaseGameMode(ABC):
                     "sensitivity": self.sensitivity.name,
                     "sensitivity_factor": player.sensitivity_factor,
                     "music_speed": self.music_speed,
+                    "adaptive_adjustment": self._player_adjustments.get(serial, 0.0),
                 },
             )
         logger.info(f"Player {serial} triggered warning (accel: {accel_mag:.2f}, threshold: {threshold:.2f})")
@@ -906,6 +912,7 @@ class BaseGameMode(ABC):
                     "sensitivity_factor": player.sensitivity_factor,
                     "music_speed": self.music_speed,
                     "alive_remaining": alive_count_before - 1,
+                    "adaptive_adjustment": self._player_adjustments.get(serial, 0.0),
                 },
             )
 
@@ -1294,7 +1301,17 @@ class BaseGameMode(ABC):
                 )
 
                 adjustment = flag_client.get_float_value("ffa_death_threshold_adjustment", 0.0, context)
+                old_adjustment = self._player_adjustments.get(serial, 0.0)
                 self._player_adjustments[serial] = adjustment
+
+                if abs(adjustment - old_adjustment) > 0.001 and player.span:
+                    player.span.add_event(
+                        "adaptive_adjustment_changed",
+                        attributes={
+                            "old_adjustment": old_adjustment,
+                            "new_adjustment": adjustment,
+                        },
+                    )
 
                 if abs(adjustment) > 0.01:
                     logger.debug(f"Adaptive adjustment for {serial}: {adjustment:+.2f}")

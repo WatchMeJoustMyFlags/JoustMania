@@ -247,6 +247,12 @@ def clear_player_analytics(serial: str, game_id: str = "") -> None:
     with suppress(KeyError, ValueError):
         player_alive.remove(serial)
 
+    with suppress(KeyError, ValueError):
+        player_effective_death_threshold.remove(serial)
+
+    with suppress(KeyError, ValueError):
+        player_effective_warning_threshold.remove(serial)
+
     # peak_accel has both serial and game_id labels
     if game_id:
         with suppress(KeyError, ValueError):
@@ -270,6 +276,10 @@ def clear_all_player_analytics() -> None:
     player_peak_accel._values.clear()
     player_alive._metrics.clear()
     player_alive._values.clear()
+    player_effective_death_threshold._metrics.clear()
+    player_effective_death_threshold._values.clear()
+    player_effective_warning_threshold._metrics.clear()
+    player_effective_warning_threshold._values.clear()
     # Reset game state gauges to 0 to indicate no game running
     music_tempo.set(0)
     game_sensitivity.set(0)
@@ -293,6 +303,19 @@ feedback_intensity_multiplier = Gauge(
 adaptive_rewards_enabled = Gauge(
     "game_adaptive_rewards_enabled",
     "Whether adaptive rewards are currently enabled (0=off, 1=on)",
+)
+
+# Per-player effective threshold metrics (with adaptive adjustment applied)
+player_effective_death_threshold = Gauge(
+    "game_player_effective_death_threshold",
+    "Per-player effective death threshold including adaptive adjustment (g-force)",
+    ["serial"],
+)
+
+player_effective_warning_threshold = Gauge(
+    "game_player_effective_warning_threshold",
+    "Per-player effective warning threshold including adaptive adjustment (g-force)",
+    ["serial"],
 )
 
 
