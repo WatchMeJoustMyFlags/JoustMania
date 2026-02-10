@@ -209,10 +209,20 @@ toml = [
 ]
 
 [[package]]
-name = "dbus-python"
-version = "1.4.0"
+name = "dbus-fast"
+version = "4.0.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/ff/24/63118050c7dd7be04b1ccd60eab53fef00abe844442e1b6dec92dae505d6/dbus-python-1.4.0.tar.gz", hash = "sha256:991666e498f60dbf3e49b8b7678f5559b8a65034fdf61aae62cdecdb7d89c770", size = 232490, upload-time = "2025-03-13T19:57:54.212Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3d/f7/36515d10e85ab6d6193edbabbcae974c25d6fbabb8ead84cfd2b4ee8eaf6/dbus_fast-4.0.0.tar.gz", hash = "sha256:e1d3ee49a4a81524d7caaa2d5a31fc71075a1c977b661df958cee24bef86b8fe", size = 75082, upload-time = "2026-02-01T20:56:27.85Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a6/43/c46a4aaeb4bdc4ce7e20c3204eb7f455aa9ddf065c9cbe5fdd8c03a72752/dbus_fast-4.0.0-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:512f25a0705903047e9b55d2bc3724f06dcbfb77e0b13f10a7eb835679d3705c", size = 829838, upload-time = "2026-02-01T21:05:07.337Z" },
+    { url = "https://files.pythonhosted.org/packages/5a/47/8ba9bf4027cc29c1eeb1e90828f151df6691012a67a0c3dabf4955e68f83/dbus_fast-4.0.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:28209c72c36f8e2bb2152c02598d353e9442d53d751efbf49870bc37ac3afcad", size = 875354, upload-time = "2026-02-01T21:05:09.516Z" },
+    { url = "https://files.pythonhosted.org/packages/7e/fd/b7fbb9546d575dc73b7540a908a38ccba46239d8d838d3c41454e6a56a70/dbus_fast-4.0.0-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:618931126219f23285b33b5825dc40cfb166c8e6554f800f7c53dfb5f368289b", size = 835403, upload-time = "2026-02-01T21:05:11.176Z" },
+    { url = "https://files.pythonhosted.org/packages/f2/3d/f9d17947917817ba88791e66169dbe807218d38a5bee4320c215ee3a187e/dbus_fast-4.0.0-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:0615063551e8d4b34bee778885ab56be3ef168df38f9bfc4364d8c80687e2df4", size = 881686, upload-time = "2026-02-01T21:05:12.602Z" },
+    { url = "https://files.pythonhosted.org/packages/64/2b/92d24e61a4774d752d25e81485fcdf23a540c3e0a9f06939463b8b22fd0d/dbus_fast-4.0.0-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:bfb269a9ed3b3ab29932b2948de52d7ea2eebfcad0c641ad6b25024b048d0b68", size = 791936, upload-time = "2026-02-01T21:05:16.051Z" },
+    { url = "https://files.pythonhosted.org/packages/6f/df/584e55aa3afa108c3dc34a7a307bfbb628954ad0a393a3a3dc8e76315724/dbus_fast-4.0.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:aa367aaad3a868dfb9373eca8868a2a0810bac6cbe35b67460682127834c2460", size = 843295, upload-time = "2026-02-01T21:05:17.671Z" },
+    { url = "https://files.pythonhosted.org/packages/2f/1e/6633e0395ea429c0f95ddab2889baebb11741f6531318342a1778a2a0c89/dbus_fast-4.0.0-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:2283e9c22411b1307fa3e3586fd4b42b44cae90e8a39f4fb4942a97a885d437b", size = 799113, upload-time = "2026-02-01T21:05:19.934Z" },
+    { url = "https://files.pythonhosted.org/packages/9d/97/6394951e1400760f9c95045a0f11d8019e38cdd2900935b9048b6e6953c3/dbus_fast-4.0.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:0a91ec3707b743c2e211fa9ecd08ee483c3af19a2028ad90d2911a7e17d20737", size = 851197, upload-time = "2026-02-01T21:05:21.277Z" },
+]
 
 [[package]]
 name = "docker"
@@ -349,7 +359,7 @@ wheels = [
 
 [[package]]
 name = "joustmania"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "." }
 
 [package.dev-dependencies]
@@ -427,7 +437,7 @@ name = "joustmania-controller-manager"
 version = "1.0.0"
 source = { editable = "services/controller_manager" }
 dependencies = [
-    { name = "dbus-python", marker = "sys_platform == 'linux'" },
+    { name = "dbus-fast", marker = "sys_platform == 'linux'" },
     { name = "grpcio" },
     { name = "grpcio-health-checking" },
     { name = "joustmania-lib" },
@@ -452,7 +462,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "dbus-python", marker = "sys_platform == 'linux'", specifier = ">=1.2.0" },
+    { name = "dbus-fast", marker = "sys_platform == 'linux'", specifier = ">=2.0.0" },
     { name = "grpcio", specifier = ">=1.70.0" },
     { name = "grpcio-health-checking", specifier = ">=1.70.0" },
     { name = "joustmania-lib", editable = "lib" },
@@ -544,6 +554,7 @@ name = "joustmania-lib"
 version = "1.0.0"
 source = { editable = "lib" }
 dependencies = [
+    { name = "dbus-fast", marker = "sys_platform == 'linux'" },
     { name = "grpcio" },
     { name = "openfeature-hooks-opentelemetry" },
     { name = "openfeature-provider-flagd" },
@@ -565,6 +576,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
+    { name = "dbus-fast", marker = "sys_platform == 'linux'", specifier = ">=2.0.0" },
     { name = "grpcio", specifier = ">=1.70.0" },
     { name = "openfeature-hooks-opentelemetry", specifier = ">=0.1.0" },
     { name = "openfeature-provider-flagd", specifier = ">=0.1.0" },
@@ -628,7 +640,7 @@ name = "joustmania-pairing-daemon"
 version = "1.0.0"
 source = { editable = "services/pairing_daemon" }
 dependencies = [
-    { name = "dbus-python", marker = "sys_platform == 'linux'" },
+    { name = "dbus-fast", marker = "sys_platform == 'linux'" },
     { name = "joustmania-lib" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-grpc" },
@@ -644,7 +656,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "dbus-python", marker = "sys_platform == 'linux'", specifier = ">=1.2.0" },
+    { name = "dbus-fast", marker = "sys_platform == 'linux'", specifier = ">=2.0.0" },
     { name = "joustmania-lib", editable = "lib" },
     { name = "opentelemetry-api", specifier = ">=1.20.0" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.20.0" },

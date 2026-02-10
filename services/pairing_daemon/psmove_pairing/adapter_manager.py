@@ -1,29 +1,21 @@
 """Bluetooth adapter management for load-balanced pairing.
 
-Uses DBus to query BlueZ for adapter and device information,
-matching the approach used in the original JoustMania.
+Uses dbus-fast via the shared lib.bluez_dbus module.
 """
 
 import logging
 from dataclasses import dataclass
-from xml.etree import ElementTree
 
-import dbus
+from dbus_fast import Variant
+
+from lib.bluez_dbus import (
+    ORG_BLUEZ_PATH,
+    DBusError,
+    get_managed_objects,
+    get_system_bus,
+)
 
 logger = logging.getLogger("psmove-pairing")
-
-ORG_BLUEZ = "org.bluez"
-ORG_BLUEZ_PATH = "/org/bluez"
-
-_BUS = None
-
-
-def _get_bus():
-    """Lazily connect to the DBus system bus on first use."""
-    global _BUS
-    if _BUS is None:
-        _BUS = dbus.SystemBus()
-    return _BUS
 
 
 @dataclass
@@ -36,69 +28,33 @@ class AdapterInfo:
     device_count: int
 
 
-def _get_root_proxy():
-    """Get root Bluez DBus node."""
-    return _get_bus().get_object(ORG_BLUEZ, ORG_BLUEZ_PATH)
-
-
-def _get_adapter_proxy(hci: str):
-    """Get Bluez DBus adapter node."""
-    import os
-
-    hci_path = os.path.join(ORG_BLUEZ_PATH, hci)
-    return _get_bus().get_object(ORG_BLUEZ, hci_path)
-
-
-def _introspect_tree(proxy):
-    """Return parsed introspection tree for a DBus node."""
-    iface = dbus.Interface(proxy, "org.freedesktop.DBus.Introspectable")
-    return ElementTree.fromstring(iface.Introspect())
-
-
-def _get_node_child_names(proxy) -> list[str]:
-    """Get child node names from a DBus node."""
-    tree = _introspect_tree(proxy)
-    return [child.attrib["name"] for child in tree if child.tag == "node"]
-
-
-def _get_node_interfaces(proxy) -> list[str]:
-    """List interface names exposed by a DBus node."""
-    tree = _introspect_tree(proxy)
-    return [child.attrib["name"] for child in tree if child.tag == "interface"]
-
-
-def _get_adapter_attrib(proxy, attrib: str):
-    """Get attribute from Bluez Adapter1 interface."""
-    iface = dbus.Interface(proxy, "org.freedesktop.DBus.Properties")
-    return iface.Get("org.bluez.Adapter1", attrib)
-
-
-def get_hci_dict() -> dict[str, str]:
+async def get_hci_dict() -> dict[str, str]:
     """Get dictionary mapping hci name to Bluetooth address.
 
     Returns:
         Dict like {"hci0": "AA:BB:CC:DD:EE:FF", "hci1": "BB:CC:DD:EE:FF:00"}
     """
-    proxy = _get_root_proxy()
-    hcis = _get_node_child_names(proxy)
-    hci_dict = {}
+    bus = await get_system_bus()
+    objects = await get_managed_objects(bus)
 
-    for hci in hcis:
-        try:
-            proxy2 = _get_adapter_proxy(hci)
-            interfaces = _get_node_interfaces(proxy2)
-            if "org.freedesktop.DBus.Properties" not in interfaces or "org.bluez.Adapter1" not in interfaces:
-                continue
-            addr = _get_adapter_attrib(proxy2, "Address")
-            hci_dict[hci] = str(addr)
-        except dbus.exceptions.DBusException as e:
-            logger.debug(f"Error getting adapter {hci}: {e}")
+    hci_dict: dict[str, str] = {}
+    for path, interfaces in objects.items():
+        adapter_props = interfaces.get("org.bluez.Adapter1")
+        if adapter_props is None:
             continue
+        # Adapter paths look like /org/bluez/hci0
+        if not path.startswith(ORG_BLUEZ_PATH + "/"):
+            continue
+        hci = path.rsplit("/", 1)[-1]
+        addr = adapter_props.get("Address")
+        if addr is not None:
+            val = addr.value if isinstance(addr, Variant) else addr
+            hci_dict[hci] = str(val)
 
     return hci_dict
 
 
-def get_attached_addresses(hci: str) -> list[str]:
+async def get_attached_addresses(hci: str) -> list[str]:
     """Get the addresses of devices known by an HCI adapter.
 
     Args:
@@ -107,51 +63,55 @@ def get_attached_addresses(hci: str) -> list[str]:
     Returns:
         List of device MAC addresses paired to this adapter
     """
-    try:
-        proxy = _get_adapter_proxy(hci)
-        devices = _get_node_child_names(proxy)
+    bus = await get_system_bus()
+    adapter_path = f"{ORG_BLUEZ_PATH}/{hci}"
+    objects = await get_managed_objects(bus)
 
-        known_devices = []
-        for dev in devices:
-            try:
-                import os
+    addresses: list[str] = []
+    for path, interfaces in objects.items():
+        if not path.startswith(adapter_path + "/"):
+            continue
+        device_props = interfaces.get("org.bluez.Device1")
+        if device_props is None:
+            continue
+        addr = device_props.get("Address")
+        if addr is not None:
+            val = addr.value if isinstance(addr, Variant) else addr
+            addresses.append(str(val))
 
-                device_path = os.path.join(ORG_BLUEZ_PATH, hci, dev)
-                dev_proxy = _get_bus().get_object(ORG_BLUEZ, device_path)
-                iface = dbus.Interface(dev_proxy, "org.freedesktop.DBus.Properties")
-                dev_addr = str(iface.Get("org.bluez.Device1", "Address"))
-                known_devices.append(dev_addr)
-            except dbus.exceptions.DBusException:
-                # Not a device node (e.g., could be a service node)
-                continue
-
-        return known_devices
-    except dbus.exceptions.DBusException as e:
-        logger.debug(f"Error getting devices for {hci}: {e}")
-        return []
+    return addresses
 
 
 class AdapterManager:
     """Manages Bluetooth adapters and provides load-balanced selection.
 
-    Uses DBus to query BlueZ directly, matching the original JoustMania approach.
+    Uses dbus-fast to query BlueZ directly.
     """
 
     def __init__(self):
         self._hci_dict: dict[str, str] = {}  # hci -> address
         self._bt_devices: dict[str, list[str]] = {}  # address -> [device_addrs]
 
-    def refresh_adapters(self) -> dict[str, list[str]]:
+    async def refresh_adapters(self) -> dict[str, list[str]]:
         """Refresh the list of adapters and their paired devices.
 
         Returns:
             Dict mapping adapter address to list of paired device addresses
         """
-        self._hci_dict = get_hci_dict()
+        try:
+            self._hci_dict = await get_hci_dict()
+        except DBusError as e:
+            logger.debug(f"Error getting adapters: {e}")
+            self._hci_dict = {}
+
         self._bt_devices = {}
 
         for hci, addr in self._hci_dict.items():
-            devices = get_attached_addresses(hci)
+            try:
+                devices = await get_attached_addresses(hci)
+            except DBusError as e:
+                logger.debug(f"Error getting devices for {hci}: {e}")
+                devices = []
             self._bt_devices[addr] = devices
             logger.debug(f"Adapter {addr} ({hci}): {len(devices)} devices")
 
