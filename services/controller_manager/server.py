@@ -14,6 +14,7 @@ import grpc.aio
 from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 
 from lib.otel_metrics import init_metrics
+from lib.profiling import init_profiling
 from lib.system_metrics import start_system_metrics_collector
 from proto import controller_manager_pb2_grpc
 from services.controller_manager import metrics
@@ -36,6 +37,7 @@ async def serve(port=50052):
     # Use METRICS_EXPORT_INTERVAL_MS env var to configure (10ms for 100Hz)
     export_interval_ms = int(os.getenv("METRICS_EXPORT_INTERVAL_MS", "100"))
     init_metrics(export_interval_ms=export_interval_ms)
+    init_profiling()
     logger.info(f"OTEL push metrics initialized ({export_interval_ms}ms export interval)")
 
     # Start prometheus_client HTTP server for direct pull scraping (pipeline comparison)

@@ -19,6 +19,9 @@ dependencies = [
     # System metrics
     "psutil>=5.9.0",
 
+    # Continuous profiling
+    "pyroscope-io>=0.8.16",
+
     # Feature Flags
     "openfeature-sdk>=0.6.0",
     "openfeature-provider-flagd>=0.1.0",
