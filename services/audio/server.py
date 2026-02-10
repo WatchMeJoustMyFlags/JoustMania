@@ -36,13 +36,13 @@ async def serve():
     logger.info("Starting JoustMania Audio service...")
 
     # Initialize OTEL push metrics
-    init_metrics(service_name="audio")
+    init_metrics()
     logger.info("OTEL push metrics initialized for audio service")
 
     # Start system metrics collection
     start_system_metrics_collector(
-        cpu_gauge=metrics.process_cpu_percent,
-        memory_gauge=metrics.process_memory_mb,
+        cpu_counter=metrics.process_cpu_seconds_total,
+        memory_gauge=metrics.process_resident_memory_bytes,
         threads_gauge=metrics.process_threads,
     )
 

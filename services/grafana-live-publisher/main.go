@@ -10,11 +10,10 @@
 // Environment variables:
 //   - PORT: HTTP server port (default: 4318)
 //   - GRAFANA_URL: Grafana base URL (default: http://grafana:3000)
-//   - GRAFANA_PUSH_PATH: Grafana Live push path (default: joustmania/accel)
+//   - GRAFANA_PUSH_PATH: Grafana Live stream ID (default: joustmania-accel)
 package main
 
 import (
-	"bytes"
 	"compress/gzip"
 	"encoding/json"
 	"fmt"
@@ -114,7 +113,7 @@ func main() {
 	config = Config{
 		Port:            getEnv("PORT", "4318"),
 		GrafanaURL:      getEnv("GRAFANA_URL", "http://grafana:3000"),
-		GrafanaPushPath: getEnv("GRAFANA_PUSH_PATH", "joustmania/accel"),
+		GrafanaPushPath: getEnv("GRAFANA_PUSH_PATH", "joustmania-accel"),
 	}
 
 	httpClient = &http.Client{
@@ -365,22 +364,22 @@ func aggregateBySerial(messages []AccelMessage) []AccelMessage {
 }
 
 func pushToGrafanaLive(msg AccelMessage) {
-	// Grafana Live push endpoint
+	// Grafana Live push endpoint expects InfluxDB line protocol
 	url := fmt.Sprintf("%s/api/live/push/%s", config.GrafanaURL, config.GrafanaPushPath)
 
-	data, err := json.Marshal(msg)
-	if err != nil {
-		log.Printf("Failed to marshal message: %v", err)
-		return
-	}
+	// Format as InfluxDB line protocol: measurement,tag=val field=val timestamp_ns
+	// Timestamp must be in nanoseconds
+	timestampNs := msg.Time * 1e6 // Convert millis to nanos
+	line := fmt.Sprintf("accel,serial=%s magnitude=%f,x=%f,y=%f,z=%f %d",
+		msg.Serial, msg.Magnitude, msg.X, msg.Y, msg.Z, timestampNs)
 
-	req, err := http.NewRequest("POST", url, bytes.NewReader(data))
+	req, err := http.NewRequest("POST", url, strings.NewReader(line))
 	if err != nil {
 		log.Printf("Failed to create request: %v", err)
 		return
 	}
 
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", "text/plain")
 
 	resp, err := httpClient.Do(req)
 	if err != nil {

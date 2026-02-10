@@ -328,7 +328,6 @@ Settings are configured via admin mode (hold all 4 face buttons):
 |------|---------|
 | `docker-compose.yml` | Full stack with observability |
 | `docker-compose.lite.yml` | Minimal stack (no observability) |
-| `docker-compose.hardware.yml` | Hardware mode overrides |
 | `docker-compose.test.yml` | Integration testing |
 | `docker-compose.ci.yml` | CI builds |
 

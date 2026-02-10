@@ -84,9 +84,9 @@ object_pool_utilization = Gauge(
 )
 
 # System metrics
-process_cpu_percent = Gauge("process_cpu_percent", "Process CPU usage percentage")
+process_cpu_seconds_total = Counter("process_cpu_seconds_total", "Total user and system CPU time spent in seconds")
 
-process_memory_mb = Gauge("process_memory_mb", "Process memory usage in MB")
+process_resident_memory_bytes = Gauge("process_resident_memory_bytes", "Resident memory size in bytes")
 
 process_threads = Gauge("process_threads", "Number of active threads")
 
@@ -222,4 +222,15 @@ controller_accel_z = Gauge(
 stream_frame_overruns_total = Counter(
     "controller_stream_frame_overruns_total",
     "Total number of stream frames that took longer than target interval",
+)
+
+# Streaming frequency flag metrics (direct flagd integration)
+stream_frequency_changes_total = Counter(
+    "controller_stream_frequency_changes_total",
+    "Total number of streaming frequency changes from flagd",
+)
+
+stream_current_frequency_hz = Gauge(
+    "controller_stream_current_frequency_hz",
+    "Current streaming frequency in Hz (from flagd override)",
 )

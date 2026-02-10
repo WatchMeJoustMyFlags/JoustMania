@@ -59,9 +59,9 @@ winner_announcement_delay_seconds = Histogram(
 )
 
 # System metrics
-process_cpu_percent = Gauge("process_cpu_percent", "Process CPU usage percentage")
+process_cpu_seconds_total = Counter("process_cpu_seconds_total", "Total user and system CPU time spent in seconds")
 
-process_memory_mb = Gauge("process_memory_mb", "Process memory usage in MB")
+process_resident_memory_bytes = Gauge("process_resident_memory_bytes", "Resident memory size in bytes")
 
 process_threads = Gauge("process_threads", "Number of active threads")
 

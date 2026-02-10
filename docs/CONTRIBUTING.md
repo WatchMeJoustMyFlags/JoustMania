@@ -8,7 +8,6 @@ Thank you for your interest in contributing to JoustMania! This guide will help 
 
 - **Docker** - All development tooling runs in containers
 - **Git** - Version control
-- **Git LFS** - Audio assets are stored with [Git Large File Storage](https://git-lfs.com/)
 - **VS Code** (optional) - Recommended for dev container support
 
 ### Quick Start
@@ -36,18 +35,12 @@ The dev container includes:
    cd JoustMania
    ```
 
-2. Install Git LFS (once per machine) and fetch audio assets:
-   ```bash
-   git lfs install
-   git lfs pull
-   ```
-
-3. Install uv (Python package manager):
+2. Install uv (Python package manager):
    ```bash
    curl -LsSf https://astral.sh/uv/install.sh | sh
    ```
 
-4. Run linting/formatting checks:
+3. Run linting/formatting checks:
    ```bash
    make lint      # Check code
    make format    # Auto-format code
@@ -133,26 +126,20 @@ make protos
 make test
 ```
 
-**Using Docker directly:**
+**Using Make targets:**
 
 ```bash
 # Lint Python code
-bash scripts/ci/lint.sh
+make lint
 
 # Check formatting
-bash scripts/ci/format-check.sh
-
-# Type check
-bash scripts/ci/typecheck.sh
+make format-check
 
 # Lint Dockerfiles
-bash scripts/ci/lint-dockerfiles.sh
+make ci-lint-dockerfiles
 
 # Validate protos
-bash scripts/ci/validate-protos.sh
-
-# Build a service
-bash scripts/ci/build-service.sh controller_manager
+make ci-validate-protos
 ```
 
 **In Dev Container:**
@@ -165,12 +152,8 @@ bash scripts/ci/build-service.sh controller_manager
 
 **Linting errors:**
 ```bash
-# Auto-fix with Make
+# Auto-fix
 make format
-
-# Or with Docker
-docker run --rm -v "$(pwd):/workspace" joustmania/ci-lint:latest ruff format .
-docker run --rm -v "$(pwd):/workspace" joustmania/ci-lint:latest ruff check --fix .
 ```
 
 **Dockerfile warnings:**
@@ -288,17 +271,12 @@ If you modify Dockerfiles:
 
 1. Lint the Dockerfile:
    ```bash
-   make lint-dockerfiles
+   make ci-lint-dockerfiles
    ```
 
 2. Build the service:
    ```bash
-   make build-service SERVICE=<service-name>
-   ```
-
-3. Test the service:
-   ```bash
-   docker run --rm joustmania/<service-name>-service:ci
+   docker compose build <service-name>
    ```
 
 ## Commit Message Guidelines

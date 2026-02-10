@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.3.0](https://github.com/WatchMeJoustMyFlags/JoustMania/compare/joustmania-v0.2.0...joustmania-v0.3.0) (2026-02-08)
+
+
+### Features
+
+* Add flagd to observability stack ([#417](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/417)) ([b03769e](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/b03769e5e6d9cbc013c0e8ec050f01ef66c79d92))
+* Add OpenFeature OpenTelemetry hook for flag evaluation tracing ([#420](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/420)) ([ec846a9](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/ec846a9adea101ec5216bc537313c4ef238bb755))
+* Add Prometheus self-monitoring dashboard ([#415](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/415)) ([b540562](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/b54056243483e78a5bb23ec41a559105a3527c3a))
+* Add VictoriaMetrics self-monitoring dashboard ([#416](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/416)) ([90a50d8](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/90a50d86eb9e9ab296d174511a7036fb079aca5e))
+* Convention idle mode for battery-saving PS Move controllers ([#419](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/419)) ([e439498](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/e4394982f4242d4a193b2c4638381a9020c6568b))
+* Migrate Menu and Audio metrics to OTEL push ([#414](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/414)) ([cb2b108](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/cb2b10838eb7d71ce3137b9d103afccb16798375))
+* Migrate pairing daemon metrics to OTEL push ([#430](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/430)) ([dae7d9b](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/dae7d9b95b23c49e5f8bc361bf7fc29c8d978cd0))
+
+
+### Bug Fixes
+
+* Add 4-tier service namespaces for dashboard metrics ([#434](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/434)) ([d7ac03a](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/d7ac03a6907fdc5583f702367c9450544fd4e7dd))
+* Correct stale labels in pipeline comparison dashboard ([#442](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/442)) ([8298cf9](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/8298cf99839258ed3930713426f5154621989784))
+* Use Grafana subpath in Live publisher URL ([#440](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/440)) ([1a1246a](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/1a1246a341cc2ec751f49bf849e489fbab2bc5a1))
+* Use host network for pairing daemon Bluetooth HCI access ([#437](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/437)) ([eb8daad](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/eb8daadfc9da04472c7142a1f57588d3b6cabbe3))
+* Use InfluxDB line protocol for Grafana Live push ([#444](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/444)) ([6ffbb11](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/6ffbb1122a66d509c5dcb0f311193b833f114080))
+* Use job label for VictoriaMetrics in pipeline dashboard ([#443](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/443)) ([c51ccf8](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/c51ccf8c800fc6eaa66457a6621d910db1245dfc))
+* Use query_result() for player-insights active filter ([#439](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/439)) ([0878e5e](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/0878e5e3a4d08d72d676e569d3930fe157b2a9ac))
+
+
+### Performance
+
+* Speed up CI integration tests with volume mounts ([#432](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/432)) ([d9f8b44](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/d9f8b44a9148487157199b725436043b0b2b269e))
+
+
+### Refactoring
+
+* Configure OTEL identity via env vars only ([#438](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/438)) ([62fd9c9](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/62fd9c9b41a32c5e4648fe802445b0f454cc8130))
+
+
+### Miscellaneous
+
+* Clean up stale files, deprecated CI tooling, and broken references ([#431](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/431)) ([c9fcc35](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/c9fcc350af959a43d7eea93912b6d5c5de908b38))
+* Remove Git LFS, commit audio assets directly ([#428](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/428)) ([62733ad](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/62733ada956ccd8fdbfadaf6a75d6c150d739398))
+
 ## [0.2.0](https://github.com/WatchMeJoustMyFlags/JoustMania/compare/joustmania-v0.1.0...joustmania-v0.2.0) (2026-02-07)
 
 

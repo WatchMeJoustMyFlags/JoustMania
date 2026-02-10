@@ -92,7 +92,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "up{job=\"prometheus\"}",
+          "expr": "up{job=\"observability/prometheus\"}",
           "legendFormat": "{{job}} ({{instance}})",
           "refId": "A"
         }
@@ -159,7 +159,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "prometheus_tsdb_head_series{job=\"prometheus\"}",
+          "expr": "prometheus_tsdb_head_series{job=\"observability/prometheus\"}",
           "legendFormat": "Head Series",
           "refId": "A"
         }
@@ -226,7 +226,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "prometheus_tsdb_head_chunks{job=\"prometheus\"}",
+          "expr": "prometheus_tsdb_head_chunks{job=\"observability/prometheus\"}",
           "legendFormat": "Head Chunks",
           "refId": "A"
         }
@@ -293,7 +293,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_resident_memory_bytes{job=\"prometheus\"}",
+          "expr": "process_resident_memory_bytes{job=\"observability/prometheus\"}",
           "legendFormat": "RSS",
           "refId": "A"
         }
@@ -382,7 +382,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "scrape_duration_seconds{job=\"prometheus\"}",
+          "expr": "scrape_duration_seconds{job=\"observability/prometheus\"}",
           "legendFormat": "{{job}} ({{instance}})",
           "refId": "A"
         }
@@ -471,7 +471,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "scrape_samples_scraped{job=\"prometheus\"}",
+          "expr": "scrape_samples_scraped{job=\"observability/prometheus\"}",
           "legendFormat": "{{job}} ({{instance}})",
           "refId": "A"
         }
@@ -560,7 +560,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "prometheus_tsdb_head_series{job=\"prometheus\"}",
+          "expr": "prometheus_tsdb_head_series{job=\"observability/prometheus\"}",
           "legendFormat": "Head Series",
           "refId": "A"
         },
@@ -569,7 +569,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "prometheus_tsdb_head_chunks{job=\"prometheus\"}",
+          "expr": "prometheus_tsdb_head_chunks{job=\"observability/prometheus\"}",
           "legendFormat": "Head Chunks",
           "refId": "B"
         }
@@ -658,7 +658,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "prometheus_tsdb_storage_blocks_bytes{job=\"prometheus\"}",
+          "expr": "prometheus_tsdb_storage_blocks_bytes{job=\"observability/prometheus\"}",
           "legendFormat": "Block Storage",
           "refId": "A"
         },
@@ -667,7 +667,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "prometheus_tsdb_wal_storage_size_bytes{job=\"prometheus\"}",
+          "expr": "prometheus_tsdb_wal_storage_size_bytes{job=\"observability/prometheus\"}",
           "legendFormat": "WAL Storage",
           "refId": "B"
         }
@@ -756,7 +756,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(prometheus_rule_evaluation_duration_seconds_sum{job=\"prometheus\"}[5m]) / rate(prometheus_rule_evaluation_duration_seconds_count{job=\"prometheus\"}[5m])",
+          "expr": "rate(prometheus_rule_evaluation_duration_seconds_sum{job=\"observability/prometheus\"}[5m]) / rate(prometheus_rule_evaluation_duration_seconds_count{job=\"observability/prometheus\"}[5m])",
           "legendFormat": "{{rule_group}}",
           "refId": "A"
         }
@@ -891,7 +891,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_resident_memory_bytes{job=\"prometheus\"}",
+          "expr": "process_resident_memory_bytes{job=\"observability/prometheus\"}",
           "legendFormat": "Resident Memory",
           "refId": "A"
         },
@@ -900,7 +900,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_virtual_memory_bytes{job=\"prometheus\"}",
+          "expr": "process_virtual_memory_bytes{job=\"observability/prometheus\"}",
           "legendFormat": "Virtual Memory",
           "refId": "B"
         },
@@ -909,7 +909,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "go_memstats_heap_inuse_bytes{job=\"prometheus\"}",
+          "expr": "go_memstats_heap_inuse_bytes{job=\"observability/prometheus\"}",
           "legendFormat": "Go Heap In-Use",
           "refId": "C"
         }
@@ -998,7 +998,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(prometheus_rule_evaluation_failures_total{job=\"prometheus\"}[5m])",
+          "expr": "rate(prometheus_rule_evaluation_failures_total{job=\"observability/prometheus\"}[5m])",
           "legendFormat": "{{rule_group}} failures",
           "refId": "A"
         }
@@ -1087,7 +1087,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(prometheus_tsdb_head_samples_appended_total{job=\"prometheus\"}[5m])",
+          "expr": "rate(prometheus_tsdb_head_samples_appended_total{job=\"observability/prometheus\"}[5m])",
           "legendFormat": "Samples Appended/s",
           "refId": "A"
         },
@@ -1096,7 +1096,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(prometheus_tsdb_compactions_total{job=\"prometheus\"}[5m])",
+          "expr": "rate(prometheus_tsdb_compactions_total{job=\"observability/prometheus\"}[5m])",
           "legendFormat": "Compactions/s",
           "refId": "B"
         }

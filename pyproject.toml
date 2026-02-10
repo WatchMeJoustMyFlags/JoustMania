@@ -1,6 +1,6 @@
 [project]
 name = "joustmania"
-version = "0.2.0"
+version = "0.3.0"
 description = "Multi-player gaming system using PS Move controllers"
 requires-python = ">=3.11,<3.13"
 # No dependencies - this is a workspace root, each member has its own deps
@@ -32,6 +32,14 @@ members = [
     "services/pairing_daemon",
     "tests/integration",
 ]
+
+# pytest configuration (migrated from pytest.ini)
+[tool.pytest.ini_options]
+testpaths = ["services", "lib", "tests/integration"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+addopts = "-v"
 
 # ty - Type checking configuration
 [tool.ty]

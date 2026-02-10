@@ -351,6 +351,7 @@ class BaseGameMode(ABC):
             # Set alive metric for all initialized players (Phase 75: filter dead from dashboard)
             for serial in self.players:
                 metrics.player_alive.labels(serial=serial).set(1)
+            metrics.players_alive.set(len(self.players))
 
             logger.info(f"Initialized {len(self.players)} players from StartGame RPC")
 
@@ -835,6 +836,8 @@ class BaseGameMode(ABC):
 
         # Mark player as dead in metrics (Phase 75: filter dead players from dashboard)
         metrics.player_alive.labels(serial=serial).set(0)
+        alive_count = len([p for p in self.players.values() if p.alive])
+        metrics.players_alive.set(alive_count)
 
         # Play death explosion sound (Phase 29)
         await self._play_sound(Sound.SFX_EXPLOSION, priority=2)

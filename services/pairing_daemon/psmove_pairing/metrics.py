@@ -1,6 +1,6 @@
-"""Prometheus metrics for PS Move pairing daemon."""
+"""OTEL push metrics for PS Move pairing daemon."""
 
-from prometheus_client import Counter, Gauge, Histogram
+from lib.otel_metrics import Counter, Gauge, Histogram
 
 # Pairing metrics
 pairing_attempts_total = Counter(
@@ -68,3 +68,8 @@ bluetooth_adapter_connections = Gauge(
     "Number of controllers per adapter",
     ["hci_adapter"],
 )
+
+# Process-level system metrics (standard Prometheus naming convention)
+process_cpu_seconds_total = Counter("process_cpu_seconds_total", "Total user and system CPU time spent in seconds")
+process_resident_memory_bytes = Gauge("process_resident_memory_bytes", "Resident memory size in bytes")
+process_threads = Gauge("process_threads", "Number of active threads")
