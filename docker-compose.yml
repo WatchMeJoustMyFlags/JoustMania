@@ -154,6 +154,24 @@ services:
           memory: 256m
           cpus: '0.5'
     logging: *default-logging
+  # Pyroscope for continuous profiling (CPU flame graphs)
+  pyroscope:
+    image: grafana/pyroscope:latest
+    container_name: joustmania-pyroscope
+    expose:
+      - "4040"
+    networks:
+      - joustmania
+    volumes:
+      - pyroscope-data:/data
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: '0.5'
+    logging: *default-logging
+
   # Controller Manager Service
   controller-manager:
     image: ghcr.io/watchmejoustmyflags/joustmania/controller-manager-service:${IMAGE_TAG:-latest}
@@ -193,6 +211,7 @@ services:
       - OTEL_SERVICE_NAME=controller-manager-service
       - OTEL_SERVICE_NAMESPACE=infrastructure
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
       # Issue #62: 100Hz acceleration metrics for real-time visualization
       # Default 100ms; set to 10ms for 100Hz demo
       - METRICS_EXPORT_INTERVAL_MS=${METRICS_EXPORT_INTERVAL_MS:-100}
@@ -263,6 +282,7 @@ services:
       - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME_GAME_COORDINATOR:-game-coordinator-service}
       - OTEL_SERVICE_NAMESPACE=joustmania
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+      - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
     depends_on:
       redis:
         condition: service_healthy
@@ -296,6 +316,7 @@ services:
       - OTEL_SERVICE_NAME=menu-service
       - OTEL_SERVICE_NAMESPACE=joustmania
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
       # Phase 60: Audio service connection
       - AUDIO_HOST=audio
       - AUDIO_PORT=50056
@@ -345,6 +366,7 @@ services:
       - OTEL_SERVICE_NAME=audio-service
       - OTEL_SERVICE_NAMESPACE=joustmania
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
       - FLAGD_HOST=flagd
       - FLAGD_PORT=8015
     depends_on:
@@ -664,3 +686,4 @@ volumes:
   loki-data:
   controller-names:
   psmoveapi-data:
+  pyroscope-data:
