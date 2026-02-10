@@ -71,6 +71,7 @@ class ControllerState(Enum):
     CONNECTED = "connected"  # Connected but not ready (dim LED)
     READY = "ready"  # Ready to play (bright LED)
     ADMIN = "admin"  # In admin mode (white LED)
+    IDLE = "idle"  # Idle mode (LED off to save battery)
 
 
 class ControllerHandler(Protocol):

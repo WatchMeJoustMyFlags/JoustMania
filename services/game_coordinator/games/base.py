@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 from opentelemetry import context as otel_context
 from opentelemetry import trace
 
+from lib.feature_flags import set_game_transaction_context
 from lib.telemetry import inject_trace_context
 from lib.types import GameEvent, Sensitivity, Sound
 from services.game_coordinator import metrics
@@ -399,6 +400,7 @@ class BaseGameMode(ABC):
             # Set alive metric for all initialized players (Phase 75: filter dead from dashboard)
             for serial in self.players:
                 metrics.player_alive.labels(serial=serial).set(1)
+            metrics.players_alive.set(len(self.players))
 
             logger.info(f"Initialized {len(self.players)} players from StartGame RPC")
 
@@ -888,6 +890,8 @@ class BaseGameMode(ABC):
 
         # Mark player as dead in metrics (Phase 75: filter dead players from dashboard)
         metrics.player_alive.labels(serial=serial).set(0)
+        alive_count = len([p for p in self.players.values() if p.alive])
+        metrics.players_alive.set(alive_count)
 
         # Play death explosion sound (Phase 29)
         await self._play_sound(Sound.SFX_EXPLOSION, priority=2)
@@ -1040,6 +1044,13 @@ class BaseGameMode(ABC):
                     raise ValueError(f"Need at least 2 players, got {len(self.players)}")
 
                 init_span.set_attribute("player_count", len(self.players))
+
+                # Set transaction context for flag evaluations during this game
+                set_game_transaction_context(
+                    game_mode=self.get_game_name(),
+                    controller_count=len(self.players),
+                    sensitivity=self.sensitivity.value,
+                )
 
                 # Additional phases (e.g., color_assignment, team_formation)
                 # These are children of initialization_phase

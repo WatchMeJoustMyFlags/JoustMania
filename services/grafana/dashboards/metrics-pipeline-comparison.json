@@ -250,7 +250,7 @@
             "uid": "prometheus-direct"
           },
           "editorMode": "code",
-          "expr": "controller_accel_magnitude{job=\"controller-manager\", serial=~\"$serial\"}",
+          "expr": "controller_accel_magnitude{job=\"controller-manager-service\", serial=~\"$serial\"}",
           "instant": false,
           "legendFormat": "{{serial}}",
           "range": true,
@@ -344,7 +344,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "controller_accel_magnitude{service_name=\"controller-manager\", serial=~\"$serial\"}",
+          "expr": "controller_accel_magnitude{job=\"infrastructure/controller-manager-service\", serial=~\"$serial\"}",
           "instant": false,
           "legendFormat": "{{serial}}",
           "range": true,
@@ -528,7 +528,7 @@
             "uid": "prometheus-direct"
           },
           "editorMode": "code",
-          "expr": "controller_accel_magnitude{job=\"controller-manager\", serial=~\"$serial\"}",
+          "expr": "controller_accel_magnitude{job=\"controller-manager-service\", serial=~\"$serial\"}",
           "instant": false,
           "legendFormat": "{{serial}} (OTEL→Prom 500ms)",
           "range": true,
@@ -540,7 +540,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "controller_accel_magnitude{service_name=\"controller-manager\", serial=~\"$serial\"}",
+          "expr": "controller_accel_magnitude{job=\"infrastructure/controller-manager-service\", serial=~\"$serial\"}",
           "instant": false,
           "legendFormat": "{{serial}} (OTEL→VM 100ms)",
           "range": true,
@@ -683,7 +683,7 @@
             "uid": "prometheus-direct"
           },
           "editorMode": "code",
-          "expr": "count_over_time(controller_accel_magnitude{job=\"controller-manager\", serial=~\"$serial\"}[1m])",
+          "expr": "count_over_time(controller_accel_magnitude{job=\"controller-manager-service\", serial=~\"$serial\"}[1m])",
           "instant": true,
           "legendFormat": "OTEL→Prom 500ms",
           "refId": "B"
@@ -694,7 +694,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "count_over_time(controller_accel_magnitude{service_name=\"controller-manager\", serial=~\"$serial\"}[1m])",
+          "expr": "count_over_time(controller_accel_magnitude{job=\"infrastructure/controller-manager-service\", serial=~\"$serial\"}[1m])",
           "instant": true,
           "legendFormat": "OTEL→VM 100ms",
           "refId": "C"
@@ -823,7 +823,7 @@
             "uid": "prometheus-direct"
           },
           "editorMode": "code",
-          "expr": "time() - controller_accel_magnitude{job=\"controller-manager\", serial=~\"$serial\"}",
+          "expr": "time() - controller_accel_magnitude{job=\"controller-manager-service\", serial=~\"$serial\"}",
           "instant": true,
           "legendFormat": "OTEL→Prom 500ms",
           "refId": "B"
@@ -834,7 +834,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "time() - controller_accel_magnitude{service_name=\"controller-manager\", serial=~\"$serial\"}",
+          "expr": "time() - controller_accel_magnitude{job=\"infrastructure/controller-manager-service\", serial=~\"$serial\"}",
           "instant": true,
           "legendFormat": "OTEL→VM 100ms",
           "refId": "C"

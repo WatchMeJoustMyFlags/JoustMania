@@ -37,6 +37,10 @@ WORKDIR /app
 # Copy workspace configuration
 COPY pyproject.toml /app/
 
+# Copy lib package (OTEL metrics)
+COPY lib/pyproject.toml /app/lib/
+RUN mkdir -p lib && touch lib/__init__.py
+
 # Copy service dependencies
 COPY services/pairing_daemon/pyproject.toml /app/services/pairing_daemon/
 
@@ -46,9 +50,9 @@ RUN mkdir -p services/pairing_daemon/psmove_pairing && \
     touch services/pairing_daemon/psmove_pairing/__init__.py && \
     touch services/pairing_daemon/server.py
 
-# Install service dependencies (standalone - no proto/lib deps)
+# Install lib + service dependencies
 WORKDIR /app
-RUN uv pip install --system --no-cache-dir -e services/pairing_daemon/
+RUN uv pip install --system --no-cache-dir -e lib/ -e services/pairing_daemon/
 
 # =============================================================================
 # Stage 3: Runtime image
@@ -84,10 +88,11 @@ RUN ldconfig
 
 # Copy application code
 COPY --from=python-builder /app/pyproject.toml /app/
+COPY lib/ /app/lib/
 COPY services/pairing_daemon/ /app/services/pairing_daemon/
 
-# Set Python path
-ENV PYTHONPATH=/app/services/pairing_daemon
+# Set Python path (includes /app for lib imports)
+ENV PYTHONPATH=/app:/app/services/pairing_daemon
 # Ensure Python uses bytecode cache for faster imports
 ENV PYTHONDONTWRITEBYTECODE=0
 
@@ -95,14 +100,13 @@ ENV PYTHONDONTWRITEBYTECODE=0
 ENV OTEL_SERVICE_NAME=psmove-pairing
 ENV OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
 ENV OTEL_TRACES_EXPORTER=otlp
-ENV OTEL_METRICS_EXPORTER=none
 ENV OTEL_LOGS_EXPORTER=none
 
 # Pairing daemon config
 ENV PSMOVE_PATH=/usr/local/bin/psmove
 ENV METRICS_PORT=8002
 
-# Expose Prometheus metrics + healthz port
+# Expose health check port
 EXPOSE 8002
 
 # Note: Pairing daemon needs privileged access for bluetooth and USB

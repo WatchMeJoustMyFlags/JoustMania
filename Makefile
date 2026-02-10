@@ -31,6 +31,7 @@ help:
 	@echo "Testing:"
 	@echo "  make test            - Run all tests (unit + integration)"
 	@echo "  make test-integration - Run integration tests only (CI)"
+	@echo "  make test-dev        - Run integration tests with pre-built images (fast)"
 	@echo "  make test TEST=name  - Run specific test by name"
 	@echo ""
 	@echo "Protos:"
@@ -157,7 +158,6 @@ protos-all: protos protos-ts protos-go
 clean-protos:
 	rm -f proto/*_pb2.py proto/*_pb2_grpc.py
 	rm -rf proto/__pycache__
-	rm -rf services/dashboard/src/gen/*
 	rm -rf services/connect-proxy/gen/*
 
 # ============================================================================
@@ -195,6 +195,13 @@ test-pulled: clean-test-venv
 		$(TEST_ENV) uv run --package joustmania-integration-tests \
 		pytest tests/integration/ -v $(if $(TEST),-k "$(TEST)")
 
+# Integration tests with pre-built images + volume-mounted source (no rebuild)
+# Requires images: run `docker compose pull` or `make dev` first
+.PHONY: test-dev
+test-dev: clean-test-venv
+	USE_PREBUILT_IMAGES=true USE_DEV_MOUNTS=true $(TEST_ENV) uv run --package joustmania-integration-tests \
+		pytest tests/integration/ -v $(if $(TEST),-k "$(TEST)")
+
 # Pause before teardown for Jaeger inspection
 .PHONY: test-debug
 test-debug: clean-test-venv
@@ -205,22 +212,6 @@ test-debug: clean-test-venv
 # CI Targets (used by GitHub Actions)
 # ============================================================================
 # These are optimized for CI - local development should use targets above.
-
-# Builder image defaults (CI overrides these)
-BUILDER_IMAGE ?= ghcr.io/watchmejoustmyflags/joustmania/builder:latest
-PSMOVE_BUILDER_IMAGE ?= ghcr.io/watchmejoustmyflags/joustmania/psmove-builder:latest
-
-# Build a single service (used by CI matrix)
-.PHONY: ci-build-service
-ci-build-service:
-ifndef SERVICE
-	$(error SERVICE is required. Usage: make ci-build-service SERVICE=game_coordinator)
-endif
-	docker build \
-		--build-arg BUILDER_IMAGE=$(BUILDER_IMAGE) \
-		--build-arg PSMOVE_BUILDER_IMAGE=$(PSMOVE_BUILDER_IMAGE) \
-		-t ghcr.io/watchmejoustmyflags/joustmania/$(SERVICE)-service:latest \
-		-f services/$(SERVICE)/Dockerfile .
 
 # Build CI proto image (used by validation scripts)
 .PHONY: ci-proto-image

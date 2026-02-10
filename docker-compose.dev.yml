@@ -40,3 +40,8 @@ services:
       - ./services/audio:/app/services/audio
       - ./lib:/app/lib
       - ./proto:/app/proto
+
+  pairing-daemon:
+    volumes:
+      - ./services/pairing_daemon:/app/services/pairing_daemon
+      - ./lib:/app/lib

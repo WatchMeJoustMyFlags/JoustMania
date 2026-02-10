@@ -7,10 +7,14 @@ Mocks psmove module, DBus, and provides test utilities.
 import os
 import sys
 
-# Disable OTEL before importing modules that use it
+# Disable OTEL metrics before importing modules that use them
+from lib.otel_metrics import disable_metrics_for_tests
+
+disable_metrics_for_tests()
+
+# Disable OTEL tracing
 os.environ["OTEL_SDK_DISABLED"] = "true"
 os.environ["OTEL_TRACES_EXPORTER"] = "none"
-os.environ["OTEL_METRICS_EXPORTER"] = "none"
 
 # Mock psmove module before it gets imported
 from unittest.mock import MagicMock

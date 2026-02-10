@@ -12,6 +12,7 @@ Usage:
 
 Environment Variables:
     USE_PREBUILT_IMAGES: Set to "true" to pull images from GHCR instead of building
+    USE_DEV_MOUNTS: Set to "true" to overlay source via docker-compose.dev.yml
     IMAGE_TAG: Specify image tag to pull (default: latest)
 """
 
@@ -42,19 +43,24 @@ def docker_compose():
 
     By default, builds images locally. Set USE_PREBUILT_IMAGES=true to pull from GHCR.
     """
-    # Check if we should use prebuilt images
+    # Check if we should use prebuilt images or dev volume mounts
     use_prebuilt = os.getenv("USE_PREBUILT_IMAGES", "false").lower() == "true"
+    use_dev_mounts = os.getenv("USE_DEV_MOUNTS", "false").lower() == "true"
     image_tag = os.getenv("IMAGE_TAG", "latest")
+
+    compose_files = [
+        "docker-compose.yml",
+        "docker-compose.override.yml",
+        "docker-compose.ci.yml",
+    ]
+    if use_dev_mounts:
+        compose_files.append("docker-compose.dev.yml")
 
     compose = DockerCompose(
         context=".",
-        compose_file_name=[
-            "docker-compose.yml",
-            "docker-compose.override.yml",
-            "docker-compose.ci.yml",
-        ],
+        compose_file_name=compose_files,
         pull=use_prebuilt,
-        build=not use_prebuilt,
+        build=not use_prebuilt and not use_dev_mounts,
         env_file=None,  # Avoid conflicts with .env (e.g., IMAGE_TAG from development)
     )
 
@@ -63,6 +69,8 @@ def docker_compose():
     if use_prebuilt:
         os.environ["IMAGE_TAG"] = image_tag
         print(f"\n🐳 Using prebuilt images from GHCR (tag: {image_tag})")
+    elif use_dev_mounts:
+        print("\n📂 Using dev volume mounts (no build)")
     else:
         print("\n🔨 Building images locally")
 

@@ -14,8 +14,8 @@ import os
 
 import grpc.aio
 from grpc_health.v1 import health, health_pb2, health_pb2_grpc
-from prometheus_client import start_http_server
 
+from lib.otel_metrics import init_metrics
 from lib.system_metrics import start_system_metrics_collector
 from proto import audio_pb2_grpc
 from services.audio import metrics
@@ -24,7 +24,7 @@ from services.audio.servicer import AudioServiceServicer
 logger = logging.getLogger(__name__)
 
 
-async def serve(metrics_port=8000):
+async def serve():
     """Start the Audio gRPC server."""
     # Configure logging
     log_level = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -35,14 +35,14 @@ async def serve(metrics_port=8000):
 
     logger.info("Starting JoustMania Audio service...")
 
-    # Start Prometheus metrics HTTP server
-    start_http_server(metrics_port)
-    logger.info(f"Prometheus metrics available at http://0.0.0.0:{metrics_port}/metrics")
+    # Initialize OTEL push metrics
+    init_metrics()
+    logger.info("OTEL push metrics initialized for audio service")
 
     # Start system metrics collection
     start_system_metrics_collector(
-        cpu_gauge=metrics.process_cpu_percent,
-        memory_gauge=metrics.process_memory_mb,
+        cpu_counter=metrics.process_cpu_seconds_total,
+        memory_gauge=metrics.process_resident_memory_bytes,
         threads_gauge=metrics.process_threads,
     )
 

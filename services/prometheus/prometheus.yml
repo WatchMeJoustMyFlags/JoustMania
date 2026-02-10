@@ -11,7 +11,8 @@ rule_files:
 scrape_configs:
   # OTEL Collector - aggregates metrics from real-time services (Issue #106)
   # Services push metrics via OTLP; collector exposes them on :8889
-  # The OTEL Prometheus exporter sets job="joustmania/<service>" on metrics.
+  # The OTEL Prometheus exporter adds namespace prefixes to job labels
+  # (e.g. "joustmania/game-coordinator", "infrastructure/controller-manager").
   # honor_labels preserves these instead of overwriting with job="otel-collector".
   - job_name: 'otel-collector'
     scrape_interval: 500ms
@@ -21,12 +22,12 @@ scrape_configs:
         labels:
           collector: 'otel'
           pipeline: 'otel-push'
-    # Strip "joustmania/" prefix from job label so dashboard queries match
-    # e.g. "joustmania/controller-manager" -> "controller-manager"
+    # Strip namespace prefix from job label for Prometheus Direct queries
+    # e.g. "joustmania/game-coordinator" -> "game-coordinator"
     metric_relabel_configs:
       - source_labels: [job]
         target_label: job
-        regex: 'joustmania/(.*)'
+        regex: '[^/]+/(.*)'
         replacement: $1
 
   # Controller Manager direct pull (pipeline comparison)
@@ -37,20 +38,6 @@ scrape_configs:
         labels:
           service: 'controller-manager'
           pipeline: 'prometheus-pull'
-
-  # Menu Service (still uses prometheus_client pull)
-  - job_name: 'menu'
-    static_configs:
-      - targets: ['menu:8000']
-        labels:
-          service: 'menu'
-
-  # Audio Service (still uses prometheus_client pull)
-  - job_name: 'audio'
-    static_configs:
-      - targets: ['audio:8000']
-        labels:
-          service: 'audio'
 
   # Prometheus itself
   - job_name: 'prometheus'
@@ -66,9 +53,10 @@ scrape_configs:
         labels:
           instance: 'raspberry-pi'
 
-  # PS Move Pairing Daemon
-  - job_name: 'psmove-pairing'
+  # flagd feature flag service (management port exposes Prometheus metrics)
+  - job_name: 'flagd'
+    scrape_interval: 30s
     static_configs:
-      - targets: ['pairing-daemon:8002']
+      - targets: ['flagd:8014']
         labels:
-          service: 'psmove-pairing'
+          service: 'flagd'

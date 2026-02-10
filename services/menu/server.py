@@ -26,8 +26,8 @@ logging.basicConfig(
 
 import grpc.aio
 from grpc_health.v1 import health, health_pb2, health_pb2_grpc
-from prometheus_client import start_http_server
 
+from lib.otel_metrics import init_metrics
 from lib.system_metrics import start_system_metrics_collector
 from lib.types import Games
 from proto import menu_pb2, menu_pb2_grpc
@@ -37,17 +37,17 @@ from services.menu.servicer import MenuServicer
 logger = logging.getLogger(__name__)
 
 
-async def serve(port=50054, metrics_port=8000):
+async def serve(port=50054):
     """Start the Menu gRPC server."""
-    # Start Prometheus metrics HTTP server
-    start_http_server(metrics_port)
-    logger.info(f"Prometheus metrics available at http://0.0.0.0:{metrics_port}/metrics")
+    # Initialize OTEL push metrics
+    init_metrics()
+    logger.info("OTEL push metrics initialized for menu service")
 
     # Start system metrics collection
     background_tasks = []
     metrics_task = start_system_metrics_collector(
-        cpu_gauge=metrics.process_cpu_percent,
-        memory_gauge=metrics.process_memory_mb,
+        cpu_counter=metrics.process_cpu_seconds_total,
+        memory_gauge=metrics.process_resident_memory_bytes,
         threads_gauge=metrics.process_threads,
     )
     background_tasks.append(metrics_task)
