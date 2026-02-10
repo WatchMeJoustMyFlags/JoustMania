@@ -10,7 +10,7 @@ from opentelemetry import context as otel_context
 from opentelemetry import trace
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
-from lib.feature_flags import get_flag_client, init_flag_domain
+from lib.feature_flags import get_flag_client, init_flag_domain, set_game_transaction_context
 from lib.flag_config_writer import FlagConfigWriter
 from lib.telemetry import get_tracer
 from lib.types import Games
@@ -679,6 +679,12 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             StartGameConfig with appropriate mode-specific config
         """
         from proto import game_coordinator_pb2
+
+        # Set transaction context so all flag evaluations include game session info
+        set_game_transaction_context(
+            game_mode=game_mode.name,
+            controller_count=len(players),
+        )
 
         # Read game settings from flagd (game_settings domain)
         sensitivity = self.game_settings_client.get_integer_value("sensitivity", 2)
