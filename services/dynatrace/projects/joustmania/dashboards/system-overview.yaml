@@ -1,0 +1,7 @@
+configs:
+  - id: system-overview
+    type:
+      api: document
+    config:
+      name: "JoustMania - System Overview"
+      template: system-overview.json

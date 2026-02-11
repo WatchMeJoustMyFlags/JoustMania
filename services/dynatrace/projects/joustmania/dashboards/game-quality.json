@@ -1,0 +1,248 @@
+{
+  "version": 14,
+  "variables": [],
+  "tiles": {
+    "game-status": {
+      "type": "data",
+      "title": "Game Status",
+      "description": "Current game active state",
+      "query": "timeseries avg(game_active)",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "singleValue",
+      "visualizationConfig": {
+        "thresholds": [
+          { "value": 0, "color": "gray" },
+          { "value": 1, "color": "green" }
+        ],
+        "valueMappings": [
+          { "value": 0, "displayValue": "No Game" },
+          { "value": 1, "displayValue": "Active" }
+        ]
+      }
+    },
+    "active-players": {
+      "type": "data",
+      "title": "Active Players",
+      "description": "Number of active players in current game",
+      "query": "timeseries avg(game_active_players)",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "singleValue",
+      "visualizationConfig": {
+        "thresholds": [
+          { "value": 0, "color": "green" }
+        ]
+      }
+    },
+    "players-alive": {
+      "type": "data",
+      "title": "Players Alive",
+      "description": "Number of players still alive",
+      "query": "timeseries avg(game_players_alive)",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "singleValue",
+      "visualizationConfig": {
+        "thresholds": [
+          { "value": 0, "color": "green" }
+        ]
+      }
+    },
+    "current-game-duration": {
+      "type": "data",
+      "title": "Current Game Duration",
+      "description": "Duration of the current game in seconds",
+      "query": "timeseries avg(game_duration_seconds)",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "singleValue",
+      "visualizationConfig": {
+        "unit": "seconds",
+        "thresholds": [
+          { "value": 0, "color": "green" }
+        ]
+      }
+    },
+    "games-by-mode": {
+      "type": "data",
+      "title": "Games by Mode (Last Hour)",
+      "description": "Distribution of games started by mode in the last hour",
+      "query": "timeseries sum(delta(games_started_total)), by:{mode}",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "pie",
+      "visualizationConfig": {
+        "legend": { "position": "right" }
+      }
+    },
+    "game-loop-jitter": {
+      "type": "data",
+      "title": "Game Loop Jitter (lower is better)",
+      "description": "Standard deviation of game loop frame times",
+      "query": "timeseries avg(game_loop_jitter_ms)",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "graph",
+      "visualizationConfig": {
+        "yAxisUnit": "seconds",
+        "yAxisMin": 0,
+        "yAxisMax": 0.016,
+        "legend": { "position": "bottom" },
+        "thresholds": [
+          { "value": 0.016, "color": "red" }
+        ]
+      }
+    },
+    "game-loop-update-rate": {
+      "type": "data",
+      "title": "Game Loop Update Rate",
+      "description": "Actual game loop frequency in Hz",
+      "query": "timeseries avg(game_actual_update_frequency_hz)",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "graph",
+      "visualizationConfig": {
+        "yAxisUnit": "hertz",
+        "yAxisMin": 0,
+        "yAxisMax": 60,
+        "legend": { "position": "bottom" },
+        "thresholds": [
+          { "value": 50, "color": "red" }
+        ]
+      }
+    },
+    "games-started-5m": {
+      "type": "data",
+      "title": "Games Started (5min windows)",
+      "description": "Number of games started in 5 minute windows",
+      "query": "timeseries sum(delta(games_started_total)), by:{mode}",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics",
+        "rollup": "5m"
+      },
+      "visualization": "graph",
+      "visualizationConfig": {
+        "drawStyle": "bar",
+        "stacked": true,
+        "legend": { "position": "bottom" }
+      }
+    },
+    "audio-playback-rate": {
+      "type": "data",
+      "title": "Audio Playback Rate",
+      "description": "Audio sounds played per second by type",
+      "query": "timeseries sum(delta(audio_sounds_played_total)) / duration(\"1m\"), by:{sound_type}",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "graph",
+      "visualizationConfig": {
+        "yAxisUnit": "eventsPerSecond",
+        "stacked": true,
+        "legend": { "position": "bottom" }
+      }
+    },
+    "frame-consistency": {
+      "type": "data",
+      "title": "Frame Consistency",
+      "description": "Percentage of frames within 50% of target timing",
+      "query": "timeseries avg(game_loop_frame_consistency_percent)",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "singleValue",
+      "visualizationConfig": {
+        "unit": "percent",
+        "thresholds": [
+          { "value": 0, "color": "red" },
+          { "value": 90, "color": "yellow" },
+          { "value": 95, "color": "green" }
+        ],
+        "colorMode": "background"
+      }
+    },
+    "frame-jitter": {
+      "type": "data",
+      "title": "Frame Jitter",
+      "description": "Standard deviation of frame times (lower is better)",
+      "query": "timeseries avg(game_loop_jitter_ms)",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "singleValue",
+      "visualizationConfig": {
+        "unit": "milliseconds",
+        "thresholds": [
+          { "value": 0, "color": "green" },
+          { "value": 5, "color": "yellow" },
+          { "value": 10, "color": "red" }
+        ],
+        "colorMode": "background"
+      }
+    },
+    "dropped-frames-5m": {
+      "type": "data",
+      "title": "Dropped Frames (5m)",
+      "description": "Frames that exceeded 2x target time (5min window)",
+      "query": "timeseries sum(delta(game_loop_frames_dropped_total))",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "singleValue",
+      "visualizationConfig": {
+        "thresholds": [
+          { "value": 0, "color": "green" },
+          { "value": 10, "color": "yellow" },
+          { "value": 50, "color": "red" }
+        ],
+        "colorMode": "background"
+      }
+    }
+  },
+  "layouts": {
+    "0": { "x": 0, "y": 0, "w": 4, "h": 5, "key": "game-status" },
+    "1": { "x": 4, "y": 0, "w": 4, "h": 5, "key": "active-players" },
+    "2": { "x": 8, "y": 0, "w": 4, "h": 5, "key": "players-alive" },
+    "3": { "x": 12, "y": 0, "w": 4, "h": 5, "key": "current-game-duration" },
+    "4": { "x": 16, "y": 0, "w": 8, "h": 5, "key": "games-by-mode" },
+    "5": { "x": 0, "y": 5, "w": 12, "h": 7, "key": "game-loop-jitter" },
+    "6": { "x": 12, "y": 5, "w": 12, "h": 7, "key": "game-loop-update-rate" },
+    "7": { "x": 0, "y": 12, "w": 12, "h": 7, "key": "games-started-5m" },
+    "8": { "x": 12, "y": 12, "w": 12, "h": 7, "key": "audio-playback-rate" },
+    "9": { "x": 16, "y": 5, "w": 4, "h": 5, "key": "frame-consistency" },
+    "10": { "x": 20, "y": 5, "w": 4, "h": 5, "key": "frame-jitter" },
+    "11": { "x": 16, "y": 10, "w": 8, "h": 2, "key": "dropped-frames-5m" }
+  }
+}
