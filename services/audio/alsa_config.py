@@ -66,17 +66,22 @@ def _auto_detect_card() -> int:
     try:
         import alsaaudio
 
-        cards = alsaaudio.cards()
+        indexes = alsaaudio.card_indexes()
     except Exception:
         logger.warning("Failed to enumerate ALSA cards, falling back to card 0", exc_info=True)
         return 0
 
-    if not cards:
+    if not indexes:
         logger.warning("No ALSA cards found, falling back to card 0")
         return 0
 
-    logger.info("Detected ALSA cards: %s — using card 0 (%s)", cards, cards[0])
-    return 0
+    card_index = indexes[0]
+    try:
+        name = alsaaudio.card_name(card_index)[0]
+    except Exception:
+        name = "unknown"
+    logger.info("Detected ALSA card indexes: %s — using card %d (%s)", indexes, card_index, name)
+    return card_index
 
 
 def _write_asound_conf(card_number: int) -> None:
