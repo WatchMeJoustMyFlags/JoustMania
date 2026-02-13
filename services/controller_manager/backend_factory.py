@@ -20,7 +20,7 @@ def create_backend() -> ControllerBackend:
     Environment variables:
         MOCK_CONTROLLERS: Set to 'true' to use mock backend
         MOCK_CONTROLLER_COUNT: Number of mock controllers (default: 4)
-        CONTROLLER_BACKEND: Force specific backend ('bluetooth', 'windows', 'mock')
+        CONTROLLER_BACKEND: Force specific backend ('bluetooth', 'hidapi', 'windows', 'mock')
 
     Returns:
         ControllerBackend instance
@@ -44,6 +44,11 @@ def create_backend() -> ControllerBackend:
             from services.controller_manager.bluetooth_backend import BluetoothBackend
 
             return BluetoothBackend()
+
+        if forced_backend == "hidapi":
+            from services.controller_manager.hidapi_backend import HidapiBackend
+
+            return HidapiBackend()
 
         if forced_backend == "windows":
             from services.controller_manager.windows_backend import WindowsBackend
