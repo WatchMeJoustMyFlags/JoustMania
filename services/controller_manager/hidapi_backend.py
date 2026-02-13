@@ -12,6 +12,7 @@ Requires:
 Activated via CONTROLLER_BACKEND=hidapi environment variable.
 """
 
+import asyncio
 import contextlib
 import logging
 import os
@@ -77,6 +78,9 @@ class HidapiBackend(ControllerBackend):
 
         # Optional RSSI reader (requires NET_ADMIN capability)
         self._rssi_reader = None
+        # Cached RSSI values (updated by periodic background task)
+        self._rssi_cache: dict[str, int] = {}
+        self._rssi_task: asyncio.Task | None = None
         if os.environ.get("HIDAPI_ENABLE_RSSI", "").lower() in ("1", "true"):
             try:
                 from lib.hci_rssi import HciRssiReader
@@ -94,10 +98,40 @@ class HidapiBackend(ControllerBackend):
             self._scan_and_open()
             self.running = True
             logger.info(f"HidapiBackend initialized with {len(self.controllers)} controllers")
+
+            # Start RSSI background task (~1Hz, separate from 100Hz polling)
+            if self._rssi_reader:
+                self._rssi_task = asyncio.create_task(self._rssi_poll_loop())
+                logger.info("RSSI polling task started (1Hz)")
+
             return True
         except Exception as e:
             logger.error(f"Failed to initialize hidapi backend: {e}", exc_info=True)
             return False
+
+    async def _rssi_poll_loop(self) -> None:
+        """Background task that polls RSSI for all connected controllers at ~1Hz.
+
+        RSSI readings use HCI sockets which are independent of hidapi data I/O.
+        Running at 1Hz keeps overhead minimal while providing useful signal
+        strength data for dashboards and connection quality monitoring.
+        """
+        while self.running:
+            try:
+                for serial in list(self.controllers.keys()):
+                    rssi = self.get_rssi(serial)
+                    if rssi is not None:
+                        self._rssi_cache[serial] = rssi
+
+                # Clean up stale entries
+                stale = set(self._rssi_cache.keys()) - set(self.controllers.keys())
+                for serial in stale:
+                    del self._rssi_cache[serial]
+
+            except Exception as e:
+                logger.debug(f"RSSI poll error: {e}")
+
+            await asyncio.sleep(1.0)
 
     def _scan_and_open(self) -> None:
         """Enumerate HID devices and open PS Move controllers."""
@@ -230,7 +264,7 @@ class HidapiBackend(ControllerBackend):
             # Decode buttons from bitmask
             buttons = parsed["buttons"]
 
-            return {
+            state = {
                 StateKey.SERIAL: serial,
                 StateKey.BATTERY: battery,
                 StateKey.TRIGGER: parsed["trigger"][1],  # Second frame trigger
@@ -247,6 +281,12 @@ class HidapiBackend(ControllerBackend):
                 StateKey.GYRO: {AxisKey.X: gx, AxisKey.Y: gy, AxisKey.Z: gz},
                 StateKey.TEMPERATURE: parsed["temperature"],
             }
+
+            # Include cached RSSI if available (updated by background task at ~1Hz)
+            if serial in self._rssi_cache:
+                state["rssi"] = self._rssi_cache[serial]
+
+            return state
 
         except OSError as e:
             # Device disconnected or I/O error
@@ -431,6 +471,12 @@ class HidapiBackend(ControllerBackend):
     async def shutdown(self):
         """Cleanup and shutdown all controller connections."""
         logger.info("Shutting down hidapi backend")
+
+        # Cancel RSSI background task
+        if self._rssi_task and not self._rssi_task.done():
+            self._rssi_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._rssi_task
 
         for _serial, device in list(self.controllers.items()):
             with contextlib.suppress(Exception):
