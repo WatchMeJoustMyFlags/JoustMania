@@ -687,3 +687,235 @@ class TestMenuServicerGameModeSelection:
         servicer.state = menu_pb2.MenuState.STOPPED
 
         assert servicer.current_selection == Games.Werewolf
+
+
+class TestGameEventResult:
+    """Tests for the _GameEventResult dataclass."""
+
+    def test_game_started_true(self):
+        from services.menu.servicer import _GameEventResult
+
+        result = _GameEventResult(game_started=True, should_return=False)
+        assert result.game_started is True
+        assert result.should_return is False
+
+    def test_should_return_true(self):
+        from services.menu.servicer import _GameEventResult
+
+        result = _GameEventResult(game_started=False, should_return=True)
+        assert result.game_started is False
+        assert result.should_return is True
+
+
+class TestCancelStream:
+    """Tests for _cancel_stream static method."""
+
+    def test_cancels_existing_stream(self):
+        """Should call cancel on a non-None stream."""
+        from services.menu.servicer import MenuServicer
+
+        mock_stream = MagicMock()
+        MenuServicer._cancel_stream(mock_stream)
+        mock_stream.cancel.assert_called_once()
+
+    def test_handles_none_stream(self):
+        """Should not raise when stream is None."""
+        from services.menu.servicer import MenuServicer
+
+        MenuServicer._cancel_stream(None)  # Should not raise
+
+
+class TestCheckRetryEligible:
+    """Tests for _check_retry_eligible static method."""
+
+    def test_raises_when_game_not_started(self):
+        """Should raise the error if game never started."""
+        from services.menu.servicer import MenuServicer
+
+        error = RuntimeError("connection lost")
+        with pytest.raises(RuntimeError, match="connection lost"):
+            MenuServicer._check_retry_eligible(error, game_started=False, attempt=0, max_attempts=3)
+
+    def test_raises_when_max_attempts_reached(self):
+        """Should raise the error when max attempts exceeded."""
+        from services.menu.servicer import MenuServicer
+
+        error = RuntimeError("timeout")
+        with pytest.raises(RuntimeError, match="timeout"):
+            MenuServicer._check_retry_eligible(error, game_started=True, attempt=3, max_attempts=3)
+
+    def test_returns_game_started_when_retryable(self):
+        """Should return game_started when retry is eligible."""
+        from services.menu.servicer import MenuServicer
+
+        result = MenuServicer._check_retry_eligible(
+            RuntimeError("transient"), game_started=True, attempt=1, max_attempts=3
+        )
+        assert result is True
+
+    def test_raises_on_first_attempt_when_game_not_started(self):
+        """Should raise even on first attempt if game never started."""
+        from services.menu.servicer import MenuServicer
+
+        error = ValueError("bad config")
+        with pytest.raises(ValueError, match="bad config"):
+            MenuServicer._check_retry_eligible(error, game_started=False, attempt=0, max_attempts=3)
+
+
+class TestHandleFirstGameEvent:
+    """Tests for _handle_first_game_event extracted helper."""
+
+    @pytest.fixture
+    def servicer(self):
+        return FakeMenuServicer()
+
+    @pytest.mark.asyncio
+    async def test_start_error_returns_should_return_true(self, servicer):
+        """game_start_error event should return result with should_return=True."""
+        from services.menu.servicer import MenuServicer, _GameEventResult
+
+        event = MagicMock()
+        event.event_type = "game_start_error"
+        event.data = {"error": "Not enough controllers"}
+
+        span = MagicMock()
+
+        # Bind the method to our fake servicer
+        servicer._clear_ready_state = MagicMock()
+        servicer._restart_lobby = AsyncMock()
+        result = await MenuServicer._handle_first_game_event(servicer, event, span)
+
+        assert isinstance(result, _GameEventResult)
+        assert result.should_return is True
+        assert result.game_started is False
+        assert servicer.state == menu_pb2.MenuState.RUNNING
+        span.set_attribute.assert_called_with("error", "Not enough controllers")
+
+    @pytest.mark.asyncio
+    async def test_success_event_returns_game_started_true(self, servicer):
+        """Non-error first event should return result with game_started=True."""
+        from services.menu.servicer import MenuServicer, _GameEventResult
+
+        event = MagicMock()
+        event.event_type = "game_started"
+
+        span = MagicMock()
+
+        servicer._clear_ready_state = MagicMock()
+        servicer._restart_lobby = AsyncMock()
+        result = await MenuServicer._handle_first_game_event(servicer, event, span)
+
+        assert isinstance(result, _GameEventResult)
+        assert result.should_return is False
+        assert result.game_started is True
+        span.set_attribute.assert_called_with("game.started", True)
+        servicer._clear_ready_state.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_start_error_default_message(self, servicer):
+        """game_start_error with no error key should use default message."""
+        from services.menu.servicer import MenuServicer
+
+        event = MagicMock()
+        event.event_type = "game_start_error"
+        event.data = {}
+
+        span = MagicMock()
+
+        servicer._clear_ready_state = MagicMock()
+        servicer._restart_lobby = AsyncMock()
+        result = await MenuServicer._handle_first_game_event(servicer, event, span)
+
+        assert result.should_return is True
+        span.set_attribute.assert_called_with("error", "Unknown error")
+
+
+class TestPrepareGameStart:
+    """Tests for _prepare_game_start extracted helper."""
+
+    @pytest.fixture
+    def servicer(self):
+        return FakeMenuServicer()
+
+    @pytest.mark.asyncio
+    async def test_sets_game_starting_state(self, servicer):
+        """Should set menu state to GAME_STARTING."""
+        from services.menu.servicer import MenuServicer
+
+        servicer.idle_monitor = MagicMock()
+        servicer.stop_button_monitor = AsyncMock()
+
+        await MenuServicer._prepare_game_start(servicer)
+
+        assert servicer.state == menu_pb2.MenuState.GAME_STARTING
+
+    @pytest.mark.asyncio
+    async def test_stops_idle_monitor(self, servicer):
+        """Should stop the idle monitor."""
+        from services.menu.servicer import MenuServicer
+
+        servicer.idle_monitor = MagicMock()
+        servicer.stop_button_monitor = AsyncMock()
+
+        await MenuServicer._prepare_game_start(servicer)
+
+        servicer.idle_monitor.stop.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_stops_button_monitor(self, servicer):
+        """Should stop the button monitor."""
+        from services.menu.servicer import MenuServicer
+
+        servicer.idle_monitor = MagicMock()
+        servicer.stop_button_monitor = AsyncMock()
+
+        await MenuServicer._prepare_game_start(servicer)
+
+        servicer.stop_button_monitor.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_stops_lobby_music(self, servicer):
+        """Should stop lobby music."""
+        from services.menu.servicer import MenuServicer
+
+        servicer.idle_monitor = MagicMock()
+        servicer.stop_button_monitor = AsyncMock()
+
+        await MenuServicer._prepare_game_start(servicer)
+
+        servicer.audio.stop_lobby_music.assert_called_once()
+
+
+class TestOpenGameStream:
+    """Tests for _open_game_stream extracted helper."""
+
+    @pytest.fixture
+    def servicer(self):
+        return FakeMenuServicer()
+
+    def test_first_attempt_sends_start_config(self, servicer):
+        """Attempt 0 should use the original request with start_config."""
+        from services.menu.servicer import MenuServicer
+
+        stub = MagicMock()
+        request = MagicMock()
+        metadata = [("traceparent", "00-abc-def-01")]
+
+        MenuServicer._open_game_stream(servicer, stub, request, metadata, attempt=0, max_attempts=3)
+
+        stub.StreamGameEvents.assert_called_once_with(request, metadata=metadata)
+
+    def test_reconnect_sends_empty_request(self, servicer):
+        """Attempt > 0 should send empty StreamEventsRequest."""
+        from services.menu.servicer import MenuServicer
+
+        stub = MagicMock()
+        request = MagicMock()
+        metadata = [("traceparent", "00-abc-def-01")]
+
+        MenuServicer._open_game_stream(servicer, stub, request, metadata, attempt=1, max_attempts=3)
+
+        # Verify it was called with an empty request (not the original)
+        call_args = stub.StreamGameEvents.call_args
+        assert call_args[0][0] != request
+        assert call_args[1]["metadata"] == metadata

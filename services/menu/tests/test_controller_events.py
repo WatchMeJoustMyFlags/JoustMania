@@ -170,3 +170,118 @@ class TestButtonTypeNames:
         for name in BUTTON_TYPE_NAMES.values():
             assert isinstance(name, str)
             assert name == name.lower()
+
+
+class TestHandleConnectionError:
+    """Tests for _handle_connection_error extracted helper."""
+
+    @pytest.mark.asyncio
+    async def test_returns_doubled_delay(self, event_loop_instance):
+        """Should return doubled retry delay after sleeping."""
+        event_loop_instance._running = True
+        result = await event_loop_instance._handle_connection_error(
+            RuntimeError("test"), retry_delay=2.0, max_retry_delay=30.0
+        )
+        assert result == 4.0
+
+    @pytest.mark.asyncio
+    async def test_caps_at_max_delay(self, event_loop_instance):
+        """Should cap retry delay at max_retry_delay."""
+        event_loop_instance._running = True
+        result = await event_loop_instance._handle_connection_error(
+            RuntimeError("test"), retry_delay=20.0, max_retry_delay=30.0
+        )
+        assert result == 30.0
+
+    @pytest.mark.asyncio
+    async def test_returns_unchanged_when_not_running(self, event_loop_instance):
+        """Should return unchanged delay when loop is not running."""
+        event_loop_instance._running = False
+        result = await event_loop_instance._handle_connection_error(
+            RuntimeError("test"), retry_delay=5.0, max_retry_delay=30.0
+        )
+        assert result == 5.0
+
+
+class TestClearStreamState:
+    """Tests for _clear_stream_state extracted helper."""
+
+    @pytest.mark.asyncio
+    async def test_clears_stream_and_queue(self, event_loop_instance):
+        """Should set stream and queue to None."""
+        event_loop_instance._stream = MagicMock()
+        event_loop_instance._stream_queue = MagicMock()
+        event_loop_instance._connected_event = asyncio.Event()
+        event_loop_instance._connected_event.set()
+
+        await event_loop_instance._clear_stream_state()
+
+        assert event_loop_instance._stream is None
+        assert event_loop_instance._stream_queue is None
+
+    @pytest.mark.asyncio
+    async def test_clears_connected_event(self, event_loop_instance):
+        """Should clear the connected event."""
+        event_loop_instance._connected_event = asyncio.Event()
+        event_loop_instance._connected_event.set()
+
+        await event_loop_instance._clear_stream_state()
+
+        assert not event_loop_instance._connected_event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_calls_set_stream_none_on_led(self, event_loop_instance):
+        """Should call set_stream(None) on the LED controller."""
+        mock_led = MagicMock()
+        event_loop_instance._led = mock_led
+
+        await event_loop_instance._clear_stream_state()
+
+        mock_led.set_stream.assert_called_once_with(None)
+
+    @pytest.mark.asyncio
+    async def test_handles_no_connected_event(self, event_loop_instance):
+        """Should handle case when connected_event is None."""
+        event_loop_instance._connected_event = None
+
+        await event_loop_instance._clear_stream_state()
+
+        assert event_loop_instance._stream is None
+
+
+class TestRequestGenerator:
+    """Tests for _request_generator extracted helper."""
+
+    @pytest.mark.asyncio
+    async def test_yields_initial_config_first(self, event_loop_instance):
+        """Should yield initial config as first message."""
+        event_loop_instance._running = False  # Stop after initial config
+        queue = asyncio.Queue()
+
+        messages = []
+        async for msg in event_loop_instance._request_generator(queue):
+            messages.append(msg)
+
+        assert len(messages) == 1
+        assert messages[0].HasField("config")
+
+    @pytest.mark.asyncio
+    async def test_yields_queued_messages(self, event_loop_instance):
+        """Should yield messages from queue after initial config."""
+        event_loop_instance._running = True
+        queue = asyncio.Queue()
+
+        test_msg = controller_manager_pb2.ButtonEventStreamControl()
+        await queue.put(test_msg)
+
+        messages = []
+        count = 0
+        async for msg in event_loop_instance._request_generator(queue):
+            messages.append(msg)
+            count += 1
+            if count >= 2:
+                event_loop_instance._running = False
+
+        assert len(messages) == 2
+        assert messages[0].HasField("config")
+        assert messages[1] == test_msg
