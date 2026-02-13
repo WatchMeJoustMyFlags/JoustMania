@@ -62,7 +62,7 @@ RUN uv pip install --system -e proto/ -e lib/ -e services/controller_manager/
 FROM python:3.11-slim
 
 # Install runtime dependencies (bluetooth for PS Move controllers)
-# libhidapi-hidraw0: Required for CONTROLLER_BACKEND=hidapi (pure Python HID backend)
+# libhidapi-hidraw0: Required for controller_backend=hidapi flag (pure Python HID backend)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bluez \
     libbluetooth3 \

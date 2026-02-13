@@ -64,7 +64,7 @@ make protos
 
 ### Controller Not Detected
 
-1. Check backend: `CONTROLLER_BACKEND=mock` for testing
+1. Check backend: set `controller_backend=mock` in flagd performance.json for testing
 2. Check Bluetooth: `bluetoothctl devices`
 3. Check permissions: user must be in `bluetooth` group
 
@@ -82,7 +82,8 @@ uv run python
 ### Mock Controller Testing
 
 ```bash
-CONTROLLER_BACKEND=mock docker compose up controller-manager
+make up-mock
+# Or set controller_backend=mock in services/flagd/performance.json
 # Use MockControllerService on port 50062 to simulate controllers
 ```
 

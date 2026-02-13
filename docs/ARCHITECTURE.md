@@ -313,14 +313,14 @@ Settings are configured via admin mode (hold all 4 face buttons):
 
 ## Configuration
 
-### Environment Variables
+### Configuration
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `CONTROLLER_BACKEND` | Controller backend type | `bluetooth` |
-| `MOCK_CONTROLLER_COUNT` | Simulated controllers | `4` |
-| `play_audio` (flagd) | Audio output toggle | `on` (enabled) |
-| `LOG_LEVEL` | Logging verbosity | `INFO` |
+| Setting | Source | Default |
+|---------|--------|---------|
+| `controller_backend` | flagd (performance) | `bluetooth` |
+| `mock_controller_count` | flagd (performance) | `4` |
+| `play_audio` | flagd (user_preferences) | `on` |
+| `LOG_LEVEL` | env var | `INFO` |
 
 ### Docker Compose Variants
 

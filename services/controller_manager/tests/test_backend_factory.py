@@ -1,12 +1,11 @@
 """
 Unit tests for backend_factory.py -- backend selection logic and flagd integration.
 
-Tests the three-level priority: env var > OpenFeature flag > platform detection.
+Tests the two-level priority: OpenFeature flag > platform detection.
 Tests that mock_controller_count is read from flagd
 with proper env var fallback when flagd is unavailable.
 """
 
-import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -30,33 +29,27 @@ from services.controller_manager.backend_factory import (
 class TestResolveBackendName:
     """Test _resolve_backend_name priority logic."""
 
-    def test_env_var_takes_priority(self):
-        """CONTROLLER_BACKEND env var should override everything."""
-        with patch.dict(os.environ, {"CONTROLLER_BACKEND": "mock"}):
-            assert _resolve_backend_name() == "mock"
-
-    def test_env_var_case_insensitive(self):
-        with patch.dict(os.environ, {"CONTROLLER_BACKEND": "HiDaPi"}):
-            assert _resolve_backend_name() == "hidapi"
-
-    def test_openfeature_flag_used_when_no_env(self):
-        """OpenFeature flag should be used when no env var set."""
+    def test_openfeature_flag_used(self):
+        """OpenFeature flag should be used as primary selection."""
         mock_client = MagicMock()
         mock_client.get_string_value.return_value = "hidapi"
 
-        with (
-            patch.dict(os.environ, {"CONTROLLER_BACKEND": ""}),
-            patch("lib.feature_flags.get_flag_client", return_value=mock_client),
-        ):
+        with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
             result = _resolve_backend_name()
             assert result == "hidapi"
 
-    def test_returns_none_when_no_env_and_flag_fails(self):
-        """Should return None for platform detection when both sources fail."""
-        with (
-            patch.dict(os.environ, {"CONTROLLER_BACKEND": ""}),
-            patch("lib.feature_flags.get_flag_client", side_effect=Exception("flagd unavailable")),
-        ):
+    def test_openfeature_flag_case_insensitive(self):
+        """Flag value should be lowercased."""
+        mock_client = MagicMock()
+        mock_client.get_string_value.return_value = "Mock"
+
+        with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
+            result = _resolve_backend_name()
+            assert result == "mock"
+
+    def test_returns_none_when_flag_fails(self):
+        """Should return None for platform detection when flag evaluation fails."""
+        with patch("lib.feature_flags.get_flag_client", side_effect=Exception("flagd unavailable")):
             result = _resolve_backend_name()
             assert result is None
 
@@ -65,10 +58,7 @@ class TestResolveBackendName:
         mock_client = MagicMock()
         mock_client.get_string_value.return_value = ""
 
-        with (
-            patch.dict(os.environ, {"CONTROLLER_BACKEND": ""}),
-            patch("lib.feature_flags.get_flag_client", return_value=mock_client),
-        ):
+        with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
             result = _resolve_backend_name()
             assert result is None
 
@@ -97,25 +87,15 @@ class TestGetMockControllerCount:
 
         result = _get_mock_controller_count()
 
-        assert result == 4  # default from env fallback
-
-    @patch.dict("os.environ", {"MOCK_CONTROLLER_COUNT": "8"})
-    @patch("lib.feature_flags.get_flag_client")
-    def test_falls_back_to_env_var(self, mock_get_client):
-        mock_get_client.side_effect = RuntimeError("flagd unavailable")
-
-        result = _get_mock_controller_count()
-
-        assert result == 8
+        assert result == 4  # hardcoded default
 
 
 class TestCreateBackendByName:
     """Test _create_backend_by_name factory method."""
 
     def test_mock_backend(self):
-        with patch.dict(os.environ, {"MOCK_CONTROLLER_COUNT": "2"}):
-            backend = _create_backend_by_name("mock")
-            assert backend.__class__.__name__ == "MockBackend"
+        backend = _create_backend_by_name("mock")
+        assert backend.__class__.__name__ == "MockBackend"
 
     def test_unknown_backend_raises(self):
         with pytest.raises(RuntimeError, match="Unknown backend"):
@@ -125,34 +105,18 @@ class TestCreateBackendByName:
 class TestCreateBackendIntegration:
     """Test create_backend end-to-end."""
 
-    def test_env_var_mock(self):
-        """CONTROLLER_BACKEND=mock should create MockBackend."""
-        with patch.dict(os.environ, {"CONTROLLER_BACKEND": "mock", "MOCK_CONTROLLER_COUNT": "2"}):
-            backend = create_backend()
-            assert backend.__class__.__name__ == "MockBackend"
-
     def test_openfeature_selects_mock(self):
         """OpenFeature flag should create the correct backend."""
         mock_client = MagicMock()
         mock_client.get_string_value.return_value = "mock"
 
-        with (
-            patch.dict(os.environ, {"CONTROLLER_BACKEND": "", "MOCK_CONTROLLER_COUNT": "2"}),
-            patch("lib.feature_flags.get_flag_client", return_value=mock_client),
-        ):
+        with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
             backend = create_backend()
             assert backend.__class__.__name__ == "MockBackend"
 
-    def test_env_var_overrides_flag(self):
-        """Env var should take priority over OpenFeature flag."""
-        mock_client = MagicMock()
-        mock_client.get_string_value.return_value = "hidapi"
-
-        with (
-            patch.dict(os.environ, {"CONTROLLER_BACKEND": "mock", "MOCK_CONTROLLER_COUNT": "2"}),
-            patch("lib.feature_flags.get_flag_client", return_value=mock_client),
-        ):
-            backend = create_backend()
-            assert backend.__class__.__name__ == "MockBackend"
-            # Flag should not have been consulted since env var was set
-            mock_client.get_string_value.assert_not_called()
+    def test_platform_fallback_when_flag_fails(self):
+        """Should fall through to platform detection when flag fails."""
+        with patch("lib.feature_flags.get_flag_client", side_effect=Exception("flagd unavailable")):
+            # Just verify _resolve_backend_name returns None (platform detection)
+            result = _resolve_backend_name()
+            assert result is None

@@ -24,22 +24,20 @@ services:
       FLAGD_HOST: flagd
       FLAGD_PORT: "8015"
 
-  # flagd - Use CI user_preferences override (play_audio=off)
+  # flagd - Use CI overrides (play_audio=off, controller_backend=mock)
   flagd:
     volumes:
-      - ./services/flagd/performance.json:/etc/flagd/performance.json
+      - ./services/flagd/performance.ci.json:/etc/flagd/performance.json
       - ./services/flagd/game_settings.json:/etc/flagd/game_settings.json
       - ./services/flagd/user_preferences.ci.json:/etc/flagd/user_preferences.json
 
-  # Controller Manager - Mock mode, no Bluetooth required
+  # Controller Manager - Mock mode via flagd (controller_backend=mock in performance.ci.json)
   controller-manager:
     # Clear devices and volumes from base compose (requires docker compose v2.24.0+)
     devices: !reset []
     volumes: !reset []
     privileged: false
     environment: !override
-      CONTROLLER_BACKEND: mock
-      # Winner rainbow and countdown timing now controlled via flagd game_settings (Issue #464)
       OTEL_SERVICE_NAME: controller-manager-service
       OTEL_SERVICE_NAMESPACE: infrastructure
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
