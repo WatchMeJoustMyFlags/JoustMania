@@ -214,9 +214,6 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - PROFILING_ENABLED=false
       - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
-      # Issue #62: 100Hz acceleration metrics for real-time visualization
-      # Default 100ms; set to 10ms for 100Hz demo
-      - METRICS_EXPORT_INTERVAL_MS=${METRICS_EXPORT_INTERVAL_MS:-100}
     depends_on:
       redis:
         condition: service_healthy
