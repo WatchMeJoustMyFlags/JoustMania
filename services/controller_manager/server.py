@@ -32,16 +32,16 @@ async def serve(port=50052):
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
+    # Initialize flagd for dynamic streaming frequency and tuning flags
+    from lib.feature_flags import init_flag_domain
+
+    init_flag_domain("performance")
+
     # Initialize OTEL push metrics
     # Export interval read from flagd with per-service targeting (Issue #479)
     # Controller-manager gets 100ms (realtime), other services get 1000ms (normal)
     init_metrics()
     init_profiling()
-
-    # Initialize flagd for dynamic streaming frequency and tuning flags
-    from lib.feature_flags import init_flag_domain
-
-    init_flag_domain("performance")
 
     from services.controller_manager.servicer import init_frequency_listener
 

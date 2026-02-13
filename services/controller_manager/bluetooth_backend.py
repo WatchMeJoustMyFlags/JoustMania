@@ -133,7 +133,7 @@ class BluetoothBackend(ControllerBackend):
         """Initialize Bluetooth adapter and scan for Bluetooth-connected controllers."""
         try:
             # Enable Bluetooth adapter
-            bluetooth.enable_adapter(self.hci)
+            await bluetooth.enable_adapter(self.hci)
             logger.info(f"Enabled Bluetooth adapter: {self.hci}")
 
             # Scan for existing controllers (Bluetooth only)
@@ -174,7 +174,7 @@ class BluetoothBackend(ControllerBackend):
 
         try:
             # Get all attached devices via BlueZ
-            devices = bluetooth.get_attached_addresses(self.hci)
+            devices = await bluetooth.get_attached_addresses(self.hci)
 
             for address in devices:
                 # Check if it's a PS Move controller (MAC prefix 00:06:F7)

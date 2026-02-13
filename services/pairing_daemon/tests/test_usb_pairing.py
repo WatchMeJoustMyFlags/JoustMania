@@ -147,21 +147,19 @@ class TestRestartBluetoothService:
     @pytest.mark.asyncio
     async def test_restarts_via_systemd_dbus(self, usb_pairing):
         """Test that bluetooth service is restarted via D-Bus systemd interface."""
-        mock_manager = MagicMock()
-
-        with patch("psmove_pairing.usb_pairing.dbus") as mock_dbus_mod:
-            mock_bus = MagicMock()
-            mock_dbus_mod.SystemBus.return_value = mock_bus
-            mock_dbus_mod.Interface.return_value = mock_manager
+        with patch("psmove_pairing.usb_pairing.restart_systemd_unit", new_callable=AsyncMock) as mock_restart:
             with patch("asyncio.sleep", return_value=None):
                 await usb_pairing.restart_bluetooth_service()
-                mock_manager.RestartUnit.assert_called_once_with("bluetooth.service", "replace")
+                mock_restart.assert_called_once_with("bluetooth.service")
 
     @pytest.mark.asyncio
     async def test_handles_dbus_failure(self, usb_pairing):
         """Test that D-Bus failure is logged but doesn't raise."""
-        with patch("psmove_pairing.usb_pairing.dbus") as mock_dbus_mod:
-            mock_dbus_mod.SystemBus.side_effect = Exception("D-Bus error")
+        with patch(
+            "psmove_pairing.usb_pairing.restart_systemd_unit",
+            new_callable=AsyncMock,
+            side_effect=Exception("D-Bus error"),
+        ):
             # Should not raise
             await usb_pairing.restart_bluetooth_service()
 
@@ -215,7 +213,7 @@ class TestProcessController:
     @pytest.mark.asyncio
     async def test_skip_already_paired_but_still_trusts(self, usb_pairing):
         """Test skipping pairing for already-paired controller but still trusting."""
-        usb_pairing.adapter_manager.refresh_adapters = MagicMock()
+        usb_pairing.adapter_manager.refresh_adapters = AsyncMock()
         usb_pairing.adapter_manager.check_if_not_paired = MagicMock(return_value=False)
         usb_pairing.bluez_trust_controller = AsyncMock(return_value=True)
 
@@ -226,7 +224,7 @@ class TestProcessController:
     @pytest.mark.asyncio
     async def test_no_adapters_available(self, usb_pairing):
         """Test when no Bluetooth adapters are available."""
-        usb_pairing.adapter_manager.refresh_adapters = MagicMock()
+        usb_pairing.adapter_manager.refresh_adapters = AsyncMock()
         usb_pairing.adapter_manager.check_if_not_paired = MagicMock(return_value=True)
         usb_pairing.adapter_manager.select_least_loaded_adapter = MagicMock(return_value=None)
 

@@ -212,7 +212,6 @@ services:
       - OTEL_SERVICE_NAME=controller-manager-service
       - OTEL_SERVICE_NAMESPACE=infrastructure
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
-      - PROFILING_ENABLED=false
       - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
     depends_on:
       redis:
@@ -284,7 +283,6 @@ services:
       - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME_GAME_COORDINATOR:-game-coordinator-service}
       - OTEL_SERVICE_NAMESPACE=joustmania
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
-      - PROFILING_ENABLED=false
       - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
     depends_on:
       redis:
@@ -319,7 +317,6 @@ services:
       - OTEL_SERVICE_NAME=menu-service
       - OTEL_SERVICE_NAMESPACE=joustmania
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
-      - PROFILING_ENABLED=false
       - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
       # Phase 60: Audio service connection
       - AUDIO_HOST=audio
@@ -369,7 +366,6 @@ services:
       - OTEL_SERVICE_NAME=audio-service
       - OTEL_SERVICE_NAMESPACE=joustmania
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
-      - PROFILING_ENABLED=false
       - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
       - FLAGD_HOST=flagd
       - FLAGD_PORT=8015

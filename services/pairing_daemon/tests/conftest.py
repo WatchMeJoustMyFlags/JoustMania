@@ -1,7 +1,7 @@
 """
 Pytest fixtures for pairing daemon tests.
 
-Mocks psmove module, DBus, and provides test utilities.
+Mocks psmove module and provides test utilities.
 """
 
 import os
@@ -24,12 +24,6 @@ mock_psmove.Conn_USB = 1
 mock_psmove.Conn_Bluetooth = 2
 mock_psmove.count_connected.return_value = 0
 sys.modules["psmove"] = mock_psmove
-
-# Mock dbus module for AdapterManager
-mock_dbus = MagicMock()
-mock_dbus.SystemBus.return_value = MagicMock()
-sys.modules["dbus"] = mock_dbus
-sys.modules["dbus.exceptions"] = MagicMock()
 
 import pytest
 
