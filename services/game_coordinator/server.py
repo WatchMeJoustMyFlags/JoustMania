@@ -64,11 +64,10 @@ async def serve(port=50053):
     # Note: logging.basicConfig() is now called at module level (top of file)
     # to ensure INFO level is enabled before any logging calls
 
-    # Initialize OTEL push metrics (Issue #103)
-    # 100ms export interval for real-time gameplay visualization
-    init_metrics(export_interval_ms=100)
+    # Initialize OTEL push metrics
+    # Export interval read from flagd with per-service targeting (Issue #479)
+    init_metrics()
     init_profiling()
-    logger.info("OTEL push metrics initialized (100ms export interval)")
 
     # Start system metrics collection
     start_system_metrics_collector(

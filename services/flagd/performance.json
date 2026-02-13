@@ -123,11 +123,18 @@
     "metrics_export_interval_ms": {
       "state": "ENABLED",
       "variants": {
-        "fast": 100,
-        "normal": 500,
-        "slow": 1000
+        "overkill": 10,
+        "realtime": 100,
+        "normal": 1000
       },
-      "defaultVariant": "fast"
+      "defaultVariant": "normal",
+      "targeting": {
+        "if": [
+          {"==": [{"var": "service"}, "controller-manager-service"]},
+          "realtime",
+          null
+        ]
+      }
     },
     "profiling_enabled": {
       "state": "ENABLED",
