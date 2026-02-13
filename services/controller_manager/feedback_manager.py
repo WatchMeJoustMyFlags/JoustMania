@@ -627,6 +627,27 @@ class FeedbackManager(ControllerEffectsBase):
             return True
         return False
 
+    async def apply_base_color(self, serial: str, color: tuple[int, int, int], label: str = "") -> None:
+        """Cancel cancellable effects and apply base color for a controller.
+
+        Combines cancel_if_cancellable + store-and-apply-under-lock into one call.
+        Used by both StreamButtonEvents and StreamGameplayData to handle base_color commands.
+
+        Args:
+            serial: Controller serial number
+            color: RGB tuple (r, g, b)
+            label: Stream label for log messages (e.g. "ButtonStream", "GameplayStream")
+        """
+        await self.cancel_if_cancellable(serial)
+        async with self.effect_lock:
+            self.base_colors[serial] = color
+            if serial not in self.active_effects:
+                await self.set_controller_color(serial, color)
+                logger.info(f"[{label}] Applied base color for {serial}: {color}")
+            else:
+                active = self.active_effects[serial]
+                logger.warning(f"[{label}] Base color for {serial} blocked by effect: {active.effect_type}")
+
     def clear_controller(self, serial: str) -> None:
         """Clear feedback state for a disconnected controller."""
         # Note: Keep base_colors[serial] so we can restore on reconnect
