@@ -1,9 +1,15 @@
-# JoustMania
+<p align="center">
+  <img src="logo/joustmania2.png" alt="JoustMania" width="200">
+</p>
 
-[![CI](https://github.com/WatchMeJoustMyFlags/JoustMania/actions/workflows/ci.yml/badge.svg)](https://github.com/WatchMeJoustMyFlags/JoustMania/actions/workflows/ci.yml)
-[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=WatchMeJoustMyFlags_JoustMania&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=WatchMeJoustMyFlags_JoustMania)
-[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=WatchMeJoustMyFlags_JoustMania&metric=coverage)](https://sonarcloud.io/summary/new_code?id=WatchMeJoustMyFlags_JoustMania)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+<h1 align="center">JoustMania</h1>
+
+<p align="center">
+  <a href="https://github.com/WatchMeJoustMyFlags/JoustMania/actions/workflows/ci.yml"><img src="https://github.com/WatchMeJoustMyFlags/JoustMania/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://sonarcloud.io/summary/new_code?id=WatchMeJoustMyFlags_JoustMania"><img src="https://sonarcloud.io/api/project_badges/measure?project=WatchMeJoustMyFlags_JoustMania&metric=alert_status" alt="Quality Gate Status"></a>
+  <a href="https://sonarcloud.io/summary/new_code?id=WatchMeJoustMyFlags_JoustMania"><img src="https://sonarcloud.io/api/project_badges/measure?project=WatchMeJoustMyFlags_JoustMania&metric=coverage" alt="Coverage"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python 3.11+"></a>
+</p>
 
 **Microservices-based motion gaming platform for PlayStation Move controllers.**
 
@@ -42,15 +48,16 @@ make up-mock
 
 ## Game Modes
 
-- **Joust FFA** - Free-for-all elimination
-- **Joust Teams** - Team-based combat
-- **Joust Random Teams** - Randomized team assignment
-- **Tournament** - Elimination brackets
-- **Werewolf** - Social deduction
-- **Zombies** - Infection survival
-- **Non-Stop Joust** - Respawn-enabled combat
-- **Fight Club** - 1v1 bracket tournament
-- And more...
+- **Joust FFA** - Free-for-all elimination, last player standing wins
+- **Joust Teams** - Team-based combat, last team standing wins
+- **Joust Random Teams** - Randomized team assignment with formation phase
+- **Swapper** - Killed players switch teams; ends when all on one team
+- **Tournament** - Single elimination bracket with 1v1 matches
+- **Fight Club** - 1v1 arena with winner-stays queue system
+- **Werewolf** - Hidden role: secret werewolves revealed after countdown
+- **Traitor** - Team game with secret traitors working for the enemy
+- **Zombies** - Infection survival; killed humans become zombies
+- **Non-Stop Joust** - Respawn-enabled combat with kill/death scoring
 
 ## Architecture
 
@@ -135,7 +142,7 @@ See [Mock Environment Guide](services/controller_manager/MOCK_ENVIRONMENT.md) fo
 
 ## License
 
-See [LICENSE](LICENSE) file for details.
+MIT License (code) + CC BY-SA 4.0 (audio assets). See [LICENSE](LICENSE) for details.
 
 ## Links
 
