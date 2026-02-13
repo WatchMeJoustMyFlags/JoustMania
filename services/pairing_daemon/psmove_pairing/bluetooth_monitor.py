@@ -6,7 +6,7 @@ import time
 
 from opentelemetry import trace
 
-from .config import BT_MONITOR_INTERVAL
+from .config import get_bt_monitor_interval
 from .metrics import (
     bluetooth_adapter_connections,
     bluetooth_device_connected,
@@ -135,10 +135,13 @@ class BluetoothMonitor:
             span.set_attribute("devices.total", len(currently_seen))
 
     async def run_loop(self) -> None:
-        """Bluetooth monitoring loop."""
+        """Bluetooth monitoring loop.
+
+        Re-evaluates monitor interval from flagd each iteration for runtime tunability.
+        """
         import asyncio
 
-        logger.info(f"Starting Bluetooth monitor loop (interval: {BT_MONITOR_INTERVAL}s)")
+        logger.info(f"Starting Bluetooth monitor loop (interval: {get_bt_monitor_interval()}s)")
         while True:
             try:
                 await self.monitor()
@@ -146,4 +149,4 @@ class BluetoothMonitor:
                 from .config import DEBUG
 
                 logger.error(f"Error during Bluetooth monitor: {e}", exc_info=DEBUG)
-            await asyncio.sleep(BT_MONITOR_INTERVAL)
+            await asyncio.sleep(get_bt_monitor_interval())

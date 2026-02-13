@@ -80,6 +80,9 @@ services:
       - ./services/flagd/performance.json:/etc/flagd/performance.json
       - ./services/flagd/game_settings.json:/etc/flagd/game_settings.json
       - ./services/flagd/user_preferences.json:/etc/flagd/user_preferences.json
+    ports:
+      # Sync port exposed on host for pairing-daemon (network_mode: host)
+      - "8015:8015"
     expose:
       - "8013"  # flagd evaluation port (gRPC)
       - "8014"  # flagd management port (Prometheus metrics)
@@ -258,8 +261,6 @@ services:
       - psmoveapi-data:/root/.psmoveapi
     # Port 8002 (health) binds directly on host via network_mode: host
     environment:
-      - POLL_INTERVAL=10
-      - BT_MONITOR_INTERVAL=5
       - METRICS_PORT=8002
       - PSMOVE_PATH=/usr/local/bin/psmove
       - DBUS_SYSTEM_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket
@@ -267,6 +268,9 @@ services:
       - OTEL_SERVICE_NAMESPACE=infrastructure
       # localhost because network_mode:host can't use Docker DNS
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+      # flagd for runtime-tunable intervals (localhost because network_mode:host)
+      - FLAGD_HOST=localhost
+      - FLAGD_PORT=8015
     restart: unless-stopped
     # Healthcheck defined in Dockerfile (uses HTTP /healthz)
 

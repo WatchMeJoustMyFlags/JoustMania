@@ -14,12 +14,16 @@ LED Feedback:
   - Red flash 3x: Error
 
 Environment:
-  POLL_INTERVAL - seconds between USB polls (default: 10)
-  BT_MONITOR_INTERVAL - seconds between Bluetooth monitoring (default: 5)
   PSMOVE_PATH   - path to psmove binary (default: auto-detect)
   DEBUG         - set to 1 for verbose logging
   HEALTH_PORT   - port for health check endpoint (default: 8002)
   OTEL_EXPORTER_OTLP_ENDPOINT - OTLP collector endpoint (default: http://localhost:4317)
+  FLAGD_HOST    - flagd host for feature flags (default: flagd)
+  FLAGD_PORT    - flagd sync port (default: 8015)
+
+Feature Flags (performance domain):
+  pairing_poll_interval - seconds between USB polls (default: 10)
+  bt_monitor_interval   - seconds between Bluetooth monitoring (default: 5)
 
 Endpoints:
   GET /healthz  - Health check (200 if healthy, 503 if unhealthy)
@@ -34,7 +38,7 @@ from threading import Thread
 from lib.otel_metrics import init_metrics
 from lib.system_metrics import start_system_metrics_collector_thread
 from psmove_pairing import PairingDaemon, find_psmove_binary, init_telemetry, metrics
-from psmove_pairing.config import DEBUG, METRICS_PORT
+from psmove_pairing.config import DEBUG, METRICS_PORT, init_performance_flags
 
 # Global daemon reference for health checks
 _daemon: PairingDaemon | None = None
@@ -98,6 +102,9 @@ def main() -> None:
     # Initialize OTEL push metrics
     init_metrics()
     logger.info("OTEL push metrics initialized for pairing daemon")
+
+    # Initialize feature flags for runtime-tunable intervals
+    init_performance_flags()
 
     # Start process-level system metrics collection (CPU, memory, threads)
     start_system_metrics_collector_thread(
