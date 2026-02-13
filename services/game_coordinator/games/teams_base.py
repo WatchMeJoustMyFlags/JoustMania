@@ -238,30 +238,38 @@ class TeamsGameBase(BaseGameMode):
         - 2 seconds: White flash (neutral, heightens anticipation)
         - 1 second: Green (universal GO signal)
 
-        This overrides the base class countdown which uses Red → Yellow → Green.
+        This overrides the base class countdown which uses Red -> Yellow -> Green.
+        Respects countdown_phase_duration_ms=0 to skip countdown (Issue #464).
         """
         from proto import controller_manager_pb2
-        from services.game_coordinator.games.base import COUNTDOWN_DURATION
+        from services.game_coordinator.runtime_config import get_config_manager
 
-        logger.info("Starting team countdown...")
-        await self.event_publisher(GameEvent.COUNTDOWN_START, {"duration": COUNTDOWN_DURATION})
+        config = get_config_manager().get_config()
+        phase_duration_ms = config.countdown_phase_duration_ms
+
+        # Skip countdown entirely if phase duration is 0 (the "skip" variant)
+        if phase_duration_ms == 0:
+            logger.info("Team countdown skipped (phase_duration_ms=0)")
+            await self.event_publisher(GameEvent.COUNTDOWN_START, {"phase_duration_ms": 0})
+            await self.event_publisher(GameEvent.COUNTDOWN_END, {})
+            return
+
+        logger.info(f"Starting team countdown (phase_duration={phase_duration_ms}ms)...")
+        await self.event_publisher(GameEvent.COUNTDOWN_START, {"phase_duration_ms": phase_duration_ms})
 
         # Countdown sequence specific to team-based games
         countdown_phases = [
             {
                 "name": "team_colors",
-                "duration": 1.0,
                 "set_team_colors": True,  # Each player sees their team color
             },
             {
                 "name": "white_flash",
                 "color": Colors.White.value,
-                "duration": 1.0,
             },
             {
                 "name": "green_go",
                 "color": Colors.Green.value,
-                "duration": 1.0,
             },
         ]
 
@@ -288,12 +296,13 @@ class TeamsGameBase(BaseGameMode):
                     )
                     await self.gameplay_stream.write(base_color_cmd)
 
-            # Wait 1 second (in 0.1s increments to allow interruption)
-            for _ in range(10):
+            # Wait for phase duration (in 50ms increments to allow interruption)
+            wait_iterations = phase_duration_ms // 50
+            for _ in range(wait_iterations):
                 if not self.running:
                     logger.info("Countdown interrupted by force_end")
                     return
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.05)
 
         # Play start sound (Phase 29)
         await self._play_sound(Sound.SFX_START3, priority=2)

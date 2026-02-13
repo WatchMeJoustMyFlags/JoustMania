@@ -29,15 +29,14 @@ services:
     environment: !override
       CONTROLLER_BACKEND: mock
       MOCK_CONTROLLER_COUNT: "4"
-      WINNER_RAINBOW_DURATION_MS: "300"  # Fast rainbow for tests (300ms vs 3000ms)
+      # Winner rainbow and countdown timing now controlled via flagd game_settings (Issue #464)
       OTEL_SERVICE_NAME: controller-manager-service
       OTEL_SERVICE_NAMESPACE: infrastructure
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
 
-  # Game Coordinator - Reduced countdown for faster tests (1s instead of 3s)
+  # Game Coordinator - Countdown and rainbow timing now controlled via flagd game_settings (Issue #464)
   game-coordinator:
     environment: !override
-      COUNTDOWN_DURATION_SECONDS: "1"
       OTEL_SERVICE_NAME: game-coordinator-service
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
 

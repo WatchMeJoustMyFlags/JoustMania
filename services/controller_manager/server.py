@@ -49,6 +49,11 @@ async def serve(port=50052):
 
     init_frequency_listener()
 
+    # Initialize flagd game_settings for winner_rainbow_duration_ms (Issue #464)
+    from services.controller_manager.feedback_manager import init_game_settings_listener
+
+    init_game_settings_listener()
+
     # Start prometheus_client HTTP server for direct pull scraping (pipeline comparison)
     from prometheus_client import start_http_server
 

@@ -11,7 +11,6 @@ Phase 57: Backend abstraction for platform independence.
 import asyncio
 import contextlib
 import logging
-import os
 from typing import TYPE_CHECKING
 
 from opentelemetry.context import Context
@@ -30,13 +29,70 @@ logger = logging.getLogger(__name__)
 # Lazy telemetry initialization - defers OTLP setup until first span
 tracer = get_tracer(__name__)
 
+# Module-level cache for winner rainbow duration from flagd
+_winner_rainbow_duration_ms: int | None = None
+
 
 def get_winner_rainbow_duration_ms() -> int:
-    """Get winner rainbow duration from env var, defaults to 3000ms."""
+    """Get winner rainbow duration from flagd game_settings domain.
+
+    Falls back to 3000ms if flagd is unavailable.
+    The value is cached and updated via _on_game_settings_changed().
+    """
+    if _winner_rainbow_duration_ms is not None:
+        return _winner_rainbow_duration_ms
+    return 3000
+
+
+def init_game_settings_listener() -> None:
+    """Initialize flagd game_settings domain and register change listener.
+
+    Called from server.py during startup to set up dynamic flag-based
+    winner_rainbow_duration_ms configuration.
+    """
+    global _winner_rainbow_duration_ms
     try:
-        return int(os.environ.get("WINNER_RAINBOW_DURATION_MS", "3000"))
-    except ValueError:
-        return 3000
+        from openfeature import api
+        from openfeature.evaluation_context import EvaluationContext
+        from openfeature.provider import ProviderEvent
+
+        from lib.feature_flags import get_flag_client, init_flag_domain
+
+        init_flag_domain("game_settings")
+        client = get_flag_client("game_settings")
+
+        # Initial read
+        _winner_rainbow_duration_ms = client.get_integer_value("winner_rainbow_duration_ms", 3000, EvaluationContext())
+        logger.info(f"winner_rainbow_duration_ms initialized from flagd: {_winner_rainbow_duration_ms}ms")
+
+        # Register for changes
+        api.add_handler(ProviderEvent.PROVIDER_CONFIGURATION_CHANGED, _on_game_settings_changed)
+
+    except Exception as e:
+        logger.warning(f"Could not initialize game_settings flags, using defaults: {e}")
+
+
+def _on_game_settings_changed(event_details) -> None:
+    """Update winner_rainbow_duration_ms when flagd config changes."""
+    global _winner_rainbow_duration_ms
+
+    # Skip if the change is not for our flag
+    changed_flags = getattr(event_details, "flags_changed", [])
+    if changed_flags and "winner_rainbow_duration_ms" not in changed_flags:
+        return
+
+    try:
+        from openfeature.evaluation_context import EvaluationContext
+
+        from lib.feature_flags import get_flag_client
+
+        client = get_flag_client("game_settings")
+        new_val = client.get_integer_value("winner_rainbow_duration_ms", 3000, EvaluationContext())
+        if new_val != _winner_rainbow_duration_ms:
+            logger.info(f"winner_rainbow_duration_ms updated from flagd: {_winner_rainbow_duration_ms} -> {new_val}ms")
+            _winner_rainbow_duration_ms = new_val
+    except Exception as e:
+        logger.warning(f"Failed to refresh winner_rainbow_duration_ms from flagd: {e}")
 
 
 class FeedbackManager(ControllerEffectsBase):
