@@ -39,6 +39,19 @@ def disable_profiling_for_tests() -> None:
     _initialized = True
 
 
+def _is_profiling_enabled() -> bool:
+    """Read profiling_enabled from flagd performance domain with hardcoded default fallback."""
+    try:
+        from openfeature.evaluation_context import EvaluationContext
+
+        from lib.feature_flags import get_flag_client
+
+        client = get_flag_client("performance")
+        return client.get_boolean_value("profiling_enabled", False, EvaluationContext())
+    except Exception:
+        return False
+
+
 def init_profiling(application_name: str | None = None) -> None:
     """
     Initialize Pyroscope continuous profiling.
@@ -58,8 +71,8 @@ def init_profiling(application_name: str | None = None) -> None:
         if _initialized:
             return
 
-        if os.getenv("PROFILING_ENABLED", "false").lower() not in ("true", "1", "yes"):
-            logger.info("Profiling disabled (set PROFILING_ENABLED=true to enable)")
+        if not _is_profiling_enabled():
+            logger.info("Profiling disabled (enable via flagd profiling_enabled flag)")
             _initialized = True
             return
 

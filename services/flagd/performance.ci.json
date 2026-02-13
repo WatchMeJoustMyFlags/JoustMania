@@ -100,7 +100,7 @@
         "hidapi": "hidapi",
         "mock": "mock"
       },
-      "defaultVariant": "bluetooth"
+      "defaultVariant": "mock"
     },
     "mock_controller_count": {
       "state": "ENABLED",
