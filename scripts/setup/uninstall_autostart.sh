@@ -10,7 +10,7 @@ echo "Uninstalling JoustMania autostart service..."
 
 # Check if running as root
 if [[ "$EUID" -ne 0 ]]; then
-    echo "ERROR: This script must be run as root (use sudo)"
+    echo "ERROR: This script must be run as root (use sudo)" >&2
     exit 1
 fi
 

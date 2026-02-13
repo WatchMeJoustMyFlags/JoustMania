@@ -737,11 +737,11 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             Exception: If retry is not eligible
         """
         if not game_started:
-            raise error
+            raise error  # NOSONAR - re-raises original exception, not generic
 
         if attempt >= max_attempts:
             logger.error(f"Game event stream failed after {max_attempts} attempts: {error}")
-            raise error
+            raise error  # NOSONAR - re-raises original exception, not generic
 
         return game_started
 

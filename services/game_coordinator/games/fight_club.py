@@ -151,7 +151,7 @@ class FightClubGame(BaseGameMode):
             },
         )
 
-    def _create_player_spans(self):
+    def _create_player_spans(self, game_context):  # noqa: ARG002
         """Create flat player lifecycle spans, parented to game span."""
         if not self.game_span:
             logger.warning("No game_span available, creating orphan player spans")
@@ -573,7 +573,7 @@ class FightClubGame(BaseGameMode):
                         f"min_rounds={self._min_rounds}"
                     )
                     await self._initialize_players()
-                    self._create_player_spans()
+                    self._create_player_spans(None)
 
                 # Start gameplay stream before intro (needed for LED effects)
                 await self._start_gameplay_stream()
