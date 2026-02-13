@@ -102,7 +102,6 @@ def create_backend() -> ControllerBackend:
 
     Configuration:
         mock_controller_count: flagd flag (performance domain), fallback to MOCK_CONTROLLER_COUNT env var
-        BLUETOOTH_HCI: env var for Bluetooth adapter (default: hci0)
 
     Returns:
         ControllerBackend instance
