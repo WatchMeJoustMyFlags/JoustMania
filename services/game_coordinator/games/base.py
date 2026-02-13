@@ -831,10 +831,9 @@ class BaseGameMode(ABC):
         # Phase 70: Track deaths for music tempo timing
         self.dead_count += 1
 
-        # Clear analytics metrics so dead players don't appear on dashboard
-        metrics.clear_player_analytics(serial, self.game_id)
-
-        # Mark player as dead in metrics (Phase 75: filter dead players from dashboard)
+        # Mark player as dead in metrics - dashboard template variables filter
+        # on game_player_alive==1 so dead players naturally disappear from panels.
+        # Metric removal happens at game end via clear_all_player_analytics().
         metrics.player_alive.labels(serial=serial).set(0)
         alive_count = len([p for p in self.players.values() if p.alive])
         metrics.players_alive.set(alive_count)
