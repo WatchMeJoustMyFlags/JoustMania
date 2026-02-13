@@ -17,7 +17,7 @@
         "on": true,
         "off": false
       },
-      "defaultVariant": "on"
+      "defaultVariant": "off"
     },
     "current_game": {
       "state": "ENABLED",
@@ -36,14 +36,6 @@
       "defaultVariant": "JoustFFA"
     },
     "game_instructions": {
-      "state": "ENABLED",
-      "variants": {
-        "on": true,
-        "off": false
-      },
-      "defaultVariant": "on"
-    },
-    "menu_auto_start": {
       "state": "ENABLED",
       "variants": {
         "on": true,

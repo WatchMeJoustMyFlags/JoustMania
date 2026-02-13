@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 # Game constants (Phase 43: Now uses runtime config for dynamic adjustment)
 # Phase 72: Increased from 30Hz to 60Hz for better responsiveness
 UPDATE_FREQUENCY = 60  # Hz - default, overridden by runtime config
-COUNTDOWN_DURATION = 3  # seconds (legacy constant, use runtime config instead)
+COUNTDOWN_BEEP_COUNT = 3  # Number of beeps (Red/Yellow/Green)
 
 # Phase 70: Music tempo constants (from original JoustMania)
 SLOW_MUSIC_SPEED = 1.0  # Normal playback
@@ -372,28 +372,26 @@ class BaseGameMode(ABC):
         """Run countdown before game starts using unified countdown effect."""
         from proto import controller_manager_pb2
 
-        # Get countdown duration from runtime config (allows override via COUNTDOWN_DURATION_SECONDS env var)
+        # Get phase duration from runtime config (controlled via flagd game_settings)
+        # phase_duration_ms == 0 means skip countdown entirely (Issue #464)
         config = get_config_manager().get_config()
-        countdown_seconds = config.countdown_duration_seconds
+        phase_duration_ms = config.countdown_phase_duration_ms
 
-        logger.info(f"Starting countdown ({countdown_seconds}s)...")
-        await self.event_publisher(GameEvent.COUNTDOWN_START, {"duration": countdown_seconds})
+        logger.info(f"Starting countdown (phase_duration={phase_duration_ms}ms)...")
+        await self.event_publisher(GameEvent.COUNTDOWN_START, {"phase_duration_ms": phase_duration_ms})
 
         if not self.running:
             logger.info(_MSG_COUNTDOWN_INTERRUPTED)
             return
 
-        # Skip countdown entirely if duration is 0 (for fast tests)
-        if countdown_seconds == 0:
-            logger.info("Countdown skipped (duration=0)")
+        # Skip countdown entirely if phase duration is 0 (the "skip" variant)
+        if phase_duration_ms == 0:
+            logger.info("Countdown skipped (phase_duration_ms=0)")
             await self.event_publisher(GameEvent.COUNTDOWN_END, {})
             return
 
-        # Get phase duration from config (shared with controller_manager for sync)
-        phase_duration_ms = config.countdown_phase_duration_ms
-
         # Send unified countdown effect via gameplay stream (broadcast to all controllers)
-        # Controller manager handles the full Red→Yellow→Green sequence using the provided duration
+        # Controller manager handles the full Red->Yellow->Green sequence using the provided duration
         if self.gameplay_stream:
             trace_parent, trace_state = inject_trace_context()
             effect_cmd = controller_manager_pb2.GameplayStreamControl(
@@ -410,7 +408,7 @@ class BaseGameMode(ABC):
         # Play countdown beeps in sync with the visual countdown
         # Default: Red (3), Yellow (2), Green (1 - GO!)
         # Use same phase duration as LEDs to keep audio/visual synchronized
-        beep_count = min(countdown_seconds, 3)  # Max 3 beeps even for longer countdowns
+        beep_count = COUNTDOWN_BEEP_COUNT
         beep_interval_ms = phase_duration_ms  # Match LED phase duration
 
         for _ in range(beep_count):

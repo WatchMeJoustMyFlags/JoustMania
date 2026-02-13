@@ -2,7 +2,6 @@
 Unit tests for Audio gRPC Servicer.
 """
 
-import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -58,17 +57,17 @@ class TestPlaySound:
 
     @pytest.mark.asyncio
     async def test_play_sound_lazy_settings_load(self, mock_grpc_context):
-        with patch.dict(os.environ, {"MOCK_MODE": "true"}):
-            from services.audio.servicer import AudioServiceServicer
+        from services.audio.servicer import AudioServiceServicer
 
+        with patch.object(AudioServiceServicer, "_load_play_audio_flag", return_value=False):
             servicer = AudioServiceServicer()
-            servicer._settings_loaded = False
-            servicer.audio_manager.play_sound = MagicMock(return_value=True)
+        servicer._settings_loaded = False
+        servicer.audio_manager.play_sound = MagicMock(return_value=True)
 
-            with patch.object(servicer, "_load_audio_setting") as mock_load:
-                request = audio_pb2.PlaySoundRequest(file_path="beep_loud", volume=1.0, priority=2)
-                await servicer.PlaySound(request, mock_grpc_context)
-                mock_load.assert_called_once()
+        with patch.object(servicer, "_load_audio_setting") as mock_load:
+            request = audio_pb2.PlaySoundRequest(file_path="beep_loud", volume=1.0, priority=2)
+            await servicer.PlaySound(request, mock_grpc_context)
+            mock_load.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_play_sound_default_volume(self, servicer, mock_grpc_context):

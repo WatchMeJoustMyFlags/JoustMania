@@ -82,6 +82,33 @@
         "modern": "dbus_fast"
       },
       "defaultVariant": "legacy"
+    },
+    "pairing_poll_interval": {
+      "state": "ENABLED",
+      "variants": {
+        "fast": 5,
+        "normal": 10,
+        "slow": 30
+      },
+      "defaultVariant": "normal"
+    },
+    "bt_monitor_interval": {
+      "state": "ENABLED",
+      "variants": {
+        "fast": 2,
+        "normal": 5,
+        "slow": 15
+      },
+      "defaultVariant": "normal"
+    },
+    "controller_backend": {
+      "state": "ENABLED",
+      "variants": {
+        "bluetooth": "bluetooth",
+        "hidapi": "hidapi",
+        "mock": "mock"
+      },
+      "defaultVariant": "bluetooth"
     }
   }
 }

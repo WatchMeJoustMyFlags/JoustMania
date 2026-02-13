@@ -104,6 +104,25 @@
         "off": false
       },
       "defaultVariant": "off"
+    },
+    "countdown_phase_duration_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "skip": 0,
+        "fast": 500,
+        "normal": 750,
+        "slow": 1000
+      },
+      "defaultVariant": "normal"
+    },
+    "winner_rainbow_duration_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "short": 1000,
+        "normal": 3000,
+        "long": 5000
+      },
+      "defaultVariant": "normal"
     }
   }
 }

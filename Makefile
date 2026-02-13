@@ -69,7 +69,7 @@ dev:
 # Mock mode sets environment variables - this is the main value-add over raw docker compose
 .PHONY: up-mock
 up-mock:
-	CONTROLLER_BACKEND=mock AUDIO_MOCK_MODE=true docker compose up -d $(if $(BUILD),--build)
+	CONTROLLER_BACKEND=mock docker compose up -d $(if $(BUILD),--build)
 	@echo ""
 	@echo "=========================================="
 	@echo "JoustMania is running (MOCK MODE)"

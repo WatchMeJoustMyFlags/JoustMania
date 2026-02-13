@@ -9,7 +9,7 @@ from opentelemetry import trace
 
 from .bluetooth_monitor import BluetoothMonitor
 from .bluez_agent import register_pairing_agent
-from .config import BT_MONITOR_INTERVAL, DEBUG, METRICS_PORT, POLL_INTERVAL
+from .config import DEBUG, METRICS_PORT, get_bt_monitor_interval, get_poll_interval
 from .usb_pairing import USBPairing
 from .utils import run_command
 
@@ -115,33 +115,39 @@ class PairingDaemon:
         self._last_bt_monitor = time.time()
 
     async def _usb_poll_loop(self) -> None:
-        """USB polling loop with health tracking."""
-        logger.info(f"Starting USB poll loop (interval: {POLL_INTERVAL}s)")
+        """USB polling loop with health tracking.
+
+        Re-evaluates poll interval from flagd each iteration for runtime tunability.
+        """
+        logger.info(f"Starting USB poll loop (interval: {get_poll_interval()}s)")
         while True:
             try:
                 await self.usb_pairing.poll()
                 self.update_usb_poll_timestamp()
             except Exception as e:
                 logger.error(f"Error during USB poll: {e}", exc_info=DEBUG)
-            await asyncio.sleep(POLL_INTERVAL)
+            await asyncio.sleep(get_poll_interval())
 
     async def _bt_monitor_loop(self) -> None:
-        """Bluetooth monitoring loop with health tracking."""
-        logger.info(f"Starting Bluetooth monitor loop (interval: {BT_MONITOR_INTERVAL}s)")
+        """Bluetooth monitoring loop with health tracking.
+
+        Re-evaluates monitor interval from flagd each iteration for runtime tunability.
+        """
+        logger.info(f"Starting Bluetooth monitor loop (interval: {get_bt_monitor_interval()}s)")
         while True:
             try:
                 await self.bt_monitor.monitor()
                 self.update_bt_monitor_timestamp()
             except Exception as e:
                 logger.error(f"Error during Bluetooth monitor: {e}", exc_info=DEBUG)
-            await asyncio.sleep(BT_MONITOR_INTERVAL)
+            await asyncio.sleep(get_bt_monitor_interval())
 
     async def run(self) -> None:
         """Main daemon loop with concurrent USB polling and Bluetooth monitoring."""
         logger.info("PS Move Pairing Daemon started")
         logger.info(f"  psmove binary: {self.psmove}")
-        logger.info(f"  USB poll interval: {POLL_INTERVAL}s")
-        logger.info(f"  Bluetooth monitor interval: {BT_MONITOR_INTERVAL}s")
+        logger.info(f"  USB poll interval: {get_poll_interval()}s")
+        logger.info(f"  Bluetooth monitor interval: {get_bt_monitor_interval()}s")
         logger.info(f"  debug mode: {DEBUG}")
         logger.info(f"  metrics port: {METRICS_PORT}")
 

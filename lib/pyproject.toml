@@ -56,7 +56,7 @@ ignore = ["ANN"]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
-"tests/*.py" = ["ARG002"]
+"tests/*.py" = ["ARG002", "E402"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["lib"]

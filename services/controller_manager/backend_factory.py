@@ -2,6 +2,11 @@
 Backend Factory for Controller Manager
 
 Detects platform and creates appropriate backend instance.
+
+Backend selection priority:
+  1. CONTROLLER_BACKEND env var (hard override, e.g. for testing)
+  2. OpenFeature "controller_backend" flag (runtime-switchable via flagd)
+  3. Platform auto-detection (Linux → bluetooth, Windows → windows)
 """
 
 import logging
@@ -13,14 +18,68 @@ from services.controller_manager.backend import ControllerBackend
 logger = logging.getLogger(__name__)
 
 
+def _resolve_backend_name() -> str | None:
+    """Resolve backend name from env var or OpenFeature flag.
+
+    Returns the backend name string, or None to fall through to platform detection.
+    """
+    # Priority 1: Env var hard override
+    forced = os.getenv("CONTROLLER_BACKEND", "").lower()
+    if forced:
+        logger.info(f"Using forced backend from CONTROLLER_BACKEND env: {forced}")
+        return forced
+
+    # Priority 2: OpenFeature flag
+    try:
+        from lib.feature_flags import get_flag_client
+
+        client = get_flag_client("performance")
+        from openfeature.evaluation_context import EvaluationContext
+
+        backend_flag = client.get_string_value("controller_backend", "", EvaluationContext())
+        if backend_flag:
+            logger.info(f"Using backend from OpenFeature flag: {backend_flag}")
+            return backend_flag.lower()
+    except Exception as e:
+        logger.debug(f"OpenFeature flag evaluation failed, falling back to platform detection: {e}")
+
+    return None
+
+
+def _create_backend_by_name(name: str) -> ControllerBackend:
+    """Create a backend instance by name."""
+    if name == "mock":
+        from services.controller_manager.mock_backend import MockBackend
+
+        num_controllers = int(os.getenv("MOCK_CONTROLLER_COUNT", "4"))
+        return MockBackend(num_controllers)
+
+    if name == "bluetooth":
+        from services.controller_manager.bluetooth_backend import BluetoothBackend
+
+        return BluetoothBackend()
+
+    if name == "hidapi":
+        from services.controller_manager.hidapi_backend import HidapiBackend
+
+        return HidapiBackend()
+
+    if name == "windows":
+        from services.controller_manager.windows_backend import WindowsBackend
+
+        return WindowsBackend()
+
+    raise RuntimeError(f"Unknown backend: {name}")
+
+
 def create_backend() -> ControllerBackend:
     """
-    Create appropriate backend based on platform and environment.
+    Create appropriate backend based on environment, flags, or platform.
 
-    Environment variables:
-        MOCK_CONTROLLERS: Set to 'true' to use mock backend
-        MOCK_CONTROLLER_COUNT: Number of mock controllers (default: 4)
-        CONTROLLER_BACKEND: Force specific backend ('bluetooth', 'windows', 'mock')
+    Selection priority:
+        1. CONTROLLER_BACKEND env var (hard override)
+        2. OpenFeature "controller_backend" flag from performance domain
+        3. Platform auto-detection (Linux → bluetooth, Windows → windows)
 
     Returns:
         ControllerBackend instance
@@ -28,39 +87,12 @@ def create_backend() -> ControllerBackend:
     Raises:
         RuntimeError: If no suitable backend available
     """
-    # Check for forced backend (useful for testing)
-    forced_backend = os.getenv("CONTROLLER_BACKEND", "").lower()
+    backend_name = _resolve_backend_name()
 
-    if forced_backend:
-        logger.info(f"Using forced backend: {forced_backend}")
+    if backend_name:
+        return _create_backend_by_name(backend_name)
 
-        if forced_backend == "mock":
-            from services.controller_manager.mock_backend import MockBackend
-
-            num_controllers = int(os.getenv("MOCK_CONTROLLER_COUNT", "4"))
-            return MockBackend(num_controllers)
-
-        if forced_backend == "bluetooth":
-            from services.controller_manager.bluetooth_backend import BluetoothBackend
-
-            return BluetoothBackend()
-
-        if forced_backend == "windows":
-            from services.controller_manager.windows_backend import WindowsBackend
-
-            return WindowsBackend()
-
-        raise RuntimeError(f"Unknown backend: {forced_backend}")
-
-    # Check for mock mode (environment variable)
-    if os.getenv("MOCK_CONTROLLERS", "").lower() == "true":
-        from services.controller_manager.mock_backend import MockBackend
-
-        num_controllers = int(os.getenv("MOCK_CONTROLLER_COUNT", "4"))
-        logger.info(f"Using Mock backend (MOCK_CONTROLLERS=true) with {num_controllers} controllers")
-        return MockBackend(num_controllers)
-
-    # Platform detection
+    # Priority 3: Platform auto-detection
     system = platform.system()
 
     if system == "Windows":
@@ -73,7 +105,7 @@ def create_backend() -> ControllerBackend:
         except ImportError as e:
             logger.error(f"Windows backend not available: {e}")
             logger.info("Install psmoveapi: pip install psmoveapi")
-            logger.info("Or use mock mode: set MOCK_CONTROLLERS=true")
+            logger.info("Or use mock mode: set CONTROLLER_BACKEND=mock")
             raise RuntimeError("Windows backend not available") from e
 
     elif system == "Linux":
@@ -86,7 +118,7 @@ def create_backend() -> ControllerBackend:
         except ImportError as e:
             logger.error(f"Bluetooth backend not available: {e}")
             logger.info("Install dependencies: apt-get install python3-dbus, pip install psmove")
-            logger.info("Or use mock mode: set MOCK_CONTROLLERS=true")
+            logger.info("Or use mock mode: set CONTROLLER_BACKEND=mock")
             raise RuntimeError("Bluetooth backend not available") from e
 
     else:
