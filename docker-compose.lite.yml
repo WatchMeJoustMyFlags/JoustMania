@@ -191,6 +191,7 @@ services:
       - AUDIODEV=default
       - FLAGD_HOST=flagd
       - FLAGD_PORT=8015
+      - ALSA_CARD=auto  # Auto-detect sound card; set to card number (e.g. "1") to override
     depends_on:
       flagd:
         condition: service_started
