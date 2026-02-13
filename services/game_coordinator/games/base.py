@@ -491,13 +491,139 @@ class BaseGameMode(ABC):
         """
         await self._create_gameplay_stream()
 
+    async def _process_gameplay_update(self, gameplay_update) -> bool:
+        """
+        Process a single gameplay update: run each controller through death detection.
+
+        Checks win condition after each controller to prevent simultaneous deaths,
+        ensuring the last player standing can never die.
+
+        Args:
+            gameplay_update: GameplayDataUpdate protobuf with controller data
+
+        Returns:
+            True if game is over (win condition met), False otherwise
+        """
+        for gameplay_data in gameplay_update.controllers:
+            await self._process_controller_state(gameplay_data)
+
+            if await self._check_win_condition():
+                return True
+        return False
+
+    async def _send_alive_filter_update(self, last_alive_serials: set[str]) -> set[str]:
+        """
+        Check if alive players changed and send filter update if so.
+
+        Args:
+            last_alive_serials: The previous set of alive player serials
+
+        Returns:
+            The current set of alive player serials
+        """
+        from proto import controller_manager_pb2
+
+        current_alive_serials = {p.serial for p in self.players.values() if p.alive}
+
+        if current_alive_serials != last_alive_serials:
+            filter_msg = controller_manager_pb2.GameplayStreamControl(
+                filter_update=controller_manager_pb2.FilterUpdate(serials=list(current_alive_serials))
+            )
+            await self.gameplay_stream.write(filter_msg)
+
+            logger.info(
+                f"Updated controller filter: {len(last_alive_serials)} → {len(current_alive_serials)} alive players"
+            )
+
+            metrics.filter_updates_total.labels(game_mode=self.get_game_name()).inc()
+            metrics.active_controllers.set(len(current_alive_serials))
+            metrics.filtered_controllers.set(len(self.players) - len(current_alive_serials))
+
+        return current_alive_serials
+
+    def _update_frame_metrics(
+        self,
+        iteration_latency_ms: float,
+        target_frame_time_ms: float,
+        recent_frame_times: list[float],
+        frames_on_target: int,
+        loop_iterations: int,
+        loop_start_time: float,
+    ) -> int:
+        """
+        Update frame timing metrics for monitoring.
+
+        Tracks frame consistency, dropped frames, actual Hz, and jitter.
+
+        Args:
+            iteration_latency_ms: Duration of this iteration in ms
+            target_frame_time_ms: Expected frame time in ms
+            recent_frame_times: Rolling window of recent frame times (mutated in place)
+            frames_on_target: Running count of frames within target tolerance
+            loop_iterations: Total iterations so far
+            loop_start_time: Timestamp when loop started
+
+        Returns:
+            Updated frames_on_target count
+        """
+        recent_frame_times.append(iteration_latency_ms)
+        if len(recent_frame_times) > 60:  # Keep last 60 frames (1 second at 60Hz)
+            recent_frame_times.pop(0)
+
+        if iteration_latency_ms <= target_frame_time_ms * 1.5:
+            frames_on_target += 1
+
+        if iteration_latency_ms > target_frame_time_ms * 2:
+            metrics.game_loop_frames_dropped_total.labels(mode=self.get_game_name()).inc()
+
+        if loop_iterations % 10 == 0:
+            elapsed = time.time() - loop_start_time
+            actual_hz = loop_iterations / elapsed if elapsed > 0 else 0
+            metrics.actual_update_frequency_hz.set(actual_hz)
+
+            consistency_percent = (frames_on_target / loop_iterations) * 100
+            metrics.game_loop_frame_consistency_percent.set(consistency_percent)
+
+            if len(recent_frame_times) >= 2:
+                jitter_ms = statistics.stdev(recent_frame_times)
+                metrics.game_loop_jitter_ms.set(jitter_ms)
+
+        return frames_on_target
+
+    async def _handle_stream_reconnection(self, error: Exception, attempt: int, max_attempts: int) -> int:
+        """
+        Handle gameplay stream reconnection after an error.
+
+        Args:
+            error: The exception that caused the stream failure
+            attempt: Current reconnection attempt number (pre-incremented)
+            max_attempts: Maximum allowed reconnection attempts
+
+        Returns:
+            The new attempt number after reconnection
+
+        Raises:
+            Exception: If max reconnection attempts exceeded
+        """
+        if attempt > max_attempts:
+            logger.error(f"Gameplay stream failed after {max_attempts} reconnect attempts, ending game")
+            raise error
+
+        backoff = attempt  # Linear backoff: 1s, 2s, 3s
+        logger.warning(
+            f"Gameplay stream error (attempt {attempt}/{max_attempts}): {error}. Reconnecting in {backoff}s..."
+        )
+        metrics.gameplay_stream_reconnects_total.labels(game_mode=self.get_game_name()).inc()
+        await asyncio.sleep(backoff)
+
+        await self._create_gameplay_stream()
+        return attempt
+
     async def _game_loop(self):
         """Main game loop - processes controller states and checks for deaths."""
         logger.info("Starting game loop...")
 
         try:
-            from proto import controller_manager_pb2
-
             # Create player lifecycle spans (subclass-specific: flat vs hierarchical)
             # Pass None to use current active span context (we're inside gameplay_phase)
             self._create_player_spans(None)
@@ -544,78 +670,28 @@ class BaseGameMode(ABC):
                             logger.info("Game running=False, breaking loop")
                             break
 
-                        # Process each controller's gameplay data
-                        # Check win condition after EACH controller to prevent simultaneous deaths
-                        # This ensures the last player standing can never die
-                        game_over = False
-                        for gameplay_data in gameplay_update.controllers:
-                            await self._process_controller_state(gameplay_data)
-
-                            # Check after each controller - stop processing if we have a winner
-                            if await self._check_win_condition():
-                                game_over = True
-                                break
-
-                        if game_over:
-                            # Keep game running for 1 second to clearly show winner in traces
+                        # Process controllers and check for game over
+                        if await self._process_gameplay_update(gameplay_update):
                             logger.info("Win condition met, keeping game active for 1 second to show winner")
                             await asyncio.sleep(1.0)
-                            return  # Exit the while loop
+                            return
 
-                        # Check if alive players changed (Phase 45 - dynamic filtering)
-                        current_alive_serials = {p.serial for p in self.players.values() if p.alive}
-
-                        if current_alive_serials != last_alive_serials:
-                            # Send filter update to server
-                            filter_msg = controller_manager_pb2.GameplayStreamControl(
-                                filter_update=controller_manager_pb2.FilterUpdate(serials=list(current_alive_serials))
-                            )
-                            await self.gameplay_stream.write(filter_msg)
-
-                            logger.info(
-                                f"Updated controller filter: {len(last_alive_serials)} → "
-                                f"{len(current_alive_serials)} alive players"
-                            )
-
-                            # Emit filter metrics (Phase 45)
-                            metrics.filter_updates_total.labels(game_mode=self.get_game_name()).inc()
-                            metrics.active_controllers.set(len(current_alive_serials))
-                            metrics.filtered_controllers.set(len(self.players) - len(current_alive_serials))
-
-                            last_alive_serials = current_alive_serials
+                        # Update alive filter if players changed
+                        last_alive_serials = await self._send_alive_filter_update(last_alive_serials)
 
                         # Track loop timing for metrics
                         loop_iterations += 1
                         iteration_end = time.time()
                         iteration_latency_ms = (iteration_end - last_iteration_time) * 1000
 
-                        # Track frame consistency (Issue #183)
-                        recent_frame_times.append(iteration_latency_ms)
-                        if len(recent_frame_times) > 60:  # Keep last 60 frames (1 second at 60Hz)
-                            recent_frame_times.pop(0)
-
-                        # Check if frame is within target (50% tolerance)
-                        if iteration_latency_ms <= target_frame_time_ms * 1.5:
-                            frames_on_target += 1
-
-                        # Check for dropped frames (>2x target time)
-                        if iteration_latency_ms > target_frame_time_ms * 2:
-                            metrics.game_loop_frames_dropped_total.labels(mode=self.get_game_name()).inc()
-
-                        # Calculate actual Hz and frame consistency every 10 iterations
-                        if loop_iterations % 10 == 0:
-                            elapsed = time.time() - loop_start_time
-                            actual_hz = loop_iterations / elapsed if elapsed > 0 else 0
-                            metrics.actual_update_frequency_hz.set(actual_hz)
-
-                            # Calculate frame consistency percentage
-                            consistency_percent = (frames_on_target / loop_iterations) * 100
-                            metrics.game_loop_frame_consistency_percent.set(consistency_percent)
-
-                            # Calculate jitter (standard deviation of recent frame times)
-                            if len(recent_frame_times) >= 2:
-                                jitter_ms = statistics.stdev(recent_frame_times)
-                                metrics.game_loop_jitter_ms.set(jitter_ms)
+                        frames_on_target = self._update_frame_metrics(
+                            iteration_latency_ms,
+                            target_frame_time_ms,
+                            recent_frame_times,
+                            frames_on_target,
+                            loop_iterations,
+                            loop_start_time,
+                        )
 
                         last_iteration_time = iteration_end
 
@@ -630,28 +706,137 @@ class BaseGameMode(ABC):
                         break
 
                     reconnect_attempt += 1
-                    if reconnect_attempt > max_reconnect_attempts:
-                        logger.error(
-                            f"Gameplay stream failed after {max_reconnect_attempts} reconnect attempts, ending game"
-                        )
-                        raise
-
-                    backoff = reconnect_attempt  # Linear backoff: 1s, 2s, 3s
-                    logger.warning(
-                        f"Gameplay stream error (attempt {reconnect_attempt}/{max_reconnect_attempts}): {e}. "
-                        f"Reconnecting in {backoff}s..."
+                    reconnect_attempt = await self._handle_stream_reconnection(
+                        e, reconnect_attempt, max_reconnect_attempts
                     )
-                    metrics.gameplay_stream_reconnects_total.labels(game_mode=self.get_game_name()).inc()
-                    await asyncio.sleep(backoff)
-
-                    # Re-create stream with current player state
-                    await self._create_gameplay_stream()
 
         except Exception as e:
             logger.error(f"Game loop error: {e}", exc_info=True)
             raise
         # Note: Don't set gameplay_stream = None here - it's needed by _end_game_impl
         # for sending winner effects. Stream cleanup happens after teardown phase.
+
+    @staticmethod
+    def _compute_accel_magnitude(accel) -> float:
+        """
+        Compute acceleration magnitude from 3-axis vector (g-force units).
+
+        Standing still: sqrt(0^2 + 0^2 + 1^2) ~ 1.0g.
+        Movement adds to this, e.g., 1.8g = significant movement.
+
+        Args:
+            accel: Vector3 protobuf with x, y, z components
+
+        Returns:
+            Scalar magnitude in g-force units
+        """
+        return math.sqrt(accel.x**2 + accel.y**2 + accel.z**2)
+
+    @staticmethod
+    def _update_ema(player: Player, accel_mag: float) -> None:
+        """
+        Apply exponential moving average filter to acceleration.
+
+        Formula: smoothed = (smoothed * 4 + raw) / 5
+        Gives 80% weight to previous value, 20% to current - smooths sensor noise.
+        First reading primes the filter to prevent false deaths at game start.
+
+        Args:
+            player: Player whose EMA to update
+            accel_mag: Raw acceleration magnitude for this frame
+        """
+        if player.smoothed_accel < 1e-9:  # Check for uninitialized (avoids float equality)
+            player.smoothed_accel = accel_mag  # Prime filter with first real reading
+        else:
+            player.smoothed_accel = (player.smoothed_accel * 4 + accel_mag) / 5
+        player.last_accel_mag = player.smoothed_accel
+
+    def _compute_effective_thresholds(self, player: Player) -> tuple[float, float]:
+        """
+        Compute effective warning and death thresholds for a player.
+
+        Uses LERP between slow/fast threshold arrays based on music speed,
+        then applies per-player sensitivity factor.
+
+        Args:
+            player: Player to compute thresholds for
+
+        Returns:
+            Tuple of (effective_warning_threshold, effective_death_threshold)
+        """
+        sens_idx = self.sensitivity.value
+
+        # Calculate music speed as percentage (0.0 = slow, 1.0 = fast)
+        speed_range = FAST_MUSIC_SPEED - SLOW_MUSIC_SPEED
+        speed_percent = (self.music_speed - SLOW_MUSIC_SPEED) / speed_range if speed_range > 0 else 0.0
+        speed_percent = max(0.0, min(1.0, speed_percent))  # Clamp to [0, 1]
+
+        # LERP between slow and fast thresholds
+        base_warn = self._lerp(SLOW_WARNING[sens_idx], FAST_WARNING[sens_idx], speed_percent)
+        base_death = self._lerp(SLOW_MAX[sens_idx], FAST_MAX[sens_idx], speed_percent)
+
+        # Apply per-player sensitivity factor
+        # Clamp factor to [0.5, 2.0] for safety, then divide thresholds
+        # Higher factor = lower threshold = easier to die
+        clamped_factor = max(0.5, min(2.0, player.sensitivity_factor))
+        return base_warn / clamped_factor, base_death / clamped_factor
+
+    def _record_player_analytics(
+        self,
+        player: Player,
+        serial: str,
+        accel,
+        accel_mag: float,
+        smoothed: float,
+        effective_death: float,
+        controller_state,
+    ) -> None:
+        """
+        Record analytics sample and emit periodic Prometheus metrics.
+
+        Args:
+            player: Player to record analytics for
+            serial: Controller serial number
+            accel: Raw acceleration vector
+            accel_mag: Raw acceleration magnitude
+            smoothed: Smoothed acceleration value
+            effective_death: Current effective death threshold
+            controller_state: Full controller state protobuf (for gyro data)
+        """
+        config = get_config_manager().get_config()
+        if not config.analytics.enabled or player.analytics is None:
+            return
+
+        # Get gyro data if available
+        gyro = controller_state.gyro if hasattr(controller_state, "gyro") else None
+        gyro_x = gyro.x if gyro else 0.0
+        gyro_y = gyro.y if gyro else 0.0
+        gyro_z = gyro.z if gyro else 0.0
+
+        # Record sample (returns current movement zone)
+        zone = player.analytics.record_sample(
+            accel_x=accel.x,
+            accel_y=accel.y,
+            accel_z=accel.z,
+            raw_accel_mag=accel_mag,
+            smoothed_accel=smoothed,
+            death_threshold=effective_death,
+            config=config.analytics,
+            gyro_x=gyro_x,
+            gyro_y=gyro_y,
+            gyro_z=gyro_z,
+            frame_duration_ms=1000.0 / config.update_frequency_hz,
+        )
+
+        # Emit Prometheus metrics periodically (every ~1 second)
+        if player.analytics.sample_count % config.analytics.metrics_emit_interval_frames == 0:
+            metrics.player_accel_magnitude.labels(serial=serial).set(accel_mag)
+            metrics.player_movement_zone.labels(serial=serial).set(zone.value)
+            metrics.player_peak_accel.labels(serial=serial, game_id=self.game_id).set(player.analytics.peak_accel)
+            metrics.player_playstyle.labels(serial=serial).set(player.analytics.get_playstyle().value)
+
+        # Record to histogram for distribution analysis
+        metrics.accel_distribution.labels(game_mode=self.get_game_name()).observe(accel_mag)
 
     async def _process_controller_state(self, controller_state):
         """
@@ -670,81 +855,19 @@ class BaseGameMode(ABC):
         if not player.alive:
             return  # Dead player, ignore
 
-        # Calculate acceleration magnitude (g-force units, 1.0 = 1g)
-        # Standing still: sqrt(0² + 0² + 1²) ≈ 1.0g
-        # Movement adds to this, e.g., 1.8g = significant movement
         accel = controller_state.accel
-        accel_mag = math.sqrt(accel.x**2 + accel.y**2 + accel.z**2)
+        accel_mag = self._compute_accel_magnitude(accel)
+        self._update_ema(player, accel_mag)
 
-        # Apply exponential moving average filter (from original JoustMania)
-        # Formula: smoothed = (smoothed * 4 + raw) / 5
-        # This gives 80% weight to previous value, 20% to current - smooths sensor noise
-        # Phase 73: Initialize with first reading to prevent false deaths at game start
-        if player.smoothed_accel < 1e-9:  # Check for uninitialized (avoids float equality)
-            player.smoothed_accel = accel_mag  # Prime filter with first real reading
-        else:
-            player.smoothed_accel = (player.smoothed_accel * 4 + accel_mag) / 5
-        player.last_accel_mag = player.smoothed_accel
-
-        # Get thresholds using LERP between slow/fast based on music speed
-        # This matches original JoustMania's threshold scaling behavior
-        sens_idx = self.sensitivity.value
-
-        # Calculate music speed as percentage (0.0 = slow, 1.0 = fast)
-        speed_range = FAST_MUSIC_SPEED - SLOW_MUSIC_SPEED
-        speed_percent = (self.music_speed - SLOW_MUSIC_SPEED) / speed_range if speed_range > 0 else 0.0
-        speed_percent = max(0.0, min(1.0, speed_percent))  # Clamp to [0, 1]
-
-        # LERP between slow and fast thresholds
-        base_warn = self._lerp(SLOW_WARNING[sens_idx], FAST_WARNING[sens_idx], speed_percent)
-        base_death = self._lerp(SLOW_MAX[sens_idx], FAST_MAX[sens_idx], speed_percent)
-
-        # Apply per-player sensitivity factor (Phase 3: Per-Player Sensitivity Infrastructure)
-        # Clamp factor to [0.5, 2.0] for safety, then divide thresholds
-        # Higher factor = lower threshold = easier to die
-        clamped_factor = max(0.5, min(2.0, player.sensitivity_factor))
-        effective_warn = base_warn / clamped_factor
-        effective_death = base_death / clamped_factor
-
+        effective_warn, effective_death = self._compute_effective_thresholds(player)
         smoothed = player.smoothed_accel
-        current_time = time.time()
 
-        # Analytics: Record sample if analytics is enabled and initialized
-        config = get_config_manager().get_config()
-        if config.analytics.enabled and player.analytics is not None:
-            # Get gyro data if available
-            gyro = controller_state.gyro if hasattr(controller_state, "gyro") else None
-            gyro_x = gyro.x if gyro else 0.0
-            gyro_y = gyro.y if gyro else 0.0
-            gyro_z = gyro.z if gyro else 0.0
-
-            # Record sample (returns current movement zone)
-            zone = player.analytics.record_sample(
-                accel_x=accel.x,
-                accel_y=accel.y,
-                accel_z=accel.z,
-                raw_accel_mag=accel_mag,
-                smoothed_accel=smoothed,
-                death_threshold=effective_death,
-                config=config.analytics,
-                gyro_x=gyro_x,
-                gyro_y=gyro_y,
-                gyro_z=gyro_z,
-                frame_duration_ms=1000.0 / config.update_frequency_hz,
-            )
-
-            # Emit Prometheus metrics periodically (every ~1 second)
-            if player.analytics.sample_count % config.analytics.metrics_emit_interval_frames == 0:
-                metrics.player_accel_magnitude.labels(serial=serial).set(accel_mag)
-                metrics.player_movement_zone.labels(serial=serial).set(zone.value)
-                metrics.player_peak_accel.labels(serial=serial, game_id=self.game_id).set(player.analytics.peak_accel)
-                metrics.player_playstyle.labels(serial=serial).set(player.analytics.get_playstyle().value)
-
-            # Record to histogram for distribution analysis
-            metrics.accel_distribution.labels(game_mode=self.get_game_name()).observe(accel_mag)
+        # Record analytics (handles enabled check internally)
+        self._record_player_analytics(player, serial, accel, accel_mag, smoothed, effective_death, controller_state)
 
         # Check grace period first - no death or warning during grace period
         # Matches original JoustMania: if time.time() > no_rumble
+        current_time = time.time()
         if current_time < player.grace_until:
             return  # In grace period, skip all checks
 
@@ -1280,6 +1403,61 @@ class BaseGameMode(ABC):
         delay = random.uniform(min_t, max_t)
         return time.time() + delay
 
+    async def _apply_tempo_change(self, target_tempo: float) -> None:
+        """
+        Apply a tempo change to the music track.
+
+        Sends gRPC request with gameplay span context, logs the change,
+        records span events, and updates internal state and metrics.
+
+        Args:
+            target_tempo: The target tempo to transition to
+        """
+        from proto import audio_pb2
+
+        old_tempo = self.music_speed
+
+        # Use gameplay context so gRPC span appears as child of gameplay_phase
+        token = None
+        if self.gameplay_span_context:
+            token = otel_context.attach(self.gameplay_span_context)
+
+        try:
+            await self.audio_client.ChangeTempo(
+                audio_pb2.ChangeTempoRequest(
+                    track_id=self.music_track_id,
+                    new_tempo=target_tempo,
+                    transition_duration=MUSIC_TRANSITION_DURATION,
+                )
+            )
+        finally:
+            if token:
+                otel_context.detach(token)
+
+        logger.info(f"Music tempo changing: {old_tempo:.2f} -> {target_tempo:.2f}")
+
+        # Add span event to gameplay span for tempo change
+        if self.gameplay_span:
+            self.gameplay_span.add_event(
+                "music_tempo_change",
+                attributes={
+                    "old_tempo": old_tempo,
+                    "new_tempo": target_tempo,
+                    "dead_count": self.dead_count,
+                    "direction": "speed_up" if self.speed_up else "slow_down",
+                },
+            )
+
+        # Update state
+        self.music_speed = target_tempo
+        self.speed_up = not self.speed_up
+        self.change_time = self._get_music_change_time()
+        # Update metrics for dashboard (Phase 80)
+        metrics.music_tempo.set(self.music_speed)
+        self._emit_threshold_metrics()
+
+        logger.debug(f"Next tempo change at +{self.change_time - time.time():.1f}s")
+
     async def _check_music_speed(self):
         """
         Check and update music tempo (Phase 70).
@@ -1290,59 +1468,10 @@ class BaseGameMode(ABC):
         if not self.audio_client or not self.music_track_id:
             return
 
-        now = time.time()
-
-        # Check if it's time for a tempo change
-        if now >= self.change_time:
+        if time.time() >= self.change_time:
             try:
-                from proto import audio_pb2
-
-                # Determine target tempo
-                old_tempo = self.music_speed
                 target_tempo = FAST_MUSIC_SPEED if self.speed_up else SLOW_MUSIC_SPEED
-
-                # Use gameplay context so gRPC span appears as child of gameplay_phase
-                token = None
-                if self.gameplay_span_context:
-                    token = otel_context.attach(self.gameplay_span_context)
-
-                try:
-                    # Request tempo transition
-                    await self.audio_client.ChangeTempo(
-                        audio_pb2.ChangeTempoRequest(
-                            track_id=self.music_track_id,
-                            new_tempo=target_tempo,
-                            transition_duration=MUSIC_TRANSITION_DURATION,
-                        )
-                    )
-                finally:
-                    if token:
-                        otel_context.detach(token)
-
-                logger.info(f"Music tempo changing: {old_tempo:.2f} -> {target_tempo:.2f}")
-
-                # Add span event to gameplay span for tempo change
-                if self.gameplay_span:
-                    self.gameplay_span.add_event(
-                        "music_tempo_change",
-                        attributes={
-                            "old_tempo": old_tempo,
-                            "new_tempo": target_tempo,
-                            "dead_count": self.dead_count,
-                            "direction": "speed_up" if self.speed_up else "slow_down",
-                        },
-                    )
-
-                # Update state
-                self.music_speed = target_tempo
-                self.speed_up = not self.speed_up
-                self.change_time = self._get_music_change_time()
-                # Update metrics for dashboard (Phase 80)
-                metrics.music_tempo.set(self.music_speed)
-                self._emit_threshold_metrics()
-
-                logger.debug(f"Next tempo change at +{self.change_time - now:.1f}s")
-
+                await self._apply_tempo_change(target_tempo)
             except Exception as e:
                 logger.warning(f"Failed to change music tempo: {e}")
 
