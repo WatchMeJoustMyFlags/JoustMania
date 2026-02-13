@@ -120,6 +120,14 @@
         "slow": 1000
       },
       "defaultVariant": "fast"
+    },
+    "profiling_enabled": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "off"
     }
   }
 }

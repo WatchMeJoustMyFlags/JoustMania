@@ -84,6 +84,19 @@ class SpanAttr:
     VALIDATION_REASON = "validation.reason"
 
 
+def _is_profiling_enabled() -> bool:
+    """Read profiling_enabled from flagd performance domain with hardcoded default fallback."""
+    try:
+        from openfeature.evaluation_context import EvaluationContext
+
+        from lib.feature_flags import get_flag_client
+
+        client = get_flag_client("performance")
+        return client.get_boolean_value("profiling_enabled", False, EvaluationContext())
+    except Exception:
+        return False
+
+
 def _do_init() -> None:
     """Perform actual OpenTelemetry initialization from env vars (internal)."""
     otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
@@ -103,7 +116,7 @@ def _do_init() -> None:
     provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
 
     # Trace-profile correlation: link Pyroscope CPU profiles to trace spans
-    if os.getenv("PROFILING_ENABLED", "false").lower() in ("true", "1", "yes"):
+    if _is_profiling_enabled():
         try:
             from pyroscope.otel import PyroscopeSpanProcessor
 
