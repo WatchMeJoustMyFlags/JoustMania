@@ -10,12 +10,13 @@
 #   make up              # Build and start all services
 #
 # Base config defaults to bluetooth mode (real hardware).
-# For mock mode (testing): CONTROLLER_BACKEND=mock make up
+# For mock mode (testing): make up-mock
 #
 # Environment Variables (can be set in shell or .env file):
 # - IMAGE_TAG: Image tag to use [default: latest]
-# - CONTROLLER_BACKEND: Controller backend type (bluetooth, mock, windows) [default: bluetooth]
 # - LOG_LEVEL: Logging level for all services (DEBUG, INFO, WARNING, ERROR) [default: INFO]
+#
+# Controller backend is configured via the "controller_backend" flag in flagd (performance domain).
 #
 # Notes:
 # - All images default to ghcr.io/watchmejoustmyflags/joustmania registry
@@ -207,7 +208,6 @@ services:
       - "8000"   # Prometheus metrics
     environment:
       - CONTROLLER_NAMES_FILE=/app/data/controller_names.txt
-      - CONTROLLER_BACKEND=${CONTROLLER_BACKEND:-bluetooth}
       - DBUS_SYSTEM_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket
       - OTEL_SERVICE_NAME=controller-manager-service
       - OTEL_SERVICE_NAMESPACE=infrastructure

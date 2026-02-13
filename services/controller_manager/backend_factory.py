@@ -4,16 +4,14 @@ Backend Factory for Controller Manager
 Detects platform and creates appropriate backend instance.
 
 Backend selection priority:
-  1. CONTROLLER_BACKEND env var (hard override, e.g. for testing)
-  2. OpenFeature "controller_backend" flag (runtime-switchable via flagd)
-  3. Platform auto-detection (Linux -> bluetooth, Windows -> windows)
+  1. OpenFeature "controller_backend" flag (runtime-switchable via flagd)
+  2. Platform auto-detection (Linux -> bluetooth, Windows -> windows)
 
-Flag value (mock_controller_count) is read once at startup.
-Runtime changes to this flag require a service restart to take effect.
+Flag values (controller_backend, mock_controller_count) are read once at startup.
+Runtime changes to these flags require a service restart to take effect.
 """
 
 import logging
-import os
 import platform
 
 from services.controller_manager.backend import ControllerBackend
@@ -22,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 def _get_mock_controller_count() -> int:
-    """Read mock_controller_count from flagd performance domain with env var fallback."""
+    """Read mock_controller_count from flagd performance domain."""
     try:
         from openfeature.evaluation_context import EvaluationContext
 
@@ -33,22 +31,15 @@ def _get_mock_controller_count() -> int:
         logger.info(f"mock_controller_count from flagd: {count}")
         return count
     except Exception as e:
-        logger.warning(f"Failed to read mock_controller_count from flagd, using env/default: {e}")
-        return int(os.getenv("MOCK_CONTROLLER_COUNT", "4"))
+        logger.warning(f"Failed to read mock_controller_count from flagd, using default: {e}")
+        return 4
 
 
 def _resolve_backend_name() -> str | None:
-    """Resolve backend name from env var or OpenFeature flag.
+    """Resolve backend name from OpenFeature flag.
 
     Returns the backend name string, or None to fall through to platform detection.
     """
-    # Priority 1: Env var hard override
-    forced = os.getenv("CONTROLLER_BACKEND", "").lower()
-    if forced:
-        logger.info(f"Using forced backend from CONTROLLER_BACKEND env: {forced}")
-        return forced
-
-    # Priority 2: OpenFeature flag
     try:
         from lib.feature_flags import get_flag_client
 
@@ -93,15 +84,14 @@ def _create_backend_by_name(name: str) -> ControllerBackend:
 
 def create_backend() -> ControllerBackend:
     """
-    Create appropriate backend based on environment, flags, or platform.
+    Create appropriate backend based on flags or platform.
 
     Selection priority:
-        1. CONTROLLER_BACKEND env var (hard override)
-        2. OpenFeature "controller_backend" flag from performance domain
-        3. Platform auto-detection (Linux -> bluetooth, Windows -> windows)
+        1. OpenFeature "controller_backend" flag from performance domain
+        2. Platform auto-detection (Linux -> bluetooth, Windows -> windows)
 
     Configuration:
-        mock_controller_count: flagd flag (performance domain), fallback to MOCK_CONTROLLER_COUNT env var
+        mock_controller_count: flagd flag (performance domain)
 
     Returns:
         ControllerBackend instance
@@ -127,7 +117,7 @@ def create_backend() -> ControllerBackend:
         except ImportError as e:
             logger.error(f"Windows backend not available: {e}")
             logger.info("Install psmoveapi: pip install psmoveapi")
-            logger.info("Or use mock mode: set CONTROLLER_BACKEND=mock")
+            logger.info("Or use mock mode: set controller_backend=mock in flagd performance.json")
             raise RuntimeError("Windows backend not available") from e
 
     elif system == "Linux":
@@ -140,8 +130,11 @@ def create_backend() -> ControllerBackend:
         except ImportError as e:
             logger.error(f"Bluetooth backend not available: {e}")
             logger.info("Install dependencies: apt-get install python3-dbus, pip install psmove")
-            logger.info("Or use mock mode: set CONTROLLER_BACKEND=mock")
+            logger.info("Or use mock mode: set controller_backend=mock in flagd performance.json")
             raise RuntimeError("Bluetooth backend not available") from e
 
     else:
-        raise RuntimeError(f"Unsupported platform: {system}. Set CONTROLLER_BACKEND=mock to use mock controllers.")
+        raise RuntimeError(
+            f"Unsupported platform: {system}. "
+            "Set controller_backend=mock in flagd performance.json to use mock controllers."
+        )

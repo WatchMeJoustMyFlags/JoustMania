@@ -38,25 +38,24 @@ The Controller Manager service is the central component for managing PS Move con
 
 ## Configuration
 
-### Environment Variables
+### Configuration
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CONTROLLER_BACKEND` | auto | Force backend: `bluetooth`, `windows`, `mock` |
-| `MOCK_CONTROLLERS` | `false` | Enable mock backend for testing |
-| `MOCK_CONTROLLER_COUNT` | `4` | Number of mock controllers |
-| `GRPC_PORT` | `50052` | gRPC server port |
-| `PROMETHEUS_PORT` | `8001` | Prometheus metrics port |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | OpenTelemetry endpoint |
+Backend selection uses the `controller_backend` OpenFeature flag (performance domain):
+
+| Setting | Source | Default | Description |
+|---------|--------|---------|-------------|
+| `controller_backend` | flagd (performance) | auto-detect | Backend: `bluetooth`, `windows`, `mock`, `hidapi` |
+| `mock_controller_count` | flagd (performance) | `4` | Number of mock controllers |
+| `GRPC_PORT` | env var | `50052` | gRPC server port |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | env var | `http://localhost:4317` | OpenTelemetry endpoint |
 
 ### Backend Selection
 
-The backend is selected automatically based on platform:
+The backend is selected via the `controller_backend` flag in flagd (`services/flagd/performance.json`).
+If the flag is not set or flagd is unavailable, platform auto-detection is used:
 - **Linux**: BluetoothBackend (BlueZ/psmove)
 - **Windows**: WindowsBackend (psmoveapi)
 - **Testing**: MockBackend (simulated controllers)
-
-Override with `CONTROLLER_BACKEND` environment variable or `MOCK_CONTROLLERS=true`.
 
 ## gRPC API
 
