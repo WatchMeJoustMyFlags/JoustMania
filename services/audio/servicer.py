@@ -71,64 +71,11 @@ class SoundChannel:
                 volume = max(0.0, min(1.0, volume))
 
                 def play_thread():
-                    import array
-                    import time
-
                     try:
                         if volume < 1.0:
-                            # Decode file to apply volume scaling
-                            decoded = miniaudio.decode_file(file_path)
-                            samples = array.array("h", decoded.samples)  # 16-bit signed
-
-                            # Apply volume scaling
-                            for i in range(len(samples)):
-                                samples[i] = int(samples[i] * volume)
-
-                            # Convert back to bytes for playback
-                            scaled_data = samples.tobytes()
-
-                            # Calculate bytes per frame for proper alignment
-                            # Frame = one sample per channel
-                            bytes_per_sample = decoded.sample_width
-                            bytes_per_frame = bytes_per_sample * decoded.nchannels
-
-                            # Create generator that responds to framecount requests
-                            # miniaudio calls send(framecount) to request specific frames
-                            def scaled_stream():
-                                idx = 0
-                                required_frames = yield b""  # Priming yield
-                                while idx < len(scaled_data) and self._playing.is_set():
-                                    # Calculate bytes needed for requested frames
-                                    bytes_needed = required_frames * bytes_per_frame
-                                    end = min(idx + bytes_needed, len(scaled_data))
-                                    required_frames = yield scaled_data[idx:end]
-                                    idx = end
-
-                            device = miniaudio.PlaybackDevice(
-                                output_format=decoded.sample_format,
-                                nchannels=decoded.nchannels,
-                                sample_rate=decoded.sample_rate,
-                            )
-                            stream = scaled_stream()
-                            next(stream)  # Prime the generator for send()
-                            with device:
-                                device.start(stream)
-                                duration = file_info.duration
-                                elapsed = 0.0
-                                while self._playing.is_set() and elapsed < duration + 0.5:
-                                    time.sleep(0.05)
-                                    elapsed += 0.05
+                            self._play_with_volume(file_path, volume, file_info.duration)
                         else:
-                            # Full volume - use streaming for efficiency
-                            stream = miniaudio.stream_file(file_path)
-                            device = miniaudio.PlaybackDevice()
-                            with device:
-                                device.start(stream)
-                                duration = file_info.duration
-                                elapsed = 0.0
-                                while self._playing.is_set() and elapsed < duration + 0.5:
-                                    time.sleep(0.05)
-                                    elapsed += 0.05
+                            self._play_full_volume(file_path, file_info.duration)
                     except Exception as e:
                         logger.warning(f"Playback error on channel {self.channel_id}: {e}")
                     finally:
@@ -141,6 +88,78 @@ class SoundChannel:
                 logger.error(f"Error playing sound on channel {self.channel_id}: {e}")
                 self._playing.clear()
                 return False
+
+    def _play_with_volume(self, file_path: str, volume: float, duration: float):
+        """Play a sound with volume scaling by decoding and resampling.
+
+        Args:
+            file_path: Path to the audio file
+            volume: Volume level (0.0 to 1.0, exclusive of 1.0)
+            duration: Duration in seconds from file info
+        """
+        import array
+
+        decoded = miniaudio.decode_file(file_path)
+        samples = array.array("h", decoded.samples)  # 16-bit signed
+
+        # Apply volume scaling
+        for i in range(len(samples)):
+            samples[i] = int(samples[i] * volume)
+
+        scaled_data = samples.tobytes()
+
+        # Calculate bytes per frame for proper alignment
+        # Frame = one sample per channel
+        bytes_per_sample = decoded.sample_width
+        bytes_per_frame = bytes_per_sample * decoded.nchannels
+
+        # Create generator that responds to framecount requests
+        # miniaudio calls send(framecount) to request specific frames
+        def scaled_stream():
+            idx = 0
+            required_frames = yield b""  # Priming yield
+            while idx < len(scaled_data) and self._playing.is_set():
+                bytes_needed = required_frames * bytes_per_frame
+                end = min(idx + bytes_needed, len(scaled_data))
+                required_frames = yield scaled_data[idx:end]
+                idx = end
+
+        device = miniaudio.PlaybackDevice(
+            output_format=decoded.sample_format,
+            nchannels=decoded.nchannels,
+            sample_rate=decoded.sample_rate,
+        )
+        stream = scaled_stream()
+        next(stream)  # Prime the generator for send()
+        with device:
+            device.start(stream)
+            self._wait_for_playback(duration)
+
+    def _play_full_volume(self, file_path: str, duration: float):
+        """Play a sound at full volume using streaming for efficiency.
+
+        Args:
+            file_path: Path to the audio file
+            duration: Duration in seconds from file info
+        """
+        stream = miniaudio.stream_file(file_path)
+        device = miniaudio.PlaybackDevice()
+        with device:
+            device.start(stream)
+            self._wait_for_playback(duration)
+
+    def _wait_for_playback(self, duration: float):
+        """Wait for playback to complete or be stopped.
+
+        Args:
+            duration: Expected duration in seconds
+        """
+        import time
+
+        elapsed = 0.0
+        while self._playing.is_set() and elapsed < duration + 0.5:
+            time.sleep(0.05)
+            elapsed += 0.05
 
     def stop(self):
         """Stop playback on this channel."""
@@ -450,33 +469,44 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         """
         base_assets_dir = Path(__file__).parent / "assets"
 
-        # Scan all game asset directories
         for base_dir in ["Joust", "Menu", "Zombie", "Fight_Club", "Commander"]:
             assets_dir = base_assets_dir / base_dir
-
             # Scan vox directory (use aaron as reference - all voices should have same files)
-            vox_dir = assets_dir / "vox" / "aaron"
-            if vox_dir.exists():
-                for ogg_file in vox_dir.glob("*.ogg"):
-                    sound_name = ogg_file.stem  # filename without extension
-                    # Don't overwrite existing entries - first found wins
-                    if sound_name not in self.sound_registry:
-                        self.sound_registry[sound_name] = ("vox", base_dir)
-                    if sound_name.lower() not in self.sound_registry:
-                        self.sound_registry[sound_name.lower()] = ("vox", base_dir)
-
+            self._scan_directory_for_sounds(assets_dir / "vox" / "aaron", "vox", base_dir)
             # Scan sounds directory
-            sounds_dir = assets_dir / "sounds"
-            if sounds_dir.exists():
-                for ogg_file in sounds_dir.glob("*.ogg"):
-                    sound_name = ogg_file.stem
-                    # Don't overwrite existing entries
-                    if sound_name not in self.sound_registry:
-                        self.sound_registry[sound_name] = ("sound", base_dir)
-                    if sound_name.lower() not in self.sound_registry:
-                        self.sound_registry[sound_name.lower()] = ("sound", base_dir)
+            self._scan_directory_for_sounds(assets_dir / "sounds", "sound", base_dir)
 
         logger.info(f"Sound registry built: {len(self.sound_registry)} sounds indexed")
+
+    def _scan_directory_for_sounds(self, directory: Path, sound_type: str, base_dir: str):
+        """Scan a directory for .ogg files and register them.
+
+        Args:
+            directory: Directory to scan for .ogg files
+            sound_type: Type of sound ("vox" or "sound")
+            base_dir: Base directory name (e.g., "Joust", "Menu")
+        """
+        if not directory.exists():
+            return
+        for ogg_file in directory.glob("*.ogg"):
+            self._register_sound(ogg_file.stem, sound_type, base_dir)
+
+    def _register_sound(self, sound_name: str, sound_type: str, base_dir: str):
+        """Register a sound name in the registry if not already present.
+
+        First-found wins: existing entries are not overwritten.
+        Both original case and lowercase variants are registered.
+
+        Args:
+            sound_name: The sound name (filename without extension)
+            sound_type: Type of sound ("vox" or "sound")
+            base_dir: Base directory name (e.g., "Joust", "Menu")
+        """
+        entry = (sound_type, base_dir)
+        if sound_name not in self.sound_registry:
+            self.sound_registry[sound_name] = entry
+        if sound_name.lower() not in self.sound_registry:
+            self.sound_registry[sound_name.lower()] = entry
 
     def _resolve_sound_path(self, sound_input: str) -> str:
         """
@@ -503,27 +533,51 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
 
         # If it's a simple name (no path separators), look up in registry
         if "/" not in lookup_name and "\\" not in lookup_name:
-            registry_entry = self.sound_registry.get(lookup_name) or self.sound_registry.get(lookup_name.lower())
-            if registry_entry:
-                sound_type, base_dir = registry_entry
-                if sound_type == "vox":
-                    return f"{base_dir}/vox/{self.menu_voice}/{lookup_name}.ogg"
-                # sound_type == "sound"
-                return f"{base_dir}/sounds/{lookup_name}.ogg"
-            # Unknown sound - try Joust vox first with current voice
-            logger.warning(f"Sound '{lookup_name}' not in registry, trying Joust vox path")
-            return f"Joust/vox/{self.menu_voice}/{lookup_name}.ogg"
+            return self._resolve_simple_name(lookup_name)
 
-        # Handle paths - check if it needs voice insertion
-        if "/vox/" in sound_input:
-            parts = sound_input.split("/vox/")
-            if len(parts) == 2:
-                remainder = parts[1]
-                # Check if voice folder is already present
-                if not remainder.startswith("aaron/") and not remainder.startswith("ivy/"):
-                    return f"{parts[0]}/vox/{self.menu_voice}/{remainder}"
+        # Handle paths - check if voice insertion is needed
+        return self._resolve_vox_path(sound_input)
 
-        return sound_input
+    def _resolve_simple_name(self, lookup_name: str) -> str:
+        """Resolve a simple sound name (no path separators) via the registry.
+
+        Args:
+            lookup_name: Sound name without extension or path separators
+
+        Returns:
+            Resolved path to the sound file
+        """
+        registry_entry = self.sound_registry.get(lookup_name) or self.sound_registry.get(lookup_name.lower())
+        if registry_entry:
+            sound_type, base_dir = registry_entry
+            if sound_type == "vox":
+                return f"{base_dir}/vox/{self.menu_voice}/{lookup_name}.ogg"
+            return f"{base_dir}/sounds/{lookup_name}.ogg"
+        # Unknown sound - try Joust vox first with current voice
+        logger.warning(f"Sound '{lookup_name}' not in registry, trying Joust vox path")
+        return f"Joust/vox/{self.menu_voice}/{lookup_name}.ogg"
+
+    def _resolve_vox_path(self, sound_input: str) -> str:
+        """Resolve a path that may need voice directory insertion.
+
+        If the path contains '/vox/' but no voice folder, inserts the current
+        menu voice. Paths with voice already present are returned as-is.
+
+        Args:
+            sound_input: Sound path potentially containing '/vox/'
+
+        Returns:
+            Path with voice directory inserted if needed
+        """
+        if "/vox/" not in sound_input:
+            return sound_input
+        parts = sound_input.split("/vox/")
+        if len(parts) != 2:
+            return sound_input
+        remainder = parts[1]
+        if remainder.startswith("aaron/") or remainder.startswith("ivy/"):
+            return sound_input
+        return f"{parts[0]}/vox/{self.menu_voice}/{remainder}"
 
     async def _load_audio_setting(self):
         """Load audio settings from flagd (user_preferences domain)."""
