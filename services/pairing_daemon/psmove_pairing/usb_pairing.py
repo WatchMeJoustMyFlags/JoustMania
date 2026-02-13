@@ -11,7 +11,7 @@ from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
 # Import config first to set up psmoveapi path
-from .config import DEBUG, POLL_INTERVAL
+from .config import DEBUG, get_poll_interval
 
 # Now import psmove (path was set up by config)
 try:
@@ -333,10 +333,13 @@ class USBPairing:
                 await self.process_controller(move_index, serial)
 
     async def run_loop(self) -> None:
-        """USB polling loop."""
+        """USB polling loop.
+
+        Re-evaluates poll interval from flagd each iteration for runtime tunability.
+        """
         import asyncio
 
-        logger.info(f"Starting USB poll loop (interval: {POLL_INTERVAL}s)")
+        logger.info(f"Starting USB poll loop (interval: {get_poll_interval()}s)")
         logger.info(f"Using psmove Python bindings (psmove.Conn_USB={psmove.Conn_USB})")
 
         while True:
@@ -344,4 +347,4 @@ class USBPairing:
                 await self.poll()
             except Exception as e:
                 logger.error(f"Error during USB poll: {e}", exc_info=DEBUG)
-            await asyncio.sleep(POLL_INTERVAL)
+            await asyncio.sleep(get_poll_interval())
