@@ -101,6 +101,25 @@
         "mock": "mock"
       },
       "defaultVariant": "bluetooth"
+    },
+    "mock_controller_count": {
+      "state": "ENABLED",
+      "variants": {
+        "two": 2,
+        "four": 4,
+        "six": 6,
+        "eight": 8
+      },
+      "defaultVariant": "four"
+    },
+    "metrics_export_interval_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "fast": 100,
+        "normal": 500,
+        "slow": 1000
+      },
+      "defaultVariant": "fast"
     }
   }
 }

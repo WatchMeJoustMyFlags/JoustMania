@@ -32,18 +32,26 @@ async def serve(port=50052):
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
+    # Initialize flagd for dynamic streaming frequency and tuning flags
+    from lib.feature_flags import get_flag_client, init_flag_domain
+
+    init_flag_domain("performance")
+
     # Initialize OTEL push metrics (Issue #104, #62)
     # Default 100ms for real-time acceleration visualization
-    # Use METRICS_EXPORT_INTERVAL_MS env var to configure (10ms for 100Hz)
-    export_interval_ms = int(os.getenv("METRICS_EXPORT_INTERVAL_MS", "100"))
+    # Read from flagd performance domain, fallback to env var
+    try:
+        from openfeature.evaluation_context import EvaluationContext
+
+        client = get_flag_client("performance")
+        export_interval_ms = client.get_integer_value("metrics_export_interval_ms", 100, EvaluationContext())
+        logger.info(f"metrics_export_interval_ms from flagd: {export_interval_ms}")
+    except Exception as e:
+        export_interval_ms = int(os.getenv("METRICS_EXPORT_INTERVAL_MS", "100"))
+        logger.warning(f"Failed to read metrics_export_interval_ms from flagd, using env/default: {e}")
     init_metrics(export_interval_ms=export_interval_ms)
     init_profiling()
     logger.info(f"OTEL push metrics initialized ({export_interval_ms}ms export interval)")
-
-    # Initialize flagd for dynamic streaming frequency
-    from lib.feature_flags import init_flag_domain
-
-    init_flag_domain("performance")
 
     from services.controller_manager.servicer import init_frequency_listener
 

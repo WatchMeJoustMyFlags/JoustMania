@@ -103,7 +103,18 @@ class BluetoothBackend(ControllerBackend):
         self.controllers: dict[str, psmove.PSMove] = {}  # serial -> PSMove object
         self.controller_states: dict[str, ControllerState] = {}  # serial -> ControllerState
         self.led_colors: dict[str, tuple[int, int, int]] = {}  # serial -> (r, g, b) - track desired LED state
-        self.hci = os.environ.get("BLUETOOTH_HCI", "hci0")  # Configurable adapter
+        # Auto-detect first available Bluetooth adapter
+        try:
+            adapters = bluetooth.get_hci_dict()
+            self.hci = next(iter(adapters)) if adapters else "hci0"
+            if adapters:
+                logger.info(f"Auto-detected Bluetooth adapter: {self.hci} (address: {adapters[self.hci]})")
+            else:
+                logger.warning("No Bluetooth adapters found, defaulting to hci0")
+        except Exception as e:
+            self.hci = "hci0"
+            logger.warning(f"Failed to auto-detect Bluetooth adapter, defaulting to hci0: {e}")
+
         self.running = False
         self._last_controller_count = 0  # Track count to avoid redundant rescans
 

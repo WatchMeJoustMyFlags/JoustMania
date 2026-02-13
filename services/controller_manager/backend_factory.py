@@ -6,7 +6,10 @@ Detects platform and creates appropriate backend instance.
 Backend selection priority:
   1. CONTROLLER_BACKEND env var (hard override, e.g. for testing)
   2. OpenFeature "controller_backend" flag (runtime-switchable via flagd)
-  3. Platform auto-detection (Linux → bluetooth, Windows → windows)
+  3. Platform auto-detection (Linux -> bluetooth, Windows -> windows)
+
+Flag value (mock_controller_count) is read once at startup.
+Runtime changes to this flag require a service restart to take effect.
 """
 
 import logging
@@ -16,6 +19,22 @@ import platform
 from services.controller_manager.backend import ControllerBackend
 
 logger = logging.getLogger(__name__)
+
+
+def _get_mock_controller_count() -> int:
+    """Read mock_controller_count from flagd performance domain with env var fallback."""
+    try:
+        from openfeature.evaluation_context import EvaluationContext
+
+        from lib.feature_flags import get_flag_client
+
+        client = get_flag_client("performance")
+        count = client.get_integer_value("mock_controller_count", 4, EvaluationContext())
+        logger.info(f"mock_controller_count from flagd: {count}")
+        return count
+    except Exception as e:
+        logger.warning(f"Failed to read mock_controller_count from flagd, using env/default: {e}")
+        return int(os.getenv("MOCK_CONTROLLER_COUNT", "4"))
 
 
 def _resolve_backend_name() -> str | None:
@@ -51,7 +70,7 @@ def _create_backend_by_name(name: str) -> ControllerBackend:
     if name == "mock":
         from services.controller_manager.mock_backend import MockBackend
 
-        num_controllers = int(os.getenv("MOCK_CONTROLLER_COUNT", "4"))
+        num_controllers = _get_mock_controller_count()
         return MockBackend(num_controllers)
 
     if name == "bluetooth":
@@ -79,7 +98,10 @@ def create_backend() -> ControllerBackend:
     Selection priority:
         1. CONTROLLER_BACKEND env var (hard override)
         2. OpenFeature "controller_backend" flag from performance domain
-        3. Platform auto-detection (Linux → bluetooth, Windows → windows)
+        3. Platform auto-detection (Linux -> bluetooth, Windows -> windows)
+
+    Configuration:
+        mock_controller_count: flagd flag (performance domain), fallback to MOCK_CONTROLLER_COUNT env var
 
     Returns:
         ControllerBackend instance

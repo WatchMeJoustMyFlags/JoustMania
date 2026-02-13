@@ -15,8 +15,6 @@
 # Environment Variables (can be set in shell or .env file):
 # - IMAGE_TAG: Image tag to use [default: latest]
 # - CONTROLLER_BACKEND: Controller backend type (bluetooth, mock, windows) [default: bluetooth]
-# - MOCK_CONTROLLER_COUNT: Number of mock controllers when CONTROLLER_BACKEND=mock [default: 4]
-# - BLUETOOTH_HCI: Bluetooth adapter to use (hci0, hci1, etc.) [default: hci0]
 # - LOG_LEVEL: Logging level for all services (DEBUG, INFO, WARNING, ERROR) [default: INFO]
 #
 # Notes:
@@ -210,8 +208,6 @@ services:
     environment:
       - CONTROLLER_NAMES_FILE=/app/data/controller_names.txt
       - CONTROLLER_BACKEND=${CONTROLLER_BACKEND:-bluetooth}
-      - MOCK_CONTROLLER_COUNT=${MOCK_CONTROLLER_COUNT:-4}
-      - BLUETOOTH_HCI=${BLUETOOTH_HCI:-hci0}
       - DBUS_SYSTEM_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket
       - OTEL_SERVICE_NAME=controller-manager-service
       - OTEL_SERVICE_NAMESPACE=infrastructure
