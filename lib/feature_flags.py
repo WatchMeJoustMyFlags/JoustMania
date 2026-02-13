@@ -53,7 +53,7 @@ def _init_global_context() -> None:
     logger.info("Registered ContextVarsTransactionContextPropagator")
 
     # Set API-level context with service identity (always available to all evaluations)
-    service_name = os.environ.get("SERVICE_NAME", "unknown")
+    service_name = os.environ.get("OTEL_SERVICE_NAME", "unknown")
     environment = os.environ.get("ENVIRONMENT", "production")
     hostname = platform.node()
 
