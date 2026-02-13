@@ -1,0 +1,128 @@
+{
+  "metadata": {
+    "flagSetId": "game_settings"
+  },
+  "flags": {
+    "sensitivity": {
+      "state": "ENABLED",
+      "variants": {
+        "ultra_slow": 0,
+        "slow": 1,
+        "medium": 2,
+        "fast": 3,
+        "ultra_fast": 4
+      },
+      "defaultVariant": "medium",
+      "targeting": {
+        "if": [
+          {
+            "==": [
+              {
+                "var": "game_mode"
+              },
+              "Werewolf"
+            ]
+          },
+          "fast",
+          null
+        ]
+      }
+    },
+    "num_teams": {
+      "state": "ENABLED",
+      "variants": {
+        "two": 2,
+        "three": 3,
+        "four": 4,
+        "five": 5,
+        "six": 6
+      },
+      "defaultVariant": "two"
+    },
+    "random_assignment": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "on"
+    },
+    "nonstop_time_limit": {
+      "state": "ENABLED",
+      "variants": {
+        "unlimited": 0,
+        "one_min": 60,
+        "two_min": 120,
+        "three_min": 180,
+        "four_min": 240,
+        "five_min": 300
+      },
+      "defaultVariant": "unlimited"
+    },
+    "invincibility": {
+      "state": "ENABLED",
+      "variants": {
+        "2s": 2.0,
+        "3s": 3.0,
+        "4s": 4.0,
+        "5s": 5.0,
+        "6s": 6.0,
+        "7s": 7.0,
+        "8s": 8.0
+      },
+      "defaultVariant": "2s"
+    },
+    "fight_club_min_rounds": {
+      "state": "ENABLED",
+      "variants": {
+        "five": 5,
+        "ten": 10,
+        "fifteen": 15,
+        "twenty": 20
+      },
+      "defaultVariant": "five"
+    },
+    "werewolf_reveal_time": {
+      "state": "ENABLED",
+      "variants": {
+        "20s": 20.0,
+        "25s": 25.0,
+        "30s": 30.0,
+        "35s": 35.0,
+        "40s": 40.0,
+        "45s": 45.0,
+        "50s": 50.0,
+        "55s": 55.0,
+        "60s": 60.0
+      },
+      "defaultVariant": "20s"
+    },
+    "force_all_start": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "off"
+    },
+    "countdown_phase_duration_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "skip": 0,
+        "fast": 500,
+        "normal": 750,
+        "slow": 1000
+      },
+      "defaultVariant": "skip"
+    },
+    "winner_rainbow_duration_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "short": 1000,
+        "normal": 3000,
+        "long": 5000
+      },
+      "defaultVariant": "short"
+    }
+  }
+}

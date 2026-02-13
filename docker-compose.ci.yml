@@ -28,7 +28,7 @@ services:
   flagd:
     volumes:
       - ./services/flagd/performance.ci.json:/etc/flagd/performance.json
-      - ./services/flagd/game_settings.json:/etc/flagd/game_settings.json
+      - ./services/flagd/game_settings.ci.json:/etc/flagd/game_settings.json
       - ./services/flagd/user_preferences.ci.json:/etc/flagd/user_preferences.json
 
   # Controller Manager - Mock mode via flagd (controller_backend=mock in performance.ci.json)
