@@ -246,7 +246,7 @@ class DiscoveryLoop:
                     # Behind schedule - reset to avoid spiral
                     next_poll_time = time.monotonic()
 
-            except asyncio.CancelledError:
+            except asyncio.CancelledError:  # NOSONAR — intentional: graceful shutdown of discovery loop
                 logger.info("Discovery loop cancelled")
                 break
             except Exception as e:

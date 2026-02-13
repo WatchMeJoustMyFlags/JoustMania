@@ -378,7 +378,7 @@ class BluetoothBackend(ControllerBackend):
         current_time = time.time()
         updated_count = 0
 
-        for serial, stored_color in list(self.led_colors.items()):
+        for serial, stored_color in self.led_colors.items():
             # Skip if effect is active - effect controls LEDs directly
             if serial in self._effect_active:
                 continue

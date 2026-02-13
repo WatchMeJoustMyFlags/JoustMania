@@ -43,6 +43,10 @@ logger = logging.getLogger(__name__)
 # Configuration: Set OTEL_GRPC_CLIENT_SPANS=true to enable client spans
 _CREATE_CLIENT_SPANS = os.getenv("OTEL_GRPC_CLIENT_SPANS", "false").lower() == "true"
 
+# Span attribute keys (S1192 - avoid duplicate string literals)
+RPC_SYSTEM_ATTR = "rpc.system"
+RPC_METHOD_ATTR = "rpc.method"
+
 
 def _safe_detach(token: object) -> None:
     """Detach an OpenTelemetry context token, ignoring ValueError.
@@ -132,7 +136,7 @@ class ContextPropagationInterceptor(grpc.aio.UnaryUnaryClientInterceptor):
         # Optional: Create client span for debugging
         method = _extract_method_name(client_call_details.method)
         with self._tracer.start_as_current_span(
-            method, kind=SpanKind.CLIENT, attributes={"rpc.system": "grpc", "rpc.method": method}
+            method, kind=SpanKind.CLIENT, attributes={RPC_SYSTEM_ATTR: "grpc", RPC_METHOD_ATTR: method}
         ) as span:
             try:
                 response = await continuation(new_details, request)
@@ -169,7 +173,7 @@ class ContextPropagationStreamUnaryInterceptor(grpc.aio.StreamUnaryClientInterce
 
         method = _extract_method_name(client_call_details.method)
         with self._tracer.start_as_current_span(
-            method, kind=SpanKind.CLIENT, attributes={"rpc.system": "grpc", "rpc.method": method}
+            method, kind=SpanKind.CLIENT, attributes={RPC_SYSTEM_ATTR: "grpc", RPC_METHOD_ATTR: method}
         ) as span:
             try:
                 response = await continuation(new_details, request_iterator)
@@ -206,7 +210,7 @@ class ContextPropagationUnaryStreamInterceptor(grpc.aio.UnaryStreamClientInterce
 
         method = _extract_method_name(client_call_details.method)
         with self._tracer.start_as_current_span(
-            method, kind=SpanKind.CLIENT, attributes={"rpc.system": "grpc", "rpc.method": method}
+            method, kind=SpanKind.CLIENT, attributes={RPC_SYSTEM_ATTR: "grpc", RPC_METHOD_ATTR: method}
         ) as span:
             try:
                 call = await continuation(new_details, request)
@@ -243,7 +247,7 @@ class ContextPropagationStreamStreamInterceptor(grpc.aio.StreamStreamClientInter
 
         method = _extract_method_name(client_call_details.method)
         with self._tracer.start_as_current_span(
-            method, kind=SpanKind.CLIENT, attributes={"rpc.system": "grpc", "rpc.method": method}
+            method, kind=SpanKind.CLIENT, attributes={RPC_SYSTEM_ATTR: "grpc", RPC_METHOD_ATTR: method}
         ) as span:
             try:
                 call = await continuation(new_details, request_iterator)

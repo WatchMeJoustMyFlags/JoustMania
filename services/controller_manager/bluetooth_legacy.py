@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 BUS = dbus.SystemBus()
 ORG_BLUEZ = "org.bluez"
 ORG_BLUEZ_PATH = "/org/bluez"
+DBUS_PROPERTIES_INTERFACE = "org.freedesktop.DBus.Properties"
+BLUEZ_ADAPTER1_INTERFACE = "org.bluez.Adapter1"
 
 
 # --- Internal sync helpers (original dbus-python implementation) ---
@@ -53,19 +55,19 @@ def _get_node_interfaces(proxy):
 
 
 def _get_adapter_attrib(proxy, attrib):
-    iface = dbus.Interface(proxy, "org.freedesktop.DBus.Properties")
-    return iface.Get("org.bluez.Adapter1", attrib)
+    iface = dbus.Interface(proxy, DBUS_PROPERTIES_INTERFACE)
+    return iface.Get(BLUEZ_ADAPTER1_INTERFACE, attrib)
 
 
 def _enable_adapter_sync(hci):
     """Set the HCI's Powered attribute to true (sync)."""
     proxy = _get_adapter_proxy(hci)
-    iface = dbus.Interface(proxy, "org.freedesktop.DBus.Properties")
-    if iface.Get("org.bluez.Adapter1", "Powered").real:
+    iface = dbus.Interface(proxy, DBUS_PROPERTIES_INTERFACE)
+    if iface.Get(BLUEZ_ADAPTER1_INTERFACE, "Powered").real:
         return False
     try:
         logger.debug("Enabling adapter")
-        iface.Set("org.bluez.Adapter1", "Powered", True)
+        iface.Set(BLUEZ_ADAPTER1_INTERFACE, "Powered", True)
         return True
     except dbus.exceptions.DBusException as e:
         if "rfkill" in str(e):
@@ -90,7 +92,7 @@ def _get_attached_addresses_sync(hci):
 
 def _get_adapter_attrib_device(proxy, attrib):
     """Get attribute from Bluez Device1 interface."""
-    iface = dbus.Interface(proxy, "org.freedesktop.DBus.Properties")
+    iface = dbus.Interface(proxy, DBUS_PROPERTIES_INTERFACE)
     return iface.Get("org.bluez.Device1", attrib)
 
 
@@ -103,7 +105,7 @@ def _get_hci_dict_sync():
     for hci in hcis:
         proxy2 = _get_adapter_proxy(hci)
         interfaces = _get_node_interfaces(proxy2)
-        if "org.freedesktop.DBus.Properties" not in interfaces or "org.bluez.Adapter1" not in interfaces:
+        if DBUS_PROPERTIES_INTERFACE not in interfaces or BLUEZ_ADAPTER1_INTERFACE not in interfaces:
             continue
         addr = _get_adapter_attrib(proxy2, "Address")
         hci_dict[hci] = str(addr)

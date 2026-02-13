@@ -20,7 +20,7 @@ from opentelemetry.trace import Status, StatusCode
 from lib.colors import Colors
 from lib.types import Sound
 from proto import controller_manager_pb2
-from services.game_coordinator.games.base import BaseGameMode, Phase, Player
+from services.game_coordinator.games.base import GAME_MODE_ATTR, BaseGameMode, Phase, Player
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -160,7 +160,7 @@ class FightClubGame(BaseGameMode):
                     "player_lifecycle",
                     attributes={
                         "player.serial": serial,
-                        "game.mode": self.get_game_name(),
+                        GAME_MODE_ATTR: self.get_game_name(),
                     },
                 )
             return
@@ -172,7 +172,7 @@ class FightClubGame(BaseGameMode):
                     "player_lifecycle",
                     attributes={
                         "player.serial": serial,
-                        "game.mode": self.get_game_name(),
+                        GAME_MODE_ATTR: self.get_game_name(),
                     },
                 )
                 logger.debug(f"Created span for player {serial}")
@@ -560,7 +560,7 @@ class FightClubGame(BaseGameMode):
         with tracer.start_as_current_span("fight_club_game") as game_span:
             self.game_span = game_span
             game_span.set_attribute("game.id", self.game_id)
-            game_span.set_attribute("game.mode", self.get_game_name())
+            game_span.set_attribute(GAME_MODE_ATTR, self.get_game_name())
 
             try:
                 self.running = True

@@ -354,7 +354,7 @@ class TeamsGameBase(BaseGameMode):
                     },
                 )
 
-            elif len(alive_teams) == 0:
+            elif len(alive_teams) == 0:  # NOSONAR — intentional: outer if guarantees <=1, this distinguishes 0 from 1
                 logger.info("No winner - all players died simultaneously")
                 await self.event_publisher(GameEvent.GAME_TIE, {})
 

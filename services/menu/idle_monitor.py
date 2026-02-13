@@ -200,7 +200,7 @@ class IdleMonitor:
                 if elapsed >= timeout_seconds:
                     await self._enter_idle_mode()
 
-        except asyncio.CancelledError:
+        except asyncio.CancelledError:  # NOSONAR — intentional: background loop exits on cancellation
             logger.debug("Idle monitor loop cancelled")
 
     async def _enter_idle_mode(self) -> None:
@@ -344,7 +344,7 @@ class IdleMonitor:
 
                 await asyncio.sleep(interval)
 
-        except asyncio.CancelledError:
+        except asyncio.CancelledError:  # NOSONAR — intentional: cleanup LEDs before exiting
             # Turn off sentinel LEDs on cancel
             for serial in self._sentinel_serials:
                 await self._state_manager.led.set_color(serial, (0, 0, 0))

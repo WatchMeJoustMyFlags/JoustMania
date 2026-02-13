@@ -201,7 +201,7 @@ class GameFactory:
             case Games.Traitor if which_config == "traitor_config":
                 cfg = config.traitor_config
                 return {
-                    "num_teams": cfg.num_teams,  # 0 = auto-calculate
+                    "num_teams": cfg.num_teams,  # zero means auto-calculate
                 }
 
             case _:

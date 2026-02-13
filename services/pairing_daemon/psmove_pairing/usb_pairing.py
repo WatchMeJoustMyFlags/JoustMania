@@ -135,7 +135,7 @@ class USBPairing:
                 )
 
                 try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+                    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
                     output = stdout.decode().strip()
                     result = output == "OK"
                 except TimeoutError:

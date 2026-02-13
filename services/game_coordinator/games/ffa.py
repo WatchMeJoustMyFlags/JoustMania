@@ -103,7 +103,7 @@ class FFAGame(BaseGameMode):
 
                 await self.event_publisher(GameEvent.GAME_WINNER, {"serial": winner.serial})
 
-            elif len(alive_players) == 0:
+            elif len(alive_players) == 0:  # NOSONAR — intentional: outer if guarantees <=1, this distinguishes 0 from 1
                 logger.info("No winner - all players died simultaneously")
 
                 await self.event_publisher(GameEvent.GAME_TIE, {})

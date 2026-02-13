@@ -260,7 +260,7 @@ class Gauge(LabeledMetric):
     def _observe(self, _options: metrics.CallbackOptions):
         """Callback for observable gauge - reports all current values."""
         with self._lock:
-            for key, value in list(self._values.items()):
+            for key, value in self._values.items():
                 labels = dict(key) if key else {}
                 yield metrics.Observation(value, labels)
 

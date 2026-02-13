@@ -215,7 +215,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         clears associated metrics. Used when game starts or menu stops.
         """
         # Transition ready controllers back to connected
-        for serial in list(self.state_manager.ready_controllers):
+        for serial in self.state_manager.ready_controllers:
             self.state_manager.controller_states[serial] = ControllerState.CONNECTED
 
         # Clear metrics
