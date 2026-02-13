@@ -92,6 +92,15 @@
         "slow": 15
       },
       "defaultVariant": "normal"
+    },
+    "controller_backend": {
+      "state": "ENABLED",
+      "variants": {
+        "bluetooth": "bluetooth",
+        "hidapi": "hidapi",
+        "mock": "mock"
+      },
+      "defaultVariant": "bluetooth"
     }
   }
 }
