@@ -157,23 +157,28 @@ class AudioManager:
 
     MAX_CHANNELS = 8  # Maximum concurrent sound effects
 
-    def __init__(self):
-        """Initialize audio systems."""
-        self.mock_mode = os.getenv("MOCK_MODE", "false").lower() == "true"
+    def __init__(self, *, silent: bool = False):
+        """Initialize audio systems.
+
+        Args:
+            silent: If True, skip hardware initialization (no channels, dummy music player).
+                    Controlled by the play_audio flagd flag at the servicer level.
+        """
+        self.silent = silent
 
         # Assets directory - clients send relative paths, we resolve to full path
         self.assets_dir = os.getenv("AUDIO_ASSETS_DIR", "services/audio/assets")
 
         # Initialize sound channels for concurrent playback
         self.channels: list[SoundChannel] = []
-        if not self.mock_mode:
+        if not self.silent:
             self.channels = [SoundChannel(i) for i in range(self.MAX_CHANNELS)]
             logger.info(f"Miniaudio initialized with {self.MAX_CHANNELS} channels")
         else:
-            logger.info("AudioManager running in MOCK_MODE - no actual audio playback")
+            logger.info("AudioManager running in silent mode - no actual audio playback")
 
         # Initialize music player with tempo control
-        if self.mock_mode:
+        if self.silent:
             self.music_player = DummyMusicPlayer("background")
         else:
             self.music_player = MusicPlayer("background")
@@ -183,7 +188,7 @@ class AudioManager:
         self.music_lock = threading.Lock()
         self.event_loop: asyncio.AbstractEventLoop | None = None  # Set from async context
 
-        logger.info(f"AudioManager initialized (assets_dir={self.assets_dir})")
+        logger.info(f"AudioManager initialized (assets_dir={self.assets_dir}, silent={self.silent})")
 
         # Track currently playing sounds for status
         self.active_sounds: dict[str, dict] = {}
@@ -239,8 +244,8 @@ class AudioManager:
         # Resolve relative path to full path
         full_path = self._resolve_path(file_path)
 
-        if self.mock_mode:
-            logger.debug(f"MOCK: Would play sound: {file_path}")
+        if self.silent:
+            logger.debug(f"Silent mode: skipping sound: {file_path}")
             return True
 
         try:
@@ -406,13 +411,33 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
 
     def __init__(self):
         """Initialize audio servicer."""
-        self.audio_manager = AudioManager()
-        self.audio_enabled = True  # Controlled by play_audio setting (default: enabled)
+        # Load play_audio flag eagerly to decide whether to initialize audio hardware.
+        # If flagd is unavailable, default to audio enabled (hardware initialized).
+        self.audio_enabled = self._load_play_audio_flag()
+        self.audio_manager = AudioManager(silent=not self.audio_enabled)
         self.menu_voice = "ivy"  # Controlled by menu_voice setting
-        self._settings_loaded = False  # Lazy load settings on first audio request
+        self._settings_loaded = False  # Lazy load full settings on first audio request
         self.sound_registry: dict[str, tuple[str, str]] = {}  # sound_name -> (type, base_dir)
         self._build_sound_registry()
-        logger.info("AudioServiceServicer initialized")
+        logger.info("AudioServiceServicer initialized (audio_enabled=%s)", self.audio_enabled)
+
+    @staticmethod
+    def _load_play_audio_flag() -> bool:
+        """Load play_audio flag from flagd at startup.
+
+        Returns True (audio enabled) if flagd is unavailable or flag is not set.
+        """
+        try:
+            from lib.feature_flags import get_flag_client, init_flag_domain
+
+            init_flag_domain("user_preferences")
+            client = get_flag_client("user_preferences")
+            value = client.get_boolean_value("play_audio", True)
+            logger.info("play_audio flag loaded at startup: %s", value)
+            return value
+        except Exception as e:
+            logger.debug("Could not load play_audio flag from flagd: %s, defaulting to enabled", e)
+            return True
 
     def _build_sound_registry(self):
         """
