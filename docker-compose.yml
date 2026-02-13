@@ -593,6 +593,8 @@ services:
     environment:
       - GRAFANA_URL=http://grafana:3000/grafana
       - GRAFANA_PUSH_PATH=joustmania-accel
+      - GRAFANA_USER=admin
+      - GRAFANA_PASSWORD=admin
     depends_on:
       grafana:
         condition: service_healthy
