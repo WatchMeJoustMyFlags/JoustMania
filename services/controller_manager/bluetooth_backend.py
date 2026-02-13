@@ -455,6 +455,96 @@ class BluetoothBackend(ControllerBackend):
             logger.error(f"Error setting rumble {serial}: {e}", exc_info=True)
             return False
 
+    def _probe_controller(self, move_num: int, count: int) -> str | None:
+        """Probe a single controller index and register it if new.
+
+        Args:
+            move_num: The psmove index to probe.
+            count: Total number of connected controllers (for log messages).
+
+        Returns:
+            The controller serial if successfully probed, or None on failure.
+        """
+        try:
+            with suppress_stderr():
+                move = psmove.PSMove(move_num)
+            if move is None:
+                logger.warning(f"Controller {move_num}/{count}: PSMove() returned None")
+                return None
+
+            serial = move.get_serial()
+            if not serial:
+                logger.warning(f"Controller {move_num}/{count}: no serial returned")
+                return None
+
+            if serial not in self.controllers:
+                # New controller detected - store the handle
+                self.controllers[serial] = move
+                self.controller_states[serial] = ControllerState()
+                logger.info(f"New controller connected: {serial} (index {move_num})")
+            # If serial already tracked, let the PSMove object be garbage collected
+            # to avoid invalidating the existing handle
+            return serial
+        except Exception as e:
+            logger.warning(f"Controller {move_num}/{count}: {e}")
+            return None
+
+    def _scan_controllers_with_retries(self, count: int, max_retries: int = 3, retry_delay: float = 0.5) -> list[str]:
+        """Scan all controller indices with retry logic for unreliable hardware.
+
+        New controllers may not be immediately ready after connecting. This method
+        retries the full scan up to max_retries times with a delay between attempts.
+
+        Args:
+            count: Number of controllers reported by psmove.count_connected().
+            max_retries: Maximum number of scan attempts.
+            retry_delay: Seconds to wait between retries.
+
+        Returns:
+            List of serial numbers successfully probed.
+        """
+        for attempt in range(max_retries):
+            seen_serials = []
+            has_failures = False
+
+            for move_num in range(count):
+                serial = self._probe_controller(move_num, count)
+                if serial:
+                    seen_serials.append(serial)
+                else:
+                    has_failures = True
+
+            # If we found all controllers or no failures, we're done
+            if len(seen_serials) >= count or not has_failures:
+                break
+
+            # Retry after delay if we're missing controllers
+            if attempt < max_retries - 1:
+                logger.info(f"Retry {attempt + 1}/{max_retries} in {retry_delay}s...")
+                time.sleep(retry_delay)
+
+        return seen_serials
+
+    def _remove_stale_controllers(self, seen_serials: list[str]) -> None:
+        """Remove controllers that are no longer detected in a scan.
+
+        Cleans up all tracking data (controller handle, state, LED colors, effects)
+        for controllers that were previously tracked but not found in the latest scan.
+
+        Args:
+            seen_serials: List of serial numbers found in the most recent scan.
+        """
+        stale_serials = set(self.controllers.keys()) - set(seen_serials)
+        for stale_serial in stale_serials:
+            logger.info(f"Controller {stale_serial} no longer in scan - removing stale handle")
+            del self.controllers[stale_serial]
+            if stale_serial in self.controller_states:
+                del self.controller_states[stale_serial]
+            self.led_colors.pop(stale_serial, None)
+            self._last_sent_color.pop(stale_serial, None)
+            self._last_led_update.pop(stale_serial, None)
+            self._effect_active.discard(stale_serial)
+
     def get_connected_controllers(self, force_rescan: bool = False) -> list[str]:
         """
         Get list of connected Bluetooth controller serials.
@@ -467,13 +557,9 @@ class BluetoothBackend(ControllerBackend):
         creating duplicate PSMove handles that could invalidate existing ones.
         """
         try:
-            # Check current count
             count = psmove.count_connected()
 
-            # Rescan if count changed OR force_rescan requested (Phase 79)
-            # Force rescan is used by periodic discovery to catch externally paired controllers
             if count != self._last_controller_count or force_rescan:
-                # Only log count change when count actually changed (not on force_rescan with same count)
                 if count != self._last_controller_count:
                     logger.info(
                         f"Controller count changed: {self._last_controller_count} -> {count}, "
@@ -481,72 +567,8 @@ class BluetoothBackend(ControllerBackend):
                     )
                 self._last_controller_count = count
 
-                # Scan for new controllers - enumerate all and check which are new
-                # Retry logic: new controllers may not be immediately ready
-                max_retries = 3
-                retry_delay = 0.5  # seconds
-
-                for attempt in range(max_retries):
-                    seen_serials = []
-                    failed_indices = []
-
-                    for move_num in range(count):
-                        # Skip indices we've already successfully processed
-                        if move_num < len(self.controllers) and attempt > 0:
-                            # On retries, only process indices that failed before
-                            pass
-
-                        try:
-                            with suppress_stderr():
-                                move = psmove.PSMove(move_num)
-                            if move is None:
-                                logger.warning(f"Controller {move_num}/{count}: PSMove() returned None")
-                                failed_indices.append(move_num)
-                                continue
-
-                            serial = move.get_serial()
-                            if not serial:
-                                logger.warning(f"Controller {move_num}/{count}: no serial returned")
-                                failed_indices.append(move_num)
-                                continue
-
-                            seen_serials.append(serial)
-
-                            if serial not in self.controllers:
-                                # New controller detected - store the handle
-                                self.controllers[serial] = move
-                                self.controller_states[serial] = ControllerState()
-                                logger.info(f"New controller connected: {serial} (index {move_num})")
-                            # If serial already tracked, let the PSMove object be garbage collected
-                            # to avoid invalidating the existing handle
-                        except Exception as e:
-                            logger.warning(f"Controller {move_num}/{count}: {e}")
-                            failed_indices.append(move_num)
-                            continue
-
-                    # If we found all controllers or no failures, we're done
-                    if len(seen_serials) >= count or not failed_indices:
-                        break
-
-                    # Retry after delay if we're missing controllers
-                    if attempt < max_retries - 1:
-                        logger.info(f"Retry {attempt + 1}/{max_retries} in {retry_delay}s...")
-                        time.sleep(retry_delay)
-
-                # Clean up controllers that are no longer connected
-                # This handles the case where a controller disconnects and we need to
-                # remove the stale handle so reconnection is properly detected
-                stale_serials = set(self.controllers.keys()) - set(seen_serials)
-                for stale_serial in stale_serials:
-                    logger.info(f"Controller {stale_serial} no longer in scan - removing stale handle")
-                    del self.controllers[stale_serial]
-                    if stale_serial in self.controller_states:
-                        del self.controller_states[stale_serial]
-                    # Clean up LED tracking
-                    self.led_colors.pop(stale_serial, None)
-                    self._last_sent_color.pop(stale_serial, None)
-                    self._last_led_update.pop(stale_serial, None)
-                    self._effect_active.discard(stale_serial)
+                seen_serials = self._scan_controllers_with_retries(count)
+                self._remove_stale_controllers(seen_serials)
 
                 logger.debug(
                     f"Scan complete: found {len(seen_serials)} serials: {seen_serials}, "
