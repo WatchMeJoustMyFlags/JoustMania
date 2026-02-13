@@ -30,16 +30,22 @@ class TestResolveCardNumber:
 
 
 class TestAutoDetectCard:
-    @patch("alsaaudio.cards", return_value=["Headphones", "USB"])
-    def test_returns_first_card_index(self, mock_cards):
+    @patch("alsaaudio.card_name", return_value=("Headphones", "Headphones Audio"))
+    @patch("alsaaudio.card_indexes", return_value=[0, 1])
+    def test_returns_first_card_index(self, mock_indexes, mock_name):
         assert _auto_detect_card() == 0
 
-    @patch("alsaaudio.cards", return_value=[])
-    def test_empty_cards_returns_zero(self, mock_cards):
+    @patch("alsaaudio.card_name", return_value=("USB Audio", "USB Audio Device"))
+    @patch("alsaaudio.card_indexes", return_value=[2, 5])
+    def test_returns_nonzero_first_index(self, mock_indexes, mock_name):
+        assert _auto_detect_card() == 2
+
+    @patch("alsaaudio.card_indexes", return_value=[])
+    def test_empty_cards_returns_zero(self, mock_indexes):
         assert _auto_detect_card() == 0
 
-    @patch("alsaaudio.cards", side_effect=Exception("no ALSA"))
-    def test_exception_returns_zero(self, mock_cards):
+    @patch("alsaaudio.card_indexes", side_effect=Exception("no ALSA"))
+    def test_exception_returns_zero(self, mock_indexes):
         assert _auto_detect_card() == 0
 
 
