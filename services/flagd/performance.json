@@ -74,6 +74,14 @@
         "10min": 10
       },
       "defaultVariant": "5min"
+    },
+    "dbus_backend": {
+      "state": "ENABLED",
+      "variants": {
+        "legacy": "dbus_python",
+        "modern": "dbus_fast"
+      },
+      "defaultVariant": "legacy"
     }
   }
 }

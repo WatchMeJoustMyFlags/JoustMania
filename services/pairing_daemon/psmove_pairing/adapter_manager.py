@@ -1,191 +1,105 @@
-"""Bluetooth adapter management for load-balanced pairing.
+"""Bluetooth adapter management — dispatches to legacy or modern backend.
 
-Uses dbus-fast via the shared lib.bluez_dbus module.
+Reads the ``dbus_backend`` feature flag from the ``performance`` domain
+to select between dbus-python (legacy) and dbus-fast (modern).
+
+The backend is resolved lazily on first use, allowing the flagd
+provider to initialize before evaluation.
 """
 
 import logging
+import os
 from dataclasses import dataclass
 
-from dbus_fast import Variant
-
-from lib.bluez_dbus import (
-    ORG_BLUEZ_PATH,
-    DBusError,
-    get_managed_objects,
-    get_system_bus,
-)
-
 logger = logging.getLogger("psmove-pairing")
+
+_backend_name: str | None = None
+
+
+def _resolve_backend() -> str:
+    """Determine which D-Bus backend to use (cached after first call)."""
+    global _backend_name
+    if _backend_name is not None:
+        return _backend_name
+
+    try:
+        from lib.feature_flags import get_flag_client, init_flag_domain
+
+        init_flag_domain("performance")
+        client = get_flag_client("performance")
+        _backend_name = client.get_string_value("dbus_backend", "dbus_python")
+    except Exception:
+        _backend_name = os.environ.get("DBUS_BACKEND", "dbus_python")
+
+    logger.info(f"D-Bus adapter manager backend: {_backend_name}")
+    return _backend_name
 
 
 @dataclass
 class AdapterInfo:
     """Information about a Bluetooth adapter."""
 
-    hci: str  # e.g., "hci0"
-    address: str  # e.g., "AA:BB:CC:DD:EE:FF"
+    hci: str
+    address: str
     name: str
     device_count: int
 
 
-async def get_hci_dict() -> dict[str, str]:
-    """Get dictionary mapping hci name to Bluetooth address.
-
-    Returns:
-        Dict like {"hci0": "AA:BB:CC:DD:EE:FF", "hci1": "BB:CC:DD:EE:FF:00"}
-    """
-    bus = await get_system_bus()
-    objects = await get_managed_objects(bus)
-
-    hci_dict: dict[str, str] = {}
-    for path, interfaces in objects.items():
-        adapter_props = interfaces.get("org.bluez.Adapter1")
-        if adapter_props is None:
-            continue
-        # Adapter paths look like /org/bluez/hci0
-        if not path.startswith(ORG_BLUEZ_PATH + "/"):
-            continue
-        hci = path.rsplit("/", 1)[-1]
-        addr = adapter_props.get("Address")
-        if addr is not None:
-            val = addr.value if isinstance(addr, Variant) else addr
-            hci_dict[hci] = str(val)
-
-    return hci_dict
-
-
-async def get_attached_addresses(hci: str) -> list[str]:
-    """Get the addresses of devices known by an HCI adapter.
-
-    Args:
-        hci: Adapter name like "hci0"
-
-    Returns:
-        List of device MAC addresses paired to this adapter
-    """
-    bus = await get_system_bus()
-    adapter_path = f"{ORG_BLUEZ_PATH}/{hci}"
-    objects = await get_managed_objects(bus)
-
-    addresses: list[str] = []
-    for path, interfaces in objects.items():
-        if not path.startswith(adapter_path + "/"):
-            continue
-        device_props = interfaces.get("org.bluez.Device1")
-        if device_props is None:
-            continue
-        addr = device_props.get("Address")
-        if addr is not None:
-            val = addr.value if isinstance(addr, Variant) else addr
-            addresses.append(str(val))
-
-    return addresses
-
-
 class AdapterManager:
-    """Manages Bluetooth adapters and provides load-balanced selection.
+    """Manages Bluetooth adapters — delegates to the active backend.
 
-    Uses dbus-fast to query BlueZ directly.
+    Creates the real backend-specific AdapterManager on first use,
+    after the feature flag has been resolved.
     """
 
     def __init__(self):
-        self._hci_dict: dict[str, str] = {}  # hci -> address
-        self._bt_devices: dict[str, list[str]] = {}  # address -> [device_addrs]
+        self._delegate = None
+
+    def _get_delegate(self):
+        if self._delegate is not None:
+            return self._delegate
+
+        if _resolve_backend() == "dbus_fast":
+            from psmove_pairing.adapter_manager_modern import AdapterManager as ModernManager
+
+            logger.info("Using dbus-fast (modern) adapter manager")
+            self._delegate = ModernManager()
+        else:
+            from psmove_pairing.adapter_manager_legacy import AdapterManager as LegacyManager
+
+            logger.info("Using dbus-python (legacy) adapter manager")
+            self._delegate = LegacyManager()
+
+        return self._delegate
 
     async def refresh_adapters(self) -> dict[str, list[str]]:
-        """Refresh the list of adapters and their paired devices.
-
-        Returns:
-            Dict mapping adapter address to list of paired device addresses
-        """
-        try:
-            self._hci_dict = await get_hci_dict()
-        except DBusError as e:
-            logger.debug(f"Error getting adapters: {e}")
-            self._hci_dict = {}
-
-        self._bt_devices = {}
-
-        for hci, addr in self._hci_dict.items():
-            try:
-                devices = await get_attached_addresses(hci)
-            except DBusError as e:
-                logger.debug(f"Error getting devices for {hci}: {e}")
-                devices = []
-            self._bt_devices[addr] = devices
-            logger.debug(f"Adapter {addr} ({hci}): {len(devices)} devices")
-
-        return self._bt_devices
+        """Refresh the list of adapters and their paired devices."""
+        return await self._get_delegate().refresh_adapters()
 
     def get_lowest_bt_device(self) -> str:
-        """Get the address of the adapter with the fewest paired devices.
-
-        This matches the original JoustMania's get_lowest_bt_device() method.
-        Call refresh_adapters() first to ensure data is current.
-
-        Returns:
-            Bluetooth address of the least-loaded adapter, or empty string if none
-        """
-        if not self._bt_devices:
-            logger.warning("No Bluetooth adapters found")
-            return ""
-
-        # Find minimum device count
-        min_count = min(len(devices) for devices in self._bt_devices.values())
-
-        # Return first adapter with that count (deterministic ordering)
-        for addr in sorted(self._bt_devices.keys()):
-            if len(self._bt_devices[addr]) == min_count:
-                logger.info(f"Selected adapter {addr} with {min_count} devices (of {len(self._bt_devices)} adapters)")
-                return addr
-
-        return ""
+        """Get the address of the adapter with the fewest paired devices."""
+        return self._get_delegate().get_lowest_bt_device()
 
     def select_least_loaded_adapter(self) -> AdapterInfo | None:
-        """Select the adapter with the fewest paired devices.
-
-        Call refresh_adapters() first to ensure data is current.
-
-        Returns:
-            AdapterInfo for the least-loaded adapter, or None if no adapters
-        """
-        if not self._bt_devices:
-            logger.warning("No Bluetooth adapters found")
+        """Select the adapter with the fewest paired devices."""
+        result = self._get_delegate().select_least_loaded_adapter()
+        if result is None:
             return None
-
-        # Find minimum device count
-        min_count = min(len(devices) for devices in self._bt_devices.values())
-
-        # Find adapter with that count
-        for addr in sorted(self._bt_devices.keys()):
-            if len(self._bt_devices[addr]) == min_count:
-                # Find the hci name for this address
-                hci = next(
-                    (h for h, a in self._hci_dict.items() if a == addr),
-                    "unknown",
-                )
-                adapter = AdapterInfo(
-                    hci=hci,
-                    address=addr,
-                    name=f"adapter-{hci}",
-                    device_count=min_count,
-                )
-                logger.info(f"Selected adapter {addr} ({hci}) with {min_count} devices")
-                # Log all adapter loads for visibility
-                for a, devs in sorted(self._bt_devices.items()):
-                    logger.debug(f"  {a}: {len(devs)} devices")
-                return adapter
-
-        return None
+        # Re-wrap in our AdapterInfo to keep a consistent type
+        return AdapterInfo(hci=result.hci, address=result.address, name=result.name, device_count=result.device_count)
 
     def check_if_not_paired(self, controller_addr: str) -> bool:
-        """Check if a controller is not yet paired to any adapter.
+        """Check if a controller is not yet paired to any adapter."""
+        return self._get_delegate().check_if_not_paired(controller_addr)
 
-        Args:
-            controller_addr: Controller MAC address
 
-        Returns:
-            True if the controller is NOT paired to any adapter
-        """
-        controller_upper = controller_addr.upper()
-        return all(controller_upper not in [d.upper() for d in devices] for devices in self._bt_devices.values())
+async def restart_systemd_unit(unit: str, mode: str = "replace") -> None:
+    """Restart a systemd unit — dispatches to active backend."""
+    if _resolve_backend() == "dbus_fast":
+        from lib.bluez_dbus import restart_systemd_unit as _impl
+
+        await _impl(unit, mode)
+    else:
+        from psmove_pairing.adapter_manager_legacy import restart_systemd_unit as _impl
+
+        await _impl(unit, mode)

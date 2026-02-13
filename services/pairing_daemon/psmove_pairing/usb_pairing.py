@@ -22,9 +22,7 @@ except ImportError as e:
         "and psmoveapi is built with Python bindings."
     ) from e
 
-from lib.bluez_dbus import restart_systemd_unit
-
-from .adapter_manager import AdapterManager
+from .adapter_manager import AdapterManager, restart_systemd_unit
 from .metrics import (
     calibration_duration_seconds,
     pairing_adapter_device_count,
