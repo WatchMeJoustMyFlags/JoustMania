@@ -155,9 +155,12 @@ services:
           cpus: '0.5'
     logging: *default-logging
   # Pyroscope for continuous profiling (CPU flame graphs)
+  # Only starts with: docker compose --profile profiling up
   pyroscope:
     image: grafana/pyroscope:latest
     container_name: joustmania-pyroscope
+    profiles:
+      - profiling
     expose:
       - "4040"
     networks:
@@ -211,6 +214,7 @@ services:
       - OTEL_SERVICE_NAME=controller-manager-service
       - OTEL_SERVICE_NAMESPACE=infrastructure
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - PROFILING_ENABLED=false
       - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
       # Issue #62: 100Hz acceleration metrics for real-time visualization
       # Default 100ms; set to 10ms for 100Hz demo
@@ -282,6 +286,7 @@ services:
       - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME_GAME_COORDINATOR:-game-coordinator-service}
       - OTEL_SERVICE_NAMESPACE=joustmania
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+      - PROFILING_ENABLED=false
       - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
     depends_on:
       redis:
@@ -316,6 +321,7 @@ services:
       - OTEL_SERVICE_NAME=menu-service
       - OTEL_SERVICE_NAMESPACE=joustmania
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - PROFILING_ENABLED=false
       - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
       # Phase 60: Audio service connection
       - AUDIO_HOST=audio
@@ -366,6 +372,7 @@ services:
       - OTEL_SERVICE_NAME=audio-service
       - OTEL_SERVICE_NAMESPACE=joustmania
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - PROFILING_ENABLED=false
       - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
       - FLAGD_HOST=flagd
       - FLAGD_PORT=8015

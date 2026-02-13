@@ -58,6 +58,11 @@ def init_profiling(application_name: str | None = None) -> None:
         if _initialized:
             return
 
+        if os.getenv("PROFILING_ENABLED", "false").lower() not in ("true", "1", "yes"):
+            logger.info("Profiling disabled (set PROFILING_ENABLED=true to enable)")
+            _initialized = True
+            return
+
         try:
             import pyroscope
         except ImportError:
