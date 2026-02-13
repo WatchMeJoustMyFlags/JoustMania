@@ -20,6 +20,7 @@ _bus_lock = asyncio.Lock()
 
 ORG_BLUEZ = "org.bluez"
 ORG_BLUEZ_PATH = "/org/bluez"
+DBUS_PROPERTIES_INTERFACE = "org.freedesktop.DBus.Properties"
 
 
 class DBusError(Exception):
@@ -87,7 +88,7 @@ async def get_adapter_property(bus: MessageBus, adapter_path: str, prop: str):
             Message(
                 destination=ORG_BLUEZ,
                 path=adapter_path,
-                interface="org.freedesktop.DBus.Properties",
+                interface=DBUS_PROPERTIES_INTERFACE,
                 member="Get",
                 signature="ss",
                 body=["org.bluez.Adapter1", prop],
@@ -109,7 +110,7 @@ async def set_adapter_property(bus: MessageBus, adapter_path: str, prop: str, va
             Message(
                 destination=ORG_BLUEZ,
                 path=adapter_path,
-                interface="org.freedesktop.DBus.Properties",
+                interface=DBUS_PROPERTIES_INTERFACE,
                 member="Set",
                 signature="ssv",
                 body=["org.bluez.Adapter1", prop, value],
@@ -125,7 +126,7 @@ async def get_device_property(bus: MessageBus, device_path: str, prop: str):
             Message(
                 destination=ORG_BLUEZ,
                 path=device_path,
-                interface="org.freedesktop.DBus.Properties",
+                interface=DBUS_PROPERTIES_INTERFACE,
                 member="Get",
                 signature="ss",
                 body=["org.bluez.Device1", prop],

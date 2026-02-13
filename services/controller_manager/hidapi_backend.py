@@ -118,7 +118,7 @@ class HidapiBackend(ControllerBackend):
         """
         while self.running:
             try:
-                for serial in list(self.controllers.keys()):
+                for serial in self.controllers:
                     rssi = self.get_rssi(serial)
                     if rssi is not None:
                         self._rssi_cache[serial] = rssi
@@ -373,7 +373,7 @@ class HidapiBackend(ControllerBackend):
         current_time = time.time()
         updated_count = 0
 
-        for serial, stored_color in list(self.led_colors.items()):
+        for serial, stored_color in self.led_colors.items():
             if serial in self._effect_active:
                 continue
 
@@ -478,7 +478,7 @@ class HidapiBackend(ControllerBackend):
             with contextlib.suppress(asyncio.CancelledError):
                 await self._rssi_task
 
-        for _serial, device in list(self.controllers.items()):
+        for _serial, device in self.controllers.items():
             with contextlib.suppress(Exception):
                 report = build_output_report(r=0, g=0, b=0, rumble=0)
                 device.write(report)

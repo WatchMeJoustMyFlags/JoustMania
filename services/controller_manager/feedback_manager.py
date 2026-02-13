@@ -29,6 +29,9 @@ logger = logging.getLogger(__name__)
 # Lazy telemetry initialization - defers OTLP setup until first span
 tracer = get_tracer(__name__)
 
+# Span attribute keys (S1192 - avoid duplicate string literals)
+CONTROLLER_SERIAL_ATTR = "controller.serial"
+
 # Module-level cache for winner rainbow duration from flagd
 _winner_rainbow_duration_ms: int | None = None
 
@@ -326,7 +329,7 @@ class FeedbackManager(ControllerEffectsBase):
         Always pass truthy value to ensure restoration to base_colors at effect end.
         """
         with tracer.start_as_current_span("effect_player_warning", context=trace_context) as span:
-            span.set_attribute("controller.serial", serial)
+            span.set_attribute(CONTROLLER_SERIAL_ATTR, serial)
 
             span.add_event("flash_start", {"color": "white", "duration_ms": 200})
             await self.play_effect_with_restore(serial, "flash", Colors.White.value, 200, 5, restore_color or True)
@@ -341,7 +344,7 @@ class FeedbackManager(ControllerEffectsBase):
         This feels more immediate and satisfying than slow blinking.
         """
         with tracer.start_as_current_span("effect_player_death", context=trace_context) as span:
-            span.set_attribute("controller.serial", serial)
+            span.set_attribute(CONTROLLER_SERIAL_ATTR, serial)
 
             # Cancel any active effect (e.g., warning flash) immediately for clean transition
             span.add_event("cancel_existing_effect")
@@ -378,7 +381,7 @@ class FeedbackManager(ControllerEffectsBase):
         """
         duration_ms = get_winner_rainbow_duration_ms()
         with tracer.start_as_current_span("effect_winner_rainbow", context=trace_context) as span:
-            span.set_attribute("controller.serial", serial)
+            span.set_attribute(CONTROLLER_SERIAL_ATTR, serial)
             span.set_attribute("effect.duration_ms", duration_ms)
 
             span.add_event("rainbow_start", {"duration_ms": duration_ms})
@@ -440,7 +443,7 @@ class FeedbackManager(ControllerEffectsBase):
         battery = self.tracked_controllers.get(serial, {}).get("battery", 0)
         battery_color = self._get_battery_color(battery)
         await self.play_effect_with_restore(serial, "flash", battery_color, 1000, 1, restore_color or True)
-        logger.debug(f"Battery display: {serial} level={battery}% color={battery_color}")
+        logger.debug("Battery display: %s level=%d%% color=%s", serial, battery, battery_color)
 
     async def _effect_rumble(self, serial: str, duration_ms: int = 0, speed: int = 0, **_kwargs) -> None:
         """Vibrate only (for secret signaling like traitor/werewolf)."""
@@ -683,7 +686,7 @@ class FeedbackManager(ControllerEffectsBase):
         phase_duration_sec = phase_duration_ms / 1000.0
 
         with tracer.start_as_current_span("effect_countdown", context=trace_context) as span:
-            span.set_attribute("controller.serial", serial)
+            span.set_attribute(CONTROLLER_SERIAL_ATTR, serial)
 
             try:
                 # Mark effect as active (polling skips LED refresh)

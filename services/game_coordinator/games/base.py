@@ -50,8 +50,11 @@ SLOW_MUSIC_SPEED = 1.0  # Normal playback
 FAST_MUSIC_SPEED = 1.3  # 30% faster
 MUSIC_TRANSITION_DURATION = 1.5  # Seconds to smoothly transition
 
+# Span attribute keys (S1192 - avoid duplicate string literals)
+GAME_MODE_ATTR = "game.mode"
+
 # Log messages (S1192 - avoid duplicate strings)
-_MSG_COUNTDOWN_INTERRUPTED = "%s"
+_MSG_COUNTDOWN_INTERRUPTED = "Countdown interrupted - game no longer running"
 
 # Threshold Scaling: LERP approach (matches original JoustMania)
 # ===============================================================
@@ -988,7 +991,7 @@ class BaseGameMode(ABC):
             # Phase 1: Initialization (includes all pre-gameplay setup)
             with tracer.start_as_current_span("initialization_phase") as init_span:
                 init_span.set_attribute("game.id", self.game_id)
-                init_span.set_attribute("game.mode", self.get_game_name())
+                init_span.set_attribute(GAME_MODE_ATTR, self.get_game_name())
 
                 # Emit sensitivity metric for dashboard
                 metrics.game_sensitivity.set(self.sensitivity.value)
@@ -1118,7 +1121,7 @@ class BaseGameMode(ABC):
                 "player.serial": serial,
                 "player.team": player.team,
                 "player.color": str(player.color),
-                "game.mode": self.get_game_name(),
+                GAME_MODE_ATTR: self.get_game_name(),
             },
         )
 

@@ -239,7 +239,7 @@ class MusicPlayer:
         self._use_alsa = HAS_ALSA and (platform == "linux" or platform == "linux2")
 
         # Shared state for inter-process communication
-        self._stop_proc = Value("i", 1)  # 1 = stopped, 0 = playing
+        self._stop_proc = Value("i", 1)  # stopped; set to zero to play
         self._ratio = Value("d", 1.0)  # Playback speed
         self._volume = Value("d", 0.7)  # Volume level
 
@@ -392,6 +392,7 @@ class DummyMusicPlayer:
         self._track_id = None
 
     def load(self, file_pattern: str):
+        # No-op: dummy player has no audio engine to load files into
         pass
 
     def start(self) -> str:
@@ -431,4 +432,5 @@ class DummyMusicPlayer:
         return self._track_id
 
     def cleanup(self):
+        # No-op: dummy player holds no resources that need releasing
         pass

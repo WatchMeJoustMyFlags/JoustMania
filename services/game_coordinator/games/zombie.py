@@ -23,7 +23,7 @@ from opentelemetry.trace import Status, StatusCode
 from lib.colors import Colors
 from lib.types import Sound
 from proto import controller_manager_pb2
-from services.game_coordinator.games.base import BaseGameMode, Phase, Player, Sensitivity
+from services.game_coordinator.games.base import GAME_MODE_ATTR, BaseGameMode, Phase, Player, Sensitivity
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -190,7 +190,7 @@ class ZombieGame(BaseGameMode):
                         "player.serial": serial,
                         "player.is_zombie": zombie_player.is_zombie,
                         "player.team": "zombie" if zombie_player.is_zombie else "human",
-                        "game.mode": self.get_game_name(),
+                        GAME_MODE_ATTR: self.get_game_name(),
                     },
                 )
             return
@@ -205,7 +205,7 @@ class ZombieGame(BaseGameMode):
                         "player.serial": serial,
                         "player.is_zombie": zombie_player.is_zombie,
                         "player.team": "zombie" if zombie_player.is_zombie else "human",
-                        "game.mode": self.get_game_name(),
+                        GAME_MODE_ATTR: self.get_game_name(),
                     },
                 )
                 logger.debug(f"Created span for player {serial}")
@@ -543,7 +543,7 @@ class ZombieGame(BaseGameMode):
         with tracer.start_as_current_span("zombie_game") as game_span:
             self.game_span = game_span
             game_span.set_attribute("game.id", self.game_id)
-            game_span.set_attribute("game.mode", self.get_game_name())
+            game_span.set_attribute(GAME_MODE_ATTR, self.get_game_name())
 
             try:
                 self.running = True

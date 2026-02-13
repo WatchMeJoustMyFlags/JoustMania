@@ -305,6 +305,7 @@ class ControllerStateManager:
             logger.info(f"Removed state for controller {move_serial}")
 
         # Clean up reverse mapping
+        # NOSONAR: list() snapshot needed — dict is mutated during iteration
         for num, serial in list(self.move_num_to_serial.items()):
             if serial == move_serial:
                 del self.move_num_to_serial[num]

@@ -19,7 +19,7 @@ from opentelemetry.trace import Status, StatusCode
 from lib.colors import Colors
 from lib.types import Sound
 from proto import controller_manager_pb2
-from services.game_coordinator.games.base import BaseGameMode, Phase, Player, Sensitivity
+from services.game_coordinator.games.base import GAME_MODE_ATTR, BaseGameMode, Phase, Player, Sensitivity
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -168,7 +168,7 @@ class WerewolfGame(BaseGameMode):
                         "player.serial": serial,
                         "player.is_werewolf": wolf_player.is_werewolf,
                         "player.team": "werewolf" if wolf_player.is_werewolf else "human",
-                        "game.mode": self.get_game_name(),
+                        GAME_MODE_ATTR: self.get_game_name(),
                     },
                 )
             return
@@ -183,7 +183,7 @@ class WerewolfGame(BaseGameMode):
                         "player.serial": serial,
                         "player.is_werewolf": wolf_player.is_werewolf,
                         "player.team": "werewolf" if wolf_player.is_werewolf else "human",
-                        "game.mode": self.get_game_name(),
+                        GAME_MODE_ATTR: self.get_game_name(),
                     },
                 )
                 logger.debug(f"Created span for player {serial}")
@@ -486,7 +486,7 @@ class WerewolfGame(BaseGameMode):
         with tracer.start_as_current_span("werewolf_game") as game_span:
             self.game_span = game_span
             game_span.set_attribute("game.id", self.game_id)
-            game_span.set_attribute("game.mode", self.get_game_name())
+            game_span.set_attribute(GAME_MODE_ATTR, self.get_game_name())
 
             try:
                 self.running = True

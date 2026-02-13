@@ -15,6 +15,8 @@ logger = logging.getLogger("psmove-pairing")
 
 ORG_BLUEZ = "org.bluez"
 ORG_BLUEZ_PATH = "/org/bluez"
+DBUS_PROPERTIES_INTERFACE = "org.freedesktop.DBus.Properties"
+BLUEZ_ADAPTER1_INTERFACE = "org.bluez.Adapter1"
 
 _BUS = None
 
@@ -67,8 +69,8 @@ def _get_node_interfaces(proxy) -> list[str]:
 
 
 def _get_adapter_attrib(proxy, attrib: str):
-    iface = dbus.Interface(proxy, "org.freedesktop.DBus.Properties")
-    return iface.Get("org.bluez.Adapter1", attrib)
+    iface = dbus.Interface(proxy, DBUS_PROPERTIES_INTERFACE)
+    return iface.Get(BLUEZ_ADAPTER1_INTERFACE, attrib)
 
 
 def _get_hci_dict_sync() -> dict[str, str]:
@@ -81,7 +83,7 @@ def _get_hci_dict_sync() -> dict[str, str]:
         try:
             proxy2 = _get_adapter_proxy(hci)
             interfaces = _get_node_interfaces(proxy2)
-            if "org.freedesktop.DBus.Properties" not in interfaces or "org.bluez.Adapter1" not in interfaces:
+            if DBUS_PROPERTIES_INTERFACE not in interfaces or BLUEZ_ADAPTER1_INTERFACE not in interfaces:
                 continue
             addr = _get_adapter_attrib(proxy2, "Address")
             hci_dict[hci] = str(addr)
@@ -105,7 +107,7 @@ def _get_attached_addresses_sync(hci: str) -> list[str]:
 
                 device_path = os.path.join(ORG_BLUEZ_PATH, hci, dev)
                 dev_proxy = _get_bus().get_object(ORG_BLUEZ, device_path)
-                iface = dbus.Interface(dev_proxy, "org.freedesktop.DBus.Properties")
+                iface = dbus.Interface(dev_proxy, DBUS_PROPERTIES_INTERFACE)
                 dev_addr = str(iface.Get("org.bluez.Device1", "Address"))
                 known_devices.append(dev_addr)
             except dbus.exceptions.DBusException:

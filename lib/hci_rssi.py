@@ -32,7 +32,7 @@ HCIGETDEVLIST = 0x800448D2  # Not needed for single adapter
 HCIGETCONNINFO = 0x800448D2  # Get connection info by address
 
 # HCI command opcodes
-HCI_OP_READ_RSSI = 0x1405  # OGF=0x05 (Status), OCF=0x05
+HCI_OP_READ_RSSI = 0x1405  # OGF 0x05 (Status), OCF 0x05
 
 # HCI event codes
 HCI_EVENT_PKT = 0x04
@@ -83,8 +83,7 @@ class HciRssiReader:
             event_mask_hi = 0
             opcode = 0  # Accept any opcode
             hci_filter = struct.pack("<IIIh", type_mask, event_mask_lo, event_mask_hi, opcode)
-            # SOL_HCI = 0, HCI_FILTER = 2
-            sock.setsockopt(0, 2, hci_filter)
+            sock.setsockopt(0, 2, hci_filter)  # SOL_HCI, HCI_FILTER
 
             self._sock = sock
             return sock
