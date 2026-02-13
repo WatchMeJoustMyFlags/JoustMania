@@ -11,6 +11,8 @@
 //   - PORT: HTTP server port (default: 4318)
 //   - GRAFANA_URL: Grafana base URL (default: http://grafana:3000)
 //   - GRAFANA_PUSH_PATH: Grafana Live stream ID (default: joustmania-accel)
+//   - GRAFANA_USER: Grafana username for basic auth (default: admin)
+//   - GRAFANA_PASSWORD: Grafana password for basic auth (default: admin)
 package main
 
 import (
@@ -52,6 +54,8 @@ type Config struct {
 	Port            string
 	GrafanaURL      string
 	GrafanaPushPath string
+	GrafanaUser     string
+	GrafanaPassword string
 }
 
 // AccelMessage represents acceleration data for Grafana Live
@@ -114,6 +118,8 @@ func main() {
 		Port:            getEnv("PORT", "4318"),
 		GrafanaURL:      getEnv("GRAFANA_URL", "http://grafana:3000"),
 		GrafanaPushPath: getEnv("GRAFANA_PUSH_PATH", "joustmania-accel"),
+		GrafanaUser:     getEnv("GRAFANA_USER", "admin"),
+		GrafanaPassword: getEnv("GRAFANA_PASSWORD", "admin"),
 	}
 
 	httpClient = &http.Client{
@@ -130,6 +136,7 @@ func main() {
 	log.Printf("Grafana Live Publisher starting on %s", addr)
 	log.Printf("  Grafana URL: %s", config.GrafanaURL)
 	log.Printf("  Push path: %s", config.GrafanaPushPath)
+	log.Printf("  Grafana user: %s", config.GrafanaUser)
 
 	if err := http.ListenAndServe(addr, nil); err != nil {
 		log.Fatalf("Server failed: %v", err)
@@ -380,6 +387,7 @@ func pushToGrafanaLive(msg AccelMessage) {
 	}
 
 	req.Header.Set("Content-Type", "text/plain")
+	req.SetBasicAuth(config.GrafanaUser, config.GrafanaPassword)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
