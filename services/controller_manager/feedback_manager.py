@@ -284,16 +284,17 @@ class FeedbackManager(ControllerEffectsBase):
         # Create wrapper that restores color after effect
         async def effect_with_restore():
             try:
-                if effect_type == "flash":
-                    await self._effect_flash(serial, color, duration_ms, speed)
-                elif effect_type == "pulse":
-                    await self._effect_pulse(serial, color, duration_ms, speed)
-                elif effect_type == "rainbow":
-                    await self._effect_rainbow(serial, duration_ms, speed)
-                elif effect_type == "fade_out":
-                    await self._effect_fade_out(serial, color, duration_ms)
-                elif effect_type == "fade_in":
-                    await self._effect_fade_in(serial, color, duration_ms)
+                match effect_type:
+                    case "flash":
+                        await self._effect_flash(serial, color, duration_ms, speed)
+                    case "pulse":
+                        await self._effect_pulse(serial, color, duration_ms, speed)
+                    case "rainbow":
+                        await self._effect_rainbow(serial, duration_ms, speed)
+                    case "fade_out":
+                        await self._effect_fade_out(serial, color, duration_ms)
+                    case "fade_in":
+                        await self._effect_fade_in(serial, color, duration_ms)
             except asyncio.CancelledError:
                 raise
             finally:

@@ -273,34 +273,34 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
             serial=event.get("serial", ""),
         )
 
-        event_type = event.get("type")
-        if event_type == "led_change":
-            proto_event.led_change.CopyFrom(
-                controller_manager_mock_pb2.LedChangeEvent(
-                    r=event.get("r", 0),
-                    g=event.get("g", 0),
-                    b=event.get("b", 0),
-                    source=event.get("source", ""),
+        match event.get("type"):
+            case "led_change":
+                proto_event.led_change.CopyFrom(
+                    controller_manager_mock_pb2.LedChangeEvent(
+                        r=event.get("r", 0),
+                        g=event.get("g", 0),
+                        b=event.get("b", 0),
+                        source=event.get("source", ""),
+                    )
                 )
-            )
-        elif event_type == "rumble_change":
-            proto_event.rumble_change.CopyFrom(
-                controller_manager_mock_pb2.RumbleChangeEvent(
-                    intensity=event.get("intensity", 0),
+            case "rumble_change":
+                proto_event.rumble_change.CopyFrom(
+                    controller_manager_mock_pb2.RumbleChangeEvent(
+                        intensity=event.get("intensity", 0),
+                    )
                 )
-            )
-        elif event_type == "button_change":
-            proto_event.button_change.CopyFrom(
-                controller_manager_mock_pb2.ButtonChangeEvent(
-                    button=event.get("button", ""),
-                    pressed=event.get("pressed", False),
+            case "button_change":
+                proto_event.button_change.CopyFrom(
+                    controller_manager_mock_pb2.ButtonChangeEvent(
+                        button=event.get("button", ""),
+                        pressed=event.get("pressed", False),
+                    )
                 )
-            )
-        elif event_type == "connection":
-            proto_event.connection.CopyFrom(
-                controller_manager_mock_pb2.ConnectionEvent(
-                    connected=event.get("connected", False),
+            case "connection":
+                proto_event.connection.CopyFrom(
+                    controller_manager_mock_pb2.ConnectionEvent(
+                        connected=event.get("connected", False),
+                    )
                 )
-            )
 
         return proto_event

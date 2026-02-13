@@ -171,14 +171,15 @@ class PlayerAnalytics:
         zone = self._classify_zone(raw_accel_mag, config)
         frame_ms = int(frame_duration_ms)
 
-        if zone == MovementZone.STILL:
-            self.time_still_ms += frame_ms
-        elif zone == MovementZone.ACTIVE:
-            self.time_active_ms += frame_ms
-        elif zone == MovementZone.WARNING:
-            self.time_warning_ms += frame_ms
-        else:  # DANGER
-            self.time_danger_ms += frame_ms
+        match zone:
+            case MovementZone.STILL:
+                self.time_still_ms += frame_ms
+            case MovementZone.ACTIVE:
+                self.time_active_ms += frame_ms
+            case MovementZone.WARNING:
+                self.time_warning_ms += frame_ms
+            case MovementZone.DANGER:
+                self.time_danger_ms += frame_ms
 
         self._last_zone = zone
 
