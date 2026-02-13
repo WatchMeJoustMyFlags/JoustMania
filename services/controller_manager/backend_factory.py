@@ -8,8 +8,8 @@ Backend selection priority:
   2. OpenFeature "controller_backend" flag (runtime-switchable via flagd)
   3. Platform auto-detection (Linux -> bluetooth, Windows -> windows)
 
-Flag values (mock_controller_count, bluetooth_hci) are read once at startup.
-Runtime changes to these flags require a service restart to take effect.
+Flag value (mock_controller_count) is read once at startup.
+Runtime changes to this flag require a service restart to take effect.
 """
 
 import logging
@@ -35,22 +35,6 @@ def _get_mock_controller_count() -> int:
     except Exception as e:
         logger.warning(f"Failed to read mock_controller_count from flagd, using env/default: {e}")
         return int(os.getenv("MOCK_CONTROLLER_COUNT", "4"))
-
-
-def _get_bluetooth_hci() -> str:
-    """Read bluetooth_hci from flagd performance domain with env var fallback."""
-    try:
-        from openfeature.evaluation_context import EvaluationContext
-
-        from lib.feature_flags import get_flag_client
-
-        client = get_flag_client("performance")
-        hci = client.get_string_value("bluetooth_hci", "hci0", EvaluationContext())
-        logger.info(f"bluetooth_hci from flagd: {hci}")
-        return hci
-    except Exception as e:
-        logger.warning(f"Failed to read bluetooth_hci from flagd, using env/default: {e}")
-        return os.getenv("BLUETOOTH_HCI", "hci0")
 
 
 def _resolve_backend_name() -> str | None:
@@ -115,6 +99,10 @@ def create_backend() -> ControllerBackend:
         1. CONTROLLER_BACKEND env var (hard override)
         2. OpenFeature "controller_backend" flag from performance domain
         3. Platform auto-detection (Linux -> bluetooth, Windows -> windows)
+
+    Configuration:
+        mock_controller_count: flagd flag (performance domain), fallback to MOCK_CONTROLLER_COUNT env var
+        BLUETOOTH_HCI: env var for Bluetooth adapter (default: hci0)
 
     Returns:
         ControllerBackend instance

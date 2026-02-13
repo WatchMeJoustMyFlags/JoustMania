@@ -208,6 +208,7 @@ services:
     environment:
       - CONTROLLER_NAMES_FILE=/app/data/controller_names.txt
       - CONTROLLER_BACKEND=${CONTROLLER_BACKEND:-bluetooth}
+      - BLUETOOTH_HCI=${BLUETOOTH_HCI:-hci0}
       - DBUS_SYSTEM_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket
       - OTEL_SERVICE_NAME=controller-manager-service
       - OTEL_SERVICE_NAMESPACE=infrastructure

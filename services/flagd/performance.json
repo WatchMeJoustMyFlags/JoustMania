@@ -112,15 +112,6 @@
       },
       "defaultVariant": "four"
     },
-    "bluetooth_hci": {
-      "state": "ENABLED",
-      "variants": {
-        "hci0": "hci0",
-        "hci1": "hci1",
-        "hci2": "hci2"
-      },
-      "defaultVariant": "hci0"
-    },
     "metrics_export_interval_ms": {
       "state": "ENABLED",
       "variants": {
