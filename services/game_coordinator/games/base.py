@@ -831,16 +831,30 @@ class BaseGameMode(ABC):
         # Phase 70: Track deaths for music tempo timing
         self.dead_count += 1
 
-        # Clear analytics metrics so dead players don't appear on dashboard
-        metrics.clear_player_analytics(serial, self.game_id)
-
-        # Mark player as dead in metrics (Phase 75: filter dead players from dashboard)
+        # Mark player as dead in metrics - dashboard template variables filter
+        # on game_player_alive==1 so dead players naturally disappear from panels.
+        # Metric removal happens at game end via clear_all_player_analytics().
         metrics.player_alive.labels(serial=serial).set(0)
         alive_count = len([p for p in self.players.values() if p.alive])
         metrics.players_alive.set(alive_count)
 
+        # Extract trace context BEFORE _kill_player_impl() which may close the span.
+        # This ensures the death effect and sound are parented to the player_lifecycle
+        # span even after the subclass impl ends it. (#456)
+        trace_parent, trace_state = inject_trace_context(player.span)
+
         # Play death explosion sound (Phase 29)
-        await self._play_sound(Sound.SFX_EXPLOSION, priority=2)
+        # Temporarily set player's span as active so gRPC interceptor propagates
+        # the player's trace context to the audio service. (#456)
+        if player.span:
+            ctx = trace.set_span_in_context(player.span)
+            token = otel_context.attach(ctx)
+            try:
+                await self._play_sound(Sound.SFX_EXPLOSION, priority=2)
+            finally:
+                otel_context.detach(token)
+        else:
+            await self._play_sound(Sound.SFX_EXPLOSION, priority=2)
 
         # Add death event to player's lifecycle span (Phase 3: Per-Player Sensitivity)
         if player.span:
@@ -859,11 +873,11 @@ class BaseGameMode(ABC):
         await self._kill_player_impl(serial, accel_mag)
 
         # Send death effect via stream (red + vibrate, no restore)
-        # Use player's span as parent so effect appears under player_lifecycle in traces
+        # Use pre-extracted trace context so effect appears under player_lifecycle
+        # in traces, even though _kill_player_impl may have closed the span. (#456)
         from proto import controller_manager_pb2
 
         if self.gameplay_stream:
-            trace_parent, trace_state = inject_trace_context(player.span)
             effect_cmd = controller_manager_pb2.GameplayStreamControl(
                 game_effect=controller_manager_pb2.GameEffectCommand(
                     serial=serial,

@@ -83,7 +83,7 @@ services:
       - ./services/flagd/user_preferences.json:/etc/flagd/user_preferences.json
     expose:
       - "8013"  # flagd evaluation port (gRPC)
-      - "8014"  # flagd management port (metrics)
+      - "8014"  # flagd management port (Prometheus metrics)
       - "8015"  # flagd sync port (for in-process evaluation)
     networks:
       - joustmania
@@ -154,6 +154,27 @@ services:
           memory: 256m
           cpus: '0.5'
     logging: *default-logging
+  # Pyroscope for continuous profiling (CPU flame graphs)
+  # Only starts with: docker compose --profile profiling up
+  pyroscope:
+    image: grafana/pyroscope:latest
+    container_name: joustmania-pyroscope
+    profiles:
+      - profiling
+    expose:
+      - "4040"
+    networks:
+      - joustmania
+    volumes:
+      - pyroscope-data:/data
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: '0.5'
+    logging: *default-logging
+
   # Controller Manager Service
   controller-manager:
     image: ghcr.io/watchmejoustmyflags/joustmania/controller-manager-service:${IMAGE_TAG:-latest}
@@ -193,6 +214,8 @@ services:
       - OTEL_SERVICE_NAME=controller-manager-service
       - OTEL_SERVICE_NAMESPACE=infrastructure
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - PROFILING_ENABLED=false
+      - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
       # Issue #62: 100Hz acceleration metrics for real-time visualization
       # Default 100ms; set to 10ms for 100Hz demo
       - METRICS_EXPORT_INTERVAL_MS=${METRICS_EXPORT_INTERVAL_MS:-100}
@@ -263,6 +286,8 @@ services:
       - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME_GAME_COORDINATOR:-game-coordinator-service}
       - OTEL_SERVICE_NAMESPACE=joustmania
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+      - PROFILING_ENABLED=false
+      - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
     depends_on:
       redis:
         condition: service_healthy
@@ -296,6 +321,8 @@ services:
       - OTEL_SERVICE_NAME=menu-service
       - OTEL_SERVICE_NAMESPACE=joustmania
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - PROFILING_ENABLED=false
+      - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
       # Phase 60: Audio service connection
       - AUDIO_HOST=audio
       - AUDIO_PORT=50056
@@ -345,6 +372,8 @@ services:
       - OTEL_SERVICE_NAME=audio-service
       - OTEL_SERVICE_NAMESPACE=joustmania
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - PROFILING_ENABLED=false
+      - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
       - FLAGD_HOST=flagd
       - FLAGD_PORT=8015
     depends_on:
@@ -564,6 +593,8 @@ services:
     environment:
       - GRAFANA_URL=http://grafana:3000/grafana
       - GRAFANA_PUSH_PATH=joustmania-accel
+      - GRAFANA_USER=admin
+      - GRAFANA_PASSWORD=admin
     depends_on:
       grafana:
         condition: service_healthy
@@ -664,3 +695,4 @@ volumes:
   loki-data:
   controller-names:
   psmoveapi-data:
+  pyroscope-data:

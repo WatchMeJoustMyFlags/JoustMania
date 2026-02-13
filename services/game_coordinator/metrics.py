@@ -230,10 +230,12 @@ game_analytics_replay_bytes = Histogram(
 
 def clear_player_analytics(serial: str, game_id: str = "") -> None:
     """
-    Clear analytics metrics for a player (e.g., when they die or game ends).
+    Clear analytics metrics for a specific player.
 
-    This removes the gauge labels so they no longer appear in dashboards,
-    rather than showing stale data.
+    Only used for targeted cleanup (e.g., controller disconnect during game).
+    Normal player death sets player_alive=0 instead, letting dashboard queries
+    filter dead players via game_player_alive==1 in template variables.
+    Bulk cleanup at game end uses clear_all_player_analytics().
     """
     with suppress(KeyError, ValueError):
         player_accel_magnitude.remove(serial)
@@ -255,10 +257,12 @@ def clear_player_analytics(serial: str, game_id: str = "") -> None:
 
 def clear_all_player_analytics() -> None:
     """
-    Clear all player analytics metrics (e.g., when game ends).
+    Clear all player analytics metrics at game end.
 
-    This removes all label combinations so dashboards show no data
-    when no game is running.
+    This is the single cleanup point for the game lifecycle, removing all
+    label combinations so the Player Insights dashboard shows no data
+    between games. Per-death metric removal was eliminated (Issue #458)
+    to prevent dashboard flicker during game transitions.
     """
     player_accel_magnitude._metrics.clear()
     player_accel_magnitude._values.clear()

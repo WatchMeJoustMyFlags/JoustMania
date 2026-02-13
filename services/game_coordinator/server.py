@@ -46,6 +46,7 @@ from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from lib.otel_metrics import init_metrics
+from lib.profiling import init_profiling
 from lib.system_metrics import start_system_metrics_collector
 from proto import game_coordinator_pb2_grpc
 from services.game_coordinator import metrics
@@ -66,6 +67,7 @@ async def serve(port=50053):
     # Initialize OTEL push metrics (Issue #103)
     # 100ms export interval for real-time gameplay visualization
     init_metrics(export_interval_ms=100)
+    init_profiling()
     logger.info("OTEL push metrics initialized (100ms export interval)")
 
     # Start system metrics collection

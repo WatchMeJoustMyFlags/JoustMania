@@ -101,6 +101,17 @@ def _do_init() -> None:
     provider = TracerProvider(resource=resource)
     otlp_exporter = OTLPSpanExporter(endpoint=otlp_endpoint, insecure=True)
     provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
+
+    # Trace-profile correlation: link Pyroscope CPU profiles to trace spans
+    if os.getenv("PROFILING_ENABLED", "false").lower() in ("true", "1", "yes"):
+        try:
+            from pyroscope.otel import PyroscopeSpanProcessor
+
+            provider.add_span_processor(PyroscopeSpanProcessor())
+            logger.info("Pyroscope span processor enabled for trace-profile correlation")
+        except ImportError:
+            pass  # pyroscope-io not installed
+
     trace.set_tracer_provider(provider)
 
     logger.info(f"OpenTelemetry initialized: {service_name} -> {otlp_endpoint}")
