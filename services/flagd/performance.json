@@ -74,6 +74,15 @@
         "10min": 10
       },
       "defaultVariant": "5min"
+    },
+    "controller_backend": {
+      "state": "ENABLED",
+      "variants": {
+        "bluetooth": "bluetooth",
+        "hidapi": "hidapi",
+        "mock": "mock"
+      },
+      "defaultVariant": "bluetooth"
     }
   }
 }
