@@ -156,7 +156,7 @@ def test_api_level_context_uses_env_vars(mock_api, _mock_provider):
     with patch.dict(
         os.environ,
         {
-            "SERVICE_NAME": "test-service",
+            "OTEL_SERVICE_NAME": "test-service",
             "ENVIRONMENT": "staging",
         },
     ):
