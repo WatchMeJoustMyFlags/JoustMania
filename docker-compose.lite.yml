@@ -188,7 +188,6 @@ services:
     expose:
       - "50056"
     environment:
-      - MOCK_MODE=${AUDIO_MOCK_MODE:-false}
       - OTEL_SDK_DISABLED=true
       - AUDIODEV=default
       - FLAGD_HOST=flagd

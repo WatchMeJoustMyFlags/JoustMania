@@ -10,14 +10,13 @@
 #   make up              # Build and start all services
 #
 # Base config defaults to bluetooth mode (real hardware).
-# For mock mode (testing): CONTROLLER_BACKEND=mock AUDIO_MOCK_MODE=true make up
+# For mock mode (testing): CONTROLLER_BACKEND=mock make up
 #
 # Environment Variables (can be set in shell or .env file):
 # - IMAGE_TAG: Image tag to use [default: latest]
 # - CONTROLLER_BACKEND: Controller backend type (bluetooth, mock, windows) [default: bluetooth]
 # - MOCK_CONTROLLER_COUNT: Number of mock controllers when CONTROLLER_BACKEND=mock [default: 4]
 # - BLUETOOTH_HCI: Bluetooth adapter to use (hci0, hci1, etc.) [default: hci0]
-# - AUDIO_MOCK_MODE: Disable audio output for testing [default: false]
 # - LOG_LEVEL: Logging level for all services (DEBUG, INFO, WARNING, ERROR) [default: INFO]
 #
 # Notes:
@@ -368,7 +367,6 @@ services:
     expose:
       - "50056"  # gRPC service
     environment:
-      - MOCK_MODE=${AUDIO_MOCK_MODE:-false}
       - OTEL_SERVICE_NAME=audio-service
       - OTEL_SERVICE_NAMESPACE=joustmania
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317

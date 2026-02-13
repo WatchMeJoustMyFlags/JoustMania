@@ -10,15 +10,26 @@
 # (docker-compose merges arrays, doesn't replace them)
 
 services:
-  # Audio Service - Mock mode, no sound device required
+  # Audio Service - No sound device required (play_audio=off via CI flagd override)
   # Fully redefined to remove devices list
   audio:
     # Clear devices list from base compose (requires docker compose v2.24.0+)
     devices: !reset []
+    volumes:
+      - ./services/audio/assets:/app/services/audio/assets:ro
+      - ./services/flagd/user_preferences.ci.json:/app/services/flagd/user_preferences.ci.json:ro
     environment: !override
-      MOCK_MODE: "true"
       OTEL_SERVICE_NAME: audio-service
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      FLAGD_HOST: flagd
+      FLAGD_PORT: "8015"
+
+  # flagd - Use CI user_preferences override (play_audio=off)
+  flagd:
+    volumes:
+      - ./services/flagd/performance.json:/etc/flagd/performance.json
+      - ./services/flagd/game_settings.json:/etc/flagd/game_settings.json
+      - ./services/flagd/user_preferences.ci.json:/etc/flagd/user_preferences.json
 
   # Controller Manager - Mock mode, no Bluetooth required
   controller-manager:

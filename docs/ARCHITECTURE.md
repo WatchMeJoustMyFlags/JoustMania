@@ -319,7 +319,7 @@ Settings are configured via admin mode (hold all 4 face buttons):
 |----------|-------------|---------|
 | `CONTROLLER_BACKEND` | Controller backend type | `bluetooth` |
 | `MOCK_CONTROLLER_COUNT` | Simulated controllers | `4` |
-| `AUDIO_MOCK_MODE` | Silent audio mode | `false` |
+| `play_audio` (flagd) | Audio output toggle | `on` (enabled) |
 | `LOG_LEVEL` | Logging verbosity | `INFO` |
 
 ### Docker Compose Variants

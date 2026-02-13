@@ -503,7 +503,7 @@ jobs:
 
 ### Mock Audio Service
 
-Currently, the audio service runs in mock mode (MOCK_MODE=true) but still requires the audio assets directory. Future enhancement: provide silent audio playback or optional audio synthesis.
+Audio playback is controlled by the `play_audio` flagd flag in the `user_preferences` domain. When set to `off`, the audio service runs in silent mode (no hardware initialization). The audio assets directory is still required for sound registry building.
 
 ## Related Documentation
 

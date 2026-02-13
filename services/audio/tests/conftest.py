@@ -11,7 +11,6 @@ disable_telemetry_for_tests()
 disable_metrics_for_tests()
 disable_profiling_for_tests()
 
-import os
 from unittest.mock import patch
 
 import pytest
@@ -37,19 +36,26 @@ def mock_grpc_context():
 
 @pytest.fixture
 def mock_audio_servicer():
-    """Create AudioServiceServicer in mock mode."""
-    with patch.dict(os.environ, {"MOCK_MODE": "true"}):
-        from services.audio.servicer import AudioServiceServicer
+    """Create AudioServiceServicer with silent AudioManager (no hardware).
 
+    The AudioManager is initialized in silent mode to avoid needing audio hardware,
+    but audio_enabled is set to True so RPC methods execute their full logic.
+    Tests that need audio_enabled=False set it explicitly.
+    """
+    from services.audio.servicer import AudioServiceServicer
+
+    # Bypass flagd lookup at init: return False so AudioManager uses silent=True (no hardware).
+    with patch.object(AudioServiceServicer, "_load_play_audio_flag", return_value=False):
         servicer = AudioServiceServicer()
-        servicer._settings_loaded = True
-        return servicer
+    # Enable audio at the servicer level so RPCs execute their full logic.
+    servicer.audio_enabled = True
+    servicer._settings_loaded = True
+    return servicer
 
 
 @pytest.fixture
 def mock_audio_manager():
-    """Create AudioManager in mock mode."""
-    with patch.dict(os.environ, {"MOCK_MODE": "true"}):
-        from services.audio.servicer import AudioManager
+    """Create AudioManager in silent mode (no hardware)."""
+    from services.audio.servicer import AudioManager
 
-        return AudioManager()
+    return AudioManager(silent=True)
