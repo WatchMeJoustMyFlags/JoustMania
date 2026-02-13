@@ -29,9 +29,9 @@ The Controller Manager service is the central component for managing PS Move con
 ├─────────────────────────────────────────────────────────────┤
 │                    Backend Abstraction                       │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐          │
-│  │ Bluetooth   │  │  Windows    │  │    Mock     │          │
+│  │ Bluetooth   │  │   HidAPI    │  │    Mock     │          │
 │  │  Backend    │  │  Backend    │  │   Backend   │          │
-│  │ (Linux/Pi)  │  │ (psmoveapi) │  │  (Testing)  │          │
+│  │ (Linux/Pi)  │  │ (libhidapi) │  │  (Testing)  │          │
 │  └─────────────┘  └─────────────┘  └─────────────┘          │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -44,7 +44,7 @@ Backend selection uses the `controller_backend` OpenFeature flag (performance do
 
 | Setting | Source | Default | Description |
 |---------|--------|---------|-------------|
-| `controller_backend` | flagd (performance) | auto-detect | Backend: `bluetooth`, `windows`, `mock`, `hidapi` |
+| `controller_backend` | flagd (performance) | auto-detect | Backend: `bluetooth`, `mock`, `hidapi` |
 | `mock_controller_count` | flagd (performance) | `4` | Number of mock controllers |
 | `GRPC_PORT` | env var | `50052` | gRPC server port |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | env var | `http://localhost:4317` | OpenTelemetry endpoint |
@@ -52,10 +52,8 @@ Backend selection uses the `controller_backend` OpenFeature flag (performance do
 ### Backend Selection
 
 The backend is selected via the `controller_backend` flag in flagd (`services/flagd/performance.json`).
-If the flag is not set or flagd is unavailable, platform auto-detection is used:
-- **Linux**: BluetoothBackend (BlueZ/psmove)
-- **Windows**: WindowsBackend (psmoveapi)
-- **Testing**: MockBackend (simulated controllers)
+If the flag is not set or flagd is unavailable, the default BluetoothBackend is used.
+Use `controller_backend=mock` for testing without hardware.
 
 ## gRPC API
 
@@ -191,7 +189,6 @@ services/controller_manager/
 ├── backend.py            # Abstract backend interface
 ├── backend_factory.py    # Backend selection logic
 ├── bluetooth_backend.py  # Linux/BlueZ implementation
-├── windows_backend.py    # Windows psmoveapi implementation
 ├── mock_backend.py       # Mock backend for testing
 ├── bluetooth.py          # BlueZ helpers
 ├── discovery.py          # Controller discovery

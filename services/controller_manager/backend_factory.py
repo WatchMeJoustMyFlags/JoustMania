@@ -5,14 +5,13 @@ Detects platform and creates appropriate backend instance.
 
 Backend selection priority:
   1. OpenFeature "controller_backend" flag (runtime-switchable via flagd)
-  2. Platform auto-detection (Linux -> bluetooth, Windows -> windows)
+  2. Platform auto-detection (Linux -> bluetooth)
 
 Flag values (controller_backend, mock_controller_count) are read once at startup.
 Runtime changes to these flags require a service restart to take effect.
 """
 
 import logging
-import platform
 
 from services.controller_manager.backend import ControllerBackend
 
@@ -72,10 +71,6 @@ def _create_backend_by_name(name: str) -> ControllerBackend:
             from services.controller_manager.hidapi_backend import HidapiBackend
 
             return HidapiBackend()
-        case "windows":
-            from services.controller_manager.windows_backend import WindowsBackend
-
-            return WindowsBackend()
         case _:
             raise RuntimeError(f"Unknown backend: {name}")
 
@@ -86,7 +81,7 @@ def create_backend() -> ControllerBackend:
 
     Selection priority:
         1. OpenFeature "controller_backend" flag from performance domain
-        2. Platform auto-detection (Linux -> bluetooth, Windows -> windows)
+        2. Platform auto-detection (Linux -> bluetooth)
 
     Configuration:
         mock_controller_count: flagd flag (performance domain)
@@ -102,37 +97,15 @@ def create_backend() -> ControllerBackend:
     if backend_name:
         return _create_backend_by_name(backend_name)
 
-    # Priority 3: Platform auto-detection
-    system = platform.system()
+    # Priority 2: Default to Bluetooth on Linux (only supported platform)
+    try:
+        from services.controller_manager.bluetooth_backend import BluetoothBackend
 
-    if system == "Windows":
-        try:
-            from services.controller_manager.windows_backend import WindowsBackend
+        logger.info("Using Linux BlueZ backend")
+        return BluetoothBackend()
 
-            logger.info("Using Windows backend (psmoveapi)")
-            return WindowsBackend()
-
-        except ImportError as e:
-            logger.error(f"Windows backend not available: {e}")
-            logger.info("Install psmoveapi: pip install psmoveapi")
-            logger.info("Or use mock mode: set controller_backend=mock in flagd performance.json")
-            raise RuntimeError("Windows backend not available") from e
-
-    elif system == "Linux":
-        try:
-            from services.controller_manager.bluetooth_backend import BluetoothBackend
-
-            logger.info("Using Linux BlueZ backend")
-            return BluetoothBackend()
-
-        except ImportError as e:
-            logger.error(f"Bluetooth backend not available: {e}")
-            logger.info("Install dependencies: apt-get install python3-dbus, pip install psmove")
-            logger.info("Or use mock mode: set controller_backend=mock in flagd performance.json")
-            raise RuntimeError("Bluetooth backend not available") from e
-
-    else:
-        raise RuntimeError(
-            f"Unsupported platform: {system}. "
-            "Set controller_backend=mock in flagd performance.json to use mock controllers."
-        )
+    except ImportError as e:
+        logger.error(f"Bluetooth backend not available: {e}")
+        logger.info("Install dependencies: apt-get install python3-dbus, pip install psmove")
+        logger.info("Or use mock mode: set controller_backend=mock in flagd performance.json")
+        raise RuntimeError("Bluetooth backend not available") from e
