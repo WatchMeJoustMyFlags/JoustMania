@@ -26,6 +26,7 @@ FROM ${PSMOVE_BUILDER_IMAGE} AS psmove-builder
 FROM ${BUILDER_IMAGE} AS python-builder
 
 # Install additional bluetooth build dependencies (not in common builder)
+# libdbus-1-dev needed for dbus-python (legacy backend); dbus-fast is pure Python
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libbluetooth-dev \
     libdbus-1-dev \

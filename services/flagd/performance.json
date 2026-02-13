@@ -75,6 +75,14 @@
       },
       "defaultVariant": "5min"
     },
+    "dbus_backend": {
+      "state": "ENABLED",
+      "variants": {
+        "legacy": "dbus_python",
+        "modern": "dbus_fast"
+      },
+      "defaultVariant": "legacy"
+    },
     "pairing_poll_interval": {
       "state": "ENABLED",
       "variants": {

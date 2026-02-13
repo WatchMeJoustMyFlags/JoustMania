@@ -22,9 +22,7 @@ except ImportError as e:
         "and psmoveapi is built with Python bindings."
     ) from e
 
-import dbus
-
-from .adapter_manager import AdapterManager
+from .adapter_manager import AdapterManager, restart_systemd_unit
 from .metrics import (
     calibration_duration_seconds,
     pairing_adapter_device_count,
@@ -206,10 +204,7 @@ class USBPairing:
 
         logger.info("Restarting bluetooth service via D-Bus...")
         try:
-            bus = dbus.SystemBus()
-            systemd = bus.get_object("org.freedesktop.systemd1", "/org/freedesktop/systemd1")
-            manager = dbus.Interface(systemd, "org.freedesktop.systemd1.Manager")
-            manager.RestartUnit("bluetooth.service", "replace")
+            await restart_systemd_unit("bluetooth.service")
             # Wait for BlueZ to fully restart and re-read device files
             await asyncio.sleep(3)
             logger.info("Bluetooth service restarted successfully")
@@ -251,7 +246,7 @@ class USBPairing:
             span.set_attribute(_ATTR_CONTROLLER_SERIAL, serial)
 
             # Refresh adapter state and check if already paired
-            self.adapter_manager.refresh_adapters()
+            await self.adapter_manager.refresh_adapters()
 
             if not self.adapter_manager.check_if_not_paired(serial):
                 logger.info(f"Controller {serial} already paired, ensuring trusted")
