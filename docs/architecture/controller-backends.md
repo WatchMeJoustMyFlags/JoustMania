@@ -1,18 +1,11 @@
-# Controller Backend Architecture (Phase 57)
+# Controller Backend Architecture
 
 ## Overview
 
-The controller manager now uses a unified backend system that supports multiple platforms and testing modes through a single interface.
+The controller manager uses a unified backend system that supports multiple platforms and testing modes through a single interface.
 
-**Before Phase 57:**
-- Separate `Dockerfile.mock` for testing
-- `MOCK_MODE=true` flag
-- Tightly coupled to psmove + dbus-python
-- Difficult to develop on Windows
-
-**After Phase 57:**
 - Single `Dockerfile` for all modes
-- `CONTROLLER_BACKEND` environment variable selects implementation
+- `controller_backend` flagd flag selects implementation at runtime
 - Clean abstraction via `ControllerBackend` interface
 - Easy development on Windows/Linux/Mock
 
@@ -65,11 +58,11 @@ The controller manager now uses a unified backend system that supports multiple 
 - `pair` - Controller pairing
 
 **Usage**:
-```yaml
-# docker-compose.yml (production)
-controller-manager:
-  environment:
-    - CONTROLLER_BACKEND=bluetooth  # Auto-detected on Linux
+```json
+// services/flagd/performance.json (default)
+"controller_backend": {
+  "defaultVariant": "bluetooth"
+}
 ```
 
 **Features**:
@@ -78,9 +71,9 @@ controller-manager:
 - Battery level tracking
 - Motion sensors (accel/gyro)
 - LED + rumble control
-- Controller hot-plug (Phase 73)
+- Controller hot-plug
 
-**Hot-Plug Support** (Phase 73):
+**Hot-Plug Support**:
 
 Controllers can connect/disconnect dynamically after container startup. The backend polls `psmove.count_connected()` and rescans when count changes:
 
@@ -111,17 +104,11 @@ controller-manager:
 - `psmoveapi` only (no dbus required)
 
 **Usage**:
-```powershell
-# Windows - Run natively (not in Docker)
-$env:CONTROLLER_BACKEND = "windows"
-python -m services.controller_manager.server --host 0.0.0.0 --port 50051
-```
-
-```yaml
-# docker-compose.override.yml (WSL services)
-game-coordinator:
-  environment:
-    - CONTROLLER_MANAGER_HOST=host.docker.internal:50051
+```json
+// services/flagd/performance.json
+"controller_backend": {
+  "defaultVariant": "windows"
+}
 ```
 
 **Features**:
@@ -142,13 +129,14 @@ game-coordinator:
 **Dependencies**: None
 
 **Usage**:
-```yaml
-# docker-compose.mock.yml
-controller-manager:
-  environment:
-    - CONTROLLER_BACKEND=mock
-    - MOCK_CONTROLLER_COUNT=4
+```json
+// services/flagd/performance.ci.json (CI default)
+"controller_backend": {
+  "defaultVariant": "mock"
+}
 ```
+
+Or use `make up-mock` which applies the CI flagd config.
 
 **Features**:
 - Simulates 1-N controllers
@@ -166,9 +154,14 @@ controller-manager:
 
 ## Backend Selection
 
+### Priority
+
+1. **OpenFeature flag** (`controller_backend` in performance domain) - runtime-switchable via flagd
+2. **Platform auto-detection** - Linux -> bluetooth, Windows -> windows
+
 ### Auto-Detection
 
-The system auto-detects platform if `CONTROLLER_BACKEND` not set:
+If the flagd flag is empty or flagd is unavailable, the system auto-detects:
 
 ```python
 # services/controller_manager/backend_factory.py
@@ -185,12 +178,12 @@ def create_backend():
 
 ### Manual Override
 
-Force a specific backend with `CONTROLLER_BACKEND`:
+Set the backend via flagd flag in `services/flagd/performance.json`:
 
-```bash
-export CONTROLLER_BACKEND=mock      # Use mock (any platform)
-export CONTROLLER_BACKEND=bluetooth  # Force BlueZ (Linux only)
-export CONTROLLER_BACKEND=windows    # Force Windows (Windows only)
+```json
+"controller_backend": {
+  "defaultVariant": "mock"
+}
 ```
 
 ## Docker Compose Integration
@@ -203,83 +196,29 @@ controller-manager:
   privileged: true  # Bluetooth access
   devices:
     - /dev/bus/usb  # USB pairing
-  environment:
-    # CONTROLLER_BACKEND auto-detected (Linux → Bluetooth)
+  # controller_backend defaults to "bluetooth" in flagd performance.json
 ```
 
-### Testing (docker-compose.mock.yml)
+### Testing (docker-compose.ci.yml)
 
 ```yaml
-mock-controller-manager:
-  dockerfile: services/controller_manager/Dockerfile  # Same Dockerfile!
-  environment:
-    - CONTROLLER_BACKEND=mock  # No privileged mode, no devices needed
-    - MOCK_CONTROLLER_COUNT=4
-  # No 'privileged', no 'devices' - runs anywhere
+# Uses performance.ci.json with controller_backend=mock
+flagd:
+  volumes:
+    - ./services/flagd/performance.ci.json:/etc/flagd/performance.json
 ```
 
-### Development (docker-compose.override.yml)
+### Mock Mode
 
-```yaml
-# Run controller_manager on Windows (native)
-# WSL services connect via host.docker.internal
-
-game-coordinator:
-  environment:
-    - CONTROLLER_MANAGER_HOST=host.docker.internal:50051
-
-menu:
-  environment:
-    - CONTROLLER_MANAGER_HOST=host.docker.internal:50051
-```
-
-## Migration Guide
-
-### Before Phase 57 (Old Approach)
-
-```python
-# server.py - Tightly coupled to psmove
-import psmove
-move = psmove.PSMove(0)
-trigger = move.get_trigger()
-move.set_leds(255, 0, 0)
-```
-
-```yaml
-# Separate mock Dockerfile
-services:
-  mock-controller-manager:
-    dockerfile: Dockerfile.mock  # Special mock image
-    environment:
-      - MOCK_MODE=true
-```
-
-### After Phase 57 (New Approach)
-
-```python
-# server.py - Uses backend abstraction
-from backend_factory import create_backend
-
-backend = create_backend()  # Auto-detects platform
-await backend.initialize()
-state = await backend.get_controller_state(serial)
-await backend.set_led_color(serial, 255, 0, 0)
-```
-
-```yaml
-# Single Dockerfile, backend selected via env var
-services:
-  mock-controller-manager:
-    dockerfile: Dockerfile  # Same for all modes!
-    environment:
-      - CONTROLLER_BACKEND=mock
+```bash
+make up-mock  # Uses CI flagd config (controller_backend=mock)
 ```
 
 ## Benefits
 
 ### 1. **Single Dockerfile**
 - No more `Dockerfile.mock`
-- Backend selected at runtime via environment variable
+- Backend selected at runtime via flagd
 - Reduces maintenance burden
 
 ### 2. **Windows Development**
@@ -298,16 +237,16 @@ services:
 - Easy to add new backends (macOS, virtual controllers, etc.)
 
 ### 5. **No Code Changes for Mock**
-- Set `CONTROLLER_BACKEND=mock` → instant mock mode
+- Set `controller_backend=mock` in flagd -> instant mock mode
 - No conditional code in service logic
 - Clean separation of concerns
 
-## Environment Variables
+## Configuration (flagd)
 
-| Variable | Values | Default | Description |
-|----------|---------|---------|-------------|
-| `CONTROLLER_BACKEND` | `bluetooth`, `windows`, `mock` | Auto-detect | Force specific backend |
-| `MOCK_CONTROLLER_COUNT` | 1-10 | 4 | Number of mock controllers |
+| Flag | Domain | Values | Default | Description |
+|------|--------|--------|---------|-------------|
+| `controller_backend` | performance | `bluetooth`, `windows`, `mock`, `hidapi` | `bluetooth` | Select backend |
+| `mock_controller_count` | performance | 2, 4, 6, 8 | 4 | Mock controllers count |
 
 ## See Also
 

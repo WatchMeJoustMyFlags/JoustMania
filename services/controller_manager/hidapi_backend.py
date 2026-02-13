@@ -9,7 +9,7 @@ Requires:
 - hidapi Python package (pip install hidapi)
 - libhidapi-hidraw0 system library (apt install libhidapi-hidraw0)
 
-Activated via CONTROLLER_BACKEND=hidapi environment variable.
+Activated via controller_backend=hidapi flag in flagd (performance domain).
 """
 
 import asyncio

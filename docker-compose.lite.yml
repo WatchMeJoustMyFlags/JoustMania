@@ -68,7 +68,6 @@ services:
       - "50052"
     environment:
       - CONTROLLER_NAMES_FILE=/app/data/controller_names.txt
-      - CONTROLLER_BACKEND=${CONTROLLER_BACKEND:-bluetooth}
       - DBUS_SYSTEM_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket
       - OTEL_SDK_DISABLED=true
     volumes:

@@ -28,7 +28,7 @@ The setup script will guide you through installation and optionally enable autos
 ```bash
 git clone https://github.com/WatchMeJoustMyFlags/JoustMania.git
 cd JoustMania
-CONTROLLER_BACKEND=mock docker compose up -d
+make up-mock
 ```
 
 **Open the dashboard:** http://localhost:8080

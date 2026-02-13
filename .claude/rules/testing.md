@@ -59,7 +59,7 @@ make test      # Run full integration tests
 ## Mocking
 
 - Use `unittest.mock` for service dependencies
-- Controller Manager has a mock backend (`CONTROLLER_BACKEND=mock`)
+- Controller Manager has a mock backend (`controller_backend=mock` flag in flagd)
 - Tests use `MockControllerManagerService`, etc.
 
 ## Disabling OTEL in Tests
