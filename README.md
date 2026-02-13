@@ -67,21 +67,21 @@ make up-mock
 │         Unified entry point with reverse proxy routing          │
 └─────────────────────────────────────────────────────────────────┘
                               │
-        ┌─────────────────────┼─────────────────────┐
-        ▼                     ▼                     ▼
-┌───────────────┐    ┌───────────────┐    ┌───────────────┐
-│     Menu      │    │     Game      │    │   Settings    │
-│    :50054     │    │  Coordinator  │    │    :50051     │
-└───────────────┘    │    :50053     │    └───────────────┘
-                     └───────────────┘
+              ┌───────────────┼───────────────┐
+              ▼               ▼               ▼
+      ┌───────────────┐ ┌───────────┐ ┌───────────────┐
+      │     Menu      │ │   Game    │ │  Controller   │
+      │    :50054     │ │Coordinator│ │   Manager     │
+      └───────────────┘ │  :50053   │ │    :50052     │
+                        └───────────┘ └───────────────┘
                               │
-        ┌─────────────────────┼─────────────────────┐
-        ▼                     ▼                     ▼
-┌───────────────┐    ┌───────────────┐    ┌───────────────┐
-│  Controller   │    │     Audio     │    │ Observability │
-│   Manager     │    │    :50056     │    │ Jaeger/Prom   │
-│    :50052     │    └───────────────┘    │ Grafana/Loki  │
-└───────────────┘                         └───────────────┘
+              ┌───────────────┼───────────────┐
+              ▼               ▼               ▼
+      ┌───────────────┐ ┌───────────┐ ┌───────────────┐
+      │     Audio     │ │   flagd   │ │ Observability │
+      │    :50056     │ │  :8015    │ │ Jaeger/Prom   │
+      └───────────────┘ └───────────┘ │ Grafana/Loki  │
+                                      └───────────────┘
 ```
 
 **For detailed architecture:** See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
@@ -119,13 +119,13 @@ See [Mock Environment Guide](services/controller_manager/MOCK_ENVIRONMENT.md) fo
 
 | Service | Port | Purpose |
 |---------|------|---------|
-| Settings | 50051 | Centralized configuration |
 | Controller Manager | 50052 | PS Move I/O and pairing |
 | Game Coordinator | 50053 | Game lifecycle management |
 | Menu | 50054 | Menu navigation |
 | Audio | 50056 | Audio playback and mixing |
 | Dashboard | 8080 | Web UI and reverse proxy |
 | Connect Proxy | - | gRPC-web bridge |
+| flagd | 8015 | Feature flags (OpenFeature) |
 
 ## Technology Stack
 
