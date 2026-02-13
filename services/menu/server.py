@@ -18,7 +18,7 @@ import os
 
 # Configure logging early, before any logging calls
 # This must happen before any logging.warning/info/etc to ensure LOG_LEVEL is respected
-log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
     level=getattr(logging, log_level, logging.INFO),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -89,11 +89,12 @@ async def serve(port=50054):
     await menu_servicer.start_game_event_monitor()
 
     # Auto-start menu (so controllers light up immediately)
-    auto_start = os.getenv("MENU_AUTO_START", "true").lower() == "true"
+    # Read from flagd user_preferences domain (initialized by MenuServicer.__init__)
+    auto_start = menu_servicer.user_prefs_client.get_boolean_value("menu_auto_start", True)
     if auto_start:
         menu_servicer.state = menu_pb2.MenuState.RUNNING
         menu_servicer.current_selection = Games.JoustFFA
-        logger.info("Menu auto-started (MENU_AUTO_START=true)")
+        logger.info("Menu auto-started (menu_auto_start flag=true)")
 
     try:
         await server.wait_for_termination()
