@@ -345,8 +345,8 @@ class AdminModeHandler:
                 if self.active and self.controller_serial == serial:
                     logger.info(f"Admin mode auto-exit after {self._timeout_seconds}s timeout")
                     await self._exit_to_connected(serial)
-            except asyncio.CancelledError:
-                pass  # Normal cancellation when exiting early
+            except asyncio.CancelledError:  # NOSONAR — intentional: timeout task cancelled on early exit
+                pass
 
         self._timeout_task = asyncio.create_task(timeout_exit())
 
@@ -474,8 +474,8 @@ class AdminModeHandler:
                 if self.active and serial == self.controller_serial:
                     logger.info(f"Trigger hold completed, triggering force start for {serial}")
                     await self.handle_force_start(serial)
-            except asyncio.CancelledError:
-                pass  # Normal cancellation when trigger released early
+            except asyncio.CancelledError:  # NOSONAR — intentional: hold-timer cancelled on trigger release
+                pass
 
         self._trigger_hold_task = asyncio.create_task(trigger_hold_timer())
         self._pending_tasks.add(self._trigger_hold_task)
