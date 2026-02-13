@@ -1,7 +1,7 @@
 """
 Abstract Controller Backend Interface
 
-Defines the contract for controller backends (BlueZ, Windows, Mock).
+Defines the contract for controller backends (BlueZ, HidAPI, Mock).
 Each backend implements this interface to provide platform-specific
 controller access while maintaining a consistent API.
 """
@@ -15,7 +15,7 @@ class ControllerBackend(ABC):
 
     Implementations:
     - BluetoothBackend: Linux/BlueZ backend for Raspberry Pi
-    - WindowsBackend: Windows backend using psmoveapi
+    - HidapiBackend: Cross-platform backend using hidapi
     - MockBackend: Mock backend for testing without hardware
     """
 

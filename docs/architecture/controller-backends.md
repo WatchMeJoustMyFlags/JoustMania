@@ -7,7 +7,7 @@ The controller manager uses a unified backend system that supports multiple plat
 - Single `Dockerfile` for all modes
 - `controller_backend` flagd flag selects implementation at runtime
 - Clean abstraction via `ControllerBackend` interface
-- Easy development on Windows/Linux/Mock
+- Easy development with Mock backend
 
 ## Architecture
 
@@ -35,11 +35,11 @@ The controller manager uses a unified backend system that supports multiple plat
        ┌─────────┴─────────┬─────────────┐
        ▼                   ▼             ▼
 ┌─────────────┐    ┌──────────────┐ ┌──────────┐
-│  Bluetooth  │    │   Windows    │ │   Mock   │
+│  Bluetooth  │    │   HidAPI     │ │   Mock   │
 │   Backend   │    │   Backend    │ │  Backend │
 │             │    │              │ │          │
-│ Linux/BlueZ │    │  psmoveapi   │ │ Testing  │
-│ + psmove    │    │  (Windows)   │ │ (No HW)  │
+│ Linux/BlueZ │    │  libhidapi   │ │ Testing  │
+│ + psmove    │    │  (Linux)     │ │ (No HW)  │
 └─────────────┘    └──────────────┘ └──────────┘
 ```
 
@@ -94,33 +94,7 @@ controller-manager:
     - /dev:/dev:rslave   # Required: rslave propagation for new devices
 ```
 
-### 2. WindowsBackend (Development)
-
-**File**: `services/controller_manager/windows_backend.py`
-
-**Platform**: Windows 10/11
-
-**Dependencies**:
-- `psmoveapi` only (no dbus required)
-
-**Usage**:
-```json
-// services/flagd/performance.json
-"controller_backend": {
-  "defaultVariant": "windows"
-}
-```
-
-**Features**:
-- Pair via Windows Bluetooth settings
-- Full LED + rumble support
-- Motion sensors
-- Battery monitoring
-- **No RSSI** (Windows API limitation)
-
-**Use Case**: Develop/debug with real controllers on Windows without deploying to Pi
-
-### 3. MockBackend (Testing/CI)
+### 2. MockBackend (Testing/CI)
 
 **File**: `services/controller_manager/mock_backend.py`
 
@@ -157,24 +131,11 @@ Or use `make up-mock` which applies the CI flagd config.
 ### Priority
 
 1. **OpenFeature flag** (`controller_backend` in performance domain) - runtime-switchable via flagd
-2. **Platform auto-detection** - Linux -> bluetooth, Windows -> windows
+2. **Default** - Linux bluetooth backend
 
-### Auto-Detection
+### Fallback
 
-If the flagd flag is empty or flagd is unavailable, the system auto-detects:
-
-```python
-# services/controller_manager/backend_factory.py
-def create_backend():
-    system = platform.system()
-
-    if system == "Windows":
-        return WindowsBackend()
-    elif system == "Linux":
-        return BluetoothBackend()
-    else:
-        raise RuntimeError("Unsupported platform")
-```
+If the flagd flag is empty or flagd is unavailable, the system defaults to `BluetoothBackend`.
 
 ### Manual Override
 
@@ -221,22 +182,12 @@ make up-mock  # Uses CI flagd config (controller_backend=mock)
 - Backend selected at runtime via flagd
 - Reduces maintenance burden
 
-### 2. **Windows Development**
-- Develop with real controllers on Windows/WSL
-- No Pi deployment required for testing
-- Full debugging in IDE
-
-### 3. **Clean Testing**
+### 2. **Clean Testing**
 - Mock backend has zero hardware dependencies
 - Runs in CI without special setup
 - Consistent behavior across environments
 
-### 4. **Platform Independence**
-- Same service code works on all platforms
-- Backend handles platform-specific details
-- Easy to add new backends (macOS, virtual controllers, etc.)
-
-### 5. **No Code Changes for Mock**
+### 3. **No Code Changes for Mock**
 - Set `controller_backend=mock` in flagd -> instant mock mode
 - No conditional code in service logic
 - Clean separation of concerns
@@ -245,7 +196,7 @@ make up-mock  # Uses CI flagd config (controller_backend=mock)
 
 | Flag | Domain | Values | Default | Description |
 |------|--------|--------|---------|-------------|
-| `controller_backend` | performance | `bluetooth`, `windows`, `mock`, `hidapi` | `bluetooth` | Select backend |
+| `controller_backend` | performance | `bluetooth`, `mock`, `hidapi` | `bluetooth` | Select backend |
 | `mock_controller_count` | performance | 2, 4, 6, 8 | 4 | Mock controllers count |
 
 ## See Also

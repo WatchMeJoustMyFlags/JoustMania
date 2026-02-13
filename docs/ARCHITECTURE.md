@@ -71,7 +71,7 @@ JoustMania is a party game system for PS Move controllers, built as a collection
 
 **Backends**:
 - `bluetooth` - Linux BlueZ (production)
-- `windows` - psmoveapi (Windows)
+- `hidapi` - libhidapi (alternative)
 - `mock` - Simulated controllers (testing)
 
 **Special Features**:
