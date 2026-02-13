@@ -221,6 +221,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      flagd:
+        condition: service_started
     restart: unless-stopped
     # Healthcheck defined in Dockerfile (uses grpc_health_probe)
     deploy:

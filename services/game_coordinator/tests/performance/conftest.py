@@ -4,7 +4,6 @@ Pytest conftest for performance tests.
 Handles OTEL disabling and environment setup.
 """
 
-import os
 import sys
 from pathlib import Path
 
@@ -25,9 +24,8 @@ from lib.telemetry import disable_telemetry_for_tests
 disable_telemetry_for_tests()
 disable_metrics_for_tests()
 
-# Set environment overrides for fast tests (no countdown delay, fast rainbow)
-os.environ.setdefault("COUNTDOWN_DURATION_SECONDS", "0")
-os.environ.setdefault("WINNER_RAINBOW_DURATION_MS", "100")
+# Note: Game timing (countdown, rainbow) now controlled via flagd game_settings (Issue #464)
+# For performance tests, the RuntimeConfigManager defaults are used unless flagd overrides them.
 
 from helpers import TimingResult
 

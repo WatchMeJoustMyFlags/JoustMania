@@ -6,10 +6,14 @@ Provides default values that can be read by game loop.
 
 Phase 44: OpenFeature integration with event-driven flag updates.
 Uses PROVIDER_CONFIGURATION_CHANGED events to reactively update config.
+
+Issue #464: Game timing parameters (countdown_phase_duration_ms,
+winner_rainbow_duration_ms) are now read from flagd game_settings domain.
+countdown_duration_seconds removed; countdown skip is now controlled by
+setting countdown_phase_duration_ms=0 (the "skip" variant).
 """
 
 import logging
-import os
 import threading
 from dataclasses import dataclass, field
 
@@ -50,17 +54,14 @@ class GamePerformanceConfig:
     # Phase 72: Increased from 30Hz to 60Hz for better responsiveness
     update_frequency_hz: int = 60  # Game loop frequency
 
-    # Countdown duration (seconds) - configurable for faster tests
-    # Set COUNTDOWN_DURATION_SECONDS=0 to skip countdown entirely
-    countdown_duration_seconds: int = 3
-
-    # Winner rainbow effect duration (milliseconds) - configurable for faster tests
-    # Set WINNER_RAINBOW_DURATION_MS=300 for fast tests (default 3000ms = 3s)
+    # Winner rainbow effect duration (milliseconds)
+    # Controlled via flagd game_settings domain (Issue #464)
     winner_rainbow_duration_ms: int = 3000
 
     # Countdown phase duration (milliseconds) - each LED phase (red/yellow/green)
     # This value is shared between game_coordinator (beep timing) and controller_manager (LED timing)
-    # Set COUNTDOWN_PHASE_DURATION_MS to override (default 750ms per phase)
+    # Controlled via flagd game_settings domain (Issue #464)
+    # Set to 0 (the "skip" variant) to skip countdown entirely
     countdown_phase_duration_ms: int = 750
 
     # Analytics configuration
@@ -84,22 +85,28 @@ class RuntimeConfigManager:
     def __init__(self):
         self.config = GamePerformanceConfig()
         self._config_lock = threading.RLock()  # Protect config updates
-        self._apply_environment_overrides()
 
-        # Initialize feature flag client
-        self.flag_client = None
+        # Initialize feature flag clients
+        self.flag_client = None  # performance domain
+        self.game_settings_client = None  # game_settings domain
         self._setup_feature_flags()
 
     def _setup_feature_flags(self):
-        """Initialize feature flag client and event listeners."""
+        """Initialize feature flag clients and event listeners."""
         try:
             from openfeature import api
 
             from lib.feature_flags import get_flag_client, init_flag_domain
 
+            # Performance domain (update_frequency_hz, sensitivity_mode)
             init_flag_domain("performance")
             self.flag_client = get_flag_client("performance")
-            logger.info("Feature flag client initialized")
+
+            # Game settings domain (countdown_phase_duration_ms, winner_rainbow_duration_ms)
+            init_flag_domain("game_settings")
+            self.game_settings_client = get_flag_client("game_settings")
+
+            logger.info("Feature flag clients initialized (performance, game_settings)")
 
             # Register event handler for configuration changes
             api.add_handler(ProviderEvent.PROVIDER_CONFIGURATION_CHANGED, self._on_flags_changed)
@@ -110,39 +117,12 @@ class RuntimeConfigManager:
 
         except ImportError:
             self.flag_client = None
+            self.game_settings_client = None
             logger.warning("Could not initialize feature flags, using defaults")
         except Exception as e:
             self.flag_client = None
+            self.game_settings_client = None
             logger.error(f"Failed to initialize feature flags: {e}")
-
-    def _apply_environment_overrides(self):
-        """Apply environment variable overrides to configuration."""
-        # Countdown duration override (for faster tests)
-        countdown_env = os.environ.get("COUNTDOWN_DURATION_SECONDS")
-        if countdown_env is not None:
-            try:
-                self.config.countdown_duration_seconds = int(countdown_env)
-                logger.info(f"Countdown duration overridden to {self.config.countdown_duration_seconds}s")
-            except ValueError:
-                logger.warning(f"Invalid COUNTDOWN_DURATION_SECONDS: {countdown_env}")
-
-        # Winner rainbow duration override (for faster tests)
-        rainbow_env = os.environ.get("WINNER_RAINBOW_DURATION_MS")
-        if rainbow_env is not None:
-            try:
-                self.config.winner_rainbow_duration_ms = int(rainbow_env)
-                logger.info(f"Winner rainbow duration overridden to {self.config.winner_rainbow_duration_ms}ms")
-            except ValueError:
-                logger.warning(f"Invalid WINNER_RAINBOW_DURATION_MS: {rainbow_env}")
-
-        # Countdown phase duration override (for faster tests or tuning)
-        phase_env = os.environ.get("COUNTDOWN_PHASE_DURATION_MS")
-        if phase_env is not None:
-            try:
-                self.config.countdown_phase_duration_ms = int(phase_env)
-                logger.info(f"Countdown phase duration overridden to {self.config.countdown_phase_duration_ms}ms")
-            except ValueError:
-                logger.warning(f"Invalid COUNTDOWN_PHASE_DURATION_MS: {phase_env}")
 
     def _on_flags_changed(self, event_details):
         """
@@ -174,6 +154,10 @@ class RuntimeConfigManager:
 
         Called during initialization and when PROVIDER_CONFIGURATION_CHANGED
         event fires. Thread-safe and includes metrics tracking.
+
+        Reads from two domains:
+        - performance: update_frequency_hz, sensitivity_mode
+        - game_settings: countdown_phase_duration_ms, winner_rainbow_duration_ms
         """
         if not self.flag_client:
             return
@@ -183,13 +167,15 @@ class RuntimeConfigManager:
             from services.game_coordinator import metrics
 
             with self._config_lock:
+                # === Performance domain flags ===
+
                 # Update frequency (15/30/60 Hz)
                 old_hz = self.config.update_frequency_hz
                 new_hz = self.flag_client.get_integer_value(
                     "update_frequency_hz", self.config.update_frequency_hz, EvaluationContext()
                 )
                 if new_hz != old_hz:
-                    logger.info(f"🎯 Config updated: update_frequency_hz {old_hz} → {new_hz} Hz")
+                    logger.info(f"Config updated: update_frequency_hz {old_hz} -> {new_hz} Hz")
                     self.config.update_frequency_hz = new_hz
                     metrics.config_changes_total.labels(parameter="update_frequency_hz").inc()
 
@@ -202,7 +188,7 @@ class RuntimeConfigManager:
                     "sensitivity_mode", self.config.sensitivity_mode, EvaluationContext()
                 )
                 if new_sensitivity != old_sensitivity:
-                    logger.info(f"🎯 Config updated: sensitivity_mode {old_sensitivity} → {new_sensitivity}")
+                    logger.info(f"Config updated: sensitivity_mode {old_sensitivity} -> {new_sensitivity}")
                     self.config.sensitivity_mode = new_sensitivity
                     metrics.config_changes_total.labels(parameter="sensitivity_mode").inc()
 
@@ -211,6 +197,33 @@ class RuntimeConfigManager:
 
                 # Update current config gauges
                 metrics.current_update_frequency_hz.set(self.config.update_frequency_hz)
+
+                # === Game settings domain flags ===
+
+                if self.game_settings_client:
+                    # Countdown phase duration (0 = skip countdown entirely)
+                    old_phase = self.config.countdown_phase_duration_ms
+                    new_phase = self.game_settings_client.get_integer_value(
+                        "countdown_phase_duration_ms", self.config.countdown_phase_duration_ms, EvaluationContext()
+                    )
+                    if new_phase != old_phase:
+                        logger.info(f"Config updated: countdown_phase_duration_ms {old_phase} -> {new_phase} ms")
+                        self.config.countdown_phase_duration_ms = new_phase
+                        metrics.config_changes_total.labels(parameter="countdown_phase_duration_ms").inc()
+
+                    metrics.flag_evaluations_total.labels(flag_key="countdown_phase_duration_ms").inc()
+
+                    # Winner rainbow duration
+                    old_rainbow = self.config.winner_rainbow_duration_ms
+                    new_rainbow = self.game_settings_client.get_integer_value(
+                        "winner_rainbow_duration_ms", self.config.winner_rainbow_duration_ms, EvaluationContext()
+                    )
+                    if new_rainbow != old_rainbow:
+                        logger.info(f"Config updated: winner_rainbow_duration_ms {old_rainbow} -> {new_rainbow} ms")
+                        self.config.winner_rainbow_duration_ms = new_rainbow
+                        metrics.config_changes_total.labels(parameter="winner_rainbow_duration_ms").inc()
+
+                    metrics.flag_evaluations_total.labels(flag_key="winner_rainbow_duration_ms").inc()
 
         except Exception as e:
             # Don't crash on flag evaluation failure, just log and keep defaults
