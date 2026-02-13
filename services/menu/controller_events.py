@@ -198,6 +198,8 @@ class ControllerEventLoop:
                 yield msg
             except TimeoutError:
                 continue
+            except asyncio.CancelledError:
+                raise
 
     async def _handle_connection_error(self, error: Exception, retry_delay: float, max_retry_delay: float) -> float:
         """

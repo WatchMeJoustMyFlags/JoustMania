@@ -295,6 +295,8 @@ class FeedbackManager(ControllerEffectsBase):
                         await self._effect_fade_out(serial, color, duration_ms)
                     case "fade_in":
                         await self._effect_fade_in(serial, color, duration_ms)
+            except asyncio.CancelledError:
+                raise
             finally:
                 # Clear effect active flag
                 self.backend.set_effect_active(serial, False)
