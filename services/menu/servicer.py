@@ -5,6 +5,7 @@ import contextlib
 import logging
 import os
 import time
+from dataclasses import dataclass
 
 from opentelemetry import context as otel_context
 from opentelemetry import trace
@@ -30,6 +31,14 @@ logger = logging.getLogger(__name__)
 
 # Lazy telemetry initialization - defers OTLP setup until first span
 tracer = get_tracer(__name__)
+
+
+@dataclass
+class _GameEventResult:
+    """Result from processing game events in a stream iteration."""
+
+    game_started: bool
+    should_return: bool
 
 
 class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
@@ -500,7 +509,6 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             serial: Controller serial that triggered the start (for logging)
             source: Source of the start request ("controller" or "web")
         """
-        from lib.types import GameEvent
         from proto import game_coordinator_pb2, game_coordinator_pb2_grpc
 
         # Brief delay to let button monitor finish current event dispatch
@@ -525,35 +533,17 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
                 logger.warning(f"Not enough players to start game: {len(controllers)}")
                 return
 
-            # Stop idle monitor and lobby music before starting game
-            self.idle_monitor.stop()
+            await self._prepare_game_start()
 
-            with tracer.start_as_current_span("stop_lobby_music"):
-                await self.audio.stop_lobby_music()
-
-            with tracer.start_as_current_span("stop_button_monitor"):
-                await self.stop_button_monitor()
-
-            # Clear menu_player_ready metrics so dashboard only shows game_player_alive
-            metrics.player_ready.clear()
-            logger.info("Button monitor and lobby music stopped for game start")
-
-            self.state = menu_pb2.MenuState.GAME_STARTING
-
-            # Build player list for GameCoordinator
+            # Build player list and config
             players = [
                 game_coordinator_pb2.Player(serial=s, team=i % 2, alive=True, score=0)
                 for i, s in enumerate(controllers)
             ]
-
-            # Build typed start config (current_selection is already a Games enum)
             config = self._build_game_config(self.current_selection, players)
 
             # Inject trace context into gRPC metadata
-            propagator = TraceContextTextMapPropagator()
-            carrier: dict[str, str] = {}
-            propagator.inject(carrier)
-            metadata = list(carrier.items())
+            metadata = self._build_trace_metadata()
 
             # Call GameCoordinator.StreamGameEvents with start_config
             stub = game_coordinator_pb2_grpc.GameCoordinatorServiceStub(self.game_coordinator_channel)
@@ -564,86 +554,196 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
                 f"{self.current_selection.name} with {len(controllers)} players"
             )
 
-            stream = None
-            game_started = False
-            max_reconnect_attempts = 3
+            await self._run_game_event_stream(stub, request, metadata, span)
 
-            try:
-                for attempt in range(max_reconnect_attempts + 1):
-                    try:
-                        # First attempt sends start_config; reconnections subscribe without it
-                        if attempt == 0:
-                            stream = stub.StreamGameEvents(request, metadata=metadata)
-                        else:
-                            metrics.game_event_stream_reconnects_total.inc()
-                            logger.warning(
-                                f"Reconnecting game event stream (attempt {attempt}/{max_reconnect_attempts})"
-                            )
-                            subscribe_request = game_coordinator_pb2.StreamEventsRequest()
-                            stream = stub.StreamGameEvents(subscribe_request, metadata=metadata)
+    async def _prepare_game_start(self) -> None:
+        """Stop lobby services in preparation for game start."""
+        self.idle_monitor.stop()
 
-                        async for event in stream:
-                            if not game_started:
-                                if event.event_type == "game_start_error":
-                                    error = event.data.get("error", "Unknown error")
-                                    logger.error(f"Game start failed: {error}")
-                                    span.set_attribute("error", error)
-                                    self.state = menu_pb2.MenuState.RUNNING
-                                    await self._restart_lobby()
-                                    return
+        with tracer.start_as_current_span("stop_lobby_music"):
+            await self.audio.stop_lobby_music()
 
-                                logger.info(f"Game started successfully: {event.event_type}")
-                                span.set_attribute("game.started", True)
-                                game_started = True
+        with tracer.start_as_current_span("stop_button_monitor"):
+            await self.stop_button_monitor()
 
-                                # Clear ready state now that game has started (Issue #256)
-                                self._clear_ready_state()
-                                logger.info("Ready state cleared on game start confirmation")
+        metrics.player_ready.clear()
+        logger.info("Button monitor and lobby music stopped for game start")
 
-                            logger.info(f"Game event received: {event.event_type}")
+        self.state = menu_pb2.MenuState.GAME_STARTING
 
-                            if GameEvent.is_game_ending(event.event_type):
-                                logger.info(f"Game ended: {event.event_type}")
-                                await self.event_publisher.publish(GameEvent.GAME_ENDED, event.data)
-                                await self._restart_lobby()
-                                return
+    def _build_trace_metadata(self) -> list[tuple[str, str]]:
+        """Build gRPC metadata with trace context propagation."""
+        propagator = TraceContextTextMapPropagator()
+        carrier: dict[str, str] = {}
+        propagator.inject(carrier)
+        return list(carrier.items())
 
-                        # Stream ended normally without game_ended event
-                        break
+    async def _run_game_event_stream(self, stub, request, metadata, span) -> None:
+        """
+        Run the game event stream with reconnection logic.
 
-                    except asyncio.CancelledError:
-                        raise  # Never retry on cancellation
+        Args:
+            stub: GameCoordinator gRPC stub
+            request: Initial StreamEventsRequest with start_config
+            metadata: gRPC metadata with trace context
+            span: Current tracing span
+        """
+        stream = None
+        game_started = False
+        max_reconnect_attempts = 3
 
-                    except Exception as e:
-                        if stream is not None:
-                            stream.cancel()
-                            stream = None
+        try:
+            for attempt in range(max_reconnect_attempts + 1):
+                try:
+                    stream = self._open_game_stream(stub, request, metadata, attempt, max_reconnect_attempts)
+                    result = await self._consume_game_events(stream, game_started, span)
 
-                        # Don't retry if game never started
-                        if not game_started:
-                            raise
+                    if result.should_return:
+                        return
+                    game_started = result.game_started
+                    # Stream ended normally without game_ended event
+                    break
 
-                        if attempt >= max_reconnect_attempts:
-                            logger.error(f"Game event stream failed after {max_reconnect_attempts} attempts: {e}")
-                            raise
+                except asyncio.CancelledError:
+                    raise
 
-                        backoff = attempt + 1
-                        logger.warning(f"Game event stream error: {e}. Reconnecting in {backoff}s...")
-                        await asyncio.sleep(backoff)
+                except Exception as e:
+                    self._cancel_stream(stream)
+                    stream = None
+                    game_started = self._check_retry_eligible(e, game_started, attempt, max_reconnect_attempts)
+                    backoff = attempt + 1
+                    logger.warning(f"Game event stream error: {e}. Reconnecting in {backoff}s...")
+                    await asyncio.sleep(backoff)
 
-                # Restart lobby after stream ends
+            await self._restart_lobby()
+
+        except asyncio.CancelledError:
+            logger.info("Game stream cancelled")
+            raise
+        except Exception as e:
+            logger.error(f"Game stream error: {e}", exc_info=True)
+            span.record_exception(e)
+            await self._restart_lobby()
+        finally:
+            self._cancel_stream(stream)
+
+    def _open_game_stream(self, stub, request, metadata, attempt: int, max_attempts: int):
+        """
+        Open a game event stream, using start_config on first attempt.
+
+        Args:
+            stub: GameCoordinator gRPC stub
+            request: StreamEventsRequest with start_config
+            metadata: gRPC metadata
+            attempt: Current attempt number (0-based)
+            max_attempts: Maximum reconnection attempts
+
+        Returns:
+            The gRPC stream
+        """
+        from proto import game_coordinator_pb2
+
+        if attempt == 0:
+            return stub.StreamGameEvents(request, metadata=metadata)
+
+        metrics.game_event_stream_reconnects_total.inc()
+        logger.warning(f"Reconnecting game event stream (attempt {attempt}/{max_attempts})")
+        subscribe_request = game_coordinator_pb2.StreamEventsRequest()
+        return stub.StreamGameEvents(subscribe_request, metadata=metadata)
+
+    async def _consume_game_events(self, stream, game_started: bool, span):
+        """
+        Consume events from a game event stream.
+
+        Args:
+            stream: The gRPC stream to read events from
+            game_started: Whether the game has already started
+            span: Current tracing span
+
+        Returns:
+            _GameEventResult with updated state
+        """
+        from lib.types import GameEvent
+
+        async for event in stream:
+            if not game_started:
+                result = await self._handle_first_game_event(event, span)
+                if result.should_return:
+                    return result
+                game_started = True
+
+            logger.info(f"Game event received: {event.event_type}")
+
+            if GameEvent.is_game_ending(event.event_type):
+                logger.info(f"Game ended: {event.event_type}")
+                await self.event_publisher.publish(GameEvent.GAME_ENDED, event.data)
                 await self._restart_lobby()
+                return _GameEventResult(game_started=game_started, should_return=True)
 
-            except asyncio.CancelledError:
-                logger.info("Game stream cancelled")
-                raise
-            except Exception as e:
-                logger.error(f"Game stream error: {e}", exc_info=True)
-                span.record_exception(e)
-                await self._restart_lobby()
-            finally:
-                if stream is not None:
-                    stream.cancel()
+        return _GameEventResult(game_started=game_started, should_return=False)
+
+    async def _handle_first_game_event(self, event, span):
+        """
+        Handle the first event received after opening a game stream.
+
+        Checks for start errors and marks game as started on success.
+
+        Args:
+            event: The first game event
+            span: Current tracing span
+
+        Returns:
+            _GameEventResult indicating whether to return early
+        """
+        if event.event_type == "game_start_error":
+            error = event.data.get("error", "Unknown error")
+            logger.error(f"Game start failed: {error}")
+            span.set_attribute("error", error)
+            self.state = menu_pb2.MenuState.RUNNING
+            await self._restart_lobby()
+            return _GameEventResult(game_started=False, should_return=True)
+
+        logger.info(f"Game started successfully: {event.event_type}")
+        span.set_attribute("game.started", True)
+
+        # Clear ready state now that game has started (Issue #256)
+        self._clear_ready_state()
+        logger.info("Ready state cleared on game start confirmation")
+        return _GameEventResult(game_started=True, should_return=False)
+
+    @staticmethod
+    def _cancel_stream(stream):
+        """Cancel a gRPC stream if it exists."""
+        if stream is not None:
+            stream.cancel()
+
+    @staticmethod
+    def _check_retry_eligible(error: Exception, game_started: bool, attempt: int, max_attempts: int) -> bool:
+        """
+        Check if a stream error is eligible for retry.
+
+        Raises the error if retry is not possible.
+
+        Args:
+            error: The exception that occurred
+            game_started: Whether the game has started
+            attempt: Current attempt number
+            max_attempts: Maximum reconnection attempts
+
+        Returns:
+            game_started value (unchanged, for caller convenience)
+
+        Raises:
+            Exception: If retry is not eligible
+        """
+        if not game_started:
+            raise error
+
+        if attempt >= max_attempts:
+            logger.error(f"Game event stream failed after {max_attempts} attempts: {error}")
+            raise error
+
+        return game_started
 
     async def _restart_lobby(self):
         """Restart lobby state after game ends."""

@@ -142,76 +142,97 @@ class ControllerEventLoop:
 
         while self._running:
             try:
-                stub = controller_manager_pb2_grpc.ControllerManagerServiceStub(self._channel)
-
-                logger.info("Connecting to Controller Manager (bidirectional stream)...")
-
-                # Create bidirectional stream with async generator for outbound messages
-                request_queue: asyncio.Queue = asyncio.Queue()
-
-                async def request_generator(queue=request_queue):
-                    """Async generator that yields ButtonEventStreamControl messages."""
-                    # Send initial config
-                    initial_config = controller_manager_pb2.ButtonEventStreamControl(
-                        config=controller_manager_pb2.ButtonEventStreamConfig()
-                    )
-                    yield initial_config
-
-                    # Then yield messages from queue
-                    while self._running:
-                        try:
-                            msg = await asyncio.wait_for(queue.get(), timeout=1.0)
-                            yield msg
-                        except TimeoutError:
-                            continue
-                        except asyncio.CancelledError:
-                            # Re-raise to properly propagate cancellation
-                            raise
-
-                # Start bidirectional stream
-                stream = stub.StreamButtonEvents(request_generator())
-
-                # Store stream reference and queue for sending messages
-                async with self._stream_lock:
-                    self._stream = stream
-                    self._stream_queue = request_queue
-                    # Wire LED controller to use the same stream
-                    self._led.set_stream(request_queue, self._stream_lock)
-
-                logger.info("Connected to Controller Manager")
-                retry_delay = 1.0
-
-                # Signal that connection is ready
-                if self._connected_event:
-                    self._connected_event.set()
-
-                # Process incoming events
-                async for event in stream:
-                    if not self._running:
-                        return
-
-                    await self._dispatch_event(event)
-
-                if self._running:
-                    logger.warning("Button event stream ended, reconnecting...")
-
+                retry_delay = await self._run_stream_connection()
             except asyncio.CancelledError:
                 logger.info("Controller event loop cancelled")
                 raise
             except Exception as e:
-                if not self._running:
-                    return
-                logger.error(f"Controller event loop error: {e}, reconnecting in {retry_delay:.1f}s")
-                await asyncio.sleep(retry_delay)
-                retry_delay = min(retry_delay * 2, max_retry_delay)
+                retry_delay = await self._handle_connection_error(e, retry_delay, max_retry_delay)
             finally:
-                # Clear stream reference and connection state on disconnect
-                async with self._stream_lock:
-                    self._stream = None
-                    self._stream_queue = None
-                    self._led.set_stream(None)
-                if self._connected_event:
-                    self._connected_event.clear()
+                await self._clear_stream_state()
+
+    async def _run_stream_connection(self) -> float:
+        """
+        Establish and process a single stream connection.
+
+        Returns:
+            Retry delay reset to 1.0 on successful connection
+        """
+        stub = controller_manager_pb2_grpc.ControllerManagerServiceStub(self._channel)
+        logger.info("Connecting to Controller Manager (bidirectional stream)...")
+
+        request_queue: asyncio.Queue = asyncio.Queue()
+        stream = stub.StreamButtonEvents(self._request_generator(request_queue))
+
+        async with self._stream_lock:
+            self._stream = stream
+            self._stream_queue = request_queue
+            self._led.set_stream(request_queue, self._stream_lock)
+
+        logger.info("Connected to Controller Manager")
+
+        if self._connected_event:
+            self._connected_event.set()
+
+        async for event in stream:
+            if not self._running:
+                return 1.0
+            await self._dispatch_event(event)
+
+        if self._running:
+            logger.warning("Button event stream ended, reconnecting...")
+
+        return 1.0
+
+    async def _request_generator(self, queue: asyncio.Queue):
+        """
+        Async generator that yields ButtonEventStreamControl messages.
+
+        Sends initial config, then yields messages from the queue.
+
+        Args:
+            queue: Queue to read outbound messages from
+        """
+        initial_config = controller_manager_pb2.ButtonEventStreamControl(
+            config=controller_manager_pb2.ButtonEventStreamConfig()
+        )
+        yield initial_config
+
+        while self._running:
+            try:
+                msg = await asyncio.wait_for(queue.get(), timeout=1.0)
+                yield msg
+            except TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                raise
+
+    async def _handle_connection_error(self, error: Exception, retry_delay: float, max_retry_delay: float) -> float:
+        """
+        Handle a connection error with exponential backoff.
+
+        Args:
+            error: The exception that occurred
+            retry_delay: Current retry delay in seconds
+            max_retry_delay: Maximum retry delay in seconds
+
+        Returns:
+            Updated retry delay for next attempt
+        """
+        if not self._running:
+            return retry_delay
+        logger.error(f"Controller event loop error: {error}, reconnecting in {retry_delay:.1f}s")
+        await asyncio.sleep(retry_delay)
+        return min(retry_delay * 2, max_retry_delay)
+
+    async def _clear_stream_state(self) -> None:
+        """Clear stream reference and connection state on disconnect."""
+        async with self._stream_lock:
+            self._stream = None
+            self._stream_queue = None
+            self._led.set_stream(None)
+        if self._connected_event:
+            self._connected_event.clear()
 
     async def _dispatch_event(self, event) -> None:
         """
