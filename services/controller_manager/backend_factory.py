@@ -58,28 +58,26 @@ def _resolve_backend_name() -> str | None:
 
 def _create_backend_by_name(name: str) -> ControllerBackend:
     """Create a backend instance by name."""
-    if name == "mock":
-        from services.controller_manager.mock_backend import MockBackend
+    match name:
+        case "mock":
+            from services.controller_manager.mock_backend import MockBackend
 
-        num_controllers = _get_mock_controller_count()
-        return MockBackend(num_controllers)
+            num_controllers = _get_mock_controller_count()
+            return MockBackend(num_controllers)
+        case "bluetooth":
+            from services.controller_manager.bluetooth_backend import BluetoothBackend
 
-    if name == "bluetooth":
-        from services.controller_manager.bluetooth_backend import BluetoothBackend
+            return BluetoothBackend()
+        case "hidapi":
+            from services.controller_manager.hidapi_backend import HidapiBackend
 
-        return BluetoothBackend()
+            return HidapiBackend()
+        case "windows":
+            from services.controller_manager.windows_backend import WindowsBackend
 
-    if name == "hidapi":
-        from services.controller_manager.hidapi_backend import HidapiBackend
-
-        return HidapiBackend()
-
-    if name == "windows":
-        from services.controller_manager.windows_backend import WindowsBackend
-
-        return WindowsBackend()
-
-    raise RuntimeError(f"Unknown backend: {name}")
+            return WindowsBackend()
+        case _:
+            raise RuntimeError(f"Unknown backend: {name}")
 
 
 def create_backend() -> ControllerBackend:
