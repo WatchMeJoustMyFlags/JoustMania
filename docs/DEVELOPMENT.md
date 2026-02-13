@@ -80,7 +80,7 @@ export PATH="$HOME/.local/bin:$PATH"
 ### 1. Clone the Repository
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/WatchMeJoustMyFlags/JoustMania.git
 cd JoustMania
 ```
 
@@ -249,7 +249,7 @@ docker compose up -d controller-manager game-coordinator menu
 docker compose up
 ```
 
-### Scale Services (Future)
+### Scale Services
 
 ```bash
 # Run multiple game coordinators
@@ -583,36 +583,30 @@ python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. newservice.pr
 
 ```python
 # server.py
-import grpc
-from concurrent import futures
-from opentelemetry.instrumentation.grpc import GrpcInstrumentorServer
-import newservice_pb2
-import newservice_pb2_grpc
+import asyncio
+import logging
+import grpc.aio
+from proto import newservice_pb2, newservice_pb2_grpc
 
 class NewServiceServicer(newservice_pb2_grpc.NewServiceServicer):
-    def DoSomething(self, request, context):
+    async def DoSomething(self, request, context):
         # Implementation
         return newservice_pb2.DoSomethingResponse(
             success=True,
             message=f"Processed: {request.param}"
         )
 
-def serve():
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-
-    # Instrument with OpenTelemetry
-    GrpcInstrumentorServer().instrument_server(server)
-
+async def serve():
+    server = grpc.aio.server()
     newservice_pb2_grpc.add_NewServiceServicer_to_server(
         NewServiceServicer(), server
     )
-
     server.add_insecure_port('[::]:50057')
-    server.start()
-    server.wait_for_termination()
+    await server.start()
+    await server.wait_for_termination()
 
 if __name__ == '__main__':
-    serve()
+    asyncio.run(serve())
 ```
 
 5. **Create Dockerfile**

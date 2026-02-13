@@ -313,8 +313,6 @@ Settings are configured via admin mode (hold all 4 face buttons):
 
 ## Configuration
 
-### Configuration
-
 | Setting | Source | Default |
 |---------|--------|---------|
 | `controller_backend` | flagd (performance) | `bluetooth` |
