@@ -275,12 +275,6 @@ def get_context_propagation_interceptors() -> list:
     ]
 
 
-# Backward compatibility alias
-def get_tracing_interceptors(_tracer=None) -> list:
-    """Deprecated: Use get_context_propagation_interceptors() instead."""
-    return get_context_propagation_interceptors()
-
-
 # =============================================================================
 # Server-side interceptors
 # =============================================================================
@@ -301,26 +295,6 @@ def _extract_context_from_metadata(context: grpc.aio.ServicerContext) -> otel_co
         for key, value in invocation_metadata:
             metadata[key] = value
     return extract(metadata)
-
-
-class ServerContextPropagationInterceptor(grpc.aio.ServerInterceptor):
-    """
-    Async server interceptor that extracts trace context from incoming requests.
-
-    Extracts W3C Trace Context (traceparent, tracestate) from gRPC metadata and
-    attaches it to the current context. This allows service spans to be linked
-    to the parent trace from the calling service.
-    """
-
-    async def intercept_service(
-        self,
-        continuation: Callable,
-        handler_call_details: grpc.HandlerCallDetails,
-    ) -> Any:
-        """Intercept incoming RPC to extract and attach trace context."""
-        # Note: We can't extract context here because we don't have ServicerContext yet.
-        # The actual context extraction happens in the handler wrapper below.
-        return await continuation(handler_call_details)
 
 
 class ServerUnaryUnaryInterceptor(grpc.aio.ServerInterceptor):

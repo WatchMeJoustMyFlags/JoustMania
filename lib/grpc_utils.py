@@ -160,9 +160,9 @@ def create_channel(
 
         interceptors.extend(get_metrics_interceptors())
     if enable_tracing:
-        from lib.grpc_tracing import get_tracing_interceptors
+        from lib.grpc_tracing import get_context_propagation_interceptors
 
-        interceptors.extend(get_tracing_interceptors())
+        interceptors.extend(get_context_propagation_interceptors())
 
     if interceptors:
         return grpc.aio.insecure_channel(address, options=options, interceptors=interceptors, **kwargs)
