@@ -101,6 +101,34 @@
         "mock": "mock"
       },
       "defaultVariant": "bluetooth"
+    },
+    "mock_controller_count": {
+      "state": "ENABLED",
+      "variants": {
+        "two": 2,
+        "four": 4,
+        "six": 6,
+        "eight": 8
+      },
+      "defaultVariant": "four"
+    },
+    "bluetooth_hci": {
+      "state": "ENABLED",
+      "variants": {
+        "hci0": "hci0",
+        "hci1": "hci1",
+        "hci2": "hci2"
+      },
+      "defaultVariant": "hci0"
+    },
+    "metrics_export_interval_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "fast": 100,
+        "normal": 500,
+        "slow": 1000
+      },
+      "defaultVariant": "fast"
     }
   }
 }

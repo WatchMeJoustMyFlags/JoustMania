@@ -39,7 +39,6 @@ services:
     privileged: false
     environment: !override
       CONTROLLER_BACKEND: mock
-      MOCK_CONTROLLER_COUNT: "4"
       # Winner rainbow and countdown timing now controlled via flagd game_settings (Issue #464)
       OTEL_SERVICE_NAME: controller-manager-service
       OTEL_SERVICE_NAMESPACE: infrastructure
