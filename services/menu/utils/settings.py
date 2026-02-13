@@ -7,8 +7,10 @@ from lib.types import Games
 logger = logging.getLogger(__name__)
 
 
-# Game modes available in the menu (from Games enum, excluding Random which is meta)
-GAME_MODES: list[str] = [g.name for g in Games if g != Games.Random]
+# Game modes available in the menu
+# Excludes unimplemented modes (Commander, Ninja) and meta mode (Random)
+_UNIMPLEMENTED_MODES = {Games.Commander, Games.Ninja, Games.Random}
+GAME_MODES: list[str] = [g.name for g in Games if g not in _UNIMPLEMENTED_MODES]
 
 DEFAULT_GAME_MODE: Games = Games.JoustFFA
 DEFAULT_VOICE_ACTOR: str = "ivy"
