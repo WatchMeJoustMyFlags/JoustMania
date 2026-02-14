@@ -23,6 +23,7 @@ sys.path.insert(0, str(test_dir))
 
 from conftest import EventCollector, MockControllerManagerService, async_noop
 
+from proto import controller_manager_pb2
 from services.game_coordinator.games.nonstop_joust import (
     RESPAWN_DURATION,
     NonstopJoustGame,
@@ -373,20 +374,14 @@ class TestNonstopSpawnProtection:
         # Enable spawn protection
         player.spawn_protected = True
 
-        # Mock controller state with high acceleration
-        mock_state = type(
-            "MockState",
-            (),
-            {
-                "serial": serial,
-                "accel_x": 5.0,
-                "accel_y": 5.0,
-                "accel_z": 5.0,
-            },
-        )()
+        # Real proto controller state with high acceleration
+        state = controller_manager_pb2.GameplayData(
+            serial=serial,
+            accel=controller_manager_pb2.Vector3(x=5.0, y=5.0, z=5.0),
+        )
 
         # Process should return early for protected player
-        await game._process_controller_state(mock_state)
+        await game._process_controller_state(state)
 
         # Player should still be alive
         assert player.alive is True
