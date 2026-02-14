@@ -106,7 +106,9 @@
       "variants": {
         "bluetooth": "bluetooth",
         "hidapi": "hidapi",
-        "mock": "mock"
+        "mock": "mock",
+        "mock_bluetooth": "mock,bluetooth",
+        "mock_hidapi": "mock,hidapi"
       },
       "defaultVariant": "bluetooth"
     },
@@ -137,6 +139,14 @@
       }
     },
     "profiling_enabled": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "off"
+    },
+    "multiplexer_backend_enabled": {
       "state": "ENABLED",
       "variants": {
         "on": true,

@@ -23,6 +23,17 @@ from services.controller_manager.servicer import ControllerManagerServicer
 logger = logging.getLogger(__name__)
 
 
+def _find_mock_backend(backend):
+    """Find MockBackend, looking through MultiplexerBackend children if needed."""
+    if backend.__class__.__name__ == "MockBackend":
+        return backend
+    if hasattr(backend, "children"):
+        for child in backend.children:
+            if child.__class__.__name__ == "MockBackend":
+                return child
+    return None
+
+
 async def serve(port=50052):
     """Start the ControllerManager async gRPC server."""
     # Configure logging with environment variable support
@@ -111,12 +122,13 @@ async def serve(port=50052):
 
     # Phase 57: If using mock backend, start MockControllerService on port 50062
     mock_server = None
-    if controller_servicer.backend.__class__.__name__ == "MockBackend":
+    mock_backend = _find_mock_backend(controller_servicer.backend)
+    if mock_backend is not None:
         from proto import controller_manager_mock_pb2_grpc
         from services.controller_manager.mock_control_service import MockControllerService
 
         mock_server = grpc.aio.server(options=get_server_options())
-        mock_servicer = MockControllerService(controller_servicer.backend)
+        mock_servicer = MockControllerService(mock_backend)
         controller_manager_mock_pb2_grpc.add_MockControllerServiceServicer_to_server(mock_servicer, mock_server)
 
         mock_port = 50062

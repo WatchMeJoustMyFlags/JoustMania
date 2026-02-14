@@ -20,7 +20,9 @@ sys.path.insert(0, str(project_root))
 
 from services.controller_manager.backend_factory import (
     _create_backend_by_name,
+    _create_bt_discovery,
     _get_mock_controller_count,
+    _is_multiplexer_enabled,
     _resolve_backend_name,
     create_backend,
 )
@@ -109,6 +111,7 @@ class TestCreateBackendIntegration:
         """OpenFeature flag should create the correct backend."""
         mock_client = MagicMock()
         mock_client.get_string_value.return_value = "mock"
+        mock_client.get_boolean_value.return_value = False
 
         with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
             backend = create_backend()
@@ -120,3 +123,245 @@ class TestCreateBackendIntegration:
             # Just verify _resolve_backend_name returns None (platform detection)
             result = _resolve_backend_name()
             assert result is None
+
+
+class TestMultiplexerBackendEnabled:
+    """Test multiplexer_backend_enabled flag wrapping."""
+
+    def test_wraps_in_multiplexer_when_flag_enabled(self):
+        """When multiplexer flag is on, backend should be wrapped in MultiplexerBackend."""
+        mock_client = MagicMock()
+        # First call: get_string_value for controller_backend → "mock"
+        mock_client.get_string_value.return_value = "mock"
+        # Second call: get_boolean_value for multiplexer_backend_enabled → True
+        mock_client.get_boolean_value.return_value = True
+
+        with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
+            backend = create_backend()
+
+        assert backend.__class__.__name__ == "MultiplexerBackend"
+        assert len(backend.children) == 1
+        assert backend.children[0].__class__.__name__ == "MockBackend"
+
+    def test_returns_plain_backend_when_flag_disabled(self):
+        """When multiplexer flag is off, backend should be returned as-is."""
+        mock_client = MagicMock()
+        mock_client.get_string_value.return_value = "mock"
+        mock_client.get_boolean_value.return_value = False
+
+        with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
+            backend = create_backend()
+
+        assert backend.__class__.__name__ == "MockBackend"
+
+    def test_is_multiplexer_enabled_returns_false_on_error(self):
+        """Should default to False when flagd is unavailable."""
+        with patch("lib.feature_flags.get_flag_client", side_effect=Exception("unavailable")):
+            assert _is_multiplexer_enabled() is False
+
+
+class TestMultiBackendCreation:
+    """Test comma-separated backend flag with multiplexer enabled."""
+
+    def test_duplicate_backend_names_rejected(self):
+        """flag='mock,mock' with multiplexer on -> ValueError (duplicates not allowed)."""
+        mock_client = MagicMock()
+        mock_client.get_string_value.return_value = "mock,mock"
+        mock_client.get_boolean_value.return_value = True
+
+        with (
+            patch("lib.feature_flags.get_flag_client", return_value=mock_client),
+            pytest.raises(ValueError, match="Duplicate backend names"),
+        ):
+            create_backend()
+
+    def test_mock_bluetooth_creates_two_children(self):
+        """flag='mock,bluetooth' with multiplexer on -> MultiplexerBackend with 2 children."""
+        mock_client = MagicMock()
+        mock_client.get_string_value.return_value = "mock,bluetooth"
+        mock_client.get_boolean_value.return_value = True
+
+        with (
+            patch("lib.feature_flags.get_flag_client", return_value=mock_client),
+            patch("services.controller_manager.backend_factory._create_backend_by_name") as mock_create,
+        ):
+            mock_backend = MagicMock()
+            mock_backend.__class__.__name__ = "MockBackend"
+            bt_backend = MagicMock()
+            bt_backend.__class__.__name__ = "BluetoothBackend"
+            mock_create.side_effect = [mock_backend, bt_backend]
+
+            backend = create_backend()
+
+        assert backend.__class__.__name__ == "MultiplexerBackend"
+        assert len(backend.children) == 2
+        # bt_discovery is passed as kwarg to both (CentralizedBTDiscovery for bluetooth combo)
+        call_names = [call[0][0] for call in mock_create.call_args_list]
+        assert "mock" in call_names
+        assert "bluetooth" in call_names
+
+    def test_comma_separated_legacy_uses_first_name(self):
+        """flag='mock,bluetooth' with multiplexer off -> plain backend from first name."""
+        mock_client = MagicMock()
+        mock_client.get_string_value.return_value = "mock,bluetooth"
+        mock_client.get_boolean_value.return_value = False
+
+        with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
+            backend = create_backend()
+
+        # Legacy path uses first name only
+        assert backend.__class__.__name__ == "MockBackend"
+
+    def test_invalid_combination_raises(self):
+        """flag='bluetooth,hidapi' with multiplexer on -> ValueError."""
+        mock_client = MagicMock()
+        mock_client.get_string_value.return_value = "bluetooth,hidapi"
+        mock_client.get_boolean_value.return_value = True
+
+        with (
+            patch("lib.feature_flags.get_flag_client", return_value=mock_client),
+            pytest.raises(ValueError, match="Unsupported backend combination"),
+        ):
+            create_backend()
+
+    def test_single_name_still_wraps(self):
+        """flag='mock' with multiplexer on -> MultiplexerBackend with 1 child (Phase 1 behavior)."""
+        mock_client = MagicMock()
+        mock_client.get_string_value.return_value = "mock"
+        mock_client.get_boolean_value.return_value = True
+
+        with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
+            backend = create_backend()
+
+        assert backend.__class__.__name__ == "MultiplexerBackend"
+        assert len(backend.children) == 1
+        assert backend.children[0].__class__.__name__ == "MockBackend"
+
+    def test_whitespace_in_comma_separated_is_trimmed(self):
+        """flag='mock , bluetooth' -> names trimmed properly."""
+        mock_client = MagicMock()
+        mock_client.get_string_value.return_value = "mock , bluetooth"
+        mock_client.get_boolean_value.return_value = True
+
+        with (
+            patch("lib.feature_flags.get_flag_client", return_value=mock_client),
+            patch("services.controller_manager.backend_factory._create_backend_by_name") as mock_create,
+        ):
+            mock_be = MagicMock()
+            mock_be.__class__.__name__ = "MockBackend"
+            bt_be = MagicMock()
+            bt_be.__class__.__name__ = "BluetoothBackend"
+            mock_create.side_effect = [mock_be, bt_be]
+
+            backend = create_backend()
+
+        assert backend.__class__.__name__ == "MultiplexerBackend"
+        mock_create.assert_any_call("mock", bt_discovery=mock_create.call_args_list[0][1].get("bt_discovery"))
+        mock_create.assert_any_call("bluetooth", bt_discovery=mock_create.call_args_list[1][1].get("bt_discovery"))
+
+
+class TestBTDiscoveryInjection:
+    """Test CentralizedBTDiscovery creation and injection."""
+
+    def test_bluetooth_gets_bluez_discovery(self):
+        """_create_bt_discovery returns CentralizedBTDiscovery(bluez) for bluetooth backends."""
+        from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDiscovery
+
+        discovery = _create_bt_discovery(["bluetooth"])
+        assert isinstance(discovery, CentralizedBTDiscovery)
+        assert discovery.discovery_mode == "bluez"
+
+    def test_hidapi_gets_hidapi_discovery(self):
+        """_create_bt_discovery returns CentralizedBTDiscovery(hidapi) for hidapi backends."""
+        from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDiscovery
+
+        discovery = _create_bt_discovery(["hidapi"])
+        assert isinstance(discovery, CentralizedBTDiscovery)
+        assert discovery.discovery_mode == "hidapi"
+
+    def test_mock_gets_no_discovery(self):
+        """_create_bt_discovery returns None for non-bluetooth backends."""
+        discovery = _create_bt_discovery(["mock"])
+        assert discovery is None
+
+    def test_mock_bluetooth_gets_bluez_discovery(self):
+        """_create_bt_discovery returns bluez mode when bluetooth is in the list."""
+        from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDiscovery
+
+        discovery = _create_bt_discovery(["mock", "bluetooth"])
+        assert isinstance(discovery, CentralizedBTDiscovery)
+        assert discovery.discovery_mode == "bluez"
+
+    def test_mock_hidapi_gets_hidapi_discovery(self):
+        """_create_bt_discovery returns hidapi mode when hidapi is in the list."""
+        from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDiscovery
+
+        discovery = _create_bt_discovery(["mock", "hidapi"])
+        assert isinstance(discovery, CentralizedBTDiscovery)
+        assert discovery.discovery_mode == "hidapi"
+
+    def test_bluetooth_backend_receives_discovery_via_factory(self):
+        """When multiplexer+bluetooth, BluetoothBackend should receive bt_discovery."""
+        mock_client = MagicMock()
+        mock_client.get_string_value.return_value = "mock,bluetooth"
+        mock_client.get_boolean_value.return_value = True
+
+        with (
+            patch("lib.feature_flags.get_flag_client", return_value=mock_client),
+            patch("services.controller_manager.backend_factory._create_backend_by_name") as mock_create,
+        ):
+            mock_be = MagicMock()
+            mock_be.__class__.__name__ = "MockBackend"
+            bt_be = MagicMock()
+            bt_be.__class__.__name__ = "BluetoothBackend"
+            mock_create.side_effect = [mock_be, bt_be]
+
+            backend = create_backend()
+
+        # bluetooth call should have bt_discovery set (not None)
+        bt_call = mock_create.call_args_list[1]
+        assert bt_call[1]["bt_discovery"] is not None
+        # MultiplexerBackend also receives bt_discovery
+        assert backend.bt_discovery is not None
+
+    def test_multiplexer_receives_bt_discovery(self):
+        """MultiplexerBackend should hold its own bt_discovery reference."""
+        mock_client = MagicMock()
+        mock_client.get_string_value.return_value = "mock,bluetooth"
+        mock_client.get_boolean_value.return_value = True
+
+        with (
+            patch("lib.feature_flags.get_flag_client", return_value=mock_client),
+            patch("services.controller_manager.backend_factory._create_backend_by_name") as mock_create,
+        ):
+            mock_be = MagicMock()
+            mock_be.__class__.__name__ = "MockBackend"
+            bt_be = MagicMock()
+            bt_be.__class__.__name__ = "BluetoothBackend"
+            mock_create.side_effect = [mock_be, bt_be]
+
+            backend = create_backend()
+
+        assert backend.__class__.__name__ == "MultiplexerBackend"
+        assert backend.bt_discovery is not None
+        assert backend.bt_discovery.discovery_mode == "bluez"
+
+    def test_mock_backend_receives_no_discovery(self):
+        """Mock-only with multiplexer should pass bt_discovery=None."""
+        mock_client = MagicMock()
+        mock_client.get_string_value.return_value = "mock"
+        mock_client.get_boolean_value.return_value = True
+
+        with (
+            patch("lib.feature_flags.get_flag_client", return_value=mock_client),
+            patch("services.controller_manager.backend_factory._create_backend_by_name") as mock_create,
+        ):
+            mock_be = MagicMock()
+            mock_be.__class__.__name__ = "MockBackend"
+            mock_create.return_value = mock_be
+
+            backend = create_backend()
+
+        call = mock_create.call_args
+        assert call[1]["bt_discovery"] is None
+        assert backend.bt_discovery is None

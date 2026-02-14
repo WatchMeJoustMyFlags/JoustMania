@@ -60,6 +60,25 @@ async def get_attached_addresses(hci: str) -> list[str]:
     return addresses
 
 
+async def get_hci_dict() -> dict[str, str]:
+    """Get dictionary mapping hci name to Bluetooth address."""
+    bus = await get_system_bus()
+    objects = await get_managed_objects(bus)
+    hci_dict: dict[str, str] = {}
+    for path, interfaces in objects.items():
+        if not path.startswith(ORG_BLUEZ_PATH + "/"):
+            continue
+        adapter_props = interfaces.get("org.bluez.Adapter1")
+        if adapter_props is None:
+            continue
+        hci = path.rsplit("/", 1)[-1]  # e.g. "hci0"
+        addr = adapter_props.get("Address")
+        if addr is not None:
+            val = addr.value if isinstance(addr, Variant) else addr
+            hci_dict[hci] = str(val)
+    return hci_dict
+
+
 def rfkill_unblock(hci: str) -> None:
     """Unblock a Bluetooth adapter via rfkill."""
     result = subprocess.run(["rfkill", "list"], capture_output=True, text=True, timeout=5.0)
