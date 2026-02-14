@@ -24,6 +24,7 @@ sys.path.insert(0, str(test_dir))
 
 from conftest import EventCollector, MockControllerManagerService
 
+from proto import controller_manager_pb2
 from services.game_coordinator.games.fight_club import (
     DEFAULT_INVINCIBILITY_DURATION,
     DEFAULT_MIN_ROUNDS,
@@ -286,3 +287,28 @@ class TestFightClubGameMode:
         # Set game over
         game.game_over = True
         assert await game._check_win_condition() is True
+
+    @pytest.mark.asyncio
+    async def test_process_controller_state_reads_proto_accel(self, fight_club_game):
+        """Test that _process_controller_state correctly reads nested accel from proto."""
+        game, mock_controller_manager, _ = fight_club_game
+        game.gameplay_stream = MockGameplayStream()
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+        await game._start_round()
+
+        defender_serial = game.current_defender
+        # Clear invincibility so processing actually happens
+        game.players[defender_serial].invincible_until = 0
+
+        # Build a ControllerState proto with nested accel (not flat accel_x)
+        state = controller_manager_pb2.ControllerState(
+            serial=defender_serial,
+            accel=controller_manager_pb2.Vector3(x=0.5, y=0.0, z=0.0),
+        )
+
+        # This would crash with AttributeError if code used state.accel_x
+        await game._process_controller_state(state)
+
+        # Verify the player's smoothed_accel was updated
+        assert game.players[defender_serial].smoothed_accel > 0

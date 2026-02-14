@@ -658,7 +658,8 @@ class FightClubGame(BaseGameMode):
             return
 
         # Calculate acceleration magnitude
-        accel_mag = (state.accel_x**2 + state.accel_y**2 + state.accel_z**2) ** 0.5
+        accel = state.accel
+        accel_mag = (accel.x**2 + accel.y**2 + accel.z**2) ** 0.5
 
         # Apply EMA filter
         if fc_player.smoothed_accel < 1e-9:  # Check for uninitialized (avoids float equality)
