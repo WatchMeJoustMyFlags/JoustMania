@@ -2,9 +2,10 @@
 Unit tests for CentralizedBTDiscovery.
 
 Tests multi-adapter enumeration, scanning, affinity tracking, and hot-plug.
+Covers both discovery modes: "bluez" (default) and "hidapi".
 """
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -14,6 +15,11 @@ from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDi
 @pytest.fixture
 def discovery():
     return CentralizedBTDiscovery()
+
+
+@pytest.fixture
+def hidapi_discovery():
+    return CentralizedBTDiscovery(discovery_mode="hidapi")
 
 
 class TestInitialize:
@@ -140,9 +146,16 @@ class TestGetAdapterForAddress:
     """Tests for adapter affinity lookup."""
 
     def test_returns_correct_adapter(self, discovery):
-        discovery._address_to_adapter = {"AA:BB": "hci0", "CC:DD": "hci1"}
+        # Keys are stored normalized (uppercase, no colons)
+        discovery._address_to_adapter = {"AABB": "hci0", "CCDD": "hci1"}
         assert discovery.get_adapter_for_address("AA:BB") == "hci0"
         assert discovery.get_adapter_for_address("CC:DD") == "hci1"
+
+    def test_normalizes_input_address(self, discovery):
+        """Both colon and no-colon formats should find the same entry."""
+        discovery._address_to_adapter = {"0006F7AABBCC": "hci0"}
+        assert discovery.get_adapter_for_address("00:06:F7:AA:BB:CC") == "hci0"
+        assert discovery.get_adapter_for_address("0006F7AABBCC") == "hci0"
 
     def test_returns_none_for_unknown(self, discovery):
         assert discovery.get_adapter_for_address("unknown") is None
@@ -223,3 +236,107 @@ class TestRefreshAdapters:
 
         assert new == ["hci1"]
         assert discovery.adapter_count == 2  # Still tracked even if enable failed
+
+
+class TestDiscoveryMode:
+    """Tests for discovery_mode parameter."""
+
+    def test_default_mode_is_bluez(self):
+        d = CentralizedBTDiscovery()
+        assert d.discovery_mode == "bluez"
+
+    def test_hidapi_mode(self):
+        d = CentralizedBTDiscovery(discovery_mode="hidapi")
+        assert d.discovery_mode == "hidapi"
+
+    def test_normalize_address(self):
+        assert CentralizedBTDiscovery._normalize_address("00:06:F7:AA:BB:CC") == "0006F7AABBCC"
+        assert CentralizedBTDiscovery._normalize_address("0006F7AABBCC") == "0006F7AABBCC"
+        assert CentralizedBTDiscovery._normalize_address("aa:bb") == "AABB"
+
+
+class TestHidapiMode:
+    """Tests for hidapi discovery mode."""
+
+    @pytest.mark.asyncio
+    async def test_scan_via_hidapi_enumerates_devices(self, hidapi_discovery):
+        """Should use hid.enumerate to find PS Move controllers."""
+        hidapi_discovery._adapters = {"hci0": "AA:00"}
+
+        mock_hid = MagicMock()
+        mock_hid.enumerate.side_effect = [
+            [{"serial_number": "00:06:F7:AA:BB:CC"}, {"serial_number": "00:06:F7:DD:EE:FF"}],
+            [],  # ZCM2 returns nothing
+        ]
+
+        with (
+            patch("services.controller_manager.multiplexer.bt_discovery.bluetooth") as mock_bt,
+            patch.dict("sys.modules", {"hid": mock_hid}),
+            patch("services.controller_manager.multiplexer.bt_discovery.hid", mock_hid, create=True),
+        ):
+            mock_bt.get_attached_addresses = AsyncMock(return_value=["00:06:F7:AA:BB:CC", "00:06:F7:DD:EE:FF"])
+            addresses = await hidapi_discovery.get_all_attached_addresses()
+
+        assert len(addresses) == 2
+        assert "0006F7AABBCC" in addresses
+        assert "0006F7DDEEFF" in addresses
+
+    @pytest.mark.asyncio
+    async def test_scan_via_hidapi_builds_affinity(self, hidapi_discovery):
+        """Should cross-reference HID serials with BlueZ for adapter affinity."""
+        hidapi_discovery._adapters = {"hci0": "AA:00", "hci1": "BB:00"}
+
+        mock_hid = MagicMock()
+        mock_hid.enumerate.side_effect = [
+            [{"serial_number": "0006F7AABBCC"}, {"serial_number": "0006F7DDEEFF"}],
+            [],
+        ]
+
+        with (
+            patch("services.controller_manager.multiplexer.bt_discovery.bluetooth") as mock_bt,
+            patch.dict("sys.modules", {"hid": mock_hid}),
+            patch("services.controller_manager.multiplexer.bt_discovery.hid", mock_hid, create=True),
+        ):
+            mock_bt.get_attached_addresses = AsyncMock(
+                side_effect=[
+                    ["00:06:F7:AA:BB:CC"],  # hci0 has first controller
+                    ["00:06:F7:DD:EE:FF"],  # hci1 has second controller
+                ]
+            )
+            await hidapi_discovery.get_all_attached_addresses()
+
+        assert hidapi_discovery.get_adapter_for_address("0006F7AABBCC") == "hci0"
+        assert hidapi_discovery.get_adapter_for_address("0006F7DDEEFF") == "hci1"
+
+    @pytest.mark.asyncio
+    async def test_scan_via_hidapi_deduplicates(self, hidapi_discovery):
+        """Should deduplicate controllers seen on multiple HID paths."""
+        hidapi_discovery._adapters = {"hci0": "AA:00"}
+
+        mock_hid = MagicMock()
+        mock_hid.enumerate.side_effect = [
+            [{"serial_number": "0006F7AABBCC"}, {"serial_number": "0006F7AABBCC"}],  # Duplicate
+            [],
+        ]
+
+        with (
+            patch("services.controller_manager.multiplexer.bt_discovery.bluetooth") as mock_bt,
+            patch.dict("sys.modules", {"hid": mock_hid}),
+            patch("services.controller_manager.multiplexer.bt_discovery.hid", mock_hid, create=True),
+        ):
+            mock_bt.get_attached_addresses = AsyncMock(return_value=["00:06:F7:AA:BB:CC"])
+            addresses = await hidapi_discovery.get_all_attached_addresses()
+
+        assert len(addresses) == 1
+
+    @pytest.mark.asyncio
+    async def test_bluez_mode_uses_bluez_scanning(self, discovery):
+        """Default (bluez) mode should NOT call hid.enumerate."""
+        discovery._adapters = {"hci0": "AA:00"}
+
+        with patch("services.controller_manager.multiplexer.bt_discovery.bluetooth") as mock_bt:
+            mock_bt.get_attached_addresses = AsyncMock(return_value=["00:06:F7:AA:BB:CC"])
+            addresses = await discovery.get_all_attached_addresses()
+
+        assert len(addresses) == 1
+        assert "00:06:F7:AA:BB:CC" in addresses

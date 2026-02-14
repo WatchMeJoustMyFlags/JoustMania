@@ -11,9 +11,15 @@ Flag values (controller_backend, mock_controller_count) are read once at startup
 Runtime changes to these flags require a service restart to take effect.
 """
 
+from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING
 
 from services.controller_manager.backend import ControllerBackend
+
+if TYPE_CHECKING:
+    from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDiscovery
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +61,7 @@ def _resolve_backend_name() -> str | None:
     return None
 
 
-def _create_backend_by_name(name: str, bt_discovery=None) -> ControllerBackend:
+def _create_backend_by_name(name: str, bt_discovery: CentralizedBTDiscovery | None = None) -> ControllerBackend:
     """Create a backend instance by name."""
     match name:
         case "mock":
@@ -75,15 +81,20 @@ def _create_backend_by_name(name: str, bt_discovery=None) -> ControllerBackend:
             raise RuntimeError(f"Unknown backend: {name}")
 
 
-def _create_bt_discovery(names: list[str]):
+def _create_bt_discovery(names: list[str]) -> CentralizedBTDiscovery | None:
     """Create CentralizedBTDiscovery if any backend needs Bluetooth.
 
     Returns None if no backend in the list uses Bluetooth.
+    Discovery mode is determined by the backend type:
+    - "bluez" for BluetoothBackend (psmoveapi + BlueZ scanning)
+    - "hidapi" for HidapiBackend (hid.enumerate scanning)
     """
-    if "bluetooth" in names:
-        from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDiscovery
+    from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDiscovery
 
-        return CentralizedBTDiscovery()
+    if "bluetooth" in names:
+        return CentralizedBTDiscovery(discovery_mode="bluez")
+    if "hidapi" in names:
+        return CentralizedBTDiscovery(discovery_mode="hidapi")
     return None
 
 
@@ -134,14 +145,14 @@ def create_backend() -> ControllerBackend:
             bt_discovery = _create_bt_discovery(names)
             children = [_create_backend_by_name(n, bt_discovery=bt_discovery) for n in names]
             logger.info(f"MultiplexerBackend with children: {names}")
-            return MultiplexerBackend(children)
+            return MultiplexerBackend(children, bt_discovery=bt_discovery)
 
         bt_discovery = _create_bt_discovery(names)
         backend = _create_backend_by_name(names[0], bt_discovery=bt_discovery)
         logger.info(f"Wrapping {backend.__class__.__name__} in MultiplexerBackend")
         from services.controller_manager.multiplexer import MultiplexerBackend
 
-        return MultiplexerBackend([backend])
+        return MultiplexerBackend([backend], bt_discovery=bt_discovery)
 
     if backend_name:
         # Legacy path (multiplexer disabled) — take first name if comma-separated

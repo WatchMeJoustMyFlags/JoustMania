@@ -6,10 +6,16 @@ Phase 1: wraps a single child behind the multiplexer_backend_enabled flag.
 Phase 2/3: multiple children with per-controller routing.
 """
 
+from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING
 
 from services.controller_manager import metrics
 from services.controller_manager.backend import ControllerBackend
+
+if TYPE_CHECKING:
+    from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDiscovery
 
 logger = logging.getLogger(__name__)
 
@@ -24,10 +30,15 @@ class MultiplexerBackend(ControllerBackend):
     look up the owning backend via _serial_to_backend.
     """
 
-    def __init__(self, children: list[ControllerBackend]):
+    def __init__(
+        self,
+        children: list[ControllerBackend],
+        bt_discovery: CentralizedBTDiscovery | None = None,
+    ):
         if not children:
             raise ValueError("MultiplexerBackend requires at least one child backend")
         self._children = children
+        self._bt_discovery = bt_discovery
         self._serial_to_backend: dict[str, ControllerBackend] = {}
         child_names = [c.__class__.__name__ for c in children]
         logger.info(f"MultiplexerBackend created with children: {child_names}")
@@ -37,9 +48,21 @@ class MultiplexerBackend(ControllerBackend):
         """Expose children for MockBackend detection in server.py."""
         return self._children
 
+    @property
+    def bt_discovery(self) -> CentralizedBTDiscovery | None:
+        """Expose bt_discovery for tests and adapter affinity metrics."""
+        return self._bt_discovery
+
     # -- Fleet-level methods --------------------------------------------------
 
     async def initialize(self) -> bool:
+        # Initialize bt_discovery first (adapter enumeration)
+        if self._bt_discovery:
+            try:
+                await self._bt_discovery.initialize()
+            except Exception:
+                logger.exception("Failed to initialize CentralizedBTDiscovery")
+
         any_success = False
         for child in self._children:
             try:
@@ -71,8 +94,8 @@ class MultiplexerBackend(ControllerBackend):
         for serial, backend in seen.items():
             metrics.controller_backend_info.labels(serial=serial, backend=backend.__class__.__name__).set(1)
             # Adapter affinity from CentralizedBTDiscovery
-            if hasattr(backend, "_bt_discovery") and backend._bt_discovery:
-                adapter = backend._bt_discovery.get_adapter_for_address(serial)
+            if self._bt_discovery:
+                adapter = self._bt_discovery.get_adapter_for_address(serial)
                 if adapter:
                     metrics.controller_adapter_info.labels(serial=serial, adapter=adapter).set(1)
 
@@ -94,6 +117,14 @@ class MultiplexerBackend(ControllerBackend):
                 results.extend(await child.scan_controllers())
             except Exception:
                 logger.exception(f"scan_controllers failed for {child.__class__.__name__}")
+
+        # Refresh adapter affinity map for metrics
+        if self._bt_discovery:
+            try:
+                await self._bt_discovery.get_all_attached_addresses()
+            except Exception:
+                logger.debug("Failed to refresh adapter affinity map")
+
         return results
 
     # -- Per-controller methods (routed via _serial_to_backend) ---------------
