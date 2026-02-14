@@ -98,7 +98,9 @@
       "variants": {
         "bluetooth": "bluetooth",
         "hidapi": "hidapi",
-        "mock": "mock"
+        "mock": "mock",
+        "mock_bluetooth": "mock,bluetooth",
+        "mock_hidapi": "mock,hidapi"
       },
       "defaultVariant": "mock"
     },

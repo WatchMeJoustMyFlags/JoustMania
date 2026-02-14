@@ -96,8 +96,9 @@ def create_backend() -> ControllerBackend:
         1. OpenFeature "controller_backend" flag from performance domain
         2. Platform auto-detection (Linux -> bluetooth)
 
-    If multiplexer_backend_enabled flag is on, wraps the resolved backend
-    in a MultiplexerBackend composite.
+    If multiplexer_backend_enabled flag is on, wraps the resolved backend(s)
+    in a MultiplexerBackend composite. Comma-separated flag values (e.g.
+    "mock,bluetooth") create multiple children.
 
     Configuration:
         mock_controller_count: flagd flag (performance domain)
@@ -107,24 +108,44 @@ def create_backend() -> ControllerBackend:
 
     Raises:
         RuntimeError: If no suitable backend available
+        ValueError: If backend combination is unsupported (e.g. bluetooth+hidapi)
     """
     backend_name = _resolve_backend_name()
 
+    if backend_name and _is_multiplexer_enabled():
+        names = [n.strip() for n in backend_name.split(",")]
+        if len(names) > 1:
+            from services.controller_manager.multiplexer import MultiplexerBackend
+            from services.controller_manager.multiplexer.validation import validate_backend_combination
+
+            validate_backend_combination(names)
+            children = [_create_backend_by_name(n) for n in names]
+            logger.info(f"MultiplexerBackend with children: {names}")
+            return MultiplexerBackend(children)
+
+        backend = _create_backend_by_name(names[0])
+        logger.info(f"Wrapping {backend.__class__.__name__} in MultiplexerBackend")
+        from services.controller_manager.multiplexer import MultiplexerBackend
+
+        return MultiplexerBackend([backend])
+
     if backend_name:
-        backend = _create_backend_by_name(backend_name)
-    else:
-        # Priority 2: Default to Bluetooth on Linux (only supported platform)
-        try:
-            from services.controller_manager.bluetooth_backend import BluetoothBackend
+        # Legacy path (multiplexer disabled) — take first name if comma-separated
+        name = backend_name.split(",")[0].strip()
+        return _create_backend_by_name(name)
 
-            logger.info("Using Linux BlueZ backend")
-            backend = BluetoothBackend()
+    # Priority 2: Default to Bluetooth on Linux (only supported platform)
+    try:
+        from services.controller_manager.bluetooth_backend import BluetoothBackend
 
-        except ImportError as e:
-            logger.error(f"Bluetooth backend not available: {e}")
-            logger.info("Install dependencies: apt-get install python3-dbus, pip install psmove")
-            logger.info("Or use mock mode: set controller_backend=mock in flagd performance.json")
-            raise RuntimeError("Bluetooth backend not available") from e
+        logger.info("Using Linux BlueZ backend")
+        backend = BluetoothBackend()
+
+    except ImportError as e:
+        logger.error(f"Bluetooth backend not available: {e}")
+        logger.info("Install dependencies: apt-get install python3-dbus, pip install psmove")
+        logger.info("Or use mock mode: set controller_backend=mock in flagd performance.json")
+        raise RuntimeError("Bluetooth backend not available") from e
 
     if _is_multiplexer_enabled():
         from services.controller_manager.multiplexer import MultiplexerBackend

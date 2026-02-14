@@ -157,3 +157,101 @@ class TestMultiplexerBackendEnabled:
         """Should default to False when flagd is unavailable."""
         with patch("lib.feature_flags.get_flag_client", side_effect=Exception("unavailable")):
             assert _is_multiplexer_enabled() is False
+
+
+class TestMultiBackendCreation:
+    """Test comma-separated backend flag with multiplexer enabled."""
+
+    def test_duplicate_backend_names_rejected(self):
+        """flag='mock,mock' with multiplexer on -> ValueError (duplicates not allowed)."""
+        mock_client = MagicMock()
+        mock_client.get_string_value.return_value = "mock,mock"
+        mock_client.get_boolean_value.return_value = True
+
+        with (
+            patch("lib.feature_flags.get_flag_client", return_value=mock_client),
+            pytest.raises(ValueError, match="Duplicate backend names"),
+        ):
+            create_backend()
+
+    def test_mock_bluetooth_creates_two_children(self):
+        """flag='mock,bluetooth' with multiplexer on -> MultiplexerBackend with 2 children."""
+        mock_client = MagicMock()
+        mock_client.get_string_value.return_value = "mock,bluetooth"
+        mock_client.get_boolean_value.return_value = True
+
+        with (
+            patch("lib.feature_flags.get_flag_client", return_value=mock_client),
+            patch("services.controller_manager.backend_factory._create_backend_by_name") as mock_create,
+        ):
+            mock_backend = MagicMock()
+            mock_backend.__class__.__name__ = "MockBackend"
+            bt_backend = MagicMock()
+            bt_backend.__class__.__name__ = "BluetoothBackend"
+            mock_create.side_effect = [mock_backend, bt_backend]
+
+            backend = create_backend()
+
+        assert backend.__class__.__name__ == "MultiplexerBackend"
+        assert len(backend.children) == 2
+        mock_create.assert_any_call("mock")
+        mock_create.assert_any_call("bluetooth")
+
+    def test_comma_separated_legacy_uses_first_name(self):
+        """flag='mock,bluetooth' with multiplexer off -> plain backend from first name."""
+        mock_client = MagicMock()
+        mock_client.get_string_value.return_value = "mock,bluetooth"
+        mock_client.get_boolean_value.return_value = False
+
+        with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
+            backend = create_backend()
+
+        # Legacy path uses first name only
+        assert backend.__class__.__name__ == "MockBackend"
+
+    def test_invalid_combination_raises(self):
+        """flag='bluetooth,hidapi' with multiplexer on -> ValueError."""
+        mock_client = MagicMock()
+        mock_client.get_string_value.return_value = "bluetooth,hidapi"
+        mock_client.get_boolean_value.return_value = True
+
+        with (
+            patch("lib.feature_flags.get_flag_client", return_value=mock_client),
+            pytest.raises(ValueError, match="Unsupported backend combination"),
+        ):
+            create_backend()
+
+    def test_single_name_still_wraps(self):
+        """flag='mock' with multiplexer on -> MultiplexerBackend with 1 child (Phase 1 behavior)."""
+        mock_client = MagicMock()
+        mock_client.get_string_value.return_value = "mock"
+        mock_client.get_boolean_value.return_value = True
+
+        with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
+            backend = create_backend()
+
+        assert backend.__class__.__name__ == "MultiplexerBackend"
+        assert len(backend.children) == 1
+        assert backend.children[0].__class__.__name__ == "MockBackend"
+
+    def test_whitespace_in_comma_separated_is_trimmed(self):
+        """flag='mock , bluetooth' -> names trimmed properly."""
+        mock_client = MagicMock()
+        mock_client.get_string_value.return_value = "mock , bluetooth"
+        mock_client.get_boolean_value.return_value = True
+
+        with (
+            patch("lib.feature_flags.get_flag_client", return_value=mock_client),
+            patch("services.controller_manager.backend_factory._create_backend_by_name") as mock_create,
+        ):
+            mock_be = MagicMock()
+            mock_be.__class__.__name__ = "MockBackend"
+            bt_be = MagicMock()
+            bt_be.__class__.__name__ = "BluetoothBackend"
+            mock_create.side_effect = [mock_be, bt_be]
+
+            backend = create_backend()
+
+        assert backend.__class__.__name__ == "MultiplexerBackend"
+        mock_create.assert_any_call("mock")
+        mock_create.assert_any_call("bluetooth")
