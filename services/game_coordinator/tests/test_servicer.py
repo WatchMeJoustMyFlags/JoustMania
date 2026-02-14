@@ -672,3 +672,207 @@ class TestConcurrentOperations:
         for response in responses:
             assert response.success is True
             assert response.game_info.state == game_coordinator_pb2.GameState.RUNNING
+
+
+class TestRunGameLoopAsync:
+    """Tests for _run_game_loop_async game loop lifecycle."""
+
+    def _make_servicer(self):
+        """Create a servicer with mocked dependencies for game loop testing."""
+        servicer = GameCoordinatorServicer()
+
+        # Mock clients
+        mock_clients = MagicMock()
+        mock_clients.connect = AsyncMock()
+        mock_clients.close = AsyncMock()
+        mock_clients.is_connected = True
+        mock_clients.controller_manager = MagicMock()
+        mock_clients.audio = MagicMock()
+        servicer.clients = mock_clients
+
+        # Mock event bus publish
+        servicer.event_bus.publish = AsyncMock()
+
+        # Set required servicer attributes
+        servicer.game_name = "FFA"
+        servicer.game_id = "game_12345"
+        servicer.players = [
+            game_coordinator_pb2.Player(serial="p1"),
+            game_coordinator_pb2.Player(serial="p2"),
+        ]
+        servicer.game_config = game_coordinator_pb2.StartGameConfig(sensitivity=2)
+        servicer.game_parent_context = None
+        servicer.game_start_time = time.time()
+
+        return servicer
+
+    def _make_tracer_mock(self):
+        """Create a mock tracer whose start_as_current_span works as a context manager."""
+        mock_span = MockSpan()
+        mock_tracer = MagicMock()
+        mock_tracer.start_as_current_span.return_value.__enter__ = MagicMock(return_value=mock_span)
+        mock_tracer.start_as_current_span.return_value.__exit__ = MagicMock(return_value=False)
+        return mock_tracer, mock_span
+
+    @pytest.mark.asyncio
+    @patch("services.game_coordinator.servicer.GameFactory")
+    @patch("services.game_coordinator.servicer.tracer")
+    async def test_game_loop_connects_clients(self, mock_tracer_mod, mock_factory):
+        """Should call clients.connect() before creating game."""
+        servicer = self._make_servicer()
+        tracer_mock, _ = self._make_tracer_mock()
+        mock_tracer_mod.start_as_current_span = tracer_mock.start_as_current_span
+
+        mock_game = MagicMock()
+        mock_game.run = AsyncMock()
+        mock_factory.create_game.return_value = mock_game
+
+        await servicer._run_game_loop_async()
+
+        servicer.clients.connect.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch("services.game_coordinator.servicer.GameFactory")
+    @patch("services.game_coordinator.servicer.tracer")
+    async def test_game_loop_clients_not_connected_publishes_error(self, mock_tracer_mod, mock_factory):
+        """When clients.is_connected is False, should publish game_error and set ENDED."""
+        servicer = self._make_servicer()
+        servicer.clients.is_connected = False
+
+        tracer_mock, _ = self._make_tracer_mock()
+        mock_tracer_mod.start_as_current_span = tracer_mock.start_as_current_span
+
+        await servicer._run_game_loop_async()
+
+        # Should publish game_error
+        publish_calls = servicer.event_bus.publish.call_args_list
+        error_calls = [c for c in publish_calls if c[0][0] == "game_error"]
+        assert len(error_calls) >= 1
+        assert "not initialized" in error_calls[0][0][1]["error"]
+
+        # GameFactory.create_game should NOT have been called
+        mock_factory.create_game.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("services.game_coordinator.servicer.GameFactory")
+    @patch("services.game_coordinator.servicer.tracer")
+    async def test_game_loop_unknown_mode_publishes_error(self, mock_tracer_mod, mock_factory):
+        """When GameFactory raises ValueError, should publish game_error and set ENDED."""
+        servicer = self._make_servicer()
+        tracer_mock, _ = self._make_tracer_mock()
+        mock_tracer_mod.start_as_current_span = tracer_mock.start_as_current_span
+
+        mock_factory.create_game.side_effect = ValueError("Unknown game mode: 'BadGame'")
+
+        await servicer._run_game_loop_async()
+
+        # Should publish game_error with the ValueError message
+        publish_calls = servicer.event_bus.publish.call_args_list
+        error_calls = [c for c in publish_calls if c[0][0] == "game_error"]
+        assert len(error_calls) >= 1
+        assert "Unknown game mode" in error_calls[0][0][1]["error"]
+
+    @pytest.mark.asyncio
+    @patch("services.game_coordinator.servicer.GameFactory")
+    @patch("services.game_coordinator.servicer.tracer")
+    async def test_game_loop_runs_game_to_completion(self, mock_tracer_mod, mock_factory):
+        """Happy path: connect, create game, run, cleanup."""
+        servicer = self._make_servicer()
+        tracer_mock, _ = self._make_tracer_mock()
+        mock_tracer_mod.start_as_current_span = tracer_mock.start_as_current_span
+
+        mock_game = MagicMock()
+        mock_game.run = AsyncMock()
+        mock_factory.create_game.return_value = mock_game
+
+        await servicer._run_game_loop_async()
+
+        # Verify full lifecycle
+        servicer.clients.connect.assert_awaited_once()
+        mock_factory.create_game.assert_called_once()
+        mock_game.run.assert_awaited_once()
+        servicer.clients.close.assert_awaited()
+
+        # Verify cleanup state
+        assert servicer.game_running is False
+        assert servicer.current_game is None
+
+    @pytest.mark.asyncio
+    @patch("services.game_coordinator.servicer.GameFactory")
+    @patch("services.game_coordinator.servicer.tracer")
+    async def test_game_loop_exception_publishes_error(self, mock_tracer_mod, mock_factory):
+        """When game.run() raises, should publish game_error and set ENDED."""
+        servicer = self._make_servicer()
+        tracer_mock, _ = self._make_tracer_mock()
+        mock_tracer_mod.start_as_current_span = tracer_mock.start_as_current_span
+
+        mock_game = MagicMock()
+        mock_game.run = AsyncMock(side_effect=RuntimeError("stream disconnected"))
+        mock_factory.create_game.return_value = mock_game
+
+        await servicer._run_game_loop_async()
+
+        # Should publish game_error with the exception message
+        publish_calls = servicer.event_bus.publish.call_args_list
+        error_calls = [c for c in publish_calls if c[0][0] == "game_error"]
+        assert len(error_calls) >= 1
+        assert "stream disconnected" in error_calls[0][0][1]["error"]
+
+    @pytest.mark.asyncio
+    @patch("services.game_coordinator.servicer.GameFactory")
+    @patch("services.game_coordinator.servicer.tracer")
+    async def test_game_loop_always_closes_clients(self, mock_tracer_mod, mock_factory):
+        """clients.close() should be called even when game.run() raises."""
+        servicer = self._make_servicer()
+        tracer_mock, _ = self._make_tracer_mock()
+        mock_tracer_mod.start_as_current_span = tracer_mock.start_as_current_span
+
+        mock_game = MagicMock()
+        mock_game.run = AsyncMock(side_effect=RuntimeError("crash"))
+        mock_factory.create_game.return_value = mock_game
+
+        await servicer._run_game_loop_async()
+
+        # close() must be called in the finally block regardless of error
+        servicer.clients.close.assert_awaited()
+
+    @pytest.mark.asyncio
+    @patch("services.game_coordinator.servicer.metrics")
+    @patch("services.game_coordinator.servicer.GameFactory")
+    @patch("services.game_coordinator.servicer.tracer")
+    async def test_game_loop_resets_metrics_on_completion(self, mock_tracer_mod, mock_factory, mock_metrics):
+        """Finally block should reset active_game, active_players, and players_alive to 0."""
+        servicer = self._make_servicer()
+        tracer_mock, _ = self._make_tracer_mock()
+        mock_tracer_mod.start_as_current_span = tracer_mock.start_as_current_span
+
+        mock_game = MagicMock()
+        mock_game.run = AsyncMock()
+        mock_factory.create_game.return_value = mock_game
+
+        await servicer._run_game_loop_async()
+
+        # Verify metrics reset in finally block
+        mock_metrics.active_game.set.assert_any_call(0)
+        mock_metrics.active_players.set.assert_any_call(0)
+        mock_metrics.players_alive.set.assert_any_call(0)
+
+    @pytest.mark.asyncio
+    @patch("services.game_coordinator.servicer.metrics")
+    @patch("services.game_coordinator.servicer.GameFactory")
+    @patch("services.game_coordinator.servicer.tracer")
+    async def test_game_loop_increments_completed_total(self, mock_tracer_mod, mock_factory, mock_metrics):
+        """Finally block should increment games_completed_total with the game mode label."""
+        servicer = self._make_servicer()
+        tracer_mock, _ = self._make_tracer_mock()
+        mock_tracer_mod.start_as_current_span = tracer_mock.start_as_current_span
+
+        mock_game = MagicMock()
+        mock_game.run = AsyncMock()
+        mock_factory.create_game.return_value = mock_game
+
+        await servicer._run_game_loop_async()
+
+        # Verify games_completed_total.labels(mode="FFA").inc() called
+        mock_metrics.games_completed_total.labels.assert_called_with(mode="FFA")
+        mock_metrics.games_completed_total.labels.return_value.inc.assert_called_once()

@@ -919,3 +919,293 @@ class TestOpenGameStream:
         call_args = stub.StreamGameEvents.call_args
         assert call_args[0][0] != request
         assert call_args[1]["metadata"] == metadata
+
+
+class TestBuildGameConfig:
+    """Tests for _build_game_config method."""
+
+    @pytest.fixture
+    def servicer(self):
+        return FakeMenuServicer()
+
+    @pytest.fixture
+    def players(self):
+        from proto import game_coordinator_pb2
+
+        return [
+            game_coordinator_pb2.Player(serial="p1"),
+            game_coordinator_pb2.Player(serial="p2"),
+        ]
+
+    def _build_config(self, servicer, game_mode, players):
+        """Call the real _build_game_config bound to our fake servicer."""
+        from unittest.mock import patch
+
+        from services.menu.servicer import MenuServicer
+
+        with patch("services.menu.servicer.set_game_transaction_context"):
+            return MenuServicer._build_game_config(servicer, game_mode, players)
+
+    def test_build_config_ffa(self, servicer, players):
+        """JoustFFA should produce ffa_config with correct base fields."""
+        config = self._build_config(servicer, Games.JoustFFA, players)
+
+        assert config.game_name == "JoustFFA"
+        assert config.sensitivity == 2
+        assert len(config.players) == 2
+        assert config.HasField("ffa_config")
+
+    def test_build_config_teams(self, servicer, players):
+        """JoustTeams should produce teams_config with num_teams and random_assignment."""
+        config = self._build_config(servicer, Games.JoustTeams, players)
+
+        assert config.game_name == "JoustTeams"
+        assert config.sensitivity == 2
+        assert len(config.players) == 2
+        assert config.HasField("teams_config")
+        # Verify flagd client was called for team settings
+        servicer.game_settings_client.get_integer_value.assert_any_call("num_teams", 2)
+        servicer.game_settings_client.get_boolean_value.assert_any_call("random_assignment", True)
+
+    def test_build_config_random_teams(self, servicer, players):
+        """JoustRandomTeams should produce random_teams_config with num_teams."""
+        config = self._build_config(servicer, Games.JoustRandomTeams, players)
+
+        assert config.game_name == "JoustRandomTeams"
+        assert config.sensitivity == 2
+        assert len(config.players) == 2
+        assert config.HasField("random_teams_config")
+        servicer.game_settings_client.get_integer_value.assert_any_call("num_teams", 2)
+
+    def test_build_config_nonstop(self, servicer, players):
+        """NonStop should produce nonstop_config with time_limit_seconds."""
+        config = self._build_config(servicer, Games.NonStop, players)
+
+        assert config.game_name == "NonStop"
+        assert config.sensitivity == 2
+        assert len(config.players) == 2
+        assert config.HasField("nonstop_config")
+        servicer.game_settings_client.get_integer_value.assert_any_call("nonstop_time_limit", 0)
+
+    def test_build_config_tournament(self, servicer, players):
+        """Tournament should produce tournament_config with invincibility_seconds."""
+        config = self._build_config(servicer, Games.Tournament, players)
+
+        assert config.game_name == "Tournament"
+        assert config.sensitivity == 2
+        assert len(config.players) == 2
+        assert config.HasField("tournament_config")
+        servicer.game_settings_client.get_float_value.assert_any_call("invincibility", 4.0)
+
+    def test_build_config_fight_club(self, servicer, players):
+        """FightClub should produce fight_club_config with invincibility and min_rounds."""
+        config = self._build_config(servicer, Games.FightClub, players)
+
+        assert config.game_name == "FightClub"
+        assert config.sensitivity == 2
+        assert len(config.players) == 2
+        assert config.HasField("fight_club_config")
+        servicer.game_settings_client.get_float_value.assert_any_call("invincibility", 4.0)
+        servicer.game_settings_client.get_integer_value.assert_any_call("fight_club_min_rounds", 10)
+
+    def test_build_config_werewolf(self, servicer, players):
+        """Werewolf should produce werewolf_config with reveal_time_seconds."""
+        config = self._build_config(servicer, Games.Werewolf, players)
+
+        assert config.game_name == "Werewolf"
+        assert config.sensitivity == 2
+        assert len(config.players) == 2
+        assert config.HasField("werewolf_config")
+        servicer.game_settings_client.get_float_value.assert_any_call("werewolf_reveal_time", 35.0)
+
+    def test_build_config_zombie(self, servicer, players):
+        """Zombies should produce zombie_config."""
+        config = self._build_config(servicer, Games.Zombies, players)
+
+        assert config.game_name == "Zombies"
+        assert config.sensitivity == 2
+        assert len(config.players) == 2
+        assert config.HasField("zombie_config")
+
+    def test_build_config_swapper(self, servicer, players):
+        """Swapper should produce swapper_config."""
+        config = self._build_config(servicer, Games.Swapper, players)
+
+        assert config.game_name == "Swapper"
+        assert config.sensitivity == 2
+        assert len(config.players) == 2
+        assert config.HasField("swapper_config")
+
+    def test_build_config_traitor(self, servicer, players):
+        """Traitor should produce traitor_config with num_teams."""
+        config = self._build_config(servicer, Games.Traitor, players)
+
+        assert config.game_name == "Traitor"
+        assert config.sensitivity == 2
+        assert len(config.players) == 2
+        assert config.HasField("traitor_config")
+        servicer.game_settings_client.get_integer_value.assert_any_call("num_teams", 0)
+
+
+class TestRestartLobby:
+    """Tests for _restart_lobby method."""
+
+    @pytest.fixture
+    def servicer(self):
+        s = FakeMenuServicer()
+        s.idle_monitor = MagicMock()
+        s.start_button_monitor = AsyncMock()
+        return s
+
+    @pytest.mark.asyncio
+    async def test_restart_lobby_sets_running_state(self, servicer):
+        """_restart_lobby should set state to RUNNING."""
+        from unittest.mock import patch
+
+        from services.menu.servicer import MenuServicer
+
+        servicer.state = menu_pb2.MenuState.GAME_STARTING
+
+        with (
+            patch("services.menu.servicer.tracer") as mock_tracer,
+            patch("services.menu.servicer.otel_context"),
+        ):
+            mock_tracer.start_as_current_span.return_value.__enter__ = MagicMock()
+            mock_tracer.start_as_current_span.return_value.__exit__ = MagicMock(return_value=False)
+
+            await MenuServicer._restart_lobby(servicer)
+
+        assert servicer.state == menu_pb2.MenuState.RUNNING
+
+    @pytest.mark.asyncio
+    async def test_restart_lobby_starts_button_monitor(self, servicer):
+        """_restart_lobby should call start_button_monitor."""
+        from unittest.mock import patch
+
+        from services.menu.servicer import MenuServicer
+
+        with (
+            patch("services.menu.servicer.tracer") as mock_tracer,
+            patch("services.menu.servicer.otel_context"),
+        ):
+            mock_tracer.start_as_current_span.return_value.__enter__ = MagicMock()
+            mock_tracer.start_as_current_span.return_value.__exit__ = MagicMock(return_value=False)
+
+            await MenuServicer._restart_lobby(servicer)
+
+        servicer.start_button_monitor.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_restart_lobby_resets_state_manager(self, servicer):
+        """_restart_lobby should call state_manager.reset()."""
+        from unittest.mock import patch
+
+        from services.menu.servicer import MenuServicer
+
+        with (
+            patch("services.menu.servicer.tracer") as mock_tracer,
+            patch("services.menu.servicer.otel_context"),
+        ):
+            mock_tracer.start_as_current_span.return_value.__enter__ = MagicMock()
+            mock_tracer.start_as_current_span.return_value.__exit__ = MagicMock(return_value=False)
+
+            await MenuServicer._restart_lobby(servicer)
+
+        servicer.state_manager.reset.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_restart_lobby_starts_lobby_music(self, servicer):
+        """_restart_lobby should restart lobby music."""
+        from unittest.mock import patch
+
+        from services.menu.servicer import MenuServicer
+
+        with (
+            patch("services.menu.servicer.tracer") as mock_tracer,
+            patch("services.menu.servicer.otel_context"),
+        ):
+            mock_tracer.start_as_current_span.return_value.__enter__ = MagicMock()
+            mock_tracer.start_as_current_span.return_value.__exit__ = MagicMock(return_value=False)
+
+            await MenuServicer._restart_lobby(servicer)
+
+        servicer.audio.start_lobby_music.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_restart_lobby_starts_idle_monitor(self, servicer):
+        """_restart_lobby should start the idle monitor."""
+        from unittest.mock import patch
+
+        from services.menu.servicer import MenuServicer
+
+        with (
+            patch("services.menu.servicer.tracer") as mock_tracer,
+            patch("services.menu.servicer.otel_context"),
+        ):
+            mock_tracer.start_as_current_span.return_value.__enter__ = MagicMock()
+            mock_tracer.start_as_current_span.return_value.__exit__ = MagicMock(return_value=False)
+
+            await MenuServicer._restart_lobby(servicer)
+
+        servicer.idle_monitor.start.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_restart_lobby_waits_for_connection(self, servicer):
+        """_restart_lobby should wait for controller connection."""
+        from unittest.mock import patch
+
+        from services.menu.servicer import MenuServicer
+
+        with (
+            patch("services.menu.servicer.tracer") as mock_tracer,
+            patch("services.menu.servicer.otel_context"),
+        ):
+            mock_tracer.start_as_current_span.return_value.__enter__ = MagicMock()
+            mock_tracer.start_as_current_span.return_value.__exit__ = MagicMock(return_value=False)
+
+            await MenuServicer._restart_lobby(servicer)
+
+        servicer.controller_events.wait_for_connection.assert_called_once()
+
+
+class TestBuildTraceMetadata:
+    """Tests for _build_trace_metadata method."""
+
+    @pytest.fixture
+    def servicer(self):
+        return FakeMenuServicer()
+
+    def test_build_trace_metadata_returns_list_of_tuples(self, servicer):
+        """_build_trace_metadata should return a list (may be empty with no active span)."""
+        from services.menu.servicer import MenuServicer
+
+        result = MenuServicer._build_trace_metadata(servicer)
+
+        assert isinstance(result, list)
+        # Each item should be a tuple of (key, value) strings
+        for item in result:
+            assert isinstance(item, tuple)
+            assert len(item) == 2
+            assert isinstance(item[0], str)
+            assert isinstance(item[1], str)
+
+    def test_build_trace_metadata_with_mocked_propagator(self, servicer):
+        """_build_trace_metadata should use TraceContextTextMapPropagator to inject context."""
+        from unittest.mock import patch
+
+        from services.menu.servicer import MenuServicer
+
+        with patch("services.menu.servicer.TraceContextTextMapPropagator") as mock_propagator_cls:
+            mock_propagator = MagicMock()
+            mock_propagator_cls.return_value = mock_propagator
+
+            # Make inject populate the carrier with test data
+            def fake_inject(carrier):
+                carrier["traceparent"] = "00-abc123-def456-01"
+
+            mock_propagator.inject.side_effect = fake_inject
+
+            result = MenuServicer._build_trace_metadata(servicer)
+
+        assert result == [("traceparent", "00-abc123-def456-01")]
+        mock_propagator.inject.assert_called_once()

@@ -2,6 +2,7 @@
 Unit tests for Audio gRPC Servicer.
 """
 
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -220,3 +221,20 @@ class TestSoundPathResolution:
         path = servicer._resolve_sound_path("nonexistent_sound_xyz")
         assert "vox" in path
         assert "ivy" in path
+
+
+class TestResolvePath:
+    """Tests for AudioManager._resolve_path."""
+
+    def test_resolve_path_absolute_unchanged(self, mock_audio_manager):
+        result = mock_audio_manager._resolve_path("/tmp/sound.ogg")
+        assert result == "/tmp/sound.ogg"
+
+    def test_resolve_path_with_assets_dir_unchanged(self, mock_audio_manager):
+        path = "services/audio/assets/Joust/sounds/beep.ogg"
+        result = mock_audio_manager._resolve_path(path)
+        assert result == path
+
+    def test_resolve_path_relative_prepends_assets(self, mock_audio_manager):
+        result = mock_audio_manager._resolve_path("Joust/sounds/beep.ogg")
+        assert result == os.path.join(mock_audio_manager.assets_dir, "Joust/sounds/beep.ogg")
