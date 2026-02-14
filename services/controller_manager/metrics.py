@@ -37,6 +37,14 @@ controller_color_hex = Gauge(
     ["serial"],
 )
 
+# Backend info metric (Phase 1: MultiplexerBackend routing visibility)
+# Always 1, use labels for joins to see which backend owns each controller
+controller_backend_info = Gauge(
+    "controller_backend_info",
+    "Controller backend assignment (always 1, use labels for joins)",
+    ["serial", "backend"],
+)
+
 controller_disconnect_total = Counter(
     "controller_disconnect_total", "Total number of controller disconnects", ["serial"]
 )

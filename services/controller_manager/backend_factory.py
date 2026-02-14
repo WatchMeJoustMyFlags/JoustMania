@@ -75,6 +75,19 @@ def _create_backend_by_name(name: str) -> ControllerBackend:
             raise RuntimeError(f"Unknown backend: {name}")
 
 
+def _is_multiplexer_enabled() -> bool:
+    """Check if the multiplexer_backend_enabled flag is on."""
+    try:
+        from openfeature.evaluation_context import EvaluationContext
+
+        from lib.feature_flags import get_flag_client
+
+        client = get_flag_client("performance")
+        return client.get_boolean_value("multiplexer_backend_enabled", False, EvaluationContext())
+    except Exception:
+        return False
+
+
 def create_backend() -> ControllerBackend:
     """
     Create appropriate backend based on flags or platform.
@@ -82,6 +95,9 @@ def create_backend() -> ControllerBackend:
     Selection priority:
         1. OpenFeature "controller_backend" flag from performance domain
         2. Platform auto-detection (Linux -> bluetooth)
+
+    If multiplexer_backend_enabled flag is on, wraps the resolved backend
+    in a MultiplexerBackend composite.
 
     Configuration:
         mock_controller_count: flagd flag (performance domain)
@@ -95,17 +111,25 @@ def create_backend() -> ControllerBackend:
     backend_name = _resolve_backend_name()
 
     if backend_name:
-        return _create_backend_by_name(backend_name)
+        backend = _create_backend_by_name(backend_name)
+    else:
+        # Priority 2: Default to Bluetooth on Linux (only supported platform)
+        try:
+            from services.controller_manager.bluetooth_backend import BluetoothBackend
 
-    # Priority 2: Default to Bluetooth on Linux (only supported platform)
-    try:
-        from services.controller_manager.bluetooth_backend import BluetoothBackend
+            logger.info("Using Linux BlueZ backend")
+            backend = BluetoothBackend()
 
-        logger.info("Using Linux BlueZ backend")
-        return BluetoothBackend()
+        except ImportError as e:
+            logger.error(f"Bluetooth backend not available: {e}")
+            logger.info("Install dependencies: apt-get install python3-dbus, pip install psmove")
+            logger.info("Or use mock mode: set controller_backend=mock in flagd performance.json")
+            raise RuntimeError("Bluetooth backend not available") from e
 
-    except ImportError as e:
-        logger.error(f"Bluetooth backend not available: {e}")
-        logger.info("Install dependencies: apt-get install python3-dbus, pip install psmove")
-        logger.info("Or use mock mode: set controller_backend=mock in flagd performance.json")
-        raise RuntimeError("Bluetooth backend not available") from e
+    if _is_multiplexer_enabled():
+        from services.controller_manager.multiplexer import MultiplexerBackend
+
+        logger.info(f"Wrapping {backend.__class__.__name__} in MultiplexerBackend")
+        return MultiplexerBackend([backend])
+
+    return backend

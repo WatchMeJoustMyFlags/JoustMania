@@ -21,6 +21,7 @@ sys.path.insert(0, str(project_root))
 from services.controller_manager.backend_factory import (
     _create_backend_by_name,
     _get_mock_controller_count,
+    _is_multiplexer_enabled,
     _resolve_backend_name,
     create_backend,
 )
@@ -109,6 +110,7 @@ class TestCreateBackendIntegration:
         """OpenFeature flag should create the correct backend."""
         mock_client = MagicMock()
         mock_client.get_string_value.return_value = "mock"
+        mock_client.get_boolean_value.return_value = False
 
         with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
             backend = create_backend()
@@ -120,3 +122,38 @@ class TestCreateBackendIntegration:
             # Just verify _resolve_backend_name returns None (platform detection)
             result = _resolve_backend_name()
             assert result is None
+
+
+class TestMultiplexerBackendEnabled:
+    """Test multiplexer_backend_enabled flag wrapping."""
+
+    def test_wraps_in_multiplexer_when_flag_enabled(self):
+        """When multiplexer flag is on, backend should be wrapped in MultiplexerBackend."""
+        mock_client = MagicMock()
+        # First call: get_string_value for controller_backend → "mock"
+        mock_client.get_string_value.return_value = "mock"
+        # Second call: get_boolean_value for multiplexer_backend_enabled → True
+        mock_client.get_boolean_value.return_value = True
+
+        with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
+            backend = create_backend()
+
+        assert backend.__class__.__name__ == "MultiplexerBackend"
+        assert len(backend.children) == 1
+        assert backend.children[0].__class__.__name__ == "MockBackend"
+
+    def test_returns_plain_backend_when_flag_disabled(self):
+        """When multiplexer flag is off, backend should be returned as-is."""
+        mock_client = MagicMock()
+        mock_client.get_string_value.return_value = "mock"
+        mock_client.get_boolean_value.return_value = False
+
+        with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
+            backend = create_backend()
+
+        assert backend.__class__.__name__ == "MockBackend"
+
+    def test_is_multiplexer_enabled_returns_false_on_error(self):
+        """Should default to False when flagd is unavailable."""
+        with patch("lib.feature_flags.get_flag_client", side_effect=Exception("unavailable")):
+            assert _is_multiplexer_enabled() is False

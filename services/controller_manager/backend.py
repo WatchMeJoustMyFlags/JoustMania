@@ -130,9 +130,12 @@ class ControllerBackend(ABC):
         pass
 
     @abstractmethod
-    def get_connected_controllers(self) -> list[str]:
+    def get_connected_controllers(self, force_rescan: bool = False) -> list[str]:
         """
         Get list of connected controller serials.
+
+        Args:
+            force_rescan: If True, re-scan hardware instead of returning cached list
 
         Returns:
             List of serial numbers (strings)
