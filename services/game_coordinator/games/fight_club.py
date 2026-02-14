@@ -666,8 +666,8 @@ class FightClubGame(BaseGameMode):
         else:
             fc_player.smoothed_accel = (fc_player.smoothed_accel * 4 + accel_mag) / 5
 
-        # Get thresholds
-        warn_thresh, death_thresh = self.sensitivity.value
+        # Get thresholds using sensitivity index into base threshold arrays
+        warn_thresh, death_thresh = self._get_death_thresholds(fc_player)
 
         # Check for death
         if fc_player.smoothed_accel > death_thresh:
