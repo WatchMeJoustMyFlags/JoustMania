@@ -142,8 +142,7 @@ class ControllerEventLoop:
 
         while self._running:
             try:
-                await self._run_stream_connection()
-                retry_delay = 1.0
+                retry_delay = await self._run_stream_connection()
             except asyncio.CancelledError:
                 logger.info("Controller event loop cancelled")
                 raise
@@ -152,8 +151,13 @@ class ControllerEventLoop:
             finally:
                 await self._clear_stream_state()
 
-    async def _run_stream_connection(self) -> None:
-        """Establish and process a single stream connection."""
+    async def _run_stream_connection(self) -> float:  # NOSONAR(python:S3516)
+        """
+        Establish and process a single stream connection.
+
+        Returns:
+            Retry delay reset to 1.0 on successful connection
+        """
         stub = controller_manager_pb2_grpc.ControllerManagerServiceStub(self._channel)
         logger.info("Connecting to Controller Manager (bidirectional stream)...")
 
@@ -172,11 +176,13 @@ class ControllerEventLoop:
 
         async for event in stream:
             if not self._running:
-                return
+                return 1.0
             await self._dispatch_event(event)
 
         if self._running:
             logger.warning("Button event stream ended, reconnecting...")
+
+        return 1.0
 
     async def _request_generator(self, queue: asyncio.Queue):
         """
