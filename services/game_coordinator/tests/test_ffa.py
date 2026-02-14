@@ -8,6 +8,7 @@ Tests the core FFA mechanics:
 """
 
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,8 @@ sys.path.insert(0, str(test_dir))
 
 from conftest import EventCollector, MockControllerManagerService
 
+from lib.types import GameEvent
+from services.game_coordinator.games.base import GameState
 from services.game_coordinator.games.ffa import FFAGame
 
 
@@ -153,3 +156,80 @@ class TestFFAGameMode:
 
         assert "mock_controller_0" not in alive_serials
         assert len(alive_serials) == 3
+
+    @pytest.mark.asyncio
+    async def test_unique_color_assignment(self, ffa_game):
+        """Test that _assign_ffa_colors gives each player a distinct color."""
+        game, mock_controller_manager, _ = ffa_game
+
+        # Initialize players
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        # Assign colors
+        await game._assign_ffa_colors()
+
+        # Collect all player colors into a set
+        colors = {player.color for player in game.players.values()}
+
+        # Each player should have a unique color
+        assert len(colors) == len(game.players)
+
+    @pytest.mark.asyncio
+    async def test_end_game_impl_winner_state(self, ffa_game):
+        """Test that winner is correctly identified in _end_game_impl."""
+        game, mock_controller_manager, event_collector = ffa_game
+
+        # Initialize players
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        # Kill 3 players, leaving mock_controller_3 as the survivor
+        for serial in ["mock_controller_0", "mock_controller_1", "mock_controller_2"]:
+            game.players[serial].alive = False
+
+        # Set up game state for _end_game_impl
+        game.state = GameState.RUNNING
+        game.start_time = time.time()
+        game.gameplay_stream = MockGameplayStream()
+
+        # Trigger win condition check (publishes game_winner event)
+        assert await game._check_win_condition()
+
+        # End the game
+        await game._end_game_impl()
+
+        # Check that a "game_winner" event was published with the surviving player's serial
+        winner_events = event_collector.get_events_of_type(GameEvent.GAME_WINNER)
+        assert len(winner_events) == 1
+        assert winner_events[0]["serial"] == "mock_controller_3"
+
+        # _end_game_impl publishes GAME_ENDED event
+        ended_events = event_collector.get_events_of_type(GameEvent.GAME_ENDED)
+        assert len(ended_events) == 1
+        assert ended_events[0]["game_id"] == "test_ffa_001"
+
+    @pytest.mark.asyncio
+    async def test_two_player_last_standing(self):
+        """Minimal game with 2 players: one dies, the other wins."""
+        mock_controller_manager = MockControllerManagerService(
+            num_controllers=2,
+            death_schedule={},
+            max_duration=10.0,
+        )
+        event_collector = EventCollector()
+
+        game = FFAGame(
+            controller_manager_client=mock_controller_manager,
+            event_publisher=event_collector.publish,
+            audio_client=None,
+            game_id="test_ffa_2p",
+        )
+
+        # Initialize players
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+        assert len(game.players) == 2
+
+        # Kill one player
+        game.players["mock_controller_0"].alive = False
+
+        # Check win condition - should be True since only 1 player alive
+        assert await game._check_win_condition()

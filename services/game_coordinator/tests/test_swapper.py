@@ -236,6 +236,46 @@ class TestSwapperTeamSwapping:
         await game._kill_player_impl("mock_controller_0", accel_mag=5.0)
         assert player.swap_count == 2
 
+    @pytest.mark.asyncio
+    async def test_swap_changes_color(self, swapper_game):
+        """After swap, player color should match their new team's color."""
+        game, mock_controller_manager, _ = swapper_game
+
+        # Initialize players
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        # Setup gameplay stream and assign team colors
+        game.gameplay_stream = MockGameplayStream()
+        await game._assign_team_colors()
+
+        # Record initial color for player 0
+        player = game.players["mock_controller_0"]
+        initial_color = player.color
+
+        # Swap player 0 via kill
+        await game._kill_player_impl("mock_controller_0", accel_mag=5.0)
+
+        # Color should have changed to new team's color
+        assert player.color != initial_color
+        new_team = player.team
+        expected_color = game.team_colors[new_team]["rgb"]
+        assert player.color == expected_color
+
+    @pytest.mark.asyncio
+    async def test_end_game_all_same_team(self, swapper_game):
+        """When all players are on the same team, game ends."""
+        game, mock_controller_manager, _ = swapper_game
+
+        # Initialize players
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        # Move all players to team 0
+        for serial in game.players:
+            game.players[serial].team = 0
+
+        # Win condition should trigger
+        assert await game._check_win_condition()
+
 
 class MockGameplayStream:
     """Minimal mock for gameplay stream writes."""

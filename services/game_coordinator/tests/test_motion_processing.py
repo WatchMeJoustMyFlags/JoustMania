@@ -425,6 +425,41 @@ class TestZombieMotionProcessing:
 
         assert game.players[serial].alive is False
 
+    @pytest.mark.asyncio
+    async def test_zombie_survives_human_lethal_accel(self, game):
+        """Zombie should survive acceleration that kills a human (threshold differentiation)."""
+        game, mock_cm = game
+        game.gameplay_stream = MockGameplayStream()
+        await game._initialize_players_impl(mock_cm.controllers)
+
+        zombie_serial = next(s for s, p in game.players.items() if p.is_zombie)
+        human_serial = next(s for s, p in game.players.items() if not p.is_zombie)
+
+        # Get thresholds to find mid-range acceleration
+        zombie_thresh = game._compute_effective_thresholds(game.players[zombie_serial])
+        human_thresh = game._compute_effective_thresholds(game.players[human_serial])
+        mid_accel = (human_thresh[1] + zombie_thresh[1]) / 2
+
+        game.players[zombie_serial].grace_until = 0.0
+        game.players[human_serial].grace_until = 0.0
+
+        mid_state_human = controller_manager_pb2.GameplayData(
+            serial=human_serial,
+            accel=controller_manager_pb2.Vector3(x=mid_accel, y=0.0, z=0.0),
+        )
+        mid_state_zombie = controller_manager_pb2.GameplayData(
+            serial=zombie_serial,
+            accel=controller_manager_pb2.Vector3(x=mid_accel, y=0.0, z=0.0),
+        )
+
+        for _ in range(20):
+            if game.players[human_serial].alive and not game.players[human_serial].is_zombie:
+                await game._process_controller_state(mid_state_human)
+            await game._process_controller_state(mid_state_zombie)
+
+        assert game.players[human_serial].is_zombie, "Human should be converted at mid-range accel"
+        assert game.players[zombie_serial].alive, "Zombie should survive mid-range accel"
+
 
 # ─── Werewolf ──────────────────────────────────────────────────────────────
 
@@ -473,6 +508,42 @@ class TestWerewolfMotionProcessing:
                 await game._process_controller_state(_lethal_state(serial))
 
         assert game.players[serial].alive is False
+
+    @pytest.mark.asyncio
+    async def test_werewolf_survives_human_lethal_accel(self, game):
+        """Werewolf should survive acceleration that kills a human (threshold differentiation)."""
+        game, mock_cm = game
+        game.gameplay_stream = MockGameplayStream()
+        await game._initialize_players_impl(mock_cm.controllers)
+
+        werewolf_serial = next(s for s, p in game.players.items() if p.is_werewolf)
+        human_serial = next(s for s, p in game.players.items() if not p.is_werewolf)
+
+        # Get thresholds to find mid-range acceleration
+        werewolf_thresh = game._compute_effective_thresholds(game.players[werewolf_serial])
+        human_thresh = game._compute_effective_thresholds(game.players[human_serial])
+        mid_accel = (human_thresh[1] + werewolf_thresh[1]) / 2
+
+        game.players[werewolf_serial].grace_until = 0.0
+        game.players[human_serial].grace_until = 0.0
+
+        mid_state_human = controller_manager_pb2.GameplayData(
+            serial=human_serial,
+            accel=controller_manager_pb2.Vector3(x=mid_accel, y=0.0, z=0.0),
+        )
+        mid_state_werewolf = controller_manager_pb2.GameplayData(
+            serial=werewolf_serial,
+            accel=controller_manager_pb2.Vector3(x=mid_accel, y=0.0, z=0.0),
+        )
+
+        for _ in range(20):
+            if game.players[human_serial].alive:
+                await game._process_controller_state(mid_state_human)
+            if game.players[werewolf_serial].alive:
+                await game._process_controller_state(mid_state_werewolf)
+
+        assert game.players[human_serial].alive is False, "Human should die at mid-range accel"
+        assert game.players[werewolf_serial].alive is True, "Werewolf should survive mid-range accel"
 
 
 # ─── Tournament ────────────────────────────────────────────────────────────
