@@ -43,7 +43,7 @@ from tests.integration.helpers import (
 # Game settings are now stored in Menu service's state_manager and passed via
 # typed proto config when starting games. Integration tests use default values.
 
-FIGHT_CLUB_ROUNDS = 4  # Run 1 more than minimum to ensure clear winner
+FIGHT_CLUB_ROUNDS = 6  # CI default min_rounds=5, run 1 extra to ensure clear winner
 
 
 # =============================================================================
@@ -92,40 +92,35 @@ async def end_zombies(mock_client, serials: list[str], _game_client, _event_coll
 
 
 async def end_werewolf(mock_client, serials: list[str], _game_client, _event_collector) -> None:
-    """End Werewolf by killing all werewolves.
+    """End Werewolf by killing all but one player.
 
-    The game ends when all werewolves (or humans) are dead.
-    Test configures werewolf_reveal_time=0 so reveal is immediate.
+    Werewolf roles are randomly assigned, so we can't target specific roles.
+    Killing all but one guarantees one team is fully eliminated.
     """
-    # Small delay for reveal (configured to 0, so just need processing time)
-    await asyncio.sleep(0.5)
-    await end_werewolf_game(mock_client, serials, delay=0.3, wait_for_reveal=False)
+    await end_werewolf_game(mock_client, serials, delay=0.3)
 
 
 async def end_tournament(mock_client, serials: list[str], _game_client, _event_collector) -> None:
     """End Tournament by running through bracket.
 
-    Test configures tournament_invincibility=0.5 for faster matches.
+    CI default: invincibility=2.0s.
     """
-    # Invincibility is configured to 0.5s, wait slightly longer
     await end_tournament_game(
-        mock_client, serials, delay=0.2, invincibility_wait=0.7  # 0.5s configured + buffer
+        mock_client, serials, delay=0.2, invincibility_wait=2.5  # 2.0s CI default + buffer
     )
 
 
 async def end_fight_club(mock_client, serials: list[str], game_client, _event_collector) -> None:
     """End FightClub by running minimum rounds until winner.
 
-    Test configures fight_club_invincibility=0.5 and fight_club_min_rounds=3
-    for faster execution.
+    CI defaults: invincibility=2.0s, fight_club_min_rounds=5.
     """
-    # Invincibility is configured to 0.5s, wait slightly longer
     await end_fight_club_game(
         mock_client,
         serials,
         game_client,
         delay=0.2,
-        invincibility_wait=0.7,  # 0.5s configured + buffer
+        invincibility_wait=2.5,  # 2.0s CI default + buffer
         rounds=FIGHT_CLUB_ROUNDS,
     )
 
@@ -177,9 +172,9 @@ async def test_full_game_lifecycle(
     - Team games: Eliminate one team
     - Swapper: Swap all players to one team
     - Zombies: Convert all humans to zombies
-    - Werewolf: Kill werewolves (reveal_time=0 via settings for instant reveal)
-    - Tournament: Run bracket matches (invincibility=0.5s via settings)
-    - FightClub: Run 4 rounds (min_rounds=3, invincibility=0.5s via settings)
+    - Werewolf: Kill all but one (roles are random, guarantees one team eliminated)
+    - Tournament: Run bracket matches (invincibility=2.0s CI default)
+    - FightClub: Run 6 rounds (min_rounds=5, invincibility=2.0s CI defaults)
     - NonStop/Traitor: Force-end (no natural end in tests)
 
     Verifies:
@@ -242,7 +237,7 @@ async def test_full_game_lifecycle(
                     raise
 
             # 6. Wait for menu to fully reset controller colors
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(3.0)
 
             # 7. Verify LED colors are restored (not stuck at black)
             await verify_lobby_colors(mock_client, serials)
