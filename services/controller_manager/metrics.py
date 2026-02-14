@@ -45,6 +45,18 @@ controller_backend_info = Gauge(
     ["serial", "backend"],
 )
 
+# Bluetooth adapter metrics (Phase 3: multi-adapter support)
+bluetooth_adapter_count = Gauge(
+    "bluetooth_adapter_count",
+    "Number of active Bluetooth adapters",
+)
+
+controller_adapter_info = Gauge(
+    "controller_adapter_info",
+    "Controller adapter affinity (always 1, use labels for joins)",
+    ["serial", "adapter"],
+)
+
 controller_disconnect_total = Counter(
     "controller_disconnect_total", "Total number of controller disconnects", ["serial"]
 )

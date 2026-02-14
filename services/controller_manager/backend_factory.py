@@ -55,7 +55,7 @@ def _resolve_backend_name() -> str | None:
     return None
 
 
-def _create_backend_by_name(name: str) -> ControllerBackend:
+def _create_backend_by_name(name: str, bt_discovery=None) -> ControllerBackend:
     """Create a backend instance by name."""
     match name:
         case "mock":
@@ -66,13 +66,25 @@ def _create_backend_by_name(name: str) -> ControllerBackend:
         case "bluetooth":
             from services.controller_manager.bluetooth_backend import BluetoothBackend
 
-            return BluetoothBackend()
+            return BluetoothBackend(bt_discovery=bt_discovery)
         case "hidapi":
             from services.controller_manager.hidapi_backend import HidapiBackend
 
             return HidapiBackend()
         case _:
             raise RuntimeError(f"Unknown backend: {name}")
+
+
+def _create_bt_discovery(names: list[str]):
+    """Create CentralizedBTDiscovery if any backend needs Bluetooth.
+
+    Returns None if no backend in the list uses Bluetooth.
+    """
+    if "bluetooth" in names:
+        from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDiscovery
+
+        return CentralizedBTDiscovery()
+    return None
 
 
 def _is_multiplexer_enabled() -> bool:
@@ -119,11 +131,13 @@ def create_backend() -> ControllerBackend:
             from services.controller_manager.multiplexer.validation import validate_backend_combination
 
             validate_backend_combination(names)
-            children = [_create_backend_by_name(n) for n in names]
+            bt_discovery = _create_bt_discovery(names)
+            children = [_create_backend_by_name(n, bt_discovery=bt_discovery) for n in names]
             logger.info(f"MultiplexerBackend with children: {names}")
             return MultiplexerBackend(children)
 
-        backend = _create_backend_by_name(names[0])
+        bt_discovery = _create_bt_discovery(names)
+        backend = _create_backend_by_name(names[0], bt_discovery=bt_discovery)
         logger.info(f"Wrapping {backend.__class__.__name__} in MultiplexerBackend")
         from services.controller_manager.multiplexer import MultiplexerBackend
 

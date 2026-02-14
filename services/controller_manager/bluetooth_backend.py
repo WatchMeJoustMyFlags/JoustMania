@@ -96,24 +96,15 @@ class BluetoothBackend(ControllerBackend):
     This backend only handles Bluetooth-connected controllers.
     """
 
-    def __init__(self):
+    def __init__(self, bt_discovery=None):
         if not LINUX_DEPS_AVAILABLE:
             raise RuntimeError("Linux dependencies not available. Install: psmove, dbus-python, controller_state")
 
         self.controllers: dict[str, psmove.PSMove] = {}  # serial -> PSMove object
         self.controller_states: dict[str, ControllerState] = {}  # serial -> ControllerState
         self.led_colors: dict[str, tuple[int, int, int]] = {}  # serial -> (r, g, b) - track desired LED state
-        # Auto-detect first available Bluetooth adapter
-        try:
-            adapters = bluetooth.get_hci_dict()
-            self.hci = next(iter(adapters)) if adapters else "hci0"
-            if adapters:
-                logger.info(f"Auto-detected Bluetooth adapter: {self.hci} (address: {adapters[self.hci]})")
-            else:
-                logger.warning("No Bluetooth adapters found, defaulting to hci0")
-        except Exception as e:
-            self.hci = "hci0"
-            logger.warning(f"Failed to auto-detect Bluetooth adapter, defaulting to hci0: {e}")
+        self._bt_discovery = bt_discovery  # None = single-adapter mode
+        self.hci = "hci0"  # Default, updated in initialize()
 
         self.running = False
         self._last_controller_count = 0  # Track count to avoid redundant rescans
@@ -132,9 +123,22 @@ class BluetoothBackend(ControllerBackend):
     async def initialize(self) -> bool:
         """Initialize Bluetooth adapter and scan for Bluetooth-connected controllers."""
         try:
-            # Enable Bluetooth adapter
-            await bluetooth.enable_adapter(self.hci)
-            logger.info(f"Enabled Bluetooth adapter: {self.hci}")
+            # Detect and enable adapters
+            if self._bt_discovery:
+                adapters = await self._bt_discovery.initialize()
+                self.hci = next(iter(adapters)) if adapters else "hci0"
+                logger.info(f"Multi-adapter mode: {len(adapters)} adapter(s), primary={self.hci}")
+            else:
+                # Single-adapter fallback: detect then enable
+                try:
+                    adapters = await bluetooth.get_hci_dict()
+                    if adapters:
+                        self.hci = next(iter(adapters))
+                        logger.info(f"Auto-detected Bluetooth adapter: {self.hci} ({adapters[self.hci]})")
+                except Exception as e:
+                    logger.warning(f"Adapter detection failed, using {self.hci}: {e}")
+                await bluetooth.enable_adapter(self.hci)
+                logger.info(f"Enabled Bluetooth adapter: {self.hci}")
 
             # Scan for existing controllers (Bluetooth only)
             count = psmove.count_connected()
@@ -173,8 +177,11 @@ class BluetoothBackend(ControllerBackend):
         controllers = []
 
         try:
-            # Get all attached devices via BlueZ
-            devices = await bluetooth.get_attached_addresses(self.hci)
+            # Get all attached devices via BlueZ (multi-adapter or single)
+            if self._bt_discovery:
+                devices = await self._bt_discovery.get_all_attached_addresses()
+            else:
+                devices = await bluetooth.get_attached_addresses(self.hci)
 
             for address in devices:
                 # Check if it's a PS Move controller (MAC prefix 00:06:F7)

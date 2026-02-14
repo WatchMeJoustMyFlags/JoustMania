@@ -70,6 +70,11 @@ class MultiplexerBackend(ControllerBackend):
         # Update backend info metric for each controller
         for serial, backend in seen.items():
             metrics.controller_backend_info.labels(serial=serial, backend=backend.__class__.__name__).set(1)
+            # Adapter affinity from CentralizedBTDiscovery
+            if hasattr(backend, "_bt_discovery") and backend._bt_discovery:
+                adapter = backend._bt_discovery.get_adapter_for_address(serial)
+                if adapter:
+                    metrics.controller_adapter_info.labels(serial=serial, adapter=adapter).set(1)
 
         # Clear metric for serials that disappeared
         # (metric cleanup is best-effort; stale labels age out in the TSDB)

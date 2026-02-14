@@ -20,6 +20,7 @@ sys.path.insert(0, str(project_root))
 
 from services.controller_manager.backend_factory import (
     _create_backend_by_name,
+    _create_bt_discovery,
     _get_mock_controller_count,
     _is_multiplexer_enabled,
     _resolve_backend_name,
@@ -194,8 +195,10 @@ class TestMultiBackendCreation:
 
         assert backend.__class__.__name__ == "MultiplexerBackend"
         assert len(backend.children) == 2
-        mock_create.assert_any_call("mock")
-        mock_create.assert_any_call("bluetooth")
+        # bt_discovery is passed as kwarg to both (CentralizedBTDiscovery for bluetooth combo)
+        call_names = [call[0][0] for call in mock_create.call_args_list]
+        assert "mock" in call_names
+        assert "bluetooth" in call_names
 
     def test_comma_separated_legacy_uses_first_name(self):
         """flag='mock,bluetooth' with multiplexer off -> plain backend from first name."""
@@ -253,5 +256,69 @@ class TestMultiBackendCreation:
             backend = create_backend()
 
         assert backend.__class__.__name__ == "MultiplexerBackend"
-        mock_create.assert_any_call("mock")
-        mock_create.assert_any_call("bluetooth")
+        mock_create.assert_any_call("mock", bt_discovery=mock_create.call_args_list[0][1].get("bt_discovery"))
+        mock_create.assert_any_call("bluetooth", bt_discovery=mock_create.call_args_list[1][1].get("bt_discovery"))
+
+
+class TestBTDiscoveryInjection:
+    """Test CentralizedBTDiscovery creation and injection."""
+
+    def test_bluetooth_gets_discovery(self):
+        """_create_bt_discovery returns CentralizedBTDiscovery for bluetooth backends."""
+        from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDiscovery
+
+        discovery = _create_bt_discovery(["bluetooth"])
+        assert isinstance(discovery, CentralizedBTDiscovery)
+
+    def test_mock_gets_no_discovery(self):
+        """_create_bt_discovery returns None for non-bluetooth backends."""
+        discovery = _create_bt_discovery(["mock"])
+        assert discovery is None
+
+    def test_mock_bluetooth_gets_discovery(self):
+        """_create_bt_discovery returns CentralizedBTDiscovery when bluetooth is in the list."""
+        from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDiscovery
+
+        discovery = _create_bt_discovery(["mock", "bluetooth"])
+        assert isinstance(discovery, CentralizedBTDiscovery)
+
+    def test_bluetooth_backend_receives_discovery_via_factory(self):
+        """When multiplexer+bluetooth, BluetoothBackend should receive bt_discovery."""
+        mock_client = MagicMock()
+        mock_client.get_string_value.return_value = "mock,bluetooth"
+        mock_client.get_boolean_value.return_value = True
+
+        with (
+            patch("lib.feature_flags.get_flag_client", return_value=mock_client),
+            patch("services.controller_manager.backend_factory._create_backend_by_name") as mock_create,
+        ):
+            mock_be = MagicMock()
+            mock_be.__class__.__name__ = "MockBackend"
+            bt_be = MagicMock()
+            bt_be.__class__.__name__ = "BluetoothBackend"
+            mock_create.side_effect = [mock_be, bt_be]
+
+            create_backend()
+
+        # bluetooth call should have bt_discovery set (not None)
+        bt_call = mock_create.call_args_list[1]
+        assert bt_call[1]["bt_discovery"] is not None
+
+    def test_mock_backend_receives_no_discovery(self):
+        """Mock-only with multiplexer should pass bt_discovery=None."""
+        mock_client = MagicMock()
+        mock_client.get_string_value.return_value = "mock"
+        mock_client.get_boolean_value.return_value = True
+
+        with (
+            patch("lib.feature_flags.get_flag_client", return_value=mock_client),
+            patch("services.controller_manager.backend_factory._create_backend_by_name") as mock_create,
+        ):
+            mock_be = MagicMock()
+            mock_be.__class__.__name__ = "MockBackend"
+            mock_create.return_value = mock_be
+
+            create_backend()
+
+        call = mock_create.call_args
+        assert call[1]["bt_discovery"] is None

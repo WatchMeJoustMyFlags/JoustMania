@@ -100,10 +100,13 @@ def _make_backend():
 
     Returns a backend with empty tracking dicts, ready for testing helpers.
     Uses sys.modules patching to make psmove importable and reloads the module.
+
+    Note: adapter detection moved to initialize() in Phase 3, so __init__
+    no longer calls bluetooth.get_hci_dict(). We still mock bluetooth to
+    prevent real imports.
     """
     # Mock the bluetooth module
     mock_bluetooth = MagicMock()
-    mock_bluetooth.get_hci_dict.return_value = {"hci0": "AA:BB:CC:DD:EE:FF"}
 
     # Mock controller_state module
     mock_cs_module = MagicMock()
