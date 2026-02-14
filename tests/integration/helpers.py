@@ -871,38 +871,28 @@ async def end_swapper_game(
 
 
 async def end_werewolf_game(
-    mock_client, serials: list[str], delay: float = 0.3, wait_for_reveal: bool = True
+    mock_client, serials: list[str], delay: float = 0.3
 ) -> list[str]:
-    """End a Werewolf game by killing all werewolves (or all humans).
+    """End a Werewolf game by killing all but one player.
 
-    Werewolves are ~44% of players, revealed at 35 seconds.
+    Werewolves are ~44% of players, randomly assigned.
     Win conditions: all humans dead OR all werewolves dead.
 
-    Strategy: Wait for reveal, then kill werewolves (minority).
-    Werewolves are assigned to later players in the list.
+    Strategy: Kill all but one player. This guarantees one team is fully
+    eliminated regardless of random role assignment.
 
     Args:
         mock_client: Mock controller service gRPC client
         serials: List of all controller serials
         delay: Delay between kills in seconds
-        wait_for_reveal: If True, wait 36s for werewolf reveal
 
     Returns:
         List of serials that were killed
     """
-    if wait_for_reveal:
-        # Wait for werewolf reveal (35 seconds + buffer)
-        print("Waiting 36s for werewolf reveal...")
-        await asyncio.sleep(36)
-
     killed = []
-    # Werewolves are ~44% of players, assigned from the end of player list
-    # For 4 players: 2 humans (56%), 2 werewolves (44%) - werewolves are players 2,3
-    num_werewolves = max(1, int(len(serials) * 0.44))
-    werewolf_serials = serials[-num_werewolves:]
-
-    print(f"Killing {len(werewolf_serials)} werewolves: {werewolf_serials}")
-    for serial in werewolf_serials:
+    # Kill all but one player — guarantees one team is fully eliminated
+    print(f"Killing {len(serials) - 1} players to end Werewolf game")
+    for serial in serials[:-1]:
         await asyncio.sleep(delay)
         response = await mock_client.SimulateDeath(
             controller_manager_mock_pb2.DeathRequest(serial=serial)
@@ -921,8 +911,10 @@ async def end_zombies_game(
     In Zombies, humans become zombies when killed (not eliminated).
     Game ends when all humans are converted OR time expires.
 
-    Strategy: Kill all humans to convert them to zombies.
-    Zombies start as 2 players, rest are humans.
+    Strategy: Kill all players. Zombie assignment is random, so we can't
+    know which are humans. Killing a zombie just triggers a respawn (no
+    impact on win condition). Killing a human converts them to zombie.
+    After killing all, every human is converted and the game ends.
 
     Args:
         mock_client: Mock controller service gRPC client
@@ -930,14 +922,13 @@ async def end_zombies_game(
         delay: Delay between kills in seconds
 
     Returns:
-        List of serials that were converted (killed as humans)
+        List of serials that were killed
     """
     killed = []
-    # First 2 players are zombies, rest are humans
-    human_serials = serials[2:] if len(serials) > 2 else []
-
-    print(f"Converting {len(human_serials)} humans to zombies: {human_serials}")
-    for serial in human_serials:
+    # Kill all players — zombies just respawn, humans convert to zombies
+    # Game ends when 0 humans remain
+    print(f"Killing all {len(serials)} players to end Zombies game")
+    for serial in serials:
         await asyncio.sleep(delay)
         response = await mock_client.SimulateDeath(
             controller_manager_mock_pb2.DeathRequest(serial=serial)
@@ -953,52 +944,48 @@ async def end_fight_club_game(
     serials: list[str],
     game_client,
     delay: float = 0.2,
-    invincibility_wait: float = 4.2,
-    rounds: int = 11,
+    round_wait: float = 3.5,
+    rounds: int = 6,
 ) -> list[str]:
     """End a Fight Club game by running through rounds until a winner emerges.
 
-    Fight Club is queue-based 1v1 matches. Minimum 10 rounds before game can end.
-    Rounds last 22s with 4s invincibility. Needs clear winner after min rounds.
+    Fight Club is queue-based 1v1 matches. CI default: min_rounds=5,
+    invincibility=2.0s. After a kill there's a 1.0s inter-round pause,
+    then a new round starts with fresh invincibility.
 
-    Strategy: Let the first 2 players fight, kill defender repeatedly.
-    This gives fighter all the wins, creating a clear winner.
+    Strategy: Each round, wait for invincibility to expire, then kill all
+    serials. FightClub's _kill_player_impl only processes players in
+    DEFENDER or FIGHTER state, so queued players are harmlessly ignored.
 
     Args:
         mock_client: Mock controller service gRPC client
         serials: List of all controller serials
         game_client: GameCoordinator client (for game state queries)
-        delay: Delay between kills in seconds
-        invincibility_wait: Time to wait for invincibility to end (default 4.2s)
-        rounds: Number of rounds to run (default 11: 10 minimum + 1)
+        delay: Delay between individual kill attempts in seconds
+        round_wait: Time to wait before each kill attempt. Must exceed
+            inter-round pause (1.0s) + invincibility duration (2.0s CI).
+            Default 3.5s = 1.0 + 2.0 + 0.5 buffer.
+        rounds: Number of rounds to run (default 6: 5 CI min_rounds + 1)
 
     Returns:
-        List of serials that were killed (defenders)
+        List of serials that were killed
     """
     killed = []
-    # Run through rounds - kill defender (first in queue) to let fighter win
-    # Each round is 22s max, but ends when someone dies
-    # Need 10+ rounds for game to end
 
     for round_num in range(rounds):
         print(f"Fight Club round {round_num + 1}/{rounds}")
 
-        # Wait for invincibility to end
-        await asyncio.sleep(invincibility_wait)
+        # Wait for inter-round pause (1s) + invincibility (2s) + buffer
+        await asyncio.sleep(round_wait)
 
-        # Kill the defender (first player in rotation)
-        # Players rotate through the queue
-        defender_idx = round_num % len(serials)
-        defender = serials[defender_idx]
-
-        response = await mock_client.SimulateDeath(
-            controller_manager_mock_pb2.DeathRequest(serial=defender)
-        )
-        if response.success:
-            killed.append(defender)
-            print(f"  Killed defender: {defender}")
-        else:
-            print(f"  Failed to kill {defender}: {response.error}")
+        # Kill all serials — only active fighter/defender dies (queued players ignored)
+        for serial in serials:
+            response = await mock_client.SimulateDeath(
+                controller_manager_mock_pb2.DeathRequest(serial=serial)
+            )
+            if response.success:
+                killed.append(serial)
+                print(f"  Killed: {serial}")
 
         await asyncio.sleep(delay)
 

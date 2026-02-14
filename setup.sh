@@ -34,7 +34,7 @@ case "$REPLY" in
         echo "=========================================="
         bash "$SCRIPT_DIR/scripts/setup/setup_runtime.sh" 2>&1 | tee setup_runtime.log
         if [[ $? -ne 0 ]]; then
-            echo "ERROR: Runtime setup failed. Check setup_runtime.log for details."
+            echo "ERROR: Runtime setup failed. Check setup_runtime.log for details." >&2
             exit 1
         fi
 
@@ -64,7 +64,7 @@ case "$REPLY" in
         echo "=========================================="
         bash "$SCRIPT_DIR/scripts/setup/setup_host.sh" 2>&1 | tee setup_host.log
         if [[ $? -ne 0 ]]; then
-            echo "ERROR: Host setup failed. Check setup_host.log for details."
+            echo "ERROR: Host setup failed. Check setup_host.log for details." >&2
             exit 1
         fi
 

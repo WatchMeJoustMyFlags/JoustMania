@@ -151,7 +151,7 @@ class ControllerEventLoop:
             finally:
                 await self._clear_stream_state()
 
-    async def _run_stream_connection(self) -> float:
+    async def _run_stream_connection(self) -> float:  # NOSONAR(python:S3516)
         """
         Establish and process a single stream connection.
 

@@ -329,9 +329,9 @@ class BluetoothBackend(ControllerBackend):
             self.controllers[serial] = move
 
         try:
-            # Poll for new data (just sensor data, no LED I/O)
+            # Drain poll buffer so sensor reads return latest data
             while move.poll():
-                pass
+                pass  # NOSONAR - intentional: psmove API requires draining
 
             # Get controller state
             state = self.controller_states.get(serial)

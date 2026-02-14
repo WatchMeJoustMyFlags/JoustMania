@@ -34,7 +34,7 @@ _SENTINEL_HUE_PERIOD = 30.0  # Seconds for full hue rotation
 
 def _hsv_to_rgb(h: float, s: float, v: float) -> tuple[int, int, int]:
     """Convert HSV to RGB (0-255 scale)."""
-    if s == 0.0:
+    if s == 0.0:  # NOSONAR - exact comparison intentional in HSV conversion
         val = int(v * 255)
         return (val, val, val)
 

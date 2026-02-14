@@ -151,7 +151,7 @@ class FightClubGame(BaseGameMode):
             },
         )
 
-    def _create_player_spans(self):
+    def _create_player_spans(self, game_context):  # noqa: ARG002
         """Create flat player lifecycle spans, parented to game span."""
         if not self.game_span:
             logger.warning("No game_span available, creating orphan player spans")
@@ -573,7 +573,7 @@ class FightClubGame(BaseGameMode):
                         f"min_rounds={self._min_rounds}"
                     )
                     await self._initialize_players()
-                    self._create_player_spans()
+                    self._create_player_spans(None)
 
                 # Start gameplay stream before intro (needed for LED effects)
                 await self._start_gameplay_stream()
@@ -658,7 +658,8 @@ class FightClubGame(BaseGameMode):
             return
 
         # Calculate acceleration magnitude
-        accel_mag = (state.accel_x**2 + state.accel_y**2 + state.accel_z**2) ** 0.5
+        accel = state.accel
+        accel_mag = (accel.x**2 + accel.y**2 + accel.z**2) ** 0.5
 
         # Apply EMA filter
         if fc_player.smoothed_accel < 1e-9:  # Check for uninitialized (avoids float equality)
@@ -666,8 +667,8 @@ class FightClubGame(BaseGameMode):
         else:
             fc_player.smoothed_accel = (fc_player.smoothed_accel * 4 + accel_mag) / 5
 
-        # Get thresholds
-        warn_thresh, death_thresh = self.sensitivity.value
+        # Get thresholds using sensitivity index into base threshold arrays
+        warn_thresh, death_thresh = self._compute_effective_thresholds(fc_player)
 
         # Check for death
         if fc_player.smoothed_accel > death_thresh:
