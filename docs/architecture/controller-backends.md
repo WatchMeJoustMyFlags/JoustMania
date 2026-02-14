@@ -2,150 +2,129 @@
 
 ## Overview
 
-The controller manager uses a unified backend system that supports multiple platforms and testing modes through a single interface.
+The controller manager uses a two-layer backend system:
 
-- Single `Dockerfile` for all modes
-- `controller_backend` flagd flag selects implementation at runtime
-- Clean abstraction via `ControllerBackend` interface
-- Easy development with Mock backend
+1. **ControllerBackend** — high-level async interface used by the servicer
+2. **ControllerIOAdapter** — thin sync I/O interface for raw hardware communication
+
+When the `multiplexer_backend_enabled` flag is on (default for new deployments), `MultiplexerBackend` orchestrates one or more adapters with centralized state tracking. When off, legacy standalone backends are used directly.
 
 ## Architecture
 
+### Multiplexer Path (recommended)
+
 ```
-┌──────────────────────────────────────────┐
-│     ControllerManagerServicer (gRPC)     │
-│                                          │
-│  - Stream controller states              │
-│  - Handle LED/rumble commands            │
-│  - Manage controller lifecycle           │
-└────────────────┬─────────────────────────┘
-                 │
-                 ▼
-┌──────────────────────────────────────────┐
-│       ControllerBackend (Interface)       │
-│                                          │
-│  - initialize()                          │
-│  - get_controller_state(serial)          │
-│  - set_led_color(serial, rgb)            │
-│  - set_rumble(serial, intensity)         │
-│  - scan_controllers()                    │
-│  - connect_controller(address)           │
-└────────────────┬─────────────────────────┘
-                 │
-       ┌─────────┴─────────┬─────────────┐
-       ▼                   ▼             ▼
-┌─────────────┐    ┌──────────────┐ ┌──────────┐
-│  Bluetooth  │    │   HidAPI     │ │   Mock   │
-│   Backend   │    │   Backend    │ │  Backend │
-│             │    │              │ │          │
-│ Linux/BlueZ │    │  libhidapi   │ │ Testing  │
-│ + psmove    │    │  (Linux)     │ │ (No HW)  │
-└─────────────┘    └──────────────┘ └──────────┘
-```
-
-## Backends
-
-### 1. BluetoothBackend (Production - Raspberry Pi)
-
-**File**: `services/controller_manager/bluetooth_backend.py`
-
-**Platform**: Linux (Raspberry Pi)
-
-**Dependencies**:
-- `psmove` - PS Move controller I/O
-- `dbus-python` - BlueZ D-Bus communication
-- `controller_state` - State tracking
-- `pair` - Controller pairing
-
-**Usage**:
-```json
-// services/flagd/performance.json (default)
-"controller_backend": {
-  "defaultVariant": "bluetooth"
-}
+┌──────────────────────────────────────────────────┐
+│          ControllerManagerServicer (gRPC)          │
+└──────────────────┬───────────────────────────────┘
+                   │
+                   ▼
+┌──────────────────────────────────────────────────┐
+│     MultiplexerBackend (implements ControllerBackend)│
+│                                                    │
+│  Centralized state:                                │
+│  - LED colors, rumble, effects per serial          │
+│  - Adapter assignment (serial → adapter)           │
+│  - LED keep-alive (4s refresh)                     │
+│                                                    │
+│  CentralizedBTDiscovery (optional)                 │
+│  - Multi-adapter Bluetooth scanning                │
+│  - Adapter affinity tracking                       │
+└──────────────┬───────────────────────────────────┘
+               │
+     ┌─────────┼─────────┐
+     ▼         ▼         ▼
+┌──────────┐ ┌────────┐ ┌──────────┐
+│ PsMove   │ │ Hidapi │ │  Mock    │
+│ Adapter  │ │Adapter │ │ Adapter  │
+│          │ │        │ │          │
+│ psmoveapi│ │libhidapi│ │ Testing  │
+│ + BlueZ  │ │(Linux) │ │ (No HW)  │
+└──────────┘ └────────┘ └──────────┘
 ```
 
-**Features**:
-- Full Bluetooth pairing support
-- RSSI (signal strength) monitoring
-- Battery level tracking
-- Motion sensors (accel/gyro)
-- LED + rumble control
-- Controller hot-plug
+### Legacy Path (multiplexer disabled)
 
-**Hot-Plug Support**:
+```
+ControllerManagerServicer → ControllerBackend (direct)
+  → BluetoothBackend | HidapiBackend | MockBackend
+```
 
-Controllers can connect/disconnect dynamically after container startup. The backend polls `psmove.count_connected()` and rescans when count changes:
+## Adapters (ControllerIOAdapter)
 
+Adapters handle device handles and raw I/O only. All methods are sync (blocking) — called via `asyncio.to_thread()`. State tracking (LED colors, rumble, effects) lives in `MultiplexerBackend`.
+
+**Interface** (`multiplexer/adapter.py`):
 ```python
-def get_connected_controllers(self) -> list[str]:
-    count = psmove.count_connected()
-    if count != self._last_controller_count:
-        # Rescan with retry logic for newly connected controllers
-        # New controllers may not be immediately ready - retry 3x with 0.5s delay
+class ControllerIOAdapter(ABC):
+    adapter_type: str              # "psmove", "hidapi", "mock"
+    def discover(force=False) -> list[str]
+    def open(serial) -> bool
+    def poll(serial) -> dict | None
+    def set_output(serial, r, g, b, rumble) -> bool
+    def close(serial) -> None
+    def close_all() -> None
 ```
 
-Docker requirements for hot-plug:
-```yaml
-controller-manager:
-  privileged: true
-  pid: "host"            # Required: host PID namespace for device visibility
-  volumes:
-    - /dev:/dev:rslave   # Required: rslave propagation for new devices
-```
+`set_output()` combines LED + rumble in one call — this matches HID output report reality and prevents rumble from being reset when LEDs refresh.
 
-### 2. MockBackend (Testing/CI)
+### PsMoveAdapter
 
-**File**: `services/controller_manager/mock_backend.py`
+**File**: `multiplexer/psmove_adapter.py`
 
-**Platform**: Any (pure Python)
+Uses the `psmove` C library. Handles are opened during `discover()` since psmove uses an index-based API. Includes retry logic for flaky USB enumeration.
 
-**Dependencies**: None
+### HidapiAdapter
 
-**Usage**:
+**File**: `multiplexer/hidapi_adapter.py`
+
+Uses `hid` (hidapi) library. Reads HID input reports via `device.read()`, parses via `lib.psmove_hid.parse_input_report()`. Normalizes serials (uppercase, no colons).
+
+### MockAdapter
+
+**File**: `multiplexer/mock_adapter.py`
+
+Simulated I/O for testing without hardware. Extra methods for `MockControllerService`: `add_controller()`, `remove_controller()`, `add_observer()`, `get_led_color()`.
+
+## Multi-Adapter Support
+
+The `controller_backend` flag accepts comma-separated values to run multiple adapters simultaneously:
+
 ```json
-// services/flagd/performance.ci.json (CI default)
-"controller_backend": {
-  "defaultVariant": "mock"
-}
+"controller_backend": { "defaultVariant": "mock,bluetooth" }
 ```
 
-Or use `make up-mock` which applies the CI flagd config.
+This creates a `MultiplexerBackend` with both a `MockAdapter` and a `PsMoveAdapter`, allowing real and simulated controllers in the same session. Valid combinations:
+- `mock` — mock only
+- `bluetooth` — psmove only
+- `hidapi` — hidapi only
+- `mock,bluetooth` — mock + psmove
+- `mock,hidapi` — mock + hidapi
 
-**Features**:
-- Simulates 1-N controllers
-- Random button presses
-- Realistic motion sensor noise
-- Battery drain simulation
-- LED/rumble state tracking (no output)
-- **No hardware required**
-
-**Use Cases**:
-- CI/CD pipelines
-- Integration tests
-- Development without controllers
-- Automated testing
+Invalid: `bluetooth,hidapi` (both use the same hardware).
 
 ## Backend Selection
 
 ### Priority
 
-1. **OpenFeature flag** (`controller_backend` in performance domain) - runtime-switchable via flagd
-2. **Default** - Linux bluetooth backend
+1. **OpenFeature flag** (`controller_backend` in performance domain) — runtime-switchable via flagd
+2. **Default** — Linux bluetooth backend
+
+### Multiplexer Toggle
+
+When `multiplexer_backend_enabled` is `true`, the factory creates adapters wrapped in `MultiplexerBackend`. When `false`, legacy standalone backends are used.
 
 ### Fallback
 
-If the flagd flag is empty or flagd is unavailable, the system defaults to `BluetoothBackend`.
+If the flagd flag is empty or flagd is unavailable, the system defaults to `BluetoothBackend` (legacy path).
 
-### Manual Override
+## Configuration (flagd)
 
-Set the backend via flagd flag in `services/flagd/performance.json`:
-
-```json
-"controller_backend": {
-  "defaultVariant": "mock"
-}
-```
+| Flag | Domain | Values | Default | Description |
+|------|--------|--------|---------|-------------|
+| `controller_backend` | performance | `bluetooth`, `mock`, `hidapi`, comma-separated | `bluetooth` | Select backend(s) |
+| `multiplexer_backend_enabled` | performance | `true`, `false` | `false` | Use adapter-based multiplexer |
+| `mock_controller_count` | performance | 2, 4, 6, 8 | 4 | Mock controllers count |
 
 ## Docker Compose Integration
 
@@ -157,16 +136,6 @@ controller-manager:
   privileged: true  # Bluetooth access
   devices:
     - /dev/bus/usb  # USB pairing
-  # controller_backend defaults to "bluetooth" in flagd performance.json
-```
-
-### Testing (docker-compose.ci.yml)
-
-```yaml
-# Uses performance.ci.json with controller_backend=mock
-flagd:
-  volumes:
-    - ./services/flagd/performance.ci.json:/etc/flagd/performance.json
 ```
 
 ### Mock Mode
@@ -175,30 +144,8 @@ flagd:
 make up-mock  # Uses CI flagd config (controller_backend=mock)
 ```
 
-## Benefits
-
-### 1. **Single Dockerfile**
-- No more `Dockerfile.mock`
-- Backend selected at runtime via flagd
-- Reduces maintenance burden
-
-### 2. **Clean Testing**
-- Mock backend has zero hardware dependencies
-- Runs in CI without special setup
-- Consistent behavior across environments
-
-### 3. **No Code Changes for Mock**
-- Set `controller_backend=mock` in flagd -> instant mock mode
-- No conditional code in service logic
-- Clean separation of concerns
-
-## Configuration (flagd)
-
-| Flag | Domain | Values | Default | Description |
-|------|--------|--------|---------|-------------|
-| `controller_backend` | performance | `bluetooth`, `mock`, `hidapi` | `bluetooth` | Select backend |
-| `mock_controller_count` | performance | 2, 4, 6, 8 | 4 | Mock controllers count |
-
 ## See Also
 
 - [ControllerBackend Interface](../../services/controller_manager/backend.py)
+- [ControllerIOAdapter ABC](../../services/controller_manager/multiplexer/adapter.py)
+- [MultiplexerBackend](../../services/controller_manager/multiplexer/multiplexer_backend.py)
