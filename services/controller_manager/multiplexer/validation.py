@@ -1,8 +1,13 @@
 """
 Backend combination validation for MultiplexerBackend.
 
-Multiple real backends (Bluetooth, HidAPI) conflict because they access the
-same physical controllers via global APIs. Only mock + one real backend is safe.
+Bluetooth and HidAPI each scan for PS Move controllers using different
+libraries.  Running both at the same time is supported via the multiplexer
+— the adapters discover controllers independently and the multiplexer
+routes per-serial operations to whichever adapter owns the controller.
+
+Mock is always auto-injected (with 0 controllers) when the multiplexer is
+enabled, so it appears in every combination automatically.
 """
 
 VALID_COMBINATIONS = {
@@ -11,6 +16,8 @@ VALID_COMBINATIONS = {
     frozenset({"hidapi"}),
     frozenset({"mock", "bluetooth"}),
     frozenset({"mock", "hidapi"}),
+    frozenset({"bluetooth", "hidapi"}),
+    frozenset({"mock", "bluetooth", "hidapi"}),
 }
 
 
@@ -30,6 +37,6 @@ def validate_backend_combination(names: list[str]) -> None:
     if combo not in VALID_COMBINATIONS:
         raise ValueError(
             f"Unsupported backend combination: {names}. "
-            "Multiple real backends conflict. "
-            "Supported: mock, bluetooth, hidapi, mock+bluetooth, mock+hidapi"
+            "Supported: mock, bluetooth, hidapi, bluetooth+hidapi, "
+            "and any of these with mock"
         )

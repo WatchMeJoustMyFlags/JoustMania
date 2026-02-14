@@ -31,6 +31,7 @@ from tests.integration.helpers import (
     get_mock_controller_serials,
     kill_players_for_team_win,
     kill_players_until_one_remains,
+    setup_mock_controllers,
     start_game_via_menu,
     verify_controllers_have_color,
     verify_lobby_colors,
@@ -197,6 +198,9 @@ async def test_full_game_lifecycle(
     """
     # Configure game-specific settings for faster test execution
     await configure_test_settings(docker_compose, game_mode)
+
+    # Ensure mock controllers exist (RPC-based, no longer pre-created at startup)
+    await setup_mock_controllers(docker_compose, count=4)
 
     # Get clients
     mock_client, mock_channel = await get_mock_client(docker_compose)

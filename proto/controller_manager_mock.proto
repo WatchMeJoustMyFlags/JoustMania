@@ -32,6 +32,15 @@ service MockControllerService {
 
     // Stream observable events from mock controllers (LED changes, button presses, etc.)
     rpc StreamObservability(ObservabilityRequest) returns (stream ObservabilityEvent);
+
+    // Add a single mock controller dynamically
+    rpc AddController(AddControllerRequest) returns (AddControllerResponse);
+
+    // Remove a mock controller
+    rpc RemoveController(RemoveControllerRequest) returns (RemoveControllerResponse);
+
+    // Add multiple mock controllers at once
+    rpc AddControllers(AddControllersRequest) returns (AddControllersResponse);
 }
 
 message MovementRequest {
@@ -158,4 +167,36 @@ message ButtonChangeEvent {
 
 message ConnectionEvent {
     bool connected = 1;
+}
+
+// AddController - add a single mock controller dynamically
+message AddControllerRequest {
+    string serial = 1;  // Optional: auto-generated if empty
+}
+
+message AddControllerResponse {
+    bool success = 1;
+    string error = 2;
+    string serial = 3;  // The serial of the added controller
+}
+
+// RemoveController - remove a mock controller
+message RemoveControllerRequest {
+    string serial = 1;
+}
+
+message RemoveControllerResponse {
+    bool success = 1;
+    string error = 2;
+}
+
+// AddControllers - add multiple mock controllers at once
+message AddControllersRequest {
+    int32 count = 1;
+}
+
+message AddControllersResponse {
+    bool success = 1;
+    string error = 2;
+    repeated string serials = 3;
 }

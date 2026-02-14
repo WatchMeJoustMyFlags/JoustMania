@@ -21,6 +21,11 @@ class TestMockAdapterInit:
         adapter = MockAdapter(num_controllers=2)
         assert adapter.adapter_type == "mock"
 
+    def test_default_zero_controllers(self):
+        adapter = MockAdapter()
+        assert adapter._num_controllers == 0
+        assert len(adapter.controllers) == 0
+
     def test_starts_empty(self):
         adapter = MockAdapter(num_controllers=2)
         assert len(adapter.controllers) == 0
@@ -34,6 +39,19 @@ class TestMockAdapterDiscover:
         assert "mock_controller_0" in serials
         assert "mock_controller_1" in serials
         assert "mock_controller_2" in serials
+
+    def test_discover_zero_controllers_returns_empty(self):
+        adapter = MockAdapter(num_controllers=0)
+        serials = adapter.discover()
+        assert serials == []
+
+    def test_discover_zero_does_not_recreate_on_subsequent_calls(self):
+        adapter = MockAdapter(num_controllers=0)
+        adapter.discover()
+        adapter.add_controller("DYN01")
+        # Second discover should return the dynamically added controller
+        serials = adapter.discover()
+        assert serials == ["DYN01"]
 
     def test_returns_existing_controllers_on_subsequent_discover(self):
         adapter = MockAdapter(num_controllers=2)

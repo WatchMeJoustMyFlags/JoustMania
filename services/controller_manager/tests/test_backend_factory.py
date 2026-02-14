@@ -220,17 +220,32 @@ class TestMultiAdapterCreation:
 
         assert backend.__class__.__name__ == "MockBackend"
 
-    def test_invalid_combination_raises(self):
-        """flag='bluetooth,hidapi' with multiplexer on -> ValueError."""
+    def test_bluetooth_hidapi_creates_three_adapters(self):
+        """flag='bluetooth,hidapi' with multiplexer on -> MultiplexerBackend with 3 adapters (+ auto-injected mock)."""
         mock_client = MagicMock()
         mock_client.get_string_value.return_value = "bluetooth,hidapi"
         mock_client.get_boolean_value.return_value = True
 
         with (
             patch("lib.feature_flags.get_flag_client", return_value=mock_client),
-            pytest.raises(ValueError, match="Unsupported backend combination"),
+            patch("services.controller_manager.backend_factory._create_adapter_by_name") as mock_create,
         ):
-            create_backend()
+            bt_adapter = MagicMock()
+            bt_adapter.adapter_type = "psmove"
+            hidapi_adapter = MagicMock()
+            hidapi_adapter.adapter_type = "hidapi"
+            mock_adapter = MagicMock()
+            mock_adapter.adapter_type = "mock"
+            mock_create.side_effect = [bt_adapter, hidapi_adapter, mock_adapter]
+
+            backend = create_backend()
+
+        assert backend.__class__.__name__ == "MultiplexerBackend"
+        assert len(backend.adapters) == 3
+        call_names = [call[0][0] for call in mock_create.call_args_list]
+        assert "bluetooth" in call_names
+        assert "hidapi" in call_names
+        assert "mock" in call_names
 
     def test_single_name_creates_adapter(self):
         """flag='mock' with multiplexer on -> MultiplexerBackend with 1 adapter."""

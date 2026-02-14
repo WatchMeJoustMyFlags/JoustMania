@@ -251,6 +251,45 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
             logger.error(f"GetColor error: {e}")
             return controller_manager_mock_pb2.GetColorResponse(success=False, error=str(e))
 
+    def AddController(self, request, _context):
+        """Add a single mock controller dynamically."""
+        try:
+            serial = request.serial if request.serial else None
+            added_serial = self.backend.add_controller(serial)
+            logger.info(f"Mock: Added controller {added_serial}")
+            return controller_manager_mock_pb2.AddControllerResponse(success=True, serial=added_serial)
+        except Exception as e:
+            logger.error(f"AddController error: {e}")
+            return controller_manager_mock_pb2.AddControllerResponse(success=False, error=str(e), serial="")
+
+    def RemoveController(self, request, _context):
+        """Remove a mock controller."""
+        try:
+            serial = request.serial
+            removed = self.backend.remove_controller(serial)
+            if removed:
+                logger.info(f"Mock: Removed controller {serial}")
+                return controller_manager_mock_pb2.RemoveControllerResponse(success=True)
+            return controller_manager_mock_pb2.RemoveControllerResponse(
+                success=False, error=f"Controller {serial} not found"
+            )
+        except Exception as e:
+            logger.error(f"RemoveController error: {e}")
+            return controller_manager_mock_pb2.RemoveControllerResponse(success=False, error=str(e))
+
+    def AddControllers(self, request, _context):
+        """Add multiple mock controllers at once."""
+        try:
+            serials = []
+            for _ in range(request.count):
+                serial = self.backend.add_controller()
+                serials.append(serial)
+            logger.info(f"Mock: Added {request.count} controllers: {serials}")
+            return controller_manager_mock_pb2.AddControllersResponse(success=True, serials=serials)
+        except Exception as e:
+            logger.error(f"AddControllers error: {e}")
+            return controller_manager_mock_pb2.AddControllersResponse(success=False, error=str(e))
+
     async def StreamObservability(self, _request, context):
         """Stream observable events from mock controllers (LED changes, button presses, etc.)."""
         queue = self.backend.add_observer()

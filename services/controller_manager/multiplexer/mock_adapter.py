@@ -55,7 +55,7 @@ class MockAdapter(ControllerIOAdapter):
     add_observer, remove_observer, get_led_color, controllers property).
     """
 
-    def __init__(self, num_controllers: int = 4):
+    def __init__(self, num_controllers: int = 0):
         self._num_controllers = num_controllers
         self.controllers: dict[str, dict] = {}
         self._observers: list[asyncio.Queue] = []
@@ -68,9 +68,11 @@ class MockAdapter(ControllerIOAdapter):
     def discover(self, force: bool = False) -> list[str]:  # noqa: ARG002
         """Return all mock controller serials.
 
-        On first call (empty controllers dict), creates the initial set.
+        On first call (empty controllers dict), creates the initial set
+        if num_controllers > 0.  When num_controllers is 0 (the default),
+        controllers are added dynamically via add_controller() / RPC.
         """
-        if not self.controllers:
+        if not self.controllers and self._num_controllers > 0:
             for i in range(self._num_controllers):
                 serial = f"mock_controller_{i}"
                 self.controllers[serial] = _create_controller_state(serial)
