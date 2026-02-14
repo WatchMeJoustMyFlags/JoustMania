@@ -354,6 +354,7 @@ class TestZombieThresholds:
     @pytest.mark.asyncio
     async def test_zombie_returns_zombie_thresholds(self, zombie_game):
         """Zombies should get thresholds from ZOMBIE_THRESHOLDS dict."""
+        from services.game_coordinator.games.zombie import ZOMBIE_THRESHOLDS
 
         game, mock_controller_manager = zombie_game
         await game._initialize_players_impl(mock_controller_manager.controllers)
@@ -361,27 +362,127 @@ class TestZombieThresholds:
         # Get threshold for a zombie
         zombie_serial = game.zombie_serials[0]
         zombie_player = game.players[zombie_serial]
-        zombie_thresholds = game._get_effective_thresholds(zombie_player)
+        zombie_thresholds = game._compute_effective_thresholds(zombie_player)
 
         # Should return a tuple from ZOMBIE_THRESHOLDS
         assert isinstance(zombie_thresholds, tuple), "Zombie thresholds should be tuple"
         assert len(zombie_thresholds) == 2, "Zombie thresholds should have (warning, death)"
         assert zombie_thresholds[0] < zombie_thresholds[1], "Warning should be less than death threshold"
 
+        # Verify it matches ZOMBIE_THRESHOLDS for game's sensitivity
+        expected = ZOMBIE_THRESHOLDS.get(game.sensitivity, (2.1, 2.6))
+        assert zombie_thresholds == expected
+
     @pytest.mark.asyncio
-    async def test_human_returns_sensitivity_value(self, zombie_game):
-        """Humans should return sensitivity.value for threshold lookup."""
+    async def test_human_returns_base_thresholds(self, zombie_game):
+        """Humans should return base class thresholds (tuple of warn, death)."""
         game, mock_controller_manager = zombie_game
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
         # Get threshold for a human
         human_serial = game.human_serials[0]
         human_player = game.players[human_serial]
-        human_thresholds = game._get_effective_thresholds(human_player)
+        human_thresholds = game._compute_effective_thresholds(human_player)
 
-        # Humans return sensitivity.value (int index) for base class threshold lookup
-        # This is intentional - base class uses this to index into SLOW_MAX/FAST_MAX arrays
-        assert isinstance(human_thresholds, int), "Human thresholds should be int index"
+        # Humans delegate to base class, which returns (warn, death) tuple
+        assert isinstance(human_thresholds, tuple), "Human thresholds should be tuple"
+        assert len(human_thresholds) == 2, "Human thresholds should have (warning, death)"
+        assert human_thresholds[0] < human_thresholds[1], "Warning should be less than death threshold"
+
+    @pytest.mark.asyncio
+    async def test_zombie_threshold_higher_than_human(self, zombie_game):
+        """Zombie death threshold should be higher than human death threshold."""
+        game, mock_controller_manager = zombie_game
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        zombie_serial = game.zombie_serials[0]
+        human_serial = game.human_serials[0]
+
+        zombie_thresh = game._compute_effective_thresholds(game.players[zombie_serial])
+        human_thresh = game._compute_effective_thresholds(game.players[human_serial])
+
+        # Zombie death threshold should be higher (harder to kill)
+        assert zombie_thresh[1] > human_thresh[1], (
+            f"Zombie death threshold {zombie_thresh[1]} should be > human {human_thresh[1]}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_zombie_survives_accel_that_kills_human(self, zombie_game):
+        """Integration test: acceleration between human and zombie death thresholds kills human but not zombie."""
+        from proto import controller_manager_pb2
+
+        game, mock_controller_manager = zombie_game
+        game.gameplay_stream = MockGameplayStream()
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        zombie_serial = game.zombie_serials[0]
+        human_serial = game.human_serials[0]
+
+        zombie_thresh = game._compute_effective_thresholds(game.players[zombie_serial])
+        human_thresh = game._compute_effective_thresholds(game.players[human_serial])
+
+        # Pick acceleration between human death and zombie death thresholds
+        mid_accel = (human_thresh[1] + zombie_thresh[1]) / 2
+
+        game.players[zombie_serial].grace_until = 0.0
+        game.players[human_serial].grace_until = 0.0
+
+        state_human = controller_manager_pb2.GameplayData(
+            serial=human_serial,
+            accel=controller_manager_pb2.Vector3(x=mid_accel, y=0.0, z=0.0),
+        )
+        state_zombie = controller_manager_pb2.GameplayData(
+            serial=zombie_serial,
+            accel=controller_manager_pb2.Vector3(x=mid_accel, y=0.0, z=0.0),
+        )
+
+        # Feed enough frames for EMA to build up
+        for _ in range(20):
+            if game.players[human_serial].alive and not game.players[human_serial].is_zombie:
+                await game._process_controller_state(state_human)
+            await game._process_controller_state(state_zombie)
+
+        # Human should be dead (converted to zombie), zombie should survive
+        assert game.players[human_serial].is_zombie, "Human should have been converted to zombie"
+        assert game.players[zombie_serial].alive, "Zombie should survive mid-range acceleration"
+
+    @pytest.mark.asyncio
+    async def test_zombie_thresholds_all_sensitivities(self, zombie_game):
+        """All 5 sensitivity levels should return valid tuples from ZOMBIE_THRESHOLDS."""
+        from services.game_coordinator.games.base import Sensitivity
+        from services.game_coordinator.games.zombie import ZOMBIE_THRESHOLDS
+
+        game, mock_controller_manager = zombie_game
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        zombie_serial = game.zombie_serials[0]
+        zombie_player = game.players[zombie_serial]
+
+        for sensitivity in Sensitivity:
+            game.sensitivity = sensitivity
+            thresh = game._compute_effective_thresholds(zombie_player)
+            expected = ZOMBIE_THRESHOLDS[sensitivity]
+            assert thresh == expected, f"Sensitivity {sensitivity}: got {thresh}, expected {expected}"
+
+    @pytest.mark.asyncio
+    async def test_zombie_thresholds_static_across_music_speed(self, zombie_game):
+        """Zombie thresholds should not change with music tempo (intentionally static)."""
+        game, mock_controller_manager = zombie_game
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        zombie_serial = game.zombie_serials[0]
+        zombie_player = game.players[zombie_serial]
+
+        # Get thresholds at slow music speed
+        game.music_speed = 1.0
+        thresh_slow = game._compute_effective_thresholds(zombie_player)
+
+        # Get thresholds at fast music speed
+        game.music_speed = 1.3
+        thresh_fast = game._compute_effective_thresholds(zombie_player)
+
+        # Zombie thresholds come from static dict, not affected by music
+        assert thresh_slow == thresh_fast, f"Zombie thresholds should be static: slow={thresh_slow}, fast={thresh_fast}"
 
 
 class TestZombieEdgeCases:

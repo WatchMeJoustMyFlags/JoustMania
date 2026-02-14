@@ -302,11 +302,12 @@ class WerewolfGame(BaseGameMode):
 
         logger.info(f"Revealed {len(self.werewolf_serials)} werewolves")
 
-    def _get_effective_thresholds(self, player: Player) -> tuple[float, float]:
+    def _compute_effective_thresholds(self, player: Player) -> tuple[float, float]:
         """
-        Get death thresholds for a player.
+        Compute effective thresholds for a player.
 
         Werewolves have higher thresholds (harder to kill).
+        Humans use standard base class thresholds.
 
         Args:
             player: The player to get thresholds for
@@ -317,8 +318,7 @@ class WerewolfGame(BaseGameMode):
         wolf_player = player
         if wolf_player.is_werewolf:
             return WEREWOLF_THRESHOLDS.get(self.sensitivity, (2.1, 2.6))
-        # Use standard thresholds from sensitivity
-        return self.sensitivity.value
+        return super()._compute_effective_thresholds(player)
 
     async def _check_win_condition(self) -> bool:
         """

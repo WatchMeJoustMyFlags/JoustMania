@@ -456,6 +456,56 @@ class TestNonstopScoring:
         expected_score = max(0, 100 - (player.deaths * 10))
         assert expected_score == 0
 
+    @pytest.mark.asyncio
+    async def test_end_game_scoring(self, nonstop_game):
+        """Test that _end_game_impl calculates final scores correctly."""
+        from services.game_coordinator.games.base import GameState
+
+        game, mock_controller_manager, _ = nonstop_game
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        # Give player 0 some deaths
+        serial = list(game.players.keys())[0]
+        player = game.players[serial]
+        player.deaths = 3
+
+        # Setup required state for _end_game_impl
+        game.gameplay_stream = MockGameplayStream()
+        game.start_time = time.time()
+        game.state = GameState.RUNNING
+
+        await game._end_game_impl()
+
+        # Score = max(0, 100 - (3 * 10)) = 70
+        assert player.score == 70
+
+    @pytest.mark.asyncio
+    async def test_respawn_timer_decrement(self, nonstop_game):
+        """Test that _update_respawn_timers decrements respawn timer."""
+        game, mock_controller_manager, _ = nonstop_game
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        # Setup gameplay stream for respawn countdown colors
+        game.gameplay_stream = MockGameplayStream()
+
+        # Kill player 0
+        serial = list(game.players.keys())[0]
+        await game._kill_player_impl(serial, accel_mag=5.0)
+
+        player = game.players[serial]
+        initial_timer = player.respawn_timer
+
+        # Set update frequency
+        game._current_update_frequency = 30
+
+        # Update respawn timers
+        await game._update_respawn_timers()
+
+        # Timer should have decreased
+        assert player.respawn_timer < initial_timer
+
 
 class TestNonstopSettings:
     """Tests for settings loading."""
