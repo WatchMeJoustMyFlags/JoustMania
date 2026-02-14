@@ -24,9 +24,15 @@ logger = logging.getLogger(__name__)
 
 
 def _find_mock_backend(backend):
-    """Find MockBackend, looking through MultiplexerBackend children if needed."""
+    """Find MockBackend or MockAdapter through MultiplexerBackend."""
     if backend.__class__.__name__ == "MockBackend":
         return backend
+    # Check for adapter-based MultiplexerBackend (Phase 4+)
+    if hasattr(backend, "adapters"):
+        for adapter in backend.adapters:
+            if adapter.adapter_type == "mock":
+                return adapter
+    # Legacy child-based MultiplexerBackend (Phase 1-3)
     if hasattr(backend, "children"):
         for child in backend.children:
             if child.__class__.__name__ == "MockBackend":

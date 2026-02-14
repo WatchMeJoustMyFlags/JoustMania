@@ -9,6 +9,9 @@ Backend selection priority:
 
 Flag values (controller_backend, mock_controller_count) are read once at startup.
 Runtime changes to these flags require a service restart to take effect.
+
+Multiplexer path (Phase 4+): creates ControllerIOAdapter instances.
+Legacy path (multiplexer disabled): creates ControllerBackend instances.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ from typing import TYPE_CHECKING
 from services.controller_manager.backend import ControllerBackend
 
 if TYPE_CHECKING:
+    from services.controller_manager.multiplexer.adapter import ControllerIOAdapter
     from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDiscovery
 
 logger = logging.getLogger(__name__)
@@ -62,7 +66,7 @@ def _resolve_backend_name() -> str | None:
 
 
 def _create_backend_by_name(name: str, bt_discovery: CentralizedBTDiscovery | None = None) -> ControllerBackend:
-    """Create a backend instance by name."""
+    """Create a legacy backend instance by name (multiplexer disabled path)."""
     match name:
         case "mock":
             from services.controller_manager.mock_backend import MockBackend
@@ -79,6 +83,25 @@ def _create_backend_by_name(name: str, bt_discovery: CentralizedBTDiscovery | No
             return HidapiBackend()
         case _:
             raise RuntimeError(f"Unknown backend: {name}")
+
+
+def _create_adapter_by_name(name: str) -> ControllerIOAdapter:
+    """Create a ControllerIOAdapter instance by name (multiplexer enabled path)."""
+    match name:
+        case "mock":
+            from services.controller_manager.multiplexer.mock_adapter import MockAdapter
+
+            return MockAdapter(num_controllers=_get_mock_controller_count())
+        case "bluetooth":
+            from services.controller_manager.multiplexer.psmove_adapter import PsMoveAdapter
+
+            return PsMoveAdapter()
+        case "hidapi":
+            from services.controller_manager.multiplexer.hidapi_adapter import HidapiAdapter
+
+            return HidapiAdapter()
+        case _:
+            raise RuntimeError(f"Unknown adapter: {name}")
 
 
 def _create_bt_discovery(names: list[str]) -> CentralizedBTDiscovery | None:
@@ -119,9 +142,9 @@ def create_backend() -> ControllerBackend:
         1. OpenFeature "controller_backend" flag from performance domain
         2. Platform auto-detection (Linux -> bluetooth)
 
-    If multiplexer_backend_enabled flag is on, wraps the resolved backend(s)
-    in a MultiplexerBackend composite. Comma-separated flag values (e.g.
-    "mock,bluetooth") create multiple children.
+    If multiplexer_backend_enabled flag is on, creates ControllerIOAdapter
+    instances wrapped in MultiplexerBackend. Comma-separated flag values
+    (e.g. "mock,bluetooth") create multiple adapters.
 
     Configuration:
         mock_controller_count: flagd flag (performance domain)
@@ -136,23 +159,16 @@ def create_backend() -> ControllerBackend:
     backend_name = _resolve_backend_name()
 
     if backend_name and _is_multiplexer_enabled():
+        from services.controller_manager.multiplexer import MultiplexerBackend
+        from services.controller_manager.multiplexer.validation import validate_backend_combination
+
         names = [n.strip() for n in backend_name.split(",")]
         if len(names) > 1:
-            from services.controller_manager.multiplexer import MultiplexerBackend
-            from services.controller_manager.multiplexer.validation import validate_backend_combination
-
             validate_backend_combination(names)
-            bt_discovery = _create_bt_discovery(names)
-            children = [_create_backend_by_name(n, bt_discovery=bt_discovery) for n in names]
-            logger.info(f"MultiplexerBackend with children: {names}")
-            return MultiplexerBackend(children, bt_discovery=bt_discovery)
-
         bt_discovery = _create_bt_discovery(names)
-        backend = _create_backend_by_name(names[0], bt_discovery=bt_discovery)
-        logger.info(f"Wrapping {backend.__class__.__name__} in MultiplexerBackend")
-        from services.controller_manager.multiplexer import MultiplexerBackend
-
-        return MultiplexerBackend([backend], bt_discovery=bt_discovery)
+        adapters = [_create_adapter_by_name(n) for n in names]
+        logger.info(f"MultiplexerBackend with adapters: {names}")
+        return MultiplexerBackend(adapters=adapters, bt_discovery=bt_discovery)
 
     if backend_name:
         # Legacy path (multiplexer disabled) — take first name if comma-separated
@@ -176,6 +192,6 @@ def create_backend() -> ControllerBackend:
         from services.controller_manager.multiplexer import MultiplexerBackend
 
         logger.info(f"Wrapping {backend.__class__.__name__} in MultiplexerBackend")
-        return MultiplexerBackend([backend])
+        return MultiplexerBackend(children=[backend])
 
     return backend
