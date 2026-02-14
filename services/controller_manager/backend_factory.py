@@ -7,11 +7,14 @@ Backend selection priority:
   1. OpenFeature "controller_backend" flag (runtime-switchable via flagd)
   2. Platform auto-detection (Linux -> bluetooth)
 
-Flag values (controller_backend, mock_controller_count) are read once at startup.
+Flag values are read once at startup.
 Runtime changes to these flags require a service restart to take effect.
 
 Multiplexer path (Phase 4+): creates ControllerIOAdapter instances.
+  - Mock adapter is always auto-injected (starts with 0 controllers).
+  - Controllers are added dynamically via AddController / AddControllers RPCs.
 Legacy path (multiplexer disabled): creates ControllerBackend instances.
+  - mock_controller_count flag still controls initial controller count.
 """
 
 from __future__ import annotations
@@ -86,12 +89,16 @@ def _create_backend_by_name(name: str, bt_discovery: CentralizedBTDiscovery | No
 
 
 def _create_adapter_by_name(name: str) -> ControllerIOAdapter:
-    """Create a ControllerIOAdapter instance by name (multiplexer enabled path)."""
+    """Create a ControllerIOAdapter instance by name (multiplexer enabled path).
+
+    Mock adapters always start with 0 controllers — controllers are added
+    dynamically via the AddController / AddControllers RPCs.
+    """
     match name:
         case "mock":
             from services.controller_manager.multiplexer.mock_adapter import MockAdapter
 
-            return MockAdapter(num_controllers=_get_mock_controller_count())
+            return MockAdapter(num_controllers=0)
         case "bluetooth":
             from services.controller_manager.multiplexer.psmove_adapter import PsMoveAdapter
 
@@ -144,10 +151,11 @@ def create_backend() -> ControllerBackend:
 
     If multiplexer_backend_enabled flag is on, creates ControllerIOAdapter
     instances wrapped in MultiplexerBackend. Comma-separated flag values
-    (e.g. "mock,bluetooth") create multiple adapters.
+    (e.g. "mock,bluetooth") create multiple adapters. A mock adapter is
+    always auto-injected (with 0 controllers) for dynamic RPC management.
 
     Configuration:
-        mock_controller_count: flagd flag (performance domain)
+        mock_controller_count: flagd flag (performance domain, legacy path only)
 
     Returns:
         ControllerBackend instance
@@ -163,6 +171,12 @@ def create_backend() -> ControllerBackend:
         from services.controller_manager.multiplexer.validation import validate_backend_combination
 
         names = [n.strip() for n in backend_name.split(",")]
+
+        # Always include mock adapter for dynamic controller management via RPC.
+        # Mock starts with 0 controllers; tests/demos add them via AddController.
+        if "mock" not in names:
+            names.append("mock")
+
         if len(names) > 1:
             validate_backend_combination(names)
         bt_discovery = _create_bt_discovery(names)

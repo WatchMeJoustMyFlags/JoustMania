@@ -73,6 +73,43 @@ async def get_mock_controller_serials(docker_compose) -> list[str]:
     return list(response.serials)
 
 
+async def setup_mock_controllers(docker_compose, count: int = 4) -> list[str]:
+    """Add mock controllers via RPC and return their serials.
+
+    Uses AddControllers RPC to dynamically create controllers.
+    This replaces the static mock_controller_count flag for the
+    multiplexer path.
+
+    Args:
+        docker_compose: Docker compose fixture
+        count: Number of controllers to add
+
+    Returns:
+        List of serial strings for the added controllers
+    """
+    mock_client, channel = await get_mock_client(docker_compose)
+
+    # First check if controllers already exist (e.g., from a previous test)
+    existing = await mock_client.ListMockControllers(
+        controller_manager_mock_pb2.ListRequest()
+    )
+    if existing.count >= count:
+        await channel.close()
+        return list(existing.serials[:count])
+
+    # Add the needed controllers
+    needed = count - existing.count
+    response = await mock_client.AddControllers(
+        controller_manager_mock_pb2.AddControllersRequest(count=needed)
+    )
+    assert response.success, f"Failed to add controllers: {response.error}"
+    await channel.close()
+
+    # Return all serials (existing + newly added)
+    all_serials = list(existing.serials) + list(response.serials)
+    return all_serials[:count]
+
+
 async def get_controller_serials(docker_compose) -> list[str]:
     """Get list of connected controller serials via ListMockControllers."""
     return await get_mock_controller_serials(docker_compose)
