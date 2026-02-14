@@ -114,13 +114,14 @@ async def end_fight_club(mock_client, serials: list[str], game_client, _event_co
     """End FightClub by running minimum rounds until winner.
 
     CI defaults: invincibility=2.0s, fight_club_min_rounds=5.
+    Round timing: 1.0s inter-round pause + 2.0s invincibility + 0.5s buffer = 3.5s.
     """
     await end_fight_club_game(
         mock_client,
         serials,
         game_client,
         delay=0.2,
-        invincibility_wait=2.5,  # 2.0s CI default + buffer
+        round_wait=3.5,  # 1.0s pause + 2.0s invincibility + 0.5s buffer
         rounds=FIGHT_CLUB_ROUNDS,
     )
 

@@ -907,24 +907,27 @@ async def end_fight_club_game(
     serials: list[str],
     game_client,
     delay: float = 0.2,
-    invincibility_wait: float = 2.5,
+    round_wait: float = 3.5,
     rounds: int = 6,
 ) -> list[str]:
     """End a Fight Club game by running through rounds until a winner emerges.
 
     Fight Club is queue-based 1v1 matches. CI default: min_rounds=5,
-    invincibility=2.0s. Needs clear winner after min rounds.
+    invincibility=2.0s. After a kill there's a 1.0s inter-round pause,
+    then a new round starts with fresh invincibility.
 
-    Strategy: Each round, kill all serials. FightClub's _kill_player_impl
-    only processes players in DEFENDER or FIGHTER state, so queued players
-    are harmlessly ignored. This avoids needing to track queue order.
+    Strategy: Each round, wait for invincibility to expire, then kill all
+    serials. FightClub's _kill_player_impl only processes players in
+    DEFENDER or FIGHTER state, so queued players are harmlessly ignored.
 
     Args:
         mock_client: Mock controller service gRPC client
         serials: List of all controller serials
         game_client: GameCoordinator client (for game state queries)
-        delay: Delay between kills in seconds
-        invincibility_wait: Time to wait for invincibility to end (default 2.5s: 2.0s CI + buffer)
+        delay: Delay between individual kill attempts in seconds
+        round_wait: Time to wait before each kill attempt. Must exceed
+            inter-round pause (1.0s) + invincibility duration (2.0s CI).
+            Default 3.5s = 1.0 + 2.0 + 0.5 buffer.
         rounds: Number of rounds to run (default 6: 5 CI min_rounds + 1)
 
     Returns:
@@ -935,8 +938,8 @@ async def end_fight_club_game(
     for round_num in range(rounds):
         print(f"Fight Club round {round_num + 1}/{rounds}")
 
-        # Wait for invincibility to end
-        await asyncio.sleep(invincibility_wait)
+        # Wait for inter-round pause (1s) + invincibility (2s) + buffer
+        await asyncio.sleep(round_wait)
 
         # Kill all serials — only active fighter/defender dies (queued players ignored)
         for serial in serials:
