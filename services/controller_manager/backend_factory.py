@@ -188,10 +188,4 @@ def create_backend() -> ControllerBackend:
         logger.info("Or use mock mode: set controller_backend=mock in flagd performance.json")
         raise RuntimeError("Bluetooth backend not available") from e
 
-    if _is_multiplexer_enabled():
-        from services.controller_manager.multiplexer import MultiplexerBackend
-
-        logger.info(f"Wrapping {backend.__class__.__name__} in MultiplexerBackend")
-        return MultiplexerBackend(children=[backend])
-
     return backend
