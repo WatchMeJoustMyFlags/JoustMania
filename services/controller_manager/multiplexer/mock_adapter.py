@@ -77,12 +77,10 @@ class MockAdapter(ControllerIOAdapter):
                 logger.info(f"Created mock controller: {serial}")
         return list(self.controllers.keys())
 
-    def open(self, serial: str) -> bool:
+    def open(self, serial: str) -> bool:  # NOSONAR(S3516) always True — mock controllers never fail to open
         """Open is a no-op for mock — controllers are always accessible."""
-        if serial in self.controllers:
-            return True
-        # Auto-create if not exists
-        self.controllers[serial] = _create_controller_state(serial)
+        if serial not in self.controllers:
+            self.controllers[serial] = _create_controller_state(serial)
         return True
 
     def poll(self, serial: str) -> dict | None:

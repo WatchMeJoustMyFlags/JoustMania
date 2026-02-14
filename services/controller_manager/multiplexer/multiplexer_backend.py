@@ -103,17 +103,25 @@ class MultiplexerBackend(ControllerBackend):
         self._effect_active.clear()
 
     def get_connected_controllers(self, force_rescan: bool = False) -> list[str]:
+        seen = self._discover_all_adapters(force_rescan)
+        self._serial_to_adapter = seen
+        self._cleanup_stale_state(seen)
+        self._update_controller_metrics(seen)
+        return list(seen.keys())
+
+    def _discover_all_adapters(self, force: bool) -> dict[str, ControllerIOAdapter]:
+        """Discover controllers from all adapters, opening new ones."""
         seen: dict[str, ControllerIOAdapter] = {}
         for adapter in self._adapters:
-            for serial in adapter.discover(force=force_rescan):
+            for serial in adapter.discover(force=force):
                 if serial not in seen:
                     seen[serial] = adapter
                     if serial not in self._serial_to_adapter:
                         adapter.open(serial)
+        return seen
 
-        self._serial_to_adapter = seen
-
-        # Clean up state for disconnected controllers
+    def _cleanup_stale_state(self, seen: dict[str, ControllerIOAdapter]) -> None:
+        """Remove centralized state for controllers no longer present."""
         stale = set(self._led_colors.keys()) - set(seen.keys())
         for serial in stale:
             self._led_colors.pop(serial, None)
@@ -122,7 +130,8 @@ class MultiplexerBackend(ControllerBackend):
             self._last_led_update.pop(serial, None)
             self._effect_active.discard(serial)
 
-        # Update metrics
+    def _update_controller_metrics(self, seen: dict[str, ControllerIOAdapter]) -> None:
+        """Update Prometheus metrics for connected controllers."""
         for serial, adapter in seen.items():
             metrics.controller_backend_info.labels(serial=serial, backend=adapter.adapter_type).set(1)
             if self._bt_discovery:
@@ -130,14 +139,13 @@ class MultiplexerBackend(ControllerBackend):
                 if hci:
                     metrics.controller_adapter_info.labels(serial=serial, adapter=hci).set(1)
 
-        return list(seen.keys())
-
     def update_all_leds(self) -> int:
         """Centralized LED refresh with keep-alive and color-change detection."""
         current_time = time.time()
         updated_count = 0
 
-        for serial, stored_color in list(self._led_colors.items()):
+        # list() is intentional — dict may be modified by concurrent disconnect
+        for serial, stored_color in list(self._led_colors.items()):  # NOSONAR(S7504)
             if serial in self._effect_active:
                 continue
 

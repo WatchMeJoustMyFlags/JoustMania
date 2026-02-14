@@ -44,16 +44,28 @@ class HidapiAdapter(ControllerIOAdapter):
     def discover(self, force: bool = False) -> list[str]:
         """Enumerate HID devices and open new PS Move controllers."""
         if not force and self._devices:
-            # Verify existing devices are still accessible
-            stale = []
-            for serial, device in self._devices.items():
-                try:
-                    device.read(0)  # Non-blocking check
-                except OSError:
-                    stale.append(serial)
-            for serial in stale:
-                self._cleanup(serial)
+            self._verify_existing_devices()
 
+        current_paths = self._enumerate_and_open_new()
+
+        if force:
+            self._remove_disappeared_devices(current_paths)
+
+        return list(self._devices.keys())
+
+    def _verify_existing_devices(self) -> None:
+        """Check existing devices are still accessible, clean up stale ones."""
+        stale = []
+        for serial, device in self._devices.items():
+            try:
+                device.read(0)  # Non-blocking check
+            except OSError:
+                stale.append(serial)
+        for serial in stale:
+            self._cleanup(serial)
+
+    def _enumerate_and_open_new(self) -> set[str]:
+        """Enumerate HID devices, open new ones. Returns set of current device paths."""
         devices = hid.enumerate(VENDOR_ID, PRODUCT_ID_ZCM1) + hid.enumerate(VENDOR_ID, PRODUCT_ID_ZCM2)
         current_paths: set[str] = set()
 
@@ -67,23 +79,27 @@ class HidapiAdapter(ControllerIOAdapter):
             current_paths.add(path)
 
             if serial not in self._devices:
-                try:
-                    device = hid.Device(path=path)
-                    device.nonblocking = True
-                    self._devices[serial] = device
-                    self._paths[serial] = path
-                    logger.info(f"Opened PS Move controller: {serial} at {path!r}")
-                except Exception as e:
-                    logger.warning(f"Failed to open PS Move at {path!r}: {e}")
+                self._try_open_device(serial, path)
 
-        if force:
-            # Remove controllers whose device paths are gone
-            stale_serials = [s for s, p in self._paths.items() if p not in current_paths]
-            for serial in stale_serials:
-                logger.info(f"Controller {serial} no longer present - removing")
-                self._cleanup(serial)
+        return current_paths
 
-        return list(self._devices.keys())
+    def _try_open_device(self, serial: str, path: str) -> None:
+        """Attempt to open a single HID device."""
+        try:
+            device = hid.Device(path=path)
+            device.nonblocking = True
+            self._devices[serial] = device
+            self._paths[serial] = path
+            logger.info(f"Opened PS Move controller: {serial} at {path!r}")
+        except Exception as e:
+            logger.warning(f"Failed to open PS Move at {path!r}: {e}")
+
+    def _remove_disappeared_devices(self, current_paths: set[str]) -> None:
+        """Remove controllers whose device paths are no longer present."""
+        stale_serials = [s for s, p in self._paths.items() if p not in current_paths]
+        for serial in stale_serials:
+            logger.info(f"Controller {serial} no longer present - removing")
+            self._cleanup(serial)
 
     def open(self, serial: str) -> bool:
         """Open a specific controller by serial (re-enumerate if needed)."""

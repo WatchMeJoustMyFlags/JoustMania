@@ -129,54 +129,55 @@ class BluetoothBackend(ControllerBackend):
     async def initialize(self) -> bool:
         """Initialize Bluetooth adapter and scan for Bluetooth-connected controllers."""
         try:
-            # Detect and enable adapters
-            if self._bt_discovery:
-                adapters = await self._bt_discovery.initialize()
-                self.hci = next(iter(adapters)) if adapters else "hci0"
-                logger.info(f"Multi-adapter mode: {len(adapters)} adapter(s), primary={self.hci}")
-            else:
-                # Single-adapter fallback: detect then enable
-                try:
-                    adapters = await bluetooth.get_hci_dict()
-                    if adapters:
-                        self.hci = next(iter(adapters))
-                        logger.info(f"Auto-detected Bluetooth adapter: {self.hci} ({adapters[self.hci]})")
-                except Exception as e:
-                    logger.warning(f"Adapter detection failed, using {self.hci}: {e}")
-                await bluetooth.enable_adapter(self.hci)
-                logger.info(f"Enabled Bluetooth adapter: {self.hci}")
-
-            # Scan for existing controllers (Bluetooth only)
-            count = psmove.count_connected()
-            logger.info(f"Found {count} PS Move controllers")
-
-            for move_num in range(count):
-                try:
-                    with suppress_stderr():
-                        move = psmove.PSMove(move_num)
-                    if move is None:
-                        continue
-
-                    serial = move.get_serial()
-                    if not serial:
-                        logger.debug(f"Controller {move_num}: no serial, skipping")
-                        continue
-
-                    # All controllers visible here are Bluetooth-connected
-                    # (USB pairing is handled by host daemon, container has no USB access)
-                    self.controllers[serial] = move
-                    self.controller_states[serial] = ControllerState()
-                    logger.info(f"Controller {serial}: ready")
-                except Exception as e:
-                    logger.debug(f"Error initializing controller {move_num}: {e}")
-                    continue
-
+            await self._initialize_bt_adapter()
+            self._scan_existing_controllers()
             self.running = True
             return True
 
         except Exception as e:
             logger.error(f"Failed to initialize Bluetooth backend: {e}", exc_info=True)
             return False
+
+    async def _initialize_bt_adapter(self) -> None:
+        """Detect and enable Bluetooth adapter(s)."""
+        if self._bt_discovery:
+            adapters = await self._bt_discovery.initialize()
+            self.hci = next(iter(adapters)) if adapters else "hci0"
+            logger.info(f"Multi-adapter mode: {len(adapters)} adapter(s), primary={self.hci}")
+        else:
+            try:
+                adapters = await bluetooth.get_hci_dict()
+                if adapters:
+                    self.hci = next(iter(adapters))
+                    logger.info(f"Auto-detected Bluetooth adapter: {self.hci} ({adapters[self.hci]})")
+            except Exception as e:
+                logger.warning(f"Adapter detection failed, using {self.hci}: {e}")
+            await bluetooth.enable_adapter(self.hci)
+            logger.info(f"Enabled Bluetooth adapter: {self.hci}")
+
+    def _scan_existing_controllers(self) -> None:
+        """Scan for existing Bluetooth-connected PS Move controllers."""
+        count = psmove.count_connected()
+        logger.info(f"Found {count} PS Move controllers")
+
+        for move_num in range(count):
+            try:
+                with suppress_stderr():
+                    move = psmove.PSMove(move_num)
+                if move is None:
+                    continue
+
+                serial = move.get_serial()
+                if not serial:
+                    logger.debug(f"Controller {move_num}: no serial, skipping")
+                    continue
+
+                self.controllers[serial] = move
+                self.controller_states[serial] = ControllerState()
+                logger.info(f"Controller {serial}: ready")
+            except Exception as e:
+                logger.debug(f"Error initializing controller {move_num}: {e}")
+                continue
 
     async def scan_controllers(self) -> list[dict]:
         """Scan for available controllers."""

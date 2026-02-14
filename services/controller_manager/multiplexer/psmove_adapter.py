@@ -93,38 +93,18 @@ class PsMoveAdapter(ControllerIOAdapter):
             return list(self._handles.keys())
 
         self._last_controller_count = count
+        seen_serials = self._probe_controllers_with_retries(count)
+        self._remove_stale_handles(seen_serials)
+        return list(self._handles.keys())
 
+    def _probe_controllers_with_retries(self, count: int) -> list[str]:
+        """Probe controller indices with retries for flaky USB enumeration."""
         max_retries = 3
         retry_delay = 0.5
         seen_serials: list[str] = []
 
         for attempt in range(max_retries):
-            seen_serials = []
-            failed_indices = []
-
-            for move_num in range(count):
-                try:
-                    with suppress_stderr():
-                        move = psmove.PSMove(move_num)
-                    if move is None:
-                        logger.warning(f"Controller {move_num}/{count}: PSMove() returned None")
-                        failed_indices.append(move_num)
-                        continue
-
-                    serial = move.get_serial()
-                    if not serial:
-                        logger.warning(f"Controller {move_num}/{count}: no serial returned")
-                        failed_indices.append(move_num)
-                        continue
-
-                    seen_serials.append(serial)
-
-                    if serial not in self._handles:
-                        self._handles[serial] = move
-                        logger.info(f"New controller connected: {serial} (index {move_num})")
-                except Exception as e:
-                    logger.warning(f"Controller {move_num}/{count}: {e}")
-                    failed_indices.append(move_num)
+            seen_serials, failed_indices = self._probe_controller_indices(count)
 
             if len(seen_serials) >= count or not failed_indices:
                 break
@@ -133,13 +113,50 @@ class PsMoveAdapter(ControllerIOAdapter):
                 logger.info(f"Retry {attempt + 1}/{max_retries} in {retry_delay}s...")
                 time.sleep(retry_delay)
 
-        # Remove stale handles
+        return seen_serials
+
+    def _probe_controller_indices(self, count: int) -> tuple[list[str], list[int]]:
+        """Probe each controller index, returning seen serials and failed indices."""
+        seen_serials: list[str] = []
+        failed_indices: list[int] = []
+
+        for move_num in range(count):
+            serial = self._probe_single_controller(move_num, count)
+            if serial:
+                seen_serials.append(serial)
+            else:
+                failed_indices.append(move_num)
+
+        return seen_serials, failed_indices
+
+    def _probe_single_controller(self, move_num: int, count: int) -> str | None:
+        """Try to open a single controller index. Returns serial or None."""
+        try:
+            with suppress_stderr():
+                move = psmove.PSMove(move_num)
+            if move is None:
+                logger.warning(f"Controller {move_num}/{count}: PSMove() returned None")
+                return None
+
+            serial = move.get_serial()
+            if not serial:
+                logger.warning(f"Controller {move_num}/{count}: no serial returned")
+                return None
+
+            if serial not in self._handles:
+                self._handles[serial] = move
+                logger.info(f"New controller connected: {serial} (index {move_num})")
+            return serial
+        except Exception as e:
+            logger.warning(f"Controller {move_num}/{count}: {e}")
+            return None
+
+    def _remove_stale_handles(self, seen_serials: list[str]) -> None:
+        """Remove handles for controllers no longer in scan."""
         stale = set(self._handles.keys()) - set(seen_serials)
         for serial in stale:
             logger.info(f"Controller {serial} no longer in scan - removing stale handle")
             del self._handles[serial]
-
-        return list(self._handles.keys())
 
     def open(self, serial: str) -> bool:
         """Open is a no-op for psmove — handles are created during discover()."""
@@ -153,7 +170,7 @@ class PsMoveAdapter(ControllerIOAdapter):
 
         try:
             while move.poll():
-                pass
+                pass  # Drain all queued reports to get latest state
 
             trigger = move.get_trigger()
             buttons = move.get_buttons()
