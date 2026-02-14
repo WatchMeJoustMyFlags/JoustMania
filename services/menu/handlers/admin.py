@@ -1171,13 +1171,13 @@ class AdminModeHandler:
         except Exception as e:
             logger.error(f"Error showing value feedback: {e}", exc_info=True)
 
-    async def _play_value_voice(self, option_name: str, value: str) -> None:
+    async def _play_value_voice(self, option_name: str, value: int | float | bool) -> None:
         """
         Play voice feedback for admin option value change.
 
         Args:
             option_name: Name of the option that changed
-            value: New value
+            value: New value (typed from _variant_to_value)
         """
         try:
             if option_name == "num_teams":
@@ -1189,12 +1189,12 @@ class AdminModeHandler:
                     "5": Sound.MENU_VOX_ADMINOP_5,
                     "6": Sound.MENU_VOX_ADMINOP_6,
                 }
-                voice = num_teams_voices.get(value)
+                voice = num_teams_voices.get(str(value))
                 if voice:
                     await self._play_voice(voice)
             elif option_name == "force_all_start":
                 # Play true/false voice
-                voice = Sound.MENU_VOX_ADMINOP_TRUE if value == "true" else Sound.MENU_VOX_ADMINOP_FALSE
+                voice = Sound.MENU_VOX_ADMINOP_TRUE if value is True else Sound.MENU_VOX_ADMINOP_FALSE
                 await self._play_voice(voice)
         except Exception as e:
             logger.error(f"Error playing value voice: {e}", exc_info=True)
