@@ -52,6 +52,15 @@ async def get_attached_addresses(hci: str) -> list[str]:
     return await _impl(hci)
 
 
+async def get_hci_dict() -> dict[str, str]:
+    """Get dictionary mapping hci name to Bluetooth address."""
+    if _resolve_backend() == "dbus_fast":
+        from services.controller_manager.bluetooth_modern import get_hci_dict as _impl
+    else:
+        from services.controller_manager.bluetooth_legacy import get_hci_dict as _impl
+    return await _impl()
+
+
 def rfkill_unblock(hci: str) -> None:
     """Unblock a Bluetooth adapter via rfkill."""
     if _resolve_backend() == "dbus_fast":

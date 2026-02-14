@@ -37,6 +37,26 @@ controller_color_hex = Gauge(
     ["serial"],
 )
 
+# Backend info metric (Phase 1: MultiplexerBackend routing visibility)
+# Always 1, use labels for joins to see which backend owns each controller
+controller_backend_info = Gauge(
+    "controller_backend_info",
+    "Controller backend assignment (always 1, use labels for joins)",
+    ["serial", "backend"],
+)
+
+# Bluetooth adapter metrics (Phase 3: multi-adapter support)
+bluetooth_adapter_count = Gauge(
+    "bluetooth_adapter_count",
+    "Number of active Bluetooth adapters",
+)
+
+controller_adapter_info = Gauge(
+    "controller_adapter_info",
+    "Controller adapter affinity (always 1, use labels for joins)",
+    ["serial", "adapter"],
+)
+
 controller_disconnect_total = Counter(
     "controller_disconnect_total", "Total number of controller disconnects", ["serial"]
 )

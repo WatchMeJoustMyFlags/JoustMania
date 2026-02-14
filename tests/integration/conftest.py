@@ -17,9 +17,12 @@ Environment Variables:
 """
 
 import asyncio
+import json
 import os
+import subprocess
 import sys
 import time
+from pathlib import Path
 
 import grpc
 import pytest
@@ -32,10 +35,41 @@ from proto import (
     game_coordinator_pb2_grpc,
 )
 
+# Compose files used for both legacy and multiplexer parametrizations
+_COMPOSE_FILES = [
+    "docker-compose.yml",
+    "docker-compose.override.yml",
+    "docker-compose.ci.yml",
+]
 
-@pytest.fixture(scope="session")
-def docker_compose():
+
+def _set_multiplexer_flag(enabled: bool):
+    """Toggle multiplexer_backend_enabled in the CI flagd config.
+
+    flagd watches the file via inotify and picks up changes within ~100ms.
+    """
+    config_path = Path("services/flagd/performance.ci.json")
+    config = json.loads(config_path.read_text())
+    config["flags"]["multiplexer_backend_enabled"]["defaultVariant"] = "on" if enabled else "off"
+    config_path.write_text(json.dumps(config, indent=2) + "\n")
+
+
+def _restart_service(compose_files: list[str], service: str):
+    """Restart a single service via docker compose."""
+    cmd = ["docker", "compose"]
+    for f in compose_files:
+        cmd.extend(["-f", f])
+    cmd.extend(["restart", service])
+    subprocess.run(cmd, check=True, capture_output=True)
+
+
+@pytest.fixture(scope="session", params=["legacy", "multiplexer"])
+def docker_compose(request):
     """Fixture to start docker-compose mock environment.
+
+    Parametrized to run the entire test suite twice:
+    - "legacy": default single-backend code path (multiplexer flag OFF)
+    - "multiplexer": MultiplexerBackend wrapping the backend (multiplexer flag ON)
 
     Uses docker-compose.yml with overrides for testing:
     - docker-compose.override.yml: port exposures for testing
@@ -48,11 +82,7 @@ def docker_compose():
     use_dev_mounts = os.getenv("USE_DEV_MOUNTS", "false").lower() == "true"
     image_tag = os.getenv("IMAGE_TAG", "latest")
 
-    compose_files = [
-        "docker-compose.yml",
-        "docker-compose.override.yml",
-        "docker-compose.ci.yml",
-    ]
+    compose_files = list(_COMPOSE_FILES)
     if use_dev_mounts:
         compose_files.append("docker-compose.dev.yml")
 
@@ -68,11 +98,11 @@ def docker_compose():
     # Note: This modifies the environment for docker-compose but is session-scoped
     if use_prebuilt:
         os.environ["IMAGE_TAG"] = image_tag
-        print(f"\n🐳 Using prebuilt images from GHCR (tag: {image_tag})")
+        print(f"\n[{request.param}] Using prebuilt images from GHCR (tag: {image_tag})")
     elif use_dev_mounts:
-        print("\n📂 Using dev volume mounts (no build)")
+        print(f"\n[{request.param}] Using dev volume mounts (no build)")
     else:
-        print("\n🔨 Building images locally")
+        print(f"\n[{request.param}] Building images locally")
 
     compose.start()
 
@@ -80,8 +110,17 @@ def docker_compose():
     # Docker Compose --wait already waits for health checks, so minimal wait needed
     time.sleep(2)
 
+    if request.param == "multiplexer":
+        print(f"\n[{request.param}] Enabling multiplexer_backend_enabled flag")
+        _set_multiplexer_flag(enabled=True)
+        # flagd picks up inotify change within ~100ms; give it a moment
+        time.sleep(1)
+        # Restart controller-manager so it re-reads the flag at startup
+        _restart_service(compose_files, "controller-manager")
+        time.sleep(2)
+
     print("\n" + "=" * 80)
-    print("🚀 Mock environment is running!")
+    print(f"Mock environment is running! [backend_mode={request.param}]")
     print("=" * 80)
     print("Jaeger UI: http://localhost:16686")
     print("WebUI: http://localhost:80")
@@ -90,16 +129,20 @@ def docker_compose():
 
     yield compose
 
+    # Restore flag to default (off) if we toggled it
+    if request.param == "multiplexer":
+        _set_multiplexer_flag(enabled=False)
+
     # Skip teardown in CI mode for faster test completion
     # Containers will be cleaned up by the CI runner
     if os.getenv("CI") or os.getenv("SKIP_TEARDOWN"):
-        print("\n⚡ Skipping teardown (CI mode)")
+        print(f"\n[{request.param}] Skipping teardown (CI mode)")
         return
 
     # Optional pause before teardown (set PAUSE_BEFORE_TEARDOWN=1 to inspect Jaeger)
     if os.getenv("PAUSE_BEFORE_TEARDOWN"):
         print("\n" + "=" * 80)
-        print("⏸️  PAUSED - Inspect Jaeger at http://localhost:16686")
+        print("PAUSED - Inspect Jaeger at http://localhost:16686")
         print("=" * 80)
         print("Press ENTER to tear down the environment...")
         input()
