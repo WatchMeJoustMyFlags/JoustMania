@@ -215,24 +215,40 @@ def _linux_audio_loop(fname: dict, ratio: Value, volume: Value, stop_proc: Value
 
     song_loaded = False
     wav_data = None
+    loaded_pattern = ""
 
     while True:
         try:
             if stop_proc.value == 1:
                 song_loaded = False
+                loaded_pattern = ""
                 time.sleep(0.05)
                 continue
 
-            if fname["song"] == "":
+            # Read pattern once per iteration to avoid TOCTOU with Manager dict
+            current_pattern = fname["song"]
+
+            if current_pattern == "":
+                song_loaded = False
+                loaded_pattern = ""
                 time.sleep(0.05)
                 continue
+
+            # Detect pattern change and force reload. This handles the race
+            # where stop()+load()+start() are called in quick succession:
+            # stop() sets stop_proc=1, but start() may reset it to 0 before
+            # this loop checks, so song_loaded would never be cleared. Tracking
+            # the pattern ensures we always reload when the song changes.
+            if current_pattern != loaded_pattern:
+                song_loaded = False
 
             if not song_loaded:
-                wav_data = _load_song_from_pattern(fname["song"])
+                wav_data = _load_song_from_pattern(current_pattern)
                 if wav_data is None:
                     time.sleep(0.5)
                     continue
                 song_loaded = True
+                loaded_pattern = current_pattern
                 continue
 
             if not _play_loaded_song(wav_data, period, period_bytes, ratio, volume, stop_proc):
