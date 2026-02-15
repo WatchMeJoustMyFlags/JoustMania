@@ -96,7 +96,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count(count by(job) (process_cpu_seconds_total{job=~\"infrastructure/controller-manager|joustmania/game-coordinator|joustmania/menu|joustmania/audio|infrastructure/pairing-daemon|observability/otel-collector|observability/victoria-metrics|observability/prometheus|infrastructure/flagd\"}))",
+          "expr": "count(count by(job) (process_cpu_seconds_total{job=~\"controller-manager-service|game-coordinator-service|menu-service|audio-service|pairing-daemon|otel-collector|prometheus|flagd\"}))",
           "legendFormat": "Services",
           "refId": "A"
         }
@@ -389,7 +389,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count by(job) (process_cpu_seconds_total{job=~\"infrastructure/controller-manager|joustmania/game-coordinator|joustmania/menu|joustmania/audio|infrastructure/pairing-daemon|observability/otel-collector|observability/victoria-metrics|observability/prometheus|infrastructure/flagd\"}) > 0",
+          "expr": "count by(job) (process_cpu_seconds_total{job=~\"controller-manager-service|game-coordinator-service|menu-service|audio-service|pairing-daemon|otel-collector|prometheus|flagd\"}) > 0",
           "format": "table",
           "instant": true,
           "refId": "A"
@@ -475,7 +475,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count(up{job=~\"psmove-pairing|controller-manager-pull|node\"} == 1)",
+          "expr": "count(up{job=~\"pairing-daemon|controller-manager-pull|node\"} == 1)",
           "legendFormat": "Infrastructure",
           "refId": "A"
         }
@@ -560,7 +560,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "up{job=~\"psmove-pairing|controller-manager-pull|node\"}",
+          "expr": "up{job=~\"pairing-daemon|controller-manager-pull|node\"}",
           "format": "table",
           "instant": true,
           "refId": "A"
@@ -847,7 +847,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_cpu_percent{job=~\"controller-manager|game-coordinator|menu|audio\"}",
+          "expr": "process_cpu_percent{job=~\"controller-manager-service|game-coordinator-service|menu-service|audio-service\"}",
           "legendFormat": "{{job}}",
           "refId": "A"
         }
@@ -939,7 +939,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_memory_mb{job=~\"controller-manager|game-coordinator|menu|audio\"}",
+          "expr": "process_memory_mb{job=~\"controller-manager-service|game-coordinator-service|menu-service|audio-service\"}",
           "legendFormat": "{{job}}",
           "refId": "A"
         }
@@ -1050,7 +1050,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_cpu_percent{job!~\"controller-manager|game-coordinator|menu|audio\"}",
+          "expr": "process_cpu_percent{job!~\"controller-manager-service|game-coordinator-service|menu-service|audio-service\"}",
           "legendFormat": "{{job}}",
           "refId": "A"
         }
@@ -1142,7 +1142,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_memory_mb{job!~\"controller-manager|game-coordinator|menu|audio\"}",
+          "expr": "process_memory_mb{job!~\"controller-manager-service|game-coordinator-service|menu-service|audio-service\"}",
           "legendFormat": "{{job}}",
           "refId": "A"
         }
