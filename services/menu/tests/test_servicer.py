@@ -1209,3 +1209,325 @@ class TestBuildTraceMetadata:
 
         assert result == [("traceparent", "00-abc123-def456-01")]
         mock_propagator.inject.assert_called_once()
+
+
+class TestBuildGameConfigCustomValues:
+    """Tests for _build_game_config with non-default flagd values.
+
+    The existing TestBuildGameConfig tests use default mock return values.
+    These tests verify that specific flagd values flow through to the proto config.
+    """
+
+    @pytest.fixture
+    def servicer(self):
+        return FakeMenuServicer()
+
+    @pytest.fixture
+    def players(self):
+        from proto import game_coordinator_pb2
+
+        return [
+            game_coordinator_pb2.Player(serial="p1"),
+            game_coordinator_pb2.Player(serial="p2"),
+            game_coordinator_pb2.Player(serial="p3"),
+        ]
+
+    def _build_config(self, servicer, game_mode, players):
+        from unittest.mock import patch
+
+        from services.menu.servicer import MenuServicer
+
+        with patch("services.menu.servicer.set_game_transaction_context"):
+            return MenuServicer._build_game_config(servicer, game_mode, players)
+
+    def test_sensitivity_flows_from_flagd(self, servicer, players):
+        """Sensitivity value from game_settings_client should appear in config."""
+        servicer.game_settings_client.get_integer_value = MagicMock(
+            side_effect=lambda key, default: {
+                "sensitivity": 4,
+                "num_teams": 2,
+            }.get(key, default)
+        )
+        config = self._build_config(servicer, Games.JoustFFA, players)
+        assert config.sensitivity == 4
+
+    def test_teams_custom_num_teams(self, servicer, players):
+        """JoustTeams should use num_teams from flagd, not just the default."""
+        servicer.game_settings_client.get_integer_value = MagicMock(
+            side_effect=lambda key, default: {
+                "sensitivity": 2,
+                "num_teams": 4,
+            }.get(key, default)
+        )
+        servicer.game_settings_client.get_boolean_value = MagicMock(
+            side_effect=lambda key, default: {
+                "random_assignment": False,
+            }.get(key, default)
+        )
+        config = self._build_config(servicer, Games.JoustTeams, players)
+        assert config.teams_config.num_teams == 4
+        assert config.teams_config.random_assignment is False
+
+    def test_nonstop_custom_time_limit(self, servicer, players):
+        """NonStop should use time_limit_seconds from flagd."""
+        servicer.game_settings_client.get_integer_value = MagicMock(
+            side_effect=lambda key, default: {
+                "sensitivity": 2,
+                "nonstop_time_limit": 120,
+            }.get(key, default)
+        )
+        config = self._build_config(servicer, Games.NonStop, players)
+        assert config.nonstop_config.time_limit_seconds == 120
+
+    def test_fight_club_custom_values(self, servicer, players):
+        """FightClub should use custom invincibility and min_rounds from flagd."""
+        servicer.game_settings_client.get_integer_value = MagicMock(
+            side_effect=lambda key, default: {
+                "sensitivity": 3,
+                "fight_club_min_rounds": 5,
+            }.get(key, default)
+        )
+        servicer.game_settings_client.get_float_value = MagicMock(
+            side_effect=lambda key, default: {
+                "invincibility": 2.5,
+            }.get(key, default)
+        )
+        config = self._build_config(servicer, Games.FightClub, players)
+        assert config.sensitivity == 3
+        assert config.fight_club_config.invincibility_seconds == pytest.approx(2.5)
+        assert config.fight_club_config.min_rounds == 5
+
+    def test_werewolf_custom_reveal_time(self, servicer, players):
+        """Werewolf should use reveal_time_seconds from flagd."""
+        servicer.game_settings_client.get_float_value = MagicMock(
+            side_effect=lambda key, default: {
+                "werewolf_reveal_time": 60.0,
+            }.get(key, default)
+        )
+        config = self._build_config(servicer, Games.Werewolf, players)
+        assert config.werewolf_config.reveal_time_seconds == pytest.approx(60.0)
+
+    def test_config_includes_all_players(self, servicer, players):
+        """Config should include all players in the players list."""
+        config = self._build_config(servicer, Games.JoustFFA, players)
+        assert len(config.players) == 3
+        serials = [p.serial for p in config.players]
+        assert "p1" in serials
+        assert "p2" in serials
+        assert "p3" in serials
+
+
+class TestConsumeGameEvents:
+    """Tests for _consume_game_events method."""
+
+    @pytest.fixture
+    def servicer(self):
+        from services.menu.servicer import MenuServicer
+
+        s = FakeMenuServicer()
+        s._clear_ready_state = MagicMock()
+        s._restart_lobby = AsyncMock()
+        # Bind real methods from MenuServicer so _consume_game_events can call them
+        s._handle_first_game_event = lambda event, span: MenuServicer._handle_first_game_event(s, event, span)
+        return s
+
+    @pytest.mark.asyncio
+    async def test_game_ended_event_returns_should_return_true(self, servicer):
+        """A game_ended event should trigger restart and return should_return=True."""
+        from services.menu.servicer import MenuServicer, _GameEventResult
+
+        event = MagicMock()
+        event.event_type = "game_started"
+        event.data = {}
+
+        ended_event = MagicMock()
+        ended_event.event_type = "game_ended"
+        ended_event.data = {"winner": "p1"}
+
+        # Create an async iterator that yields two events
+        async def fake_stream():
+            yield event
+            yield ended_event
+
+        span = MagicMock()
+        result = await MenuServicer._consume_game_events(servicer, fake_stream(), False, span)
+
+        assert isinstance(result, _GameEventResult)
+        assert result.should_return is True
+        assert result.game_started is True
+        servicer._restart_lobby.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_game_force_ended_event_returns_should_return_true(self, servicer):
+        """A game_force_ended event should also trigger restart."""
+        from services.menu.servicer import MenuServicer
+
+        start_event = MagicMock()
+        start_event.event_type = "game_started"
+        start_event.data = {}
+
+        force_ended_event = MagicMock()
+        force_ended_event.event_type = "game_force_ended"
+        force_ended_event.data = {}
+
+        async def fake_stream():
+            yield start_event
+            yield force_ended_event
+
+        span = MagicMock()
+        result = await MenuServicer._consume_game_events(servicer, fake_stream(), False, span)
+
+        assert result.should_return is True
+        servicer._restart_lobby.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_empty_stream_returns_not_should_return(self, servicer):
+        """An empty stream should return should_return=False."""
+        from services.menu.servicer import MenuServicer, _GameEventResult
+
+        async def fake_stream():
+            return
+            yield  # noqa: RET504 - makes this an async generator
+
+        span = MagicMock()
+        result = await MenuServicer._consume_game_events(servicer, fake_stream(), False, span)
+
+        assert isinstance(result, _GameEventResult)
+        assert result.should_return is False
+        assert result.game_started is False
+
+    @pytest.mark.asyncio
+    async def test_first_event_error_returns_early(self, servicer):
+        """A game_start_error as first event should return should_return=True."""
+        from services.menu.servicer import MenuServicer
+
+        error_event = MagicMock()
+        error_event.event_type = "game_start_error"
+        error_event.data = {"error": "bad config"}
+
+        async def fake_stream():
+            yield error_event
+
+        span = MagicMock()
+        servicer.state = MagicMock()  # Allow state assignment
+        result = await MenuServicer._consume_game_events(servicer, fake_stream(), False, span)
+
+        assert result.should_return is True
+        assert result.game_started is False
+
+    @pytest.mark.asyncio
+    async def test_game_already_started_skips_first_event_handling(self, servicer):
+        """When game_started=True, first event handling should be skipped."""
+        from services.menu.servicer import MenuServicer
+
+        ended_event = MagicMock()
+        ended_event.event_type = "game_ended"
+        ended_event.data = {}
+
+        async def fake_stream():
+            yield ended_event
+
+        span = MagicMock()
+        result = await MenuServicer._consume_game_events(servicer, fake_stream(), True, span)
+
+        assert result.should_return is True
+        assert result.game_started is True
+        # _handle_first_game_event should NOT have been called (no _clear_ready_state call)
+        servicer._clear_ready_state.assert_not_called()
+
+
+class TestStreamMenuEvents:
+    """Tests for StreamMenuEvents gRPC method."""
+
+    @pytest.fixture
+    def servicer(self):
+        return FakeMenuServicer()
+
+    @pytest.mark.asyncio
+    async def test_stream_subscribes_and_unsubscribes(self, servicer):
+        """StreamMenuEvents should subscribe on start and unsubscribe on cancel."""
+        from services.menu.servicer import MenuServicer
+
+        context = MockGrpcContext()
+        event_queue = asyncio.Queue()
+
+        servicer.event_publisher.subscribe = AsyncMock(return_value=event_queue)
+
+        # Put an event then cancel context so stream terminates
+        test_event = MagicMock()
+        await event_queue.put(test_event)
+
+        events = []
+        async for event in MenuServicer.StreamMenuEvents(servicer, None, context):
+            events.append(event)
+            context.cancel()  # cancel after first event
+
+        assert len(events) == 1
+        assert events[0] is test_event
+        servicer.event_publisher.subscribe.assert_awaited_once()
+        servicer.event_publisher.unsubscribe.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_stream_handles_timeout_and_continues(self, servicer):
+        """StreamMenuEvents should handle timeout and continue polling."""
+        from services.menu.servicer import MenuServicer
+
+        context = MockGrpcContext()
+        event_queue = asyncio.Queue()
+
+        servicer.event_publisher.subscribe = AsyncMock(return_value=event_queue)
+
+        # Schedule a cancel after a short delay (queue will be empty, causing timeouts)
+        async def delayed_cancel():
+            await asyncio.sleep(0.1)
+            context.cancel()
+
+        cancel_task = asyncio.create_task(delayed_cancel())
+
+        events = []
+        async for event in MenuServicer.StreamMenuEvents(servicer, None, context):
+            events.append(event)
+
+        await cancel_task
+
+        # No events should have been yielded (queue was empty, only timeouts)
+        assert len(events) == 0
+        servicer.event_publisher.unsubscribe.assert_awaited_once()
+
+
+class TestClearReadyState:
+    """Tests for _clear_ready_state method."""
+
+    @pytest.fixture
+    def servicer(self):
+        return FakeMenuServicer()
+
+    def test_transitions_ready_to_connected(self, servicer):
+        """_clear_ready_state should transition READY controllers back to CONNECTED."""
+        from unittest.mock import patch
+
+        from services.menu.servicer import MenuServicer
+
+        servicer.state_manager.controller_states = {
+            "s1": ControllerState.READY,
+            "s2": ControllerState.CONNECTED,
+            "s3": ControllerState.READY,
+        }
+
+        with patch("services.menu.servicer.metrics"):
+            MenuServicer._clear_ready_state(servicer)
+
+        assert servicer.state_manager.controller_states["s1"] == ControllerState.CONNECTED
+        assert servicer.state_manager.controller_states["s2"] == ControllerState.CONNECTED
+        assert servicer.state_manager.controller_states["s3"] == ControllerState.CONNECTED
+
+    def test_clears_player_ready_metric(self, servicer):
+        """_clear_ready_state should clear the player_ready metric."""
+        from unittest.mock import patch
+
+        from services.menu.servicer import MenuServicer
+
+        with patch("services.menu.servicer.metrics") as mock_metrics:
+            MenuServicer._clear_ready_state(servicer)
+
+        mock_metrics.player_ready.clear.assert_called_once()

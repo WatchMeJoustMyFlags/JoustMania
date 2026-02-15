@@ -1025,3 +1025,622 @@ class TestTournamentAdditionalPhases:
         phases = game._get_additional_phases()
         assert len(phases) == 1
         assert phases[0].name == "tournament_intro"
+
+
+# ---------------------------------------------------------------------------
+# Async gameplay stream mock for _run_match tests
+# ---------------------------------------------------------------------------
+
+
+def _patch_win_flash():
+    """Ensure GAME_EFFECT_WIN_FLASH exists on the proto module.
+
+    The source references ``controller_manager_pb2.GAME_EFFECT_WIN_FLASH``
+    which is not defined in the proto. We add it at test time so that
+    the code path can execute without modifying production code.
+    """
+    from proto import controller_manager_pb2 as cm
+
+    if not hasattr(cm, "GAME_EFFECT_WIN_FLASH"):
+        cm.GAME_EFFECT_WIN_FLASH = cm.GAME_EFFECT_FLASH
+
+
+_patch_win_flash()
+
+
+class AsyncGameplayStreamMock:
+    """Mock gameplay stream that yields controller data and records writes.
+
+    Supports producing a configurable sequence of updates via ``__anext__``,
+    then raising ``StopAsyncIteration`` when exhausted.
+    """
+
+    def __init__(self, updates=None, *, timeout_forever=False):
+        """
+        Args:
+            updates: List of GameplayDataUpdate protos to yield. When
+                exhausted the stream raises StopAsyncIteration.
+            timeout_forever: If True, every ``__anext__`` raises
+                ``TimeoutError`` so the match loop only checks elapsed time.
+        """
+        self._updates = list(updates or [])
+        self._idx = 0
+        self._timeout_forever = timeout_forever
+        self.messages: list = []
+
+    async def write(self, message):
+        self.messages.append(message)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self._timeout_forever:
+            raise TimeoutError
+        if self._idx < len(self._updates):
+            update = self._updates[self._idx]
+            self._idx += 1
+            return update
+        raise StopAsyncIteration
+
+
+# ---------------------------------------------------------------------------
+# _run_match orchestration tests
+# ---------------------------------------------------------------------------
+
+
+class TestRunMatchActive:
+    """Tests for _run_match() with two active players (non-bye)."""
+
+    @pytest.fixture
+    def tournament_game(self):
+        """Create a Tournament game with 4 players."""
+        mock_controller_manager = MockControllerManagerService(
+            num_controllers=4,
+            death_schedule={},
+            max_duration=10.0,
+        )
+        event_collector = EventCollector()
+
+        game = TournamentGame(
+            controller_manager_client=mock_controller_manager,
+            event_publisher=event_collector.publish,
+            audio_client=None,
+            game_id="test_run_match",
+            invincibility_seconds=0.0,
+        )
+
+        return game, mock_controller_manager, event_collector
+
+    @pytest.mark.asyncio
+    async def test_run_match_sets_fighting_state_and_colors(self, tournament_game):
+        """_run_match sets both players to FIGHTING and sends red/blue colors."""
+        from unittest.mock import AsyncMock
+
+        game, mock_cm, event_collector = tournament_game
+        await game._initialize_players_impl(mock_cm.controllers)
+        game._play_sound = AsyncMock()
+        game.running = True
+
+        serials = list(game.players.keys())
+        p1, p2 = serials[0], serials[1]
+
+        match = Match(match_id=0, round_number=1, player1_serial=p1, player2_serial=p2)
+
+        # Stream that always times out so we can control match completion
+        # externally by marking the match complete after checking state.
+        stream = AsyncGameplayStreamMock(timeout_forever=True)
+        game.gameplay_stream = stream
+
+        # Kill p1 after first iteration so match finishes quickly
+        async def kill_after_check(_gd):
+            if game.players[p1].tournament_state == TournamentState.FIGHTING:
+                match.winner_serial = p2
+                match.is_complete = True
+
+        game._process_controller_state = kill_after_check
+
+        await game._run_match(match)
+
+        # Colors should have been sent: red for p1, blue for p2
+        color_msgs = [m for m in stream.messages if m.HasField("base_color")]
+        color_serials = {m.base_color.serial for m in color_msgs}
+        assert p1 in color_serials
+        assert p2 in color_serials
+
+        # match_start event should have been published
+        match_starts = event_collector.get_events_of_type("match_start")
+        assert len(match_starts) == 1
+        assert match_starts[0]["player1"] == p1
+        assert match_starts[0]["player2"] == p2
+
+    @pytest.mark.asyncio
+    async def test_run_match_timeout_picks_random_winner(self, tournament_game):
+        """When match timer expires, a random winner is chosen and finalized."""
+        from unittest.mock import AsyncMock, patch
+
+        game, mock_cm, event_collector = tournament_game
+        await game._initialize_players_impl(mock_cm.controllers)
+        game._play_sound = AsyncMock()
+        game.running = True
+
+        serials = list(game.players.keys())
+        p1, p2 = serials[0], serials[1]
+
+        match = Match(match_id=0, round_number=1, player1_serial=p1, player2_serial=p2)
+
+        stream = AsyncGameplayStreamMock(timeout_forever=True)
+        game.gameplay_stream = stream
+
+        # Make time.time() jump past MATCH_DURATION on the second call
+        original_time = time.time
+        call_count = 0
+
+        def fast_time():
+            nonlocal call_count
+            call_count += 1
+            # First calls are for invincibility setup; after ~5 calls jump ahead
+            if call_count > 4:
+                return original_time() + 100
+            return original_time()
+
+        with (
+            patch("services.game_coordinator.games.tournament.time.time", side_effect=fast_time),
+            patch("services.game_coordinator.games.tournament.random.choice", return_value=p1),
+        ):
+            await game._run_match(match)
+
+        # Match should be finalized with p1 as winner
+        assert match.is_complete is True
+        assert match.winner_serial == p1
+
+        # Loser should be ELIMINATED
+        assert game.players[p2].tournament_state == TournamentState.ELIMINATED
+        assert game.players[p2].alive is False
+
+        # Winner wins count should increase
+        assert game.players[p1].wins == 1
+
+        # match_end event should be published
+        match_ends = event_collector.get_events_of_type("match_end")
+        assert len(match_ends) == 1
+        assert match_ends[0]["winner"] == p1
+        assert match_ends[0]["loser"] == p2
+
+    @pytest.mark.asyncio
+    async def test_run_match_stream_ended_during_match(self, tournament_game):
+        """StopAsyncIteration during match exits cleanly without crash."""
+        from unittest.mock import AsyncMock
+
+        game, mock_cm, _ = tournament_game
+        await game._initialize_players_impl(mock_cm.controllers)
+        game._play_sound = AsyncMock()
+        game.running = True
+
+        serials = list(game.players.keys())
+        p1, p2 = serials[0], serials[1]
+
+        match = Match(match_id=0, round_number=1, player1_serial=p1, player2_serial=p2)
+
+        # Empty stream -- __anext__ raises StopAsyncIteration immediately
+        stream = AsyncGameplayStreamMock(updates=[])
+        game.gameplay_stream = stream
+
+        # Should not raise
+        await game._run_match(match)
+
+        # Match should NOT be finalized since nobody won
+        assert match.is_complete is False
+
+    @pytest.mark.asyncio
+    async def test_run_match_game_stopped_mid_match(self, tournament_game):
+        """Setting running=False during match causes clean exit."""
+        from unittest.mock import AsyncMock
+
+        game, mock_cm, _ = tournament_game
+        await game._initialize_players_impl(mock_cm.controllers)
+        game._play_sound = AsyncMock()
+        game.running = True
+
+        serials = list(game.players.keys())
+        p1, p2 = serials[0], serials[1]
+
+        match = Match(match_id=0, round_number=1, player1_serial=p1, player2_serial=p2)
+
+        call_count = 0
+
+        async def stop_on_second_anext():
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 2:
+                game.running = False
+            raise TimeoutError
+
+        stream = AsyncGameplayStreamMock(timeout_forever=True)
+        stream.__anext__ = stop_on_second_anext
+        game.gameplay_stream = stream
+
+        await game._run_match(match)
+
+        # Match should not be complete since we stopped
+        assert match.is_complete is False
+
+    @pytest.mark.asyncio
+    async def test_run_match_winner_effect_and_loser_off(self, tournament_game):
+        """After match finalization, winner gets WIN_FLASH and loser LED turns off."""
+        from unittest.mock import AsyncMock, patch
+
+        from proto import controller_manager_pb2 as cm_pb2
+
+        game, mock_cm, event_collector = tournament_game
+        await game._initialize_players_impl(mock_cm.controllers)
+        game._play_sound = AsyncMock()
+        game.running = True
+
+        serials = list(game.players.keys())
+        p1, p2 = serials[0], serials[1]
+
+        match = Match(match_id=0, round_number=1, player1_serial=p1, player2_serial=p2)
+
+        stream = AsyncGameplayStreamMock(timeout_forever=True)
+        game.gameplay_stream = stream
+
+        original_time = time.time
+        call_count = 0
+
+        def fast_time():
+            nonlocal call_count
+            call_count += 1
+            if call_count > 4:
+                return original_time() + 100
+            return original_time()
+
+        with (
+            patch("services.game_coordinator.games.tournament.time.time", side_effect=fast_time),
+            patch("services.game_coordinator.games.tournament.random.choice", return_value=p2),
+        ):
+            await game._run_match(match)
+
+        # Winner effect
+        effect_msgs = [m for m in stream.messages if m.HasField("game_effect")]
+        assert any(
+            m.game_effect.serial == p2 and m.game_effect.effect == cm_pb2.GAME_EFFECT_WIN_FLASH for m in effect_msgs
+        )
+
+        # Loser LED off (0,0,0)
+        color_msgs = [m for m in stream.messages if m.HasField("base_color")]
+        loser_off = [m for m in color_msgs if m.base_color.serial == p1]
+        assert any(
+            m.base_color.color.r == 0 and m.base_color.color.g == 0 and m.base_color.color.b == 0 for m in loser_off
+        )
+
+
+# ---------------------------------------------------------------------------
+# _gameplay_loop tests
+# ---------------------------------------------------------------------------
+
+
+class TestGameplayLoop:
+    """Tests for _gameplay_loop() orchestration."""
+
+    @pytest.fixture
+    def tournament_game(self):
+        """Create a Tournament game with 2 players (simplest bracket)."""
+        mock_controller_manager = MockControllerManagerService(
+            num_controllers=2,
+            death_schedule={},
+            max_duration=10.0,
+        )
+        event_collector = EventCollector()
+
+        game = TournamentGame(
+            controller_manager_client=mock_controller_manager,
+            event_publisher=event_collector.publish,
+            audio_client=None,
+            game_id="test_gameplay_loop",
+            invincibility_seconds=0.0,
+        )
+
+        return game, mock_controller_manager, event_collector
+
+    @pytest.mark.asyncio
+    async def test_gameplay_loop_completes_tournament(self, tournament_game):
+        """_gameplay_loop should run matches until a champion is determined."""
+        from unittest.mock import AsyncMock, patch
+
+        game, mock_cm, event_collector = tournament_game
+        await game._initialize_players_impl(mock_cm.controllers)
+        game._play_sound = AsyncMock()
+        game.running = True
+
+        serials = list(game.players.keys())
+        p1, p2 = serials[0], serials[1]
+
+        stream = AsyncGameplayStreamMock(timeout_forever=True)
+        game.gameplay_stream = stream
+
+        original_time = time.time
+        call_count = 0
+
+        def fast_time():
+            nonlocal call_count
+            call_count += 1
+            if call_count > 4:
+                return original_time() + 100
+            return original_time()
+
+        with (
+            patch("services.game_coordinator.games.tournament.time.time", side_effect=fast_time),
+            patch("services.game_coordinator.games.tournament.random.choice", return_value=p1),
+            patch("services.game_coordinator.games.tournament.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            await game._gameplay_loop()
+
+        # One player should be eliminated, one waiting/champion
+        assert game.players[p2].tournament_state == TournamentState.ELIMINATED
+        assert game.players[p1].tournament_state == TournamentState.WAITING
+
+    @pytest.mark.asyncio
+    async def test_gameplay_loop_round_change_publishes_event(self, tournament_game):
+        """When advancing to a new round, round_start event should be published."""
+        from unittest.mock import AsyncMock, patch
+
+        # 4 players so we get round transitions
+        mock_cm = MockControllerManagerService(num_controllers=4, death_schedule={}, max_duration=10.0)
+        event_collector = EventCollector()
+
+        game = TournamentGame(
+            controller_manager_client=mock_cm,
+            event_publisher=event_collector.publish,
+            audio_client=None,
+            game_id="test_round_change",
+            invincibility_seconds=0.0,
+        )
+
+        await game._initialize_players_impl(mock_cm.controllers)
+        game._play_sound = AsyncMock()
+        game.running = True
+
+        stream = AsyncGameplayStreamMock(timeout_forever=True)
+        game.gameplay_stream = stream
+
+        original_time = time.time
+        call_count = 0
+
+        def fast_time():
+            nonlocal call_count
+            call_count += 1
+            if call_count > 4:
+                return original_time() + 100
+            return original_time()
+
+        with (
+            patch("services.game_coordinator.games.tournament.time.time", side_effect=fast_time),
+            patch("services.game_coordinator.games.tournament.random.choice", side_effect=lambda x: x[0]),
+            patch("services.game_coordinator.games.tournament.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            await game._gameplay_loop()
+
+        # Should have round_start events for round 2
+        round_starts = event_collector.get_events_of_type("round_start")
+        assert len(round_starts) >= 1
+        assert round_starts[0]["round"] == 2
+
+
+# ---------------------------------------------------------------------------
+# _check_win_condition edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestCheckWinConditionEdgeCases:
+    """Additional edge case tests for _check_win_condition()."""
+
+    @pytest.fixture
+    def tournament_game(self):
+        mock_controller_manager = MockControllerManagerService(num_controllers=4)
+        event_collector = EventCollector()
+
+        game = TournamentGame(
+            controller_manager_client=mock_controller_manager,
+            event_publisher=event_collector.publish,
+            audio_client=None,
+            game_id="test_win_edge",
+        )
+
+        return game, mock_controller_manager, event_collector
+
+    @pytest.mark.asyncio
+    async def test_all_eliminated_no_winner(self, tournament_game):
+        """When all players are eliminated, win condition is True with no champion."""
+        game, mock_cm, event_collector = tournament_game
+        await game._initialize_players_impl(mock_cm.controllers)
+
+        for player in game.players.values():
+            player.tournament_state = TournamentState.ELIMINATED
+
+        result = await game._check_win_condition()
+        assert result is True
+
+        # Should publish tournament_no_winner, not tournament_champion
+        no_winner_events = event_collector.get_events_of_type("tournament_no_winner")
+        assert len(no_winner_events) == 1
+        champion_events = event_collector.get_events_of_type("tournament_champion")
+        assert len(champion_events) == 0
+
+
+# ---------------------------------------------------------------------------
+# _kill_player_impl span interaction
+# ---------------------------------------------------------------------------
+
+
+class TestKillPlayerSpan:
+    """Tests for _kill_player_impl() span event recording."""
+
+    @pytest.fixture
+    def tournament_game(self):
+        mock_controller_manager = MockControllerManagerService(num_controllers=4)
+
+        game = TournamentGame(
+            controller_manager_client=mock_controller_manager,
+            event_publisher=async_noop,
+            audio_client=None,
+            game_id="test_kill_span",
+        )
+
+        return game, mock_controller_manager
+
+    @pytest.mark.asyncio
+    async def test_kill_records_span_event(self, tournament_game):
+        """When a player is killed and has a span, add_event is called."""
+        from unittest.mock import MagicMock
+
+        game, mock_cm = tournament_game
+        await game._initialize_players_impl(mock_cm.controllers)
+
+        serials = list(game.players.keys())
+        p1, p2 = serials[0], serials[1]
+
+        game.players[p1].tournament_state = TournamentState.FIGHTING
+        game.players[p1].invincible_until = 0  # expired
+        game.players[p2].tournament_state = TournamentState.FIGHTING
+
+        mock_span = MagicMock()
+        game.players[p1].span = mock_span
+
+        game.current_match = Match(match_id=0, round_number=1, player1_serial=p1, player2_serial=p2)
+
+        await game._kill_player_impl(p1, accel_mag=5.5)
+
+        mock_span.add_event.assert_called_once()
+        call_args = mock_span.add_event.call_args
+        assert call_args[0][0] == "match_death"
+        assert call_args[1]["attributes"]["match_id"] == 0
+        assert call_args[1]["attributes"]["accel_magnitude"] == 5.5
+
+    @pytest.mark.asyncio
+    async def test_kill_p2_makes_p1_winner(self, tournament_game):
+        """When player2 is killed, player1 becomes the winner."""
+        game, mock_cm = tournament_game
+        await game._initialize_players_impl(mock_cm.controllers)
+
+        serials = list(game.players.keys())
+        p1, p2 = serials[0], serials[1]
+
+        game.players[p2].tournament_state = TournamentState.FIGHTING
+        game.players[p2].invincible_until = 0
+        game.players[p1].tournament_state = TournamentState.FIGHTING
+
+        game.current_match = Match(match_id=0, round_number=1, player1_serial=p1, player2_serial=p2)
+
+        await game._kill_player_impl(p2, accel_mag=4.0)
+
+        assert game.current_match.winner_serial == p1
+        assert game.current_match.is_complete is True
+
+
+# ---------------------------------------------------------------------------
+# run() lifecycle test
+# ---------------------------------------------------------------------------
+
+
+class TestRunLifecycle:
+    """Tests for the full run() orchestration."""
+
+    @pytest.mark.asyncio
+    async def test_run_full_lifecycle(self):
+        """run() should execute init, intro, countdown, gameplay, and end."""
+        from unittest.mock import AsyncMock, patch
+
+        mock_cm = MockControllerManagerService(num_controllers=2, death_schedule={}, max_duration=10.0)
+        event_collector = EventCollector()
+
+        game = TournamentGame(
+            controller_manager_client=mock_cm,
+            event_publisher=event_collector.publish,
+            audio_client=None,
+            game_id="test_run_lifecycle",
+            invincibility_seconds=0.0,
+        )
+
+        stream = AsyncGameplayStreamMock(timeout_forever=True)
+
+        # Mock _initialize_players to call _initialize_players_impl directly
+        async def fake_init_players():
+            await game._initialize_players_impl(mock_cm.controllers)
+
+        game._initialize_players = fake_init_players
+        game._play_sound = AsyncMock()
+        game._start_gameplay_stream = AsyncMock()
+        game.gameplay_stream = stream
+        game._countdown = AsyncMock()
+        game._start_game_music = AsyncMock()
+        game._stop_game_music = AsyncMock()
+
+        original_time = time.time
+        call_count = 0
+
+        def fast_time():
+            nonlocal call_count
+            call_count += 1
+            if call_count > 4:
+                return original_time() + 100
+            return original_time()
+
+        serials = [f"mock_controller_{i}" for i in range(2)]
+
+        with (
+            patch("services.game_coordinator.games.tournament.time.time", side_effect=fast_time),
+            patch("services.game_coordinator.games.tournament.random.choice", return_value=serials[0]),
+            patch("services.game_coordinator.games.tournament.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            await game.run()
+
+        # Verify lifecycle phases were called
+        game._start_gameplay_stream.assert_called_once()
+        game._countdown.assert_called_once()
+        game._start_game_music.assert_called_once()
+        game._stop_game_music.assert_called_once()
+
+        # game_started and game_ended events should exist
+        started_events = event_collector.get_events_of_type("game_started")
+        assert len(started_events) == 1
+        ended_events = event_collector.get_events_of_type("game_ended")
+        assert len(ended_events) == 1
+
+    @pytest.mark.asyncio
+    async def test_run_stops_early_if_not_running_after_intro(self):
+        """If running becomes False during intro, run() returns without gameplay."""
+        from unittest.mock import AsyncMock, patch
+
+        mock_cm = MockControllerManagerService(num_controllers=2, death_schedule={}, max_duration=10.0)
+        event_collector = EventCollector()
+
+        game = TournamentGame(
+            controller_manager_client=mock_cm,
+            event_publisher=event_collector.publish,
+            audio_client=None,
+            game_id="test_run_early_stop",
+            invincibility_seconds=0.0,
+        )
+
+        async def fake_init_players():
+            await game._initialize_players_impl(mock_cm.controllers)
+
+        game._initialize_players = fake_init_players
+        game._play_sound = AsyncMock()
+        game._start_gameplay_stream = AsyncMock()
+        game.gameplay_stream = AsyncGameplayStreamMock(timeout_forever=True)
+        game._start_game_music = AsyncMock()
+        game._stop_game_music = AsyncMock()
+
+        async def stop_during_countdown():
+            game.running = False
+
+        game._countdown = AsyncMock(side_effect=stop_during_countdown)
+
+        with patch("services.game_coordinator.games.tournament.asyncio.sleep", new_callable=AsyncMock):
+            await game.run()
+
+        # game_started should NOT have been published since we stopped before gameplay
+        started_events = event_collector.get_events_of_type("game_started")
+        assert len(started_events) == 0

@@ -490,3 +490,240 @@ class TestEndSurvivingTeamSpans:
         event_1 = mock_span_1.add_event.call_args[0][0]
         assert event_0 == "team_survived"
         assert event_1 == "team_survived"
+
+
+class TestGetAliveTeams:
+    """Test _get_alive_teams method."""
+
+    def test_all_players_alive(self, game):
+        """Should return all team numbers when all players are alive."""
+        _add_players(
+            game,
+            [
+                ("p1", 0, True),
+                ("p2", 0, True),
+                ("p3", 1, True),
+                ("p4", 1, True),
+            ],
+        )
+        assert game._get_alive_teams() == {0, 1}
+
+    def test_one_team_eliminated(self, game):
+        """Should exclude a team whose players are all dead."""
+        _add_players(
+            game,
+            [
+                ("p1", 0, True),
+                ("p2", 0, True),
+                ("p3", 1, False),
+                ("p4", 1, False),
+            ],
+        )
+        assert game._get_alive_teams() == {0}
+
+    def test_all_players_dead(self, game):
+        """Should return empty set when all players are dead."""
+        _add_players(
+            game,
+            [
+                ("p1", 0, False),
+                ("p2", 1, False),
+            ],
+        )
+        assert game._get_alive_teams() == set()
+
+    def test_no_players(self, game):
+        """Should return empty set with no players."""
+        assert game._get_alive_teams() == set()
+
+    def test_mixed_alive_dead_per_team(self, game):
+        """Team should be alive if at least one player on it is alive."""
+        _add_players(
+            game,
+            [
+                ("p1", 0, False),
+                ("p2", 0, True),  # Team 0 still alive via p2
+                ("p3", 1, False),
+                ("p4", 1, False),  # Team 1 all dead
+            ],
+        )
+        assert game._get_alive_teams() == {0}
+
+
+class TestCheckWinCondition:
+    """Test _check_win_condition method."""
+
+    @pytest.mark.asyncio
+    async def test_one_team_remaining_returns_true(self, game, mock_event_publisher):
+        """Should return True and publish team_winner when one team remains."""
+        _add_players(
+            game,
+            [
+                ("p1", 0, True),
+                ("p2", 0, True),
+                ("p3", 1, False),
+                ("p4", 1, False),
+            ],
+        )
+
+        result = await game._check_win_condition()
+
+        assert result is True
+        # Should have published team_winner event
+        mock_event_publisher.assert_awaited_once()
+        event_type = mock_event_publisher.call_args[0][0]
+        event_data = mock_event_publisher.call_args[0][1]
+        assert event_type == "team_winner"
+        assert event_data["team"] == 0
+        assert event_data["team_name"] == "Pink"  # Team 0 color is Pink
+        assert set(event_data["winning_players"]) == {"p1", "p2"}
+        assert event_data["winner_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_no_teams_remaining_tie(self, game, mock_event_publisher):
+        """Should return True and publish game_tie when no teams remain."""
+        from lib.types import GameEvent
+
+        _add_players(
+            game,
+            [
+                ("p1", 0, False),
+                ("p2", 1, False),
+            ],
+        )
+
+        result = await game._check_win_condition()
+
+        assert result is True
+        mock_event_publisher.assert_awaited_once()
+        event_type = mock_event_publisher.call_args[0][0]
+        assert event_type == GameEvent.GAME_TIE
+
+    @pytest.mark.asyncio
+    async def test_multiple_teams_remaining_returns_false(self, game, mock_event_publisher):
+        """Should return False when multiple teams are still alive."""
+        _add_players(
+            game,
+            [
+                ("p1", 0, True),
+                ("p2", 1, True),
+            ],
+        )
+
+        result = await game._check_win_condition()
+
+        assert result is False
+        mock_event_publisher.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_single_surviving_player_on_winning_team(self, game, mock_event_publisher):
+        """Should correctly detect winner with just one surviving player."""
+        _add_players(
+            game,
+            [
+                ("p1", 0, False),
+                ("p2", 0, False),
+                ("p3", 1, True),
+            ],
+        )
+
+        result = await game._check_win_condition()
+
+        assert result is True
+        event_data = mock_event_publisher.call_args[0][1]
+        assert event_data["team"] == 1
+        assert event_data["winning_players"] == ["p3"]
+        assert event_data["winner_count"] == 1
+
+
+class TestEndGameImpl:
+    """Test _end_game_impl method for team-based games."""
+
+    @pytest.fixture
+    def game_with_mocks(self, game):
+        """Set up a game with mocked helper methods."""
+        from services.game_coordinator.games.base import GameState
+
+        game.start_time = time.time() - 30.0  # Game ran for 30 seconds
+        game.state = GameState.RUNNING
+        game._send_winner_rainbow_effects = AsyncMock()
+        game._play_team_victory_sound = AsyncMock()
+        game._wait_for_rainbow_effect = AsyncMock()
+        game._end_surviving_player_spans = MagicMock()
+        game._publish_player_analytics = AsyncMock()
+        game._end_surviving_team_spans = MagicMock()
+        return game
+
+    @pytest.mark.asyncio
+    async def test_end_game_with_winner(self, game_with_mocks, mock_event_publisher):
+        """Should send rainbow effects and victory sound when there is a winner."""
+        _add_players(
+            game_with_mocks,
+            [
+                ("p1", 0, True),
+                ("p2", 1, False),
+            ],
+        )
+
+        await game_with_mocks._end_game_impl()
+
+        game_with_mocks._send_winner_rainbow_effects.assert_awaited_once_with(0)
+        game_with_mocks._play_team_victory_sound.assert_awaited_once_with(0)
+        game_with_mocks._wait_for_rainbow_effect.assert_awaited_once()
+        game_with_mocks._end_surviving_player_spans.assert_called_once_with(0)
+        game_with_mocks._publish_player_analytics.assert_awaited_once_with(0)
+
+    @pytest.mark.asyncio
+    async def test_end_game_tie(self, game_with_mocks, mock_event_publisher):
+        """Should skip rainbow and victory sound when there is no winner (tie)."""
+        _add_players(
+            game_with_mocks,
+            [
+                ("p1", 0, False),
+                ("p2", 1, False),
+            ],
+        )
+
+        await game_with_mocks._end_game_impl()
+
+        game_with_mocks._send_winner_rainbow_effects.assert_not_awaited()
+        game_with_mocks._play_team_victory_sound.assert_not_awaited()
+        game_with_mocks._wait_for_rainbow_effect.assert_awaited_once()
+        game_with_mocks._end_surviving_player_spans.assert_called_once_with(None)
+        game_with_mocks._publish_player_analytics.assert_awaited_once_with(None)
+
+    @pytest.mark.asyncio
+    async def test_end_game_publishes_game_ended(self, game_with_mocks, mock_event_publisher):
+        """Should publish GAME_ENDED event with game_id and duration."""
+        from lib.types import GameEvent
+
+        _add_players(game_with_mocks, [("p1", 0, True)])
+
+        await game_with_mocks._end_game_impl()
+
+        # Last call to event_publisher should be GAME_ENDED
+        last_call = mock_event_publisher.call_args
+        assert last_call[0][0] == GameEvent.GAME_ENDED
+        assert last_call[0][1]["game_id"] == "test_helpers_001"
+        assert "duration" in last_call[0][1]
+        assert last_call[0][1]["duration"] > 0
+
+    @pytest.mark.asyncio
+    async def test_end_game_calls_end_surviving_team_spans(self, game_with_mocks, mock_event_publisher):
+        """Should pass alive_teams and winning_team_num to _end_surviving_team_spans."""
+        _add_players(
+            game_with_mocks,
+            [
+                ("p1", 0, True),
+                ("p2", 0, True),
+                ("p3", 1, False),
+            ],
+        )
+
+        await game_with_mocks._end_game_impl()
+
+        call_args = game_with_mocks._end_surviving_team_spans.call_args
+        alive_teams_arg = call_args[0][0]
+        winning_team_arg = call_args[0][1]
+        assert alive_teams_arg == {0}
+        assert winning_team_arg == 0

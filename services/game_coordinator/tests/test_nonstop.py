@@ -577,3 +577,390 @@ class TestNonstopRespawnCountdown:
         assert get_countdown_color(2.5) == (128, 128, 128)  # Gray
         assert get_countdown_color(1.5) == (255, 255, 0)  # Yellow
         assert get_countdown_color(0.5) == (0, 255, 0)  # Green
+
+
+class RecordingGameplayStream:
+    """Mock gameplay stream that records all writes."""
+
+    def __init__(self):
+        self.messages = []
+
+    async def write(self, message):
+        self.messages.append(message)
+
+
+class TestNonstopShowRespawnCountdown:
+    """Tests for _show_respawn_countdown color transitions via stream."""
+
+    @pytest.fixture
+    def nonstop_game(self):
+        """Create a Nonstop Joust game with recording stream."""
+        mock_controller_manager = MockControllerManagerService(num_controllers=2)
+        event_collector = EventCollector()
+
+        game = NonstopJoustGame(
+            controller_manager_client=mock_controller_manager,
+            event_publisher=event_collector.publish,
+            audio_client=None,
+            game_id="test_nonstop_countdown_stream",
+        )
+
+        return game, mock_controller_manager, event_collector
+
+    @pytest.mark.asyncio
+    async def test_show_respawn_countdown_gray_phase(self, nonstop_game):
+        """Test that _show_respawn_countdown sends gray at >2s remaining."""
+        game, mock_controller_manager, _ = nonstop_game
+        stream = RecordingGameplayStream()
+        game.gameplay_stream = stream
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+        serial = list(game.players.keys())[0]
+
+        await game._show_respawn_countdown(serial, 2.5)
+
+        # Should have written a base_color message with gray
+        assert len(stream.messages) >= 1
+        color_msg = stream.messages[-1]
+        assert color_msg.base_color.serial == serial
+        assert color_msg.base_color.color.r == 128
+        assert color_msg.base_color.color.g == 128
+        assert color_msg.base_color.color.b == 128
+
+    @pytest.mark.asyncio
+    async def test_show_respawn_countdown_yellow_phase(self, nonstop_game):
+        """Test that _show_respawn_countdown sends yellow at 1-2s remaining."""
+        game, mock_controller_manager, _ = nonstop_game
+        stream = RecordingGameplayStream()
+        game.gameplay_stream = stream
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+        serial = list(game.players.keys())[0]
+
+        await game._show_respawn_countdown(serial, 1.5)
+
+        assert len(stream.messages) >= 1
+        color_msg = stream.messages[-1]
+        assert color_msg.base_color.serial == serial
+        assert color_msg.base_color.color.r == 255
+        assert color_msg.base_color.color.g == 255
+        assert color_msg.base_color.color.b == 0
+
+    @pytest.mark.asyncio
+    async def test_show_respawn_countdown_green_phase(self, nonstop_game):
+        """Test that _show_respawn_countdown sends green at <1s remaining."""
+        game, mock_controller_manager, _ = nonstop_game
+        stream = RecordingGameplayStream()
+        game.gameplay_stream = stream
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+        serial = list(game.players.keys())[0]
+
+        await game._show_respawn_countdown(serial, 0.5)
+
+        assert len(stream.messages) >= 1
+        color_msg = stream.messages[-1]
+        assert color_msg.base_color.serial == serial
+        assert color_msg.base_color.color.r == 0
+        assert color_msg.base_color.color.g == 255
+        assert color_msg.base_color.color.b == 0
+
+    @pytest.mark.asyncio
+    async def test_show_respawn_countdown_skips_duplicate_color(self, nonstop_game):
+        """Test that repeated calls with same color phase don't re-send."""
+        game, mock_controller_manager, _ = nonstop_game
+        stream = RecordingGameplayStream()
+        game.gameplay_stream = stream
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+        serial = list(game.players.keys())[0]
+
+        # First call at 2.5s (gray) should send
+        await game._show_respawn_countdown(serial, 2.5)
+        count_after_first = len(stream.messages)
+        assert count_after_first >= 1
+
+        # Second call still in gray phase should NOT send again
+        await game._show_respawn_countdown(serial, 2.3)
+        assert len(stream.messages) == count_after_first
+
+
+class TestNonstopUpdateRespawnTimers:
+    """Tests for _update_respawn_timers including respawn trigger and spawn protection expiry."""
+
+    @pytest.fixture
+    def nonstop_game(self):
+        """Create a Nonstop Joust game."""
+        mock_controller_manager = MockControllerManagerService(num_controllers=3)
+        event_collector = EventCollector()
+
+        game = NonstopJoustGame(
+            controller_manager_client=mock_controller_manager,
+            event_publisher=event_collector.publish,
+            audio_client=None,
+            game_id="test_nonstop_respawn_timers",
+        )
+
+        return game, mock_controller_manager, event_collector
+
+    @pytest.mark.asyncio
+    async def test_respawn_triggers_when_timer_reaches_zero(self, nonstop_game):
+        """Test that a player respawns when respawn_timer decrements to zero."""
+        game, mock_controller_manager, event_collector = nonstop_game
+        stream = RecordingGameplayStream()
+        game.gameplay_stream = stream
+        game._current_update_frequency = 30
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        serial = list(game.players.keys())[0]
+        player = game.players[serial]
+
+        # Set player as dead with timer about to expire
+        player.alive = False
+        player.respawn_timer = 0.01  # Very small, one tick will go to 0
+
+        await game._update_respawn_timers()
+
+        # Player should have been respawned
+        assert player.alive is True
+        assert player.spawn_protected is True
+
+        # Should have published respawn event
+        respawn_events = event_collector.get_events_of_type("player_respawned")
+        assert len(respawn_events) == 1
+
+    @pytest.mark.asyncio
+    async def test_spawn_protection_expiry_restores_white(self, nonstop_game):
+        """Test that spawn protection expiry sends white color and clears flag."""
+        game, mock_controller_manager, _ = nonstop_game
+        stream = RecordingGameplayStream()
+        game.gameplay_stream = stream
+        game._current_update_frequency = 30
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        serial = list(game.players.keys())[0]
+        player = game.players[serial]
+
+        # Set player as alive with spawn protection that already expired
+        player.alive = True
+        player.spawn_protected = True
+        player.spawn_protection_end = time.time() - 1.0  # Expired 1s ago
+
+        await game._update_respawn_timers()
+
+        # Spawn protection should be cleared
+        assert player.spawn_protected is False
+
+        # Should have sent white color command
+        color_msgs = [m for m in stream.messages if m.HasField("base_color")]
+        assert len(color_msgs) >= 1
+        last_color = color_msgs[-1]
+        assert last_color.base_color.color.r == 255
+        assert last_color.base_color.color.g == 255
+        assert last_color.base_color.color.b == 255
+
+
+class TestNonstopEndGameImpl:
+    """Tests for _end_game_impl scoring, winner detection, and event publishing."""
+
+    @pytest.fixture
+    def nonstop_game(self):
+        """Create a Nonstop Joust game."""
+        mock_controller_manager = MockControllerManagerService(num_controllers=4)
+        event_collector = EventCollector()
+
+        game = NonstopJoustGame(
+            controller_manager_client=mock_controller_manager,
+            event_publisher=event_collector.publish,
+            audio_client=None,
+            game_id="test_nonstop_end_game",
+        )
+
+        return game, mock_controller_manager, event_collector
+
+    @pytest.mark.asyncio
+    async def test_end_game_determines_winner_by_fewest_deaths(self, nonstop_game):
+        """Test winner is the player with fewest deaths (highest score)."""
+        from services.game_coordinator.games.base import GameState
+
+        game, mock_controller_manager, event_collector = nonstop_game
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        # Set different death counts
+        serials = list(game.players.keys())
+        game.players[serials[0]].deaths = 0  # Winner: score=100
+        game.players[serials[1]].deaths = 3  # score=70
+        game.players[serials[2]].deaths = 5  # score=50
+        game.players[serials[3]].deaths = 10  # score=0
+
+        game.gameplay_stream = RecordingGameplayStream()
+        game.start_time = time.time()
+        game.state = GameState.RUNNING
+        game.running = False  # Skip celebration sleep
+
+        await game._end_game_impl()
+
+        # Verify scores assigned correctly
+        assert game.players[serials[0]].score == 100
+        assert game.players[serials[1]].score == 70
+        assert game.players[serials[2]].score == 50
+        assert game.players[serials[3]].score == 0
+
+        # Verify winner event published
+        winner_events = event_collector.get_events_of_type("game_winner")
+        assert len(winner_events) == 1
+        assert winner_events[0]["serial"] == serials[0]
+        assert winner_events[0]["score"] == 100
+
+    @pytest.mark.asyncio
+    async def test_end_game_publishes_game_ended(self, nonstop_game):
+        """Test that _end_game_impl publishes game_ended event with duration."""
+        from services.game_coordinator.games.base import GameState
+
+        game, mock_controller_manager, event_collector = nonstop_game
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        game.gameplay_stream = RecordingGameplayStream()
+        game.start_time = time.time() - 60  # 60 seconds ago
+        game.state = GameState.RUNNING
+        game.running = False
+
+        await game._end_game_impl()
+
+        ended_events = event_collector.get_events_of_type("game_ended")
+        assert len(ended_events) == 1
+        assert ended_events[0]["game_id"] == "test_nonstop_end_game"
+        assert ended_events[0]["duration"] >= 59  # ~60 seconds
+
+    @pytest.mark.asyncio
+    async def test_end_game_sends_winner_rainbow_effect(self, nonstop_game):
+        """Test that _end_game_impl sends rainbow effect to winner."""
+        from services.game_coordinator.games.base import GameState
+
+        game, mock_controller_manager, _ = nonstop_game
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        serials = list(game.players.keys())
+        game.players[serials[0]].deaths = 0  # Winner
+
+        stream = RecordingGameplayStream()
+        game.gameplay_stream = stream
+        game.start_time = time.time()
+        game.state = GameState.RUNNING
+        game.running = False
+
+        await game._end_game_impl()
+
+        # Check for rainbow effect sent to winner
+        effect_msgs = [m for m in stream.messages if m.HasField("game_effect")]
+        assert len(effect_msgs) >= 1
+        assert effect_msgs[0].game_effect.serial == serials[0]
+        assert effect_msgs[0].game_effect.effect == controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW
+
+    @pytest.mark.asyncio
+    async def test_end_game_sets_state_to_ended(self, nonstop_game):
+        """Test that _end_game_impl transitions state to ENDED."""
+        from services.game_coordinator.games.base import GameState
+
+        game, mock_controller_manager, _ = nonstop_game
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        game.gameplay_stream = RecordingGameplayStream()
+        game.start_time = time.time()
+        game.state = GameState.RUNNING
+        game.running = False
+
+        await game._end_game_impl()
+
+        assert game.state == GameState.ENDED
+
+
+class TestNonstopGameLoopFilterUpdate:
+    """Tests for _game_loop filter update logic."""
+
+    @pytest.fixture
+    def nonstop_game(self):
+        """Create a Nonstop Joust game."""
+        mock_controller_manager = MockControllerManagerService(num_controllers=3)
+        event_collector = EventCollector()
+
+        game = NonstopJoustGame(
+            controller_manager_client=mock_controller_manager,
+            event_publisher=event_collector.publish,
+            audio_client=None,
+            game_id="test_nonstop_filter",
+            time_limit_seconds=1,
+        )
+
+        return game, mock_controller_manager, event_collector
+
+    @pytest.mark.asyncio
+    async def test_check_win_condition_no_start_time(self):
+        """Test win condition returns False when start_time is None."""
+        mock_cm = MockControllerManagerService(num_controllers=2)
+        game = NonstopJoustGame(
+            controller_manager_client=mock_cm,
+            event_publisher=async_noop,
+            audio_client=None,
+            game_id="test_no_start",
+            time_limit_seconds=60,
+        )
+
+        await game._initialize_players_impl(mock_cm.controllers)
+        game.start_time = None
+
+        # Time limit is set but start_time is None, should return False
+        assert not await game._check_win_condition()
+
+    @pytest.mark.asyncio
+    async def test_dead_player_skips_processing(self):
+        """Test that dead players are skipped in _process_controller_state."""
+        mock_cm = MockControllerManagerService(num_controllers=2)
+        game = NonstopJoustGame(
+            controller_manager_client=mock_cm,
+            event_publisher=async_noop,
+            audio_client=None,
+            game_id="test_dead_skip",
+        )
+
+        await game._initialize_players_impl(mock_cm.controllers)
+
+        serial = list(game.players.keys())[0]
+        player = game.players[serial]
+        player.alive = False
+
+        state = controller_manager_pb2.GameplayData(
+            serial=serial,
+            accel=controller_manager_pb2.Vector3(x=10.0, y=10.0, z=10.0),
+        )
+
+        # Should not crash and player stays dead
+        await game._process_controller_state(state)
+        assert player.alive is False
+
+    @pytest.mark.asyncio
+    async def test_unknown_controller_skips_processing(self):
+        """Test that unknown controller serials are ignored."""
+        mock_cm = MockControllerManagerService(num_controllers=2)
+        game = NonstopJoustGame(
+            controller_manager_client=mock_cm,
+            event_publisher=async_noop,
+            audio_client=None,
+            game_id="test_unknown",
+        )
+
+        await game._initialize_players_impl(mock_cm.controllers)
+
+        state = controller_manager_pb2.GameplayData(
+            serial="unknown_controller_999",
+            accel=controller_manager_pb2.Vector3(x=10.0, y=10.0, z=10.0),
+        )
+
+        # Should not crash
+        await game._process_controller_state(state)
