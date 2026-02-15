@@ -10,10 +10,12 @@ import pytest
 from services.audio.music_player import (
     DummyMusicPlayer,
     _clamp_ratio,
+    _get_song_pattern,
     _load_song_from_pattern,
     _read_samples,
     _resample_audio,
     _resample_chunk,
+    _set_song_pattern,
     _write_samples,
     lerp,
 )
@@ -318,16 +320,11 @@ class TestMusicPlayerStartStop:
 
     @pytest.fixture
     def player(self):
-        """Create a MusicPlayer with process/manager mocked out."""
-        with patch("services.audio.music_player.Manager") as mock_mgr_cls:
-            mock_dict = {}
-            mock_mgr_cls.return_value.dict.return_value = mock_dict
-            # Patch platform check so _use_alsa is False (no process spawned)
-            with patch("services.audio.music_player.HAS_ALSA", False):
-                from services.audio.music_player import MusicPlayer
+        """Create a MusicPlayer with ALSA disabled (no process spawned)."""
+        with patch("services.audio.music_player.HAS_ALSA", False):
+            from services.audio.music_player import MusicPlayer
 
-                p = MusicPlayer(name="test")
-        return p
+            return MusicPlayer(name="test")
 
     def test_start_returns_track_id(self, player):
         track_id = player.start()
@@ -359,18 +356,67 @@ class TestMusicPlayerStartStop:
         assert id1 != id2
 
 
+class TestSongPatternSharedMemory:
+    """Tests for the shared memory song pattern (regression for BrokenPipeError).
+
+    The original implementation used Manager().dict() which spawns a separate
+    process. If that process crashes, all subsequent load()/stop() calls fail
+    with BrokenPipeError permanently. The fix uses multiprocessing.Array which
+    is kernel-level shared memory with no manager process to crash.
+
+    These tests verify the Array-based IPC works end-to-end without mocking.
+    """
+
+    @pytest.fixture
+    def player(self):
+        """Create a real MusicPlayer (no ALSA, but real shared memory)."""
+        with patch("services.audio.music_player.HAS_ALSA", False):
+            from services.audio.music_player import MusicPlayer
+
+            return MusicPlayer(name="test-shm")
+
+    def test_load_writes_pattern_to_shared_memory(self, player):
+        player.load("Joust/music/*.ogg")
+        assert _get_song_pattern(player._song_array) == "Joust/music/*.ogg"
+
+    def test_stop_clears_pattern_in_shared_memory(self, player):
+        player.load("Joust/music/*.ogg")
+        player.stop()
+        assert _get_song_pattern(player._song_array) == ""
+
+    def test_load_stop_load_roundtrip(self, player):
+        player.load("Joust/music/*.ogg")
+        player.start()
+        player.stop()
+        player.load("Menu/music/*.ogg")
+        assert _get_song_pattern(player._song_array) == "Menu/music/*.ogg"
+
+    def test_set_get_song_pattern_helpers(self):
+        """Verify _get/_set helpers work with a real Array."""
+        from multiprocessing import Array
+
+        arr = Array("c", 4096)
+        _set_song_pattern(arr, "test/pattern/*.ogg")
+        assert _get_song_pattern(arr) == "test/pattern/*.ogg"
+
+        _set_song_pattern(arr, "")
+        assert _get_song_pattern(arr) == ""
+
+    def test_long_pattern_fits_in_buffer(self, player):
+        long_pattern = "a/" * 2000 + "*.ogg"
+        player.load(long_pattern)
+        assert _get_song_pattern(player._song_array) == long_pattern
+
+
 class TestTransitionRatio:
     """Tests for MusicPlayer.transition_ratio async method."""
 
     @pytest.fixture
     def player(self):
-        with patch("services.audio.music_player.Manager") as mock_mgr_cls:
-            mock_mgr_cls.return_value.dict.return_value = {}
-            with patch("services.audio.music_player.HAS_ALSA", False):
-                from services.audio.music_player import MusicPlayer
+        with patch("services.audio.music_player.HAS_ALSA", False):
+            from services.audio.music_player import MusicPlayer
 
-                p = MusicPlayer(name="test-transition")
-        return p
+            return MusicPlayer(name="test-transition")
 
     @pytest.mark.asyncio
     async def test_transition_reaches_target_ratio(self, player):

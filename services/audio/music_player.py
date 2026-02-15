@@ -17,7 +17,7 @@ import os
 import random
 import time
 import wave
-from multiprocessing import Manager, Process, Value
+from multiprocessing import Array, Process, Value
 from sys import platform
 
 import numpy as np
@@ -195,14 +195,24 @@ def _play_loaded_song(wav_data, period, period_bytes, ratio, volume, stop_proc):
     return True
 
 
-def _linux_audio_loop(fname: dict, ratio: Value, volume: Value, stop_proc: Value):
+def _get_song_pattern(song_array: Array) -> str:
+    """Read the song pattern from a shared byte array."""
+    return song_array.value.decode("utf-8")
+
+
+def _set_song_pattern(song_array: Array, pattern: str) -> None:
+    """Write a song pattern to a shared byte array."""
+    song_array.value = pattern.encode("utf-8")
+
+
+def _linux_audio_loop(song_array: Array, ratio: Value, volume: Value, stop_proc: Value):
     """
     Linux audio playback loop using ALSA with real-time resampling.
 
     Runs in a separate process for non-blocking playback.
 
     Args:
-        fname: Manager dict with 'song' key containing glob pattern
+        song_array: Shared byte array containing glob pattern for current song
         ratio: Shared Value for playback speed (1.0 = normal)
         volume: Shared Value for volume (0.0 to 1.0)
         stop_proc: Shared Value to control playback (0=play, 1=stop)
@@ -225,8 +235,7 @@ def _linux_audio_loop(fname: dict, ratio: Value, volume: Value, stop_proc: Value
                 time.sleep(0.05)
                 continue
 
-            # Read pattern once per iteration to avoid TOCTOU with Manager dict
-            current_pattern = fname["song"]
+            current_pattern = _get_song_pattern(song_array)
 
             if current_pattern == "":
                 song_loaded = False
@@ -282,9 +291,9 @@ class MusicPlayer:
         self._ratio = Value("d", 1.0)  # Playback speed
         self._volume = Value("d", 0.7)  # Volume level
 
-        self._manager = Manager()
-        self._fname = self._manager.dict()
-        self._fname["song"] = ""
+        # Shared byte array for song pattern (replaces Manager().dict() to avoid
+        # BrokenPipeError when the Manager subprocess crashes)
+        self._song_array = Array("c", 4096)
 
         self._process = None
         self._track_id = None
@@ -293,9 +302,8 @@ class MusicPlayer:
 
         if self._use_alsa:
             # Start audio process
-            self._process = Process(
-                target=_linux_audio_loop, args=(self._fname, self._ratio, self._volume, self._stop_proc), daemon=True
-            )
+            args = (self._song_array, self._ratio, self._volume, self._stop_proc)
+            self._process = Process(target=_linux_audio_loop, args=args, daemon=True)
             self._process.start()
             logger.info(f"MusicPlayer '{name}' initialized with ALSA backend")
         else:
@@ -308,7 +316,7 @@ class MusicPlayer:
         Args:
             file_pattern: Glob pattern for music files
         """
-        self._fname["song"] = file_pattern
+        _set_song_pattern(self._song_array, file_pattern)
         logger.debug(f"Music pattern loaded: {file_pattern}")
 
     def start(self) -> str:
@@ -328,7 +336,7 @@ class MusicPlayer:
     def stop(self):
         """Stop music playback."""
         self._stop_proc.value = 1
-        self._fname["song"] = ""
+        _set_song_pattern(self._song_array, "")
 
         # Cancel any ongoing transition
         if self._transition_task and not self._transition_task.done():
