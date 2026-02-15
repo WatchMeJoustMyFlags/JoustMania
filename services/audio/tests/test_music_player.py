@@ -10,10 +10,12 @@ import pytest
 from services.audio.music_player import (
     DummyMusicPlayer,
     _clamp_ratio,
+    _get_song_pattern,
     _load_song_from_pattern,
     _read_samples,
     _resample_audio,
     _resample_chunk,
+    _set_song_pattern,
     _write_samples,
     lerp,
 )
@@ -352,6 +354,58 @@ class TestMusicPlayerStartStop:
         player.stop()
         id2 = player.start()
         assert id1 != id2
+
+
+class TestSongPatternSharedMemory:
+    """Tests for the shared memory song pattern (regression for BrokenPipeError).
+
+    The original implementation used Manager().dict() which spawns a separate
+    process. If that process crashes, all subsequent load()/stop() calls fail
+    with BrokenPipeError permanently. The fix uses multiprocessing.Array which
+    is kernel-level shared memory with no manager process to crash.
+
+    These tests verify the Array-based IPC works end-to-end without mocking.
+    """
+
+    @pytest.fixture
+    def player(self):
+        """Create a real MusicPlayer (no ALSA, but real shared memory)."""
+        with patch("services.audio.music_player.HAS_ALSA", False):
+            from services.audio.music_player import MusicPlayer
+
+            return MusicPlayer(name="test-shm")
+
+    def test_load_writes_pattern_to_shared_memory(self, player):
+        player.load("Joust/music/*.ogg")
+        assert _get_song_pattern(player._song_array) == "Joust/music/*.ogg"
+
+    def test_stop_clears_pattern_in_shared_memory(self, player):
+        player.load("Joust/music/*.ogg")
+        player.stop()
+        assert _get_song_pattern(player._song_array) == ""
+
+    def test_load_stop_load_roundtrip(self, player):
+        player.load("Joust/music/*.ogg")
+        player.start()
+        player.stop()
+        player.load("Menu/music/*.ogg")
+        assert _get_song_pattern(player._song_array) == "Menu/music/*.ogg"
+
+    def test_set_get_song_pattern_helpers(self):
+        """Verify _get/_set helpers work with a real Array."""
+        from multiprocessing import Array
+
+        arr = Array("c", 4096)
+        _set_song_pattern(arr, "test/pattern/*.ogg")
+        assert _get_song_pattern(arr) == "test/pattern/*.ogg"
+
+        _set_song_pattern(arr, "")
+        assert _get_song_pattern(arr) == ""
+
+    def test_long_pattern_fits_in_buffer(self, player):
+        long_pattern = "a/" * 2000 + "*.ogg"
+        player.load(long_pattern)
+        assert _get_song_pattern(player._song_array) == long_pattern
 
 
 class TestTransitionRatio:
