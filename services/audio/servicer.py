@@ -427,10 +427,10 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         # If flagd is unavailable, default to audio enabled (hardware initialized).
         self.audio_enabled = self._load_play_audio_flag()
         self.audio_manager = AudioManager(silent=not self.audio_enabled)
-        self.menu_voice = "ivy"  # Controlled by menu_voice setting
-        self._settings_loaded = False  # Lazy load full settings on first audio request
+        self.menu_voice = self._load_menu_voice_flag()
         self.sound_registry: dict[str, tuple[str, str]] = {}  # sound_name -> (type, base_dir)
         self._build_sound_registry()
+        self._register_flag_change_handler()
         logger.info("AudioServiceServicer initialized (audio_enabled=%s)", self.audio_enabled)
 
     @staticmethod
@@ -450,6 +450,66 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         except Exception as e:
             logger.debug("Could not load play_audio flag from flagd: %s, defaulting to enabled", e)
             return True
+
+    @staticmethod
+    def _load_menu_voice_flag() -> str:
+        """Load menu_voice flag from flagd at startup.
+
+        Returns "ivy" if flagd is unavailable or flag is not set.
+        """
+        try:
+            from lib.feature_flags import get_flag_client, init_flag_domain
+
+            init_flag_domain("user_preferences")
+            client = get_flag_client("user_preferences")
+            voice = client.get_string_value("menu_voice", "ivy")
+            if voice in ("aaron", "ivy"):
+                logger.info("menu_voice flag loaded at startup: %s", voice)
+                return voice
+            logger.warning("Invalid menu_voice value '%s', defaulting to ivy", voice)
+            return "ivy"
+        except Exception as e:
+            logger.debug("Could not load menu_voice flag from flagd: %s, defaulting to ivy", e)
+            return "ivy"
+
+    def _register_flag_change_handler(self):
+        """Register event handler for reactive flag updates from flagd."""
+        try:
+            from openfeature import api
+            from openfeature.provider import ProviderEvent
+
+            api.add_handler(ProviderEvent.PROVIDER_CONFIGURATION_CHANGED, self._on_flags_changed)
+            logger.info("Registered flag change handler for reactive audio settings")
+        except Exception as e:
+            logger.debug("Could not register flag change handler: %s", e)
+
+    def _on_flags_changed(self, _event_details):
+        """Handle flag configuration changes from flagd.
+
+        Re-reads play_audio and menu_voice flags. If play_audio is toggled off,
+        stops any currently playing music immediately.
+        """
+        try:
+            from lib.feature_flags import get_flag_client
+
+            client = get_flag_client("user_preferences")
+
+            # Check play_audio
+            new_audio_enabled = client.get_boolean_value("play_audio", True)
+            if new_audio_enabled != self.audio_enabled:
+                logger.info("play_audio flag changed: %s -> %s", self.audio_enabled, new_audio_enabled)
+                self.audio_enabled = new_audio_enabled
+                if not new_audio_enabled:
+                    self.audio_manager.stop_music()
+
+            # Check menu_voice
+            new_voice = client.get_string_value("menu_voice", "ivy")
+            if new_voice in ("aaron", "ivy") and new_voice != self.menu_voice:
+                logger.info("menu_voice flag changed: %s -> %s", self.menu_voice, new_voice)
+                self.menu_voice = new_voice
+
+        except Exception as e:
+            logger.warning("Error handling flag change: %s", e)
 
     def _build_sound_registry(self):
         """
@@ -572,37 +632,8 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
             return sound_input
         return f"{parts[0]}/vox/{self.menu_voice}/{remainder}"
 
-    async def _load_audio_setting(self):
-        """Load audio settings from flagd (user_preferences domain)."""
-        if self._settings_loaded:
-            return  # Already loaded
-
-        try:
-            from lib.feature_flags import get_flag_client, init_flag_domain
-
-            init_flag_domain("user_preferences")
-            client = get_flag_client("user_preferences")
-
-            # Load play_audio setting
-            self.audio_enabled = client.get_boolean_value("play_audio", True)
-            logger.info(f"Audio enabled setting loaded: {self.audio_enabled}")
-
-            # Load menu_voice setting
-            voice = client.get_string_value("menu_voice", "ivy")
-            if voice in ("aaron", "ivy"):
-                self.menu_voice = voice
-            logger.info(f"Menu voice setting loaded: {self.menu_voice}")
-
-            self._settings_loaded = True
-        except Exception as e:
-            logger.debug(f"Could not load audio settings from flagd: {e}, using defaults")
-            # Mark as loaded even on failure to avoid repeated attempts
-            self._settings_loaded = True
-
     async def PlaySound(self, request, _context):
         """Play a sound effect."""
-        # Lazy load settings on first audio request (avoids blocking startup)
-        await self._load_audio_setting()
 
         # Resolve sound name/path to full path with voice selection
         resolved_path = self._resolve_sound_path(request.file_path)
@@ -626,8 +657,6 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
 
     async def PlayMusic(self, request, _context):
         """Play background music."""
-        # Lazy load settings on first audio request (avoids blocking startup)
-        await self._load_audio_setting()
 
         # Extract music directory for span (e.g., "Joust" from "Joust/music/*.ogg")
         music_dir = request.file_pattern.split("/")[0] if "/" in request.file_pattern else "music"

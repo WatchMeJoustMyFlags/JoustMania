@@ -57,18 +57,15 @@ class TestPlaySound:
         assert "aaron" in resolved_path
 
     @pytest.mark.asyncio
-    async def test_play_sound_lazy_settings_load(self, mock_grpc_context):
+    async def test_play_sound_respects_audio_disabled(self, mock_grpc_context):
         from services.audio.servicer import AudioServiceServicer
 
         with patch.object(AudioServiceServicer, "_load_play_audio_flag", return_value=False):
             servicer = AudioServiceServicer()
-        servicer._settings_loaded = False
-        servicer.audio_manager.play_sound = MagicMock(return_value=True)
-
-        with patch.object(servicer, "_load_audio_setting") as mock_load:
-            request = audio_pb2.PlaySoundRequest(file_path="beep_loud", volume=1.0, priority=2)
-            await servicer.PlaySound(request, mock_grpc_context)
-            mock_load.assert_called_once()
+        servicer.audio_enabled = False
+        request = audio_pb2.PlaySoundRequest(file_path="beep_loud", volume=1.0, priority=2)
+        response = await servicer.PlaySound(request, mock_grpc_context)
+        assert response.success is True  # Silently succeeds when disabled
 
     @pytest.mark.asyncio
     async def test_play_sound_default_volume(self, servicer, mock_grpc_context):
@@ -240,65 +237,81 @@ class TestResolvePath:
         assert result == os.path.join(mock_audio_manager.assets_dir, "Joust/sounds/beep.ogg")
 
 
-class TestLoadAudioSetting:
-    """Tests for _load_audio_setting lazy flagd loading."""
+class TestOnFlagsChanged:
+    """Tests for reactive flag change handler."""
 
     @pytest.fixture
     def servicer(self, mock_audio_servicer):
         return mock_audio_servicer
 
-    @pytest.mark.asyncio
-    async def test_skips_load_if_already_loaded(self, servicer):
-        servicer._settings_loaded = True
-        original_voice = servicer.menu_voice
-        # Even if flagd would return different values, we skip the load
-        await servicer._load_audio_setting()
-        assert servicer.menu_voice == original_voice
+    def test_disables_audio_and_stops_music(self, servicer):
+        servicer.audio_enabled = True
+        servicer.audio_manager.stop_music = MagicMock(return_value=True)
+        mock_client = MagicMock()
+        mock_client.get_boolean_value.return_value = False
+        mock_client.get_string_value.return_value = "ivy"
 
-    @pytest.mark.asyncio
-    async def test_loads_settings_from_flagd(self, servicer):
-        servicer._settings_loaded = False
+        with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
+            servicer._on_flags_changed(None)
+
+        assert servicer.audio_enabled is False
+        servicer.audio_manager.stop_music.assert_called_once()
+
+    def test_enables_audio(self, servicer):
+        servicer.audio_enabled = False
+        mock_client = MagicMock()
+        mock_client.get_boolean_value.return_value = True
+        mock_client.get_string_value.return_value = "ivy"
+
+        with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
+            servicer._on_flags_changed(None)
+
+        assert servicer.audio_enabled is True
+
+    def test_changes_menu_voice(self, servicer):
+        servicer.menu_voice = "ivy"
         mock_client = MagicMock()
         mock_client.get_boolean_value.return_value = True
         mock_client.get_string_value.return_value = "aaron"
 
-        with (
-            patch("lib.feature_flags.get_flag_client", return_value=mock_client),
-            patch("lib.feature_flags.init_flag_domain"),
-        ):
-            await servicer._load_audio_setting()
+        with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
+            servicer._on_flags_changed(None)
 
-        assert servicer.audio_enabled is True
         assert servicer.menu_voice == "aaron"
-        assert servicer._settings_loaded is True
 
-    @pytest.mark.asyncio
-    async def test_handles_flagd_failure_gracefully(self, servicer):
-        servicer._settings_loaded = False
-        with patch(
-            "lib.feature_flags.get_flag_client",
-            side_effect=Exception("flagd unavailable"),
-        ):
-            await servicer._load_audio_setting()
-        # Should still mark as loaded to avoid retries
-        assert servicer._settings_loaded is True
-
-    @pytest.mark.asyncio
-    async def test_rejects_invalid_voice(self, servicer):
-        servicer._settings_loaded = False
+    def test_rejects_invalid_voice(self, servicer):
         servicer.menu_voice = "ivy"
         mock_client = MagicMock()
         mock_client.get_boolean_value.return_value = True
         mock_client.get_string_value.return_value = "invalid_voice"
 
-        with (
-            patch("lib.feature_flags.get_flag_client", return_value=mock_client),
-            patch("lib.feature_flags.init_flag_domain"),
-        ):
-            await servicer._load_audio_setting()
+        with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
+            servicer._on_flags_changed(None)
 
-        # Invalid voice should be rejected, keeping the default
         assert servicer.menu_voice == "ivy"
+
+    def test_handles_flagd_failure_gracefully(self, servicer):
+        servicer.audio_enabled = True
+        with patch(
+            "lib.feature_flags.get_flag_client",
+            side_effect=Exception("flagd unavailable"),
+        ):
+            servicer._on_flags_changed(None)
+        # Should not crash, audio_enabled unchanged
+        assert servicer.audio_enabled is True
+
+    def test_no_stop_music_when_audio_already_disabled(self, servicer):
+        servicer.audio_enabled = False
+        servicer.audio_manager.stop_music = MagicMock()
+        mock_client = MagicMock()
+        mock_client.get_boolean_value.return_value = False
+        mock_client.get_string_value.return_value = "ivy"
+
+        with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
+            servicer._on_flags_changed(None)
+
+        # No change, so stop_music should not be called
+        servicer.audio_manager.stop_music.assert_not_called()
 
 
 class TestSoundRegistry:
