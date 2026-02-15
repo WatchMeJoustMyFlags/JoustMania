@@ -255,16 +255,17 @@ class ZombieGame(BaseGameMode):
         await self.event_publisher("zombie_intro_end", {})
         logger.info("Zombie intro phase complete")
 
-    def _get_effective_thresholds(self, player: Player) -> tuple[float, float]:
+    def _compute_effective_thresholds(self, player: Player) -> tuple[float, float]:
         """
-        Get death thresholds for a player.
+        Compute effective thresholds for a player.
 
-        Zombies have higher thresholds.
+        Zombies have higher thresholds (harder to kill).
+        Humans use standard base class thresholds.
         """
         zombie_player = player
         if zombie_player.is_zombie:
             return ZOMBIE_THRESHOLDS.get(self.sensitivity, (2.1, 2.6))
-        return self.sensitivity.value
+        return super()._compute_effective_thresholds(player)
 
     async def _game_timer(self):
         """

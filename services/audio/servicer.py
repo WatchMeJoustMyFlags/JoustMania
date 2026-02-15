@@ -417,13 +417,6 @@ class AudioManager:
             logger.error(f"Error setting volume: {e}", exc_info=True)
             return False
 
-    def cleanup(self):
-        """Clean up audio resources."""
-        self.music_player.cleanup()
-        # Stop all sound channels
-        for channel in self.channels:
-            channel.stop()
-
 
 class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
     """gRPC servicer for Audio service."""

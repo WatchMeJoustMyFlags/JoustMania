@@ -107,9 +107,6 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             tracked_controllers=self.tracked_controllers,
         )
 
-        # Vibration tasks - tracks active asyncio vibration tasks per controller (Phase 57)
-        self.vibration_tasks: dict[str, asyncio.Task] = {}
-
         # Phase 79: Periodic rescan timer for externally paired controllers
         self.rescan_timer = PeriodicRescanTimer(interval=5.0)
 
@@ -504,28 +501,6 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             metrics.active_streams.dec()
 
             logger.info(f"Gameplay subscriber disconnected: {subscriber_id}")
-
-    async def _schedule_vibration_stop(self, serial: str, duration_ms: int):
-        """Schedule vibration to stop after duration using asyncio task (Phase 57 async migration)."""
-        # Cancel existing task for this controller
-        if serial in self.vibration_tasks:
-            self.vibration_tasks[serial].cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self.vibration_tasks[serial]
-
-        async def stop_after_delay():
-            await asyncio.sleep(duration_ms / 1000.0)
-            # Clean up task tracking
-            if serial in self.vibration_tasks:
-                del self.vibration_tasks[serial]
-            # Skip if controller was removed
-            if serial not in self.tracked_controllers:
-                logger.debug(f"Vibration task expired for removed controller {serial}")
-                return
-            await self.backend.set_rumble(serial, 0)
-            logger.debug(f"Vibration stopped on {serial} (duration expired)")
-
-        self.vibration_tasks[serial] = asyncio.create_task(stop_after_delay())
 
     # NOTE: Internal feedback methods moved to feedback_manager.py
     # NOTE: State cache methods moved to state_cache.py

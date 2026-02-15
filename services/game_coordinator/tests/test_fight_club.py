@@ -312,3 +312,72 @@ class TestFightClubGameMode:
 
         # Verify the player's smoothed_accel was updated
         assert game.players[defender_serial].smoothed_accel > 0
+
+    @pytest.mark.asyncio
+    async def test_start_round_assigns_roles(self, fight_club_game):
+        """Test that after _start_round, defender and fighter have correct state."""
+        game, mock_controller_manager, _ = fight_club_game
+        game.gameplay_stream = None
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+        await game._start_round()
+
+        # Defender and fighter should be assigned
+        assert game.current_defender is not None
+        assert game.current_fighter is not None
+
+        # Verify their states
+        defender = game.players[game.current_defender]
+        fighter = game.players[game.current_fighter]
+
+        assert defender.state == FightState.DEFENDER
+        assert fighter.state == FightState.FIGHTER
+
+    @pytest.mark.asyncio
+    async def test_handle_timeout_both_to_queue(self, fight_club_game):
+        """Test that when round times out, both players go to back of queue."""
+        game, mock_controller_manager, _ = fight_club_game
+        game.gameplay_stream = None
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+        await game._start_round()
+
+        # Record who is fighting
+        defender_serial = game.current_defender
+        fighter_serial = game.current_fighter
+
+        # Handle timeout
+        await game._handle_timeout()
+
+        # Both original combatants should be back in the queue
+        assert defender_serial in game.queue
+        assert fighter_serial in game.queue
+
+        # Both should be IN_LINE state
+        assert game.players[defender_serial].state == FightState.IN_LINE
+        assert game.players[fighter_serial].state == FightState.IN_LINE
+
+    @pytest.mark.asyncio
+    async def test_invincibility_blocks_death(self, fight_club_game):
+        """Test that a player with invincibility survives lethal motion."""
+        game, mock_controller_manager, _ = fight_club_game
+        game.gameplay_stream = MockGameplayStream()
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+        await game._start_round()
+
+        defender_serial = game.current_defender
+
+        # Verify invincibility is active
+        assert game.players[defender_serial].invincible_until > time.time()
+
+        # Feed 10 lethal motion frames during invincibility
+        for _ in range(10):
+            state = controller_manager_pb2.ControllerState(
+                serial=defender_serial,
+                accel=controller_manager_pb2.Vector3(x=10.0, y=10.0, z=10.0),
+            )
+            await game._process_controller_state(state)
+
+        # Defender should still be alive
+        assert game.players[defender_serial].alive is True

@@ -209,6 +209,48 @@ class TestTournamentGameMode:
         game, _, _ = tournament_game
         assert game.get_game_name() == "Tournament"
 
+    @pytest.mark.asyncio
+    async def test_get_next_match(self, tournament_game):
+        """Test _get_next_match returns a ready, incomplete match."""
+        game, mock_controller_manager, _ = tournament_game
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        bracket = game._generate_bracket(4)
+        game.bracket = bracket
+
+        next_match = game._get_next_match()
+
+        assert next_match is not None
+        assert next_match.player1_serial is not None
+        assert next_match.player2_serial is not None
+        assert next_match.is_complete is False
+
+    @pytest.mark.asyncio
+    async def test_advance_winner(self, tournament_game):
+        """Test _advance_winner moves winner to next round."""
+        game, mock_controller_manager, _ = tournament_game
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        bracket = game._generate_bracket(4)
+        game.bracket = bracket
+
+        # Get first match from bracket
+        first_match = bracket[0]
+
+        # Complete the first match
+        first_match.is_complete = True
+        first_match.winner_serial = first_match.player1_serial
+
+        # Advance the winner
+        game._advance_winner(first_match.player1_serial, first_match)
+
+        # Winner should be in WAITING state with round 2
+        winner = game.players[first_match.player1_serial]
+        assert winner.tournament_state == TournamentState.WAITING
+        assert winner.round_number == 2
+
 
 class TestTournamentBracket:
     """Tests for tournament bracket generation."""
