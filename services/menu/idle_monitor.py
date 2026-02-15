@@ -16,6 +16,8 @@ import math
 import time
 from typing import TYPE_CHECKING
 
+from opentelemetry import context as otel_context
+
 from services.menu import metrics
 from services.menu.handlers.base import ControllerState
 
@@ -181,6 +183,10 @@ class IdleMonitor:
 
     async def _monitor_loop(self) -> None:
         """Background task monitoring lobby idle time."""
+        # Detach from any inherited span context to prevent the OpenFeature
+        # TracingHook from calling add_event on stale ended spans (e.g., the
+        # start_game span inherited when _restart_lobby creates this task).
+        token = otel_context.attach(otel_context.Context())
         try:
             while True:
                 await asyncio.sleep(1.0)
@@ -202,6 +208,8 @@ class IdleMonitor:
 
         except asyncio.CancelledError:  # NOSONAR — intentional: background loop exits on cancellation
             logger.debug("Idle monitor loop cancelled")
+        finally:
+            otel_context.detach(token)
 
     async def _enter_idle_mode(self) -> None:
         """Transition all CONNECTED controllers to IDLE and start sentinels."""
