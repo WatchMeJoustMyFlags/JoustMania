@@ -318,16 +318,11 @@ class TestMusicPlayerStartStop:
 
     @pytest.fixture
     def player(self):
-        """Create a MusicPlayer with process/manager mocked out."""
-        with patch("services.audio.music_player.Manager") as mock_mgr_cls:
-            mock_dict = {}
-            mock_mgr_cls.return_value.dict.return_value = mock_dict
-            # Patch platform check so _use_alsa is False (no process spawned)
-            with patch("services.audio.music_player.HAS_ALSA", False):
-                from services.audio.music_player import MusicPlayer
+        """Create a MusicPlayer with ALSA disabled (no process spawned)."""
+        with patch("services.audio.music_player.HAS_ALSA", False):
+            from services.audio.music_player import MusicPlayer
 
-                p = MusicPlayer(name="test")
-        return p
+            return MusicPlayer(name="test")
 
     def test_start_returns_track_id(self, player):
         track_id = player.start()
@@ -364,13 +359,10 @@ class TestTransitionRatio:
 
     @pytest.fixture
     def player(self):
-        with patch("services.audio.music_player.Manager") as mock_mgr_cls:
-            mock_mgr_cls.return_value.dict.return_value = {}
-            with patch("services.audio.music_player.HAS_ALSA", False):
-                from services.audio.music_player import MusicPlayer
+        with patch("services.audio.music_player.HAS_ALSA", False):
+            from services.audio.music_player import MusicPlayer
 
-                p = MusicPlayer(name="test-transition")
-        return p
+            return MusicPlayer(name="test-transition")
 
     @pytest.mark.asyncio
     async def test_transition_reaches_target_ratio(self, player):
