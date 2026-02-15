@@ -678,7 +678,16 @@ class AdminModeHandler:
                     speed=10,
                 )
 
-                # Exit admin mode
+                # Record span event before exit() ends the parent session span
+                span.add_event(
+                    "force_start_triggered",
+                    {
+                        "game": self._current_game_mode,
+                        "player_count": len(controllers),
+                    },
+                )
+
+                # Exit admin mode (ends session_span)
                 await self.exit()
 
                 # Small delay for visual feedback
@@ -698,13 +707,6 @@ class AdminModeHandler:
                     },
                 )
 
-                span.add_event(
-                    "force_start_triggered",
-                    {
-                        "game": self._current_game_mode,
-                        "player_count": len(controllers),
-                    },
-                )
                 logger.info(
                     f"Force starting game '{self._current_game_mode}' via admin controller {serial} "
                     f"with {len(controllers)} players"

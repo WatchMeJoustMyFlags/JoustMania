@@ -7,6 +7,8 @@ import contextlib
 import logging
 from typing import TYPE_CHECKING, Protocol
 
+from opentelemetry import context as otel_context
+
 from proto import controller_manager_pb2, controller_manager_pb2_grpc, menu_pb2
 
 logger = logging.getLogger(__name__)
@@ -137,19 +139,26 @@ class ControllerEventLoop:
 
     async def _run(self) -> None:
         """Main event loop with reconnection logic."""
+        # Detach from any inherited span context to prevent stale span
+        # references when this task is created inside _restart_lobby's
+        # restart_button_monitor span block.
+        token = otel_context.attach(otel_context.Context())
         retry_delay = 1.0
         max_retry_delay = 30.0
 
-        while self._running:
-            try:
-                retry_delay = await self._run_stream_connection()
-            except asyncio.CancelledError:
-                logger.info("Controller event loop cancelled")
-                raise
-            except Exception as e:
-                retry_delay = await self._handle_connection_error(e, retry_delay, max_retry_delay)
-            finally:
-                await self._clear_stream_state()
+        try:
+            while self._running:
+                try:
+                    retry_delay = await self._run_stream_connection()
+                except asyncio.CancelledError:
+                    logger.info("Controller event loop cancelled")
+                    raise
+                except Exception as e:
+                    retry_delay = await self._handle_connection_error(e, retry_delay, max_retry_delay)
+                finally:
+                    await self._clear_stream_state()
+        finally:
+            otel_context.detach(token)
 
     async def _run_stream_connection(self) -> float:  # NOSONAR(python:S3516)
         """
