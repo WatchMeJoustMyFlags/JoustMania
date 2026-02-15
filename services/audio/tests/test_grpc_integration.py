@@ -35,7 +35,6 @@ async def grpc_service():
     with patch.object(AudioServiceServicer, "_load_play_audio_flag", return_value=False):
         servicer = AudioServiceServicer()
     servicer.audio_enabled = True
-    servicer._settings_loaded = True
 
     server = grpc.aio.server()
     audio_pb2_grpc.add_AudioServiceServicer_to_server(servicer, server)

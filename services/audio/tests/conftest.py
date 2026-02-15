@@ -49,7 +49,6 @@ def mock_audio_servicer():
         servicer = AudioServiceServicer()
     # Enable audio at the servicer level so RPCs execute their full logic.
     servicer.audio_enabled = True
-    servicer._settings_loaded = True
     return servicer
 
 

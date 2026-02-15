@@ -82,6 +82,7 @@ END_MAX_MUSIC_SLOW_TIME = 12
 
 # Volume levels
 GAME_VOLUME = 0.7
+COUNTDOWN_MUSIC_VOLUME = 0.15  # Soft background music during countdown
 
 
 # Threshold arrays from original JoustMania (in g-force units, 1.0 = 1g)
@@ -1145,12 +1146,19 @@ class BaseGameMode(ABC):
                 # Start gameplay stream before countdown (needed for countdown effects)
                 await self._start_gameplay_stream()
 
+                # Start game music BEFORE countdown at low volume.
+                # OGG decode happens during countdown, so music is ready instantly after.
+                await self._start_game_music(volume=COUNTDOWN_MUSIC_VOLUME)
+
                 # Countdown phase (child of initialization_phase)
                 with tracer.start_as_current_span("countdown_phase"):
                     await self._countdown()
 
-                # Start game music (after countdown, still part of initialization)
-                await self._start_game_music()
+                # Ramp music volume up to game level after countdown
+                if self.audio_client:
+                    from proto import audio_pb2
+
+                    await self.audio_client.SetVolume(audio_pb2.SetVolumeRequest(volume=GAME_VOLUME))
 
             # Game starts
             self.state = GameState.RUNNING
@@ -1320,11 +1328,11 @@ class BaseGameMode(ABC):
         metrics.effective_warning_threshold.set(effective_warn)
         metrics.effective_death_threshold.set(effective_death)
 
-    async def _start_game_music(self):
+    async def _start_game_music(self, volume: float = GAME_VOLUME):
         """
         Start game music with tempo control (Phase 70).
 
-        Sets volume higher than lobby and starts music at normal speed.
+        Sets volume and starts music at normal speed.
         Note: play_audio setting is checked centrally in audio service.
         """
         if not self.audio_client:
@@ -1333,8 +1341,8 @@ class BaseGameMode(ABC):
         try:
             from proto import audio_pb2
 
-            # Set game volume (louder than lobby)
-            await self.audio_client.SetVolume(audio_pb2.SetVolumeRequest(volume=GAME_VOLUME))
+            # Set initial volume (may be low during countdown, then ramped up)
+            await self.audio_client.SetVolume(audio_pb2.SetVolumeRequest(volume=volume))
 
             # Start game music
             response = await self.audio_client.PlayMusic(
