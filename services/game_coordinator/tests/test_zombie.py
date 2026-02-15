@@ -22,6 +22,8 @@ sys.path.insert(0, str(test_dir))
 
 from conftest import EventCollector, MockControllerManagerService, async_noop
 
+from lib.types import Sound
+from proto import controller_manager_pb2
 from services.game_coordinator.games.zombie import (
     HUMAN_COLOR,
     INITIAL_ZOMBIES,
@@ -531,3 +533,486 @@ class TestZombieEdgeCases:
         )
 
         assert game.get_game_name() == "Zombie"
+
+
+# ---------------------------------------------------------------------------
+# Recording stream mock for tests that inspect written messages
+# ---------------------------------------------------------------------------
+
+
+class RecordingGameplayStream:
+    """Mock gameplay stream that records all written messages."""
+
+    def __init__(self):
+        self.messages = []
+
+    async def write(self, message):
+        self.messages.append(message)
+
+
+# ---------------------------------------------------------------------------
+# New test classes appended below
+# ---------------------------------------------------------------------------
+
+
+class TestZombieRespawn:
+    """Tests for _respawn_zombie() method."""
+
+    @pytest.fixture
+    def zombie_game(self):
+        """Create a Zombie game with 4 players."""
+        mock_controller_manager = MockControllerManagerService(
+            num_controllers=4,
+            death_schedule={},
+            max_duration=10.0,
+        )
+        event_collector = EventCollector()
+
+        game = ZombieGame(
+            controller_manager_client=mock_controller_manager,
+            event_publisher=event_collector.publish,
+            audio_client=None,
+            game_id="test_zombie_respawn",
+        )
+
+        return game, mock_controller_manager, event_collector
+
+    @pytest.mark.asyncio
+    async def test_respawn_zombie_revives_player(self, zombie_game):
+        """After respawn delay, a dead zombie should be revived with grace period."""
+        game, mock_controller_manager, _ = zombie_game
+        game.running = True
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        zombie_serial = game.zombie_serials[0]
+        player = game.players[zombie_serial]
+        player.alive = False
+
+        game.gameplay_stream = RecordingGameplayStream()
+
+        await game._respawn_zombie(zombie_serial, 0.01)
+
+        assert player.alive is True
+        assert player.respawn_until == 0.0
+        assert player.grace_until > 0
+
+    @pytest.mark.asyncio
+    async def test_respawn_zombie_skips_if_not_running(self, zombie_game):
+        """If game is no longer running, respawn should not revive the zombie."""
+        game, mock_controller_manager, _ = zombie_game
+        game.running = False
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        zombie_serial = game.zombie_serials[0]
+        player = game.players[zombie_serial]
+        player.alive = False
+
+        game.gameplay_stream = RecordingGameplayStream()
+
+        await game._respawn_zombie(zombie_serial, 0.01)
+
+        assert player.alive is False
+
+    @pytest.mark.asyncio
+    async def test_respawn_zombie_sends_flash_effect(self, zombie_game):
+        """Respawn should send a GAME_EFFECT_FLASH via the gameplay stream."""
+        game, mock_controller_manager, _ = zombie_game
+        game.running = True
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        zombie_serial = game.zombie_serials[0]
+        player = game.players[zombie_serial]
+        player.alive = False
+
+        stream = RecordingGameplayStream()
+        game.gameplay_stream = stream
+
+        await game._respawn_zombie(zombie_serial, 0.01)
+
+        # Find a message with GAME_EFFECT_FLASH
+        flash_messages = [
+            m
+            for m in stream.messages
+            if m.HasField("game_effect") and m.game_effect.effect == controller_manager_pb2.GAME_EFFECT_FLASH
+        ]
+        assert len(flash_messages) == 1
+        assert flash_messages[0].game_effect.serial == zombie_serial
+
+    @pytest.mark.asyncio
+    async def test_respawn_zombie_skips_if_player_not_found(self, zombie_game):
+        """Calling _respawn_zombie with a nonexistent serial should not raise."""
+        game, mock_controller_manager, _ = zombie_game
+        game.running = True
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+        game.gameplay_stream = RecordingGameplayStream()
+
+        # Should return silently without error
+        await game._respawn_zombie("nonexistent_serial", 0.01)
+
+
+class TestZombieIntroPhase:
+    """Tests for _zombie_intro_phase() method."""
+
+    @pytest.fixture
+    def zombie_game(self):
+        """Create a Zombie game with 4 players."""
+        mock_controller_manager = MockControllerManagerService(
+            num_controllers=4,
+            death_schedule={},
+            max_duration=10.0,
+        )
+        event_collector = EventCollector()
+
+        game = ZombieGame(
+            controller_manager_client=mock_controller_manager,
+            event_publisher=event_collector.publish,
+            audio_client=None,
+            game_id="test_zombie_intro",
+        )
+
+        return game, mock_controller_manager, event_collector
+
+    @pytest.mark.asyncio
+    async def test_zombie_intro_publishes_start_and_end_events(self, zombie_game):
+        """Intro phase should publish zombie_intro_start and zombie_intro_end events."""
+        from unittest.mock import AsyncMock, patch
+
+        game, mock_controller_manager, event_collector = zombie_game
+        game.running = True
+        game.gameplay_stream = RecordingGameplayStream()
+        game._play_sound = AsyncMock()
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        with patch("services.game_coordinator.games.zombie.asyncio.sleep", new_callable=AsyncMock):
+            await game._zombie_intro_phase()
+
+        start_events = event_collector.get_events_of_type("zombie_intro_start")
+        end_events = event_collector.get_events_of_type("zombie_intro_end")
+        assert len(start_events) == 1
+        assert len(end_events) == 1
+
+    @pytest.mark.asyncio
+    async def test_zombie_intro_sets_colors_for_all_players(self, zombie_game):
+        """Intro phase should send base_color commands for each player serial."""
+        from unittest.mock import AsyncMock, patch
+
+        game, mock_controller_manager, event_collector = zombie_game
+        game.running = True
+        stream = RecordingGameplayStream()
+        game.gameplay_stream = stream
+        game._play_sound = AsyncMock()
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        with patch("services.game_coordinator.games.zombie.asyncio.sleep", new_callable=AsyncMock):
+            await game._zombie_intro_phase()
+
+        # Extract serials from base_color messages
+        color_serials = set()
+        for m in stream.messages:
+            if m.HasField("base_color"):
+                color_serials.add(m.base_color.serial)
+
+        # Every player should have received a base_color command
+        for serial in game.players:
+            assert serial in color_serials, f"Missing base_color for {serial}"
+
+    @pytest.mark.asyncio
+    async def test_zombie_intro_stops_if_not_running(self, zombie_game):
+        """If game.running becomes False during intro, zombie_intro_end should NOT be published."""
+        from unittest.mock import AsyncMock, patch
+
+        game, mock_controller_manager, event_collector = zombie_game
+        game.running = True
+        game.gameplay_stream = RecordingGameplayStream()
+        game._play_sound = AsyncMock()
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        call_count = 0
+
+        async def stop_after_first_call(*_args, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 2:
+                game.running = False
+
+        with patch("services.game_coordinator.games.zombie.asyncio.sleep", side_effect=stop_after_first_call):
+            await game._zombie_intro_phase()
+
+        end_events = event_collector.get_events_of_type("zombie_intro_end")
+        assert len(end_events) == 0
+
+
+class TestZombieEndGame:
+    """Tests for _end_game_impl() method."""
+
+    @pytest.fixture
+    def zombie_game(self):
+        """Create a Zombie game with 4 players."""
+        mock_controller_manager = MockControllerManagerService(
+            num_controllers=4,
+            death_schedule={},
+            max_duration=10.0,
+        )
+        event_collector = EventCollector()
+
+        game = ZombieGame(
+            controller_manager_client=mock_controller_manager,
+            event_publisher=event_collector.publish,
+            audio_client=None,
+            game_id="test_zombie_endgame",
+        )
+
+        return game, mock_controller_manager, event_collector
+
+    async def _setup_game(self, game, mock_controller_manager):
+        """Shared setup: initialize players, set state to RUNNING, mock helpers."""
+        from unittest.mock import AsyncMock
+
+        from services.game_coordinator.games.base import GameState
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+        game.state = GameState.RUNNING
+        game.start_time = 100.0
+        game.gameplay_stream = RecordingGameplayStream()
+        game._play_sound = AsyncMock()
+        game._wait_for_rainbow_effect = AsyncMock()
+
+    @pytest.mark.asyncio
+    async def test_end_game_humans_win_time_expired(self, zombie_game):
+        """When time_remaining=0 and humans are alive, humans should win."""
+        game, mock_controller_manager, event_collector = zombie_game
+        await self._setup_game(game, mock_controller_manager)
+
+        game.time_remaining = 0
+
+        await game._end_game_impl()
+
+        ended_events = event_collector.get_events_of_type("game_ended")
+        assert len(ended_events) == 1
+        assert ended_events[0]["winner"] == "humans"
+
+    @pytest.mark.asyncio
+    async def test_end_game_zombies_win_all_converted(self, zombie_game):
+        """When all humans are converted (none alive as humans), zombies win."""
+        game, mock_controller_manager, event_collector = zombie_game
+        await self._setup_game(game, mock_controller_manager)
+
+        game.time_remaining = 100
+
+        # Convert all humans to zombies
+        for serial in list(game.human_serials):
+            player = game.players[serial]
+            player.is_zombie = True
+            player.team = 1
+            player.alive = True
+            game.zombie_serials.append(serial)
+        game.human_serials.clear()
+
+        await game._end_game_impl()
+
+        ended_events = event_collector.get_events_of_type("game_ended")
+        assert len(ended_events) == 1
+        assert ended_events[0]["winner"] == "zombies"
+
+    @pytest.mark.asyncio
+    async def test_end_game_cancels_timer_task(self, zombie_game):
+        """_end_game_impl should cancel the timer_task if it is not done."""
+        import asyncio
+        from unittest.mock import MagicMock
+
+        game, mock_controller_manager, _ = zombie_game
+        await self._setup_game(game, mock_controller_manager)
+
+        mock_task = MagicMock(spec=asyncio.Task)
+        mock_task.done.return_value = False
+        game.timer_task = mock_task
+        game.time_remaining = 0
+
+        await game._end_game_impl()
+
+        mock_task.cancel.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_end_game_plays_human_victory_sound(self, zombie_game):
+        """When humans win, VOX_HUMAN_VICTORY should be played."""
+        game, mock_controller_manager, _ = zombie_game
+        await self._setup_game(game, mock_controller_manager)
+
+        game.time_remaining = 0
+
+        await game._end_game_impl()
+
+        # Check _play_sound was called with Sound.VOX_HUMAN_VICTORY
+        calls = game._play_sound.call_args_list
+        sound_args = [c[0][0] for c in calls]
+        assert Sound.VOX_HUMAN_VICTORY in sound_args
+
+    @pytest.mark.asyncio
+    async def test_end_game_plays_zombie_victory_sound(self, zombie_game):
+        """When zombies win, VOX_ZOMBIE_VICTORY should be played."""
+        game, mock_controller_manager, _ = zombie_game
+        await self._setup_game(game, mock_controller_manager)
+
+        game.time_remaining = 100
+
+        # Convert all humans to zombies
+        for serial in list(game.human_serials):
+            player = game.players[serial]
+            player.is_zombie = True
+            player.team = 1
+            player.alive = True
+            game.zombie_serials.append(serial)
+        game.human_serials.clear()
+
+        await game._end_game_impl()
+
+        calls = game._play_sound.call_args_list
+        sound_args = [c[0][0] for c in calls]
+        assert Sound.VOX_ZOMBIE_VICTORY in sound_args
+
+
+class TestZombieCleanup:
+    """Tests for cleanup() method."""
+
+    @pytest.fixture
+    def zombie_game(self):
+        """Create a Zombie game."""
+        mock_controller_manager = MockControllerManagerService(
+            num_controllers=4,
+            death_schedule={},
+            max_duration=10.0,
+        )
+
+        return ZombieGame(
+            controller_manager_client=mock_controller_manager,
+            event_publisher=async_noop,
+            audio_client=None,
+            game_id="test_zombie_cleanup",
+        )
+
+    @pytest.mark.asyncio
+    async def test_cleanup_cancels_timer_task(self, zombie_game):
+        """cleanup() should cancel the timer_task if it is not done."""
+        import asyncio
+        from unittest.mock import MagicMock
+
+        game = zombie_game
+
+        mock_task = MagicMock(spec=asyncio.Task)
+        mock_task.done.return_value = False
+        game.timer_task = mock_task
+
+        await game.cleanup()
+
+        mock_task.cancel.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_ignores_completed_timer(self, zombie_game):
+        """cleanup() should NOT cancel a timer_task that is already done."""
+        import asyncio
+        from unittest.mock import MagicMock
+
+        game = zombie_game
+
+        mock_task = MagicMock(spec=asyncio.Task)
+        mock_task.done.return_value = True
+        game.timer_task = mock_task
+
+        await game.cleanup()
+
+        mock_task.cancel.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_handles_no_timer(self, zombie_game):
+        """cleanup() should not raise when timer_task is None."""
+        game = zombie_game
+        game.timer_task = None
+
+        # Should complete without error
+        await game.cleanup()
+
+
+class TestZombieGameTimer:
+    """Tests for _game_timer() announcements."""
+
+    @pytest.fixture
+    def zombie_game(self):
+        """Create a Zombie game with 4 players."""
+        mock_controller_manager = MockControllerManagerService(
+            num_controllers=4,
+            death_schedule={},
+            max_duration=10.0,
+        )
+        event_collector = EventCollector()
+
+        game = ZombieGame(
+            controller_manager_client=mock_controller_manager,
+            event_publisher=event_collector.publish,
+            audio_client=None,
+            game_id="test_zombie_timer",
+        )
+
+        return game, mock_controller_manager, event_collector
+
+    @pytest.mark.asyncio
+    async def test_game_timer_decrements_time(self, zombie_game):
+        """_game_timer should decrement time_remaining."""
+        from unittest.mock import AsyncMock, patch
+
+        game, mock_controller_manager, _ = zombie_game
+        game._play_sound = AsyncMock()
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        game.running = True
+        game.time_remaining = 3.0
+
+        call_count = 0
+
+        async def counting_sleep(*_args, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 2:
+                game.running = False
+
+        with patch("services.game_coordinator.games.zombie.asyncio.sleep", side_effect=counting_sleep):
+            await game._game_timer()
+
+        # After 2 ticks of sleep(1.0), time_remaining should have decreased by 2
+        assert game.time_remaining == 1.0
+
+    @pytest.mark.asyncio
+    async def test_game_timer_publishes_60s_announcement(self, zombie_game):
+        """_game_timer should publish time_announcement at 60 seconds remaining."""
+        from unittest.mock import AsyncMock, patch
+
+        game, mock_controller_manager, event_collector = zombie_game
+        game._play_sound = AsyncMock()
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        game.running = True
+        game.time_remaining = 61.0
+
+        call_count = 0
+
+        async def counting_sleep(*_args, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            # Let it run 2 ticks: 61 -> 60 (announcement) -> 59, then stop
+            if call_count >= 3:
+                game.running = False
+
+        with patch("services.game_coordinator.games.zombie.asyncio.sleep", side_effect=counting_sleep):
+            await game._game_timer()
+
+        time_events = event_collector.get_events_of_type("time_announcement")
+        found_60s = any(e["seconds_remaining"] == 60 for e in time_events)
+        assert found_60s, f"Expected 60s announcement, got events: {time_events}"
