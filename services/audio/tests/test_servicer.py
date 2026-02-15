@@ -238,3 +238,172 @@ class TestResolvePath:
     def test_resolve_path_relative_prepends_assets(self, mock_audio_manager):
         result = mock_audio_manager._resolve_path("Joust/sounds/beep.ogg")
         assert result == os.path.join(mock_audio_manager.assets_dir, "Joust/sounds/beep.ogg")
+
+
+class TestLoadAudioSetting:
+    """Tests for _load_audio_setting lazy flagd loading."""
+
+    @pytest.fixture
+    def servicer(self, mock_audio_servicer):
+        return mock_audio_servicer
+
+    @pytest.mark.asyncio
+    async def test_skips_load_if_already_loaded(self, servicer):
+        servicer._settings_loaded = True
+        original_voice = servicer.menu_voice
+        # Even if flagd would return different values, we skip the load
+        await servicer._load_audio_setting()
+        assert servicer.menu_voice == original_voice
+
+    @pytest.mark.asyncio
+    async def test_loads_settings_from_flagd(self, servicer):
+        servicer._settings_loaded = False
+        mock_client = MagicMock()
+        mock_client.get_boolean_value.return_value = True
+        mock_client.get_string_value.return_value = "aaron"
+
+        with (
+            patch("lib.feature_flags.get_flag_client", return_value=mock_client),
+            patch("lib.feature_flags.init_flag_domain"),
+        ):
+            await servicer._load_audio_setting()
+
+        assert servicer.audio_enabled is True
+        assert servicer.menu_voice == "aaron"
+        assert servicer._settings_loaded is True
+
+    @pytest.mark.asyncio
+    async def test_handles_flagd_failure_gracefully(self, servicer):
+        servicer._settings_loaded = False
+        with patch(
+            "lib.feature_flags.get_flag_client",
+            side_effect=Exception("flagd unavailable"),
+        ):
+            await servicer._load_audio_setting()
+        # Should still mark as loaded to avoid retries
+        assert servicer._settings_loaded is True
+
+    @pytest.mark.asyncio
+    async def test_rejects_invalid_voice(self, servicer):
+        servicer._settings_loaded = False
+        servicer.menu_voice = "ivy"
+        mock_client = MagicMock()
+        mock_client.get_boolean_value.return_value = True
+        mock_client.get_string_value.return_value = "invalid_voice"
+
+        with (
+            patch("lib.feature_flags.get_flag_client", return_value=mock_client),
+            patch("lib.feature_flags.init_flag_domain"),
+        ):
+            await servicer._load_audio_setting()
+
+        # Invalid voice should be rejected, keeping the default
+        assert servicer.menu_voice == "ivy"
+
+
+class TestSoundRegistry:
+    """Tests for _register_sound and _scan_directory_for_sounds."""
+
+    @pytest.fixture
+    def servicer(self, mock_audio_servicer):
+        return mock_audio_servicer
+
+    def test_register_sound_adds_both_cases(self, servicer):
+        servicer.sound_registry.clear()
+        servicer._register_sound("TestSound", "vox", "Joust")
+        assert "TestSound" in servicer.sound_registry
+        assert "testsound" in servicer.sound_registry
+
+    def test_register_sound_first_wins(self, servicer):
+        servicer.sound_registry.clear()
+        servicer._register_sound("boom", "sound", "Joust")
+        servicer._register_sound("boom", "vox", "Menu")
+        assert servicer.sound_registry["boom"] == ("sound", "Joust")
+
+    def test_resolve_vox_path_no_vox_in_path(self, servicer):
+        path = "Joust/sounds/beep.ogg"
+        assert servicer._resolve_vox_path(path) == path
+
+    def test_resolve_vox_path_inserts_voice(self, servicer):
+        servicer.menu_voice = "aaron"
+        result = servicer._resolve_vox_path("Joust/vox/hello.ogg")
+        assert result == "Joust/vox/aaron/hello.ogg"
+
+    def test_resolve_vox_path_preserves_existing_voice(self, servicer):
+        result = servicer._resolve_vox_path("Joust/vox/ivy/hello.ogg")
+        assert result == "Joust/vox/ivy/hello.ogg"
+
+
+class TestAudioManagerFindChannel:
+    """Tests for AudioManager._find_channel."""
+
+    def test_returns_free_channel(self, mock_audio_manager):
+        from services.audio.servicer import SoundChannel
+
+        ch = SoundChannel(0)
+        mock_audio_manager.channels = [ch]
+        result = mock_audio_manager._find_channel()
+        assert result is ch
+
+    def test_returns_none_when_all_busy(self, mock_audio_manager):
+        from services.audio.servicer import SoundChannel
+
+        ch = SoundChannel(0)
+        ch._playing.set()  # mark as playing
+        mock_audio_manager.channels = [ch]
+        result = mock_audio_manager._find_channel()
+        assert result is None
+
+    def test_force_priority_steals_lower_channel(self, mock_audio_manager):
+        from services.audio.servicer import SoundChannel
+
+        ch = SoundChannel(0)
+        ch._playing.set()
+        ch.priority = 1  # low priority
+        mock_audio_manager.channels = [ch]
+        result = mock_audio_manager._find_channel(force_priority=True, priority=3)
+        assert result is ch
+
+    def test_force_priority_no_steal_if_equal_or_higher(self, mock_audio_manager):
+        from services.audio.servicer import SoundChannel
+
+        ch = SoundChannel(0)
+        ch._playing.set()
+        ch.priority = 3  # same priority
+        mock_audio_manager.channels = [ch]
+        result = mock_audio_manager._find_channel(force_priority=True, priority=3)
+        assert result is None
+
+
+class TestAudioManagerPlaySound:
+    """Tests for AudioManager.play_sound."""
+
+    def test_silent_mode_returns_true(self, mock_audio_manager):
+        assert mock_audio_manager.silent is True
+        result = mock_audio_manager.play_sound("Joust/sounds/beep.ogg")
+        assert result is True
+
+    def test_file_not_found_returns_false(self):
+        from services.audio.servicer import AudioManager, SoundChannel
+
+        mgr = AudioManager(silent=True)
+        # Override silent to test the file-not-found path
+        mgr.silent = False
+        mgr.channels = [SoundChannel(0)]
+        result = mgr.play_sound("/nonexistent/file.ogg")
+        assert result is False
+
+
+class TestAudioManagerChangeTempo:
+    """Tests for AudioManager.change_tempo."""
+
+    def test_track_id_mismatch_returns_false(self, mock_audio_manager):
+        mock_audio_manager.music_player._track_id = "track-abc"
+        result = mock_audio_manager.change_tempo("wrong-id", 1.5)
+        assert result is False
+
+    def test_no_event_loop_returns_false(self, mock_audio_manager):
+        mock_audio_manager.music_player._track_id = "track-abc"
+        mock_audio_manager.event_loop = None
+        result = mock_audio_manager.change_tempo("track-abc", 1.5)
+        assert result is False

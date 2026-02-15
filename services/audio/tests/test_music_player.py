@@ -2,12 +2,15 @@
 Unit tests for music_player module extracted helper functions.
 """
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pytest
 
 from services.audio.music_player import (
+    DummyMusicPlayer,
     _clamp_ratio,
+    _load_song_from_pattern,
     _read_samples,
     _resample_audio,
     _resample_chunk,
@@ -258,3 +261,184 @@ class TestWriteSamples:
         samples = [b"\x00" * 6, b"\x00" * 6]
         _write_samples(device, 8, samples, stop_proc)
         assert device.write.call_count == 1
+
+
+class TestLoadSongFromPattern:
+    """Tests for _load_song_from_pattern."""
+
+    def test_returns_none_when_no_files_match(self):
+        with patch("services.audio.music_player.glob.glob", return_value=[]):
+            result = _load_song_from_pattern("/nonexistent/*.ogg")
+        assert result is None
+
+    def test_loads_matching_file(self):
+        mock_segment = MagicMock()
+        mock_segment.set_channels.return_value = mock_segment
+        mock_segment.set_frame_rate.return_value = mock_segment
+        mock_segment.set_sample_width.return_value = mock_segment
+
+        # Mock export to write fake WAV bytes
+        def fake_export(buf, **_kwargs):
+            buf.write(b"RIFF_fake_wav_data")
+
+        mock_segment.export.side_effect = fake_export
+
+        with (
+            patch("services.audio.music_player.glob.glob", return_value=["/music/song1.ogg"]),
+            patch("services.audio.music_player.random.choice", return_value="/music/song1.ogg"),
+            patch("services.audio.music_player.AudioSegment.from_file", return_value=mock_segment),
+        ):
+            result = _load_song_from_pattern("/music/*.ogg")
+
+        assert result is not None
+        assert isinstance(result, bytes)
+        assert len(result) > 0
+
+    def test_selects_random_file_from_matches(self):
+        mock_segment = MagicMock()
+        mock_segment.set_channels.return_value = mock_segment
+        mock_segment.set_frame_rate.return_value = mock_segment
+        mock_segment.set_sample_width.return_value = mock_segment
+        mock_segment.export.side_effect = lambda buf, **_kwargs: buf.write(b"wav")
+
+        files = ["/music/a.ogg", "/music/b.ogg", "/music/c.ogg"]
+
+        with (
+            patch("services.audio.music_player.glob.glob", return_value=files),
+            patch("services.audio.music_player.random.choice", return_value="/music/b.ogg") as mock_choice,
+            patch("services.audio.music_player.AudioSegment.from_file", return_value=mock_segment),
+        ):
+            _load_song_from_pattern("/music/*.ogg")
+
+        mock_choice.assert_called_once_with(files)
+
+
+class TestMusicPlayerStartStop:
+    """Tests for MusicPlayer.start() and stop() without spawning a real process."""
+
+    @pytest.fixture
+    def player(self):
+        """Create a MusicPlayer with process/manager mocked out."""
+        with patch("services.audio.music_player.Manager") as mock_mgr_cls:
+            mock_dict = {}
+            mock_mgr_cls.return_value.dict.return_value = mock_dict
+            # Patch platform check so _use_alsa is False (no process spawned)
+            with patch("services.audio.music_player.HAS_ALSA", False):
+                from services.audio.music_player import MusicPlayer
+
+                p = MusicPlayer(name="test")
+        return p
+
+    def test_start_returns_track_id(self, player):
+        track_id = player.start()
+        assert track_id is not None
+        assert isinstance(track_id, str)
+        assert len(track_id) > 0
+
+    def test_start_sets_stop_proc_to_zero(self, player):
+        player.start()
+        assert player._stop_proc.value == 0
+        assert player.is_playing is True
+
+    def test_stop_sets_stop_proc_to_one(self, player):
+        player.start()
+        player.stop()
+        assert player._stop_proc.value == 1
+        assert player.is_playing is False
+
+    def test_stop_clears_track_id(self, player):
+        player.start()
+        assert player.track_id is not None
+        player.stop()
+        assert player.track_id is None
+
+    def test_start_generates_unique_ids(self, player):
+        id1 = player.start()
+        player.stop()
+        id2 = player.start()
+        assert id1 != id2
+
+
+class TestTransitionRatio:
+    """Tests for MusicPlayer.transition_ratio async method."""
+
+    @pytest.fixture
+    def player(self):
+        with patch("services.audio.music_player.Manager") as mock_mgr_cls:
+            mock_mgr_cls.return_value.dict.return_value = {}
+            with patch("services.audio.music_player.HAS_ALSA", False):
+                from services.audio.music_player import MusicPlayer
+
+                p = MusicPlayer(name="test-transition")
+        return p
+
+    @pytest.mark.asyncio
+    async def test_transition_reaches_target_ratio(self, player):
+        player._ratio.value = 1.0
+        player._stop_proc.value = 0  # playing
+        task = await player.transition_ratio(1.5, duration=0.1)
+        await task
+        assert player._ratio.value == pytest.approx(1.5)
+
+    @pytest.mark.asyncio
+    async def test_transition_aborts_when_stopped(self, player):
+        player._ratio.value = 1.0
+        player._stop_proc.value = 1  # stopped
+        task = await player.transition_ratio(2.0, duration=0.1)
+        await task
+        # Ratio should stay at 1.0 since stop_proc was set
+        assert player._ratio.value == pytest.approx(1.0)
+
+    @pytest.mark.asyncio
+    async def test_new_transition_cancels_previous(self, player):
+        player._ratio.value = 1.0
+        player._stop_proc.value = 0
+        # Start a long transition
+        task1 = await player.transition_ratio(2.0, duration=10.0)
+        # Immediately start another, which should cancel the first
+        task2 = await player.transition_ratio(0.8, duration=0.1)
+        await task2
+        assert task1.cancelled()
+        assert player._ratio.value == pytest.approx(0.8)
+
+
+class TestDummyMusicPlayer:
+    """Tests for DummyMusicPlayer no-op fallback."""
+
+    def test_start_returns_track_id(self):
+        p = DummyMusicPlayer("test")
+        track_id = p.start()
+        assert isinstance(track_id, str)
+        assert len(track_id) > 0
+        assert p.is_playing is True
+
+    def test_stop_clears_state(self):
+        p = DummyMusicPlayer("test")
+        p.start()
+        p.stop()
+        assert p.is_playing is False
+        assert p.track_id is None
+
+    def test_set_ratio_and_volume(self):
+        p = DummyMusicPlayer("test")
+        p.set_ratio(1.5)
+        assert p.ratio == 1.5
+        p.set_volume(0.3)
+        assert p.volume == pytest.approx(0.3)
+
+    @pytest.mark.asyncio
+    async def test_transition_ratio_sets_immediately(self):
+        p = DummyMusicPlayer("test")
+        await p.transition_ratio(1.8, _duration=5.0)
+        assert p.ratio == pytest.approx(1.8)
+
+    def test_load_is_noop(self):
+        p = DummyMusicPlayer("test")
+        # Should not raise
+        p.load("some/pattern/*.ogg")
+
+    def test_cleanup_is_noop(self):
+        p = DummyMusicPlayer("test")
+        p.start()
+        # Should not raise
+        p.cleanup()

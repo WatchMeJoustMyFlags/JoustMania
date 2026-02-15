@@ -283,3 +283,319 @@ class MockGameplayStream:
     async def write(self, message):
         """Accept writes silently."""
         pass
+
+
+class RecordingGameplayStream:
+    """Mock gameplay stream that records all writes."""
+
+    def __init__(self):
+        self.messages = []
+
+    async def write(self, message):
+        self.messages.append(message)
+
+
+class TestSwapperWinConditionExclusion:
+    """Tests for last-swapper exclusion from winners."""
+
+    @pytest.fixture
+    def swapper_game(self):
+        """Create a Swapper game with 4 players."""
+        mock_controller_manager = MockControllerManagerService(
+            num_controllers=4,
+            death_schedule={},
+            max_duration=10.0,
+        )
+        event_collector = EventCollector()
+
+        game = SwapperGame(
+            controller_manager_client=mock_controller_manager,
+            event_publisher=event_collector.publish,
+            audio_client=None,
+            game_id="test_swapper_exclusion",
+        )
+
+        return game, mock_controller_manager, event_collector
+
+    @pytest.mark.asyncio
+    async def test_last_swapper_excluded_from_winners(self, swapper_game):
+        """Test that the player who caused the final swap is NOT a winner."""
+        game, mock_controller_manager, event_collector = swapper_game
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        # Move all players to team 0
+        for serial in game.players:
+            game.players[serial].team = 0
+
+        # Set last_death_serial (the final swapper)
+        game.last_death_serial = "mock_controller_0"
+
+        result = await game._check_win_condition()
+        assert result is True
+
+        # Verify the swapper_winner event excludes the last swapper
+        winner_events = event_collector.get_events_of_type("swapper_winner")
+        assert len(winner_events) == 1
+        assert "mock_controller_0" not in winner_events[0]["winners"]
+        assert winner_events[0]["excluded_serial"] == "mock_controller_0"
+        # Other players should be winners
+        assert "mock_controller_1" in winner_events[0]["winners"]
+        assert "mock_controller_2" in winner_events[0]["winners"]
+        assert "mock_controller_3" in winner_events[0]["winners"]
+
+    @pytest.mark.asyncio
+    async def test_win_condition_includes_team_info(self, swapper_game):
+        """Test that win event includes correct team number and name."""
+        game, mock_controller_manager, event_collector = swapper_game
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        # Move all players to team 1
+        for serial in game.players:
+            game.players[serial].team = 1
+
+        game.last_death_serial = "mock_controller_2"
+
+        await game._check_win_condition()
+
+        winner_events = event_collector.get_events_of_type("swapper_winner")
+        assert len(winner_events) == 1
+        assert winner_events[0]["team"] == 1
+        assert winner_events[0]["team_name"] == game.team_colors[1]["name"]
+
+
+class TestSwapperGracePeriod:
+    """Tests for grace period during team swap."""
+
+    @pytest.fixture
+    def swapper_game(self):
+        """Create a Swapper game with 4 players."""
+        mock_controller_manager = MockControllerManagerService(
+            num_controllers=4,
+            death_schedule={},
+            max_duration=10.0,
+        )
+        event_collector = EventCollector()
+
+        game = SwapperGame(
+            controller_manager_client=mock_controller_manager,
+            event_publisher=event_collector.publish,
+            audio_client=None,
+            game_id="test_swapper_grace",
+        )
+
+        return game, mock_controller_manager, event_collector
+
+    @pytest.mark.asyncio
+    async def test_player_alive_after_swap(self, swapper_game):
+        """Test that player is alive=True after completing a swap."""
+        game, mock_controller_manager, _ = swapper_game
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+        game.gameplay_stream = MockGameplayStream()
+        await game._assign_team_colors()
+
+        player = game.players["mock_controller_0"]
+        assert player.alive is True
+
+        await game._kill_player_impl("mock_controller_0", accel_mag=5.0)
+
+        # Player should be alive again after swap completes
+        assert player.alive is True
+
+    @pytest.mark.asyncio
+    async def test_grace_period_is_approximately_2_seconds(self, swapper_game):
+        """Test that grace period is approximately 2 seconds from swap time."""
+        game, mock_controller_manager, _ = swapper_game
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+        game.gameplay_stream = MockGameplayStream()
+        await game._assign_team_colors()
+
+        player = game.players["mock_controller_1"]
+        before = time.time()
+
+        await game._kill_player_impl("mock_controller_1", accel_mag=5.0)
+
+        # Grace period should be ~2 seconds from when swap was initiated
+        assert player.grace_until >= before + 1.5
+        assert player.grace_until <= before + 3.5  # Allow for asyncio.sleep(0.5) in swap
+
+
+class TestSwapperEndGameImpl:
+    """Tests for _end_game_impl winner effects and team sound."""
+
+    @pytest.fixture
+    def swapper_game(self):
+        """Create a Swapper game with 4 players."""
+        mock_controller_manager = MockControllerManagerService(
+            num_controllers=4,
+            death_schedule={},
+            max_duration=10.0,
+        )
+        event_collector = EventCollector()
+
+        game = SwapperGame(
+            controller_manager_client=mock_controller_manager,
+            event_publisher=event_collector.publish,
+            audio_client=None,
+            game_id="test_swapper_endgame",
+        )
+
+        return game, mock_controller_manager, event_collector
+
+    @pytest.mark.asyncio
+    async def test_end_game_sends_rainbow_to_winners(self, swapper_game):
+        """Test that _end_game_impl sends rainbow effect to winning players."""
+        from services.game_coordinator.games.base import GameState
+
+        game, mock_controller_manager, _ = swapper_game
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        # All on team 0
+        for serial in game.players:
+            game.players[serial].team = 0
+
+        game.last_death_serial = "mock_controller_3"  # Excluded
+
+        stream = RecordingGameplayStream()
+        game.gameplay_stream = stream
+        game.start_time = time.time()
+        game.state = GameState.RUNNING
+        game.running = False
+
+        await game._end_game_impl()
+
+        # Rainbow effects should be sent to winners (not the excluded player)
+        effect_msgs = [m for m in stream.messages if m.HasField("game_effect")]
+        effect_serials = {m.game_effect.serial for m in effect_msgs}
+
+        assert "mock_controller_0" in effect_serials
+        assert "mock_controller_1" in effect_serials
+        assert "mock_controller_2" in effect_serials
+        assert "mock_controller_3" not in effect_serials
+
+    @pytest.mark.asyncio
+    async def test_end_game_dims_excluded_player(self, swapper_game):
+        """Test that _end_game_impl sets dim gray on the excluded last-swapper."""
+        from services.game_coordinator.games.base import GameState
+
+        game, mock_controller_manager, _ = swapper_game
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        for serial in game.players:
+            game.players[serial].team = 0
+
+        game.last_death_serial = "mock_controller_2"
+
+        stream = RecordingGameplayStream()
+        game.gameplay_stream = stream
+        game.start_time = time.time()
+        game.state = GameState.RUNNING
+        game.running = False
+
+        await game._end_game_impl()
+
+        # Look for dim gray color command for excluded player
+        color_msgs = [m for m in stream.messages if m.HasField("base_color")]
+        excluded_colors = [m for m in color_msgs if m.base_color.serial == "mock_controller_2"]
+        assert len(excluded_colors) >= 1
+        assert excluded_colors[0].base_color.color.r == 50
+        assert excluded_colors[0].base_color.color.g == 50
+        assert excluded_colors[0].base_color.color.b == 50
+
+    @pytest.mark.asyncio
+    async def test_end_game_publishes_game_ended_event(self, swapper_game):
+        """Test that _end_game_impl publishes game_ended with winning_team."""
+        from services.game_coordinator.games.base import GameState
+
+        game, mock_controller_manager, event_collector = swapper_game
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        for serial in game.players:
+            game.players[serial].team = 1
+
+        game.last_death_serial = None
+        game.gameplay_stream = RecordingGameplayStream()
+        game.start_time = time.time() - 30
+        game.state = GameState.RUNNING
+        game.running = False
+
+        await game._end_game_impl()
+
+        ended_events = event_collector.get_events_of_type("game_ended")
+        assert len(ended_events) == 1
+        assert ended_events[0]["winning_team"] == 1
+        assert ended_events[0]["game_id"] == "test_swapper_endgame"
+
+    @pytest.mark.asyncio
+    async def test_end_game_sets_state_ended(self, swapper_game):
+        """Test that _end_game_impl transitions to ENDED state."""
+        from services.game_coordinator.games.base import GameState
+
+        game, mock_controller_manager, _ = swapper_game
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        for serial in game.players:
+            game.players[serial].team = 0
+
+        game.gameplay_stream = RecordingGameplayStream()
+        game.start_time = time.time()
+        game.state = GameState.RUNNING
+        game.running = False
+
+        await game._end_game_impl()
+
+        assert game.state == GameState.ENDED
+
+
+class TestSwapperSpanManagement:
+    """Tests for hierarchical span recreation on team swap."""
+
+    @pytest.fixture
+    def swapper_game(self):
+        """Create a Swapper game."""
+        mock_controller_manager = MockControllerManagerService(
+            num_controllers=4,
+            death_schedule={},
+            max_duration=10.0,
+        )
+        event_collector = EventCollector()
+
+        game = SwapperGame(
+            controller_manager_client=mock_controller_manager,
+            event_publisher=event_collector.publish,
+            audio_client=None,
+            game_id="test_swapper_spans",
+        )
+
+        return game, mock_controller_manager, event_collector
+
+    @pytest.mark.asyncio
+    async def test_get_team_counts(self, swapper_game):
+        """Test _get_team_counts returns correct per-team player counts."""
+        game, mock_controller_manager, _ = swapper_game
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        # Initial round-robin: 2 on team 0, 2 on team 1
+        counts = game._get_team_counts()
+        assert counts[0] == 2
+        assert counts[1] == 2
+
+        # Move one player to team 1
+        game.players["mock_controller_0"].team = 1
+        counts = game._get_team_counts()
+        assert counts[0] == 1
+        assert counts[1] == 3
+
+    @pytest.mark.asyncio
+    async def test_get_game_name(self, swapper_game):
+        """Test get_game_name returns 'Swapper'."""
+        game, _, _ = swapper_game
+        assert game.get_game_name() == "Swapper"
