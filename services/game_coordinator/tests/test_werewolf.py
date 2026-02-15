@@ -22,8 +22,10 @@ sys.path.insert(0, str(test_dir))
 
 from conftest import EventCollector, MockControllerManagerService, async_noop
 
+from lib.types import Sound
 from services.game_coordinator.games.werewolf import (
     HUMAN_COLOR,
+    WEREWOLF_COLOR,
     WerewolfGame,
     WerewolfPlayer,
 )
@@ -408,3 +410,554 @@ class TestWerewolfEdgeCases:
         game.revealed = True
 
         assert game.revealed is True
+
+
+# ---------------------------------------------------------------------------
+# Recording stream mock for tests that inspect written messages
+# ---------------------------------------------------------------------------
+
+
+class RecordingGameplayStream:
+    """Mock gameplay stream that records all written messages."""
+
+    def __init__(self):
+        self.messages = []
+
+    async def write(self, message):
+        self.messages.append(message)
+
+
+# ---------------------------------------------------------------------------
+# New test classes appended below
+# ---------------------------------------------------------------------------
+
+
+class TestWerewolfRevealMechanics:
+    """Tests for _reveal_werewolves() method."""
+
+    @pytest.fixture
+    def werewolf_game(self):
+        """Create a Werewolf game with 6 players (ensures >=2 werewolves)."""
+        mock_controller_manager = MockControllerManagerService(
+            num_controllers=6,
+            death_schedule={},
+            max_duration=10.0,
+        )
+        event_collector = EventCollector()
+
+        game = WerewolfGame(
+            controller_manager_client=mock_controller_manager,
+            event_publisher=event_collector.publish,
+            audio_client=None,
+            game_id="test_werewolf_reveal_mech",
+            reveal_time_seconds=0.01,
+        )
+
+        return game, mock_controller_manager, event_collector
+
+    @pytest.mark.asyncio
+    async def test_reveal_sets_game_revealed_flag(self, werewolf_game):
+        """After reveal, game.revealed should be True."""
+        from unittest.mock import AsyncMock, patch
+
+        game, mock_controller_manager, _ = werewolf_game
+        game.running = True
+        game.gameplay_stream = RecordingGameplayStream()
+        game._play_sound = AsyncMock()
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        with patch("services.game_coordinator.games.werewolf.asyncio.sleep", new_callable=AsyncMock):
+            await game._reveal_werewolves()
+
+        assert game.revealed is True
+
+    @pytest.mark.asyncio
+    async def test_reveal_changes_werewolf_colors(self, werewolf_game):
+        """After reveal, alive werewolves should have WEREWOLF_COLOR and revealed=True."""
+        from unittest.mock import AsyncMock, patch
+
+        game, mock_controller_manager, _ = werewolf_game
+        game.running = True
+        game.gameplay_stream = RecordingGameplayStream()
+        game._play_sound = AsyncMock()
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        with patch("services.game_coordinator.games.werewolf.asyncio.sleep", new_callable=AsyncMock):
+            await game._reveal_werewolves()
+
+        for serial in game.werewolf_serials:
+            player = game.players[serial]
+            if player.alive:
+                assert player.color == WEREWOLF_COLOR
+                assert player.revealed is True
+
+    @pytest.mark.asyncio
+    async def test_reveal_publishes_event(self, werewolf_game):
+        """Reveal should publish werewolf_reveal event with serials."""
+        from unittest.mock import AsyncMock, patch
+
+        game, mock_controller_manager, event_collector = werewolf_game
+        game.running = True
+        game.gameplay_stream = RecordingGameplayStream()
+        game._play_sound = AsyncMock()
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        with patch("services.game_coordinator.games.werewolf.asyncio.sleep", new_callable=AsyncMock):
+            await game._reveal_werewolves()
+
+        reveal_events = event_collector.get_events_of_type("werewolf_reveal")
+        assert len(reveal_events) == 1
+        assert set(reveal_events[0]["werewolf_serials"]) == set(game.werewolf_serials)
+
+    @pytest.mark.asyncio
+    async def test_reveal_skips_if_not_running(self, werewolf_game):
+        """If game stops during reveal sleep, revealed should stay False."""
+        from unittest.mock import AsyncMock, patch
+
+        game, mock_controller_manager, _ = werewolf_game
+        game.running = True
+        game.gameplay_stream = RecordingGameplayStream()
+        game._play_sound = AsyncMock()
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        async def stop_game(*_args, **_kwargs):
+            game.running = False
+
+        with patch("services.game_coordinator.games.werewolf.asyncio.sleep", side_effect=stop_game):
+            await game._reveal_werewolves()
+
+        assert game.revealed is False
+
+    @pytest.mark.asyncio
+    async def test_reveal_plays_sound(self, werewolf_game):
+        """Reveal should play VOX_WEREWOLF_REVEAL sound."""
+        from unittest.mock import AsyncMock, patch
+
+        game, mock_controller_manager, _ = werewolf_game
+        game.running = True
+        game.gameplay_stream = RecordingGameplayStream()
+        game._play_sound = AsyncMock()
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        with patch("services.game_coordinator.games.werewolf.asyncio.sleep", new_callable=AsyncMock):
+            await game._reveal_werewolves()
+
+        calls = game._play_sound.call_args_list
+        sound_args = [c[0][0] for c in calls]
+        assert Sound.VOX_WEREWOLF_REVEAL in sound_args
+
+    @pytest.mark.asyncio
+    async def test_reveal_skips_dead_werewolves(self, werewolf_game):
+        """Dead werewolves should not get color change or revealed=True."""
+        from unittest.mock import AsyncMock, patch
+
+        game, mock_controller_manager, _ = werewolf_game
+        game.running = True
+        game.gameplay_stream = RecordingGameplayStream()
+        game._play_sound = AsyncMock()
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        # Kill first werewolf before reveal
+        dead_wolf = game.werewolf_serials[0]
+        game.players[dead_wolf].alive = False
+
+        with patch("services.game_coordinator.games.werewolf.asyncio.sleep", new_callable=AsyncMock):
+            await game._reveal_werewolves()
+
+        # Dead werewolf should NOT have color changed or revealed set
+        assert game.players[dead_wolf].revealed is False
+        assert game.players[dead_wolf].color == HUMAN_COLOR
+
+
+class TestWerewolfIntroPhase:
+    """Tests for _werewolf_intro_phase() method."""
+
+    @pytest.fixture
+    def werewolf_game(self):
+        """Create a Werewolf game with 4 players."""
+        mock_controller_manager = MockControllerManagerService(
+            num_controllers=4,
+            death_schedule={},
+            max_duration=10.0,
+        )
+        event_collector = EventCollector()
+
+        game = WerewolfGame(
+            controller_manager_client=mock_controller_manager,
+            event_publisher=event_collector.publish,
+            audio_client=None,
+            game_id="test_werewolf_intro",
+        )
+
+        return game, mock_controller_manager, event_collector
+
+    @pytest.mark.asyncio
+    async def test_intro_publishes_start_and_end_events(self, werewolf_game):
+        """Intro should publish werewolf_intro_start and werewolf_intro_end."""
+        from unittest.mock import AsyncMock, patch
+
+        game, mock_controller_manager, event_collector = werewolf_game
+        game.running = True
+        game.gameplay_stream = RecordingGameplayStream()
+        game._play_sound = AsyncMock()
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        with patch("services.game_coordinator.games.werewolf.asyncio.sleep", new_callable=AsyncMock):
+            await game._werewolf_intro_phase()
+
+        start_events = event_collector.get_events_of_type("werewolf_intro_start")
+        end_events = event_collector.get_events_of_type("werewolf_intro_end")
+        assert len(start_events) == 1
+        assert len(end_events) == 1
+
+    @pytest.mark.asyncio
+    async def test_intro_sets_all_colors_yellow(self, werewolf_game):
+        """Intro should set all controllers to HUMAN_COLOR (yellow)."""
+        from unittest.mock import AsyncMock, patch
+
+        game, mock_controller_manager, _ = werewolf_game
+        game.running = True
+        stream = RecordingGameplayStream()
+        game.gameplay_stream = stream
+        game._play_sound = AsyncMock()
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        with patch("services.game_coordinator.games.werewolf.asyncio.sleep", new_callable=AsyncMock):
+            await game._werewolf_intro_phase()
+
+        # Check base_color commands for all players
+        color_serials = set()
+        for m in stream.messages:
+            if m.HasField("base_color"):
+                color_serials.add(m.base_color.serial)
+
+        for serial in game.players:
+            assert serial in color_serials
+
+    @pytest.mark.asyncio
+    async def test_intro_rumbles_werewolves(self, werewolf_game):
+        """Intro should send GAME_EFFECT_RUMBLE to each werewolf."""
+        from unittest.mock import AsyncMock, patch
+
+        from proto import controller_manager_pb2
+
+        game, mock_controller_manager, _ = werewolf_game
+        game.running = True
+        stream = RecordingGameplayStream()
+        game.gameplay_stream = stream
+        game._play_sound = AsyncMock()
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        with patch("services.game_coordinator.games.werewolf.asyncio.sleep", new_callable=AsyncMock):
+            await game._werewolf_intro_phase()
+
+        # Find rumble messages
+        rumble_serials = set()
+        for m in stream.messages:
+            if m.HasField("game_effect") and m.game_effect.effect == controller_manager_pb2.GAME_EFFECT_RUMBLE:
+                rumble_serials.add(m.game_effect.serial)
+
+        for serial in game.werewolf_serials:
+            assert serial in rumble_serials
+
+    @pytest.mark.asyncio
+    async def test_intro_stops_if_not_running(self, werewolf_game):
+        """If game.running becomes False during intro, werewolf_intro_end should NOT be published."""
+        from unittest.mock import AsyncMock, patch
+
+        game, mock_controller_manager, event_collector = werewolf_game
+        game.running = True
+        game.gameplay_stream = RecordingGameplayStream()
+        game._play_sound = AsyncMock()
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        call_count = 0
+
+        async def stop_after_first(*_args, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 2:
+                game.running = False
+
+        with patch("services.game_coordinator.games.werewolf.asyncio.sleep", side_effect=stop_after_first):
+            await game._werewolf_intro_phase()
+
+        end_events = event_collector.get_events_of_type("werewolf_intro_end")
+        assert len(end_events) == 0
+
+
+class TestSetAllColors:
+    """Tests for _set_all_colors() method."""
+
+    @pytest.fixture
+    def werewolf_game(self):
+        """Create a Werewolf game with 4 players."""
+        mock_controller_manager = MockControllerManagerService(num_controllers=4)
+
+        game = WerewolfGame(
+            controller_manager_client=mock_controller_manager,
+            event_publisher=async_noop,
+            audio_client=None,
+            game_id="test_set_colors",
+        )
+
+        return game, mock_controller_manager
+
+    @pytest.mark.asyncio
+    async def test_set_all_colors_sends_commands(self, werewolf_game):
+        """_set_all_colors should send a base_color command for each player."""
+        game, mock_controller_manager = werewolf_game
+        stream = RecordingGameplayStream()
+        game.gameplay_stream = stream
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        await game._set_all_colors((255, 0, 0))
+
+        color_serials = {m.base_color.serial for m in stream.messages if m.HasField("base_color")}
+        assert color_serials == set(game.players.keys())
+
+    @pytest.mark.asyncio
+    async def test_set_all_colors_correct_rgb(self, werewolf_game):
+        """The RGB values in commands should match the requested color."""
+        game, mock_controller_manager = werewolf_game
+        stream = RecordingGameplayStream()
+        game.gameplay_stream = stream
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        await game._set_all_colors((100, 200, 50))
+
+        for m in stream.messages:
+            if m.HasField("base_color"):
+                assert m.base_color.color.r == 100
+                assert m.base_color.color.g == 200
+                assert m.base_color.color.b == 50
+
+
+class TestWerewolfEndGame:
+    """Tests for _end_game_impl() method."""
+
+    @pytest.fixture
+    def werewolf_game(self):
+        """Create a Werewolf game with 4 players."""
+        mock_controller_manager = MockControllerManagerService(
+            num_controllers=4,
+            death_schedule={},
+            max_duration=10.0,
+        )
+        event_collector = EventCollector()
+
+        game = WerewolfGame(
+            controller_manager_client=mock_controller_manager,
+            event_publisher=event_collector.publish,
+            audio_client=None,
+            game_id="test_werewolf_endgame",
+        )
+
+        return game, mock_controller_manager, event_collector
+
+    async def _setup_game(self, game, mock_controller_manager):
+        """Shared setup: init players, set state to RUNNING, mock helpers."""
+        from unittest.mock import AsyncMock
+
+        from services.game_coordinator.games.base import GameState
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+        game.state = GameState.RUNNING
+        game.start_time = 100.0
+        game.gameplay_stream = RecordingGameplayStream()
+        game._play_sound = AsyncMock()
+        game._wait_for_rainbow_effect = AsyncMock()
+
+    @pytest.mark.asyncio
+    async def test_end_game_werewolves_win(self, werewolf_game):
+        """When all humans dead, werewolves should win."""
+        game, mock_controller_manager, event_collector = werewolf_game
+        await self._setup_game(game, mock_controller_manager)
+
+        for serial in game.human_serials:
+            game.players[serial].alive = False
+
+        await game._end_game_impl()
+
+        ended_events = event_collector.get_events_of_type("game_ended")
+        assert len(ended_events) == 1
+        assert ended_events[0]["winner"] == "werewolves"
+
+    @pytest.mark.asyncio
+    async def test_end_game_humans_win(self, werewolf_game):
+        """When all werewolves dead, humans should win."""
+        game, mock_controller_manager, event_collector = werewolf_game
+        await self._setup_game(game, mock_controller_manager)
+
+        for serial in game.werewolf_serials:
+            game.players[serial].alive = False
+
+        await game._end_game_impl()
+
+        ended_events = event_collector.get_events_of_type("game_ended")
+        assert len(ended_events) == 1
+        assert ended_events[0]["winner"] == "humans"
+
+    @pytest.mark.asyncio
+    async def test_end_game_draw(self, werewolf_game):
+        """When everyone dead, winner should be 'none'."""
+        game, mock_controller_manager, event_collector = werewolf_game
+        await self._setup_game(game, mock_controller_manager)
+
+        for player in game.players.values():
+            player.alive = False
+
+        await game._end_game_impl()
+
+        ended_events = event_collector.get_events_of_type("game_ended")
+        assert len(ended_events) == 1
+        assert ended_events[0]["winner"] == "none"
+
+    @pytest.mark.asyncio
+    async def test_end_game_cancels_reveal_task(self, werewolf_game):
+        """_end_game_impl should cancel reveal_task if not done."""
+        import asyncio
+        from unittest.mock import MagicMock
+
+        game, mock_controller_manager, _ = werewolf_game
+        await self._setup_game(game, mock_controller_manager)
+
+        mock_task = MagicMock(spec=asyncio.Task)
+        mock_task.done.return_value = False
+        game.reveal_task = mock_task
+
+        await game._end_game_impl()
+
+        mock_task.cancel.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_end_game_plays_werewolf_win_sound(self, werewolf_game):
+        """When werewolves win, VOX_WEREWOLF_WIN should be played."""
+        game, mock_controller_manager, _ = werewolf_game
+        await self._setup_game(game, mock_controller_manager)
+
+        for serial in game.human_serials:
+            game.players[serial].alive = False
+
+        await game._end_game_impl()
+
+        calls = game._play_sound.call_args_list
+        sound_args = [c[0][0] for c in calls]
+        assert Sound.VOX_WEREWOLF_WIN in sound_args
+
+    @pytest.mark.asyncio
+    async def test_end_game_plays_human_win_sound(self, werewolf_game):
+        """When humans win, VOX_HUMAN_WIN should be played."""
+        game, mock_controller_manager, _ = werewolf_game
+        await self._setup_game(game, mock_controller_manager)
+
+        for serial in game.werewolf_serials:
+            game.players[serial].alive = False
+
+        await game._end_game_impl()
+
+        calls = game._play_sound.call_args_list
+        sound_args = [c[0][0] for c in calls]
+        assert Sound.VOX_HUMAN_WIN in sound_args
+
+    @pytest.mark.asyncio
+    async def test_end_game_plays_wolfdown_on_draw(self, werewolf_game):
+        """When draw (no one alive), SFX_WOLFDOWN should be played."""
+        game, mock_controller_manager, _ = werewolf_game
+        await self._setup_game(game, mock_controller_manager)
+
+        for player in game.players.values():
+            player.alive = False
+
+        await game._end_game_impl()
+
+        calls = game._play_sound.call_args_list
+        sound_args = [c[0][0] for c in calls]
+        assert Sound.SFX_WOLFDOWN in sound_args
+
+
+class TestWerewolfCleanup:
+    """Tests for cleanup() method."""
+
+    @pytest.fixture
+    def werewolf_game(self):
+        """Create a Werewolf game."""
+        mock_controller_manager = MockControllerManagerService(num_controllers=4)
+
+        return WerewolfGame(
+            controller_manager_client=mock_controller_manager,
+            event_publisher=async_noop,
+            audio_client=None,
+            game_id="test_werewolf_cleanup",
+        )
+
+    @pytest.mark.asyncio
+    async def test_cleanup_cancels_reveal_task(self, werewolf_game):
+        """cleanup() should cancel reveal_task if not done."""
+        import asyncio
+        from unittest.mock import MagicMock
+
+        game = werewolf_game
+
+        mock_task = MagicMock(spec=asyncio.Task)
+        mock_task.done.return_value = False
+        game.reveal_task = mock_task
+
+        await game.cleanup()
+
+        mock_task.cancel.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_handles_no_reveal_task(self, werewolf_game):
+        """cleanup() should not raise when reveal_task is None."""
+        game = werewolf_game
+        game.reveal_task = None
+
+        await game.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_ignores_done_reveal_task(self, werewolf_game):
+        """cleanup() should NOT cancel a reveal_task that is already done."""
+        import asyncio
+        from unittest.mock import MagicMock
+
+        game = werewolf_game
+
+        mock_task = MagicMock(spec=asyncio.Task)
+        mock_task.done.return_value = True
+        game.reveal_task = mock_task
+
+        await game.cleanup()
+
+        mock_task.cancel.assert_not_called()
+
+
+class TestWerewolfAdditionalPhases:
+    """Tests for _get_additional_phases() method."""
+
+    def test_additional_phases_returns_werewolf_intro(self):
+        """Should return a list with one Phase named 'werewolf_intro'."""
+        mock_controller_manager = MockControllerManagerService(num_controllers=2)
+
+        game = WerewolfGame(
+            controller_manager_client=mock_controller_manager,
+            event_publisher=async_noop,
+            audio_client=None,
+            game_id="test_phases",
+        )
+
+        phases = game._get_additional_phases()
+        assert len(phases) == 1
+        assert phases[0].name == "werewolf_intro"
