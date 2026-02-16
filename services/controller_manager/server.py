@@ -53,6 +53,16 @@ async def serve(port=50052):
     # Deadline must be shorter than the Docker HEALTHCHECK window (start_period + retries * interval).
     await wait_for_provider_ready("performance", deadline_seconds=5.0)
 
+    # Diagnostic: verify flag store is populated after PROVIDER_READY
+    from lib.feature_flags import get_flag_client
+
+    _diag_client = get_flag_client("performance")
+    for _flag_name in ("update_frequency_hz", "controller_backend", "multiplexer_backend_enabled"):
+        from openfeature.evaluation_context import EvaluationContext
+
+        _diag = _diag_client.get_string_details(_flag_name, "__MISSING__", EvaluationContext())
+        logger.info(f"  flagd diag: {_flag_name} = {_diag.value!r} (reason={_diag.reason}, err={_diag.error_code})")
+
     # Initialize OTEL push metrics
     # Export interval read from flagd with per-service targeting (Issue #479)
     # Controller-manager gets 100ms (realtime), other services get 1000ms (normal)
