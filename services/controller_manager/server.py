@@ -24,9 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 def _find_mock_backend(backend):
-    """Find MockBackend or MockAdapter through MultiplexerBackend."""
-    if backend.__class__.__name__ == "MockBackend":
-        return backend
+    """Find MockAdapter through MultiplexerBackend."""
     if hasattr(backend, "adapters"):
         for adapter in backend.adapters:
             if adapter.adapter_type == "mock":
@@ -48,8 +46,6 @@ async def serve(port=50052):
 
     init_flag_domain("performance")
     # Wait for flagd to be ready so flag evaluations in create_backend() succeed.
-    # Without this, multiplexer_backend_enabled evaluates to False (default) and
-    # the controller manager falls back to BluetoothBackend instead of MultiplexerBackend.
     # Deadline must be shorter than the Docker HEALTHCHECK window (start_period + retries * interval).
     await wait_for_provider_ready("performance", deadline_seconds=5.0)
 
@@ -66,7 +62,7 @@ async def serve(port=50052):
     # Create servicer BEFORE initializing other flag domains.
     # The FlagdProvider in-process resolver loses flags from the performance domain
     # when a second provider (game_settings) is initialized — causing FLAG_NOT_FOUND
-    # for controller_backend and multiplexer_backend_enabled.
+    # for controller_backend.
     controller_servicer = ControllerManagerServicer()
 
     # Initialize flagd game_settings for winner_rainbow_duration_ms (Issue #464)
@@ -128,7 +124,7 @@ async def serve(port=50052):
 
     logger.info(f"ControllerManager server listening on port {port}")
 
-    # Phase 57: If using mock backend, start MockControllerService on port 50062
+    # If using mock backend, start MockControllerService on port 50062
     mock_server = None
     mock_backend = _find_mock_backend(controller_servicer.backend)
     if mock_backend is not None:

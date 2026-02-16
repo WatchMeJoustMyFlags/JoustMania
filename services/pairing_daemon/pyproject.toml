@@ -12,10 +12,8 @@ dependencies = [
     "opentelemetry-sdk>=1.20.0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.20.0",
 
-    # DBus for BlueZ adapter management — both backends available,
-    # selected by dbus_backend feature flag
-    "dbus-python>=1.3.2; sys_platform == 'linux'",  # Legacy (sync, C extension)
-    "dbus-fast>=2.0.0; sys_platform == 'linux'",  # Modern (async, pure Python)
+    # DBus for BlueZ adapter management
+    "dbus-fast>=2.0.0; sys_platform == 'linux'",  # Async D-Bus
 
     # NOTE: psmove/psmoveapi must be built from source (not on PyPI)
     # See: https://github.com/thp/psmoveapi for build instructions

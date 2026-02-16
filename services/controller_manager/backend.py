@@ -13,10 +13,8 @@ class ControllerBackend(ABC):
     """
     Abstract interface for controller backends.
 
-    Implementations:
-    - BluetoothBackend: Linux/BlueZ backend for Raspberry Pi
-    - HidapiBackend: Cross-platform backend using hidapi
-    - MockBackend: Mock backend for testing without hardware
+    The primary implementation is MultiplexerBackend, which wraps one or
+    more ControllerIOAdapter instances (PsMoveAdapter, HidapiAdapter, MockAdapter).
     """
 
     @abstractmethod
