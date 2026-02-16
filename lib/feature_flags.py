@@ -117,6 +117,44 @@ def init_flag_domain(domain: str) -> None:
         logger.error(f"Failed to initialize domain '{domain}': {e}")
 
 
+async def wait_for_provider_ready(domain: str, deadline_seconds: float = 5.0) -> bool:
+    """Wait for a domain's provider to reach READY status.
+
+    Uses an asyncio.Event triggered by the PROVIDER_READY handler.
+    Returns True if ready within deadline, False otherwise.
+
+    Args:
+        domain: OpenFeature domain name
+        deadline_seconds: Maximum seconds to wait (default 5.0)
+    """
+    import asyncio
+
+    from openfeature.provider import ProviderEvent, ProviderStatus
+
+    # Already ready?
+    status = api.provider_registry.get_provider_status(domain)
+    if status == ProviderStatus.READY:
+        logger.debug(f"Domain '{domain}' provider already READY")
+        return True
+
+    ready_event = asyncio.Event()
+
+    def _on_ready(_event_details):
+        ready_event.set()
+
+    client = api.get_client(domain=domain)
+    client.add_handler(ProviderEvent.PROVIDER_READY, _on_ready)
+
+    try:
+        async with asyncio.timeout(deadline_seconds):
+            await ready_event.wait()
+        logger.info(f"Domain '{domain}' provider is READY")
+        return True
+    except TimeoutError:
+        logger.warning(f"Domain '{domain}' provider not ready after {deadline_seconds}s")
+        return False
+
+
 def get_flag_client(domain: str):
     """
     Get an OpenFeature client for a specific domain.

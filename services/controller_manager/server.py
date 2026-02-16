@@ -44,9 +44,14 @@ async def serve(port=50052):
     )
 
     # Initialize flagd for dynamic streaming frequency and tuning flags
-    from lib.feature_flags import init_flag_domain
+    from lib.feature_flags import init_flag_domain, wait_for_provider_ready
 
     init_flag_domain("performance")
+    # Wait for flagd to be ready so flag evaluations in create_backend() succeed.
+    # Without this, multiplexer_backend_enabled evaluates to False (default) and
+    # the controller manager falls back to BluetoothBackend instead of MultiplexerBackend.
+    # Deadline must be shorter than the Docker HEALTHCHECK window (start_period + retries * interval).
+    await wait_for_provider_ready("performance", deadline_seconds=5.0)
 
     # Initialize OTEL push metrics
     # Export interval read from flagd with per-service targeting (Issue #479)
@@ -57,6 +62,12 @@ async def serve(port=50052):
     from services.controller_manager.servicer import init_frequency_listener
 
     init_frequency_listener()
+
+    # Create servicer BEFORE initializing other flag domains.
+    # The FlagdProvider in-process resolver loses flags from the performance domain
+    # when a second provider (game_settings) is initialized — causing FLAG_NOT_FOUND
+    # for controller_backend and multiplexer_backend_enabled.
+    controller_servicer = ControllerManagerServicer()
 
     # Initialize flagd game_settings for winner_rainbow_duration_ms (Issue #464)
     from services.controller_manager.feedback_manager import init_game_settings_listener
@@ -86,9 +97,6 @@ async def serve(port=50052):
         options=get_server_options(),
         interceptors=get_server_interceptors(),
     )
-
-    # Add servicer
-    controller_servicer = ControllerManagerServicer()
     controller_manager_pb2_grpc.add_ControllerManagerServiceServicer_to_server(controller_servicer, server)
 
     # Start discovery loop immediately (don't defer to first stream connection)

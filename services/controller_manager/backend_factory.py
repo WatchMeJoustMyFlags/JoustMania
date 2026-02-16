@@ -58,12 +58,18 @@ def _resolve_backend_name() -> str | None:
         client = get_flag_client("performance")
         from openfeature.evaluation_context import EvaluationContext
 
-        backend_flag = client.get_string_value("controller_backend", "", EvaluationContext())
+        details = client.get_string_details("controller_backend", "", EvaluationContext())
+        backend_flag = details.value
         if backend_flag:
-            logger.info(f"Using backend from OpenFeature flag: {backend_flag}")
+            logger.info(f"Using backend from OpenFeature flag: {backend_flag} (reason={details.reason})")
             return backend_flag.lower()
+        logger.warning(
+            f"controller_backend flag returned empty string: "
+            f"reason={details.reason}, error_code={details.error_code}, "
+            f"error_message={details.error_message}"
+        )
     except Exception as e:
-        logger.debug(f"OpenFeature flag evaluation failed, falling back to platform detection: {e}")
+        logger.warning(f"controller_backend flag evaluation failed: {e}")
 
     return None
 
@@ -136,8 +142,13 @@ def _is_multiplexer_enabled() -> bool:
         from lib.feature_flags import get_flag_client
 
         client = get_flag_client("performance")
-        return client.get_boolean_value("multiplexer_backend_enabled", False, EvaluationContext())
-    except Exception:
+        details = client.get_boolean_details("multiplexer_backend_enabled", False, EvaluationContext())
+        logger.info(
+            f"multiplexer_backend_enabled={details.value} (reason={details.reason}, error_code={details.error_code})"
+        )
+        return details.value
+    except Exception as e:
+        logger.warning(f"multiplexer_backend_enabled flag evaluation failed: {e}")
         return False
 
 
@@ -165,6 +176,7 @@ def create_backend() -> ControllerBackend:
         ValueError: If backend combination is unsupported (e.g. bluetooth+hidapi)
     """
     backend_name = _resolve_backend_name()
+    logger.info(f"Backend selection: backend_name={backend_name!r}")
 
     if backend_name and _is_multiplexer_enabled():
         from services.controller_manager.multiplexer import MultiplexerBackend

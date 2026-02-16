@@ -29,13 +29,23 @@ from services.controller_manager.backend_factory import (
 )
 
 
+def _mock_details(value, reason="STATIC", error_code=None, error_message=None):
+    """Create a mock FlagEvaluationDetails object."""
+    details = MagicMock()
+    details.value = value
+    details.reason = reason
+    details.error_code = error_code
+    details.error_message = error_message
+    return details
+
+
 class TestResolveBackendName:
     """Test _resolve_backend_name priority logic."""
 
     def test_openfeature_flag_used(self):
         """OpenFeature flag should be used as primary selection."""
         mock_client = MagicMock()
-        mock_client.get_string_value.return_value = "hidapi"
+        mock_client.get_string_details.return_value = _mock_details("hidapi")
 
         with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
             result = _resolve_backend_name()
@@ -44,7 +54,7 @@ class TestResolveBackendName:
     def test_openfeature_flag_case_insensitive(self):
         """Flag value should be lowercased."""
         mock_client = MagicMock()
-        mock_client.get_string_value.return_value = "Mock"
+        mock_client.get_string_details.return_value = _mock_details("Mock")
 
         with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
             result = _resolve_backend_name()
@@ -59,7 +69,7 @@ class TestResolveBackendName:
     def test_returns_none_when_flag_returns_empty(self):
         """Empty flag value should fall through to platform detection."""
         mock_client = MagicMock()
-        mock_client.get_string_value.return_value = ""
+        mock_client.get_string_details.return_value = _mock_details("")
 
         with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
             result = _resolve_backend_name()
@@ -123,8 +133,8 @@ class TestCreateBackendIntegration:
     def test_openfeature_selects_mock(self):
         """OpenFeature flag should create the correct backend."""
         mock_client = MagicMock()
-        mock_client.get_string_value.return_value = "mock"
-        mock_client.get_boolean_value.return_value = False
+        mock_client.get_string_details.return_value = _mock_details("mock")
+        mock_client.get_boolean_details.return_value = _mock_details(False)
 
         with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
             backend = create_backend()
@@ -143,8 +153,8 @@ class TestMultiplexerBackendEnabled:
     def test_creates_adapter_based_multiplexer_when_enabled(self):
         """When multiplexer flag is on, should create MultiplexerBackend with adapters."""
         mock_client = MagicMock()
-        mock_client.get_string_value.return_value = "mock"
-        mock_client.get_boolean_value.return_value = True
+        mock_client.get_string_details.return_value = _mock_details("mock")
+        mock_client.get_boolean_details.return_value = _mock_details(True)
 
         with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
             backend = create_backend()
@@ -156,8 +166,8 @@ class TestMultiplexerBackendEnabled:
     def test_returns_plain_backend_when_flag_disabled(self):
         """When multiplexer flag is off, backend should be returned as-is."""
         mock_client = MagicMock()
-        mock_client.get_string_value.return_value = "mock"
-        mock_client.get_boolean_value.return_value = False
+        mock_client.get_string_details.return_value = _mock_details("mock")
+        mock_client.get_boolean_details.return_value = _mock_details(False)
 
         with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
             backend = create_backend()
@@ -176,8 +186,8 @@ class TestMultiAdapterCreation:
     def test_duplicate_backend_names_rejected(self):
         """flag='mock,mock' with multiplexer on -> ValueError."""
         mock_client = MagicMock()
-        mock_client.get_string_value.return_value = "mock,mock"
-        mock_client.get_boolean_value.return_value = True
+        mock_client.get_string_details.return_value = _mock_details("mock,mock")
+        mock_client.get_boolean_details.return_value = _mock_details(True)
 
         with (
             patch("lib.feature_flags.get_flag_client", return_value=mock_client),
@@ -188,8 +198,8 @@ class TestMultiAdapterCreation:
     def test_mock_bluetooth_creates_two_adapters(self):
         """flag='mock,bluetooth' with multiplexer on -> MultiplexerBackend with 2 adapters."""
         mock_client = MagicMock()
-        mock_client.get_string_value.return_value = "mock,bluetooth"
-        mock_client.get_boolean_value.return_value = True
+        mock_client.get_string_details.return_value = _mock_details("mock,bluetooth")
+        mock_client.get_boolean_details.return_value = _mock_details(True)
 
         with (
             patch("lib.feature_flags.get_flag_client", return_value=mock_client),
@@ -212,8 +222,8 @@ class TestMultiAdapterCreation:
     def test_comma_separated_legacy_uses_first_name(self):
         """flag='mock,bluetooth' with multiplexer off -> plain backend from first name."""
         mock_client = MagicMock()
-        mock_client.get_string_value.return_value = "mock,bluetooth"
-        mock_client.get_boolean_value.return_value = False
+        mock_client.get_string_details.return_value = _mock_details("mock,bluetooth")
+        mock_client.get_boolean_details.return_value = _mock_details(False)
 
         with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
             backend = create_backend()
@@ -223,8 +233,8 @@ class TestMultiAdapterCreation:
     def test_bluetooth_hidapi_creates_three_adapters(self):
         """flag='bluetooth,hidapi' with multiplexer on -> MultiplexerBackend with 3 adapters (+ auto-injected mock)."""
         mock_client = MagicMock()
-        mock_client.get_string_value.return_value = "bluetooth,hidapi"
-        mock_client.get_boolean_value.return_value = True
+        mock_client.get_string_details.return_value = _mock_details("bluetooth,hidapi")
+        mock_client.get_boolean_details.return_value = _mock_details(True)
 
         with (
             patch("lib.feature_flags.get_flag_client", return_value=mock_client),
@@ -250,8 +260,8 @@ class TestMultiAdapterCreation:
     def test_single_name_creates_adapter(self):
         """flag='mock' with multiplexer on -> MultiplexerBackend with 1 adapter."""
         mock_client = MagicMock()
-        mock_client.get_string_value.return_value = "mock"
-        mock_client.get_boolean_value.return_value = True
+        mock_client.get_string_details.return_value = _mock_details("mock")
+        mock_client.get_boolean_details.return_value = _mock_details(True)
 
         with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
             backend = create_backend()
@@ -263,8 +273,8 @@ class TestMultiAdapterCreation:
     def test_whitespace_in_comma_separated_is_trimmed(self):
         """flag='mock , bluetooth' -> names trimmed properly."""
         mock_client = MagicMock()
-        mock_client.get_string_value.return_value = "mock , bluetooth"
-        mock_client.get_boolean_value.return_value = True
+        mock_client.get_string_details.return_value = _mock_details("mock , bluetooth")
+        mock_client.get_boolean_details.return_value = _mock_details(True)
 
         with (
             patch("lib.feature_flags.get_flag_client", return_value=mock_client),
@@ -322,8 +332,8 @@ class TestBTDiscoveryInjection:
     def test_multiplexer_receives_bt_discovery(self):
         """MultiplexerBackend should hold bt_discovery when bluetooth adapter used."""
         mock_client = MagicMock()
-        mock_client.get_string_value.return_value = "mock,bluetooth"
-        mock_client.get_boolean_value.return_value = True
+        mock_client.get_string_details.return_value = _mock_details("mock,bluetooth")
+        mock_client.get_boolean_details.return_value = _mock_details(True)
 
         with (
             patch("lib.feature_flags.get_flag_client", return_value=mock_client),
@@ -344,8 +354,8 @@ class TestBTDiscoveryInjection:
     def test_mock_only_receives_no_discovery(self):
         """Mock-only with multiplexer should pass bt_discovery=None."""
         mock_client = MagicMock()
-        mock_client.get_string_value.return_value = "mock"
-        mock_client.get_boolean_value.return_value = True
+        mock_client.get_string_details.return_value = _mock_details("mock")
+        mock_client.get_boolean_details.return_value = _mock_details(True)
 
         with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
             backend = create_backend()
