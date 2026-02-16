@@ -418,7 +418,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus-direct"
+        "uid": "prometheus"
       },
       "description": "Number of healthy infrastructure components",
       "fieldConfig": {
@@ -473,7 +473,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus-direct"
+            "uid": "prometheus"
           },
           "expr": "count(up{job=~\"pairing-daemon|controller-manager-pull|node\"} == 1)",
           "legendFormat": "Infrastructure",
@@ -486,7 +486,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus-direct"
+        "uid": "prometheus"
       },
       "description": "Status of infrastructure components",
       "fieldConfig": {
@@ -558,7 +558,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus-direct"
+            "uid": "prometheus"
           },
           "expr": "up{job=~\"pairing-daemon|controller-manager-pull|node\"}",
           "format": "table",
@@ -589,7 +589,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus-direct"
+        "uid": "prometheus"
       },
       "description": "Number of healthy observability components",
       "fieldConfig": {
@@ -644,7 +644,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus-direct"
+            "uid": "prometheus"
           },
           "expr": "count(up{job=~\"prometheus|grafana|loki|victoria-metrics|otel-collector\"} == 1)",
           "legendFormat": "Observability",
@@ -657,7 +657,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus-direct"
+        "uid": "prometheus"
       },
       "description": "Status of observability stack components",
       "fieldConfig": {
@@ -729,7 +729,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus-direct"
+            "uid": "prometheus"
           },
           "expr": "up{job=~\"prometheus|grafana|loki|victoria-metrics|otel-collector\"}",
           "format": "table",
@@ -847,7 +847,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_cpu_percent{job=~\"infrastructure/controller-manager-service|joustmania/game-coordinator-service|joustmania/menu-service|joustmania/audio-service\"}",
+          "expr": "rate(process_cpu_seconds_total{job=~\"infrastructure/controller-manager-service|joustmania/game-coordinator-service|joustmania/menu-service|joustmania/audio-service\"}[5m]) * 100",
           "legendFormat": "{{job}}",
           "refId": "A"
         }
@@ -906,7 +906,7 @@
               }
             ]
           },
-          "unit": "decmbytes"
+          "unit": "bytes"
         },
         "overrides": []
       },
@@ -939,7 +939,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_memory_mb{job=~\"infrastructure/controller-manager-service|joustmania/game-coordinator-service|joustmania/menu-service|joustmania/audio-service\"}",
+          "expr": "process_resident_memory_bytes{job=~\"infrastructure/controller-manager-service|joustmania/game-coordinator-service|joustmania/menu-service|joustmania/audio-service\"}",
           "legendFormat": "{{job}}",
           "refId": "A"
         }
@@ -1050,7 +1050,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_cpu_percent{job!~\"controller-manager-service|game-coordinator-service|menu-service|audio-service\"}",
+          "expr": "rate(process_cpu_seconds_total{job!~\"infrastructure/controller-manager-service|joustmania/game-coordinator-service|joustmania/menu-service|joustmania/audio-service\"}[5m]) * 100",
           "legendFormat": "{{job}}",
           "refId": "A"
         }
@@ -1109,7 +1109,7 @@
               }
             ]
           },
-          "unit": "decmbytes"
+          "unit": "bytes"
         },
         "overrides": []
       },
@@ -1142,7 +1142,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_memory_mb{job!~\"controller-manager-service|game-coordinator-service|menu-service|audio-service\"}",
+          "expr": "process_resident_memory_bytes{job!~\"infrastructure/controller-manager-service|joustmania/game-coordinator-service|joustmania/menu-service|joustmania/audio-service\"}",
           "legendFormat": "{{job}}",
           "refId": "A"
         }

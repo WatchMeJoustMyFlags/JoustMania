@@ -481,6 +481,17 @@
           "instant": true,
           "legendFormat": "__auto",
           "refId": "connected"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "controller_backend_info",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "refId": "backend"
         }
       ],
       "title": "Controller Status Table",
@@ -500,34 +511,41 @@
               "Time 2": true,
               "Time 3": true,
               "Time 4": true,
+              "Time 5": true,
               "Value #info": true,
+              "Value #backend": true,
               "__name__": true,
               "__name__ 1": true,
               "__name__ 2": true,
               "__name__ 3": true,
               "__name__ 4": true,
+              "__name__ 5": true,
               "instance": true,
               "instance 1": true,
               "instance 2": true,
               "instance 3": true,
               "instance 4": true,
+              "instance 5": true,
               "job": true,
               "job 1": true,
               "job 2": true,
               "job 3": true,
-              "job 4": true
+              "job 4": true,
+              "job 5": true
             },
             "indexByName": {
               "name": 0,
               "serial": 1,
-              "Value #battery": 2,
-              "Value #rssi": 3,
-              "Value #connected": 4
+              "backend": 2,
+              "Value #battery": 3,
+              "Value #rssi": 4,
+              "Value #connected": 5
             },
             "renameByName": {
               "Value #battery": "Battery",
               "Value #connected": "Status",
               "Value #rssi": "Signal (dBm)",
+              "backend": "Backend",
               "name": "Name",
               "serial": "Serial"
             }
