@@ -76,9 +76,9 @@ services:
     environment:
       - OTEL_SERVICE_NAME=flagd
     volumes:
-      - ./services/flagd/performance.json:/etc/flagd/performance.json
-      - ./services/flagd/game_settings.json:/etc/flagd/game_settings.json
-      - ./services/flagd/user_preferences.json:/etc/flagd/user_preferences.json
+      # Mount directory (not individual files) so inotify detects edits
+      # (editors do atomic save via temp+rename, which changes the inode)
+      - ./services/flagd:/etc/flagd
     ports:
       # Sync port exposed on host for pairing-daemon (network_mode: host)
       - "8015:8015"
@@ -325,8 +325,7 @@ services:
       - FLAGD_PORT=8015
       - FLAGD_DIR=/etc/flagd
     volumes:
-      - ./services/flagd/game_settings.json:/etc/flagd/game_settings.json
-      - ./services/flagd/user_preferences.json:/etc/flagd/user_preferences.json
+      - ./services/flagd:/etc/flagd
     depends_on:
       redis:
         condition: service_healthy
