@@ -9,7 +9,7 @@ from __future__ import annotations
 import contextlib
 import logging
 
-import hid
+import hidraw as hid  # hidraw backend sees Bluetooth HID devices (libusb backend cannot)
 
 from lib.controller_constants import AxisKey, ButtonKey, StateKey
 from lib.psmove_hid import (

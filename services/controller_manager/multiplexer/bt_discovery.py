@@ -114,7 +114,7 @@ class CentralizedBTDiscovery:
 
     async def _scan_via_hidapi(self) -> list[str]:
         """Scan via hid.enumerate() with BlueZ cross-reference for adapter affinity."""
-        import hid
+        import hidraw as hid  # hidraw backend sees Bluetooth HID devices
 
         from lib.psmove_hid import PRODUCT_ID_ZCM1, PRODUCT_ID_ZCM2, VENDOR_ID
 

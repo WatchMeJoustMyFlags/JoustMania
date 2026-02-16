@@ -16,12 +16,12 @@ service_dir = test_dir.parent
 project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 
-# Install a mock `hid` module before importing the adapter, since
+# Install a mock `hidraw` module before importing the adapter, since
 # the real hidapi C extension may not be installed in test environments.
-_mock_hid = ModuleType("hid")
+_mock_hid = ModuleType("hidraw")
 _mock_hid.enumerate = MagicMock(return_value=[])
 _mock_hid.Device = MagicMock
-sys.modules.setdefault("hid", _mock_hid)
+sys.modules.setdefault("hidraw", _mock_hid)
 
 from lib.controller_constants import AxisKey, ButtonKey, StateKey  # noqa: E402
 from lib.psmove_hid import Button  # noqa: E402

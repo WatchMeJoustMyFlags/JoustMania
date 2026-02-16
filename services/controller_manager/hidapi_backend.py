@@ -19,7 +19,7 @@ import os
 import threading
 import time
 
-import hid
+import hidraw as hid  # hidraw backend sees Bluetooth HID devices (libusb backend cannot)
 
 from lib.controller_constants import (
     AxisKey,
