@@ -499,6 +499,11 @@ class DiscoveryLoop:
             if self.name_manager:
                 name = self.name_manager.get_name(serial)
 
+            # Resolve adapter type if backend supports it (MultiplexerBackend)
+            adapter_type = ""
+            if hasattr(self.backend, "get_adapter_type"):
+                adapter_type = self.backend.get_adapter_type(serial)
+
             # Track controller
             self.tracked_controllers[serial] = {
                 ControllerInfoKey.SERIAL: serial,
@@ -506,6 +511,7 @@ class DiscoveryLoop:
                 ControllerInfoKey.TEAM: 0,
                 ControllerInfoKey.CONNECTED_AT: time.time(),
                 ControllerInfoKey.NAME: name,
+                ControllerInfoKey.ADAPTER: adapter_type,
             }
 
             # Store initial state

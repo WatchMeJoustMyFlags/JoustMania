@@ -137,6 +137,15 @@
         "off": false
       },
       "defaultVariant": "off"
+    },
+    "controller_adapter_routing": {
+      "state": "ENABLED",
+      "variants": {
+        "bluetooth": "psmove",
+        "hidapi": "hidapi"
+      },
+      "defaultVariant": "hidapi",
+      "targeting": {}
     }
   }
 }

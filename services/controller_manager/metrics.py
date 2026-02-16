@@ -61,6 +61,12 @@ controller_disconnect_total = Counter(
     "controller_disconnect_total", "Total number of controller disconnects", ["serial"]
 )
 
+controller_routing_decisions_total = Counter(
+    "controller_routing_decisions_total",
+    "Adapter routing decisions",
+    ["serial", "adapter", "method"],  # method: targeted, fallback, default
+)
+
 controller_reconnect_total = Counter("controller_reconnect_total", "Total number of controller reconnects", ["serial"])
 
 active_controllers = Gauge("active_controllers_total", "Number of currently active controllers")
