@@ -65,7 +65,7 @@ class MockAdapter(ControllerIOAdapter):
     def adapter_type(self) -> str:
         return "mock"
 
-    def discover(self, force: bool = False) -> list[str]:  # noqa: ARG002
+    def discover(self, force: bool = False, verify_only: bool = False) -> list[str]:  # noqa: ARG002
         """Return all mock controller serials.
 
         On first call (empty controllers dict), creates the initial set

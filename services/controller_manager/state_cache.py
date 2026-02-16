@@ -46,9 +46,9 @@ class StateCache:
         # Format: {serial: {'cached_state': ControllerState, 'snapshot_hash': str}}
         self._cache: dict[str, dict] = {}
 
-        # Protobuf object pools (Phase 18 - Task 3)
-        self._controller_state_pool = MessagePool(controller_manager_pb2.ControllerState, pool_size=10)
-        self._vector3_pool = MessagePool(controller_manager_pb2.Vector3, pool_size=20)
+        # Protobuf object pools (Phase 18 - Task 3, Issue #542: scaled for 20+ controllers)
+        self._controller_state_pool = MessagePool(controller_manager_pb2.ControllerState, pool_size=30)
+        self._vector3_pool = MessagePool(controller_manager_pb2.Vector3, pool_size=60)
 
         # Reference to shared state (set by servicer)
         self._controller_states: dict[str, dict] = {}

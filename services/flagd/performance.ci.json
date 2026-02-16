@@ -130,14 +130,6 @@
       },
       "defaultVariant": "off"
     },
-    "multiplexer_backend_enabled": {
-      "state": "ENABLED",
-      "variants": {
-        "on": true,
-        "off": false
-      },
-      "defaultVariant": "off"
-    },
     "controller_adapter_routing": {
       "state": "ENABLED",
       "variants": {

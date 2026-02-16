@@ -17,12 +17,9 @@ Environment Variables:
 """
 
 import asyncio
-import json
 import os
-import subprocess
 import sys
 import time
-from pathlib import Path
 
 import grpc
 import pytest
@@ -35,7 +32,6 @@ from proto import (
     game_coordinator_pb2_grpc,
 )
 
-# Compose files used for both legacy and multiplexer parametrizations
 _COMPOSE_FILES = [
     "docker-compose.yml",
     "docker-compose.override.yml",
@@ -43,33 +39,9 @@ _COMPOSE_FILES = [
 ]
 
 
-def _set_multiplexer_flag(enabled: bool):
-    """Toggle multiplexer_backend_enabled in the CI flagd config.
-
-    flagd watches the file via inotify and picks up changes within ~100ms.
-    """
-    config_path = Path("services/flagd/performance.ci.json")
-    config = json.loads(config_path.read_text())
-    config["flags"]["multiplexer_backend_enabled"]["defaultVariant"] = "on" if enabled else "off"
-    config_path.write_text(json.dumps(config, indent=2) + "\n")
-
-
-def _restart_service(compose_files: list[str], service: str):
-    """Restart a single service via docker compose."""
-    cmd = ["docker", "compose"]
-    for f in compose_files:
-        cmd.extend(["-f", f])
-    cmd.extend(["restart", service])
-    subprocess.run(cmd, check=True, capture_output=True)
-
-
-@pytest.fixture(scope="session", params=["legacy", "multiplexer"])
+@pytest.fixture(scope="session")
 def docker_compose(request):
     """Fixture to start docker-compose mock environment.
-
-    Parametrized to run the entire test suite twice:
-    - "legacy": default single-backend code path (multiplexer flag OFF)
-    - "multiplexer": MultiplexerBackend wrapping the backend (multiplexer flag ON)
 
     Uses docker-compose.yml with overrides for testing:
     - docker-compose.override.yml: port exposures for testing
@@ -98,11 +70,11 @@ def docker_compose(request):
     # Note: This modifies the environment for docker-compose but is session-scoped
     if use_prebuilt:
         os.environ["IMAGE_TAG"] = image_tag
-        print(f"\n[{request.param}] Using prebuilt images from GHCR (tag: {image_tag})")
+        print(f"\nUsing prebuilt images from GHCR (tag: {image_tag})")
     elif use_dev_mounts:
-        print(f"\n[{request.param}] Using dev volume mounts (no build)")
+        print("\nUsing dev volume mounts (no build)")
     else:
-        print(f"\n[{request.param}] Building images locally")
+        print("\nBuilding images locally")
 
     compose.start()
 
@@ -110,17 +82,8 @@ def docker_compose(request):
     # Docker Compose --wait already waits for health checks, so minimal wait needed
     time.sleep(2)
 
-    if request.param == "multiplexer":
-        print(f"\n[{request.param}] Enabling multiplexer_backend_enabled flag")
-        _set_multiplexer_flag(enabled=True)
-        # flagd picks up inotify change within ~100ms; give it a moment
-        time.sleep(1)
-        # Restart controller-manager so it re-reads the flag at startup
-        _restart_service(compose_files, "controller-manager")
-        time.sleep(2)
-
     print("\n" + "=" * 80)
-    print(f"Mock environment is running! [backend_mode={request.param}]")
+    print("Mock environment is running!")
     print("=" * 80)
     print("Jaeger UI: http://localhost:16686")
     print("WebUI: http://localhost:80")
@@ -129,14 +92,10 @@ def docker_compose(request):
 
     yield compose
 
-    # Restore flag to default (off) if we toggled it
-    if request.param == "multiplexer":
-        _set_multiplexer_flag(enabled=False)
-
     # Skip teardown in CI mode for faster test completion
     # Containers will be cleaned up by the CI runner
     if os.getenv("CI") or os.getenv("SKIP_TEARDOWN"):
-        print(f"\n[{request.param}] Skipping teardown (CI mode)")
+        print("\nSkipping teardown (CI mode)")
         return
 
     # Optional pause before teardown (set PAUSE_BEFORE_TEARDOWN=1 to inspect Jaeger)

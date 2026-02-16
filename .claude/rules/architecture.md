@@ -1,87 +1,16 @@
-# JoustMania Architecture
-
-## Service Overview
+# Architecture
 
 | Service | Port | Role |
 |---------|------|------|
-| Controller Manager | 50052 | PS Move hardware, button events, motion streaming |
+| Controller Manager | 50052 | PS Move hardware, buttons, motion |
 | Game Coordinator | 50053 | Game lifecycle, death detection, scoring |
-| Menu | 50054 | Lobby, game selection, ready state, admin mode |
-| Audio | 50056 | Sound effects, music, voice announcements |
+| Menu | 50054 | Lobby, game selection, ready state |
+| Audio | 50056 | Sound effects, music, announcements |
 
-## Data Flow
+Dependencies: Audio & ControllerManager (no deps) -> GameCoordinator -> Menu
 
-### Game Start Sequence
+Streams (bidir): `StreamButtonEvents` (buttons + LEDs), `StreamGameplayData` (motion + effects). Server-stream: `StreamGameEvents`, `StreamMenuEvents`.
 
-```
-Menu (lobby)
-  │ monitors button events via StreamButtonEvents
-  │
-  ├─ Controllers connect → dim LED (game color)
-  ├─ Trigger pressed → READY state, bright LED
-  │
-  ▼ All ready (≥2 players)
-Menu → GameCoordinator.StreamGameEvents(start_config)
-  │
-  ▼
-GameCoordinator
-  ├─ Creates game instance
-  ├─ Subscribes to StreamGameplayData (motion)
-  ├─ Emits "game_started" event
-  │
-  ▼
-Menu receives confirmation
-  ├─ Clears ready state
-  ├─ Stops button monitor
-  │
-  ▼
-Game runs (60Hz motion processing)
-  ├─ Detects deaths (movement threshold)
-  ├─ Sends LED effects (warning, death, winner)
-  ├─ Plays sounds via Audio service
-  │
-  ▼
-Game ends → "game_ended" event → Menu restarts lobby
-```
+States - Controller: DISCONNECTED -> CONNECTED (dim LED) -> READY (bright LED). Game: IDLE -> STARTING -> RUNNING -> ENDING -> ENDED.
 
-### Streaming Patterns
-
-**Bidirectional streams** (primary communication):
-- `StreamButtonEvents`: Button events ↔ LED commands
-- `StreamGameplayData`: Motion data ↔ Game effects
-
-**Server streams**:
-- `StreamGameEvents`: Game lifecycle events
-- `StreamMenuEvents`: Menu state changes
-
-## Key Concepts
-
-### Controller States (Menu)
-
-```
-DISCONNECTED → CONNECTED (dim LED) → READY (bright LED)
-                    ↓                      ↓
-               ADMIN MODE (white LED, 60s timeout)
-```
-
-### Game States
-
-```
-IDLE → STARTING → RUNNING → ENDING → ENDED
-```
-
-### Motion Processing
-
-- Hardware polls at 1000Hz
-- Streams to game at 60Hz (active) or 10Hz (idle)
-- Game uses EMA filter for smoothing
-- Death threshold varies by sensitivity setting (0-4)
-
-## Service Dependencies
-
-```
-Audio ← foundational (no deps)
-Controller Manager ← foundational (no deps)
-Game Coordinator ← Controller Manager, Audio
-Menu ← Controller Manager, Game Coordinator, Audio
-```
+Motion: 1000Hz hardware poll -> 60Hz stream (active) / 10Hz (idle). EMA filter. Death threshold by sensitivity 0-4.
