@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 import contextlib
 
-from lib.controller_constants import ControllerInfoKey
+from lib.controller_constants import ControllerInfoKey, normalize_serial
 from lib.telemetry import get_tracer
 from proto import controller_manager_pb2, controller_manager_pb2_grpc
 from services.controller_manager import metrics
@@ -521,14 +521,16 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                 if not request.name:
                     return controller_manager_pb2.RenameControllerResponse(success=False, error="Name is required")
 
+                serial = normalize_serial(request.serial)
+
                 # Update the name
-                self.name_manager.set_name(request.serial, request.name)
+                self.name_manager.set_name(serial, request.name)
 
                 # Update tracked_controllers if the controller is currently connected
-                if request.serial in self.tracked_controllers:
-                    self.tracked_controllers[request.serial][ControllerInfoKey.NAME] = request.name
+                if serial in self.tracked_controllers:
+                    self.tracked_controllers[serial][ControllerInfoKey.NAME] = request.name
 
-                logger.info(f"Renamed controller {request.serial} to '{request.name}'")
+                logger.info(f"Renamed controller {serial} to '{request.name}'")
                 return controller_manager_pb2.RenameControllerResponse(success=True, error="")
 
             except Exception as e:
