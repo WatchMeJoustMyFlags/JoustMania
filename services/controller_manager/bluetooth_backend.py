@@ -17,6 +17,7 @@ from lib.controller_constants import (
     AxisKey,
     ButtonKey,
     StateKey,
+    normalize_serial,
 )
 from services.controller_manager.backend import ControllerBackend
 
@@ -167,7 +168,7 @@ class BluetoothBackend(ControllerBackend):
                 if move is None:
                     continue
 
-                serial = move.get_serial()
+                serial = normalize_serial(move.get_serial())
                 if not serial:
                     logger.debug(f"Controller {move_num}: no serial, skipping")
                     continue
@@ -194,7 +195,7 @@ class BluetoothBackend(ControllerBackend):
                 # Check if it's a PS Move controller (MAC prefix 00:06:F7)
                 if address.startswith("00:06:F7"):
                     controllers.append(
-                        {"address": address, "serial": address.replace(":", ""), "name": "PS Move Controller"}
+                        {"address": address, "serial": normalize_serial(address), "name": "PS Move Controller"}
                     )
 
             # Also check currently connected via psmove
@@ -205,7 +206,7 @@ class BluetoothBackend(ControllerBackend):
                         move = psmove.PSMove(move_num)
                     if move is None:
                         continue
-                    serial = move.get_serial()
+                    serial = normalize_serial(move.get_serial())
                     if not serial:
                         continue
 
@@ -247,11 +248,11 @@ class BluetoothBackend(ControllerBackend):
                         move = psmove.PSMove(i)
                     if move is None:
                         continue
-                    serial = move.get_serial()
+                    serial = normalize_serial(move.get_serial())
                     if not serial:
                         continue
 
-                    if serial == address or serial.upper() == address.upper():
+                    if serial == normalize_serial(address):
                         # Track the controller
                         self.controllers[serial] = move
                         self.controller_states[serial] = ControllerState()
@@ -296,7 +297,7 @@ class BluetoothBackend(ControllerBackend):
             try:
                 with suppress_stderr():
                     move = psmove.PSMove(i)
-                if move and move.get_serial() == serial:
+                if move and normalize_serial(move.get_serial()) == serial:
                     return move
             except Exception:
                 continue
@@ -486,7 +487,7 @@ class BluetoothBackend(ControllerBackend):
                 logger.warning(f"Controller {move_num}/{count}: PSMove() returned None")
                 return None
 
-            serial = move.get_serial()
+            serial = normalize_serial(move.get_serial())
             if not serial:
                 logger.warning(f"Controller {move_num}/{count}: no serial returned")
                 return None

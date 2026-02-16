@@ -298,6 +298,63 @@ class TestGetAllNames:
                 os.unlink(names_file)
 
 
+class TestSerialNormalization:
+    """Tests that NameManager normalizes MAC-format serials."""
+
+    def test_get_name_normalizes_colon_format(self):
+        """get_name with colon-format serial returns same name as normalized form."""
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            names_file = f.name
+
+        try:
+            manager = NameManager(names_file)
+            name_colon = manager.get_name("aa:bb:cc:dd:ee:ff")
+            name_upper = manager.get_name("AABBCCDDEEFF")
+            assert name_colon == name_upper
+        finally:
+            if os.path.exists(names_file):
+                os.unlink(names_file)
+
+    def test_set_name_normalizes_then_get_retrieves(self):
+        """set_name with colon format, then get_name with uppercase retrieves it."""
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            names_file = f.name
+
+        try:
+            manager = NameManager(names_file)
+            manager.set_name("aa:bb:cc:dd:ee:ff", "Player 1")
+            assert manager.get_name("AABBCCDDEEFF") == "Player 1"
+        finally:
+            if os.path.exists(names_file):
+                os.unlink(names_file)
+
+    def test_load_normalizes_legacy_serials(self):
+        """Loading a file with colon-format serials normalizes them."""
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt") as f:
+            f.write("aa:bb:cc:dd:ee:ff=Legacy Name\n")
+            names_file = f.name
+
+        try:
+            manager = NameManager(names_file)
+            assert manager.get_name("AABBCCDDEEFF") == "Legacy Name"
+        finally:
+            if os.path.exists(names_file):
+                os.unlink(names_file)
+
+    def test_non_mac_serials_unchanged(self):
+        """Non-MAC serials pass through normalization unchanged."""
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            names_file = f.name
+
+        try:
+            manager = NameManager(names_file)
+            manager.set_name("mock_controller_0", "Mock")
+            assert manager.get_name("mock_controller_0") == "Mock"
+        finally:
+            if os.path.exists(names_file):
+                os.unlink(names_file)
+
+
 class TestThreadSafety:
     """Tests for thread-safe operations."""
 

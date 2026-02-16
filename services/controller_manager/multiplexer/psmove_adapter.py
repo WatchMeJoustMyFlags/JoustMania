@@ -11,7 +11,7 @@ import logging
 import os
 import time
 
-from lib.controller_constants import AxisKey, ButtonKey, StateKey
+from lib.controller_constants import AxisKey, ButtonKey, StateKey, normalize_serial
 from services.controller_manager.multiplexer.adapter import ControllerIOAdapter
 
 
@@ -138,7 +138,7 @@ class PsMoveAdapter(ControllerIOAdapter):
                 logger.warning(f"Controller {move_num}/{count}: PSMove() returned None")
                 return None
 
-            serial = move.get_serial()
+            serial = normalize_serial(move.get_serial())
             if not serial:
                 logger.warning(f"Controller {move_num}/{count}: no serial returned")
                 return None

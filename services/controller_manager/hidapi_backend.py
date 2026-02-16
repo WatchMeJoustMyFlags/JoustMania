@@ -25,6 +25,7 @@ from lib.controller_constants import (
     AxisKey,
     ButtonKey,
     StateKey,
+    normalize_serial,
 )
 from lib.psmove_hid import (
     INPUT_REPORT_SIZE,
@@ -145,8 +146,7 @@ class HidapiBackend(ControllerBackend):
                 logger.debug(f"HID device at {path!r}: no serial, skipping")
                 continue
 
-            # Normalize serial to uppercase without colons (match psmoveapi format)
-            serial = serial.upper().replace(":", "")
+            serial = normalize_serial(serial)
 
             if serial in self.controllers:
                 continue
@@ -169,7 +169,7 @@ class HidapiBackend(ControllerBackend):
             serial = dev_info.get("serial_number", "")
             if not serial:
                 continue
-            serial = serial.upper().replace(":", "")
+            serial = normalize_serial(serial)
             if not any(c["serial"] == serial for c in controllers):
                 controllers.append(
                     {
@@ -193,8 +193,8 @@ class HidapiBackend(ControllerBackend):
             serial = dev_info.get("serial_number", "")
             if not serial:
                 continue
-            serial = serial.upper().replace(":", "")
-            if serial == address.upper().replace(":", ""):
+            serial = normalize_serial(serial)
+            if serial == normalize_serial(address):
                 try:
                     device = hid.Device(path=dev_info["path"])
                     device.nonblocking = True
@@ -424,7 +424,7 @@ class HidapiBackend(ControllerBackend):
                 serial = dev_info.get("serial_number", "")
                 if not serial:
                     continue
-                serial = serial.upper().replace(":", "")
+                serial = normalize_serial(serial)
                 current_paths.add(path)
 
                 if serial not in self.controllers:

@@ -149,7 +149,7 @@ class TestProbeController:
         ):
             serial = backend._probe_controller(0, 1)
 
-        assert serial == "AA:BB:CC:DD:EE:00"
+        assert serial == "AABBCCDDEE00"
 
     def test_probe_registers_new_controller(self):
         """Probing a new controller should register it in controllers dict."""
@@ -166,14 +166,14 @@ class TestProbeController:
         ):
             backend._probe_controller(0, 1)
 
-        assert "AA:BB:CC:DD:EE:01" in backend.controllers
-        assert "AA:BB:CC:DD:EE:01" in backend.controller_states
+        assert "AABBCCDDEE01" in backend.controllers
+        assert "AABBCCDDEE01" in backend.controller_states
 
     def test_probe_skips_already_tracked_controller(self):
         """Probing an already-tracked serial should not overwrite the stored handle."""
         backend = _make_backend()
         original_move = MagicMock()
-        backend.controllers["AA:BB:CC:DD:EE:02"] = original_move
+        backend.controllers["AABBCCDDEE02"] = original_move
 
         new_move = MockPSMove.PSMove(0)
         new_move._serial = "AA:BB:CC:DD:EE:02"
@@ -187,9 +187,9 @@ class TestProbeController:
         ):
             serial = backend._probe_controller(0, 1)
 
-        assert serial == "AA:BB:CC:DD:EE:02"
+        assert serial == "AABBCCDDEE02"
         # Original handle preserved
-        assert backend.controllers["AA:BB:CC:DD:EE:02"] is original_move
+        assert backend.controllers["AABBCCDDEE02"] is original_move
 
     def test_probe_returns_none_when_psmove_returns_none(self):
         """Probing should return None when PSMove() returns None."""

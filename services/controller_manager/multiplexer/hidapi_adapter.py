@@ -11,7 +11,7 @@ import logging
 
 import hidraw as hid  # hidraw backend sees Bluetooth HID devices (libusb backend cannot)
 
-from lib.controller_constants import AxisKey, ButtonKey, StateKey
+from lib.controller_constants import AxisKey, ButtonKey, StateKey, normalize_serial
 from lib.psmove_hid import (
     INPUT_REPORT_SIZE,
     PRODUCT_ID_ZCM1,
@@ -75,7 +75,7 @@ class HidapiAdapter(ControllerIOAdapter):
             if not serial:
                 continue
 
-            serial = serial.upper().replace(":", "")
+            serial = normalize_serial(serial)
             current_paths.add(path)
 
             if serial not in self._devices:
@@ -111,8 +111,8 @@ class HidapiAdapter(ControllerIOAdapter):
             dev_serial = dev_info.get("serial_number", "")
             if not dev_serial:
                 continue
-            dev_serial = dev_serial.upper().replace(":", "")
-            if dev_serial == serial.upper().replace(":", ""):
+            dev_serial = normalize_serial(dev_serial)
+            if dev_serial == normalize_serial(serial):
                 try:
                     device = hid.Device(path=dev_info["path"])
                     device.nonblocking = True
