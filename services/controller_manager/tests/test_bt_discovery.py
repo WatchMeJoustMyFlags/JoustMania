@@ -271,7 +271,7 @@ class TestHidapiMode:
 
         with (
             patch("services.controller_manager.multiplexer.bt_discovery.bluetooth") as mock_bt,
-            patch.dict("sys.modules", {"hid": mock_hid}),
+            patch.dict("sys.modules", {"hidraw": mock_hid}),
             patch("services.controller_manager.multiplexer.bt_discovery.hid", mock_hid, create=True),
         ):
             mock_bt.get_attached_addresses = AsyncMock(return_value=["00:06:F7:AA:BB:CC", "00:06:F7:DD:EE:FF"])
@@ -294,7 +294,7 @@ class TestHidapiMode:
 
         with (
             patch("services.controller_manager.multiplexer.bt_discovery.bluetooth") as mock_bt,
-            patch.dict("sys.modules", {"hid": mock_hid}),
+            patch.dict("sys.modules", {"hidraw": mock_hid}),
             patch("services.controller_manager.multiplexer.bt_discovery.hid", mock_hid, create=True),
         ):
             mock_bt.get_attached_addresses = AsyncMock(
@@ -321,7 +321,7 @@ class TestHidapiMode:
 
         with (
             patch("services.controller_manager.multiplexer.bt_discovery.bluetooth") as mock_bt,
-            patch.dict("sys.modules", {"hid": mock_hid}),
+            patch.dict("sys.modules", {"hidraw": mock_hid}),
             patch("services.controller_manager.multiplexer.bt_discovery.hid", mock_hid, create=True),
         ):
             mock_bt.get_attached_addresses = AsyncMock(return_value=["00:06:F7:AA:BB:CC"])

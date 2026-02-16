@@ -97,7 +97,7 @@ def mock_hid():
 @pytest.fixture
 def backend(mock_hid):
     """Create a HidapiBackend with mocked hid module."""
-    with patch.dict(sys.modules, {"hid": mock_hid}):
+    with patch.dict(sys.modules, {"hidraw": mock_hid}):
         # Re-import to pick up the mock
         import importlib
 
