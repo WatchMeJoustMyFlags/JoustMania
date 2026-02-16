@@ -44,9 +44,10 @@ async def serve(port=50052):
     )
 
     # Initialize flagd for dynamic streaming frequency and tuning flags
-    from lib.feature_flags import init_flag_domain
+    from lib.feature_flags import init_flag_domain, wait_for_provider_ready
 
     init_flag_domain("performance")
+    await wait_for_provider_ready("performance", timeout=10.0)
 
     # Initialize OTEL push metrics
     # Export interval read from flagd with per-service targeting (Issue #479)
