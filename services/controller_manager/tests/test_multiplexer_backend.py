@@ -420,10 +420,11 @@ class TestRouteControllers:
         assert mux._serial_to_adapter["AA:AA"] is a2
 
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
-    def test_fallback_when_preferred_not_in_discoverers(self, mock_metrics):
-        """If targeting returns an adapter that didn't discover the serial, fall back."""
+    def test_fallback_when_preferred_not_in_discoverers_and_open_fails(self, mock_metrics):
+        """If preferred adapter didn't discover and open() fails, fall back."""
         a1 = _make_adapter("psmove", serials=["AA:AA"])
         a2 = _make_adapter("hidapi", serials=[])  # hidapi didn't find it
+        a2.open.return_value = False  # open() also fails
         mux = MultiplexerBackend(adapters=[a1, a2])
 
         with patch.object(mux, "_resolve_adapter_for_serial", return_value=a2):
@@ -431,6 +432,21 @@ class TestRouteControllers:
 
         assert result == ["AA:AA"]
         assert mux._serial_to_adapter["AA:AA"] is a1  # Falls back to psmove
+
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_open_on_demand_when_preferred_not_in_discoverers(self, mock_metrics):
+        """If preferred adapter didn't discover but open() succeeds, use it."""
+        a1 = _make_adapter("psmove", serials=["AA:AA"])
+        a2 = _make_adapter("hidapi", serials=[])  # hidapi didn't discover
+        a2.open.return_value = True  # but open() succeeds (re-enumerates)
+        mux = MultiplexerBackend(adapters=[a1, a2])
+
+        with patch.object(mux, "_resolve_adapter_for_serial", return_value=a2):
+            result = mux.get_connected_controllers()
+
+        assert result == ["AA:AA"]
+        assert mux._serial_to_adapter["AA:AA"] is a2  # Switched via open()
+        a2.open.assert_called_with("AA:AA")
 
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_mock_excluded_from_targeting(self, mock_metrics):

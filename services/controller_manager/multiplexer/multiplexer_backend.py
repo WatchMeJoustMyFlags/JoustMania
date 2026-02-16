@@ -155,12 +155,20 @@ class MultiplexerBackend(ControllerBackend):
                 seen[serial] = preferred
                 method = "targeted"
             elif preferred and preferred not in discoverers:
-                logger.warning(
-                    f"Preferred adapter '{preferred.adapter_type}' for {serial} "
-                    f"not in discoverers {[a.adapter_type for a in discoverers]} — using fallback"
-                )
-                seen[serial] = real[0]
-                method = "fallback"
+                # Preferred adapter hasn't discovered this controller yet.
+                # Try opening directly — hidapi can re-enumerate on demand,
+                # psmove requires a prior discover() so open() may return False.
+                if preferred.open(serial):
+                    seen[serial] = preferred
+                    method = "targeted"
+                    logger.info(f"Opened {serial} on preferred adapter '{preferred.adapter_type}' directly")
+                else:
+                    seen[serial] = real[0]
+                    method = "fallback"
+                    logger.warning(
+                        f"Preferred adapter '{preferred.adapter_type}' for {serial} "
+                        f"not in discoverers and open() failed — using fallback"
+                    )
             elif len(real) == 1:
                 seen[serial] = real[0]
                 method = "default"

@@ -49,13 +49,6 @@ class PeriodicRescanTimer:
             return True
         return False
 
-    def force_next_rescan(self):
-        """Force the next should_force_rescan() call to return True.
-
-        Used when flag changes require immediate re-discovery.
-        """
-        self._last_rescan_time = 0.0
-
     def reset(self):
         """Reset the timer (e.g., after manual rescan trigger)."""
         self._last_rescan_time = time.time()

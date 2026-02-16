@@ -91,11 +91,6 @@ async def serve(port=50052):
     controller_servicer = ControllerManagerServicer()
     controller_manager_pb2_grpc.add_ControllerManagerServiceServicer_to_server(controller_servicer, server)
 
-    # Register routing flag listener (force rescan when adapter routing changes)
-    from services.controller_manager.servicer import init_routing_listener
-
-    init_routing_listener(controller_servicer.rescan_timer)
-
     # Start discovery loop immediately (don't defer to first stream connection)
     # This ensures controllers are discovered before any clients connect
     controller_servicer.discovery_loop.start()
