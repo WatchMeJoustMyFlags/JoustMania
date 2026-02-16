@@ -260,3 +260,10 @@ stream_current_frequency_hz = Gauge(
     "controller_stream_current_frequency_hz",
     "Current streaming frequency in Hz (from flagd override)",
 )
+
+# Chaos fault injection metrics (Issue #548)
+chaos_faults_injected_total = Counter(
+    "controller_chaos_faults_injected_total",
+    "Total chaos faults injected by ChaosAdapter",
+    ["fault"],  # poll_drop, accel_spike, led_failure, disconnect
+)

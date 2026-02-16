@@ -146,6 +146,18 @@
       },
       "defaultVariant": "hidapi",
       "targeting": {}
+    },
+    "chaos_fault_type": {
+      "state": "ENABLED",
+      "variants": {
+        "poll_drop": "poll_drop",
+        "accel_spike": "accel_spike",
+        "led_failure": "led_failure",
+        "disconnect": "disconnect",
+        "none": "none"
+      },
+      "defaultVariant": "none",
+      "targeting": {}
     }
   }
 }

@@ -134,6 +134,37 @@ def _create_bt_discovery(names: list[str]) -> CentralizedBTDiscovery | None:
     return None
 
 
+def _is_chaos_enabled() -> bool:
+    """Check if chaos testing flag is configured (non-default targeting)."""
+    try:
+        from openfeature.evaluation_context import EvaluationContext
+
+        from lib.feature_flags import get_flag_client
+
+        client = get_flag_client("performance")
+        client.get_string_value("chaos_fault_type", "none", EvaluationContext())
+        return True
+    except Exception:
+        return False
+
+
+def _maybe_wrap_chaos(adapters: list[ControllerIOAdapter]) -> list[ControllerIOAdapter]:
+    """Wrap non-mock adapters in ChaosAdapter if chaos flag is configured."""
+    if not _is_chaos_enabled():
+        return adapters
+
+    from services.controller_manager.multiplexer.chaos_adapter import ChaosAdapter
+
+    wrapped = []
+    for adapter in adapters:
+        if adapter.adapter_type == "mock":
+            wrapped.append(adapter)
+        else:
+            wrapped.append(ChaosAdapter(adapter))
+            logger.info(f"Wrapped {adapter.adapter_type} adapter in ChaosAdapter")
+    return wrapped
+
+
 def _is_multiplexer_enabled() -> bool:
     """Check if the multiplexer_backend_enabled flag is on."""
     try:
@@ -193,6 +224,7 @@ def create_backend() -> ControllerBackend:
             validate_backend_combination(names)
         bt_discovery = _create_bt_discovery(names)
         adapters = [_create_adapter_by_name(n) for n in names]
+        adapters = _maybe_wrap_chaos(adapters)
         logger.info(f"MultiplexerBackend with adapters: {names}")
         return MultiplexerBackend(adapters=adapters, bt_discovery=bt_discovery)
 
