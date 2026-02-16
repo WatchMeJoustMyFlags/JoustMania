@@ -23,8 +23,14 @@ class ControllerIOAdapter(ABC):
         """Identifier: 'psmove', 'hidapi', 'mock'."""
 
     @abstractmethod
-    def discover(self, force: bool = False) -> list[str]:
-        """Scan for available controllers. Returns list of serials."""
+    def discover(self, force: bool = False, verify_only: bool = False) -> list[str]:
+        """Scan for available controllers. Returns list of serials.
+
+        Args:
+            force: Force a full rescan, removing stale devices.
+            verify_only: When True, only verify existing devices are
+                accessible — skip expensive enumeration for new devices.
+        """
 
     @abstractmethod
     def open(self, serial: str) -> bool:

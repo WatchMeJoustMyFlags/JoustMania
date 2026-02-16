@@ -108,7 +108,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         )
 
         # Phase 79: Periodic rescan timer for externally paired controllers
-        self.rescan_timer = PeriodicRescanTimer(interval=5.0)
+        self.rescan_timer = PeriodicRescanTimer(interval=10.0)
 
         # Issue #7: Name manager for human-readable controller names
         self.name_manager = NameManager()

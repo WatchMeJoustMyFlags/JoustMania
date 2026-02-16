@@ -63,6 +63,10 @@ class MultiplexerBackend(ControllerBackend):
         for adapter in self._adapters:
             self._adapter_by_type[adapter.adapter_type] = adapter
 
+        # Discovery throttle: only run full enumeration every N seconds
+        self._last_full_discovery: float = 0.0
+        self._full_discovery_interval: float = 0.5  # seconds
+
         adapter_names = [a.adapter_type for a in self._adapters]
         logger.info(f"MultiplexerBackend created with adapters: {adapter_names}")
 
@@ -126,10 +130,23 @@ class MultiplexerBackend(ControllerBackend):
         Phase 2: For each serial found by multiple adapters, evaluate the
         ``controller_adapter_routing`` flag to pick the preferred adapter.
         """
+        # Determine discovery mode: full enumeration or verify-only
+        now = time.monotonic()
+        if force or (now - self._last_full_discovery >= self._full_discovery_interval):
+            verify_only = False
+            self._last_full_discovery = now
+        else:
+            verify_only = True
+
+        if verify_only:
+            metrics.discovery_verify_only_total.inc()
+        else:
+            metrics.discovery_full_enumerate_total.inc()
+
         # Phase 1: discover — build serial -> list[adapter]
         adapter_serials: dict[str, list[ControllerIOAdapter]] = {}
         for adapter in self._adapters:
-            for serial in adapter.discover(force=force):
+            for serial in adapter.discover(force=force, verify_only=verify_only):
                 adapter_serials.setdefault(serial, []).append(adapter)
                 # Open handle if this adapter hasn't seen it before
                 if self._serial_to_adapter.get(serial) is not adapter:

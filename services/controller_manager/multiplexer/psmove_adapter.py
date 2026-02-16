@@ -81,7 +81,7 @@ class PsMoveAdapter(ControllerIOAdapter):
     def adapter_type(self) -> str:
         return "psmove"
 
-    def discover(self, force: bool = False) -> list[str]:
+    def discover(self, force: bool = False, verify_only: bool = False) -> list[str]:  # noqa: ARG002
         """Scan for connected PS Move controllers via psmove index API.
 
         Returns list of serials for all currently connected controllers.
