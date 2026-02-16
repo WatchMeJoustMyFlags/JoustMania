@@ -241,6 +241,9 @@ class HidapiBackend(ControllerBackend):
                     break  # No more data available (hidraw non-blocking)
                 if not report:
                     break
+                # hidraw returns list of ints; convert to bytes for struct parsing
+                if isinstance(report, list):
+                    report = bytes(report)
                 data = report
 
             if data is None:
