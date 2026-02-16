@@ -114,6 +114,23 @@ BUTTON_TRACKING_TO_STATE = {
 }
 
 
+def normalize_serial(serial: str) -> str:
+    """Normalize a controller serial to canonical format (uppercase, no colons).
+
+    MAC-format serials (12 hex chars with/without colons) are uppercased
+    and stripped of colons. Non-MAC serials (e.g. mock_controller_0) are
+    returned unchanged.
+    """
+    cleaned = serial.upper().replace(":", "")
+    if len(cleaned) == 12:
+        try:
+            int(cleaned, 16)
+            return cleaned
+        except ValueError:
+            pass
+    return serial
+
+
 # Default values
 DEFAULT_BATTERY = 5
 DEFAULT_ACCEL = {"x": 0.0, "y": 0.0, "z": 1.0}  # At rest (1g gravity)

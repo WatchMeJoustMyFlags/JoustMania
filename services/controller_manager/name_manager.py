@@ -12,6 +12,8 @@ import os
 import threading
 from pathlib import Path
 
+from lib.controller_constants import normalize_serial
+
 logger = logging.getLogger(__name__)
 
 # Default path, can be overridden by CONTROLLER_NAMES_FILE env var
@@ -93,7 +95,7 @@ class NameManager:
                     line = line.strip()
                     if line and not line.startswith("#") and "=" in line:
                         serial, name = line.split("=", 1)
-                        self._names[serial.strip()] = name.strip()
+                        self._names[normalize_serial(serial.strip())] = name.strip()
             logger.info(f"Loaded {len(self._names)} controller names from {self.names_file}")
         except Exception as e:
             logger.error(f"Error loading controller names: {e}")
@@ -141,6 +143,7 @@ class NameManager:
         Returns:
             Human-readable name for the controller.
         """
+        serial = normalize_serial(serial)
         with self._lock:
             if serial not in self._names:
                 self._names[serial] = self._generate_name(serial)
@@ -159,6 +162,7 @@ class NameManager:
         Returns:
             True if the name was set successfully.
         """
+        serial = normalize_serial(serial)
         with self._lock:
             old_name = self._names.get(serial)
             self._names[serial] = name

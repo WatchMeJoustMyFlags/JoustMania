@@ -25,6 +25,7 @@ from lib.controller_constants import (
     AxisKey,
     ButtonKey,
     StateKey,
+    normalize_serial,
 )
 from lib.psmove_hid import (
     INPUT_REPORT_SIZE,
@@ -61,8 +62,8 @@ class HidapiBackend(ControllerBackend):
     """
 
     def __init__(self):
-        # serial -> hid.Device
-        self.controllers: dict[str, hid.Device] = {}
+        # serial -> hid.device
+        self.controllers: dict[str, hid.device] = {}
         # serial -> device path (for reconnection detection)
         self._device_paths: dict[str, str] = {}
         # LED state tracking
@@ -145,15 +146,15 @@ class HidapiBackend(ControllerBackend):
                 logger.debug(f"HID device at {path!r}: no serial, skipping")
                 continue
 
-            # Normalize serial to uppercase without colons (match psmoveapi format)
-            serial = serial.upper().replace(":", "")
+            serial = normalize_serial(serial)
 
             if serial in self.controllers:
                 continue
 
             try:
-                device = hid.Device(path=path)
-                device.nonblocking = True
+                device = hid.device()
+                device.open_path(path)
+                device.set_nonblocking(True)
                 self.controllers[serial] = device
                 self._device_paths[serial] = path
                 logger.info(f"Opened PS Move controller: {serial} at {path!r}")
@@ -169,7 +170,7 @@ class HidapiBackend(ControllerBackend):
             serial = dev_info.get("serial_number", "")
             if not serial:
                 continue
-            serial = serial.upper().replace(":", "")
+            serial = normalize_serial(serial)
             if not any(c["serial"] == serial for c in controllers):
                 controllers.append(
                     {
@@ -193,11 +194,12 @@ class HidapiBackend(ControllerBackend):
             serial = dev_info.get("serial_number", "")
             if not serial:
                 continue
-            serial = serial.upper().replace(":", "")
-            if serial == address.upper().replace(":", ""):
+            serial = normalize_serial(serial)
+            if serial == normalize_serial(address):
                 try:
-                    device = hid.Device(path=dev_info["path"])
-                    device.nonblocking = True
+                    device = hid.device()
+                    device.open_path(dev_info["path"])
+                    device.set_nonblocking(True)
                     self.controllers[serial] = device
                     self._device_paths[serial] = dev_info["path"]
                     logger.info(f"Connected controller {serial}")
@@ -233,9 +235,15 @@ class HidapiBackend(ControllerBackend):
             # Read all available reports, keep the latest
             data = None
             while True:
-                report = device.read(INPUT_REPORT_SIZE)
+                try:
+                    report = device.read(INPUT_REPORT_SIZE)
+                except BlockingIOError:
+                    break  # No more data available (hidraw non-blocking)
                 if not report:
                     break
+                # hidraw returns list of ints; convert to bytes for struct parsing
+                if isinstance(report, list):
+                    report = bytes(report)
                 data = report
 
             if data is None:
@@ -424,13 +432,14 @@ class HidapiBackend(ControllerBackend):
                 serial = dev_info.get("serial_number", "")
                 if not serial:
                     continue
-                serial = serial.upper().replace(":", "")
+                serial = normalize_serial(serial)
                 current_paths.add(path)
 
                 if serial not in self.controllers:
                     try:
-                        device = hid.Device(path=path)
-                        device.nonblocking = True
+                        device = hid.device()
+                        device.open_path(path)
+                        device.set_nonblocking(True)
                         self.controllers[serial] = device
                         self._device_paths[serial] = path
                         logger.info(f"New controller found during rescan: {serial}")

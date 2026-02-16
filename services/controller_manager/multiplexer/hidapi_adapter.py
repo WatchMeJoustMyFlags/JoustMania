@@ -11,7 +11,7 @@ import logging
 
 import hidraw as hid  # hidraw backend sees Bluetooth HID devices (libusb backend cannot)
 
-from lib.controller_constants import AxisKey, ButtonKey, StateKey
+from lib.controller_constants import AxisKey, ButtonKey, StateKey, normalize_serial
 from lib.psmove_hid import (
     INPUT_REPORT_SIZE,
     PRODUCT_ID_ZCM1,
@@ -34,7 +34,7 @@ class HidapiAdapter(ControllerIOAdapter):
     """I/O adapter using hidapi for PS Move controllers via HID reports."""
 
     def __init__(self):
-        self._devices: dict[str, hid.Device] = {}
+        self._devices: dict[str, hid.device] = {}
         self._paths: dict[str, str] = {}
 
     @property
@@ -58,7 +58,9 @@ class HidapiAdapter(ControllerIOAdapter):
         stale = []
         for serial, device in self._devices.items():
             try:
-                device.read(0)  # Non-blocking check
+                device.read(64)  # Non-blocking health check
+            except BlockingIOError:
+                pass  # No data available is fine — device is healthy
             except OSError:
                 stale.append(serial)
         for serial in stale:
@@ -75,7 +77,7 @@ class HidapiAdapter(ControllerIOAdapter):
             if not serial:
                 continue
 
-            serial = serial.upper().replace(":", "")
+            serial = normalize_serial(serial)
             current_paths.add(path)
 
             if serial not in self._devices:
@@ -86,8 +88,9 @@ class HidapiAdapter(ControllerIOAdapter):
     def _try_open_device(self, serial: str, path: str) -> None:
         """Attempt to open a single HID device."""
         try:
-            device = hid.Device(path=path)
-            device.nonblocking = True
+            device = hid.device()
+            device.open_path(path)
+            device.set_nonblocking(True)
             self._devices[serial] = device
             self._paths[serial] = path
             logger.info(f"Opened PS Move controller: {serial} at {path!r}")
@@ -111,11 +114,12 @@ class HidapiAdapter(ControllerIOAdapter):
             dev_serial = dev_info.get("serial_number", "")
             if not dev_serial:
                 continue
-            dev_serial = dev_serial.upper().replace(":", "")
-            if dev_serial == serial.upper().replace(":", ""):
+            dev_serial = normalize_serial(dev_serial)
+            if dev_serial == normalize_serial(serial):
                 try:
-                    device = hid.Device(path=dev_info["path"])
-                    device.nonblocking = True
+                    device = hid.device()
+                    device.open_path(dev_info["path"])
+                    device.set_nonblocking(True)
                     self._devices[serial] = device
                     self._paths[serial] = dev_info["path"]
                     return True
@@ -135,9 +139,15 @@ class HidapiAdapter(ControllerIOAdapter):
             # Read all available reports, keep the latest
             data = None
             while True:
-                report = device.read(INPUT_REPORT_SIZE)
+                try:
+                    report = device.read(INPUT_REPORT_SIZE)
+                except BlockingIOError:
+                    break  # No more data available (hidraw non-blocking)
                 if not report:
                     break
+                # hidraw returns list of ints; convert to bytes for struct parsing
+                if isinstance(report, list):
+                    report = bytes(report)
                 data = report
 
             if data is None:

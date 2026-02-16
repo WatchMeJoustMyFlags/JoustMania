@@ -137,19 +137,19 @@ class TestPsMoveAdapterInit:
 class TestPsMoveAdapterDiscover:
     def test_discover_returns_serials(self):
         adapter = PsMoveAdapter()
-        fake_move = _make_fake_move("AA:BB:CC:DD:EE:01")
+        fake_move = _make_fake_move("AABBCCDDEE01")
         mock_psmove.count_connected.return_value = 1
         mock_psmove.PSMove.return_value = fake_move
 
         serials = adapter.discover()
 
-        assert "AA:BB:CC:DD:EE:01" in serials
+        assert "AABBCCDDEE01" in serials
         assert len(serials) == 1
 
     def test_discover_multiple_controllers(self):
         adapter = PsMoveAdapter()
         moves = [
-            _make_fake_move("AA:BB:CC:DD:EE:01"),
+            _make_fake_move("AABBCCDDEE01"),
             _make_fake_move("AA:BB:CC:DD:EE:02"),
         ]
         mock_psmove.count_connected.return_value = 2
@@ -158,12 +158,12 @@ class TestPsMoveAdapterDiscover:
         serials = adapter.discover()
 
         assert len(serials) == 2
-        assert "AA:BB:CC:DD:EE:01" in serials
-        assert "AA:BB:CC:DD:EE:02" in serials
+        assert "AABBCCDDEE01" in serials
+        assert "AABBCCDDEE02" in serials
 
     def test_discover_skips_no_change_without_force(self):
         adapter = PsMoveAdapter()
-        fake_move = _make_fake_move("AA:BB:CC:DD:EE:01")
+        fake_move = _make_fake_move("AABBCCDDEE01")
         mock_psmove.count_connected.return_value = 1
         mock_psmove.PSMove.return_value = fake_move
 
@@ -177,21 +177,21 @@ class TestPsMoveAdapterDiscover:
 
     def test_discover_rescans_on_force(self):
         adapter = PsMoveAdapter()
-        fake_move = _make_fake_move("AA:BB:CC:DD:EE:01")
+        fake_move = _make_fake_move("AABBCCDDEE01")
         mock_psmove.count_connected.return_value = 1
         mock_psmove.PSMove.return_value = fake_move
 
         adapter.discover()
         # Reset mock to track new calls
         mock_psmove.PSMove.reset_mock()
-        mock_psmove.PSMove.return_value = _make_fake_move("AA:BB:CC:DD:EE:01")
+        mock_psmove.PSMove.return_value = _make_fake_move("AABBCCDDEE01")
         adapter.discover(force=True)
 
         mock_psmove.PSMove.assert_called()
 
     def test_discover_rescans_on_count_change(self):
         adapter = PsMoveAdapter()
-        move1 = _make_fake_move("AA:BB:CC:DD:EE:01")
+        move1 = _make_fake_move("AABBCCDDEE01")
         mock_psmove.count_connected.return_value = 1
         mock_psmove.PSMove.return_value = move1
 
@@ -201,7 +201,7 @@ class TestPsMoveAdapterDiscover:
         move2 = _make_fake_move("AA:BB:CC:DD:EE:02")
         mock_psmove.count_connected.return_value = 2
         mock_psmove.PSMove.side_effect = [
-            _make_fake_move("AA:BB:CC:DD:EE:01"),
+            _make_fake_move("AABBCCDDEE01"),
             move2,
         ]
 
@@ -213,7 +213,7 @@ class TestPsMoveAdapterDiscover:
         # First scan: 2 controllers
         mock_psmove.count_connected.return_value = 2
         mock_psmove.PSMove.side_effect = [
-            _make_fake_move("AA:BB:CC:DD:EE:01"),
+            _make_fake_move("AABBCCDDEE01"),
             _make_fake_move("AA:BB:CC:DD:EE:02"),
         ]
         adapter.discover()
@@ -222,13 +222,13 @@ class TestPsMoveAdapterDiscover:
         # Second scan: only 1 controller (count changed)
         mock_psmove.count_connected.return_value = 1
         mock_psmove.PSMove.side_effect = [
-            _make_fake_move("AA:BB:CC:DD:EE:01"),
+            _make_fake_move("AABBCCDDEE01"),
         ]
         serials = adapter.discover()
 
         assert len(serials) == 1
-        assert "AA:BB:CC:DD:EE:01" in serials
-        assert "AA:BB:CC:DD:EE:02" not in serials
+        assert "AABBCCDDEE01" in serials
+        assert "AABBCCDDEE02" not in serials
 
     def test_discover_handles_psmove_returning_none(self):
         adapter = PsMoveAdapter()
@@ -267,36 +267,61 @@ class TestPsMoveAdapterDiscover:
         # First attempt: exception. Second attempt: success.
         mock_psmove.PSMove.side_effect = [
             RuntimeError("USB busy"),
-            _make_fake_move("AA:BB:CC:DD:EE:01"),
+            _make_fake_move("AABBCCDDEE01"),
         ]
 
         with patch("services.controller_manager.multiplexer.psmove_adapter.time.sleep"):
             serials = adapter.discover()
 
-        assert "AA:BB:CC:DD:EE:01" in serials
+        assert "AABBCCDDEE01" in serials
 
     def test_discover_does_not_duplicate_existing_handle(self):
         adapter = PsMoveAdapter()
         mock_psmove.count_connected.return_value = 1
-        first_move = _make_fake_move("AA:BB:CC:DD:EE:01")
+        first_move = _make_fake_move("AABBCCDDEE01")
         mock_psmove.PSMove.return_value = first_move
 
         adapter.discover()
 
         # Force rescan, same serial appears again
-        second_move = _make_fake_move("AA:BB:CC:DD:EE:01")
+        second_move = _make_fake_move("AABBCCDDEE01")
         mock_psmove.PSMove.return_value = second_move
         adapter.discover(force=True)
 
         # Should still use the first handle, not replace it
-        assert adapter._handles["AA:BB:CC:DD:EE:01"] is first_move
+        assert adapter._handles["AABBCCDDEE01"] is first_move
+
+
+class TestPsMoveAdapterSerialNormalization:
+    def test_discover_normalizes_colon_format(self):
+        """Serials from psmoveapi (colon format) are normalized to uppercase no-colon."""
+        adapter = PsMoveAdapter()
+        fake_move = _make_fake_move("e0:ae:5e:e1:11:ab")
+        mock_psmove.count_connected.return_value = 1
+        mock_psmove.PSMove.return_value = fake_move
+
+        serials = adapter.discover()
+
+        assert serials == ["E0AE5EE111AB"]
+        assert "E0AE5EE111AB" in adapter._handles
+
+    def test_discover_normalizes_mixed_case(self):
+        """Mixed-case serials without colons are uppercased."""
+        adapter = PsMoveAdapter()
+        fake_move = _make_fake_move("aaBBccDDeeFF")
+        mock_psmove.count_connected.return_value = 1
+        mock_psmove.PSMove.return_value = fake_move
+
+        serials = adapter.discover()
+
+        assert serials == ["AABBCCDDEEFF"]
 
 
 class TestPsMoveAdapterOpen:
     def test_open_returns_true_for_known_serial(self):
         adapter = PsMoveAdapter()
-        adapter._handles["AA:BB:CC:DD:EE:01"] = _make_fake_move()
-        assert adapter.open("AA:BB:CC:DD:EE:01") is True
+        adapter._handles["AABBCCDDEE01"] = _make_fake_move()
+        assert adapter.open("AABBCCDDEE01") is True
 
     def test_open_returns_false_for_unknown_serial(self):
         adapter = PsMoveAdapter()
@@ -306,19 +331,19 @@ class TestPsMoveAdapterOpen:
 class TestPsMoveAdapterPoll:
     def test_poll_returns_state_dict(self):
         adapter = PsMoveAdapter()
-        move = _make_fake_move("AA:BB:CC:DD:EE:01")
+        move = _make_fake_move("AABBCCDDEE01")
         move.get_trigger.return_value = 200
         move.get_buttons.return_value = 0
         move.get_accelerometer_frame.return_value = (100.0, 200.0, 4096.0)
         move.get_gyroscope_frame.return_value = (0.5, 1.0, 1.5)
         move.get_battery.return_value = mock_psmove.Batt_80Percent
         move.get_temperature.return_value = 30.5
-        adapter._handles["AA:BB:CC:DD:EE:01"] = move
+        adapter._handles["AABBCCDDEE01"] = move
 
-        state = adapter.poll("AA:BB:CC:DD:EE:01")
+        state = adapter.poll("AABBCCDDEE01")
 
         assert state is not None
-        assert state[StateKey.SERIAL] == "AA:BB:CC:DD:EE:01"
+        assert state[StateKey.SERIAL] == "AABBCCDDEE01"
         assert state[StateKey.TRIGGER] == 200
         assert state[StateKey.BATTERY] == 80
         assert state[StateKey.TEMPERATURE] == 30.5
@@ -339,12 +364,12 @@ class TestPsMoveAdapterPoll:
 
     def test_poll_button_flags(self):
         adapter = PsMoveAdapter()
-        move = _make_fake_move("AA:BB:CC:DD:EE:01")
+        move = _make_fake_move("AABBCCDDEE01")
         # Set MOVE and TRIGGER buttons
         move.get_buttons.return_value = mock_psmove.Btn_MOVE | mock_psmove.Btn_T
-        adapter._handles["AA:BB:CC:DD:EE:01"] = move
+        adapter._handles["AABBCCDDEE01"] = move
 
-        state = adapter.poll("AA:BB:CC:DD:EE:01")
+        state = adapter.poll("AABBCCDDEE01")
 
         assert state[ButtonKey.MOVE] is True
         assert state[ButtonKey.TRIGGER] is True
@@ -358,7 +383,7 @@ class TestPsMoveAdapterPoll:
 
     def test_poll_all_buttons_pressed(self):
         adapter = PsMoveAdapter()
-        move = _make_fake_move("AA:BB:CC:DD:EE:01")
+        move = _make_fake_move("AABBCCDDEE01")
         all_buttons = (
             mock_psmove.Btn_MOVE
             | mock_psmove.Btn_T
@@ -371,9 +396,9 @@ class TestPsMoveAdapterPoll:
             | mock_psmove.Btn_START
         )
         move.get_buttons.return_value = all_buttons
-        adapter._handles["AA:BB:CC:DD:EE:01"] = move
+        adapter._handles["AABBCCDDEE01"] = move
 
-        state = adapter.poll("AA:BB:CC:DD:EE:01")
+        state = adapter.poll("AABBCCDDEE01")
 
         assert state[ButtonKey.MOVE] is True
         assert state[ButtonKey.TRIGGER] is True
@@ -387,44 +412,44 @@ class TestPsMoveAdapterPoll:
 
     def test_poll_drains_event_queue(self):
         adapter = PsMoveAdapter()
-        move = _make_fake_move("AA:BB:CC:DD:EE:01")
+        move = _make_fake_move("AABBCCDDEE01")
         # poll() returns True three times then False (drains 3 queued reports)
         move.poll.side_effect = [True, True, True, False]
-        adapter._handles["AA:BB:CC:DD:EE:01"] = move
+        adapter._handles["AABBCCDDEE01"] = move
 
-        adapter.poll("AA:BB:CC:DD:EE:01")
+        adapter.poll("AABBCCDDEE01")
 
         assert move.poll.call_count == 4
 
     def test_poll_returns_none_on_exception(self):
         adapter = PsMoveAdapter()
-        move = _make_fake_move("AA:BB:CC:DD:EE:01")
+        move = _make_fake_move("AABBCCDDEE01")
         move.poll.side_effect = RuntimeError("Device disconnected")
-        adapter._handles["AA:BB:CC:DD:EE:01"] = move
+        adapter._handles["AABBCCDDEE01"] = move
 
-        state = adapter.poll("AA:BB:CC:DD:EE:01")
+        state = adapter.poll("AABBCCDDEE01")
 
         assert state is None
 
     def test_poll_returns_none_on_get_trigger_exception(self):
         adapter = PsMoveAdapter()
-        move = _make_fake_move("AA:BB:CC:DD:EE:01")
+        move = _make_fake_move("AABBCCDDEE01")
         move.poll.side_effect = [False]  # drain completes immediately
         move.get_trigger.side_effect = RuntimeError("Read error")
-        adapter._handles["AA:BB:CC:DD:EE:01"] = move
+        adapter._handles["AABBCCDDEE01"] = move
 
-        state = adapter.poll("AA:BB:CC:DD:EE:01")
+        state = adapter.poll("AABBCCDDEE01")
 
         assert state is None
 
     def test_poll_accel_scaling(self):
         """Accelerometer raw values are divided by ACCEL_SCALE (4096.0)."""
         adapter = PsMoveAdapter()
-        move = _make_fake_move("AA:BB:CC:DD:EE:01")
+        move = _make_fake_move("AABBCCDDEE01")
         move.get_accelerometer_frame.return_value = (4096.0, -4096.0, 8192.0)
-        adapter._handles["AA:BB:CC:DD:EE:01"] = move
+        adapter._handles["AABBCCDDEE01"] = move
 
-        state = adapter.poll("AA:BB:CC:DD:EE:01")
+        state = adapter.poll("AABBCCDDEE01")
 
         assert abs(state[StateKey.ACCEL][AxisKey.X] - 1.0) < 1e-9
         assert abs(state[StateKey.ACCEL][AxisKey.Y] - (-1.0)) < 1e-9
@@ -434,10 +459,10 @@ class TestPsMoveAdapterPoll:
 class TestPsMoveAdapterSetOutput:
     def test_set_output_calls_psmove_methods(self):
         adapter = PsMoveAdapter()
-        move = _make_fake_move("AA:BB:CC:DD:EE:01")
-        adapter._handles["AA:BB:CC:DD:EE:01"] = move
+        move = _make_fake_move("AABBCCDDEE01")
+        adapter._handles["AABBCCDDEE01"] = move
 
-        result = adapter.set_output("AA:BB:CC:DD:EE:01", 255, 128, 64, 200)
+        result = adapter.set_output("AABBCCDDEE01", 255, 128, 64, 200)
 
         assert result is True
         move.set_leds.assert_called_once_with(255, 128, 64)
@@ -451,20 +476,20 @@ class TestPsMoveAdapterSetOutput:
 
     def test_set_output_returns_false_on_exception(self):
         adapter = PsMoveAdapter()
-        move = _make_fake_move("AA:BB:CC:DD:EE:01")
+        move = _make_fake_move("AABBCCDDEE01")
         move.set_leds.side_effect = RuntimeError("USB write error")
-        adapter._handles["AA:BB:CC:DD:EE:01"] = move
+        adapter._handles["AABBCCDDEE01"] = move
 
-        result = adapter.set_output("AA:BB:CC:DD:EE:01", 255, 0, 0, 0)
+        result = adapter.set_output("AABBCCDDEE01", 255, 0, 0, 0)
 
         assert result is False
 
     def test_set_output_zero_values(self):
         adapter = PsMoveAdapter()
-        move = _make_fake_move("AA:BB:CC:DD:EE:01")
-        adapter._handles["AA:BB:CC:DD:EE:01"] = move
+        move = _make_fake_move("AABBCCDDEE01")
+        adapter._handles["AABBCCDDEE01"] = move
 
-        result = adapter.set_output("AA:BB:CC:DD:EE:01", 0, 0, 0, 0)
+        result = adapter.set_output("AABBCCDDEE01", 0, 0, 0, 0)
 
         assert result is True
         move.set_leds.assert_called_once_with(0, 0, 0)
@@ -474,12 +499,12 @@ class TestPsMoveAdapterSetOutput:
 class TestPsMoveAdapterClose:
     def test_close_removes_handle(self):
         adapter = PsMoveAdapter()
-        adapter._handles["AA:BB:CC:DD:EE:01"] = _make_fake_move()
+        adapter._handles["AABBCCDDEE01"] = _make_fake_move()
         adapter._handles["AA:BB:CC:DD:EE:02"] = _make_fake_move()
 
-        adapter.close("AA:BB:CC:DD:EE:01")
+        adapter.close("AABBCCDDEE01")
 
-        assert "AA:BB:CC:DD:EE:01" not in adapter._handles
+        assert "AABBCCDDEE01" not in adapter._handles
         assert "AA:BB:CC:DD:EE:02" in adapter._handles
 
     def test_close_nonexistent_does_not_raise(self):
@@ -488,9 +513,9 @@ class TestPsMoveAdapterClose:
 
     def test_close_all_turns_off_leds_and_clears_handles(self):
         adapter = PsMoveAdapter()
-        move1 = _make_fake_move("AA:BB:CC:DD:EE:01")
+        move1 = _make_fake_move("AABBCCDDEE01")
         move2 = _make_fake_move("AA:BB:CC:DD:EE:02")
-        adapter._handles["AA:BB:CC:DD:EE:01"] = move1
+        adapter._handles["AABBCCDDEE01"] = move1
         adapter._handles["AA:BB:CC:DD:EE:02"] = move2
 
         adapter.close_all()
@@ -505,9 +530,9 @@ class TestPsMoveAdapterClose:
 
     def test_close_all_suppresses_exceptions(self):
         adapter = PsMoveAdapter()
-        move = _make_fake_move("AA:BB:CC:DD:EE:01")
+        move = _make_fake_move("AABBCCDDEE01")
         move.set_leds.side_effect = RuntimeError("Device gone")
-        adapter._handles["AA:BB:CC:DD:EE:01"] = move
+        adapter._handles["AABBCCDDEE01"] = move
 
         # Should not raise even when set_leds fails
         adapter.close_all()
@@ -523,24 +548,24 @@ class TestPsMoveAdapterClose:
 class TestPsMoveAdapterProbeHelpers:
     def test_probe_controller_indices_returns_seen_and_failed(self):
         adapter = PsMoveAdapter()
-        move1 = _make_fake_move("AA:BB:CC:DD:EE:01")
+        move1 = _make_fake_move("AABBCCDDEE01")
         # Second PSMove call raises to simulate failure
         mock_psmove.PSMove.side_effect = [move1, RuntimeError("USB error")]
 
         seen, failed = adapter._probe_controller_indices(2)
 
-        assert "AA:BB:CC:DD:EE:01" in seen
+        assert "AABBCCDDEE01" in seen
         assert 1 in failed
 
     def test_probe_single_controller_success(self):
         adapter = PsMoveAdapter()
-        move = _make_fake_move("AA:BB:CC:DD:EE:01")
+        move = _make_fake_move("AABBCCDDEE01")
         mock_psmove.PSMove.return_value = move
 
         serial = adapter._probe_single_controller(0, 1)
 
-        assert serial == "AA:BB:CC:DD:EE:01"
-        assert "AA:BB:CC:DD:EE:01" in adapter._handles
+        assert serial == "AABBCCDDEE01"
+        assert "AABBCCDDEE01" in adapter._handles
 
     def test_probe_single_controller_none_returned(self):
         adapter = PsMoveAdapter()
@@ -570,25 +595,25 @@ class TestPsMoveAdapterProbeHelpers:
 
     def test_remove_stale_handles(self):
         adapter = PsMoveAdapter()
-        adapter._handles["AA:BB:CC:DD:EE:01"] = _make_fake_move()
+        adapter._handles["AABBCCDDEE01"] = _make_fake_move()
         adapter._handles["AA:BB:CC:DD:EE:02"] = _make_fake_move()
 
-        adapter._remove_stale_handles(["AA:BB:CC:DD:EE:01"])
+        adapter._remove_stale_handles(["AABBCCDDEE01"])
 
-        assert "AA:BB:CC:DD:EE:01" in adapter._handles
+        assert "AABBCCDDEE01" in adapter._handles
         assert "AA:BB:CC:DD:EE:02" not in adapter._handles
 
     def test_remove_stale_handles_none_stale(self):
         adapter = PsMoveAdapter()
-        adapter._handles["AA:BB:CC:DD:EE:01"] = _make_fake_move()
+        adapter._handles["AABBCCDDEE01"] = _make_fake_move()
 
-        adapter._remove_stale_handles(["AA:BB:CC:DD:EE:01"])
+        adapter._remove_stale_handles(["AABBCCDDEE01"])
 
-        assert "AA:BB:CC:DD:EE:01" in adapter._handles
+        assert "AABBCCDDEE01" in adapter._handles
 
     def test_remove_stale_handles_all_stale(self):
         adapter = PsMoveAdapter()
-        adapter._handles["AA:BB:CC:DD:EE:01"] = _make_fake_move()
+        adapter._handles["AABBCCDDEE01"] = _make_fake_move()
         adapter._handles["AA:BB:CC:DD:EE:02"] = _make_fake_move()
 
         adapter._remove_stale_handles([])
