@@ -1,27 +1,25 @@
 """
-Atomic read-modify-write helper for flagd JSON flag files.
+Read-modify-write helper for flagd JSON flag files.
 
 Enables services to persist setting changes by updating the defaultVariant
-of a flag in a flagd JSON file. Uses atomic writes (tempfile + os.replace)
-to prevent corruption.
+of a flag in a flagd JSON file. Writes directly to the file because
+os.replace() fails with EBUSY on Docker bind mounts when flagd holds
+an inotify watch on the file.
 """
 
-import contextlib
 import json
 import logging
-import os
-import tempfile
 
 logger = logging.getLogger(__name__)
 
 
 class FlagConfigWriter:
     """
-    Atomic read-modify-write for a single flagd flag file.
+    Read-modify-write for a single flagd flag file.
 
     Each instance manages one flag file (e.g., game_settings.json).
-    Changes are written atomically using a temp file + os.replace,
-    which is safe even if the process crashes mid-write.
+    Writes directly to the file (not via temp + rename) because
+    os.replace() fails with EBUSY on Docker bind mounts.
 
     flagd watches the file via inotify and picks up changes in <100ms.
     """
@@ -40,7 +38,7 @@ class FlagConfigWriter:
         Update the defaultVariant for a flag.
 
         Reads the JSON file, changes the defaultVariant for the specified flag,
-        and writes it back atomically.
+        and writes it back.
 
         Args:
             flag_key: Flag name (e.g., "sensitivity")
@@ -68,19 +66,10 @@ class FlagConfigWriter:
             old_variant = flag.get("defaultVariant")
             flag["defaultVariant"] = variant_name
 
-            # Atomic write: write to temp file in same directory, then rename
-            dir_name = os.path.dirname(self.file_path)
-            fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".json.tmp")
-            try:
-                with os.fdopen(fd, "w") as tmp_f:
-                    json.dump(data, tmp_f, indent=2)
-                    tmp_f.write("\n")  # Trailing newline
-                os.replace(tmp_path, self.file_path)
-            except Exception:
-                # Clean up temp file on error
-                with contextlib.suppress(OSError):
-                    os.unlink(tmp_path)
-                raise
+            # Write directly to the file
+            with open(self.file_path, "w") as f:
+                json.dump(data, f, indent=2)
+                f.write("\n")  # Trailing newline
 
             logger.info(
                 f"Updated flag '{flag_key}' defaultVariant: '{old_variant}' -> '{variant_name}' in {self.file_path}"
