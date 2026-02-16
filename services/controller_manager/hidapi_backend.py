@@ -28,9 +28,8 @@ from lib.controller_constants import (
     normalize_serial,
 )
 from lib.psmove_hid import (
+    ALL_PRODUCT_IDS,
     INPUT_REPORT_SIZE,
-    PRODUCT_ID_ZCM1,
-    PRODUCT_ID_ZCM2,
     VENDOR_ID,
     Button,
     battery_to_percent,
@@ -136,7 +135,7 @@ class HidapiBackend(ControllerBackend):
 
     def _scan_and_open(self) -> None:
         """Enumerate HID devices and open PS Move controllers."""
-        devices = hid.enumerate(VENDOR_ID, PRODUCT_ID_ZCM1) + hid.enumerate(VENDOR_ID, PRODUCT_ID_ZCM2)
+        devices = [d for pid in ALL_PRODUCT_IDS for d in hid.enumerate(VENDOR_ID, pid)]
 
         for dev_info in devices:
             path = dev_info["path"]
@@ -164,7 +163,7 @@ class HidapiBackend(ControllerBackend):
     async def scan_controllers(self) -> list[dict]:
         """Scan for available PS Move controllers."""
         controllers = []
-        devices = hid.enumerate(VENDOR_ID, PRODUCT_ID_ZCM1) + hid.enumerate(VENDOR_ID, PRODUCT_ID_ZCM2)
+        devices = [d for pid in ALL_PRODUCT_IDS for d in hid.enumerate(VENDOR_ID, pid)]
 
         for dev_info in devices:
             serial = dev_info.get("serial_number", "")
@@ -188,7 +187,7 @@ class HidapiBackend(ControllerBackend):
             return True
 
         # Search for the device
-        devices = hid.enumerate(VENDOR_ID, PRODUCT_ID_ZCM1) + hid.enumerate(VENDOR_ID, PRODUCT_ID_ZCM2)
+        devices = [d for pid in ALL_PRODUCT_IDS for d in hid.enumerate(VENDOR_ID, pid)]
 
         for dev_info in devices:
             serial = dev_info.get("serial_number", "")
@@ -424,7 +423,7 @@ class HidapiBackend(ControllerBackend):
         """
         if force_rescan:
             # Re-enumerate to find new controllers
-            devices = hid.enumerate(VENDOR_ID, PRODUCT_ID_ZCM1) + hid.enumerate(VENDOR_ID, PRODUCT_ID_ZCM2)
+            devices = [d for pid in ALL_PRODUCT_IDS for d in hid.enumerate(VENDOR_ID, pid)]
             current_paths = set()
 
             for dev_info in devices:
