@@ -4,6 +4,11 @@ through ControllerIOAdapter instances with centralized state tracking.
 
 LED state, rumble, and effect tracking are centralized here instead of
 being duplicated across each backend.
+
+Adapter routing uses OpenFeature targeting via the ``controller_adapter_routing``
+flag to decide which adapter handles each controller when multiple adapters
+discover the same serial.  Changing the flag value takes effect on the next
+discovery cycle — no reconnect needed.
 """
 
 from __future__ import annotations
@@ -52,6 +57,11 @@ class MultiplexerBackend(ControllerBackend):
         self._last_led_update: dict[str, float] = {}
         self._effect_active: set[str] = set()
         self._led_lock = threading.Lock()
+
+        # Build adapter_type -> adapter lookup for targeting resolution
+        self._adapter_by_type: dict[str, ControllerIOAdapter] = {}
+        for adapter in self._adapters:
+            self._adapter_by_type[adapter.adapter_type] = adapter
 
         adapter_names = [a.adapter_type for a in self._adapters]
         logger.info(f"MultiplexerBackend created with adapters: {adapter_names}")
@@ -103,22 +113,94 @@ class MultiplexerBackend(ControllerBackend):
         self._effect_active.clear()
 
     def get_connected_controllers(self, force_rescan: bool = False) -> list[str]:
-        seen = self._discover_all_adapters(force_rescan)
+        seen = self._route_controllers(force_rescan)
         self._serial_to_adapter = seen
         self._cleanup_stale_state(seen)
         self._update_controller_metrics(seen)
         return list(seen.keys())
 
-    def _discover_all_adapters(self, force: bool) -> dict[str, ControllerIOAdapter]:
-        """Discover controllers from all adapters, opening new ones."""
-        seen: dict[str, ControllerIOAdapter] = {}
+    def _route_controllers(self, force: bool) -> dict[str, ControllerIOAdapter]:
+        """Discover controllers from all adapters, then route via targeting.
+
+        Phase 1: All adapters discover independently (opens handles for new serials).
+        Phase 2: For each serial found by multiple adapters, evaluate the
+        ``controller_adapter_routing`` flag to pick the preferred adapter.
+        """
+        # Phase 1: discover — build serial -> list[adapter]
+        adapter_serials: dict[str, list[ControllerIOAdapter]] = {}
         for adapter in self._adapters:
             for serial in adapter.discover(force=force):
-                if serial not in seen:
-                    seen[serial] = adapter
-                    if serial not in self._serial_to_adapter:
-                        adapter.open(serial)
+                adapter_serials.setdefault(serial, []).append(adapter)
+                # Open handle if this adapter hasn't seen it before
+                if self._serial_to_adapter.get(serial) is not adapter:
+                    adapter.open(serial)
+
+        # Phase 2: route each serial
+        seen: dict[str, ControllerIOAdapter] = {}
+        for serial, discoverers in adapter_serials.items():
+            # Mock-only controllers skip targeting
+            if all(a.adapter_type == "mock" for a in discoverers):
+                seen[serial] = discoverers[0]
+                metrics.controller_routing_decisions_total.labels(
+                    serial=serial,
+                    adapter=discoverers[0].adapter_type,
+                    method="default",
+                ).inc()
+                continue
+
+            real = [a for a in discoverers if a.adapter_type != "mock"]
+            preferred = self._resolve_adapter_for_serial(serial)
+
+            if preferred and preferred in discoverers:
+                seen[serial] = preferred
+                method = "targeted"
+            elif len(real) == 1:
+                seen[serial] = real[0]
+                method = "default"
+            else:
+                seen[serial] = real[0]
+                method = "fallback"
+
+            metrics.controller_routing_decisions_total.labels(
+                serial=serial,
+                adapter=seen[serial].adapter_type,
+                method=method,
+            ).inc()
+
+            # Log dynamic switch
+            old = self._serial_to_adapter.get(serial)
+            if old and old is not seen[serial]:
+                logger.info(f"Switched {serial}: {old.adapter_type} -> {seen[serial].adapter_type}")
+
         return seen
+
+    def _resolve_adapter_for_serial(self, serial: str) -> ControllerIOAdapter | None:
+        """Evaluate the controller_adapter_routing flag for a serial.
+
+        Returns the matching adapter instance, or None if targeting is
+        unavailable, errors, or the result doesn't match any adapter.
+        """
+        try:
+            from openfeature.evaluation_context import EvaluationContext
+
+            from lib.feature_flags import get_flag_client
+
+            client = get_flag_client("performance")
+            adapter_type = client.get_string_value(
+                "controller_adapter_routing",
+                "",
+                EvaluationContext(targeting_key=serial),
+            )
+            if adapter_type:
+                return self._adapter_by_type.get(adapter_type)
+        except Exception:
+            logger.debug(f"Failed to evaluate controller_adapter_routing for {serial}", exc_info=True)
+        return None
+
+    def get_adapter_type(self, serial: str) -> str:
+        """Return the adapter_type string for a tracked serial."""
+        adapter = self._serial_to_adapter.get(serial)
+        return adapter.adapter_type if adapter else "unknown"
 
     def _cleanup_stale_state(self, seen: dict[str, ControllerIOAdapter]) -> None:
         """Remove centralized state for controllers no longer present."""
@@ -226,7 +308,20 @@ class MultiplexerBackend(ControllerBackend):
             self._effect_active.discard(serial)
 
     async def connect_controller(self, address: str) -> bool:
+        # Try targeted adapter first
+        preferred = self._resolve_adapter_for_serial(address)
+        if preferred:
+            try:
+                if preferred.open(address):
+                    self._serial_to_adapter[address] = preferred
+                    return True
+            except Exception:
+                logger.exception(f"connect_controller targeted failed for {preferred.adapter_type}")
+
+        # Fall back to iteration order
         for adapter in self._adapters:
+            if adapter is preferred:
+                continue  # Already tried
             try:
                 if adapter.open(address):
                     self._serial_to_adapter[address] = adapter

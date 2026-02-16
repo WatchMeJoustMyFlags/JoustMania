@@ -72,6 +72,7 @@ class ControllerInfoKey(StrEnum):
     ADDRESS = "address"
     NAME = "name"
     PAIRED = "paired"
+    ADAPTER = "adapter"  # Which adapter handles this controller (psmove, hidapi, mock)
 
 
 class LobbyState(StrEnum):

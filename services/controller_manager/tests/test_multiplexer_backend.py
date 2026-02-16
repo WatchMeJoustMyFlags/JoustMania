@@ -108,13 +108,14 @@ class TestMultiplexerGetConnectedControllers:
 
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_deduplicates_across_adapters(self, mock_metrics):
-        a1 = _make_adapter("mock", serials=["AA:AA"])
+        a1 = _make_adapter("psmove", serials=["AA:AA"])
         a2 = _make_adapter("hidapi", serials=["AA:AA"])
         mux = MultiplexerBackend(adapters=[a1, a2])
 
         result = mux.get_connected_controllers()
 
         assert result == ["AA:AA"]
+        # With no targeting, first real adapter wins
         assert mux._serial_to_adapter["AA:AA"] is a1
 
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
@@ -400,3 +401,208 @@ class TestMultiplexerScanControllers:
         result = await mux.scan_controllers()
 
         assert len(result) == 2
+
+
+class TestRouteControllers:
+    """Tests for OpenFeature targeting-based adapter routing."""
+
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_targeting_routes_to_preferred_adapter(self, mock_metrics):
+        """When targeting returns 'hidapi', that adapter should be chosen."""
+        a1 = _make_adapter("psmove", serials=["AA:AA"])
+        a2 = _make_adapter("hidapi", serials=["AA:AA"])
+        mux = MultiplexerBackend(adapters=[a1, a2])
+
+        with patch.object(mux, "_resolve_adapter_for_serial", return_value=a2):
+            result = mux.get_connected_controllers()
+
+        assert result == ["AA:AA"]
+        assert mux._serial_to_adapter["AA:AA"] is a2
+
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_fallback_when_preferred_not_in_discoverers(self, mock_metrics):
+        """If targeting returns an adapter that didn't discover the serial, fall back."""
+        a1 = _make_adapter("psmove", serials=["AA:AA"])
+        a2 = _make_adapter("hidapi", serials=[])  # hidapi didn't find it
+        mux = MultiplexerBackend(adapters=[a1, a2])
+
+        with patch.object(mux, "_resolve_adapter_for_serial", return_value=a2):
+            result = mux.get_connected_controllers()
+
+        assert result == ["AA:AA"]
+        assert mux._serial_to_adapter["AA:AA"] is a1  # Falls back to psmove
+
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_mock_excluded_from_targeting(self, mock_metrics):
+        """Mock-only controllers skip targeting entirely."""
+        a1 = _make_adapter("mock", serials=["MOCK01"])
+        a2 = _make_adapter("hidapi", serials=[])
+        mux = MultiplexerBackend(adapters=[a1, a2])
+
+        resolve_mock = MagicMock()
+        with patch.object(mux, "_resolve_adapter_for_serial", resolve_mock):
+            result = mux.get_connected_controllers()
+
+        assert result == ["MOCK01"]
+        assert mux._serial_to_adapter["MOCK01"] is a1
+        resolve_mock.assert_not_called()
+
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_dynamic_switch_logs(self, mock_metrics, caplog):
+        """Switching adapter mid-session should log the change."""
+        import logging
+
+        caplog.set_level(logging.INFO)
+        a1 = _make_adapter("psmove", serials=["AA:AA"])
+        a2 = _make_adapter("hidapi", serials=["AA:AA"])
+        mux = MultiplexerBackend(adapters=[a1, a2])
+
+        # First discovery: route to psmove (no targeting)
+        with patch.object(mux, "_resolve_adapter_for_serial", return_value=None):
+            mux.get_connected_controllers()
+
+        assert mux._serial_to_adapter["AA:AA"] is a1
+
+        # Second discovery: targeting switches to hidapi
+        with patch.object(mux, "_resolve_adapter_for_serial", return_value=a2):
+            mux.get_connected_controllers()
+
+        assert mux._serial_to_adapter["AA:AA"] is a2
+        assert "Switched AA:AA: psmove -> hidapi" in caplog.text
+
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_different_serials_to_different_adapters(self, mock_metrics):
+        """Each serial can route to a different adapter independently."""
+        a1 = _make_adapter("psmove", serials=["AA:AA", "BB:BB"])
+        a2 = _make_adapter("hidapi", serials=["AA:AA", "BB:BB"])
+        mux = MultiplexerBackend(adapters=[a1, a2])
+
+        def route(serial):
+            return a2 if serial == "AA:AA" else a1
+
+        with patch.object(mux, "_resolve_adapter_for_serial", side_effect=route):
+            mux.get_connected_controllers()
+
+        assert mux._serial_to_adapter["AA:AA"] is a2
+        assert mux._serial_to_adapter["BB:BB"] is a1
+
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_single_real_adapter_skips_targeting(self, mock_metrics):
+        """When only one real adapter discovers a serial, use it directly."""
+        a1 = _make_adapter("psmove", serials=["AA:AA"])
+        a2 = _make_adapter("hidapi", serials=[])
+        mux = MultiplexerBackend(adapters=[a1, a2])
+
+        # _resolve returns None — but only one real adapter found it
+        with patch.object(mux, "_resolve_adapter_for_serial", return_value=None):
+            mux.get_connected_controllers()
+
+        assert mux._serial_to_adapter["AA:AA"] is a1
+
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_opens_handles_for_all_discovering_adapters(self, mock_metrics):
+        """Both adapters should get open() called so they have handles ready."""
+        a1 = _make_adapter("psmove", serials=["AA:AA"])
+        a2 = _make_adapter("hidapi", serials=["AA:AA"])
+        mux = MultiplexerBackend(adapters=[a1, a2])
+
+        with patch.object(mux, "_resolve_adapter_for_serial", return_value=a1):
+            mux.get_connected_controllers()
+
+        a1.open.assert_called_with("AA:AA")
+        a2.open.assert_called_with("AA:AA")
+
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_routing_metric_incremented(self, mock_metrics):
+        """Routing decisions should increment the counter metric."""
+        a1 = _make_adapter("psmove", serials=["AA:AA"])
+        a2 = _make_adapter("hidapi", serials=["AA:AA"])
+        mux = MultiplexerBackend(adapters=[a1, a2])
+
+        with patch.object(mux, "_resolve_adapter_for_serial", return_value=a2):
+            mux.get_connected_controllers()
+
+        mock_metrics.controller_routing_decisions_total.labels.assert_any_call(
+            serial="AA:AA",
+            adapter="hidapi",
+            method="targeted",
+        )
+
+
+class TestResolveAdapterForSerial:
+    """Tests for flag evaluation in _resolve_adapter_for_serial."""
+
+    def test_returns_matching_adapter(self):
+        a1 = _make_adapter("psmove")
+        a2 = _make_adapter("hidapi")
+        mux = MultiplexerBackend(adapters=[a1, a2])
+
+        mock_client = MagicMock()
+        mock_client.get_string_value.return_value = "hidapi"
+
+        with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
+            result = mux._resolve_adapter_for_serial("AA:AA")
+
+        assert result is a2
+
+    def test_returns_none_when_no_match(self):
+        a1 = _make_adapter("psmove")
+        mux = MultiplexerBackend(adapters=[a1])
+
+        mock_client = MagicMock()
+        mock_client.get_string_value.return_value = "nonexistent"
+
+        with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
+            result = mux._resolve_adapter_for_serial("AA:AA")
+
+        assert result is None
+
+    def test_returns_none_when_empty_value(self):
+        a1 = _make_adapter("psmove")
+        mux = MultiplexerBackend(adapters=[a1])
+
+        mock_client = MagicMock()
+        mock_client.get_string_value.return_value = ""
+
+        with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
+            result = mux._resolve_adapter_for_serial("AA:AA")
+
+        assert result is None
+
+    def test_returns_none_on_exception(self):
+        a1 = _make_adapter("psmove")
+        mux = MultiplexerBackend(adapters=[a1])
+
+        with patch("lib.feature_flags.get_flag_client", side_effect=RuntimeError("flagd down")):
+            result = mux._resolve_adapter_for_serial("AA:AA")
+
+        assert result is None
+
+    def test_passes_serial_as_targeting_key(self):
+        a1 = _make_adapter("psmove")
+        mux = MultiplexerBackend(adapters=[a1])
+
+        mock_client = MagicMock()
+        mock_client.get_string_value.return_value = "psmove"
+
+        with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
+            mux._resolve_adapter_for_serial("E0AE5EE111AB")
+
+        call_args = mock_client.get_string_value.call_args
+        ctx = call_args[0][2]  # Third positional arg is the EvaluationContext
+        assert ctx.targeting_key == "E0AE5EE111AB"
+
+
+class TestGetAdapterType:
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_returns_adapter_type_for_known_serial(self, mock_metrics):
+        a1 = _make_adapter("hidapi", serials=["AA:AA"])
+        mux = MultiplexerBackend(adapters=[a1])
+        mux.get_connected_controllers()
+
+        assert mux.get_adapter_type("AA:AA") == "hidapi"
+
+    def test_returns_unknown_for_missing_serial(self):
+        mux = MultiplexerBackend(adapters=[_make_adapter()])
+
+        assert mux.get_adapter_type("ZZ:ZZ") == "unknown"
