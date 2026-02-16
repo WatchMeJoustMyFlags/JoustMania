@@ -91,7 +91,7 @@ class TestHidapiAdapterInit:
 class TestDiscover:
     @patch("services.controller_manager.multiplexer.hidapi_adapter.hid")
     def test_discover_opens_new_devices(self, mock_hid):
-        """discover() should enumerate ZCM1+ZCM2 and open new controllers."""
+        """discover() should enumerate all PS Move product IDs and open new controllers."""
         mock_device = MagicMock()
         mock_hid.enumerate.return_value = [_make_dev_info()]
         mock_hid.Device.return_value = mock_device
@@ -99,7 +99,7 @@ class TestDiscover:
         adapter = HidapiAdapter()
         serials = adapter.discover()
 
-        assert mock_hid.enumerate.call_count == 2  # ZCM1 + ZCM2
+        assert mock_hid.enumerate.call_count == 3  # ZCM1 + ZCM2 + ZCM2E
         assert FAKE_SERIAL_NORMALIZED in serials
         mock_hid.Device.assert_called_once_with(path=FAKE_PATH_1)
         assert mock_device.nonblocking is True
@@ -198,6 +198,7 @@ class TestDiscover:
         mock_hid.enumerate.side_effect = [
             [_make_dev_info(FAKE_PATH_1, FAKE_SERIAL_RAW)],
             [_make_dev_info(FAKE_PATH_2, FAKE_SERIAL_2_RAW)],
+            [],  # ZCM2E returns nothing
         ]
         mock_hid.Device.return_value = MagicMock()
 
@@ -599,6 +600,7 @@ class TestClose:
         mock_hid.enumerate.side_effect = [
             [_make_dev_info(FAKE_PATH_1, FAKE_SERIAL_RAW)],
             [_make_dev_info(FAKE_PATH_2, FAKE_SERIAL_2_RAW)],
+            [],  # ZCM2E returns nothing
         ]
         mock_hid.Device.side_effect = [mock_device_1, mock_device_2]
         mock_build.return_value = b"\x00" * 49

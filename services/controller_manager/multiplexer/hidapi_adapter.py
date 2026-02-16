@@ -13,9 +13,8 @@ import hidraw as hid  # hidraw backend sees Bluetooth HID devices (libusb backen
 
 from lib.controller_constants import AxisKey, ButtonKey, StateKey
 from lib.psmove_hid import (
+    ALL_PRODUCT_IDS,
     INPUT_REPORT_SIZE,
-    PRODUCT_ID_ZCM1,
-    PRODUCT_ID_ZCM2,
     VENDOR_ID,
     Button,
     battery_to_percent,
@@ -66,7 +65,7 @@ class HidapiAdapter(ControllerIOAdapter):
 
     def _enumerate_and_open_new(self) -> set[str]:
         """Enumerate HID devices, open new ones. Returns set of current device paths."""
-        devices = hid.enumerate(VENDOR_ID, PRODUCT_ID_ZCM1) + hid.enumerate(VENDOR_ID, PRODUCT_ID_ZCM2)
+        devices = [d for pid in ALL_PRODUCT_IDS for d in hid.enumerate(VENDOR_ID, pid)]
         current_paths: set[str] = set()
 
         for dev_info in devices:
@@ -106,7 +105,7 @@ class HidapiAdapter(ControllerIOAdapter):
         if serial in self._devices:
             return True
 
-        devices = hid.enumerate(VENDOR_ID, PRODUCT_ID_ZCM1) + hid.enumerate(VENDOR_ID, PRODUCT_ID_ZCM2)
+        devices = [d for pid in ALL_PRODUCT_IDS for d in hid.enumerate(VENDOR_ID, pid)]
         for dev_info in devices:
             dev_serial = dev_info.get("serial_number", "")
             if not dev_serial:

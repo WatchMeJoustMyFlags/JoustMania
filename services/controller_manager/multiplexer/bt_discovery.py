@@ -116,9 +116,9 @@ class CentralizedBTDiscovery:
         """Scan via hid.enumerate() with BlueZ cross-reference for adapter affinity."""
         import hidraw as hid  # hidraw backend sees Bluetooth HID devices
 
-        from lib.psmove_hid import PRODUCT_ID_ZCM1, PRODUCT_ID_ZCM2, VENDOR_ID
+        from lib.psmove_hid import ALL_PRODUCT_IDS, VENDOR_ID
 
-        devices = hid.enumerate(VENDOR_ID, PRODUCT_ID_ZCM1) + hid.enumerate(VENDOR_ID, PRODUCT_ID_ZCM2)
+        devices = [d for pid in ALL_PRODUCT_IDS for d in hid.enumerate(VENDOR_ID, pid)]
         hid_serials: list[str] = []
         seen: set[str] = set()
         for dev_info in devices:

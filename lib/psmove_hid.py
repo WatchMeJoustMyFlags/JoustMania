@@ -20,6 +20,8 @@ from enum import IntEnum, IntFlag
 VENDOR_ID = 0x054C  # Sony
 PRODUCT_ID_ZCM1 = 0x03D5  # PS Move (PS3 era, ZCM1)
 PRODUCT_ID_ZCM2 = 0x042F  # PS Move (PS4 era, ZCM2)
+PRODUCT_ID_ZCM2E = 0x0C5E  # PS Move (PS4 era, ZCM2E variant)
+ALL_PRODUCT_IDS = (PRODUCT_ID_ZCM1, PRODUCT_ID_ZCM2, PRODUCT_ID_ZCM2E)
 
 # HID report sizes
 INPUT_REPORT_SIZE = 49

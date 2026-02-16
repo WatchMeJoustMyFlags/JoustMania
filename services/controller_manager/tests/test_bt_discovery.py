@@ -267,6 +267,7 @@ class TestHidapiMode:
         mock_hid.enumerate.side_effect = [
             [{"serial_number": "00:06:F7:AA:BB:CC"}, {"serial_number": "00:06:F7:DD:EE:FF"}],
             [],  # ZCM2 returns nothing
+            [],  # ZCM2E returns nothing
         ]
 
         with (
@@ -289,7 +290,8 @@ class TestHidapiMode:
         mock_hid = MagicMock()
         mock_hid.enumerate.side_effect = [
             [{"serial_number": "0006F7AABBCC"}, {"serial_number": "0006F7DDEEFF"}],
-            [],
+            [],  # ZCM2
+            [],  # ZCM2E
         ]
 
         with (
@@ -316,7 +318,8 @@ class TestHidapiMode:
         mock_hid = MagicMock()
         mock_hid.enumerate.side_effect = [
             [{"serial_number": "0006F7AABBCC"}, {"serial_number": "0006F7AABBCC"}],  # Duplicate
-            [],
+            [],  # ZCM2
+            [],  # ZCM2E
         ]
 
         with (
