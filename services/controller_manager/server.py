@@ -47,7 +47,11 @@ async def serve(port=50052):
     from lib.feature_flags import init_flag_domain, wait_for_provider_ready
 
     init_flag_domain("performance")
-    await wait_for_provider_ready("performance", timeout=10.0)
+    # Wait for flagd to be ready so flag evaluations in create_backend() succeed.
+    # Without this, multiplexer_backend_enabled evaluates to False (default) and
+    # the controller manager falls back to BluetoothBackend instead of MultiplexerBackend.
+    # Deadline must be shorter than the Docker HEALTHCHECK window (start_period + retries * interval).
+    await wait_for_provider_ready("performance", deadline_seconds=5.0)
 
     # Initialize OTEL push metrics
     # Export interval read from flagd with per-service targeting (Issue #479)
