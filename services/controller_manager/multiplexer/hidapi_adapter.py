@@ -58,7 +58,9 @@ class HidapiAdapter(ControllerIOAdapter):
         stale = []
         for serial, device in self._devices.items():
             try:
-                device.read(0)  # Non-blocking check
+                device.read(64)  # Non-blocking health check
+            except BlockingIOError:
+                pass  # No data available is fine — device is healthy
             except OSError:
                 stale.append(serial)
         for serial in stale:
@@ -137,7 +139,10 @@ class HidapiAdapter(ControllerIOAdapter):
             # Read all available reports, keep the latest
             data = None
             while True:
-                report = device.read(INPUT_REPORT_SIZE)
+                try:
+                    report = device.read(INPUT_REPORT_SIZE)
+                except BlockingIOError:
+                    break  # No more data available (hidraw non-blocking)
                 if not report:
                     break
                 data = report

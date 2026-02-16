@@ -485,8 +485,14 @@ class DiscoveryLoop:
         Phase 57: Simplified to use backend for state tracking.
         """
         try:
-            # Get initial state from backend
-            state = await self.backend.get_controller_state(serial)
+            # Get initial state from backend (retry briefly — hidraw non-blocking
+            # read may return empty immediately after open_path)
+            state = None
+            for _attempt in range(5):
+                state = await self.backend.get_controller_state(serial)
+                if state:
+                    break
+                await asyncio.sleep(0.02)  # 20ms between retries
 
             if not state:
                 logger.error(f"Failed to get initial state for controller {serial}")

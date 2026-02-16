@@ -235,7 +235,10 @@ class HidapiBackend(ControllerBackend):
             # Read all available reports, keep the latest
             data = None
             while True:
-                report = device.read(INPUT_REPORT_SIZE)
+                try:
+                    report = device.read(INPUT_REPORT_SIZE)
+                except BlockingIOError:
+                    break  # No more data available (hidraw non-blocking)
                 if not report:
                     break
                 data = report
