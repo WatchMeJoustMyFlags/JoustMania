@@ -86,6 +86,59 @@ Uses `hid` (hidapi) library. Reads HID input reports via `device.read()`, parses
 
 Simulated I/O for testing without hardware. Extra methods for `MockControllerService`: `add_controller()`, `remove_controller()`, `add_observer()`, `get_led_color()`.
 
+### ChaosAdapter (Fault Injection)
+
+**File**: `multiplexer/chaos_adapter.py`
+
+Decorator that wraps any adapter to inject configurable faults for resilience testing. Uses OpenFeature fractional targeting with controller serial as `targetingKey` — flagd's consistent hashing makes targeting sticky (same serial always gets the same fault).
+
+```
+┌──────────────────┐     ┌───────────────┐
+│  ChaosAdapter    │────▶│  Inner Adapter │
+│  (decorator)     │     │  (any type)    │
+│                  │     └───────────────┘
+│  fault_map:      │
+│    S1 → poll_drop│
+│    S2 → none     │
+│    S3 → disconnect│
+└──────────────────┘
+```
+
+**Fault types:**
+
+| Fault | `poll()` | `set_output()` | `discover()` |
+|-------|----------|-----------------|---------------|
+| `none` | passthrough | passthrough | passthrough |
+| `poll_drop` | 30% chance → `None` | passthrough | passthrough |
+| `accel_spike` | 5% chance → high accel | passthrough | passthrough |
+| `led_failure` | passthrough | 50% chance → `False` | passthrough |
+| `disconnect` | always `None` | always `False` | excludes serial |
+
+**Activation:** ChaosAdapter is automatically wrapped around non-mock adapters when the `chaos_fault_type` flag exists in flagd. By default (variant `"none"`), no faults are injected — it's a pure passthrough. To activate faults, add fractional targeting to the flag:
+
+```json
+"chaos_fault_type": {
+  "state": "ENABLED",
+  "variants": {
+    "poll_drop": "poll_drop",
+    "accel_spike": "accel_spike",
+    "led_failure": "led_failure",
+    "disconnect": "disconnect",
+    "none": "none"
+  },
+  "defaultVariant": "none",
+  "targeting": {
+    "fractional": [["poll_drop", 10], ["disconnect", 5], ["none", 85]]
+  }
+}
+```
+
+This would make ~10% of controllers experience poll drops, ~5% appear disconnected, and 85% behave normally. Because flagd uses consistent hashing on the targeting key (controller serial), each controller is stickily assigned to a fault bucket.
+
+**Reactive updates:** ChaosAdapter registers a `PROVIDER_CONFIGURATION_CHANGED` listener. When you edit the targeting in flagd, all known controllers are re-evaluated within ~100ms — no restart needed.
+
+**Metrics:** `controller_chaos_faults_injected_total{fault="..."}` counts every injected fault.
+
 ## Multi-Adapter Support
 
 The `controller_backend` flag accepts comma-separated values to run multiple adapters simultaneously:
@@ -125,6 +178,7 @@ If the flagd flag is empty or flagd is unavailable, the system defaults to `Blue
 | `controller_backend` | performance | `bluetooth`, `mock`, `hidapi`, comma-separated | `bluetooth` | Select backend(s) |
 | `multiplexer_backend_enabled` | performance | `true`, `false` | `false` | Use adapter-based multiplexer |
 | `mock_controller_count` | performance | 2, 4, 6, 8 | 4 | Mock controllers count |
+| `chaos_fault_type` | performance | `none`, `poll_drop`, `accel_spike`, `led_failure`, `disconnect` | `none` | Fault injection (use fractional targeting) |
 
 ## Docker Compose Integration
 

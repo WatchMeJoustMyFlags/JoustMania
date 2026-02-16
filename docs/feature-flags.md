@@ -192,6 +192,7 @@ Or view in Grafana's **Feature Flags** dashboard at `http://localhost:3000`.
 | `streaming_mode` | string | standard, filtered, aggressive | Controller data streaming mode |
 | `sensitivity_mode` | string | low, medium, high | Death detection sensitivity |
 | `enable_adaptive_rewards` | boolean | true, false | Enable dynamic reward scaling |
+| `chaos_fault_type` | string | none, poll_drop, accel_spike, led_failure, disconnect | Chaos fault injection for controllers (see [ChaosAdapter](architecture/controller-backends.md#chaosadapter-fault-injection)) |
 
 ### Game Settings Flags (`services/flagd/game_settings.json`)
 
