@@ -185,4 +185,4 @@ Connections:
 
         with patch("psmove_pairing.bluetooth_monitor.run_command", runner):
             await bt_monitor.monitor()
-            assert ("00:06:f7:aa:bb:cc", "hci0") in bt_monitor._known_devices
+            assert ("0006F7AABBCC", "hci0") in bt_monitor._known_devices
