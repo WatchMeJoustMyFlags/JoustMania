@@ -224,7 +224,7 @@ services:
       resources:
         limits:
           memory: 256m
-          cpus: '1.0'
+          cpus: '3.0'
     logging: *default-logging
 
   # Pairing Daemon - USB controller pairing and Bluetooth monitoring
