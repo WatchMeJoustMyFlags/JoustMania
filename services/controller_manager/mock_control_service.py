@@ -2,7 +2,7 @@
 Mock Controller Control Service for integration testing.
 
 Provides control RPCs for simulating controller behavior during tests.
-Only active when using MockBackend or MockAdapter (Phase 57/Phase 4).
+Only active when using MockAdapter.
 """
 
 import asyncio
@@ -15,7 +15,6 @@ from lib.controller_constants import AxisKey, ButtonKey, StateKey
 from proto import controller_manager_mock_pb2, controller_manager_mock_pb2_grpc
 
 if TYPE_CHECKING:
-    from services.controller_manager.mock_backend import MockBackend
     from services.controller_manager.multiplexer.mock_adapter import MockAdapter
 
 logger = logging.getLogger(__name__)
@@ -24,12 +23,12 @@ logger = logging.getLogger(__name__)
 class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServiceServicer):
     """Service for controlling mock controllers during integration tests."""
 
-    def __init__(self, backend: "MockBackend | MockAdapter"):
+    def __init__(self, backend: "MockAdapter"):
         """
         Initialize mock control service.
 
         Args:
-            backend: MockBackend instance to control
+            backend: MockAdapter instance to control
         """
         self.backend = backend
         self.auto_end_task: asyncio.Task | None = None  # Background task for auto-ending games
