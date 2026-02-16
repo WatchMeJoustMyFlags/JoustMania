@@ -20,7 +20,7 @@ sys.path.insert(0, str(project_root))
 # the real hidapi C extension may not be installed in test environments.
 _mock_hid = ModuleType("hidraw")
 _mock_hid.enumerate = MagicMock(return_value=[])
-_mock_hid.Device = MagicMock
+_mock_hid.device = MagicMock
 sys.modules.setdefault("hidraw", _mock_hid)
 
 from lib.controller_constants import AxisKey, ButtonKey, StateKey  # noqa: E402
@@ -94,21 +94,22 @@ class TestDiscover:
         """discover() should enumerate ZCM1+ZCM2 and open new controllers."""
         mock_device = MagicMock()
         mock_hid.enumerate.return_value = [_make_dev_info()]
-        mock_hid.Device.return_value = mock_device
+        mock_hid.device.return_value = mock_device
 
         adapter = HidapiAdapter()
         serials = adapter.discover()
 
         assert mock_hid.enumerate.call_count == 2  # ZCM1 + ZCM2
         assert FAKE_SERIAL_NORMALIZED in serials
-        mock_hid.Device.assert_called_once_with(path=FAKE_PATH_1)
-        assert mock_device.nonblocking is True
+        mock_hid.device.assert_called_once()
+        mock_device.open_path.assert_called_once_with(FAKE_PATH_1)
+        mock_device.set_nonblocking.assert_called_with(True)
 
     @patch("services.controller_manager.multiplexer.hidapi_adapter.hid")
     def test_discover_normalizes_serial(self, mock_hid):
         """Serials are uppercased and colons removed."""
         mock_hid.enumerate.return_value = [_make_dev_info(serial="aA:bB:cC:01:02:03")]
-        mock_hid.Device.return_value = MagicMock()
+        mock_hid.device.return_value = MagicMock()
 
         adapter = HidapiAdapter()
         serials = adapter.discover()
@@ -126,26 +127,26 @@ class TestDiscover:
         serials = adapter.discover()
 
         assert serials == []
-        mock_hid.Device.assert_not_called()
+        mock_hid.device.assert_not_called()
 
     @patch("services.controller_manager.multiplexer.hidapi_adapter.hid")
     def test_discover_skips_already_opened_device(self, mock_hid):
         """A device already in _devices should not be opened again."""
         mock_hid.enumerate.return_value = [_make_dev_info()]
-        mock_hid.Device.return_value = MagicMock()
+        mock_hid.device.return_value = MagicMock()
 
         adapter = HidapiAdapter()
         adapter.discover()  # First call opens the device
-        mock_hid.Device.reset_mock()
+        mock_hid.device.reset_mock()
 
         adapter.discover()  # Second call should skip
-        mock_hid.Device.assert_not_called()
+        mock_hid.device.assert_not_called()
 
     @patch("services.controller_manager.multiplexer.hidapi_adapter.hid")
     def test_discover_handles_open_failure(self, mock_hid):
-        """If hid.Device() raises, the device is skipped."""
+        """If hid.device() raises, the device is skipped."""
         mock_hid.enumerate.return_value = [_make_dev_info()]
-        mock_hid.Device.side_effect = OSError("permission denied")
+        mock_hid.device.side_effect = OSError("permission denied")
 
         adapter = HidapiAdapter()
         serials = adapter.discover()
@@ -158,7 +159,7 @@ class TestDiscover:
         """Non-force discover verifies existing devices; stale ones are cleaned."""
         mock_device = MagicMock()
         mock_hid.enumerate.return_value = [_make_dev_info()]
-        mock_hid.Device.return_value = mock_device
+        mock_hid.device.return_value = mock_device
 
         adapter = HidapiAdapter()
         adapter.discover()
@@ -166,8 +167,8 @@ class TestDiscover:
         # Now make the device raise on read (simulating disconnect)
         mock_device.read.side_effect = OSError("disconnected")
         mock_hid.enumerate.return_value = [_make_dev_info()]
-        mock_hid.Device.reset_mock()
-        mock_hid.Device.return_value = MagicMock()
+        mock_hid.device.reset_mock()
+        mock_hid.device.return_value = MagicMock()
 
         serials = adapter.discover(force=False)
 
@@ -179,7 +180,7 @@ class TestDiscover:
         """force=True removes devices whose paths are no longer enumerated."""
         mock_device = MagicMock()
         mock_hid.enumerate.return_value = [_make_dev_info()]
-        mock_hid.Device.return_value = mock_device
+        mock_hid.device.return_value = mock_device
 
         adapter = HidapiAdapter()
         adapter.discover()
@@ -199,7 +200,7 @@ class TestDiscover:
             [_make_dev_info(FAKE_PATH_1, FAKE_SERIAL_RAW)],
             [_make_dev_info(FAKE_PATH_2, FAKE_SERIAL_2_RAW)],
         ]
-        mock_hid.Device.return_value = MagicMock()
+        mock_hid.device.return_value = MagicMock()
 
         adapter = HidapiAdapter()
         serials = adapter.discover()
@@ -217,7 +218,7 @@ class TestDiscover:
         adapter.discover(force=False)
 
         # No device read should have been attempted
-        mock_hid.Device.assert_not_called()
+        mock_hid.device.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +231,7 @@ class TestOpen:
     def test_open_already_opened(self, mock_hid):
         """open() returns True immediately if the serial is already tracked."""
         mock_hid.enumerate.return_value = [_make_dev_info()]
-        mock_hid.Device.return_value = MagicMock()
+        mock_hid.device.return_value = MagicMock()
 
         adapter = HidapiAdapter()
         adapter.discover()
@@ -247,21 +248,22 @@ class TestOpen:
         adapter = HidapiAdapter()
         mock_device = MagicMock()
         mock_hid.enumerate.return_value = [_make_dev_info()]
-        mock_hid.Device.return_value = mock_device
+        mock_hid.device.return_value = mock_device
 
         result = adapter.open(FAKE_SERIAL_NORMALIZED)
 
         assert result is True
         assert FAKE_SERIAL_NORMALIZED in adapter._devices
-        mock_hid.Device.assert_called_once_with(path=FAKE_PATH_1)
-        assert mock_device.nonblocking is True
+        mock_hid.device.assert_called_once()
+        mock_device.open_path.assert_called_once_with(FAKE_PATH_1)
+        mock_device.set_nonblocking.assert_called_with(True)
 
     @patch("services.controller_manager.multiplexer.hidapi_adapter.hid")
     def test_open_normalizes_input_serial(self, mock_hid):
         """open() normalizes the input serial for comparison."""
         adapter = HidapiAdapter()
         mock_hid.enumerate.return_value = [_make_dev_info()]
-        mock_hid.Device.return_value = MagicMock()
+        mock_hid.device.return_value = MagicMock()
 
         # Pass serial with colons and lowercase — should still match
         result = adapter.open(FAKE_SERIAL_RAW)
@@ -278,9 +280,9 @@ class TestOpen:
 
     @patch("services.controller_manager.multiplexer.hidapi_adapter.hid")
     def test_open_returns_false_on_device_error(self, mock_hid):
-        """open() returns False if hid.Device() raises."""
+        """open() returns False if hid.device() raises."""
         mock_hid.enumerate.return_value = [_make_dev_info()]
-        mock_hid.Device.side_effect = OSError("cannot open")
+        mock_hid.device.side_effect = OSError("cannot open")
 
         adapter = HidapiAdapter()
         result = adapter.open(FAKE_SERIAL_NORMALIZED)
@@ -293,12 +295,13 @@ class TestOpen:
             {"path": FAKE_PATH_1, "serial_number": ""},
             _make_dev_info(FAKE_PATH_2, FAKE_SERIAL_RAW),
         ]
-        mock_hid.Device.return_value = MagicMock()
+        mock_hid.device.return_value = MagicMock()
 
         adapter = HidapiAdapter()
         result = adapter.open(FAKE_SERIAL_NORMALIZED)
         assert result is True
-        mock_hid.Device.assert_called_once_with(path=FAKE_PATH_2)
+        mock_hid.device.assert_called_once()
+        mock_hid.device.return_value.open_path.assert_called_once_with(FAKE_PATH_2)
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +319,7 @@ class TestPoll:
         # Simulate one report then empty
         mock_device.read.side_effect = [b"\x00" * 49, b""]
         mock_hid.enumerate.return_value = [_make_dev_info()]
-        mock_hid.Device.return_value = mock_device
+        mock_hid.device.return_value = mock_device
 
         parsed = _make_parsed_report(
             buttons=int(Button.MOVE | Button.CROSS),
@@ -368,7 +371,7 @@ class TestPoll:
         report_3 = b"\x03" * 49
         mock_device.read.side_effect = [report_1, report_2, report_3, b""]
         mock_hid.enumerate.return_value = [_make_dev_info()]
-        mock_hid.Device.return_value = mock_device
+        mock_hid.device.return_value = mock_device
 
         mock_parse.return_value = _make_parsed_report()
 
@@ -385,7 +388,7 @@ class TestPoll:
         mock_device = MagicMock()
         mock_device.read.return_value = b""
         mock_hid.enumerate.return_value = [_make_dev_info()]
-        mock_hid.Device.return_value = mock_device
+        mock_hid.device.return_value = mock_device
 
         adapter = HidapiAdapter()
         adapter.discover()
@@ -399,7 +402,7 @@ class TestPoll:
         mock_device = MagicMock()
         mock_device.read.side_effect = OSError("disconnected")
         mock_hid.enumerate.return_value = [_make_dev_info()]
-        mock_hid.Device.return_value = mock_device
+        mock_hid.device.return_value = mock_device
 
         adapter = HidapiAdapter()
         adapter.discover()
@@ -419,7 +422,7 @@ class TestPoll:
         mock_device = MagicMock()
         mock_device.read.side_effect = [b"\x00" * 49, b""]
         mock_hid.enumerate.return_value = [_make_dev_info()]
-        mock_hid.Device.return_value = mock_device
+        mock_hid.device.return_value = mock_device
         mock_parse.side_effect = ValueError("bad parse")
 
         adapter = HidapiAdapter()
@@ -450,7 +453,7 @@ class TestPoll:
         mock_device = MagicMock()
         mock_device.read.side_effect = [b"\x00" * 49, b""]
         mock_hid.enumerate.return_value = [_make_dev_info()]
-        mock_hid.Device.return_value = mock_device
+        mock_hid.device.return_value = mock_device
         mock_parse.return_value = _make_parsed_report(buttons=int(all_buttons))
 
         adapter = HidapiAdapter()
@@ -475,7 +478,7 @@ class TestPoll:
         mock_device = MagicMock()
         mock_device.read.side_effect = [b"\x00" * 49, b""]
         mock_hid.enumerate.return_value = [_make_dev_info()]
-        mock_hid.Device.return_value = mock_device
+        mock_hid.device.return_value = mock_device
         mock_parse.return_value = _make_parsed_report(buttons=0)
 
         adapter = HidapiAdapter()
@@ -505,7 +508,7 @@ class TestSetOutput:
         """set_output() builds an output report and writes it."""
         mock_device = MagicMock()
         mock_hid.enumerate.return_value = [_make_dev_info()]
-        mock_hid.Device.return_value = mock_device
+        mock_hid.device.return_value = mock_device
         fake_report = b"\x02" + b"\x00" * 48
         mock_build.return_value = fake_report
 
@@ -531,7 +534,7 @@ class TestSetOutput:
         """OSError during write triggers _cleanup."""
         mock_device = MagicMock()
         mock_hid.enumerate.return_value = [_make_dev_info()]
-        mock_hid.Device.return_value = mock_device
+        mock_hid.device.return_value = mock_device
         mock_build.return_value = b"\x00" * 49
         mock_device.write.side_effect = OSError("write failed")
 
@@ -550,7 +553,7 @@ class TestSetOutput:
         """A non-OSError returns False but does NOT remove the device."""
         mock_device = MagicMock()
         mock_hid.enumerate.return_value = [_make_dev_info()]
-        mock_hid.Device.return_value = mock_device
+        mock_hid.device.return_value = mock_device
         mock_build.side_effect = RuntimeError("unexpected")
 
         adapter = HidapiAdapter()
@@ -574,7 +577,7 @@ class TestClose:
         """close() removes the device from _devices and _paths, and closes handle."""
         mock_device = MagicMock()
         mock_hid.enumerate.return_value = [_make_dev_info()]
-        mock_hid.Device.return_value = mock_device
+        mock_hid.device.return_value = mock_device
 
         adapter = HidapiAdapter()
         adapter.discover()
@@ -600,7 +603,7 @@ class TestClose:
             [_make_dev_info(FAKE_PATH_1, FAKE_SERIAL_RAW)],
             [_make_dev_info(FAKE_PATH_2, FAKE_SERIAL_2_RAW)],
         ]
-        mock_hid.Device.side_effect = [mock_device_1, mock_device_2]
+        mock_hid.device.side_effect = [mock_device_1, mock_device_2]
         mock_build.return_value = b"\x00" * 49
 
         adapter = HidapiAdapter()
@@ -624,7 +627,7 @@ class TestClose:
         mock_device = MagicMock()
         mock_device.write.side_effect = OSError("write failed")
         mock_hid.enumerate.return_value = [_make_dev_info()]
-        mock_hid.Device.return_value = mock_device
+        mock_hid.device.return_value = mock_device
         mock_build.return_value = b"\x00" * 49
 
         adapter = HidapiAdapter()
@@ -646,7 +649,7 @@ class TestCleanup:
         """_cleanup() removes from both _devices and _paths."""
         mock_device = MagicMock()
         mock_hid.enumerate.return_value = [_make_dev_info()]
-        mock_hid.Device.return_value = mock_device
+        mock_hid.device.return_value = mock_device
 
         adapter = HidapiAdapter()
         adapter.discover()
@@ -662,7 +665,7 @@ class TestCleanup:
         mock_device = MagicMock()
         mock_device.close.side_effect = OSError("close failed")
         mock_hid.enumerate.return_value = [_make_dev_info()]
-        mock_hid.Device.return_value = mock_device
+        mock_hid.device.return_value = mock_device
 
         adapter = HidapiAdapter()
         adapter.discover()
@@ -690,7 +693,7 @@ class TestVerifyExistingDevices:
         mock_device = MagicMock()
         mock_device.read.return_value = b""  # Healthy non-blocking read
         mock_hid.enumerate.return_value = [_make_dev_info()]
-        mock_hid.Device.return_value = mock_device
+        mock_hid.device.return_value = mock_device
 
         adapter = HidapiAdapter()
         adapter.discover()
@@ -703,7 +706,7 @@ class TestVerifyExistingDevices:
         """Devices that raise OSError on read(0) are cleaned up."""
         mock_device = MagicMock()
         mock_hid.enumerate.return_value = [_make_dev_info()]
-        mock_hid.Device.return_value = mock_device
+        mock_hid.device.return_value = mock_device
 
         adapter = HidapiAdapter()
         adapter.discover()
@@ -727,7 +730,7 @@ class TestRemoveDisappearedDevices:
         """Devices whose paths are not in current_paths are removed."""
         mock_device = MagicMock()
         mock_hid.enumerate.return_value = [_make_dev_info()]
-        mock_hid.Device.return_value = mock_device
+        mock_hid.device.return_value = mock_device
 
         adapter = HidapiAdapter()
         adapter.discover()
@@ -741,7 +744,7 @@ class TestRemoveDisappearedDevices:
         """Devices whose paths are in current_paths are kept."""
         mock_device = MagicMock()
         mock_hid.enumerate.return_value = [_make_dev_info()]
-        mock_hid.Device.return_value = mock_device
+        mock_hid.device.return_value = mock_device
 
         adapter = HidapiAdapter()
         adapter.discover()

@@ -365,9 +365,16 @@ class DiscoveryLoop:
 
             # Debug: Log tracked controller count periodically (every 5 seconds)
             if current_time - self._last_controller_count_log >= 5.0:
-                logger.info(
-                    f"Polling {len(all_serials)} controllers at 100Hz, active={active_count}, idle={idle_count}"
-                )
+                adapter_info = ""
+                if hasattr(self.backend, "get_adapter_type"):
+                    adapter_counts: dict[str, int] = {}
+                    for s in all_serials:
+                        atype = self.backend.get_adapter_type(s)
+                        adapter_counts[atype] = adapter_counts.get(atype, 0) + 1
+                    adapter_info = ", adapters=" + "+".join(f"{k}:{v}" for k, v in sorted(adapter_counts.items()))
+                msg = f"Polling {len(all_serials)} controllers at 100Hz"
+                msg += f", active={active_count}, idle={idle_count}{adapter_info}"
+                logger.info(msg)
                 self._last_controller_count_log = current_time
 
             # Parallel polling - read all controllers concurrently
@@ -485,8 +492,14 @@ class DiscoveryLoop:
         Phase 57: Simplified to use backend for state tracking.
         """
         try:
-            # Get initial state from backend
-            state = await self.backend.get_controller_state(serial)
+            # Get initial state from backend (retry briefly — hidraw non-blocking
+            # read may return empty immediately after open_path)
+            state = None
+            for _attempt in range(5):
+                state = await self.backend.get_controller_state(serial)
+                if state:
+                    break
+                await asyncio.sleep(0.02)  # 20ms between retries
 
             if not state:
                 logger.error(f"Failed to get initial state for controller {serial}")

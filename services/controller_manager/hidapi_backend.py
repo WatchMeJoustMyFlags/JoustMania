@@ -61,8 +61,8 @@ class HidapiBackend(ControllerBackend):
     """
 
     def __init__(self):
-        # serial -> hid.Device
-        self.controllers: dict[str, hid.Device] = {}
+        # serial -> hid.device
+        self.controllers: dict[str, hid.device] = {}
         # serial -> device path (for reconnection detection)
         self._device_paths: dict[str, str] = {}
         # LED state tracking
@@ -152,8 +152,9 @@ class HidapiBackend(ControllerBackend):
                 continue
 
             try:
-                device = hid.Device(path=path)
-                device.nonblocking = True
+                device = hid.device()
+                device.open_path(path)
+                device.set_nonblocking(True)
                 self.controllers[serial] = device
                 self._device_paths[serial] = path
                 logger.info(f"Opened PS Move controller: {serial} at {path!r}")
@@ -196,8 +197,9 @@ class HidapiBackend(ControllerBackend):
             serial = serial.upper().replace(":", "")
             if serial == address.upper().replace(":", ""):
                 try:
-                    device = hid.Device(path=dev_info["path"])
-                    device.nonblocking = True
+                    device = hid.device()
+                    device.open_path(dev_info["path"])
+                    device.set_nonblocking(True)
                     self.controllers[serial] = device
                     self._device_paths[serial] = dev_info["path"]
                     logger.info(f"Connected controller {serial}")
@@ -233,9 +235,15 @@ class HidapiBackend(ControllerBackend):
             # Read all available reports, keep the latest
             data = None
             while True:
-                report = device.read(INPUT_REPORT_SIZE)
+                try:
+                    report = device.read(INPUT_REPORT_SIZE)
+                except BlockingIOError:
+                    break  # No more data available (hidraw non-blocking)
                 if not report:
                     break
+                # hidraw returns list of ints; convert to bytes for struct parsing
+                if isinstance(report, list):
+                    report = bytes(report)
                 data = report
 
             if data is None:
@@ -429,8 +437,9 @@ class HidapiBackend(ControllerBackend):
 
                 if serial not in self.controllers:
                     try:
-                        device = hid.Device(path=path)
-                        device.nonblocking = True
+                        device = hid.device()
+                        device.open_path(path)
+                        device.set_nonblocking(True)
                         self.controllers[serial] = device
                         self._device_paths[serial] = path
                         logger.info(f"New controller found during rescan: {serial}")
