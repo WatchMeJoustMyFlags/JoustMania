@@ -125,7 +125,7 @@ class TestMultiplexerGetConnectedControllers:
 
         mux.get_connected_controllers(force_rescan=True)
 
-        a1.discover.assert_called_once_with(force=True)
+        a1.discover.assert_called_once_with(force=True, verify_only=False)
 
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_cleans_stale_state_on_disconnect(self, mock_metrics):
@@ -622,3 +622,83 @@ class TestGetAdapterType:
         mux = MultiplexerBackend(adapters=[_make_adapter()])
 
         assert mux.get_adapter_type("ZZ:ZZ") == "unknown"
+
+
+class TestDiscoveryThrottling:
+    """Tests for verify_only discovery throttling."""
+
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_first_call_is_full_discovery(self, mock_metrics):
+        """First call should always do full discovery (verify_only=False)."""
+        a1 = _make_adapter(serials=["AA:AA"])
+        mux = MultiplexerBackend(adapters=[a1])
+
+        mux.get_connected_controllers()
+
+        a1.discover.assert_called_once_with(force=False, verify_only=False)
+
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_rapid_second_call_uses_verify_only(self, mock_metrics):
+        """Immediate second call should use verify_only=True."""
+        a1 = _make_adapter(serials=["AA:AA"])
+        mux = MultiplexerBackend(adapters=[a1])
+
+        mux.get_connected_controllers()
+        a1.discover.reset_mock()
+
+        mux.get_connected_controllers()
+
+        a1.discover.assert_called_once_with(force=False, verify_only=True)
+
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_force_always_does_full_discovery(self, mock_metrics):
+        """force=True should bypass throttle and use verify_only=False."""
+        a1 = _make_adapter(serials=["AA:AA"])
+        mux = MultiplexerBackend(adapters=[a1])
+
+        # First call to set _last_full_discovery
+        mux.get_connected_controllers()
+        a1.discover.reset_mock()
+
+        # Immediate force call should still do full discovery
+        mux.get_connected_controllers(force_rescan=True)
+
+        a1.discover.assert_called_once_with(force=True, verify_only=False)
+
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_verify_only_still_returns_controllers(self, mock_metrics):
+        """Known controllers should still be reported during verify_only cycles."""
+        a1 = _make_adapter(serials=["AA:AA", "BB:BB"])
+        mux = MultiplexerBackend(adapters=[a1])
+
+        # First call — full discovery
+        result1 = mux.get_connected_controllers()
+        assert sorted(result1) == ["AA:AA", "BB:BB"]
+
+        # Second call — verify_only, but adapter still returns known serials
+        result2 = mux.get_connected_controllers()
+        assert sorted(result2) == ["AA:AA", "BB:BB"]
+
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.time")
+    def test_after_interval_does_full_discovery_again(self, mock_time, mock_metrics):
+        """After the throttle interval elapses, full discovery should run again."""
+        a1 = _make_adapter(serials=["AA:AA"])
+        mux = MultiplexerBackend(adapters=[a1])
+
+        # First call at t=0
+        mock_time.monotonic.return_value = 0.0
+        mock_time.time = MagicMock(return_value=1000.0)
+        mux.get_connected_controllers()
+        a1.discover.reset_mock()
+
+        # Second call at t=0.1 — within interval, should be verify_only
+        mock_time.monotonic.return_value = 0.1
+        mux.get_connected_controllers()
+        a1.discover.assert_called_once_with(force=False, verify_only=True)
+        a1.discover.reset_mock()
+
+        # Third call at t=0.6 — past the 0.5s interval, should be full
+        mock_time.monotonic.return_value = 0.6
+        mux.get_connected_controllers()
+        a1.discover.assert_called_once_with(force=False, verify_only=False)

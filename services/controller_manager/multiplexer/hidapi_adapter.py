@@ -40,15 +40,16 @@ class HidapiAdapter(ControllerIOAdapter):
     def adapter_type(self) -> str:
         return "hidapi"
 
-    def discover(self, force: bool = False) -> list[str]:
+    def discover(self, force: bool = False, verify_only: bool = False) -> list[str]:
         """Enumerate HID devices and open new PS Move controllers."""
         if not force and self._devices:
             self._verify_existing_devices()
 
-        current_paths = self._enumerate_and_open_new()
+        if not verify_only:
+            current_paths = self._enumerate_and_open_new()
 
-        if force:
-            self._remove_disappeared_devices(current_paths)
+            if force:
+                self._remove_disappeared_devices(current_paths)
 
         return list(self._devices.keys())
 
