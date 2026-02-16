@@ -122,6 +122,10 @@ class DiscoveryLoop:
         self._idle_threshold_seconds = 5.0
         self._accel_movement_threshold = 0.05
 
+        # Cached metric label children (Issue #542: avoid 10K+ label lookups/sec)
+        # Populated at spawn, cleaned up on disconnect
+        self._accel_gauges: dict[str, dict] = {}
+
         # Debug logging throttle
         self._last_controller_count_log = 0.0
 
@@ -293,6 +297,7 @@ class DiscoveryLoop:
                 # Activity tracking cleanup
                 self._last_activity_time.pop(serial, None)
                 self._previous_accel.pop(serial, None)
+                self._accel_gauges.pop(serial, None)
                 # Publish disconnect event to button event stream subscribers
                 self.button_detector.publish_connection_event(serial, is_connect=False, name=name)
                 metrics.controller_disconnect_total.labels(serial=serial).inc()
@@ -462,11 +467,15 @@ class DiscoveryLoop:
             import math
 
             magnitude = math.sqrt(ax * ax + ay * ay + az * az)
-            metrics.controller_accel_magnitude.labels(serial=serial).set(magnitude)
-            metrics.prom_controller_accel_magnitude.labels(serial=serial).set(magnitude)
-            metrics.controller_accel_x.labels(serial=serial).set(ax)
-            metrics.controller_accel_y.labels(serial=serial).set(ay)
-            metrics.controller_accel_z.labels(serial=serial).set(az)
+
+            # Issue #542: Use cached label children (avoids 5× label lookup per poll)
+            gauges = self._accel_gauges.get(serial)
+            if gauges:
+                gauges["magnitude"].set(magnitude)
+                gauges["prom_magnitude"].set(magnitude)
+                gauges["x"].set(ax)
+                gauges["y"].set(ay)
+                gauges["z"].set(az)
 
             prev_accel = self._previous_accel.get(serial)
             if prev_accel and not activity_detected:
@@ -541,6 +550,16 @@ class DiscoveryLoop:
             )
 
             logger.info(f"Started tracking controller {serial} ({name})")
+
+            # Cache metric label children for this serial (Issue #542)
+            # Avoids 5× _validate_labels + _make_key per poll cycle per controller
+            self._accel_gauges[serial] = {
+                "magnitude": metrics.controller_accel_magnitude.labels(serial=serial),
+                "prom_magnitude": metrics.prom_controller_accel_magnitude.labels(serial=serial),
+                "x": metrics.controller_accel_x.labels(serial=serial),
+                "y": metrics.controller_accel_y.labels(serial=serial),
+                "z": metrics.controller_accel_z.labels(serial=serial),
+            }
 
             # Update metrics (Phase 38)
             metrics.active_controllers.inc()
