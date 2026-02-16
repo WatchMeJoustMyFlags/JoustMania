@@ -59,14 +59,20 @@ def _build_hid_report(
 
 
 class FakeHidDevice:
-    """Mock hid.Device for testing."""
+    """Mock hid.device for testing (hidraw API)."""
 
-    def __init__(self, path=None):
-        self.path = path
-        self.nonblocking = False
+    def __init__(self):
+        self._path = None
+        self._nonblocking = False
         self._reports = []  # Queue of reports to return from read()
         self._written = []  # Capture write() calls
         self._closed = False
+
+    def open_path(self, path):
+        self._path = path
+
+    def set_nonblocking(self, flag):
+        self._nonblocking = flag
 
     def read(self, size):
         if self._reports:
@@ -90,7 +96,7 @@ def mock_hid():
     """Mock the hid module."""
     mock = MagicMock()
     mock.enumerate.return_value = []
-    mock.Device = FakeHidDevice
+    mock.device = FakeHidDevice
     return mock
 
 
@@ -119,9 +125,9 @@ class TestInitialize:
     @pytest.mark.asyncio
     async def test_initialize_opens_found_controllers(self, mock_hid, backend):
         """Controllers found during init should be opened."""
-        device = FakeHidDevice(path=b"/dev/hidraw0")
+        device = FakeHidDevice()
         mock_hid.enumerate.return_value = [{"path": b"/dev/hidraw0", "serial_number": "AA:BB:CC:DD:EE:FF"}]
-        mock_hid.Device = lambda path=None: device  # noqa: ARG005
+        mock_hid.device = lambda: device
 
         result = await backend.initialize()
         assert result is True
@@ -340,9 +346,9 @@ class TestGetConnectedControllers:
 
     def test_force_rescan_finds_new_controllers(self, backend, mock_hid):
         """Force rescan should enumerate and open new controllers."""
-        device = FakeHidDevice(path=b"/dev/hidraw1")
+        device = FakeHidDevice()
         mock_hid.enumerate.return_value = [{"path": b"/dev/hidraw1", "serial_number": "11:22:33:44:55:66"}]
-        mock_hid.Device = lambda path=None: device  # noqa: ARG005
+        mock_hid.device = lambda: device
 
         result = backend.get_connected_controllers(force_rescan=True)
         assert "112233445566" in result

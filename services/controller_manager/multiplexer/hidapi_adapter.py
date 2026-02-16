@@ -34,7 +34,7 @@ class HidapiAdapter(ControllerIOAdapter):
     """I/O adapter using hidapi for PS Move controllers via HID reports."""
 
     def __init__(self):
-        self._devices: dict[str, hid.Device] = {}
+        self._devices: dict[str, hid.device] = {}
         self._paths: dict[str, str] = {}
 
     @property
@@ -86,8 +86,9 @@ class HidapiAdapter(ControllerIOAdapter):
     def _try_open_device(self, serial: str, path: str) -> None:
         """Attempt to open a single HID device."""
         try:
-            device = hid.Device(path=path)
-            device.nonblocking = True
+            device = hid.device()
+            device.open_path(path)
+            device.set_nonblocking(True)
             self._devices[serial] = device
             self._paths[serial] = path
             logger.info(f"Opened PS Move controller: {serial} at {path!r}")
@@ -114,8 +115,9 @@ class HidapiAdapter(ControllerIOAdapter):
             dev_serial = dev_serial.upper().replace(":", "")
             if dev_serial == serial.upper().replace(":", ""):
                 try:
-                    device = hid.Device(path=dev_info["path"])
-                    device.nonblocking = True
+                    device = hid.device()
+                    device.open_path(dev_info["path"])
+                    device.set_nonblocking(True)
                     self._devices[serial] = device
                     self._paths[serial] = dev_info["path"]
                     return True
