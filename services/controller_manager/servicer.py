@@ -604,3 +604,39 @@ def _on_performance_flags_changed(event_details) -> None:
             metrics.stream_current_frequency_hz.set(new_hz)
     except Exception as e:
         logger.warning(f"Failed to read frequency flag: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Flagd routing override — force rescan when controller_adapter_routing changes
+# ---------------------------------------------------------------------------
+
+_routing_listener_initialized = False
+_routing_rescan_timer: PeriodicRescanTimer | None = None
+
+
+def init_routing_listener(rescan_timer: PeriodicRescanTimer) -> None:
+    """Register event handler for controller_adapter_routing flag changes."""
+    global _routing_listener_initialized, _routing_rescan_timer
+    if _routing_listener_initialized:
+        return
+
+    from openfeature.provider import ProviderEvent
+
+    from lib.feature_flags import get_flag_client
+
+    _routing_rescan_timer = rescan_timer
+    client = get_flag_client("performance")
+    client.add_handler(ProviderEvent.PROVIDER_CONFIGURATION_CHANGED, _on_routing_flag_changed)
+    _routing_listener_initialized = True
+    logger.info("Routing flag listener registered on performance client")
+
+
+def _on_routing_flag_changed(event_details) -> None:
+    """Force immediate rescan when controller_adapter_routing changes."""
+    changed = getattr(event_details, "flags_changed", None)
+    if changed is not None and "controller_adapter_routing" not in changed:
+        return
+
+    logger.info("controller_adapter_routing flag changed — forcing immediate rescan")
+    if _routing_rescan_timer:
+        _routing_rescan_timer.force_next_rescan()

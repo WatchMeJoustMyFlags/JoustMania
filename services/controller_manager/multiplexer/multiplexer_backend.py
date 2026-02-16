@@ -154,6 +154,13 @@ class MultiplexerBackend(ControllerBackend):
             if preferred and preferred in discoverers:
                 seen[serial] = preferred
                 method = "targeted"
+            elif preferred and preferred not in discoverers:
+                logger.warning(
+                    f"Preferred adapter '{preferred.adapter_type}' for {serial} "
+                    f"not in discoverers {[a.adapter_type for a in discoverers]} — using fallback"
+                )
+                seen[serial] = real[0]
+                method = "fallback"
             elif len(real) == 1:
                 seen[serial] = real[0]
                 method = "default"
