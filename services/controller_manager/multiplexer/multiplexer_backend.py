@@ -254,16 +254,9 @@ class MultiplexerBackend(ControllerBackend):
                     metrics.controller_adapter_info.labels(serial=serial, adapter=hci).set(1)
 
     def update_all_leds(self) -> int:
-        """Centralized LED refresh with keep-alive and color-change detection.
-
-        Collects pending updates outside the lock (pure reads), then acquires
-        _led_lock once for the entire batch of set_output() calls + bookkeeping.
-        This prevents concurrent USB writes with set_led_color()/set_rumble().
-        """
+        """Centralized LED refresh with keep-alive and color-change detection."""
         current_time = time.time()
-
-        # Phase 1: Collect updates outside lock (pure reads, no I/O)
-        batch: list[tuple[str, ControllerIOAdapter, int, int, int, int]] = []
+        updated_count = 0
 
         # list() is intentional — dict may be modified by concurrent disconnect
         for serial, stored_color in list(self._led_colors.items()):  # NOSONAR(S7504)
@@ -274,33 +267,27 @@ class MultiplexerBackend(ControllerBackend):
             if not adapter:
                 continue
 
-            last_sent = self._last_sent_color.get(serial)
-            last_update = self._last_led_update.get(serial, 0)
+            try:
+                last_sent = self._last_sent_color.get(serial)
+                last_update = self._last_led_update.get(serial, 0)
 
-            color_changed = stored_color != last_sent
-            keepalive_needed = current_time - last_update >= 2.0
+                color_changed = stored_color != last_sent
+                keepalive_needed = current_time - last_update >= 2.0
 
-            if color_changed or keepalive_needed:
-                r, g, b = stored_color
-                rumble = self._rumble.get(serial, 0)
-                batch.append((serial, adapter, r, g, b, rumble))
-
-        if not batch:
-            return 0
-
-        # Phase 2: Execute I/O and update bookkeeping under a single lock.
-        # Bookkeeping must be inside the lock to prevent set_led_color() from
-        # racing with stale _last_sent_color/_last_led_update overwrites.
-        updated_count = 0
-        with self._led_lock:
-            for serial, adapter, r, g, b, rumble in batch:
-                try:
-                    adapter.set_output(serial, r, g, b, rumble)
-                    self._last_sent_color[serial] = (r, g, b)
+                if color_changed or keepalive_needed:
+                    r, g, b = stored_color
+                    rumble = self._rumble.get(serial, 0)
+                    with self._led_lock:
+                        adapter.set_output(serial, r, g, b, rumble)
+                    self._last_sent_color[serial] = stored_color
                     self._last_led_update[serial] = current_time
                     updated_count += 1
-                except Exception as e:
-                    logger.debug(f"Error updating LED for {serial}: {e}")
+
+                    if color_changed:
+                        logger.debug(f"LED color changed for {serial}: {last_sent} -> {stored_color}")
+
+            except Exception as e:
+                logger.debug(f"Error updating LED for {serial}: {e}")
 
         return updated_count
 
