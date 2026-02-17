@@ -21,6 +21,7 @@ help:
 	@echo "Docker (use docker compose directly for most operations):"
 	@echo "  make dev             - Start with hot-reload source mounting"
 	@echo "  make up-mock         - Start in mock mode (no hardware)"
+	@echo "  make up-dynatrace    - Start with Dynatrace telemetry export"
 	@echo "  make builders        - Build base images (run once)"
 	@echo ""
 	@echo "Code Quality:"
@@ -65,6 +66,21 @@ dev:
 	@echo "  Dashboard:  http://localhost/"
 	@echo "  Jaeger:     http://localhost/jaeger/"
 	@echo "  Grafana:    http://localhost/grafana/"
+
+# Dynatrace mode: adds parallel telemetry export to Dynatrace alongside local stack
+# Requires DYNATRACE_ENDPOINT and DYNATRACE_API_TOKEN in .env or environment
+.PHONY: up-dynatrace
+up-dynatrace:
+	docker compose -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.dynatrace.yml up -d $(if $(BUILD),--build)
+	@echo ""
+	@echo "=========================================="
+	@echo "JoustMania is running (DYNATRACE MODE)"
+	@echo "=========================================="
+	@echo "  Local stack:     http://localhost/"
+	@echo "  Dynatrace:       check your Dynatrace environment"
+	@echo ""
+	@echo "  Traces, metrics, and logs are exported to both"
+	@echo "  the local stack and Dynatrace in parallel."
 
 # Mock mode uses CI flagd config (controller_backend=mock)
 .PHONY: up-mock

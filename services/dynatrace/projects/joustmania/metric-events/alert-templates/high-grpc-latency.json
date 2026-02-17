@@ -1,0 +1,37 @@
+{
+  "summary": "High gRPC request latency on {{dims:job}} (P90 > 100ms)",
+  "queryDefinition": {
+    "type": "METRIC_KEY",
+    "metricKey": "grpc_request_duration_seconds",
+    "aggregation": "PERCENTILE90",
+    "entityFilter": {},
+    "dimensionFilter": [],
+    "managementZone": ""
+  },
+  "modelProperties": {
+    "type": "STATIC_THRESHOLD",
+    "threshold": 0.1,
+    "alertOnNoData": false,
+    "alertCondition": "ABOVE",
+    "violatingSamples": 5,
+    "samples": 10,
+    "dealertingSamples": 10
+  },
+  "eventTemplate": {
+    "title": "High gRPC Latency",
+    "description": "gRPC request latency P90 on {{dims:job}} exceeds 100ms. Inter-service communication is degraded. Check service health and network.",
+    "eventType": "CUSTOM_ALERT",
+    "davisMerge": true,
+    "metadata": [
+      {
+        "metadataKey": "severity",
+        "metadataValue": "warning"
+      },
+      {
+        "metadataKey": "prometheus_equivalent",
+        "metadataValue": "histogram_quantile(0.99, sum by(job, le) (rate(grpc_request_duration_seconds_bucket[5m]))) > 0.1"
+      }
+    ]
+  },
+  "enabled": true
+}

@@ -1,0 +1,158 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  # Prometheus receiver to scrape infrastructure targets that don't push via OTLP.
+  # These metrics flow to VictoriaMetrics so Grafana dashboards (which default to
+  # VictoriaMetrics) can display host metrics alongside OTEL-pushed service metrics.
+  prometheus/infra:
+    config:
+      scrape_configs:
+        - job_name: 'node'
+          scrape_interval: 30s
+          scrape_timeout: 25s
+          static_configs:
+            - targets: ['node-exporter:9100']
+              labels:
+                instance: 'raspberry-pi'
+
+processors:
+  # Batch processor for better performance (traces/logs)
+  batch:
+    timeout: 10s
+    send_batch_size: 1024
+
+  # Fast batch processor for sub-second metrics (Issue #105)
+  batch/fast:
+    timeout: 100ms
+    send_batch_size: 1000
+
+  # Memory limiter to prevent OOM
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+
+  # Resource processor to add common attributes
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: development
+        action: insert
+      # NOTE: service.namespace removed — when set, the prometheusremotewrite
+      # exporter prefixes the job label (e.g. "joustmania/controller-manager")
+      # which breaks dashboard queries expecting just "controller-manager".
+
+  # Cumulative-to-delta processor for Dynatrace.
+  # Dynatrace requires delta temporality for counters; the local stack
+  # (VictoriaMetrics/Prometheus) expects cumulative. This processor is only
+  # used in Dynatrace-specific pipelines, keeping local pipelines isolated.
+  cumulativetodelta: {}
+
+exporters:
+  # OTLP exporter to send traces to Jaeger
+  # Jaeger has OTLP support enabled and accepts OTLP on port 4317
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+  # Prometheus remote write to VictoriaMetrics for high-frequency metrics storage
+  prometheusremotewrite:
+    endpoint: "http://victoria-metrics:8428/api/v1/write"
+    tls:
+      insecure: true
+
+  # Prometheus exporter for metrics (exposed on :8889 for backward compatibility)
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+
+  # Loki exporter for logs
+  loki:
+    endpoint: http://loki:3100/loki/api/v1/push
+    tls:
+      insecure: true
+
+  # OTLP HTTP exporter to Grafana Live Publisher for real-time WebSocket streaming
+  otlphttp/grafana-live:
+    endpoint: "http://grafana-live-publisher:4318"
+    encoding: json
+    tls:
+      insecure: true
+
+  # Debug exporter for local troubleshooting
+  debug:
+    verbosity: basic
+
+  # Dynatrace OTLP HTTP exporter.
+  # Uses env-var expansion: set DYNATRACE_ENDPOINT and DYNATRACE_API_TOKEN.
+  otlphttp/dynatrace:
+    endpoint: ${env:DYNATRACE_ENDPOINT}
+    headers:
+      Authorization: "Api-Token ${env:DYNATRACE_API_TOKEN}"
+
+service:
+  pipelines:
+    # ── Local pipelines (unchanged from config.yaml) ───────────────────
+
+    # Traces pipeline
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [otlp/jaeger, debug]
+
+    # Metrics pipeline - uses fast batch processor for sub-second updates
+    # Fan-out to VictoriaMetrics (storage), Prometheus (backward compat), and Grafana Live (streaming)
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch/fast, resource]
+      exporters: [prometheusremotewrite, prometheus, otlphttp/grafana-live]
+
+    # Infrastructure metrics pipeline — scraped targets (node-exporter, etc.)
+    # Only exports to VictoriaMetrics since Prometheus already scrapes these directly.
+    # Does NOT use the resource processor (no need to tag host metrics with
+    # deployment.environment, and avoids any future service.namespace issues).
+    metrics/infra:
+      receivers: [prometheus/infra]
+      processors: [memory_limiter, batch/fast]
+      exporters: [prometheusremotewrite]
+
+    # Logs pipeline
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [loki, debug]
+
+    # ── Dynatrace pipelines ────────────────────────────────────────────
+    # Parallel export to Dynatrace. Uses batch (10s) instead of batch/fast
+    # (100ms) because Dynatrace has 1-minute metric resolution — sub-second
+    # batches would just waste bandwidth to a cloud endpoint.
+
+    traces/dynatrace:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [otlphttp/dynatrace]
+
+    metrics/dynatrace:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource, cumulativetodelta]
+      exporters: [otlphttp/dynatrace]
+
+    metrics/infra-dynatrace:
+      receivers: [prometheus/infra]
+      processors: [memory_limiter, batch, cumulativetodelta]
+      exporters: [otlphttp/dynatrace]
+
+    logs/dynatrace:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [otlphttp/dynatrace]
+
+  extensions: [health_check]
+
+extensions:
+  health_check:
+    endpoint: :13133

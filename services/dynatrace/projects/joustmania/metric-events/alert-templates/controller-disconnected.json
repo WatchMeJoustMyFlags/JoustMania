@@ -1,0 +1,33 @@
+{
+  "summary": "Controller {{dims:serial}} is disconnected",
+  "queryDefinition": {
+    "type": "METRIC_KEY",
+    "metricKey": "controller_connected",
+    "aggregation": "AVG",
+    "entityFilter": {},
+    "dimensionFilter": [],
+    "managementZone": ""
+  },
+  "modelProperties": {
+    "type": "STATIC_THRESHOLD",
+    "threshold": 0.5,
+    "alertOnNoData": false,
+    "alertCondition": "BELOW",
+    "violatingSamples": 1,
+    "samples": 3,
+    "dealertingSamples": 3
+  },
+  "eventTemplate": {
+    "title": "Controller Disconnected",
+    "description": "Controller {{dims:serial}} has been disconnected. Check Bluetooth connectivity and controller power.",
+    "eventType": "ERROR_EVENT",
+    "davisMerge": true,
+    "metadata": [
+      {
+        "metadataKey": "severity",
+        "metadataValue": "critical"
+      }
+    ]
+  },
+  "enabled": true
+}

@@ -1,0 +1,33 @@
+{
+  "summary": "Service {{dims:job}} is down",
+  "queryDefinition": {
+    "type": "METRIC_KEY",
+    "metricKey": "up",
+    "aggregation": "AVG",
+    "entityFilter": {},
+    "dimensionFilter": [],
+    "managementZone": ""
+  },
+  "modelProperties": {
+    "type": "STATIC_THRESHOLD",
+    "threshold": 0.5,
+    "alertOnNoData": false,
+    "alertCondition": "BELOW",
+    "violatingSamples": 3,
+    "samples": 5,
+    "dealertingSamples": 5
+  },
+  "eventTemplate": {
+    "title": "Service Down",
+    "description": "Service {{dims:job}} is not responding. Check container status and service logs for errors.",
+    "eventType": "ERROR_EVENT",
+    "davisMerge": true,
+    "metadata": [
+      {
+        "metadataKey": "severity",
+        "metadataValue": "critical"
+      }
+    ]
+  },
+  "enabled": true
+}

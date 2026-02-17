@@ -1,0 +1,279 @@
+{
+  "version": 14,
+  "variables": [],
+  "tiles": {
+    "app-services-up": {
+      "type": "data",
+      "title": "App Services Up",
+      "description": "Number of healthy application services",
+      "query": "timeseries avg(process_cpu_percent), by:{job}, filter:{job in (\"controller-manager\", \"game-coordinator\", \"menu\", \"audio\")} | summarize count()",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "singleValue",
+      "visualizationConfig": {
+        "thresholds": [
+          { "value": 0, "color": "red" },
+          { "value": 3, "color": "yellow" },
+          { "value": 5, "color": "green" }
+        ],
+        "colorMode": "background"
+      }
+    },
+    "controllers": {
+      "type": "data",
+      "title": "Controllers",
+      "description": "Currently connected controllers",
+      "query": "timeseries sum(controller_connected) | fieldsAdd default(value, default:0)",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "singleValue",
+      "visualizationConfig": {
+        "thresholds": [
+          { "value": 0, "color": "blue" }
+        ],
+        "colorMode": "background"
+      }
+    },
+    "game-status": {
+      "type": "data",
+      "title": "Game Status",
+      "description": "Current game status",
+      "query": "timeseries avg(game_active) | fieldsAdd default(value, default:0)",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "singleValue",
+      "visualizationConfig": {
+        "thresholds": [
+          { "value": 0, "color": "gray" },
+          { "value": 1, "color": "green" }
+        ],
+        "valueMappings": [
+          { "value": 0, "displayValue": "Idle" },
+          { "value": 1, "displayValue": "Active" }
+        ],
+        "colorMode": "background"
+      }
+    },
+    "grpc-errors-5m": {
+      "type": "data",
+      "title": "gRPC Errors (5m)",
+      "description": "gRPC errors in last 5 minutes",
+      "query": "timeseries delta(grpc_requests_total), filter:{status ne \"ok\"} | fieldsAdd default(value, default:0)",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "singleValue",
+      "visualizationConfig": {
+        "thresholds": [
+          { "value": 0, "color": "green" },
+          { "value": 1, "color": "yellow" },
+          { "value": 10, "color": "red" }
+        ],
+        "colorMode": "background"
+      }
+    },
+    "application-services-table": {
+      "type": "data",
+      "title": "Application Services",
+      "description": "Status of all JoustMania application services",
+      "query": "timeseries avg(process_cpu_percent), by:{job}, filter:{job in (\"controller-manager\", \"game-coordinator\", \"menu\", \"audio\")} | fieldsRename service = job | fieldsAdd Status = if(value[] > 0, \"UP\", \"DOWN\")",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "table",
+      "visualizationConfig": {
+        "columns": ["service", "Status"]
+      }
+    },
+    "observability-up": {
+      "type": "data",
+      "title": "Observability Up",
+      "description": "Number of healthy observability components",
+      "query": "timeseries avg(up), by:{job}, filter:{job in (\"prometheus\", \"grafana\", \"loki\", \"victoria-metrics\", \"otel-collector\", \"node\")} | filter value[] == 1 | summarize count()",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "singleValue",
+      "visualizationConfig": {
+        "thresholds": [
+          { "value": 0, "color": "red" },
+          { "value": 3, "color": "yellow" },
+          { "value": 5, "color": "green" }
+        ],
+        "colorMode": "background"
+      }
+    },
+    "observability-stack-table": {
+      "type": "data",
+      "title": "Observability Stack",
+      "description": "Status of observability stack components",
+      "query": "timeseries avg(up), by:{job}, filter:{job in (\"prometheus\", \"grafana\", \"loki\", \"victoria-metrics\", \"otel-collector\", \"node\")} | fieldsRename Component = job | fieldsAdd Status = if(value[] == 1, \"UP\", \"DOWN\")",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "table",
+      "visualizationConfig": {
+        "columns": ["Component", "Status"]
+      }
+    },
+    "cpu-usage-by-service": {
+      "type": "data",
+      "title": "CPU Usage by Service",
+      "description": "CPU usage by service (last 15 minutes)",
+      "query": "timeseries avg(process_cpu_percent), by:{job}",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "graph",
+      "visualizationConfig": {
+        "yAxisUnit": "percent",
+        "yAxisMin": 0,
+        "yAxisMax": 100,
+        "legend": { "position": "right" },
+        "thresholds": [
+          { "value": 80, "color": "red" }
+        ]
+      }
+    },
+    "memory-usage-by-service": {
+      "type": "data",
+      "title": "Memory Usage by Service",
+      "description": "Memory usage by service",
+      "query": "timeseries avg(process_memory_mb), by:{job}",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "graph",
+      "visualizationConfig": {
+        "yAxisUnit": "megabytes",
+        "stacked": true,
+        "legend": { "position": "right" }
+      }
+    },
+    "grpc-request-rate": {
+      "type": "data",
+      "title": "gRPC Request Rate",
+      "description": "gRPC request rate by service",
+      "query": "timeseries sum(delta(grpc_requests_total)) / duration(\"1m\"), by:{job}",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "graph",
+      "visualizationConfig": {
+        "yAxisUnit": "requestsPerSecond",
+        "drawStyle": "bar",
+        "stacked": true,
+        "legend": { "position": "bottom" }
+      }
+    },
+    "grpc-latency-p95": {
+      "type": "data",
+      "title": "gRPC Latency (p95)",
+      "description": "gRPC request latency p95 by service",
+      "query": "timeseries percentile(grpc_request_duration_seconds, 95), by:{job}",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "graph",
+      "visualizationConfig": {
+        "yAxisUnit": "seconds",
+        "legend": { "position": "right" },
+        "thresholds": [
+          { "value": 0.1, "color": "yellow" }
+        ]
+      }
+    },
+    "grpc-error-rate": {
+      "type": "data",
+      "title": "gRPC Error Rate",
+      "description": "gRPC error rate by service",
+      "query": "timeseries sum(delta(grpc_requests_total)) / duration(\"1m\"), by:{job}, filter:{status ne \"ok\"}",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "graph",
+      "visualizationConfig": {
+        "yAxisUnit": "requestsPerSecond",
+        "legend": { "position": "right" }
+      }
+    },
+    "grpc-client-latency-p99": {
+      "type": "data",
+      "title": "gRPC Client Latency P99",
+      "description": "P99 latency of outbound gRPC client calls by service and method",
+      "query": "timeseries percentile(grpc_client_request_duration_seconds, 99), by:{service, method}",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "graph",
+      "visualizationConfig": {
+        "yAxisUnit": "seconds",
+        "legend": { "position": "right" },
+        "thresholds": [
+          { "value": 0.1, "color": "yellow" }
+        ]
+      }
+    },
+    "grpc-client-error-rate": {
+      "type": "data",
+      "title": "gRPC Client Error Rate",
+      "description": "Error rate of outbound gRPC client calls by service, method, and status code",
+      "query": "timeseries sum(delta(grpc_client_errors_total)) / duration(\"5m\"), by:{service, method, code}",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "graph",
+      "visualizationConfig": {
+        "yAxisUnit": "requestsPerSecond",
+        "legend": { "position": "right" }
+      }
+    }
+  },
+  "layouts": {
+    "0": { "x": 0, "y": 0, "w": 4, "h": 4, "key": "app-services-up" },
+    "1": { "x": 4, "y": 0, "w": 4, "h": 4, "key": "controllers" },
+    "2": { "x": 8, "y": 0, "w": 4, "h": 4, "key": "game-status" },
+    "3": { "x": 12, "y": 0, "w": 4, "h": 4, "key": "grpc-errors-5m" },
+    "4": { "x": 16, "y": 0, "w": 8, "h": 4, "key": "application-services-table" },
+    "5": { "x": 0, "y": 4, "w": 4, "h": 4, "key": "observability-up" },
+    "6": { "x": 4, "y": 4, "w": 20, "h": 4, "key": "observability-stack-table" },
+    "7": { "x": 0, "y": 8, "w": 12, "h": 6, "key": "cpu-usage-by-service" },
+    "8": { "x": 12, "y": 8, "w": 12, "h": 6, "key": "memory-usage-by-service" },
+    "9": { "x": 0, "y": 14, "w": 8, "h": 6, "key": "grpc-request-rate" },
+    "10": { "x": 8, "y": 14, "w": 8, "h": 6, "key": "grpc-latency-p95" },
+    "11": { "x": 16, "y": 14, "w": 8, "h": 6, "key": "grpc-error-rate" },
+    "12": { "x": 0, "y": 20, "w": 12, "h": 6, "key": "grpc-client-latency-p99" },
+    "13": { "x": 12, "y": 20, "w": 12, "h": 6, "key": "grpc-client-error-rate" }
+  }
+}

@@ -1,0 +1,182 @@
+{
+  "version": 14,
+  "variables": [],
+  "tiles": {
+    "services-running": {
+      "type": "data",
+      "title": "Services Running",
+      "description": "Number of healthy services",
+      "query": "timeseries avg(up), by:{job}, filter:{job in (\"controller-manager\", \"game-coordinator\", \"menu\", \"audio\")} | filter value[] == 1 | summarize count()",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "singleValue",
+      "visualizationConfig": {
+        "thresholds": [
+          { "value": 0, "color": "red" },
+          { "value": 5, "color": "yellow" },
+          { "value": 7, "color": "green" }
+        ],
+        "colorMode": "background"
+      }
+    },
+    "service-availability-table": {
+      "type": "data",
+      "title": "Service Availability",
+      "description": "Status of all JoustMania services",
+      "query": "timeseries avg(up), by:{job}, filter:{job in (\"controller-manager\", \"game-coordinator\", \"menu\", \"audio\")} | fieldsRename Service = job | fieldsAdd Status = if(value[] == 1, \"UP\", \"DOWN\")",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "table",
+      "visualizationConfig": {
+        "columns": ["Service", "Status"]
+      }
+    },
+    "cpu-temp": {
+      "type": "data",
+      "title": "CPU Temp",
+      "description": "Raspberry Pi CPU temperature",
+      "query": "timeseries avg(host_cpu_temperature_celsius) | fieldsAdd default(value, default:0)",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "singleValue",
+      "visualizationConfig": {
+        "thresholds": [
+          { "value": 0, "color": "green" },
+          { "value": 70, "color": "yellow" },
+          { "value": 80, "color": "red" }
+        ],
+        "unit": "celsius",
+        "colorMode": "background"
+      }
+    },
+    "system-memory": {
+      "type": "data",
+      "title": "System Memory",
+      "description": "Total system memory usage",
+      "query": "timeseries avg(host_memory_usage_percent) | fieldsAdd default(value, default:0)",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "singleValue",
+      "visualizationConfig": {
+        "thresholds": [
+          { "value": 0, "color": "green" },
+          { "value": 70, "color": "yellow" },
+          { "value": 90, "color": "red" }
+        ],
+        "unit": "percent",
+        "colorMode": "background"
+      }
+    },
+    "cpu-usage-by-service": {
+      "type": "data",
+      "title": "CPU Usage by Service",
+      "description": "CPU usage by service over time",
+      "query": "timeseries avg(process_cpu_percent), by:{job}",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "graph",
+      "visualizationConfig": {
+        "yAxisUnit": "percent",
+        "yAxisMin": 0,
+        "yAxisMax": 100,
+        "legend": { "position": "bottom" }
+      }
+    },
+    "memory-usage-stacked": {
+      "type": "data",
+      "title": "Memory Usage by Service (Stacked)",
+      "description": "Memory usage by service, stacked area chart",
+      "query": "timeseries avg(process_memory_mb), by:{job}",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "graph",
+      "visualizationConfig": {
+        "yAxisUnit": "megabytes",
+        "stacked": true,
+        "legend": { "position": "bottom" }
+      }
+    },
+    "grpc-request-rate-ok": {
+      "type": "data",
+      "title": "gRPC Request Rate (Successful)",
+      "description": "Successful gRPC request rate by service",
+      "query": "timeseries sum(delta(grpc_requests_total)) / duration(\"1m\"), by:{job}, filter:{status eq \"ok\"}",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "graph",
+      "visualizationConfig": {
+        "yAxisUnit": "requestsPerSecond",
+        "stacked": true,
+        "legend": { "position": "bottom" }
+      }
+    },
+    "grpc-latency-p95-p99": {
+      "type": "data",
+      "title": "gRPC Request Latency (p95 & p99)",
+      "description": "gRPC request latency percentiles by service",
+      "query": "timeseries p95 = percentile(grpc_request_duration_seconds, 95), p99 = percentile(grpc_request_duration_seconds, 99), by:{job}",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "graph",
+      "visualizationConfig": {
+        "yAxisUnit": "seconds",
+        "legend": { "position": "bottom" },
+        "thresholds": [
+          { "value": 0.1, "color": "red" }
+        ]
+      }
+    },
+    "grpc-error-rate": {
+      "type": "data",
+      "title": "gRPC Error Rate",
+      "description": "gRPC error rate by service",
+      "query": "timeseries sum(delta(grpc_requests_total)) / duration(\"1m\"), by:{job}, filter:{status ne \"ok\"}",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "graph",
+      "visualizationConfig": {
+        "yAxisUnit": "requestsPerSecond",
+        "stacked": true,
+        "legend": { "position": "bottom" }
+      }
+    }
+  },
+  "layouts": {
+    "0": { "x": 0, "y": 0, "w": 4, "h": 4, "key": "services-running" },
+    "1": { "x": 4, "y": 0, "w": 10, "h": 4, "key": "service-availability-table" },
+    "2": { "x": 14, "y": 0, "w": 5, "h": 4, "key": "cpu-temp" },
+    "3": { "x": 19, "y": 0, "w": 5, "h": 4, "key": "system-memory" },
+    "4": { "x": 0, "y": 4, "w": 12, "h": 8, "key": "cpu-usage-by-service" },
+    "5": { "x": 12, "y": 4, "w": 12, "h": 8, "key": "memory-usage-stacked" },
+    "6": { "x": 0, "y": 12, "w": 8, "h": 7, "key": "grpc-request-rate-ok" },
+    "7": { "x": 8, "y": 12, "w": 8, "h": 7, "key": "grpc-latency-p95-p99" },
+    "8": { "x": 16, "y": 12, "w": 8, "h": 7, "key": "grpc-error-rate" }
+  }
+}

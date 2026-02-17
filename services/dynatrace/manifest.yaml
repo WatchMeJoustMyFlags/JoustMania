@@ -1,0 +1,15 @@
+manifestVersion: "1.0"
+projects:
+  - name: joustmania
+    path: projects/joustmania
+environmentGroups:
+  - name: default
+    environments:
+      - name: joustmania
+        url:
+          type: environment
+          value: DYNATRACE_ENVIRONMENT_URL
+        auth:
+          token:
+            type: environment
+            name: DYNATRACE_API_TOKEN

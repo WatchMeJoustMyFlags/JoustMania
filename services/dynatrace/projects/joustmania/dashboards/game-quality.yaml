@@ -1,0 +1,7 @@
+configs:
+  - id: game-quality
+    type:
+      api: document
+    config:
+      name: "JoustMania - Game Quality"
+      template: game-quality.json
