@@ -151,12 +151,27 @@ class PsMoveAdapter(ControllerIOAdapter):
             logger.warning(f"Controller {move_num}/{count}: {e}")
             return None
 
+    def _disconnect_handle(self, serial: str) -> None:
+        """Disconnect and release a single PSMove handle.
+
+        The SWIG destructor (~PSMove) calls psmove_disconnect() which closes
+        the underlying HID/USB handle. We must delete the Python object
+        explicitly so resources are freed immediately, not at GC time.
+        """
+        move = self._handles.pop(serial, None)
+        if move is not None:
+            with contextlib.suppress(Exception):
+                move.set_leds(0, 0, 0)
+                move.set_rumble(0)
+                move.update_leds()
+            del move
+
     def _remove_stale_handles(self, seen_serials: list[str]) -> None:
         """Remove handles for controllers no longer in scan."""
         stale = set(self._handles.keys()) - set(seen_serials)
         for serial in stale:
             logger.info(f"Controller {serial} no longer in scan - removing stale handle")
-            del self._handles[serial]
+            self._disconnect_handle(serial)
 
     def open(self, serial: str) -> bool:
         """Open is a no-op for psmove — handles are created during discover()."""
@@ -223,14 +238,10 @@ class PsMoveAdapter(ControllerIOAdapter):
             return False
 
     def close(self, serial: str) -> None:
-        """Release controller handle."""
-        self._handles.pop(serial, None)
+        """Disconnect controller and release its HID handle."""
+        self._disconnect_handle(serial)
 
     def close_all(self) -> None:
-        """Turn off all LEDs/rumble and release all handles."""
-        for move in self._handles.values():
-            with contextlib.suppress(Exception):
-                move.set_leds(0, 0, 0)
-                move.set_rumble(0)
-                move.update_leds()
-        self._handles.clear()
+        """Turn off all LEDs/rumble and disconnect all handles."""
+        for serial in list(self._handles.keys()):
+            self._disconnect_handle(serial)
