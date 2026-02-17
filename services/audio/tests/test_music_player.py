@@ -212,25 +212,32 @@ class TestResampleAudio:
 class TestWriteSamples:
     """Tests for _write_samples."""
 
+    def _make_generation(self, value=1):
+        gen = MagicMock()
+        gen.value = value
+        return gen
+
     def test_writes_complete_buffers(self):
         device = MagicMock()
         stop_proc = MagicMock()
         stop_proc.value = 0
+        gen = self._make_generation(1)
 
         # write_size = 8 bytes, send 16 bytes => 2 writes
         samples = [b"\x00" * 16]
-        _write_samples(device, 8, samples, stop_proc)
+        _write_samples(device, 8, samples, stop_proc, gen, 1)
         assert device.write.call_count == 2
 
     def test_stops_when_stop_proc_set(self):
         device = MagicMock()
         stop_proc = MagicMock()
         stop_proc.value = 1  # Stopped
+        gen = self._make_generation(1)
 
         # stop_proc is checked after each sample is written, so the first
         # sample's writes complete but processing stops before the second sample.
         samples = [b"\x00" * 8, b"\x00" * 8]
-        _write_samples(device, 8, samples, stop_proc)
+        _write_samples(device, 8, samples, stop_proc, gen, 1)
         # First sample written (1 write), then stop_proc checked => return
         assert device.write.call_count == 1
 
@@ -239,29 +246,45 @@ class TestWriteSamples:
         device.write.side_effect = Exception("ALSA error")
         stop_proc = MagicMock()
         stop_proc.value = 0
+        gen = self._make_generation(1)
 
         # Should not raise; error is logged and loop breaks
         samples = [b"\x00" * 16]
-        _write_samples(device, 8, samples, stop_proc)
+        _write_samples(device, 8, samples, stop_proc, gen, 1)
 
     def test_partial_buffer_not_written(self):
         device = MagicMock()
         stop_proc = MagicMock()
         stop_proc.value = 0
+        gen = self._make_generation(1)
 
         # 6 bytes with write_size=8 => not enough for a write
         samples = [b"\x00" * 6]
-        _write_samples(device, 8, samples, stop_proc)
+        _write_samples(device, 8, samples, stop_proc, gen, 1)
         device.write.assert_not_called()
 
     def test_multiple_samples_accumulated(self):
         device = MagicMock()
         stop_proc = MagicMock()
         stop_proc.value = 0
+        gen = self._make_generation(1)
 
         # Two 6-byte samples = 12 bytes total, write_size=8 => 1 write (4 leftover)
         samples = [b"\x00" * 6, b"\x00" * 6]
-        _write_samples(device, 8, samples, stop_proc)
+        _write_samples(device, 8, samples, stop_proc, gen, 1)
+        assert device.write.call_count == 1
+
+    def test_stops_when_generation_changes(self):
+        """Playback stops when generation counter differs from play_gen."""
+        device = MagicMock()
+        stop_proc = MagicMock()
+        stop_proc.value = 0  # Not stopped
+        gen = self._make_generation(2)  # Current generation is 2
+
+        # play_gen=1 (stale), so playback should stop after first sample
+        samples = [b"\x00" * 8, b"\x00" * 8]
+        _write_samples(device, 8, samples, stop_proc, gen, 1)
+        # First sample written, then generation mismatch detected => return
         assert device.write.call_count == 1
 
 
@@ -354,6 +377,15 @@ class TestMusicPlayerStartStop:
         player.stop()
         id2 = player.start()
         assert id1 != id2
+
+    def test_start_increments_generation(self, player):
+        """Each start() call increments _generation to invalidate stale playback."""
+        gen0 = player._generation.value
+        player.start()
+        assert player._generation.value == gen0 + 1
+        player.stop()
+        player.start()
+        assert player._generation.value == gen0 + 2
 
 
 class TestSongPatternSharedMemory:

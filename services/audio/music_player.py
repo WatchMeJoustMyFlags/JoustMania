@@ -149,8 +149,12 @@ def _resample_audio(samples, ratio_val, vol_val):
             yield data
 
 
-def _write_samples(device, write_size, samples, stop_proc):
-    """Write resampled audio samples to an ALSA device."""
+def _write_samples(device, write_size, samples, stop_proc, generation, play_gen):
+    """Write resampled audio samples to an ALSA device.
+
+    Stops early if stop_proc is set or if the generation counter has changed
+    (indicating a new start() call, so this playback session is stale).
+    """
     buf = bytearray()
     for sample in samples:
         buf.extend(sample)
@@ -161,11 +165,11 @@ def _write_samples(device, write_size, samples, stop_proc):
                 logger.warning(f"ALSA write error: {e}")
                 break
             del buf[:write_size]
-        if stop_proc.value:
+        if stop_proc.value or generation.value != play_gen:
             return
 
 
-def _play_loaded_song(wav_data, period, period_bytes, ratio, volume, stop_proc):
+def _play_loaded_song(wav_data, period, period_bytes, ratio, volume, stop_proc, generation, play_gen):
     """
     Open and play a loaded WAV through ALSA with real-time resampling.
 
@@ -185,7 +189,9 @@ def _play_loaded_song(wav_data, period, period_bytes, ratio, volume, stop_proc):
         device="default",
     )
 
-    _write_samples(device, period_bytes, _resample_audio(_read_samples(wf, period), ratio, volume), stop_proc)
+    _write_samples(
+        device, period_bytes, _resample_audio(_read_samples(wf, period), ratio, volume), stop_proc, generation, play_gen
+    )
 
     wf.close()
     device.close()
@@ -205,7 +211,7 @@ def _set_song_pattern(song_array: Array, pattern: str) -> None:
     song_array.value = pattern.encode("utf-8")
 
 
-def _linux_audio_loop(song_array: Array, ratio: Value, volume: Value, stop_proc: Value):
+def _linux_audio_loop(song_array: Array, ratio: Value, volume: Value, stop_proc: Value, generation: Value):
     """
     Linux audio playback loop using ALSA with real-time resampling.
 
@@ -216,6 +222,7 @@ def _linux_audio_loop(song_array: Array, ratio: Value, volume: Value, stop_proc:
         ratio: Shared Value for playback speed (1.0 = normal)
         volume: Shared Value for volume (0.0 to 1.0)
         stop_proc: Shared Value to control playback (0=play, 1=stop)
+        generation: Shared Value incremented on each start(), used to detect stale playback
     """
     period = 1024 * 4
     period_bytes = period * 2 * 2  # Two channels, two bytes per sample
@@ -226,9 +233,16 @@ def _linux_audio_loop(song_array: Array, ratio: Value, volume: Value, stop_proc:
     song_loaded = False
     wav_data = None
     loaded_pattern = ""
+    last_gen = generation.value
 
     while True:
         try:
+            # Detect generation change (new start() was called) — force reload
+            if generation.value != last_gen:
+                song_loaded = False
+                loaded_pattern = ""
+                last_gen = generation.value
+
             if stop_proc.value == 1:
                 song_loaded = False
                 loaded_pattern = ""
@@ -260,7 +274,8 @@ def _linux_audio_loop(song_array: Array, ratio: Value, volume: Value, stop_proc:
                 loaded_pattern = current_pattern
                 continue
 
-            if not _play_loaded_song(wav_data, period, period_bytes, ratio, volume, stop_proc):
+            play_gen = generation.value
+            if not _play_loaded_song(wav_data, period, period_bytes, ratio, volume, stop_proc, generation, play_gen):
                 song_loaded = False
 
         except Exception as e:
@@ -290,6 +305,7 @@ class MusicPlayer:
         self._stop_proc = Value("i", 1)  # stopped; set to zero to play
         self._ratio = Value("d", 1.0)  # Playback speed
         self._volume = Value("d", 0.7)  # Volume level
+        self._generation = Value("i", 0)  # Incremented on each start() to break stale playback
 
         # Shared byte array for song pattern (replaces Manager().dict() to avoid
         # BrokenPipeError when the Manager subprocess crashes)
@@ -311,7 +327,7 @@ class MusicPlayer:
         if self._process and self._process.is_alive():
             self._process.terminate()
             self._process.join(timeout=1.0)
-        args = (self._song_array, self._ratio, self._volume, self._stop_proc)
+        args = (self._song_array, self._ratio, self._volume, self._stop_proc, self._generation)
         self._process = Process(target=_linux_audio_loop, args=args, daemon=True)
         self._process.start()
 
@@ -346,6 +362,7 @@ class MusicPlayer:
 
         self._ensure_process_alive()
         self._track_id = str(uuid.uuid4())
+        self._generation.value += 1
         self._stop_proc.value = 0
         logger.info(f"Music started: {self._track_id}")
         return self._track_id

@@ -151,17 +151,12 @@ class PsMoveAdapter(ControllerIOAdapter):
             logger.warning(f"Controller {move_num}/{count}: {e}")
             return None
 
-    def _remove_stale_handles(self, seen_serials: list[str]) -> None:
-        """Remove handles for controllers no longer in scan."""
-        stale = set(self._handles.keys()) - set(seen_serials)
-        for serial in stale:
-            logger.info(f"Controller {serial} no longer in scan - removing stale handle")
-            self._disconnect_handle(serial)
-
     def _disconnect_handle(self, serial: str) -> None:
-        """Release a PSMove handle, turning off LEDs/rumble first.
+        """Disconnect and release a single PSMove handle.
 
-        Triggers ~PSMove() via del, which calls psmove_disconnect() -> hid_close().
+        The SWIG destructor (~PSMove) calls psmove_disconnect() which closes
+        the underlying HID/USB handle. We must delete the Python object
+        explicitly so resources are freed immediately, not at GC time.
         """
         move = self._handles.pop(serial, None)
         if move is not None:
@@ -170,6 +165,13 @@ class PsMoveAdapter(ControllerIOAdapter):
                 move.set_rumble(0)
                 move.update_leds()
             del move
+
+    def _remove_stale_handles(self, seen_serials: list[str]) -> None:
+        """Remove handles for controllers no longer in scan."""
+        stale = set(self._handles.keys()) - set(seen_serials)
+        for serial in stale:
+            logger.info(f"Controller {serial} no longer in scan - removing stale handle")
+            self._disconnect_handle(serial)
 
     def open(self, serial: str) -> bool:
         """Open a handle for a specific controller by serial.
@@ -257,10 +259,10 @@ class PsMoveAdapter(ControllerIOAdapter):
             return False
 
     def close(self, serial: str) -> None:
-        """Release controller handle."""
+        """Disconnect controller and release its HID handle."""
         self._disconnect_handle(serial)
 
     def close_all(self) -> None:
-        """Turn off all LEDs/rumble and release all handles."""
+        """Turn off all LEDs/rumble and disconnect all handles."""
         for serial in list(self._handles.keys()):
             self._disconnect_handle(serial)

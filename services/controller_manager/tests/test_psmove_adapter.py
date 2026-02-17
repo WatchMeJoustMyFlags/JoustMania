@@ -683,6 +683,7 @@ class TestPsMoveAdapterProbeHelpers:
         assert "AA:BB:CC:DD:EE:02" not in adapter._handles
         # Stale handle should have LEDs turned off via _disconnect_handle
         stale_move.set_leds.assert_called_with(0, 0, 0)
+        stale_move.set_rumble.assert_called_with(0)
 
     def test_remove_stale_handles_none_stale(self):
         adapter = PsMoveAdapter()
