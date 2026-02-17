@@ -233,6 +233,21 @@ class StateManager:
 
         logger.info(f"Controller {serial} disconnected")
 
+    async def on_stream_reconnected(self) -> None:
+        """
+        Clear all controller state on stream reconnect.
+
+        When the button event stream reconnects, the backend will replay
+        initial connection events for all currently connected controllers.
+        Clear state so these events re-populate cleanly without ghosts.
+        """
+        count = len(self.controller_states)
+        self.controller_states.clear()
+        self.button_states.clear()
+        self.battery_levels.clear()
+        metrics.player_ready.clear()
+        logger.info(f"Stream reconnected: cleared {count} controller(s) for re-population")
+
     def update_battery(self, serial: str, battery: int) -> None:
         """
         Update battery level for a controller.

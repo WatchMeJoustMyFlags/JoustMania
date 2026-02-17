@@ -102,3 +102,9 @@ idle_mode_wake_total = Counter(
     "menu_idle_mode_wake_total",
     "Total times controllers have been woken from idle mode",
 )
+
+# Ghost controller reconciliation metrics
+ghost_controllers_pruned_total = Counter(
+    "menu_ghost_controllers_pruned_total",
+    "Total ghost controllers pruned via reconciliation with backend",
+)

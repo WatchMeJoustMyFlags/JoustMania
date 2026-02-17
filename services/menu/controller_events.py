@@ -50,6 +50,14 @@ class ControllerEventCallbacks(Protocol):
         """Get current menu state."""
         ...
 
+    def get_connected_serials(self) -> set[str]:
+        """Get set of serials the menu considers connected."""
+        ...
+
+    async def on_stream_reconnected(self) -> None:
+        """Called when the button event stream reconnects."""
+        ...
+
 
 if TYPE_CHECKING:
     import grpc.aio
@@ -170,6 +178,9 @@ class ControllerEventLoop:
         stub = controller_manager_pb2_grpc.ControllerManagerServiceStub(self._channel)
         logger.info("Connecting to Controller Manager (bidirectional stream)...")
 
+        # Clear menu state before reconnect so initial events re-populate cleanly
+        await self._callbacks.on_stream_reconnected()
+
         request_queue: asyncio.Queue = asyncio.Queue()
         stream = stub.StreamButtonEvents(self._request_generator(request_queue))
 
@@ -243,6 +254,31 @@ class ControllerEventLoop:
         if self._connected_event:
             self._connected_event.clear()
 
+    async def _reconcile_controllers(self, backend_serials: list[str]) -> None:
+        """
+        Reconcile menu controller state with backend's authoritative list.
+
+        Removes any controllers the menu tracks that the backend doesn't know about
+        (ghost controllers from lost stream events).
+
+        Args:
+            backend_serials: List of serials the backend considers connected
+        """
+        if not backend_serials:
+            return
+
+        backend_set = set(backend_serials)
+        menu_serials = self._callbacks.get_connected_serials()
+        ghosts = menu_serials - backend_set
+
+        for ghost_serial in ghosts:
+            logger.warning(f"Reconciliation: pruning ghost controller {ghost_serial}")
+            await self._callbacks.on_disconnect(ghost_serial)
+            self._metrics.ghost_controllers_pruned_total.inc()
+
+        if ghosts:
+            logger.info(f"Reconciliation pruned {len(ghosts)} ghost controller(s): {ghosts}")
+
     async def _dispatch_event(self, event) -> None:
         """
         Dispatch an event to the appropriate handler.
@@ -259,9 +295,15 @@ class ControllerEventLoop:
         if event.event_type == controller_manager_pb2.EVENT_CONNECT:
             await self._callbacks.on_connect(serial)
             self._metrics.button_frames_processed_total.inc()
+            # Reconcile after processing the connect event
+            if event.connected_serials:
+                await self._reconcile_controllers(list(event.connected_serials))
         elif event.event_type == controller_manager_pb2.EVENT_DISCONNECT:
             await self._callbacks.on_disconnect(serial)
             self._metrics.button_frames_processed_total.inc()
+            # Reconcile after processing the disconnect event
+            if event.connected_serials:
+                await self._reconcile_controllers(list(event.connected_serials))
         else:
             # Regular button event (EVENT_BUTTON is default, 0)
             # Only process when menu is running
