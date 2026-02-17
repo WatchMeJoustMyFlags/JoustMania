@@ -256,8 +256,9 @@ class MultiplexerBackend(ControllerBackend):
     def update_all_leds(self) -> int:
         """Centralized LED refresh with keep-alive and color-change detection.
 
-        Issue #542: Collects all pending updates first, then acquires the lock
-        once for the entire batch instead of per-controller.
+        Collects pending updates outside the lock (pure reads), then acquires
+        _led_lock once for the entire batch of set_output() calls + bookkeeping.
+        This prevents concurrent USB writes with set_led_color()/set_rumble().
         """
         current_time = time.time()
 
@@ -277,7 +278,7 @@ class MultiplexerBackend(ControllerBackend):
             last_update = self._last_led_update.get(serial, 0)
 
             color_changed = stored_color != last_sent
-            keepalive_needed = current_time - last_update >= 4.0
+            keepalive_needed = current_time - last_update >= 2.0
 
             if color_changed or keepalive_needed:
                 r, g, b = stored_color
@@ -287,24 +288,19 @@ class MultiplexerBackend(ControllerBackend):
         if not batch:
             return 0
 
-        # Phase 2: Execute all I/O under a single lock acquisition
+        # Phase 2: Execute I/O and update bookkeeping under a single lock.
+        # Bookkeeping must be inside the lock to prevent set_led_color() from
+        # racing with stale _last_sent_color/_last_led_update overwrites.
         updated_count = 0
         with self._led_lock:
             for serial, adapter, r, g, b, rumble in batch:
                 try:
                     adapter.set_output(serial, r, g, b, rumble)
+                    self._last_sent_color[serial] = (r, g, b)
+                    self._last_led_update[serial] = current_time
                     updated_count += 1
                 except Exception as e:
                     logger.debug(f"Error updating LED for {serial}: {e}")
-
-        # Phase 3: Update bookkeeping outside lock
-        for serial, _adapter, r, g, b, _rumble in batch:
-            stored_color = (r, g, b)
-            last_sent = self._last_sent_color.get(serial)
-            self._last_sent_color[serial] = stored_color
-            self._last_led_update[serial] = current_time
-            if stored_color != last_sent:
-                logger.debug(f"LED color changed for {serial}: {last_sent} -> {stored_color}")
 
         return updated_count
 
@@ -336,11 +332,19 @@ class MultiplexerBackend(ControllerBackend):
             return False
         self._led_colors[serial] = (r, g, b)
         rumble = self._rumble.get(serial, 0)
-        result = adapter.set_output(serial, r, g, b, rumble)
-        if result:
-            self._last_sent_color[serial] = (r, g, b)
-            self._last_led_update[serial] = time.time()
-        return result
+        # Non-blocking lock: if update_all_leds() batch is in progress, skip
+        # the direct USB write to avoid concurrent set_output() calls.
+        # _led_colors is already set, so the 20Hz loop picks it up within 50ms.
+        if self._led_lock.acquire(blocking=False):
+            try:
+                result = adapter.set_output(serial, r, g, b, rumble)
+                if result:
+                    self._last_sent_color[serial] = (r, g, b)
+                    self._last_led_update[serial] = time.time()
+                return result
+            finally:
+                self._led_lock.release()
+        return True
 
     async def set_rumble(self, serial: str, intensity: int) -> bool:
         adapter = self._serial_to_adapter.get(serial)
@@ -348,7 +352,15 @@ class MultiplexerBackend(ControllerBackend):
             return False
         self._rumble[serial] = intensity
         r, g, b = self._led_colors.get(serial, (0, 0, 0))
-        return adapter.set_output(serial, r, g, b, intensity)
+        # Non-blocking lock: same pattern as set_led_color() — skip direct
+        # USB write if batch is in progress. Rumble + color state is stored,
+        # next update_all_leds() cycle sends the combined output.
+        if self._led_lock.acquire(blocking=False):
+            try:
+                return adapter.set_output(serial, r, g, b, intensity)
+            finally:
+                self._led_lock.release()
+        return True
 
     def set_effect_active(self, serial: str, active: bool):
         if active:
