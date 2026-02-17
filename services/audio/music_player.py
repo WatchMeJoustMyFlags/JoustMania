@@ -301,13 +301,29 @@ class MusicPlayer:
         self._transition_task = None
 
         if self._use_alsa:
-            # Start audio process
-            args = (self._song_array, self._ratio, self._volume, self._stop_proc)
-            self._process = Process(target=_linux_audio_loop, args=args, daemon=True)
-            self._process.start()
+            self._spawn_audio_process()
             logger.info(f"MusicPlayer '{name}' initialized with ALSA backend")
         else:
             logger.info(f"MusicPlayer '{name}' initialized (no tempo control - using pygame fallback)")
+
+    def _spawn_audio_process(self):
+        """Spawn (or respawn) the audio playback subprocess."""
+        if self._process and self._process.is_alive():
+            self._process.terminate()
+            self._process.join(timeout=1.0)
+        args = (self._song_array, self._ratio, self._volume, self._stop_proc)
+        self._process = Process(target=_linux_audio_loop, args=args, daemon=True)
+        self._process.start()
+
+    def _ensure_process_alive(self):
+        """Check if the audio process is alive; respawn if dead."""
+        if not self._use_alsa:
+            return
+        if self._process and self._process.is_alive():
+            return
+        exit_code = self._process.exitcode if self._process else None
+        logger.warning(f"MusicPlayer '{self.name}': audio process died (exit code {exit_code}), respawning")
+        self._spawn_audio_process()
 
     def load(self, file_pattern: str):
         """
@@ -328,6 +344,7 @@ class MusicPlayer:
         """
         import uuid
 
+        self._ensure_process_alive()
         self._track_id = str(uuid.uuid4())
         self._stop_proc.value = 0
         logger.info(f"Music started: {self._track_id}")
