@@ -488,3 +488,92 @@ class TestDummyMusicPlayer:
         p.start()
         # Should not raise
         p.cleanup()
+
+
+class TestProcessRespawn:
+    """Tests for automatic respawn of dead audio subprocess."""
+
+    def test_start_respawns_dead_process(self):
+        """If the audio process has died, start() respawns it."""
+        with (
+            patch("services.audio.music_player.HAS_ALSA", True),
+            patch("services.audio.music_player.Process") as mock_process_cls,
+        ):
+            mock_proc = MagicMock()
+            mock_proc.is_alive.return_value = True
+            mock_process_cls.return_value = mock_proc
+
+            from services.audio.music_player import MusicPlayer
+
+            player = MusicPlayer(name="test-respawn")
+            assert mock_proc.start.call_count == 1
+
+            # Simulate process death
+            mock_proc.is_alive.return_value = False
+            mock_proc.exitcode = -9
+
+            # Create a new mock for the respawned process
+            new_proc = MagicMock()
+            new_proc.is_alive.return_value = True
+            mock_process_cls.return_value = new_proc
+
+            player.start()
+
+            # New process was spawned
+            assert new_proc.start.call_count == 1
+
+    def test_start_does_not_respawn_alive_process(self):
+        """If the audio process is alive, start() does not respawn."""
+        with (
+            patch("services.audio.music_player.HAS_ALSA", True),
+            patch("services.audio.music_player.Process") as mock_process_cls,
+        ):
+            mock_proc = MagicMock()
+            mock_proc.is_alive.return_value = True
+            mock_process_cls.return_value = mock_proc
+
+            from services.audio.music_player import MusicPlayer
+
+            player = MusicPlayer(name="test-alive")
+            assert mock_process_cls.call_count == 1
+
+            player.start()
+
+            # No additional Process created
+            assert mock_process_cls.call_count == 1
+
+    def test_ensure_process_alive_noop_without_alsa(self):
+        """_ensure_process_alive does nothing when ALSA is disabled."""
+        with patch("services.audio.music_player.HAS_ALSA", False):
+            from services.audio.music_player import MusicPlayer
+
+            player = MusicPlayer(name="test-no-alsa")
+            assert player._process is None
+            # Should not raise
+            player._ensure_process_alive()
+            assert player._process is None
+
+    def test_respawn_terminates_zombie_process(self):
+        """_spawn_audio_process terminates an existing alive process before spawning."""
+        with (
+            patch("services.audio.music_player.HAS_ALSA", True),
+            patch("services.audio.music_player.Process") as mock_process_cls,
+        ):
+            mock_proc = MagicMock()
+            mock_proc.is_alive.return_value = True
+            mock_process_cls.return_value = mock_proc
+
+            from services.audio.music_player import MusicPlayer
+
+            player = MusicPlayer(name="test-terminate")
+
+            # Force a respawn while process is "alive"
+            new_proc = MagicMock()
+            new_proc.is_alive.return_value = True
+            mock_process_cls.return_value = new_proc
+
+            player._spawn_audio_process()
+
+            # Old process should have been terminated
+            mock_proc.terminate.assert_called_once()
+            mock_proc.join.assert_called_once_with(timeout=1.0)
