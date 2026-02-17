@@ -60,24 +60,32 @@ def _load_song_from_pattern(pattern: str) -> bytes | None:
     """
     Load a random song matching the glob pattern and return WAV bytes.
 
-    Returns None if no files match or loading fails.
+    Tries files in random order until one loads successfully.
+    Returns None if no files match or all files fail to decode.
     """
     files = glob.glob(pattern)
     if not files:
         logger.error(f"No files match pattern: {pattern}")
         return None
 
-    random_song = random.choice(files)
-    logger.info(f"Loading music: {random_song}")
+    random.shuffle(files)
+    for song_path in files:
+        try:
+            logger.info(f"Loading music: {song_path}")
+            segment = AudioSegment.from_file(song_path)
+            segment = segment.set_channels(2).set_frame_rate(44100).set_sample_width(2)
 
-    segment = AudioSegment.from_file(random_song)
-    segment = segment.set_channels(2).set_frame_rate(44100).set_sample_width(2)
+            buf = io.BytesIO()
+            segment.export(buf, format="wav")
+            wav_bytes = buf.getvalue()
+            logger.info(f"Music loaded: {song_path} ({len(wav_bytes)} bytes)")
+            return wav_bytes
+        except Exception as e:
+            logger.warning(f"Failed to load music file {song_path}: {e}")
+            continue
 
-    buf = io.BytesIO()
-    segment.export(buf, format="wav")
-    wav_bytes = buf.getvalue()
-    logger.info(f"Music loaded: {random_song} ({len(wav_bytes)} bytes)")
-    return wav_bytes
+    logger.error(f"All {len(files)} files failed to load for pattern: {pattern}")
+    return None
 
 
 def _read_samples(wf, read_size):
