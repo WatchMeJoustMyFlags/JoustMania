@@ -487,6 +487,26 @@ class TestRouteControllers:
         assert "Switched AA:AA: psmove -> hidapi" in caplog.text
 
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_dynamic_switch_closes_old_adapter(self, mock_metrics):
+        """Switching adapter should close the handle on the old adapter."""
+        a1 = _make_adapter("psmove", serials=["AA:AA"])
+        a2 = _make_adapter("hidapi", serials=["AA:AA"])
+        mux = MultiplexerBackend(adapters=[a1, a2])
+
+        # First discovery: route to psmove
+        with patch.object(mux, "_resolve_adapter_for_serial", return_value=None):
+            mux.get_connected_controllers()
+
+        assert mux._serial_to_adapter["AA:AA"] is a1
+
+        # Second discovery: targeting switches to hidapi
+        with patch.object(mux, "_resolve_adapter_for_serial", return_value=a2):
+            mux.get_connected_controllers()
+
+        # Old adapter should have been closed
+        a1.close.assert_called_once_with("AA:AA")
+
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_different_serials_to_different_adapters(self, mock_metrics):
         """Each serial can route to a different adapter independently."""
         a1 = _make_adapter("psmove", serials=["AA:AA", "BB:BB"])

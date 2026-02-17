@@ -199,9 +199,10 @@ class MultiplexerBackend(ControllerBackend):
                 method=method,
             ).inc()
 
-            # Log dynamic switch
+            # Close old adapter handle on dynamic switch
             old = self._serial_to_adapter.get(serial)
             if old and old is not seen[serial]:
+                old.close(serial)
                 logger.info(f"Switched {serial}: {old.adapter_type} -> {seen[serial].adapter_type}")
 
         return seen
