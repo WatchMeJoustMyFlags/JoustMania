@@ -160,7 +160,9 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         This allows new subscribers to immediately know about existing controllers.
         """
         # Snapshot to avoid RuntimeError if dict changes at await points
-        for serial, info in dict(self.tracked_controllers).items():
+        tracked_snapshot = dict(self.tracked_controllers)
+        all_serials = list(tracked_snapshot.keys())
+        for serial, info in tracked_snapshot.items():
             battery = info.get(ControllerInfoKey.BATTERY, 0)
             name = info.get(ControllerInfoKey.NAME, "")
             connect_event = controller_manager_pb2.ButtonEvent(
@@ -169,6 +171,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                 battery=battery,
                 event_type=controller_manager_pb2.EVENT_CONNECT,
                 name=name,
+                connected_serials=all_serials,
             )
             try:
                 event_queue.put_nowait(connect_event)

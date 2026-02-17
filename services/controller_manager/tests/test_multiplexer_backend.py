@@ -278,6 +278,75 @@ class TestMultiplexerUpdateAllLeds:
 
         a1.set_output.assert_called_once_with("AA:AA", 255, 0, 0, 128)
 
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_bookkeeping_updated_under_lock(self, mock_metrics):
+        """Verify _last_sent_color and _last_led_update are set after set_output."""
+        a1 = _make_adapter("mock", serials=["AA:AA"])
+        mux = MultiplexerBackend(adapters=[a1])
+        mux.get_connected_controllers()
+        mux._led_colors["AA:AA"] = (0, 255, 0)
+        mux._last_led_update["AA:AA"] = 0
+
+        mux.update_all_leds()
+
+        assert mux._last_sent_color["AA:AA"] == (0, 255, 0)
+        assert mux._last_led_update["AA:AA"] > 0
+
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_keepalive_interval_is_two_seconds(self, mock_metrics):
+        """Keepalive fires at 2s, not 4s (safety margin for hardware LED timeout)."""
+        import time
+
+        a1 = _make_adapter("mock", serials=["AA:AA"])
+        mux = MultiplexerBackend(adapters=[a1])
+        mux.get_connected_controllers()
+        mux._led_colors["AA:AA"] = (255, 0, 0)
+        mux._last_sent_color["AA:AA"] = (255, 0, 0)  # No color change
+        mux._last_led_update["AA:AA"] = time.time() - 2.5  # 2.5s ago
+
+        count = mux.update_all_leds()
+
+        assert count == 1  # Keepalive should fire at 2s
+
+    @pytest.mark.asyncio
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    async def test_set_led_skips_io_when_lock_held(self, mock_metrics):
+        """set_led_color() skips USB write when _led_lock is held by batch."""
+        a1 = _make_adapter("mock", serials=["AA:AA"])
+        mux = MultiplexerBackend(adapters=[a1])
+        mux.get_connected_controllers()
+
+        # Hold the lock (simulating update_all_leds batch in progress)
+        mux._led_lock.acquire()
+        try:
+            result = await mux.set_led_color("AA:AA", 0, 255, 0)
+        finally:
+            mux._led_lock.release()
+
+        # Returns True (optimistic) but doesn't call set_output
+        assert result is True
+        a1.set_output.assert_not_called()
+        # Color is stored for next batch cycle
+        assert mux._led_colors["AA:AA"] == (0, 255, 0)
+
+    @pytest.mark.asyncio
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    async def test_set_rumble_skips_io_when_lock_held(self, mock_metrics):
+        """set_rumble() skips USB write when _led_lock is held by batch."""
+        a1 = _make_adapter("mock", serials=["AA:AA"])
+        mux = MultiplexerBackend(adapters=[a1])
+        mux.get_connected_controllers()
+
+        mux._led_lock.acquire()
+        try:
+            result = await mux.set_rumble("AA:AA", 128)
+        finally:
+            mux._led_lock.release()
+
+        assert result is True
+        a1.set_output.assert_not_called()
+        assert mux._rumble["AA:AA"] == 128
+
 
 class TestMultiplexerShutdown:
     @pytest.mark.asyncio

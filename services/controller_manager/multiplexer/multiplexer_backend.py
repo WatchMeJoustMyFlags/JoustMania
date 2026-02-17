@@ -319,11 +319,19 @@ class MultiplexerBackend(ControllerBackend):
             return False
         self._led_colors[serial] = (r, g, b)
         rumble = self._rumble.get(serial, 0)
-        result = adapter.set_output(serial, r, g, b, rumble)
-        if result:
-            self._last_sent_color[serial] = (r, g, b)
-            self._last_led_update[serial] = time.time()
-        return result
+        # Non-blocking lock: if update_all_leds() batch is in progress, skip
+        # the direct USB write to avoid concurrent set_output() calls.
+        # _led_colors is already set, so the 20Hz loop picks it up within 50ms.
+        if self._led_lock.acquire(blocking=False):
+            try:
+                result = adapter.set_output(serial, r, g, b, rumble)
+                if result:
+                    self._last_sent_color[serial] = (r, g, b)
+                    self._last_led_update[serial] = time.time()
+                return result
+            finally:
+                self._led_lock.release()
+        return True
 
     async def set_rumble(self, serial: str, intensity: int) -> bool:
         adapter = self._serial_to_adapter.get(serial)
@@ -331,7 +339,15 @@ class MultiplexerBackend(ControllerBackend):
             return False
         self._rumble[serial] = intensity
         r, g, b = self._led_colors.get(serial, (0, 0, 0))
-        return adapter.set_output(serial, r, g, b, intensity)
+        # Non-blocking lock: same pattern as set_led_color() — skip direct
+        # USB write if batch is in progress. Rumble + color state is stored,
+        # next update_all_leds() cycle sends the combined output.
+        if self._led_lock.acquire(blocking=False):
+            try:
+                return adapter.set_output(serial, r, g, b, intensity)
+            finally:
+                self._led_lock.release()
+        return True
 
     def set_effect_active(self, serial: str, active: bool):
         if active:
