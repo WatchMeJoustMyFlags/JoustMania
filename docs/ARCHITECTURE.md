@@ -71,7 +71,7 @@ JoustMania is a party game system for PS Move controllers, built as a collection
 
 **Backends**:
 - `bluetooth` - Linux BlueZ (production)
-- `windows` - psmoveapi (Windows)
+- `hidapi` - libhidapi (alternative)
 - `mock` - Simulated controllers (testing)
 
 **Special Features**:
@@ -313,14 +313,12 @@ Settings are configured via admin mode (hold all 4 face buttons):
 
 ## Configuration
 
-### Environment Variables
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `CONTROLLER_BACKEND` | Controller backend type | `bluetooth` |
-| `MOCK_CONTROLLER_COUNT` | Simulated controllers | `4` |
-| `AUDIO_MOCK_MODE` | Silent audio mode | `false` |
-| `LOG_LEVEL` | Logging verbosity | `INFO` |
+| Setting | Source | Default |
+|---------|--------|---------|
+| `controller_backend` | flagd (performance) | `bluetooth` |
+| `mock_controller_count` | flagd (performance) | `4` |
+| `play_audio` | flagd (user_preferences) | `on` |
+| `LOG_LEVEL` | env var | `INFO` |
 
 ### Docker Compose Variants
 

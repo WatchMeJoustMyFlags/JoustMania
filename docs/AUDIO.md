@@ -118,7 +118,7 @@ Example: Add custom Joust music to `services/audio/assets/Joust/music/`
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AUDIO_ASSETS_DIR` | `services/audio/assets` | Path to audio files |
-| `MOCK_MODE` | `false` | Silent mode for testing |
+| `play_audio` (flagd) | `on` | Audio output toggle (user_preferences domain) |
 | `LOG_LEVEL` | `INFO` | Logging verbosity |
 
 ### Configuration (flagd)

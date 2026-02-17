@@ -232,16 +232,17 @@ JoustMania/
 ### Running Tests
 
 ```bash
-# Unit tests (when available)
-pytest
+# Unit tests (from each service directory)
+cd services/<service-name>
+uv run pytest
 
 # Integration tests
-docker compose -f docker-compose.test.yml up
+make test
 ```
 
 ### Adding Tests
 
-- Place unit tests in `tests/unit/<service_name>/`
+- Place unit tests in `services/<service_name>/tests/`
 - Place integration tests in `tests/integration/`
 - Follow existing test patterns
 

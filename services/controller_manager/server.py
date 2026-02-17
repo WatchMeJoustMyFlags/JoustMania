@@ -14,12 +14,22 @@ import grpc.aio
 from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 
 from lib.otel_metrics import init_metrics
+from lib.profiling import init_profiling
 from lib.system_metrics import start_system_metrics_collector
 from proto import controller_manager_pb2_grpc
 from services.controller_manager import metrics
 from services.controller_manager.servicer import ControllerManagerServicer
 
 logger = logging.getLogger(__name__)
+
+
+def _find_mock_backend(backend):
+    """Find MockAdapter through MultiplexerBackend."""
+    if hasattr(backend, "adapters"):
+        for adapter in backend.adapters:
+            if adapter.adapter_type == "mock":
+                return adapter
+    return None
 
 
 async def serve(port=50052):
@@ -31,21 +41,34 @@ async def serve(port=50052):
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
-    # Initialize OTEL push metrics (Issue #104, #62)
-    # Default 100ms for real-time acceleration visualization
-    # Use METRICS_EXPORT_INTERVAL_MS env var to configure (10ms for 100Hz)
-    export_interval_ms = int(os.getenv("METRICS_EXPORT_INTERVAL_MS", "100"))
-    init_metrics(export_interval_ms=export_interval_ms)
-    logger.info(f"OTEL push metrics initialized ({export_interval_ms}ms export interval)")
-
-    # Initialize flagd for dynamic streaming frequency
-    from lib.feature_flags import init_flag_domain
+    # Initialize flagd for dynamic streaming frequency and tuning flags
+    from lib.feature_flags import init_flag_domain, wait_for_provider_ready
 
     init_flag_domain("performance")
+    # Wait for flagd to be ready so flag evaluations in create_backend() succeed.
+    # Deadline must be shorter than the Docker HEALTHCHECK window (start_period + retries * interval).
+    await wait_for_provider_ready("performance", deadline_seconds=5.0)
+
+    # Initialize OTEL push metrics
+    # Export interval read from flagd with per-service targeting (Issue #479)
+    # Controller-manager gets 100ms (realtime), other services get 1000ms (normal)
+    init_metrics()
+    init_profiling()
 
     from services.controller_manager.servicer import init_frequency_listener
 
     init_frequency_listener()
+
+    # Create servicer BEFORE initializing other flag domains.
+    # The FlagdProvider in-process resolver loses flags from the performance domain
+    # when a second provider (game_settings) is initialized — causing FLAG_NOT_FOUND
+    # for controller_backend.
+    controller_servicer = ControllerManagerServicer()
+
+    # Initialize flagd game_settings for winner_rainbow_duration_ms (Issue #464)
+    from services.controller_manager.feedback_manager import init_game_settings_listener
+
+    init_game_settings_listener()
 
     # Start prometheus_client HTTP server for direct pull scraping (pipeline comparison)
     from prometheus_client import start_http_server
@@ -70,9 +93,6 @@ async def serve(port=50052):
         options=get_server_options(),
         interceptors=get_server_interceptors(),
     )
-
-    # Add servicer
-    controller_servicer = ControllerManagerServicer()
     controller_manager_pb2_grpc.add_ControllerManagerServiceServicer_to_server(controller_servicer, server)
 
     # Start discovery loop immediately (don't defer to first stream connection)
@@ -104,14 +124,15 @@ async def serve(port=50052):
 
     logger.info(f"ControllerManager server listening on port {port}")
 
-    # Phase 57: If using mock backend, start MockControllerService on port 50062
+    # If using mock backend, start MockControllerService on port 50062
     mock_server = None
-    if controller_servicer.backend.__class__.__name__ == "MockBackend":
+    mock_backend = _find_mock_backend(controller_servicer.backend)
+    if mock_backend is not None:
         from proto import controller_manager_mock_pb2_grpc
         from services.controller_manager.mock_control_service import MockControllerService
 
         mock_server = grpc.aio.server(options=get_server_options())
-        mock_servicer = MockControllerService(controller_servicer.backend)
+        mock_servicer = MockControllerService(mock_backend)
         controller_manager_mock_pb2_grpc.add_MockControllerServiceServicer_to_server(mock_servicer, mock_server)
 
         mock_port = 50062

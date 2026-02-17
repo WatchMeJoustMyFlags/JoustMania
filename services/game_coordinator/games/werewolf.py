@@ -19,7 +19,7 @@ from opentelemetry.trace import Status, StatusCode
 from lib.colors import Colors
 from lib.types import Sound
 from proto import controller_manager_pb2
-from services.game_coordinator.games.base import BaseGameMode, Phase, Player, Sensitivity
+from services.game_coordinator.games.base import GAME_MODE_ATTR, BaseGameMode, Phase, Player, Sensitivity
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -156,7 +156,7 @@ class WerewolfGame(BaseGameMode):
             },
         )
 
-    def _create_player_spans(self):
+    def _create_player_spans(self, game_context):  # noqa: ARG002
         """Create flat player lifecycle spans (FFA-style), parented to game span."""
         if not self.game_span:
             logger.warning("No game_span available, creating orphan player spans")
@@ -168,7 +168,7 @@ class WerewolfGame(BaseGameMode):
                         "player.serial": serial,
                         "player.is_werewolf": wolf_player.is_werewolf,
                         "player.team": "werewolf" if wolf_player.is_werewolf else "human",
-                        "game.mode": self.get_game_name(),
+                        GAME_MODE_ATTR: self.get_game_name(),
                     },
                 )
             return
@@ -183,7 +183,7 @@ class WerewolfGame(BaseGameMode):
                         "player.serial": serial,
                         "player.is_werewolf": wolf_player.is_werewolf,
                         "player.team": "werewolf" if wolf_player.is_werewolf else "human",
-                        "game.mode": self.get_game_name(),
+                        GAME_MODE_ATTR: self.get_game_name(),
                     },
                 )
                 logger.debug(f"Created span for player {serial}")
@@ -302,11 +302,12 @@ class WerewolfGame(BaseGameMode):
 
         logger.info(f"Revealed {len(self.werewolf_serials)} werewolves")
 
-    def _get_effective_thresholds(self, player: Player) -> tuple[float, float]:
+    def _compute_effective_thresholds(self, player: Player) -> tuple[float, float]:
         """
-        Get death thresholds for a player.
+        Compute effective thresholds for a player.
 
         Werewolves have higher thresholds (harder to kill).
+        Humans use standard base class thresholds.
 
         Args:
             player: The player to get thresholds for
@@ -317,8 +318,7 @@ class WerewolfGame(BaseGameMode):
         wolf_player = player
         if wolf_player.is_werewolf:
             return WEREWOLF_THRESHOLDS.get(self.sensitivity, (2.1, 2.6))
-        # Use standard thresholds from sensitivity
-        return self.sensitivity.value
+        return super()._compute_effective_thresholds(player)
 
     async def _check_win_condition(self) -> bool:
         """
@@ -486,7 +486,7 @@ class WerewolfGame(BaseGameMode):
         with tracer.start_as_current_span("werewolf_game") as game_span:
             self.game_span = game_span
             game_span.set_attribute("game.id", self.game_id)
-            game_span.set_attribute("game.mode", self.get_game_name())
+            game_span.set_attribute(GAME_MODE_ATTR, self.get_game_name())
 
             try:
                 self.running = True
@@ -496,7 +496,7 @@ class WerewolfGame(BaseGameMode):
                     # reveal_time is now set in __init__ from StartGameConfig
                     logger.info(f"Werewolf reveal time: {self._reveal_time}s")
                     await self._initialize_players()
-                    self._create_player_spans()
+                    self._create_player_spans(None)
 
                 # Start gameplay stream before intro (needed for LED effects)
                 await self._start_gameplay_stream()

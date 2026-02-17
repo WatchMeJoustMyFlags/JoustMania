@@ -11,7 +11,6 @@ Phase 57: Backend abstraction for platform independence.
 import asyncio
 import contextlib
 import logging
-import os
 from typing import TYPE_CHECKING
 
 from opentelemetry.context import Context
@@ -30,13 +29,73 @@ logger = logging.getLogger(__name__)
 # Lazy telemetry initialization - defers OTLP setup until first span
 tracer = get_tracer(__name__)
 
+# Span attribute keys (S1192 - avoid duplicate string literals)
+CONTROLLER_SERIAL_ATTR = "controller.serial"
+
+# Module-level cache for winner rainbow duration from flagd
+_winner_rainbow_duration_ms: int | None = None
+
 
 def get_winner_rainbow_duration_ms() -> int:
-    """Get winner rainbow duration from env var, defaults to 3000ms."""
+    """Get winner rainbow duration from flagd game_settings domain.
+
+    Falls back to 3000ms if flagd is unavailable.
+    The value is cached and updated via _on_game_settings_changed().
+    """
+    if _winner_rainbow_duration_ms is not None:
+        return _winner_rainbow_duration_ms
+    return 3000
+
+
+def init_game_settings_listener() -> None:
+    """Initialize flagd game_settings domain and register change listener.
+
+    Called from server.py during startup to set up dynamic flag-based
+    winner_rainbow_duration_ms configuration.
+    """
+    global _winner_rainbow_duration_ms
     try:
-        return int(os.environ.get("WINNER_RAINBOW_DURATION_MS", "3000"))
-    except ValueError:
-        return 3000
+        from openfeature import api
+        from openfeature.evaluation_context import EvaluationContext
+        from openfeature.provider import ProviderEvent
+
+        from lib.feature_flags import get_flag_client, init_flag_domain
+
+        init_flag_domain("game_settings")
+        client = get_flag_client("game_settings")
+
+        # Initial read
+        _winner_rainbow_duration_ms = client.get_integer_value("winner_rainbow_duration_ms", 3000, EvaluationContext())
+        logger.info(f"winner_rainbow_duration_ms initialized from flagd: {_winner_rainbow_duration_ms}ms")
+
+        # Register for changes
+        api.add_handler(ProviderEvent.PROVIDER_CONFIGURATION_CHANGED, _on_game_settings_changed)
+
+    except Exception as e:
+        logger.warning(f"Could not initialize game_settings flags, using defaults: {e}")
+
+
+def _on_game_settings_changed(event_details) -> None:
+    """Update winner_rainbow_duration_ms when flagd config changes."""
+    global _winner_rainbow_duration_ms
+
+    # Skip if the change is not for our flag
+    changed_flags = getattr(event_details, "flags_changed", [])
+    if changed_flags and "winner_rainbow_duration_ms" not in changed_flags:
+        return
+
+    try:
+        from openfeature.evaluation_context import EvaluationContext
+
+        from lib.feature_flags import get_flag_client
+
+        client = get_flag_client("game_settings")
+        new_val = client.get_integer_value("winner_rainbow_duration_ms", 3000, EvaluationContext())
+        if new_val != _winner_rainbow_duration_ms:
+            logger.info(f"winner_rainbow_duration_ms updated from flagd: {_winner_rainbow_duration_ms} -> {new_val}ms")
+            _winner_rainbow_duration_ms = new_val
+    except Exception as e:
+        logger.warning(f"Failed to refresh winner_rainbow_duration_ms from flagd: {e}")
 
 
 class FeedbackManager(ControllerEffectsBase):
@@ -77,6 +136,22 @@ class FeedbackManager(ControllerEffectsBase):
         # Vibration duration tasks
         self.vibration_tasks: dict[str, asyncio.Task] = {}
 
+        # Cached metric label children (Issue #542: avoid label lookups per LED update)
+        self._color_gauges: dict[str, dict] = {}
+
+    def _get_color_gauges(self, serial: str) -> dict:
+        """Get or create cached color metric gauges for a controller."""
+        gauges = self._color_gauges.get(serial)
+        if gauges is None:
+            gauges = {
+                "r": metrics.controller_color_r.labels(serial=serial),
+                "g": metrics.controller_color_g.labels(serial=serial),
+                "b": metrics.controller_color_b.labels(serial=serial),
+                "hex": metrics.controller_color_hex.labels(serial=serial),
+            }
+            self._color_gauges[serial] = gauges
+        return gauges
+
     async def _set_led_color(self, serial: str, color: tuple[int, int, int]) -> None:
         """
         Set LED color on a controller (implements abstract from ControllerEffectsBase).
@@ -90,12 +165,12 @@ class FeedbackManager(ControllerEffectsBase):
 
         try:
             await self.backend.set_led_color(serial, color[0], color[1], color[2])
-            # Update color metrics for Grafana dashboard
-            metrics.controller_color_r.labels(serial=serial).set(color[0])
-            metrics.controller_color_g.labels(serial=serial).set(color[1])
-            metrics.controller_color_b.labels(serial=serial).set(color[2])
-            hex_color = (color[0] << 16) | (color[1] << 8) | color[2]
-            metrics.controller_color_hex.labels(serial=serial).set(hex_color)
+            # Update color metrics for Grafana dashboard (Issue #542: cached gauges)
+            gauges = self._get_color_gauges(serial)
+            gauges["r"].set(color[0])
+            gauges["g"].set(color[1])
+            gauges["b"].set(color[2])
+            gauges["hex"].set((color[0] << 16) | (color[1] << 8) | color[2])
         except Exception as e:
             logger.error(f"Error setting LED color on {serial}: {e}", exc_info=True)
 
@@ -120,13 +195,12 @@ class FeedbackManager(ControllerEffectsBase):
             success = await self.backend.set_led_color(serial, color_rgb[0], color_rgb[1], color_rgb[2])
             if success:
                 logger.debug(f"Set color on {serial}: RGB{color_rgb}")
-                # Emit color metrics for Grafana dashboard (Phase 75)
-                metrics.controller_color_r.labels(serial=serial).set(color_rgb[0])
-                metrics.controller_color_g.labels(serial=serial).set(color_rgb[1])
-                metrics.controller_color_b.labels(serial=serial).set(color_rgb[2])
-                # Combined hex for single-panel color display
-                hex_color = (color_rgb[0] << 16) | (color_rgb[1] << 8) | color_rgb[2]
-                metrics.controller_color_hex.labels(serial=serial).set(hex_color)
+                # Emit color metrics for Grafana dashboard (Issue #542: cached gauges)
+                gauges = self._get_color_gauges(serial)
+                gauges["r"].set(color_rgb[0])
+                gauges["g"].set(color_rgb[1])
+                gauges["b"].set(color_rgb[2])
+                gauges["hex"].set((color_rgb[0] << 16) | (color_rgb[1] << 8) | color_rgb[2])
             else:
                 logger.warning(f"Failed to set color on {serial}")
             return success
@@ -225,16 +299,17 @@ class FeedbackManager(ControllerEffectsBase):
         # Create wrapper that restores color after effect
         async def effect_with_restore():
             try:
-                if effect_type == "flash":
-                    await self._effect_flash(serial, color, duration_ms, speed)
-                elif effect_type == "pulse":
-                    await self._effect_pulse(serial, color, duration_ms, speed)
-                elif effect_type == "rainbow":
-                    await self._effect_rainbow(serial, duration_ms, speed)
-                elif effect_type == "fade_out":
-                    await self._effect_fade_out(serial, color, duration_ms)
-                elif effect_type == "fade_in":
-                    await self._effect_fade_in(serial, color, duration_ms)
+                match effect_type:
+                    case "flash":
+                        await self._effect_flash(serial, color, duration_ms, speed)
+                    case "pulse":
+                        await self._effect_pulse(serial, color, duration_ms, speed)
+                    case "rainbow":
+                        await self._effect_rainbow(serial, duration_ms, speed)
+                    case "fade_out":
+                        await self._effect_fade_out(serial, color, duration_ms)
+                    case "fade_in":
+                        await self._effect_fade_in(serial, color, duration_ms)
             except asyncio.CancelledError:
                 raise
             finally:
@@ -270,7 +345,7 @@ class FeedbackManager(ControllerEffectsBase):
         Always pass truthy value to ensure restoration to base_colors at effect end.
         """
         with tracer.start_as_current_span("effect_player_warning", context=trace_context) as span:
-            span.set_attribute("controller.serial", serial)
+            span.set_attribute(CONTROLLER_SERIAL_ATTR, serial)
 
             span.add_event("flash_start", {"color": "white", "duration_ms": 200})
             await self.play_effect_with_restore(serial, "flash", Colors.White.value, 200, 5, restore_color or True)
@@ -285,7 +360,7 @@ class FeedbackManager(ControllerEffectsBase):
         This feels more immediate and satisfying than slow blinking.
         """
         with tracer.start_as_current_span("effect_player_death", context=trace_context) as span:
-            span.set_attribute("controller.serial", serial)
+            span.set_attribute(CONTROLLER_SERIAL_ATTR, serial)
 
             # Cancel any active effect (e.g., warning flash) immediately for clean transition
             span.add_event("cancel_existing_effect")
@@ -322,7 +397,7 @@ class FeedbackManager(ControllerEffectsBase):
         """
         duration_ms = get_winner_rainbow_duration_ms()
         with tracer.start_as_current_span("effect_winner_rainbow", context=trace_context) as span:
-            span.set_attribute("controller.serial", serial)
+            span.set_attribute(CONTROLLER_SERIAL_ATTR, serial)
             span.set_attribute("effect.duration_ms", duration_ms)
 
             span.add_event("rainbow_start", {"duration_ms": duration_ms})
@@ -384,7 +459,7 @@ class FeedbackManager(ControllerEffectsBase):
         battery = self.tracked_controllers.get(serial, {}).get("battery", 0)
         battery_color = self._get_battery_color(battery)
         await self.play_effect_with_restore(serial, "flash", battery_color, 1000, 1, restore_color or True)
-        logger.debug(f"Battery display: {serial} level={battery}% color={battery_color}")
+        logger.debug("Battery display: %s level=%d%% color=%s", serial, battery, battery_color)
 
     async def _effect_rumble(self, serial: str, duration_ms: int = 0, speed: int = 0, **_kwargs) -> None:
         """Vibrate only (for secret signaling like traitor/werewolf)."""
@@ -571,6 +646,27 @@ class FeedbackManager(ControllerEffectsBase):
             return True
         return False
 
+    async def apply_base_color(self, serial: str, color: tuple[int, int, int], label: str = "") -> None:
+        """Cancel cancellable effects and apply base color for a controller.
+
+        Combines cancel_if_cancellable + store-and-apply-under-lock into one call.
+        Used by both StreamButtonEvents and StreamGameplayData to handle base_color commands.
+
+        Args:
+            serial: Controller serial number
+            color: RGB tuple (r, g, b)
+            label: Stream label for log messages (e.g. "ButtonStream", "GameplayStream")
+        """
+        await self.cancel_if_cancellable(serial)
+        async with self.effect_lock:
+            self.base_colors[serial] = color
+            if serial not in self.active_effects:
+                await self.set_controller_color(serial, color)
+                logger.info(f"[{label}] Applied base color for {serial}: {color}")
+            else:
+                active = self.active_effects[serial]
+                logger.warning(f"[{label}] Base color for {serial} blocked by effect: {active.effect_type}")
+
     def clear_controller(self, serial: str) -> None:
         """Clear feedback state for a disconnected controller."""
         # Note: Keep base_colors[serial] so we can restore on reconnect
@@ -578,6 +674,7 @@ class FeedbackManager(ControllerEffectsBase):
         if serial in self.active_effects:
             self.active_effects[serial].task.cancel()
             del self.active_effects[serial]
+        self._color_gauges.pop(serial, None)
 
     def _get_battery_color(self, battery_percent: int) -> tuple[int, int, int]:
         """
@@ -627,7 +724,7 @@ class FeedbackManager(ControllerEffectsBase):
         phase_duration_sec = phase_duration_ms / 1000.0
 
         with tracer.start_as_current_span("effect_countdown", context=trace_context) as span:
-            span.set_attribute("controller.serial", serial)
+            span.set_attribute(CONTROLLER_SERIAL_ATTR, serial)
 
             try:
                 # Mark effect as active (polling skips LED refresh)

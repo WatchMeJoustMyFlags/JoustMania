@@ -80,7 +80,7 @@ grpcurl -plaintext -d '{"volume": 0.8}' \
 |----------|---------|-------------|
 | `AUDIO_PORT` | 50056 | gRPC service port |
 | `AUDIO_ASSETS_DIR` | `/audio` | Path to audio files |
-| `MOCK_MODE` | `false` | Silent mode for testing |
+| `play_audio` (flagd) | `on` | Audio output toggle (user_preferences domain) |
 
 ## Development
 

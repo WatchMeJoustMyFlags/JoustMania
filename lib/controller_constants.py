@@ -72,6 +72,7 @@ class ControllerInfoKey(StrEnum):
     ADDRESS = "address"
     NAME = "name"
     PAIRED = "paired"
+    ADAPTER = "adapter"  # Which adapter handles this controller (psmove, hidapi, mock)
 
 
 class LobbyState(StrEnum):
@@ -111,6 +112,23 @@ BUTTON_TRACKING_TO_STATE = {
     ButtonTrackingKey.SELECT: ButtonKey.SELECT,
     ButtonTrackingKey.START: ButtonKey.START,
 }
+
+
+def normalize_serial(serial: str) -> str:
+    """Normalize a controller serial to canonical format (uppercase, no colons).
+
+    MAC-format serials (12 hex chars with/without colons) are uppercased
+    and stripped of colons. Non-MAC serials (e.g. mock_controller_0) are
+    returned unchanged.
+    """
+    cleaned = serial.upper().replace(":", "")
+    if len(cleaned) == 12:
+        try:
+            int(cleaned, 16)
+            return cleaned
+        except ValueError:
+            pass
+    return serial
 
 
 # Default values

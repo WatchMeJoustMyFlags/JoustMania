@@ -2,7 +2,7 @@
 Mock Controller Control Service for integration testing.
 
 Provides control RPCs for simulating controller behavior during tests.
-Only active when using MockBackend (Phase 57).
+Only active when using MockAdapter.
 """
 
 import asyncio
@@ -15,7 +15,7 @@ from lib.controller_constants import AxisKey, ButtonKey, StateKey
 from proto import controller_manager_mock_pb2, controller_manager_mock_pb2_grpc
 
 if TYPE_CHECKING:
-    from services.controller_manager.mock_backend import MockBackend
+    from services.controller_manager.multiplexer.mock_adapter import MockAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -23,12 +23,12 @@ logger = logging.getLogger(__name__)
 class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServiceServicer):
     """Service for controlling mock controllers during integration tests."""
 
-    def __init__(self, backend: "MockBackend"):
+    def __init__(self, backend: "MockAdapter"):
         """
         Initialize mock control service.
 
         Args:
-            backend: MockBackend instance to control
+            backend: MockAdapter instance to control
         """
         self.backend = backend
         self.auto_end_task: asyncio.Task | None = None  # Background task for auto-ending games
@@ -250,6 +250,45 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
             logger.error(f"GetColor error: {e}")
             return controller_manager_mock_pb2.GetColorResponse(success=False, error=str(e))
 
+    def AddController(self, request, _context):
+        """Add a single mock controller dynamically."""
+        try:
+            serial = request.serial if request.serial else None
+            added_serial = self.backend.add_controller(serial)
+            logger.info(f"Mock: Added controller {added_serial}")
+            return controller_manager_mock_pb2.AddControllerResponse(success=True, serial=added_serial)
+        except Exception as e:
+            logger.error(f"AddController error: {e}")
+            return controller_manager_mock_pb2.AddControllerResponse(success=False, error=str(e), serial="")
+
+    def RemoveController(self, request, _context):
+        """Remove a mock controller."""
+        try:
+            serial = request.serial
+            removed = self.backend.remove_controller(serial)
+            if removed:
+                logger.info(f"Mock: Removed controller {serial}")
+                return controller_manager_mock_pb2.RemoveControllerResponse(success=True)
+            return controller_manager_mock_pb2.RemoveControllerResponse(
+                success=False, error=f"Controller {serial} not found"
+            )
+        except Exception as e:
+            logger.error(f"RemoveController error: {e}")
+            return controller_manager_mock_pb2.RemoveControllerResponse(success=False, error=str(e))
+
+    def AddControllers(self, request, _context):
+        """Add multiple mock controllers at once."""
+        try:
+            serials = []
+            for _ in range(request.count):
+                serial = self.backend.add_controller()
+                serials.append(serial)
+            logger.info(f"Mock: Added {request.count} controllers: {serials}")
+            return controller_manager_mock_pb2.AddControllersResponse(success=True, serials=serials)
+        except Exception as e:
+            logger.error(f"AddControllers error: {e}")
+            return controller_manager_mock_pb2.AddControllersResponse(success=False, error=str(e))
+
     async def StreamObservability(self, _request, context):
         """Stream observable events from mock controllers (LED changes, button presses, etc.)."""
         queue = self.backend.add_observer()
@@ -273,34 +312,34 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
             serial=event.get("serial", ""),
         )
 
-        event_type = event.get("type")
-        if event_type == "led_change":
-            proto_event.led_change.CopyFrom(
-                controller_manager_mock_pb2.LedChangeEvent(
-                    r=event.get("r", 0),
-                    g=event.get("g", 0),
-                    b=event.get("b", 0),
-                    source=event.get("source", ""),
+        match event.get("type"):
+            case "led_change":
+                proto_event.led_change.CopyFrom(
+                    controller_manager_mock_pb2.LedChangeEvent(
+                        r=event.get("r", 0),
+                        g=event.get("g", 0),
+                        b=event.get("b", 0),
+                        source=event.get("source", ""),
+                    )
                 )
-            )
-        elif event_type == "rumble_change":
-            proto_event.rumble_change.CopyFrom(
-                controller_manager_mock_pb2.RumbleChangeEvent(
-                    intensity=event.get("intensity", 0),
+            case "rumble_change":
+                proto_event.rumble_change.CopyFrom(
+                    controller_manager_mock_pb2.RumbleChangeEvent(
+                        intensity=event.get("intensity", 0),
+                    )
                 )
-            )
-        elif event_type == "button_change":
-            proto_event.button_change.CopyFrom(
-                controller_manager_mock_pb2.ButtonChangeEvent(
-                    button=event.get("button", ""),
-                    pressed=event.get("pressed", False),
+            case "button_change":
+                proto_event.button_change.CopyFrom(
+                    controller_manager_mock_pb2.ButtonChangeEvent(
+                        button=event.get("button", ""),
+                        pressed=event.get("pressed", False),
+                    )
                 )
-            )
-        elif event_type == "connection":
-            proto_event.connection.CopyFrom(
-                controller_manager_mock_pb2.ConnectionEvent(
-                    connected=event.get("connected", False),
+            case "connection":
+                proto_event.connection.CopyFrom(
+                    controller_manager_mock_pb2.ConnectionEvent(
+                        connected=event.get("connected", False),
+                    )
                 )
-            )
 
         return proto_event

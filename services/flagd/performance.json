@@ -74,6 +74,77 @@
         "10min": 10
       },
       "defaultVariant": "5min"
+    },
+    "pairing_poll_interval": {
+      "state": "ENABLED",
+      "variants": {
+        "fast": 5,
+        "normal": 10,
+        "slow": 30
+      },
+      "defaultVariant": "normal"
+    },
+    "bt_monitor_interval": {
+      "state": "ENABLED",
+      "variants": {
+        "fast": 2,
+        "normal": 5,
+        "slow": 15
+      },
+      "defaultVariant": "normal"
+    },
+    "controller_backend": {
+      "state": "ENABLED",
+      "variants": {
+        "bluetooth": "bluetooth",
+        "hidapi": "hidapi",
+        "mock": "mock",
+        "bluetooth_hidapi": "bluetooth,hidapi"
+      },
+      "defaultVariant": "hidapi"
+    },
+    "mock_controller_count": {
+      "state": "ENABLED",
+      "variants": {
+        "two": 2,
+        "four": 4,
+        "six": 6,
+        "eight": 8
+      },
+      "defaultVariant": "four"
+    },
+    "metrics_export_interval_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "overkill": 10,
+        "realtime": 100,
+        "normal": 1000
+      },
+      "defaultVariant": "normal",
+      "targeting": {
+        "if": [
+          {"==": [{"var": "service"}, "controller-manager-service"]},
+          "realtime",
+          null
+        ]
+      }
+    },
+    "profiling_enabled": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "off"
+    },
+    "controller_adapter_routing": {
+      "state": "ENABLED",
+      "variants": {
+        "bluetooth": "psmove",
+        "hidapi": "hidapi"
+      },
+      "defaultVariant": "hidapi",
+      "targeting": {}
     }
   }
 }

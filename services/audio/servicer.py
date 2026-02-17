@@ -71,64 +71,11 @@ class SoundChannel:
                 volume = max(0.0, min(1.0, volume))
 
                 def play_thread():
-                    import array
-                    import time
-
                     try:
                         if volume < 1.0:
-                            # Decode file to apply volume scaling
-                            decoded = miniaudio.decode_file(file_path)
-                            samples = array.array("h", decoded.samples)  # 16-bit signed
-
-                            # Apply volume scaling
-                            for i in range(len(samples)):
-                                samples[i] = int(samples[i] * volume)
-
-                            # Convert back to bytes for playback
-                            scaled_data = samples.tobytes()
-
-                            # Calculate bytes per frame for proper alignment
-                            # Frame = one sample per channel
-                            bytes_per_sample = decoded.sample_width
-                            bytes_per_frame = bytes_per_sample * decoded.nchannels
-
-                            # Create generator that responds to framecount requests
-                            # miniaudio calls send(framecount) to request specific frames
-                            def scaled_stream():
-                                idx = 0
-                                required_frames = yield b""  # Priming yield
-                                while idx < len(scaled_data) and self._playing.is_set():
-                                    # Calculate bytes needed for requested frames
-                                    bytes_needed = required_frames * bytes_per_frame
-                                    end = min(idx + bytes_needed, len(scaled_data))
-                                    required_frames = yield scaled_data[idx:end]
-                                    idx = end
-
-                            device = miniaudio.PlaybackDevice(
-                                output_format=decoded.sample_format,
-                                nchannels=decoded.nchannels,
-                                sample_rate=decoded.sample_rate,
-                            )
-                            stream = scaled_stream()
-                            next(stream)  # Prime the generator for send()
-                            with device:
-                                device.start(stream)
-                                duration = file_info.duration
-                                elapsed = 0.0
-                                while self._playing.is_set() and elapsed < duration + 0.5:
-                                    time.sleep(0.05)
-                                    elapsed += 0.05
+                            self._play_with_volume(file_path, volume, file_info.duration)
                         else:
-                            # Full volume - use streaming for efficiency
-                            stream = miniaudio.stream_file(file_path)
-                            device = miniaudio.PlaybackDevice()
-                            with device:
-                                device.start(stream)
-                                duration = file_info.duration
-                                elapsed = 0.0
-                                while self._playing.is_set() and elapsed < duration + 0.5:
-                                    time.sleep(0.05)
-                                    elapsed += 0.05
+                            self._play_full_volume(file_path, file_info.duration)
                     except Exception as e:
                         logger.warning(f"Playback error on channel {self.channel_id}: {e}")
                     finally:
@@ -141,6 +88,78 @@ class SoundChannel:
                 logger.error(f"Error playing sound on channel {self.channel_id}: {e}")
                 self._playing.clear()
                 return False
+
+    def _play_with_volume(self, file_path: str, volume: float, duration: float):
+        """Play a sound with volume scaling by decoding and resampling.
+
+        Args:
+            file_path: Path to the audio file
+            volume: Volume level (0.0 to 1.0, exclusive of 1.0)
+            duration: Duration in seconds from file info
+        """
+        import array
+
+        decoded = miniaudio.decode_file(file_path)
+        samples = array.array("h", decoded.samples)  # 16-bit signed
+
+        # Apply volume scaling
+        for i in range(len(samples)):
+            samples[i] = int(samples[i] * volume)
+
+        scaled_data = samples.tobytes()
+
+        # Calculate bytes per frame for proper alignment
+        # Frame = one sample per channel
+        bytes_per_sample = decoded.sample_width
+        bytes_per_frame = bytes_per_sample * decoded.nchannels
+
+        # Create generator that responds to framecount requests
+        # miniaudio calls send(framecount) to request specific frames
+        def scaled_stream():
+            idx = 0
+            required_frames = yield b""  # Priming yield
+            while idx < len(scaled_data) and self._playing.is_set():
+                bytes_needed = required_frames * bytes_per_frame
+                end = min(idx + bytes_needed, len(scaled_data))
+                required_frames = yield scaled_data[idx:end]
+                idx = end
+
+        device = miniaudio.PlaybackDevice(
+            output_format=decoded.sample_format,
+            nchannels=decoded.nchannels,
+            sample_rate=decoded.sample_rate,
+        )
+        stream = scaled_stream()
+        next(stream)  # Prime the generator for send()
+        with device:
+            device.start(stream)
+            self._wait_for_playback(duration)
+
+    def _play_full_volume(self, file_path: str, duration: float):
+        """Play a sound at full volume using streaming for efficiency.
+
+        Args:
+            file_path: Path to the audio file
+            duration: Duration in seconds from file info
+        """
+        stream = miniaudio.stream_file(file_path)
+        device = miniaudio.PlaybackDevice()
+        with device:
+            device.start(stream)
+            self._wait_for_playback(duration)
+
+    def _wait_for_playback(self, duration: float):
+        """Wait for playback to complete or be stopped.
+
+        Args:
+            duration: Expected duration in seconds
+        """
+        import time
+
+        elapsed = 0.0
+        while self._playing.is_set() and elapsed < duration + 0.5:
+            time.sleep(0.05)
+            elapsed += 0.05
 
     def stop(self):
         """Stop playback on this channel."""
@@ -157,23 +176,28 @@ class AudioManager:
 
     MAX_CHANNELS = 8  # Maximum concurrent sound effects
 
-    def __init__(self):
-        """Initialize audio systems."""
-        self.mock_mode = os.getenv("MOCK_MODE", "false").lower() == "true"
+    def __init__(self, *, silent: bool = False):
+        """Initialize audio systems.
+
+        Args:
+            silent: If True, skip hardware initialization (no channels, dummy music player).
+                    Controlled by the play_audio flagd flag at the servicer level.
+        """
+        self.silent = silent
 
         # Assets directory - clients send relative paths, we resolve to full path
         self.assets_dir = os.getenv("AUDIO_ASSETS_DIR", "services/audio/assets")
 
         # Initialize sound channels for concurrent playback
         self.channels: list[SoundChannel] = []
-        if not self.mock_mode:
+        if not self.silent:
             self.channels = [SoundChannel(i) for i in range(self.MAX_CHANNELS)]
             logger.info(f"Miniaudio initialized with {self.MAX_CHANNELS} channels")
         else:
-            logger.info("AudioManager running in MOCK_MODE - no actual audio playback")
+            logger.info("AudioManager running in silent mode - no actual audio playback")
 
         # Initialize music player with tempo control
-        if self.mock_mode:
+        if self.silent:
             self.music_player = DummyMusicPlayer("background")
         else:
             self.music_player = MusicPlayer("background")
@@ -183,7 +207,7 @@ class AudioManager:
         self.music_lock = threading.Lock()
         self.event_loop: asyncio.AbstractEventLoop | None = None  # Set from async context
 
-        logger.info(f"AudioManager initialized (assets_dir={self.assets_dir})")
+        logger.info(f"AudioManager initialized (assets_dir={self.assets_dir}, silent={self.silent})")
 
         # Track currently playing sounds for status
         self.active_sounds: dict[str, dict] = {}
@@ -239,8 +263,8 @@ class AudioManager:
         # Resolve relative path to full path
         full_path = self._resolve_path(file_path)
 
-        if self.mock_mode:
-            logger.debug(f"MOCK: Would play sound: {file_path}")
+        if self.silent:
+            logger.debug(f"Silent mode: skipping sound: {file_path}")
             return True
 
         try:
@@ -393,26 +417,99 @@ class AudioManager:
             logger.error(f"Error setting volume: {e}", exc_info=True)
             return False
 
-    def cleanup(self):
-        """Clean up audio resources."""
-        self.music_player.cleanup()
-        # Stop all sound channels
-        for channel in self.channels:
-            channel.stop()
-
 
 class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
     """gRPC servicer for Audio service."""
 
     def __init__(self):
         """Initialize audio servicer."""
-        self.audio_manager = AudioManager()
-        self.audio_enabled = True  # Controlled by play_audio setting (default: enabled)
-        self.menu_voice = "ivy"  # Controlled by menu_voice setting
-        self._settings_loaded = False  # Lazy load settings on first audio request
+        # Load play_audio flag eagerly to decide whether to initialize audio hardware.
+        # If flagd is unavailable, default to audio enabled (hardware initialized).
+        self.audio_enabled = self._load_play_audio_flag()
+        self.audio_manager = AudioManager(silent=not self.audio_enabled)
+        self.menu_voice = self._load_menu_voice_flag()
         self.sound_registry: dict[str, tuple[str, str]] = {}  # sound_name -> (type, base_dir)
         self._build_sound_registry()
-        logger.info("AudioServiceServicer initialized")
+        self._register_flag_change_handler()
+        logger.info("AudioServiceServicer initialized (audio_enabled=%s)", self.audio_enabled)
+
+    @staticmethod
+    def _load_play_audio_flag() -> bool:
+        """Load play_audio flag from flagd at startup.
+
+        Returns True (audio enabled) if flagd is unavailable or flag is not set.
+        """
+        try:
+            from lib.feature_flags import get_flag_client, init_flag_domain
+
+            init_flag_domain("user_preferences")
+            client = get_flag_client("user_preferences")
+            value = client.get_boolean_value("play_audio", True)
+            logger.info("play_audio flag loaded at startup: %s", value)
+            return value
+        except Exception as e:
+            logger.debug("Could not load play_audio flag from flagd: %s, defaulting to enabled", e)
+            return True
+
+    @staticmethod
+    def _load_menu_voice_flag() -> str:
+        """Load menu_voice flag from flagd at startup.
+
+        Returns "ivy" if flagd is unavailable or flag is not set.
+        """
+        try:
+            from lib.feature_flags import get_flag_client, init_flag_domain
+
+            init_flag_domain("user_preferences")
+            client = get_flag_client("user_preferences")
+            voice = client.get_string_value("menu_voice", "ivy")
+            if voice in ("aaron", "ivy"):
+                logger.info("menu_voice flag loaded at startup: %s", voice)
+                return voice
+            logger.warning("Invalid menu_voice value '%s', defaulting to ivy", voice)
+            return "ivy"
+        except Exception as e:
+            logger.debug("Could not load menu_voice flag from flagd: %s, defaulting to ivy", e)
+            return "ivy"
+
+    def _register_flag_change_handler(self):
+        """Register event handler for reactive flag updates from flagd."""
+        try:
+            from openfeature import api
+            from openfeature.provider import ProviderEvent
+
+            api.add_handler(ProviderEvent.PROVIDER_CONFIGURATION_CHANGED, self._on_flags_changed)
+            logger.info("Registered flag change handler for reactive audio settings")
+        except Exception as e:
+            logger.debug("Could not register flag change handler: %s", e)
+
+    def _on_flags_changed(self, _event_details):
+        """Handle flag configuration changes from flagd.
+
+        Re-reads play_audio and menu_voice flags. If play_audio is toggled off,
+        stops any currently playing music immediately.
+        """
+        try:
+            from lib.feature_flags import get_flag_client
+
+            client = get_flag_client("user_preferences")
+
+            # Check play_audio
+            new_audio_enabled = client.get_boolean_value("play_audio", True)
+            if new_audio_enabled != self.audio_enabled:
+                logger.info("play_audio flag changed: %s -> %s", self.audio_enabled, new_audio_enabled)
+                self.audio_enabled = new_audio_enabled
+                if not new_audio_enabled:
+                    self.audio_manager.stop_music()
+
+            # Check menu_voice
+            new_voice = client.get_string_value("menu_voice", "ivy")
+            if new_voice in ("aaron", "ivy") and new_voice != self.menu_voice:
+                logger.info("menu_voice flag changed: %s -> %s", self.menu_voice, new_voice)
+                self.menu_voice = new_voice
+
+        except Exception as e:
+            logger.warning("Error handling flag change: %s", e)
 
     def _build_sound_registry(self):
         """
@@ -425,33 +522,44 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         """
         base_assets_dir = Path(__file__).parent / "assets"
 
-        # Scan all game asset directories
         for base_dir in ["Joust", "Menu", "Zombie", "Fight_Club", "Commander"]:
             assets_dir = base_assets_dir / base_dir
-
             # Scan vox directory (use aaron as reference - all voices should have same files)
-            vox_dir = assets_dir / "vox" / "aaron"
-            if vox_dir.exists():
-                for ogg_file in vox_dir.glob("*.ogg"):
-                    sound_name = ogg_file.stem  # filename without extension
-                    # Don't overwrite existing entries - first found wins
-                    if sound_name not in self.sound_registry:
-                        self.sound_registry[sound_name] = ("vox", base_dir)
-                    if sound_name.lower() not in self.sound_registry:
-                        self.sound_registry[sound_name.lower()] = ("vox", base_dir)
-
+            self._scan_directory_for_sounds(assets_dir / "vox" / "aaron", "vox", base_dir)
             # Scan sounds directory
-            sounds_dir = assets_dir / "sounds"
-            if sounds_dir.exists():
-                for ogg_file in sounds_dir.glob("*.ogg"):
-                    sound_name = ogg_file.stem
-                    # Don't overwrite existing entries
-                    if sound_name not in self.sound_registry:
-                        self.sound_registry[sound_name] = ("sound", base_dir)
-                    if sound_name.lower() not in self.sound_registry:
-                        self.sound_registry[sound_name.lower()] = ("sound", base_dir)
+            self._scan_directory_for_sounds(assets_dir / "sounds", "sound", base_dir)
 
         logger.info(f"Sound registry built: {len(self.sound_registry)} sounds indexed")
+
+    def _scan_directory_for_sounds(self, directory: Path, sound_type: str, base_dir: str):
+        """Scan a directory for .ogg files and register them.
+
+        Args:
+            directory: Directory to scan for .ogg files
+            sound_type: Type of sound ("vox" or "sound")
+            base_dir: Base directory name (e.g., "Joust", "Menu")
+        """
+        if not directory.exists():
+            return
+        for ogg_file in directory.glob("*.ogg"):
+            self._register_sound(ogg_file.stem, sound_type, base_dir)
+
+    def _register_sound(self, sound_name: str, sound_type: str, base_dir: str):
+        """Register a sound name in the registry if not already present.
+
+        First-found wins: existing entries are not overwritten.
+        Both original case and lowercase variants are registered.
+
+        Args:
+            sound_name: The sound name (filename without extension)
+            sound_type: Type of sound ("vox" or "sound")
+            base_dir: Base directory name (e.g., "Joust", "Menu")
+        """
+        entry = (sound_type, base_dir)
+        if sound_name not in self.sound_registry:
+            self.sound_registry[sound_name] = entry
+        if sound_name.lower() not in self.sound_registry:
+            self.sound_registry[sound_name.lower()] = entry
 
     def _resolve_sound_path(self, sound_input: str) -> str:
         """
@@ -478,59 +586,54 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
 
         # If it's a simple name (no path separators), look up in registry
         if "/" not in lookup_name and "\\" not in lookup_name:
-            registry_entry = self.sound_registry.get(lookup_name) or self.sound_registry.get(lookup_name.lower())
-            if registry_entry:
-                sound_type, base_dir = registry_entry
-                if sound_type == "vox":
-                    return f"{base_dir}/vox/{self.menu_voice}/{lookup_name}.ogg"
-                # sound_type == "sound"
-                return f"{base_dir}/sounds/{lookup_name}.ogg"
-            # Unknown sound - try Joust vox first with current voice
-            logger.warning(f"Sound '{lookup_name}' not in registry, trying Joust vox path")
-            return f"Joust/vox/{self.menu_voice}/{lookup_name}.ogg"
+            return self._resolve_simple_name(lookup_name)
 
-        # Handle paths - check if it needs voice insertion
-        if "/vox/" in sound_input:
-            parts = sound_input.split("/vox/")
-            if len(parts) == 2:
-                remainder = parts[1]
-                # Check if voice folder is already present
-                if not remainder.startswith("aaron/") and not remainder.startswith("ivy/"):
-                    return f"{parts[0]}/vox/{self.menu_voice}/{remainder}"
+        # Handle paths - check if voice insertion is needed
+        return self._resolve_vox_path(sound_input)
 
-        return sound_input
+    def _resolve_simple_name(self, lookup_name: str) -> str:
+        """Resolve a simple sound name (no path separators) via the registry.
 
-    async def _load_audio_setting(self):
-        """Load audio settings from flagd (user_preferences domain)."""
-        if self._settings_loaded:
-            return  # Already loaded
+        Args:
+            lookup_name: Sound name without extension or path separators
 
-        try:
-            from lib.feature_flags import get_flag_client, init_flag_domain
+        Returns:
+            Resolved path to the sound file
+        """
+        registry_entry = self.sound_registry.get(lookup_name) or self.sound_registry.get(lookup_name.lower())
+        if registry_entry:
+            sound_type, base_dir = registry_entry
+            if sound_type == "vox":
+                return f"{base_dir}/vox/{self.menu_voice}/{lookup_name}.ogg"
+            return f"{base_dir}/sounds/{lookup_name}.ogg"
+        # Unknown sound - try Joust vox first with current voice
+        logger.warning(f"Sound '{lookup_name}' not in registry, trying Joust vox path")
+        return f"Joust/vox/{self.menu_voice}/{lookup_name}.ogg"
 
-            init_flag_domain("user_preferences")
-            client = get_flag_client("user_preferences")
+    def _resolve_vox_path(self, sound_input: str) -> str:
+        """Resolve a path that may need voice directory insertion.
 
-            # Load play_audio setting
-            self.audio_enabled = client.get_boolean_value("play_audio", True)
-            logger.info(f"Audio enabled setting loaded: {self.audio_enabled}")
+        If the path contains '/vox/' but no voice folder, inserts the current
+        menu voice. Paths with voice already present are returned as-is.
 
-            # Load menu_voice setting
-            voice = client.get_string_value("menu_voice", "ivy")
-            if voice in ("aaron", "ivy"):
-                self.menu_voice = voice
-            logger.info(f"Menu voice setting loaded: {self.menu_voice}")
+        Args:
+            sound_input: Sound path potentially containing '/vox/'
 
-            self._settings_loaded = True
-        except Exception as e:
-            logger.debug(f"Could not load audio settings from flagd: {e}, using defaults")
-            # Mark as loaded even on failure to avoid repeated attempts
-            self._settings_loaded = True
+        Returns:
+            Path with voice directory inserted if needed
+        """
+        if "/vox/" not in sound_input:
+            return sound_input
+        parts = sound_input.split("/vox/")
+        if len(parts) != 2:
+            return sound_input
+        remainder = parts[1]
+        if remainder.startswith("aaron/") or remainder.startswith("ivy/"):
+            return sound_input
+        return f"{parts[0]}/vox/{self.menu_voice}/{remainder}"
 
     async def PlaySound(self, request, _context):
         """Play a sound effect."""
-        # Lazy load settings on first audio request (avoids blocking startup)
-        await self._load_audio_setting()
 
         # Resolve sound name/path to full path with voice selection
         resolved_path = self._resolve_sound_path(request.file_path)
@@ -554,8 +657,6 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
 
     async def PlayMusic(self, request, _context):
         """Play background music."""
-        # Lazy load settings on first audio request (avoids blocking startup)
-        await self._load_audio_setting()
 
         # Extract music directory for span (e.g., "Joust" from "Joust/music/*.ogg")
         music_dir = request.file_pattern.split("/")[0] if "/" in request.file_pattern else "music"

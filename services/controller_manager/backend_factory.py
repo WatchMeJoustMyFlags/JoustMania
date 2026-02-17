@@ -2,92 +2,140 @@
 Backend Factory for Controller Manager
 
 Detects platform and creates appropriate backend instance.
+
+Backend selection priority:
+  1. OpenFeature "controller_backend" flag (runtime-switchable via flagd)
+  2. Platform auto-detection (Linux -> bluetooth)
+
+Flag values are read once at startup.
+Runtime changes to these flags require a service restart to take effect.
+
+Creates ControllerIOAdapter instances wrapped in MultiplexerBackend.
+  - Mock adapter is always auto-injected (starts with 0 controllers).
+  - Controllers are added dynamically via AddController / AddControllers RPCs.
 """
 
+from __future__ import annotations
+
 import logging
-import os
-import platform
+from typing import TYPE_CHECKING
 
 from services.controller_manager.backend import ControllerBackend
+
+if TYPE_CHECKING:
+    from services.controller_manager.multiplexer.adapter import ControllerIOAdapter
+    from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDiscovery
 
 logger = logging.getLogger(__name__)
 
 
+def _resolve_backend_name() -> str | None:
+    """Resolve backend name from OpenFeature flag.
+
+    Returns the backend name string, or None to fall through to platform detection.
+    """
+    try:
+        from lib.feature_flags import get_flag_client
+
+        client = get_flag_client("performance")
+        from openfeature.evaluation_context import EvaluationContext
+
+        details = client.get_string_details("controller_backend", "", EvaluationContext())
+        backend_flag = details.value
+        if backend_flag:
+            logger.info(f"Using backend from OpenFeature flag: {backend_flag} (reason={details.reason})")
+            return backend_flag.lower()
+        logger.warning(
+            f"controller_backend flag returned empty string: "
+            f"reason={details.reason}, error_code={details.error_code}, "
+            f"error_message={details.error_message}"
+        )
+    except Exception as e:
+        logger.warning(f"controller_backend flag evaluation failed: {e}")
+
+    return None
+
+
+def _create_adapter_by_name(name: str) -> ControllerIOAdapter:
+    """Create a ControllerIOAdapter instance by name.
+
+    Mock adapters always start with 0 controllers — controllers are added
+    dynamically via the AddController / AddControllers RPCs.
+    """
+    match name:
+        case "mock":
+            from services.controller_manager.multiplexer.mock_adapter import MockAdapter
+
+            return MockAdapter(num_controllers=0)
+        case "bluetooth":
+            from services.controller_manager.multiplexer.psmove_adapter import PsMoveAdapter
+
+            return PsMoveAdapter()
+        case "hidapi":
+            from services.controller_manager.multiplexer.hidapi_adapter import HidapiAdapter
+
+            return HidapiAdapter()
+        case _:
+            raise RuntimeError(f"Unknown adapter: {name}")
+
+
+def _create_bt_discovery(names: list[str]) -> CentralizedBTDiscovery | None:
+    """Create CentralizedBTDiscovery if any backend needs Bluetooth.
+
+    Returns None if no backend in the list uses Bluetooth.
+    Discovery mode is determined by the backend type:
+    - "bluez" for BluetoothBackend (psmoveapi + BlueZ scanning)
+    - "hidapi" for HidapiBackend (hid.enumerate scanning)
+    """
+    from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDiscovery
+
+    if "bluetooth" in names:
+        return CentralizedBTDiscovery(discovery_mode="bluez")
+    if "hidapi" in names:
+        return CentralizedBTDiscovery(discovery_mode="hidapi")
+    return None
+
+
 def create_backend() -> ControllerBackend:
     """
-    Create appropriate backend based on platform and environment.
+    Create appropriate backend based on flags or platform.
 
-    Environment variables:
-        MOCK_CONTROLLERS: Set to 'true' to use mock backend
-        MOCK_CONTROLLER_COUNT: Number of mock controllers (default: 4)
-        CONTROLLER_BACKEND: Force specific backend ('bluetooth', 'windows', 'mock')
+    Selection priority:
+        1. OpenFeature "controller_backend" flag from performance domain
+        2. Platform auto-detection (Linux -> bluetooth)
+
+    Creates ControllerIOAdapter instances wrapped in MultiplexerBackend.
+    Comma-separated flag values (e.g. "mock,bluetooth") create multiple
+    adapters. A mock adapter is always auto-injected (with 0 controllers)
+    for dynamic RPC management.
 
     Returns:
-        ControllerBackend instance
+        ControllerBackend instance (MultiplexerBackend)
 
     Raises:
         RuntimeError: If no suitable backend available
+        ValueError: If backend combination is unsupported (e.g. bluetooth+hidapi)
     """
-    # Check for forced backend (useful for testing)
-    forced_backend = os.getenv("CONTROLLER_BACKEND", "").lower()
+    from services.controller_manager.multiplexer import MultiplexerBackend
+    from services.controller_manager.multiplexer.validation import validate_backend_combination
 
-    if forced_backend:
-        logger.info(f"Using forced backend: {forced_backend}")
+    backend_name = _resolve_backend_name()
+    if not backend_name:
+        backend_name = "bluetooth"  # Default on Linux
 
-        if forced_backend == "mock":
-            from services.controller_manager.mock_backend import MockBackend
+    logger.info(f"Backend selection: backend_name={backend_name!r}")
 
-            num_controllers = int(os.getenv("MOCK_CONTROLLER_COUNT", "4"))
-            return MockBackend(num_controllers)
+    names = [n.strip() for n in backend_name.split(",")]
 
-        if forced_backend == "bluetooth":
-            from services.controller_manager.bluetooth_backend import BluetoothBackend
+    # Always include mock adapter for dynamic controller management via RPC.
+    # Mock starts with 0 controllers; tests/demos add them via AddController.
+    if "mock" not in names:
+        names.append("mock")
 
-            return BluetoothBackend()
+    if len(names) > 1:
+        validate_backend_combination(names)
 
-        if forced_backend == "windows":
-            from services.controller_manager.windows_backend import WindowsBackend
-
-            return WindowsBackend()
-
-        raise RuntimeError(f"Unknown backend: {forced_backend}")
-
-    # Check for mock mode (environment variable)
-    if os.getenv("MOCK_CONTROLLERS", "").lower() == "true":
-        from services.controller_manager.mock_backend import MockBackend
-
-        num_controllers = int(os.getenv("MOCK_CONTROLLER_COUNT", "4"))
-        logger.info(f"Using Mock backend (MOCK_CONTROLLERS=true) with {num_controllers} controllers")
-        return MockBackend(num_controllers)
-
-    # Platform detection
-    system = platform.system()
-
-    if system == "Windows":
-        try:
-            from services.controller_manager.windows_backend import WindowsBackend
-
-            logger.info("Using Windows backend (psmoveapi)")
-            return WindowsBackend()
-
-        except ImportError as e:
-            logger.error(f"Windows backend not available: {e}")
-            logger.info("Install psmoveapi: pip install psmoveapi")
-            logger.info("Or use mock mode: set MOCK_CONTROLLERS=true")
-            raise RuntimeError("Windows backend not available") from e
-
-    elif system == "Linux":
-        try:
-            from services.controller_manager.bluetooth_backend import BluetoothBackend
-
-            logger.info("Using Linux BlueZ backend")
-            return BluetoothBackend()
-
-        except ImportError as e:
-            logger.error(f"Bluetooth backend not available: {e}")
-            logger.info("Install dependencies: apt-get install python3-dbus, pip install psmove")
-            logger.info("Or use mock mode: set MOCK_CONTROLLERS=true")
-            raise RuntimeError("Bluetooth backend not available") from e
-
-    else:
-        raise RuntimeError(f"Unsupported platform: {system}. Set CONTROLLER_BACKEND=mock to use mock controllers.")
+    bt_discovery = _create_bt_discovery(names)
+    adapters = [_create_adapter_by_name(n) for n in names]
+    logger.info(f"MultiplexerBackend with adapters: {names}")
+    return MultiplexerBackend(adapters=adapters, bt_discovery=bt_discovery)

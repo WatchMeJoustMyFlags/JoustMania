@@ -238,30 +238,38 @@ class TeamsGameBase(BaseGameMode):
         - 2 seconds: White flash (neutral, heightens anticipation)
         - 1 second: Green (universal GO signal)
 
-        This overrides the base class countdown which uses Red → Yellow → Green.
+        This overrides the base class countdown which uses Red -> Yellow -> Green.
+        Respects countdown_phase_duration_ms=0 to skip countdown (Issue #464).
         """
         from proto import controller_manager_pb2
-        from services.game_coordinator.games.base import COUNTDOWN_DURATION
+        from services.game_coordinator.runtime_config import get_config_manager
 
-        logger.info("Starting team countdown...")
-        await self.event_publisher(GameEvent.COUNTDOWN_START, {"duration": COUNTDOWN_DURATION})
+        config = get_config_manager().get_config()
+        phase_duration_ms = config.countdown_phase_duration_ms
+
+        # Skip countdown entirely if phase duration is 0 (the "skip" variant)
+        if phase_duration_ms == 0:
+            logger.info("Team countdown skipped (phase_duration_ms=0)")
+            await self.event_publisher(GameEvent.COUNTDOWN_START, {"phase_duration_ms": 0})
+            await self.event_publisher(GameEvent.COUNTDOWN_END, {})
+            return
+
+        logger.info(f"Starting team countdown (phase_duration={phase_duration_ms}ms)...")
+        await self.event_publisher(GameEvent.COUNTDOWN_START, {"phase_duration_ms": phase_duration_ms})
 
         # Countdown sequence specific to team-based games
         countdown_phases = [
             {
                 "name": "team_colors",
-                "duration": 1.0,
                 "set_team_colors": True,  # Each player sees their team color
             },
             {
                 "name": "white_flash",
                 "color": Colors.White.value,
-                "duration": 1.0,
             },
             {
                 "name": "green_go",
                 "color": Colors.Green.value,
-                "duration": 1.0,
             },
         ]
 
@@ -288,12 +296,13 @@ class TeamsGameBase(BaseGameMode):
                     )
                     await self.gameplay_stream.write(base_color_cmd)
 
-            # Wait 1 second (in 0.1s increments to allow interruption)
-            for _ in range(10):
+            # Wait for phase duration (in 50ms increments to allow interruption)
+            wait_iterations = phase_duration_ms // 50
+            for _ in range(wait_iterations):
                 if not self.running:
                     logger.info("Countdown interrupted by force_end")
                     return
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.05)
 
         # Play start sound (Phase 29)
         await self._play_sound(Sound.SFX_START3, priority=2)
@@ -345,7 +354,7 @@ class TeamsGameBase(BaseGameMode):
                     },
                 )
 
-            elif len(alive_teams) == 0:
+            elif len(alive_teams) == 0:  # NOSONAR — intentional: outer if guarantees <=1, this distinguishes 0 from 1
                 logger.info("No winner - all players died simultaneously")
                 await self.event_publisher(GameEvent.GAME_TIE, {})
 
@@ -402,108 +411,178 @@ class TeamsGameBase(BaseGameMode):
             team.span = None  # Mark as closed to prevent double-ending
             logger.info(f"Team {team.name} eliminated! Ended team lifecycle span")
 
-    async def _end_game_impl(self):
-        """Handle game ending for team-based games."""
+    def _get_winning_team_num(self, alive_teams: set[int]) -> int | None:
+        """
+        Determine the winning team number from alive teams.
+
+        Args:
+            alive_teams: Set of team numbers that still have alive players
+
+        Returns:
+            Winning team number if exactly one team remains, None otherwise
+        """
+        if len(alive_teams) == 1:
+            return list(alive_teams)[0]
+        return None
+
+    async def _send_winner_rainbow_effects(self, winning_team_num: int):
+        """
+        Send rainbow LED effects to all alive members of the winning team.
+
+        Args:
+            winning_team_num: The winning team number
+        """
+        from proto import controller_manager_pb2
+
+        if not self.gameplay_stream:
+            return
+
+        for serial, player in self.players.items():
+            if player.alive and player.team == winning_team_num:
+                effect_cmd = controller_manager_pb2.GameplayStreamControl(
+                    game_effect=controller_manager_pb2.GameEffectCommand(
+                        serial=serial,
+                        effect=controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW,
+                    )
+                )
+                await self.gameplay_stream.write(effect_cmd)
+
+    async def _play_team_victory_sound(self, winning_team_num: int):
+        """
+        Play the victory sound for the winning team.
+
+        Falls back to congratulations sound if team has no specific sound.
+
+        Args:
+            winning_team_num: The winning team number
+        """
+        winning_team = self.teams.get(winning_team_num)
+        if winning_team:
+            sound = TEAM_WIN_SOUNDS.get(winning_team.name, Sound.VOX_CONGRATULATIONS)
+            await self._play_sound(sound, priority=2)
+
+    def _build_survived_span_attrs(self, player, is_winner: bool) -> dict:
+        """
+        Build span attributes for a surviving player.
+
+        Includes game duration, winner status, team, and analytics summary if available.
+
+        Args:
+            player: Player object
+            is_winner: Whether this player is on the winning team
+
+        Returns:
+            Dict of span attributes
+        """
+        survived_attrs = {
+            "game_duration": time.time() - self.start_time if self.start_time else 0,
+            "winner": is_winner,
+            "team": player.team,
+        }
+
+        if player.analytics is not None:
+            analytics_summary = player.analytics.get_summary()
+            for key, value in analytics_summary.items():
+                survived_attrs[f"analytics.{key}"] = value
+
+        return survived_attrs
+
+    def _end_surviving_player_spans(self, winning_team_num: int | None):
+        """
+        End lifecycle spans for surviving players after the celebration.
+
+        This ensures winners' spans are longer than losers'.
+
+        Args:
+            winning_team_num: Winning team number, or None if no winner
+        """
+        for serial, player in self.players.items():
+            if not (player.span and player.alive):
+                continue
+
+            is_winner = winning_team_num is not None and player.team == winning_team_num
+            survived_attrs = self._build_survived_span_attrs(player, is_winner)
+
+            player.span.add_event("player_survived", attributes=survived_attrs)
+            player.span.set_status(Status(StatusCode.OK))
+            player.span.end()
+            logger.debug(f"Ended lifecycle span for surviving player {serial}")
+
+    async def _publish_player_analytics(self, winning_team_num: int | None):
+        """
+        Publish analytics summaries and update metrics for all players.
+
+        Args:
+            winning_team_num: Winning team number, or None if no winner
+        """
         from services.game_coordinator import metrics
 
+        for serial, player in self.players.items():
+            if player.analytics is None:
+                continue
+
+            is_winner = winning_team_num is not None and player.team == winning_team_num
+            summary = player.analytics.get_summary()
+            summary["game_id"] = self.game_id
+            summary["winner"] = is_winner
+            summary["team"] = player.team
+            summary["survival_time_ms"] = player.analytics.total_time_ms
+
+            await self.event_publisher(GameEvent.PLAYER_ANALYTICS, summary)
+
+            metrics.game_analytics_samples_total.labels(game_mode=self.get_game_name()).inc(
+                player.analytics.sample_count
+            )
+            metrics.near_death_events_total.labels(serial=serial, game_mode=self.get_game_name()).inc(
+                player.analytics.near_death_count
+            )
+
+            logger.info(
+                f"Player {serial} analytics: peak={summary['peak_accel']:.2f}g, "
+                f"playstyle={summary['playstyle']}, near_deaths={summary['near_death_count']}"
+            )
+
+    def _end_surviving_team_spans(self, alive_teams: set[int], winning_team_num: int | None):
+        """
+        End lifecycle spans for surviving teams after the celebration.
+
+        Args:
+            alive_teams: Set of team numbers that still have alive players
+            winning_team_num: Winning team number, or None if no winner
+        """
+        for team_num, team in self.teams.items():
+            if not (team.span and team_num in alive_teams):
+                continue
+
+            is_winning_team = winning_team_num is not None and team_num == winning_team_num
+            team.span.add_event(
+                "team_victory" if is_winning_team else "team_survived",
+                attributes={
+                    "game_duration": time.time() - self.start_time if self.start_time else 0,
+                    "winner": is_winning_team,
+                },
+            )
+            team.span.set_status(Status(StatusCode.OK))
+            team.span.end()
+            logger.info(f"Ended lifecycle span for team {team.name} ({'WINNER' if is_winning_team else 'survived'})")
+
+    async def _end_game_impl(self):
+        """Handle game ending for team-based games."""
         logger.info("Ending game...")
         self.state = self.state.__class__.ENDING
 
-        # Determine winning team
         alive_teams = self._get_alive_teams()
-        winning_team_num = list(alive_teams)[0] if len(alive_teams) == 1 else None
+        winning_team_num = self._get_winning_team_num(alive_teams)
 
-        # Phase XX: Show rainbow effect on winning team's controllers via game effect
         if winning_team_num is not None:
-            from proto import controller_manager_pb2
+            await self._send_winner_rainbow_effects(winning_team_num)
+            await self._play_team_victory_sound(winning_team_num)
 
-            # Play rainbow effect on all winning team members
-            if self.gameplay_stream:
-                for serial, player in self.players.items():
-                    if player.alive and player.team == winning_team_num:
-                        effect_cmd = controller_manager_pb2.GameplayStreamControl(
-                            game_effect=controller_manager_pb2.GameEffectCommand(
-                                serial=serial,
-                                effect=controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW,
-                            )
-                        )
-                        await self.gameplay_stream.write(effect_cmd)
-
-            # Play team victory sound (Phase 29)
-            winning_team = self.teams.get(winning_team_num)
-            if winning_team:
-                sound = TEAM_WIN_SOUNDS.get(winning_team.name, Sound.VOX_CONGRATULATIONS)
-                await self._play_sound(sound, priority=2)
-
-        # Wait for rainbow effect to complete
         await self._wait_for_rainbow_effect()
 
-        # End spans for surviving players AFTER the celebration
-        # This ensures winners' spans are longer than losers'
-        for serial, player in self.players.items():
-            if player.span and player.alive:
-                is_winner = winning_team_num is not None and player.team == winning_team_num
-
-                # Build attributes including analytics summary if available
-                survived_attrs = {
-                    "game_duration": time.time() - self.start_time if self.start_time else 0,
-                    "winner": is_winner,
-                    "team": player.team,
-                }
-
-                # Add analytics summary to span
-                if player.analytics is not None:
-                    analytics_summary = player.analytics.get_summary()
-                    for key, value in analytics_summary.items():
-                        survived_attrs[f"analytics.{key}"] = value
-
-                player.span.add_event("player_survived", attributes=survived_attrs)
-                player.span.set_status(Status(StatusCode.OK))
-                player.span.end()
-                logger.debug(f"Ended lifecycle span for surviving player {serial}")
-
-        # Publish analytics summaries for all players
-        for serial, player in self.players.items():
-            if player.analytics is not None:
-                is_winner = winning_team_num is not None and player.team == winning_team_num
-                summary = player.analytics.get_summary()
-                summary["game_id"] = self.game_id
-                summary["winner"] = is_winner
-                summary["team"] = player.team
-                summary["survival_time_ms"] = player.analytics.total_time_ms
-
-                # Publish player analytics event
-                await self.event_publisher(GameEvent.PLAYER_ANALYTICS, summary)
-
-                # Update Prometheus metrics
-                metrics.game_analytics_samples_total.labels(game_mode=self.get_game_name()).inc(
-                    player.analytics.sample_count
-                )
-                metrics.near_death_events_total.labels(serial=serial, game_mode=self.get_game_name()).inc(
-                    player.analytics.near_death_count
-                )
-
-                logger.info(
-                    f"Player {serial} analytics: peak={summary['peak_accel']:.2f}g, "
-                    f"playstyle={summary['playstyle']}, near_deaths={summary['near_death_count']}"
-                )
-
-        # End spans for surviving teams AFTER the celebration
-        for team_num, team in self.teams.items():
-            if team.span and team_num in alive_teams:
-                is_winning_team = winning_team_num is not None and team_num == winning_team_num
-                team.span.add_event(
-                    "team_victory" if is_winning_team else "team_survived",
-                    attributes={
-                        "game_duration": time.time() - self.start_time if self.start_time else 0,
-                        "winner": is_winning_team,
-                    },
-                )
-                team.span.set_status(Status(StatusCode.OK))
-                team.span.end()
-                logger.info(
-                    f"Ended lifecycle span for team {team.name} ({'WINNER' if is_winning_team else 'survived'})"
-                )
+        self._end_surviving_player_spans(winning_team_num)
+        await self._publish_player_analytics(winning_team_num)
+        self._end_surviving_team_spans(alive_teams, winning_team_num)
 
         self.state = self.state.__class__.ENDED
         await self.event_publisher(

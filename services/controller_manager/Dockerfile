@@ -26,6 +26,7 @@ FROM ${PSMOVE_BUILDER_IMAGE} AS psmove-builder
 FROM ${BUILDER_IMAGE} AS python-builder
 
 # Install additional bluetooth build dependencies (not in common builder)
+# libdbus-1-dev needed for dbus-python (legacy backend); dbus-fast is pure Python
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libbluetooth-dev \
     libdbus-1-dev \
@@ -62,11 +63,13 @@ RUN uv pip install --system -e proto/ -e lib/ -e services/controller_manager/
 FROM python:3.11-slim
 
 # Install runtime dependencies (bluetooth for PS Move controllers)
+# libhidapi-hidraw0: Required for controller_backend=hidapi flag (pure Python HID backend)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bluez \
     libbluetooth3 \
     libdbus-1-3 \
     libglib2.0-0 \
+    libhidapi-hidraw0 \
     libusb-1.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -116,7 +119,7 @@ EXPOSE 8000
 # Run with: docker run --privileged or docker-compose privileged: true
 
 # Health check using grpc-health-probe
-HEALTHCHECK --interval=2s --timeout=2s --start-period=1s --retries=3 \
+HEALTHCHECK --interval=2s --timeout=2s --start-period=10s --retries=3 \
     CMD ["/bin/grpc_health_probe", "-addr=:50052"]
 
 # Run the server

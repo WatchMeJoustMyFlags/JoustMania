@@ -53,7 +53,7 @@ def _init_global_context() -> None:
     logger.info("Registered ContextVarsTransactionContextPropagator")
 
     # Set API-level context with service identity (always available to all evaluations)
-    service_name = os.environ.get("SERVICE_NAME", "unknown")
+    service_name = os.environ.get("OTEL_SERVICE_NAME", "unknown")
     environment = os.environ.get("ENVIRONMENT", "production")
     hostname = platform.node()
 
@@ -110,12 +110,50 @@ def init_flag_domain(domain: str) -> None:
             port=flagd_port,
             resolver_type=ResolverType.IN_PROCESS,
             selector=f"flagSetId={domain}",
-            keep_alive_time=30000,
+            keep_alive_time=30000,  # 30s — default 0 causes 1ms pings → flagd GOAWAY
         )
         api.set_provider(provider, domain=domain)
         _initialized_domains.add(domain)
     except Exception as e:
         logger.error(f"Failed to initialize domain '{domain}': {e}")
+
+
+async def wait_for_provider_ready(domain: str, deadline_seconds: float = 5.0) -> bool:
+    """Wait for a domain's provider to reach READY status.
+
+    Uses an asyncio.Event triggered by the PROVIDER_READY handler.
+    Returns True if ready within deadline, False otherwise.
+
+    Args:
+        domain: OpenFeature domain name
+        deadline_seconds: Maximum seconds to wait (default 5.0)
+    """
+    import asyncio
+
+    from openfeature.provider import ProviderEvent, ProviderStatus
+
+    # Already ready?
+    status = api.provider_registry.get_provider_status(domain)
+    if status == ProviderStatus.READY:
+        logger.debug(f"Domain '{domain}' provider already READY")
+        return True
+
+    ready_event = asyncio.Event()
+
+    def _on_ready(_event_details):
+        ready_event.set()
+
+    client = api.get_client(domain=domain)
+    client.add_handler(ProviderEvent.PROVIDER_READY, _on_ready)
+
+    try:
+        async with asyncio.timeout(deadline_seconds):
+            await ready_event.wait()
+        logger.info(f"Domain '{domain}' provider is READY")
+        return True
+    except TimeoutError:
+        logger.warning(f"Domain '{domain}' provider not ready after {deadline_seconds}s")
+        return False
 
 
 def get_flag_client(domain: str):

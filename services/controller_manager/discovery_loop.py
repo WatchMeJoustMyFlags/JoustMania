@@ -122,6 +122,10 @@ class DiscoveryLoop:
         self._idle_threshold_seconds = 5.0
         self._accel_movement_threshold = 0.05
 
+        # Cached metric label children (Issue #542: avoid 10K+ label lookups/sec)
+        # Populated at spawn, cleaned up on disconnect
+        self._accel_gauges: dict[str, dict] = {}
+
         # Debug logging throttle
         self._last_controller_count_log = 0.0
 
@@ -246,7 +250,7 @@ class DiscoveryLoop:
                     # Behind schedule - reset to avoid spiral
                     next_poll_time = time.monotonic()
 
-            except asyncio.CancelledError:
+            except asyncio.CancelledError:  # NOSONAR — intentional: graceful shutdown of discovery loop
                 logger.info("Discovery loop cancelled")
                 break
             except Exception as e:
@@ -293,8 +297,14 @@ class DiscoveryLoop:
                 # Activity tracking cleanup
                 self._last_activity_time.pop(serial, None)
                 self._previous_accel.pop(serial, None)
+                self._accel_gauges.pop(serial, None)
                 # Publish disconnect event to button event stream subscribers
-                self.button_detector.publish_connection_event(serial, is_connect=False, name=name)
+                self.button_detector.publish_connection_event(
+                    serial,
+                    is_connect=False,
+                    name=name,
+                    connected_serials=list(self.tracked_controllers.keys()),
+                )
                 metrics.controller_disconnect_total.labels(serial=serial).inc()
 
             # Check for new controllers
@@ -317,7 +327,11 @@ class DiscoveryLoop:
                         battery = info.get(ControllerInfoKey.BATTERY, 0)
                         name = info.get(ControllerInfoKey.NAME, "")
                         self.button_detector.publish_connection_event(
-                            serial, is_connect=True, battery=battery, name=name
+                            serial,
+                            is_connect=True,
+                            battery=battery,
+                            name=name,
+                            connected_serials=list(self.tracked_controllers.keys()),
                         )
 
                         # Restore base color if we had one before (reconnection case)
@@ -365,9 +379,16 @@ class DiscoveryLoop:
 
             # Debug: Log tracked controller count periodically (every 5 seconds)
             if current_time - self._last_controller_count_log >= 5.0:
-                logger.info(
-                    f"Polling {len(all_serials)} controllers at 100Hz, active={active_count}, idle={idle_count}"
-                )
+                adapter_info = ""
+                if hasattr(self.backend, "get_adapter_type"):
+                    adapter_counts: dict[str, int] = {}
+                    for s in all_serials:
+                        atype = self.backend.get_adapter_type(s)
+                        adapter_counts[atype] = adapter_counts.get(atype, 0) + 1
+                    adapter_info = ", adapters=" + "+".join(f"{k}:{v}" for k, v in sorted(adapter_counts.items()))
+                msg = f"Polling {len(all_serials)} controllers at 100Hz"
+                msg += f", active={active_count}, idle={idle_count}{adapter_info}"
+                logger.info(msg)
                 self._last_controller_count_log = current_time
 
             # Parallel polling - read all controllers concurrently
@@ -455,11 +476,15 @@ class DiscoveryLoop:
             import math
 
             magnitude = math.sqrt(ax * ax + ay * ay + az * az)
-            metrics.controller_accel_magnitude.labels(serial=serial).set(magnitude)
-            metrics.prom_controller_accel_magnitude.labels(serial=serial).set(magnitude)
-            metrics.controller_accel_x.labels(serial=serial).set(ax)
-            metrics.controller_accel_y.labels(serial=serial).set(ay)
-            metrics.controller_accel_z.labels(serial=serial).set(az)
+
+            # Issue #542: Use cached label children (avoids 5× label lookup per poll)
+            gauges = self._accel_gauges.get(serial)
+            if gauges:
+                gauges["magnitude"].set(magnitude)
+                gauges["prom_magnitude"].set(magnitude)
+                gauges["x"].set(ax)
+                gauges["y"].set(ay)
+                gauges["z"].set(az)
 
             prev_accel = self._previous_accel.get(serial)
             if prev_accel and not activity_detected:
@@ -485,8 +510,14 @@ class DiscoveryLoop:
         Phase 57: Simplified to use backend for state tracking.
         """
         try:
-            # Get initial state from backend
-            state = await self.backend.get_controller_state(serial)
+            # Get initial state from backend (retry briefly — hidraw non-blocking
+            # read may return empty immediately after open_path)
+            state = None
+            for _attempt in range(5):
+                state = await self.backend.get_controller_state(serial)
+                if state:
+                    break
+                await asyncio.sleep(0.02)  # 20ms between retries
 
             if not state:
                 logger.error(f"Failed to get initial state for controller {serial}")
@@ -499,6 +530,11 @@ class DiscoveryLoop:
             if self.name_manager:
                 name = self.name_manager.get_name(serial)
 
+            # Resolve adapter type if backend supports it (MultiplexerBackend)
+            adapter_type = ""
+            if hasattr(self.backend, "get_adapter_type"):
+                adapter_type = self.backend.get_adapter_type(serial)
+
             # Track controller
             self.tracked_controllers[serial] = {
                 ControllerInfoKey.SERIAL: serial,
@@ -506,6 +542,7 @@ class DiscoveryLoop:
                 ControllerInfoKey.TEAM: 0,
                 ControllerInfoKey.CONNECTED_AT: time.time(),
                 ControllerInfoKey.NAME: name,
+                ControllerInfoKey.ADAPTER: adapter_type,
             }
 
             # Store initial state
@@ -522,6 +559,16 @@ class DiscoveryLoop:
             )
 
             logger.info(f"Started tracking controller {serial} ({name})")
+
+            # Cache metric label children for this serial (Issue #542)
+            # Avoids 5× _validate_labels + _make_key per poll cycle per controller
+            self._accel_gauges[serial] = {
+                "magnitude": metrics.controller_accel_magnitude.labels(serial=serial),
+                "prom_magnitude": metrics.prom_controller_accel_magnitude.labels(serial=serial),
+                "x": metrics.controller_accel_x.labels(serial=serial),
+                "y": metrics.controller_accel_y.labels(serial=serial),
+                "z": metrics.controller_accel_z.labels(serial=serial),
+            }
 
             # Update metrics (Phase 38)
             metrics.active_controllers.inc()

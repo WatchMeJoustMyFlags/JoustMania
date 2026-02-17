@@ -32,9 +32,15 @@ from proto import (
     game_coordinator_pb2_grpc,
 )
 
+_COMPOSE_FILES = [
+    "docker-compose.yml",
+    "docker-compose.override.yml",
+    "docker-compose.ci.yml",
+]
+
 
 @pytest.fixture(scope="session")
-def docker_compose():
+def docker_compose(request):
     """Fixture to start docker-compose mock environment.
 
     Uses docker-compose.yml with overrides for testing:
@@ -48,11 +54,7 @@ def docker_compose():
     use_dev_mounts = os.getenv("USE_DEV_MOUNTS", "false").lower() == "true"
     image_tag = os.getenv("IMAGE_TAG", "latest")
 
-    compose_files = [
-        "docker-compose.yml",
-        "docker-compose.override.yml",
-        "docker-compose.ci.yml",
-    ]
+    compose_files = list(_COMPOSE_FILES)
     if use_dev_mounts:
         compose_files.append("docker-compose.dev.yml")
 
@@ -68,11 +70,11 @@ def docker_compose():
     # Note: This modifies the environment for docker-compose but is session-scoped
     if use_prebuilt:
         os.environ["IMAGE_TAG"] = image_tag
-        print(f"\n🐳 Using prebuilt images from GHCR (tag: {image_tag})")
+        print(f"\nUsing prebuilt images from GHCR (tag: {image_tag})")
     elif use_dev_mounts:
-        print("\n📂 Using dev volume mounts (no build)")
+        print("\nUsing dev volume mounts (no build)")
     else:
-        print("\n🔨 Building images locally")
+        print("\nBuilding images locally")
 
     compose.start()
 
@@ -81,7 +83,7 @@ def docker_compose():
     time.sleep(2)
 
     print("\n" + "=" * 80)
-    print("🚀 Mock environment is running!")
+    print("Mock environment is running!")
     print("=" * 80)
     print("Jaeger UI: http://localhost:16686")
     print("WebUI: http://localhost:80")
@@ -93,13 +95,13 @@ def docker_compose():
     # Skip teardown in CI mode for faster test completion
     # Containers will be cleaned up by the CI runner
     if os.getenv("CI") or os.getenv("SKIP_TEARDOWN"):
-        print("\n⚡ Skipping teardown (CI mode)")
+        print("\nSkipping teardown (CI mode)")
         return
 
     # Optional pause before teardown (set PAUSE_BEFORE_TEARDOWN=1 to inspect Jaeger)
     if os.getenv("PAUSE_BEFORE_TEARDOWN"):
         print("\n" + "=" * 80)
-        print("⏸️  PAUSED - Inspect Jaeger at http://localhost:16686")
+        print("PAUSED - Inspect Jaeger at http://localhost:16686")
         print("=" * 80)
         print("Press ENTER to tear down the environment...")
         input()

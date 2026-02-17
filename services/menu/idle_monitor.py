@@ -16,6 +16,8 @@ import math
 import time
 from typing import TYPE_CHECKING
 
+from opentelemetry import context as otel_context
+
 from services.menu import metrics
 from services.menu.handlers.base import ControllerState
 
@@ -34,7 +36,7 @@ _SENTINEL_HUE_PERIOD = 30.0  # Seconds for full hue rotation
 
 def _hsv_to_rgb(h: float, s: float, v: float) -> tuple[int, int, int]:
     """Convert HSV to RGB (0-255 scale)."""
-    if s == 0.0:
+    if s == 0.0:  # NOSONAR - exact comparison intentional in HSV conversion
         val = int(v * 255)
         return (val, val, val)
 
@@ -181,6 +183,10 @@ class IdleMonitor:
 
     async def _monitor_loop(self) -> None:
         """Background task monitoring lobby idle time."""
+        # Detach from any inherited span context to prevent the OpenFeature
+        # TracingHook from calling add_event on stale ended spans (e.g., the
+        # start_game span inherited when _restart_lobby creates this task).
+        token = otel_context.attach(otel_context.Context())
         try:
             while True:
                 await asyncio.sleep(1.0)
@@ -200,8 +206,10 @@ class IdleMonitor:
                 if elapsed >= timeout_seconds:
                     await self._enter_idle_mode()
 
-        except asyncio.CancelledError:
+        except asyncio.CancelledError:  # NOSONAR — intentional: background loop exits on cancellation
             logger.debug("Idle monitor loop cancelled")
+        finally:
+            otel_context.detach(token)
 
     async def _enter_idle_mode(self) -> None:
         """Transition all CONNECTED controllers to IDLE and start sentinels."""
@@ -344,7 +352,7 @@ class IdleMonitor:
 
                 await asyncio.sleep(interval)
 
-        except asyncio.CancelledError:
+        except asyncio.CancelledError:  # NOSONAR — intentional: cleanup LEDs before exiting
             # Turn off sentinel LEDs on cancel
             for serial in self._sentinel_serials:
                 await self._state_manager.led.set_color(serial, (0, 0, 0))

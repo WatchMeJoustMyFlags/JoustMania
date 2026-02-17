@@ -11,7 +11,7 @@ from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
 # Import config first to set up psmoveapi path
-from .config import DEBUG, POLL_INTERVAL
+from .config import DEBUG, get_poll_interval
 
 # Now import psmove (path was set up by config)
 try:
@@ -22,9 +22,7 @@ except ImportError as e:
         "and psmoveapi is built with Python bindings."
     ) from e
 
-import dbus
-
-from .adapter_manager import AdapterManager
+from .adapter_manager import AdapterManager, restart_systemd_unit
 from .metrics import (
     calibration_duration_seconds,
     pairing_adapter_device_count,
@@ -137,7 +135,7 @@ class USBPairing:
                 )
 
                 try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+                    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
                     output = stdout.decode().strip()
                     result = output == "OK"
                 except TimeoutError:
@@ -206,10 +204,7 @@ class USBPairing:
 
         logger.info("Restarting bluetooth service via D-Bus...")
         try:
-            bus = dbus.SystemBus()
-            systemd = bus.get_object("org.freedesktop.systemd1", "/org/freedesktop/systemd1")
-            manager = dbus.Interface(systemd, "org.freedesktop.systemd1.Manager")
-            manager.RestartUnit("bluetooth.service", "replace")
+            await restart_systemd_unit("bluetooth.service")
             # Wait for BlueZ to fully restart and re-read device files
             await asyncio.sleep(3)
             logger.info("Bluetooth service restarted successfully")
@@ -251,7 +246,7 @@ class USBPairing:
             span.set_attribute(_ATTR_CONTROLLER_SERIAL, serial)
 
             # Refresh adapter state and check if already paired
-            self.adapter_manager.refresh_adapters()
+            await self.adapter_manager.refresh_adapters()
 
             if not self.adapter_manager.check_if_not_paired(serial):
                 logger.info(f"Controller {serial} already paired, ensuring trusted")
@@ -333,10 +328,13 @@ class USBPairing:
                 await self.process_controller(move_index, serial)
 
     async def run_loop(self) -> None:
-        """USB polling loop."""
+        """USB polling loop.
+
+        Re-evaluates poll interval from flagd each iteration for runtime tunability.
+        """
         import asyncio
 
-        logger.info(f"Starting USB poll loop (interval: {POLL_INTERVAL}s)")
+        logger.info(f"Starting USB poll loop (interval: {get_poll_interval()}s)")
         logger.info(f"Using psmove Python bindings (psmove.Conn_USB={psmove.Conn_USB})")
 
         while True:
@@ -344,4 +342,4 @@ class USBPairing:
                 await self.poll()
             except Exception as e:
                 logger.error(f"Error during USB poll: {e}", exc_info=DEBUG)
-            await asyncio.sleep(POLL_INTERVAL)
+            await asyncio.sleep(get_poll_interval())

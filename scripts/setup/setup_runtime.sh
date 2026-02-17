@@ -44,7 +44,7 @@ echo "For development, use: ./scripts/setup/setup_host.sh"
 echo ""
 
 # Check if running as root (we need sudo for some things)
-if [ "$EUID" -eq 0 ]; then
+if [[ "$EUID" -eq 0 ]]; then
     echo -e "${RED}Please run without sudo. The script will ask for sudo when needed.${NC}"
     exit 1
 fi
@@ -89,14 +89,14 @@ echo "[3/4] Configuring Bluetooth..."
 
 # Detect config.txt location based on distribution
 DIST_REL=$(lsb_release -r -s 2>/dev/null | cut -d. -f1 || echo "12")
-if [ "$DIST_REL" -ge 12 ]; then
+if [[ "$DIST_REL" -ge 12 ]]; then
     config_loc=/boot/firmware/config.txt
 else
     config_loc=/boot/config.txt
 fi
 
 # Disable internal Bluetooth (use USB adapters for better performance)
-if [ -f "$config_loc" ]; then
+if [[ -f "$config_loc" ]]; then
     if ! grep -q 'dtoverlay=disable-bt' "$config_loc" 2>/dev/null; then
         echo "  → Disabling internal Bluetooth (USB adapters recommended)..."
         echo "dtoverlay=disable-bt" | sudo tee -a "$config_loc" > /dev/null
@@ -108,7 +108,7 @@ if [ -f "$config_loc" ]; then
 fi
 
 # Configure ClassicBondedOnly for PS Move controllers
-if [ -f "/etc/bluetooth/input.conf" ]; then
+if [[ -f "/etc/bluetooth/input.conf" ]]; then
     if grep -q "ClassicBondedOnly=true" /etc/bluetooth/input.conf 2>/dev/null; then
         echo "  → Setting ClassicBondedOnly=false..."
         sudo sed -i 's/ClassicBondedOnly=true/ClassicBondedOnly=false/' /etc/bluetooth/input.conf
@@ -145,13 +145,13 @@ echo "Setup Complete!"
 echo "=========================================="
 echo ""
 
-if [ "$REBOOT_NEEDED" = true ]; then
+if [[ "$REBOOT_NEEDED" = true ]]; then
     echo -e "${YELLOW}ACTION REQUIRED: Reboot to disable internal Bluetooth${NC}"
     echo "  sudo reboot"
     echo ""
 fi
 
-if [ "$DOCKER_GROUP_CHANGED" = true ]; then
+if [[ "$DOCKER_GROUP_CHANGED" = true ]]; then
     echo -e "${YELLOW}ACTION REQUIRED: Log out and back in for docker group${NC}"
     echo ""
 fi

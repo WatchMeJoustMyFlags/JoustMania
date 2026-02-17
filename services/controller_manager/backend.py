@@ -1,7 +1,7 @@
 """
 Abstract Controller Backend Interface
 
-Defines the contract for controller backends (BlueZ, Windows, Mock).
+Defines the contract for controller backends (BlueZ, HidAPI, Mock).
 Each backend implements this interface to provide platform-specific
 controller access while maintaining a consistent API.
 """
@@ -13,10 +13,8 @@ class ControllerBackend(ABC):
     """
     Abstract interface for controller backends.
 
-    Implementations:
-    - BluetoothBackend: Linux/BlueZ backend for Raspberry Pi
-    - WindowsBackend: Windows backend using psmoveapi
-    - MockBackend: Mock backend for testing without hardware
+    The primary implementation is MultiplexerBackend, which wraps one or
+    more ControllerIOAdapter instances (PsMoveAdapter, HidapiAdapter, MockAdapter).
     """
 
     @abstractmethod
@@ -130,9 +128,12 @@ class ControllerBackend(ABC):
         pass
 
     @abstractmethod
-    def get_connected_controllers(self) -> list[str]:
+    def get_connected_controllers(self, force_rescan: bool = False) -> list[str]:
         """
         Get list of connected controller serials.
+
+        Args:
+            force_rescan: If True, re-scan hardware instead of returning cached list
 
         Returns:
             List of serial numbers (strings)

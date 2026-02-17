@@ -7,6 +7,8 @@ import contextlib
 import logging
 from typing import TYPE_CHECKING, Protocol
 
+from opentelemetry import context as otel_context
+
 from proto import controller_manager_pb2, controller_manager_pb2_grpc, menu_pb2
 
 logger = logging.getLogger(__name__)
@@ -46,6 +48,14 @@ class ControllerEventCallbacks(Protocol):
 
     def get_menu_state(self) -> int:
         """Get current menu state."""
+        ...
+
+    def get_connected_serials(self) -> set[str]:
+        """Get set of serials the menu considers connected."""
+        ...
+
+    async def on_stream_reconnected(self) -> None:
+        """Called when the button event stream reconnects."""
         ...
 
 
@@ -137,81 +147,137 @@ class ControllerEventLoop:
 
     async def _run(self) -> None:
         """Main event loop with reconnection logic."""
+        # Detach from any inherited span context to prevent stale span
+        # references when this task is created inside _restart_lobby's
+        # restart_button_monitor span block.
+        token = otel_context.attach(otel_context.Context())
         retry_delay = 1.0
         max_retry_delay = 30.0
 
+        try:
+            while self._running:
+                try:
+                    retry_delay = await self._run_stream_connection()
+                except asyncio.CancelledError:
+                    logger.info("Controller event loop cancelled")
+                    raise
+                except Exception as e:
+                    retry_delay = await self._handle_connection_error(e, retry_delay, max_retry_delay)
+                finally:
+                    await self._clear_stream_state()
+        finally:
+            otel_context.detach(token)
+
+    async def _run_stream_connection(self) -> float:  # NOSONAR(python:S3516)
+        """
+        Establish and process a single stream connection.
+
+        Returns:
+            Retry delay reset to 1.0 on successful connection
+        """
+        stub = controller_manager_pb2_grpc.ControllerManagerServiceStub(self._channel)
+        logger.info("Connecting to Controller Manager (bidirectional stream)...")
+
+        # Clear menu state before reconnect so initial events re-populate cleanly
+        await self._callbacks.on_stream_reconnected()
+
+        request_queue: asyncio.Queue = asyncio.Queue()
+        stream = stub.StreamButtonEvents(self._request_generator(request_queue))
+
+        async with self._stream_lock:
+            self._stream = stream
+            self._stream_queue = request_queue
+            self._led.set_stream(request_queue, self._stream_lock)
+
+        logger.info("Connected to Controller Manager")
+
+        if self._connected_event:
+            self._connected_event.set()
+
+        async for event in stream:
+            if not self._running:
+                return 1.0
+            await self._dispatch_event(event)
+
+        if self._running:
+            logger.warning("Button event stream ended, reconnecting...")
+
+        return 1.0
+
+    async def _request_generator(self, queue: asyncio.Queue):
+        """
+        Async generator that yields ButtonEventStreamControl messages.
+
+        Sends initial config, then yields messages from the queue.
+
+        Args:
+            queue: Queue to read outbound messages from
+        """
+        initial_config = controller_manager_pb2.ButtonEventStreamControl(
+            config=controller_manager_pb2.ButtonEventStreamConfig()
+        )
+        yield initial_config
+
         while self._running:
             try:
-                stub = controller_manager_pb2_grpc.ControllerManagerServiceStub(self._channel)
-
-                logger.info("Connecting to Controller Manager (bidirectional stream)...")
-
-                # Create bidirectional stream with async generator for outbound messages
-                request_queue: asyncio.Queue = asyncio.Queue()
-
-                async def request_generator(queue=request_queue):
-                    """Async generator that yields ButtonEventStreamControl messages."""
-                    # Send initial config
-                    initial_config = controller_manager_pb2.ButtonEventStreamControl(
-                        config=controller_manager_pb2.ButtonEventStreamConfig()
-                    )
-                    yield initial_config
-
-                    # Then yield messages from queue
-                    while self._running:
-                        try:
-                            msg = await asyncio.wait_for(queue.get(), timeout=1.0)
-                            yield msg
-                        except TimeoutError:
-                            continue
-                        except asyncio.CancelledError:
-                            # Re-raise to properly propagate cancellation
-                            raise
-
-                # Start bidirectional stream
-                stream = stub.StreamButtonEvents(request_generator())
-
-                # Store stream reference and queue for sending messages
-                async with self._stream_lock:
-                    self._stream = stream
-                    self._stream_queue = request_queue
-                    # Wire LED controller to use the same stream
-                    self._led.set_stream(request_queue, self._stream_lock)
-
-                logger.info("Connected to Controller Manager")
-                retry_delay = 1.0
-
-                # Signal that connection is ready
-                if self._connected_event:
-                    self._connected_event.set()
-
-                # Process incoming events
-                async for event in stream:
-                    if not self._running:
-                        return
-
-                    await self._dispatch_event(event)
-
-                if self._running:
-                    logger.warning("Button event stream ended, reconnecting...")
-
+                msg = await asyncio.wait_for(queue.get(), timeout=1.0)
+                yield msg
+            except TimeoutError:
+                continue
             except asyncio.CancelledError:
-                logger.info("Controller event loop cancelled")
                 raise
-            except Exception as e:
-                if not self._running:
-                    return
-                logger.error(f"Controller event loop error: {e}, reconnecting in {retry_delay:.1f}s")
-                await asyncio.sleep(retry_delay)
-                retry_delay = min(retry_delay * 2, max_retry_delay)
-            finally:
-                # Clear stream reference and connection state on disconnect
-                async with self._stream_lock:
-                    self._stream = None
-                    self._stream_queue = None
-                    self._led.set_stream(None)
-                if self._connected_event:
-                    self._connected_event.clear()
+
+    async def _handle_connection_error(self, error: Exception, retry_delay: float, max_retry_delay: float) -> float:
+        """
+        Handle a connection error with exponential backoff.
+
+        Args:
+            error: The exception that occurred
+            retry_delay: Current retry delay in seconds
+            max_retry_delay: Maximum retry delay in seconds
+
+        Returns:
+            Updated retry delay for next attempt
+        """
+        if not self._running:
+            return retry_delay
+        logger.error(f"Controller event loop error: {error}, reconnecting in {retry_delay:.1f}s")
+        await asyncio.sleep(retry_delay)
+        return min(retry_delay * 2, max_retry_delay)
+
+    async def _clear_stream_state(self) -> None:
+        """Clear stream reference and connection state on disconnect."""
+        async with self._stream_lock:
+            self._stream = None
+            self._stream_queue = None
+            self._led.set_stream(None)
+        if self._connected_event:
+            self._connected_event.clear()
+
+    async def _reconcile_controllers(self, backend_serials: list[str]) -> None:
+        """
+        Reconcile menu controller state with backend's authoritative list.
+
+        Removes any controllers the menu tracks that the backend doesn't know about
+        (ghost controllers from lost stream events).
+
+        Args:
+            backend_serials: List of serials the backend considers connected
+        """
+        if not backend_serials:
+            return
+
+        backend_set = set(backend_serials)
+        menu_serials = self._callbacks.get_connected_serials()
+        ghosts = menu_serials - backend_set
+
+        for ghost_serial in ghosts:
+            logger.warning(f"Reconciliation: pruning ghost controller {ghost_serial}")
+            await self._callbacks.on_disconnect(ghost_serial)
+            self._metrics.ghost_controllers_pruned_total.inc()
+
+        if ghosts:
+            logger.info(f"Reconciliation pruned {len(ghosts)} ghost controller(s): {ghosts}")
 
     async def _dispatch_event(self, event) -> None:
         """
@@ -229,9 +295,15 @@ class ControllerEventLoop:
         if event.event_type == controller_manager_pb2.EVENT_CONNECT:
             await self._callbacks.on_connect(serial)
             self._metrics.button_frames_processed_total.inc()
+            # Reconcile after processing the connect event
+            if event.connected_serials:
+                await self._reconcile_controllers(list(event.connected_serials))
         elif event.event_type == controller_manager_pb2.EVENT_DISCONNECT:
             await self._callbacks.on_disconnect(serial)
             self._metrics.button_frames_processed_total.inc()
+            # Reconcile after processing the disconnect event
+            if event.connected_serials:
+                await self._reconcile_controllers(list(event.connected_serials))
         else:
             # Regular button event (EVENT_BUTTON is default, 0)
             # Only process when menu is running

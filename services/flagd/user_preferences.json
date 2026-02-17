@@ -42,6 +42,14 @@
         "off": false
       },
       "defaultVariant": "on"
+    },
+    "menu_auto_start": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "on"
     }
   }
 }

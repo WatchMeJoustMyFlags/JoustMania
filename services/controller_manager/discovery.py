@@ -15,7 +15,7 @@ import time
 logger = logging.getLogger(__name__)
 
 # Default interval between forced rescans (seconds)
-DEFAULT_RESCAN_INTERVAL = 5.0
+DEFAULT_RESCAN_INTERVAL = 10.0
 
 
 class PeriodicRescanTimer:

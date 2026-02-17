@@ -17,7 +17,7 @@ import os
 import random
 import time
 import wave
-from multiprocessing import Manager, Process, Value
+from multiprocessing import Array, Process, Value
 from sys import platform
 
 import numpy as np
@@ -45,24 +45,8 @@ def lerp(a: float, b: float, t: float) -> float:
     return a * (1 - t) + b * t
 
 
-def _linux_audio_loop(fname: dict, ratio: Value, volume: Value, stop_proc: Value):
-    """
-    Linux audio playback loop using ALSA with real-time resampling.
-
-    Runs in a separate process for non-blocking playback.
-
-    Args:
-        fname: Manager dict with 'song' key containing glob pattern
-        ratio: Shared Value for playback speed (1.0 = normal)
-        volume: Shared Value for volume (0.0 to 1.0)
-        stop_proc: Shared Value to control playback (0=play, 1=stop)
-    """
-    period = 1024 * 4
-    period_bytes = period * 2 * 2  # Two channels, two bytes per sample
-
-    time.sleep(0.1)  # Brief startup delay
-
-    # Try to set higher process priority for smoother audio
+def _try_set_process_priority():
+    """Try to set higher process priority for smoother audio. Silently ignored on failure."""
     try:
         import psutil
 
@@ -71,154 +55,241 @@ def _linux_audio_loop(fname: dict, ratio: Value, volume: Value, stop_proc: Value
     except Exception:
         pass
 
+
+def _load_song_from_pattern(pattern: str) -> bytes | None:
+    """
+    Load a random song matching the glob pattern and return WAV bytes.
+
+    Tries files in random order until one loads successfully.
+    Returns None if no files match or all files fail to decode.
+    """
+    files = glob.glob(pattern)
+    if not files:
+        logger.error(f"No files match pattern: {pattern}")
+        return None
+
+    random.shuffle(files)
+    for song_path in files:
+        try:
+            logger.info(f"Loading music: {song_path}")
+            segment = AudioSegment.from_file(song_path)
+            segment = segment.set_channels(2).set_frame_rate(44100).set_sample_width(2)
+
+            buf = io.BytesIO()
+            segment.export(buf, format="wav")
+            wav_bytes = buf.getvalue()
+            logger.info(f"Music loaded: {song_path} ({len(wav_bytes)} bytes)")
+            return wav_bytes
+        except Exception as e:
+            logger.warning(f"Failed to load music file {song_path}: {e}")
+            continue
+
+    logger.error(f"All {len(files)} files failed to load for pattern: {pattern}")
+    return None
+
+
+def _read_samples(wf, read_size):
+    """Generator to read audio frames from a wave file."""
+    while True:
+        sample = wf.readframes(read_size)
+        if len(sample) > 0:
+            yield sample
+        else:
+            return
+
+
+def _clamp_ratio(ratio: float) -> float:
+    """Clamp playback ratio to safe range, defaulting to 1.0 if out of bounds."""
+    if ratio <= 0.5 or ratio > 2.0:
+        return 1.0
+    return ratio
+
+
+def _resample_chunk(data: bytes, ratio: float, volume: float) -> bytes:
+    """
+    Resample a single stereo audio chunk for tempo change with volume.
+
+    Args:
+        data: Raw PCM bytes (int16, stereo interleaved)
+        ratio: Playback speed ratio (1.0 = normal)
+        volume: Volume multiplier (0.0 to 1.0)
+
+    Returns:
+        Resampled PCM bytes, or original data if chunk is too small.
+    """
+    array = np.frombuffer(data, dtype=np.int16)
+
+    num_input_frames = len(array) // 2  # Stereo
+    num_output_frames = int(num_input_frames / ratio) & (~0x1F)
+    if num_output_frames < 32:
+        return data
+
+    # Split stereo channels and convert to float for resampy
+    left_in = array[0::2].astype(np.float64)
+    right_in = array[1::2].astype(np.float64)
+
+    # Resample using resampy (audio-quality resampling)
+    sr_in = 44100
+    sr_out = int(44100 / ratio)
+    left = resampy.resample(left_in, sr_in, sr_out, filter="kaiser_fast")
+    right = resampy.resample(right_in, sr_in, sr_out, filter="kaiser_fast")
+
+    # Apply volume and convert back to int16
+    left = (left * volume).astype(np.int16)
+    right = (right * volume).astype(np.int16)
+
+    # Interleave channels
+    final = np.empty(len(left) * 2, dtype=np.int16)
+    final[0::2] = left
+    final[1::2] = right
+
+    return final.tobytes()
+
+
+def _resample_audio(samples, ratio_val, vol_val):
+    """Generator that resamples audio chunks for tempo change with volume using resampy."""
+    for data in samples:
+        try:
+            ratio = _clamp_ratio(ratio_val.value)
+            yield _resample_chunk(data, ratio, vol_val.value)
+        except Exception as e:
+            logger.warning(f"Resample error: {e}")
+            yield data
+
+
+def _write_samples(device, write_size, samples, stop_proc, generation, play_gen):
+    """Write resampled audio samples to an ALSA device.
+
+    Stops early if stop_proc is set or if the generation counter has changed
+    (indicating a new start() call, so this playback session is stale).
+    """
+    buf = bytearray()
+    for sample in samples:
+        buf.extend(sample)
+        while len(buf) >= write_size:
+            try:
+                device.write(bytes(buf[:write_size]))
+            except Exception as e:
+                logger.warning(f"ALSA write error: {e}")
+                break
+            del buf[:write_size]
+        if stop_proc.value or generation.value != play_gen:
+            return
+
+
+def _play_loaded_song(wav_data, period, period_bytes, ratio, volume, stop_proc, generation, play_gen):
+    """
+    Open and play a loaded WAV through ALSA with real-time resampling.
+
+    Returns True if playback completed normally, False if WAV was invalid.
+    """
+    wf = wave.open(io.BytesIO(wav_data), "rb")
+    if len(wf.readframes(1)) == 0:
+        logger.error("Empty WAV data")
+        return False
+    wf.rewind()
+
+    device = alsaaudio.PCM(
+        channels=wf.getnchannels(),
+        rate=wf.getframerate(),
+        format=alsaaudio.PCM_FORMAT_S16_LE,
+        periodsize=period,
+        device="default",
+    )
+
+    _write_samples(
+        device, period_bytes, _resample_audio(_read_samples(wf, period), ratio, volume), stop_proc, generation, play_gen
+    )
+
+    wf.close()
+    device.close()
+
+    if stop_proc.value == 0:
+        logger.debug("Music track finished, looping")
+    return True
+
+
+def _get_song_pattern(song_array: Array) -> str:
+    """Read the song pattern from a shared byte array."""
+    return song_array.value.decode("utf-8")
+
+
+def _set_song_pattern(song_array: Array, pattern: str) -> None:
+    """Write a song pattern to a shared byte array."""
+    song_array.value = pattern.encode("utf-8")
+
+
+def _linux_audio_loop(song_array: Array, ratio: Value, volume: Value, stop_proc: Value, generation: Value):
+    """
+    Linux audio playback loop using ALSA with real-time resampling.
+
+    Runs in a separate process for non-blocking playback.
+
+    Args:
+        song_array: Shared byte array containing glob pattern for current song
+        ratio: Shared Value for playback speed (1.0 = normal)
+        volume: Shared Value for volume (0.0 to 1.0)
+        stop_proc: Shared Value to control playback (0=play, 1=stop)
+        generation: Shared Value incremented on each start(), used to detect stale playback
+    """
+    period = 1024 * 4
+    period_bytes = period * 2 * 2  # Two channels, two bytes per sample
+
+    time.sleep(0.1)  # Brief startup delay
+    _try_set_process_priority()
+
     song_loaded = False
     wav_data = None
+    loaded_pattern = ""
+    last_gen = generation.value
 
     while True:
         try:
-            if stop_proc.value == 1:
-                # Stopped - wait for start signal
+            # Detect generation change (new start() was called) — force reload
+            if generation.value != last_gen:
                 song_loaded = False
+                loaded_pattern = ""
+                last_gen = generation.value
+
+            if stop_proc.value == 1:
+                song_loaded = False
+                loaded_pattern = ""
                 time.sleep(0.05)
                 continue
 
-            if fname["song"] == "":
+            current_pattern = _get_song_pattern(song_array)
+
+            if current_pattern == "":
+                song_loaded = False
+                loaded_pattern = ""
                 time.sleep(0.05)
                 continue
 
-            # Load song if not loaded
+            # Detect pattern change and force reload. This handles the race
+            # where stop()+load()+start() are called in quick succession:
+            # stop() sets stop_proc=1, but start() may reset it to 0 before
+            # this loop checks, so song_loaded would never be cleared. Tracking
+            # the pattern ensures we always reload when the song changes.
+            if current_pattern != loaded_pattern:
+                song_loaded = False
+
             if not song_loaded:
-                try:
-                    pattern = fname["song"]
-                    files = glob.glob(pattern)
-                    if not files:
-                        logger.error(f"No files match pattern: {pattern}")
-                        time.sleep(0.5)
-                        continue
-
-                    random_song = random.choice(files)
-                    logger.info(f"Loading music: {random_song}")
-
-                    segment = AudioSegment.from_file(random_song)
-                    # Ensure stereo, 44100Hz, 16-bit
-                    segment = segment.set_channels(2).set_frame_rate(44100).set_sample_width(2)
-
-                    wav_data = io.BytesIO()
-                    segment.export(wav_data, format="wav")
-                    wav_data = wav_data.getvalue()
-                    song_loaded = True
-                    logger.info(f"Music loaded: {random_song} ({len(wav_data)} bytes)")
-                    continue
-
-                except Exception as e:
-                    logger.error(f"Error loading music: {e}")
+                wav_data = _load_song_from_pattern(current_pattern)
+                if wav_data is None:
                     time.sleep(0.5)
                     continue
+                song_loaded = True
+                loaded_pattern = current_pattern
+                continue
 
-            # Play the loaded song
-            if stop_proc.value == 0 and song_loaded:
-                try:
-                    wf = wave.open(io.BytesIO(wav_data), "rb")
-                    if len(wf.readframes(1)) == 0:
-                        logger.error("Empty WAV data")
-                        song_loaded = False
-                        continue
-                    wf.rewind()
-
-                    device = alsaaudio.PCM(
-                        channels=wf.getnchannels(),
-                        rate=wf.getframerate(),
-                        format=alsaaudio.PCM_FORMAT_S16_LE,
-                        periodsize=period,
-                        device="default",
-                    )
-
-                    def read_samples(wf, read_size):
-                        """Generator to read audio samples."""
-                        while True:
-                            sample = wf.readframes(read_size)
-                            if len(sample) > 0:
-                                yield sample
-                            else:
-                                return
-
-                    def resample_audio(samples, ratio_val, vol_val):
-                        """Resample audio data for tempo change with volume using resampy."""
-                        for data in samples:
-                            try:
-                                array = np.frombuffer(data, dtype=np.int16)
-
-                                # Calculate output frames based on ratio
-                                # ratio > 1 means faster playback = fewer output samples
-                                ratio = ratio_val.value
-                                if ratio <= 0.5 or ratio > 2.0:
-                                    ratio = 1.0  # Safety clamp
-
-                                num_input_frames = len(array) // 2  # Stereo
-                                num_output_frames = int(num_input_frames / ratio) & (~0x1F)
-                                if num_output_frames < 32:
-                                    yield data
-                                    continue
-
-                                # Split stereo channels and convert to float for resampy
-                                left_in = array[0::2].astype(np.float64)
-                                right_in = array[1::2].astype(np.float64)
-
-                                # Resample using resampy (audio-quality resampling)
-                                # Use 'kaiser_fast' for real-time performance
-                                sr_in = 44100
-                                sr_out = int(44100 / ratio)
-                                left = resampy.resample(left_in, sr_in, sr_out, filter="kaiser_fast")
-                                right = resampy.resample(right_in, sr_in, sr_out, filter="kaiser_fast")
-
-                                # Apply volume and convert back to int16
-                                vol = vol_val.value
-                                left = (left * vol).astype(np.int16)
-                                right = (right * vol).astype(np.int16)
-
-                                # Interleave channels
-                                final = np.empty(len(left) * 2, dtype=np.int16)
-                                final[0::2] = left
-                                final[1::2] = right
-
-                                yield final.tobytes()
-                            except Exception as e:
-                                logger.warning(f"Resample error: {e}")
-                                yield data
-
-                    def write_samples(device, write_size, samples):
-                        """Write audio samples to device."""
-                        buf = bytearray()
-                        for sample in samples:
-                            buf.extend(sample)
-                            while len(buf) >= write_size:
-                                try:
-                                    device.write(bytes(buf[:write_size]))
-                                except alsaaudio.ALSAAudioError as e:
-                                    logger.warning(f"ALSA write error: {e}")
-                                    break
-                                del buf[:write_size]
-                            if stop_proc.value:
-                                return
-
-                    # Play with resampling
-                    write_samples(device, period_bytes, resample_audio(read_samples(wf, period), ratio, volume))
-
-                    wf.close()
-                    device.close()
-
-                    # Song finished, will loop if not stopped
-                    if stop_proc.value == 0:
-                        logger.debug("Music track finished, looping")
-
-                except Exception as e:
-                    logger.error(f"Playback error: {e}")
-                    time.sleep(0.5)
-                    song_loaded = False
+            play_gen = generation.value
+            if not _play_loaded_song(wav_data, period, period_bytes, ratio, volume, stop_proc, generation, play_gen):
+                song_loaded = False
 
         except Exception as e:
             logger.error(f"Audio loop error: {e}")
             time.sleep(0.5)
+            song_loaded = False
 
 
 class MusicPlayer:
@@ -239,13 +310,14 @@ class MusicPlayer:
         self._use_alsa = HAS_ALSA and (platform == "linux" or platform == "linux2")
 
         # Shared state for inter-process communication
-        self._stop_proc = Value("i", 1)  # 1 = stopped, 0 = playing
+        self._stop_proc = Value("i", 1)  # stopped; set to zero to play
         self._ratio = Value("d", 1.0)  # Playback speed
         self._volume = Value("d", 0.7)  # Volume level
+        self._generation = Value("i", 0)  # Incremented on each start() to break stale playback
 
-        self._manager = Manager()
-        self._fname = self._manager.dict()
-        self._fname["song"] = ""
+        # Shared byte array for song pattern (replaces Manager().dict() to avoid
+        # BrokenPipeError when the Manager subprocess crashes)
+        self._song_array = Array("c", 4096)
 
         self._process = None
         self._track_id = None
@@ -253,14 +325,29 @@ class MusicPlayer:
         self._transition_task = None
 
         if self._use_alsa:
-            # Start audio process
-            self._process = Process(
-                target=_linux_audio_loop, args=(self._fname, self._ratio, self._volume, self._stop_proc), daemon=True
-            )
-            self._process.start()
+            self._spawn_audio_process()
             logger.info(f"MusicPlayer '{name}' initialized with ALSA backend")
         else:
             logger.info(f"MusicPlayer '{name}' initialized (no tempo control - using pygame fallback)")
+
+    def _spawn_audio_process(self):
+        """Spawn (or respawn) the audio playback subprocess."""
+        if self._process and self._process.is_alive():
+            self._process.terminate()
+            self._process.join(timeout=1.0)
+        args = (self._song_array, self._ratio, self._volume, self._stop_proc, self._generation)
+        self._process = Process(target=_linux_audio_loop, args=args, daemon=True)
+        self._process.start()
+
+    def _ensure_process_alive(self):
+        """Check if the audio process is alive; respawn if dead."""
+        if not self._use_alsa:
+            return
+        if self._process and self._process.is_alive():
+            return
+        exit_code = self._process.exitcode if self._process else None
+        logger.warning(f"MusicPlayer '{self.name}': audio process died (exit code {exit_code}), respawning")
+        self._spawn_audio_process()
 
     def load(self, file_pattern: str):
         """
@@ -269,7 +356,7 @@ class MusicPlayer:
         Args:
             file_pattern: Glob pattern for music files
         """
-        self._fname["song"] = file_pattern
+        _set_song_pattern(self._song_array, file_pattern)
         logger.debug(f"Music pattern loaded: {file_pattern}")
 
     def start(self) -> str:
@@ -281,7 +368,9 @@ class MusicPlayer:
         """
         import uuid
 
+        self._ensure_process_alive()
         self._track_id = str(uuid.uuid4())
+        self._generation.value += 1
         self._stop_proc.value = 0
         logger.info(f"Music started: {self._track_id}")
         return self._track_id
@@ -289,7 +378,7 @@ class MusicPlayer:
     def stop(self):
         """Stop music playback."""
         self._stop_proc.value = 1
-        self._fname["song"] = ""
+        _set_song_pattern(self._song_array, "")
 
         # Cancel any ongoing transition
         if self._transition_task and not self._transition_task.done():
@@ -392,6 +481,7 @@ class DummyMusicPlayer:
         self._track_id = None
 
     def load(self, file_pattern: str):
+        # No-op: dummy player has no audio engine to load files into
         pass
 
     def start(self) -> str:
@@ -431,4 +521,5 @@ class DummyMusicPlayer:
         return self._track_id
 
     def cleanup(self):
+        # No-op: dummy player holds no resources that need releasing
         pass

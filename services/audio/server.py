@@ -16,6 +16,7 @@ import grpc.aio
 from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 
 from lib.otel_metrics import init_metrics
+from lib.profiling import init_profiling
 from lib.system_metrics import start_system_metrics_collector
 from proto import audio_pb2_grpc
 from services.audio import metrics
@@ -35,8 +36,14 @@ async def serve():
 
     logger.info("Starting JoustMania Audio service...")
 
+    # Auto-detect ALSA card and write /etc/asound.conf before opening any audio device
+    from services.audio.alsa_config import configure_alsa_device
+
+    configure_alsa_device(os.getenv("ALSA_CARD", "auto"))
+
     # Initialize OTEL push metrics
     init_metrics()
+    init_profiling()
     logger.info("OTEL push metrics initialized for audio service")
 
     # Start system metrics collection

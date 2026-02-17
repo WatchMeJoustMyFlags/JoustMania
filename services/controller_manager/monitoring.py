@@ -42,7 +42,7 @@ class ControllerMonitoring:
         Args:
             tracked_controllers: Dict of serial → controller info
         """
-        for serial, info in list(tracked_controllers.items()):
+        for serial, info in tracked_controllers.items():
             try:
                 battery = info.get("battery", 5)  # Default to full if unknown
 

@@ -1,197 +1,130 @@
-# Controller Backend Architecture (Phase 57)
+# Controller Backend Architecture
 
 ## Overview
 
-The controller manager now uses a unified backend system that supports multiple platforms and testing modes through a single interface.
+The controller manager uses a two-layer backend system:
 
-**Before Phase 57:**
-- Separate `Dockerfile.mock` for testing
-- `MOCK_MODE=true` flag
-- Tightly coupled to psmove + dbus-python
-- Difficult to develop on Windows
+1. **ControllerBackend** — high-level async interface used by the servicer
+2. **ControllerIOAdapter** — thin sync I/O interface for raw hardware communication
 
-**After Phase 57:**
-- Single `Dockerfile` for all modes
-- `CONTROLLER_BACKEND` environment variable selects implementation
-- Clean abstraction via `ControllerBackend` interface
-- Easy development on Windows/Linux/Mock
+When the `multiplexer_backend_enabled` flag is on (default for new deployments), `MultiplexerBackend` orchestrates one or more adapters with centralized state tracking. When off, legacy standalone backends are used directly.
 
 ## Architecture
 
+### Multiplexer Path (recommended)
+
 ```
-┌──────────────────────────────────────────┐
-│     ControllerManagerServicer (gRPC)     │
-│                                          │
-│  - Stream controller states              │
-│  - Handle LED/rumble commands            │
-│  - Manage controller lifecycle           │
-└────────────────┬─────────────────────────┘
-                 │
-                 ▼
-┌──────────────────────────────────────────┐
-│       ControllerBackend (Interface)       │
-│                                          │
-│  - initialize()                          │
-│  - get_controller_state(serial)          │
-│  - set_led_color(serial, rgb)            │
-│  - set_rumble(serial, intensity)         │
-│  - scan_controllers()                    │
-│  - connect_controller(address)           │
-└────────────────┬─────────────────────────┘
-                 │
-       ┌─────────┴─────────┬─────────────┐
-       ▼                   ▼             ▼
-┌─────────────┐    ┌──────────────┐ ┌──────────┐
-│  Bluetooth  │    │   Windows    │ │   Mock   │
-│   Backend   │    │   Backend    │ │  Backend │
-│             │    │              │ │          │
-│ Linux/BlueZ │    │  psmoveapi   │ │ Testing  │
-│ + psmove    │    │  (Windows)   │ │ (No HW)  │
-└─────────────┘    └──────────────┘ └──────────┘
-```
-
-## Backends
-
-### 1. BluetoothBackend (Production - Raspberry Pi)
-
-**File**: `services/controller_manager/bluetooth_backend.py`
-
-**Platform**: Linux (Raspberry Pi)
-
-**Dependencies**:
-- `psmove` - PS Move controller I/O
-- `dbus-python` - BlueZ D-Bus communication
-- `controller_state` - State tracking
-- `pair` - Controller pairing
-
-**Usage**:
-```yaml
-# docker-compose.yml (production)
-controller-manager:
-  environment:
-    - CONTROLLER_BACKEND=bluetooth  # Auto-detected on Linux
+┌──────────────────────────────────────────────────┐
+│          ControllerManagerServicer (gRPC)          │
+└──────────────────┬───────────────────────────────┘
+                   │
+                   ▼
+┌──────────────────────────────────────────────────┐
+│     MultiplexerBackend (implements ControllerBackend)│
+│                                                    │
+│  Centralized state:                                │
+│  - LED colors, rumble, effects per serial          │
+│  - Adapter assignment (serial → adapter)           │
+│  - LED keep-alive (4s refresh)                     │
+│                                                    │
+│  CentralizedBTDiscovery (optional)                 │
+│  - Multi-adapter Bluetooth scanning                │
+│  - Adapter affinity tracking                       │
+└──────────────┬───────────────────────────────────┘
+               │
+     ┌─────────┼─────────┐
+     ▼         ▼         ▼
+┌──────────┐ ┌────────┐ ┌──────────┐
+│ PsMove   │ │ Hidapi │ │  Mock    │
+│ Adapter  │ │Adapter │ │ Adapter  │
+│          │ │        │ │          │
+│ psmoveapi│ │libhidapi│ │ Testing  │
+│ + BlueZ  │ │(Linux) │ │ (No HW)  │
+└──────────┘ └────────┘ └──────────┘
 ```
 
-**Features**:
-- Full Bluetooth pairing support
-- RSSI (signal strength) monitoring
-- Battery level tracking
-- Motion sensors (accel/gyro)
-- LED + rumble control
-- Controller hot-plug (Phase 73)
+### Legacy Path (multiplexer disabled)
 
-**Hot-Plug Support** (Phase 73):
+```
+ControllerManagerServicer → ControllerBackend (direct)
+  → BluetoothBackend | HidapiBackend | MockBackend
+```
 
-Controllers can connect/disconnect dynamically after container startup. The backend polls `psmove.count_connected()` and rescans when count changes:
+## Adapters (ControllerIOAdapter)
 
+Adapters handle device handles and raw I/O only. All methods are sync (blocking) — called via `asyncio.to_thread()`. State tracking (LED colors, rumble, effects) lives in `MultiplexerBackend`.
+
+**Interface** (`multiplexer/adapter.py`):
 ```python
-def get_connected_controllers(self) -> list[str]:
-    count = psmove.count_connected()
-    if count != self._last_controller_count:
-        # Rescan with retry logic for newly connected controllers
-        # New controllers may not be immediately ready - retry 3x with 0.5s delay
+class ControllerIOAdapter(ABC):
+    adapter_type: str              # "psmove", "hidapi", "mock"
+    def discover(force=False) -> list[str]
+    def open(serial) -> bool
+    def poll(serial) -> dict | None
+    def set_output(serial, r, g, b, rumble) -> bool
+    def close(serial) -> None
+    def close_all() -> None
 ```
 
-Docker requirements for hot-plug:
-```yaml
-controller-manager:
-  privileged: true
-  pid: "host"            # Required: host PID namespace for device visibility
-  volumes:
-    - /dev:/dev:rslave   # Required: rslave propagation for new devices
+`set_output()` combines LED + rumble in one call — this matches HID output report reality and prevents rumble from being reset when LEDs refresh.
+
+### PsMoveAdapter
+
+**File**: `multiplexer/psmove_adapter.py`
+
+Uses the `psmove` C library. Handles are opened during `discover()` since psmove uses an index-based API. Includes retry logic for flaky USB enumeration.
+
+### HidapiAdapter
+
+**File**: `multiplexer/hidapi_adapter.py`
+
+Uses `hid` (hidapi) library. Reads HID input reports via `device.read()`, parses via `lib.psmove_hid.parse_input_report()`. Normalizes serials (uppercase, no colons).
+
+### MockAdapter
+
+**File**: `multiplexer/mock_adapter.py`
+
+Simulated I/O for testing without hardware. Extra methods for `MockControllerService`: `add_controller()`, `remove_controller()`, `add_observer()`, `get_led_color()`.
+
+## Multi-Adapter Support
+
+The `controller_backend` flag accepts comma-separated values to run multiple adapters simultaneously:
+
+```json
+"controller_backend": { "defaultVariant": "mock,bluetooth" }
 ```
 
-### 2. WindowsBackend (Development)
+This creates a `MultiplexerBackend` with both a `MockAdapter` and a `PsMoveAdapter`, allowing real and simulated controllers in the same session. Valid combinations:
+- `mock` — mock only
+- `bluetooth` — psmove only
+- `hidapi` — hidapi only
+- `mock,bluetooth` — mock + psmove
+- `mock,hidapi` — mock + hidapi
 
-**File**: `services/controller_manager/windows_backend.py`
-
-**Platform**: Windows 10/11
-
-**Dependencies**:
-- `psmoveapi` only (no dbus required)
-
-**Usage**:
-```powershell
-# Windows - Run natively (not in Docker)
-$env:CONTROLLER_BACKEND = "windows"
-python -m services.controller_manager.server --host 0.0.0.0 --port 50051
-```
-
-```yaml
-# docker-compose.override.yml (WSL services)
-game-coordinator:
-  environment:
-    - CONTROLLER_MANAGER_HOST=host.docker.internal:50051
-```
-
-**Features**:
-- Pair via Windows Bluetooth settings
-- Full LED + rumble support
-- Motion sensors
-- Battery monitoring
-- **No RSSI** (Windows API limitation)
-
-**Use Case**: Develop/debug with real controllers on Windows without deploying to Pi
-
-### 3. MockBackend (Testing/CI)
-
-**File**: `services/controller_manager/mock_backend.py`
-
-**Platform**: Any (pure Python)
-
-**Dependencies**: None
-
-**Usage**:
-```yaml
-# docker-compose.mock.yml
-controller-manager:
-  environment:
-    - CONTROLLER_BACKEND=mock
-    - MOCK_CONTROLLER_COUNT=4
-```
-
-**Features**:
-- Simulates 1-N controllers
-- Random button presses
-- Realistic motion sensor noise
-- Battery drain simulation
-- LED/rumble state tracking (no output)
-- **No hardware required**
-
-**Use Cases**:
-- CI/CD pipelines
-- Integration tests
-- Development without controllers
-- Automated testing
+Invalid: `bluetooth,hidapi` (both use the same hardware).
 
 ## Backend Selection
 
-### Auto-Detection
+### Priority
 
-The system auto-detects platform if `CONTROLLER_BACKEND` not set:
+1. **OpenFeature flag** (`controller_backend` in performance domain) — runtime-switchable via flagd
+2. **Default** — Linux bluetooth backend
 
-```python
-# services/controller_manager/backend_factory.py
-def create_backend():
-    system = platform.system()
+### Multiplexer Toggle
 
-    if system == "Windows":
-        return WindowsBackend()
-    elif system == "Linux":
-        return BluetoothBackend()
-    else:
-        raise RuntimeError("Unsupported platform")
-```
+When `multiplexer_backend_enabled` is `true`, the factory creates adapters wrapped in `MultiplexerBackend`. When `false`, legacy standalone backends are used.
 
-### Manual Override
+### Fallback
 
-Force a specific backend with `CONTROLLER_BACKEND`:
+If the flagd flag is empty or flagd is unavailable, the system defaults to `BluetoothBackend` (legacy path).
 
-```bash
-export CONTROLLER_BACKEND=mock      # Use mock (any platform)
-export CONTROLLER_BACKEND=bluetooth  # Force BlueZ (Linux only)
-export CONTROLLER_BACKEND=windows    # Force Windows (Windows only)
-```
+## Configuration (flagd)
+
+| Flag | Domain | Values | Default | Description |
+|------|--------|--------|---------|-------------|
+| `controller_backend` | performance | `bluetooth`, `mock`, `hidapi`, comma-separated | `bluetooth` | Select backend(s) |
+| `multiplexer_backend_enabled` | performance | `true`, `false` | `false` | Use adapter-based multiplexer |
+| `mock_controller_count` | performance | 2, 4, 6, 8 | 4 | Mock controllers count |
 
 ## Docker Compose Integration
 
@@ -203,112 +136,16 @@ controller-manager:
   privileged: true  # Bluetooth access
   devices:
     - /dev/bus/usb  # USB pairing
-  environment:
-    # CONTROLLER_BACKEND auto-detected (Linux → Bluetooth)
 ```
 
-### Testing (docker-compose.mock.yml)
+### Mock Mode
 
-```yaml
-mock-controller-manager:
-  dockerfile: services/controller_manager/Dockerfile  # Same Dockerfile!
-  environment:
-    - CONTROLLER_BACKEND=mock  # No privileged mode, no devices needed
-    - MOCK_CONTROLLER_COUNT=4
-  # No 'privileged', no 'devices' - runs anywhere
+```bash
+make up-mock  # Uses CI flagd config (controller_backend=mock)
 ```
-
-### Development (docker-compose.override.yml)
-
-```yaml
-# Run controller_manager on Windows (native)
-# WSL services connect via host.docker.internal
-
-game-coordinator:
-  environment:
-    - CONTROLLER_MANAGER_HOST=host.docker.internal:50051
-
-menu:
-  environment:
-    - CONTROLLER_MANAGER_HOST=host.docker.internal:50051
-```
-
-## Migration Guide
-
-### Before Phase 57 (Old Approach)
-
-```python
-# server.py - Tightly coupled to psmove
-import psmove
-move = psmove.PSMove(0)
-trigger = move.get_trigger()
-move.set_leds(255, 0, 0)
-```
-
-```yaml
-# Separate mock Dockerfile
-services:
-  mock-controller-manager:
-    dockerfile: Dockerfile.mock  # Special mock image
-    environment:
-      - MOCK_MODE=true
-```
-
-### After Phase 57 (New Approach)
-
-```python
-# server.py - Uses backend abstraction
-from backend_factory import create_backend
-
-backend = create_backend()  # Auto-detects platform
-await backend.initialize()
-state = await backend.get_controller_state(serial)
-await backend.set_led_color(serial, 255, 0, 0)
-```
-
-```yaml
-# Single Dockerfile, backend selected via env var
-services:
-  mock-controller-manager:
-    dockerfile: Dockerfile  # Same for all modes!
-    environment:
-      - CONTROLLER_BACKEND=mock
-```
-
-## Benefits
-
-### 1. **Single Dockerfile**
-- No more `Dockerfile.mock`
-- Backend selected at runtime via environment variable
-- Reduces maintenance burden
-
-### 2. **Windows Development**
-- Develop with real controllers on Windows/WSL
-- No Pi deployment required for testing
-- Full debugging in IDE
-
-### 3. **Clean Testing**
-- Mock backend has zero hardware dependencies
-- Runs in CI without special setup
-- Consistent behavior across environments
-
-### 4. **Platform Independence**
-- Same service code works on all platforms
-- Backend handles platform-specific details
-- Easy to add new backends (macOS, virtual controllers, etc.)
-
-### 5. **No Code Changes for Mock**
-- Set `CONTROLLER_BACKEND=mock` → instant mock mode
-- No conditional code in service logic
-- Clean separation of concerns
-
-## Environment Variables
-
-| Variable | Values | Default | Description |
-|----------|---------|---------|-------------|
-| `CONTROLLER_BACKEND` | `bluetooth`, `windows`, `mock` | Auto-detect | Force specific backend |
-| `MOCK_CONTROLLER_COUNT` | 1-10 | 4 | Number of mock controllers |
 
 ## See Also
 
 - [ControllerBackend Interface](../../services/controller_manager/backend.py)
+- [ControllerIOAdapter ABC](../../services/controller_manager/multiplexer/adapter.py)
+- [MultiplexerBackend](../../services/controller_manager/multiplexer/multiplexer_backend.py)

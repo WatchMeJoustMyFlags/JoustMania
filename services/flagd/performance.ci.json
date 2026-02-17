@@ -1,0 +1,143 @@
+{
+  "metadata": {
+    "flagSetId": "performance"
+  },
+  "flags": {
+    "update_frequency_hz": {
+      "state": "ENABLED",
+      "variants": {
+        "low": 15,
+        "medium": 30,
+        "high": 60
+      },
+      "defaultVariant": "high"
+    },
+    "sensitivity_mode": {
+      "state": "ENABLED",
+      "variants": {
+        "low": "low",
+        "medium": "medium",
+        "high": "high"
+      },
+      "defaultVariant": "medium"
+    },
+    "streaming_mode": {
+      "state": "ENABLED",
+      "variants": {
+        "standard": "standard",
+        "filtered": "filtered",
+        "aggressive": "aggressive"
+      },
+      "defaultVariant": "filtered"
+    },
+    "enable_adaptive_rewards": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "off"
+    },
+    "idle_mode_enabled": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "on"
+    },
+    "idle_timeout_minutes": {
+      "state": "ENABLED",
+      "variants": {
+        "5min": 5,
+        "10min": 10,
+        "15min": 15,
+        "30min": 30
+      },
+      "defaultVariant": "15min"
+    },
+    "sentinel_count": {
+      "state": "ENABLED",
+      "variants": {
+        "none": 0,
+        "one": 1,
+        "two": 2
+      },
+      "defaultVariant": "two"
+    },
+    "sentinel_rotation_minutes": {
+      "state": "ENABLED",
+      "variants": {
+        "off": 0,
+        "3min": 3,
+        "5min": 5,
+        "10min": 10
+      },
+      "defaultVariant": "5min"
+    },
+    "pairing_poll_interval": {
+      "state": "ENABLED",
+      "variants": {
+        "fast": 5,
+        "normal": 10,
+        "slow": 30
+      },
+      "defaultVariant": "normal"
+    },
+    "bt_monitor_interval": {
+      "state": "ENABLED",
+      "variants": {
+        "fast": 2,
+        "normal": 5,
+        "slow": 15
+      },
+      "defaultVariant": "normal"
+    },
+    "controller_backend": {
+      "state": "ENABLED",
+      "variants": {
+        "bluetooth": "bluetooth",
+        "hidapi": "hidapi",
+        "mock": "mock",
+        "bluetooth_hidapi": "bluetooth,hidapi"
+      },
+      "defaultVariant": "mock"
+    },
+    "mock_controller_count": {
+      "state": "ENABLED",
+      "variants": {
+        "two": 2,
+        "four": 4,
+        "six": 6,
+        "eight": 8
+      },
+      "defaultVariant": "four"
+    },
+    "metrics_export_interval_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "overkill": 10,
+        "realtime": 100,
+        "normal": 1000
+      },
+      "defaultVariant": "normal"
+    },
+    "profiling_enabled": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "off"
+    },
+    "controller_adapter_routing": {
+      "state": "ENABLED",
+      "variants": {
+        "bluetooth": "psmove",
+        "hidapi": "hidapi"
+      },
+      "defaultVariant": "hidapi",
+      "targeting": {}
+    }
+  }
+}

@@ -116,7 +116,7 @@ When all connected controllers are ready (trigger pressed) and there are at leas
 stateDiagram-v2
     [*] --> STOPPED: Service starts
 
-    STOPPED --> RUNNING: StartMenu RPC\nor MENU_AUTO_START=true
+    STOPPED --> RUNNING: StartMenu RPC\nor menu_auto_start flag=true
     RUNNING --> STOPPED: StopMenu RPC
     RUNNING --> GAME_STARTING: All controllers ready\n(≥2 controllers)
     GAME_STARTING --> RUNNING: Game ends\n(game_ended event)

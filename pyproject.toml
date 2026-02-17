@@ -1,10 +1,26 @@
 [project]
 name = "joustmania"
-version = "0.3.0"
-description = "Multi-player gaming system using PS Move controllers"
+version = "0.4.0"
+description = "Microservices-based motion gaming platform for PlayStation Move controllers"
+readme = "README.md"
+license = "MIT"
 requires-python = ">=3.11,<3.13"
+keywords = ["gaming", "motion-control", "grpc", "opentelemetry", "microservices", "ps-move"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Games/Entertainment",
+    "Framework :: AsyncIO",
+]
 # No dependencies - this is a workspace root, each member has its own deps
 dependencies = []
+
+[project.urls]
+Repository = "https://github.com/WatchMeJoustMyFlags/JoustMania"
+Documentation = "https://github.com/WatchMeJoustMyFlags/JoustMania/tree/main/docs"
+Issues = "https://github.com/WatchMeJoustMyFlags/JoustMania/issues"
+Changelog = "https://github.com/WatchMeJoustMyFlags/JoustMania/blob/main/CHANGELOG.md"
 
 [tool.setuptools]
 packages = []

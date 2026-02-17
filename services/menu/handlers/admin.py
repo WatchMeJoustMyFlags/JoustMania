@@ -345,8 +345,8 @@ class AdminModeHandler:
                 if self.active and self.controller_serial == serial:
                     logger.info(f"Admin mode auto-exit after {self._timeout_seconds}s timeout")
                     await self._exit_to_connected(serial)
-            except asyncio.CancelledError:
-                pass  # Normal cancellation when exiting early
+            except asyncio.CancelledError:  # NOSONAR — intentional: timeout task cancelled on early exit
+                pass
 
         self._timeout_task = asyncio.create_task(timeout_exit())
 
@@ -474,8 +474,8 @@ class AdminModeHandler:
                 if self.active and serial == self.controller_serial:
                     logger.info(f"Trigger hold completed, triggering force start for {serial}")
                     await self.handle_force_start(serial)
-            except asyncio.CancelledError:
-                pass  # Normal cancellation when trigger released early
+            except asyncio.CancelledError:  # NOSONAR — intentional: hold-timer cancelled on trigger release
+                pass
 
         self._trigger_hold_task = asyncio.create_task(trigger_hold_timer())
         self._pending_tasks.add(self._trigger_hold_task)
@@ -678,7 +678,16 @@ class AdminModeHandler:
                     speed=10,
                 )
 
-                # Exit admin mode
+                # Record span event before exit() ends the parent session span
+                span.add_event(
+                    "force_start_triggered",
+                    {
+                        "game": self._current_game_mode,
+                        "player_count": len(controllers),
+                    },
+                )
+
+                # Exit admin mode (ends session_span)
                 await self.exit()
 
                 # Small delay for visual feedback
@@ -698,13 +707,6 @@ class AdminModeHandler:
                     },
                 )
 
-                span.add_event(
-                    "force_start_triggered",
-                    {
-                        "game": self._current_game_mode,
-                        "player_count": len(controllers),
-                    },
-                )
                 logger.info(
                     f"Force starting game '{self._current_game_mode}' via admin controller {serial} "
                     f"with {len(controllers)} players"
@@ -1171,13 +1173,13 @@ class AdminModeHandler:
         except Exception as e:
             logger.error(f"Error showing value feedback: {e}", exc_info=True)
 
-    async def _play_value_voice(self, option_name: str, value: str) -> None:
+    async def _play_value_voice(self, option_name: str, value: int | float | bool) -> None:
         """
         Play voice feedback for admin option value change.
 
         Args:
             option_name: Name of the option that changed
-            value: New value
+            value: New value (typed from _variant_to_value)
         """
         try:
             if option_name == "num_teams":
@@ -1189,12 +1191,12 @@ class AdminModeHandler:
                     "5": Sound.MENU_VOX_ADMINOP_5,
                     "6": Sound.MENU_VOX_ADMINOP_6,
                 }
-                voice = num_teams_voices.get(value)
+                voice = num_teams_voices.get(str(value))
                 if voice:
                     await self._play_voice(voice)
             elif option_name == "force_all_start":
                 # Play true/false voice
-                voice = Sound.MENU_VOX_ADMINOP_TRUE if value == "true" else Sound.MENU_VOX_ADMINOP_FALSE
+                voice = Sound.MENU_VOX_ADMINOP_TRUE if value is True else Sound.MENU_VOX_ADMINOP_FALSE
                 await self._play_voice(voice)
         except Exception as e:
             logger.error(f"Error playing value voice: {e}", exc_info=True)

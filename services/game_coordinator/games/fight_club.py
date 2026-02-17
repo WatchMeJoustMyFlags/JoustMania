@@ -20,7 +20,7 @@ from opentelemetry.trace import Status, StatusCode
 from lib.colors import Colors
 from lib.types import Sound
 from proto import controller_manager_pb2
-from services.game_coordinator.games.base import BaseGameMode, Phase, Player
+from services.game_coordinator.games.base import GAME_MODE_ATTR, BaseGameMode, Phase, Player
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -151,7 +151,7 @@ class FightClubGame(BaseGameMode):
             },
         )
 
-    def _create_player_spans(self):
+    def _create_player_spans(self, game_context):  # noqa: ARG002
         """Create flat player lifecycle spans, parented to game span."""
         if not self.game_span:
             logger.warning("No game_span available, creating orphan player spans")
@@ -160,7 +160,7 @@ class FightClubGame(BaseGameMode):
                     "player_lifecycle",
                     attributes={
                         "player.serial": serial,
-                        "game.mode": self.get_game_name(),
+                        GAME_MODE_ATTR: self.get_game_name(),
                     },
                 )
             return
@@ -172,7 +172,7 @@ class FightClubGame(BaseGameMode):
                     "player_lifecycle",
                     attributes={
                         "player.serial": serial,
-                        "game.mode": self.get_game_name(),
+                        GAME_MODE_ATTR: self.get_game_name(),
                     },
                 )
                 logger.debug(f"Created span for player {serial}")
@@ -560,7 +560,7 @@ class FightClubGame(BaseGameMode):
         with tracer.start_as_current_span("fight_club_game") as game_span:
             self.game_span = game_span
             game_span.set_attribute("game.id", self.game_id)
-            game_span.set_attribute("game.mode", self.get_game_name())
+            game_span.set_attribute(GAME_MODE_ATTR, self.get_game_name())
 
             try:
                 self.running = True
@@ -573,7 +573,7 @@ class FightClubGame(BaseGameMode):
                         f"min_rounds={self._min_rounds}"
                     )
                     await self._initialize_players()
-                    self._create_player_spans()
+                    self._create_player_spans(None)
 
                 # Start gameplay stream before intro (needed for LED effects)
                 await self._start_gameplay_stream()
@@ -658,7 +658,8 @@ class FightClubGame(BaseGameMode):
             return
 
         # Calculate acceleration magnitude
-        accel_mag = (state.accel_x**2 + state.accel_y**2 + state.accel_z**2) ** 0.5
+        accel = state.accel
+        accel_mag = (accel.x**2 + accel.y**2 + accel.z**2) ** 0.5
 
         # Apply EMA filter
         if fc_player.smoothed_accel < 1e-9:  # Check for uninitialized (avoids float equality)
@@ -666,8 +667,8 @@ class FightClubGame(BaseGameMode):
         else:
             fc_player.smoothed_accel = (fc_player.smoothed_accel * 4 + accel_mag) / 5
 
-        # Get thresholds
-        warn_thresh, death_thresh = self.sensitivity.value
+        # Get thresholds using sensitivity index into base threshold arrays
+        warn_thresh, death_thresh = self._compute_effective_thresholds(fc_player)
 
         # Check for death
         if fc_player.smoothed_accel > death_thresh:

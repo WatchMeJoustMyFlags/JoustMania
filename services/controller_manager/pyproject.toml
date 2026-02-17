@@ -12,10 +12,11 @@ dependencies = [
     "pyyaml>=6.0",
 
     # Platform-specific dependencies
-    # Linux: dbus-python for BlueZ Bluetooth stack
-    "dbus-python>=1.2.0; sys_platform == 'linux'",
+    "dbus-fast>=2.0.0; sys_platform == 'linux'",  # Async D-Bus for BlueZ
     # NOTE: psmove/psmoveapi must be built from source (not on PyPI)
     # See: https://github.com/thp/psmoveapi for build instructions
+    # hidapi: Pure Python HID backend (alternative to psmoveapi, controller_backend=hidapi flag)
+    "hidapi>=0.14.0",
 
     # gRPC
     "grpcio>=1.70.0",

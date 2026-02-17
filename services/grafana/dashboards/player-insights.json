@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Per-player detailed view with 100Hz acceleration visualization, dynamic thresholds, and real-time status (Issue #62)",
+  "description": "Per-player gameplay view with 100Hz acceleration visualization, dynamic thresholds, and real-time status. Only shows alive players during active games (Issue #62, #458).",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -107,7 +107,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "game_players_alive",
+          "expr": "game_players_alive or vector(0)",
           "legendFormat": "Alive",
           "refId": "A"
         },
@@ -116,7 +116,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "game_active_players",
+          "expr": "game_active_players or vector(0)",
           "legendFormat": "Total",
           "refId": "B"
         }
@@ -963,7 +963,7 @@
       "type": "state-timeline"
     }
   ],
-  "refresh": "1s",
+  "refresh": "500ms",
   "schemaVersion": 39,
   "tags": ["joustmania", "game", "per-player", "sensitivity", "presentation"],
   "templating": {
@@ -974,7 +974,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(controller_info * on(serial) group_left() ((menu_player_ready == 1) or (game_player_alive == 1)))",
+        "definition": "query_result(controller_info * on(serial) group_left() (game_player_alive == 1))",
         "hide": 0,
         "includeAll": true,
         "label": "Player",
@@ -982,7 +982,7 @@
         "name": "player",
         "options": [],
         "query": {
-          "query": "query_result(controller_info * on(serial) group_left() ((menu_player_ready == 1) or (game_player_alive == 1)))",
+          "query": "query_result(controller_info * on(serial) group_left() (game_player_alive == 1))",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
@@ -997,7 +997,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(controller_info{name=~\"$player\"} * on(serial) group_left() ((menu_player_ready == 1) or (game_player_alive == 1)))",
+        "definition": "query_result(controller_info{name=~\"$player\"} * on(serial) group_left() (game_player_alive == 1))",
         "hide": 2,
         "includeAll": true,
         "label": "Serial",
@@ -1005,7 +1005,7 @@
         "name": "serial",
         "options": [],
         "query": {
-          "query": "query_result(controller_info{name=~\"$player\"} * on(serial) group_left() ((menu_player_ready == 1) or (game_player_alive == 1)))",
+          "query": "query_result(controller_info{name=~\"$player\"} * on(serial) group_left() (game_player_alive == 1))",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,

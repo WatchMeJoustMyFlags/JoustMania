@@ -27,36 +27,44 @@ The Controller Manager service is the central component for managing PS Move con
 │  - StreamGameplayData (bidirectional - motion + feedback)    │
 │  - PlayControllerEffect                                      │
 ├─────────────────────────────────────────────────────────────┤
-│                    Backend Abstraction                       │
+│            MultiplexerBackend (orchestrator)                  │
+│  Centralized state: LED colors, rumble, effects per serial   │
+│  Adapter assignment: serial → adapter (runtime-swappable)    │
+│  LED keep-alive: 4s refresh cycle                            │
+├─────────────────────────────────────────────────────────────┤
+│               ControllerIOAdapter (sync I/O)                 │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐          │
-│  │ Bluetooth   │  │  Windows    │  │    Mock     │          │
-│  │  Backend    │  │  Backend    │  │   Backend   │          │
-│  │ (Linux/Pi)  │  │ (psmoveapi) │  │  (Testing)  │          │
+│  │  PsMove     │  │   Hidapi    │  │    Mock     │          │
+│  │  Adapter    │  │  Adapter    │  │   Adapter   │          │
+│  │ (psmoveapi) │  │ (libhidapi) │  │  (Testing)  │          │
 │  └─────────────┘  └─────────────┘  └─────────────┘          │
+├─────────────────────────────────────────────────────────────┤
+│            Legacy Backends (multiplexer disabled)             │
+│  BluetoothBackend | HidapiBackend | MockBackend              │
 └─────────────────────────────────────────────────────────────┘
 ```
 
+When `multiplexer_backend_enabled` is on, `MultiplexerBackend` routes per-controller calls through thin `ControllerIOAdapter` instances with centralized state. When off, legacy standalone backends are used directly. See [Controller Backend Architecture](../../docs/architecture/controller-backends.md) for details.
+
 ## Configuration
 
-### Environment Variables
+Backend selection uses OpenFeature flags (performance domain):
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CONTROLLER_BACKEND` | auto | Force backend: `bluetooth`, `windows`, `mock` |
-| `MOCK_CONTROLLERS` | `false` | Enable mock backend for testing |
-| `MOCK_CONTROLLER_COUNT` | `4` | Number of mock controllers |
-| `GRPC_PORT` | `50052` | gRPC server port |
-| `PROMETHEUS_PORT` | `8001` | Prometheus metrics port |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | OpenTelemetry endpoint |
+| Setting | Source | Default | Description |
+|---------|--------|---------|-------------|
+| `controller_backend` | flagd (performance) | `bluetooth` | Backend: `bluetooth`, `mock`, `hidapi`, or comma-separated |
+| `multiplexer_backend_enabled` | flagd (performance) | `false` | Use adapter-based multiplexer |
+| `mock_controller_count` | flagd (performance) | `4` | Number of mock controllers |
+| `GRPC_PORT` | env var | `50052` | gRPC server port |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | env var | `http://localhost:4317` | OpenTelemetry endpoint |
 
 ### Backend Selection
 
-The backend is selected automatically based on platform:
-- **Linux**: BluetoothBackend (BlueZ/psmove)
-- **Windows**: WindowsBackend (psmoveapi)
-- **Testing**: MockBackend (simulated controllers)
+The backend is selected via the `controller_backend` flag in flagd (`services/flagd/performance.json`).
+If the flag is not set or flagd is unavailable, the default BluetoothBackend is used.
+Use `controller_backend=mock` for testing without hardware.
 
-Override with `CONTROLLER_BACKEND` environment variable or `MOCK_CONTROLLERS=true`.
+Multi-adapter mode: set `controller_backend=mock,bluetooth` to run mock and real controllers simultaneously.
 
 ## gRPC API
 
@@ -99,22 +107,41 @@ Prometheus metrics available on port 8001:
 | `controller_manager_button_events_total` | Counter | Button press/release events |
 | `controller_manager_discovery_checks_total` | Counter | Discovery loop iterations |
 
-## Backend Interface
+## Backend Interfaces
 
-All backends implement `ControllerBackend` abstract class:
+### ControllerBackend (high-level async)
+
+Used by the servicer. `MultiplexerBackend` implements this:
 
 ```python
 class ControllerBackend(ABC):
     async def initialize(self) -> bool
-    async def scan_controllers(self) -> List[Dict]
+    async def scan_controllers(self) -> list[dict]
     async def connect_controller(self, address: str) -> bool
     async def disconnect_controller(self, serial: str) -> bool
-    async def get_controller_state(self, serial: str) -> Optional[Dict]
+    async def get_controller_state(self, serial: str) -> dict | None
     async def set_led_color(self, serial: str, r: int, g: int, b: int) -> bool
     async def set_rumble(self, serial: str, intensity: int) -> bool
-    def get_connected_controllers(self) -> List[str]
+    def get_connected_controllers(self) -> list[str]
     async def shutdown()
 ```
+
+### ControllerIOAdapter (thin sync I/O)
+
+Used by `MultiplexerBackend`. Adapters handle raw hardware communication only:
+
+```python
+class ControllerIOAdapter(ABC):
+    adapter_type: str              # "psmove", "hidapi", "mock"
+    def discover(force=False) -> list[str]
+    def open(serial) -> bool
+    def poll(serial) -> dict | None
+    def set_output(serial, r, g, b, rumble) -> bool
+    def close(serial) -> None
+    def close_all() -> None
+```
+
+`set_output()` combines LED + rumble in one call, matching HID output report reality.
 
 ## Performance Optimizations
 
@@ -187,27 +214,33 @@ uv run pytest services/controller_manager/tests/ --cov=services.controller_manag
 
 ```
 services/controller_manager/
-├── server.py             # Entry point, gRPC server setup
-├── servicer.py           # gRPC servicer implementation
-├── backend.py            # Abstract backend interface
-├── backend_factory.py    # Backend selection logic
-├── bluetooth_backend.py  # Linux/BlueZ implementation
-├── windows_backend.py    # Windows psmoveapi implementation
-├── mock_backend.py       # Mock backend for testing
-├── bluetooth.py          # BlueZ helpers
-├── discovery.py          # Controller discovery
-├── discovery_loop.py     # Discovery loop management
-├── button_detector.py    # Button event detection
-├── controller_state.py   # Controller state tracking
-├── state_cache.py        # State caching layer
-├── effects_base.py       # Visual effect animations
-├── feedback_manager.py   # LED/rumble feedback
-├── event_publisher.py    # Event broadcasting
-├── name_manager.py       # Controller naming
-├── metrics.py            # Prometheus/OTEL metrics
+├── server.py              # Entry point, gRPC server setup
+├── servicer.py            # gRPC servicer implementation
+├── backend.py             # ControllerBackend ABC
+├── backend_factory.py     # Backend/adapter selection logic
+├── bluetooth_backend.py   # Legacy BlueZ backend (standalone)
+├── hidapi_backend.py      # Legacy HID backend (standalone)
+├── mock_backend.py        # Legacy mock backend (standalone)
+├── multiplexer/
+│   ├── adapter.py         # ControllerIOAdapter ABC
+│   ├── multiplexer_backend.py  # Orchestrator with centralized state
+│   ├── psmove_adapter.py  # PsMoveAdapter (psmoveapi I/O)
+│   ├── hidapi_adapter.py  # HidapiAdapter (libhidapi I/O)
+│   ├── mock_adapter.py    # MockAdapter (simulated I/O)
+│   ├── bt_discovery.py    # CentralizedBTDiscovery
+│   └── validation.py      # Backend combination validation
+├── discovery_loop.py      # Discovery loop management
+├── button_detector.py     # Button event detection
+├── controller_state.py    # Controller state tracking
+├── state_cache.py         # State caching layer
+├── effects_base.py        # Visual effect animations
+├── feedback_manager.py    # LED/rumble feedback
+├── event_publisher.py     # Event broadcasting
+├── name_manager.py        # Controller naming
+├── metrics.py             # Prometheus/OTEL metrics
 ├── Dockerfile
 ├── pyproject.toml
-└── tests/                # Unit tests
+└── tests/                 # Unit tests
 ```
 
 ## See Also

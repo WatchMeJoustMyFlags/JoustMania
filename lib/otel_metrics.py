@@ -72,8 +72,33 @@ def is_test_mode() -> bool:
     return _test_mode
 
 
+def _get_export_interval_ms(service_name: str) -> int:
+    """Read metrics_export_interval_ms from flagd with per-service targeting.
+
+    Uses OTEL_SERVICE_NAME as the targeting context so flagd can return different
+    intervals per service (e.g., 100ms for controller-manager, 1000ms for others).
+    """
+    try:
+        from openfeature.evaluation_context import EvaluationContext
+
+        from lib.feature_flags import get_flag_client, init_flag_domain
+
+        init_flag_domain("performance")
+        client = get_flag_client("performance")
+        interval = client.get_integer_value(
+            "metrics_export_interval_ms",
+            1000,
+            EvaluationContext(attributes={"service": service_name}),
+        )
+        logger.info(f"metrics_export_interval_ms from flagd: {interval}ms (service={service_name})")
+        return interval
+    except Exception as e:
+        logger.warning(f"Failed to read metrics_export_interval_ms from flagd, using default 1000ms: {e}")
+        return 1000
+
+
 def init_metrics(
-    export_interval_ms: int = 100,
+    export_interval_ms: int | None = None,
 ) -> metrics.Meter:
     """
     Initialize OpenTelemetry metrics with OTLP push exporter.
@@ -82,8 +107,12 @@ def init_metrics(
     but before they are used. Service identity is configured via environment
     variables set in docker-compose.yml.
 
+    The export interval is read from the flagd ``metrics_export_interval_ms``
+    flag with per-service targeting (using OTEL_SERVICE_NAME). Controller-manager
+    gets 100ms (realtime), other services get 1000ms (normal).
+
     Args:
-        export_interval_ms: How often to push metrics (default 100ms for real-time).
+        export_interval_ms: Override interval (ms). If None, reads from flagd.
 
     Returns:
         Configured meter instance.
@@ -104,6 +133,9 @@ def init_metrics(
         service_name = os.getenv("OTEL_SERVICE_NAME", "unknown-service")
         namespace = os.getenv("OTEL_SERVICE_NAMESPACE", "joustmania")
 
+        if export_interval_ms is None:
+            export_interval_ms = _get_export_interval_ms(service_name)
+
         resource = Resource(
             attributes={
                 SERVICE_NAME: service_name,
@@ -112,7 +144,7 @@ def init_metrics(
             }
         )
 
-        # Create OTLP exporter with fast export interval
+        # Create OTLP exporter
         exporter = OTLPMetricExporter(endpoint=otlp_endpoint, insecure=True)
 
         # Use PeriodicExportingMetricReader for push-based export
@@ -228,7 +260,7 @@ class Gauge(LabeledMetric):
     def _observe(self, _options: metrics.CallbackOptions):
         """Callback for observable gauge - reports all current values."""
         with self._lock:
-            for key, value in list(self._values.items()):
+            for key, value in self._values.items():
                 labels = dict(key) if key else {}
                 yield metrics.Observation(value, labels)
 

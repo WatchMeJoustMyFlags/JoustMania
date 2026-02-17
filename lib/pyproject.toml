@@ -19,9 +19,15 @@ dependencies = [
     # System metrics
     "psutil>=5.9.0",
 
+    # DBus for BlueZ Bluetooth helpers (async, pure Python)
+    "dbus-fast>=2.0.0; sys_platform == 'linux'",
+    
+    # Continuous profiling
+    "pyroscope-io>=0.8.16",
+
     # Feature Flags
     "openfeature-sdk>=0.6.0",
-    "openfeature-provider-flagd>=0.1.0",
+    "openfeature-provider-flagd>=0.2.7",
     "openfeature-hooks-opentelemetry>=0.1.0",
 ]
 
@@ -50,7 +56,7 @@ ignore = ["ANN"]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
-"tests/*.py" = ["ARG002"]
+"tests/*.py" = ["ARG002", "E402"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["lib"]

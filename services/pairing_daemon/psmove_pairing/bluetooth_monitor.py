@@ -6,7 +6,9 @@ import time
 
 from opentelemetry import trace
 
-from .config import BT_MONITOR_INTERVAL
+from lib.controller_constants import normalize_serial
+
+from .config import get_bt_monitor_interval
 from .metrics import (
     bluetooth_adapter_connections,
     bluetooth_device_connected,
@@ -104,14 +106,15 @@ class BluetoothMonitor:
                 bluetooth_adapter_connections.labels(hci_adapter=hci).set(len(connections))
                 logger.debug(f"{hci}: {len(connections)} devices connected")
 
-                for serial in connections:
+                for bt_address in connections:
+                    serial = normalize_serial(bt_address)
                     currently_seen.add((serial, hci))
                     ts = time.time()
 
-                    # Get RSSI
-                    rssi = await self.get_rssi(hci, serial)
+                    # Get RSSI (hcitool needs raw colon-format address)
+                    rssi = await self.get_rssi(hci, bt_address)
 
-                    # Update metrics
+                    # Update metrics (normalized serial matches controller manager)
                     bluetooth_device_connected.labels(serial=serial, hci_adapter=hci).set(1)
                     bluetooth_device_last_seen.labels(serial=serial, hci_adapter=hci).set(ts)
 
@@ -135,10 +138,13 @@ class BluetoothMonitor:
             span.set_attribute("devices.total", len(currently_seen))
 
     async def run_loop(self) -> None:
-        """Bluetooth monitoring loop."""
+        """Bluetooth monitoring loop.
+
+        Re-evaluates monitor interval from flagd each iteration for runtime tunability.
+        """
         import asyncio
 
-        logger.info(f"Starting Bluetooth monitor loop (interval: {BT_MONITOR_INTERVAL}s)")
+        logger.info(f"Starting Bluetooth monitor loop (interval: {get_bt_monitor_interval()}s)")
         while True:
             try:
                 await self.monitor()
@@ -146,4 +152,4 @@ class BluetoothMonitor:
                 from .config import DEBUG
 
                 logger.error(f"Error during Bluetooth monitor: {e}", exc_info=DEBUG)
-            await asyncio.sleep(BT_MONITOR_INTERVAL)
+            await asyncio.sleep(get_bt_monitor_interval())

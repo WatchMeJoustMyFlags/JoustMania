@@ -190,7 +190,14 @@ class ButtonDetector:
             for event in events:
                 self.event_publisher.publish_to_subscribers(self._subscribers, event, "button")
 
-    def publish_connection_event(self, serial: str, is_connect: bool, battery: int = 0, name: str = "") -> None:
+    def publish_connection_event(
+        self,
+        serial: str,
+        is_connect: bool,
+        battery: int = 0,
+        name: str = "",
+        connected_serials: list[str] | None = None,
+    ) -> None:
         """
         Publish a connection or disconnection event to all button event subscribers.
 
@@ -202,6 +209,7 @@ class ButtonDetector:
             is_connect: True for connect, False for disconnect
             battery: Battery level (only available for connect events)
             name: Human-readable controller name (Issue #7)
+            connected_serials: All currently connected serials (for reconciliation)
         """
         event_type = controller_manager_pb2.EVENT_CONNECT if is_connect else controller_manager_pb2.EVENT_DISCONNECT
 
@@ -211,6 +219,7 @@ class ButtonDetector:
             battery=battery,
             event_type=event_type,
             name=name,
+            connected_serials=connected_serials or [],
             # button and action fields are left unset for connection events
         )
 

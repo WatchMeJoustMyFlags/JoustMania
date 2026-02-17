@@ -13,21 +13,6 @@ import alsaaudio
 
 def play(device, f):
     format = alsaaudio.PCM_FORMAT_S16_LE
-
-    # 8bit is unsigned in wav files
-    # if f.getsampwidth() == 1:
-    # format = alsaaudio.PCM_FORMAT_U8
-    # # Otherwise we assume signed data, little endian
-    # elif f.getsampwidth() == 2:
-    # format = alsaaudio.PCM_FORMAT_S16_LE
-    # elif f.getsampwidth() == 3:
-    # format = alsaaudio.PCM_FORMAT_S24_3LE
-    # elif f.getsampwidth() == 4:
-    # format = alsaaudio.PCM_FORMAT_S32_LE
-    # else:
-    # raise ValueError('Unsupported format')
-
-    # periodsize = f.getframerate() // 8
     periodsize = 1024 * 2
 
     print(
@@ -38,12 +23,8 @@ def play(device, f):
 
     data = ReadSamples(f, periodsize)
     while data:
-        # Read data from stdin
         WriteSamples(device, periodsize, data)
-        # device.write(data)
         data = ReadSamples(f, periodsize)
-        # data = f.readframes(periodsize)
-        # Loops samples of up to read_size bytes from the wav file.
 
 
 # Writes incoming samples in chunks of write_size to device.

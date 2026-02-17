@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.4.0](https://github.com/WatchMeJoustMyFlags/JoustMania/compare/joustmania-v0.3.0...joustmania-v0.4.0) (2026-02-13)
+
+
+### Features
+
+* Add continuous profiling with Grafana Pyroscope ([#447](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/447)) ([58c57a6](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/58c57a68f033530ce34c6666a11205c8d7bc8e12))
+* Add direct flagd integration for dynamic streaming frequency ([#421](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/421)) ([510c265](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/510c265d6c3739e7a97d56aed9a7fdc829f1c9fc))
+* Implement layered OpenFeature evaluation context strategy ([#423](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/423)) ([5285b3d](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/5285b3d8c37c5a1ee80ed74cb9c96698d94b64b3))
+
+
+### Bug Fixes
+
+* Add Basic Auth to Grafana Live publisher requests ([#454](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/454)) ([a3f4fd2](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/a3f4fd24284e7b1366d5866da47ab168f53b1e10))
+* Disable Pyroscope profiling by default to reduce load ([#455](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/455)) ([269fd13](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/269fd13682e6057f23c14f432d893400813cd26a))
+* Improve player-insights dashboard UX for empty state ([#448](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/448)) ([5ff8ead](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/5ff8ead607ec9477ada4ed2e514e34655e1f1a53))
+* Parent death effect and audio spans to player_lifecycle ([#457](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/457)) ([6c34b34](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/6c34b34b8cd1ed233ff7932a19b78e002efac6e2))
+* Simplify Player Insights dashboard to only show gameplay data ([#459](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/459)) ([f677b39](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/f677b3942a4e3ab786e6c45c6e022493a3a8c747))
+
 ## [0.3.0](https://github.com/WatchMeJoustMyFlags/JoustMania/compare/joustmania-v0.2.0...joustmania-v0.3.0) (2026-02-08)
 
 

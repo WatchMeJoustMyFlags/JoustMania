@@ -67,13 +67,14 @@ class MockButtonDetector:
     def detect_transitions_from_state(self, serial, state, tracked):
         self.transitions.append((serial, state))
 
-    def publish_connection_event(self, serial, is_connect, battery=0, name=""):
+    def publish_connection_event(self, serial, is_connect, battery=0, name="", connected_serials=None):
         self.connection_events.append(
             {
                 "serial": serial,
                 "is_connect": is_connect,
                 "battery": battery,
                 "name": name,
+                "connected_serials": connected_serials or [],
             }
         )
 
@@ -448,3 +449,274 @@ class TestBaseColorRestoration:
         has_base_color = serial in base_colors
 
         assert has_base_color is False
+
+
+class TestCheckForNewControllersAsync:
+    """Async tests for _check_for_new_controllers method."""
+
+    def _create_discovery_loop(
+        self,
+        backend=None,
+        tracked_controllers=None,
+        controller_states=None,
+        button_detector=None,
+        state_cache=None,
+        feedback_manager=None,
+        rescan_timer=None,
+        base_colors=None,
+        name_manager=None,
+    ):
+        """Create a DiscoveryLoop with configurable mock dependencies."""
+        from services.controller_manager.discovery_loop import DiscoveryLoop
+
+        _backend = backend or MockBackend()
+        _tracked = tracked_controllers if tracked_controllers is not None else {}
+        _states = controller_states if controller_states is not None else {}
+        _button = button_detector or MockButtonDetector()
+        _cache = state_cache or MockStateCache()
+        _feedback = feedback_manager or MockFeedbackManager()
+        _monitoring = MockMonitoring()
+        _rescan = rescan_timer or MockRescanTimer()
+        _base_colors = base_colors if base_colors is not None else {}
+        _event_pub = MockEventPublisher()
+
+        return DiscoveryLoop(
+            backend=_backend,
+            tracked_controllers=_tracked,
+            controller_states=_states,
+            button_detector=_button,
+            state_cache_manager=_cache,
+            feedback_manager=_feedback,
+            monitoring=_monitoring,
+            rescan_timer=_rescan,
+            paired_serials=[],
+            base_colors=_base_colors,
+            event_publisher=_event_pub,
+            name_manager=name_manager,
+        )
+
+    @pytest.mark.asyncio
+    async def test_new_controller_added_to_tracking(self):
+        """_check_for_new_controllers should add new controller to tracked_controllers."""
+        backend = MockBackend()
+        backend.connected_controllers = ["serial_A"]
+        backend.controller_states["serial_A"] = {
+            "serial": "serial_A",
+            "battery": 75,
+        }
+
+        tracked = {}
+        states = {}
+        button_det = MockButtonDetector()
+        loop = self._create_discovery_loop(
+            backend=backend,
+            tracked_controllers=tracked,
+            controller_states=states,
+            button_detector=button_det,
+        )
+        loop.backend_initialized = True
+
+        await loop._check_for_new_controllers()
+
+        assert "serial_A" in tracked
+        assert tracked["serial_A"]["battery"] == 75
+        assert len(button_det.connection_events) == 1
+        assert button_det.connection_events[0]["is_connect"] is True
+
+    @pytest.mark.asyncio
+    async def test_disconnected_controller_removed(self):
+        """_check_for_new_controllers should remove disconnected controllers."""
+        backend = MockBackend()
+        backend.connected_controllers = []  # No controllers connected
+
+        tracked = {"serial_A": {"battery": 80, "name": "Player1"}}
+        states = {"serial_A": {"trigger": 0}}
+        button_det = MockButtonDetector()
+        cache = MockStateCache()
+        loop = self._create_discovery_loop(
+            backend=backend,
+            tracked_controllers=tracked,
+            controller_states=states,
+            button_detector=button_det,
+            state_cache=cache,
+        )
+        loop.backend_initialized = True
+        loop._last_activity_time["serial_A"] = 1.0
+        loop._previous_accel["serial_A"] = (0.0, 0.0, 1.0)
+
+        await loop._check_for_new_controllers()
+
+        assert "serial_A" not in tracked
+        assert "serial_A" not in states
+        assert "serial_A" in cache.cleared
+        assert "serial_A" not in loop._last_activity_time
+        assert "serial_A" not in loop._previous_accel
+        assert len(button_det.connection_events) == 1
+        assert button_det.connection_events[0]["is_connect"] is False
+        assert button_det.connection_events[0]["serial"] == "serial_A"
+
+    @pytest.mark.asyncio
+    async def test_skipped_when_backend_not_initialized(self):
+        """_check_for_new_controllers should do nothing when backend not initialized."""
+        backend = MockBackend()
+        backend.connected_controllers = ["serial_A"]
+
+        tracked = {}
+        loop = self._create_discovery_loop(backend=backend, tracked_controllers=tracked)
+        loop.backend_initialized = False
+
+        await loop._check_for_new_controllers()
+
+        assert len(tracked) == 0
+
+    @pytest.mark.asyncio
+    async def test_existing_controller_not_re_added(self):
+        """_check_for_new_controllers should not re-add existing controllers."""
+        backend = MockBackend()
+        backend.connected_controllers = ["serial_A"]
+
+        tracked = {"serial_A": {"battery": 80}}
+        button_det = MockButtonDetector()
+        loop = self._create_discovery_loop(
+            backend=backend,
+            tracked_controllers=tracked,
+            button_detector=button_det,
+        )
+        loop.backend_initialized = True
+
+        await loop._check_for_new_controllers()
+
+        # No connection events for already-tracked controllers
+        assert len(button_det.connection_events) == 0
+
+    @pytest.mark.asyncio
+    async def test_base_color_restored_on_reconnect(self):
+        """_check_for_new_controllers should restore base color when controller reconnects."""
+        backend = MockBackend()
+        backend.connected_controllers = ["serial_A"]
+        backend.controller_states["serial_A"] = {
+            "serial": "serial_A",
+            "battery": 90,
+        }
+
+        tracked = {}
+        base_colors = {"serial_A": (255, 0, 0)}
+        feedback = MockFeedbackManager()
+        feedback.color_calls = []
+
+        original_set = feedback.set_controller_color
+
+        async def tracking_set_color(serial, color):
+            feedback.color_calls.append((serial, color))
+            return await original_set(serial, color)
+
+        feedback.set_controller_color = tracking_set_color
+
+        loop = self._create_discovery_loop(
+            backend=backend,
+            tracked_controllers=tracked,
+            base_colors=base_colors,
+            feedback_manager=feedback,
+        )
+        loop.backend_initialized = True
+
+        await loop._check_for_new_controllers()
+
+        # Should have called set_controller_color to restore base color
+        assert len(feedback.color_calls) == 1
+        assert feedback.color_calls[0] == ("serial_A", (255, 0, 0))
+
+    @pytest.mark.asyncio
+    async def test_name_manager_used_for_new_controller(self):
+        """_check_for_new_controllers should use name_manager to get controller name."""
+        backend = MockBackend()
+        backend.connected_controllers = ["serial_A"]
+        backend.controller_states["serial_A"] = {
+            "serial": "serial_A",
+            "battery": 80,
+        }
+
+        tracked = {}
+        name_mgr = MockNameManager()
+        name_mgr.names["serial_A"] = "Player One"
+
+        loop = self._create_discovery_loop(
+            backend=backend,
+            tracked_controllers=tracked,
+            name_manager=name_mgr,
+        )
+        loop.backend_initialized = True
+
+        await loop._check_for_new_controllers()
+
+        assert tracked["serial_A"]["name"] == "Player One"
+
+
+class TestUpdateControllerStatesAsync:
+    """Async tests for _update_controller_states method."""
+
+    def _create_discovery_loop(self, backend=None, tracked=None, states=None, button_detector=None):
+        """Create a DiscoveryLoop with common defaults."""
+        from services.controller_manager.discovery_loop import DiscoveryLoop
+
+        _backend = backend or MockBackend()
+        _tracked = tracked if tracked is not None else {}
+        _states = states if states is not None else {}
+        _button = button_detector or MockButtonDetector()
+
+        return DiscoveryLoop(
+            backend=_backend,
+            tracked_controllers=_tracked,
+            controller_states=_states,
+            button_detector=_button,
+            state_cache_manager=MockStateCache(),
+            feedback_manager=MockFeedbackManager(),
+            monitoring=MockMonitoring(),
+            rescan_timer=MockRescanTimer(),
+            paired_serials=[],
+            base_colors={},
+            event_publisher=MockEventPublisher(),
+        )
+
+    @pytest.mark.asyncio
+    async def test_updates_controller_states(self):
+        """_update_controller_states should poll and store states for all tracked controllers."""
+        from lib.controller_constants import StateKey
+
+        backend = MockBackend()
+        backend.controller_states["s1"] = {
+            StateKey.BATTERY: 75,
+            "trigger": 100,
+        }
+        backend.controller_states["s2"] = {
+            StateKey.BATTERY: 50,
+            "trigger": 0,
+        }
+
+        tracked = {"s1": {"battery": 0}, "s2": {"battery": 0}}
+        states = {}
+        button_det = MockButtonDetector()
+        loop = self._create_discovery_loop(backend=backend, tracked=tracked, states=states, button_detector=button_det)
+        loop.backend_initialized = True
+
+        await loop._update_controller_states()
+
+        assert "s1" in states
+        assert "s2" in states
+        assert tracked["s1"]["battery"] == 75
+        assert tracked["s2"]["battery"] == 50
+        assert len(button_det.transitions) == 2
+
+    @pytest.mark.asyncio
+    async def test_skips_when_no_controllers(self):
+        """_update_controller_states should return early when no controllers are tracked."""
+        backend = MockBackend()
+        tracked = {}
+        states = {}
+        loop = self._create_discovery_loop(backend=backend, tracked=tracked, states=states)
+        loop.backend_initialized = True
+
+        # Should not raise
+        await loop._update_controller_states()
+
+        assert len(states) == 0
