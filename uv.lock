@@ -225,12 +225,6 @@ wheels = [
 ]
 
 [[package]]
-name = "dbus-python"
-version = "1.4.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/ff/24/63118050c7dd7be04b1ccd60eab53fef00abe844442e1b6dec92dae505d6/dbus-python-1.4.0.tar.gz", hash = "sha256:991666e498f60dbf3e49b8b7678f5559b8a65034fdf61aae62cdecdb7d89c770", size = 232490, upload-time = "2025-03-13T19:57:54.212Z" }
-
-[[package]]
 name = "docker"
 version = "7.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -472,7 +466,6 @@ version = "1.0.0"
 source = { editable = "services/controller_manager" }
 dependencies = [
     { name = "dbus-fast", marker = "sys_platform == 'linux'" },
-    { name = "dbus-python", marker = "sys_platform == 'linux'" },
     { name = "grpcio" },
     { name = "grpcio-health-checking" },
     { name = "hidapi" },
@@ -499,7 +492,6 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "dbus-fast", marker = "sys_platform == 'linux'", specifier = ">=2.0.0" },
-    { name = "dbus-python", marker = "sys_platform == 'linux'", specifier = ">=1.3.2" },
     { name = "grpcio", specifier = ">=1.70.0" },
     { name = "grpcio-health-checking", specifier = ">=1.70.0" },
     { name = "hidapi", specifier = ">=0.14.0" },
@@ -618,7 +610,7 @@ requires-dist = [
     { name = "dbus-fast", marker = "sys_platform == 'linux'", specifier = ">=2.0.0" },
     { name = "grpcio", specifier = ">=1.70.0" },
     { name = "openfeature-hooks-opentelemetry", specifier = ">=0.1.0" },
-    { name = "openfeature-provider-flagd", specifier = ">=0.1.0" },
+    { name = "openfeature-provider-flagd", specifier = ">=0.2.7" },
     { name = "openfeature-sdk", specifier = ">=0.6.0" },
     { name = "opentelemetry-api", specifier = ">=1.28.0" },
     { name = "opentelemetry-exporter-otlp", specifier = ">=1.28.0" },
@@ -681,7 +673,6 @@ version = "1.0.0"
 source = { editable = "services/pairing_daemon" }
 dependencies = [
     { name = "dbus-fast", marker = "sys_platform == 'linux'" },
-    { name = "dbus-python", marker = "sys_platform == 'linux'" },
     { name = "joustmania-lib" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-grpc" },
@@ -698,7 +689,6 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "dbus-fast", marker = "sys_platform == 'linux'", specifier = ">=2.0.0" },
-    { name = "dbus-python", marker = "sys_platform == 'linux'", specifier = ">=1.3.2" },
     { name = "joustmania-lib", editable = "lib" },
     { name = "opentelemetry-api", specifier = ">=1.20.0" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.20.0" },
@@ -882,7 +872,7 @@ wheels = [
 
 [[package]]
 name = "openfeature-provider-flagd"
-version = "0.2.6"
+version = "0.2.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cachebox" },
@@ -894,9 +884,9 @@ dependencies = [
     { name = "pyyaml" },
     { name = "semver" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/da/f9/b0c79e30d8cb410b0008e45add05a6c225bdc1679f243c5ee6cc064a7393/openfeature_provider_flagd-0.2.6.tar.gz", hash = "sha256:d3299f96a51fec5873b44819b2385bd7db768300716c1d5e96ca3493f1f879d4", size = 59602, upload-time = "2025-07-24T12:42:43.313Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/51/f5/02c0c03ffcdf740737dabca096256e78afb3711168e3e44f486288cdb860/openfeature_provider_flagd-0.2.7.tar.gz", hash = "sha256:ee6dee7551e9fd479ec00aa78de84d1f53d4bb8a5d1ce93e5ca9c67bf879fea7", size = 64308, upload-time = "2026-02-04T06:44:20.786Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/77/49/0384bbd97123e508e5879b64c36a6294fd9956e30f7d91ee83503b442797/openfeature_provider_flagd-0.2.6-py3-none-any.whl", hash = "sha256:7843a8928485214edd733ff496d83269bbc2dbe4d384160033582cb9116a36d1", size = 58828, upload-time = "2025-07-24T12:42:41.862Z" },
+    { url = "https://files.pythonhosted.org/packages/35/4d/a296df991f7fbbb3652f3f0125ad6de31fa7fe366e640a2b50ba80f78637/openfeature_provider_flagd-0.2.7-py3-none-any.whl", hash = "sha256:645aabbafae932df1c98257763b8afbbd874ff2aa70088249f45314cf5009dda", size = 58854, upload-time = "2026-02-04T06:44:19.156Z" },
 ]
 
 [[package]]

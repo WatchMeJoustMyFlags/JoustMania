@@ -313,6 +313,34 @@ class TestConnectionEvents:
         event_type = call_args[0][2]  # Third positional arg
         assert event_type == "connection"
 
+    def test_connect_event_includes_connected_serials(self):
+        """Connection event includes connected_serials when provided."""
+        publisher = MagicMock(spec=EventPublisher)
+        detector = ButtonDetector(publisher)
+        detector._subscribers = {"sub1": MagicMock()}
+
+        detector.publish_connection_event(
+            "SERIAL1", is_connect=True, battery=5, connected_serials=["SERIAL1", "SERIAL2"]
+        )
+
+        call_args = publisher.publish_to_subscribers.call_args
+        event = call_args[0][1]
+
+        assert list(event.connected_serials) == ["SERIAL1", "SERIAL2"]
+
+    def test_connect_event_empty_connected_serials_by_default(self):
+        """Connection event has empty connected_serials when not provided."""
+        publisher = MagicMock(spec=EventPublisher)
+        detector = ButtonDetector(publisher)
+        detector._subscribers = {"sub1": MagicMock()}
+
+        detector.publish_connection_event("SERIAL1", is_connect=True)
+
+        call_args = publisher.publish_to_subscribers.call_args
+        event = call_args[0][1]
+
+        assert list(event.connected_serials) == []
+
 
 class TestMultipleControllers:
     """Tests for handling multiple controllers."""

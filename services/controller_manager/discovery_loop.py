@@ -299,7 +299,12 @@ class DiscoveryLoop:
                 self._previous_accel.pop(serial, None)
                 self._accel_gauges.pop(serial, None)
                 # Publish disconnect event to button event stream subscribers
-                self.button_detector.publish_connection_event(serial, is_connect=False, name=name)
+                self.button_detector.publish_connection_event(
+                    serial,
+                    is_connect=False,
+                    name=name,
+                    connected_serials=list(self.tracked_controllers.keys()),
+                )
                 metrics.controller_disconnect_total.labels(serial=serial).inc()
 
             # Check for new controllers
@@ -322,7 +327,11 @@ class DiscoveryLoop:
                         battery = info.get(ControllerInfoKey.BATTERY, 0)
                         name = info.get(ControllerInfoKey.NAME, "")
                         self.button_detector.publish_connection_event(
-                            serial, is_connect=True, battery=battery, name=name
+                            serial,
+                            is_connect=True,
+                            battery=battery,
+                            name=name,
+                            connected_serials=list(self.tracked_controllers.keys()),
                         )
 
                         # Restore base color if we had one before (reconnection case)

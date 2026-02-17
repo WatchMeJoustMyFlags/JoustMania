@@ -175,6 +175,14 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         """Update battery level for a controller (ControllerEventCallbacks)."""
         self.state_manager.update_battery(serial, battery)
 
+    def get_connected_serials(self) -> set[str]:
+        """Get set of serials the menu considers connected (ControllerEventCallbacks)."""
+        return self.state_manager.connected_controllers
+
+    async def on_stream_reconnected(self) -> None:
+        """Clear state on stream reconnect so initial events re-populate cleanly (ControllerEventCallbacks)."""
+        await self.state_manager.on_stream_reconnected()
+
     async def on_button(self, serial: str, button: str, is_press: bool) -> None:
         """Handle button event (ControllerEventCallbacks)."""
         # Reset idle timer on any button activity

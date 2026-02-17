@@ -67,13 +67,14 @@ class MockButtonDetector:
     def detect_transitions_from_state(self, serial, state, tracked):
         self.transitions.append((serial, state))
 
-    def publish_connection_event(self, serial, is_connect, battery=0, name=""):
+    def publish_connection_event(self, serial, is_connect, battery=0, name="", connected_serials=None):
         self.connection_events.append(
             {
                 "serial": serial,
                 "is_connect": is_connect,
                 "battery": battery,
                 "name": name,
+                "connected_serials": connected_serials or [],
             }
         )
 
