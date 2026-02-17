@@ -156,11 +156,45 @@ class PsMoveAdapter(ControllerIOAdapter):
         stale = set(self._handles.keys()) - set(seen_serials)
         for serial in stale:
             logger.info(f"Controller {serial} no longer in scan - removing stale handle")
-            del self._handles[serial]
+            self._disconnect_handle(serial)
+
+    def _disconnect_handle(self, serial: str) -> None:
+        """Release a PSMove handle, turning off LEDs/rumble first.
+
+        Triggers ~PSMove() via del, which calls psmove_disconnect() -> hid_close().
+        """
+        move = self._handles.pop(serial, None)
+        if move is not None:
+            with contextlib.suppress(Exception):
+                move.set_leds(0, 0, 0)
+                move.set_rumble(0)
+                move.update_leds()
+            del move
 
     def open(self, serial: str) -> bool:
-        """Open is a no-op for psmove — handles are created during discover()."""
-        return serial in self._handles
+        """Open a handle for a specific controller by serial.
+
+        If the handle already exists (from discover()), returns True.
+        Otherwise probes all connected indices to find matching serial.
+        """
+        if serial in self._handles:
+            return True
+
+        count = psmove.count_connected()
+        for move_num in range(count):
+            try:
+                with suppress_stderr():
+                    move = psmove.PSMove(move_num)
+                if move is None:
+                    continue
+                move_serial = normalize_serial(move.get_serial())
+                if move_serial == serial:
+                    self._handles[serial] = move
+                    return True
+                del move
+            except Exception:
+                continue
+        return False
 
     def poll(self, serial: str) -> dict | None:
         """Read current sensor/button data from a PS Move controller."""
@@ -224,13 +258,9 @@ class PsMoveAdapter(ControllerIOAdapter):
 
     def close(self, serial: str) -> None:
         """Release controller handle."""
-        self._handles.pop(serial, None)
+        self._disconnect_handle(serial)
 
     def close_all(self) -> None:
         """Turn off all LEDs/rumble and release all handles."""
-        for move in self._handles.values():
-            with contextlib.suppress(Exception):
-                move.set_leds(0, 0, 0)
-                move.set_rumble(0)
-                move.update_leds()
-        self._handles.clear()
+        for serial in list(self._handles.keys()):
+            self._disconnect_handle(serial)

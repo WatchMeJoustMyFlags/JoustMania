@@ -318,14 +318,59 @@ class TestPsMoveAdapterSerialNormalization:
 
 
 class TestPsMoveAdapterOpen:
-    def test_open_returns_true_for_known_serial(self):
+    def test_open_returns_true_for_existing_handle(self):
+        """No re-probe when handle already exists."""
         adapter = PsMoveAdapter()
         adapter._handles["AABBCCDDEE01"] = _make_fake_move()
-        assert adapter.open("AABBCCDDEE01") is True
 
-    def test_open_returns_false_for_unknown_serial(self):
+        assert adapter.open("AABBCCDDEE01") is True
+        # Should not call PSMove() or count_connected since handle exists
+        mock_psmove.count_connected.assert_not_called()
+        mock_psmove.PSMove.assert_not_called()
+
+    def test_open_probes_indices_for_serial(self):
+        """open(serial) probes connected indices to find matching serial."""
         adapter = PsMoveAdapter()
-        assert adapter.open("UNKNOWN") is False
+        mock_psmove.count_connected.return_value = 2
+        move_wrong = _make_fake_move("AABBCCDDEE99")
+        move_target = _make_fake_move("AABBCCDDEE01")
+        mock_psmove.PSMove.side_effect = [move_wrong, move_target]
+
+        result = adapter.open("AABBCCDDEE01")
+
+        assert result is True
+        assert "AABBCCDDEE01" in adapter._handles
+        assert adapter._handles["AABBCCDDEE01"] is move_target
+
+    def test_open_returns_false_when_not_found(self):
+        """open() returns False when serial not found in any index."""
+        adapter = PsMoveAdapter()
+        mock_psmove.count_connected.return_value = 1
+        mock_psmove.PSMove.return_value = _make_fake_move("AABBCCDDEE99")
+
+        result = adapter.open("AABBCCDDEE01")
+
+        assert result is False
+        assert "AABBCCDDEE01" not in adapter._handles
+
+    def test_open_handles_probe_exception(self):
+        """open() continues probing if one index raises."""
+        adapter = PsMoveAdapter()
+        mock_psmove.count_connected.return_value = 2
+        move_target = _make_fake_move("AABBCCDDEE01")
+        mock_psmove.PSMove.side_effect = [RuntimeError("USB busy"), move_target]
+
+        result = adapter.open("AABBCCDDEE01")
+
+        assert result is True
+        assert "AABBCCDDEE01" in adapter._handles
+
+    def test_open_returns_false_when_no_controllers(self):
+        """open() returns False when no controllers are connected."""
+        adapter = PsMoveAdapter()
+        mock_psmove.count_connected.return_value = 0
+
+        assert adapter.open("AABBCCDDEE01") is False
 
 
 class TestPsMoveAdapterPoll:
@@ -497,15 +542,20 @@ class TestPsMoveAdapterSetOutput:
 
 
 class TestPsMoveAdapterClose:
-    def test_close_removes_handle(self):
+    def test_close_removes_handle_and_cleans_up(self):
         adapter = PsMoveAdapter()
-        adapter._handles["AABBCCDDEE01"] = _make_fake_move()
+        move1 = _make_fake_move("AABBCCDDEE01")
+        adapter._handles["AABBCCDDEE01"] = move1
         adapter._handles["AA:BB:CC:DD:EE:02"] = _make_fake_move()
 
         adapter.close("AABBCCDDEE01")
 
         assert "AABBCCDDEE01" not in adapter._handles
         assert "AA:BB:CC:DD:EE:02" in adapter._handles
+        # close() uses _disconnect_handle which turns off LEDs/rumble
+        move1.set_leds.assert_called_with(0, 0, 0)
+        move1.set_rumble.assert_called_with(0)
+        move1.update_leds.assert_called()
 
     def test_close_nonexistent_does_not_raise(self):
         adapter = PsMoveAdapter()
@@ -543,6 +593,34 @@ class TestPsMoveAdapterClose:
         adapter = PsMoveAdapter()
         adapter.close_all()  # Should not raise
         assert len(adapter._handles) == 0
+
+
+class TestPsMoveAdapterDisconnectHandle:
+    def test_disconnect_handle_turns_off_leds_and_rumble(self):
+        adapter = PsMoveAdapter()
+        move = _make_fake_move("AABBCCDDEE01")
+        adapter._handles["AABBCCDDEE01"] = move
+
+        adapter._disconnect_handle("AABBCCDDEE01")
+
+        assert "AABBCCDDEE01" not in adapter._handles
+        move.set_leds.assert_called_with(0, 0, 0)
+        move.set_rumble.assert_called_with(0)
+        move.update_leds.assert_called()
+
+    def test_disconnect_handle_nonexistent_is_noop(self):
+        adapter = PsMoveAdapter()
+        adapter._disconnect_handle("NONEXISTENT")  # Should not raise
+
+    def test_disconnect_handle_suppresses_exceptions(self):
+        adapter = PsMoveAdapter()
+        move = _make_fake_move("AABBCCDDEE01")
+        move.set_leds.side_effect = RuntimeError("Device gone")
+        adapter._handles["AABBCCDDEE01"] = move
+
+        adapter._disconnect_handle("AABBCCDDEE01")
+
+        assert "AABBCCDDEE01" not in adapter._handles
 
 
 class TestPsMoveAdapterProbeHelpers:
@@ -596,12 +674,15 @@ class TestPsMoveAdapterProbeHelpers:
     def test_remove_stale_handles(self):
         adapter = PsMoveAdapter()
         adapter._handles["AABBCCDDEE01"] = _make_fake_move()
-        adapter._handles["AA:BB:CC:DD:EE:02"] = _make_fake_move()
+        stale_move = _make_fake_move()
+        adapter._handles["AA:BB:CC:DD:EE:02"] = stale_move
 
         adapter._remove_stale_handles(["AABBCCDDEE01"])
 
         assert "AABBCCDDEE01" in adapter._handles
         assert "AA:BB:CC:DD:EE:02" not in adapter._handles
+        # Stale handle should have LEDs turned off via _disconnect_handle
+        stale_move.set_leds.assert_called_with(0, 0, 0)
 
     def test_remove_stale_handles_none_stale(self):
         adapter = PsMoveAdapter()
