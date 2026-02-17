@@ -310,7 +310,6 @@ class TestLoadSongFromPattern:
 
         with (
             patch("services.audio.music_player.glob.glob", return_value=["/music/song1.ogg"]),
-            patch("services.audio.music_player.random.choice", return_value="/music/song1.ogg"),
             patch("services.audio.music_player.AudioSegment.from_file", return_value=mock_segment),
         ):
             result = _load_song_from_pattern("/music/*.ogg")
@@ -319,7 +318,7 @@ class TestLoadSongFromPattern:
         assert isinstance(result, bytes)
         assert len(result) > 0
 
-    def test_selects_random_file_from_matches(self):
+    def test_shuffles_files_before_loading(self):
         mock_segment = MagicMock()
         mock_segment.set_channels.return_value = mock_segment
         mock_segment.set_frame_rate.return_value = mock_segment
@@ -330,12 +329,41 @@ class TestLoadSongFromPattern:
 
         with (
             patch("services.audio.music_player.glob.glob", return_value=files),
-            patch("services.audio.music_player.random.choice", return_value="/music/b.ogg") as mock_choice,
+            patch("services.audio.music_player.random.shuffle") as mock_shuffle,
             patch("services.audio.music_player.AudioSegment.from_file", return_value=mock_segment),
         ):
             _load_song_from_pattern("/music/*.ogg")
 
-        mock_choice.assert_called_once_with(files)
+        mock_shuffle.assert_called_once_with(files)
+
+    def test_skips_broken_file_and_loads_next(self):
+        """If first file fails to decode, tries the next one."""
+        mock_segment = MagicMock()
+        mock_segment.set_channels.return_value = mock_segment
+        mock_segment.set_frame_rate.return_value = mock_segment
+        mock_segment.set_sample_width.return_value = mock_segment
+        mock_segment.export.side_effect = lambda buf, **_kwargs: buf.write(b"wav")
+
+        with (
+            patch("services.audio.music_player.glob.glob", return_value=["/music/bad.ogg", "/music/good.ogg"]),
+            patch(
+                "services.audio.music_player.AudioSegment.from_file",
+                side_effect=[Exception("decode error"), mock_segment],
+            ),
+        ):
+            result = _load_song_from_pattern("/music/*.ogg")
+
+        assert result is not None
+
+    def test_returns_none_when_all_files_fail(self):
+        """Returns None if every file in the glob fails to decode."""
+        with (
+            patch("services.audio.music_player.glob.glob", return_value=["/music/a.ogg", "/music/b.ogg"]),
+            patch("services.audio.music_player.AudioSegment.from_file", side_effect=Exception("decode error")),
+        ):
+            result = _load_song_from_pattern("/music/*.ogg")
+
+        assert result is None
 
 
 class TestMusicPlayerStartStop:
