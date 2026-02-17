@@ -174,8 +174,29 @@ class PsMoveAdapter(ControllerIOAdapter):
             self._disconnect_handle(serial)
 
     def open(self, serial: str) -> bool:
-        """Open is a no-op for psmove — handles are created during discover()."""
-        return serial in self._handles
+        """Open a handle for a specific controller by serial.
+
+        If the handle already exists (from discover()), returns True.
+        Otherwise probes all connected indices to find matching serial.
+        """
+        if serial in self._handles:
+            return True
+
+        count = psmove.count_connected()
+        for move_num in range(count):
+            try:
+                with suppress_stderr():
+                    move = psmove.PSMove(move_num)
+                if move is None:
+                    continue
+                move_serial = normalize_serial(move.get_serial())
+                if move_serial == serial:
+                    self._handles[serial] = move
+                    return True
+                del move
+            except Exception:
+                continue
+        return False
 
     def poll(self, serial: str) -> dict | None:
         """Read current sensor/button data from a PS Move controller."""
