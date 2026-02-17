@@ -507,6 +507,17 @@ class TestPsMoveAdapterClose:
         assert "AABBCCDDEE01" not in adapter._handles
         assert "AA:BB:CC:DD:EE:02" in adapter._handles
 
+    def test_close_turns_off_leds(self):
+        adapter = PsMoveAdapter()
+        move = _make_fake_move("AABBCCDDEE01")
+        adapter._handles["AABBCCDDEE01"] = move
+
+        adapter.close("AABBCCDDEE01")
+
+        move.set_leds.assert_called_with(0, 0, 0)
+        move.set_rumble.assert_called_with(0)
+        move.update_leds.assert_called()
+
     def test_close_nonexistent_does_not_raise(self):
         adapter = PsMoveAdapter()
         adapter.close("NONEXISTENT")  # Should not raise
@@ -596,12 +607,16 @@ class TestPsMoveAdapterProbeHelpers:
     def test_remove_stale_handles(self):
         adapter = PsMoveAdapter()
         adapter._handles["AABBCCDDEE01"] = _make_fake_move()
-        adapter._handles["AA:BB:CC:DD:EE:02"] = _make_fake_move()
+        stale_move = _make_fake_move()
+        adapter._handles["AA:BB:CC:DD:EE:02"] = stale_move
 
         adapter._remove_stale_handles(["AABBCCDDEE01"])
 
         assert "AABBCCDDEE01" in adapter._handles
         assert "AA:BB:CC:DD:EE:02" not in adapter._handles
+        # Stale handle should have LEDs turned off
+        stale_move.set_leds.assert_called_with(0, 0, 0)
+        stale_move.set_rumble.assert_called_with(0)
 
     def test_remove_stale_handles_none_stale(self):
         adapter = PsMoveAdapter()
