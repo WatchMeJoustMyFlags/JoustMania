@@ -93,6 +93,13 @@ static_resources:
                           redirect:
                             path_redirect: "/victoria-metrics/"
 
+                        # Chaos fault injection API
+                        # PRESERVE prefix - connect-proxy handles /chaos/* paths
+                        - match:
+                            prefix: "/chaos/"
+                          route:
+                            cluster: connect_proxy
+
                         # Health check endpoint
                         - match:
                             path: "/health"

@@ -617,6 +617,9 @@ services:
       - CONTROLLER_MANAGER_SERVICE=controller-manager:50052
       - GAME_COORDINATOR_SERVICE=game-coordinator:50053
       - MENU_SERVICE=menu:50054
+      - FLAGD_CONFIG_PATH=/etc/flagd/flags/performance.json
+    volumes:
+      - ./services/flagd:/etc/flagd/flags
     networks:
       - joustmania
     restart: unless-stopped
