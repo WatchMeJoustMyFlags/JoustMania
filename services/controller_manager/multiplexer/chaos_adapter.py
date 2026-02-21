@@ -44,8 +44,8 @@ class ChaosAdapter(ControllerIOAdapter):
     def adapter_type(self) -> str:
         return self._inner.adapter_type  # transparent to routing
 
-    def discover(self, force: bool = False) -> list[str]:
-        serials = self._inner.discover(force=force)
+    def discover(self, force: bool = False, verify_only: bool = False) -> list[str]:
+        serials = self._inner.discover(force=force, verify_only=verify_only)
         # Track and evaluate new serials
         for s in serials:
             if s not in self._known_serials:
