@@ -107,6 +107,7 @@ services:
       - "4318"   # OTLP HTTP
     volumes:
       - ./services/jaeger/config.yaml:/etc/jaeger/config.yaml:ro
+      - jaeger-data:/badger
     command: ["--config", "/etc/jaeger/config.yaml"]
     networks:
       - joustmania
@@ -686,6 +687,7 @@ volumes:
   victoria-metrics-data:
   grafana-data:
   loki-data:
+  jaeger-data:
   controller-names:
   psmoveapi-data:
   pyroscope-data:
