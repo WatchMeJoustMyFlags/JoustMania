@@ -827,3 +827,21 @@ grpcurl -plaintext localhost:4317 list
 ---
 
 Happy coding! 🎮
+
+## Raspberry Pi Audio Setup
+
+The audio service needs direct ALSA access to the USB audio device (card 2). The host's PipeWire/WirePlumber stack conflicts with this and must be masked:
+
+```bash
+systemctl --user mask wireplumber pipewire pipewire-pulse pipewire.socket pipewire-pulse.socket
+systemctl --user stop wireplumber pipewire.socket pipewire-pulse.socket
+```
+
+Also set `ALSA_CARD=2` in `docker-compose.yml` (the USB audio device — cards 0 and 1 are HDMI outputs with no slave device when no display is connected).
+
+To re-enable PipeWire/WirePlumber later:
+```bash
+systemctl --user unmask wireplumber pipewire pipewire-pulse pipewire.socket pipewire-pulse.socket
+systemctl --user enable wireplumber
+systemctl --user start pipewire wireplumber
+```
