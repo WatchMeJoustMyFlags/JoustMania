@@ -385,7 +385,12 @@ class BaseGameMode(ABC):
             raise
 
     async def _countdown(self):
-        """Run countdown before game starts using unified countdown effect."""
+        """Run countdown before game starts using unified countdown effect.
+
+        Sends per-controller countdown effects so each effect_countdown span
+        appears under the corresponding player's countdown_phase span.
+        Sound spans live under gameplay_phase (shared, not player-specific).
+        """
         from proto import controller_manager_pb2
 
         # Get phase duration from runtime config (controlled via flagd game_settings)
@@ -406,24 +411,26 @@ class BaseGameMode(ABC):
             await self.event_publisher(GameEvent.COUNTDOWN_END, {})
             return
 
-        # Send unified countdown effect via gameplay stream (broadcast to all controllers)
-        # Controller manager handles the full Red->Yellow->Green sequence using the provided duration
+        # Send per-controller countdown effects via gameplay stream.
+        # Each effect carries its player's countdown_phase span context so
+        # effect_countdown becomes a child of the correct countdown_phase.
         if self.gameplay_stream:
-            trace_parent, trace_state = inject_trace_context()
-            effect_cmd = controller_manager_pb2.GameplayStreamControl(
-                game_effect=controller_manager_pb2.GameEffectCommand(
-                    serial="",  # Empty = all controllers
-                    effect=controller_manager_pb2.GAME_EFFECT_COUNTDOWN,
-                    duration_ms=phase_duration_ms,  # Pass phase duration for LED sync
-                    trace_parent=trace_parent,
-                    trace_state=trace_state,
+            for player in self.players.values():
+                trace_parent, trace_state = inject_trace_context(player._countdown_span)
+                effect_cmd = controller_manager_pb2.GameplayStreamControl(
+                    game_effect=controller_manager_pb2.GameEffectCommand(
+                        serial=player.serial,
+                        effect=controller_manager_pb2.GAME_EFFECT_COUNTDOWN,
+                        duration_ms=phase_duration_ms,
+                        trace_parent=trace_parent,
+                        trace_state=trace_state,
+                    )
                 )
-            )
-            await self.gameplay_stream.write(effect_cmd)
+                await self.gameplay_stream.write(effect_cmd)
 
-        # Play countdown beeps in sync with the visual countdown
-        # Default: Red (3), Yellow (2), Green (1 - GO!)
-        # Use same phase duration as LEDs to keep audio/visual synchronized
+        # Play countdown beeps in sync with the visual countdown.
+        # Sounds are shared (not per-player), so they inherit the active
+        # gameplay_phase span as their parent — not any player's countdown_phase.
         beep_count = COUNTDOWN_BEEP_COUNT
         beep_interval_ms = phase_duration_ms  # Match LED phase duration
 
@@ -432,7 +439,7 @@ class BaseGameMode(ABC):
                 logger.info(_MSG_COUNTDOWN_INTERRUPTED)
                 return
 
-            # Play countdown beep (Phase 29)
+            # Play countdown beep — inherits gameplay_phase as parent span
             await self._play_sound(Sound.SFX_BEEP_LOUD, priority=2)
 
             # Wait for beep interval (configurable based on countdown duration)
@@ -443,7 +450,7 @@ class BaseGameMode(ABC):
                     return
                 await asyncio.sleep(0.05)
 
-        # Play start sound (Phase 29 - GO!)
+        # Play start sound — inherits gameplay_phase as parent span
         await self._play_sound(Sound.SFX_START3, priority=2)
 
         await self.event_publisher(GameEvent.COUNTDOWN_END, {})
