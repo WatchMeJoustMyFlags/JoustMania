@@ -70,10 +70,10 @@ class GamePerformanceConfig:
     # Sensitivity
     sensitivity_mode: str = "MEDIUM"  # SLOW, MEDIUM, FAST
 
-    # Poll drop threshold: per-frame drops at or below this value are considered
-    # normal USB/Bluetooth noise and won't open a controller_poll_degraded span.
-    # At 1000Hz USB polling, 1-2 drops per 16.67ms frame is typical.
-    poll_drop_threshold: int = 3
+    # Poll drop threshold: rolling-window drop rate (drops/sec) at or below this
+    # value is considered normal USB/Bluetooth noise and won't open a
+    # controller_poll_degraded span. Evaluated over a 2-second window.
+    poll_drop_threshold: int = 10
 
 
 class RuntimeConfigManager:

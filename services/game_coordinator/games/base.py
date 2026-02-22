@@ -142,6 +142,10 @@ class Player:
     total_led_failures: int = 0
     _poll_degraded_span: trace.Span | None = None
     _led_degraded_span: trace.Span | None = None
+    # Rolling window rate detection for poll drops
+    _health_window_start: float | None = None  # monotonic time at window start
+    _health_window_drops: int = 0  # cumulative drops at window start
+    _health_drop_rate: float = 0.0  # current calculated drop rate (drops/sec)
 
 
 @dataclass
@@ -848,9 +852,10 @@ class BaseGameMode(ABC):
     def _process_health(self, player: Player, serial: str, controller_state) -> None:
         """Process controller health counters and manage degradation child spans.
 
-        Opens child spans on transition from healthy to degraded, adds events
-        per frame with issues, and closes spans on recovery. This gives
-        per-player health visibility on player_lifecycle spans in Jaeger.
+        Uses a rolling window to calculate poll drop rate (drops/sec) rather
+        than checking per-frame counts. This avoids false positives from single
+        frames that accumulate pre-game drops and correctly detects sustained
+        degradation at 100Hz polling with 60Hz streaming.
 
         Args:
             player: The player to process health for
@@ -860,7 +865,6 @@ class BaseGameMode(ABC):
         health = controller_state.health if controller_state.HasField("health") else None
         config = get_config_manager().get_config()
         threshold = config.poll_drop_threshold
-        has_poll_issues = health and (health.poll_drops > threshold or health.poll_errors)
         has_led_issues = health and health.led_failures
 
         # Always accumulate totals for final summary, even below threshold
@@ -869,9 +873,29 @@ class BaseGameMode(ABC):
         if health and health.poll_errors:
             player.total_poll_errors += health.poll_errors
 
-        # --- Poll degradation span (only for drops exceeding threshold) ---
+        # --- Rolling window rate detection for poll drops ---
+        now = time.monotonic()
+        window_seconds = 2.0  # evaluation window
+
+        # Initialize window on first call
+        if player._health_window_start is None:
+            player._health_window_start = now
+            player._health_window_drops = player.total_poll_drops
+
+        elapsed = now - player._health_window_start
+        if elapsed >= window_seconds:
+            drops_in_window = player.total_poll_drops - player._health_window_drops
+            player._health_drop_rate = drops_in_window / elapsed
+            # Reset window
+            player._health_window_start = now
+            player._health_window_drops = player.total_poll_drops
+
+        # Threshold is drops/sec (not drops/frame)
+        has_poll_issues = player._health_drop_rate > threshold or (health and health.poll_errors > 0)
+
+        # --- Poll degradation span (only when rolling rate exceeds threshold) ---
         if has_poll_issues:
-            # Open child span on transition healthy → degraded
+            # Open child span on transition healthy -> degraded
             if player._poll_degraded_span is None and player.span:
                 ctx = trace.set_span_in_context(player.span)
                 player._poll_degraded_span = tracer.start_span(
@@ -881,14 +905,14 @@ class BaseGameMode(ABC):
                 )
             # Add event for this frame's drops inside the child span
             if player._poll_degraded_span:
-                attrs: dict[str, int] = {}
-                if health.poll_drops:
+                attrs: dict[str, float | int] = {"drop_rate": player._health_drop_rate}
+                if health and health.poll_drops:
                     attrs["poll_drops"] = health.poll_drops
-                if health.poll_errors:
+                if health and health.poll_errors:
                     attrs["poll_errors"] = health.poll_errors
                 player._poll_degraded_span.add_event("poll_issues", attrs)
         else:
-            # Close child span on transition degraded → healthy
+            # Close child span on transition degraded -> healthy
             if player._poll_degraded_span is not None:
                 from opentelemetry.trace import Status, StatusCode
 
@@ -1380,6 +1404,7 @@ class BaseGameMode(ABC):
         player.span.set_attribute("health.total_poll_drops", player.total_poll_drops)
         player.span.set_attribute("health.total_poll_errors", player.total_poll_errors)
         player.span.set_attribute("health.total_led_failures", player.total_led_failures)
+        player.span.set_attribute("health.final_drop_rate", player._health_drop_rate)
         player.span.set_attribute(
             "health.had_issues",
             player.total_poll_drops > 0 or player.total_poll_errors > 0 or player.total_led_failures > 0,
