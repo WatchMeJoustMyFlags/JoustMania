@@ -134,6 +134,12 @@ class Player:
     # 1.0 = default, >1.0 = more sensitive (easier to die), <1.0 = less sensitive (harder to die)
     # Thresholds are divided by this factor: higher factor = lower threshold = easier to trigger
     sensitivity_factor: float = 1.0
+    # Health tracking (#571: controller health on player_lifecycle spans)
+    total_poll_drops: int = 0
+    total_poll_errors: int = 0
+    total_led_failures: int = 0
+    _poll_degraded_span: trace.Span | None = None
+    _led_degraded_span: trace.Span | None = None
 
 
 @dataclass
@@ -839,6 +845,66 @@ class BaseGameMode(ABC):
         # Record to histogram for distribution analysis
         metrics.accel_distribution.labels(game_mode=self.get_game_name()).observe(accel_mag)
 
+    def _process_health(self, player: Player, serial: str, controller_state) -> None:
+        """Process controller health counters and manage degradation child spans.
+
+        Opens child spans on transition from healthy to degraded, adds events
+        per frame with issues, and closes spans on recovery. This gives
+        per-player health visibility on player_lifecycle spans in Jaeger.
+
+        Args:
+            player: The player to process health for
+            serial: Controller serial number
+            controller_state: GameplayData protobuf (may have .health field)
+        """
+        health = controller_state.health if controller_state.HasField("health") else None
+        has_poll_issues = health and (health.poll_drops or health.poll_errors)
+        has_led_issues = health and health.led_failures
+
+        # --- Poll degradation span ---
+        if has_poll_issues:
+            player.total_poll_drops += health.poll_drops
+            player.total_poll_errors += health.poll_errors
+            # Open child span on transition healthy → degraded
+            if player._poll_degraded_span is None and player.span:
+                ctx = trace.set_span_in_context(player.span)
+                player._poll_degraded_span = tracer.start_span(
+                    "controller_poll_degraded",
+                    context=ctx,
+                    attributes={"player.serial": serial},
+                )
+            # Add event for this frame's drops inside the child span
+            if player._poll_degraded_span:
+                attrs: dict[str, int] = {}
+                if health.poll_drops:
+                    attrs["poll_drops"] = health.poll_drops
+                if health.poll_errors:
+                    attrs["poll_errors"] = health.poll_errors
+                player._poll_degraded_span.add_event("poll_issues", attrs)
+        else:
+            # Close child span on transition degraded → healthy
+            if player._poll_degraded_span is not None:
+                player._poll_degraded_span.set_attribute("health.total_poll_drops", player.total_poll_drops)
+                player._poll_degraded_span.set_attribute("health.total_poll_errors", player.total_poll_errors)
+                player._poll_degraded_span.end()
+                player._poll_degraded_span = None
+
+        # --- LED degradation span ---
+        if has_led_issues:
+            player.total_led_failures += health.led_failures
+            if player._led_degraded_span is None and player.span:
+                ctx = trace.set_span_in_context(player.span)
+                player._led_degraded_span = tracer.start_span(
+                    "controller_led_degraded",
+                    context=ctx,
+                    attributes={"player.serial": serial},
+                )
+        else:
+            if player._led_degraded_span is not None:
+                player._led_degraded_span.set_attribute("health.total_led_failures", player.total_led_failures)
+                player._led_degraded_span.end()
+                player._led_degraded_span = None
+
     async def _process_controller_state(self, controller_state):
         """
         Process a single controller's state and check for death.
@@ -855,6 +921,9 @@ class BaseGameMode(ABC):
 
         if not player.alive:
             return  # Dead player, ignore
+
+        # Process controller health counters (#571)
+        self._process_health(player, serial, controller_state)
 
         accel = controller_state.accel
         accel_mag = self._compute_accel_magnitude(accel)
@@ -1256,6 +1325,35 @@ class BaseGameMode(ABC):
             },
         )
 
+    def _finalize_player_health(self, player: Player) -> None:
+        """Close health degradation spans and add summary attributes (#571).
+
+        Called per-player before closing the player_lifecycle span.
+        Safe to call even if no health spans were opened.
+        """
+        if not player.span:
+            return
+
+        # Close any open health degradation spans
+        if player._poll_degraded_span is not None:
+            player._poll_degraded_span.set_attribute("health.total_poll_drops", player.total_poll_drops)
+            player._poll_degraded_span.set_attribute("health.total_poll_errors", player.total_poll_errors)
+            player._poll_degraded_span.end()
+            player._poll_degraded_span = None
+        if player._led_degraded_span is not None:
+            player._led_degraded_span.set_attribute("health.total_led_failures", player.total_led_failures)
+            player._led_degraded_span.end()
+            player._led_degraded_span = None
+
+        # Summary health attributes on player_lifecycle span
+        player.span.set_attribute("health.total_poll_drops", player.total_poll_drops)
+        player.span.set_attribute("health.total_poll_errors", player.total_poll_errors)
+        player.span.set_attribute("health.total_led_failures", player.total_led_failures)
+        player.span.set_attribute(
+            "health.had_issues",
+            player.total_poll_drops > 0 or player.total_poll_errors > 0 or player.total_led_failures > 0,
+        )
+
     def _close_all_player_spans(self):
         """
         Close all open player lifecycle spans.
@@ -1268,6 +1366,8 @@ class BaseGameMode(ABC):
 
         for serial, player in self.players.items():
             if player.span:
+                self._finalize_player_health(player)
+
                 # Add final event based on player state
                 if player.alive:
                     player.span.add_event(

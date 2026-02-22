@@ -129,6 +129,10 @@ class DiscoveryLoop:
         # Debug logging throttle
         self._last_controller_count_log = 0.0
 
+        # Health counters: accumulated between stream frames, reset on drain
+        self._poll_drops: dict[str, int] = {}
+        self._poll_errors: dict[str, int] = {}
+
     def start(self) -> None:
         """Start the discovery task.
 
@@ -298,6 +302,8 @@ class DiscoveryLoop:
                 self._last_activity_time.pop(serial, None)
                 self._previous_accel.pop(serial, None)
                 self._accel_gauges.pop(serial, None)
+                self._poll_drops.pop(serial, None)
+                self._poll_errors.pop(serial, None)
                 # Publish disconnect event to button event stream subscribers
                 self.button_detector.publish_connection_event(
                     serial,
@@ -413,9 +419,11 @@ class DiscoveryLoop:
                 # Handle exceptions from individual controller reads
                 if isinstance(state, Exception):
                     logger.debug(f"Error updating state for {serial}: {state}")
+                    self._poll_errors[serial] = self._poll_errors.get(serial, 0) + 1
                     continue
 
                 if not state:
+                    self._poll_drops[serial] = self._poll_drops.get(serial, 0) + 1
                     continue
 
                 # Update stored state
@@ -503,6 +511,25 @@ class DiscoveryLoop:
         # Update last activity time if activity detected
         if activity_detected:
             self._last_activity_time[serial] = current_time
+
+    def drain_health_counters(self, serial: str) -> tuple[int, int, int]:
+        """Drain and reset health counters for a controller.
+
+        Called by servicer when building each stream frame. Returns accumulated
+        counts since the last drain and resets them to zero.
+
+        Safe without locks — poll loop and stream frame building both run on
+        the same asyncio event loop.
+
+        Returns:
+            Tuple of (poll_drops, poll_errors, led_failures).
+        """
+        drops = self._poll_drops.pop(serial, 0)
+        errors = self._poll_errors.pop(serial, 0)
+        led = 0
+        if hasattr(self.backend, "_led_failures"):
+            led = self.backend._led_failures.pop(serial, 0)
+        return drops, errors, led
 
     async def _spawn_controller_process(self, serial: str) -> None:
         """
