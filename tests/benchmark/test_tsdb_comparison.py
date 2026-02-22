@@ -85,6 +85,12 @@ PI5_CPU_SCALING_FACTOR = 2.5
 CONCURRENT_DASHBOARDS = 3
 READ_STRESS_CYCLES = 10
 
+# Cardinality stress: simulate adding game_id labels across many game sessions.
+# Each "game" creates N_controllers new series per metric, accumulating over
+# CARDINALITY_GAMES sessions — mimicking a party night.
+CARDINALITY_GAMES = 50
+CARDINALITY_METRICS_PER_PLAYER = 10
+
 
 class TSDBClient:
     """Thin wrapper around the Prometheus HTTP query API.
@@ -243,7 +249,104 @@ def _percentiles(values: list[float]) -> tuple[float, float, float]:
     return (p50, p95, p99)
 
 
-@pytest.mark.timeout(300)
+def _build_otlp_payload(
+    game_idx: int, controllers: int, metrics_per_player: int, timestamp_ns: int
+) -> dict:
+    """Build an OTLP JSON metrics payload for one game session.
+
+    Creates ``controllers * metrics_per_player`` gauge data points, each
+    with a unique ``{game_id, serial}`` label combination.
+    """
+    data_points = []
+    for ctrl in range(controllers):
+        for m in range(metrics_per_player):
+            data_points.append(
+                {
+                    "asDouble": 1.0 + (game_idx * 0.01) + (ctrl * 0.001),
+                    "timeUnixNano": str(timestamp_ns),
+                    "attributes": [
+                        {
+                            "key": "game_id",
+                            "value": {"stringValue": f"game_{game_idx:04d}"},
+                        },
+                        {
+                            "key": "serial",
+                            "value": {"stringValue": f"MOCK{ctrl:04d}"},
+                        },
+                        {
+                            "key": "metric_idx",
+                            "value": {"stringValue": str(m)},
+                        },
+                    ],
+                }
+            )
+
+    return {
+        "resourceMetrics": [
+            {
+                "resource": {
+                    "attributes": [
+                        {
+                            "key": "service.name",
+                            "value": {"stringValue": "cardinality-bench"},
+                        }
+                    ]
+                },
+                "scopeMetrics": [
+                    {
+                        "metrics": [
+                            {
+                                "name": "bench_player_gauge",
+                                "gauge": {"dataPoints": data_points},
+                            }
+                        ]
+                    }
+                ],
+            }
+        ]
+    }
+
+
+def _push_cardinality_via_otlp(
+    collector_url: str, games: int, controllers: int, metrics_per_player: int
+) -> tuple[int, float]:
+    """Push synthetic high-cardinality metrics through the OTEL Collector.
+
+    Uses the OTLP HTTP endpoint so data fans out to both Prometheus and
+    VictoriaMetrics via the existing pipeline.
+
+    Returns ``(total_series_created, push_duration_seconds)``.
+    """
+    client = httpx.Client(timeout=30.0)
+    timestamp_ns = int(time.time() * 1e9)
+    total_series = 0
+    t0 = time.monotonic()
+
+    for game_idx in range(games):
+        payload = _build_otlp_payload(
+            game_idx, controllers, metrics_per_player, timestamp_ns
+        )
+        resp = client.post(
+            f"{collector_url}/v1/metrics",
+            json=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        if resp.status_code >= 400:
+            warnings.warn(
+                f"OTLP push failed for game {game_idx}: "
+                f"{resp.status_code} {resp.text[:200]}"
+            )
+            break
+        total_series += controllers * metrics_per_player
+        # Advance timestamp by 15s per game to create distinct samples
+        timestamp_ns += 15_000_000_000
+
+    duration = time.monotonic() - t0
+    client.close()
+    return total_series, duration
+
+
+@pytest.mark.timeout(420)
 async def test_tsdb_comparison(docker_compose):
     """Run a JoustFFA game and compare Prometheus vs VictoriaMetrics."""
 
@@ -462,11 +565,116 @@ async def test_tsdb_comparison(docker_compose):
 
     print("Read stress test complete")
 
+    # ------------------------------------------------------------------
+    # 9. Cardinality stress test
+    # ------------------------------------------------------------------
+    # Push synthetic metrics with unique game_id labels through the OTEL
+    # Collector, simulating a party night with many game sessions.
+    # Each game creates controllers * metrics_per_player new series.
+    expected_series = (
+        CARDINALITY_GAMES * CONTROLLER_COUNT * CARDINALITY_METRICS_PER_PLAYER
+    )
+    print(
+        f"\nCardinality stress: {CARDINALITY_GAMES} games x "
+        f"{CONTROLLER_COUNT} controllers x {CARDINALITY_METRICS_PER_PLAYER} metrics "
+        f"= {expected_series:,} synthetic series ..."
+    )
+
+    series_pushed, push_duration = _push_cardinality_via_otlp(
+        "http://localhost:4318",
+        CARDINALITY_GAMES,
+        CONTROLLER_COUNT,
+        CARDINALITY_METRICS_PER_PLAYER,
+    )
+    print(f"Pushed {series_pushed:,} series in {push_duration:.1f}s")
+
+    # Allow collector to flush to both backends
+    await asyncio.sleep(5)
+
+    # Re-create clients (previous ones were closed)
+    prom_card = TSDBClient("http://localhost:9090", "Prometheus")
+    vm_card = TSDBClient("http://localhost:8428", "VictoriaMetrics")
+
+    # Measure series count for the synthetic metric
+    prom_card_series = prom_card.series_count("bench_player_gauge")
+    vm_card_series = vm_card.series_count("bench_player_gauge")
+
+    # Query the high-cardinality metric with different patterns
+    cardinality_queries = [
+        ("bench_player_gauge", "Select all series"),
+        ("count(bench_player_gauge) by (game_id)", "Count by game_id"),
+        ("avg(bench_player_gauge) by (serial)", "Avg by serial"),
+        (
+            "count(count(bench_player_gauge) by (game_id))",
+            "Count distinct games",
+        ),
+    ]
+
+    card_query_rows = []
+    for promql, desc in cardinality_queries:
+        _, prom_ms = prom_card.timed_query(promql)
+        _, vm_ms = vm_card.timed_query(promql)
+        card_query_rows.append([desc, f"{prom_ms:.1f}", f"{vm_ms:.1f}"])
+
+    # Concurrent reads against high-cardinality data
+    prom_card_clients = [
+        TSDBClient("http://localhost:9090", "Prometheus")
+        for _ in range(CONCURRENT_DASHBOARDS)
+    ]
+    vm_card_clients = [
+        TSDBClient("http://localhost:8428", "VictoriaMetrics")
+        for _ in range(CONCURRENT_DASHBOARDS)
+    ]
+
+    card_stress = _run_concurrent_read_stress(
+        prom_card_clients + vm_card_clients,
+        cardinality_queries,
+        READ_STRESS_CYCLES,
+    )
+
+    for c in prom_card_clients + vm_card_clients:
+        c.close()
+
+    prom_card_lat = card_stress["Prometheus"]
+    vm_card_lat = card_stress["VictoriaMetrics"]
+    prom_card_p50, prom_card_p95, prom_card_p99 = _percentiles(prom_card_lat)
+    vm_card_p50, vm_card_p95, vm_card_p99 = _percentiles(vm_card_lat)
+
+    cardinality_summary_rows = [
+        ["Series pushed", series_pushed, series_pushed],
+        ["Series ingested", prom_card_series, vm_card_series],
+        ["Push duration (s)", f"{push_duration:.1f}", f"{push_duration:.1f}"],
+    ]
+
+    card_concurrent_rows = [
+        ["p50 (ms)", f"{prom_card_p50:.1f}", f"{vm_card_p50:.1f}"],
+        ["p95 (ms)", f"{prom_card_p95:.1f}", f"{vm_card_p95:.1f}"],
+        ["p99 (ms)", f"{prom_card_p99:.1f}", f"{vm_card_p99:.1f}"],
+    ]
+
+    # Resource snapshot after cardinality injection
+    prom_card_stats = _get_container_stats("joustmania-prometheus")
+    vm_card_stats = _get_container_stats("joustmania-victoria-metrics")
+
+    card_resource_rows = [
+        ["CPU %", prom_card_stats["cpu_percent"], vm_card_stats["cpu_percent"]],
+        [
+            "CPU % (Pi 5 est.)",
+            round(prom_card_stats["cpu_percent"] * PI5_CPU_SCALING_FACTOR, 2),
+            round(vm_card_stats["cpu_percent"] * PI5_CPU_SCALING_FACTOR, 2),
+        ],
+        ["Memory (MB)", prom_card_stats["memory_mb"], vm_card_stats["memory_mb"]],
+    ]
+
+    prom_card.close()
+    vm_card.close()
+    print("Cardinality stress test complete")
+
     prom.close()
     vm.close()
 
     # ------------------------------------------------------------------
-    # 9. Print results
+    # 10. Print results
     # ------------------------------------------------------------------
     print("\n" + "=" * 80)
     print("TSDB Benchmark Results: Prometheus vs VictoriaMetrics")
@@ -549,8 +757,50 @@ async def test_tsdb_comparison(docker_compose):
         )
     )
 
+    print(
+        f"\nCardinality Stress ({CARDINALITY_GAMES} games x "
+        f"{CONTROLLER_COUNT} controllers x {CARDINALITY_METRICS_PER_PLAYER} metrics/player):"
+    )
+    print(
+        tabulate(
+            cardinality_summary_rows,
+            headers=["Metric", "Prometheus", "VictoriaMetrics"],
+            tablefmt="grid",
+        )
+    )
+
+    print("\nQuery Latency on High-Cardinality Data (sequential):")
+    print(
+        tabulate(
+            card_query_rows,
+            headers=["Query", "Prom (ms)", "VM (ms)"],
+            tablefmt="grid",
+        )
+    )
+
+    print(
+        f"\nConcurrent Reads on High-Cardinality Data "
+        f"({CONCURRENT_DASHBOARDS} dashboards x {READ_STRESS_CYCLES} cycles):"
+    )
+    print(
+        tabulate(
+            card_concurrent_rows,
+            headers=["Metric", "Prometheus", "VictoriaMetrics"],
+            tablefmt="grid",
+        )
+    )
+
+    print("\nResource Usage After Cardinality Injection:")
+    print(
+        tabulate(
+            card_resource_rows,
+            headers=["Resource", "Prometheus", "VictoriaMetrics"],
+            tablefmt="grid",
+        )
+    )
+
     # ------------------------------------------------------------------
-    # 10. Warn (do NOT assert) on divergence / query errors
+    # 11. Warn (do NOT assert) on divergence / query errors
     # ------------------------------------------------------------------
     if divergence_warnings:
         msg = (
