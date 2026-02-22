@@ -385,7 +385,7 @@ class BaseGameMode(ABC):
 
         Sends per-controller countdown effects so each effect_countdown span
         appears under the corresponding player's countdown_phase span.
-        Sound spans are parented to the first player's countdown_phase.
+        Sound spans live under gameplay_phase (shared, not player-specific).
         """
         from proto import controller_manager_pb2
 
@@ -424,13 +424,9 @@ class BaseGameMode(ABC):
                 )
                 await self.gameplay_stream.write(effect_cmd)
 
-        # Use first player's countdown span as parent for shared sound spans
-        first_player = next(iter(self.players.values()), None)
-        countdown_span = first_player._countdown_span if first_player else None
-
-        # Play countdown beeps in sync with the visual countdown
-        # Default: Red (3), Yellow (2), Green (1 - GO!)
-        # Use same phase duration as LEDs to keep audio/visual synchronized
+        # Play countdown beeps in sync with the visual countdown.
+        # Sounds are shared (not per-player), so they inherit the active
+        # gameplay_phase span as their parent — not any player's countdown_phase.
         beep_count = COUNTDOWN_BEEP_COUNT
         beep_interval_ms = phase_duration_ms  # Match LED phase duration
 
@@ -439,9 +435,8 @@ class BaseGameMode(ABC):
                 logger.info(_MSG_COUNTDOWN_INTERRUPTED)
                 return
 
-            # Play countdown beep (Phase 29)
-            # Set countdown span as active so gRPC interceptor propagates it
-            await self._play_sound_with_context(Sound.SFX_BEEP_LOUD, countdown_span, priority=2)
+            # Play countdown beep — inherits gameplay_phase as parent span
+            await self._play_sound(Sound.SFX_BEEP_LOUD, priority=2)
 
             # Wait for beep interval (configurable based on countdown duration)
             wait_iterations = beep_interval_ms // 50  # 50ms per iteration
@@ -451,8 +446,8 @@ class BaseGameMode(ABC):
                     return
                 await asyncio.sleep(0.05)
 
-        # Play start sound (Phase 29 - GO!)
-        await self._play_sound_with_context(Sound.SFX_START3, countdown_span, priority=2)
+        # Play start sound — inherits gameplay_phase as parent span
+        await self._play_sound(Sound.SFX_START3, priority=2)
 
         await self.event_publisher(GameEvent.COUNTDOWN_END, {})
         logger.info("Countdown complete")
@@ -1449,28 +1444,6 @@ class BaseGameMode(ABC):
             logger.debug(f"Playing sound: {sound_name}")
         except Exception as e:
             logger.warning(f"Failed to play sound {sound_name}: {e}")
-
-    async def _play_sound_with_context(self, sound: str | Sound, span: trace.Span | None, priority: int = 2):
-        """Play sound with a specific span as the active trace context.
-
-        Sets the given span as the current context so the gRPC interceptor
-        propagates it to the audio service, making the PlaySound span a child
-        of the specified parent span.
-
-        Args:
-            sound: Sound enum or string name
-            span: Span to set as active context (None falls back to current context)
-            priority: Audio priority (0=LOW, 1=MEDIUM, 2=HIGH, 3=CRITICAL)
-        """
-        if span is not None:
-            ctx = trace.set_span_in_context(span)
-            token = otel_context.attach(ctx)
-            try:
-                await self._play_sound(sound, priority=priority)
-            finally:
-                otel_context.detach(token)
-        else:
-            await self._play_sound(sound, priority=priority)
 
     # ========================================================================
     # Phase 70: Music Tempo Control
