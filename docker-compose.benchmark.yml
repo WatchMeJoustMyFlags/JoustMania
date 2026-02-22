@@ -1,0 +1,38 @@
+# TSDB Benchmark Override - Prometheus vs VictoriaMetrics comparison (Issue #575)
+#
+# Swaps the OTEL Collector config for one that pushes metrics to both
+# VictoriaMetrics (existing) and Prometheus (via remote write receiver),
+# enabling side-by-side TSDB comparison under identical workloads.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.override.yml \
+#     -f docker-compose.ci.yml -f docker-compose.benchmark.yml up -d
+#
+# Run benchmark tests:
+#   make benchmark-tsdb
+
+services:
+  otel-collector:
+    volumes:
+      - ./services/otel-collector/config.benchmark.yaml:/etc/otel-collector-config.yaml:ro
+
+  prometheus:
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.external-url=/prometheus/'
+      - '--web.route-prefix=/'
+      - '--web.enable-remote-write-receiver'
+    ports:
+      - "9090:9090"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  victoria-metrics:
+    ports:
+      - "8428:8428"

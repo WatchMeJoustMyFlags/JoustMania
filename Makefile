@@ -34,6 +34,7 @@ help:
 	@echo "  make test-integration - Run integration tests only (CI)"
 	@echo "  make test-dev        - Run integration tests with pre-built images (fast)"
 	@echo "  make test TEST=name  - Run specific test by name"
+	@echo "  make benchmark-tsdb  - TSDB benchmark: Prometheus vs VictoriaMetrics"
 	@echo ""
 	@echo "Protos:"
 	@echo "  make protos          - Generate Python protobuf files"
@@ -224,6 +225,12 @@ test-dev: clean-test-venv
 test-debug: clean-test-venv
 	PAUSE_BEFORE_TEARDOWN=1 $(TEST_ENV) uv run --package joustmania-integration-tests \
 		pytest tests/integration/ -v -s $(if $(TEST),-k "$(TEST)")
+
+# TSDB benchmark: Prometheus vs VictoriaMetrics comparison (Issue #575)
+.PHONY: benchmark-tsdb
+benchmark-tsdb: clean-test-venv
+	$(TEST_ENV) uv run --package joustmania-benchmark-tests \
+		pytest tests/benchmark/ -v -s $(if $(TEST),-k "$(TEST)")
 
 # ============================================================================
 # CI Targets (used by GitHub Actions)

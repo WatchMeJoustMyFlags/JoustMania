@@ -1,0 +1,194 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  # Scrape receivers for targets that don't push via OTLP.
+  # Split by namespace so each pipeline gets the correct service.namespace tag.
+  # Metrics flow to VictoriaMetrics via prometheusremotewrite.
+
+  # Observability stack: monitoring tools that observe the system
+  prometheus/observability:
+    config:
+      scrape_configs:
+        - job_name: 'victoria-metrics'
+          scrape_interval: 30s
+          static_configs:
+            - targets: ['victoria-metrics:8428']
+        - job_name: 'prometheus'
+          scrape_interval: 30s
+          static_configs:
+            - targets: ['prometheus:9090']
+        # Self-telemetry: the collector exposes its own metrics on :8888.
+        # Rename otelcol_process_* to standard process_* for unified dashboards.
+        - job_name: 'otel-collector'
+          scrape_interval: 30s
+          static_configs:
+            - targets: ['localhost:8888']
+          metric_relabel_configs:
+            - source_labels: [__name__]
+              regex: 'otelcol_process_cpu_seconds'
+              target_label: __name__
+              replacement: 'process_cpu_seconds_total'
+            - source_labels: [__name__]
+              regex: 'otelcol_process_memory_rss'
+              target_label: __name__
+              replacement: 'process_resident_memory_bytes'
+
+  # Infrastructure: supporting services for the game platform
+  prometheus/infrastructure:
+    config:
+      scrape_configs:
+        - job_name: 'flagd'
+          scrape_interval: 30s
+          static_configs:
+            - targets: ['flagd:8014']
+
+  # Host: OS-level metrics from the Raspberry Pi
+  prometheus/host:
+    config:
+      scrape_configs:
+        - job_name: 'node'
+          scrape_interval: 30s
+          scrape_timeout: 25s
+          static_configs:
+            - targets: ['node-exporter:9100']
+              labels:
+                instance: 'raspberry-pi'
+
+processors:
+  # Batch processor for better performance (traces/logs)
+  batch:
+    timeout: 10s
+    send_batch_size: 1024
+
+  # Fast batch processor for sub-second metrics (Issue #105)
+  batch/fast:
+    timeout: 100ms
+    send_batch_size: 1000
+
+  # Memory limiter to prevent OOM
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+
+  # Resource processors set service.namespace per pipeline.
+  # The prometheusremotewrite exporter prefixes job labels with the namespace
+  # (e.g. "joustmania/game-coordinator", "infrastructure/flagd", "host/node").
+  # All dashboard queries use these prefixed job names.
+  resource/observability:
+    attributes:
+      - key: service.namespace
+        value: observability
+        action: insert
+
+  resource/infrastructure:
+    attributes:
+      - key: service.namespace
+        value: infrastructure
+        action: insert
+
+  resource/host:
+    attributes:
+      - key: service.namespace
+        value: host
+        action: insert
+
+  # Resource processor to add common attributes for OTLP-pushed metrics
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: development
+        action: insert
+      # service.namespace is set per-service in the Python SDK:
+      #   "joustmania" for game services (game-coordinator, menu, audio)
+      #   "infrastructure" for platform services (controller-manager, psmove-pairing)
+
+exporters:
+  # OTLP exporter to send traces to Jaeger
+  # Jaeger has OTLP support enabled and accepts OTLP on port 4317
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+  # Prometheus remote write to VictoriaMetrics for high-frequency metrics storage
+  prometheusremotewrite:
+    endpoint: "http://victoria-metrics:8428/api/v1/write"
+    tls:
+      insecure: true
+
+  # Benchmark: push same metrics to Prometheus for TSDB comparison (Issue #575)
+  prometheusremotewrite/prometheus:
+    endpoint: "http://prometheus:9090/api/v1/write"
+    tls:
+      insecure: true
+
+  # Prometheus exporter for metrics (exposed on :8889 for backward compatibility)
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+
+  # Loki exporter for logs
+  loki:
+    endpoint: http://loki:3100/loki/api/v1/push
+    tls:
+      insecure: true
+
+  # OTLP HTTP exporter to Grafana Live Publisher for real-time WebSocket streaming
+  otlphttp/grafana-live:
+    endpoint: "http://grafana-live-publisher:4318"
+    encoding: json
+    tls:
+      insecure: true
+
+  # Debug exporter for local troubleshooting
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    # Traces pipeline
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [otlp/jaeger, debug]
+
+    # Metrics pipeline - uses fast batch processor for sub-second updates
+    # Fan-out to VictoriaMetrics (storage), Prometheus (benchmark), Prometheus exporter, and Grafana Live (streaming)
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch/fast, resource]
+      exporters: [prometheusremotewrite, prometheusremotewrite/prometheus, prometheus, otlphttp/grafana-live]
+
+    # Observability metrics — victoria-metrics, prometheus, otel-collector
+    metrics/observability:
+      receivers: [prometheus/observability]
+      processors: [memory_limiter, resource/observability, batch/fast]
+      exporters: [prometheusremotewrite]
+
+    # Infrastructure metrics — flagd (scraped, not OTLP-pushed)
+    metrics/infrastructure:
+      receivers: [prometheus/infrastructure]
+      processors: [memory_limiter, resource/infrastructure, batch/fast]
+      exporters: [prometheusremotewrite]
+
+    # Host metrics — node-exporter (OS-level)
+    metrics/host:
+      receivers: [prometheus/host]
+      processors: [memory_limiter, resource/host, batch/fast]
+      exporters: [prometheusremotewrite]
+
+    # Logs pipeline
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [loki, debug]
+
+  extensions: [health_check]
+
+extensions:
+  health_check:
+    endpoint: :13133

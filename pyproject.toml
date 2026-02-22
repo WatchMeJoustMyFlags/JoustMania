@@ -47,6 +47,7 @@ members = [
     "services/audio",
     "services/pairing_daemon",
     "tests/integration",
+    "tests/benchmark",
 ]
 
 # pytest configuration (migrated from pytest.ini)
@@ -73,4 +74,5 @@ addopts = "-v"
 exclude = [
     "tools",             # Utility scripts (not part of main codebase)
     "tests/integration", # Integration tests (separate package)
+    "tests/benchmark",   # Benchmark tests (separate package)
 ]
