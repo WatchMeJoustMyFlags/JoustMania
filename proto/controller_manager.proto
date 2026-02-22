@@ -115,6 +115,14 @@ message ButtonEventStreamConfig {
   // Could add filter options in future (e.g., specific buttons, controllers)
 }
 
+// Per-frame controller health counters (accumulated since last stream frame).
+// When all fields are zero, protobuf omits the message entirely (zero wire cost).
+message ControllerHealth {
+  uint32 poll_drops = 1;    // Polls returning None since last stream frame
+  uint32 poll_errors = 2;   // Polls throwing exceptions since last stream frame
+  uint32 led_failures = 3;  // set_output() failures since last stream frame
+}
+
 // Phase 41: Gameplay data streaming (acceleration/gyro only, no buttons)
 message GameplayData {
   string serial = 1;
@@ -128,6 +136,7 @@ message GameplayData {
   // NO button states - use StreamButtonEvents if buttons are needed
   int32 rssi = 9;     // Signal strength in dBm (-100 to 0, 0 = USB/unavailable)
   string name = 10;   // Human-readable controller name (Issue #7)
+  ControllerHealth health = 11;  // Per-frame health counters (#571)
 }
 
 message GameplayDataUpdate {
