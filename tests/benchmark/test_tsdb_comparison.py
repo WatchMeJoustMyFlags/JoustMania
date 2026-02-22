@@ -14,8 +14,10 @@ Environment variables:
 
 import asyncio
 import os
+import statistics
 import time
 import warnings
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import docker
 import httpx
@@ -77,6 +79,11 @@ SAMPLE_DIVERGENCE_THRESHOLD = 0.10
 # Pi 5 scaling: i9-11950H single-thread Geekbench ~1700, Cortex-A76 ~700
 # Ratio ~2.5x. Memory is assumed 1:1 (workload-dependent, not CPU-bound).
 PI5_CPU_SCALING_FACTOR = 2.5
+
+# Concurrent read stress test: simulate N dashboards refreshing simultaneously,
+# repeated for CYCLES refresh intervals.
+CONCURRENT_DASHBOARDS = 3
+READ_STRESS_CYCLES = 10
 
 
 class TSDBClient:
@@ -188,7 +195,55 @@ def _get_container_stats(container_name: str) -> dict:
         return {"cpu_percent": 0.0, "memory_mb": 0.0}
 
 
-@pytest.mark.timeout(180)
+def _run_concurrent_read_stress(
+    clients: list[TSDBClient],
+    queries: list[tuple[str, str]],
+    cycles: int,
+) -> dict[str, list[float]]:
+    """Fire all queries concurrently across multiple TSDB clients.
+
+    Simulates *len(clients)* dashboards each running all *queries*
+    simultaneously, repeated for *cycles* refresh intervals.
+
+    Returns ``{client.name: [latency_ms, ...]}`` with one entry per
+    query per cycle.
+    """
+    latencies: dict[str, list[float]] = {c.name: [] for c in clients}
+
+    def _single_query(client: TSDBClient, promql: str) -> tuple[str, float]:
+        t0 = time.monotonic()
+        client.query(promql)
+        return client.name, (time.monotonic() - t0) * 1000
+
+    for cycle in range(cycles):
+        futures = []
+        with ThreadPoolExecutor(max_workers=len(clients) * len(queries)) as pool:
+            for client in clients:
+                for promql, _desc in queries:
+                    futures.append(pool.submit(_single_query, client, promql))
+
+            for fut in as_completed(futures):
+                try:
+                    name, ms = fut.result()
+                    latencies[name].append(ms)
+                except Exception:
+                    pass
+
+    return latencies
+
+
+def _percentiles(values: list[float]) -> tuple[float, float, float]:
+    """Return (p50, p95, p99) from a list of values."""
+    if not values:
+        return (0.0, 0.0, 0.0)
+    s = sorted(values)
+    p50 = statistics.median(s)
+    p95 = s[int(len(s) * 0.95)]
+    p99 = s[int(len(s) * 0.99)]
+    return (p50, p95, p99)
+
+
+@pytest.mark.timeout(300)
 async def test_tsdb_comparison(docker_compose):
     """Run a JoustFFA game and compare Prometheus vs VictoriaMetrics."""
 
@@ -340,11 +395,78 @@ async def test_tsdb_comparison(docker_compose):
             ]
         )
 
+    # ------------------------------------------------------------------
+    # 8. Concurrent read stress test
+    # ------------------------------------------------------------------
+    # Each "dashboard" is a separate httpx client hitting the same backend.
+    # We create N clients per backend to simulate N dashboards refreshing
+    # all DASHBOARD_QUERIES in parallel, repeated for READ_STRESS_CYCLES.
+    print(
+        f"\nRead stress test: {CONCURRENT_DASHBOARDS} dashboards x "
+        f"{len(DASHBOARD_QUERIES)} queries x {READ_STRESS_CYCLES} cycles ..."
+    )
+
+    prom_clients = [
+        TSDBClient("http://localhost:9090", "Prometheus")
+        for _ in range(CONCURRENT_DASHBOARDS)
+    ]
+    vm_clients = [
+        TSDBClient("http://localhost:8428", "VictoriaMetrics")
+        for _ in range(CONCURRENT_DASHBOARDS)
+    ]
+
+    stress_latencies = _run_concurrent_read_stress(
+        prom_clients + vm_clients, DASHBOARD_QUERIES, READ_STRESS_CYCLES
+    )
+
+    for c in prom_clients + vm_clients:
+        c.close()
+
+    # Aggregate per-backend (all dashboard clients combined)
+    prom_latencies = stress_latencies["Prometheus"]
+    vm_latencies = stress_latencies["VictoriaMetrics"]
+
+    prom_p50, prom_p95, prom_p99 = _percentiles(prom_latencies)
+    vm_p50, vm_p95, vm_p99 = _percentiles(vm_latencies)
+
+    total_queries = len(DASHBOARD_QUERIES) * CONCURRENT_DASHBOARDS * READ_STRESS_CYCLES
+    stress_rows = [
+        ["Total queries", total_queries, total_queries],
+        ["p50 (ms)", f"{prom_p50:.1f}", f"{vm_p50:.1f}"],
+        ["p95 (ms)", f"{prom_p95:.1f}", f"{vm_p95:.1f}"],
+        ["p99 (ms)", f"{prom_p99:.1f}", f"{vm_p99:.1f}"],
+        [
+            "Errors",
+            total_queries - len(prom_latencies),
+            total_queries - len(vm_latencies),
+        ],
+    ]
+
+    # Snapshot resource usage under read load
+    prom_read_stats = _get_container_stats("joustmania-prometheus")
+    vm_read_stats = _get_container_stats("joustmania-victoria-metrics")
+
+    read_resource_rows = [
+        [
+            "CPU % (under read load)",
+            prom_read_stats["cpu_percent"],
+            vm_read_stats["cpu_percent"],
+        ],
+        [
+            "CPU % (Pi 5 est.)",
+            round(prom_read_stats["cpu_percent"] * PI5_CPU_SCALING_FACTOR, 2),
+            round(vm_read_stats["cpu_percent"] * PI5_CPU_SCALING_FACTOR, 2),
+        ],
+        ["Memory (MB)", prom_read_stats["memory_mb"], vm_read_stats["memory_mb"]],
+    ]
+
+    print("Read stress test complete")
+
     prom.close()
     vm.close()
 
     # ------------------------------------------------------------------
-    # 8. Print results
+    # 9. Print results
     # ------------------------------------------------------------------
     print("\n" + "=" * 80)
     print("TSDB Benchmark Results: Prometheus vs VictoriaMetrics")
@@ -406,8 +528,29 @@ async def test_tsdb_comparison(docker_compose):
         )
     )
 
+    print(
+        f"\nConcurrent Read Stress ({CONCURRENT_DASHBOARDS} dashboards x "
+        f"{READ_STRESS_CYCLES} cycles):"
+    )
+    print(
+        tabulate(
+            stress_rows,
+            headers=["Metric", "Prometheus", "VictoriaMetrics"],
+            tablefmt="grid",
+        )
+    )
+
+    print("\nResource Usage Under Read Load:")
+    print(
+        tabulate(
+            read_resource_rows,
+            headers=["Resource", "Prometheus", "VictoriaMetrics"],
+            tablefmt="grid",
+        )
+    )
+
     # ------------------------------------------------------------------
-    # 9. Warn (do NOT assert) on divergence / query errors
+    # 10. Warn (do NOT assert) on divergence / query errors
     # ------------------------------------------------------------------
     if divergence_warnings:
         msg = (
