@@ -306,6 +306,7 @@ class DiscoveryLoop:
                     connected_serials=list(self.tracked_controllers.keys()),
                 )
                 metrics.controller_disconnect_total.labels(serial=serial).inc()
+                metrics.controller_connected.labels(serial=serial).set(0)
 
             # Check for new controllers
             for serial in connected_serials:

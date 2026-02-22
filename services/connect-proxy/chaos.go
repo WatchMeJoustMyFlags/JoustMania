@@ -162,10 +162,13 @@ func buildFractionalTargeting(variant string, fraction int) interface{} {
 	if fraction >= 100 {
 		return nil
 	}
-	// flagd fractional operator: deterministic bucketing by targetingKey
+	// flagd fractional operator: deterministic bucketing by targetingKey (serial)
 	// https://flagd.dev/reference/custom-operations/fractional-operation/
+	// First element selects the bucketing value — the controller serial passed
+	// as targetingKey in the ChaosAdapter's EvaluationContext.
 	return map[string]interface{}{
 		"fractional": []interface{}{
+			map[string]interface{}{"var": "targetingKey"},
 			[]interface{}{variant, fraction},
 			[]interface{}{"none", 100 - fraction},
 		},
