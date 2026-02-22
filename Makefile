@@ -227,6 +227,8 @@ test-debug: clean-test-venv
 		pytest tests/integration/ -v -s $(if $(TEST),-k "$(TEST)")
 
 # TSDB benchmark: Prometheus vs VictoriaMetrics comparison (Issue #575)
+# Use BENCHMARK_CONTROLLERS=N to scale (default 4, e.g. 18 or 36)
+# Use BENCHMARK_DURATION=N to change steady-state seconds (default 30)
 .PHONY: benchmark-tsdb
 benchmark-tsdb: clean-test-venv
 	$(TEST_ENV) uv run --package joustmania-benchmark-tests \

@@ -6,9 +6,14 @@ identical metric workloads pushed via OTEL Collector remote_write.
 
 This test is informational only -- no hard assertions on benchmark results.
 Differences >10% in sample counts trigger warnings for investigation.
+
+Environment variables:
+    BENCHMARK_CONTROLLERS: Number of mock controllers (default 4, max 36)
+    BENCHMARK_DURATION: Steady-state duration in seconds (default 30)
 """
 
 import asyncio
+import os
 import time
 import warnings
 
@@ -34,8 +39,9 @@ BENCHMARK_METRICS = [
     "game_active_players",
 ]
 
-# Steady-state game duration in seconds
-GAME_DURATION_SECONDS = 30
+# Configurable via environment
+CONTROLLER_COUNT = int(os.getenv("BENCHMARK_CONTROLLERS", "4"))
+GAME_DURATION_SECONDS = int(os.getenv("BENCHMARK_DURATION", "30"))
 
 # Maximum acceptable sample count divergence (fraction)
 SAMPLE_DIVERGENCE_THRESHOLD = 0.10
@@ -148,8 +154,8 @@ async def test_tsdb_comparison(docker_compose):
     # ------------------------------------------------------------------
     # 1. Set up controllers and start a game
     # ------------------------------------------------------------------
-    serials = await setup_mock_controllers(docker_compose, count=4)
-    print(f"\nControllers ready: {serials}")
+    serials = await setup_mock_controllers(docker_compose, count=CONTROLLER_COUNT)
+    print(f"\nControllers ready: {len(serials)} controllers ({serials[:3]}{'...' if len(serials) > 3 else ''})")
 
     game_client, game_channel = await get_game_client(docker_compose)
 
@@ -254,7 +260,7 @@ async def test_tsdb_comparison(docker_compose):
     # ------------------------------------------------------------------
     print("\n" + "=" * 80)
     print("TSDB Benchmark Results: Prometheus vs VictoriaMetrics")
-    print(f"Steady-state window: {GAME_DURATION_SECONDS}s, 4 controllers, JoustFFA")
+    print(f"Steady-state window: {GAME_DURATION_SECONDS}s, {CONTROLLER_COUNT} controllers, JoustFFA")
     print("=" * 80)
 
     print("\nMetric Samples:")
