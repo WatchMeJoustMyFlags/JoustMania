@@ -164,8 +164,17 @@ func buildFractionalTargeting(variant string, fraction int) interface{} {
 	}
 	// flagd fractional operator: deterministic bucketing by targetingKey
 	// https://flagd.dev/reference/custom-operations/fractional-operation/
+	// First element is the bucketing value — concatenate flagKey + targetingKey
+	// so each controller serial hashes to a different bucket.
+	// Without this, flagd hashes a constant and all controllers get the same variant.
 	return map[string]interface{}{
 		"fractional": []interface{}{
+			map[string]interface{}{
+				"cat": []interface{}{
+					map[string]interface{}{"var": "$flagd.flagKey"},
+					map[string]interface{}{"var": "targetingKey"},
+				},
+			},
 			[]interface{}{variant, fraction},
 			[]interface{}{"none", 100 - fraction},
 		},

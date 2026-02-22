@@ -365,7 +365,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(controller_info, serial)",
+        "definition": "label_values(controller_accel_magnitude, serial)",
         "hide": 0,
         "includeAll": true,
         "label": "Controller",
@@ -373,7 +373,7 @@
         "name": "serial",
         "options": [],
         "query": {
-          "query": "label_values(controller_info, serial)",
+          "query": "label_values(controller_accel_magnitude, serial)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
