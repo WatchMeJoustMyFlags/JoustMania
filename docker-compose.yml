@@ -100,6 +100,7 @@ services:
   jaeger:
     image: jaegertracing/jaeger:2.14.1
     container_name: joustmania-jaeger
+    user: "0"  # Run as root to avoid permission issues with badger volume (default UID 10001 can't write)
     # All ports exposed only within Docker network (envoy proxies to it)
     expose:
       - "16686"  # Jaeger UI
