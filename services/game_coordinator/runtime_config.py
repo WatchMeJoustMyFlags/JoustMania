@@ -70,6 +70,11 @@ class GamePerformanceConfig:
     # Sensitivity
     sensitivity_mode: str = "MEDIUM"  # SLOW, MEDIUM, FAST
 
+    # Poll drop threshold: per-frame drops at or below this value are considered
+    # normal USB/Bluetooth noise and won't open a controller_poll_degraded span.
+    # At 1000Hz USB polling, 1-2 drops per 16.67ms frame is typical.
+    poll_drop_threshold: int = 3
+
 
 class RuntimeConfigManager:
     """
@@ -194,6 +199,18 @@ class RuntimeConfigManager:
 
                 # Track flag evaluation
                 metrics.flag_evaluations_total.labels(flag_key="sensitivity_mode").inc()
+
+                # Poll drop threshold (per-frame drops below this are normal noise)
+                old_threshold = self.config.poll_drop_threshold
+                new_threshold = self.flag_client.get_integer_value(
+                    "poll_drop_threshold", self.config.poll_drop_threshold, EvaluationContext()
+                )
+                if new_threshold != old_threshold:
+                    logger.info(f"Config updated: poll_drop_threshold {old_threshold} -> {new_threshold}")
+                    self.config.poll_drop_threshold = new_threshold
+                    metrics.config_changes_total.labels(parameter="poll_drop_threshold").inc()
+
+                metrics.flag_evaluations_total.labels(flag_key="poll_drop_threshold").inc()
 
                 # Update current config gauges
                 metrics.current_update_frequency_hz.set(self.config.update_frequency_hz)
