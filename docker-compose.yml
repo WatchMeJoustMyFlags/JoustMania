@@ -100,6 +100,7 @@ services:
   jaeger:
     image: jaegertracing/jaeger:2.14.1
     container_name: joustmania-jaeger
+    user: "0"  # Run as root to avoid permission issues with badger volume (default UID 10001 can't write)
     # All ports exposed only within Docker network (envoy proxies to it)
     expose:
       - "16686"  # Jaeger UI
@@ -107,6 +108,7 @@ services:
       - "4318"   # OTLP HTTP
     volumes:
       - ./services/jaeger/config.yaml:/etc/jaeger/config.yaml:ro
+      - jaeger-data:/badger
     command: ["--config", "/etc/jaeger/config.yaml"]
     networks:
       - joustmania
@@ -689,6 +691,7 @@ volumes:
   victoria-metrics-data:
   grafana-data:
   loki-data:
+  jaeger-data:
   controller-names:
   psmoveapi-data:
   pyroscope-data:
