@@ -109,7 +109,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "controller_accel_magnitude{serial=~\"$serial\"}",
+          "expr": "controller_accel_magnitude{serial=~\"$serial\"} * on(serial) controller_connected{serial=~\"$serial\"}",
           "instant": false,
           "legendFormat": "{{serial}}",
           "range": true,
