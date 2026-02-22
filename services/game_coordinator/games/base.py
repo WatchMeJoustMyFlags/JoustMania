@@ -858,13 +858,19 @@ class BaseGameMode(ABC):
             controller_state: GameplayData protobuf (may have .health field)
         """
         health = controller_state.health if controller_state.HasField("health") else None
-        has_poll_issues = health and (health.poll_drops or health.poll_errors)
+        config = get_config_manager().get_config()
+        threshold = config.poll_drop_threshold
+        has_poll_issues = health and (health.poll_drops > threshold or health.poll_errors)
         has_led_issues = health and health.led_failures
 
-        # --- Poll degradation span ---
-        if has_poll_issues:
+        # Always accumulate totals for final summary, even below threshold
+        if health and health.poll_drops:
             player.total_poll_drops += health.poll_drops
+        if health and health.poll_errors:
             player.total_poll_errors += health.poll_errors
+
+        # --- Poll degradation span (only for drops exceeding threshold) ---
+        if has_poll_issues:
             # Open child span on transition healthy → degraded
             if player._poll_degraded_span is None and player.span:
                 ctx = trace.set_span_in_context(player.span)
@@ -884,8 +890,11 @@ class BaseGameMode(ABC):
         else:
             # Close child span on transition degraded → healthy
             if player._poll_degraded_span is not None:
+                from opentelemetry.trace import Status, StatusCode
+
                 player._poll_degraded_span.set_attribute("health.total_poll_drops", player.total_poll_drops)
                 player._poll_degraded_span.set_attribute("health.total_poll_errors", player.total_poll_errors)
+                player._poll_degraded_span.set_status(Status(StatusCode.ERROR, "poll degradation detected"))
                 player._poll_degraded_span.end()
                 player._poll_degraded_span = None
 
@@ -1355,8 +1364,11 @@ class BaseGameMode(ABC):
 
         # Close any open health degradation spans
         if player._poll_degraded_span is not None:
+            from opentelemetry.trace import Status, StatusCode
+
             player._poll_degraded_span.set_attribute("health.total_poll_drops", player.total_poll_drops)
             player._poll_degraded_span.set_attribute("health.total_poll_errors", player.total_poll_errors)
+            player._poll_degraded_span.set_status(Status(StatusCode.ERROR, "poll degradation detected"))
             player._poll_degraded_span.end()
             player._poll_degraded_span = None
         if player._led_degraded_span is not None:

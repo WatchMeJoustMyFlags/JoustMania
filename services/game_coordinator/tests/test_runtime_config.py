@@ -33,8 +33,9 @@ def test_runtime_config_flag_updates(mock_get_client, mock_add_handler):
     mock_get_client.return_value = mock_client
 
     # Configure mock evaluations
-    # get_integer_value is called for: update_frequency_hz, countdown_phase_duration_ms, winner_rainbow_duration_ms
-    mock_client.get_integer_value.side_effect = [30, 500, 1000]
+    # get_integer_value is called for: update_frequency_hz, poll_drop_threshold,
+    # countdown_phase_duration_ms, winner_rainbow_duration_ms
+    mock_client.get_integer_value.side_effect = [30, 3, 500, 1000]
     # get_string_value is called for: sensitivity_mode
     mock_client.get_string_value.return_value = "HIGH"
 
@@ -47,6 +48,7 @@ def test_runtime_config_flag_updates(mock_get_client, mock_add_handler):
     # Verify mock was called with correct keys and EvaluationContext
     mock_client.get_integer_value.assert_any_call("update_frequency_hz", 60, ANY)
     mock_client.get_string_value.assert_any_call("sensitivity_mode", "MEDIUM", ANY)
+    mock_client.get_integer_value.assert_any_call("poll_drop_threshold", 3, ANY)
     mock_client.get_integer_value.assert_any_call("countdown_phase_duration_ms", 750, ANY)
     mock_client.get_integer_value.assert_any_call("winner_rainbow_duration_ms", 3000, ANY)
 
@@ -65,7 +67,7 @@ def test_countdown_skip_via_flag(mock_get_client, _mock_add_handler):
     mock_get_client.return_value = mock_client
 
     # Return 0 for countdown_phase_duration_ms (the "skip" variant)
-    mock_client.get_integer_value.side_effect = [60, 0, 3000]
+    mock_client.get_integer_value.side_effect = [60, 3, 0, 3000]
     mock_client.get_string_value.return_value = "MEDIUM"
 
     manager = RuntimeConfigManager()
@@ -100,7 +102,7 @@ def test_on_flags_changed_event(mock_get_client, _mock_add_handler, caplog):
     mock_get_client.return_value = mock_client
 
     # Initial values
-    mock_client.get_integer_value.side_effect = [60, 750, 3000]
+    mock_client.get_integer_value.side_effect = [60, 3, 750, 3000]
     mock_client.get_string_value.return_value = "MEDIUM"
 
     manager = RuntimeConfigManager()
@@ -109,7 +111,7 @@ def test_on_flags_changed_event(mock_get_client, _mock_add_handler, caplog):
     assert config.countdown_phase_duration_ms == 750
 
     # Simulate flag change
-    mock_client.get_integer_value.side_effect = [30, 500, 1000]
+    mock_client.get_integer_value.side_effect = [30, 3, 500, 1000]
     mock_client.get_string_value.return_value = "HIGH"
 
     # Trigger event handler
@@ -134,7 +136,7 @@ def test_on_flags_changed_no_flag_list(mock_get_client, _mock_add_handler, caplo
     """Test that _on_flags_changed works when flags_changed is empty."""
     mock_client = MagicMock()
     mock_get_client.return_value = mock_client
-    mock_client.get_integer_value.side_effect = [45, 750, 3000]
+    mock_client.get_integer_value.side_effect = [45, 3, 750, 3000]
     mock_client.get_string_value.return_value = "LOW"
 
     manager = RuntimeConfigManager()
@@ -144,7 +146,7 @@ def test_on_flags_changed_no_flag_list(mock_get_client, _mock_add_handler, caplo
     mock_event.flags_changed = []
 
     # Reset side_effect for second refresh
-    mock_client.get_integer_value.side_effect = [45, 750, 3000]
+    mock_client.get_integer_value.side_effect = [45, 3, 750, 3000]
     mock_client.get_string_value.return_value = "LOW"
 
     with caplog.at_level(logging.INFO):
@@ -235,8 +237,9 @@ def test_refresh_from_flags_with_metrics(mock_get_client, _mock_add_handler):
     mock_get_client.return_value = mock_client
 
     # First call returns defaults, second call returns changed values
-    # Each refresh evaluates: update_frequency_hz, countdown_phase_duration_ms, winner_rainbow_duration_ms
-    mock_client.get_integer_value.side_effect = [60, 750, 3000, 45, 500, 1000]
+    # Each refresh evaluates: update_frequency_hz, poll_drop_threshold,
+    # countdown_phase_duration_ms, winner_rainbow_duration_ms
+    mock_client.get_integer_value.side_effect = [60, 3, 750, 3000, 45, 5, 500, 1000]
     mock_client.get_string_value.side_effect = ["MEDIUM", "HIGH"]
 
     with (
@@ -266,14 +269,14 @@ def test_on_flags_changed_with_metrics(mock_get_client, _mock_add_handler):
     """Test that _on_flags_changed increments metrics."""
     mock_client = MagicMock()
     mock_get_client.return_value = mock_client
-    mock_client.get_integer_value.side_effect = [60, 750, 3000]
+    mock_client.get_integer_value.side_effect = [60, 3, 750, 3000]
     mock_client.get_string_value.return_value = "MEDIUM"
 
     with patch("services.game_coordinator.metrics.flag_configuration_changes_total") as mock_counter:
         manager = RuntimeConfigManager()
 
         # Reset for next refresh
-        mock_client.get_integer_value.side_effect = [60, 750, 3000]
+        mock_client.get_integer_value.side_effect = [60, 3, 750, 3000]
 
         # Trigger event
         mock_event = MagicMock()
@@ -300,7 +303,7 @@ def test_game_settings_flags_read_on_init(mock_get_client, _mock_add_handler):
     mock_client = MagicMock()
     mock_get_client.return_value = mock_client
 
-    mock_client.get_integer_value.side_effect = [60, 500, 5000]
+    mock_client.get_integer_value.side_effect = [60, 3, 500, 5000]
     mock_client.get_string_value.return_value = "MEDIUM"
 
     manager = RuntimeConfigManager()
@@ -317,7 +320,7 @@ def test_game_settings_client_initialized(mock_get_client, _mock_add_handler):
     """Test that game_settings_client is initialized alongside performance client."""
     mock_client = MagicMock()
     mock_get_client.return_value = mock_client
-    mock_client.get_integer_value.side_effect = [60, 750, 3000]
+    mock_client.get_integer_value.side_effect = [60, 3, 750, 3000]
     mock_client.get_string_value.return_value = "MEDIUM"
 
     manager = RuntimeConfigManager()

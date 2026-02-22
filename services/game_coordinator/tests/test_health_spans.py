@@ -77,15 +77,17 @@ def _make_gameplay_data(serial="AA:BB:CC", poll_drops=0, poll_errors=0, led_fail
 class TestProcessHealthPollDegradation:
     """Tests for poll degradation child span lifecycle."""
 
+    @patch("services.game_coordinator.games.base.get_config_manager")
     @patch("services.game_coordinator.games.base.tracer")
-    def test_opens_span_on_first_poll_drops(self, mock_tracer):
-        """First frame with poll_drops should open a controller_poll_degraded span."""
+    def test_opens_span_on_first_poll_drops(self, mock_tracer, mock_get_config):
+        """First frame with poll_drops above threshold should open a controller_poll_degraded span."""
+        mock_get_config.return_value.get_config.return_value.poll_drop_threshold = 3
         game = _make_game()
         player = _make_player()
         mock_child_span = MagicMock()
         mock_tracer.start_span.return_value = mock_child_span
 
-        gd = _make_gameplay_data(poll_drops=3)
+        gd = _make_gameplay_data(poll_drops=5)
         game._process_health(player, "AA:BB:CC", gd)
 
         mock_tracer.start_span.assert_called_once_with(
@@ -94,44 +96,48 @@ class TestProcessHealthPollDegradation:
             attributes={"player.serial": "AA:BB:CC"},
         )
         assert player._poll_degraded_span is mock_child_span
-        assert player.total_poll_drops == 3
+        assert player.total_poll_drops == 5
 
+    @patch("services.game_coordinator.games.base.get_config_manager")
     @patch("services.game_coordinator.games.base.tracer")
-    def test_adds_event_per_frame(self, mock_tracer):
+    def test_adds_event_per_frame(self, mock_tracer, mock_get_config):
         """Each frame with issues should add an event to the child span."""
+        mock_get_config.return_value.get_config.return_value.poll_drop_threshold = 3
         game = _make_game()
         player = _make_player()
         mock_child_span = MagicMock()
         mock_tracer.start_span.return_value = mock_child_span
 
-        # Frame 1: opens span + adds event
-        gd1 = _make_gameplay_data(poll_drops=3)
+        # Frame 1: opens span + adds event (above threshold)
+        gd1 = _make_gameplay_data(poll_drops=5)
         game._process_health(player, "AA:BB:CC", gd1)
 
         # Frame 2: should add another event (span already open)
-        gd2 = _make_gameplay_data(poll_drops=5, poll_errors=1)
+        gd2 = _make_gameplay_data(poll_drops=6, poll_errors=1)
         game._process_health(player, "AA:BB:CC", gd2)
 
         # Should only open span once
         assert mock_tracer.start_span.call_count == 1
         # Should have two events
         assert mock_child_span.add_event.call_count == 2
-        mock_child_span.add_event.assert_any_call("poll_issues", {"poll_drops": 3})
-        mock_child_span.add_event.assert_any_call("poll_issues", {"poll_drops": 5, "poll_errors": 1})
+        mock_child_span.add_event.assert_any_call("poll_issues", {"poll_drops": 5})
+        mock_child_span.add_event.assert_any_call("poll_issues", {"poll_drops": 6, "poll_errors": 1})
 
-        assert player.total_poll_drops == 8
+        assert player.total_poll_drops == 11
         assert player.total_poll_errors == 1
 
+    @patch("services.game_coordinator.games.base.get_config_manager")
     @patch("services.game_coordinator.games.base.tracer")
-    def test_closes_span_on_recovery(self, mock_tracer):
+    def test_closes_span_on_recovery(self, mock_tracer, mock_get_config):
         """Healthy frame after degradation should close the child span."""
+        mock_get_config.return_value.get_config.return_value.poll_drop_threshold = 3
         game = _make_game()
         player = _make_player()
         mock_child_span = MagicMock()
         mock_tracer.start_span.return_value = mock_child_span
 
-        # Frame 1: degraded
-        gd1 = _make_gameplay_data(poll_drops=3)
+        # Frame 1: degraded (above threshold)
+        gd1 = _make_gameplay_data(poll_drops=5)
         game._process_health(player, "AA:BB:CC", gd1)
         assert player._poll_degraded_span is not None
 
@@ -140,31 +146,54 @@ class TestProcessHealthPollDegradation:
         game._process_health(player, "AA:BB:CC", gd2)
 
         assert player._poll_degraded_span is None
-        mock_child_span.set_attribute.assert_any_call("health.total_poll_drops", 3)
+        mock_child_span.set_attribute.assert_any_call("health.total_poll_drops", 5)
         mock_child_span.set_attribute.assert_any_call("health.total_poll_errors", 0)
+        mock_child_span.set_status.assert_called_once()
         mock_child_span.end.assert_called_once()
 
+    @patch("services.game_coordinator.games.base.get_config_manager")
     @patch("services.game_coordinator.games.base.tracer")
-    def test_no_span_without_player_span(self, mock_tracer):
+    def test_no_span_without_player_span(self, mock_tracer, mock_get_config):
         """No child span should be created if player has no parent span."""
+        mock_get_config.return_value.get_config.return_value.poll_drop_threshold = 3
         game = _make_game()
         player = _make_player(with_span=False)
 
-        gd = _make_gameplay_data(poll_drops=3)
+        gd = _make_gameplay_data(poll_drops=5)
         game._process_health(player, "AA:BB:CC", gd)
 
         mock_tracer.start_span.assert_not_called()
         assert player._poll_degraded_span is None
         # But counters should still accumulate
-        assert player.total_poll_drops == 3
+        assert player.total_poll_drops == 5
+
+    @patch("services.game_coordinator.games.base.get_config_manager")
+    @patch("services.game_coordinator.games.base.tracer")
+    def test_drops_at_threshold_no_span(self, mock_tracer, mock_get_config):
+        """Poll drops at or below threshold should NOT open a degraded span."""
+        mock_get_config.return_value.get_config.return_value.poll_drop_threshold = 3
+        game = _make_game()
+        player = _make_player()
+
+        # 1-2 drops per frame is normal Bluetooth noise
+        for drops in [1, 2, 3]:
+            gd = _make_gameplay_data(poll_drops=drops)
+            game._process_health(player, "AA:BB:CC", gd)
+
+        mock_tracer.start_span.assert_not_called()
+        assert player._poll_degraded_span is None
+        # Counters should still accumulate
+        assert player.total_poll_drops == 6
 
 
 class TestProcessHealthLedDegradation:
     """Tests for LED degradation child span lifecycle."""
 
+    @patch("services.game_coordinator.games.base.get_config_manager")
     @patch("services.game_coordinator.games.base.tracer")
-    def test_opens_led_span_on_failures(self, mock_tracer):
+    def test_opens_led_span_on_failures(self, mock_tracer, mock_get_config):
         """LED failures should open a controller_led_degraded span."""
+        mock_get_config.return_value.get_config.return_value.poll_drop_threshold = 3
         game = _make_game()
         player = _make_player()
         mock_child_span = MagicMock()
@@ -181,9 +210,11 @@ class TestProcessHealthLedDegradation:
         assert player._led_degraded_span is mock_child_span
         assert player.total_led_failures == 2
 
+    @patch("services.game_coordinator.games.base.get_config_manager")
     @patch("services.game_coordinator.games.base.tracer")
-    def test_closes_led_span_on_recovery(self, mock_tracer):
+    def test_closes_led_span_on_recovery(self, mock_tracer, mock_get_config):
         """Healthy frame should close LED degradation span."""
+        mock_get_config.return_value.get_config.return_value.poll_drop_threshold = 3
         game = _make_game()
         player = _make_player()
         mock_child_span = MagicMock()
@@ -205,25 +236,29 @@ class TestProcessHealthLedDegradation:
 class TestProcessHealthCombined:
     """Tests for combined poll + LED degradation."""
 
+    @patch("services.game_coordinator.games.base.get_config_manager")
     @patch("services.game_coordinator.games.base.tracer")
-    def test_both_poll_and_led_spans(self, mock_tracer):
+    def test_both_poll_and_led_spans(self, mock_tracer, mock_get_config):
         """Both poll and LED issues should open separate child spans."""
+        mock_get_config.return_value.get_config.return_value.poll_drop_threshold = 3
         game = _make_game()
         player = _make_player()
         mock_poll_span = MagicMock(name="poll_span")
         mock_led_span = MagicMock(name="led_span")
         mock_tracer.start_span.side_effect = [mock_poll_span, mock_led_span]
 
-        gd = _make_gameplay_data(poll_drops=3, led_failures=2)
+        gd = _make_gameplay_data(poll_drops=5, led_failures=2)
         game._process_health(player, "AA:BB:CC", gd)
 
         assert mock_tracer.start_span.call_count == 2
         assert player._poll_degraded_span is mock_poll_span
         assert player._led_degraded_span is mock_led_span
 
+    @patch("services.game_coordinator.games.base.get_config_manager")
     @patch("services.game_coordinator.games.base.tracer")
-    def test_healthy_game_no_spans(self, mock_tracer):
+    def test_healthy_game_no_spans(self, mock_tracer, mock_get_config):
         """Healthy data should create no child spans."""
+        mock_get_config.return_value.get_config.return_value.poll_drop_threshold = 3
         game = _make_game()
         player = _make_player()
 
@@ -257,9 +292,10 @@ class TestFinalizePlayerHealth:
 
         game._finalize_player_health(player)
 
-        # Health spans should be closed
+        # Health spans should be closed with error status
         mock_poll_span.set_attribute.assert_any_call("health.total_poll_drops", 42)
         mock_poll_span.set_attribute.assert_any_call("health.total_poll_errors", 5)
+        mock_poll_span.set_status.assert_called_once()
         mock_poll_span.end.assert_called_once()
 
         mock_led_span.set_attribute.assert_called_with("health.total_led_failures", 3)

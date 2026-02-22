@@ -146,6 +146,16 @@
       "defaultVariant": "hidapi",
       "targeting": {}
     },
+    "poll_drop_threshold": {
+      "state": "ENABLED",
+      "variants": {
+        "off": 0,
+        "low": 2,
+        "default": 3,
+        "high": 5
+      },
+      "defaultVariant": "default"
+    },
     "chaos_fault_type": {
       "state": "ENABLED",
       "variants": {
