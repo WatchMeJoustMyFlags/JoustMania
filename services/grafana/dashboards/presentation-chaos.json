@@ -262,9 +262,9 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "rate(controller_chaos_faults_injected_total{serial=~\"$serial\"}[30s])",
+          "expr": "sum by(fault) (rate(controller_chaos_faults_injected_total[30s]))",
           "instant": false,
-          "legendFormat": "{{fault_type}}",
+          "legendFormat": "{{fault}}",
           "range": true,
           "refId": "A"
         }
