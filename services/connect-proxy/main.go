@@ -91,6 +91,9 @@ func main() {
 	)
 	mux.Handle(menuPath, menuHandler)
 
+	// Chaos fault injection endpoints (for presentation demos)
+	registerChaosHandlers(mux)
+
 	// Health check endpoint
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
