@@ -134,6 +134,8 @@ class Player:
     # 1.0 = default, >1.0 = more sensitive (easier to die), <1.0 = less sensitive (harder to die)
     # Thresholds are divided by this factor: higher factor = lower threshold = easier to trigger
     sensitivity_factor: float = 1.0
+    # Per-player countdown span (created before countdown, ended after)
+    _countdown_span: trace.Span | None = None
     # Health tracking (#571: controller health on player_lifecycle spans)
     total_poll_drops: int = 0
     total_poll_errors: int = 0
@@ -631,9 +633,7 @@ class BaseGameMode(ABC):
         logger.info("Starting game loop...")
 
         try:
-            # Create player lifecycle spans (subclass-specific: flat vs hierarchical)
-            # Pass None to use current active span context (we're inside gameplay_phase)
-            self._create_player_spans(None)
+            # Player spans already created in run() before countdown
 
             # Get runtime config for frame timing calculations
             config = get_config_manager().get_config()
@@ -1169,8 +1169,8 @@ class BaseGameMode(ABC):
         Main entry point to run the game (Template Method).
 
         Orchestrates all game phases with consistent span hierarchy:
-        1. initialization_phase (contains color_assignment, countdown_phase)
-        2. gameplay_phase
+        1. initialization_phase (setup: players, colors, stream, music)
+        2. gameplay_phase (player_lifecycle spans with countdown_phase children)
         3. teardown_phase
 
         Phase spans are automatically children of the current game span.
@@ -1181,7 +1181,7 @@ class BaseGameMode(ABC):
             self.running = True  # Set early to allow force_end during countdown
             await self.event_publisher(GameEvent.GAME_STARTING, {"game_id": self.game_id})
 
-            # Phase 1: Initialization (includes all pre-gameplay setup)
+            # Phase 1: Initialization (setup only — no countdown)
             with tracer.start_as_current_span("initialization_phase") as init_span:
                 init_span.set_attribute("game.id", self.game_id)
                 init_span.set_attribute(GAME_MODE_ATTR, self.get_game_name())
@@ -1219,16 +1219,6 @@ class BaseGameMode(ABC):
                 # OGG decode happens during countdown, so music is ready instantly after.
                 await self._start_game_music(volume=COUNTDOWN_MUSIC_VOLUME)
 
-                # Countdown phase (child of initialization_phase)
-                with tracer.start_as_current_span("countdown_phase"):
-                    await self._countdown()
-
-                # Ramp music volume up to game level after countdown
-                if self.audio_client:
-                    from proto import audio_pb2
-
-                    await self.audio_client.SetVolume(audio_pb2.SetVolumeRequest(volume=GAME_VOLUME))
-
             # Game starts
             self.state = GameState.RUNNING
             # Note: self.start_time is set in _game_loop when first data is received
@@ -1237,11 +1227,40 @@ class BaseGameMode(ABC):
                 {"game_id": self.game_id, "player_count": len(self.players)},
             )
 
-            # Phase 2: Gameplay (with music loop running alongside)
+            # Phase 2: Gameplay (player spans created before countdown)
             with tracer.start_as_current_span("gameplay_phase") as gameplay_span:
                 # Store span reference and context for background tasks
                 self.gameplay_span = gameplay_span
                 self.gameplay_span_context = otel_context.get_current()
+
+                # Create player lifecycle spans BEFORE countdown
+                # so countdown_phase appears as a child of each player_lifecycle
+                self._create_player_spans(None)
+
+                # Open per-player countdown child spans
+                for player in self.players.values():
+                    if player.span:
+                        ctx = trace.set_span_in_context(player.span)
+                        player._countdown_span = tracer.start_span(
+                            "countdown_phase",
+                            context=ctx,
+                            attributes={"player.serial": player.serial},
+                        )
+
+                # Run countdown (all per-player countdown spans are open)
+                await self._countdown()
+
+                # Close per-player countdown spans
+                for player in self.players.values():
+                    if player._countdown_span:
+                        player._countdown_span.end()
+                        player._countdown_span = None
+
+                # Ramp music volume up to game level after countdown
+                if self.audio_client:
+                    from proto import audio_pb2
+
+                    await self.audio_client.SetVolume(audio_pb2.SetVolumeRequest(volume=GAME_VOLUME))
 
                 # Start music loop as background task
                 self.music_loop_task = asyncio.create_task(self._music_loop())
