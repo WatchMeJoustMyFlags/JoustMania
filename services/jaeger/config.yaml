@@ -20,7 +20,7 @@ extensions:
             keys: /badger/key
             values: /badger/value
           ttl:
-            span_storage: 168h  # 7 days
+            spans: 168h  # 7 days
   jaeger_query:
     base_path: /jaeger
     storage:
