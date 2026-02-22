@@ -403,7 +403,16 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             )
             gameplay_data.append(gd)
 
-        return controller_manager_pb2.GameplayDataUpdate(controllers=gameplay_data, timestamp=int(time.time() * 1000))
+        # Drain disconnect events accumulated since last frame (#580)
+        disconnect_events = [
+            controller_manager_pb2.DisconnectEvent(serial=s) for s in self.discovery_loop.drain_disconnects()
+        ]
+
+        return controller_manager_pb2.GameplayDataUpdate(
+            controllers=gameplay_data,
+            timestamp=int(time.time() * 1000),
+            disconnects=disconnect_events,
+        )
 
     async def StreamGameplayData(self, request_iterator, context):
         """

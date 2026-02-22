@@ -513,10 +513,12 @@ class BaseGameMode(ABC):
 
     async def _process_gameplay_update(self, gameplay_update) -> bool:
         """
-        Process a single gameplay update: run each controller through death detection.
+        Process a single gameplay update: handle disconnects then run death detection.
 
-        Checks win condition after each controller to prevent simultaneous deaths,
-        ensuring the last player standing can never die.
+        Disconnect events are processed first so that a disconnected player is
+        killed before any remaining controller data is evaluated. Checks win
+        condition after each disconnect and each controller to prevent
+        simultaneous deaths, ensuring the last player standing can never die.
 
         Args:
             gameplay_update: GameplayDataUpdate protobuf with controller data
@@ -524,12 +526,43 @@ class BaseGameMode(ABC):
         Returns:
             True if game is over (win condition met), False otherwise
         """
+        # Handle disconnects first (#580)
+        for disconnect in gameplay_update.disconnects:
+            await self._handle_disconnect(disconnect.serial)
+            if await self._check_win_condition():
+                return True
+
         for gameplay_data in gameplay_update.controllers:
             await self._process_controller_state(gameplay_data)
 
             if await self._check_win_condition():
                 return True
         return False
+
+    async def _handle_disconnect(self, serial: str) -> None:
+        """Handle a controller disconnect by killing the player.
+
+        Uses the existing _kill_player pipeline so that death events, audio
+        feedback, metrics, and spans all fire correctly.
+
+        Args:
+            serial: Serial number of the disconnected controller.
+        """
+        player = self.players.get(serial)
+        if not player or not player.alive:
+            return
+
+        logger.info(f"Player disconnected during game: {serial}")
+
+        # Record disconnect on the player's span before kill closes it
+        if player.span:
+            player.span.add_event(
+                "player_disconnected",
+                attributes={"reason": "controller_disconnect"},
+            )
+
+        # Kill the player using the standard pipeline (accel_mag=0.0 — no motion)
+        await self._kill_player(serial, accel_mag=0.0)
 
     async def _send_alive_filter_update(self, last_alive_serials: set[str]) -> set[str]:
         """

@@ -133,6 +133,9 @@ class DiscoveryLoop:
         self._poll_drops: dict[str, int] = {}
         self._poll_errors: dict[str, int] = {}
 
+        # Gameplay disconnect events: accumulated between stream frames, drained by servicer (#580)
+        self._gameplay_disconnects: list[str] = []
+
     def start(self) -> None:
         """Start the discovery task.
 
@@ -311,6 +314,8 @@ class DiscoveryLoop:
                     name=name,
                     connected_serials=list(self.tracked_controllers.keys()),
                 )
+                # Queue disconnect for gameplay stream subscribers (#580)
+                self._gameplay_disconnects.append(serial)
                 metrics.controller_disconnect_total.labels(serial=serial).inc()
                 metrics.controller_connected.labels(serial=serial).set(0)
 
@@ -530,6 +535,24 @@ class DiscoveryLoop:
         if hasattr(self.backend, "_led_failures"):
             led = self.backend._led_failures.pop(serial, 0)
         return drops, errors, led
+
+    def drain_disconnects(self) -> list[str]:
+        """Drain and return accumulated gameplay disconnect events.
+
+        Called by servicer when building each stream frame. Returns serials
+        that disconnected since the last drain and clears the list.
+
+        Safe without locks -- discovery loop and stream frame building both
+        run on the same asyncio event loop.
+
+        Returns:
+            List of serial numbers that disconnected since last drain.
+        """
+        if not self._gameplay_disconnects:
+            return []
+        disconnects = self._gameplay_disconnects
+        self._gameplay_disconnects = []
+        return disconnects
 
     async def _spawn_controller_process(self, serial: str) -> None:
         """
