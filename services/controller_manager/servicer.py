@@ -378,6 +378,17 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                 continue
 
             full_state = self.state_cache_manager.build_or_get_cached_state(serial, info)
+
+            # Drain health counters accumulated since last frame
+            drops, errors, led_fails = self.discovery_loop.drain_health_counters(serial)
+            health = None
+            if drops or errors or led_fails:
+                health = controller_manager_pb2.ControllerHealth(
+                    poll_drops=drops,
+                    poll_errors=errors,
+                    led_failures=led_fails,
+                )
+
             gd = controller_manager_pb2.GameplayData(
                 serial=full_state.serial,
                 move_num=full_state.move_num,
@@ -388,6 +399,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                 gyro=full_state.gyro,
                 rssi=full_state.rssi,
                 name=full_state.name,
+                health=health,
             )
             gameplay_data.append(gd)
 

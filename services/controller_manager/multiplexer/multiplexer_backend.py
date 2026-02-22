@@ -75,6 +75,9 @@ class MultiplexerBackend(ControllerBackend):
         self._last_full_discovery: float = 0.0
         self._full_discovery_interval: float = 0.5  # seconds
 
+        # Health counter: LED failures accumulated between stream frames
+        self._led_failures: dict[str, int] = {}
+
         adapter_names = [a.adapter_type for a in self._adapters]
         discovery_name = self._discovery_adapter.adapter_type if self._discovery_adapter else "none"
         logger.info(f"MultiplexerBackend created with adapters: {adapter_names}, discovery adapter: {discovery_name}")
@@ -286,7 +289,9 @@ class MultiplexerBackend(ControllerBackend):
                     r, g, b = stored_color
                     rumble = self._rumble.get(serial, 0)
                     with self._led_lock:
-                        adapter.set_output(serial, r, g, b, rumble)
+                        result = adapter.set_output(serial, r, g, b, rumble)
+                    if not result:
+                        self._led_failures[serial] = self._led_failures.get(serial, 0) + 1
                     self._last_sent_color[serial] = stored_color
                     self._last_led_update[serial] = current_time
                     updated_count += 1
@@ -296,6 +301,7 @@ class MultiplexerBackend(ControllerBackend):
 
             except Exception as e:
                 logger.debug(f"Error updating LED for {serial}: {e}")
+                self._led_failures[serial] = self._led_failures.get(serial, 0) + 1
 
         return updated_count
 

@@ -188,6 +188,9 @@ class FFAGame(BaseGameMode):
 
         for serial, player in self.players.items():
             if player.span:
+                # Finalize health spans and summary attributes (#571)
+                self._finalize_player_health(player)
+
                 # Build attributes including analytics summary if available
                 if player.alive:
                     victory_attrs = {

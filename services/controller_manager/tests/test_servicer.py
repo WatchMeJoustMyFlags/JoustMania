@@ -88,6 +88,7 @@ class TestRenameController:
             mock_loop.start = MagicMock()
             mock_loop.stop = MagicMock()
             mock_loop.wait_stopped = AsyncMock()
+            mock_loop.drain_health_counters = MagicMock(return_value=(0, 0, 0))
             mock_discovery_loop.return_value = mock_loop
 
             from services.controller_manager.servicer import ControllerManagerServicer
@@ -192,6 +193,7 @@ class TestServicerInitialization:
             mock_loop.start = MagicMock()
             mock_loop.stop = MagicMock()
             mock_loop.wait_stopped = AsyncMock()
+            mock_loop.drain_health_counters = MagicMock(return_value=(0, 0, 0))
             mock_discovery_loop.return_value = mock_loop
 
             from services.controller_manager.servicer import ControllerManagerServicer
@@ -236,6 +238,7 @@ class TestServicerShutdown:
             mock_loop.start = MagicMock()
             mock_loop.stop = MagicMock()
             mock_loop.wait_stopped = AsyncMock()
+            mock_loop.drain_health_counters = MagicMock(return_value=(0, 0, 0))
             mock_discovery_loop.return_value = mock_loop
 
             from services.controller_manager.servicer import ControllerManagerServicer
@@ -293,6 +296,7 @@ class TestExtractedHelpers:
             mock_loop.start = MagicMock()
             mock_loop.stop = MagicMock()
             mock_loop.wait_stopped = AsyncMock()
+            mock_loop.drain_health_counters = MagicMock(return_value=(0, 0, 0))
             mock_discovery_loop.return_value = mock_loop
 
             from services.controller_manager.servicer import ControllerManagerServicer
@@ -651,6 +655,7 @@ def _make_servicer():
         mock_loop.start = MagicMock()
         mock_loop.stop = MagicMock()
         mock_loop.wait_stopped = AsyncMock()
+        mock_loop.drain_health_counters = MagicMock(return_value=(0, 0, 0))
         mock_discovery_loop_cls.return_value = mock_loop
 
         from services.controller_manager.servicer import ControllerManagerServicer
