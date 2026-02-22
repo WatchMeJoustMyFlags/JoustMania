@@ -48,7 +48,7 @@ def test_runtime_config_flag_updates(mock_get_client, mock_add_handler):
     # Verify mock was called with correct keys and EvaluationContext
     mock_client.get_integer_value.assert_any_call("update_frequency_hz", 60, ANY)
     mock_client.get_string_value.assert_any_call("sensitivity_mode", "MEDIUM", ANY)
-    mock_client.get_integer_value.assert_any_call("poll_drop_threshold", 3, ANY)
+    mock_client.get_integer_value.assert_any_call("poll_drop_threshold", 10, ANY)
     mock_client.get_integer_value.assert_any_call("countdown_phase_duration_ms", 750, ANY)
     mock_client.get_integer_value.assert_any_call("winner_rainbow_duration_ms", 3000, ANY)
 
