@@ -139,9 +139,15 @@ message GameplayData {
   ControllerHealth health = 11;  // Per-frame health counters (#571)
 }
 
+// Notification that a controller disconnected during gameplay streaming.
+message DisconnectEvent {
+  string serial = 1;
+}
+
 message GameplayDataUpdate {
   repeated GameplayData controllers = 1;
   int64 timestamp = 2;  // Unix timestamp in milliseconds
+  repeated DisconnectEvent disconnects = 3;  // Controllers that disconnected since last frame (#580)
 }
 
 message GameplayStreamRequest {
