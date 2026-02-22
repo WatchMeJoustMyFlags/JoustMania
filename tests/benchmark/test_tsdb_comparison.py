@@ -39,12 +39,44 @@ BENCHMARK_METRICS = [
     "game_active_players",
 ]
 
+# Representative PromQL queries from Grafana dashboards.
+# These exercise different query patterns (rate, histogram_quantile,
+# aggregations, label matchers) to validate both backends produce
+# correct and timely results for real dashboard panels.
+DASHBOARD_QUERIES = [
+    # Simple selectors / gauges
+    ("process_resident_memory_bytes", "Process memory (gauge)"),
+    ("active_controllers_total", "Active controllers (gauge)"),
+    ("game_active_players", "Active players (gauge)"),
+    # Rate calculations
+    ("rate(process_cpu_seconds_total[5m]) * 100", "Process CPU % (rate)"),
+    ("sum by(job) (rate(grpc_requests_total[1m]))", "gRPC request rate by service"),
+    ('sum by(job) (rate(grpc_requests_total{status!="ok"}[1m]))', "gRPC error rate"),
+    ("rate(controller_stream_updates_total[1m])", "Controller stream update rate"),
+    # Histogram quantiles
+    (
+        "histogram_quantile(0.95, sum by(job, le) (rate(grpc_request_duration_seconds_bucket[5m])))",
+        "gRPC p95 latency (histogram_quantile)",
+    ),
+    # Aggregations with math
+    ("sum(increase(controller_stream_updates_total[1m]))", "Stream updates increase"),
+    ("count(active_controllers_total >= 0)", "Count with comparison"),
+    # Game-specific metrics
+    ("avg(game_player_accel_magnitude)", "Avg player acceleration"),
+    ("game_player_peak_accel", "Peak acceleration (gauge)"),
+    ("rate(game_near_death_events_total[1m]) * 60", "Near-death events per minute"),
+]
+
 # Configurable via environment
 CONTROLLER_COUNT = int(os.getenv("BENCHMARK_CONTROLLERS", "4"))
 GAME_DURATION_SECONDS = int(os.getenv("BENCHMARK_DURATION", "30"))
 
 # Maximum acceptable sample count divergence (fraction)
 SAMPLE_DIVERGENCE_THRESHOLD = 0.10
+
+# Pi 5 scaling: i9-11950H single-thread Geekbench ~1700, Cortex-A76 ~700
+# Ratio ~2.5x. Memory is assumed 1:1 (workload-dependent, not CPU-bound).
+PI5_CPU_SCALING_FACTOR = 2.5
 
 
 class TSDBClient:
@@ -68,7 +100,9 @@ class TSDBClient:
         resp.raise_for_status()
         return resp.json()
 
-    def query_range(self, promql: str, start: float, end: float, step: str = "15s") -> dict:
+    def query_range(
+        self, promql: str, start: float, end: float, step: str = "15s"
+    ) -> dict:
         """Execute a range query."""
         resp = self._client.get(
             f"{self.base_url}/api/v1/query_range",
@@ -107,6 +141,13 @@ class TSDBClient:
         """Count the number of distinct series for *metric*."""
         data = self.series(metric)
         return len(data.get("data", []))
+
+    def timed_query(self, promql: str) -> tuple[dict, float]:
+        """Execute an instant query and return (result, latency_ms)."""
+        t0 = time.monotonic()
+        result = self.query(promql)
+        latency_ms = (time.monotonic() - t0) * 1000
+        return result, latency_ms
 
     def close(self):
         self._client.close()
@@ -155,7 +196,9 @@ async def test_tsdb_comparison(docker_compose):
     # 1. Set up controllers and start a game
     # ------------------------------------------------------------------
     serials = await setup_mock_controllers(docker_compose, count=CONTROLLER_COUNT)
-    print(f"\nControllers ready: {len(serials)} controllers ({serials[:3]}{'...' if len(serials) > 3 else ''})")
+    print(
+        f"\nControllers ready: {len(serials)} controllers ({serials[:3]}{'...' if len(serials) > 3 else ''})"
+    )
 
     game_client, game_channel = await get_game_client(docker_compose)
 
@@ -226,14 +269,16 @@ async def test_tsdb_comparison(docker_compose):
         max_samples = max(prom_samples, vm_samples, 1)
         divergence = abs(prom_samples - vm_samples) / max_samples
 
-        rows.append([
-            metric,
-            prom_samples,
-            vm_samples,
-            prom_series,
-            vm_series,
-            f"{divergence:.1%}",
-        ])
+        rows.append(
+            [
+                metric,
+                prom_samples,
+                vm_samples,
+                prom_series,
+                vm_series,
+                f"{divergence:.1%}",
+            ]
+        )
 
         if divergence > SAMPLE_DIVERGENCE_THRESHOLD:
             divergence_warnings.append(
@@ -252,39 +297,130 @@ async def test_tsdb_comparison(docker_compose):
         ["Memory (MB)", prom_stats["memory_mb"], vm_stats["memory_mb"]],
     ]
 
+    # Pi 5 theoretical projection (CPU only — memory is workload-dependent)
+    pi5_rows = [
+        [
+            "CPU % (Pi 5 est.)",
+            round(prom_stats["cpu_percent"] * PI5_CPU_SCALING_FACTOR, 2),
+            round(vm_stats["cpu_percent"] * PI5_CPU_SCALING_FACTOR, 2),
+        ],
+        ["Memory (MB)", prom_stats["memory_mb"], vm_stats["memory_mb"]],
+    ]
+
+    # ------------------------------------------------------------------
+    # 7. Dashboard PromQL query validation
+    # ------------------------------------------------------------------
+    query_rows = []
+    query_warnings = []
+
+    for promql, description in DASHBOARD_QUERIES:
+        prom_result, prom_ms = prom.timed_query(promql)
+        vm_result, vm_ms = vm.timed_query(promql)
+
+        prom_status = prom_result.get("status", "error")
+        vm_status = vm_result.get("status", "error")
+        prom_series_n = len(prom_result.get("data", {}).get("result", []))
+        vm_series_n = len(vm_result.get("data", {}).get("result", []))
+
+        status = "OK"
+        if prom_status != "success" or vm_status != "success":
+            status = "ERR"
+            query_warnings.append(f"{description}: Prom={prom_status}, VM={vm_status}")
+        elif prom_series_n == 0 and vm_series_n == 0:
+            status = "EMPTY"
+
+        query_rows.append(
+            [
+                description,
+                f"{prom_ms:.0f}",
+                f"{vm_ms:.0f}",
+                prom_series_n,
+                vm_series_n,
+                status,
+            ]
+        )
+
     prom.close()
     vm.close()
 
     # ------------------------------------------------------------------
-    # 7. Print results
+    # 8. Print results
     # ------------------------------------------------------------------
     print("\n" + "=" * 80)
     print("TSDB Benchmark Results: Prometheus vs VictoriaMetrics")
-    print(f"Steady-state window: {GAME_DURATION_SECONDS}s, {CONTROLLER_COUNT} controllers, JoustFFA")
+    print(
+        f"Steady-state window: {GAME_DURATION_SECONDS}s, {CONTROLLER_COUNT} controllers, JoustFFA"
+    )
     print("=" * 80)
 
     print("\nMetric Samples:")
-    print(tabulate(
-        rows,
-        headers=["Metric", "Prom Samples", "VM Samples", "Prom Series", "VM Series", "Divergence"],
-        tablefmt="grid",
-    ))
+    print(
+        tabulate(
+            rows,
+            headers=[
+                "Metric",
+                "Prom Samples",
+                "VM Samples",
+                "Prom Series",
+                "VM Series",
+                "Divergence",
+            ],
+            tablefmt="grid",
+        )
+    )
 
     print("\nResource Usage (snapshot at end of benchmark):")
-    print(tabulate(
-        resource_rows,
-        headers=["Resource", "Prometheus", "VictoriaMetrics"],
-        tablefmt="grid",
-    ))
+    print(
+        tabulate(
+            resource_rows,
+            headers=["Resource", "Prometheus", "VictoriaMetrics"],
+            tablefmt="grid",
+        )
+    )
+
+    print(
+        f"\nPi 5 Projection (CPU x{PI5_CPU_SCALING_FACTOR} — "
+        "i9-11950H single-thread ~2.5x faster than Cortex-A76):"
+    )
+    print(
+        tabulate(
+            pi5_rows,
+            headers=["Resource", "Prometheus", "VictoriaMetrics"],
+            tablefmt="grid",
+        )
+    )
+
+    print("\nDashboard Query Validation:")
+    print(
+        tabulate(
+            query_rows,
+            headers=[
+                "Query",
+                "Prom (ms)",
+                "VM (ms)",
+                "Prom Series",
+                "VM Series",
+                "Status",
+            ],
+            tablefmt="grid",
+        )
+    )
 
     # ------------------------------------------------------------------
-    # 8. Warn (do NOT assert) on divergence
+    # 9. Warn (do NOT assert) on divergence / query errors
     # ------------------------------------------------------------------
     if divergence_warnings:
         msg = (
             f"Sample count divergence >{SAMPLE_DIVERGENCE_THRESHOLD:.0%} "
             f"detected in {len(divergence_warnings)} metric(s):\n"
             + "\n".join(f"  - {w}" for w in divergence_warnings)
+        )
+        warnings.warn(msg)
+
+    if query_warnings:
+        msg = (
+            f"Dashboard query errors in {len(query_warnings)} query(ies):\n"
+            + "\n".join(f"  - {w}" for w in query_warnings)
         )
         warnings.warn(msg)
 
