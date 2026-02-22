@@ -13,13 +13,18 @@ service:
 extensions:
   jaeger_storage:
     backends:
-      memory:
-        memory:
-          max_traces: 100000
+      badger:
+        badger:
+          ephemeral: false
+          directories:
+            keys: /badger/key
+            values: /badger/value
+          ttl:
+            spans: 168h  # 7 days
   jaeger_query:
     base_path: /jaeger
     storage:
-      traces: memory
+      traces: badger
 
 receivers:
   otlp:
@@ -36,4 +41,4 @@ processors:
 
 exporters:
   jaeger_storage_exporter:
-    trace_storage: memory
+    trace_storage: badger
