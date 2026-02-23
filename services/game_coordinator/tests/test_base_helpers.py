@@ -276,6 +276,94 @@ class TestComputeEffectiveThresholds:
 
 
 # ========================================================================
+# _process_controller_state (player name capture)
+# ========================================================================
+
+
+class TestPlayerNameCapture:
+    """Tests for player name capture from gameplay data."""
+
+    @pytest.fixture
+    def game(self):
+        """Create game with a player for name capture tests."""
+        mock_cm = MockControllerManagerService(num_controllers=2)
+        game = FFAGame(
+            controller_manager_client=mock_cm,
+            event_publisher=async_noop,
+            audio_client=None,
+            game_id="test_name",
+        )
+        game.gameplay_stream = MockGameplayStream()
+        game.running = True
+        game.music_speed = SLOW_MUSIC_SPEED
+        game.start_time = time.time()
+        game.players["p1"] = Player(
+            serial="p1",
+            alive=True,
+            color=(255, 0, 0),
+            smoothed_accel=1.0,
+        )
+        game.players["p2"] = Player(
+            serial="p2",
+            alive=True,
+            color=(0, 255, 0),
+            smoothed_accel=1.0,
+        )
+        return game
+
+    @pytest.mark.asyncio
+    async def test_captures_name_from_first_frame(self, game):
+        """Should store controller name on first gameplay data with name."""
+        controller_state = controller_manager_pb2.GameplayData(
+            serial="p1",
+            name="Blue Phoenix",
+            accel=controller_manager_pb2.Vector3(x=0.0, y=0.0, z=1.0),
+        )
+        await game._process_controller_state(controller_state)
+        assert game.players["p1"].name == "Blue Phoenix"
+
+    @pytest.mark.asyncio
+    async def test_updates_span_name(self, game):
+        """Should call update_name on player span with controller name."""
+        mock_span = MagicMock()
+        game.players["p1"].span = mock_span
+        controller_state = controller_manager_pb2.GameplayData(
+            serial="p1",
+            name="Swift Tiger",
+            accel=controller_manager_pb2.Vector3(x=0.0, y=0.0, z=1.0),
+        )
+        await game._process_controller_state(controller_state)
+        mock_span.update_name.assert_called_once_with("player: Swift Tiger")
+        mock_span.set_attribute.assert_any_call("player.name", "Swift Tiger")
+
+    @pytest.mark.asyncio
+    async def test_name_captured_only_once(self, game):
+        """Should not overwrite name on subsequent frames."""
+        game.players["p1"].name = "Blue Phoenix"
+        mock_span = MagicMock()
+        game.players["p1"].span = mock_span
+        controller_state = controller_manager_pb2.GameplayData(
+            serial="p1",
+            name="Different Name",
+            accel=controller_manager_pb2.Vector3(x=0.0, y=0.0, z=1.0),
+        )
+        await game._process_controller_state(controller_state)
+        assert game.players["p1"].name == "Blue Phoenix"
+        mock_span.update_name.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_name_not_captured(self, game):
+        """Should not capture empty name string."""
+        controller_state = controller_manager_pb2.GameplayData(
+            serial="p1",
+            name="",
+            accel=controller_manager_pb2.Vector3(x=0.0, y=0.0, z=1.0),
+        )
+        await game._process_controller_state(controller_state)
+        assert game.players["p1"].name == ""
+
+
+# ========================================================================
 # _process_gameplay_update
 # ========================================================================
 

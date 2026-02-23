@@ -114,6 +114,7 @@ class Player:
     """Represents a player in the game."""
 
     serial: str
+    name: str = ""  # Human-readable controller name (e.g., "Blue Phoenix")
     team: int = 0
     alive: bool = True
     color: tuple = (255, 255, 255)
@@ -998,6 +999,13 @@ class BaseGameMode(ABC):
         if not player.alive:
             return  # Dead player, ignore
 
+        # Capture controller name on first frame and update span title
+        if not player.name and controller_state.name:
+            player.name = controller_state.name
+            if player.span:
+                player.span.update_name(f"player: {player.name}")
+                player.span.set_attribute("player.name", player.name)
+
         # Process controller health counters (#571)
         self._process_health(player, serial, controller_state)
 
@@ -1109,12 +1117,20 @@ class BaseGameMode(ABC):
         metrics.players_alive.set(alive_count)
 
         # Extract trace context BEFORE _kill_player_impl() which may close the span.
-        # This ensures the death effect is parented to the player_lifecycle
+        # This ensures the death effect and sound are parented to the player_lifecycle
         # span even after the subclass impl ends it. (#456)
         trace_parent, trace_state = inject_trace_context(player.span)
 
-        # Play death explosion sound (parented to game_cycle via _play_sound)
-        await self._play_sound(Sound.SFX_EXPLOSION, priority=2)
+        # Play death explosion sound under the player's span (player-specific)
+        if player.span:
+            ctx = trace.set_span_in_context(player.span)
+            token = otel_context.attach(ctx)
+            try:
+                await self._play_sound(Sound.SFX_EXPLOSION, priority=2)
+            finally:
+                otel_context.detach(token)
+        else:
+            await self._play_sound(Sound.SFX_EXPLOSION, priority=2)
 
         # Add death event to player's lifecycle span (Phase 3: Per-Player Sensitivity)
         if player.span:
@@ -1715,17 +1731,20 @@ class BaseGameMode(ABC):
         Runs alongside the main game loop and periodically checks
         if tempo should change based on game progression.
 
-        Creates a music_tempo_control span parented to the game_cycle
-        span so all music instrumentation is grouped together in traces.
+        Sets game_cycle as active context so each music_tempo_change span
+        appears directly under game_cycle in traces.
         """
         logger.info("Music loop started")
 
         try:
-            with tracer.start_as_current_span("music_tempo_control", context=self.game_cycle_context) as span:
-                span.set_attribute("game.id", self.game_id)
+            token = otel_context.attach(self.game_cycle_context) if self.game_cycle_context else None
+            try:
                 while self.running:
                     await self._check_music_speed()
                     await asyncio.sleep(0.1)  # Check every 100ms
+            finally:
+                if token is not None:
+                    otel_context.detach(token)
         except asyncio.CancelledError:
             logger.info("Music loop cancelled")
             raise  # Re-raise to properly propagate cancellation
