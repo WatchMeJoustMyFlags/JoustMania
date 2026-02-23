@@ -30,6 +30,7 @@ sys.path.insert(0, str(test_dir))
 
 from conftest import EventCollector, MockControllerManagerService, async_noop
 
+from lib.types import Sound
 from proto import controller_manager_pb2
 from services.game_coordinator.games.base import (
     FAST_MAX,
@@ -648,6 +649,122 @@ class TestApplyTempoChange:
         # Verify the method completes successfully (span creation is internal).
         await game._apply_tempo_change(FAST_MUSIC_SPEED)
         game.audio_client.ChangeTempo.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_adds_span_event_when_span_exists(self, game):
+        """Should add timeline marker event on gameplay_span."""
+        mock_span = MagicMock()
+        game.gameplay_span = mock_span
+        await game._apply_tempo_change(FAST_MUSIC_SPEED)
+        mock_span.add_event.assert_called_once_with(
+            "music_tempo_change",
+            attributes={
+                "old_tempo": SLOW_MUSIC_SPEED,
+                "new_tempo": FAST_MUSIC_SPEED,
+                "direction": "speed_up",
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_span_event_when_no_span(self, game):
+        """Should not crash when gameplay_span is None."""
+        game.gameplay_span = None
+        await game._apply_tempo_change(FAST_MUSIC_SPEED)
+        game.audio_client.ChangeTempo.assert_called_once()
+
+
+# ========================================================================
+# _play_sound (game_cycle context)
+# ========================================================================
+
+
+class TestPlaySound:
+    """Tests for _play_sound method with game_cycle context."""
+
+    @pytest.fixture
+    def game(self):
+        """Create game with mock audio client."""
+        mock_cm = MockControllerManagerService(num_controllers=2)
+        mock_audio = AsyncMock()
+        return FFAGame(
+            controller_manager_client=mock_cm,
+            event_publisher=async_noop,
+            audio_client=mock_audio,
+            game_id="test_sound",
+        )
+
+    @pytest.mark.asyncio
+    async def test_calls_audio_client(self, game):
+        """Should call PlaySound on audio client."""
+        await game._play_sound(Sound.SFX_BEEP_LOUD, priority=2)
+        game.audio_client.PlaySound.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_no_crash_without_audio_client(self, game):
+        """Should return early when audio_client is None."""
+        game.audio_client = None
+        await game._play_sound(Sound.SFX_BEEP_LOUD)  # Should not raise
+
+    @pytest.mark.asyncio
+    async def test_uses_game_cycle_context_when_set(self, game):
+        """Should attach game_cycle_context for sound calls when available."""
+        # Set a mock game_cycle_context
+        game.game_cycle_context = MagicMock()
+        await game._play_sound(Sound.SFX_EXPLOSION, priority=2)
+        game.audio_client.PlaySound.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_falls_back_without_game_cycle_context(self, game):
+        """Should call PlaySound normally when game_cycle_context is None."""
+        game.game_cycle_context = None
+        await game._play_sound(Sound.SFX_EXPLOSION, priority=2)
+        game.audio_client.PlaySound.assert_called_once()
+
+
+# ========================================================================
+# _close_grouping_spans
+# ========================================================================
+
+
+class TestCloseGroupingSpans:
+    """Tests for _close_grouping_spans method."""
+
+    @pytest.fixture
+    def game(self):
+        """Create a minimal FFA game."""
+        mock_cm = MockControllerManagerService(num_controllers=2)
+        return FFAGame(
+            controller_manager_client=mock_cm,
+            event_publisher=async_noop,
+            audio_client=None,
+            game_id="test_grouping",
+        )
+
+    def test_closes_players_span(self, game):
+        """Should end and clear _players_span."""
+        mock_span = MagicMock()
+        game._players_span = mock_span
+        game._game_cycle_span = None
+        game._close_grouping_spans()
+        mock_span.end.assert_called_once()
+        assert game._players_span is None
+
+    def test_closes_game_cycle_span(self, game):
+        """Should end and clear _game_cycle_span and game_cycle_context."""
+        mock_span = MagicMock()
+        game._game_cycle_span = mock_span
+        game.game_cycle_context = MagicMock()
+        game._players_span = None
+        game._close_grouping_spans()
+        mock_span.end.assert_called_once()
+        assert game._game_cycle_span is None
+        assert game.game_cycle_context is None
+
+    def test_handles_none_spans(self, game):
+        """Should not crash when spans are already None."""
+        game._players_span = None
+        game._game_cycle_span = None
+        game._close_grouping_spans()  # Should not raise
 
 
 # ========================================================================
