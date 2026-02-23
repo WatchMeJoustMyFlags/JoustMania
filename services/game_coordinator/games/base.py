@@ -1611,8 +1611,8 @@ class BaseGameMode(ABC):
         """
         Apply a tempo change to the music track.
 
-        Sends gRPC request with gameplay span context, logs the change,
-        records span events, and updates internal state and metrics.
+        Creates a child span of music_tempo_control, sends gRPC request,
+        logs the change, and updates internal state and metrics.
 
         Args:
             target_tempo: The target tempo to transition to
@@ -1620,13 +1620,16 @@ class BaseGameMode(ABC):
         from proto import audio_pb2
 
         old_tempo = self.music_speed
+        direction = "speed_up" if self.speed_up else "slow_down"
 
-        # Use gameplay context so gRPC span appears as child of gameplay_phase
-        token = None
-        if self.gameplay_span_context:
-            token = otel_context.attach(self.gameplay_span_context)
+        # Create a child span — the gRPC ChangeTempo call inherits this context
+        # naturally, so the audio service span links back to the game trace.
+        with tracer.start_as_current_span("music_tempo_change") as span:
+            span.set_attribute("old_tempo", old_tempo)
+            span.set_attribute("new_tempo", target_tempo)
+            span.set_attribute("dead_count", self.dead_count)
+            span.set_attribute("direction", direction)
 
-        try:
             await self.audio_client.ChangeTempo(
                 audio_pb2.ChangeTempoRequest(
                     track_id=self.music_track_id,
@@ -1634,23 +1637,8 @@ class BaseGameMode(ABC):
                     transition_duration=MUSIC_TRANSITION_DURATION,
                 )
             )
-        finally:
-            if token:
-                otel_context.detach(token)
 
         logger.info(f"Music tempo changing: {old_tempo:.2f} -> {target_tempo:.2f}")
-
-        # Add span event to gameplay span for tempo change
-        if self.gameplay_span:
-            self.gameplay_span.add_event(
-                "music_tempo_change",
-                attributes={
-                    "old_tempo": old_tempo,
-                    "new_tempo": target_tempo,
-                    "dead_count": self.dead_count,
-                    "direction": "speed_up" if self.speed_up else "slow_down",
-                },
-            )
 
         # Update state
         self.music_speed = target_tempo
@@ -1685,13 +1673,20 @@ class BaseGameMode(ABC):
 
         Runs alongside the main game loop and periodically checks
         if tempo should change based on game progression.
+
+        Creates a music_tempo_control span explicitly parented to the
+        gameplay_phase span. This ensures all ChangeTempo gRPC calls
+        appear in the main game trace (asyncio.create_task copies context
+        but the gRPC interceptor needs an active span to propagate).
         """
         logger.info("Music loop started")
 
         try:
-            while self.running:
-                await self._check_music_speed()
-                await asyncio.sleep(0.1)  # Check every 100ms
+            with tracer.start_as_current_span("music_tempo_control", context=self.gameplay_span_context) as span:
+                span.set_attribute("game.id", self.game_id)
+                while self.running:
+                    await self._check_music_speed()
+                    await asyncio.sleep(0.1)  # Check every 100ms
         except asyncio.CancelledError:
             logger.info("Music loop cancelled")
             raise  # Re-raise to properly propagate cancellation
