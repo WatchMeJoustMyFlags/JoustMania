@@ -8,6 +8,7 @@ from services.audio.alsa_config import (
     _resolve_card_number,
     _write_asound_conf,
     configure_alsa_device,
+    get_detected_card,
 )
 
 
@@ -30,23 +31,46 @@ class TestResolveCardNumber:
 
 
 class TestAutoDetectCard:
+    @patch("services.audio.alsa_config.time.sleep")
     @patch("alsaaudio.card_name", return_value=("Headphones", "Headphones Audio"))
     @patch("alsaaudio.card_indexes", return_value=[0, 1])
-    def test_returns_first_card_index(self, mock_indexes, mock_name):
+    def test_returns_first_card_index(self, mock_indexes, mock_name, _mock_sleep):
         assert _auto_detect_card() == 0
 
+    @patch("services.audio.alsa_config.time.sleep")
     @patch("alsaaudio.card_name", return_value=("USB Audio", "USB Audio Device"))
     @patch("alsaaudio.card_indexes", return_value=[2, 5])
-    def test_returns_nonzero_first_index(self, mock_indexes, mock_name):
+    def test_returns_nonzero_first_index(self, mock_indexes, mock_name, _mock_sleep):
         assert _auto_detect_card() == 2
 
+    @patch("services.audio.alsa_config.time.sleep")
     @patch("alsaaudio.card_indexes", return_value=[])
-    def test_empty_cards_returns_zero(self, mock_indexes):
+    def test_empty_cards_returns_zero_after_retries(self, mock_indexes, mock_sleep):
         assert _auto_detect_card() == 0
+        # Should have retried _DETECT_MAX_RETRIES times
+        assert mock_indexes.call_count == 3
+        assert mock_sleep.call_count == 2  # sleeps between retries, not after last
 
+    @patch("services.audio.alsa_config.time.sleep")
     @patch("alsaaudio.card_indexes", side_effect=Exception("no ALSA"))
-    def test_exception_returns_zero(self, mock_indexes):
+    def test_exception_returns_zero_after_retries(self, mock_indexes, mock_sleep):
         assert _auto_detect_card() == 0
+        assert mock_indexes.call_count == 3
+
+    @patch("services.audio.alsa_config.time.sleep")
+    @patch("alsaaudio.card_name", return_value=("USB Audio", "USB Audio Device"))
+    @patch("alsaaudio.card_indexes", side_effect=[[], [1]])
+    def test_retry_succeeds_on_second_attempt(self, mock_indexes, mock_name, mock_sleep):
+        assert _auto_detect_card() == 1
+        assert mock_indexes.call_count == 2
+        mock_sleep.assert_called_once()
+
+    @patch("services.audio.alsa_config.time.sleep")
+    @patch("alsaaudio.card_name", return_value=("Headphones", "Headphones Audio"))
+    @patch("alsaaudio.card_indexes", side_effect=[Exception("not ready"), [0]])
+    def test_retry_after_exception_succeeds(self, mock_indexes, mock_name, mock_sleep):
+        assert _auto_detect_card() == 0
+        assert mock_indexes.call_count == 2
 
 
 class TestWriteAsoundConf:
@@ -78,3 +102,27 @@ class TestConfigureAlsaDevice:
         configure_alsa_device("3")
         mock_resolve.assert_called_once_with("3")
         mock_write.assert_called_once_with(3)
+
+    @patch("services.audio.alsa_config._write_asound_conf")
+    @patch("services.audio.alsa_config._resolve_card_number", return_value=2)
+    def test_stores_detected_card(self, mock_resolve, mock_write):
+        configure_alsa_device("auto")
+        assert get_detected_card() == 2
+
+
+class TestGetDetectedCard:
+    def test_default_is_zero(self):
+        import services.audio.alsa_config as mod
+
+        original = mod._detected_card
+        try:
+            mod._detected_card = 0
+            assert get_detected_card() == 0
+        finally:
+            mod._detected_card = original
+
+    @patch("services.audio.alsa_config._write_asound_conf")
+    @patch("services.audio.alsa_config._resolve_card_number", return_value=5)
+    def test_updated_by_configure(self, _mock_resolve, _mock_write):
+        configure_alsa_device("5")
+        assert get_detected_card() == 5

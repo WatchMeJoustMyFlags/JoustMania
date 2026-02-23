@@ -10,8 +10,10 @@ import pytest
 from services.audio.music_player import (
     DummyMusicPlayer,
     _clamp_ratio,
+    _get_fallback_devices,
     _get_song_pattern,
     _load_song_from_pattern,
+    _open_pcm,
     _read_samples,
     _resample_audio,
     _resample_chunk,
@@ -637,3 +639,77 @@ class TestProcessRespawn:
             # Old process should have been terminated
             mock_proc.terminate.assert_called_once()
             mock_proc.join.assert_called_once_with(timeout=1.0)
+
+
+class TestGetFallbackDevices:
+    """Tests for _get_fallback_devices."""
+
+    @patch("services.audio.alsa_config.get_detected_card", return_value=0)
+    def test_default_card_zero(self, _mock_card):
+        devices = _get_fallback_devices()
+        assert devices == ["default", "plughw:0,0", "hw:0,0"]
+
+    @patch("services.audio.alsa_config.get_detected_card", return_value=2)
+    def test_nonzero_card(self, _mock_card):
+        devices = _get_fallback_devices()
+        assert devices == ["default", "plughw:2,0", "hw:2,0"]
+
+    def test_fallback_on_import_error(self):
+        with patch("services.audio.alsa_config.get_detected_card", side_effect=Exception("import error")):
+            devices = _get_fallback_devices()
+        assert devices == ["default", "plughw:0,0", "hw:0,0"]
+
+
+class TestOpenPcm:
+    """Tests for _open_pcm with fallback device chain."""
+
+    @patch("services.audio.music_player._get_fallback_devices", return_value=["default", "plughw:0,0", "hw:0,0"])
+    @patch("services.audio.music_player.alsaaudio")
+    def test_opens_default_device_first(self, mock_alsa, _mock_devices):
+        mock_pcm = MagicMock()
+        mock_alsa.PCM.return_value = mock_pcm
+        mock_alsa.PCM_FORMAT_S16_LE = 2
+
+        result = _open_pcm(channels=2, rate=44100, period=4096)
+
+        assert result is mock_pcm
+        mock_alsa.PCM.assert_called_once_with(channels=2, rate=44100, format=2, periodsize=4096, device="default")
+
+    @patch("services.audio.music_player._get_fallback_devices", return_value=["default", "plughw:1,0", "hw:1,0"])
+    @patch("services.audio.music_player.alsaaudio")
+    def test_falls_back_to_plughw_on_dmix_failure(self, mock_alsa, _mock_devices):
+        mock_pcm = MagicMock()
+        mock_alsa.PCM.side_effect = [Exception("unable to open slave"), mock_pcm]
+        mock_alsa.PCM_FORMAT_S16_LE = 2
+
+        result = _open_pcm(channels=2, rate=44100, period=4096)
+
+        assert result is mock_pcm
+        assert mock_alsa.PCM.call_count == 2
+        # Second call should use plughw
+        assert mock_alsa.PCM.call_args_list[1][1]["device"] == "plughw:1,0"
+
+    @patch("services.audio.music_player._get_fallback_devices", return_value=["default", "plughw:0,0", "hw:0,0"])
+    @patch("services.audio.music_player.alsaaudio")
+    def test_falls_back_to_hw_when_all_others_fail(self, mock_alsa, _mock_devices):
+        mock_pcm = MagicMock()
+        mock_alsa.PCM.side_effect = [
+            Exception("dmix error 524"),
+            Exception("plughw failed"),
+            mock_pcm,
+        ]
+        mock_alsa.PCM_FORMAT_S16_LE = 2
+
+        result = _open_pcm(channels=2, rate=44100, period=4096)
+
+        assert result is mock_pcm
+        assert mock_alsa.PCM.call_count == 3
+
+    @patch("services.audio.music_player._get_fallback_devices", return_value=["default", "plughw:0,0", "hw:0,0"])
+    @patch("services.audio.music_player.alsaaudio")
+    def test_raises_when_all_devices_fail(self, mock_alsa, _mock_devices):
+        mock_alsa.PCM.side_effect = Exception("no audio hardware")
+        mock_alsa.PCM_FORMAT_S16_LE = 2
+
+        with pytest.raises(Exception, match="no audio hardware"):
+            _open_pcm(channels=2, rate=44100, period=4096)

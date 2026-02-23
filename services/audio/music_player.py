@@ -177,6 +177,50 @@ def _write_samples(device, write_size, samples, stop_proc, generation, play_gen)
             return
 
 
+def _get_fallback_devices() -> list[str]:
+    """Return a list of PCM device names to try, in priority order.
+
+    Order: "default" (dmix) → "plughw:N,0" (direct + format conversion) → "hw:N,0" (raw).
+    The card number N comes from the startup auto-detection in alsa_config.
+    """
+    try:
+        from services.audio.alsa_config import get_detected_card
+
+        card = get_detected_card()
+    except Exception:
+        card = 0
+    return ["default", f"plughw:{card},0", f"hw:{card},0"]
+
+
+def _open_pcm(channels: int, rate: int, period: int) -> alsaaudio.PCM:
+    """Open an ALSA PCM device, trying fallback devices if dmix fails.
+
+    Tries each device in the fallback chain. This handles:
+    - Stale dmix IPC (error 524 / ENOTRECOVERABLE) after container crash
+    - Wrong card in asound.conf
+    - Permission issues with dmix shared memory
+    """
+    devices = _get_fallback_devices()
+    last_error = None
+
+    for device_name in devices:
+        try:
+            pcm = alsaaudio.PCM(
+                channels=channels,
+                rate=rate,
+                format=alsaaudio.PCM_FORMAT_S16_LE,
+                periodsize=period,
+                device=device_name,
+            )
+            logger.info("Opened ALSA PCM device: %s", device_name)
+            return pcm
+        except Exception as e:
+            logger.warning("Failed to open ALSA device '%s': %s", device_name, e)
+            last_error = e
+
+    raise last_error  # type: ignore[misc]
+
+
 def _play_loaded_song(wav_data, period, period_bytes, ratio, volume, stop_proc, generation, play_gen):
     """
     Open and play a loaded WAV through ALSA with real-time resampling.
@@ -189,12 +233,10 @@ def _play_loaded_song(wav_data, period, period_bytes, ratio, volume, stop_proc, 
         return False
     wf.rewind()
 
-    device = alsaaudio.PCM(
+    device = _open_pcm(
         channels=wf.getnchannels(),
         rate=wf.getframerate(),
-        format=alsaaudio.PCM_FORMAT_S16_LE,
-        periodsize=period,
-        device="default",
+        period=period,
     )
 
     _write_samples(
