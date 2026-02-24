@@ -114,6 +114,7 @@ class Player:
     """Represents a player in the game."""
 
     serial: str
+    name: str = ""  # Human-readable controller name (e.g., "Blue Phoenix")
     team: int = 0
     alive: bool = True
     color: tuple = (255, 255, 255)
@@ -241,6 +242,9 @@ class BaseGameMode(ABC):
         self.dead_count = 0  # Track deaths for tempo timing
         self.gameplay_span: trace.Span | None = None  # Reference for span events
         self.gameplay_span_context = None  # Context for child spans in background tasks
+        self._players_span: trace.Span | None = None  # Parent span grouping all player lifecycles
+        self._game_cycle_span: trace.Span | None = None  # Span for instrumentation (sounds, music)
+        self.game_cycle_context = None  # Context for sound/music spans
 
         # Tracked async tasks for automatic cleanup on game end
         self._tasks: set[asyncio.Task] = set()
@@ -995,6 +999,13 @@ class BaseGameMode(ABC):
         if not player.alive:
             return  # Dead player, ignore
 
+        # Capture controller name on first frame and update span title
+        if not player.name and controller_state.name:
+            player.name = controller_state.name
+            if player.span:
+                player.span.update_name(f"player: {player.name}")
+                player.span.set_attribute("player.name", player.name)
+
         # Process controller health counters (#571)
         self._process_health(player, serial, controller_state)
 
@@ -1110,9 +1121,7 @@ class BaseGameMode(ABC):
         # span even after the subclass impl ends it. (#456)
         trace_parent, trace_state = inject_trace_context(player.span)
 
-        # Play death explosion sound (Phase 29)
-        # Temporarily set player's span as active so gRPC interceptor propagates
-        # the player's trace context to the audio service. (#456)
+        # Play death explosion sound under the player's span (player-specific)
         if player.span:
             ctx = trace.set_span_in_context(player.span)
             token = otel_context.attach(ctx)
@@ -1306,9 +1315,24 @@ class BaseGameMode(ABC):
                 self.gameplay_span = gameplay_span
                 self.gameplay_span_context = otel_context.get_current()
 
-                # Create player lifecycle spans BEFORE countdown
-                # so countdown_phase appears as a child of each player_lifecycle
-                self._create_player_spans(None)
+                # Create "players" parent span (collapsible group in Jaeger)
+                self._players_span = tracer.start_span(
+                    "players",
+                    context=self.gameplay_span_context,
+                    attributes={"player_count": len(self.players)},
+                )
+                players_ctx = trace.set_span_in_context(self._players_span)
+
+                # Create "game_cycle" span for instrumentation (sounds, music tempo)
+                self._game_cycle_span = tracer.start_span(
+                    "game_cycle",
+                    context=self.gameplay_span_context,
+                    attributes={"game.id": self.game_id},
+                )
+                self.game_cycle_context = trace.set_span_in_context(self._game_cycle_span)
+
+                # Create player lifecycle spans under "players" parent
+                self._create_player_spans(players_ctx)
 
                 # Open per-player countdown child spans
                 for player in self.players.values():
@@ -1320,7 +1344,7 @@ class BaseGameMode(ABC):
                             attributes={"player.serial": player.serial},
                         )
 
-                # Run countdown (all per-player countdown spans are open)
+                # Run countdown (sounds go under game_cycle via _play_sound)
                 await self._countdown()
 
                 # Close per-player countdown spans
@@ -1335,7 +1359,7 @@ class BaseGameMode(ABC):
 
                     await self.audio_client.SetVolume(audio_pb2.SetVolumeRequest(volume=GAME_VOLUME))
 
-                # Start music loop as background task
+                # Start music loop as background task (uses game_cycle_context)
                 self.music_loop_task = asyncio.create_task(self._music_loop())
 
                 try:
@@ -1347,9 +1371,9 @@ class BaseGameMode(ABC):
                         with contextlib.suppress(asyncio.CancelledError):
                             await self.music_loop_task
 
-                    # Close all player spans before gameplay_phase ends
-                    # This ensures player spans are children of gameplay_phase, not teardown
+                    # Close all player spans, then grouping spans
                     self._close_all_player_spans()
+                    self._close_grouping_spans()
 
             # Phase 3: Teardown
             with tracer.start_as_current_span("teardown_phase"):
@@ -1478,9 +1502,25 @@ class BaseGameMode(ABC):
                 player.span = None  # Mark as closed
                 logger.debug(f"Closed lifecycle span for player {serial}")
 
+    def _close_grouping_spans(self):
+        """Close the players and game_cycle grouping spans.
+
+        Called after all player spans are closed, before gameplay_phase ends.
+        """
+        if self._players_span:
+            self._players_span.end()
+            self._players_span = None
+        if self._game_cycle_span:
+            self._game_cycle_span.end()
+            self._game_cycle_span = None
+            self.game_cycle_context = None
+
     async def _play_sound(self, sound: str | Sound, priority: int = 2):
         """
         Play sound via Audio service (Phase 29).
+
+        When game_cycle_context is set, sounds are parented to the game_cycle
+        span so all audio instrumentation is grouped together in traces.
 
         Args:
             sound: Sound enum or string name (e.g., Sound.VOX_CONGRATULATIONS or "congratulations")
@@ -1496,9 +1536,15 @@ class BaseGameMode(ABC):
             sound_name = sound.value if isinstance(sound, Sound) else sound
             request = audio_pb2.PlaySoundRequest(file_path=sound_name, volume=1.0, priority=priority)
 
-            # Fire-and-forget - don't wait for response
-            # Note: play_audio setting is checked centrally in audio service
-            await self.audio_client.PlaySound(request)
+            # Parent sound spans under game_cycle when available
+            if self.game_cycle_context:
+                token = otel_context.attach(self.game_cycle_context)
+                try:
+                    await self.audio_client.PlaySound(request)
+                finally:
+                    otel_context.detach(token)
+            else:
+                await self.audio_client.PlaySound(request)
             logger.debug(f"Playing sound: {sound_name}")
         except Exception as e:
             logger.warning(f"Failed to play sound {sound_name}: {e}")
@@ -1640,6 +1686,17 @@ class BaseGameMode(ABC):
 
         logger.info(f"Music tempo changing: {old_tempo:.2f} -> {target_tempo:.2f}")
 
+        # Add timeline marker event on gameplay_span (visible in trace overview)
+        if self.gameplay_span:
+            self.gameplay_span.add_event(
+                "music_tempo_change",
+                attributes={
+                    "old_tempo": old_tempo,
+                    "new_tempo": target_tempo,
+                    "direction": direction,
+                },
+            )
+
         # Update state
         self.music_speed = target_tempo
         self.speed_up = not self.speed_up
@@ -1674,19 +1731,20 @@ class BaseGameMode(ABC):
         Runs alongside the main game loop and periodically checks
         if tempo should change based on game progression.
 
-        Creates a music_tempo_control span explicitly parented to the
-        gameplay_phase span. This ensures all ChangeTempo gRPC calls
-        appear in the main game trace (asyncio.create_task copies context
-        but the gRPC interceptor needs an active span to propagate).
+        Sets game_cycle as active context so each music_tempo_change span
+        appears directly under game_cycle in traces.
         """
         logger.info("Music loop started")
 
         try:
-            with tracer.start_as_current_span("music_tempo_control", context=self.gameplay_span_context) as span:
-                span.set_attribute("game.id", self.game_id)
+            token = otel_context.attach(self.game_cycle_context) if self.game_cycle_context else None
+            try:
                 while self.running:
                     await self._check_music_speed()
                     await asyncio.sleep(0.1)  # Check every 100ms
+            finally:
+                if token is not None:
+                    otel_context.detach(token)
         except asyncio.CancelledError:
             logger.info("Music loop cancelled")
             raise  # Re-raise to properly propagate cancellation
