@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from psmove_pairing.adapter_manager import AdapterInfo
 from psmove_pairing.usb_pairing import USBPairing
 
 from .conftest import MockCommandRunner
@@ -220,6 +221,28 @@ class TestProcessController:
         result = await usb_pairing.process_controller(0, "00:06:F7:AA:BB:CC")
         assert result is False
         usb_pairing.bluez_trust_controller.assert_called_once_with("00:06:F7:AA:BB:CC")
+
+    @pytest.mark.asyncio
+    async def test_already_paired_trust_fails_triggers_full_pairing(self, usb_pairing):
+        """Test that trust failure on 'already paired' controller falls through to full pairing."""
+        usb_pairing.adapter_manager.refresh_adapters = AsyncMock()
+        usb_pairing.adapter_manager.check_if_not_paired = MagicMock(return_value=False)
+        # Trust fails — stale BlueZ record from a different system
+        usb_pairing.bluez_trust_controller = AsyncMock(return_value=False)
+        adapter = AdapterInfo(hci="hci0", address="11:22:33:44:55:66", name="adapter-hci0", device_count=0)
+        usb_pairing.adapter_manager.select_least_loaded_adapter = MagicMock(return_value=adapter)
+        usb_pairing.pair_controller_psmove = AsyncMock(return_value=True)
+        usb_pairing.restart_bluetooth_service = AsyncMock()
+        usb_pairing.calibrate_controller = AsyncMock(return_value=True)
+
+        result = await usb_pairing.process_controller(0, "00:06:F7:AA:BB:CC")
+
+        assert result is True
+        # Trust called twice: once in the "already paired" check, once after re-pairing
+        assert usb_pairing.bluez_trust_controller.call_count == 2
+        usb_pairing.pair_controller_psmove.assert_called_once_with(0, "00:06:F7:AA:BB:CC", "11:22:33:44:55:66")
+        usb_pairing.restart_bluetooth_service.assert_called_once()
+        usb_pairing.calibrate_controller.assert_called_once_with("00:06:F7:AA:BB:CC")
 
     @pytest.mark.asyncio
     async def test_no_adapters_available(self, usb_pairing):
