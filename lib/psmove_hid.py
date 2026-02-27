@@ -25,7 +25,9 @@ ALL_PRODUCT_IDS = (PRODUCT_ID_ZCM1, PRODUCT_ID_ZCM2, PRODUCT_ID_ZCM2E)
 
 # HID report sizes
 INPUT_REPORT_SIZE = 49
-OUTPUT_REPORT_SIZE = 49
+OUTPUT_REPORT_SIZE_ZCM1 = 49  # BT output report 0x02 (49 bytes)
+OUTPUT_REPORT_SIZE_ZCM2 = 9  # Output report 0x06 (9 bytes, same as psmoveapi)
+OUTPUT_REPORT_SIZE = OUTPUT_REPORT_SIZE_ZCM1  # Default (backward compat)
 
 
 class Button(IntFlag):
@@ -175,8 +177,16 @@ def parse_input_report(data: bytes) -> dict:
     }
 
 
+def _clamp_byte(value: int) -> int:
+    """Clamp an integer to the 0-255 range."""
+    return max(0, min(255, value))
+
+
 def build_output_report(r: int = 0, g: int = 0, b: int = 0, rumble: int = 0) -> bytes:
-    """Build a PS Move HID output report for LED and rumble control.
+    """Build a ZCM1 (PS3-era) PS Move HID output report for LED and rumble control.
+
+    Uses BT output report 0x02 (49 bytes), which is the Bluetooth-specific
+    output report supported by ZCM1 controllers.
 
     Args:
         r: Red LED intensity (0-255)
@@ -185,20 +195,56 @@ def build_output_report(r: int = 0, g: int = 0, b: int = 0, rumble: int = 0) -> 
         rumble: Rumble motor intensity (0-255)
 
     Returns:
-        49-byte output report.
+        49-byte output report with report ID 0x02.
     """
-    r = max(0, min(255, r))
-    g = max(0, min(255, g))
-    b = max(0, min(255, b))
-    rumble = max(0, min(255, rumble))
+    r = _clamp_byte(r)
+    g = _clamp_byte(g)
+    b = _clamp_byte(b)
+    rumble = _clamp_byte(rumble)
 
-    report = bytearray(OUTPUT_REPORT_SIZE)
-    report[0] = 0x02  # Report type for LED/rumble
-    # Bytes 1: 0x00 (reserved)
+    report = bytearray(OUTPUT_REPORT_SIZE_ZCM1)
+    report[0] = 0x02  # BT output report type for LED/rumble (ZCM1)
+    # Byte 1: 0x00 (reserved)
     report[2] = r
     report[3] = g
     report[4] = b
     # Byte 5: 0x00 (reserved)
     report[6] = rumble
     # Bytes 7-48: 0x00 (padding)
+    return bytes(report)
+
+
+def build_output_report_zcm2(r: int = 0, g: int = 0, b: int = 0, rumble: int = 0) -> bytes:
+    """Build a ZCM2 (PS4-era) PS Move HID output report for LED and rumble control.
+
+    Uses output report 0x06 (9 bytes), which is the SetLEDs report supported
+    by both ZCM1 and ZCM2 controllers. The ZCM2 does not support the
+    BT-specific report 0x02 used by ZCM1.
+
+    The byte layout matches psmoveapi's PSMove_Data_LEDs struct:
+        [0x06, 0x00, R, G, B, 0x00, rumble, 0x00, 0x00]
+
+    Args:
+        r: Red LED intensity (0-255)
+        g: Green LED intensity (0-255)
+        b: Blue LED intensity (0-255)
+        rumble: Rumble motor intensity (0-255)
+
+    Returns:
+        9-byte output report with report ID 0x06.
+    """
+    r = _clamp_byte(r)
+    g = _clamp_byte(g)
+    b = _clamp_byte(b)
+    rumble = _clamp_byte(rumble)
+
+    report = bytearray(OUTPUT_REPORT_SIZE_ZCM2)
+    report[0] = 0x06  # SetLEDs report type (works for both ZCM1 and ZCM2)
+    # Byte 1: 0x00 (reserved)
+    report[2] = r
+    report[3] = g
+    report[4] = b
+    # Byte 5: 0x00 (rumble2, reserved)
+    report[6] = rumble
+    # Bytes 7-8: 0x00 (padding)
     return bytes(report)

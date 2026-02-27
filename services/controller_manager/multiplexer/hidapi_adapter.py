@@ -15,10 +15,12 @@ from lib.controller_constants import AxisKey, ButtonKey, StateKey, normalize_ser
 from lib.psmove_hid import (
     ALL_PRODUCT_IDS,
     INPUT_REPORT_SIZE,
+    PRODUCT_ID_ZCM1,
     VENDOR_ID,
     Button,
     battery_to_percent,
     build_output_report,
+    build_output_report_zcm2,
     parse_input_report,
 )
 from services.controller_manager.multiplexer.adapter import ControllerIOAdapter
@@ -35,6 +37,7 @@ class HidapiAdapter(ControllerIOAdapter):
     def __init__(self):
         self._devices: dict[str, hid.device] = {}
         self._paths: dict[str, str] = {}
+        self._product_ids: dict[str, int] = {}
 
     @property
     def adapter_type(self) -> str:
@@ -81,11 +84,12 @@ class HidapiAdapter(ControllerIOAdapter):
             current_paths.add(path)
 
             if serial not in self._devices:
-                self._try_open_device(serial, path)
+                product_id = dev_info.get("product_id", PRODUCT_ID_ZCM1)
+                self._try_open_device(serial, path, product_id)
 
         return current_paths
 
-    def _try_open_device(self, serial: str, path: str) -> None:
+    def _try_open_device(self, serial: str, path: str, product_id: int = PRODUCT_ID_ZCM1) -> None:
         """Attempt to open a single HID device."""
         try:
             device = hid.device()
@@ -93,7 +97,9 @@ class HidapiAdapter(ControllerIOAdapter):
             device.set_nonblocking(True)
             self._devices[serial] = device
             self._paths[serial] = path
-            logger.info(f"Opened PS Move controller: {serial} at {path!r}")
+            self._product_ids[serial] = product_id
+            model = "ZCM1" if product_id == PRODUCT_ID_ZCM1 else "ZCM2"
+            logger.info(f"Opened PS Move controller: {serial} ({model}) at {path!r}")
         except Exception as e:
             logger.warning(f"Failed to open PS Move at {path!r}: {e}")
 
@@ -122,6 +128,7 @@ class HidapiAdapter(ControllerIOAdapter):
                     device.set_nonblocking(True)
                     self._devices[serial] = device
                     self._paths[serial] = dev_info["path"]
+                    self._product_ids[serial] = dev_info.get("product_id", PRODUCT_ID_ZCM1)
                     return True
                 except Exception as e:
                     logger.error(f"Failed to open controller {serial}: {e}")
@@ -195,6 +202,13 @@ class HidapiAdapter(ControllerIOAdapter):
             logger.error(f"Error reading controller state {serial}: {e}", exc_info=True)
             return None
 
+    def _build_report(self, serial: str, r: int, g: int, b: int, rumble: int) -> bytes:
+        """Build the correct output report for the controller's hardware model."""
+        product_id = self._product_ids.get(serial, PRODUCT_ID_ZCM1)
+        if product_id == PRODUCT_ID_ZCM1:
+            return build_output_report(r=r, g=g, b=b, rumble=rumble)
+        return build_output_report_zcm2(r=r, g=g, b=b, rumble=rumble)
+
     def set_output(self, serial: str, r: int, g: int, b: int, rumble: int) -> bool:
         """Write LED color and rumble via HID output report."""
         device = self._devices.get(serial)
@@ -202,7 +216,7 @@ class HidapiAdapter(ControllerIOAdapter):
             return False
 
         try:
-            report = build_output_report(r=r, g=g, b=b, rumble=rumble)
+            report = self._build_report(serial, r=r, g=g, b=b, rumble=rumble)
             device.write(report)
             return True
         except OSError as e:
@@ -219,13 +233,14 @@ class HidapiAdapter(ControllerIOAdapter):
 
     def close_all(self) -> None:
         """Turn off all LEDs/rumble and close all devices."""
-        for device in self._devices.values():
+        for serial, device in self._devices.items():
             with contextlib.suppress(Exception):
-                report = build_output_report(r=0, g=0, b=0, rumble=0)
+                report = self._build_report(serial, r=0, g=0, b=0, rumble=0)
                 device.write(report)
                 device.close()
         self._devices.clear()
         self._paths.clear()
+        self._product_ids.clear()
 
     def _cleanup(self, serial: str) -> None:
         """Remove a controller that is no longer accessible."""
@@ -234,4 +249,5 @@ class HidapiAdapter(ControllerIOAdapter):
             with contextlib.suppress(Exception):
                 device.close()
         self._paths.pop(serial, None)
+        self._product_ids.pop(serial, None)
         logger.info(f"Cleaned up controller {serial}")

@@ -24,7 +24,7 @@ _mock_hid.device = MagicMock
 sys.modules.setdefault("hidraw", _mock_hid)
 
 from lib.controller_constants import AxisKey, ButtonKey, StateKey  # noqa: E402
-from lib.psmove_hid import Button  # noqa: E402
+from lib.psmove_hid import PRODUCT_ID_ZCM1, PRODUCT_ID_ZCM2, Button  # noqa: E402
 from services.controller_manager.multiplexer.hidapi_adapter import (  # noqa: E402
     ACCEL_SCALE,
     HidapiAdapter,
@@ -42,9 +42,13 @@ FAKE_SERIAL_2_RAW = "11:22:33:44:55:66"
 FAKE_SERIAL_2_NORMALIZED = "112233445566"
 
 
-def _make_dev_info(path: bytes = FAKE_PATH_1, serial: str = FAKE_SERIAL_RAW) -> dict:
+def _make_dev_info(
+    path: bytes = FAKE_PATH_1,
+    serial: str = FAKE_SERIAL_RAW,
+    product_id: int = PRODUCT_ID_ZCM1,
+) -> dict:
     """Return a fake HID enumeration dict entry."""
-    return {"path": path, "serial_number": serial}
+    return {"path": path, "serial_number": serial, "product_id": product_id}
 
 
 def _make_parsed_report(
@@ -81,6 +85,7 @@ class TestHidapiAdapterInit:
         adapter = HidapiAdapter()
         assert len(adapter._devices) == 0
         assert len(adapter._paths) == 0
+        assert len(adapter._product_ids) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +225,32 @@ class TestDiscover:
 
         # No device read should have been attempted
         mock_hid.device.assert_not_called()
+
+    @patch("services.controller_manager.multiplexer.hidapi_adapter.hid")
+    def test_discover_stores_product_id(self, mock_hid):
+        """discover() stores the product_id from enumeration."""
+        mock_hid.enumerate.return_value = [
+            _make_dev_info(product_id=PRODUCT_ID_ZCM2),
+        ]
+        mock_hid.device.return_value = MagicMock()
+
+        adapter = HidapiAdapter()
+        adapter.discover()
+
+        assert adapter._product_ids[FAKE_SERIAL_NORMALIZED] == PRODUCT_ID_ZCM2
+
+    @patch("services.controller_manager.multiplexer.hidapi_adapter.hid")
+    def test_discover_defaults_product_id_to_zcm1(self, mock_hid):
+        """discover() defaults product_id to ZCM1 when not in dev_info."""
+        mock_hid.enumerate.return_value = [
+            {"path": FAKE_PATH_1, "serial_number": FAKE_SERIAL_RAW},
+        ]
+        mock_hid.device.return_value = MagicMock()
+
+        adapter = HidapiAdapter()
+        adapter.discover()
+
+        assert adapter._product_ids[FAKE_SERIAL_NORMALIZED] == PRODUCT_ID_ZCM1
 
 
 # ---------------------------------------------------------------------------
@@ -566,6 +597,48 @@ class TestSetOutput:
         # Device should still be tracked (not cleaned up)
         assert FAKE_SERIAL_NORMALIZED in adapter._devices
 
+    @patch("services.controller_manager.multiplexer.hidapi_adapter.build_output_report_zcm2")
+    @patch("services.controller_manager.multiplexer.hidapi_adapter.hid")
+    def test_set_output_zcm2_uses_zcm2_report(self, mock_hid, mock_build_zcm2):
+        """set_output() uses build_output_report_zcm2 for ZCM2 controllers."""
+        mock_device = MagicMock()
+        mock_hid.enumerate.return_value = [
+            _make_dev_info(product_id=PRODUCT_ID_ZCM2),
+        ]
+        mock_hid.device.return_value = mock_device
+        fake_report = b"\x06" + b"\x00" * 8
+        mock_build_zcm2.return_value = fake_report
+
+        adapter = HidapiAdapter()
+        adapter.discover()
+
+        result = adapter.set_output(FAKE_SERIAL_NORMALIZED, 100, 200, 50, 30)
+
+        assert result is True
+        mock_build_zcm2.assert_called_once_with(r=100, g=200, b=50, rumble=30)
+        mock_device.write.assert_called_once_with(fake_report)
+
+    @patch("services.controller_manager.multiplexer.hidapi_adapter.build_output_report")
+    @patch("services.controller_manager.multiplexer.hidapi_adapter.hid")
+    def test_set_output_zcm1_uses_zcm1_report(self, mock_hid, mock_build):
+        """set_output() uses build_output_report for ZCM1 controllers."""
+        mock_device = MagicMock()
+        mock_hid.enumerate.return_value = [
+            _make_dev_info(product_id=PRODUCT_ID_ZCM1),
+        ]
+        mock_hid.device.return_value = mock_device
+        fake_report = b"\x02" + b"\x00" * 48
+        mock_build.return_value = fake_report
+
+        adapter = HidapiAdapter()
+        adapter.discover()
+
+        result = adapter.set_output(FAKE_SERIAL_NORMALIZED, 100, 200, 50, 30)
+
+        assert result is True
+        mock_build.assert_called_once_with(r=100, g=200, b=50, rumble=30)
+        mock_device.write.assert_called_once_with(fake_report)
+
 
 # ---------------------------------------------------------------------------
 # Tests: close() / close_all()
@@ -616,6 +689,7 @@ class TestClose:
 
         assert len(adapter._devices) == 0
         assert len(adapter._paths) == 0
+        assert len(adapter._product_ids) == 0
         mock_build.assert_called_with(r=0, g=0, b=0, rumble=0)
         mock_device_1.write.assert_called_once()
         mock_device_1.close.assert_called_once()
@@ -647,8 +721,8 @@ class TestClose:
 
 class TestCleanup:
     @patch("services.controller_manager.multiplexer.hidapi_adapter.hid")
-    def test_cleanup_removes_device_and_path(self, mock_hid):
-        """_cleanup() removes from both _devices and _paths."""
+    def test_cleanup_removes_device_path_and_product_id(self, mock_hid):
+        """_cleanup() removes from _devices, _paths, and _product_ids."""
         mock_device = MagicMock()
         mock_hid.enumerate.return_value = [_make_dev_info()]
         mock_hid.device.return_value = mock_device
@@ -659,6 +733,7 @@ class TestCleanup:
 
         assert FAKE_SERIAL_NORMALIZED not in adapter._devices
         assert FAKE_SERIAL_NORMALIZED not in adapter._paths
+        assert FAKE_SERIAL_NORMALIZED not in adapter._product_ids
         mock_device.close.assert_called_once()
 
     @patch("services.controller_manager.multiplexer.hidapi_adapter.hid")

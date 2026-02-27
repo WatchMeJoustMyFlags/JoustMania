@@ -16,11 +16,14 @@ sys.path.insert(0, str(project_root))
 from lib.psmove_hid import (
     INPUT_REPORT_SIZE,
     OUTPUT_REPORT_SIZE,
+    OUTPUT_REPORT_SIZE_ZCM1,
+    OUTPUT_REPORT_SIZE_ZCM2,
     Battery,
     Button,
     Frame,
     battery_to_percent,
     build_output_report,
+    build_output_report_zcm2,
     parse_input_report,
 )
 
@@ -367,6 +370,94 @@ class TestOutputReport:
         report = build_output_report(r=255, g=255, b=255, rumble=255)
         for i in range(7, OUTPUT_REPORT_SIZE):
             assert report[i] == 0, f"Byte {i} should be 0, got {report[i]}"
+
+
+class TestOutputReportZCM2:
+    """Test ZCM2 (PS4-era) output report building."""
+
+    def test_output_report_size(self):
+        report = build_output_report_zcm2()
+        assert len(report) == OUTPUT_REPORT_SIZE_ZCM2
+
+    def test_output_report_type_byte(self):
+        report = build_output_report_zcm2()
+        assert report[0] == 0x06
+
+    def test_rgb_values(self):
+        report = build_output_report_zcm2(r=255, g=128, b=64)
+        assert report[2] == 255
+        assert report[3] == 128
+        assert report[4] == 64
+
+    def test_rumble_value(self):
+        report = build_output_report_zcm2(rumble=200)
+        assert report[6] == 200
+
+    def test_all_zeros(self):
+        report = build_output_report_zcm2(r=0, g=0, b=0, rumble=0)
+        assert report[2] == 0
+        assert report[3] == 0
+        assert report[4] == 0
+        assert report[6] == 0
+
+    def test_clamps_values(self):
+        """Values outside 0-255 should be clamped."""
+        report = build_output_report_zcm2(r=300, g=-10, b=256, rumble=999)
+        assert report[2] == 255  # r clamped
+        assert report[3] == 0  # g clamped
+        assert report[4] == 255  # b clamped
+        assert report[6] == 255  # rumble clamped
+
+    def test_padding_is_zeros(self):
+        """Bytes after rumble should be zero."""
+        report = build_output_report_zcm2(r=255, g=255, b=255, rumble=255)
+        for i in range(7, OUTPUT_REPORT_SIZE_ZCM2):
+            assert report[i] == 0, f"Byte {i} should be 0, got {report[i]}"
+
+    def test_reserved_byte_1_is_zero(self):
+        """Byte 1 (reserved) should always be zero."""
+        report = build_output_report_zcm2(r=255, g=255, b=255, rumble=255)
+        assert report[1] == 0
+
+    def test_reserved_byte_5_is_zero(self):
+        """Byte 5 (rumble2) should always be zero."""
+        report = build_output_report_zcm2(r=255, g=255, b=255, rumble=255)
+        assert report[5] == 0
+
+    def test_same_rgb_layout_as_zcm1(self):
+        """ZCM2 and ZCM1 share the same R/G/B/rumble byte positions."""
+        zcm1 = build_output_report(r=100, g=150, b=200, rumble=50)
+        zcm2 = build_output_report_zcm2(r=100, g=150, b=200, rumble=50)
+        # Same byte positions for color and rumble data
+        assert zcm1[2:5] == zcm2[2:5]  # R, G, B
+        assert zcm1[6] == zcm2[6]  # rumble
+
+    def test_different_report_id_from_zcm1(self):
+        """ZCM2 uses report ID 0x06, not 0x02."""
+        zcm1 = build_output_report()
+        zcm2 = build_output_report_zcm2()
+        assert zcm1[0] == 0x02
+        assert zcm2[0] == 0x06
+
+    def test_different_size_from_zcm1(self):
+        """ZCM2 report is 9 bytes, ZCM1 is 49 bytes."""
+        zcm1 = build_output_report()
+        zcm2 = build_output_report_zcm2()
+        assert len(zcm1) == OUTPUT_REPORT_SIZE_ZCM1
+        assert len(zcm2) == OUTPUT_REPORT_SIZE_ZCM2
+
+
+class TestOutputReportSizeConstants:
+    """Test output report size constants are consistent."""
+
+    def test_zcm1_size_matches_default(self):
+        assert OUTPUT_REPORT_SIZE == OUTPUT_REPORT_SIZE_ZCM1
+
+    def test_zcm1_is_49(self):
+        assert OUTPUT_REPORT_SIZE_ZCM1 == 49
+
+    def test_zcm2_is_9(self):
+        assert OUTPUT_REPORT_SIZE_ZCM2 == 9
 
 
 class TestButtonIntFlag:
