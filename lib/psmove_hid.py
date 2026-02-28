@@ -7,6 +7,8 @@ replacing the need for psmoveapi C library for basic controller I/O.
 The PS Move uses standard HID over Bluetooth with:
 - 49-byte input reports (buttons, trigger, accelerometer, gyroscope, battery)
 - 9-byte output reports (report 0x06 SetLEDs: LED RGB, rumble)
+- Feature report 0x04 GET (16 bytes): read controller + host BT addresses
+- Feature report 0x05 SET (23 bytes): write new host BT address for pairing
 
 References:
 - https://github.com/nitsch/movern/wiki/Input-report
@@ -26,6 +28,12 @@ ALL_PRODUCT_IDS = (PRODUCT_ID_ZCM1, PRODUCT_ID_ZCM2, PRODUCT_ID_ZCM2E)
 # HID report sizes
 INPUT_REPORT_SIZE = 49
 OUTPUT_REPORT_SIZE = 9  # Output report 0x06 (SetLEDs, works for all models)
+
+# Feature report IDs and sizes (USB pairing)
+FEATURE_REPORT_GET_BTADDR = 0x04
+FEATURE_REPORT_SET_BTADDR = 0x05
+FEATURE_REPORT_GET_SIZE = 16
+FEATURE_REPORT_SET_SIZE = 23
 
 
 class Button(IntFlag):
@@ -216,4 +224,72 @@ def build_output_report(r: int = 0, g: int = 0, b: int = 0, rumble: int = 0) -> 
     # Byte 5: 0x00 (rumble2, reserved)
     report[6] = rumble
     # Bytes 7-8: 0x00 (padding)
+    return bytes(report)
+
+
+# ---------------------------------------------------------------------------
+# Feature report helpers for USB pairing (report 0x04 GET / 0x05 SET)
+# ---------------------------------------------------------------------------
+
+
+def _mac_bytes_to_string(data: bytes) -> str:
+    """Convert 6 LSB-first bytes to 'AA:BB:CC:DD:EE:FF'.
+
+    The PS Move stores MAC addresses in reverse (least-significant byte first),
+    so we reverse before formatting.
+    """
+    return ":".join(f"{b:02X}" for b in reversed(data[:6]))
+
+
+def _mac_string_to_bytes(mac: str) -> bytes:
+    """Convert 'AA:BB:CC:DD:EE:FF' to 6 LSB-first bytes.
+
+    Reverses the octets so the most-significant byte ends up last,
+    matching the PS Move's wire format.
+    """
+    octets = [int(x, 16) for x in mac.split(":")]
+    if len(octets) != 6:
+        raise ValueError(f"Invalid MAC address: {mac}")
+    return bytes(reversed(octets))
+
+
+def parse_btaddr_report(data: bytes) -> tuple[str, str]:
+    """Parse a GET_FEATURE 0x04 report into controller and host MAC addresses.
+
+    Report layout (16 bytes):
+        [0x04, ctrl[0..5], pad(3B), host[0..5]]
+    Bytes 1-6: controller BT address (LSB-first).
+    Bytes 10-15: host BT address (LSB-first).
+
+    Args:
+        data: Raw 16-byte feature report (may include leading report ID).
+
+    Returns:
+        (controller_mac, host_mac) as 'AA:BB:CC:DD:EE:FF' strings.
+
+    Raises:
+        ValueError: If data is too short.
+    """
+    if len(data) < FEATURE_REPORT_GET_SIZE:
+        raise ValueError(f"Feature report too short: {len(data)} bytes (need {FEATURE_REPORT_GET_SIZE})")
+    controller_mac = _mac_bytes_to_string(data[1:7])
+    host_mac = _mac_bytes_to_string(data[10:16])
+    return controller_mac, host_mac
+
+
+def build_set_btaddr_report(host_mac: str) -> bytes:
+    """Build a SET_FEATURE 0x05 report to write a new host BT address.
+
+    Report layout (23 bytes):
+        [0x05, addr[0..5], 0x00 * 16]
+
+    Args:
+        host_mac: Target host address as 'AA:BB:CC:DD:EE:FF'.
+
+    Returns:
+        23-byte feature report ready for send_feature_report().
+    """
+    report = bytearray(FEATURE_REPORT_SET_SIZE)
+    report[0] = FEATURE_REPORT_SET_BTADDR
+    report[1:7] = _mac_string_to_bytes(host_mac)
     return bytes(report)

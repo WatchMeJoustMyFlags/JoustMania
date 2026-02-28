@@ -1,30 +1,28 @@
 """USB controller pairing for PS Move controllers.
 
-Uses the psmove Python bindings (like the original JoustMania) for reliable
-adapter selection via pair_custom().
+Uses hidapi (hidraw backend) for direct HID feature report access,
+replacing the psmoveapi C library and its GIL-blocking pair_custom().
 """
 
 import logging
 import time
 
+import hidraw as hid
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
-# Import config first to set up psmoveapi path
-from .config import DEBUG, get_poll_interval
-
-# Now import psmove (path was set up by config)
-try:
-    import psmove
-except ImportError as e:
-    raise ImportError(
-        "psmove module not found. Ensure PSMOVEAPI_BUILD_PATH is set correctly "
-        "and psmoveapi is built with Python bindings."
-    ) from e
+from lib.psmove_hid import (
+    ALL_PRODUCT_IDS,
+    FEATURE_REPORT_GET_BTADDR,
+    FEATURE_REPORT_GET_SIZE,
+    VENDOR_ID,
+    build_set_btaddr_report,
+    parse_btaddr_report,
+)
 
 from .adapter_manager import AdapterManager, restart_systemd_unit
+from .config import DEBUG, get_poll_interval
 from .metrics import (
-    calibration_duration_seconds,
     pairing_adapter_device_count,
     pairing_adapter_selected_total,
     pairing_attempts_total,
@@ -46,65 +44,71 @@ _ATTR_ADAPTER_ADDRESS = "adapter.address"
 class USBPairing:
     """Handles USB-connected PS Move controller pairing.
 
-    Uses the psmove Python bindings with pair_custom() for reliable
-    adapter selection, matching the original JoustMania approach.
+    Uses hidapi to read/write HID feature reports for BT address
+    management, replacing the psmoveapi C library.
     """
 
-    def __init__(self, tracer: trace.Tracer, psmove_path: str):
+    def __init__(self, tracer: trace.Tracer):
         self.tracer = tracer
-        self.psmove_cli = psmove_path  # Keep for calibration
         self.poll_count = 0
         self.adapter_manager = AdapterManager()
         # Track controllers verified this session to avoid re-processing every poll
         self._verified_serials: set[str] = set()
 
-    def get_usb_controllers_psmove(self) -> list[tuple[int, str]]:
-        """Get list of USB-connected controllers using psmove library.
+    def get_usb_controllers(self) -> list[tuple[bytes, str]]:
+        """Get list of USB-connected controllers using hidapi.
+
+        Enumerates HID devices matching PS Move vendor/product IDs,
+        filters to USB-only (interface_number >= 0), and reads the
+        controller's BT MAC from feature report 0x04.
 
         Returns:
-            List of tuples (index, serial) for USB-connected controllers
+            List of tuples (device_path, serial) for USB-connected controllers.
         """
-        connected = psmove.count_connected()
-        logger.debug(f"psmove.count_connected() = {connected}")
-        pairing_usb_controllers.set(0)  # Will update below
+        pairing_usb_controllers.set(0)
 
-        usb_controllers = []
-        for i in range(connected):
+        usb_controllers: list[tuple[bytes, str]] = []
+        devices = [d for pid in ALL_PRODUCT_IDS for d in hid.enumerate(VENDOR_ID, pid)]
+
+        for dev_info in devices:
+            # BT devices return interface_number == -1; USB returns >= 0
+            if dev_info.get("interface_number", -1) < 0:
+                continue
+
+            path = dev_info["path"]
             try:
-                move = psmove.PSMove(i)
-                if move.connection_type == psmove.Conn_USB:
-                    serial = move.get_serial()
-                    if serial:
-                        usb_controllers.append((i, serial.upper()))
-                        logger.debug(f"USB controller {i}: {serial}")
+                device = hid.device()
+                device.open_path(path)
+                try:
+                    report = device.get_feature_report(FEATURE_REPORT_GET_BTADDR, FEATURE_REPORT_GET_SIZE)
+                    if isinstance(report, list):
+                        report = bytes(report)
+                    serial, _ = parse_btaddr_report(report)
+                    usb_controllers.append((path, serial.upper()))
+                    logger.debug(f"USB controller at {path!r}: {serial}")
+                finally:
+                    device.close()
             except Exception as e:
-                logger.debug(f"Error accessing controller {i}: {e}")
+                logger.debug(f"Error reading controller at {path!r}: {e}")
 
         pairing_usb_controllers.set(len(usb_controllers))
         return usb_controllers
 
-    async def pair_controller_psmove(self, move_index: int, serial: str, adapter_address: str) -> bool:
-        """Pair a controller using psmove Python library's pair_custom().
+    async def pair_controller(self, device_path: bytes, serial: str, adapter_address: str) -> bool:
+        """Pair a controller by writing the host BT address via HID feature report.
 
-        For ZCM2 (PS4-era) controllers, pair_custom() blocks indefinitely in
-        its internal PIN agent (which can't work in Docker because systemctl
-        fails). Since the C code holds the GIL, threading timeouts don't work.
-
-        We run pair_custom() in a subprocess with a timeout. The controller's
-        BT address and BlueZ device files are written before the PIN agent
-        starts, so killing the subprocess after timeout is safe. Our own
-        bluetoothctl agent handles PIN after BlueZ is restarted.
+        Opens the device, reads the current host address, and writes the
+        new adapter address if it differs. Direct HID call (~ms), no
+        subprocess or GIL issues.
 
         Args:
-            move_index: Controller index from psmove.count_connected()
+            device_path: HID device path from enumerate()
             serial: Controller MAC address
             adapter_address: Target Bluetooth adapter address
 
         Returns:
-            True if pairing succeeded (or timed out after address was written)
+            True if pairing succeeded.
         """
-        import asyncio
-
         logger.info(f"Pairing controller {serial} to adapter {adapter_address}...")
 
         with self.tracer.start_as_current_span("pair_controller") as span:
@@ -113,56 +117,35 @@ class USBPairing:
             start_time = time.time()
 
             try:
-                move = psmove.PSMove(move_index)
-                if move.connection_type != psmove.Conn_USB:
-                    logger.warning(f"Controller {serial} not connected via USB")
-                    span.set_status(Status(StatusCode.ERROR, "Not USB connected"))
-                    return False
-                # Release the PSMove handle before subprocess uses it
-                del move
-
-                # Run pair_custom in a subprocess to avoid GIL blocking
-                script = (
-                    "import psmove; "
-                    f"m = psmove.PSMove({move_index}); "
-                    f"r = m.pair_custom('{adapter_address}'); "
-                    "print('OK' if r else 'FAIL')"
-                )
-                proc = await asyncio.create_subprocess_exec(
-                    "python",
-                    "-c",
-                    script,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-
+                device = hid.device()
+                device.open_path(device_path)
                 try:
-                    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
-                    output = stdout.decode().strip()
-                    result = output == "OK"
-                except TimeoutError:
-                    logger.info(
-                        f"pair_custom() timed out for {serial} (ZCM2 PIN agent blocking) "
-                        "- address written, will handle PIN via bluetoothctl agent"
-                    )
-                    proc.kill()
-                    await proc.wait()
-                    # Timeout is expected for ZCM2 — address was already written
-                    result = True
+                    # Read current host address
+                    report = device.get_feature_report(FEATURE_REPORT_GET_BTADDR, FEATURE_REPORT_GET_SIZE)
+                    if isinstance(report, list):
+                        report = bytes(report)
+                    _, current_host = parse_btaddr_report(report)
+                    span.set_attribute("pair.current_host", current_host)
+
+                    if current_host.upper() == adapter_address.upper():
+                        logger.info(f"Controller {serial} already paired to {adapter_address}")
+                        span.set_attribute("pair.already_paired", True)
+                    else:
+                        logger.info(f"Writing host address {adapter_address} (was {current_host})")
+
+                    # Write new host address (idempotent — safe to write even if same)
+                    set_report = build_set_btaddr_report(adapter_address)
+                    device.send_feature_report(set_report)
+                finally:
+                    device.close()
 
                 duration = time.time() - start_time
                 pairing_duration_seconds.observe(duration)
-
-                span.set_attribute("pair.result", result)
+                span.set_attribute("pair.result", True)
                 span.set_attribute("pair.duration_seconds", duration)
-
-                if result:
-                    logger.info(f"pair_custom() succeeded for {serial}")
-                    span.set_status(Status(StatusCode.OK))
-                    return True
-                logger.error(f"pair_custom() returned False for {serial}")
-                span.set_status(Status(StatusCode.ERROR, "pair_custom failed"))
-                return False
+                logger.info(f"Pairing succeeded for {serial}")
+                span.set_status(Status(StatusCode.OK))
+                return True
 
             except Exception as e:
                 duration = time.time() - start_time
@@ -170,30 +153,6 @@ class USBPairing:
                 logger.error(f"Exception during pairing: {e}", exc_info=DEBUG)
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 return False
-
-    async def calibrate_controller(self, serial: str) -> bool:
-        """Calibrate the controller using CLI tool."""
-        logger.info("Calibrating controller...")
-
-        with self.tracer.start_as_current_span("calibrate_controller") as span:
-            span.set_attribute(_ATTR_CONTROLLER_SERIAL, serial)
-            start_time = time.time()
-
-            exit_code, output = await run_command([self.psmove_cli, "calibrate"])
-            duration = time.time() - start_time
-            calibration_duration_seconds.observe(duration)
-
-            logger.debug(f"Calibrate output: {output}")
-            span.set_attribute("calibrate.exit_code", exit_code)
-            span.set_attribute("calibrate.duration_seconds", duration)
-
-            if exit_code != 0:
-                logger.warning(f"Calibration returned non-zero: {exit_code}")
-                span.set_status(Status(StatusCode.ERROR, "Calibration returned non-zero"))
-            else:
-                span.set_status(Status(StatusCode.OK))
-
-            return exit_code == 0
 
     async def restart_bluetooth_service(self) -> None:
         """Restart the host's BlueZ bluetooth service via D-Bus systemd interface.
@@ -242,7 +201,7 @@ class USBPairing:
         logger.warning(f"bluetoothctl trust failed for {serial}, continuing anyway")
         return False
 
-    async def process_controller(self, move_index: int, serial: str) -> bool:
+    async def process_controller(self, device_path: bytes, serial: str) -> bool:
         """Process a single USB-connected controller with load-balanced adapter selection."""
         with self.tracer.start_as_current_span("process_controller") as span:
             span.set_attribute(_ATTR_CONTROLLER_SERIAL, serial)
@@ -258,11 +217,7 @@ class USBPairing:
 
             already_in_bluez = not self.adapter_manager.check_if_not_paired(serial)
             if already_in_bluez:
-                # BlueZ has a device record, but the controller's internal host
-                # address may point to a different system. Always run pair_custom()
-                # to verify and fix if needed — it's idempotent (only writes if
-                # the host address actually differs).
-                logger.info(f"Controller {serial} in BlueZ device list, verifying host address via pair_custom()")
+                logger.info(f"Controller {serial} in BlueZ device list, verifying host address")
                 span.set_attribute("verify_existing", True)
             else:
                 logger.info(f"Found unpaired USB controller: {serial}")
@@ -288,8 +243,8 @@ class USBPairing:
             pairing_adapter_selected_total.labels(adapter=adapter.address).inc()
             pairing_adapter_device_count.labels(adapter=adapter.address).set(adapter.device_count)
 
-            # Pair controller to selected adapter using Python bindings
-            if not await self.pair_controller_psmove(move_index, serial, adapter.address):
+            # Pair controller to selected adapter via HID feature report
+            if not await self.pair_controller(device_path, serial, adapter.address):
                 logger.error(f"PAIRING FAILED: Controller {serial} could not be paired")
                 pairing_failed_total.inc()
                 span.set_status(Status(StatusCode.ERROR, "Pairing failed"))
@@ -300,9 +255,6 @@ class USBPairing:
 
             # Trust device in BlueZ (for ZCM2, agent handles PIN at connect time)
             await self.bluez_trust_controller(serial)
-
-            # Calibrate
-            await self.calibrate_controller(serial)
 
             # Mark as verified so we don't re-process every poll cycle
             self._verified_serials.add(serial)
@@ -326,8 +278,8 @@ class USBPairing:
         with self.tracer.start_as_current_span("poll_cycle") as span:
             span.set_attribute("poll.count", self.poll_count)
 
-            # Get USB controllers using psmove library
-            controllers = self.get_usb_controllers_psmove()
+            # Get USB controllers using hidapi
+            controllers = self.get_usb_controllers()
             span.set_attribute("controllers.count", len(controllers))
 
             if not controllers:
@@ -335,8 +287,8 @@ class USBPairing:
                 return
 
             # Process each controller
-            for move_index, serial in controllers:
-                await self.process_controller(move_index, serial)
+            for device_path, serial in controllers:
+                await self.process_controller(device_path, serial)
 
     async def run_loop(self) -> None:
         """USB polling loop.
@@ -346,7 +298,6 @@ class USBPairing:
         import asyncio
 
         logger.info(f"Starting USB poll loop (interval: {get_poll_interval()}s)")
-        logger.info(f"Using psmove Python bindings (psmove.Conn_USB={psmove.Conn_USB})")
 
         while True:
             try:

@@ -237,7 +237,6 @@ services:
       dockerfile: services/pairing_daemon/Dockerfile
       args:
         BUILDER_IMAGE: ${BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/builder:latest}
-        PSMOVE_BUILDER_IMAGE: ${PSMOVE_BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/psmove-builder:latest}
     container_name: joustmania-pairing-daemon
     privileged: true
     pid: "host"
@@ -251,12 +250,9 @@ services:
       - /var/lib/bluetooth:/var/lib/bluetooth
       # USB device access
       - /dev:/dev:rslave
-      # PS Move calibration data (shared with controller-manager)
-      - psmoveapi-data:/root/.psmoveapi
     # Port 8002 (health) binds directly on host via network_mode: host
     environment:
       - METRICS_PORT=8002
-      - PSMOVE_PATH=/usr/local/bin/psmove
       - DBUS_SYSTEM_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket
       - OTEL_SERVICE_NAME=pairing-daemon
       - OTEL_SERVICE_NAMESPACE=infrastructure

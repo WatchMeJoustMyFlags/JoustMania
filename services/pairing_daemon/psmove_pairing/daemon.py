@@ -22,10 +22,9 @@ _HEALTH_STALENESS_THRESHOLD = 60.0  # seconds
 class PairingDaemon:
     """PS Move controller pairing daemon with async Bluetooth monitoring."""
 
-    def __init__(self, tracer: trace.Tracer, psmove_path: str):
+    def __init__(self, tracer: trace.Tracer):
         self.tracer = tracer
-        self.psmove = psmove_path
-        self.usb_pairing = USBPairing(tracer, psmove_path)
+        self.usb_pairing = USBPairing(tracer)
         self.bt_monitor = BluetoothMonitor(tracer)
 
         # Health tracking timestamps
@@ -33,7 +32,7 @@ class PairingDaemon:
         self._last_bt_monitor: float = 0.0
         self._startup_time: float = time.time()
 
-        logger.info(f"PairingDaemon initialized with psmove: {self.psmove}")
+        logger.info("PairingDaemon initialized")
 
     async def validate_prerequisites(self) -> bool:
         """Validate that required tools are available.
@@ -41,11 +40,6 @@ class PairingDaemon:
         Returns True if all prerequisites are met, False otherwise.
         """
         errors = []
-
-        # Check psmove binary
-        exit_code, output = await run_command([self.psmove, "list"])
-        if exit_code != 0:
-            errors.append(f"psmove binary failed: {output}")
 
         # Check bluetoothctl
         if not shutil.which("bluetoothctl"):
@@ -145,7 +139,6 @@ class PairingDaemon:
     async def run(self) -> None:
         """Main daemon loop with concurrent USB polling and Bluetooth monitoring."""
         logger.info("PS Move Pairing Daemon started")
-        logger.info(f"  psmove binary: {self.psmove}")
         logger.info(f"  USB poll interval: {get_poll_interval()}s")
         logger.info(f"  Bluetooth monitor interval: {get_bt_monitor_interval()}s")
         logger.info(f"  debug mode: {DEBUG}")

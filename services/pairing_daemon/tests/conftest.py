@@ -1,11 +1,13 @@
 """
 Pytest fixtures for pairing daemon tests.
 
-Mocks psmove module and provides test utilities.
+Mocks hidraw module and provides test utilities.
 """
 
 import os
 import sys
+from types import ModuleType
+from unittest.mock import MagicMock
 
 # Disable OTEL metrics before importing modules that use them
 from lib.otel_metrics import disable_metrics_for_tests
@@ -16,14 +18,11 @@ disable_metrics_for_tests()
 os.environ["OTEL_SDK_DISABLED"] = "true"
 os.environ["OTEL_TRACES_EXPORTER"] = "none"
 
-# Mock psmove module before it gets imported
-from unittest.mock import MagicMock
-
-mock_psmove = MagicMock()
-mock_psmove.Conn_USB = 1
-mock_psmove.Conn_Bluetooth = 2
-mock_psmove.count_connected.return_value = 0
-sys.modules["psmove"] = mock_psmove
+# Mock hidraw module before it gets imported (same pattern as test_hidapi_adapter.py)
+_mock_hid = ModuleType("hidraw")
+_mock_hid.enumerate = MagicMock(return_value=[])
+_mock_hid.device = MagicMock
+sys.modules.setdefault("hidraw", _mock_hid)
 
 import pytest
 
@@ -87,12 +86,6 @@ def mock_tracer():
     span.__exit__ = MagicMock(return_value=False)
     tracer.start_as_current_span.return_value = span
     return tracer
-
-
-@pytest.fixture
-def mock_psmove_module():
-    """Provide a configurable mock psmove module."""
-    return mock_psmove
 
 
 # Sample command outputs for testing
