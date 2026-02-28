@@ -186,7 +186,6 @@ services:
       dockerfile: services/controller_manager/Dockerfile
       args:
         BUILDER_IMAGE: ${BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/builder:latest}
-        PSMOVE_BUILDER_IMAGE: ${PSMOVE_BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/psmove-builder:latest}
     container_name: joustmania-controller-manager
     privileged: true
     # Required for controller hot-plug: run in host PID namespace to see new devices
@@ -196,8 +195,6 @@ services:
       - /var/run/dbus:/var/run/dbus:ro
       # Bluetooth device info (read-only, pairing handled by host daemon)
       - /var/lib/bluetooth:/var/lib/bluetooth:ro
-      # PS Move calibration data (shared with pairing daemon)
-      - psmoveapi-data:/root/.psmoveapi:ro
       # Mount devtmpfs with rslave for hot-plug device visibility
       - /dev:/dev:rslave
       # Persist controller names across restarts

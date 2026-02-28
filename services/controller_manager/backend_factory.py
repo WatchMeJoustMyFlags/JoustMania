@@ -5,7 +5,7 @@ Detects platform and creates appropriate backend instance.
 
 Backend selection priority:
   1. OpenFeature "controller_backend" flag (runtime-switchable via flagd)
-  2. Platform auto-detection (Linux -> bluetooth)
+  2. Platform auto-detection (Linux -> hidapi)
 
 Flag values are read once at startup.
 Runtime changes to these flags require a service restart to take effect.
@@ -67,10 +67,6 @@ def _create_adapter_by_name(name: str) -> ControllerIOAdapter:
             from services.controller_manager.multiplexer.mock_adapter import MockAdapter
 
             return MockAdapter(num_controllers=0)
-        case "bluetooth":
-            from services.controller_manager.multiplexer.psmove_adapter import PsMoveAdapter
-
-            return PsMoveAdapter()
         case "hidapi":
             from services.controller_manager.multiplexer.hidapi_adapter import HidapiAdapter
 
@@ -83,16 +79,11 @@ def _create_bt_discovery(names: list[str]) -> CentralizedBTDiscovery | None:
     """Create CentralizedBTDiscovery if any backend needs Bluetooth.
 
     Returns None if no backend in the list uses Bluetooth.
-    Discovery mode is determined by the backend type:
-    - "bluez" for BluetoothBackend (psmoveapi + BlueZ scanning)
-    - "hidapi" for HidapiBackend (hid.enumerate scanning)
     """
     from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDiscovery
 
-    if "bluetooth" in names:
-        return CentralizedBTDiscovery(discovery_mode="bluez")
     if "hidapi" in names:
-        return CentralizedBTDiscovery(discovery_mode="hidapi")
+        return CentralizedBTDiscovery()
     return None
 
 
@@ -133,7 +124,7 @@ def create_backend() -> ControllerBackend:
 
     Selection priority:
         1. OpenFeature "controller_backend" flag from performance domain
-        2. Platform auto-detection (Linux -> bluetooth)
+        2. Platform auto-detection (Linux -> hidapi)
 
     Creates ControllerIOAdapter instances wrapped in MultiplexerBackend.
     Comma-separated flag values (e.g. "mock,bluetooth") create multiple
@@ -152,7 +143,7 @@ def create_backend() -> ControllerBackend:
 
     backend_name = _resolve_backend_name()
     if not backend_name:
-        backend_name = "bluetooth"  # Default on Linux
+        backend_name = "hidapi"  # Default on Linux
 
     logger.info(f"Backend selection: backend_name={backend_name!r}")
 

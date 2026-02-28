@@ -2,7 +2,6 @@
 Unit tests for CentralizedBTDiscovery.
 
 Tests multi-adapter enumeration, scanning, affinity tracking, and hot-plug.
-Covers both discovery modes: "bluez" (default) and "hidapi".
 """
 
 import pathlib
@@ -16,11 +15,6 @@ from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDi
 @pytest.fixture
 def discovery():
     return CentralizedBTDiscovery()
-
-
-@pytest.fixture
-def hidapi_discovery():
-    return CentralizedBTDiscovery(discovery_mode="hidapi")
 
 
 class TestInitialize:
@@ -76,71 +70,6 @@ class TestInitialize:
         # Both adapters were attempted
         assert mock_bt.enable_adapter.call_count == 2
         mock_metrics.bluetooth_adapter_count.set.assert_called_once_with(2)
-
-
-class TestGetAllAttachedAddresses:
-    """Tests for consolidated address scanning."""
-
-    @pytest.mark.asyncio
-    async def test_scans_all_adapters_and_deduplicates(self, discovery):
-        """Should scan each adapter and deduplicate addresses."""
-        discovery._adapters = {"hci0": "AA:00", "hci1": "BB:00"}
-
-        with patch("services.controller_manager.multiplexer.bt_discovery.bluetooth") as mock_bt:
-            mock_bt.get_attached_addresses = AsyncMock(
-                side_effect=[
-                    ["00:06:F7:AA:BB:CC", "00:06:F7:DD:EE:FF"],
-                    ["00:06:F7:DD:EE:FF", "00:06:F7:11:22:33"],  # DD:EE:FF is duplicate
-                ]
-            )
-
-            addresses = await discovery.get_all_attached_addresses()
-
-        assert len(addresses) == 3
-        assert "00:06:F7:AA:BB:CC" in addresses
-        assert "00:06:F7:DD:EE:FF" in addresses
-        assert "00:06:F7:11:22:33" in addresses
-
-    @pytest.mark.asyncio
-    async def test_builds_affinity_map(self, discovery):
-        """Should track which adapter owns which address."""
-        discovery._adapters = {"hci0": "AA:00", "hci1": "BB:00"}
-
-        with patch("services.controller_manager.multiplexer.bt_discovery.bluetooth") as mock_bt:
-            mock_bt.get_attached_addresses = AsyncMock(
-                side_effect=[
-                    ["00:06:F7:AA:BB:CC"],
-                    ["00:06:F7:DD:EE:FF"],
-                ]
-            )
-
-            await discovery.get_all_attached_addresses()
-
-        assert discovery.get_adapter_for_address("00:06:F7:AA:BB:CC") == "hci0"
-        assert discovery.get_adapter_for_address("00:06:F7:DD:EE:FF") == "hci1"
-
-    @pytest.mark.asyncio
-    async def test_scan_failure_on_one_adapter_continues(self, discovery):
-        """Failure scanning one adapter should not prevent scanning others."""
-        discovery._adapters = {"hci0": "AA:00", "hci1": "BB:00"}
-
-        with patch("services.controller_manager.multiplexer.bt_discovery.bluetooth") as mock_bt:
-            mock_bt.get_attached_addresses = AsyncMock(
-                side_effect=[
-                    Exception("D-Bus error"),
-                    ["00:06:F7:DD:EE:FF"],
-                ]
-            )
-
-            addresses = await discovery.get_all_attached_addresses()
-
-        assert addresses == ["00:06:F7:DD:EE:FF"]
-
-    @pytest.mark.asyncio
-    async def test_empty_adapters_returns_empty(self, discovery):
-        """No adapters should return empty list."""
-        addresses = await discovery.get_all_attached_addresses()
-        assert addresses == []
 
 
 class TestGetAdapterForAddress:
@@ -240,15 +169,7 @@ class TestRefreshAdapters:
 
 
 class TestDiscoveryMode:
-    """Tests for discovery_mode parameter."""
-
-    def test_default_mode_is_bluez(self):
-        d = CentralizedBTDiscovery()
-        assert d.discovery_mode == "bluez"
-
-    def test_hidapi_mode(self):
-        d = CentralizedBTDiscovery(discovery_mode="hidapi")
-        assert d.discovery_mode == "hidapi"
+    """Tests for normalize_address utility."""
 
     def test_normalize_address(self):
         assert CentralizedBTDiscovery._normalize_address("00:06:F7:AA:BB:CC") == "0006F7AABBCC"
@@ -257,12 +178,12 @@ class TestDiscoveryMode:
 
 
 class TestHidapiMode:
-    """Tests for hidapi discovery mode."""
+    """Tests for hidapi discovery."""
 
     @pytest.mark.asyncio
-    async def test_scan_via_hidapi_enumerates_devices(self, hidapi_discovery):
+    async def test_scan_via_hidapi_enumerates_devices(self, discovery):
         """Should use hid.enumerate to find PS Move controllers."""
-        hidapi_discovery._adapters = {"hci0": "AA:00"}
+        discovery._adapters = {"hci0": "AA:00"}
 
         mock_hid = MagicMock()
         mock_hid.enumerate.side_effect = [
@@ -277,16 +198,16 @@ class TestHidapiMode:
             patch("services.controller_manager.multiplexer.bt_discovery.hid", mock_hid, create=True),
         ):
             mock_bt.get_attached_addresses = AsyncMock(return_value=["00:06:F7:AA:BB:CC", "00:06:F7:DD:EE:FF"])
-            addresses = await hidapi_discovery.get_all_attached_addresses()
+            addresses = await discovery.get_all_attached_addresses()
 
         assert len(addresses) == 2
         assert "0006F7AABBCC" in addresses
         assert "0006F7DDEEFF" in addresses
 
     @pytest.mark.asyncio
-    async def test_scan_via_hidapi_builds_affinity(self, hidapi_discovery):
+    async def test_scan_via_hidapi_builds_affinity(self, discovery):
         """Should cross-reference HID serials with BlueZ for adapter affinity."""
-        hidapi_discovery._adapters = {"hci0": "AA:00", "hci1": "BB:00"}
+        discovery._adapters = {"hci0": "AA:00", "hci1": "BB:00"}
 
         mock_hid = MagicMock()
         mock_hid.enumerate.side_effect = [
@@ -306,15 +227,15 @@ class TestHidapiMode:
                     ["00:06:F7:DD:EE:FF"],  # hci1 has second controller
                 ]
             )
-            await hidapi_discovery.get_all_attached_addresses()
+            await discovery.get_all_attached_addresses()
 
-        assert hidapi_discovery.get_adapter_for_address("0006F7AABBCC") == "hci0"
-        assert hidapi_discovery.get_adapter_for_address("0006F7DDEEFF") == "hci1"
+        assert discovery.get_adapter_for_address("0006F7AABBCC") == "hci0"
+        assert discovery.get_adapter_for_address("0006F7DDEEFF") == "hci1"
 
     @pytest.mark.asyncio
-    async def test_scan_via_hidapi_deduplicates(self, hidapi_discovery):
+    async def test_scan_via_hidapi_deduplicates(self, discovery):
         """Should deduplicate controllers seen on multiple HID paths."""
-        hidapi_discovery._adapters = {"hci0": "AA:00"}
+        discovery._adapters = {"hci0": "AA:00"}
 
         mock_hid = MagicMock()
         mock_hid.enumerate.side_effect = [
@@ -329,14 +250,14 @@ class TestHidapiMode:
             patch("services.controller_manager.multiplexer.bt_discovery.hid", mock_hid, create=True),
         ):
             mock_bt.get_attached_addresses = AsyncMock(return_value=["00:06:F7:AA:BB:CC"])
-            addresses = await hidapi_discovery.get_all_attached_addresses()
+            addresses = await discovery.get_all_attached_addresses()
 
         assert len(addresses) == 1
 
     @pytest.mark.asyncio
-    async def test_sysfs_fallback_when_bluez_has_no_devices(self, hidapi_discovery):
+    async def test_sysfs_fallback_when_bluez_has_no_devices(self, discovery):
         """Should resolve adapter affinity via sysfs when BlueZ cross-ref fails."""
-        hidapi_discovery._adapters = {"hci0": "AA:00", "hci1": "BB:00"}
+        discovery._adapters = {"hci0": "AA:00", "hci1": "BB:00"}
 
         mock_hid = MagicMock()
         mock_hid.enumerate.side_effect = [
@@ -360,15 +281,15 @@ class TestHidapiMode:
         ):
             # BlueZ returns nothing — devices connected via hidraw, not BlueZ
             mock_bt.get_attached_addresses = AsyncMock(return_value=[])
-            await hidapi_discovery.get_all_attached_addresses()
+            await discovery.get_all_attached_addresses()
 
-        assert hidapi_discovery.get_adapter_for_address("0006F7AABBCC") == "hci0"
-        assert hidapi_discovery.get_adapter_for_address("0006F7DDEEFF") == "hci1"
+        assert discovery.get_adapter_for_address("0006F7AABBCC") == "hci0"
+        assert discovery.get_adapter_for_address("0006F7DDEEFF") == "hci1"
 
     @pytest.mark.asyncio
-    async def test_sysfs_fallback_skips_unknown_adapters(self, hidapi_discovery):
+    async def test_sysfs_fallback_skips_unknown_adapters(self, discovery):
         """Sysfs fallback should ignore adapters not in the known adapter list."""
-        hidapi_discovery._adapters = {"hci0": "AA:00"}
+        discovery._adapters = {"hci0": "AA:00"}
 
         mock_hid = MagicMock()
         mock_hid.enumerate.side_effect = [
@@ -388,9 +309,9 @@ class TestHidapiMode:
             ),
         ):
             mock_bt.get_attached_addresses = AsyncMock(return_value=[])
-            await hidapi_discovery.get_all_attached_addresses()
+            await discovery.get_all_attached_addresses()
 
-        assert hidapi_discovery.get_adapter_for_address("0006F7AABBCC") is None
+        assert discovery.get_adapter_for_address("0006F7AABBCC") is None
 
     def test_resolve_adapter_from_sysfs_parses_hci(self):
         """Should extract hci name from resolved sysfs path."""
@@ -426,15 +347,3 @@ class TestHidapiMode:
         with patch("pathlib.Path.exists", return_value=False):
             result = CentralizedBTDiscovery._resolve_adapter_from_sysfs(b"/dev/hidraw99")
         assert result is None
-
-    @pytest.mark.asyncio
-    async def test_bluez_mode_uses_bluez_scanning(self, discovery):
-        """Default (bluez) mode should NOT call hid.enumerate."""
-        discovery._adapters = {"hci0": "AA:00"}
-
-        with patch("services.controller_manager.multiplexer.bt_discovery.bluetooth") as mock_bt:
-            mock_bt.get_attached_addresses = AsyncMock(return_value=["00:06:F7:AA:BB:CC"])
-            addresses = await discovery.get_all_attached_addresses()
-
-        assert len(addresses) == 1
-        assert "00:06:F7:AA:BB:CC" in addresses

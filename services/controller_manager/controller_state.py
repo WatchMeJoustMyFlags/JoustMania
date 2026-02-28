@@ -20,8 +20,6 @@ import logging
 import time
 from multiprocessing import Value
 
-import psmove
-
 logger = logging.getLogger(__name__)
 
 
@@ -58,8 +56,8 @@ class ControllerState:
         # Trigger value (0-255)
         self.trigger = Value("i", 0)
 
-        # Battery level (integer enum from psmove)
-        self.battery = Value("i", psmove.Batt_MIN)
+        # Battery level (integer enum; 0 = minimum)
+        self.battery = Value("i", 0)
 
         # Connection status
         self.connected = Value("b", False)
@@ -101,13 +99,13 @@ class ControllerState:
 
         try:
             # Read accelerometer
-            ax, ay, az = move.get_accelerometer_frame(psmove.Frame_SecondHalf)
+            ax, ay, az = move.get_accelerometer_frame(1)
             self.accel_x.value = ax
             self.accel_y.value = ay
             self.accel_z.value = az
 
             # Read gyroscope
-            gx, gy, gz = move.get_gyroscope_frame(psmove.Frame_SecondHalf)
+            gx, gy, gz = move.get_gyroscope_frame(1)
             self.gyro_x.value = gx
             self.gyro_y.value = gy
             self.gyro_z.value = gz

@@ -109,14 +109,14 @@ class TestMultiplexerGetConnectedControllers:
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_discovery_only_on_discovery_adapter(self, mock_metrics):
         """Only the discovery adapter (first non-mock) calls discover()."""
-        a1 = _make_adapter("psmove", serials=["AA:AA"])
+        a1 = _make_adapter("hidapi", serials=["AA:AA"])
         a2 = _make_adapter("hidapi", serials=["AA:AA"])
         mux = MultiplexerBackend(adapters=[a1, a2])
 
         result = mux.get_connected_controllers()
 
         assert result == ["AA:AA"]
-        # Discovery adapter (psmove, first non-mock) discovers
+        # Discovery adapter (hidapi, first non-mock) discovers
         a1.discover.assert_called_once()
         # Non-discovery adapter never calls discover()
         a2.discover.assert_not_called()
@@ -483,7 +483,7 @@ class TestRouteControllers:
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_targeting_routes_to_non_discovery_adapter(self, mock_metrics):
         """When targeting returns non-discovery adapter, open() is called on it."""
-        a1 = _make_adapter("psmove", serials=["AA:AA"])
+        a1 = _make_adapter("hidapi", serials=["AA:AA"])
         a2 = _make_adapter("hidapi", serials=[])
         mux = MultiplexerBackend(adapters=[a1, a2])
 
@@ -499,7 +499,7 @@ class TestRouteControllers:
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_fallback_to_discovery_when_open_fails(self, mock_metrics):
         """If preferred non-discovery adapter's open() fails, fall back to discovery adapter."""
-        a1 = _make_adapter("psmove", serials=["AA:AA"])
+        a1 = _make_adapter("hidapi", serials=["AA:AA"])
         a2 = _make_adapter("hidapi", serials=[])
         a2.open.return_value = False
         mux = MultiplexerBackend(adapters=[a1, a2])
@@ -513,7 +513,7 @@ class TestRouteControllers:
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_non_discovery_adapter_open_on_demand(self, mock_metrics):
         """Non-discovery adapter gets handle via open() when targeted."""
-        a1 = _make_adapter("psmove", serials=["AA:AA"])
+        a1 = _make_adapter("hidapi", serials=["AA:AA"])
         a2 = _make_adapter("hidapi", serials=[])
         a2.open.return_value = True
         mux = MultiplexerBackend(adapters=[a1, a2])
@@ -546,11 +546,11 @@ class TestRouteControllers:
         import logging
 
         caplog.set_level(logging.INFO)
-        a1 = _make_adapter("psmove", serials=["AA:AA"])
+        a1 = _make_adapter("hidapi", serials=["AA:AA"])
         a2 = _make_adapter("hidapi", serials=[])
         mux = MultiplexerBackend(adapters=[a1, a2])
 
-        # First discovery: route to psmove (discovery adapter, no targeting)
+        # First discovery: route to discovery adapter (no targeting)
         with patch.object(mux, "_resolve_adapter_for_serial", return_value=None):
             mux.get_connected_controllers()
 
@@ -561,16 +561,16 @@ class TestRouteControllers:
             mux.get_connected_controllers()
 
         assert mux._serial_to_adapter["AA:AA"] is a2
-        assert "Switched AA:AA: psmove -> hidapi" in caplog.text
+        assert "Switched AA:AA: hidapi -> hidapi" in caplog.text
 
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_dynamic_switch_closes_old_adapter(self, mock_metrics):
         """Switching adapter should close the handle on the old adapter."""
-        a1 = _make_adapter("psmove", serials=["AA:AA"])
+        a1 = _make_adapter("hidapi", serials=["AA:AA"])
         a2 = _make_adapter("hidapi", serials=[])
         mux = MultiplexerBackend(adapters=[a1, a2])
 
-        # First discovery: route to psmove (discovery adapter)
+        # First discovery: route to discovery adapter
         with patch.object(mux, "_resolve_adapter_for_serial", return_value=None):
             mux.get_connected_controllers()
 
@@ -586,7 +586,7 @@ class TestRouteControllers:
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_different_serials_to_different_adapters(self, mock_metrics):
         """Each serial can route to a different adapter independently."""
-        a1 = _make_adapter("psmove", serials=["AA:AA", "BB:BB"])
+        a1 = _make_adapter("hidapi", serials=["AA:AA", "BB:BB"])
         a2 = _make_adapter("hidapi", serials=[])
         mux = MultiplexerBackend(adapters=[a1, a2])
 
@@ -603,7 +603,7 @@ class TestRouteControllers:
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_single_real_adapter_skips_targeting(self, mock_metrics):
         """When only one real adapter discovers a serial, use it directly."""
-        a1 = _make_adapter("psmove", serials=["AA:AA"])
+        a1 = _make_adapter("hidapi", serials=["AA:AA"])
         a2 = _make_adapter("hidapi", serials=[])
         mux = MultiplexerBackend(adapters=[a1, a2])
 
@@ -616,11 +616,11 @@ class TestRouteControllers:
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_only_discovery_adapter_discovers(self, mock_metrics):
         """Only discovery adapter calls discover(); non-discovery gets open() only if targeted."""
-        a1 = _make_adapter("psmove", serials=["AA:AA"])
+        a1 = _make_adapter("hidapi", serials=["AA:AA"])
         a2 = _make_adapter("hidapi", serials=[])
         mux = MultiplexerBackend(adapters=[a1, a2])
 
-        # Route to discovery adapter (psmove) — hidapi should not be called at all
+        # Route to discovery adapter — second adapter should not be called at all
         with patch.object(mux, "_resolve_adapter_for_serial", return_value=a1):
             mux.get_connected_controllers()
 
@@ -631,7 +631,7 @@ class TestRouteControllers:
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_routing_metric_incremented(self, mock_metrics):
         """Routing decisions should increment the counter metric."""
-        a1 = _make_adapter("psmove", serials=["AA:AA"])
+        a1 = _make_adapter("hidapi", serials=["AA:AA"])
         a2 = _make_adapter("hidapi", serials=[])
         mux = MultiplexerBackend(adapters=[a1, a2])
 
@@ -649,7 +649,7 @@ class TestResolveAdapterForSerial:
     """Tests for flag evaluation in _resolve_adapter_for_serial."""
 
     def test_returns_matching_adapter(self):
-        a1 = _make_adapter("psmove")
+        a1 = _make_adapter("hidapi")
         a2 = _make_adapter("hidapi")
         mux = MultiplexerBackend(adapters=[a1, a2])
 
@@ -662,7 +662,7 @@ class TestResolveAdapterForSerial:
         assert result is a2
 
     def test_returns_none_when_no_match(self):
-        a1 = _make_adapter("psmove")
+        a1 = _make_adapter("hidapi")
         mux = MultiplexerBackend(adapters=[a1])
 
         mock_client = MagicMock()
@@ -674,7 +674,7 @@ class TestResolveAdapterForSerial:
         assert result is None
 
     def test_returns_none_when_empty_value(self):
-        a1 = _make_adapter("psmove")
+        a1 = _make_adapter("hidapi")
         mux = MultiplexerBackend(adapters=[a1])
 
         mock_client = MagicMock()
@@ -686,7 +686,7 @@ class TestResolveAdapterForSerial:
         assert result is None
 
     def test_returns_none_on_exception(self):
-        a1 = _make_adapter("psmove")
+        a1 = _make_adapter("hidapi")
         mux = MultiplexerBackend(adapters=[a1])
 
         with patch("lib.feature_flags.get_flag_client", side_effect=RuntimeError("flagd down")):
@@ -695,11 +695,11 @@ class TestResolveAdapterForSerial:
         assert result is None
 
     def test_passes_serial_as_targeting_key(self):
-        a1 = _make_adapter("psmove")
+        a1 = _make_adapter("hidapi")
         mux = MultiplexerBackend(adapters=[a1])
 
         mock_client = MagicMock()
-        mock_client.get_string_value.return_value = "psmove"
+        mock_client.get_string_value.return_value = "hidapi"
 
         with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
             mux._resolve_adapter_for_serial("E0AE5EE111AB")
@@ -810,7 +810,7 @@ class TestDiscoveryAdapterSelection:
     def test_discovery_adapter_is_first_non_mock(self):
         """Discovery adapter is the first non-mock adapter in the list."""
         a1 = _make_adapter("mock")
-        a2 = _make_adapter("psmove")
+        a2 = _make_adapter("hidapi")
         a3 = _make_adapter("hidapi")
         mux = MultiplexerBackend(adapters=[a1, a2, a3])
 
@@ -819,7 +819,7 @@ class TestDiscoveryAdapterSelection:
     def test_discovery_adapter_respects_order(self):
         """Reordering adapters changes which is the discovery adapter."""
         a1 = _make_adapter("hidapi")
-        a2 = _make_adapter("psmove")
+        a2 = _make_adapter("hidapi")
         mux = MultiplexerBackend(adapters=[a1, a2])
 
         assert mux._discovery_adapter is a1
@@ -835,7 +835,7 @@ class TestDiscoveryAdapterSelection:
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_non_discovery_adapter_not_called_discover(self, mock_metrics):
         """Second (non-discovery) adapter's discover() is never called."""
-        a1 = _make_adapter("psmove", serials=["AA:AA"])
+        a1 = _make_adapter("hidapi", serials=["AA:AA"])
         a2 = _make_adapter("hidapi", serials=[])
         mux = MultiplexerBackend(adapters=[a1, a2])
 
@@ -847,7 +847,7 @@ class TestDiscoveryAdapterSelection:
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_non_discovery_adapter_gets_open_on_route(self, mock_metrics):
         """When targeting routes to non-discovery adapter, open(serial) is called."""
-        a1 = _make_adapter("psmove", serials=["AA:AA"])
+        a1 = _make_adapter("hidapi", serials=["AA:AA"])
         a2 = _make_adapter("hidapi", serials=[])
         a2.open.return_value = True
         mux = MultiplexerBackend(adapters=[a1, a2])
@@ -861,7 +861,7 @@ class TestDiscoveryAdapterSelection:
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_targeting_to_discovery_adapter_skips_open(self, mock_metrics):
         """When targeting returns the discovery adapter, no extra open() is needed."""
-        a1 = _make_adapter("psmove", serials=["AA:AA"])
+        a1 = _make_adapter("hidapi", serials=["AA:AA"])
         a2 = _make_adapter("hidapi", serials=[])
         mux = MultiplexerBackend(adapters=[a1, a2])
 
@@ -876,7 +876,7 @@ class TestDiscoveryAdapterSelection:
     async def test_scan_only_uses_discovery_and_mock(self):
         """scan_controllers() only enumerates via discovery adapter and mock."""
         a1 = _make_adapter("mock", serials=["AA:AA"])
-        a2 = _make_adapter("psmove", serials=["BB:BB"])
+        a2 = _make_adapter("hidapi", serials=["BB:BB"])
         a3 = _make_adapter("hidapi", serials=["CC:CC"])
         mux = MultiplexerBackend(adapters=[a1, a2, a3])
 
@@ -884,14 +884,14 @@ class TestDiscoveryAdapterSelection:
 
         serials = [r["serial"] for r in result]
         assert "AA:AA" in serials  # mock
-        assert "BB:BB" in serials  # discovery adapter (psmove)
+        assert "BB:BB" in serials  # discovery adapter
         assert "CC:CC" not in serials  # non-discovery, not scanned
         a3.discover.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_initialize_skips_discover_on_non_discovery(self):
         """initialize() only calls discover() on discovery adapter and mock."""
-        a1 = _make_adapter("psmove", serials=["AA:AA"])
+        a1 = _make_adapter("hidapi", serials=["AA:AA"])
         a2 = _make_adapter("hidapi", serials=["BB:BB"])
         mux = MultiplexerBackend(adapters=[a1, a2])
 

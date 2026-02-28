@@ -9,15 +9,13 @@ Tests the shared memory state management:
 - LED and rumble control
 - ControllerStateManager operations
 
-Note: Requires mocking psmove library as hardware is not available in tests.
-
 Issue #209: Improve test coverage for critical game flow
 """
 
 import sys
 import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -28,49 +26,41 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-
-class MockPSMove:
-    """Mock psmove module for testing."""
-
-    Batt_MIN = 0x00
-    Batt_MAX = 0x05
-    Frame_SecondHalf = 1
-
-    class PSMove:
-        def poll(self):
-            return True
-
-        def get_accelerometer_frame(self, frame):
-            return (0.1, 0.2, 4096.0)
-
-        def get_gyroscope_frame(self, frame):
-            return (0.01, 0.02, 0.03)
-
-        def get_buttons(self):
-            return 0
-
-        def get_trigger(self):
-            return 128
-
-        def get_battery(self):
-            return MockPSMove.Batt_MAX
-
-        def set_leds(self, r, g, b):
-            pass
-
-        def set_rumble(self, intensity):
-            pass
-
-        def update_leds(self):
-            pass
+from services.controller_manager.controller_state import (
+    ControllerState,
+    ControllerStateManager,
+)
 
 
-# Patch psmove before importing controller_state
-with patch.dict(sys.modules, {"psmove": MockPSMove}):
-    from services.controller_manager.controller_state import (
-        ControllerState,
-        ControllerStateManager,
-    )
+class FakeMoveHandle:
+    """Fake move controller handle for testing ControllerState.update()."""
+
+    def poll(self):
+        return True
+
+    def get_accelerometer_frame(self, _frame):
+        return (0.1, 0.2, 4096.0)
+
+    def get_gyroscope_frame(self, _frame):
+        return (0.01, 0.02, 0.03)
+
+    def get_buttons(self):
+        return 0
+
+    def get_trigger(self):
+        return 128
+
+    def get_battery(self):
+        return 5
+
+    def set_leds(self, _r, _g, _b):
+        pass
+
+    def set_rumble(self, _intensity):
+        pass
+
+    def update_leds(self):
+        pass
 
 
 class TestControllerStateInit:
@@ -131,7 +121,7 @@ class TestControllerStateUpdate:
     def test_update_sets_connected(self):
         """update() should mark controller as connected."""
         state = ControllerState()
-        mock_move = MockPSMove.PSMove()
+        mock_move = FakeMoveHandle()
 
         state.update(mock_move)
 
@@ -140,7 +130,7 @@ class TestControllerStateUpdate:
     def test_update_sets_timestamp(self):
         """update() should set timestamp."""
         state = ControllerState()
-        mock_move = MockPSMove.PSMove()
+        mock_move = FakeMoveHandle()
 
         before = time.time()
         state.update(mock_move)
@@ -151,7 +141,7 @@ class TestControllerStateUpdate:
     def test_update_increments_count(self):
         """update() should increment update_count."""
         state = ControllerState()
-        mock_move = MockPSMove.PSMove()
+        mock_move = FakeMoveHandle()
 
         initial_count = state.update_count.value
         state.update(mock_move)
@@ -161,7 +151,7 @@ class TestControllerStateUpdate:
     def test_update_reads_accel(self):
         """update() should read accelerometer values."""
         state = ControllerState()
-        mock_move = MockPSMove.PSMove()
+        mock_move = FakeMoveHandle()
 
         state.update(mock_move)
 
@@ -172,7 +162,7 @@ class TestControllerStateUpdate:
     def test_update_reads_trigger(self):
         """update() should read trigger value."""
         state = ControllerState()
-        mock_move = MockPSMove.PSMove()
+        mock_move = FakeMoveHandle()
 
         state.update(mock_move)
 
@@ -181,7 +171,7 @@ class TestControllerStateUpdate:
     def test_update_returns_true_on_poll(self):
         """update() should return True when poll succeeds."""
         state = ControllerState()
-        mock_move = MockPSMove.PSMove()
+        mock_move = FakeMoveHandle()
 
         result = state.update(mock_move)
 
