@@ -197,8 +197,6 @@ services:
       - /var/lib/bluetooth:/var/lib/bluetooth:ro
       # Mount devtmpfs with rslave for hot-plug device visibility
       - /dev:/dev:rslave
-      # Sysfs for hidraw → BT adapter resolution (adapter affinity)
-      - /sys:/sys:ro
       # Persist controller names across restarts
       - controller-names:/app/data
     networks:
