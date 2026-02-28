@@ -1180,6 +1180,10 @@ class BaseGameMode(ABC):
                 },
             )
 
+        # Finalize health attributes BEFORE _kill_player_impl() which may close the span.
+        # Without this, dead players lose their health.total_poll_drops etc. attributes.
+        self._finalize_player_health(player)
+
         # Call subclass-specific death handling
         await self._kill_player_impl(serial, accel_mag)
 
