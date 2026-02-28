@@ -42,7 +42,10 @@ FAKE_SERIAL_2_RAW = "11:22:33:44:55:66"
 FAKE_SERIAL_2_NORMALIZED = "112233445566"
 
 
-def _make_dev_info(path: bytes = FAKE_PATH_1, serial: str = FAKE_SERIAL_RAW) -> dict:
+def _make_dev_info(
+    path: bytes = FAKE_PATH_1,
+    serial: str = FAKE_SERIAL_RAW,
+) -> dict:
     """Return a fake HID enumeration dict entry."""
     return {"path": path, "serial_number": serial}
 
@@ -510,7 +513,7 @@ class TestSetOutput:
         mock_device = MagicMock()
         mock_hid.enumerate.return_value = [_make_dev_info()]
         mock_hid.device.return_value = mock_device
-        fake_report = b"\x02" + b"\x00" * 48
+        fake_report = b"\x06" + b"\x00" * 8
         mock_build.return_value = fake_report
 
         adapter = HidapiAdapter()
@@ -536,7 +539,7 @@ class TestSetOutput:
         mock_device = MagicMock()
         mock_hid.enumerate.return_value = [_make_dev_info()]
         mock_hid.device.return_value = mock_device
-        mock_build.return_value = b"\x00" * 49
+        mock_build.return_value = b"\x00" * 9
         mock_device.write.side_effect = OSError("write failed")
 
         adapter = HidapiAdapter()
@@ -606,7 +609,7 @@ class TestClose:
             [],  # ZCM2E returns nothing
         ]
         mock_hid.device.side_effect = [mock_device_1, mock_device_2]
-        mock_build.return_value = b"\x00" * 49
+        mock_build.return_value = b"\x00" * 9
 
         adapter = HidapiAdapter()
         adapter.discover()
@@ -630,7 +633,7 @@ class TestClose:
         mock_device.write.side_effect = OSError("write failed")
         mock_hid.enumerate.return_value = [_make_dev_info()]
         mock_hid.device.return_value = mock_device
-        mock_build.return_value = b"\x00" * 49
+        mock_build.return_value = b"\x00" * 9
 
         adapter = HidapiAdapter()
         adapter.discover()
@@ -648,7 +651,7 @@ class TestClose:
 class TestCleanup:
     @patch("services.controller_manager.multiplexer.hidapi_adapter.hid")
     def test_cleanup_removes_device_and_path(self, mock_hid):
-        """_cleanup() removes from both _devices and _paths."""
+        """_cleanup() removes from _devices and _paths."""
         mock_device = MagicMock()
         mock_hid.enumerate.return_value = [_make_dev_info()]
         mock_hid.device.return_value = mock_device
