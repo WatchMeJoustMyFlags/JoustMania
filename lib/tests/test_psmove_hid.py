@@ -335,7 +335,7 @@ class TestOutputReport:
 
     def test_output_report_type_byte(self):
         report = build_output_report()
-        assert report[0] == 0x02
+        assert report[0] == 0x06
 
     def test_rgb_values(self):
         report = build_output_report(r=255, g=128, b=64)
@@ -367,6 +367,20 @@ class TestOutputReport:
         report = build_output_report(r=255, g=255, b=255, rumble=255)
         for i in range(7, OUTPUT_REPORT_SIZE):
             assert report[i] == 0, f"Byte {i} should be 0, got {report[i]}"
+
+    def test_reserved_byte_1_is_zero(self):
+        """Byte 1 (reserved) should always be zero."""
+        report = build_output_report(r=255, g=255, b=255, rumble=255)
+        assert report[1] == 0
+
+    def test_reserved_byte_5_is_zero(self):
+        """Byte 5 (rumble2) should always be zero."""
+        report = build_output_report(r=255, g=255, b=255, rumble=255)
+        assert report[5] == 0
+
+    def test_output_report_is_9_bytes(self):
+        assert OUTPUT_REPORT_SIZE == 9
+        assert len(build_output_report()) == 9
 
 
 class TestButtonIntFlag:

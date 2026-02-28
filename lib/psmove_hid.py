@@ -6,7 +6,7 @@ replacing the need for psmoveapi C library for basic controller I/O.
 
 The PS Move uses standard HID over Bluetooth with:
 - 49-byte input reports (buttons, trigger, accelerometer, gyroscope, battery)
-- 49-byte output reports (LED RGB, rumble)
+- 9-byte output reports (report 0x06 SetLEDs: LED RGB, rumble)
 
 References:
 - https://github.com/nitsch/movern/wiki/Input-report
@@ -25,7 +25,7 @@ ALL_PRODUCT_IDS = (PRODUCT_ID_ZCM1, PRODUCT_ID_ZCM2, PRODUCT_ID_ZCM2E)
 
 # HID report sizes
 INPUT_REPORT_SIZE = 49
-OUTPUT_REPORT_SIZE = 49
+OUTPUT_REPORT_SIZE = 9  # Output report 0x06 (SetLEDs, works for all models)
 
 
 class Button(IntFlag):
@@ -175,8 +175,20 @@ def parse_input_report(data: bytes) -> dict:
     }
 
 
+def _clamp_byte(value: int) -> int:
+    """Clamp an integer to the 0-255 range."""
+    return max(0, min(255, value))
+
+
 def build_output_report(r: int = 0, g: int = 0, b: int = 0, rumble: int = 0) -> bytes:
     """Build a PS Move HID output report for LED and rumble control.
+
+    Uses output report 0x06 (SetLEDs, 9 bytes), which works for both ZCM1
+    (PS3-era) and ZCM2 (PS4-era) controllers. This matches psmoveapi which
+    switched from report 0x02 to 0x06 in 2018 for universal compatibility.
+
+    The byte layout matches psmoveapi's PSMove_Data_LEDs struct:
+        [0x06, 0x00, R, G, B, 0x00, rumble, 0x00, 0x00]
 
     Args:
         r: Red LED intensity (0-255)
@@ -185,20 +197,20 @@ def build_output_report(r: int = 0, g: int = 0, b: int = 0, rumble: int = 0) -> 
         rumble: Rumble motor intensity (0-255)
 
     Returns:
-        49-byte output report.
+        9-byte output report with report ID 0x06.
     """
-    r = max(0, min(255, r))
-    g = max(0, min(255, g))
-    b = max(0, min(255, b))
-    rumble = max(0, min(255, rumble))
+    r = _clamp_byte(r)
+    g = _clamp_byte(g)
+    b = _clamp_byte(b)
+    rumble = _clamp_byte(rumble)
 
     report = bytearray(OUTPUT_REPORT_SIZE)
-    report[0] = 0x02  # Report type for LED/rumble
-    # Bytes 1: 0x00 (reserved)
+    report[0] = 0x06  # SetLEDs report type (works for all PS Move models)
+    # Byte 1: 0x00 (reserved)
     report[2] = r
     report[3] = g
     report[4] = b
-    # Byte 5: 0x00 (reserved)
+    # Byte 5: 0x00 (rumble2, reserved)
     report[6] = rumble
-    # Bytes 7-48: 0x00 (padding)
+    # Bytes 7-8: 0x00 (padding)
     return bytes(report)
