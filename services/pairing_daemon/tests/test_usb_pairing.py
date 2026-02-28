@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from psmove_pairing.adapter_manager import AdapterInfo
 from psmove_pairing.usb_pairing import USBPairing
 
 from .conftest import MockCommandRunner
@@ -211,15 +212,47 @@ class TestProcessController:
     """Tests for process_controller()."""
 
     @pytest.mark.asyncio
-    async def test_skip_already_paired_but_still_trusts(self, usb_pairing):
-        """Test skipping pairing for already-paired controller but still trusting."""
+    async def test_already_in_bluez_runs_full_pairing(self, usb_pairing):
+        """Test that 'already paired' controllers still go through pair_custom() to verify host address."""
         usb_pairing.adapter_manager.refresh_adapters = AsyncMock()
         usb_pairing.adapter_manager.check_if_not_paired = MagicMock(return_value=False)
+        adapter = AdapterInfo(hci="hci0", address="11:22:33:44:55:66", name="adapter-hci0", device_count=0)
+        usb_pairing.adapter_manager.select_least_loaded_adapter = MagicMock(return_value=adapter)
+        usb_pairing.pair_controller_psmove = AsyncMock(return_value=True)
+        usb_pairing.restart_bluetooth_service = AsyncMock()
         usb_pairing.bluez_trust_controller = AsyncMock(return_value=True)
+        usb_pairing.calibrate_controller = AsyncMock(return_value=True)
 
         result = await usb_pairing.process_controller(0, "00:06:F7:AA:BB:CC")
-        assert result is False
-        usb_pairing.bluez_trust_controller.assert_called_once_with("00:06:F7:AA:BB:CC")
+
+        assert result is True
+        # pair_custom is called even though BlueZ thinks it's paired
+        usb_pairing.pair_controller_psmove.assert_called_once_with(0, "00:06:F7:AA:BB:CC", "11:22:33:44:55:66")
+        usb_pairing.restart_bluetooth_service.assert_called_once()
+        usb_pairing.bluez_trust_controller.assert_called_once()
+        usb_pairing.calibrate_controller.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_verified_serial_skipped_on_subsequent_poll(self, usb_pairing):
+        """Test that a controller verified this session is skipped on next poll."""
+        usb_pairing.adapter_manager.refresh_adapters = AsyncMock()
+        usb_pairing.adapter_manager.check_if_not_paired = MagicMock(return_value=True)
+        adapter = AdapterInfo(hci="hci0", address="11:22:33:44:55:66", name="adapter-hci0", device_count=0)
+        usb_pairing.adapter_manager.select_least_loaded_adapter = MagicMock(return_value=adapter)
+        usb_pairing.pair_controller_psmove = AsyncMock(return_value=True)
+        usb_pairing.restart_bluetooth_service = AsyncMock()
+        usb_pairing.bluez_trust_controller = AsyncMock(return_value=True)
+        usb_pairing.calibrate_controller = AsyncMock(return_value=True)
+
+        # First call: full pairing
+        result1 = await usb_pairing.process_controller(0, "00:06:F7:AA:BB:CC")
+        assert result1 is True
+
+        # Second call: should skip
+        result2 = await usb_pairing.process_controller(0, "00:06:F7:AA:BB:CC")
+        assert result2 is False
+        # pair_custom only called once (first time)
+        usb_pairing.pair_controller_psmove.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_no_adapters_available(self, usb_pairing):
