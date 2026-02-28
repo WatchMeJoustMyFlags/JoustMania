@@ -410,3 +410,96 @@ class TestFrameEnum:
     def test_frame_values(self):
         assert Frame.FIRST == 0
         assert Frame.SECOND == 1
+
+
+# ---------------------------------------------------------------------------
+# ZCM2 (PS4-era) tests — signed 16-bit two's complement decoding
+# ---------------------------------------------------------------------------
+
+
+def _build_zcm2_test_report(
+    buttons_lo=0,
+    buttons_hi=0,
+    sequence=0,
+    trigger1=0,
+    trigger2=0,
+    battery=Battery.MAX,
+    ax1=0,
+    ay1=0,
+    az1=0,
+    ax2=0,
+    ay2=0,
+    az2=0,
+    gx1=0,
+    gy1=0,
+    gz1=0,
+    gx2=0,
+    gy2=0,
+    gz2=0,
+    temperature=0,
+) -> bytes:
+    """Build a synthetic 49-byte HID input report with ZCM2-style signed sensor values."""
+    data = bytearray(INPUT_REPORT_SIZE)
+
+    data[1] = buttons_lo & 0xFF
+    data[2] = (buttons_lo >> 8) & 0xFF
+    data[3] = buttons_hi & 0xFF
+    data[4] = sequence
+    data[6] = trigger1
+    data[7] = trigger2
+    data[12] = battery
+
+    # Pack as signed int16 (same raw bytes a ZCM2 controller would produce)
+    struct.pack_into("<hhh", data, 13, ax1, ay1, az1)
+    struct.pack_into("<hhh", data, 19, ax2, ay2, az2)
+    struct.pack_into("<hhh", data, 25, gx1, gy1, gz1)
+    struct.pack_into("<hhh", data, 31, gx2, gy2, gz2)
+    struct.pack_into("<H", data, 37, temperature)
+
+    return bytes(data)
+
+
+class TestZCM2AccelerometerParsing:
+    """Test ZCM2 (PS4-era) accelerometer parsing with signed two's complement."""
+
+    def test_zcm2_positive_acceleration(self):
+        """Signed 4096 (0x1000) parses as +4096."""
+        data = _build_zcm2_test_report(ax1=4096)
+        result = parse_input_report(data, zcm2=True)
+        assert result["accel"][0][0] == 4096
+
+    def test_zcm2_negative_acceleration(self):
+        """Signed -4096 (0xF000 unsigned) parses as -4096."""
+        data = _build_zcm2_test_report(ax1=-4096)
+        result = parse_input_report(data, zcm2=True)
+        assert result["accel"][0][0] == -4096
+
+    def test_zcm2_gravity_on_z_axis(self):
+        """0x1000 on Z gives +4096 (same magnitude as ZCM1 but no offset)."""
+        data = _build_zcm2_test_report(az1=4096)
+        result = parse_input_report(data, zcm2=True)
+        assert result["accel"][0][2] == 4096
+
+    def test_zcm2_zero_acceleration(self):
+        """0x0000 parses as 0 (not -32768 like ZCM1 decoding would give)."""
+        data = _build_zcm2_test_report(ax1=0, ay1=0, az1=0)
+        result = parse_input_report(data, zcm2=True)
+        assert result["accel"][0] == (0, 0, 0)
+
+
+class TestZCM2GyroscopeParsing:
+    """Test ZCM2 (PS4-era) gyroscope parsing with signed two's complement."""
+
+    def test_zcm2_gyro_stationary(self):
+        """0x0000 parses as 0."""
+        data = _build_zcm2_test_report(gx1=0, gy1=0, gz1=0)
+        result = parse_input_report(data, zcm2=True)
+        assert result["gyro"][0] == (0, 0, 0)
+
+    def test_zcm2_gyro_rotation(self):
+        """Signed values parsed correctly."""
+        data = _build_zcm2_test_report(gx1=256, gy1=-256, gz1=0)
+        result = parse_input_report(data, zcm2=True)
+        assert result["gyro"][0][0] == 256
+        assert result["gyro"][0][1] == -256
+        assert result["gyro"][0][2] == 0
