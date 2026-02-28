@@ -98,6 +98,7 @@ class MultiplexerBackend(ControllerBackend):
         if self._bt_discovery:
             try:
                 await self._bt_discovery.initialize()
+                await self._bt_discovery.get_all_attached_addresses()
             except Exception:
                 logger.exception("Failed to initialize CentralizedBTDiscovery")
 
