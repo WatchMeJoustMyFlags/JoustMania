@@ -636,6 +636,10 @@ class DiscoveryLoop:
             else:
                 controller_name = serial
             metrics.controller_info.labels(serial=serial, name=controller_name).set(1)
+            # Initialize poll drop/error counters so rate() always returns a series,
+            # even for controllers with zero drops (needed for dashboard queries).
+            metrics.controller_poll_drops_total.labels(serial=serial)
+            metrics.controller_poll_errors_total.labels(serial=serial)
             # Check if this is a reconnect
             if serial in self.paired_serials:
                 metrics.controller_reconnect_total.labels(serial=serial).inc()
