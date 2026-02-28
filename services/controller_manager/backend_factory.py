@@ -71,6 +71,10 @@ def _create_adapter_by_name(name: str) -> ControllerIOAdapter:
             from services.controller_manager.multiplexer.hidapi_adapter import HidapiAdapter
 
             return HidapiAdapter()
+        case "rust":
+            from services.controller_manager.multiplexer.rust_adapter import RustServiceAdapter
+
+            return RustServiceAdapter()
         case _:
             raise RuntimeError(f"Unknown adapter: {name}")
 

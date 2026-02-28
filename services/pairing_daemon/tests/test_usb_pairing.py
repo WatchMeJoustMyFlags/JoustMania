@@ -5,41 +5,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from psmove_pairing.adapter_manager import AdapterInfo
-from psmove_pairing.usb_pairing import USBPairing
+from psmove_pairing.pairing_backend import HidapiBackend, RustServiceBackend
+from psmove_pairing.usb_pairing import USBPairing, _resolve_backend
 
 from .conftest import MockCommandRunner
 
 # Fake HID device paths (bytes, as returned by hidapi)
 FAKE_PATH_1 = b"/dev/hidraw3"
 FAKE_PATH_2 = b"/dev/hidraw4"
-
-# Feature report 0x04 for controller AA:BB:CC:DD:EE:FF with host 11:22:33:44:55:66
-# Controller MAC LSB-first: FF EE DD CC BB AA
-# Host MAC LSB-first: 66 55 44 33 22 11
-SAMPLE_FEATURE_REPORT = bytes(
-    [0x04, 0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA, 0x00, 0x00, 0x00, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11]
-)
-
-# Zero host (unpaired)
-SAMPLE_FEATURE_REPORT_UNPAIRED = bytes(
-    [0x04, 0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
-)
-
-
-def _make_dev_info(
-    path: bytes = FAKE_PATH_1,
-    vendor_id: int = 0x054C,
-    product_id: int = 0x03D5,
-    interface_number: int = 0,
-) -> dict:
-    """Create a fake hid.enumerate() device info dict."""
-    return {
-        "path": path,
-        "vendor_id": vendor_id,
-        "product_id": product_id,
-        "interface_number": interface_number,
-        "serial_number": "",
-    }
 
 
 @pytest.fixture
@@ -48,143 +21,155 @@ def usb_pairing(mock_tracer):
     return USBPairing(mock_tracer)
 
 
+def _mock_backend(controllers=None):
+    """Create a mock HidapiBackend with predefined controllers."""
+    backend = MagicMock(spec=HidapiBackend)
+    backend.get_usb_controllers.return_value = controllers or []
+    backend.pair_controller = AsyncMock(return_value=True)
+    return backend
+
+
+class TestResolveBackend:
+    """Tests for _resolve_backend() flag-based backend selection."""
+
+    def test_default_returns_hidapi(self):
+        """Default routing returns HidapiBackend."""
+        with patch("psmove_pairing.usb_pairing.get_adapter_routing_default", return_value="hidapi"):
+            backend, name = _resolve_backend()
+        assert isinstance(backend, HidapiBackend)
+        assert name == "hidapi"
+
+    def test_rust_returns_rust_backend(self):
+        """Routing 'rust' returns RustServiceBackend."""
+        with patch("psmove_pairing.usb_pairing.get_adapter_routing_default", return_value="rust"):
+            backend, name = _resolve_backend()
+        assert isinstance(backend, RustServiceBackend)
+        assert name == "rust"
+
+    def test_unknown_falls_back_to_hidapi(self):
+        """Unknown routing value falls back to HidapiBackend."""
+        with patch("psmove_pairing.usb_pairing.get_adapter_routing_default", return_value="unknown"):
+            backend, name = _resolve_backend()
+        assert isinstance(backend, HidapiBackend)
+        assert name == "hidapi"
+
+
 class TestGetUSBControllers:
-    """Tests for get_usb_controllers()."""
+    """Tests for poll() USB controller enumeration via backend."""
 
-    @patch("psmove_pairing.usb_pairing.hid")
-    def test_no_controllers_connected(self, mock_hid, usb_pairing):
-        """Test when no HID devices are found."""
-        mock_hid.enumerate.return_value = []
+    @patch("psmove_pairing.usb_pairing._resolve_backend")
+    @pytest.mark.asyncio
+    async def test_no_controllers(self, mock_resolve, usb_pairing):
+        """Poll with no controllers delegates to backend and finds none."""
+        backend = _mock_backend(controllers=[])
+        mock_resolve.return_value = (backend, "hidapi")
 
-        controllers = usb_pairing.get_usb_controllers()
-        assert controllers == []
+        await usb_pairing.poll()
+        backend.get_usb_controllers.assert_called_once()
 
-    @patch("psmove_pairing.usb_pairing.hid")
-    def test_usb_controller_detected(self, mock_hid, usb_pairing):
-        """Test when a USB controller is detected via feature report."""
-        # enumerate is called once per product ID; return device for first PID only
-        mock_hid.enumerate.side_effect = lambda _v, p: [_make_dev_info()] if p == 0x03D5 else []
+    @patch("psmove_pairing.usb_pairing._resolve_backend")
+    @pytest.mark.asyncio
+    async def test_controllers_found(self, mock_resolve, usb_pairing):
+        """Poll with controllers delegates to process_controller."""
+        backend = _mock_backend(controllers=[(FAKE_PATH_1, "AA:BB:CC:DD:EE:FF")])
+        mock_resolve.return_value = (backend, "hidapi")
+        usb_pairing.process_controller = AsyncMock(return_value=True)
 
-        mock_device = MagicMock()
-        mock_device.get_feature_report.return_value = SAMPLE_FEATURE_REPORT
-        mock_hid.device.return_value = mock_device
-
-        controllers = usb_pairing.get_usb_controllers()
-        assert len(controllers) == 1
-        assert controllers[0] == (FAKE_PATH_1, "AA:BB:CC:DD:EE:FF")
-        mock_device.open_path.assert_called_once_with(FAKE_PATH_1)
-        mock_device.close.assert_called_once()
-
-    @patch("psmove_pairing.usb_pairing.hid")
-    def test_bluetooth_controller_excluded(self, mock_hid, usb_pairing):
-        """Test that Bluetooth controllers (interface_number == -1) are excluded."""
-        mock_hid.enumerate.side_effect = lambda _v, p: [_make_dev_info(interface_number=-1)] if p == 0x03D5 else []
-
-        controllers = usb_pairing.get_usb_controllers()
-        assert controllers == []
-        # Should not attempt to open BT devices
-        mock_hid.device.assert_not_called()
-
-    @patch("psmove_pairing.usb_pairing.hid")
-    def test_multiple_controllers(self, mock_hid, usb_pairing):
-        """Test multiple USB controllers enumerated with BT filtered out."""
-        # Two controllers for one PID: one USB, one BT (filtered out)
-        mock_hid.enumerate.side_effect = (
-            lambda _v, p: [
-                _make_dev_info(path=FAKE_PATH_1, interface_number=0),
-                _make_dev_info(path=FAKE_PATH_2, interface_number=-1),
-            ]
-            if p == 0x03D5
-            else []
-        )
-
-        mock_device = MagicMock()
-        mock_device.get_feature_report.return_value = SAMPLE_FEATURE_REPORT
-        mock_hid.device.return_value = mock_device
-
-        controllers = usb_pairing.get_usb_controllers()
-        assert len(controllers) == 1  # BT one filtered out
-
-    @patch("psmove_pairing.usb_pairing.hid")
-    def test_hid_error_skips_device(self, mock_hid, usb_pairing):
-        """Test that HID errors during enumeration skip the device gracefully."""
-        mock_hid.enumerate.side_effect = lambda _v, p: [_make_dev_info()] if p == 0x03D5 else []
-
-        mock_device = MagicMock()
-        mock_device.get_feature_report.side_effect = OSError("Device busy")
-        mock_hid.device.return_value = mock_device
-
-        controllers = usb_pairing.get_usb_controllers()
-        assert controllers == []
-        mock_device.close.assert_called_once()
-
-    @patch("psmove_pairing.usb_pairing.hid")
-    def test_feature_report_returned_as_list(self, mock_hid, usb_pairing):
-        """Test that list-type feature report (hidraw quirk) is handled."""
-        mock_hid.enumerate.side_effect = lambda _v, p: [_make_dev_info()] if p == 0x03D5 else []
-
-        mock_device = MagicMock()
-        mock_device.get_feature_report.return_value = list(SAMPLE_FEATURE_REPORT)
-        mock_hid.device.return_value = mock_device
-
-        controllers = usb_pairing.get_usb_controllers()
-        assert len(controllers) == 1
-        assert controllers[0] == (FAKE_PATH_1, "AA:BB:CC:DD:EE:FF")
+        await usb_pairing.poll()
+        usb_pairing.process_controller.assert_called_once_with(FAKE_PATH_1, "AA:BB:CC:DD:EE:FF")
 
 
 class TestPairController:
-    """Tests for pair_controller()."""
+    """Tests for pair_controller() with backend delegation."""
 
+    @patch("psmove_pairing.usb_pairing._resolve_backend")
     @pytest.mark.asyncio
-    @patch("psmove_pairing.usb_pairing.hid")
-    async def test_successful_pairing(self, mock_hid, usb_pairing):
-        """Test successful pairing writes host address."""
-        mock_device = MagicMock()
-        mock_device.get_feature_report.return_value = SAMPLE_FEATURE_REPORT_UNPAIRED
-        mock_hid.device.return_value = mock_device
+    async def test_successful_pairing(self, mock_resolve, usb_pairing):
+        """Delegates to backend and returns True on success."""
+        backend = _mock_backend()
+        backend.pair_controller.return_value = True
+        mock_resolve.return_value = (backend, "hidapi")
 
         result = await usb_pairing.pair_controller(FAKE_PATH_1, "AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66")
         assert result is True
-        mock_device.open_path.assert_called_once_with(FAKE_PATH_1)
-        mock_device.send_feature_report.assert_called_once()
-        mock_device.close.assert_called_once()
+        backend.pair_controller.assert_called_once_with(FAKE_PATH_1, "AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66")
 
+    @patch("psmove_pairing.usb_pairing._resolve_backend")
     @pytest.mark.asyncio
-    @patch("psmove_pairing.usb_pairing.hid")
-    async def test_pairing_already_set(self, mock_hid, usb_pairing):
-        """Test pairing when host address already matches (still succeeds)."""
-        mock_device = MagicMock()
-        mock_device.get_feature_report.return_value = SAMPLE_FEATURE_REPORT
-        mock_hid.device.return_value = mock_device
-
-        result = await usb_pairing.pair_controller(FAKE_PATH_1, "AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66")
-        assert result is True
-        # Still writes (idempotent)
-        mock_device.send_feature_report.assert_called_once()
-
-    @pytest.mark.asyncio
-    @patch("psmove_pairing.usb_pairing.hid")
-    async def test_hid_error_returns_false(self, mock_hid, usb_pairing):
-        """Test that HID errors during pairing return False."""
-        mock_device = MagicMock()
-        mock_device.open_path.side_effect = OSError("Device not found")
-        mock_hid.device.return_value = mock_device
+    async def test_pairing_failure(self, mock_resolve, usb_pairing):
+        """Returns False when backend pairing fails."""
+        backend = _mock_backend()
+        backend.pair_controller.return_value = False
+        mock_resolve.return_value = (backend, "hidapi")
 
         result = await usb_pairing.pair_controller(FAKE_PATH_1, "AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66")
         assert result is False
 
+    @patch("psmove_pairing.usb_pairing._resolve_backend")
     @pytest.mark.asyncio
-    @patch("psmove_pairing.usb_pairing.hid")
-    async def test_send_feature_report_error(self, mock_hid, usb_pairing):
-        """Test that send_feature_report errors return False."""
-        mock_device = MagicMock()
-        mock_device.get_feature_report.return_value = SAMPLE_FEATURE_REPORT_UNPAIRED
-        mock_device.send_feature_report.side_effect = OSError("Write failed")
-        mock_hid.device.return_value = mock_device
+    async def test_backend_exception(self, mock_resolve, usb_pairing):
+        """Returns False when backend raises an exception."""
+        backend = _mock_backend()
+        backend.pair_controller.side_effect = RuntimeError("Hardware error")
+        mock_resolve.return_value = (backend, "hidapi")
 
         result = await usb_pairing.pair_controller(FAKE_PATH_1, "AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66")
         assert result is False
-        mock_device.close.assert_called_once()
+
+
+class TestPoll:
+    """Tests for poll() with backend delegation."""
+
+    @patch("psmove_pairing.usb_pairing._resolve_backend")
+    @pytest.mark.asyncio
+    async def test_poll_increments_count(self, mock_resolve, usb_pairing):
+        """Poll count is incremented each cycle."""
+        backend = _mock_backend()
+        mock_resolve.return_value = (backend, "hidapi")
+
+        initial_count = usb_pairing.poll_count
+        await usb_pairing.poll()
+        assert usb_pairing.poll_count == initial_count + 1
+
+    @patch("psmove_pairing.usb_pairing._resolve_backend")
+    @pytest.mark.asyncio
+    async def test_poll_sets_backend_span_attribute(self, mock_resolve, usb_pairing):
+        """Poll sets pairing.backend span attribute."""
+        backend = _mock_backend()
+        mock_resolve.return_value = (backend, "hidapi")
+
+        await usb_pairing.poll()
+
+        span = usb_pairing.tracer.start_as_current_span.return_value.__enter__.return_value
+        span.set_attribute.assert_any_call("pairing.backend", "hidapi")
+
+    @patch("psmove_pairing.usb_pairing._resolve_backend")
+    @pytest.mark.asyncio
+    async def test_poll_logs_backend_switch(self, mock_resolve, usb_pairing):
+        """Logs when backend switches between polls."""
+        hidapi_backend = _mock_backend()
+        rust_backend = _mock_backend()
+
+        # First poll: hidapi
+        mock_resolve.return_value = (hidapi_backend, "hidapi")
+        await usb_pairing.poll()
+        assert usb_pairing._last_backend_name == "hidapi"
+
+        # Second poll: rust
+        mock_resolve.return_value = (rust_backend, "rust")
+        with patch("psmove_pairing.usb_pairing.logger") as mock_logger:
+            await usb_pairing.poll()
+            mock_logger.info.assert_any_call("Pairing backend switched: hidapi -> rust")
+
+    @patch("psmove_pairing.usb_pairing._resolve_backend")
+    @pytest.mark.asyncio
+    async def test_poll_skips_when_no_controllers(self, mock_resolve, usb_pairing):
+        """Poll skips processing when no USB controllers found."""
+        backend = _mock_backend(controllers=[])
+        mock_resolve.return_value = (backend, "hidapi")
+
+        await usb_pairing.poll()
+        # No process_controller calls expected
 
 
 class TestRestartBluetoothService:
@@ -304,26 +289,3 @@ class TestProcessController:
 
         result = await usb_pairing.process_controller(FAKE_PATH_1, "00:06:F7:AA:BB:CC")
         assert result is False
-
-
-class TestPoll:
-    """Tests for poll()."""
-
-    @pytest.mark.asyncio
-    @patch("psmove_pairing.usb_pairing.hid")
-    async def test_poll_increments_count(self, mock_hid, usb_pairing):
-        """Test that poll count is incremented."""
-        mock_hid.enumerate.side_effect = lambda _v, _p: []
-
-        initial_count = usb_pairing.poll_count
-        await usb_pairing.poll()
-        assert usb_pairing.poll_count == initial_count + 1
-
-    @pytest.mark.asyncio
-    @patch("psmove_pairing.usb_pairing.hid")
-    async def test_poll_skips_when_no_controllers(self, mock_hid, usb_pairing):
-        """Test that poll skips processing when no USB controllers found."""
-        mock_hid.enumerate.side_effect = lambda _v, _p: []
-
-        await usb_pairing.poll()
-        # No process_controller calls expected

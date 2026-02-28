@@ -20,7 +20,7 @@ class ControllerIOAdapter(ABC):
     @property
     @abstractmethod
     def adapter_type(self) -> str:
-        """Identifier: 'psmove', 'hidapi', 'mock'."""
+        """Identifier: 'hidapi', 'mock', 'rust'."""
 
     @abstractmethod
     def discover(self, force: bool = False, verify_only: bool = False) -> list[str]:

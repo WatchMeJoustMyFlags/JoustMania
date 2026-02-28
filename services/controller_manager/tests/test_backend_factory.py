@@ -80,6 +80,11 @@ class TestCreateAdapterByName:
         assert adapter.__class__.__name__ == "MockAdapter"
         assert adapter.adapter_type == "mock"
 
+    def test_rust_adapter(self):
+        adapter = _create_adapter_by_name("rust")
+        assert adapter.__class__.__name__ == "RustServiceAdapter"
+        assert adapter.adapter_type == "rust"
+
     def test_unknown_adapter_raises(self):
         with pytest.raises(RuntimeError, match="Unknown adapter"):
             _create_adapter_by_name("nonexistent")
@@ -167,6 +172,28 @@ class TestMultiAdapterCreation:
         assert backend.__class__.__name__ == "MultiplexerBackend"
         assert len(backend.adapters) == 1
         assert backend.adapters[0].adapter_type == "mock"
+
+    def test_rust_flag_creates_rust_adapter(self):
+        """flag='rust' -> MultiplexerBackend with rust + mock adapters."""
+        mock_client = MagicMock()
+        mock_client.get_string_details.return_value = _mock_details("rust")
+
+        with (
+            patch("lib.feature_flags.get_flag_client", return_value=mock_client),
+            patch("services.controller_manager.backend_factory._create_adapter_by_name") as mock_create,
+        ):
+            rust_adapter = MagicMock()
+            rust_adapter.adapter_type = "rust"
+            mock_adapter = MagicMock()
+            mock_adapter.adapter_type = "mock"
+            mock_create.side_effect = [rust_adapter, mock_adapter]
+
+            backend = create_backend()
+
+        assert backend.__class__.__name__ == "MultiplexerBackend"
+        call_names = [call[0][0] for call in mock_create.call_args_list]
+        assert "rust" in call_names
+        assert "mock" in call_names
 
     def test_whitespace_in_comma_separated_is_trimmed(self):
         """flag='mock , hidapi' -> names trimmed properly."""
