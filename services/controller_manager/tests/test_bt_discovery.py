@@ -2,7 +2,7 @@
 Unit tests for CentralizedBTDiscovery.
 
 Tests multi-adapter enumeration, scanning, affinity tracking, and hot-plug.
-Covers both discovery modes: "bluez" (default) and "hidapi".
+Default discovery mode is "hidapi".
 """
 
 import pathlib
@@ -19,8 +19,9 @@ def discovery():
 
 
 @pytest.fixture
-def hidapi_discovery():
-    return CentralizedBTDiscovery(discovery_mode="hidapi")
+def bluez_discovery():
+    """Discovery with explicit bluez mode for testing the BlueZ scanning path."""
+    return CentralizedBTDiscovery(discovery_mode="bluez")
 
 
 class TestInitialize:
@@ -79,12 +80,12 @@ class TestInitialize:
 
 
 class TestGetAllAttachedAddresses:
-    """Tests for consolidated address scanning."""
+    """Tests for consolidated address scanning via BlueZ path."""
 
     @pytest.mark.asyncio
-    async def test_scans_all_adapters_and_deduplicates(self, discovery):
+    async def test_scans_all_adapters_and_deduplicates(self, bluez_discovery):
         """Should scan each adapter and deduplicate addresses."""
-        discovery._adapters = {"hci0": "AA:00", "hci1": "BB:00"}
+        bluez_discovery._adapters = {"hci0": "AA:00", "hci1": "BB:00"}
 
         with patch("services.controller_manager.multiplexer.bt_discovery.bluetooth") as mock_bt:
             mock_bt.get_attached_addresses = AsyncMock(
@@ -94,7 +95,7 @@ class TestGetAllAttachedAddresses:
                 ]
             )
 
-            addresses = await discovery.get_all_attached_addresses()
+            addresses = await bluez_discovery.get_all_attached_addresses()
 
         assert len(addresses) == 3
         assert "00:06:F7:AA:BB:CC" in addresses
@@ -102,9 +103,9 @@ class TestGetAllAttachedAddresses:
         assert "00:06:F7:11:22:33" in addresses
 
     @pytest.mark.asyncio
-    async def test_builds_affinity_map(self, discovery):
+    async def test_builds_affinity_map(self, bluez_discovery):
         """Should track which adapter owns which address."""
-        discovery._adapters = {"hci0": "AA:00", "hci1": "BB:00"}
+        bluez_discovery._adapters = {"hci0": "AA:00", "hci1": "BB:00"}
 
         with patch("services.controller_manager.multiplexer.bt_discovery.bluetooth") as mock_bt:
             mock_bt.get_attached_addresses = AsyncMock(
@@ -114,15 +115,15 @@ class TestGetAllAttachedAddresses:
                 ]
             )
 
-            await discovery.get_all_attached_addresses()
+            await bluez_discovery.get_all_attached_addresses()
 
-        assert discovery.get_adapter_for_address("00:06:F7:AA:BB:CC") == "hci0"
-        assert discovery.get_adapter_for_address("00:06:F7:DD:EE:FF") == "hci1"
+        assert bluez_discovery.get_adapter_for_address("00:06:F7:AA:BB:CC") == "hci0"
+        assert bluez_discovery.get_adapter_for_address("00:06:F7:DD:EE:FF") == "hci1"
 
     @pytest.mark.asyncio
-    async def test_scan_failure_on_one_adapter_continues(self, discovery):
+    async def test_scan_failure_on_one_adapter_continues(self, bluez_discovery):
         """Failure scanning one adapter should not prevent scanning others."""
-        discovery._adapters = {"hci0": "AA:00", "hci1": "BB:00"}
+        bluez_discovery._adapters = {"hci0": "AA:00", "hci1": "BB:00"}
 
         with patch("services.controller_manager.multiplexer.bt_discovery.bluetooth") as mock_bt:
             mock_bt.get_attached_addresses = AsyncMock(
@@ -132,7 +133,7 @@ class TestGetAllAttachedAddresses:
                 ]
             )
 
-            addresses = await discovery.get_all_attached_addresses()
+            addresses = await bluez_discovery.get_all_attached_addresses()
 
         assert addresses == ["00:06:F7:DD:EE:FF"]
 
@@ -242,11 +243,11 @@ class TestRefreshAdapters:
 class TestDiscoveryMode:
     """Tests for discovery_mode parameter."""
 
-    def test_default_mode_is_bluez(self):
+    def test_default_mode_is_hidapi(self):
         d = CentralizedBTDiscovery()
-        assert d.discovery_mode == "bluez"
+        assert d.discovery_mode == "hidapi"
 
-    def test_hidapi_mode(self):
+    def test_explicit_hidapi_mode(self):
         d = CentralizedBTDiscovery(discovery_mode="hidapi")
         assert d.discovery_mode == "hidapi"
 
@@ -260,9 +261,9 @@ class TestHidapiMode:
     """Tests for hidapi discovery mode."""
 
     @pytest.mark.asyncio
-    async def test_scan_via_hidapi_enumerates_devices(self, hidapi_discovery):
+    async def test_scan_via_hidapi_enumerates_devices(self, discovery):
         """Should use hid.enumerate to find PS Move controllers."""
-        hidapi_discovery._adapters = {"hci0": "AA:00"}
+        discovery._adapters = {"hci0": "AA:00"}
 
         mock_hid = MagicMock()
         mock_hid.enumerate.side_effect = [
@@ -277,16 +278,16 @@ class TestHidapiMode:
             patch("services.controller_manager.multiplexer.bt_discovery.hid", mock_hid, create=True),
         ):
             mock_bt.get_attached_addresses = AsyncMock(return_value=["00:06:F7:AA:BB:CC", "00:06:F7:DD:EE:FF"])
-            addresses = await hidapi_discovery.get_all_attached_addresses()
+            addresses = await discovery.get_all_attached_addresses()
 
         assert len(addresses) == 2
         assert "0006F7AABBCC" in addresses
         assert "0006F7DDEEFF" in addresses
 
     @pytest.mark.asyncio
-    async def test_scan_via_hidapi_builds_affinity(self, hidapi_discovery):
+    async def test_scan_via_hidapi_builds_affinity(self, discovery):
         """Should cross-reference HID serials with BlueZ for adapter affinity."""
-        hidapi_discovery._adapters = {"hci0": "AA:00", "hci1": "BB:00"}
+        discovery._adapters = {"hci0": "AA:00", "hci1": "BB:00"}
 
         mock_hid = MagicMock()
         mock_hid.enumerate.side_effect = [
@@ -306,15 +307,15 @@ class TestHidapiMode:
                     ["00:06:F7:DD:EE:FF"],  # hci1 has second controller
                 ]
             )
-            await hidapi_discovery.get_all_attached_addresses()
+            await discovery.get_all_attached_addresses()
 
-        assert hidapi_discovery.get_adapter_for_address("0006F7AABBCC") == "hci0"
-        assert hidapi_discovery.get_adapter_for_address("0006F7DDEEFF") == "hci1"
+        assert discovery.get_adapter_for_address("0006F7AABBCC") == "hci0"
+        assert discovery.get_adapter_for_address("0006F7DDEEFF") == "hci1"
 
     @pytest.mark.asyncio
-    async def test_scan_via_hidapi_deduplicates(self, hidapi_discovery):
+    async def test_scan_via_hidapi_deduplicates(self, discovery):
         """Should deduplicate controllers seen on multiple HID paths."""
-        hidapi_discovery._adapters = {"hci0": "AA:00"}
+        discovery._adapters = {"hci0": "AA:00"}
 
         mock_hid = MagicMock()
         mock_hid.enumerate.side_effect = [
@@ -329,14 +330,14 @@ class TestHidapiMode:
             patch("services.controller_manager.multiplexer.bt_discovery.hid", mock_hid, create=True),
         ):
             mock_bt.get_attached_addresses = AsyncMock(return_value=["00:06:F7:AA:BB:CC"])
-            addresses = await hidapi_discovery.get_all_attached_addresses()
+            addresses = await discovery.get_all_attached_addresses()
 
         assert len(addresses) == 1
 
     @pytest.mark.asyncio
-    async def test_sysfs_fallback_when_bluez_has_no_devices(self, hidapi_discovery):
+    async def test_sysfs_fallback_when_bluez_has_no_devices(self, discovery):
         """Should resolve adapter affinity via sysfs when BlueZ cross-ref fails."""
-        hidapi_discovery._adapters = {"hci0": "AA:00", "hci1": "BB:00"}
+        discovery._adapters = {"hci0": "AA:00", "hci1": "BB:00"}
 
         mock_hid = MagicMock()
         mock_hid.enumerate.side_effect = [
@@ -360,15 +361,15 @@ class TestHidapiMode:
         ):
             # BlueZ returns nothing — devices connected via hidraw, not BlueZ
             mock_bt.get_attached_addresses = AsyncMock(return_value=[])
-            await hidapi_discovery.get_all_attached_addresses()
+            await discovery.get_all_attached_addresses()
 
-        assert hidapi_discovery.get_adapter_for_address("0006F7AABBCC") == "hci0"
-        assert hidapi_discovery.get_adapter_for_address("0006F7DDEEFF") == "hci1"
+        assert discovery.get_adapter_for_address("0006F7AABBCC") == "hci0"
+        assert discovery.get_adapter_for_address("0006F7DDEEFF") == "hci1"
 
     @pytest.mark.asyncio
-    async def test_sysfs_fallback_skips_unknown_adapters(self, hidapi_discovery):
+    async def test_sysfs_fallback_skips_unknown_adapters(self, discovery):
         """Sysfs fallback should ignore adapters not in the known adapter list."""
-        hidapi_discovery._adapters = {"hci0": "AA:00"}
+        discovery._adapters = {"hci0": "AA:00"}
 
         mock_hid = MagicMock()
         mock_hid.enumerate.side_effect = [
@@ -388,9 +389,9 @@ class TestHidapiMode:
             ),
         ):
             mock_bt.get_attached_addresses = AsyncMock(return_value=[])
-            await hidapi_discovery.get_all_attached_addresses()
+            await discovery.get_all_attached_addresses()
 
-        assert hidapi_discovery.get_adapter_for_address("0006F7AABBCC") is None
+        assert discovery.get_adapter_for_address("0006F7AABBCC") is None
 
     def test_resolve_adapter_from_sysfs_parses_hci(self):
         """Should extract hci name from resolved sysfs path."""
@@ -428,13 +429,13 @@ class TestHidapiMode:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_bluez_mode_uses_bluez_scanning(self, discovery):
-        """Default (bluez) mode should NOT call hid.enumerate."""
-        discovery._adapters = {"hci0": "AA:00"}
+    async def test_bluez_mode_uses_bluez_scanning(self, bluez_discovery):
+        """Explicit bluez mode should NOT call hid.enumerate."""
+        bluez_discovery._adapters = {"hci0": "AA:00"}
 
         with patch("services.controller_manager.multiplexer.bt_discovery.bluetooth") as mock_bt:
             mock_bt.get_attached_addresses = AsyncMock(return_value=["00:06:F7:AA:BB:CC"])
-            addresses = await discovery.get_all_attached_addresses()
+            addresses = await bluez_discovery.get_all_attached_addresses()
 
         assert len(addresses) == 1
         assert "00:06:F7:AA:BB:CC" in addresses

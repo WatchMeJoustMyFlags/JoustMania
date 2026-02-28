@@ -13,9 +13,6 @@ dependencies = [
 
     # Platform-specific dependencies
     "dbus-fast>=2.0.0; sys_platform == 'linux'",  # Async D-Bus for BlueZ
-    # NOTE: psmove/psmoveapi must be built from source (not on PyPI)
-    # See: https://github.com/thp/psmoveapi for build instructions
-    # hidapi: Pure Python HID backend (alternative to psmoveapi, controller_backend=hidapi flag)
     "hidapi>=0.14.0",
 
     # gRPC

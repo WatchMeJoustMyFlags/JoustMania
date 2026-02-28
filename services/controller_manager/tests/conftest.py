@@ -17,7 +17,7 @@ disable_profiling_for_tests()
 class FakeMove:
     """Mock PS Move controller for testing without hardware.
 
-    Simulates the psmove API for unit testing controller logic.
+    Simulates the controller I/O API for unit testing controller logic.
     """
 
     def __init__(self):
@@ -25,7 +25,7 @@ class FakeMove:
         self.gyro = (0, 0, 0)
         self.buttons = 0
         self.trigger = 0
-        self.battery = 5  # psmove.Batt_MAX equivalent
+        self.battery = 5
         self.last_poll_ = False
         self.led_r = 0
         self.led_g = 0

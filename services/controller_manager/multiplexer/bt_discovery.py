@@ -4,8 +4,7 @@ Centralized Bluetooth Discovery for multi-adapter setups.
 Manages all Bluetooth adapters for setups with multiple USB BT dongles.
 Each adapter supports ~7 controllers, so multi-adapter setups scale capacity.
 
-Supports two discovery modes:
-- "bluez": Scans via BlueZ D-Bus per adapter (for psmoveapi/BluetoothBackend)
+Discovery mode:
 - "hidapi": Scans via hid.enumerate() with BlueZ cross-ref for adapter affinity
 """
 
@@ -28,15 +27,12 @@ class CentralizedBTDiscovery:
     - Adapter affinity tracking (which adapter each address is on)
     - Periodic refresh for hot-plug support
 
-    Discovery modes:
-    - "bluez": Uses BlueZ get_attached_addresses() per adapter.
-      Best for psmoveapi (BluetoothBackend) which uses BlueZ for pairing.
+    Discovery mode:
     - "hidapi": Uses hid.enumerate() for device discovery, with BlueZ
-      cross-reference for adapter affinity. Best for HidapiBackend which
-      talks to controllers via HID (hidraw) instead of BlueZ.
+      cross-reference for adapter affinity.
     """
 
-    def __init__(self, discovery_mode: str = "bluez"):
+    def __init__(self, discovery_mode: str = "hidapi"):
         self._discovery_mode = discovery_mode
         self._adapters: dict[str, str] = {}  # {hci: bt_address}
         self._address_to_adapter: dict[str, str] = {}  # {normalized_addr: hci}

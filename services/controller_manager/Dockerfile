@@ -1,27 +1,16 @@
 # Multi-stage build for JoustMania Controller Manager Service
 #
-# Uses pre-built psmoveapi image for faster builds (Phase 69)
-# Build the images first:
-#   docker build -t ghcr.io/watchmejoustmyflags/joustmania/psmove-builder:latest images/psmove-builder/
+# Build the builder image first:
 #   docker build -t ghcr.io/watchmejoustmyflags/joustmania/builder:latest images/builder/
 #
-# Phase 75: Builder images can be overridden for CI/CD
+# Builder images can be overridden for CI/CD:
 # --build-arg BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:main
-# --build-arg PSMOVE_BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/psmove-builder:main
-#
-# Build time: ~1-2 minutes (vs 10-15 minutes without pre-built psmoveapi)
 
-# Builder images - override with --build-arg for CI/CD
+# Builder image - override with --build-arg for CI/CD
 ARG BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:latest
-ARG PSMOVE_BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/psmove-builder:latest
 
 # =============================================================================
-# Stage 1: PS Move API - use pre-built image
-# =============================================================================
-FROM ${PSMOVE_BUILDER_IMAGE} AS psmove-builder
-
-# =============================================================================
-# Stage 2: Build Python dependencies
+# Stage 1: Build Python dependencies
 # =============================================================================
 FROM ${BUILDER_IMAGE} AS python-builder
 
@@ -31,7 +20,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libbluetooth-dev \
     libdbus-1-dev \
     libglib2.0-dev \
-    libusb-dev \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
@@ -58,19 +46,18 @@ WORKDIR /app
 RUN uv pip install --system -e proto/ -e lib/ -e services/controller_manager/
 
 # =============================================================================
-# Stage 3: Runtime image
+# Stage 2: Runtime image
 # =============================================================================
 FROM python:3.11-slim
 
 # Install runtime dependencies (bluetooth for PS Move controllers)
-# libhidapi-hidraw0: Required for controller_backend=hidapi flag (pure Python HID backend)
+# libhidapi-hidraw0: Required for hidapi backend (HID over hidraw)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bluez \
     libbluetooth3 \
     libdbus-1-3 \
     libglib2.0-0 \
     libhidapi-hidraw0 \
-    libusb-1.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -78,14 +65,6 @@ WORKDIR /app
 # Copy installed packages from python-builder
 COPY --from=python-builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=python-builder /usr/local/bin /usr/local/bin
-
-# Copy psmove Python bindings from pre-built psmove-builder
-COPY --from=psmove-builder /psmove/psmove.py /usr/local/lib/python3.11/site-packages/
-COPY --from=psmove-builder /psmove/_psmove.so /usr/local/lib/python3.11/site-packages/
-COPY --from=psmove-builder /psmove/libpsmoveapi.so /usr/local/lib/
-
-# Update library cache so _psmove.so can find libpsmoveapi.so
-RUN ldconfig
 
 # Copy grpc-health-probe binary
 # Copy grpc-health-probe from official multi-arch image
