@@ -34,6 +34,32 @@ _ATTR_ADAPTER_ADDRESS = "adapter.address"
 _KNOWN_ROUTING_VALUES = {"hidapi", "rust"}
 
 
+def _resolve_routing() -> str:
+    """Resolve the routing name from feature flags.
+
+    Reads the controller_adapter_routing default variant and validates it.
+    Returns a known routing name, falling back to "hidapi" for unknown values.
+    """
+    routing = get_adapter_routing_default()
+
+    if routing in _KNOWN_ROUTING_VALUES:
+        return routing
+
+    logger.warning(f"Unknown adapter routing '{routing}', falling back to hidapi")
+    return "hidapi"
+
+
+def _create_backend(name: str) -> PairingBackend:
+    """Create a backend instance by name."""
+    if name == "rust":
+        logger.warning(
+            "Rust pairing backend selected but not yet implemented — "
+            "set controller_adapter_routing=hidapi to restore pairing"
+        )
+        return RustServiceBackend()
+    return HidapiBackend()
+
+
 def _resolve_backend() -> tuple[PairingBackend, str]:
     """Resolve the pairing backend from feature flags.
 
@@ -44,15 +70,8 @@ def _resolve_backend() -> tuple[PairingBackend, str]:
     Returns:
         Tuple of (backend_instance, backend_name).
     """
-    routing = get_adapter_routing_default()
-
-    if routing == "rust":
-        return RustServiceBackend(), "rust"
-
-    if routing not in _KNOWN_ROUTING_VALUES:
-        logger.warning(f"Unknown adapter routing '{routing}', falling back to hidapi")
-
-    return HidapiBackend(), "hidapi"
+    name = _resolve_routing()
+    return _create_backend(name), name
 
 
 class USBPairing:
@@ -257,8 +276,8 @@ class USBPairing:
         with self.tracer.start_as_current_span("poll_cycle") as span:
             span.set_attribute("poll.count", self.poll_count)
 
-            # Resolve backend, caching instance across polls when routing is unchanged
-            backend, backend_name = _resolve_backend()
+            # Resolve routing name, only creating a new backend when it changes
+            backend_name = _resolve_routing()
             if backend_name == self._current_backend_name and self._current_backend is not None:
                 backend = self._current_backend
             else:
@@ -266,6 +285,7 @@ class USBPairing:
                     logger.info(f"Pairing backend initialized: {backend_name}")
                 elif backend_name != self._current_backend_name:
                     logger.info(f"Pairing backend switched: {self._current_backend_name} -> {backend_name}")
+                backend = _create_backend(backend_name)
                 self._current_backend = backend
                 self._current_backend_name = backend_name
             span.set_attribute("pairing.backend", backend_name)

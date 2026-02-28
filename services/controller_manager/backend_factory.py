@@ -83,6 +83,7 @@ def _create_bt_discovery(names: list[str]) -> CentralizedBTDiscovery | None:
     """Create CentralizedBTDiscovery if any backend needs Bluetooth.
 
     Returns None if no backend in the list uses Bluetooth.
+    The "rust" backend handles its own discovery via gRPC.
     """
     from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDiscovery
 

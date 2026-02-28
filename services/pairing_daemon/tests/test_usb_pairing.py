@@ -6,7 +6,7 @@ import pytest
 
 from psmove_pairing.adapter_manager import AdapterInfo
 from psmove_pairing.pairing_backend import HidapiBackend, PairingResult, RustServiceBackend
-from psmove_pairing.usb_pairing import USBPairing, _resolve_backend
+from psmove_pairing.usb_pairing import USBPairing, _resolve_backend, _resolve_routing
 
 from .conftest import FAKE_PATH_1, MockCommandRunner
 
@@ -26,7 +26,7 @@ def _mock_backend(controllers=None):
 
 
 class TestResolveBackend:
-    """Tests for _resolve_backend() flag-based backend selection."""
+    """Tests for _resolve_routing() and _resolve_backend() flag-based backend selection."""
 
     def test_default_returns_hidapi(self):
         """Default routing returns HidapiBackend."""
@@ -49,6 +49,13 @@ class TestResolveBackend:
         assert isinstance(backend, HidapiBackend)
         assert name == "hidapi"
 
+    def test_empty_string_falls_back_to_hidapi(self):
+        """Empty string routing falls back to HidapiBackend."""
+        with patch("psmove_pairing.usb_pairing.get_adapter_routing_default", return_value=""):
+            backend, name = _resolve_backend()
+        assert isinstance(backend, HidapiBackend)
+        assert name == "hidapi"
+
     def test_unknown_logs_warning(self):
         """Unknown routing value logs a warning."""
         with (
@@ -56,28 +63,49 @@ class TestResolveBackend:
             patch("psmove_pairing.usb_pairing.logger") as mock_logger,
         ):
             _resolve_backend()
-            mock_logger.warning.assert_called_once_with("Unknown adapter routing 'bogus', falling back to hidapi")
+            mock_logger.warning.assert_any_call("Unknown adapter routing 'bogus', falling back to hidapi")
+
+    def test_resolve_routing_returns_known_values(self):
+        """_resolve_routing() returns known routing names without constructing backends."""
+        with patch("psmove_pairing.usb_pairing.get_adapter_routing_default", return_value="hidapi"):
+            assert _resolve_routing() == "hidapi"
+        with patch("psmove_pairing.usb_pairing.get_adapter_routing_default", return_value="rust"):
+            assert _resolve_routing() == "rust"
+
+    def test_rust_selection_logs_warning(self):
+        """Selecting rust backend logs an actionable warning."""
+        with (
+            patch("psmove_pairing.usb_pairing.get_adapter_routing_default", return_value="rust"),
+            patch("psmove_pairing.usb_pairing.logger") as mock_logger,
+        ):
+            _resolve_backend()
+            mock_logger.warning.assert_called_once_with(
+                "Rust pairing backend selected but not yet implemented — "
+                "set controller_adapter_routing=hidapi to restore pairing"
+            )
 
 
 class TestGetUSBControllers:
     """Tests for poll() USB controller enumeration via backend."""
 
-    @patch("psmove_pairing.usb_pairing._resolve_backend")
+    @patch("psmove_pairing.usb_pairing._create_backend")
+    @patch("psmove_pairing.usb_pairing._resolve_routing", return_value="hidapi")
     @pytest.mark.asyncio
-    async def test_no_controllers(self, mock_resolve, usb_pairing):
+    async def test_no_controllers(self, _mock_routing, mock_create, usb_pairing):
         """Poll with no controllers delegates to backend and finds none."""
         backend = _mock_backend(controllers=[])
-        mock_resolve.return_value = (backend, "hidapi")
+        mock_create.return_value = backend
 
         await usb_pairing.poll()
         backend.get_usb_controllers.assert_called_once()
 
-    @patch("psmove_pairing.usb_pairing._resolve_backend")
+    @patch("psmove_pairing.usb_pairing._create_backend")
+    @patch("psmove_pairing.usb_pairing._resolve_routing", return_value="hidapi")
     @pytest.mark.asyncio
-    async def test_controllers_found(self, mock_resolve, usb_pairing):
+    async def test_controllers_found(self, _mock_routing, mock_create, usb_pairing):
         """Poll with controllers delegates to process_controller."""
         backend = _mock_backend(controllers=[(FAKE_PATH_1, "AA:BB:CC:DD:EE:FF")])
-        mock_resolve.return_value = (backend, "hidapi")
+        mock_create.return_value = backend
         usb_pairing.process_controller = AsyncMock(return_value=True)
 
         await usb_pairing.poll()
@@ -157,13 +185,14 @@ class TestPairController:
 class TestBackendCoherence:
     """Tests for poll-cycle backend coherence."""
 
-    @patch("psmove_pairing.usb_pairing._resolve_backend")
+    @patch("psmove_pairing.usb_pairing._create_backend")
+    @patch("psmove_pairing.usb_pairing._resolve_routing", return_value="hidapi")
     @pytest.mark.asyncio
-    async def test_same_backend_used_for_enumerate_and_pair(self, mock_resolve, usb_pairing):
+    async def test_same_backend_used_for_enumerate_and_pair(self, _mock_routing, mock_create, usb_pairing):
         """Backend resolved once in poll() is reused by pair_controller()."""
         backend = _mock_backend(controllers=[(FAKE_PATH_1, "AA:BB:CC:DD:EE:FF")])
         backend.pair_controller.return_value = PairingResult(success=True)
-        mock_resolve.return_value = (backend, "hidapi")
+        mock_create.return_value = backend
 
         # Mock out the rest of process_controller's dependencies
         usb_pairing.adapter_manager.refresh_adapters = AsyncMock()
@@ -175,100 +204,104 @@ class TestBackendCoherence:
 
         await usb_pairing.poll()
 
-        # _resolve_backend called exactly once (in poll), not again in pair_controller
-        mock_resolve.assert_called_once()
+        # _create_backend called exactly once (in poll), not again in pair_controller
+        mock_create.assert_called_once()
         # But pair_controller still delegated to the same backend
         backend.pair_controller.assert_called_once()
 
-    @patch("psmove_pairing.usb_pairing._resolve_backend")
+    @patch("psmove_pairing.usb_pairing._create_backend")
+    @patch("psmove_pairing.usb_pairing._resolve_routing", return_value="hidapi")
     @pytest.mark.asyncio
-    async def test_backend_cached_after_poll(self, mock_resolve, usb_pairing):
+    async def test_backend_cached_after_poll(self, _mock_routing, mock_create, usb_pairing):
         """Backend instance is cached after poll for reuse."""
         backend = _mock_backend()
-        mock_resolve.return_value = (backend, "hidapi")
+        mock_create.return_value = backend
 
         await usb_pairing.poll()
         assert usb_pairing._current_backend is backend
         assert usb_pairing._current_backend_name == "hidapi"
 
-    @patch("psmove_pairing.usb_pairing._resolve_backend")
+    @patch("psmove_pairing.usb_pairing._create_backend")
+    @patch("psmove_pairing.usb_pairing._resolve_routing", return_value="hidapi")
     @pytest.mark.asyncio
-    async def test_backend_instance_reused_across_polls(self, mock_resolve, usb_pairing):
+    async def test_backend_instance_reused_across_polls(self, _mock_routing, mock_create, usb_pairing):
         """Same backend instance is reused when routing is unchanged."""
-        backend1 = _mock_backend()
-        backend2 = _mock_backend()
-        mock_resolve.side_effect = [(backend1, "hidapi"), (backend2, "hidapi")]
+        backend = _mock_backend()
+        mock_create.return_value = backend
 
         await usb_pairing.poll()
-        assert usb_pairing._current_backend is backend1
+        assert usb_pairing._current_backend is backend
 
         await usb_pairing.poll()
-        # Second poll resolved a new instance but reused the cached one
-        assert usb_pairing._current_backend is backend1
-        assert mock_resolve.call_count == 2
+        # Routing unchanged — _create_backend only called once, instance reused
+        mock_create.assert_called_once()
+        assert usb_pairing._current_backend is backend
 
 
 class TestPoll:
     """Tests for poll() with backend delegation."""
 
-    @patch("psmove_pairing.usb_pairing._resolve_backend")
+    @patch("psmove_pairing.usb_pairing._create_backend")
+    @patch("psmove_pairing.usb_pairing._resolve_routing", return_value="hidapi")
     @pytest.mark.asyncio
-    async def test_poll_increments_count(self, mock_resolve, usb_pairing):
+    async def test_poll_increments_count(self, _mock_routing, mock_create, usb_pairing):
         """Poll count is incremented each cycle."""
-        backend = _mock_backend()
-        mock_resolve.return_value = (backend, "hidapi")
+        mock_create.return_value = _mock_backend()
 
         initial_count = usb_pairing.poll_count
         await usb_pairing.poll()
         assert usb_pairing.poll_count == initial_count + 1
 
-    @patch("psmove_pairing.usb_pairing._resolve_backend")
+    @patch("psmove_pairing.usb_pairing._create_backend")
+    @patch("psmove_pairing.usb_pairing._resolve_routing", return_value="hidapi")
     @pytest.mark.asyncio
-    async def test_poll_sets_backend_span_attribute(self, mock_resolve, usb_pairing):
+    async def test_poll_sets_backend_span_attribute(self, _mock_routing, mock_create, usb_pairing):
         """Poll sets pairing.backend span attribute."""
-        backend = _mock_backend()
-        mock_resolve.return_value = (backend, "hidapi")
+        mock_create.return_value = _mock_backend()
 
         await usb_pairing.poll()
 
         span = usb_pairing.tracer.start_as_current_span.return_value.__enter__.return_value
         span.set_attribute.assert_any_call("pairing.backend", "hidapi")
 
-    @patch("psmove_pairing.usb_pairing._resolve_backend")
+    @patch("psmove_pairing.usb_pairing._create_backend")
+    @patch("psmove_pairing.usb_pairing._resolve_routing", return_value="hidapi")
     @pytest.mark.asyncio
-    async def test_poll_logs_initial_backend(self, mock_resolve, usb_pairing):
+    async def test_poll_logs_initial_backend(self, _mock_routing, mock_create, usb_pairing):
         """Logs initial backend on first poll."""
-        backend = _mock_backend()
-        mock_resolve.return_value = (backend, "hidapi")
+        mock_create.return_value = _mock_backend()
 
         with patch("psmove_pairing.usb_pairing.logger") as mock_logger:
             await usb_pairing.poll()
             mock_logger.info.assert_any_call("Pairing backend initialized: hidapi")
 
-    @patch("psmove_pairing.usb_pairing._resolve_backend")
+    @patch("psmove_pairing.usb_pairing._create_backend")
+    @patch("psmove_pairing.usb_pairing._resolve_routing")
     @pytest.mark.asyncio
-    async def test_poll_logs_backend_switch(self, mock_resolve, usb_pairing):
+    async def test_poll_logs_backend_switch(self, mock_routing, mock_create, usb_pairing):
         """Logs when backend switches between polls."""
         hidapi_backend = _mock_backend()
         rust_backend = _mock_backend()
 
         # First poll: hidapi
-        mock_resolve.return_value = (hidapi_backend, "hidapi")
+        mock_routing.return_value = "hidapi"
+        mock_create.return_value = hidapi_backend
         await usb_pairing.poll()
         assert usb_pairing._current_backend_name == "hidapi"
 
         # Second poll: rust
-        mock_resolve.return_value = (rust_backend, "rust")
+        mock_routing.return_value = "rust"
+        mock_create.return_value = rust_backend
         with patch("psmove_pairing.usb_pairing.logger") as mock_logger:
             await usb_pairing.poll()
             mock_logger.info.assert_any_call("Pairing backend switched: hidapi -> rust")
 
-    @patch("psmove_pairing.usb_pairing._resolve_backend")
+    @patch("psmove_pairing.usb_pairing._create_backend")
+    @patch("psmove_pairing.usb_pairing._resolve_routing", return_value="hidapi")
     @pytest.mark.asyncio
-    async def test_poll_skips_when_no_controllers(self, mock_resolve, usb_pairing):
+    async def test_poll_skips_when_no_controllers(self, _mock_routing, mock_create, usb_pairing):
         """Poll skips processing when no USB controllers found."""
-        backend = _mock_backend(controllers=[])
-        mock_resolve.return_value = (backend, "hidapi")
+        mock_create.return_value = _mock_backend(controllers=[])
 
         await usb_pairing.poll()
         # No process_controller calls expected

@@ -107,7 +107,7 @@ class HidapiBackend:
                 finally:
                     device.close()
             except Exception as e:
-                logger.debug(f"Error reading controller at {path!r}: {e}")
+                logger.warning(f"Error reading controller at {path!r}: {e}")
 
         return usb_controllers
 
