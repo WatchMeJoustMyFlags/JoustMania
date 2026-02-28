@@ -686,7 +686,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "avg by(adapter) ((scalar(controller_polling_target_hz) - rate(controller_poll_drops_total[1m])) * on(serial) group_left(adapter) controller_adapter_info)",
+          "expr": "avg by(adapter) (scalar(controller_polling_target_hz) * on() group_left(serial, adapter) (controller_adapter_info * 0 + 1) - (rate(controller_poll_drops_total[1m]) * on(serial) group_left(adapter) controller_adapter_info or controller_adapter_info * 0))",
           "legendFormat": "{{adapter}}",
           "refId": "A"
         }
