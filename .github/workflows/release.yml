@@ -41,6 +41,7 @@ jobs:
           - game-coordinator-service
           - menu-service
           - audio-service
+          - mobile-gateway-service
           - connect-proxy
           - dashboard
           - grafana-live-publisher

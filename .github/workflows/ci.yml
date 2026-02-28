@@ -78,6 +78,7 @@ jobs:
           - menu
           - audio
           - pairing_daemon
+          - mobile_gateway
     steps:
       - uses: actions/checkout@v4
 
@@ -355,6 +356,7 @@ jobs:
           - menu
           - audio
           - pairing_daemon
+          - mobile_gateway
     steps:
       - uses: actions/checkout@v4
 
