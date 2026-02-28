@@ -390,6 +390,5 @@ networks:
     name: joustmania-network
 
 volumes:
-  redis-data:
   controller-names:
   psmoveapi-data:

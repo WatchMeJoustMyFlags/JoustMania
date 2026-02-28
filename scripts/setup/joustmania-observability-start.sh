@@ -16,8 +16,17 @@ docker network inspect joustmania-network >/dev/null 2>&1 || docker network crea
 
 # Clean up stale containers
 echo "Cleaning up stale observability containers..."
-docker ps -aq --filter "name=joustmania-obs-" | xargs -r docker rm -f 2>/dev/null || true
-docker container prune -f 2>/dev/null || true
+docker ps -aq \
+  --filter "name=joustmania-jaeger" \
+  --filter "name=joustmania-otel-collector" \
+  --filter "name=joustmania-prometheus" \
+  --filter "name=joustmania-grafana" \
+  --filter "name=joustmania-victoria-metrics" \
+  --filter "name=joustmania-loki" \
+  --filter "name=joustmania-node-exporter" \
+  --filter "name=joustmania-grafana-live-publisher" \
+  --filter "name=joustmania-pyroscope" \
+  | xargs -r docker rm -f 2>/dev/null || true
 
 # Pull images (non-fatal)
 echo "Checking for observability image updates..."

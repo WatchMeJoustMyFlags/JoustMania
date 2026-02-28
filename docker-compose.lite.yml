@@ -256,7 +256,7 @@ services:
 
 networks:
   joustmania:
-    external: true
+    driver: bridge
     name: joustmania-network
 
 volumes:

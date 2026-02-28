@@ -135,8 +135,10 @@ def docker_compose(request):
         print("Press ENTER to tear down the environment...")
         input()
 
-    compose.stop()
-    obs_compose.stop()
+    try:
+        compose.stop()
+    finally:
+        obs_compose.stop()
 
 
 @pytest.fixture
