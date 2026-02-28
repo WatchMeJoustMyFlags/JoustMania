@@ -8,6 +8,7 @@ The actual servicer implementation is in servicer.py.
 import asyncio
 import logging
 import os
+import signal
 
 import grpc
 import grpc.aio
@@ -140,16 +141,22 @@ async def serve(port=50052):
         await mock_server.start()
         logger.info(f"MockControllerService listening on port {mock_port}")
 
-    try:
-        await server.wait_for_termination()
-    except KeyboardInterrupt:
-        logger.info("Shutting down ControllerManager server...")
-        await controller_servicer.shutdown()
-        await server.stop(grace=5)
+    # Use asyncio.Event for signal-driven shutdown so both SIGTERM (Docker stop)
+    # and SIGINT (Ctrl-C / KeyboardInterrupt) trigger graceful shutdown.
+    shutdown_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, shutdown_event.set)
 
-        # Stop mock server if running
-        if mock_server:
-            await mock_server.stop(grace=5)
+    await shutdown_event.wait()
+
+    logger.info("Shutting down ControllerManager server...")
+    await controller_servicer.shutdown()
+    await server.stop(grace=5)
+
+    # Stop mock server if running
+    if mock_server:
+        await mock_server.stop(grace=5)
 
 
 if __name__ == "__main__":
