@@ -17,15 +17,17 @@ from .conftest import (
 class TestHidapiBackendGetUSBControllers:
     """Tests for HidapiBackend.get_usb_controllers()."""
 
+    @pytest.mark.asyncio
     @patch("psmove_pairing.pairing_backend.hid")
-    def test_no_controllers(self, mock_hid):
+    async def test_no_controllers(self, mock_hid):
         """Returns empty list when no HID devices found."""
         mock_hid.enumerate.return_value = []
         backend = HidapiBackend()
-        assert backend.get_usb_controllers() == []
+        assert await backend.get_usb_controllers() == []
 
+    @pytest.mark.asyncio
     @patch("psmove_pairing.pairing_backend.hid")
-    def test_usb_controller_detected(self, mock_hid):
+    async def test_usb_controller_detected(self, mock_hid):
         """Detects USB controller and reads serial from feature report."""
         mock_hid.enumerate.side_effect = lambda _v, p: [make_dev_info()] if p == 0x03D5 else []
 
@@ -34,26 +36,28 @@ class TestHidapiBackendGetUSBControllers:
         mock_hid.device.return_value = mock_device
 
         backend = HidapiBackend()
-        controllers = backend.get_usb_controllers()
+        controllers = await backend.get_usb_controllers()
 
         assert len(controllers) == 1
         assert controllers[0] == (FAKE_PATH_1, "AA:BB:CC:DD:EE:FF")
         mock_device.open_path.assert_called_once_with(FAKE_PATH_1)
         mock_device.close.assert_called_once()
 
+    @pytest.mark.asyncio
     @patch("psmove_pairing.pairing_backend.hid")
-    def test_bluetooth_excluded(self, mock_hid):
+    async def test_bluetooth_excluded(self, mock_hid):
         """Excludes Bluetooth devices (interface_number == -1)."""
         mock_hid.enumerate.side_effect = lambda _v, p: [make_dev_info(interface_number=-1)] if p == 0x03D5 else []
 
         backend = HidapiBackend()
-        controllers = backend.get_usb_controllers()
+        controllers = await backend.get_usb_controllers()
 
         assert controllers == []
         mock_hid.device.assert_not_called()
 
+    @pytest.mark.asyncio
     @patch("psmove_pairing.pairing_backend.hid")
-    def test_hid_error_skips_device(self, mock_hid):
+    async def test_hid_error_skips_device(self, mock_hid):
         """Skips devices that raise errors during feature report read."""
         mock_hid.enumerate.side_effect = lambda _v, p: [make_dev_info()] if p == 0x03D5 else []
 
@@ -62,13 +66,14 @@ class TestHidapiBackendGetUSBControllers:
         mock_hid.device.return_value = mock_device
 
         backend = HidapiBackend()
-        controllers = backend.get_usb_controllers()
+        controllers = await backend.get_usb_controllers()
 
         assert controllers == []
         mock_device.close.assert_called_once()
 
+    @pytest.mark.asyncio
     @patch("psmove_pairing.pairing_backend.hid")
-    def test_feature_report_as_list(self, mock_hid):
+    async def test_feature_report_as_list(self, mock_hid):
         """Handles feature report returned as list (hidraw quirk)."""
         mock_hid.enumerate.side_effect = lambda _v, p: [make_dev_info()] if p == 0x03D5 else []
 
@@ -77,7 +82,7 @@ class TestHidapiBackendGetUSBControllers:
         mock_hid.device.return_value = mock_device
 
         backend = HidapiBackend()
-        controllers = backend.get_usb_controllers()
+        controllers = await backend.get_usb_controllers()
 
         assert len(controllers) == 1
         assert controllers[0] == (FAKE_PATH_1, "AA:BB:CC:DD:EE:FF")
@@ -153,11 +158,12 @@ class TestPairingResult:
 class TestRustServiceBackend:
     """Tests for RustServiceBackend stub."""
 
-    def test_get_usb_controllers_raises(self):
+    @pytest.mark.asyncio
+    async def test_get_usb_controllers_raises(self):
         """All methods raise NotImplementedError."""
         backend = RustServiceBackend()
         with pytest.raises(NotImplementedError, match="Rust pairing service not yet implemented"):
-            backend.get_usb_controllers()
+            await backend.get_usb_controllers()
 
     @pytest.mark.asyncio
     async def test_pair_controller_raises(self):

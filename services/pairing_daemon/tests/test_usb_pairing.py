@@ -20,7 +20,7 @@ def usb_pairing(mock_tracer):
 def _mock_backend(controllers=None):
     """Create a mock HidapiBackend with predefined controllers."""
     backend = MagicMock(spec=HidapiBackend)
-    backend.get_usb_controllers.return_value = controllers or []
+    backend.get_usb_controllers = AsyncMock(return_value=controllers or [])
     backend.pair_controller = AsyncMock(return_value=PairingResult(success=True))
     return backend
 
@@ -182,14 +182,30 @@ class TestBackendCoherence:
 
     @patch("psmove_pairing.usb_pairing._resolve_backend")
     @pytest.mark.asyncio
-    async def test_backend_cleared_after_poll(self, mock_resolve, usb_pairing):
-        """Backend is cleared after poll cycle completes."""
+    async def test_backend_cached_after_poll(self, mock_resolve, usb_pairing):
+        """Backend instance is cached after poll for reuse."""
         backend = _mock_backend()
         mock_resolve.return_value = (backend, "hidapi")
 
         await usb_pairing.poll()
-        assert usb_pairing._current_backend is None
-        assert usb_pairing._current_backend_name is None
+        assert usb_pairing._current_backend is backend
+        assert usb_pairing._current_backend_name == "hidapi"
+
+    @patch("psmove_pairing.usb_pairing._resolve_backend")
+    @pytest.mark.asyncio
+    async def test_backend_instance_reused_across_polls(self, mock_resolve, usb_pairing):
+        """Same backend instance is reused when routing is unchanged."""
+        backend1 = _mock_backend()
+        backend2 = _mock_backend()
+        mock_resolve.side_effect = [(backend1, "hidapi"), (backend2, "hidapi")]
+
+        await usb_pairing.poll()
+        assert usb_pairing._current_backend is backend1
+
+        await usb_pairing.poll()
+        # Second poll resolved a new instance but reused the cached one
+        assert usb_pairing._current_backend is backend1
+        assert mock_resolve.call_count == 2
 
 
 class TestPoll:
@@ -239,7 +255,7 @@ class TestPoll:
         # First poll: hidapi
         mock_resolve.return_value = (hidapi_backend, "hidapi")
         await usb_pairing.poll()
-        assert usb_pairing._last_backend_name == "hidapi"
+        assert usb_pairing._current_backend_name == "hidapi"
 
         # Second poll: rust
         mock_resolve.return_value = (rust_backend, "rust")

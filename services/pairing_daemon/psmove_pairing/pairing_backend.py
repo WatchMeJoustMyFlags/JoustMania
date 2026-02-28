@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 import hidraw as hid
 
@@ -38,6 +38,7 @@ class PairingResult:
     previous_host: str = ""
 
 
+@runtime_checkable
 class PairingBackend(Protocol):
     """Protocol for pairing backend implementations.
 
@@ -46,7 +47,7 @@ class PairingBackend(Protocol):
     delegates to whichever backend is selected by feature flags.
     """
 
-    def get_usb_controllers(self) -> list[tuple[bytes, str]]:
+    async def get_usb_controllers(self) -> list[tuple[bytes, str]]:
         """Enumerate USB-connected PS Move controllers.
 
         Returns:
@@ -76,11 +77,14 @@ class HidapiBackend:
     No tracing or metrics — the caller (USBPairing) handles observability.
     """
 
-    def get_usb_controllers(self) -> list[tuple[bytes, str]]:
+    async def get_usb_controllers(self) -> list[tuple[bytes, str]]:
         """Enumerate USB-connected PS Move controllers via hidapi.
 
         Filters to USB-only devices (interface_number >= 0) and reads
         each controller's BT MAC from feature report 0x04.
+
+        Note: HID calls are synchronous blocking I/O. Wrapping in
+        asyncio.to_thread() is deferred until profiling shows it matters.
         """
         usb_controllers: list[tuple[bytes, str]] = []
         devices = [d for pid in ALL_PRODUCT_IDS for d in hid.enumerate(VENDOR_ID, pid)]
@@ -136,7 +140,7 @@ class HidapiBackend:
             return PairingResult(success=True, already_paired=already_paired, previous_host=current_host)
 
         except Exception as e:
-            logger.debug(f"HID pairing error for {serial}: {e}")
+            logger.warning(f"HID pairing error for {serial}: {e}")
             return PairingResult(success=False)
 
 
@@ -147,7 +151,7 @@ class RustServiceBackend:
     All methods raise NotImplementedError until #612 adds the Rust service.
     """
 
-    def get_usb_controllers(self) -> list[tuple[bytes, str]]:
+    async def get_usb_controllers(self) -> list[tuple[bytes, str]]:
         raise NotImplementedError("Rust pairing service not yet implemented — see #612")
 
     async def pair_controller(self, device_path: bytes, serial: str, adapter_address: str) -> PairingResult:
