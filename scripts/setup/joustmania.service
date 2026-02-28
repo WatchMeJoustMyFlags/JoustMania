@@ -1,13 +1,16 @@
 [Unit]
 Description=JoustMania Docker Compose Application
 Requires=docker.service
-After=docker.service network-online.target
-Wants=network-online.target
+After=docker.service network-online.target joustmania-observability.service
+Wants=network-online.target joustmania-observability.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/home/pi/JoustMania
+ExecStartPre=+/bin/bash -c '\
+  docker network inspect joustmania-network >/dev/null 2>&1 || docker network create joustmania-network; \
+  true'
 ExecStart=/home/pi/JoustMania/scripts/setup/joustmania-start.sh
 ExecStop=/usr/bin/docker compose down
 TimeoutStartSec=600

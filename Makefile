@@ -1,28 +1,39 @@
 # JoustMania Makefile
 #
-# Most Docker operations are done directly with docker compose.
-# This Makefile provides shortcuts for common development tasks.
+# The system is split into two independent Docker Compose projects:
+#   - Game stack: docker-compose.yml (game services, redis, flagd, envoy)
+#   - Observability stack: docker-compose.observability.yml (jaeger, grafana, prometheus, etc.)
+#
+# Both stacks share the external 'joustmania-network' Docker network.
+# Create it once: docker network create joustmania-network
 #
 # Quick Start:
-#   docker compose up -d              # Start with existing images
-#   docker compose up -d --build      # Build and start
-#   docker compose pull && docker compose up -d  # Pull from GHCR and start
+#   make up                           # Start both stacks
+#   make down                         # Stop both stacks
+#   make up-game                      # Start game stack only
+#   make up-obs                       # Start observability stack only
 #
-# Or use make targets for convenience:
-#   make up-mock                      # Start in mock mode (no hardware)
-#   make builders                     # Build base images (once)
-#   make test                         # Run integration tests
+# Or use docker compose directly:
+#   docker compose up -d              # Game stack
+#   docker compose -f docker-compose.observability.yml up -d  # Observability stack
 
 .PHONY: help
 help:
 	@echo "JoustMania Development Targets"
 	@echo "=============================="
 	@echo ""
-	@echo "Docker (use docker compose directly for most operations):"
+	@echo "Docker Compose Stacks:"
+	@echo "  make up              - Start both stacks (observability + game)"
+	@echo "  make down            - Stop both stacks"
+	@echo "  make up-game         - Start game stack only"
+	@echo "  make down-game       - Stop game stack only"
+	@echo "  make up-obs          - Start observability stack only"
+	@echo "  make down-obs        - Stop observability stack only"
+	@echo ""
+	@echo "Development Modes:"
 	@echo "  make dev             - Start with hot-reload source mounting"
 	@echo "  make up-mock         - Start in mock mode (no hardware)"
 	@echo "  make up-dynatrace    - Start with Dynatrace telemetry export"
-	@echo "  make builders        - Build base images (run once)"
 	@echo ""
 	@echo "Code Quality:"
 	@echo "  make lint            - Run linting (ruff)"
@@ -39,21 +50,66 @@ help:
 	@echo "  make protos          - Generate Python protobuf files"
 	@echo "  make protos-all      - Generate all protobuf files (Python, TS, Go)"
 	@echo ""
-	@echo "Direct docker compose commands:"
-	@echo "  docker compose up -d              # Start services"
-	@echo "  docker compose up -d --build      # Build and start"
-	@echo "  docker compose down               # Stop services"
-	@echo "  docker compose logs -f            # Follow logs"
-	@echo "  docker compose ps                 # List services"
-	@echo "  docker compose pull               # Pull images from GHCR"
+	@echo "Builder Images:"
+	@echo "  make builders        - Build base images (run once)"
 
 # ============================================================================
-# Docker Convenience Targets
+# Shared Network
 # ============================================================================
+# Both compose projects use an external Docker network. Create it if missing.
+
+.PHONY: network
+network:
+	@docker network inspect joustmania-network >/dev/null 2>&1 || docker network create joustmania-network
+
+# ============================================================================
+# Docker Compose Stack Management
+# ============================================================================
+
+# Start both stacks (observability first, then game)
+.PHONY: up
+up: network
+	docker compose -f docker-compose.observability.yml up -d $(if $(BUILD),--build)
+	docker compose up -d $(if $(BUILD),--build)
+	@echo ""
+	@echo "=========================================="
+	@echo "JoustMania is running (FULL STACK)"
+	@echo "=========================================="
+	@echo "  Dashboard:  http://localhost/"
+	@echo "  Jaeger:     http://localhost/jaeger/"
+	@echo "  Grafana:    http://localhost/grafana/"
+	@echo "  Prometheus: http://localhost/prometheus/"
+
+# Stop both stacks
+.PHONY: down
+down:
+	docker compose down --remove-orphans || true
+	docker compose -f docker-compose.observability.yml down --remove-orphans || true
+
+# Start game stack only
+.PHONY: up-game
+up-game: network
+	docker compose up -d $(if $(BUILD),--build)
+
+# Stop game stack only
+.PHONY: down-game
+down-game:
+	docker compose down --remove-orphans || true
+
+# Start observability stack only
+.PHONY: up-obs
+up-obs: network
+	docker compose -f docker-compose.observability.yml up -d $(if $(BUILD),--build)
+
+# Stop observability stack only
+.PHONY: down-obs
+down-obs:
+	docker compose -f docker-compose.observability.yml down --remove-orphans || true
 
 # Hot-reload mode: volume-mounts Python source for live code changes without rebuilds
 .PHONY: dev
-dev:
+dev: network
+	docker compose -f docker-compose.observability.yml up -d
 	docker compose -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.dev.yml up -d $(if $(BUILD),--build)
 	@echo ""
 	@echo "=========================================="
@@ -70,8 +126,9 @@ dev:
 # Dynatrace mode: adds parallel telemetry export to Dynatrace alongside local stack
 # Requires DYNATRACE_ENDPOINT and DYNATRACE_API_TOKEN in .env or environment
 .PHONY: up-dynatrace
-up-dynatrace:
-	docker compose -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.dynatrace.yml up -d $(if $(BUILD),--build)
+up-dynatrace: network
+	docker compose -f docker-compose.observability.yml -f docker-compose.dynatrace.yml up -d $(if $(BUILD),--build)
+	docker compose up -d $(if $(BUILD),--build)
 	@echo ""
 	@echo "=========================================="
 	@echo "JoustMania is running (DYNATRACE MODE)"
@@ -84,7 +141,8 @@ up-dynatrace:
 
 # Mock mode uses CI flagd config (controller_backend=mock)
 .PHONY: up-mock
-up-mock:
+up-mock: network
+	docker compose -f docker-compose.observability.yml up -d
 	docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d $(if $(BUILD),--build)
 	@echo ""
 	@echo "=========================================="
@@ -106,7 +164,7 @@ PSMOVE_BUILDER_MARKER := .psmove-builder-built
 
 .PHONY: builders
 builders: $(BUILDER_MARKER) $(PSMOVE_BUILDER_MARKER)
-	@echo "✓ All builder images ready"
+	@echo "All builder images ready"
 
 $(BUILDER_MARKER): images/builder/Dockerfile images/builder/requirements-common.txt
 	@echo "Building shared Python builder image..."
@@ -146,7 +204,7 @@ format-check:
 
 .PHONY: check
 check: lint format-check
-	@echo "✓ All checks passed"
+	@echo "All checks passed"
 
 # ============================================================================
 # Protobuf Generation
@@ -169,7 +227,7 @@ protos-go:
 
 .PHONY: protos-all
 protos-all: protos protos-ts protos-go
-	@echo "✓ All protobuf files generated"
+	@echo "All protobuf files generated"
 
 .PHONY: clean-protos
 clean-protos:

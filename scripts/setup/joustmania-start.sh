@@ -21,6 +21,8 @@ mkdir -p "$STATUS_DIR"
 TRACKED_FILES=(
     "scripts/setup/joustmania.service"
     "scripts/setup/joustmania-start.sh"
+    "scripts/setup/joustmania-observability.service"
+    "scripts/setup/joustmania-observability-start.sh"
     "scripts/setup/install_autostart.sh"
 )
 
@@ -68,6 +70,9 @@ EOF
 if [[ ${#CHANGED_FILES[@]} -gt 0 ]]; then
     echo "WARNING: Service files have changed. Run 'sudo ./scripts/setup/install_autostart.sh' to apply updates."
 fi
+
+# Ensure shared network exists (idempotent)
+docker network inspect joustmania-network >/dev/null 2>&1 || docker network create joustmania-network
 
 # Attempt docker compose pull (non-fatal)
 echo "Checking for image updates..."

@@ -18,6 +18,7 @@ Environment Variables:
 
 import asyncio
 import os
+import subprocess
 import sys
 import time
 
@@ -32,6 +33,10 @@ from proto import (
     game_coordinator_pb2_grpc,
 )
 
+_OBS_COMPOSE_FILES = [
+    "docker-compose.observability.yml",
+]
+
 _COMPOSE_FILES = [
     "docker-compose.yml",
     "docker-compose.override.yml",
@@ -43,9 +48,13 @@ _COMPOSE_FILES = [
 def docker_compose(request):
     """Fixture to start docker-compose mock environment.
 
-    Uses docker-compose.yml with overrides for testing:
-    - docker-compose.override.yml: port exposures for testing
-    - docker-compose.ci.yml: mock mode for audio/controllers (no hardware)
+    Starts two independent compose projects:
+    1. Observability stack (docker-compose.observability.yml) - Jaeger, Grafana, etc.
+    2. Game stack with overrides for testing:
+       - docker-compose.override.yml: port exposures for testing
+       - docker-compose.ci.yml: mock mode for audio/controllers (no hardware)
+
+    Both stacks share the external 'joustmania-network' Docker network.
 
     By default, builds images locally. Set USE_PREBUILT_IMAGES=true to pull from GHCR.
     """
@@ -53,18 +62,6 @@ def docker_compose(request):
     use_prebuilt = os.getenv("USE_PREBUILT_IMAGES", "false").lower() == "true"
     use_dev_mounts = os.getenv("USE_DEV_MOUNTS", "false").lower() == "true"
     image_tag = os.getenv("IMAGE_TAG", "latest")
-
-    compose_files = list(_COMPOSE_FILES)
-    if use_dev_mounts:
-        compose_files.append("docker-compose.dev.yml")
-
-    compose = DockerCompose(
-        context=".",
-        compose_file_name=compose_files,
-        pull=use_prebuilt,
-        build=not use_prebuilt and not use_dev_mounts,
-        env_file=None,  # Avoid conflicts with .env (e.g., IMAGE_TAG from development)
-    )
 
     # Set IMAGE_TAG if using prebuilt images
     # Note: This modifies the environment for docker-compose but is session-scoped
@@ -76,6 +73,38 @@ def docker_compose(request):
     else:
         print("\nBuilding images locally")
 
+    # Ensure shared network exists
+    subprocess.run(
+        ["docker", "network", "inspect", "joustmania-network"],
+        capture_output=True,
+    )
+    subprocess.run(
+        ["docker", "network", "create", "joustmania-network"],
+        capture_output=True,
+    )
+
+    # Start observability stack first (separate compose project)
+    obs_compose = DockerCompose(
+        context=".",
+        compose_file_name=_OBS_COMPOSE_FILES,
+        pull=use_prebuilt,
+        build=not use_prebuilt and not use_dev_mounts,
+        env_file=None,
+    )
+    obs_compose.start()
+
+    # Start game stack
+    compose_files = list(_COMPOSE_FILES)
+    if use_dev_mounts:
+        compose_files.append("docker-compose.dev.yml")
+
+    compose = DockerCompose(
+        context=".",
+        compose_file_name=compose_files,
+        pull=use_prebuilt,
+        build=not use_prebuilt and not use_dev_mounts,
+        env_file=None,
+    )
     compose.start()
 
     # Wait for services to be ready
@@ -107,6 +136,7 @@ def docker_compose(request):
         input()
 
     compose.stop()
+    obs_compose.stop()
 
 
 @pytest.fixture

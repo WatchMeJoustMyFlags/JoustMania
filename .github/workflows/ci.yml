@@ -465,6 +465,7 @@ jobs:
               - 'proto/pyproject.toml'
               - 'images/**'
               - 'docker-compose.yml'
+              - 'docker-compose.observability.yml'
               - 'docker-compose.ci.yml'
 
       - name: Set up Docker Buildx
