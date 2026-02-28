@@ -46,6 +46,7 @@ members = [
     "services/menu",
     "services/audio",
     "services/pairing_daemon",
+    "services/mobile_gateway",
     "tests/integration",
 ]
 

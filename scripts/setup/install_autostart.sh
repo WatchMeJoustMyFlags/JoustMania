@@ -42,6 +42,13 @@ chmod 644 "$SYSTEMD_DIR/$SERVICE_NAME"
 echo "Reloading systemd daemon..."
 systemctl daemon-reload
 
+# Generate TLS certificate for mobile phone controller support (Issue #594)
+CERT_SCRIPT="$SCRIPT_DIR/generate-cert.sh"
+if [[ -f "$CERT_SCRIPT" ]]; then
+    echo "Generating TLS certificate for mobile phone support..."
+    bash "$CERT_SCRIPT"
+fi
+
 # Enable the service
 echo "Enabling $SERVICE_NAME..."
 systemctl enable "$SERVICE_NAME"

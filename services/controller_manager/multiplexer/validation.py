@@ -14,10 +14,15 @@ VALID_COMBINATIONS = {
     frozenset({"mock"}),
     frozenset({"bluetooth"}),
     frozenset({"hidapi"}),
+    frozenset({"mobile"}),
     frozenset({"mock", "bluetooth"}),
     frozenset({"mock", "hidapi"}),
+    frozenset({"mock", "mobile"}),
     frozenset({"bluetooth", "hidapi"}),
     frozenset({"mock", "bluetooth", "hidapi"}),
+    frozenset({"mock", "bluetooth", "mobile"}),
+    frozenset({"mock", "hidapi", "mobile"}),
+    frozenset({"mock", "bluetooth", "hidapi", "mobile"}),
 }
 
 

@@ -207,6 +207,7 @@ services:
     # Ports exposed only within Docker network (no host binding)
     expose:
       - "50052"  # gRPC service
+      - "50063"  # Mobile controller gRPC (Issue #594)
       - "8000"   # Prometheus metrics
     environment:
       - CONTROLLER_NAMES_FILE=/app/data/controller_names.txt
@@ -384,6 +385,37 @@ services:
       resources:
         limits:
           memory: 192m
+          cpus: '0.5'
+    logging: *default-logging
+
+  # Mobile Gateway — phone-as-controller via WebSocket (Issue #594)
+  mobile-gateway:
+    image: ghcr.io/watchmejoustmyflags/joustmania/mobile-gateway-service:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: services/mobile_gateway/Dockerfile
+      args:
+        BUILDER_IMAGE: ${BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/builder:latest}
+    container_name: joustmania-mobile-gateway
+    expose:
+      - "8070"  # HTTP/WebSocket
+    environment:
+      - CONTROLLER_MANAGER_HOST=controller-manager
+      - CONTROLLER_MANAGER_MOBILE_PORT=50063
+      - OTEL_SERVICE_NAME=mobile-gateway-service
+      - OTEL_SERVICE_NAMESPACE=joustmania
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+    depends_on:
+      controller-manager:
+        condition: service_healthy
+    networks:
+      - joustmania
+    restart: unless-stopped
+    # Healthcheck defined in Dockerfile
+    deploy:
+      resources:
+        limits:
+          memory: 128m
           cpus: '0.5'
     logging: *default-logging
 

@@ -8,6 +8,7 @@
 #   /jaeger/*       -> jaeger:16686       (PRESERVE prefix, base_path=/jaeger in config.yaml)
 #   /loki/*         -> loki:3100          (STRIP prefix, API expects root)
 #   /victoria-metrics/* -> victoria-metrics:8428 (STRIP prefix, API expects root)
+#   /mobile/*       -> mobile-gateway:8070 (PRESERVE prefix, WebSocket upgrade)
 #   /health         -> envoy internal     (health check)
 #   /*              -> dashboard:8080     (SPA with fallback)
 
@@ -99,6 +100,20 @@ static_resources:
                             prefix: "/chaos/"
                           route:
                             cluster: connect_proxy
+
+                        # Mobile phone controller UI + WebSocket
+                        # PRESERVE prefix - mobile-gateway serves /mobile/* paths
+                        - match:
+                            prefix: "/mobile/"
+                          route:
+                            cluster: mobile_gateway
+                            timeout: 3600s  # Long timeout for WebSocket
+                            upgrade_configs:
+                              - upgrade_type: websocket
+                        - match:
+                            path: "/mobile"
+                          redirect:
+                            path_redirect: "/mobile/"
 
                         # Health check endpoint
                         - match:
@@ -204,6 +219,20 @@ static_resources:
                     socket_address:
                       address: victoria-metrics
                       port_value: 8428
+
+    # Mobile Gateway (phone controller WebSocket)
+    - name: mobile_gateway
+      type: STRICT_DNS
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: mobile_gateway
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: mobile-gateway
+                      port_value: 8070
 
     # Dashboard SPA (static-web-server)
     - name: dashboard

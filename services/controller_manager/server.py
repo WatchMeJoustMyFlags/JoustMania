@@ -32,6 +32,15 @@ def _find_mock_backend(backend):
     return None
 
 
+def _find_mobile_adapter(backend):
+    """Find MobileAdapter through MultiplexerBackend."""
+    if hasattr(backend, "adapters"):
+        for adapter in backend.adapters:
+            if adapter.adapter_type == "mobile":
+                return adapter
+    return None
+
+
 async def serve(port=50052):
     """Start the ControllerManager async gRPC server."""
     # Configure logging with environment variable support
@@ -140,6 +149,22 @@ async def serve(port=50052):
         await mock_server.start()
         logger.info(f"MockControllerService listening on port {mock_port}")
 
+    # If mobile adapter present, start MobileControllerService on port 50063
+    mobile_server = None
+    mobile_adapter = _find_mobile_adapter(controller_servicer.backend)
+    if mobile_adapter is not None:
+        from proto import mobile_controller_pb2_grpc
+        from services.controller_manager.mobile_servicer import MobileControllerService
+
+        mobile_server = grpc.aio.server(options=get_server_options())
+        mobile_servicer = MobileControllerService(mobile_adapter)
+        mobile_controller_pb2_grpc.add_MobileControllerServiceServicer_to_server(mobile_servicer, mobile_server)
+
+        mobile_port = 50063
+        mobile_server.add_insecure_port(f"[::]:{mobile_port}")
+        await mobile_server.start()
+        logger.info(f"MobileControllerService listening on port {mobile_port}")
+
     try:
         await server.wait_for_termination()
     except KeyboardInterrupt:
@@ -150,6 +175,10 @@ async def serve(port=50052):
         # Stop mock server if running
         if mock_server:
             await mock_server.stop(grace=5)
+
+        # Stop mobile server if running
+        if mobile_server:
+            await mobile_server.stop(grace=5)
 
 
 if __name__ == "__main__":

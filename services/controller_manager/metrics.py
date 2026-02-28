@@ -272,6 +272,17 @@ stream_current_frequency_hz = Gauge(
     "Current streaming frequency in Hz (from flagd override)",
 )
 
+# Mobile phone controller metrics (Issue #594)
+controller_mobile_phones_active = Gauge(
+    "controller_mobile_phones_active",
+    "Number of currently connected phone controllers",
+)
+
+controller_mobile_data_received_total = Counter(
+    "controller_mobile_data_received_total",
+    "Total sensor data updates received from phone controllers",
+)
+
 # Chaos fault injection metrics (Issue #548)
 chaos_faults_injected_total = Counter(
     "controller_chaos_faults_injected_total",

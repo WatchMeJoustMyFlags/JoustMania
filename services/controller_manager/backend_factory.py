@@ -75,6 +75,10 @@ def _create_adapter_by_name(name: str) -> ControllerIOAdapter:
             from services.controller_manager.multiplexer.hidapi_adapter import HidapiAdapter
 
             return HidapiAdapter()
+        case "mobile":
+            from services.controller_manager.multiplexer.mobile_adapter import MobileAdapter
+
+            return MobileAdapter()
         case _:
             raise RuntimeError(f"Unknown adapter: {name}")
 
@@ -94,6 +98,20 @@ def _create_bt_discovery(names: list[str]) -> CentralizedBTDiscovery | None:
     if "hidapi" in names:
         return CentralizedBTDiscovery(discovery_mode="hidapi")
     return None
+
+
+def _is_mobile_enabled() -> bool:
+    """Check if mobile gateway feature flag is enabled."""
+    try:
+        from openfeature.evaluation_context import EvaluationContext
+
+        from lib.feature_flags import get_flag_client
+
+        client = get_flag_client("performance")
+        value = client.get_boolean_value("mobile_gateway_enabled", False, EvaluationContext())
+        return value is True  # Strict identity check (MagicMock objects won't match)
+    except Exception:
+        return False
 
 
 def _is_chaos_enabled() -> bool:
@@ -162,6 +180,10 @@ def create_backend() -> ControllerBackend:
     # Mock starts with 0 controllers; tests/demos add them via AddController.
     if "mock" not in names:
         names.append("mock")
+
+    # Conditionally inject mobile adapter if mobile_gateway_enabled flag is on
+    if "mobile" not in names and _is_mobile_enabled():
+        names.append("mobile")
 
     if len(names) > 1:
         validate_backend_combination(names)

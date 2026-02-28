@@ -156,6 +156,14 @@
       },
       "defaultVariant": "default"
     },
+    "mobile_gateway_enabled": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "off"
+    },
     "chaos_fault_type": {
       "state": "ENABLED",
       "variants": {
