@@ -31,3 +31,89 @@ message PairControllerResponse {
   bool already_paired = 2;
   string previous_host = 3;
 }
+
+// --- Controller I/O Service ---
+// Manages HID device handles and provides real-time controller I/O.
+// All state (LED colors, effects) lives in the Python MultiplexerBackend;
+// this service only handles raw device I/O.
+//
+// Lifecycle RPCs (Discover, Open, Close, CloseAll) are unary.
+// Real-time I/O uses a single bidirectional stream (StreamIO) where:
+//   - Server pushes SensorData for all open controllers at hardware rate
+//   - Client sends IOCommand for LED/rumble updates
+
+service ControllerIOService {
+  // Lifecycle (unary)
+  rpc Discover(DiscoverRequest) returns (DiscoverResponse);
+  rpc Open(OpenRequest) returns (OpenResponse);
+  rpc Close(CloseRequest) returns (CloseResponse);
+  rpc CloseAll(CloseAllRequest) returns (CloseAllResponse);
+
+  // Real-time I/O (bidirectional stream)
+  rpc StreamIO(stream IOCommand) returns (stream SensorData);
+}
+
+message DiscoverRequest {
+  bool force = 1;        // Force full rescan, removing stale devices
+  bool verify_only = 2;  // Only verify existing devices, skip enumeration
+}
+
+message DiscoverResponse {
+  repeated string serials = 1;
+}
+
+message OpenRequest {
+  string serial = 1;
+}
+
+message OpenResponse {
+  bool success = 1;
+}
+
+message CloseRequest {
+  string serial = 1;
+}
+
+message CloseResponse {}
+
+message CloseAllRequest {}
+
+message CloseAllResponse {}
+
+// Client -> Server: LED/rumble output command
+message IOCommand {
+  string serial = 1;
+  int32 r = 2;       // Red LED 0-255
+  int32 g = 3;       // Green LED 0-255
+  int32 b = 4;       // Blue LED 0-255
+  int32 rumble = 5;  // Rumble motor 0-255
+}
+
+// Server -> Client: parsed sensor data from input reports
+message SensorData {
+  string serial = 1;
+  int32 battery = 2;      // 0-100 percentage
+  int32 trigger = 3;      // 0-255 analog value
+  int32 temperature = 4;
+
+  // Digital buttons
+  bool button_move = 10;
+  bool button_trigger = 11;
+  bool button_ps = 12;
+  bool button_cross = 13;
+  bool button_circle = 14;
+  bool button_square = 15;
+  bool button_triangle = 16;
+  bool button_select = 17;
+  bool button_start = 18;
+
+  // Accelerometer (scaled, units of g)
+  float accel_x = 20;
+  float accel_y = 21;
+  float accel_z = 22;
+
+  // Gyroscope (raw units)
+  float gyro_x = 23;
+  float gyro_y = 24;
+  float gyro_z = 25;
+}

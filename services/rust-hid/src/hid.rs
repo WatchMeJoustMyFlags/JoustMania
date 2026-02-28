@@ -1,12 +1,15 @@
 //! HID protocol for PS Move controllers.
 //!
-//! Ports the USB pairing subset of `lib/psmove_hid.py`:
+//! Ports `lib/psmove_hid.py`:
 //! - Enumerate USB-connected PS Move controllers
 //! - Read/write BT addresses via feature reports 0x04/0x05
 //! - MAC address conversion (LSB-first bytes <-> colon string)
+//! - Input report parsing (49 bytes: buttons, trigger, accel, gyro, battery)
+//! - Output report building (9 bytes, report 0x06: LED RGB, rumble)
+//! - Battery level conversion
 
-use hidapi::HidApi;
-use tracing::{debug, warn};
+use hidapi::{HidApi, HidDevice};
+use tracing::{debug, info, warn};
 
 // PS Move USB vendor/product IDs
 const VENDOR_ID: u16 = 0x054C; // Sony
@@ -20,6 +23,28 @@ const FEATURE_REPORT_GET_BTADDR: u8 = 0x04;
 const FEATURE_REPORT_SET_BTADDR: u8 = 0x05;
 const FEATURE_REPORT_GET_SIZE: usize = 16;
 const FEATURE_REPORT_SET_SIZE: usize = 23;
+
+// Controller I/O report sizes
+pub const INPUT_REPORT_SIZE: usize = 49;
+const OUTPUT_REPORT_SIZE: usize = 9;
+const OUTPUT_REPORT_ID: u8 = 0x06; // SetLEDs, works for all PS Move models
+
+// Accelerometer scale factor: raw ~4096 per 1g
+const ACCEL_SCALE: f32 = 4096.0;
+
+/// Button bitmask values (matches Python Button IntFlag).
+pub struct Button;
+impl Button {
+    pub const TRIANGLE: u32 = 0x0010;
+    pub const CIRCLE: u32 = 0x0020;
+    pub const CROSS: u32 = 0x0040;
+    pub const SQUARE: u32 = 0x0080;
+    pub const SELECT: u32 = 0x0100;
+    pub const START: u32 = 0x0800;
+    pub const PS: u32 = 0x010000;
+    pub const MOVE: u32 = 0x080000;
+    pub const T: u32 = 0x100000; // Trigger (digital)
+}
 
 /// A USB-connected PS Move controller.
 #[derive(Debug, Clone)]
@@ -202,6 +227,260 @@ pub fn pair_controller(
     Ok((already_paired, current_host))
 }
 
+// ---------------------------------------------------------------------------
+// Controller I/O: input report parsing, output report building, battery
+// ---------------------------------------------------------------------------
+
+/// Parsed controller sensor data from a 49-byte input report.
+#[derive(Debug, Clone)]
+pub struct ParsedInputReport {
+    pub buttons: u32,
+    pub trigger: u8,         // Second frame analog trigger (0-255)
+    pub battery: i32,        // Percentage (0-100)
+    pub temperature: i32,
+    pub accel_x: f32,        // Scaled, units of g
+    pub accel_y: f32,
+    pub accel_z: f32,
+    pub gyro_x: f32,         // Raw units
+    pub gyro_y: f32,
+    pub gyro_z: f32,
+}
+
+impl ParsedInputReport {
+    pub fn button_move(&self) -> bool { self.buttons & Button::MOVE != 0 }
+    pub fn button_trigger(&self) -> bool { self.buttons & Button::T != 0 }
+    pub fn button_ps(&self) -> bool { self.buttons & Button::PS != 0 }
+    pub fn button_cross(&self) -> bool { self.buttons & Button::CROSS != 0 }
+    pub fn button_circle(&self) -> bool { self.buttons & Button::CIRCLE != 0 }
+    pub fn button_square(&self) -> bool { self.buttons & Button::SQUARE != 0 }
+    pub fn button_triangle(&self) -> bool { self.buttons & Button::TRIANGLE != 0 }
+    pub fn button_select(&self) -> bool { self.buttons & Button::SELECT != 0 }
+    pub fn button_start(&self) -> bool { self.buttons & Button::START != 0 }
+}
+
+/// Convert battery raw value to percentage (0-100).
+///
+/// Matches Python `battery_to_percent()`.
+pub fn battery_to_percent(raw: u8) -> i32 {
+    match raw {
+        0x00 => 0,
+        0x01 => 20,
+        0x02 => 40,
+        0x03 => 60,
+        0x04 => 80,
+        0x05 => 100,
+        0xEE => 100, // CHARGING
+        0xEF => 100, // CHARGING_DONE
+        _ => 50,     // Unknown
+    }
+}
+
+/// Parse a 49-byte PS Move HID input report.
+///
+/// Matches Python `parse_input_report()`. Uses second frame of sensor data
+/// (bytes 19-24 for accel, 31-36 for gyro) and second trigger value (byte 7),
+/// matching the HidapiAdapter convention.
+///
+/// `zcm2`: If true, decode accel/gyro as signed 16-bit two's complement
+/// (ZCM2/PS4-era). If false, decode as unsigned 16-bit offset by 0x8000.
+pub fn parse_input_report(data: &[u8], zcm2: bool) -> Result<ParsedInputReport, String> {
+    // Strip leading report ID byte (0x01) if present
+    let data = if data.len() > INPUT_REPORT_SIZE && data[0] == 0x01 {
+        &data[1..]
+    } else {
+        data
+    };
+
+    if data.len() < INPUT_REPORT_SIZE {
+        return Err(format!(
+            "Input report too short: {} bytes (need {INPUT_REPORT_SIZE})",
+            data.len()
+        ));
+    }
+
+    // Buttons: bytes 1-3 as little-endian, plus byte 3 shifted up
+    let btn_lo = (data[1] as u32) | ((data[2] as u32) << 8);
+    let btn_hi = data[3] as u32;
+    let buttons = btn_lo | (btn_hi << 16);
+
+    // Trigger analog: byte 7 (frame 2)
+    let trigger = data[7];
+
+    // Battery: byte 12
+    let battery = battery_to_percent(data[12]);
+
+    // Second frame of sensor data (matching Python HidapiAdapter: parsed["accel"][1])
+    let (ax, ay, az, gx, gy, gz) = if zcm2 {
+        // ZCM2: signed 16-bit two's complement
+        let ax = i16::from_le_bytes([data[19], data[20]]);
+        let ay = i16::from_le_bytes([data[21], data[22]]);
+        let az = i16::from_le_bytes([data[23], data[24]]);
+        let gx = i16::from_le_bytes([data[31], data[32]]);
+        let gy = i16::from_le_bytes([data[33], data[34]]);
+        let gz = i16::from_le_bytes([data[35], data[36]]);
+        (ax as i32, ay as i32, az as i32, gx as i32, gy as i32, gz as i32)
+    } else {
+        // ZCM1: unsigned 16-bit offset by 0x8000
+        let ax = u16::from_le_bytes([data[19], data[20]]) as i32 - 0x8000;
+        let ay = u16::from_le_bytes([data[21], data[22]]) as i32 - 0x8000;
+        let az = u16::from_le_bytes([data[23], data[24]]) as i32 - 0x8000;
+        let gx = u16::from_le_bytes([data[31], data[32]]) as i32 - 0x8000;
+        let gy = u16::from_le_bytes([data[33], data[34]]) as i32 - 0x8000;
+        let gz = u16::from_le_bytes([data[35], data[36]]) as i32 - 0x8000;
+        (ax, ay, az, gx, gy, gz)
+    };
+
+    // Temperature: bytes 37-38 (12-bit value)
+    let temp_raw = u16::from_le_bytes([data[37], data[38]]);
+    let temperature = (temp_raw & 0x0FFF) as i32;
+
+    Ok(ParsedInputReport {
+        buttons,
+        trigger,
+        battery,
+        temperature,
+        accel_x: ax as f32 / ACCEL_SCALE,
+        accel_y: ay as f32 / ACCEL_SCALE,
+        accel_z: az as f32 / ACCEL_SCALE,
+        gyro_x: gx as f32,
+        gyro_y: gy as f32,
+        gyro_z: gz as f32,
+    })
+}
+
+/// Build a 9-byte PS Move output report (report 0x06) for LED and rumble.
+///
+/// Layout: [0x06, 0x00, R, G, B, 0x00, rumble, 0x00, 0x00]
+pub fn build_output_report(r: u8, g: u8, b: u8, rumble: u8) -> [u8; OUTPUT_REPORT_SIZE] {
+    let mut report = [0u8; OUTPUT_REPORT_SIZE];
+    report[0] = OUTPUT_REPORT_ID;
+    report[2] = r;
+    report[3] = g;
+    report[4] = b;
+    report[6] = rumble;
+    report
+}
+
+/// Normalize a serial to canonical format (uppercase, no colons).
+///
+/// MAC-format serials (12 hex chars) are uppercased and stripped of colons.
+/// Non-MAC serials (e.g. mock controller IDs) are returned unchanged.
+pub fn normalize_serial(serial: &str) -> String {
+    let cleaned: String = serial.to_uppercase().replace(':', "");
+    if cleaned.len() == 12 && cleaned.chars().all(|c| c.is_ascii_hexdigit()) {
+        cleaned
+    } else {
+        serial.to_string()
+    }
+}
+
+/// Check if a product ID is a ZCM2 (PS4-era) controller.
+pub fn is_zcm2(product_id: u16) -> bool {
+    product_id == PRODUCT_ID_ZCM2 || product_id == PRODUCT_ID_ZCM2E
+}
+
+/// Discover PS Move controllers via HID enumeration.
+///
+/// Opens each discovered device, sets it to non-blocking mode, and
+/// returns a list of (serial, HidDevice, product_id) tuples.
+pub fn discover_controllers(api: &HidApi) -> Vec<(String, HidDevice, u16)> {
+    let mut results = Vec::new();
+
+    for &pid in &ALL_PRODUCT_IDS {
+        for dev_info in api.device_list() {
+            if dev_info.vendor_id() != VENDOR_ID || dev_info.product_id() != pid {
+                continue;
+            }
+
+            let serial_raw = dev_info.serial_number().unwrap_or_default();
+            if serial_raw.is_empty() {
+                continue;
+            }
+            let serial = normalize_serial(serial_raw);
+
+            match api.open_path(dev_info.path()) {
+                Ok(device) => {
+                    if let Err(e) = device.set_blocking_mode(false) {
+                        warn!(serial = %serial, error = %e, "Failed to set non-blocking");
+                        continue;
+                    }
+                    let path = dev_info.path().to_string_lossy();
+                    info!(serial = %serial, path = %path, product_id = pid, "Discovered controller");
+                    results.push((serial, device, pid));
+                }
+                Err(e) => {
+                    warn!(serial = %serial, error = %e, "Failed to open controller");
+                }
+            }
+        }
+    }
+
+    results
+}
+
+/// Open a specific controller by serial via HID enumeration.
+///
+/// Enumerates devices, finds one matching the serial, opens it in
+/// non-blocking mode, and returns (HidDevice, product_id).
+pub fn open_controller_by_serial(api: &HidApi, target_serial: &str) -> Option<(HidDevice, u16)> {
+    let target = normalize_serial(target_serial);
+
+    for &pid in &ALL_PRODUCT_IDS {
+        for dev_info in api.device_list() {
+            if dev_info.vendor_id() != VENDOR_ID || dev_info.product_id() != pid {
+                continue;
+            }
+
+            let serial_raw = dev_info.serial_number().unwrap_or_default();
+            if serial_raw.is_empty() {
+                continue;
+            }
+            let serial = normalize_serial(serial_raw);
+
+            if serial != target {
+                continue;
+            }
+
+            match api.open_path(dev_info.path()) {
+                Ok(device) => {
+                    if let Err(e) = device.set_blocking_mode(false) {
+                        warn!(serial = %serial, error = %e, "Failed to set non-blocking");
+                        return None;
+                    }
+                    return Some((device, pid));
+                }
+                Err(e) => {
+                    warn!(serial = %serial, error = %e, "Failed to open controller");
+                    return None;
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Read the latest input report from a device (non-blocking).
+///
+/// Drains all available reports and returns the most recent one,
+/// matching the Python HidapiAdapter.poll() pattern.
+pub fn read_latest_input(device: &HidDevice, zcm2: bool) -> Option<ParsedInputReport> {
+    let mut latest: Option<[u8; INPUT_REPORT_SIZE]> = None;
+    let mut buf = [0u8; INPUT_REPORT_SIZE];
+
+    loop {
+        match device.read(&mut buf) {
+            Ok(len) if len >= INPUT_REPORT_SIZE => {
+                latest = Some(buf);
+            }
+            Ok(_) => break, // Short read or no data
+            Err(_) => break,
+        }
+    }
+
+    latest.and_then(|data| parse_input_report(&data, zcm2).ok())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,5 +639,185 @@ mod tests {
         assert_eq!(report[0], 0x05);
         assert_eq!(&report[1..7], &[0xFF; 6]);
         assert_eq!(&report[7..], &[0u8; 16]);
+    }
+
+    // --- Input report parsing tests ---
+
+    fn make_input_report(
+        buttons: u32,
+        trigger2: u8,
+        battery: u8,
+        accel2: (u16, u16, u16),
+        gyro2: (u16, u16, u16),
+        temperature: u16,
+    ) -> [u8; INPUT_REPORT_SIZE] {
+        let mut data = [0u8; INPUT_REPORT_SIZE];
+        // Buttons: bytes 1-3
+        data[1] = (buttons & 0xFF) as u8;
+        data[2] = ((buttons >> 8) & 0xFF) as u8;
+        data[3] = ((buttons >> 16) & 0xFF) as u8;
+        // Trigger frame 2: byte 7
+        data[7] = trigger2;
+        // Battery: byte 12
+        data[12] = battery;
+        // Accel frame 2: bytes 19-24 (little-endian u16)
+        data[19..21].copy_from_slice(&accel2.0.to_le_bytes());
+        data[21..23].copy_from_slice(&accel2.1.to_le_bytes());
+        data[23..25].copy_from_slice(&accel2.2.to_le_bytes());
+        // Gyro frame 2: bytes 31-36
+        data[31..33].copy_from_slice(&gyro2.0.to_le_bytes());
+        data[33..35].copy_from_slice(&gyro2.1.to_le_bytes());
+        data[35..37].copy_from_slice(&gyro2.2.to_le_bytes());
+        // Temperature: bytes 37-38
+        data[37..39].copy_from_slice(&temperature.to_le_bytes());
+        data
+    }
+
+    #[test]
+    fn test_parse_input_report_zcm1_buttons() {
+        let data = make_input_report(
+            Button::MOVE | Button::T | Button::CROSS,
+            128,  // trigger
+            0x05, // battery MAX
+            (0x8000, 0x8000, 0x9000), // accel at 0, 0, ~1g
+            (0x8000, 0x8000, 0x8000), // gyro all zero
+            300, // temperature
+        );
+        let report = parse_input_report(&data, false).unwrap();
+        assert!(report.button_move());
+        assert!(report.button_trigger());
+        assert!(report.button_cross());
+        assert!(!report.button_ps());
+        assert!(!report.button_circle());
+        assert_eq!(report.trigger, 128);
+        assert_eq!(report.battery, 100);
+        assert_eq!(report.temperature, 300);
+    }
+
+    #[test]
+    fn test_parse_input_report_zcm1_accel() {
+        // 0x9000 = 36864 unsigned, offset by 0x8000 = 4096 raw
+        // 4096 / ACCEL_SCALE(4096.0) = 1.0g
+        let data = make_input_report(
+            0, 0, 0,
+            (0x8000, 0x8000, 0x9000),
+            (0x8000, 0x8000, 0x8000),
+            0,
+        );
+        let report = parse_input_report(&data, false).unwrap();
+        assert!((report.accel_x).abs() < 0.001);
+        assert!((report.accel_y).abs() < 0.001);
+        assert!((report.accel_z - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_parse_input_report_zcm2_signed() {
+        // ZCM2 uses signed 16-bit: 4096 = 0x1000
+        let ax: i16 = 0;
+        let ay: i16 = 0;
+        let az: i16 = 4096; // ~1g
+        let data = make_input_report(
+            0, 0, 0,
+            (ax as u16, ay as u16, az as u16),
+            (0, 0, 0),
+            0,
+        );
+        let report = parse_input_report(&data, true).unwrap();
+        assert!((report.accel_x).abs() < 0.001);
+        assert!((report.accel_z - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_parse_input_report_too_short() {
+        let data = [0u8; 10];
+        assert!(parse_input_report(&data, false).is_err());
+    }
+
+    #[test]
+    fn test_parse_input_report_strips_report_id() {
+        // 50 bytes with leading 0x01
+        let mut data = [0u8; 50];
+        data[0] = 0x01;
+        // Rest is a valid 49-byte report (all zeros)
+        let report = parse_input_report(&data, false).unwrap();
+        assert_eq!(report.buttons, 0);
+    }
+
+    #[test]
+    fn test_parse_input_report_all_buttons() {
+        let all = Button::TRIANGLE | Button::CIRCLE | Button::CROSS | Button::SQUARE
+            | Button::SELECT | Button::START | Button::PS | Button::MOVE | Button::T;
+        let data = make_input_report(all, 255, 0, (0x8000, 0x8000, 0x8000), (0x8000, 0x8000, 0x8000), 0);
+        let report = parse_input_report(&data, false).unwrap();
+        assert!(report.button_triangle());
+        assert!(report.button_circle());
+        assert!(report.button_cross());
+        assert!(report.button_square());
+        assert!(report.button_select());
+        assert!(report.button_start());
+        assert!(report.button_ps());
+        assert!(report.button_move());
+        assert!(report.button_trigger());
+    }
+
+    // --- Battery conversion tests ---
+
+    #[test]
+    fn test_battery_to_percent_levels() {
+        assert_eq!(battery_to_percent(0x00), 0);
+        assert_eq!(battery_to_percent(0x01), 20);
+        assert_eq!(battery_to_percent(0x02), 40);
+        assert_eq!(battery_to_percent(0x03), 60);
+        assert_eq!(battery_to_percent(0x04), 80);
+        assert_eq!(battery_to_percent(0x05), 100);
+        assert_eq!(battery_to_percent(0xEE), 100); // Charging
+        assert_eq!(battery_to_percent(0xEF), 100); // Charging done
+        assert_eq!(battery_to_percent(0xFF), 50);  // Unknown
+    }
+
+    // --- Output report tests ---
+
+    #[test]
+    fn test_build_output_report_structure() {
+        let report = build_output_report(255, 128, 64, 200);
+        assert_eq!(report.len(), OUTPUT_REPORT_SIZE);
+        assert_eq!(report[0], 0x06); // Report ID
+        assert_eq!(report[1], 0x00); // Reserved
+        assert_eq!(report[2], 255);  // R
+        assert_eq!(report[3], 128);  // G
+        assert_eq!(report[4], 64);   // B
+        assert_eq!(report[5], 0x00); // Reserved
+        assert_eq!(report[6], 200);  // Rumble
+        assert_eq!(report[7], 0x00); // Padding
+        assert_eq!(report[8], 0x00); // Padding
+    }
+
+    #[test]
+    fn test_build_output_report_all_zeros() {
+        let report = build_output_report(0, 0, 0, 0);
+        let mut expected = [0u8; OUTPUT_REPORT_SIZE];
+        expected[0] = 0x06;
+        assert_eq!(report, expected);
+    }
+
+    // --- Serial normalization tests ---
+
+    #[test]
+    fn test_normalize_serial_mac() {
+        assert_eq!(normalize_serial("AA:BB:CC:DD:EE:FF"), "AABBCCDDEEFF");
+        assert_eq!(normalize_serial("aa:bb:cc:dd:ee:ff"), "AABBCCDDEEFF");
+        assert_eq!(normalize_serial("AABBCCDDEEFF"), "AABBCCDDEEFF");
+    }
+
+    #[test]
+    fn test_normalize_serial_non_mac() {
+        assert_eq!(normalize_serial("mock_controller_0"), "mock_controller_0");
+    }
+
+    #[test]
+    fn test_is_zcm2_detection() {
+        assert!(!is_zcm2(PRODUCT_ID_ZCM1));
+        assert!(is_zcm2(PRODUCT_ID_ZCM2));
+        assert!(is_zcm2(PRODUCT_ID_ZCM2E));
     }
 }
