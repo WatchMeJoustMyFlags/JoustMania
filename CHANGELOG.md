@@ -1,5 +1,122 @@
 # Changelog
 
+## [0.5.0](https://github.com/WatchMeJoustMyFlags/JoustMania/compare/joustmania-v0.4.0...joustmania-v0.5.0) (2026-02-28)
+
+
+### Features
+
+* add backend column to controller status table ([#531](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/531)) ([ea5a75f](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/ea5a75f33c30f9cfd66e15d68064f37ad240d222))
+* add ChaosAdapter for fault injection testing ([#549](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/549)) ([e51b6a0](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/e51b6a06af6a57035510d56632078bd6a3787836))
+* Add Dynatrace observability backend ([#453](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/453)) ([3d52c98](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/3d52c98602f3d68752eb4770f92968656808ae6c))
+* Add pure-Python hidapi backend for PS Move controllers ([#460](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/460)) ([7ddcb1d](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/7ddcb1d8cda666d1f6097a758edaa0e539ea5284))
+* auto-detect ALSA audio card in Docker container ([#490](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/490)) ([26c415f](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/26c415f2542f98dfdd1df7798ddbf7328792652b))
+* chaos trigger API and presentation dashboard ([#563](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/563)) ([6e59cef](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/6e59cef02582b41e267335f07ab4047b03b2f5a3))
+* ControllerIOAdapter and centralized state (Phase 4) ([#509](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/509)) ([99fca08](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/99fca08caff205b9cea7343e0977debcba534143))
+* distinct colors per controller in chaos acceleration panel ([#570](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/570)) ([4212146](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/42121462cabe26d9d1e82c5e9716149b04a297ac))
+* dynamic mock controller management via RPC ([#511](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/511)) ([d90c2d0](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/d90c2d030e668341659f61ab229298d17437b246))
+* enrich player lifecycle spans with controller health ([#571](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/571)) ([#572](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/572)) ([fa0b2a9](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/fa0b2a94d0b8100805c54c9d83fbb22a32973fab))
+* per-controller adapter routing via OpenFeature targeting ([#533](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/533)) ([8a5745e](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/8a5745e41704c12567881c671eb4c0f3c1f25006))
+* per-player countdown spans inside player lifecycle ([#573](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/573)) ([c41b59a](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/c41b59a4fd0d2f635b9a8952820e8b55f0a1176c))
+* per-service metrics export interval via OpenFeature targeting ([#480](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/480)) ([8ea0043](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/8ea0043858036a094369e69b551d9d88a33e363d))
+* player span hierarchy with names and game_cycle grouping ([#586](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/586)) ([9299235](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/9299235aa8a920e80bc4ab253fff6cf170d764a4))
+* poll drop threshold and error status on degraded spans ([#574](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/574)) ([955fe7a](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/955fe7a2bea629f26a26570368749267f075a796))
+* preload music during countdown and reactive playAudio flag ([#529](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/529)) ([8f38890](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/8f3889015135ed56971ab7c77a82520d4c1999f9))
+* presentation kiosk-mode panels for pipeline comparison ([#562](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/562)) ([2955ae9](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/2955ae90d2a0a3cfb9873fe5ae07ec7c450a582f))
+* rolling window poll drop detection for health spans ([#582](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/582)) ([ace29f5](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/ace29f5c7217fc506d1049fed710a7f5864eefa5))
+
+
+### Bug Fixes
+
+* add generation counter to break stale music playback ([#557](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/557)) ([1093b8c](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/1093b8c994ce9dd509f15db90fdc3bf081b72c5b))
+* add PS Move ZCM2E (product ID 0x0C5E) to HID enumeration ([#539](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/539)) ([bcf273b](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/bcf273bd88c317ac1ee5d0d45183aa7b58b9c20d))
+* add verify_only parameter to ChaosAdapter.discover() ([#564](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/564)) ([eb85c7a](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/eb85c7ad0c34b26d6cc2cc2222b6f2fe35f39804))
+* call psmove_disconnect on close to release HID handles ([#556](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/556)) ([1d1a5ae](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/1d1a5ae6bc538d8a74e1483364d49959ee379182))
+* chaos dashboard and fractional targeting follow-ups ([#568](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/568)) ([3e9de8d](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/3e9de8d6cde531e3c13ff45c50dd771269637b8f))
+* clean up stale Docker containers after unclean Pi shutdown ([#592](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/592)) ([cf221d7](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/cf221d7785d87f4968772871753f9f4b9fb69a20))
+* clean up stale SonarCloud exclusion paths ([#504](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/504)) ([dd99900](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/dd99900336e9f4ddad66bf8e950056b7a75e175c))
+* close old adapter handle on controller route switch ([#554](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/554)) ([9395f4f](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/9395f4f210fe7009460f098c977d2c65ca5e5278))
+* improve ALSA audio reliability with retry and PCM fallback ([#584](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/584)) ([6ea9519](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/6ea951994477c4a5ed6690c045b52ede9c232302))
+* kill player on controller disconnect during game ([#583](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/583)) ([7b8773f](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/7b8773f02e17ef2cc164f108493d9db86604fa1c))
+* link ChangeTempo spans to main game trace ([#585](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/585)) ([eb9b170](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/eb9b170626d9dc23f308bbb48350486bdd45323d))
+* make countdown effects child spans of countdown_phase ([#576](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/576)) ([4224264](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/4224264324b0329f78c100789fe50964c02c47eb))
+* move countdown sounds outside per-player spans ([#579](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/579)) ([ed4471c](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/ed4471cc9d9b230c5ee842ddb3100d733783b22b))
+* normalize controller serial numbers across all backends ([#536](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/536)) ([f92f4c4](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/f92f4c4bab89e3b16dd0986914d26fd3c568736a))
+* normalize controller serials in pairing daemon bluetooth monitor ([#538](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/538)) ([62888a7](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/62888a709b3bb2c58e4fe43cb3f00a4af9a146ec))
+* persist Jaeger traces using badger storage (7-day TTL) ([#566](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/566)) ([d8c3e38](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/d8c3e383decb81ef43e733c25860736b9586c8c4))
+* prevent concurrent USB writes and reduce LED keepalive to 2s ([#550](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/550)) ([175c8c2](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/175c8c258f41518775c47b958d1641551aade24d))
+* prevent OTEL ended span warnings from stale task contexts ([#524](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/524)) ([8e22e88](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/8e22e8866ac0581485f37451eb2686fe3dc6db62))
+* reconcile ghost controllers on connection events ([#552](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/552)) ([d5ab6ec](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/d5ab6ec3142b119f407115b31133c0b4ac8d8ea7))
+* remove aggressive gRPC keepalive causing flagd GOAWAY errors ([#532](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/532)) ([718ecc9](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/718ecc93dff8e68fc28222c38be306bf056a8b42))
+* replace Manager().dict() with Array to prevent BrokenPipeError ([#525](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/525)) ([1f3293f](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/1f3293f30e4ff4697b83f50b21240be834f3e89b))
+* resolve music playback race condition on game restart ([#523](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/523)) ([d047a78](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/d047a78479fcf1c96798a322e183216e87c74c1b))
+* resolve SonarCloud code smells across 21 files ([#493](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/493)) ([57bfecb](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/57bfecb74d8ba56f8da239b6ad1932fbe2cc6118))
+* resolve SonarCloud quick-fix issues across 14 files ([#501](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/501)) ([57d49ed](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/57d49edc30782e2061c76ac820c90441eeecd6f6))
+* respawn dead music player subprocess on start() ([#555](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/555)) ([fd9361c](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/fd9361ce67d51fa2abf4c214c3cc073407d1f454))
+* retry next music file when decode fails ([#559](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/559)) ([1cc5bd3](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/1cc5bd3eb505946aca0c6d3d6c682155a9a3f959))
+* service health dashboard VictoriaMetrics labels and datasources ([#530](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/530)) ([0427da2](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/0427da2d98aa81c92afdaa42d0ccd0fe9aafa266))
+* set FlagdProvider keep_alive_time to 30s to prevent GOAWAY ([#541](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/541)) ([42de831](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/42de831d6b1f73962b406ef98c5bbeb3610cbfec))
+* try open() on preferred adapter before falling back ([#537](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/537)) ([6fd5f0d](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/6fd5f0dcf2920d2937c162abc3cda359304cf88e))
+* type mismatch in _play_value_voice and add admin handler tests ([#516](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/516)) ([b41ec92](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/b41ec92cb0451bbd94585e7e3f2ded08f8f1d763))
+* update service health dashboard to match Prometheus job labels ([#526](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/526)) ([5c97412](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/5c97412d52d6e7caed6fc70646671381276173b5))
+* use card_indexes() for actual ALSA card detection ([#492](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/492)) ([890da22](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/890da220b9c89fd1d2fb5bef4af006a599c4ca00))
+* use hidraw device API (open_path + set_nonblocking) ([#535](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/535)) ([4e628d2](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/4e628d2d1cc9275189401d598a2d51b47296696a))
+* use OTEL_SERVICE_NAME for OpenFeature API-level context ([#481](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/481)) ([daafdf4](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/daafdf4a6062cabf1099e54f3f67d97c77342d8a))
+* wait for flagd provider READY before creating backend ([#540](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/540)) ([9bcc2ad](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/9bcc2adf9870c9a0997143860ff843931d0a4a04))
+* warm up resampy at song load to prevent audio drops ([#589](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/589)) ([#591](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/591)) ([699c5be](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/699c5be06ac69f27a4915c68f3ec1906b0e3f465))
+* zombie/werewolf dead code thresholds + game mode test coverage ([#515](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/515)) ([3bac8cc](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/3bac8cc71ca8db9a99950adbb178357b3d80a9ca))
+
+
+### Performance
+
+* cache metric label children and scale object pools ([#546](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/546)) ([7325a4c](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/7325a4c098d5c623e46ca830c72deab0ef026458))
+* single-discovery-adapter to avoid duplicate FD opens ([#558](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/558)) ([00a68db](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/00a68dbc506c95ba9932e9e2dd3996de9652c941))
+* throttle redundant HID discovery scanning ([#543](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/543)) ([543c23d](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/543c23dccb93bddb8cc3c8a32932f8468bd97e47))
+
+
+### Refactoring
+
+* consolidate audio MOCK_MODE into play_audio flagd flag ([#472](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/472)) ([396e854](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/396e85477a1f0d24b0b4505f8d1329ba391c3544))
+* migrate controller tuning env vars to flagd ([#470](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/470)) ([7d37a94](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/7d37a94a5d5e6189523ce60fc77b15239314241a))
+* Migrate dbus-python to dbus-fast ([#450](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/450)) ([1a7e7d2](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/1a7e7d223c86b7545eb723bce5b69a134fa347a9))
+* migrate game timing env vars to flagd game_settings ([#474](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/474)) ([25ebb5f](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/25ebb5fb9a7b5d6ddbbcd70ec3c5680cfe3ebc4e))
+* migrate MENU_AUTO_START to flagd user_preferences domain ([#469](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/469)) ([4c14279](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/4c142796027e88c5063bfa0ce614e24920fdfccf))
+* migrate pairing daemon intervals to flagd performance domain ([#473](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/473)) ([2e35d46](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/2e35d46cbb224db656fd47ae7e9ec5944dcf8279))
+* migrate PROFILING_ENABLED to flagd ([#478](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/478)) ([941f972](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/941f9723b1732574d65ef7cbb608f72050819109))
+* reduce cognitive complexity in audio servicer ([#495](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/495)) ([ec2aa67](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/ec2aa676896bcbd6ffadf03674439a0b629a878b))
+* reduce cognitive complexity in bluetooth_backend.py ([#497](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/497)) ([3d51f29](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/3d51f2941a7f474856a3ecfa6f00bc3a294422df))
+* reduce cognitive complexity in controller_manager servicer ([#491](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/491)) ([0a17edb](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/0a17edb8f13d925936f6c3fd023bf59597c5eb02))
+* reduce cognitive complexity in games/base.py ([#499](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/499)) ([db5033a](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/db5033afff50ef13e389443de90ffbb54c5de92d))
+* reduce cognitive complexity in menu service ([#498](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/498)) ([8ebadcd](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/8ebadcd0a1ffe14ef53668dfa027ab7517c7b87a))
+* reduce cognitive complexity in music_player.py ([#494](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/494)) ([8bbf16d](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/8bbf16d554b6ca98509fd92f159f7c4eddb8bb1a))
+* reduce cognitive complexity in teams_base.py ([#496](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/496)) ([96baaf3](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/96baaf30fd9b4c7bd47f14059eab848c2db9550d))
+* remove dead code and deactivate unimplemented game modes ([#482](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/482)) ([c6a4baa](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/c6a4baae90a4a22aaaeaa8247c7e662667645fc1))
+* remove legacy backends, always use MultiplexerBackend ([#544](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/544)) ([e01cee7](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/e01cee7a1fa01d0c08e2a34df379326838a5a7f4))
+* remove unused Windows controller backend ([#502](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/502)) ([f8418db](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/f8418dbe40c46b5f7daf7efc12809151192efd04))
+* replace CONTROLLER_BACKEND env var with OpenFeature flag ([#476](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/476)) ([51bc29b](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/51bc29bb2a5fff178cd2d9916f6d024b501ddffc))
+* replace if/elif chains with match/case ([#500](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/500)) ([90d3f65](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/90d3f654322865d3feca059b18360516868d7ebd))
+
+
+### Documentation
+
+* update LICENSE copyright year ([#503](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/503)) ([637c520](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/637c5208b4296d6c79834d5246096b217ad5ced3))
+
+
+### Tests
+
+* add comprehensive coverage for zombie, werewolf, and tournament ([#518](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/518)) ([8c78f30](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/8c78f308cc6b686737bb946b3cb8bf26439f10f6))
+* add in-process gRPC integration tests for all services ([#519](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/519)) ([7833f32](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/7833f327f54fcda122698ae17f3e937c177b1fe9))
+* add motion processing unit tests for all game modes ([#513](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/513)) ([31db3d1](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/31db3d191b1c7908d5e911f435a32be6a2178452))
+* add streaming RPC coverage for controller manager servicer ([#521](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/521)) ([d3ad9d9](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/d3ad9d9611660476c4f6125c989bd9b10a9922d5))
+* add unit tests for 6 untested lib/ modules ([#520](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/520)) ([fd13e32](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/fd13e3224d91ded9bf38301925c5b411bd144311))
+* comprehensive coverage hardening across all services ([#522](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/522)) ([34acae7](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/34acae72dd84ba620b58b61222aa0ab41aff4abb))
+* harden servicer tests and remove dead code ([#517](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/517)) ([63a01cf](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/63a01cfd729057ffb4e7f61f73edfc0e768ebc45))
+
+
+### Miscellaneous
+
+* condense .claude/rules from 945 to 42 lines ([#545](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/545)) ([78d4cb5](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/78d4cb54360c833b12b0a181f8dc0805d03eb579))
+* polish repo for conference sharing ([#483](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/483)) ([c45b88a](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/c45b88a0f3de12bd5f661f2d78d1b27e1c700004))
+
 ## [0.4.0](https://github.com/WatchMeJoustMyFlags/JoustMania/compare/joustmania-v0.3.0...joustmania-v0.4.0) (2026-02-13)
 
 
