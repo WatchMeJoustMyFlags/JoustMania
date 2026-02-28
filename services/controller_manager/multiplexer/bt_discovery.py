@@ -54,24 +54,39 @@ class CentralizedBTDiscovery:
         """
         return self._address_to_adapter.get(self._normalize_address(address))
 
-    @staticmethod
-    def _resolve_adapter_from_sysfs(hidraw_path: str | bytes) -> str | None:
-        """Resolve BT adapter from hidraw device path via sysfs.
+    def _resolve_via_pairing_dir(self, serials: set[str]) -> int:
+        """Resolve adapter affinity from BlueZ pairing directories.
 
-        For Bluetooth HID devices, the resolved sysfs path includes the
-        adapter name: .../bluetooth/hci0/hci0:XX/.../hidraw/hidrawN
+        BlueZ stores paired devices under /var/lib/bluetooth/<adapter-addr>/<device-addr>/.
+        Builds a reverse map from adapter BT address to hci name, then checks
+        which adapter directory contains each device serial.
+
+        Returns the number of newly resolved devices.
         """
-        if isinstance(hidraw_path, bytes):
-            hidraw_path = hidraw_path.decode("utf-8", errors="replace")
-        hidraw_name = pathlib.Path(hidraw_path).name  # e.g. "hidraw0"
-        sysfs = pathlib.Path(f"/sys/class/hidraw/{hidraw_name}")
-        if not sysfs.exists():
-            return None
-        resolved = str(sysfs.resolve())
-        for part in resolved.split("/"):
-            if part.startswith("hci") and ":" not in part:
-                return part
-        return None
+        bt_dir = pathlib.Path("/var/lib/bluetooth")
+        if not bt_dir.exists():
+            return 0
+
+        # Reverse map: adapter BT address (uppercase) -> hci name
+        addr_to_hci = {addr.upper().replace(":", ""): hci for hci, addr in self._adapters.items()}
+
+        resolved_count = 0
+        for normalized in serials:
+            if normalized in self._address_to_adapter:
+                continue
+            # Format as colon-separated MAC for directory lookup
+            mac = ":".join(normalized[i : i + 2] for i in range(0, 12, 2))
+            for adapter_dir in bt_dir.iterdir():
+                if not adapter_dir.is_dir() or adapter_dir.name in ("cache", "settings"):
+                    continue
+                if (adapter_dir / mac).exists():
+                    adapter_key = self._normalize_address(adapter_dir.name)
+                    hci = addr_to_hci.get(adapter_key)
+                    if hci:
+                        self._address_to_adapter[normalized] = hci
+                        resolved_count += 1
+                        break
+        return resolved_count
 
     async def initialize(self) -> dict[str, str]:
         """Enumerate all BT adapters and enable them. Returns adapter dict."""
@@ -130,26 +145,14 @@ class CentralizedBTDiscovery:
             except Exception:
                 logger.exception(f"Failed to scan {hci} for adapter affinity")
 
-        # Sysfs fallback for devices not found in BlueZ (common with hidapi)
+        # Pairing directory fallback for devices not found in BlueZ D-Bus.
+        # BlueZ stores pairings at /var/lib/bluetooth/<adapter>/<device>/.
+        # This resolves uhid devices whose sysfs paths lack hci info.
         unresolved = seen - set(self._address_to_adapter.keys())
         if unresolved:
-            for dev_info in devices:
-                serial = dev_info.get("serial_number", "")
-                if not serial:
-                    continue
-                normalized = self._normalize_address(serial)
-                if normalized in unresolved and normalized not in self._address_to_adapter:
-                    path = dev_info.get("path", b"")
-                    if path:
-                        hci = self._resolve_adapter_from_sysfs(path)
-                        if hci and hci in self._adapters:
-                            self._address_to_adapter[normalized] = hci
-
-            resolved_by_sysfs = len(seen) - len(unresolved - set(self._address_to_adapter.keys()))
-            if resolved_by_sysfs > len(seen) - len(unresolved):
-                logger.info(
-                    f"Sysfs resolved adapter affinity for {resolved_by_sysfs - (len(seen) - len(unresolved))} device(s)"
-                )
+            count = self._resolve_via_pairing_dir(unresolved)
+            if count:
+                logger.info(f"Pairing directory resolved adapter affinity for {count} device(s)")
 
         return hid_serials
 
