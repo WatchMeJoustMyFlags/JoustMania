@@ -1267,3 +1267,84 @@ class TestGameLifecycleCleanup:
             await game.run()
 
         assert len(cleanup_called) >= 1
+
+
+class TestStartupGracePeriod:
+    """Tests for startup grace period preventing instant death on first frame."""
+
+    @pytest.fixture
+    def game_with_player(self):
+        """Create game with a player whose EMA is uninitialized (first frame scenario)."""
+        mock_cm = MockControllerManagerService(num_controllers=2)
+
+        game = FFAGame(
+            controller_manager_client=mock_cm,
+            event_publisher=async_noop,
+            audio_client=None,
+            game_id="test_startup_grace",
+        )
+
+        game.players["test_serial"] = Player(
+            serial="test_serial",
+            team=0,
+            alive=True,
+            color=(255, 0, 0),
+            smoothed_accel=1.0,  # Prime EMA so it doesn't auto-prime
+        )
+        game.gameplay_stream = MockGameplayStream()
+        game.music_speed = SLOW_MUSIC_SPEED
+        game.start_time = time.time()
+
+        return game
+
+    @pytest.mark.asyncio
+    async def test_startup_grace_prevents_first_frame_death(self, game_with_player):
+        """Player should survive a spike during startup grace period."""
+        game = game_with_player
+        player = game.players["test_serial"]
+
+        # Set grace period in the future (simulates startup grace)
+        player.grace_until = time.time() + 0.3
+
+        # Create a massive spike that would normally kill instantly
+        controller_state = controller_manager_pb2.GameplayData(
+            serial="test_serial",
+            accel=controller_manager_pb2.Vector3(x=10.0, y=10.0, z=10.0),
+        )
+
+        # Process several frames during grace period
+        for _ in range(5):
+            await game._process_controller_state(controller_state)
+
+        # Player should survive — grace period blocks death checks
+        assert player.alive is True
+
+    @pytest.mark.asyncio
+    async def test_startup_grace_expires_and_death_works(self, game_with_player):
+        """After grace period expires, death detection works normally."""
+        game = game_with_player
+        player = game.players["test_serial"]
+
+        # Set grace period in the past (expired)
+        player.grace_until = time.time() - 1.0
+
+        kill_called = []
+
+        async def mock_kill(serial, accel_mag):
+            kill_called.append((serial, accel_mag))
+            player.alive = False
+
+        game._kill_player = mock_kill
+
+        # Create lethal acceleration
+        controller_state = controller_manager_pb2.GameplayData(
+            serial="test_serial",
+            accel=controller_manager_pb2.Vector3(x=10.0, y=10.0, z=10.0),
+        )
+
+        # Process enough frames for EMA to exceed death threshold
+        for _ in range(10):
+            if player.alive:
+                await game._process_controller_state(controller_state)
+
+        assert len(kill_called) > 0, "Player should die after grace period expires"
