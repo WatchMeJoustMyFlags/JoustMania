@@ -34,14 +34,14 @@ RUN apk add --no-cache git
 
 WORKDIR /app
 
-# Copy go.mod and download dependencies
-COPY services/mobile_gateway/go.mod services/mobile_gateway/go.sum* ./
+# Copy go.mod, go.sum, and local proto module for dependency resolution
+COPY services/mobile_gateway/go.mod services/mobile_gateway/go.sum ./
 
 # Copy generated proto files (overwrite local stubs)
 COPY --from=proto-gen /workspace/gen/github.com/WatchMeJoustMyFlags/JoustMania/services/mobile_gateway/proto/mobile_controller ./proto/mobile_controller/
 
-# Download dependencies
-RUN go mod tidy && go mod download
+# Download dependencies (go.mod + go.sum are sufficient, no source needed)
+RUN go mod download
 
 # Copy source code
 COPY services/mobile_gateway/*.go ./
