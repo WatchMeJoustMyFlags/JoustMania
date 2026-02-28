@@ -13,6 +13,7 @@ See services/game_coordinator/servicer.py for the GameCoordinatorServicer implem
 import asyncio
 import logging
 import os
+import signal
 import sys
 
 # Configure logging early, before any logging calls
@@ -106,12 +107,18 @@ async def serve(port=50053):
 
     logger.info(f"GameCoordinator server listening on port {port}")
 
-    try:
-        await server.wait_for_termination()
-    except KeyboardInterrupt:
-        logger.info("Shutting down GameCoordinator server...")
-        await game_servicer.shutdown()
-        await server.stop(grace=5)
+    # Use asyncio.Event for signal-driven shutdown so both SIGTERM (Docker stop)
+    # and SIGINT (Ctrl-C / KeyboardInterrupt) trigger graceful shutdown.
+    shutdown_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, shutdown_event.set)
+
+    await shutdown_event.wait()
+
+    logger.info("Shutting down GameCoordinator server...")
+    await game_servicer.shutdown()
+    await server.stop(grace=5)
 
 
 if __name__ == "__main__":
