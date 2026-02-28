@@ -686,5 +686,4 @@ volumes:
   loki-data:
   jaeger-data:
   controller-names:
-  psmoveapi-data:
   pyroscope-data:

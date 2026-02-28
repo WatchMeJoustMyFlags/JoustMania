@@ -33,11 +33,11 @@ The Controller Manager service is the central component for managing PS Move con
 │  LED keep-alive: 4s refresh cycle                            │
 ├─────────────────────────────────────────────────────────────┤
 │               ControllerIOAdapter (sync I/O)                 │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐          │
-│  │  PsMove     │  │   Hidapi    │  │    Mock     │          │
-│  │  Adapter    │  │  Adapter    │  │   Adapter   │          │
-│  │ (psmoveapi) │  │ (libhidapi) │  │  (Testing)  │          │
-│  └─────────────┘  └─────────────┘  └─────────────┘          │
+│         ┌─────────────┐  ┌─────────────┐                     │
+│         │   Hidapi    │  │    Mock     │                     │
+│         │  Adapter    │  │   Adapter   │                     │
+│         │(hidapi/hidraw)│ │  (Testing)  │                     │
+│         └─────────────┘  └─────────────┘                     │
 ├─────────────────────────────────────────────────────────────┤
 │            Legacy Backends (multiplexer disabled)             │
 │  BluetoothBackend | HidapiBackend | MockBackend              │
@@ -52,7 +52,7 @@ Backend selection uses OpenFeature flags (performance domain):
 
 | Setting | Source | Default | Description |
 |---------|--------|---------|-------------|
-| `controller_backend` | flagd (performance) | `bluetooth` | Backend: `bluetooth`, `mock`, `hidapi`, or comma-separated |
+| `controller_backend` | flagd (performance) | `hidapi` | Backend: `hidapi`, `mock`, or comma-separated |
 | `multiplexer_backend_enabled` | flagd (performance) | `false` | Use adapter-based multiplexer |
 | `mock_controller_count` | flagd (performance) | `4` | Number of mock controllers |
 | `GRPC_PORT` | env var | `50052` | gRPC server port |
@@ -61,10 +61,10 @@ Backend selection uses OpenFeature flags (performance domain):
 ### Backend Selection
 
 The backend is selected via the `controller_backend` flag in flagd (`services/flagd/performance.json`).
-If the flag is not set or flagd is unavailable, the default BluetoothBackend is used.
+If the flag is not set or flagd is unavailable, the default hidapi backend is used.
 Use `controller_backend=mock` for testing without hardware.
 
-Multi-adapter mode: set `controller_backend=mock,bluetooth` to run mock and real controllers simultaneously.
+Multi-adapter mode: set `controller_backend=mock,hidapi` to run mock and real controllers simultaneously.
 
 ## gRPC API
 
@@ -132,7 +132,7 @@ Used by `MultiplexerBackend`. Adapters handle raw hardware communication only:
 
 ```python
 class ControllerIOAdapter(ABC):
-    adapter_type: str              # "psmove", "hidapi", "mock"
+    adapter_type: str              # "hidapi", "mock"
     def discover(force=False) -> list[str]
     def open(serial) -> bool
     def poll(serial) -> dict | None
@@ -224,8 +224,7 @@ services/controller_manager/
 ├── multiplexer/
 │   ├── adapter.py         # ControllerIOAdapter ABC
 │   ├── multiplexer_backend.py  # Orchestrator with centralized state
-│   ├── psmove_adapter.py  # PsMoveAdapter (psmoveapi I/O)
-│   ├── hidapi_adapter.py  # HidapiAdapter (libhidapi I/O)
+│   ├── hidapi_adapter.py  # HidapiAdapter (hidapi/hidraw I/O)
 │   ├── mock_adapter.py    # MockAdapter (simulated I/O)
 │   ├── bt_discovery.py    # CentralizedBTDiscovery
 │   └── validation.py      # Backend combination validation

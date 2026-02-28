@@ -32,15 +32,15 @@ When the `multiplexer_backend_enabled` flag is on (default for new deployments),
 │  - Adapter affinity tracking                       │
 └──────────────┬───────────────────────────────────┘
                │
-     ┌─────────┼─────────┐
-     ▼         ▼         ▼
-┌──────────┐ ┌────────┐ ┌──────────┐
-│ PsMove   │ │ Hidapi │ │  Mock    │
-│ Adapter  │ │Adapter │ │ Adapter  │
-│          │ │        │ │          │
-│ psmoveapi│ │libhidapi│ │ Testing  │
-│ + BlueZ  │ │(Linux) │ │ (No HW)  │
-└──────────┘ └────────┘ └──────────┘
+          ┌────┴────┐
+          ▼         ▼
+       ┌────────┐ ┌──────────┐
+       │ Hidapi │ │  Mock    │
+       │Adapter │ │ Adapter  │
+       │        │ │          │
+       │hidapi/ │ │ Testing  │
+       │hidraw  │ │ (No HW)  │
+       └────────┘ └──────────┘
 ```
 
 ### Legacy Path (multiplexer disabled)
@@ -57,7 +57,7 @@ Adapters handle device handles and raw I/O only. All methods are sync (blocking)
 **Interface** (`multiplexer/adapter.py`):
 ```python
 class ControllerIOAdapter(ABC):
-    adapter_type: str              # "psmove", "hidapi", "mock"
+    adapter_type: str              # "hidapi", "mock"
     def discover(force=False) -> list[str]
     def open(serial) -> bool
     def poll(serial) -> dict | None
@@ -67,12 +67,6 @@ class ControllerIOAdapter(ABC):
 ```
 
 `set_output()` combines LED + rumble in one call — this matches HID output report reality and prevents rumble from being reset when LEDs refresh.
-
-### PsMoveAdapter
-
-**File**: `multiplexer/psmove_adapter.py`
-
-Uses the `psmove` C library. Handles are opened during `discover()` since psmove uses an index-based API. Includes retry logic for flaky USB enumeration.
 
 ### HidapiAdapter
 
@@ -147,21 +141,17 @@ The `controller_backend` flag accepts comma-separated values to run multiple ada
 "controller_backend": { "defaultVariant": "mock,bluetooth" }
 ```
 
-This creates a `MultiplexerBackend` with both a `MockAdapter` and a `PsMoveAdapter`, allowing real and simulated controllers in the same session. Valid combinations:
+This creates a `MultiplexerBackend` with both a `MockAdapter` and a `HidapiAdapter`, allowing real and simulated controllers in the same session. Valid combinations:
 - `mock` — mock only
-- `bluetooth` — psmove only
 - `hidapi` — hidapi only
-- `mock,bluetooth` — mock + psmove
 - `mock,hidapi` — mock + hidapi
-
-Invalid: `bluetooth,hidapi` (both use the same hardware).
 
 ## Backend Selection
 
 ### Priority
 
 1. **OpenFeature flag** (`controller_backend` in performance domain) — runtime-switchable via flagd
-2. **Default** — Linux bluetooth backend
+2. **Default** — hidapi backend
 
 ### Multiplexer Toggle
 
@@ -169,13 +159,13 @@ When `multiplexer_backend_enabled` is `true`, the factory creates adapters wrapp
 
 ### Fallback
 
-If the flagd flag is empty or flagd is unavailable, the system defaults to `BluetoothBackend` (legacy path).
+If the flagd flag is empty or flagd is unavailable, the system defaults to the hidapi backend.
 
 ## Configuration (flagd)
 
 | Flag | Domain | Values | Default | Description |
 |------|--------|--------|---------|-------------|
-| `controller_backend` | performance | `bluetooth`, `mock`, `hidapi`, comma-separated | `bluetooth` | Select backend(s) |
+| `controller_backend` | performance | `mock`, `hidapi`, comma-separated | `hidapi` | Select backend(s) |
 | `multiplexer_backend_enabled` | performance | `true`, `false` | `false` | Use adapter-based multiplexer |
 | `mock_controller_count` | performance | 2, 4, 6, 8 | 4 | Mock controllers count |
 | `chaos_fault_type` | performance | `none`, `poll_drop`, `accel_spike`, `led_failure`, `disconnect` | `none` | Fault injection (use fractional targeting) |
@@ -203,3 +193,7 @@ make up-mock  # Uses CI flagd config (controller_backend=mock)
 - [ControllerBackend Interface](../../services/controller_manager/backend.py)
 - [ControllerIOAdapter ABC](../../services/controller_manager/multiplexer/adapter.py)
 - [MultiplexerBackend](../../services/controller_manager/multiplexer/multiplexer_backend.py)
+
+## History
+
+The controller backend originally used [psmoveapi](https://github.com/thp/psmoveapi) (C library with SWIG Python bindings) for PS Move communication. This required a separate `psmove-builder` Docker image to compile the C library from source. The migration to hidapi (pure Python HID via the `hidraw` kernel interface) eliminated this build dependency while maintaining identical controller behavior. The HID report format documentation in `lib/psmove_hid.py` was derived from psmoveapi's protocol implementation.

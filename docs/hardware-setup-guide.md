@@ -206,11 +206,11 @@ This is automatically configured by `setup_host.sh`.
 
 ### Manual Pairing (Alternative)
 
-If the daemon isn't working, you can pair manually:
+If the daemon isn't working, you can pair manually using `bluetoothctl`:
 
 ```bash
-# Pair via psmove CLI (inside the container)
-docker compose exec pairing-daemon psmove pair
+# Connect the controller via USB, then check logs for its MAC address
+docker compose logs pairing-daemon | grep "serial"
 
 # Trust the controller in BlueZ
 bluetoothctl trust AA:BB:CC:DD:EE:FF
@@ -219,7 +219,7 @@ bluetoothctl trust AA:BB:CC:DD:EE:FF
 sudo systemctl restart bluetooth
 ```
 
-Replace `AA:BB:CC:DD:EE:FF` with your controller's Bluetooth address (shown in `psmove pair` output).
+Replace `AA:BB:CC:DD:EE:FF` with your controller's Bluetooth address (shown in pairing daemon logs).
 
 ---
 

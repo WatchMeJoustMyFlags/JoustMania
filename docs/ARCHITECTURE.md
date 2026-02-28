@@ -70,8 +70,7 @@ JoustMania is a party game system for PS Move controllers, built as a collection
 | `PlayControllerEffect` | Unary | Trigger visual effect (flash, pulse, rainbow) |
 
 **Backends**:
-- `bluetooth` - Linux BlueZ (production)
-- `hidapi` - libhidapi (alternative)
+- `hidapi` - hidapi/hidraw (production, default)
 - `mock` - Simulated controllers (testing)
 
 **Special Features**:
@@ -315,7 +314,7 @@ Settings are configured via admin mode (hold all 4 face buttons):
 
 | Setting | Source | Default |
 |---------|--------|---------|
-| `controller_backend` | flagd (performance) | `bluetooth` |
+| `controller_backend` | flagd (performance) | `hidapi` |
 | `mock_controller_count` | flagd (performance) | `4` |
 | `play_audio` | flagd (user_preferences) | `on` |
 | `LOG_LEVEL` | env var | `INFO` |
@@ -332,7 +331,6 @@ Settings are configured via admin mode (hold all 4 face buttons):
 
 ### Persistence
 
-- `~/.psmoveapi/` - Controller calibration (Linux)
 - Feature flags managed via flagd (JSON flag files in `services/flagd/`)
 
 ---
@@ -430,3 +428,9 @@ Regenerate after changes:
 ```bash
 make protos
 ```
+
+---
+
+## Acknowledgments
+
+JoustMania's PS Move controller support was originally built on [psmoveapi](https://github.com/thp/psmoveapi) by Thomas Perl. The project has since migrated to direct HID communication via [hidapi](https://github.com/trezor/cython-hidapi), but psmoveapi's protocol documentation and reference implementation were instrumental in understanding the PS Move HID report format.

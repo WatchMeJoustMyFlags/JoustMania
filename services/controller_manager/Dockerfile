@@ -3,7 +3,7 @@
 # Build the builder image first:
 #   docker build -t ghcr.io/watchmejoustmyflags/joustmania/builder:latest images/builder/
 #
-# Builder images can be overridden for CI/CD:
+# Builder image can be overridden for CI/CD:
 # --build-arg BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:main
 
 # Builder image - override with --build-arg for CI/CD
@@ -67,7 +67,6 @@ COPY --from=python-builder /usr/local/lib/python3.11/site-packages /usr/local/li
 COPY --from=python-builder /usr/local/bin /usr/local/bin
 
 # Copy grpc-health-probe binary
-# Copy grpc-health-probe from official multi-arch image
 COPY --from=ghcr.io/grpc-ecosystem/grpc-health-probe:v0.4.38 /ko-app/grpc-health-probe /bin/grpc_health_probe
 
 # Copy application code
