@@ -85,7 +85,7 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 8,
+        "w": 6,
         "x": 0,
         "y": 1
       },
@@ -153,8 +153,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 8,
-        "x": 8,
+        "w": 6,
+        "x": 6,
         "y": 1
       },
       "id": 3,
@@ -213,8 +213,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 8,
-        "x": 16,
+        "w": 6,
+        "x": 12,
         "y": 1
       },
       "id": 6,
@@ -245,6 +245,74 @@
         }
       ],
       "title": "Connected",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Controllers with poll drop rate above degradation threshold (10 drops/sec). Matches controller_poll_degraded spans in Jaeger.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 3
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      },
+      "id": 37,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.2.3",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "count(rate(controller_poll_drops_total[1m]) > 10) or vector(0)",
+          "legendFormat": "Controllers",
+          "refId": "A"
+        }
+      ],
+      "title": "Degraded (Poll Drops)",
       "type": "stat"
     },
     {
@@ -434,6 +502,53 @@
                 "value": 80
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Poll Drops/s"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "gradient",
+                  "type": "gauge"
+                }
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "max",
+                "value": 100
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 10
+                    },
+                    {
+                      "color": "red",
+                      "value": 30
+                    }
+                  ]
+                }
+              }
+            ]
           }
         ]
       },
@@ -502,6 +617,17 @@
           "instant": true,
           "legendFormat": "__auto",
           "refId": "RSSI"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "rate(controller_poll_drops_total[1m])",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "refId": "PollDrops"
         }
       ],
       "title": "Controller Health Status",
@@ -553,7 +679,8 @@
               "hci_adapter": 2,
               "Value #Status": 3,
               "Value #Battery": 4,
-              "Value #RSSI": 5
+              "Value #RSSI": 5,
+              "Value #PollDrops": 6
             },
             "renameByName": {
               "name": "Name",
@@ -562,7 +689,8 @@
               "Value #Status": "Status",
               "Value #Battery": "Battery",
               "Value #RSSI": "RSSI (dBm)",
-              "Value #Info": ""
+              "Value #Info": "",
+              "Value #PollDrops": "Poll Drops/s"
             }
           }
         }
@@ -1077,7 +1205,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Rate of poll() calls returning None per controller (includes chaos-injected drops)",
+      "description": "Rate of poll() calls returning None per controller. Red zone (>10 drops/sec) matches the degradation threshold used by Jaeger health spans.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1091,7 +1219,23 @@
             "spanNulls": false,
             "stacking": {
               "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line+area"
             }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 10
+              }
+            ]
           },
           "unit": "ops"
         },
@@ -1135,7 +1279,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Rate of poll() exceptions per controller",
+      "description": "Rate of poll() exceptions per controller. Any errors are highlighted red — errors indicate connection problems.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1149,7 +1293,23 @@
             "spanNulls": false,
             "stacking": {
               "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line+area"
             }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
           },
           "unit": "ops"
         },

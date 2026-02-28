@@ -12,6 +12,7 @@ Supports two discovery modes:
 from __future__ import annotations
 
 import logging
+import pathlib
 
 from services.controller_manager import bluetooth, metrics
 
@@ -63,6 +64,25 @@ class CentralizedBTDiscovery:
         Accepts addresses in any format (with/without colons).
         """
         return self._address_to_adapter.get(self._normalize_address(address))
+
+    @staticmethod
+    def _resolve_adapter_from_sysfs(hidraw_path: str | bytes) -> str | None:
+        """Resolve BT adapter from hidraw device path via sysfs.
+
+        For Bluetooth HID devices, the resolved sysfs path includes the
+        adapter name: .../bluetooth/hci0/hci0:XX/.../hidraw/hidrawN
+        """
+        if isinstance(hidraw_path, bytes):
+            hidraw_path = hidraw_path.decode("utf-8", errors="replace")
+        hidraw_name = pathlib.Path(hidraw_path).name  # e.g. "hidraw0"
+        sysfs = pathlib.Path(f"/sys/class/hidraw/{hidraw_name}")
+        if not sysfs.exists():
+            return None
+        resolved = str(sysfs.resolve())
+        for part in resolved.split("/"):
+            if part.startswith("hci") and ":" not in part:
+                return part
+        return None
 
     async def initialize(self) -> dict[str, str]:
         """Enumerate all BT adapters and enable them. Returns adapter dict."""
@@ -141,6 +161,27 @@ class CentralizedBTDiscovery:
                         self._address_to_adapter[key] = hci
             except Exception:
                 logger.exception(f"Failed to scan {hci} for adapter affinity")
+
+        # Sysfs fallback for devices not found in BlueZ (common with hidapi)
+        unresolved = seen - set(self._address_to_adapter.keys())
+        if unresolved:
+            for dev_info in devices:
+                serial = dev_info.get("serial_number", "")
+                if not serial:
+                    continue
+                normalized = self._normalize_address(serial)
+                if normalized in unresolved and normalized not in self._address_to_adapter:
+                    path = dev_info.get("path", b"")
+                    if path:
+                        hci = self._resolve_adapter_from_sysfs(path)
+                        if hci and hci in self._adapters:
+                            self._address_to_adapter[normalized] = hci
+
+            resolved_by_sysfs = len(seen) - len(unresolved - set(self._address_to_adapter.keys()))
+            if resolved_by_sysfs > len(seen) - len(unresolved):
+                logger.info(
+                    f"Sysfs resolved adapter affinity for {resolved_by_sysfs - (len(seen) - len(unresolved))} device(s)"
+                )
 
         return hid_serials
 
