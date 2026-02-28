@@ -9,6 +9,7 @@ a future Rust gRPC service.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Protocol
 
 import hidraw as hid
@@ -23,6 +24,18 @@ from lib.psmove_hid import (
 )
 
 logger = logging.getLogger("psmove-pairing")
+
+
+@dataclass
+class PairingResult:
+    """Result of a pairing operation, returned by PairingBackend.pair_controller().
+
+    Carries success status plus metadata for observability (span attributes).
+    """
+
+    success: bool
+    already_paired: bool = False
+    previous_host: str = ""
 
 
 class PairingBackend(Protocol):
@@ -42,7 +55,7 @@ class PairingBackend(Protocol):
         """
         ...
 
-    async def pair_controller(self, device_path: bytes, serial: str, adapter_address: str) -> bool:
+    async def pair_controller(self, device_path: bytes, serial: str, adapter_address: str) -> PairingResult:
         """Write the host BT address to a controller.
 
         Args:
@@ -51,7 +64,7 @@ class PairingBackend(Protocol):
             adapter_address: Target Bluetooth adapter address to write.
 
         Returns:
-            True if the address was written successfully.
+            PairingResult with success status and metadata.
         """
         ...
 
@@ -94,7 +107,7 @@ class HidapiBackend:
 
         return usb_controllers
 
-    async def pair_controller(self, device_path: bytes, serial: str, adapter_address: str) -> bool:
+    async def pair_controller(self, device_path: bytes, serial: str, adapter_address: str) -> PairingResult:
         """Write the host BT address via HID feature report.
 
         Opens the device, reads the current host address, and writes
@@ -109,7 +122,8 @@ class HidapiBackend:
                     report = bytes(report)
                 _, current_host = parse_btaddr_report(report)
 
-                if current_host.upper() == adapter_address.upper():
+                already_paired = current_host.upper() == adapter_address.upper()
+                if already_paired:
                     logger.info(f"Controller {serial} already paired to {adapter_address}")
                 else:
                     logger.info(f"Writing host address {adapter_address} (was {current_host})")
@@ -119,11 +133,11 @@ class HidapiBackend:
             finally:
                 device.close()
 
-            return True
+            return PairingResult(success=True, already_paired=already_paired, previous_host=current_host)
 
         except Exception as e:
             logger.debug(f"HID pairing error for {serial}: {e}")
-            return False
+            return PairingResult(success=False)
 
 
 class RustServiceBackend:
@@ -136,5 +150,5 @@ class RustServiceBackend:
     def get_usb_controllers(self) -> list[tuple[bytes, str]]:
         raise NotImplementedError("Rust pairing service not yet implemented — see #612")
 
-    async def pair_controller(self, device_path: bytes, serial: str, adapter_address: str) -> bool:
+    async def pair_controller(self, device_path: bytes, serial: str, adapter_address: str) -> PairingResult:
         raise NotImplementedError("Rust pairing service not yet implemented — see #612")

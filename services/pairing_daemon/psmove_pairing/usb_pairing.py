@@ -1,7 +1,7 @@
 """USB controller pairing for PS Move controllers.
 
 Delegates hardware I/O to a PairingBackend selected by feature flags.
-The backend is resolved each poll cycle for runtime switchability.
+The backend is resolved once per poll cycle for coherence and hot-switchability.
 """
 
 import logging
@@ -31,6 +31,8 @@ logger = logging.getLogger("psmove-pairing")
 _ATTR_CONTROLLER_SERIAL = "controller.serial"
 _ATTR_ADAPTER_ADDRESS = "adapter.address"
 
+_KNOWN_ROUTING_VALUES = {"hidapi", "rust"}
+
 
 def _resolve_backend() -> tuple[PairingBackend, str]:
     """Resolve the pairing backend from feature flags.
@@ -47,6 +49,9 @@ def _resolve_backend() -> tuple[PairingBackend, str]:
     if routing == "rust":
         return RustServiceBackend(), "rust"
 
+    if routing not in _KNOWN_ROUTING_VALUES:
+        logger.warning(f"Unknown adapter routing '{routing}', falling back to hidapi")
+
     return HidapiBackend(), "hidapi"
 
 
@@ -54,7 +59,8 @@ class USBPairing:
     """Handles USB-connected PS Move controller pairing.
 
     Delegates hardware I/O to a PairingBackend selected by feature flags.
-    Each poll cycle re-resolves the backend for hot-switching.
+    The backend is resolved once per poll cycle — all operations within
+    a cycle use the same backend instance for coherence.
     """
 
     def __init__(self, tracer: trace.Tracer):
@@ -64,6 +70,19 @@ class USBPairing:
         # Track controllers verified this session to avoid re-processing every poll
         self._verified_serials: set[str] = set()
         self._last_backend_name: str | None = None
+        # Current backend for the active poll cycle (set in poll(), used by pair_controller())
+        self._current_backend: PairingBackend | None = None
+        self._current_backend_name: str | None = None
+
+    def _get_backend(self) -> tuple[PairingBackend, str]:
+        """Return the current poll-cycle backend, or resolve a new one.
+
+        Within a poll cycle, returns the backend resolved at poll() start.
+        Outside a poll cycle (e.g. direct pair_controller call), resolves fresh.
+        """
+        if self._current_backend is not None:
+            return self._current_backend, self._current_backend_name  # type: ignore[return-value]
+        return _resolve_backend()
 
     async def pair_controller(self, device_path: bytes, serial: str, adapter_address: str) -> bool:
         """Pair a controller by writing the host BT address.
@@ -86,24 +105,27 @@ class USBPairing:
             start_time = time.time()
 
             try:
-                backend, backend_name = _resolve_backend()
+                backend, backend_name = self._get_backend()
                 span.set_attribute("pairing.backend", backend_name)
 
                 result = await backend.pair_controller(device_path, serial, adapter_address)
 
                 duration = time.time() - start_time
                 pairing_duration_seconds.observe(duration)
-                span.set_attribute("pair.result", result)
+                span.set_attribute("pair.result", result.success)
                 span.set_attribute("pair.duration_seconds", duration)
+                span.set_attribute("pair.already_paired", result.already_paired)
+                if result.previous_host:
+                    span.set_attribute("pair.current_host", result.previous_host)
 
-                if result:
+                if result.success:
                     logger.info(f"Pairing succeeded for {serial}")
                     span.set_status(Status(StatusCode.OK))
                 else:
                     logger.error(f"Pairing failed for {serial}")
                     span.set_status(Status(StatusCode.ERROR, "Backend pairing failed"))
 
-                return result
+                return result.success
 
             except Exception as e:
                 duration = time.time() - start_time
@@ -236,27 +258,36 @@ class USBPairing:
         with self.tracer.start_as_current_span("poll_cycle") as span:
             span.set_attribute("poll.count", self.poll_count)
 
-            # Resolve backend from feature flags
+            # Resolve backend once for the entire poll cycle
             backend, backend_name = _resolve_backend()
+            self._current_backend = backend
+            self._current_backend_name = backend_name
             span.set_attribute("pairing.backend", backend_name)
 
-            # Log backend switches
-            if self._last_backend_name is not None and backend_name != self._last_backend_name:
-                logger.info(f"Pairing backend switched: {self._last_backend_name} -> {backend_name}")
-            self._last_backend_name = backend_name
+            try:
+                # Log initial backend and switches
+                if self._last_backend_name is None:
+                    logger.info(f"Pairing backend initialized: {backend_name}")
+                elif backend_name != self._last_backend_name:
+                    logger.info(f"Pairing backend switched: {self._last_backend_name} -> {backend_name}")
+                self._last_backend_name = backend_name
 
-            # Get USB controllers using resolved backend
-            controllers = backend.get_usb_controllers()
-            pairing_usb_controllers.set(len(controllers))
-            span.set_attribute("controllers.count", len(controllers))
+                # Get USB controllers using resolved backend
+                controllers = backend.get_usb_controllers()
+                pairing_usb_controllers.set(len(controllers))
+                span.set_attribute("controllers.count", len(controllers))
 
-            if not controllers:
-                logger.debug("No USB controllers found")
-                return
+                if not controllers:
+                    logger.debug("No USB controllers found")
+                    return
 
-            # Process each controller
-            for device_path, serial in controllers:
-                await self.process_controller(device_path, serial)
+                # Process each controller
+                for device_path, serial in controllers:
+                    await self.process_controller(device_path, serial)
+            finally:
+                # Clear cycle-scoped backend so stale references aren't used outside poll()
+                self._current_backend = None
+                self._current_backend_name = None
 
     async def run_loop(self) -> None:
         """USB polling loop.
