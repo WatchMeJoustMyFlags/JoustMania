@@ -515,6 +515,36 @@ class BaseGameMode(ABC):
         """
         await self._create_gameplay_stream()
 
+    async def _warmup_ema(self):
+        """
+        Drain buffered stream data and prime EMA filters before game loop.
+
+        The gameplay stream opens ~2.25s before the game loop starts (before
+        countdown). Data buffered during that time can contain stale spikes
+        that cause instant deaths when the EMA is uninitialized. This method
+        reads and discards buffered frames while priming each player's EMA
+        with real sensor data — no death checks run.
+        """
+        warmup_duration = 0.1  # 100ms — enough to drain buffer and get ~6 frames at 60Hz
+        warmup_start = time.time()
+        frames_consumed = 0
+
+        try:
+            async for gameplay_update in self.gameplay_stream:
+                for controller_data in gameplay_update.controllers:
+                    serial = controller_data.serial
+                    if serial in self.players and self.players[serial].alive:
+                        accel_mag = self._compute_accel_magnitude(controller_data.accel)
+                        self._update_ema(self.players[serial], accel_mag)
+                frames_consumed += 1
+
+                if time.time() - warmup_start >= warmup_duration:
+                    break
+        except Exception as e:
+            logger.warning(f"EMA warmup interrupted: {e}")
+
+        logger.info(f"EMA warmup complete: drained {frames_consumed} buffered frames")
+
     async def _process_gameplay_update(self, gameplay_update) -> bool:
         """
         Process a single gameplay update: handle disconnects then run death detection.
@@ -689,8 +719,13 @@ class BaseGameMode(ABC):
 
             logger.info("Starting game loop (stream rate controlled by controller-manager)")
 
-            # Stream was already created in _start_gameplay_stream() before countdown
-            # EMA filter was primed during countdown by _warmup_ema()
+            # Stream was already created in _start_gameplay_stream() before countdown.
+            # EMA filters were primed and buffered data drained by _warmup_ema().
+            # Apply startup grace period so any residual spikes can't cause instant death.
+            grace_until = time.time() + 0.3
+            for player in self.players.values():
+                if player.alive:
+                    player.grace_until = grace_until
 
             # Track current alive set for detecting changes
             last_alive_serials = {p.serial for p in self.players.values() if p.alive}
@@ -1358,6 +1393,9 @@ class BaseGameMode(ABC):
                     from proto import audio_pb2
 
                     await self.audio_client.SetVolume(audio_pb2.SetVolumeRequest(volume=GAME_VOLUME))
+
+                # Drain buffered stream data and prime EMA filters
+                await self._warmup_ema()
 
                 # Start music loop as background task (uses game_cycle_context)
                 self.music_loop_task = asyncio.create_task(self._music_loop())

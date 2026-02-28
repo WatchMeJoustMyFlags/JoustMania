@@ -55,6 +55,8 @@ class USBPairing:
         self.psmove_cli = psmove_path  # Keep for calibration
         self.poll_count = 0
         self.adapter_manager = AdapterManager()
+        # Track controllers verified this session to avoid re-processing every poll
+        self._verified_serials: set[str] = set()
 
     def get_usb_controllers_psmove(self) -> list[tuple[int, str]]:
         """Get list of USB-connected controllers using psmove library.
@@ -248,16 +250,22 @@ class USBPairing:
             # Refresh adapter state and check if already paired
             await self.adapter_manager.refresh_adapters()
 
-            if not self.adapter_manager.check_if_not_paired(serial):
-                logger.info(f"Controller {serial} already paired, ensuring trusted")
+            # Skip controllers we've already verified this session
+            if serial in self._verified_serials:
                 span.set_attribute("skipped", True)
-                span.set_attribute("skip_reason", "already_paired")
-                # Still trust — controller may be paired but not yet trusted
-                # (e.g. trust failed on a previous attempt due to BlueZ timing)
-                await self.bluez_trust_controller(serial)
+                span.set_attribute("skip_reason", "verified_this_session")
                 return False
 
-            logger.info(f"Found unpaired USB controller: {serial}")
+            already_in_bluez = not self.adapter_manager.check_if_not_paired(serial)
+            if already_in_bluez:
+                # BlueZ has a device record, but the controller's internal host
+                # address may point to a different system. Always run pair_custom()
+                # to verify and fix if needed — it's idempotent (only writes if
+                # the host address actually differs).
+                logger.info(f"Controller {serial} in BlueZ device list, verifying host address via pair_custom()")
+                span.set_attribute("verify_existing", True)
+            else:
+                logger.info(f"Found unpaired USB controller: {serial}")
             span.set_attribute("skipped", False)
             pairing_attempts_total.inc()
 
@@ -295,6 +303,9 @@ class USBPairing:
 
             # Calibrate
             await self.calibrate_controller(serial)
+
+            # Mark as verified so we don't re-process every poll cycle
+            self._verified_serials.add(serial)
 
             # Success message
             logger.info(
