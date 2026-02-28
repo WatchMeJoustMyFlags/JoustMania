@@ -102,31 +102,24 @@ up-mock:
 # Build once, then service builds are much faster.
 
 BUILDER_MARKER := .builder-built
-PSMOVE_BUILDER_MARKER := .psmove-builder-built
 
 .PHONY: builders
-builders: $(BUILDER_MARKER) $(PSMOVE_BUILDER_MARKER)
-	@echo "✓ All builder images ready"
+builders: $(BUILDER_MARKER)
+	@echo "✓ Builder image ready"
 
 $(BUILDER_MARKER): images/builder/Dockerfile images/builder/requirements-common.txt
 	@echo "Building shared Python builder image..."
 	docker build -t ghcr.io/watchmejoustmyflags/joustmania/builder:latest images/builder/
 	@touch $(BUILDER_MARKER)
 
-$(PSMOVE_BUILDER_MARKER): images/psmove-builder/Dockerfile
-	@echo "Building psmoveapi builder image..."
-	docker build -t ghcr.io/watchmejoustmyflags/joustmania/psmove-builder:latest images/psmove-builder/
-	@touch $(PSMOVE_BUILDER_MARKER)
-
 .PHONY: builders-force
 builders-force:
 	docker build --no-cache -t ghcr.io/watchmejoustmyflags/joustmania/builder:latest images/builder/
-	docker build --no-cache -t ghcr.io/watchmejoustmyflags/joustmania/psmove-builder:latest images/psmove-builder/
-	@touch $(BUILDER_MARKER) $(PSMOVE_BUILDER_MARKER)
+	@touch $(BUILDER_MARKER)
 
 .PHONY: clean-builders
 clean-builders:
-	rm -f $(BUILDER_MARKER) $(PSMOVE_BUILDER_MARKER)
+	rm -f $(BUILDER_MARKER)
 
 # ============================================================================
 # Code Quality (using uv directly - fast, no Docker overhead)

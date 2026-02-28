@@ -54,7 +54,6 @@ ghcr.io/watchmejoustmyflags/joustmania/<service>:<tag>
 ### Builder Images
 
 - `ghcr.io/watchmejoustmyflags/joustmania/builder:latest`
-- `ghcr.io/watchmejoustmyflags/joustmania/psmove-builder:latest`
 
 ### Service Images
 
@@ -80,9 +79,9 @@ IMAGE_TAG=main docker compose pull
 IMAGE_TAG=main docker compose up -d
 ```
 
-### BUILDER_IMAGE / PSMOVE_BUILDER_IMAGE
+### BUILDER_IMAGE
 
-Override builder images (used by CI):
+Override builder image (used by CI):
 
 ```bash
 BUILDER_IMAGE=ghcr.io/.../builder:sha123 docker compose build
@@ -153,7 +152,6 @@ The CI workflow automatically:
 
 - `IMAGE_TAG`: Set to `${{ github.sha }}` for versioning
 - `BUILDER_IMAGE`: Points to builder image with same commit SHA
-- `PSMOVE_BUILDER_IMAGE`: Points to psmove-builder with same commit SHA
 
 ## GHCR Authentication
 
@@ -200,7 +198,6 @@ make builders
 
 # Or pull from GHCR
 docker pull ghcr.io/watchmejoustmyflags/joustmania/builder:latest
-docker pull ghcr.io/watchmejoustmyflags/joustmania/psmove-builder:latest
 ```
 
 ### .venv permission issues

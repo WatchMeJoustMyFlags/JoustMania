@@ -105,7 +105,7 @@ processors:
         action: insert
       # service.namespace is set per-service in the Python SDK:
       #   "joustmania" for game services (game-coordinator, menu, audio)
-      #   "infrastructure" for platform services (controller-manager, psmove-pairing)
+      #   "infrastructure" for platform services (controller-manager, pairing-daemon)
 
 exporters:
   # OTLP exporter to send traces to Jaeger

@@ -96,10 +96,9 @@
     "controller_backend": {
       "state": "ENABLED",
       "variants": {
-        "bluetooth": "bluetooth",
         "hidapi": "hidapi",
         "mock": "mock",
-        "bluetooth_hidapi": "bluetooth,hidapi"
+        "mock_hidapi": "mock,hidapi"
       },
       "defaultVariant": "hidapi"
     },
@@ -140,7 +139,6 @@
     "controller_adapter_routing": {
       "state": "ENABLED",
       "variants": {
-        "bluetooth": "psmove",
         "hidapi": "hidapi"
       },
       "defaultVariant": "hidapi",
