@@ -79,13 +79,11 @@ def _create_bt_discovery(names: list[str]) -> CentralizedBTDiscovery | None:
     """Create CentralizedBTDiscovery if any backend needs Bluetooth.
 
     Returns None if no backend in the list uses Bluetooth.
-    Discovery mode is determined by the backend type:
-    - "hidapi" for HidapiBackend (hid.enumerate scanning)
     """
     from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDiscovery
 
     if "hidapi" in names:
-        return CentralizedBTDiscovery(discovery_mode="hidapi")
+        return CentralizedBTDiscovery()
     return None
 
 

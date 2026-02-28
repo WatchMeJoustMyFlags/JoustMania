@@ -199,7 +199,6 @@ class TestBTDiscoveryInjection:
 
         discovery = _create_bt_discovery(["hidapi"])
         assert isinstance(discovery, CentralizedBTDiscovery)
-        assert discovery.discovery_mode == "hidapi"
 
     def test_mock_gets_no_discovery(self):
         discovery = _create_bt_discovery(["mock"])
@@ -210,7 +209,6 @@ class TestBTDiscoveryInjection:
 
         discovery = _create_bt_discovery(["mock", "hidapi"])
         assert isinstance(discovery, CentralizedBTDiscovery)
-        assert discovery.discovery_mode == "hidapi"
 
     def test_multiplexer_receives_bt_discovery(self):
         """MultiplexerBackend should hold bt_discovery when hidapi adapter used."""
@@ -231,7 +229,6 @@ class TestBTDiscoveryInjection:
 
         assert backend.__class__.__name__ == "MultiplexerBackend"
         assert backend.bt_discovery is not None
-        assert backend.bt_discovery.discovery_mode == "hidapi"
 
     def test_mock_only_receives_no_discovery(self):
         """Mock-only should pass bt_discovery=None."""
