@@ -272,9 +272,22 @@ stream_current_frequency_hz = Gauge(
     "Current streaming frequency in Hz (from flagd override)",
 )
 
+# Per-controller health metrics (observable connection quality)
+controller_poll_drops_total = Counter(
+    "controller_poll_drops_total",
+    "Total poll() calls returning None per controller",
+    ["serial"],
+)
+
+controller_poll_errors_total = Counter(
+    "controller_poll_errors_total",
+    "Total poll() exceptions per controller",
+    ["serial"],
+)
+
 # Chaos fault injection metrics (Issue #548)
 chaos_faults_injected_total = Counter(
     "controller_chaos_faults_injected_total",
     "Total chaos faults injected by ChaosAdapter",
-    ["fault"],  # poll_drop, accel_spike, led_failure, disconnect
+    ["fault", "serial"],
 )

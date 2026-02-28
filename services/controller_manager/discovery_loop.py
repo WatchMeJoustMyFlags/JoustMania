@@ -425,10 +425,12 @@ class DiscoveryLoop:
                 if isinstance(state, Exception):
                     logger.debug(f"Error updating state for {serial}: {state}")
                     self._poll_errors[serial] = self._poll_errors.get(serial, 0) + 1
+                    metrics.controller_poll_errors_total.labels(serial=serial).inc()
                     continue
 
                 if not state:
                     self._poll_drops[serial] = self._poll_drops.get(serial, 0) + 1
+                    metrics.controller_poll_drops_total.labels(serial=serial).inc()
                     continue
 
                 # Update stored state

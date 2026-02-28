@@ -62,7 +62,7 @@ class ChaosAdapter(ControllerIOAdapter):
         if fault == "disconnect":
             return None
         if fault == "poll_drop" and random.random() < 0.3:
-            metrics.chaos_faults_injected_total.labels(fault="poll_drop").inc()
+            metrics.chaos_faults_injected_total.labels(fault="poll_drop", serial=serial).inc()
             return None
         result = self._inner.poll(serial)
         if fault == "accel_spike" and result and random.random() < 0.05:
@@ -71,16 +71,16 @@ class ChaosAdapter(ControllerIOAdapter):
                 AxisKey.Y: random.gauss(0, 3.0),
                 AxisKey.Z: random.gauss(0, 3.0),
             }
-            metrics.chaos_faults_injected_total.labels(fault="accel_spike").inc()
+            metrics.chaos_faults_injected_total.labels(fault="accel_spike", serial=serial).inc()
         return result
 
     def set_output(self, serial: str, r: int, g: int, b: int, rumble: int) -> bool:
         fault = self._get_fault(serial)
         if fault == "disconnect":
-            metrics.chaos_faults_injected_total.labels(fault="disconnect").inc()
+            metrics.chaos_faults_injected_total.labels(fault="disconnect", serial=serial).inc()
             return False
         if fault == "led_failure" and random.random() < 0.5:
-            metrics.chaos_faults_injected_total.labels(fault="led_failure").inc()
+            metrics.chaos_faults_injected_total.labels(fault="led_failure", serial=serial).inc()
             return False
         return self._inner.set_output(serial, r, g, b, rumble)
 
