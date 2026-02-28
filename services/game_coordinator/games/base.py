@@ -1156,16 +1156,9 @@ class BaseGameMode(ABC):
         # span even after the subclass impl ends it. (#456)
         trace_parent, trace_state = inject_trace_context(player.span)
 
-        # Play death explosion sound under the player's span (player-specific)
-        if player.span:
-            ctx = trace.set_span_in_context(player.span)
-            token = otel_context.attach(ctx)
-            try:
-                await self._play_sound(Sound.SFX_EXPLOSION, priority=2)
-            finally:
-                otel_context.detach(token)
-        else:
-            await self._play_sound(Sound.SFX_EXPLOSION, priority=2)
+        # Play death explosion sound under the player's span
+        player_ctx = trace.set_span_in_context(player.span) if player.span else None
+        await self._play_sound(Sound.SFX_EXPLOSION, priority=2, parent_context=player_ctx)
 
         # Add death event to player's lifecycle span (Phase 3: Per-Player Sensitivity)
         if player.span:
@@ -1557,16 +1550,21 @@ class BaseGameMode(ABC):
             self._game_cycle_span = None
             self.game_cycle_context = None
 
-    async def _play_sound(self, sound: str | Sound, priority: int = 2):
+    async def _play_sound(
+        self,
+        sound: str | Sound,
+        priority: int = 2,
+        parent_context: otel_context.Context | None = None,
+    ):
         """
         Play sound via Audio service (Phase 29).
-
-        When game_cycle_context is set, sounds are parented to the game_cycle
-        span so all audio instrumentation is grouped together in traces.
 
         Args:
             sound: Sound enum or string name (e.g., Sound.VOX_CONGRATULATIONS or "congratulations")
             priority: Audio priority (0=LOW, 1=MEDIUM, 2=HIGH, 3=CRITICAL)
+            parent_context: Explicit parent context. When set, overrides
+                game_cycle_context so the sound span is parented to a specific
+                span (e.g., a player lifecycle span for death explosions).
         """
         if not self.audio_client:
             return
@@ -1578,9 +1576,10 @@ class BaseGameMode(ABC):
             sound_name = sound.value if isinstance(sound, Sound) else sound
             request = audio_pb2.PlaySoundRequest(file_path=sound_name, volume=1.0, priority=priority)
 
-            # Parent sound spans under game_cycle when available
-            if self.game_cycle_context:
-                token = otel_context.attach(self.game_cycle_context)
+            # Use explicit parent if provided, otherwise fall back to game_cycle
+            ctx = parent_context or self.game_cycle_context
+            if ctx:
+                token = otel_context.attach(ctx)
                 try:
                     await self.audio_client.PlaySound(request)
                 finally:
