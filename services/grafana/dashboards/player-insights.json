@@ -94,7 +94,9 @@
         "justifyMode": "center",
         "orientation": "horizontal",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -107,7 +109,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "game_players_alive or vector(0)",
+          "expr": "sum(game_players_alive) or vector(0)",
           "legendFormat": "Alive",
           "refId": "A"
         },
@@ -116,7 +118,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "game_active_players or vector(0)",
+          "expr": "sum(game_active_players) or vector(0)",
           "legendFormat": "Total",
           "refId": "B"
         }
@@ -175,7 +177,9 @@
         "minVizWidth": 75,
         "orientation": "horizontal",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -250,7 +254,9 @@
         "justifyMode": "center",
         "orientation": "horizontal",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -460,7 +466,9 @@
         "minVizWidth": 75,
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -475,7 +483,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "controller_accel_magnitude{serial=~\"$serial\"}",
+          "expr": "controller_accel_magnitude and on(serial) controller_info{name=~\"$player\"}",
           "legendFormat": "Accel",
           "refId": "A",
           "instant": false,
@@ -585,7 +593,10 @@
               {
                 "id": "custom.lineStyle",
                 "value": {
-                  "dash": [10, 10],
+                  "dash": [
+                    10,
+                    10
+                  ],
                   "fill": "dash"
                 }
               },
@@ -615,7 +626,10 @@
               {
                 "id": "custom.lineStyle",
                 "value": {
-                  "dash": [10, 10],
+                  "dash": [
+                    10,
+                    10
+                  ],
                   "fill": "dash"
                 }
               },
@@ -660,7 +674,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "controller_accel_magnitude{serial=~\"$serial\"}",
+          "expr": "controller_accel_magnitude and on(serial) controller_info{name=~\"$player\"}",
           "legendFormat": "Acceleration",
           "refId": "A",
           "instant": false,
@@ -738,7 +752,9 @@
         "justifyMode": "center",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -751,7 +767,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "game_player_peak_accel{serial=~\"$serial\"}",
+          "expr": "game_player_peak_accel and on(serial) controller_info{name=~\"$player\"}",
           "legendFormat": "Peak",
           "refId": "A"
         }
@@ -834,7 +850,9 @@
         "justifyMode": "center",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -847,7 +865,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "game_player_playstyle{serial=~\"$serial\"}",
+          "expr": "game_player_playstyle and on(serial) controller_info{name=~\"$player\"}",
           "legendFormat": "Playstyle",
           "refId": "A"
         }
@@ -954,7 +972,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "game_player_movement_zone{serial=~\"$serial\"}",
+          "expr": "game_player_movement_zone and on(serial) controller_info{name=~\"$player\"}",
           "legendFormat": "Zone",
           "refId": "A"
         }
@@ -965,7 +983,13 @@
   ],
   "refresh": "500ms",
   "schemaVersion": 39,
-  "tags": ["joustmania", "game", "per-player", "sensitivity", "presentation"],
+  "tags": [
+    "joustmania",
+    "game",
+    "per-player",
+    "sensitivity",
+    "presentation"
+  ],
   "templating": {
     "list": [
       {
