@@ -15,8 +15,8 @@ dependencies = [
     # DBus for BlueZ adapter management
     "dbus-fast>=2.0.0; sys_platform == 'linux'",  # Async D-Bus
 
-    # NOTE: psmove/psmoveapi must be built from source (not on PyPI)
-    # See: https://github.com/thp/psmoveapi for build instructions
+    # HID access for USB controller pairing (feature reports)
+    "hidapi>=0.14.0",
 ]
 
 [project.optional-dependencies]

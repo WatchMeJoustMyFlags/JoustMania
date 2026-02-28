@@ -2,8 +2,9 @@
 """
 PS Move Controller Pairing Daemon.
 
-Polls for USB-connected PS Move controllers and pairs them automatically.
-Monitors Bluetooth-connected controllers for signal strength and connection status.
+Polls for USB-connected PS Move controllers and pairs them automatically
+using hidapi for direct HID feature report access. Monitors Bluetooth-connected
+controllers for signal strength and connection status.
 Provides OTEL push metrics and OpenTelemetry tracing for observability.
 
 Runs as a Docker container alongside other JoustMania services.
@@ -14,7 +15,6 @@ LED Feedback:
   - Red flash 3x: Error
 
 Environment:
-  PSMOVE_PATH   - path to psmove binary (default: auto-detect)
   DEBUG         - set to 1 for verbose logging
   HEALTH_PORT   - port for health check endpoint (default: 8002)
   OTEL_EXPORTER_OTLP_ENDPOINT - OTLP collector endpoint (default: http://localhost:4317)
@@ -37,7 +37,7 @@ from threading import Thread
 
 from lib.otel_metrics import init_metrics
 from lib.system_metrics import start_system_metrics_collector_thread
-from psmove_pairing import PairingDaemon, find_psmove_binary, init_telemetry, metrics
+from psmove_pairing import PairingDaemon, init_telemetry, metrics
 from psmove_pairing.config import DEBUG, METRICS_PORT, init_performance_flags
 
 # Global daemon reference for health checks
@@ -120,11 +120,8 @@ def main() -> None:
     # Initialize OpenTelemetry tracing
     tracer = init_telemetry()
 
-    # Find psmove binary
-    psmove_path = find_psmove_binary()
-
     # Create and run daemon
-    _daemon = PairingDaemon(tracer, psmove_path)
+    _daemon = PairingDaemon(tracer)
     asyncio.run(_daemon.run())
 
 

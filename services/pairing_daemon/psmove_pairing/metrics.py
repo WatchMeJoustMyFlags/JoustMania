@@ -38,12 +38,6 @@ pairing_duration_seconds = Histogram(
     "Time to complete pairing",
     buckets=[0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0],
 )
-calibration_duration_seconds = Histogram(
-    "psmove_pairing_calibration_duration_seconds",
-    "Time to calibrate controller",
-    buckets=[0.5, 1.0, 2.0, 5.0, 10.0, 30.0],
-)
-
 # Bluetooth monitoring metrics (host-level HCI layer)
 # Note: These are distinct from controller_* metrics in controller-manager
 # which measure the application layer (psmoveapi). These measure the raw
