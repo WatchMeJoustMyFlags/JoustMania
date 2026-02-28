@@ -15,12 +15,24 @@
       "visualization": "singleValue",
       "visualizationConfig": {
         "thresholds": [
-          { "value": 0, "color": "gray" },
-          { "value": 1, "color": "green" }
+          {
+            "value": 0,
+            "color": "gray"
+          },
+          {
+            "value": 1,
+            "color": "green"
+          }
         ],
         "valueMappings": [
-          { "value": 0, "displayValue": "No Game" },
-          { "value": 1, "displayValue": "Active" }
+          {
+            "value": 0,
+            "displayValue": "No Game"
+          },
+          {
+            "value": 1,
+            "displayValue": "Active"
+          }
         ]
       }
     },
@@ -37,7 +49,10 @@
       "visualization": "singleValue",
       "visualizationConfig": {
         "thresholds": [
-          { "value": 0, "color": "green" }
+          {
+            "value": 0,
+            "color": "green"
+          }
         ]
       }
     },
@@ -54,7 +69,10 @@
       "visualization": "singleValue",
       "visualizationConfig": {
         "thresholds": [
-          { "value": 0, "color": "green" }
+          {
+            "value": 0,
+            "color": "green"
+          }
         ]
       }
     },
@@ -72,7 +90,10 @@
       "visualizationConfig": {
         "unit": "seconds",
         "thresholds": [
-          { "value": 0, "color": "green" }
+          {
+            "value": 0,
+            "color": "green"
+          }
         ]
       }
     },
@@ -88,7 +109,9 @@
       },
       "visualization": "pie",
       "visualizationConfig": {
-        "legend": { "position": "right" }
+        "legend": {
+          "position": "right"
+        }
       }
     },
     "game-loop-jitter": {
@@ -106,9 +129,14 @@
         "yAxisUnit": "seconds",
         "yAxisMin": 0,
         "yAxisMax": 0.016,
-        "legend": { "position": "bottom" },
+        "legend": {
+          "position": "bottom"
+        },
         "thresholds": [
-          { "value": 0.016, "color": "red" }
+          {
+            "value": 0.016,
+            "color": "red"
+          }
         ]
       }
     },
@@ -127,9 +155,14 @@
         "yAxisUnit": "hertz",
         "yAxisMin": 0,
         "yAxisMax": 60,
-        "legend": { "position": "bottom" },
+        "legend": {
+          "position": "bottom"
+        },
         "thresholds": [
-          { "value": 50, "color": "red" }
+          {
+            "value": 50,
+            "color": "red"
+          }
         ]
       }
     },
@@ -148,24 +181,9 @@
       "visualizationConfig": {
         "drawStyle": "bar",
         "stacked": true,
-        "legend": { "position": "bottom" }
-      }
-    },
-    "audio-playback-rate": {
-      "type": "data",
-      "title": "Audio Playback Rate",
-      "description": "Audio sounds played per second by type",
-      "query": "timeseries sum(delta(audio_sounds_played_total)) / duration(\"1m\"), by:{sound_type}",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
-      },
-      "visualization": "graph",
-      "visualizationConfig": {
-        "yAxisUnit": "eventsPerSecond",
-        "stacked": true,
-        "legend": { "position": "bottom" }
+        "legend": {
+          "position": "bottom"
+        }
       }
     },
     "frame-consistency": {
@@ -182,9 +200,18 @@
       "visualizationConfig": {
         "unit": "percent",
         "thresholds": [
-          { "value": 0, "color": "red" },
-          { "value": 90, "color": "yellow" },
-          { "value": 95, "color": "green" }
+          {
+            "value": 0,
+            "color": "red"
+          },
+          {
+            "value": 90,
+            "color": "yellow"
+          },
+          {
+            "value": 95,
+            "color": "green"
+          }
         ],
         "colorMode": "background"
       }
@@ -203,9 +230,18 @@
       "visualizationConfig": {
         "unit": "milliseconds",
         "thresholds": [
-          { "value": 0, "color": "green" },
-          { "value": 5, "color": "yellow" },
-          { "value": 10, "color": "red" }
+          {
+            "value": 0,
+            "color": "green"
+          },
+          {
+            "value": 5,
+            "color": "yellow"
+          },
+          {
+            "value": 10,
+            "color": "red"
+          }
         ],
         "colorMode": "background"
       }
@@ -223,26 +259,100 @@
       "visualization": "singleValue",
       "visualizationConfig": {
         "thresholds": [
-          { "value": 0, "color": "green" },
-          { "value": 10, "color": "yellow" },
-          { "value": 50, "color": "red" }
+          {
+            "value": 0,
+            "color": "green"
+          },
+          {
+            "value": 10,
+            "color": "yellow"
+          },
+          {
+            "value": 50,
+            "color": "red"
+          }
         ],
         "colorMode": "background"
       }
     }
   },
   "layouts": {
-    "0": { "x": 0, "y": 0, "w": 4, "h": 5, "key": "game-status" },
-    "1": { "x": 4, "y": 0, "w": 4, "h": 5, "key": "active-players" },
-    "2": { "x": 8, "y": 0, "w": 4, "h": 5, "key": "players-alive" },
-    "3": { "x": 12, "y": 0, "w": 4, "h": 5, "key": "current-game-duration" },
-    "4": { "x": 16, "y": 0, "w": 8, "h": 5, "key": "games-by-mode" },
-    "5": { "x": 0, "y": 5, "w": 12, "h": 7, "key": "game-loop-jitter" },
-    "6": { "x": 12, "y": 5, "w": 12, "h": 7, "key": "game-loop-update-rate" },
-    "7": { "x": 0, "y": 12, "w": 12, "h": 7, "key": "games-started-5m" },
-    "8": { "x": 12, "y": 12, "w": 12, "h": 7, "key": "audio-playback-rate" },
-    "9": { "x": 16, "y": 5, "w": 4, "h": 5, "key": "frame-consistency" },
-    "10": { "x": 20, "y": 5, "w": 4, "h": 5, "key": "frame-jitter" },
-    "11": { "x": 16, "y": 10, "w": 8, "h": 2, "key": "dropped-frames-5m" }
+    "0": {
+      "x": 0,
+      "y": 0,
+      "w": 4,
+      "h": 5,
+      "key": "game-status"
+    },
+    "1": {
+      "x": 4,
+      "y": 0,
+      "w": 4,
+      "h": 5,
+      "key": "active-players"
+    },
+    "2": {
+      "x": 8,
+      "y": 0,
+      "w": 4,
+      "h": 5,
+      "key": "players-alive"
+    },
+    "3": {
+      "x": 12,
+      "y": 0,
+      "w": 4,
+      "h": 5,
+      "key": "current-game-duration"
+    },
+    "4": {
+      "x": 16,
+      "y": 0,
+      "w": 8,
+      "h": 5,
+      "key": "games-by-mode"
+    },
+    "5": {
+      "x": 0,
+      "y": 5,
+      "w": 12,
+      "h": 7,
+      "key": "game-loop-jitter"
+    },
+    "6": {
+      "x": 12,
+      "y": 5,
+      "w": 12,
+      "h": 7,
+      "key": "game-loop-update-rate"
+    },
+    "7": {
+      "x": 0,
+      "y": 12,
+      "w": 12,
+      "h": 7,
+      "key": "games-started-5m"
+    },
+    "8": {
+      "x": 16,
+      "y": 5,
+      "w": 4,
+      "h": 5,
+      "key": "frame-consistency"
+    },
+    "9": {
+      "x": 20,
+      "y": 5,
+      "w": 4,
+      "h": 5,
+      "key": "frame-jitter"
+    },
+    "10": {
+      "x": 16,
+      "y": 10,
+      "w": 8,
+      "h": 2,
+      "key": "dropped-frames-5m"
+    }
   }
 }
