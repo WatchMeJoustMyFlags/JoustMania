@@ -77,7 +77,12 @@ else
     echo "Could not pull images (offline) - continuing with cached images"
 fi
 
-# Clean up any orphaned containers
+# Force-remove any stale joustmania containers from previous unclean shutdown
+echo "Cleaning up stale containers..."
+docker ps -aq --filter "name=joustmania-" | xargs -r docker rm -f 2>/dev/null || true
+docker container prune -f 2>/dev/null || true
+
+# Normal compose cleanup
 echo "Cleaning up..."
 docker compose down --remove-orphans || true
 
