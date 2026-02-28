@@ -252,7 +252,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Controllers with poll drop rate above degradation threshold (10 drops/sec). Matches controller_poll_degraded spans in Jaeger.",
+      "description": "Controllers with effective poll rate below 50 Hz (degraded connection). Matches controller_poll_degraded spans in Jaeger.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -307,7 +307,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count(rate(controller_poll_drops_total[1m]) > 10) or vector(0)",
+          "expr": "count((scalar(controller_polling_target_hz) - rate(controller_poll_drops_total[1m])) < 50) or vector(0)",
           "legendFormat": "Controllers",
           "refId": "A"
         }
@@ -506,7 +506,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Poll Drops/s"
+              "options": "Poll Rate (Hz)"
             },
             "properties": [
               {
@@ -534,16 +534,16 @@
                   "mode": "absolute",
                   "steps": [
                     {
-                      "color": "green",
+                      "color": "red",
                       "value": null
                     },
                     {
                       "color": "yellow",
-                      "value": 10
+                      "value": 30
                     },
                     {
-                      "color": "red",
-                      "value": 30
+                      "color": "green",
+                      "value": 50
                     }
                   ]
                 }
@@ -623,11 +623,11 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(controller_poll_drops_total[1m])",
+          "expr": "scalar(controller_polling_target_hz) - rate(controller_poll_drops_total[1m])",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
-          "refId": "PollDrops"
+          "refId": "PollRate"
         }
       ],
       "title": "Controller Health Status",
@@ -680,7 +680,7 @@
               "Value #Status": 3,
               "Value #Battery": 4,
               "Value #RSSI": 5,
-              "Value #PollDrops": 6
+              "Value #PollRate": 6
             },
             "renameByName": {
               "name": "Name",
@@ -690,7 +690,7 @@
               "Value #Battery": "Battery",
               "Value #RSSI": "RSSI (dBm)",
               "Value #Info": "",
-              "Value #PollDrops": "Poll Drops/s"
+              "Value #PollRate": "Poll Rate (Hz)"
             }
           }
         }
@@ -1205,7 +1205,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Rate of poll() calls returning None per controller. Red zone (>10 drops/sec) matches the degradation threshold used by Jaeger health spans.",
+      "description": "Effective poll rate per controller (target - drops). Drops below the red threshold indicate degraded connection quality, matching controller_poll_degraded spans in Jaeger.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1213,7 +1213,7 @@
           },
           "custom": {
             "axisCenteredZero": false,
-            "axisLabel": "drops/sec",
+            "axisLabel": "Hz",
             "fillOpacity": 20,
             "lineWidth": 2,
             "spanNulls": false,
@@ -1228,16 +1228,17 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "transparent",
+                "color": "red",
                 "value": null
               },
               {
-                "color": "red",
-                "value": 10
+                "color": "transparent",
+                "value": 50
               }
             ]
           },
-          "unit": "ops"
+          "min": 0,
+          "unit": "hertz"
         },
         "overrides": []
       },
@@ -1250,7 +1251,7 @@
       "id": 33,
       "options": {
         "legend": {
-          "calcs": ["mean", "max"],
+          "calcs": ["mean", "min"],
           "displayMode": "table",
           "placement": "right",
           "showLegend": true
@@ -1266,12 +1267,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(controller_poll_drops_total[1m]) * on(serial) group_left(name) controller_info",
+          "expr": "(scalar(controller_polling_target_hz) - rate(controller_poll_drops_total[1m])) * on(serial) group_left(name) controller_info",
           "legendFormat": "{{name}}",
           "refId": "A"
         }
       ],
-      "title": "Poll Drop Rate (per controller)",
+      "title": "Effective Poll Rate (per controller)",
       "type": "timeseries"
     },
     {
@@ -1332,7 +1333,8 @@
         "tooltip": {
           "mode": "multi",
           "sort": "desc"
-        }
+        },
+        "noDataMessage": "No poll errors recorded"
       },
       "targets": [
         {
@@ -1440,7 +1442,8 @@
         "tooltip": {
           "mode": "multi",
           "sort": "desc"
-        }
+        },
+        "noDataMessage": "No poll errors recorded"
       },
       "targets": [
         {
