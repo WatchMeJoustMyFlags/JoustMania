@@ -283,9 +283,22 @@ controller_mobile_data_received_total = Counter(
     "Total sensor data updates received from phone controllers",
 )
 
+# Per-controller health metrics (Issue #594: observable connection quality)
+controller_poll_drops_total = Counter(
+    "controller_poll_drops_total",
+    "Total poll() calls returning None per controller",
+    ["serial"],
+)
+
+controller_poll_errors_total = Counter(
+    "controller_poll_errors_total",
+    "Total poll() exceptions per controller",
+    ["serial"],
+)
+
 # Chaos fault injection metrics (Issue #548)
 chaos_faults_injected_total = Counter(
     "controller_chaos_faults_injected_total",
     "Total chaos faults injected by ChaosAdapter",
-    ["fault"],  # poll_drop, accel_spike, led_failure, disconnect
+    ["fault", "serial"],
 )
