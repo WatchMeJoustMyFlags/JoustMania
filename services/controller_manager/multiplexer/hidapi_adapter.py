@@ -15,6 +15,8 @@ from lib.controller_constants import AxisKey, ButtonKey, StateKey, normalize_ser
 from lib.psmove_hid import (
     ALL_PRODUCT_IDS,
     INPUT_REPORT_SIZE,
+    PRODUCT_ID_ZCM2,
+    PRODUCT_ID_ZCM2E,
     VENDOR_ID,
     Button,
     battery_to_percent,
@@ -35,6 +37,7 @@ class HidapiAdapter(ControllerIOAdapter):
     def __init__(self):
         self._devices: dict[str, hid.device] = {}
         self._paths: dict[str, str] = {}
+        self._product_ids: dict[str, int] = {}
 
     @property
     def adapter_type(self) -> str:
@@ -81,11 +84,11 @@ class HidapiAdapter(ControllerIOAdapter):
             current_paths.add(path)
 
             if serial not in self._devices:
-                self._try_open_device(serial, path)
+                self._try_open_device(serial, path, dev_info.get("product_id", 0))
 
         return current_paths
 
-    def _try_open_device(self, serial: str, path: str) -> None:
+    def _try_open_device(self, serial: str, path: str, product_id: int = 0) -> None:
         """Attempt to open a single HID device."""
         try:
             device = hid.device()
@@ -93,6 +96,7 @@ class HidapiAdapter(ControllerIOAdapter):
             device.set_nonblocking(True)
             self._devices[serial] = device
             self._paths[serial] = path
+            self._product_ids[serial] = product_id
             logger.info(f"Opened PS Move controller: {serial} at {path!r}")
         except Exception as e:
             logger.warning(f"Failed to open PS Move at {path!r}: {e}")
@@ -122,6 +126,7 @@ class HidapiAdapter(ControllerIOAdapter):
                     device.set_nonblocking(True)
                     self._devices[serial] = device
                     self._paths[serial] = dev_info["path"]
+                    self._product_ids[serial] = dev_info.get("product_id", 0)
                     return True
                 except Exception as e:
                     logger.error(f"Failed to open controller {serial}: {e}")
@@ -153,7 +158,8 @@ class HidapiAdapter(ControllerIOAdapter):
             if data is None:
                 return None
 
-            parsed = parse_input_report(data)
+            is_zcm2 = self._product_ids.get(serial) in (PRODUCT_ID_ZCM2, PRODUCT_ID_ZCM2E)
+            parsed = parse_input_report(data, zcm2=is_zcm2)
 
             ax_raw, ay_raw, az_raw = parsed["accel"][1]
             gx_raw, gy_raw, gz_raw = parsed["gyro"][1]
@@ -226,6 +232,7 @@ class HidapiAdapter(ControllerIOAdapter):
                 device.close()
         self._devices.clear()
         self._paths.clear()
+        self._product_ids.clear()
 
     def _cleanup(self, serial: str) -> None:
         """Remove a controller that is no longer accessible."""
@@ -234,4 +241,5 @@ class HidapiAdapter(ControllerIOAdapter):
             with contextlib.suppress(Exception):
                 device.close()
         self._paths.pop(serial, None)
+        self._product_ids.pop(serial, None)
         logger.info(f"Cleaned up controller {serial}")

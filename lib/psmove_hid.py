@@ -87,12 +87,15 @@ class Frame(IntEnum):
     SECOND = 1
 
 
-def parse_input_report(data: bytes) -> dict:
+def parse_input_report(data: bytes, zcm2: bool = False) -> dict:
     """Parse a PS Move HID input report into structured data.
 
     Args:
         data: Raw HID input report bytes (49 bytes).
               May include a leading report ID byte (0x01) which is stripped.
+        zcm2: If True, decode accelerometer/gyroscope as signed 16-bit
+              two's complement (ZCM2/PS4-era). If False (default), decode as
+              unsigned 16-bit offset by 0x8000 (ZCM1/PS3-era).
 
     Returns:
         Dict with parsed controller state:
@@ -134,31 +137,31 @@ def parse_input_report(data: bytes) -> dict:
     # Battery: byte 12
     battery = data[12]
 
-    # Accelerometer frame 1: bytes 13-18 (3x uint16 little-endian)
-    ax1, ay1, az1 = struct.unpack_from("<HHH", data, 13)
-    # Accelerometer frame 2: bytes 19-24
-    ax2, ay2, az2 = struct.unpack_from("<HHH", data, 19)
+    if zcm2:
+        # ZCM2 (PS4-era): signed 16-bit two's complement, no offset
+        ax1, ay1, az1 = struct.unpack_from("<hhh", data, 13)
+        ax2, ay2, az2 = struct.unpack_from("<hhh", data, 19)
+        gx1, gy1, gz1 = struct.unpack_from("<hhh", data, 25)
+        gx2, gy2, gz2 = struct.unpack_from("<hhh", data, 31)
+    else:
+        # ZCM1 (PS3-era): unsigned 16-bit offset by 0x8000
+        ax1, ay1, az1 = struct.unpack_from("<HHH", data, 13)
+        ax2, ay2, az2 = struct.unpack_from("<HHH", data, 19)
+        ax1 -= 0x8000
+        ay1 -= 0x8000
+        az1 -= 0x8000
+        ax2 -= 0x8000
+        ay2 -= 0x8000
+        az2 -= 0x8000
 
-    # Convert to signed: raw values are offset by 0x8000
-    ax1 -= 0x8000
-    ay1 -= 0x8000
-    az1 -= 0x8000
-    ax2 -= 0x8000
-    ay2 -= 0x8000
-    az2 -= 0x8000
-
-    # Gyroscope frame 1: bytes 25-30 (3x uint16 little-endian)
-    gx1, gy1, gz1 = struct.unpack_from("<HHH", data, 25)
-    # Gyroscope frame 2: bytes 31-36
-    gx2, gy2, gz2 = struct.unpack_from("<HHH", data, 31)
-
-    # Convert to signed
-    gx1 -= 0x8000
-    gy1 -= 0x8000
-    gz1 -= 0x8000
-    gx2 -= 0x8000
-    gy2 -= 0x8000
-    gz2 -= 0x8000
+        gx1, gy1, gz1 = struct.unpack_from("<HHH", data, 25)
+        gx2, gy2, gz2 = struct.unpack_from("<HHH", data, 31)
+        gx1 -= 0x8000
+        gy1 -= 0x8000
+        gz1 -= 0x8000
+        gx2 -= 0x8000
+        gy2 -= 0x8000
+        gz2 -= 0x8000
 
     # Temperature: bytes 37-38 (12-bit value)
     temp_raw = struct.unpack_from("<H", data, 37)[0]
