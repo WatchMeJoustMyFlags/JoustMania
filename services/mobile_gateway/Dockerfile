@@ -1,71 +1,69 @@
-# Mobile Gateway Service — serves phone UI and bridges WebSocket to gRPC
+# Mobile Gateway Service — Go WebSocket-to-gRPC bridge for phone controllers
 #
-# Lightweight aiohttp service with no native dependencies.
-# Phase 75: Builder images can be overridden for CI/CD
+# Multi-stage build: generate proto files, build Go binary, minimal runtime.
 
-ARG BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:latest
+# Stage 1: Generate Go proto files from .proto definitions
+FROM bufbuild/buf:1.47.2 AS proto-gen
 
-# =============================================================================
-# Stage 1: Build Python dependencies
-# =============================================================================
-FROM ${BUILDER_IMAGE} AS builder
+WORKDIR /workspace
+COPY proto/ ./proto/
 
-WORKDIR /app
+RUN mkdir -p gen
 
-# Copy workspace configuration
-COPY pyproject.toml /app/
+WORKDIR /workspace/proto
+RUN buf generate --template buf.gen.mobile.yaml
 
-# Copy proto package
-COPY proto/pyproject.toml /app/proto/
-COPY proto/*.py /app/proto/
-RUN python -m compileall -q proto/
+# Create go.mod for the generated package
+WORKDIR /workspace
+RUN pkg_dir="gen/github.com/WatchMeJoustMyFlags/JoustMania/services/mobile_gateway/proto/mobile_controller" && \
+    echo 'module github.com/WatchMeJoustMyFlags/JoustMania/services/mobile_gateway/proto/mobile_controller' > "$pkg_dir/go.mod" && \
+    echo '' >> "$pkg_dir/go.mod" && \
+    echo 'go 1.22' >> "$pkg_dir/go.mod" && \
+    echo '' >> "$pkg_dir/go.mod" && \
+    echo 'require (' >> "$pkg_dir/go.mod" && \
+    echo '  google.golang.org/protobuf v1.35.1' >> "$pkg_dir/go.mod" && \
+    echo '  google.golang.org/grpc v1.67.1' >> "$pkg_dir/go.mod" && \
+    echo ')' >> "$pkg_dir/go.mod"
 
-# Copy lib package
-COPY lib/pyproject.toml /app/lib/
-COPY lib/*.py /app/lib/
-RUN python -m compileall -q lib/
+# Stage 2: Build the Go binary
+FROM --platform=$BUILDPLATFORM golang:1.22-alpine AS builder
 
-# Copy service dependencies
-COPY services/mobile_gateway/pyproject.toml /app/services/mobile_gateway/
+ARG TARGETARCH
 
-# Install workspace packages and service dependencies
-WORKDIR /app
-RUN uv pip install --system -e proto/ -e lib/ -e services/mobile_gateway/
-
-# =============================================================================
-# Stage 2: Runtime image
-# =============================================================================
-FROM python:3.11-slim
+RUN apk add --no-cache git
 
 WORKDIR /app
 
-# Copy installed packages from builder
-COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
+# Copy go.mod and download dependencies
+COPY services/mobile_gateway/go.mod services/mobile_gateway/go.sum* ./
 
-# Copy application code
-COPY --from=builder /app/pyproject.toml /app/
-COPY proto/ /app/proto/
-COPY lib/ /app/lib/
-COPY services/mobile_gateway/ /app/services/mobile_gateway/
+# Copy generated proto files (overwrite local stubs)
+COPY --from=proto-gen /workspace/gen/github.com/WatchMeJoustMyFlags/JoustMania/services/mobile_gateway/proto/mobile_controller ./proto/mobile_controller/
 
-# Set Python path
-ENV PYTHONPATH=/app
-ENV PYTHONDONTWRITEBYTECODE=0
+# Download dependencies
+RUN go mod tidy && go mod download
+
+# Copy source code
+COPY services/mobile_gateway/*.go ./
+
+# Build the binary (cross-compile for target architecture)
+RUN CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}" go build -ldflags="-s -w" -o /mobile-gateway .
+
+# Stage 3: Minimal runtime image
+FROM alpine:3.19
+
+RUN apk add --no-cache ca-certificates wget
+
+COPY --from=builder /mobile-gateway /mobile-gateway
+COPY services/mobile_gateway/static/ /static/
 
 # Configure OpenTelemetry
 ENV OTEL_SERVICE_NAME=mobile-gateway-service
 ENV OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
-ENV OTEL_TRACES_EXPORTER=otlp
-ENV OTEL_METRICS_EXPORTER=none
-ENV OTEL_LOGS_EXPORTER=none
 
-# Expose HTTP/WebSocket port
 EXPOSE 8070
 
-# Health check via aiohttp
 HEALTHCHECK --interval=5s --timeout=3s --start-period=5s --retries=3 \
-    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8070/mobile/')"]
+    CMD ["wget", "-q", "--spider", "http://localhost:8070/healthz"]
 
-# Run the server
-CMD ["python", "services/mobile_gateway/server.py"]
+CMD ["/mobile-gateway"]

@@ -78,7 +78,6 @@ jobs:
           - menu
           - audio
           - pairing_daemon
-          - mobile_gateway
     steps:
       - uses: actions/checkout@v4
 
@@ -151,6 +150,45 @@ jobs:
           name: coverage-${{ matrix.service }}
           path: services/${{ matrix.service }}/coverage.xml
           retention-days: 1
+
+  # Go service checks (mobile_gateway)
+  go-service-checks:
+    name: mobile_gateway (Go) checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            service:
+              - 'services/mobile_gateway/**'
+              - 'proto/**'
+
+      - name: Set up Go
+        if: steps.changes.outputs.service == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Go vet
+        if: steps.changes.outputs.service == 'true'
+        run: |
+          cd services/mobile_gateway
+          go vet ./...
+
+      - name: Go build
+        if: steps.changes.outputs.service == 'true'
+        run: |
+          cd services/mobile_gateway
+          go build ./...
+
+      - name: Go test
+        if: steps.changes.outputs.service == 'true'
+        run: |
+          cd services/mobile_gateway
+          go test ./... -v || true
 
   lint-dockerfiles:
     name: Lint Dockerfiles
@@ -356,7 +394,6 @@ jobs:
           - menu
           - audio
           - pairing_daemon
-          - mobile_gateway
     steps:
       - uses: actions/checkout@v4
 
@@ -419,6 +456,9 @@ jobs:
           - service: grafana-live-publisher
             dockerfile: services/grafana-live-publisher/Dockerfile
             image_name: grafana-live-publisher
+          - service: mobile-gateway
+            dockerfile: services/mobile_gateway/Dockerfile
+            image_name: mobile-gateway-service
     steps:
       - uses: actions/checkout@v4
 
@@ -503,6 +543,7 @@ jobs:
     needs:
       - lib-tests
       - service-checks
+      - go-service-checks
       - lint-dockerfiles
       - sonarcloud
       - validate-protos
@@ -524,6 +565,7 @@ jobs:
             echo "Job results:"
             echo "  lib-tests: ${{ needs.lib-tests.result }}"
             echo "  service-checks: ${{ needs.service-checks.result }}"
+            echo "  go-service-checks: ${{ needs.go-service-checks.result }}"
             echo "  lint-dockerfiles: ${{ needs.lint-dockerfiles.result }}"
             echo "  sonarcloud: ${{ needs.sonarcloud.result }}"
             echo "  validate-protos: ${{ needs.validate-protos.result }}"

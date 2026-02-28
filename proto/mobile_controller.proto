@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package joustmania.mobile_controller;
 
-option go_package = "github.com/joustmania/connect-proxy/gen/mobile_controller";
+option go_package = "github.com/WatchMeJoustMyFlags/JoustMania/services/mobile_gateway/proto/mobile_controller";
 
 // MobileControllerService — gRPC interface between mobile-gateway and controller-manager.
 // Runs on controller-manager port 50063.
