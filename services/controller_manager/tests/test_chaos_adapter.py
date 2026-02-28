@@ -122,7 +122,7 @@ class TestChaosAdapterPollDrop:
         ):
             mock_random.random.return_value = 0.1  # < 0.3, will drop
             chaos.poll("SERIAL001")
-            mock_metrics.chaos_faults_injected_total.labels.assert_called_with(fault="poll_drop")
+            mock_metrics.chaos_faults_injected_total.labels.assert_called_with(fault="poll_drop", serial="SERIAL001")
 
 
 class TestChaosAdapterAccelSpike:
@@ -166,7 +166,7 @@ class TestChaosAdapterAccelSpike:
             mock_random.random.return_value = 0.01  # < 0.05
             mock_random.gauss.return_value = 3.0
             chaos.poll("SERIAL001")
-            mock_metrics.chaos_faults_injected_total.labels.assert_called_with(fault="accel_spike")
+            mock_metrics.chaos_faults_injected_total.labels.assert_called_with(fault="accel_spike", serial="SERIAL001")
 
 
 class TestChaosAdapterLedFailure:
@@ -200,7 +200,7 @@ class TestChaosAdapterLedFailure:
         ):
             mock_random.random.return_value = 0.3  # < 0.5
             chaos.set_output("SERIAL001", 255, 0, 0, 0)
-            mock_metrics.chaos_faults_injected_total.labels.assert_called_with(fault="led_failure")
+            mock_metrics.chaos_faults_injected_total.labels.assert_called_with(fault="led_failure", serial="SERIAL001")
 
     def test_led_failure_poll_unaffected(self):
         inner = _make_inner()
@@ -238,7 +238,7 @@ class TestChaosAdapterDisconnect:
 
         with patch("services.controller_manager.multiplexer.chaos_adapter.metrics") as mock_metrics:
             chaos.set_output("SERIAL001", 255, 0, 0, 0)
-            mock_metrics.chaos_faults_injected_total.labels.assert_called_with(fault="disconnect")
+            mock_metrics.chaos_faults_injected_total.labels.assert_called_with(fault="disconnect", serial="SERIAL001")
 
 
 class TestChaosAdapterFlagListener:
