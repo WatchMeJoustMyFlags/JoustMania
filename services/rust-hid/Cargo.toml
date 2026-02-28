@@ -1,0 +1,29 @@
+[package]
+name = "rust-hid"
+version = "0.1.0"
+edition = "2021"
+description = "PS Move HID gRPC service for JoustMania"
+
+[[bin]]
+name = "rust-hid"
+path = "src/main.rs"
+
+[dependencies]
+# gRPC
+tonic = "0.12"
+prost = "0.13"
+tonic-health = "0.12"
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+# HID device access (hidraw backend for Linux)
+hidapi = { version = "2.6", features = ["linux-static-hidraw"] }
+# Logging/tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# OpenTelemetry
+opentelemetry = "0.27"
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.27", features = ["tonic"] }
+
+[build-dependencies]
+tonic-build = "0.12"

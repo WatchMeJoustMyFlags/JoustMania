@@ -45,3 +45,8 @@ services:
     volumes:
       - ./services/pairing_daemon:/app/services/pairing_daemon
       - ./lib:/app/lib
+
+  # Rust HID: source mount for reference (requires rebuild unlike Python hot-reload)
+  rust-hid:
+    volumes:
+      - ./services/rust-hid/src:/app/services/rust-hid/src:ro
