@@ -21,6 +21,7 @@ from lib.psmove_hid import (
 )
 
 from .adapter_manager import AdapterManager, restart_systemd_unit
+from .bluez_agent import register_pairing_agent
 from .config import DEBUG, get_poll_interval
 from .metrics import (
     pairing_adapter_device_count,
@@ -160,6 +161,10 @@ class USBPairing:
         BlueZ only reads device files from /var/lib/bluetooth/ at startup,
         so a full service restart is needed after writing new pairing data.
         Adapter power-cycling alone is not sufficient.
+
+        Re-registers the BlueZ pairing agent after restart because the service
+        restart invalidates the previous agent's D-Bus session. Without this,
+        incoming BT connections from unpaired controllers would be rejected.
         """
         import asyncio
 
@@ -171,6 +176,10 @@ class USBPairing:
             logger.info("Bluetooth service restarted successfully")
         except Exception as e:
             logger.error(f"Failed to restart bluetooth service: {e}")
+
+        # Re-register the pairing agent — the BT service restart invalidates
+        # the previous bluetoothctl session's D-Bus connection.
+        await register_pairing_agent()
 
     async def bluez_trust_controller(self, serial: str) -> bool:
         """Trust a controller in BlueZ so it can connect later.

@@ -195,8 +195,25 @@ class TestRestartBluetoothService:
         """Test that bluetooth service is restarted via D-Bus systemd interface."""
         with patch("psmove_pairing.usb_pairing.restart_systemd_unit", new_callable=AsyncMock) as mock_restart:
             with patch("asyncio.sleep", return_value=None):
-                await usb_pairing.restart_bluetooth_service()
-                mock_restart.assert_called_once_with("bluetooth.service")
+                with patch("psmove_pairing.usb_pairing.register_pairing_agent", new_callable=AsyncMock):
+                    await usb_pairing.restart_bluetooth_service()
+                    mock_restart.assert_called_once_with("bluetooth.service")
+
+    @pytest.mark.asyncio
+    async def test_re_registers_agent_after_restart(self, usb_pairing):
+        """Test that the pairing agent is re-registered after BT service restart.
+
+        BlueZ service restart invalidates the previous agent's D-Bus session.
+        Without re-registration, incoming connections from unknown controllers
+        are rejected, causing the light to blink and stop.
+        """
+        with patch("psmove_pairing.usb_pairing.restart_systemd_unit", new_callable=AsyncMock):
+            with patch("asyncio.sleep", return_value=None):
+                with patch(
+                    "psmove_pairing.usb_pairing.register_pairing_agent", new_callable=AsyncMock
+                ) as mock_agent:
+                    await usb_pairing.restart_bluetooth_service()
+                    mock_agent.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_handles_dbus_failure(self, usb_pairing):
@@ -206,8 +223,9 @@ class TestRestartBluetoothService:
             new_callable=AsyncMock,
             side_effect=Exception("D-Bus error"),
         ):
-            # Should not raise
-            await usb_pairing.restart_bluetooth_service()
+            with patch("psmove_pairing.usb_pairing.register_pairing_agent", new_callable=AsyncMock):
+                # Should not raise
+                await usb_pairing.restart_bluetooth_service()
 
 
 class TestBluezTrustController:

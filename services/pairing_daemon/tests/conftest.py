@@ -24,6 +24,18 @@ _mock_hid.enumerate = MagicMock(return_value=[])
 _mock_hid.device = MagicMock
 sys.modules.setdefault("hidraw", _mock_hid)
 
+# Mock dbus_fast and sub-modules — Linux-only dependency, not available on macOS
+for _mod in ("dbus_fast", "dbus_fast.aio", "dbus_fast.constants", "dbus_fast.errors"):
+    sys.modules.setdefault(_mod, ModuleType(_mod))
+# Provide the names imported by lib/bluez_dbus.py
+_dbus_fast = sys.modules["dbus_fast"]
+for _name in ("BusType", "Message", "MessageType", "Variant"):
+    setattr(_dbus_fast, _name, MagicMock())
+_dbus_fast.aio = sys.modules["dbus_fast.aio"]
+_dbus_fast.aio.MessageBus = MagicMock()
+_dbus_fast.errors = sys.modules["dbus_fast.errors"]
+_dbus_fast.errors.DBusError = Exception
+
 import pytest
 
 
