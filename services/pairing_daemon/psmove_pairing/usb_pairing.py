@@ -5,6 +5,7 @@ replacing the psmoveapi C library and its GIL-blocking pair_custom().
 """
 
 import logging
+import os
 import time
 
 import hidraw as hid
@@ -41,6 +42,8 @@ logger = logging.getLogger("psmove-pairing")
 _ATTR_CONTROLLER_SERIAL = "controller.serial"
 _ATTR_ADAPTER_ADDRESS = "adapter.address"
 
+_BLUEZ_DEVICE_DIR = "/var/lib/bluetooth"
+
 
 class USBPairing:
     """Handles USB-connected PS Move controller pairing.
@@ -56,7 +59,7 @@ class USBPairing:
         # Track controllers verified this session to avoid re-processing every poll
         self._verified_serials: set[str] = set()
 
-    def get_usb_controllers(self) -> list[tuple[bytes, str]]:
+    def get_usb_controllers(self) -> list[tuple[bytes, str, int]]:
         """Get list of USB-connected controllers using hidapi.
 
         Enumerates HID devices matching PS Move vendor/product IDs,
@@ -64,11 +67,11 @@ class USBPairing:
         controller's BT MAC from feature report 0x04.
 
         Returns:
-            List of tuples (device_path, serial) for USB-connected controllers.
+            List of tuples (device_path, serial, product_id) for USB-connected controllers.
         """
         pairing_usb_controllers.set(0)
 
-        usb_controllers: list[tuple[bytes, str]] = []
+        usb_controllers: list[tuple[bytes, str, int]] = []
         devices = [d for pid in ALL_PRODUCT_IDS for d in hid.enumerate(VENDOR_ID, pid)]
 
         for dev_info in devices:
@@ -77,6 +80,7 @@ class USBPairing:
                 continue
 
             path = dev_info["path"]
+            product_id = dev_info.get("product_id", 0)
             try:
                 device = hid.device()
                 device.open_path(path)
@@ -85,7 +89,7 @@ class USBPairing:
                     if isinstance(report, list):
                         report = bytes(report)
                     serial, _ = parse_btaddr_report(report)
-                    usb_controllers.append((path, serial.upper()))
+                    usb_controllers.append((path, serial.upper(), product_id))
                     logger.debug(f"USB controller at {path!r}: {serial}")
                 finally:
                     device.close()
@@ -155,6 +159,56 @@ class USBPairing:
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 return False
 
+    def write_bluez_device_file(self, adapter_address: str, controller_serial: str, product_id: int) -> bool:
+        """Write a BlueZ device info file so the controller is known after BT restart.
+
+        BlueZ reads /var/lib/bluetooth/<adapter>/<device>/info at startup.
+        Without this file the controller is unknown to BlueZ and incoming
+        connections are rejected even with a pairing agent registered —
+        the controller light blinks briefly and stops.
+
+        The file format is copied from working PS Move devices observed on
+        this system. No LinkKey section is needed: PS Move ZCM1 uses
+        unauthenticated HID, so BlueZ accepts the connection without a key.
+
+        Args:
+            adapter_address: Bluetooth adapter MAC (e.g. "8C:68:8B:82:32:E9")
+            controller_serial: Controller MAC (e.g. "00:07:04:28:1C:B4")
+            product_id: HID product ID (decimal, used in DeviceID section)
+
+        Returns:
+            True if file written successfully.
+        """
+        device_dir = os.path.join(_BLUEZ_DEVICE_DIR, adapter_address, controller_serial)
+        info_path = os.path.join(device_dir, "info")
+
+        info_content = (
+            "[General]\n"
+            "Name=Motion Controller\n"
+            "Class=0x002508\n"
+            "SupportedTechnologies=BR/EDR;\n"
+            "Trusted=true\n"
+            "Blocked=false\n"
+            "Services=00001124-0000-1000-8000-00805f9b34fb;\n"
+            "WakeAllowed=true\n"
+            "\n"
+            "[DeviceID]\n"
+            "Source=1\n"
+            f"Vendor={VENDOR_ID}\n"
+            f"Product={product_id}\n"
+            "Version=1\n"
+        )
+
+        try:
+            os.makedirs(device_dir, mode=0o700, exist_ok=True)
+            with open(info_path, "w") as f:
+                f.write(info_content)
+            logger.info(f"Wrote BlueZ device file: {info_path}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to write BlueZ device file for {controller_serial}: {e}")
+            return False
+
     async def restart_bluetooth_service(self) -> None:
         """Restart the host's BlueZ bluetooth service via D-Bus systemd interface.
 
@@ -210,7 +264,7 @@ class USBPairing:
         logger.warning(f"bluetoothctl trust failed for {serial}, continuing anyway")
         return False
 
-    async def process_controller(self, device_path: bytes, serial: str) -> bool:
+    async def process_controller(self, device_path: bytes, serial: str, product_id: int) -> bool:
         """Process a single USB-connected controller with load-balanced adapter selection."""
         with self.tracer.start_as_current_span("process_controller") as span:
             span.set_attribute(_ATTR_CONTROLLER_SERIAL, serial)
@@ -259,6 +313,11 @@ class USBPairing:
                 span.set_status(Status(StatusCode.ERROR, "Pairing failed"))
                 return False
 
+            # Write BlueZ device file before restart so BlueZ loads it at startup.
+            # Without this file BlueZ treats the controller as unknown and rejects
+            # the incoming BT connection when the user presses PS.
+            self.write_bluez_device_file(adapter.address, serial, product_id)
+
             # Restart BlueZ so it re-reads the new device files
             await self.restart_bluetooth_service()
 
@@ -296,8 +355,8 @@ class USBPairing:
                 return
 
             # Process each controller
-            for device_path, serial in controllers:
-                await self.process_controller(device_path, serial)
+            for device_path, serial, product_id in controllers:
+                await self.process_controller(device_path, serial, product_id)
 
     async def run_loop(self) -> None:
         """USB polling loop.

@@ -71,7 +71,7 @@ class TestGetUSBControllers:
 
         controllers = usb_pairing.get_usb_controllers()
         assert len(controllers) == 1
-        assert controllers[0] == (FAKE_PATH_1, "AA:BB:CC:DD:EE:FF")
+        assert controllers[0] == (FAKE_PATH_1, "AA:BB:CC:DD:EE:FF", 0x03D5)
         mock_device.open_path.assert_called_once_with(FAKE_PATH_1)
         mock_device.close.assert_called_once()
 
@@ -129,7 +129,7 @@ class TestGetUSBControllers:
 
         controllers = usb_pairing.get_usb_controllers()
         assert len(controllers) == 1
-        assert controllers[0] == (FAKE_PATH_1, "AA:BB:CC:DD:EE:FF")
+        assert controllers[0] == (FAKE_PATH_1, "AA:BB:CC:DD:EE:FF", 0x03D5)
 
 
 class TestPairController:
@@ -185,6 +185,39 @@ class TestPairController:
         result = await usb_pairing.pair_controller(FAKE_PATH_1, "AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66")
         assert result is False
         mock_device.close.assert_called_once()
+
+
+class TestWriteBluezDeviceFile:
+    """Tests for write_bluez_device_file()."""
+
+    def test_writes_device_info_file(self, usb_pairing, tmp_path):
+        """Test that a correctly formatted device info file is written."""
+        with patch("psmove_pairing.usb_pairing._BLUEZ_DEVICE_DIR", str(tmp_path)):
+            result = usb_pairing.write_bluez_device_file("AA:BB:CC:DD:EE:FF", "00:07:04:28:1C:B4", 0x03D5)
+
+        assert result is True
+        info_path = tmp_path / "AA:BB:CC:DD:EE:FF" / "00:07:04:28:1C:B4" / "info"
+        assert info_path.exists()
+        content = info_path.read_text()
+        assert "Trusted=true" in content
+        assert "Services=00001124-0000-1000-8000-00805f9b34fb;" in content
+        assert "SupportedTechnologies=BR/EDR;" in content
+        assert f"Product={0x03D5}" in content
+
+    def test_idempotent_if_file_already_exists(self, usb_pairing, tmp_path):
+        """Test that writing over an existing file succeeds."""
+        with patch("psmove_pairing.usb_pairing._BLUEZ_DEVICE_DIR", str(tmp_path)):
+            usb_pairing.write_bluez_device_file("AA:BB:CC:DD:EE:FF", "00:07:04:28:1C:B4", 0x03D5)
+            result = usb_pairing.write_bluez_device_file("AA:BB:CC:DD:EE:FF", "00:07:04:28:1C:B4", 0x03D5)
+
+        assert result is True
+
+    def test_handles_write_error(self, usb_pairing):
+        """Test that write errors return False without raising."""
+        with patch("psmove_pairing.usb_pairing.os.makedirs", side_effect=PermissionError("denied")):
+            result = usb_pairing.write_bluez_device_file("AA:BB:CC:DD:EE:FF", "00:07:04:28:1C:B4", 0x03D5)
+
+        assert result is False
 
 
 class TestRestartBluetoothService:
@@ -282,13 +315,15 @@ class TestProcessController:
         adapter = AdapterInfo(hci="hci0", address="11:22:33:44:55:66", name="adapter-hci0", device_count=0)
         usb_pairing.adapter_manager.select_least_loaded_adapter = MagicMock(return_value=adapter)
         usb_pairing.pair_controller = AsyncMock(return_value=True)
+        usb_pairing.write_bluez_device_file = MagicMock(return_value=True)
         usb_pairing.restart_bluetooth_service = AsyncMock()
         usb_pairing.bluez_trust_controller = AsyncMock(return_value=True)
 
-        result = await usb_pairing.process_controller(FAKE_PATH_1, "00:06:F7:AA:BB:CC")
+        result = await usb_pairing.process_controller(FAKE_PATH_1, "00:06:F7:AA:BB:CC", 0x03D5)
 
         assert result is True
         usb_pairing.pair_controller.assert_called_once_with(FAKE_PATH_1, "00:06:F7:AA:BB:CC", "11:22:33:44:55:66")
+        usb_pairing.write_bluez_device_file.assert_called_once_with("11:22:33:44:55:66", "00:06:F7:AA:BB:CC", 0x03D5)
         usb_pairing.restart_bluetooth_service.assert_called_once()
         usb_pairing.bluez_trust_controller.assert_called_once()
 
@@ -300,15 +335,16 @@ class TestProcessController:
         adapter = AdapterInfo(hci="hci0", address="11:22:33:44:55:66", name="adapter-hci0", device_count=0)
         usb_pairing.adapter_manager.select_least_loaded_adapter = MagicMock(return_value=adapter)
         usb_pairing.pair_controller = AsyncMock(return_value=True)
+        usb_pairing.write_bluez_device_file = MagicMock(return_value=True)
         usb_pairing.restart_bluetooth_service = AsyncMock()
         usb_pairing.bluez_trust_controller = AsyncMock(return_value=True)
 
         # First call: full pairing
-        result1 = await usb_pairing.process_controller(FAKE_PATH_1, "00:06:F7:AA:BB:CC")
+        result1 = await usb_pairing.process_controller(FAKE_PATH_1, "00:06:F7:AA:BB:CC", 0x03D5)
         assert result1 is True
 
         # Second call: should skip
-        result2 = await usb_pairing.process_controller(FAKE_PATH_1, "00:06:F7:AA:BB:CC")
+        result2 = await usb_pairing.process_controller(FAKE_PATH_1, "00:06:F7:AA:BB:CC", 0x03D5)
         assert result2 is False
         # pair_controller only called once (first time)
         usb_pairing.pair_controller.assert_called_once()
@@ -320,7 +356,7 @@ class TestProcessController:
         usb_pairing.adapter_manager.check_if_not_paired = MagicMock(return_value=True)
         usb_pairing.adapter_manager.select_least_loaded_adapter = MagicMock(return_value=None)
 
-        result = await usb_pairing.process_controller(FAKE_PATH_1, "00:06:F7:AA:BB:CC")
+        result = await usb_pairing.process_controller(FAKE_PATH_1, "00:06:F7:AA:BB:CC", 0x03D5)
         assert result is False
 
 
