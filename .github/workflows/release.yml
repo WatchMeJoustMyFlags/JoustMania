@@ -1,8 +1,11 @@
 name: Release
 
 on:
-  push:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
     branches: [main]
+  workflow_dispatch:
 
 env:
   IMAGE_PREFIX: ghcr.io/watchmejoustmyflags/joustmania
@@ -11,6 +14,9 @@ jobs:
   release-please:
     name: Release Please
     runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
     permissions:
       contents: write
       pull-requests: write
@@ -41,18 +47,11 @@ jobs:
           - game-coordinator-service
           - menu-service
           - audio-service
+          - pairing-daemon-service
           - connect-proxy
           - dashboard
           - grafana-live-publisher
     steps:
-      - name: Wait for CI images to be available
-        uses: lewagon/wait-on-check-action@v1.3.4
-        with:
-          ref: ${{ github.sha }}
-          check-name: CI Complete
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-          wait-interval: 30
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -67,7 +66,8 @@ jobs:
         env:
           IMAGE: ${{ env.IMAGE_PREFIX }}/${{ matrix.image }}
           VERSION: ${{ needs.release-please.outputs.version }}
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           docker buildx imagetools create \
             --tag "${IMAGE}:${VERSION}" \
-            "${IMAGE}:${GITHUB_SHA}"
+            "${IMAGE}:${SHA}"
