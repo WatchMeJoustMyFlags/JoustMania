@@ -622,6 +622,9 @@ services:
       - GAME_COORDINATOR_SERVICE=game-coordinator:50053
       - MENU_SERVICE=menu:50054
       - FLAGD_CONFIG_PATH=/etc/flagd/flags/performance.json
+      - OTEL_SERVICE_NAME=connect-proxy
+      - OTEL_SERVICE_NAMESPACE=infrastructure
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
     volumes:
       - ./services/flagd:/etc/flagd/flags
     networks:
