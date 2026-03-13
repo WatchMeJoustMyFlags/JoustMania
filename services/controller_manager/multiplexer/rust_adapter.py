@@ -53,6 +53,9 @@ class RustServiceAdapter(ControllerIOAdapter):
         self._stream_thread: threading.Thread | None = None
         self._stream_running = False
 
+        # Adapter affinity cache (serial -> BT adapter name, e.g. "hci0")
+        self._adapter_names: dict[str, str] = {}
+
     @property
     def adapter_type(self) -> str:
         return "rust"
@@ -102,10 +105,18 @@ class RustServiceAdapter(ControllerIOAdapter):
 
         try:
             response = self._stub.Discover(psmove_hid_pb2.DiscoverRequest(force=force, verify_only=verify_only))
-            return list(response.serials)
+            serials = []
+            for c in response.controllers:
+                serials.append(c.serial)
+                if c.adapter_name:
+                    self._adapter_names[c.serial] = c.adapter_name
+            return serials
         except grpc.RpcError as e:
             logger.warning(f"Discover RPC failed: {e}")
             return []
+
+    def get_adapter_for_serial(self, serial: str) -> str | None:
+        return self._adapter_names.get(serial) or None
 
     def open(self, serial: str) -> bool:
         from proto import psmove_hid_pb2
@@ -149,6 +160,7 @@ class RustServiceAdapter(ControllerIOAdapter):
 
         with self._data_lock:
             self._latest_data.pop(serial, None)
+        self._adapter_names.pop(serial, None)
 
         try:
             self._stub.Close(psmove_hid_pb2.CloseRequest(serial=serial))
@@ -166,6 +178,7 @@ class RustServiceAdapter(ControllerIOAdapter):
 
         with self._data_lock:
             self._latest_data.clear()
+        self._adapter_names.clear()
 
         try:
             self._stub.CloseAll(psmove_hid_pb2.CloseAllRequest())

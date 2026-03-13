@@ -22,6 +22,7 @@ def _make_adapter():
     adapter._data_lock = __import__("threading").Lock()
     adapter._stream_thread = None
     adapter._stream_running = False
+    adapter._adapter_names = {}
     return adapter
 
 
@@ -39,7 +40,15 @@ class TestDiscover:
     def test_discover_returns_serials(self):
         adapter = _make_adapter()
         mock_response = MagicMock()
-        mock_response.serials = ["AABBCCDDEEFF", "112233445566"]
+        mock_ctrl1 = MagicMock()
+        mock_ctrl1.serial = "AABBCCDDEEFF"
+        mock_ctrl1.adapter_name = "hci0"
+        mock_ctrl1.product_id = 0x03D5
+        mock_ctrl2 = MagicMock()
+        mock_ctrl2.serial = "112233445566"
+        mock_ctrl2.adapter_name = "hci1"
+        mock_ctrl2.product_id = 0x03D5
+        mock_response.controllers = [mock_ctrl1, mock_ctrl2]
         adapter._stub.Discover.return_value = mock_response
         adapter._stream_running = True  # Skip stream start
 
@@ -54,7 +63,11 @@ class TestDiscover:
     def test_discover_verify_only(self):
         adapter = _make_adapter()
         mock_response = MagicMock()
-        mock_response.serials = ["AABBCCDDEEFF"]
+        mock_ctrl = MagicMock()
+        mock_ctrl.serial = "AABBCCDDEEFF"
+        mock_ctrl.adapter_name = "hci0"
+        mock_ctrl.product_id = 0x03D5
+        mock_response.controllers = [mock_ctrl]
         adapter._stub.Discover.return_value = mock_response
         adapter._stream_running = True
 
@@ -73,6 +86,62 @@ class TestDiscover:
         serials = adapter.discover()
 
         assert serials == []
+
+
+class TestGetAdapterForSerial:
+    """Tests for get_adapter_for_serial() — adapter affinity cache."""
+
+    def test_returns_cached_adapter_name(self):
+        adapter = _make_adapter()
+        mock_response = MagicMock()
+        mock_ctrl = MagicMock()
+        mock_ctrl.serial = "AABBCCDDEEFF"
+        mock_ctrl.adapter_name = "hci0"
+        mock_ctrl.product_id = 0x03D5
+        mock_response.controllers = [mock_ctrl]
+        adapter._stub.Discover.return_value = mock_response
+        adapter._stream_running = True
+
+        adapter.discover()
+
+        assert adapter.get_adapter_for_serial("AABBCCDDEEFF") == "hci0"
+
+    def test_returns_none_for_unknown(self):
+        adapter = _make_adapter()
+        assert adapter.get_adapter_for_serial("UNKNOWN") is None
+
+    def test_returns_none_for_empty_adapter_name(self):
+        adapter = _make_adapter()
+        mock_response = MagicMock()
+        mock_ctrl = MagicMock()
+        mock_ctrl.serial = "AABBCCDDEEFF"
+        mock_ctrl.adapter_name = ""
+        mock_ctrl.product_id = 0x03D5
+        mock_response.controllers = [mock_ctrl]
+        adapter._stub.Discover.return_value = mock_response
+        adapter._stream_running = True
+
+        adapter.discover()
+
+        assert adapter.get_adapter_for_serial("AABBCCDDEEFF") is None
+
+    def test_close_clears_adapter_name(self):
+        adapter = _make_adapter()
+        adapter._adapter_names["AABBCCDDEEFF"] = "hci0"
+
+        adapter.close("AABBCCDDEEFF")
+
+        assert adapter.get_adapter_for_serial("AABBCCDDEEFF") is None
+
+    def test_close_all_clears_adapter_names(self):
+        adapter = _make_adapter()
+        adapter._adapter_names["SERIAL_A"] = "hci0"
+        adapter._adapter_names["SERIAL_B"] = "hci1"
+
+        adapter.close_all()
+
+        assert adapter.get_adapter_for_serial("SERIAL_A") is None
+        assert adapter.get_adapter_for_serial("SERIAL_B") is None
 
 
 class TestOpen:

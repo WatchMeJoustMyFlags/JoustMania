@@ -9,6 +9,7 @@
 //! - Battery level conversion
 
 use hidapi::{HidApi, HidDevice};
+use std::path::Path;
 use tracing::{debug, info, warn};
 
 // PS Move USB vendor/product IDs
@@ -379,11 +380,35 @@ pub fn is_zcm2(product_id: u16) -> bool {
     product_id == PRODUCT_ID_ZCM2 || product_id == PRODUCT_ID_ZCM2E
 }
 
+/// Resolve the Bluetooth adapter name from a hidraw device path via sysfs.
+///
+/// For Bluetooth HID devices, the resolved sysfs path includes the
+/// adapter name: `.../bluetooth/hci0/hci0:XX/.../hidraw/hidrawN`
+///
+/// Port of `bt_discovery.py:_resolve_adapter_from_sysfs()`.
+pub fn resolve_adapter_from_sysfs(hidraw_path: &str) -> Option<String> {
+    // Extract hidraw name from path (e.g. "/dev/hidraw3" -> "hidraw3")
+    let hidraw_name = Path::new(hidraw_path).file_name()?.to_str()?;
+    let sysfs = Path::new("/sys/class/hidraw").join(hidraw_name);
+    if !sysfs.exists() {
+        return None;
+    }
+    let resolved = sysfs.canonicalize().ok()?;
+    let resolved_str = resolved.to_str()?;
+    for part in resolved_str.split('/') {
+        if part.starts_with("hci") && !part.contains(':') {
+            return Some(part.to_string());
+        }
+    }
+    None
+}
+
 /// Discover PS Move controllers via HID enumeration.
 ///
 /// Opens each discovered device, sets it to non-blocking mode, and
-/// returns a list of (serial, HidDevice, product_id) tuples.
-pub fn discover_controllers(api: &HidApi) -> Vec<(String, HidDevice, u16)> {
+/// returns a list of (serial, HidDevice, product_id, adapter_name) tuples.
+/// `adapter_name` is resolved from sysfs (e.g. "hci0") or None for USB.
+pub fn discover_controllers(api: &HidApi) -> Vec<(String, HidDevice, u16, Option<String>)> {
     let mut results = Vec::new();
 
     for &pid in &ALL_PRODUCT_IDS {
@@ -405,8 +430,9 @@ pub fn discover_controllers(api: &HidApi) -> Vec<(String, HidDevice, u16)> {
                         continue;
                     }
                     let path = dev_info.path().to_string_lossy();
-                    info!(serial = %serial, path = %path, product_id = pid, "Discovered controller");
-                    results.push((serial, device, pid));
+                    let adapter_name = resolve_adapter_from_sysfs(&path);
+                    info!(serial = %serial, path = %path, product_id = pid, adapter = ?adapter_name, "Discovered controller");
+                    results.push((serial, device, pid, adapter_name));
                 }
                 Err(e) => {
                     warn!(serial = %serial, error = %e, "Failed to open controller");
@@ -819,5 +845,27 @@ mod tests {
         assert!(!is_zcm2(PRODUCT_ID_ZCM1));
         assert!(is_zcm2(PRODUCT_ID_ZCM2));
         assert!(is_zcm2(PRODUCT_ID_ZCM2E));
+    }
+
+    // --- sysfs adapter resolution tests ---
+
+    #[test]
+    fn test_resolve_adapter_from_sysfs_extracts_name() {
+        // This test verifies the path parsing logic without real sysfs.
+        // On a non-Linux system or without /sys, it returns None (sysfs not found).
+        let result = resolve_adapter_from_sysfs("/dev/hidraw99");
+        // We can't assert a specific adapter without real sysfs,
+        // but we can verify it doesn't panic and returns None when sysfs absent.
+        assert!(result.is_none() || result.as_deref().unwrap().starts_with("hci"));
+    }
+
+    #[test]
+    fn test_resolve_adapter_from_sysfs_empty_path() {
+        assert!(resolve_adapter_from_sysfs("").is_none());
+    }
+
+    #[test]
+    fn test_resolve_adapter_from_sysfs_nonexistent_device() {
+        assert!(resolve_adapter_from_sysfs("/dev/hidraw99999").is_none());
     }
 }

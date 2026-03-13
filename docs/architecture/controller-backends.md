@@ -32,15 +32,15 @@ When the `multiplexer_backend_enabled` flag is on (default for new deployments),
 │  - Adapter affinity tracking                       │
 └──────────────┬───────────────────────────────────┘
                │
-          ┌────┴────┐
-          ▼         ▼
-       ┌────────┐ ┌──────────┐
-       │ Hidapi │ │  Mock    │
-       │Adapter │ │ Adapter  │
-       │        │ │          │
-       │hidapi/ │ │ Testing  │
-       │hidraw  │ │ (No HW)  │
-       └────────┘ └──────────┘
+     ┌────────┴────────┬────────────┐
+     ▼                ▼            ▼
+  ┌────────┐   ┌──────────┐  ┌────────┐
+  │ Hidapi │   │  Mock    │  │  Rust  │
+  │Adapter │   │ Adapter  │  │Adapter │
+  │        │   │          │  │        │
+  │hidapi/ │   │ Testing  │  │ gRPC → │
+  │hidraw  │   │ (No HW)  │  │rust-hid│
+  └────────┘   └──────────┘  └────────┘
 ```
 
 ### Legacy Path (multiplexer disabled)
@@ -57,7 +57,7 @@ Adapters handle device handles and raw I/O only. All methods are sync (blocking)
 **Interface** (`multiplexer/adapter.py`):
 ```python
 class ControllerIOAdapter(ABC):
-    adapter_type: str              # "hidapi", "mock"
+    adapter_type: str              # "hidapi", "mock", "rust"
     def discover(force=False) -> list[str]
     def open(serial) -> bool
     def poll(serial) -> dict | None
@@ -79,6 +79,16 @@ Uses `hid` (hidapi) library. Reads HID input reports via `device.read()`, parses
 **File**: `multiplexer/mock_adapter.py`
 
 Simulated I/O for testing without hardware. Extra methods for `MockControllerService`: `add_controller()`, `remove_controller()`, `add_observer()`, `get_led_color()`.
+
+### RustAdapter
+
+**File**: `multiplexer/rust_adapter.py`
+
+Delegates all HID I/O to the `rust-hid` gRPC service (port 50058). Uses sync `grpc.insecure_channel` (called via `asyncio.to_thread()` like other adapters). A background thread manages a bidirectional `StreamIO` stream for continuous sensor data and output commands.
+
+- `poll()` reads from a cached sensor data dict (last-write-wins per serial)
+- `set_output()` queues an `IOCommand` on a bounded queue (capacity 256)
+- Environment variables: `RUST_HID_HOST` (default: `localhost`), `RUST_HID_PORT` (default: `50058`)
 
 ### ChaosAdapter (Fault Injection)
 
@@ -144,7 +154,9 @@ The `controller_backend` flag accepts comma-separated values to run multiple ada
 This creates a `MultiplexerBackend` with both a `MockAdapter` and a `HidapiAdapter`, allowing real and simulated controllers in the same session. Valid combinations:
 - `mock` — mock only
 - `hidapi` — hidapi only
+- `rust` — rust-hid only
 - `mock,hidapi` — mock + hidapi
+- `mock,rust` — mock + rust-hid
 
 ## Backend Selection
 
@@ -165,7 +177,7 @@ If the flagd flag is empty or flagd is unavailable, the system defaults to the h
 
 | Flag | Domain | Values | Default | Description |
 |------|--------|--------|---------|-------------|
-| `controller_backend` | performance | `mock`, `hidapi`, comma-separated | `hidapi` | Select backend(s) |
+| `controller_backend` | performance | `mock`, `hidapi`, `rust`, comma-separated | `hidapi` | Select backend(s) |
 | `multiplexer_backend_enabled` | performance | `true`, `false` | `false` | Use adapter-based multiplexer |
 | `mock_controller_count` | performance | 2, 4, 6, 8 | 4 | Mock controllers count |
 | `chaos_fault_type` | performance | `none`, `poll_drop`, `accel_spike`, `led_failure`, `disconnect` | `none` | Fault injection (use fractional targeting) |
@@ -193,6 +205,7 @@ make up-mock  # Uses CI flagd config (controller_backend=mock)
 - [ControllerBackend Interface](../../services/controller_manager/backend.py)
 - [ControllerIOAdapter ABC](../../services/controller_manager/multiplexer/adapter.py)
 - [MultiplexerBackend](../../services/controller_manager/multiplexer/multiplexer_backend.py)
+- [RustAdapter](../../services/controller_manager/multiplexer/rust_adapter.py)
 
 ## History
 

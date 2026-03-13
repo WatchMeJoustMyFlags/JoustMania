@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x10psmove_hid.proto\x12\x15joustmania.psmove_hid\"\x1a\n\x18GetUSBControllersRequest\"4\n\rUSBController\x12\x13\n\x0b\x64\x65vice_path\x18\x01 \x01(\t\x12\x0e\n\x06serial\x18\x02 \x01(\t\"V\n\x19GetUSBControllersResponse\x12\x39\n\x0b\x63ontrollers\x18\x01 \x03(\x0b\x32$.joustmania.psmove_hid.USBController\"U\n\x15PairControllerRequest\x12\x13\n\x0b\x64\x65vice_path\x18\x01 \x01(\t\x12\x0e\n\x06serial\x18\x02 \x01(\t\x12\x17\n\x0f\x61\x64\x61pter_address\x18\x03 \x01(\t\"X\n\x16PairControllerResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x16\n\x0e\x61lready_paired\x18\x02 \x01(\x08\x12\x15\n\rprevious_host\x18\x03 \x01(\t\"5\n\x0f\x44iscoverRequest\x12\r\n\x05\x66orce\x18\x01 \x01(\x08\x12\x13\n\x0bverify_only\x18\x02 \x01(\x08\"#\n\x10\x44iscoverResponse\x12\x0f\n\x07serials\x18\x01 \x03(\t\"\x1d\n\x0bOpenRequest\x12\x0e\n\x06serial\x18\x01 \x01(\t\"\x1f\n\x0cOpenResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\"\x1e\n\x0c\x43loseRequest\x12\x0e\n\x06serial\x18\x01 \x01(\t\"\x0f\n\rCloseResponse\"\x11\n\x0f\x43loseAllRequest\"\x12\n\x10\x43loseAllResponse\"L\n\tIOCommand\x12\x0e\n\x06serial\x18\x01 \x01(\t\x12\t\n\x01r\x18\x02 \x01(\x05\x12\t\n\x01g\x18\x03 \x01(\x05\x12\t\n\x01\x62\x18\x04 \x01(\x05\x12\x0e\n\x06rumble\x18\x05 \x01(\x05\"\x80\x03\n\nSensorData\x12\x0e\n\x06serial\x18\x01 \x01(\t\x12\x0f\n\x07\x62\x61ttery\x18\x02 \x01(\x05\x12\x0f\n\x07trigger\x18\x03 \x01(\x05\x12\x13\n\x0btemperature\x18\x04 \x01(\x05\x12\x13\n\x0b\x62utton_move\x18\n \x01(\x08\x12\x16\n\x0e\x62utton_trigger\x18\x0b \x01(\x08\x12\x11\n\tbutton_ps\x18\x0c \x01(\x08\x12\x14\n\x0c\x62utton_cross\x18\r \x01(\x08\x12\x15\n\rbutton_circle\x18\x0e \x01(\x08\x12\x15\n\rbutton_square\x18\x0f \x01(\x08\x12\x17\n\x0f\x62utton_triangle\x18\x10 \x01(\x08\x12\x15\n\rbutton_select\x18\x11 \x01(\x08\x12\x14\n\x0c\x62utton_start\x18\x12 \x01(\x08\x12\x0f\n\x07\x61\x63\x63\x65l_x\x18\x14 \x01(\x02\x12\x0f\n\x07\x61\x63\x63\x65l_y\x18\x15 \x01(\x02\x12\x0f\n\x07\x61\x63\x63\x65l_z\x18\x16 \x01(\x02\x12\x0e\n\x06gyro_x\x18\x17 \x01(\x02\x12\x0e\n\x06gyro_y\x18\x18 \x01(\x02\x12\x0e\n\x06gyro_z\x18\x19 \x01(\x02\x32\xf7\x01\n\x0ePairingService\x12v\n\x11GetUSBControllers\x12/.joustmania.psmove_hid.GetUSBControllersRequest\x1a\x30.joustmania.psmove_hid.GetUSBControllersResponse\x12m\n\x0ePairController\x12,.joustmania.psmove_hid.PairControllerRequest\x1a-.joustmania.psmove_hid.PairControllerResponse2\xc9\x03\n\x13\x43ontrollerIOService\x12[\n\x08\x44iscover\x12&.joustmania.psmove_hid.DiscoverRequest\x1a\'.joustmania.psmove_hid.DiscoverResponse\x12O\n\x04Open\x12\".joustmania.psmove_hid.OpenRequest\x1a#.joustmania.psmove_hid.OpenResponse\x12R\n\x05\x43lose\x12#.joustmania.psmove_hid.CloseRequest\x1a$.joustmania.psmove_hid.CloseResponse\x12[\n\x08\x43loseAll\x12&.joustmania.psmove_hid.CloseAllRequest\x1a\'.joustmania.psmove_hid.CloseAllResponse\x12S\n\x08StreamIO\x12 .joustmania.psmove_hid.IOCommand\x1a!.joustmania.psmove_hid.SensorData(\x01\x30\x01\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x10psmove_hid.proto\x12\x15joustmania.psmove_hid\"\x1a\n\x18GetUSBControllersRequest\"4\n\rUSBController\x12\x13\n\x0b\x64\x65vice_path\x18\x01 \x01(\t\x12\x0e\n\x06serial\x18\x02 \x01(\t\"V\n\x19GetUSBControllersResponse\x12\x39\n\x0b\x63ontrollers\x18\x01 \x03(\x0b\x32$.joustmania.psmove_hid.USBController\"U\n\x15PairControllerRequest\x12\x13\n\x0b\x64\x65vice_path\x18\x01 \x01(\t\x12\x0e\n\x06serial\x18\x02 \x01(\t\x12\x17\n\x0f\x61\x64\x61pter_address\x18\x03 \x01(\t\"X\n\x16PairControllerResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x16\n\x0e\x61lready_paired\x18\x02 \x01(\x08\x12\x15\n\rprevious_host\x18\x03 \x01(\t\"5\n\x0f\x44iscoverRequest\x12\r\n\x05\x66orce\x18\x01 \x01(\x08\x12\x13\n\x0bverify_only\x18\x02 \x01(\x08\"P\n\x14\x44iscoveredController\x12\x0e\n\x06serial\x18\x01 \x01(\t\x12\x14\n\x0c\x61\x64\x61pter_name\x18\x02 \x01(\t\x12\x12\n\nproduct_id\x18\x03 \x01(\r\"T\n\x10\x44iscoverResponse\x12@\n\x0b\x63ontrollers\x18\x01 \x03(\x0b\x32+.joustmania.psmove_hid.DiscoveredController\"\x1d\n\x0bOpenRequest\x12\x0e\n\x06serial\x18\x01 \x01(\t\"\x1f\n\x0cOpenResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\"\x1e\n\x0c\x43loseRequest\x12\x0e\n\x06serial\x18\x01 \x01(\t\"\x0f\n\rCloseResponse\"\x11\n\x0f\x43loseAllRequest\"\x12\n\x10\x43loseAllResponse\"L\n\tIOCommand\x12\x0e\n\x06serial\x18\x01 \x01(\t\x12\t\n\x01r\x18\x02 \x01(\x05\x12\t\n\x01g\x18\x03 \x01(\x05\x12\t\n\x01\x62\x18\x04 \x01(\x05\x12\x0e\n\x06rumble\x18\x05 \x01(\x05\"\x80\x03\n\nSensorData\x12\x0e\n\x06serial\x18\x01 \x01(\t\x12\x0f\n\x07\x62\x61ttery\x18\x02 \x01(\x05\x12\x0f\n\x07trigger\x18\x03 \x01(\x05\x12\x13\n\x0btemperature\x18\x04 \x01(\x05\x12\x13\n\x0b\x62utton_move\x18\n \x01(\x08\x12\x16\n\x0e\x62utton_trigger\x18\x0b \x01(\x08\x12\x11\n\tbutton_ps\x18\x0c \x01(\x08\x12\x14\n\x0c\x62utton_cross\x18\r \x01(\x08\x12\x15\n\rbutton_circle\x18\x0e \x01(\x08\x12\x15\n\rbutton_square\x18\x0f \x01(\x08\x12\x17\n\x0f\x62utton_triangle\x18\x10 \x01(\x08\x12\x15\n\rbutton_select\x18\x11 \x01(\x08\x12\x14\n\x0c\x62utton_start\x18\x12 \x01(\x08\x12\x0f\n\x07\x61\x63\x63\x65l_x\x18\x14 \x01(\x02\x12\x0f\n\x07\x61\x63\x63\x65l_y\x18\x15 \x01(\x02\x12\x0f\n\x07\x61\x63\x63\x65l_z\x18\x16 \x01(\x02\x12\x0e\n\x06gyro_x\x18\x17 \x01(\x02\x12\x0e\n\x06gyro_y\x18\x18 \x01(\x02\x12\x0e\n\x06gyro_z\x18\x19 \x01(\x02\x32\xf7\x01\n\x0ePairingService\x12v\n\x11GetUSBControllers\x12/.joustmania.psmove_hid.GetUSBControllersRequest\x1a\x30.joustmania.psmove_hid.GetUSBControllersResponse\x12m\n\x0ePairController\x12,.joustmania.psmove_hid.PairControllerRequest\x1a-.joustmania.psmove_hid.PairControllerResponse2\xc9\x03\n\x13\x43ontrollerIOService\x12[\n\x08\x44iscover\x12&.joustmania.psmove_hid.DiscoverRequest\x1a\'.joustmania.psmove_hid.DiscoverResponse\x12O\n\x04Open\x12\".joustmania.psmove_hid.OpenRequest\x1a#.joustmania.psmove_hid.OpenResponse\x12R\n\x05\x43lose\x12#.joustmania.psmove_hid.CloseRequest\x1a$.joustmania.psmove_hid.CloseResponse\x12[\n\x08\x43loseAll\x12&.joustmania.psmove_hid.CloseAllRequest\x1a\'.joustmania.psmove_hid.CloseAllResponse\x12S\n\x08StreamIO\x12 .joustmania.psmove_hid.IOCommand\x1a!.joustmania.psmove_hid.SensorData(\x01\x30\x01\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -43,26 +43,28 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_PAIRCONTROLLERRESPONSE']._serialized_end=388
   _globals['_DISCOVERREQUEST']._serialized_start=390
   _globals['_DISCOVERREQUEST']._serialized_end=443
-  _globals['_DISCOVERRESPONSE']._serialized_start=445
-  _globals['_DISCOVERRESPONSE']._serialized_end=480
-  _globals['_OPENREQUEST']._serialized_start=482
-  _globals['_OPENREQUEST']._serialized_end=511
-  _globals['_OPENRESPONSE']._serialized_start=513
-  _globals['_OPENRESPONSE']._serialized_end=544
-  _globals['_CLOSEREQUEST']._serialized_start=546
-  _globals['_CLOSEREQUEST']._serialized_end=576
-  _globals['_CLOSERESPONSE']._serialized_start=578
-  _globals['_CLOSERESPONSE']._serialized_end=593
-  _globals['_CLOSEALLREQUEST']._serialized_start=595
-  _globals['_CLOSEALLREQUEST']._serialized_end=612
-  _globals['_CLOSEALLRESPONSE']._serialized_start=614
-  _globals['_CLOSEALLRESPONSE']._serialized_end=632
-  _globals['_IOCOMMAND']._serialized_start=634
-  _globals['_IOCOMMAND']._serialized_end=710
-  _globals['_SENSORDATA']._serialized_start=713
-  _globals['_SENSORDATA']._serialized_end=1097
-  _globals['_PAIRINGSERVICE']._serialized_start=1100
-  _globals['_PAIRINGSERVICE']._serialized_end=1347
-  _globals['_CONTROLLERIOSERVICE']._serialized_start=1350
-  _globals['_CONTROLLERIOSERVICE']._serialized_end=1807
+  _globals['_DISCOVEREDCONTROLLER']._serialized_start=445
+  _globals['_DISCOVEREDCONTROLLER']._serialized_end=525
+  _globals['_DISCOVERRESPONSE']._serialized_start=527
+  _globals['_DISCOVERRESPONSE']._serialized_end=611
+  _globals['_OPENREQUEST']._serialized_start=613
+  _globals['_OPENREQUEST']._serialized_end=642
+  _globals['_OPENRESPONSE']._serialized_start=644
+  _globals['_OPENRESPONSE']._serialized_end=675
+  _globals['_CLOSEREQUEST']._serialized_start=677
+  _globals['_CLOSEREQUEST']._serialized_end=707
+  _globals['_CLOSERESPONSE']._serialized_start=709
+  _globals['_CLOSERESPONSE']._serialized_end=724
+  _globals['_CLOSEALLREQUEST']._serialized_start=726
+  _globals['_CLOSEALLREQUEST']._serialized_end=743
+  _globals['_CLOSEALLRESPONSE']._serialized_start=745
+  _globals['_CLOSEALLRESPONSE']._serialized_end=763
+  _globals['_IOCOMMAND']._serialized_start=765
+  _globals['_IOCOMMAND']._serialized_end=841
+  _globals['_SENSORDATA']._serialized_start=844
+  _globals['_SENSORDATA']._serialized_end=1228
+  _globals['_PAIRINGSERVICE']._serialized_start=1231
+  _globals['_PAIRINGSERVICE']._serialized_end=1478
+  _globals['_CONTROLLERIOSERVICE']._serialized_start=1481
+  _globals['_CONTROLLERIOSERVICE']._serialized_end=1938
 # @@protoc_insertion_point(module_scope)

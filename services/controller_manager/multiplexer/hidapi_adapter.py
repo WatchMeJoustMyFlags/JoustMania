@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import pathlib
 
 import hidraw as hid  # hidraw backend sees Bluetooth HID devices (libusb backend cannot)
 
@@ -39,6 +40,26 @@ class HidapiAdapter(ControllerIOAdapter):
         self._paths: dict[str, str] = {}
         self._product_ids: dict[str, int] = {}
         self._last_state: dict[str, dict] = {}  # cached last-known state per serial
+        self._adapter_names: dict[str, str] = {}
+
+    @staticmethod
+    def _resolve_adapter_from_sysfs(hidraw_path: str | bytes) -> str | None:
+        """Resolve BT adapter from hidraw device path via sysfs.
+
+        For Bluetooth HID devices, the resolved sysfs path includes the
+        adapter name: .../bluetooth/hci0/hci0:XX/.../hidraw/hidrawN
+        """
+        if isinstance(hidraw_path, bytes):
+            hidraw_path = hidraw_path.decode("utf-8", errors="replace")
+        hidraw_name = pathlib.Path(hidraw_path).name
+        sysfs = pathlib.Path(f"/sys/class/hidraw/{hidraw_name}")
+        if not sysfs.exists():
+            return None
+        resolved = str(sysfs.resolve())
+        for part in resolved.split("/"):
+            if part.startswith("hci") and ":" not in part:
+                return part
+        return None
 
     @property
     def adapter_type(self) -> str:
@@ -98,6 +119,10 @@ class HidapiAdapter(ControllerIOAdapter):
             self._devices[serial] = device
             self._paths[serial] = path
             self._product_ids[serial] = product_id
+            # Resolve BT adapter affinity from sysfs
+            adapter = self._resolve_adapter_from_sysfs(path)
+            if adapter:
+                self._adapter_names[serial] = adapter
             logger.info(f"Opened PS Move controller: {serial} at {path!r}")
         except Exception as e:
             logger.warning(f"Failed to open PS Move at {path!r}: {e}")
@@ -224,6 +249,9 @@ class HidapiAdapter(ControllerIOAdapter):
             logger.error(f"Error setting output for {serial}: {e}", exc_info=True)
             return False
 
+    def get_adapter_for_serial(self, serial: str) -> str | None:
+        return self._adapter_names.get(serial) or None
+
     def close(self, serial: str) -> None:
         """Release controller handle."""
         self._cleanup(serial)
@@ -239,6 +267,7 @@ class HidapiAdapter(ControllerIOAdapter):
         self._paths.clear()
         self._product_ids.clear()
         self._last_state.clear()
+        self._adapter_names.clear()
 
     def _cleanup(self, serial: str) -> None:
         """Remove a controller that is no longer accessible."""
@@ -249,4 +278,5 @@ class HidapiAdapter(ControllerIOAdapter):
         self._paths.pop(serial, None)
         self._product_ids.pop(serial, None)
         self._last_state.pop(serial, None)
+        self._adapter_names.pop(serial, None)
         logger.info(f"Cleaned up controller {serial}")

@@ -58,8 +58,14 @@ message DiscoverRequest {
   bool verify_only = 2;  // Only verify existing devices, skip enumeration
 }
 
+message DiscoveredController {
+  string serial = 1;
+  string adapter_name = 2;  // "hci0", empty if unknown (USB or sysfs unavailable)
+  uint32 product_id = 3;    // 0x03D5, 0x042F, 0x0C5E
+}
+
 message DiscoverResponse {
-  repeated string serials = 1;
+  repeated DiscoveredController controllers = 1;
 }
 
 message OpenRequest {

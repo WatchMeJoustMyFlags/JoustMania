@@ -18,7 +18,7 @@ use crate::service::proto;
 use proto::controller_io_service_server::ControllerIoService;
 use proto::{
     CloseAllRequest, CloseAllResponse, CloseRequest, CloseResponse, DiscoverRequest,
-    DiscoverResponse, IoCommand, OpenRequest, OpenResponse, SensorData,
+    DiscoverResponse, DiscoveredController, IoCommand, OpenRequest, OpenResponse, SensorData,
 };
 
 /// gRPC service implementation for PS Move controller I/O.
@@ -54,12 +54,20 @@ impl ControllerIoService for ControllerIoServiceImpl {
             reply: reply_tx,
         })?;
 
-        let serials = reply_rx
+        let discovered = reply_rx
             .await
             .map_err(|_| Status::internal("Device manager did not respond"))?;
 
-        info!(count = serials.len(), force = req.force, verify_only = req.verify_only, "Discover");
-        Ok(Response::new(DiscoverResponse { serials }))
+        info!(count = discovered.len(), force = req.force, verify_only = req.verify_only, "Discover");
+        let controllers = discovered
+            .into_iter()
+            .map(|c| DiscoveredController {
+                serial: c.serial,
+                adapter_name: c.adapter_name,
+                product_id: c.product_id,
+            })
+            .collect();
+        Ok(Response::new(DiscoverResponse { controllers }))
     }
 
     async fn open(

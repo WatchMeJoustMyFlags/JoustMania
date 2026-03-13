@@ -13,12 +13,20 @@ use tracing::{debug, info, warn};
 
 use crate::hid;
 
+/// Discovered controller info returned from discovery.
+#[derive(Debug, Clone)]
+pub struct DiscoveredControllerInfo {
+    pub serial: String,
+    pub adapter_name: String,  // empty if unknown
+    pub product_id: u32,
+}
+
 /// Commands sent from gRPC handlers to the device manager thread.
 pub enum DeviceCmd {
     Discover {
         force: bool,
         verify_only: bool,
-        reply: tokio::sync::oneshot::Sender<Vec<String>>,
+        reply: tokio::sync::oneshot::Sender<Vec<DiscoveredControllerInfo>>,
     },
     Open {
         serial: String,
@@ -57,6 +65,7 @@ pub struct StreamSensorData {
 struct DeviceEntry {
     device: hidapi::HidDevice,
     product_id: u16,
+    adapter_name: Option<String>,
 }
 
 /// Run the device manager loop on the current thread (blocking).
@@ -163,7 +172,7 @@ fn handle_discover(
     devices: &mut HashMap<String, DeviceEntry>,
     force: bool,
     verify_only: bool,
-) -> Vec<String> {
+) -> Vec<DiscoveredControllerInfo> {
     // Verify existing devices if not forcing
     if !force && !devices.is_empty() {
         let stale: Vec<String> = devices
@@ -188,15 +197,22 @@ fn handle_discover(
         }
 
         let discovered = hid::discover_controllers(api);
-        for (serial, device, product_id) in discovered {
+        for (serial, device, product_id, adapter_name) in discovered {
             devices.entry(serial.clone()).or_insert_with(|| {
                 info!(serial = %serial, "New controller discovered");
-                DeviceEntry { device, product_id }
+                DeviceEntry { device, product_id, adapter_name }
             });
         }
     }
 
-    devices.keys().cloned().collect()
+    devices
+        .iter()
+        .map(|(serial, entry)| DiscoveredControllerInfo {
+            serial: serial.clone(),
+            adapter_name: entry.adapter_name.clone().unwrap_or_default(),
+            product_id: entry.product_id as u32,
+        })
+        .collect()
 }
 
 /// Open a specific controller by serial.
@@ -216,7 +232,7 @@ fn handle_open(
     match hid::open_controller_by_serial(api, serial) {
         Some((device, product_id)) => {
             info!(serial = %serial, "Opened controller");
-            devices.insert(serial.to_string(), DeviceEntry { device, product_id });
+            devices.insert(serial.to_string(), DeviceEntry { device, product_id, adapter_name: None });
             true
         }
         None => {

@@ -16,14 +16,10 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import TYPE_CHECKING
 
 from services.controller_manager import metrics
 from services.controller_manager.backend import ControllerBackend
 from services.controller_manager.multiplexer.adapter import ControllerIOAdapter
-
-if TYPE_CHECKING:
-    from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDiscovery
 
 logger = logging.getLogger(__name__)
 
@@ -39,13 +35,11 @@ class MultiplexerBackend(ControllerBackend):
     def __init__(
         self,
         adapters: list[ControllerIOAdapter],
-        bt_discovery: CentralizedBTDiscovery | None = None,
     ):
         if not adapters:
             raise ValueError("MultiplexerBackend requires at least one adapter")
 
         self._adapters = adapters
-        self._bt_discovery = bt_discovery
 
         # Adapter-based routing
         self._serial_to_adapter: dict[str, ControllerIOAdapter] = {}
@@ -63,14 +57,6 @@ class MultiplexerBackend(ControllerBackend):
         for adapter in self._adapters:
             self._adapter_by_type[adapter.adapter_type] = adapter
 
-        # First non-mock adapter handles discovery (enumeration).
-        # Order is controlled by the controller_backend flag value.
-        self._discovery_adapter: ControllerIOAdapter | None = None
-        for adapter in self._adapters:
-            if adapter.adapter_type != "mock":
-                self._discovery_adapter = adapter
-                break
-
         # Discovery throttle: only run full enumeration every N seconds
         self._last_full_discovery: float = 0.0
         self._full_discovery_interval: float = 0.5  # seconds
@@ -79,35 +65,18 @@ class MultiplexerBackend(ControllerBackend):
         self._led_failures: dict[str, int] = {}
 
         adapter_names = [a.adapter_type for a in self._adapters]
-        discovery_name = self._discovery_adapter.adapter_type if self._discovery_adapter else "none"
-        logger.info(f"MultiplexerBackend created with adapters: {adapter_names}, discovery adapter: {discovery_name}")
+        logger.info(f"MultiplexerBackend created with adapters: {adapter_names}")
 
     @property
     def adapters(self) -> list[ControllerIOAdapter]:
         """Expose adapters for MockAdapter detection in server.py."""
         return self._adapters
 
-    @property
-    def bt_discovery(self) -> CentralizedBTDiscovery | None:
-        """Expose bt_discovery for tests and adapter affinity metrics."""
-        return self._bt_discovery
-
     # -- Fleet-level methods --------------------------------------------------
 
     async def initialize(self) -> bool:
-        if self._bt_discovery:
-            try:
-                await self._bt_discovery.initialize()
-                await self._bt_discovery.get_all_attached_addresses()
-            except Exception:
-                logger.exception("Failed to initialize CentralizedBTDiscovery")
-
         any_success = False
         for adapter in self._adapters:
-            if adapter is not self._discovery_adapter and adapter.adapter_type != "mock":
-                logger.info(f"Adapter {adapter.adapter_type} available (non-discovery)")
-                any_success = True
-                continue
             try:
                 serials = adapter.discover()
                 for serial in serials:
@@ -141,14 +110,12 @@ class MultiplexerBackend(ControllerBackend):
         return list(seen.keys())
 
     def _route_controllers(self, force: bool) -> dict[str, ControllerIOAdapter]:
-        """Discover controllers via discovery adapter, then route via targeting.
+        """All adapters discover independently, routing deduplicates.
 
-        Phase 1 — Discover: Only the discovery adapter and mock adapters
-        enumerate controllers. Other adapters only open handles when routed.
-        Phase 2 — Route: Evaluate targeting to pick the handler adapter.
-        Phase 3 — Cleanup: Close discovery-adapter handles for serials routed elsewhere.
+        Phase 1 — Discover: every adapter enumerates + opens what it finds.
+        Phase 2 — Route: for serials seen by multiple adapters, pick one via
+                  OpenFeature targeting. Close handles on non-winning adapters.
         """
-        # Determine discovery mode: full enumeration or verify-only
         now = time.monotonic()
         if force or (now - self._last_full_discovery >= self._full_discovery_interval):
             verify_only = False
@@ -161,60 +128,65 @@ class MultiplexerBackend(ControllerBackend):
         else:
             metrics.discovery_full_enumerate_total.inc()
 
-        # Phase 1: Only discovery adapter + mock enumerate controllers
-        discovered: dict[str, ControllerIOAdapter] = {}
+        # Phase 1: all adapters discover independently
+        candidates: dict[str, list[ControllerIOAdapter]] = {}
         for adapter in self._adapters:
-            if adapter is self._discovery_adapter or adapter.adapter_type == "mock":
-                for serial in adapter.discover(force=force, verify_only=verify_only):
-                    discovered[serial] = adapter
+            for serial in adapter.discover(force=force, verify_only=verify_only):
+                candidates.setdefault(serial, []).append(adapter)
 
-        # Phase 2: route each serial
+        # Phase 2: route — pick winner for each serial
         seen: dict[str, ControllerIOAdapter] = {}
-        for serial, discoverer in discovered.items():
-            # Mock controllers skip targeting
-            if discoverer.adapter_type == "mock":
-                seen[serial] = discoverer
+        for serial, adapters in candidates.items():
+            # Mock-only → skip targeting
+            if len(adapters) == 1 and adapters[0].adapter_type == "mock":
+                seen[serial] = adapters[0]
                 metrics.controller_routing_decisions_total.labels(
                     serial=serial,
-                    adapter=discoverer.adapter_type,
+                    adapter="mock",
                     method="default",
                 ).inc()
                 continue
 
             preferred = self._resolve_adapter_for_serial(serial)
+            winner = None
+            method = "default"
 
-            if preferred and preferred is discoverer:
-                # Preferred is the discovery adapter — already has a handle
-                seen[serial] = preferred
+            if preferred and preferred in adapters:
+                winner = preferred
                 method = "targeted"
-            elif preferred and preferred is not discoverer:
-                # Preferred is a non-discovery adapter — open handle on demand
+            elif preferred:
+                # Preferred adapter didn't discover it — try open on demand
                 if preferred.open(serial):
-                    seen[serial] = preferred
+                    winner = preferred
                     method = "targeted"
-                    logger.info(f"Opened {serial} on preferred adapter '{preferred.adapter_type}' directly")
                 else:
-                    seen[serial] = discoverer
                     method = "fallback"
-                    logger.warning(
-                        f"Preferred adapter '{preferred.adapter_type}' for {serial} "
-                        f"open() failed — using discovery adapter as fallback"
-                    )
-            else:
-                seen[serial] = discoverer
-                method = "default"
+
+            if winner is None:
+                # Pick first non-mock, or first overall
+                winner = next(
+                    (a for a in adapters if a.adapter_type != "mock"),
+                    adapters[0],
+                )
+
+            seen[serial] = winner
+
+            # Close handles on non-winning adapters
+            for adapter in adapters:
+                if adapter is not winner:
+                    adapter.close(serial)
 
             metrics.controller_routing_decisions_total.labels(
                 serial=serial,
-                adapter=seen[serial].adapter_type,
+                adapter=winner.adapter_type,
                 method=method,
             ).inc()
 
-            # Cleanup: close old adapter handle on dynamic switch
+            # Detect dynamic switch from previous cycle
             old = self._serial_to_adapter.get(serial)
-            if old and old is not seen[serial]:
+            if old and old is not winner:
                 old.close(serial)
-                logger.info(f"Switched {serial}: {old.adapter_type} -> {seen[serial].adapter_type}")
+                logger.info(f"Switched {serial}: {old.adapter_type} -> {winner.adapter_type}")
 
         return seen
 
@@ -260,10 +232,9 @@ class MultiplexerBackend(ControllerBackend):
         """Update Prometheus metrics for connected controllers."""
         for serial, adapter in seen.items():
             metrics.controller_backend_info.labels(serial=serial, backend=adapter.adapter_type).set(1)
-            hci = None
-            if self._bt_discovery:
-                hci = self._bt_discovery.get_adapter_for_address(serial)
-            metrics.controller_adapter_info.labels(serial=serial, adapter=hci or "unknown").set(1)
+            hci = adapter.get_adapter_for_serial(serial)
+            if hci:
+                metrics.controller_adapter_info.labels(serial=serial, adapter=hci).set(1)
 
     def update_all_leds(self) -> int:
         """Centralized LED refresh with keep-alive and color-change detection."""
@@ -309,17 +280,8 @@ class MultiplexerBackend(ControllerBackend):
     async def scan_controllers(self) -> list[dict]:
         results: list[dict] = []
         for adapter in self._adapters:
-            if adapter is not self._discovery_adapter and adapter.adapter_type != "mock":
-                continue
             for serial in adapter.discover(force=True):
                 results.append({"address": serial, "serial": serial, "name": f"Controller {serial[-4:]}"})
-
-        if self._bt_discovery:
-            try:
-                await self._bt_discovery.get_all_attached_addresses()
-            except Exception:
-                logger.debug("Failed to refresh adapter affinity map")
-
         return results
 
     # -- Per-controller methods -----------------------------------------------

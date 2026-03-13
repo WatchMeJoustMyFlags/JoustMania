@@ -24,7 +24,6 @@ from services.controller_manager.backend import ControllerBackend
 
 if TYPE_CHECKING:
     from services.controller_manager.multiplexer.adapter import ControllerIOAdapter
-    from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDiscovery
 
 logger = logging.getLogger(__name__)
 
@@ -79,17 +78,12 @@ def _create_adapter_by_name(name: str) -> ControllerIOAdapter:
             raise RuntimeError(f"Unknown adapter: {name}")
 
 
-def _create_bt_discovery(names: list[str]) -> CentralizedBTDiscovery | None:
-    """Create CentralizedBTDiscovery if any backend needs Bluetooth.
-
-    Returns None if no backend in the list uses Bluetooth.
-    The "rust" backend handles its own discovery via gRPC.
-    """
+async def initialize_bt_adapters() -> None:
+    """Enable Bluetooth adapters (rfkill unblock). Call once at startup."""
     from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDiscovery
 
-    if "hidapi" in names:
-        return CentralizedBTDiscovery()
-    return None
+    discovery = CentralizedBTDiscovery()
+    await discovery.initialize()
 
 
 def _is_chaos_enabled() -> bool:
@@ -162,8 +156,7 @@ def create_backend() -> ControllerBackend:
     if len(names) > 1:
         validate_backend_combination(names)
 
-    bt_discovery = _create_bt_discovery(names)
     adapters = [_create_adapter_by_name(n) for n in names]
     adapters = _maybe_wrap_chaos(adapters)
     logger.info(f"MultiplexerBackend with adapters: {names}")
-    return MultiplexerBackend(adapters=adapters, bt_discovery=bt_discovery)
+    return MultiplexerBackend(adapters=adapters)

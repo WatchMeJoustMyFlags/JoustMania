@@ -60,6 +60,14 @@ async def serve(port=50052):
 
     init_frequency_listener()
 
+    # Enable Bluetooth adapters before backend creation (rfkill unblock)
+    try:
+        from services.controller_manager.backend_factory import initialize_bt_adapters
+
+        await initialize_bt_adapters()
+    except Exception:
+        logger.warning("Failed to initialize Bluetooth adapters (may not be available)", exc_info=True)
+
     # Create servicer BEFORE initializing other flag domains.
     # The FlagdProvider in-process resolver loses flags from the performance domain
     # when a second provider (game_settings) is initialized — causing FLAG_NOT_FOUND
