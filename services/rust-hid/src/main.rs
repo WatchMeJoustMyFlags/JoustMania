@@ -120,9 +120,7 @@ fn init_tracing(
     let env_filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let fmt_layer = tracing_subscriber::fmt::layer();
-    let logs_layer = log_provider
-        .as_ref()
-        .map(|p| OpenTelemetryTracingBridge::new(p));
+    let logs_layer = log_provider.as_ref().map(OpenTelemetryTracingBridge::new);
 
     let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok();
 
