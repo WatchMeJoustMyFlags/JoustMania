@@ -19,6 +19,7 @@ def _make_adapter():
     adapter._stub = MagicMock()
     adapter._command_queue = queue.Queue(maxsize=256)
     adapter._latest_data = {}
+    adapter._last_state = {}
     adapter._data_lock = __import__("threading").Lock()
     adapter._stream_thread = None
     adapter._stream_running = False
@@ -178,7 +179,7 @@ class TestOpen:
 class TestPoll:
     """Tests for poll() — reads from cached stream data."""
 
-    def test_poll_returns_cached_data(self):
+    def test_poll_returns_new_stream_data(self):
         adapter = _make_adapter()
         state = {StateKey.SERIAL: "AABBCCDDEEFF", StateKey.BATTERY: 80}
         adapter._latest_data["AABBCCDDEEFF"] = state
@@ -189,16 +190,29 @@ class TestPoll:
         assert result[StateKey.SERIAL] == "AABBCCDDEEFF"
         assert result[StateKey.BATTERY] == 80
 
-    def test_poll_consumes_data(self):
+    def test_poll_returns_cached_state_when_no_new_data(self):
+        """Unlike dict.pop, poll() should return last-known state like HidapiAdapter."""
         adapter = _make_adapter()
-        adapter._latest_data["AABBCCDDEEFF"] = {StateKey.SERIAL: "AABBCCDDEEFF"}
+        adapter._latest_data["AABBCCDDEEFF"] = {StateKey.SERIAL: "AABBCCDDEEFF", StateKey.BATTERY: 80}
 
+        adapter.poll("AABBCCDDEEFF")  # consumes from _latest_data
+        result = adapter.poll("AABBCCDDEEFF")  # should return cached
+
+        assert result is not None
+        assert result[StateKey.BATTERY] == 80
+
+    def test_poll_new_data_replaces_cached(self):
+        adapter = _make_adapter()
+        adapter._latest_data["AABBCCDDEEFF"] = {StateKey.SERIAL: "AABBCCDDEEFF", StateKey.BATTERY: 80}
         adapter.poll("AABBCCDDEEFF")
+
+        # New stream data arrives with updated battery
+        adapter._latest_data["AABBCCDDEEFF"] = {StateKey.SERIAL: "AABBCCDDEEFF", StateKey.BATTERY: 60}
         result = adapter.poll("AABBCCDDEEFF")
 
-        assert result is None
+        assert result[StateKey.BATTERY] == 60
 
-    def test_poll_no_data(self):
+    def test_poll_no_data_ever(self):
         adapter = _make_adapter()
         assert adapter.poll("AABBCCDDEEFF") is None
 
@@ -212,6 +226,22 @@ class TestPoll:
 
         assert result_a[StateKey.SERIAL] == "SERIAL_A"
         assert result_b[StateKey.SERIAL] == "SERIAL_B"
+
+    def test_close_clears_cached_state(self):
+        adapter = _make_adapter()
+        adapter._latest_data["AABBCCDDEEFF"] = {StateKey.SERIAL: "AABBCCDDEEFF"}
+        adapter.poll("AABBCCDDEEFF")  # populate _last_state
+
+        adapter.close("AABBCCDDEEFF")
+        assert adapter.poll("AABBCCDDEEFF") is None
+
+    def test_close_all_clears_cached_state(self):
+        adapter = _make_adapter()
+        adapter._latest_data["AABBCCDDEEFF"] = {StateKey.SERIAL: "AABBCCDDEEFF"}
+        adapter.poll("AABBCCDDEEFF")
+
+        adapter.close_all()
+        assert adapter.poll("AABBCCDDEEFF") is None
 
 
 class TestSetOutput:
@@ -262,6 +292,68 @@ class TestClose:
 
         adapter._stub.CloseAll.assert_called_once()
         assert len(adapter._latest_data) == 0
+
+
+class TestSerialNormalization:
+    """Tests for serial normalization in discover() and stream."""
+
+    def test_discover_normalizes_serials(self):
+        adapter = _make_adapter()
+        mock_response = MagicMock()
+        mock_ctrl = MagicMock()
+        mock_ctrl.serial = "aa:bb:cc:dd:ee:ff"
+        mock_ctrl.adapter_name = "hci0"
+        mock_ctrl.product_id = 0x03D5
+        mock_response.controllers = [mock_ctrl]
+        adapter._stub.Discover.return_value = mock_response
+        adapter._stream_running = True
+
+        serials = adapter.discover()
+
+        assert serials == ["AABBCCDDEEFF"]
+        assert adapter.get_adapter_for_serial("AABBCCDDEEFF") == "hci0"
+
+    def test_discover_adapter_name_stored_under_normalized_serial(self):
+        adapter = _make_adapter()
+        mock_response = MagicMock()
+        mock_ctrl = MagicMock()
+        mock_ctrl.serial = "aa:bb:cc:dd:ee:ff"
+        mock_ctrl.adapter_name = "hci1"
+        mock_ctrl.product_id = 0x03D5
+        mock_response.controllers = [mock_ctrl]
+        adapter._stub.Discover.return_value = mock_response
+        adapter._stream_running = True
+
+        adapter.discover()
+
+        # Should NOT be stored under the raw serial
+        assert adapter.get_adapter_for_serial("aa:bb:cc:dd:ee:ff") is None
+        assert adapter.get_adapter_for_serial("AABBCCDDEEFF") == "hci1"
+
+
+class TestStreamReconnection:
+    """Tests for stream reconnection resilience."""
+
+    def test_ensure_stream_joins_old_thread(self):
+        adapter = _make_adapter()
+        old_thread = MagicMock()
+        adapter._stream_thread = old_thread
+        adapter._stream_running = False
+
+        # _ensure_stream will try to start a real thread, so just test the join
+        old_thread.join.assert_not_called()
+        adapter._ensure_stream()
+        old_thread.join.assert_called_once_with(timeout=1.0)
+
+    def test_ensure_stream_skips_if_running(self):
+        adapter = _make_adapter()
+        adapter._stream_running = True
+        old_thread = adapter._stream_thread
+
+        adapter._ensure_stream()
+
+        # Should not have changed the thread
+        assert adapter._stream_thread is old_thread
 
 
 class TestSensorDataConversion:

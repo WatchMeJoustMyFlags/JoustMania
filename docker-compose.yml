@@ -235,11 +235,16 @@ services:
       - OTEL_SERVICE_NAMESPACE=infrastructure
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
+      # Rust HID service for canary controller I/O backend
+      - RUST_HID_HOST=rust-hid
+      - RUST_HID_PORT=50058
     depends_on:
       redis:
         condition: service_healthy
       flagd:
         condition: service_started
+      rust-hid:
+        condition: service_healthy
     restart: unless-stopped
     # Healthcheck defined in Dockerfile (uses grpc_health_probe)
     deploy:
