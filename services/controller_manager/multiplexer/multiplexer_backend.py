@@ -128,10 +128,14 @@ class MultiplexerBackend(ControllerBackend):
         else:
             metrics.discovery_full_enumerate_total.inc()
 
-        # Phase 1: all adapters discover independently
+        # Phase 1: all adapters discover independently.
+        # Each adapter receives exclude_serials — serials claimed by other adapters
+        # in the previous cycle. Adapters that manage HID handles (e.g. rust) skip
+        # opening excluded devices, avoiding open→close churn that causes LED flashing.
         candidates: dict[str, list[ControllerIOAdapter]] = {}
         for adapter in self._adapters:
-            for serial in adapter.discover(force=force, verify_only=verify_only):
+            claimed_by_others = [s for s, a in self._serial_to_adapter.items() if a is not adapter]
+            for serial in adapter.discover(force=force, verify_only=verify_only, exclude_serials=claimed_by_others):
                 candidates.setdefault(serial, []).append(adapter)
 
         # Phase 2: route — pick winner for each serial

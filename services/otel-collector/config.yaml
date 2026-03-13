@@ -46,6 +46,11 @@ receivers:
           scrape_interval: 30s
           static_configs:
             - targets: ['flagd:8014']
+        - job_name: 'envoy'
+          scrape_interval: 30s
+          metrics_path: '/stats/prometheus'
+          static_configs:
+            - targets: ['envoy:9901']
 
   # Filelog receiver — tail Docker container JSON logs for non-OTLP services
   # (connect-proxy, rust-hid, envoy, flagd, redis, etc.)

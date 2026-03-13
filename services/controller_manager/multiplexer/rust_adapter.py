@@ -105,13 +105,24 @@ class RustServiceAdapter(ControllerIOAdapter):
             self._stream_running = False
             logger.info("Bidir stream ended")
 
-    def discover(self, force: bool = False, verify_only: bool = False) -> list[str]:
+    def discover(
+        self,
+        force: bool = False,
+        verify_only: bool = False,
+        exclude_serials: list[str] | None = None,
+    ) -> list[str]:
         from proto import psmove_hid_pb2
 
         self._ensure_stream()
 
         try:
-            response = self._stub.Discover(psmove_hid_pb2.DiscoverRequest(force=force, verify_only=verify_only))
+            response = self._stub.Discover(
+                psmove_hid_pb2.DiscoverRequest(
+                    force=force,
+                    verify_only=verify_only,
+                    exclude_serials=exclude_serials or [],
+                )
+            )
             serials = []
             for c in response.controllers:
                 serial = normalize_serial(c.serial)

@@ -26,6 +26,7 @@ pub enum DeviceCmd {
     Discover {
         force: bool,
         verify_only: bool,
+        exclude_serials: Vec<String>,
         reply: tokio::sync::oneshot::Sender<Vec<DiscoveredControllerInfo>>,
     },
     Open {
@@ -129,8 +130,8 @@ fn handle_command(
     stream_sender: &mut Option<tokio::sync::mpsc::Sender<StreamSensorData>>,
 ) -> bool {
     match cmd {
-        DeviceCmd::Discover { force, verify_only, reply } => {
-            let serials = handle_discover(api, devices, force, verify_only);
+        DeviceCmd::Discover { force, verify_only, exclude_serials, reply } => {
+            let serials = handle_discover(api, devices, force, verify_only, &exclude_serials);
             let _ = reply.send(serials);
         }
         DeviceCmd::Open { serial, reply } => {
@@ -167,11 +168,16 @@ fn handle_command(
 }
 
 /// Discover controllers: enumerate HID devices, open new ones.
+///
+/// `exclude_serials` lists controllers claimed by another adapter (e.g. hidapi).
+/// Excluded serials are skipped during enumeration — the device handle is not
+/// opened, avoiding the open→close churn that causes LED flashing.
 fn handle_discover(
     api: &mut HidApi,
     devices: &mut HashMap<String, DeviceEntry>,
     force: bool,
     verify_only: bool,
+    exclude_serials: &[String],
 ) -> Vec<DiscoveredControllerInfo> {
     // Verify existing devices if not forcing
     if !force && !devices.is_empty() {
@@ -198,6 +204,11 @@ fn handle_discover(
 
         let discovered = hid::discover_controllers(api);
         for (serial, device, product_id, adapter_name) in discovered {
+            // Skip controllers claimed by another adapter
+            if exclude_serials.iter().any(|s| s == &serial) {
+                debug!(serial = %serial, "Skipping excluded controller (claimed by another adapter)");
+                continue;
+            }
             devices.entry(serial.clone()).or_insert_with(|| {
                 info!(serial = %serial, "New controller discovered");
                 DeviceEntry { device, product_id, adapter_name }

@@ -46,7 +46,7 @@
       },
       "title": "Bizevents: Acceleration (full 100Hz)",
       "type": "data",
-      "query": "fetch bizevents | filter event.type == \"controller.acceleration\" | fields timestamp, serial = event.provider, accel = toDouble(magnitude) | sort timestamp asc",
+      "query": "fetch bizevents\n| filter event.type == \"com.joustmania.acceleration\"\n| filter metric.name == \"controller_accel_magnitude\"\n| fields timestamp, serial, accel = metric.value\n| sort timestamp asc",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -116,7 +116,7 @@
       },
       "title": "Bizevents: Per-Axis Acceleration",
       "type": "data",
-      "query": "fetch bizevents | filter event.type == \"controller.acceleration\" | fields timestamp, serial = event.provider, x = toDouble(accel_x), y = toDouble(accel_y), z = toDouble(accel_z) | sort timestamp asc",
+      "query": "fetch bizevents\n| filter event.type == \"com.joustmania.acceleration\"\n| filter metric.name == \"controller_accel_x\" or metric.name == \"controller_accel_y\" or metric.name == \"controller_accel_z\"\n| fields timestamp, serial, axis = metric.name, value = metric.value\n| sort timestamp asc",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -129,7 +129,8 @@
         "autoSelectVisualization": false,
         "chartSettings": {
           "fieldMapping": {
-            "leftAxisValues": ["x", "y", "z"],
+            "leftAxisValues": ["value"],
+            "seriesField": "axis",
             "timestamp": "timestamp"
           },
           "leftYAxisSettings": {
@@ -178,7 +179,7 @@
       },
       "title": "Bizevents: Events/min",
       "type": "data",
-      "query": "fetch bizevents | filter event.type == \"controller.acceleration\" | summarize count = count(), by:{bin(timestamp, 1m)} | sort `bin(timestamp, 1m)` asc | fieldsAdd last = arrayLast(count) | fields last",
+      "query": "fetch bizevents\n| filter event.type == \"com.joustmania.acceleration\"\n| filter metric.name == \"controller_accel_magnitude\"\n| summarize count = count(), by:{bin(timestamp, 1m)}\n| fields interval = bin(timestamp, 1m), count\n| sort interval asc\n| summarize last = arrayLast(count)",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -203,7 +204,7 @@
       },
       "title": "Bizevents Volume Over Time",
       "type": "data",
-      "query": "fetch bizevents | filter event.type == \"controller.acceleration\" | summarize events = count(), by:{bin(timestamp, 1m), serial = event.provider}",
+      "query": "fetch bizevents\n| filter event.type == \"com.joustmania.acceleration\"\n| filter metric.name == \"controller_accel_magnitude\"\n| summarize events = count(), by:{interval = bin(timestamp, 1m), serial}",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -217,7 +218,7 @@
         "chartSettings": {
           "fieldMapping": {
             "leftAxisValues": ["events"],
-            "timestamp": "bin(timestamp, 1m)"
+            "timestamp": "interval"
           },
           "categoricalBarChartSettings": {
             "groupMode": "stacked"
@@ -262,7 +263,7 @@
       }
     },
     "11": {
-      "content": "### Summary\n\n| | Dynatrace Metrics | Bizevents (HD) |\n|---|---|---|\n| **Source** | OTEL → Dynatrace metrics ingest | OTEL → metricsaslogs → bizevents ingest |\n| **Resolution** | ~1 min (aggregated by Dynatrace) | ~10ms (every data point preserved) |\n| **Samples/min** | 1 (aggregated) | ~6,000 per controller |\n| **Storage cost** | Low (standard metrics) | Higher (log/bizevent ingestion) |\n| **Catches peaks?** | Only within 1-min max aggregation | Every peak, valley, and micro-gesture |\n| **Best for** | Trends, alerting, long-term analysis | Full-fidelity replay, motion forensics |\n| **Retention** | Metrics retention (default 3y) | Bizevent retention (configurable) |\n\n**When to use Metrics:** Alerting on sustained high acceleration, capacity planning, SLO tracking.  \n**When to use Bizevents:** Investigating specific player movements, debugging death detection thresholds, replaying exact game moments.\n\n-----",
+      "content": "### Summary\n\n| | Dynatrace Metrics | Bizevents (HD) |\n|---|---|---|\n| **Source** | OTEL → Dynatrace metrics ingest | OTEL → dtbizevents exporter → bizevents ingest |\n| **Resolution** | ~1 min (aggregated by Dynatrace) | ~10ms (every data point preserved) |\n| **Samples/min** | 1 (aggregated) | ~6,000 per controller |\n| **Storage cost** | Low (standard metrics) | Higher (log/bizevent ingestion) |\n| **Catches peaks?** | Only within 1-min max aggregation | Every peak, valley, and micro-gesture |\n| **Best for** | Trends, alerting, long-term analysis | Full-fidelity replay, motion forensics |\n| **Retention** | Metrics retention (default 3y) | Bizevent retention (configurable) |\n\n**When to use Metrics:** Alerting on sustained high acceleration, capacity planning, SLO tracking.  \n**When to use Bizevents:** Investigating specific player movements, debugging death detection thresholds, replaying exact game moments.\n\n-----",
       "type": "markdown"
     }
   },

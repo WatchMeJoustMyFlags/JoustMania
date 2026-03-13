@@ -51,6 +51,7 @@ impl ControllerIoService for ControllerIoServiceImpl {
         self.send_cmd(DeviceCmd::Discover {
             force: req.force,
             verify_only: req.verify_only,
+            exclude_serials: req.exclude_serials,
             reply: reply_tx,
         })?;
 

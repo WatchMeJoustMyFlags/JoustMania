@@ -1,0 +1,823 @@
+{
+  "version": 14,
+  "variables": [],
+  "tiles": {
+    "0": {
+      "content": "## Player Insights\n\nPer-player gameplay view with **100Hz acceleration** via bizevents — full-resolution data that metrics (1-min aggregation) cannot capture.\n\n-----",
+      "type": "markdown"
+    },
+    "1": {
+      "davis": {
+        "davisVisualization": {
+          "isAvailable": true
+        },
+        "enabled": false
+      },
+      "title": "Players Alive",
+      "type": "data",
+      "query": "timeseries alive = avg(game_players_alive), total = avg(game_active_players)",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
+      },
+      "visualization": "lineChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "leftAxisValues": [
+              "alive",
+              "total"
+            ],
+            "timestamp": "timeframe"
+          },
+          "leftYAxisSettings": {
+            "isLabelVisible": true,
+            "label": "Players"
+          },
+          "legend": {
+            "hidden": false
+          },
+          "truncationMode": "end",
+          "colorPalette": "categorical"
+        },
+        "thresholds": []
+      }
+    },
+    "2": {
+      "davis": {
+        "davisVisualization": {
+          "isAvailable": true
+        },
+        "enabled": false
+      },
+      "title": "Death Threshold",
+      "type": "data",
+      "query": "timeseries t = avg(game_effective_death_threshold) | fieldsAdd last = arrayLast(t) | fields last",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
+      },
+      "visualization": "singleValue",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "singleValue": {
+          "recordField": "last",
+          "labelMode": "none",
+          "trend": {
+            "isVisible": true
+          }
+        },
+        "coloring": {
+          "colorRules": [
+            {
+              "colorMode": "custom-color",
+              "comparator": "≥",
+              "field": "last",
+              "value": 2.2,
+              "customColor": {
+                "Default": "var(--dt-colors-charts-categorical-color-09-default, #649438)"
+              }
+            },
+            {
+              "colorMode": "custom-color",
+              "comparator": "<",
+              "field": "last",
+              "value": 2.2,
+              "customColor": {
+                "Default": "var(--dt-colors-charts-status-warning-default, #f5d30f)"
+              }
+            },
+            {
+              "colorMode": "custom-color",
+              "comparator": "<",
+              "field": "last",
+              "value": 1.8,
+              "customColor": {
+                "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "3": {
+      "davis": {
+        "davisVisualization": {
+          "isAvailable": true
+        },
+        "enabled": false
+      },
+      "title": "Music Tempo",
+      "type": "data",
+      "query": "timeseries tempo = avg(game_music_tempo) | fieldsAdd last = arrayLast(tempo) | fields last",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
+      },
+      "visualization": "singleValue",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "singleValue": {
+          "recordField": "last",
+          "labelMode": "none",
+          "trend": {
+            "isVisible": true
+          }
+        }
+      }
+    },
+    "4": {
+      "davis": {
+        "davisVisualization": {
+          "isAvailable": true
+        },
+        "enabled": false
+      },
+      "title": "Near-Deaths",
+      "type": "data",
+      "query": "timeseries nd = sum(game_near_death_events_total) | fieldsAdd last = arrayLast(nd) | fields last",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
+      },
+      "visualization": "singleValue",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "singleValue": {
+          "recordField": "last",
+          "labelMode": "none",
+          "trend": {
+            "isVisible": true
+          }
+        }
+      }
+    },
+    "5": {
+      "content": "## 100Hz Acceleration (Bizevents)\n\nRaw acceleration data at full sensor resolution. Each point is a real controller reading — no aggregation.\n\n-----",
+      "type": "markdown"
+    },
+    "6": {
+      "davis": {
+        "davisVisualization": {
+          "isAvailable": true
+        },
+        "enabled": false
+      },
+      "title": "Acceleration Magnitude per Player (100Hz)",
+      "type": "data",
+      "query": "fetch bizevents\n| filter event.type == \"com.joustmania.acceleration\"\n| filter metric.name == \"controller_accel_magnitude\"\n| fields timestamp, serial, accel = metric.value\n| sort timestamp asc",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 50000
+      },
+      "visualization": "lineChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "leftAxisValues": [
+              "accel"
+            ],
+            "seriesField": "serial",
+            "timestamp": "timestamp"
+          },
+          "leftYAxisSettings": {
+            "isLabelVisible": true,
+            "label": "Acceleration (g)"
+          },
+          "legend": {
+            "hidden": false
+          },
+          "truncationMode": "end"
+        },
+        "thresholds": [
+          {
+            "field": "accel",
+            "isVisible": true,
+            "value": 2.5,
+            "label": "Death",
+            "queryModifier": ""
+          },
+          {
+            "field": "accel",
+            "isVisible": true,
+            "value": 1.6,
+            "label": "Warning",
+            "queryModifier": ""
+          }
+        ]
+      }
+    },
+    "7": {
+      "davis": {
+        "davisVisualization": {
+          "isAvailable": true
+        },
+        "enabled": false
+      },
+      "title": "X-Axis Acceleration (100Hz)",
+      "type": "data",
+      "query": "fetch bizevents\n| filter event.type == \"com.joustmania.acceleration\"\n| filter metric.name == \"controller_accel_x\"\n| fields timestamp, serial, x = metric.value\n| sort timestamp asc",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 50000
+      },
+      "visualization": "lineChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "leftAxisValues": [
+              "x"
+            ],
+            "seriesField": "serial",
+            "timestamp": "timestamp"
+          },
+          "leftYAxisSettings": {
+            "isLabelVisible": true,
+            "label": "Accel X (g)"
+          },
+          "legend": {
+            "hidden": false
+          },
+          "truncationMode": "end"
+        },
+        "thresholds": []
+      }
+    },
+    "8": {
+      "davis": {
+        "davisVisualization": {
+          "isAvailable": true
+        },
+        "enabled": false
+      },
+      "title": "Y-Axis Acceleration (100Hz)",
+      "type": "data",
+      "query": "fetch bizevents\n| filter event.type == \"com.joustmania.acceleration\"\n| filter metric.name == \"controller_accel_y\"\n| fields timestamp, serial, y = metric.value\n| sort timestamp asc",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 50000
+      },
+      "visualization": "lineChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "leftAxisValues": [
+              "y"
+            ],
+            "seriesField": "serial",
+            "timestamp": "timestamp"
+          },
+          "leftYAxisSettings": {
+            "isLabelVisible": true,
+            "label": "Accel Y (g)"
+          },
+          "legend": {
+            "hidden": false
+          },
+          "truncationMode": "end"
+        },
+        "thresholds": []
+      }
+    },
+    "9": {
+      "davis": {
+        "davisVisualization": {
+          "isAvailable": true
+        },
+        "enabled": false
+      },
+      "title": "Z-Axis Acceleration (100Hz)",
+      "type": "data",
+      "query": "fetch bizevents\n| filter event.type == \"com.joustmania.acceleration\"\n| filter metric.name == \"controller_accel_z\"\n| fields timestamp, serial, z = metric.value\n| sort timestamp asc",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 50000
+      },
+      "visualization": "lineChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "leftAxisValues": [
+              "z"
+            ],
+            "seriesField": "serial",
+            "timestamp": "timestamp"
+          },
+          "leftYAxisSettings": {
+            "isLabelVisible": true,
+            "label": "Accel Z (g)"
+          },
+          "legend": {
+            "hidden": false
+          },
+          "truncationMode": "end"
+        },
+        "thresholds": []
+      }
+    },
+    "10": {
+      "davis": {
+        "davisVisualization": {
+          "isAvailable": true
+        },
+        "enabled": false
+      },
+      "title": "Data Points per Player (last 1m)",
+      "type": "data",
+      "query": "fetch bizevents\n| filter event.type == \"com.joustmania.acceleration\"\n| filter metric.name == \"controller_accel_magnitude\"\n| summarize points = count(), avgAccel = avg(metric.value), maxAccel = max(metric.value), by:{serial}\n| sort points desc",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
+      },
+      "visualization": "table",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "table": {
+          "enableSparklines": false,
+          "hiddenColumns": [],
+          "lineWrapIds": [],
+          "columnWidths": {},
+          "columns": [
+            {
+              "columnId": "serial",
+              "columnType": "data",
+              "visible": true
+            },
+            {
+              "columnId": "points",
+              "columnType": "data",
+              "visible": true
+            },
+            {
+              "columnId": "avgAccel",
+              "columnType": "data",
+              "visible": true
+            },
+            {
+              "columnId": "maxAccel",
+              "columnType": "data",
+              "visible": true
+            }
+          ]
+        }
+      }
+    },
+    "11": {
+      "content": "## Player Activity & Events\n\nPer-player honeycomb activity map, peak acceleration tracking, and event rates.\n\n-----",
+      "type": "markdown"
+    },
+    "12": {
+      "davis": {
+        "davisVisualization": {
+          "isAvailable": true
+        },
+        "enabled": false
+      },
+      "title": "Player Activity",
+      "type": "data",
+      "query": "timeseries accel = avg(game_player_accel_magnitude), peak = avg(game_player_peak_accel), by:{serial} | fieldsAdd accelLast = arrayLast(accel), peakLast = arrayLast(peak) | fields serial, accelLast, peakLast",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
+      },
+      "visualization": "honeycomb",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "honeycomb": {
+          "colorMode": "custom-colors",
+          "colorPalette": "blue",
+          "dataMappings": {
+            "value": "accelLast"
+          },
+          "displayedFields": [
+            "serial",
+            "accelLast",
+            "peakLast"
+          ],
+          "customColors": [
+            {
+              "comparator": "≥",
+              "value": 0,
+              "color": {
+                "Default": "var(--dt-colors-charts-categorical-color-09-default, #649438)"
+              }
+            },
+            {
+              "comparator": "≥",
+              "value": 1.0,
+              "color": {
+                "Default": "var(--dt-colors-charts-status-warning-default, #f5d30f)"
+              }
+            },
+            {
+              "comparator": "≥",
+              "value": 1.5,
+              "color": {
+                "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)"
+              }
+            }
+          ]
+        },
+        "coloring": {
+          "colorRules": [
+            {
+              "colorMode": "custom-color",
+              "comparator": "≥",
+              "field": "accelLast",
+              "value": 0,
+              "customColor": {
+                "Default": "var(--dt-colors-charts-categorical-color-09-default, #649438)"
+              }
+            },
+            {
+              "colorMode": "custom-color",
+              "comparator": "≥",
+              "field": "accelLast",
+              "value": 1.0,
+              "customColor": {
+                "Default": "var(--dt-colors-charts-status-warning-default, #f5d30f)"
+              }
+            },
+            {
+              "colorMode": "custom-color",
+              "comparator": "≥",
+              "field": "accelLast",
+              "value": 1.5,
+              "customColor": {
+                "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "13": {
+      "davis": {
+        "davisVisualization": {
+          "isAvailable": true
+        },
+        "enabled": false
+      },
+      "title": "Peak Acceleration by Player",
+      "type": "data",
+      "query": "timeseries peak = avg(game_player_peak_accel), by:{serial}",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
+      },
+      "visualization": "lineChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "leftAxisValues": [
+              "peak"
+            ],
+            "timestamp": "timeframe"
+          },
+          "leftYAxisSettings": {
+            "isLabelVisible": true,
+            "label": "Peak Accel (g)"
+          },
+          "legend": {
+            "hidden": false
+          },
+          "truncationMode": "end"
+        },
+        "thresholds": []
+      }
+    },
+    "14": {
+      "davis": {
+        "davisVisualization": {
+          "isAvailable": true
+        },
+        "enabled": false
+      },
+      "title": "Effective Thresholds Over Time",
+      "type": "data",
+      "query": "timeseries warning = avg(game_effective_warning_threshold), death = avg(game_effective_death_threshold)",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
+      },
+      "visualization": "lineChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "leftAxisValues": [
+              "warning",
+              "death"
+            ],
+            "timestamp": "timeframe"
+          },
+          "leftYAxisSettings": {
+            "isLabelVisible": true,
+            "label": "Threshold (g)"
+          },
+          "legend": {
+            "hidden": false
+          },
+          "truncationMode": "end"
+        },
+        "thresholds": []
+      }
+    },
+    "15": {
+      "davis": {
+        "davisVisualization": {
+          "isAvailable": true
+        },
+        "enabled": false
+      },
+      "title": "Near-Death Events by Player",
+      "type": "data",
+      "query": "timeseries nearDeaths = sum(game_near_death_events_total, rate: 1m), by:{serial}",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
+      },
+      "visualization": "barChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "leftAxisValues": [
+              "nearDeaths"
+            ],
+            "timestamp": "timeframe"
+          },
+          "categoricalBarChartSettings": {
+            "groupMode": "stacked"
+          },
+          "legend": {
+            "hidden": false
+          },
+          "truncationMode": "end"
+        },
+        "thresholds": []
+      }
+    },
+    "16": {
+      "davis": {
+        "davisVisualization": {
+          "isAvailable": true
+        },
+        "enabled": false
+      },
+      "title": "Warning Events by Player",
+      "type": "data",
+      "query": "timeseries warnings = sum(game_player_warnings_total, rate: 1m), by:{serial}",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
+      },
+      "visualization": "barChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "leftAxisValues": [
+              "warnings"
+            ],
+            "timestamp": "timeframe"
+          },
+          "categoricalBarChartSettings": {
+            "groupMode": "stacked"
+          },
+          "legend": {
+            "hidden": false
+          },
+          "truncationMode": "end"
+        },
+        "thresholds": []
+      }
+    },
+    "17": {
+      "davis": {
+        "davisVisualization": {
+          "isAvailable": true
+        },
+        "enabled": false
+      },
+      "title": "Acceleration Distribution by Player",
+      "type": "data",
+      "query": "fetch bizevents\n| filter event.type == \"com.joustmania.acceleration\"\n| filter metric.name == \"controller_accel_magnitude\"\n| summarize p50 = percentile(metric.value, 50), p90 = percentile(metric.value, 90), p99 = percentile(metric.value, 99), max = max(metric.value), by:{serial}\n| sort max desc",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
+      },
+      "visualization": "table",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "table": {
+          "enableSparklines": false,
+          "hiddenColumns": [],
+          "lineWrapIds": [],
+          "columnWidths": {},
+          "columns": [
+            {
+              "columnId": "serial",
+              "columnType": "data",
+              "visible": true
+            },
+            {
+              "columnId": "p50",
+              "columnType": "data",
+              "visible": true
+            },
+            {
+              "columnId": "p90",
+              "columnType": "data",
+              "visible": true
+            },
+            {
+              "columnId": "p99",
+              "columnType": "data",
+              "visible": true
+            },
+            {
+              "columnId": "max",
+              "columnType": "data",
+              "visible": true
+            }
+          ]
+        },
+        "coloring": {
+          "colorRules": [
+            {
+              "colorMode": "custom-color",
+              "comparator": "≥",
+              "field": "max",
+              "value": 2.5,
+              "customColor": {
+                "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)"
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "layouts": {
+    "0": {
+      "x": 0,
+      "y": 0,
+      "w": 24,
+      "h": 2
+    },
+    "1": {
+      "x": 0,
+      "y": 2,
+      "w": 10,
+      "h": 6
+    },
+    "2": {
+      "x": 10,
+      "y": 2,
+      "w": 5,
+      "h": 3
+    },
+    "3": {
+      "x": 15,
+      "y": 2,
+      "w": 5,
+      "h": 3
+    },
+    "4": {
+      "x": 20,
+      "y": 2,
+      "w": 4,
+      "h": 3
+    },
+    "5": {
+      "x": 0,
+      "y": 8,
+      "w": 24,
+      "h": 2
+    },
+    "6": {
+      "x": 0,
+      "y": 10,
+      "w": 24,
+      "h": 8
+    },
+    "7": {
+      "x": 0,
+      "y": 18,
+      "w": 8,
+      "h": 7
+    },
+    "8": {
+      "x": 8,
+      "y": 18,
+      "w": 8,
+      "h": 7
+    },
+    "9": {
+      "x": 16,
+      "y": 18,
+      "w": 8,
+      "h": 7
+    },
+    "10": {
+      "x": 10,
+      "y": 5,
+      "w": 14,
+      "h": 3
+    },
+    "11": {
+      "x": 0,
+      "y": 25,
+      "w": 24,
+      "h": 2
+    },
+    "12": {
+      "x": 0,
+      "y": 27,
+      "w": 10,
+      "h": 8
+    },
+    "13": {
+      "x": 10,
+      "y": 27,
+      "w": 14,
+      "h": 8
+    },
+    "14": {
+      "x": 0,
+      "y": 35,
+      "w": 24,
+      "h": 7
+    },
+    "15": {
+      "x": 0,
+      "y": 42,
+      "w": 8,
+      "h": 7
+    },
+    "16": {
+      "x": 8,
+      "y": 42,
+      "w": 8,
+      "h": 7
+    },
+    "17": {
+      "x": 16,
+      "y": 42,
+      "w": 8,
+      "h": 7
+    }
+  }
+}
