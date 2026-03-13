@@ -16,6 +16,7 @@ import miniaudio
 
 from lib.telemetry import get_tracer
 from proto import audio_pb2, audio_pb2_grpc
+from services.audio import metrics
 from services.audio.music_player import DummyMusicPlayer, MusicPlayer
 
 logger = logging.getLogger(__name__)
@@ -78,6 +79,7 @@ class SoundChannel:
                             self._play_full_volume(file_path, file_info.duration)
                     except Exception as e:
                         logger.warning(f"Playback error on channel {self.channel_id}: {e}")
+                        metrics.audio_playback_errors_total.inc()
                     finally:
                         self._playing.clear()
 
@@ -212,6 +214,11 @@ class AudioManager:
         # Track currently playing sounds for status
         self.active_sounds: dict[str, dict] = {}
 
+    def _update_channel_gauge(self):
+        """Update the active channels gauge."""
+        active = sum(1 for c in self.channels if c.is_playing)
+        metrics.audio_channels_active.set(active)
+
     def set_event_loop(self, loop: asyncio.AbstractEventLoop):
         """Set the event loop for async operations (call from async context)."""
         self.event_loop = loop
@@ -270,6 +277,7 @@ class AudioManager:
         try:
             if not os.path.exists(full_path):
                 logger.error(f"Audio file not found: {full_path} (requested: {file_path})")
+                metrics.audio_sounds_played_total.labels(result="file_not_found").inc()
                 return False
 
             # Find available channel (or force if critical priority)
@@ -280,14 +288,20 @@ class AudioManager:
                     logger.debug(
                         f"Playing sound: {file_path} (channel={channel.channel_id}, volume={adjusted_volume:.2f})"
                     )
+                    metrics.audio_sounds_played_total.labels(result="success").inc()
+                    self._update_channel_gauge()
                     return True
+                metrics.audio_sounds_played_total.labels(result="error").inc()
                 return False
 
             logger.warning(f"No available channel for sound: {file_path}")
+            metrics.audio_sounds_played_total.labels(result="no_channel").inc()
+            metrics.audio_channel_saturation_total.inc()
             return False
 
         except Exception as e:
             logger.error(f"Error playing sound {file_path}: {e}", exc_info=True)
+            metrics.audio_sounds_played_total.labels(result="error").inc()
             return False
 
     def play_music(
@@ -327,6 +341,8 @@ class AudioManager:
                 track_id = self.music_player.start()
                 self.current_music_file = full_pattern
 
+                metrics.audio_music_playing.set(1)
+                metrics.audio_music_tempo.set(tempo)
                 logger.info(f"Playing music: {file_pattern} (track_id={track_id}, tempo={tempo})")
                 return track_id
 
@@ -351,6 +367,8 @@ class AudioManager:
                 if not track_id or current_track == track_id:
                     self.music_player.stop()
                     self.current_music_file = None
+                    metrics.audio_music_playing.set(0)
+                    metrics.audio_music_tempo.set(0)
                     logger.info(f"Stopped music track: {current_track}")
                     return True
 
@@ -391,6 +409,7 @@ class AudioManager:
                 self.event_loop,
             )
 
+            metrics.audio_music_tempo.set(new_tempo)
             logger.debug(f"Tempo transition started: {self.music_player.ratio:.2f} -> {new_tempo:.2f}")
             return True
 
