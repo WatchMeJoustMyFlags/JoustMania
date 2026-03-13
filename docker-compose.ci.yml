@@ -37,6 +37,12 @@ services:
     devices: !reset []
     volumes: !reset []
     privileged: false
+    # Override depends_on to remove rust-hid (hardware profile, not available in CI)
+    depends_on: !override
+      redis:
+        condition: service_healthy
+      flagd:
+        condition: service_started
     environment: !override
       OTEL_SERVICE_NAME: controller-manager-service
       OTEL_SERVICE_NAMESPACE: infrastructure
