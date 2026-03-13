@@ -125,9 +125,9 @@ exporters:
   prometheus:
     endpoint: "0.0.0.0:8889"
 
-  # Loki exporter for logs
-  loki:
-    endpoint: http://loki:3100/loki/api/v1/push
+  # Loki exporter for logs (OTLP native ingestion, Loki 3.x)
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
     tls:
       insecure: true
 
@@ -179,7 +179,7 @@ service:
     logs:
       receivers: [otlp]
       processors: [memory_limiter, batch, resource]
-      exporters: [loki, debug]
+      exporters: [otlphttp/loki, debug]
 
   extensions: [health_check]
 
