@@ -5,7 +5,7 @@ per-controller operations through ControllerIOAdapter instances.
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -127,7 +127,7 @@ class TestMultiplexerGetConnectedControllers:
 
         mux.get_connected_controllers(force_rescan=True)
 
-        a1.discover.assert_called_once_with(force=True, verify_only=False)
+        a1.discover.assert_called_once_with(force=True, verify_only=False, exclude_serials=ANY)
 
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_cleans_stale_state_on_disconnect(self, mock_metrics):
@@ -770,7 +770,7 @@ class TestDiscoveryThrottling:
 
         mux.get_connected_controllers()
 
-        a1.discover.assert_called_once_with(force=False, verify_only=False)
+        a1.discover.assert_called_once_with(force=False, verify_only=False, exclude_serials=ANY)
 
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_rapid_second_call_uses_verify_only(self, mock_metrics):
@@ -783,7 +783,7 @@ class TestDiscoveryThrottling:
 
         mux.get_connected_controllers()
 
-        a1.discover.assert_called_once_with(force=False, verify_only=True)
+        a1.discover.assert_called_once_with(force=False, verify_only=True, exclude_serials=ANY)
 
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_force_always_does_full_discovery(self, mock_metrics):
@@ -798,7 +798,7 @@ class TestDiscoveryThrottling:
         # Immediate force call should still do full discovery
         mux.get_connected_controllers(force_rescan=True)
 
-        a1.discover.assert_called_once_with(force=True, verify_only=False)
+        a1.discover.assert_called_once_with(force=True, verify_only=False, exclude_serials=ANY)
 
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_verify_only_still_returns_controllers(self, mock_metrics):
@@ -830,10 +830,10 @@ class TestDiscoveryThrottling:
         # Second call at t=0.1 — within interval, should be verify_only
         mock_time.monotonic.return_value = 0.1
         mux.get_connected_controllers()
-        a1.discover.assert_called_once_with(force=False, verify_only=True)
+        a1.discover.assert_called_once_with(force=False, verify_only=True, exclude_serials=ANY)
         a1.discover.reset_mock()
 
         # Third call at t=0.6 — past the 0.5s interval, should be full
         mock_time.monotonic.return_value = 0.6
         mux.get_connected_controllers()
-        a1.discover.assert_called_once_with(force=False, verify_only=False)
+        a1.discover.assert_called_once_with(force=False, verify_only=False, exclude_serials=ANY)

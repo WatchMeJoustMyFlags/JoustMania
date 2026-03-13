@@ -56,6 +56,7 @@ service ControllerIOService {
 message DiscoverRequest {
   bool force = 1;        // Force full rescan, removing stale devices
   bool verify_only = 2;  // Only verify existing devices, skip enumeration
+  repeated string exclude_serials = 3;  // Serials claimed by another adapter — skip opening these
 }
 
 message DiscoveredController {

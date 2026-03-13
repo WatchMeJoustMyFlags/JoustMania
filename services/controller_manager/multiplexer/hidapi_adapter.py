@@ -65,7 +65,12 @@ class HidapiAdapter(ControllerIOAdapter):
     def adapter_type(self) -> str:
         return "hidapi"
 
-    def discover(self, force: bool = False, verify_only: bool = False) -> list[str]:
+    def discover(
+        self,
+        force: bool = False,
+        verify_only: bool = False,
+        exclude_serials: list[str] | None = None,  # noqa: ARG002
+    ) -> list[str]:
         """Enumerate HID devices and open new PS Move controllers."""
         if not force and self._devices:
             self._verify_existing_devices()

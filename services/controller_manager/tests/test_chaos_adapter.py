@@ -55,7 +55,7 @@ class TestChaosAdapterPassthrough:
         inner.discover = mock_discover
         with patch.object(chaos, "_evaluate_flag", return_value="none"):
             chaos.discover(force=True, verify_only=True)
-        mock_discover.assert_called_with(force=True, verify_only=True)
+        mock_discover.assert_called_with(force=True, verify_only=True, exclude_serials=None)
 
     def test_open_delegates(self):
         inner = _make_inner()
