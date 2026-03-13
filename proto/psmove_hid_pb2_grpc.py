@@ -138,3 +138,279 @@ class PairingService(object):
             timeout,
             metadata,
             _registered_method=True)
+
+
+class ControllerIOServiceStub(object):
+    """--- Controller I/O Service ---
+    Manages HID device handles and provides real-time controller I/O.
+    All state (LED colors, effects) lives in the Python MultiplexerBackend;
+    this service only handles raw device I/O.
+
+    Lifecycle RPCs (Discover, Open, Close, CloseAll) are unary.
+    Real-time I/O uses a single bidirectional stream (StreamIO) where:
+    - Server pushes SensorData for all open controllers at hardware rate
+    - Client sends IOCommand for LED/rumble updates
+
+    """
+
+    def __init__(self, channel):
+        """Constructor.
+
+        Args:
+            channel: A grpc.Channel.
+        """
+        self.Discover = channel.unary_unary(
+                '/joustmania.psmove_hid.ControllerIOService/Discover',
+                request_serializer=psmove__hid__pb2.DiscoverRequest.SerializeToString,
+                response_deserializer=psmove__hid__pb2.DiscoverResponse.FromString,
+                _registered_method=True)
+        self.Open = channel.unary_unary(
+                '/joustmania.psmove_hid.ControllerIOService/Open',
+                request_serializer=psmove__hid__pb2.OpenRequest.SerializeToString,
+                response_deserializer=psmove__hid__pb2.OpenResponse.FromString,
+                _registered_method=True)
+        self.Close = channel.unary_unary(
+                '/joustmania.psmove_hid.ControllerIOService/Close',
+                request_serializer=psmove__hid__pb2.CloseRequest.SerializeToString,
+                response_deserializer=psmove__hid__pb2.CloseResponse.FromString,
+                _registered_method=True)
+        self.CloseAll = channel.unary_unary(
+                '/joustmania.psmove_hid.ControllerIOService/CloseAll',
+                request_serializer=psmove__hid__pb2.CloseAllRequest.SerializeToString,
+                response_deserializer=psmove__hid__pb2.CloseAllResponse.FromString,
+                _registered_method=True)
+        self.StreamIO = channel.stream_stream(
+                '/joustmania.psmove_hid.ControllerIOService/StreamIO',
+                request_serializer=psmove__hid__pb2.IOCommand.SerializeToString,
+                response_deserializer=psmove__hid__pb2.SensorData.FromString,
+                _registered_method=True)
+
+
+class ControllerIOServiceServicer(object):
+    """--- Controller I/O Service ---
+    Manages HID device handles and provides real-time controller I/O.
+    All state (LED colors, effects) lives in the Python MultiplexerBackend;
+    this service only handles raw device I/O.
+
+    Lifecycle RPCs (Discover, Open, Close, CloseAll) are unary.
+    Real-time I/O uses a single bidirectional stream (StreamIO) where:
+    - Server pushes SensorData for all open controllers at hardware rate
+    - Client sends IOCommand for LED/rumble updates
+
+    """
+
+    def Discover(self, request, context):
+        """Lifecycle (unary)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Open(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Close(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CloseAll(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def StreamIO(self, request_iterator, context):
+        """Real-time I/O (bidirectional stream)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+
+def add_ControllerIOServiceServicer_to_server(servicer, server):
+    rpc_method_handlers = {
+            'Discover': grpc.unary_unary_rpc_method_handler(
+                    servicer.Discover,
+                    request_deserializer=psmove__hid__pb2.DiscoverRequest.FromString,
+                    response_serializer=psmove__hid__pb2.DiscoverResponse.SerializeToString,
+            ),
+            'Open': grpc.unary_unary_rpc_method_handler(
+                    servicer.Open,
+                    request_deserializer=psmove__hid__pb2.OpenRequest.FromString,
+                    response_serializer=psmove__hid__pb2.OpenResponse.SerializeToString,
+            ),
+            'Close': grpc.unary_unary_rpc_method_handler(
+                    servicer.Close,
+                    request_deserializer=psmove__hid__pb2.CloseRequest.FromString,
+                    response_serializer=psmove__hid__pb2.CloseResponse.SerializeToString,
+            ),
+            'CloseAll': grpc.unary_unary_rpc_method_handler(
+                    servicer.CloseAll,
+                    request_deserializer=psmove__hid__pb2.CloseAllRequest.FromString,
+                    response_serializer=psmove__hid__pb2.CloseAllResponse.SerializeToString,
+            ),
+            'StreamIO': grpc.stream_stream_rpc_method_handler(
+                    servicer.StreamIO,
+                    request_deserializer=psmove__hid__pb2.IOCommand.FromString,
+                    response_serializer=psmove__hid__pb2.SensorData.SerializeToString,
+            ),
+    }
+    generic_handler = grpc.method_handlers_generic_handler(
+            'joustmania.psmove_hid.ControllerIOService', rpc_method_handlers)
+    server.add_generic_rpc_handlers((generic_handler,))
+    server.add_registered_method_handlers('joustmania.psmove_hid.ControllerIOService', rpc_method_handlers)
+
+
+ # This class is part of an EXPERIMENTAL API.
+class ControllerIOService(object):
+    """--- Controller I/O Service ---
+    Manages HID device handles and provides real-time controller I/O.
+    All state (LED colors, effects) lives in the Python MultiplexerBackend;
+    this service only handles raw device I/O.
+
+    Lifecycle RPCs (Discover, Open, Close, CloseAll) are unary.
+    Real-time I/O uses a single bidirectional stream (StreamIO) where:
+    - Server pushes SensorData for all open controllers at hardware rate
+    - Client sends IOCommand for LED/rumble updates
+
+    """
+
+    @staticmethod
+    def Discover(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/joustmania.psmove_hid.ControllerIOService/Discover',
+            psmove__hid__pb2.DiscoverRequest.SerializeToString,
+            psmove__hid__pb2.DiscoverResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Open(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/joustmania.psmove_hid.ControllerIOService/Open',
+            psmove__hid__pb2.OpenRequest.SerializeToString,
+            psmove__hid__pb2.OpenResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Close(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/joustmania.psmove_hid.ControllerIOService/Close',
+            psmove__hid__pb2.CloseRequest.SerializeToString,
+            psmove__hid__pb2.CloseResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CloseAll(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/joustmania.psmove_hid.ControllerIOService/CloseAll',
+            psmove__hid__pb2.CloseAllRequest.SerializeToString,
+            psmove__hid__pb2.CloseAllResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StreamIO(request_iterator,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.stream_stream(
+            request_iterator,
+            target,
+            '/joustmania.psmove_hid.ControllerIOService/StreamIO',
+            psmove__hid__pb2.IOCommand.SerializeToString,
+            psmove__hid__pb2.SensorData.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)

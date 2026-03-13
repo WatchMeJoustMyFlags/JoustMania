@@ -876,3 +876,110 @@ class TestProductIdTracking:
 
         adapter.close_all()
         assert len(adapter._product_ids) == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: get_adapter_for_serial() and sysfs resolution
+# ---------------------------------------------------------------------------
+
+
+class TestGetAdapterForSerial:
+    @patch("services.controller_manager.multiplexer.hidapi_adapter.hid")
+    def test_returns_none_by_default(self, mock_hid):
+        """get_adapter_for_serial() returns None when no sysfs data available."""
+        adapter = HidapiAdapter()
+        assert adapter.get_adapter_for_serial("UNKNOWN") is None
+
+    @patch("services.controller_manager.multiplexer.hidapi_adapter.hid")
+    def test_returns_cached_adapter_name(self, mock_hid):
+        """get_adapter_for_serial() returns cached adapter name after discover."""
+        mock_hid.enumerate.return_value = [_make_dev_info()]
+        mock_hid.device.return_value = MagicMock()
+
+        adapter = HidapiAdapter()
+        # Manually set adapter name (sysfs won't work in test env)
+        adapter._adapter_names[FAKE_SERIAL_NORMALIZED] = "hci0"
+
+        assert adapter.get_adapter_for_serial(FAKE_SERIAL_NORMALIZED) == "hci0"
+
+    @patch("services.controller_manager.multiplexer.hidapi_adapter.hid")
+    def test_cleanup_removes_adapter_name(self, mock_hid):
+        """_cleanup() removes adapter name entry."""
+        mock_hid.enumerate.return_value = [_make_dev_info()]
+        mock_hid.device.return_value = MagicMock()
+
+        adapter = HidapiAdapter()
+        adapter.discover()
+        adapter._adapter_names[FAKE_SERIAL_NORMALIZED] = "hci0"
+
+        adapter._cleanup(FAKE_SERIAL_NORMALIZED)
+        assert FAKE_SERIAL_NORMALIZED not in adapter._adapter_names
+
+    @patch("services.controller_manager.multiplexer.hidapi_adapter.build_output_report")
+    @patch("services.controller_manager.multiplexer.hidapi_adapter.hid")
+    def test_close_all_clears_adapter_names(self, mock_hid, mock_build):
+        """close_all() clears _adapter_names."""
+        mock_hid.enumerate.return_value = [_make_dev_info()]
+        mock_hid.device.return_value = MagicMock()
+        mock_build.return_value = b"\x00" * 9
+
+        adapter = HidapiAdapter()
+        adapter.discover()
+        adapter._adapter_names[FAKE_SERIAL_NORMALIZED] = "hci0"
+
+        adapter.close_all()
+        assert len(adapter._adapter_names) == 0
+
+
+class TestResolveAdapterFromSysfs:
+    def test_nonexistent_path_returns_none(self):
+        """Non-existent hidraw path returns None."""
+        result = HidapiAdapter._resolve_adapter_from_sysfs("/dev/hidraw99999")
+        assert result is None
+
+    def test_bytes_path_accepted(self):
+        """Bytes paths are decoded before processing."""
+        result = HidapiAdapter._resolve_adapter_from_sysfs(b"/dev/hidraw99999")
+        assert result is None
+
+    def test_resolves_hci_from_sysfs_path(self, tmp_path):
+        """When sysfs resolves to a path containing hciN, returns it."""
+        import pathlib
+
+        # Create a fake sysfs structure:
+        # /sys/class/hidraw/hidraw3 -> .../bluetooth/hci0/hci0:11/.../hidraw/hidraw3
+        bt_path = tmp_path / "devices" / "bluetooth" / "hci0" / "hci0:11" / "hidraw" / "hidraw3"
+        bt_path.mkdir(parents=True)
+        sysfs_class = tmp_path / "class" / "hidraw"
+        sysfs_class.mkdir(parents=True)
+        (sysfs_class / "hidraw3").symlink_to(bt_path)
+
+        # Redirect /sys/class/hidraw/ to our tmp_path structure
+        real_path = pathlib.Path
+        sysfs_prefix = "/sys/class/hidraw/"
+        redirect_prefix = str(sysfs_class) + "/"
+
+        def make_path(p):
+            if isinstance(p, str) and p.startswith(sysfs_prefix):
+                return real_path(p.replace(sysfs_prefix, redirect_prefix, 1))
+            return real_path(p)
+
+        with patch(
+            "services.controller_manager.multiplexer.hidapi_adapter.pathlib.Path",
+            side_effect=make_path,
+        ):
+            result = HidapiAdapter._resolve_adapter_from_sysfs("/dev/hidraw3")
+
+        assert result == "hci0"
+
+    def test_skips_hci_with_colon(self):
+        """hci0:11 (with colon) should NOT be returned, only bare hciN."""
+        # Directly test the path-part scanning logic
+        test_path = "/sys/devices/bluetooth/hci0:11/hidraw/hidraw3"
+        parts = test_path.split("/")
+        found = None
+        for part in parts:
+            if part.startswith("hci") and ":" not in part:
+                found = part
+                break
+        assert found is None  # hci0:11 has colon, should be skipped

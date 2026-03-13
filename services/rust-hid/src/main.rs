@@ -1,11 +1,15 @@
 //! rust-hid: PS Move HID gRPC service for JoustMania.
 //!
-//! Serves PairingService RPCs on port 50058 with gRPC health checking.
-//! Future: will also serve ControllerIO RPCs for motion/LED streaming.
+//! Serves PairingService and ControllerIOService RPCs on port 50058
+//! with gRPC health checking.
 
+mod controller_io_service;
+mod device_manager;
 mod hid;
 mod service;
 
+use controller_io_service::ControllerIoServiceImpl;
+use service::proto::controller_io_service_server::ControllerIoServiceServer;
 use service::proto::pairing_service_server::PairingServiceServer;
 use service::PairingServiceImpl;
 use tonic::transport::Server;
@@ -31,9 +35,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pairing_service =
         PairingServiceImpl::new().map_err(|e| format!("Failed to init PairingService: {e}"))?;
 
+    // ControllerIOService — start device manager on a dedicated thread
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("device-manager".into())
+        .spawn(move || device_manager::run_device_manager(cmd_rx))
+        .expect("Failed to spawn device manager thread");
+
+    let controller_io_service = ControllerIoServiceImpl::new(cmd_tx);
+
+    health_reporter
+        .set_serving::<ControllerIoServiceServer<ControllerIoServiceImpl>>()
+        .await;
+
     Server::builder()
         .add_service(health_service)
         .add_service(PairingServiceServer::new(pairing_service))
+        .add_service(ControllerIoServiceServer::new(controller_io_service))
         .serve(addr)
         .await?;
 

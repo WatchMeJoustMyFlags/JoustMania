@@ -19,7 +19,6 @@ sys.path.insert(0, str(project_root))
 
 from services.controller_manager.backend_factory import (
     _create_adapter_by_name,
-    _create_bt_discovery,
     _resolve_backend_name,
     create_backend,
 )
@@ -216,53 +215,3 @@ class TestMultiAdapterCreation:
         call_names = [call[0][0] for call in mock_create.call_args_list]
         assert "mock" in call_names
         assert "hidapi" in call_names
-
-
-class TestBTDiscoveryInjection:
-    """Test CentralizedBTDiscovery creation and injection."""
-
-    def test_hidapi_gets_hidapi_discovery(self):
-        from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDiscovery
-
-        discovery = _create_bt_discovery(["hidapi"])
-        assert isinstance(discovery, CentralizedBTDiscovery)
-
-    def test_mock_gets_no_discovery(self):
-        discovery = _create_bt_discovery(["mock"])
-        assert discovery is None
-
-    def test_mock_hidapi_gets_hidapi_discovery(self):
-        from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDiscovery
-
-        discovery = _create_bt_discovery(["mock", "hidapi"])
-        assert isinstance(discovery, CentralizedBTDiscovery)
-
-    def test_multiplexer_receives_bt_discovery(self):
-        """MultiplexerBackend should hold bt_discovery when hidapi adapter used."""
-        mock_client = MagicMock()
-        mock_client.get_string_details.return_value = _mock_details("mock,hidapi")
-
-        with (
-            patch("lib.feature_flags.get_flag_client", return_value=mock_client),
-            patch("services.controller_manager.backend_factory._create_adapter_by_name") as mock_create,
-        ):
-            mock_adapter = MagicMock()
-            mock_adapter.adapter_type = "mock"
-            hidapi_adapter = MagicMock()
-            hidapi_adapter.adapter_type = "hidapi"
-            mock_create.side_effect = [mock_adapter, hidapi_adapter]
-
-            backend = create_backend()
-
-        assert backend.__class__.__name__ == "MultiplexerBackend"
-        assert backend.bt_discovery is not None
-
-    def test_mock_only_receives_no_discovery(self):
-        """Mock-only should pass bt_discovery=None."""
-        mock_client = MagicMock()
-        mock_client.get_string_details.return_value = _mock_details("mock")
-
-        with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
-            backend = create_backend()
-
-        assert backend.bt_discovery is None

@@ -84,6 +84,9 @@ class ChaosAdapter(ControllerIOAdapter):
             return False
         return self._inner.set_output(serial, r, g, b, rumble)
 
+    def get_adapter_for_serial(self, serial: str) -> str | None:
+        return self._inner.get_adapter_for_serial(serial)
+
     def close(self, serial: str) -> None:
         self._inner.close(serial)
         self._known_serials.discard(serial)

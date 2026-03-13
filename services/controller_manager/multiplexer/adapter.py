@@ -48,5 +48,9 @@ class ControllerIOAdapter(ABC):
     def close(self, serial: str) -> None:
         """Release controller handle."""
 
+    def get_adapter_for_serial(self, serial: str) -> str | None:  # noqa: ARG002
+        """Return BT adapter name (e.g. 'hci0') for this serial, if known."""
+        return None
+
     def close_all(self) -> None:  # noqa: B027
         """Release all handles (shutdown). Default: no-op."""

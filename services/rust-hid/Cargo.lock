@@ -921,6 +921,7 @@ dependencies = [
  "opentelemetry_sdk",
  "prost",
  "tokio",
+ "tokio-stream",
  "tonic",
  "tonic-build",
  "tonic-health",
