@@ -125,9 +125,12 @@ services:
           cpus: '0.5'
     logging: *default-logging
 
-  # OpenTelemetry Collector
+  # OpenTelemetry Collector (custom build: contrib + metricsaslogs connector)
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.147.0
+    image: ghcr.io/watchmejoustmyflags/joustmania/otel-collector:${IMAGE_TAG:-latest}
+    build:
+      context: images/otel-collector
+      dockerfile: Dockerfile
     container_name: joustmania-otel-collector
     command: [ "--config=/etc/otel-collector-config.yaml" ]
     volumes:
@@ -146,9 +149,11 @@ services:
         condition: service_healthy
     networks:
       - joustmania
-    # No healthcheck: otel-collector-contrib is a scratch image with no shell/wget/curl.
-    # The health_check extension exposes :13133 but we can't probe it from within the container.
-    # No healthcheck: distroless image has no shell/wget/curl
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:13133"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     deploy:
       resources:
         limits:

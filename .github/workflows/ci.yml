@@ -419,6 +419,10 @@ jobs:
           - service: bizevents-bridge
             dockerfile: services/bizevents-bridge/Dockerfile
             image_name: bizevents-bridge
+          - service: otel-collector
+            dockerfile: images/otel-collector/Dockerfile
+            context: images/otel-collector
+            image_name: otel-collector
     steps:
       - uses: actions/checkout@v4
 
@@ -438,7 +442,7 @@ jobs:
       - name: Build and push service
         uses: docker/build-push-action@v5
         with:
-          context: .
+          context: ${{ matrix.context || '.' }}
           file: ${{ matrix.dockerfile }}
           # Only build amd64 on PRs (arm64 via QEMU is very slow, not needed for validation)
           platforms: ${{ github.event_name != 'pull_request' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
