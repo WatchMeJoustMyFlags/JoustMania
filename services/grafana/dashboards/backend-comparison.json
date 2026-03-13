@@ -830,7 +830,7 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "CPU usage of the controller manager process",
+      "description": "Combined CPU cost of the controller pipeline. When Rust backend is active, rust-hid does the HID I/O work while controller-manager handles orchestration. Stacked view shows true total cost.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -841,14 +841,14 @@
             "axisPlacement": "auto",
             "barAlignment": 0,
             "drawStyle": "line",
-            "fillOpacity": 10,
+            "fillOpacity": 30,
             "gradientMode": "none",
             "lineInterpolation": "smooth",
             "lineWidth": 2,
             "pointSize": 5,
             "showPoints": "never",
             "spanNulls": true,
-            "stacking": { "group": "A", "mode": "none" },
+            "stacking": { "group": "A", "mode": "normal" },
             "thresholdsStyle": { "mode": "off" }
           },
           "unit": "percent",
@@ -859,7 +859,16 @@
             ]
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "controller-manager" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "rust-hid" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }]
+          }
+        ]
       },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 42 },
       "id": 51,
@@ -872,16 +881,22 @@
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "rate(process_cpu_seconds_total{job=~\".*controller-manager.*\"}[5m]) * 100",
-          "legendFormat": "controller-manager CPU %",
+          "legendFormat": "controller-manager",
           "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(process_cpu_seconds_total{job=~\".*rust-hid.*\"}[5m]) * 100",
+          "legendFormat": "rust-hid",
+          "refId": "B"
         }
       ],
-      "title": "CPU Usage",
+      "title": "Pipeline CPU Usage (Stacked)",
       "type": "timeseries"
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Resident memory of the controller manager process",
+      "description": "Combined resident memory of the controller pipeline. Stacked view shows true total footprint of both processes.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -892,14 +907,14 @@
             "axisPlacement": "auto",
             "barAlignment": 0,
             "drawStyle": "line",
-            "fillOpacity": 10,
+            "fillOpacity": 30,
             "gradientMode": "none",
             "lineInterpolation": "smooth",
             "lineWidth": 2,
             "pointSize": 5,
             "showPoints": "never",
             "spanNulls": true,
-            "stacking": { "group": "A", "mode": "none" },
+            "stacking": { "group": "A", "mode": "normal" },
             "thresholdsStyle": { "mode": "off" }
           },
           "unit": "bytes",
@@ -910,7 +925,16 @@
             ]
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "controller-manager" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "rust-hid" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }]
+          }
+        ]
       },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 42 },
       "id": 52,
@@ -923,11 +947,17 @@
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "process_resident_memory_bytes{job=~\".*controller-manager.*\"}",
-          "legendFormat": "controller-manager RSS",
+          "legendFormat": "controller-manager",
           "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "process_resident_memory_bytes{job=~\".*rust-hid.*\"}",
+          "legendFormat": "rust-hid",
+          "refId": "B"
         }
       ],
-      "title": "Memory Usage",
+      "title": "Pipeline Memory Usage (Stacked)",
       "type": "timeseries"
     }
   ],

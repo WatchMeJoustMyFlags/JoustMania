@@ -1,0 +1,9 @@
+configs:
+  - id: metrics-pipeline-comparison
+    type:
+      document:
+        kind: dashboard
+        private: false
+    config:
+      name: "JoustMania - Metrics Pipeline Comparison"
+      template: metrics-pipeline-comparison.json

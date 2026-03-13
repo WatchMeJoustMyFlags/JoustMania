@@ -1,0 +1,197 @@
+{
+  "version": 14,
+  "variables": [],
+  "tiles": {
+    "controllers-python": {
+      "type": "data",
+      "title": "Controllers on Python",
+      "description": "Controllers using the hidapi (Python) backend",
+      "query": "timeseries avg(controller_backend_info), filter:{backend == \"hidapi\"} | fieldsAdd count = arrayLast(avg(controller_backend_info)) | summarize total = countIf(count > 0)",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "singleValue",
+      "visualizationConfig": {
+        "thresholds": [
+          { "value": 0, "color": "blue" }
+        ],
+        "colorMode": "background"
+      }
+    },
+    "controllers-rust": {
+      "type": "data",
+      "title": "Controllers on Rust",
+      "description": "Controllers using the rust-hid backend",
+      "query": "timeseries avg(controller_backend_info), filter:{backend == \"rust\"} | fieldsAdd count = arrayLast(avg(controller_backend_info)) | summarize total = countIf(count > 0)",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "singleValue",
+      "visualizationConfig": {
+        "thresholds": [
+          { "value": 0, "color": "orange" }
+        ],
+        "colorMode": "background"
+      }
+    },
+    "canary-rollout": {
+      "type": "data",
+      "title": "Canary Rollout %",
+      "description": "Percentage of controllers on Rust backend",
+      "query": "timeseries rust = avg(controller_backend_info), filter:{backend == \"rust\"}, by:{serial} | summarize rustCount = count() | lookup [timeseries avg(controller_backend_info), filter:{backend != \"mock\"}, by:{serial} | summarize totalCount = count()], sourceField:, lookupField: | fieldsAdd pct = rustCount / totalCount * 100 | fields pct",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "singleValue",
+      "visualizationConfig": {
+        "thresholds": [
+          { "value": 0, "color": "green" },
+          { "value": 25, "color": "yellow" },
+          { "value": 50, "color": "orange" },
+          { "value": 75, "color": "red" }
+        ],
+        "unit": "percent",
+        "colorMode": "background"
+      }
+    },
+    "pipeline-cpu": {
+      "type": "data",
+      "title": "Pipeline CPU (Stacked)",
+      "description": "Combined CPU cost of controller-manager + rust-hid. Shows true total pipeline cost regardless of which backend is active.",
+      "query": "timeseries avg(process_cpu_seconds_total, rate: 5m), by:{service.name}, filter:{service.name IN (\"controller-manager-service\", \"rust-hid\")}",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "graph",
+      "visualizationConfig": {
+        "drawStyle": "area",
+        "stacked": true,
+        "legend": { "position": "bottom" },
+        "yAxisLabel": "CPU %"
+      }
+    },
+    "pipeline-memory": {
+      "type": "data",
+      "title": "Pipeline Memory (Stacked)",
+      "description": "Combined resident memory of controller-manager + rust-hid. Shows true total footprint of both processes.",
+      "query": "timeseries avg(process_resident_memory_bytes), by:{service.name}, filter:{service.name IN (\"controller-manager-service\", \"rust-hid\")}",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "graph",
+      "visualizationConfig": {
+        "drawStyle": "area",
+        "stacked": true,
+        "legend": { "position": "bottom" },
+        "yAxisUnit": "bytes"
+      }
+    },
+    "input-lag": {
+      "type": "data",
+      "title": "Input Lag by Backend",
+      "description": "p95 input lag split by backend type",
+      "query": "timeseries percentile(controller_input_lag_seconds, 95), by:{serial} | lookup [timeseries avg(controller_backend_info), by:{serial, backend}], sourceField:serial, lookupField:serial | fieldsAdd backend | summarize p95 = avg(arrayLast(`percentile(controller_input_lag_seconds, 95)`)), by:{backend}",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "graph",
+      "visualizationConfig": {
+        "legend": { "position": "bottom" },
+        "yAxisUnit": "seconds"
+      }
+    },
+    "update-frequency": {
+      "type": "data",
+      "title": "Update Frequency by Backend",
+      "description": "Controller update rate (Hz) split by backend",
+      "query": "timeseries avg(controller_state_update_hz), by:{serial} | lookup [timeseries avg(controller_backend_info), by:{serial, backend}], sourceField:serial, lookupField:serial | fieldsAdd backend | summarize avgHz = avg(arrayLast(`avg(controller_state_update_hz)`)), by:{backend}",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "graph",
+      "visualizationConfig": {
+        "legend": { "position": "bottom" },
+        "yAxisUnit": "hertz"
+      }
+    },
+    "poll-drops": {
+      "type": "data",
+      "title": "Poll Drops by Backend",
+      "description": "Poll drop rate split by backend type",
+      "query": "timeseries sum(controller_poll_drops_total, rate: 1m), by:{serial} | lookup [timeseries avg(controller_backend_info), by:{serial, backend}], sourceField:serial, lookupField:serial | fieldsAdd backend | summarize drops = sum(arrayLast(`sum(controller_poll_drops_total)`)), by:{backend}",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "graph",
+      "visualizationConfig": {
+        "legend": { "position": "bottom" },
+        "thresholds": [
+          { "value": 1, "color": "yellow" },
+          { "value": 10, "color": "red" }
+        ]
+      }
+    },
+    "disconnects": {
+      "type": "data",
+      "title": "Disconnects by Backend",
+      "description": "Controller disconnect rate split by backend type",
+      "query": "timeseries sum(controller_disconnect_total, rate: 1m), by:{serial} | lookup [timeseries avg(controller_backend_info), by:{serial, backend}], sourceField:serial, lookupField:serial | fieldsAdd backend | summarize disconnects = sum(arrayLast(`sum(controller_disconnect_total)`)), by:{backend}",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "graph",
+      "visualizationConfig": {
+        "legend": { "position": "bottom" },
+        "thresholds": [
+          { "value": 1, "color": "yellow" },
+          { "value": 3, "color": "red" }
+        ]
+      }
+    },
+    "pipeline-threads": {
+      "type": "data",
+      "title": "Pipeline Threads",
+      "description": "Thread count for controller-manager and rust-hid",
+      "query": "timeseries avg(process_threads), by:{service.name}, filter:{service.name IN (\"controller-manager-service\", \"rust-hid\")}",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "graph",
+      "visualizationConfig": {
+        "legend": { "position": "bottom" }
+      }
+    }
+  },
+  "layouts": {
+    "0":  { "x": 0,  "y": 0,  "w": 8,  "h": 4, "key": "controllers-python" },
+    "1":  { "x": 8,  "y": 0,  "w": 8,  "h": 4, "key": "controllers-rust" },
+    "2":  { "x": 16, "y": 0,  "w": 8,  "h": 4, "key": "canary-rollout" },
+    "3":  { "x": 0,  "y": 4,  "w": 12, "h": 8, "key": "pipeline-cpu" },
+    "4":  { "x": 12, "y": 4,  "w": 12, "h": 8, "key": "pipeline-memory" },
+    "5":  { "x": 0,  "y": 12, "w": 12, "h": 8, "key": "input-lag" },
+    "6":  { "x": 12, "y": 12, "w": 12, "h": 8, "key": "update-frequency" },
+    "7":  { "x": 0,  "y": 20, "w": 8,  "h": 8, "key": "poll-drops" },
+    "8":  { "x": 8,  "y": 20, "w": 8,  "h": 8, "key": "disconnects" },
+    "9":  { "x": 16, "y": 20, "w": 8,  "h": 8, "key": "pipeline-threads" }
+  }
+}

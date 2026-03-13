@@ -3,19 +3,17 @@
   "variables": [],
   "tiles": {
     "0": {
-      "content": "### Player Analytics\n\nMovement intensity per player. Hover a hexagon for peak acceleration and playstyle details.\n\n-----",
+      "content": "### JoustMania — Service Health Overview\n\nAt-a-glance health for all platform services. Each hexagon is a service — hover for CPU, memory, threads, and error rate.\n\n-----",
       "type": "markdown"
     },
     "1": {
       "davis": {
-        "davisVisualization": {
-          "isAvailable": true
-        },
+        "davisVisualization": { "isAvailable": true },
         "enabled": false
       },
-      "title": "Player Activity",
+      "title": "Service Health",
       "type": "data",
-      "query": "timeseries accel = avg(game_player_accel_magnitude), peak = avg(game_player_peak_accel), by:{serial} | fieldsAdd accelLast = arrayLast(accel), peakLast = arrayLast(peak) | fields serial, accelLast, peakLast",
+      "query": "timeseries cpu = avg(process_cpu_seconds_total, rate: 1m), mem = avg(process_resident_memory_bytes), threads = avg(process_threads), errors = sum(grpc_requests_total, rate: 1m), by:{job} | fieldsAdd cpuLast = arrayLast(cpu), memMB = arrayLast(mem) / 1048576, threadsLast = arrayLast(threads), errRate = arrayLast(errors) | fields job, cpuLast, memMB, threadsLast, errRate",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -30,34 +28,24 @@
           "colorMode": "custom-colors",
           "colorPalette": "blue",
           "dataMappings": {
-            "value": "accelLast"
+            "value": "cpuLast"
           },
-          "displayedFields": [
-            "serial",
-            "accelLast",
-            "peakLast"
-          ],
+          "displayedFields": ["job", "cpuLast", "memMB", "threadsLast", "errRate"],
           "customColors": [
             {
               "comparator": "\u2265",
               "value": 0,
-              "color": {
-                "Default": "var(--dt-colors-charts-categorical-color-09-default, #649438)"
-              }
+              "color": { "Default": "var(--dt-colors-charts-categorical-color-09-default, #649438)" }
             },
             {
               "comparator": "\u2265",
-              "value": 1.0,
-              "color": {
-                "Default": "var(--dt-colors-charts-status-warning-default, #f5d30f)"
-              }
+              "value": 0.5,
+              "color": { "Default": "var(--dt-colors-charts-status-warning-default, #f5d30f)" }
             },
             {
               "comparator": "\u2265",
-              "value": 1.5,
-              "color": {
-                "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)"
-              }
+              "value": 0.8,
+              "color": { "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)" }
             }
           ]
         },
@@ -66,29 +54,23 @@
             {
               "colorMode": "custom-color",
               "comparator": "\u2265",
-              "field": "accelLast",
+              "field": "cpuLast",
               "value": 0,
-              "customColor": {
-                "Default": "var(--dt-colors-charts-categorical-color-09-default, #649438)"
-              }
+              "customColor": { "Default": "var(--dt-colors-charts-categorical-color-09-default, #649438)" }
             },
             {
               "colorMode": "custom-color",
               "comparator": "\u2265",
-              "field": "accelLast",
-              "value": 1.0,
-              "customColor": {
-                "Default": "var(--dt-colors-charts-status-warning-default, #f5d30f)"
-              }
+              "field": "cpuLast",
+              "value": 0.5,
+              "customColor": { "Default": "var(--dt-colors-charts-status-warning-default, #f5d30f)" }
             },
             {
               "colorMode": "custom-color",
               "comparator": "\u2265",
-              "field": "accelLast",
-              "value": 1.5,
-              "customColor": {
-                "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)"
-              }
+              "field": "cpuLast",
+              "value": 0.8,
+              "customColor": { "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)" }
             }
           ]
         }
@@ -96,14 +78,12 @@
     },
     "2": {
       "davis": {
-        "davisVisualization": {
-          "isAvailable": true
-        },
+        "davisVisualization": { "isAvailable": true },
         "enabled": false
       },
-      "title": "Music Tempo",
+      "title": "Game Active",
       "type": "data",
-      "query": "timeseries tempo = avg(game_music_tempo) | fieldsAdd last = arrayLast(tempo) | fields last",
+      "query": "timeseries active = avg(game_active) | fieldsAdd last = arrayLast(active) | fields last",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -117,22 +97,18 @@
         "singleValue": {
           "recordField": "last",
           "labelMode": "none",
-          "trend": {
-            "isVisible": true
-          }
+          "trend": { "isVisible": true }
         }
       }
     },
     "3": {
       "davis": {
-        "davisVisualization": {
-          "isAvailable": true
-        },
+        "davisVisualization": { "isAvailable": true },
         "enabled": false
       },
-      "title": "Sensitivity",
+      "title": "Controllers Connected",
       "type": "data",
-      "query": "timeseries sens = avg(game_sensitivity) | fieldsAdd last = arrayLast(sens) | fields last",
+      "query": "timeseries controllers = avg(active_controllers_total) | fieldsAdd last = arrayLast(controllers) | fields last",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -146,22 +122,18 @@
         "singleValue": {
           "recordField": "last",
           "labelMode": "none",
-          "trend": {
-            "isVisible": true
-          }
+          "trend": { "isVisible": true }
         }
       }
     },
     "4": {
       "davis": {
-        "davisVisualization": {
-          "isAvailable": true
-        },
+        "davisVisualization": { "isAvailable": true },
         "enabled": false
       },
-      "title": "Near-Deaths",
+      "title": "Players Alive",
       "type": "data",
-      "query": "timeseries nd = sum(game_near_death_events_total) | fieldsAdd last = arrayLast(nd) | fields last",
+      "query": "timeseries alive = avg(game_players_alive) | fieldsAdd last = arrayLast(alive) | fields last",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -175,22 +147,18 @@
         "singleValue": {
           "recordField": "last",
           "labelMode": "none",
-          "trend": {
-            "isVisible": true
-          }
+          "trend": { "isVisible": true }
         }
       }
     },
     "5": {
       "davis": {
-        "davisVisualization": {
-          "isAvailable": true
-        },
+        "davisVisualization": { "isAvailable": true },
         "enabled": false
       },
-      "title": "Warnings",
+      "title": "Games Started (24h)",
       "type": "data",
-      "query": "timeseries w = sum(game_player_warnings_total) | fieldsAdd last = arrayLast(w) | fields last",
+      "query": "timeseries games = sum(games_started_total, rate: 1m) | fieldsAdd last = arrayLast(games) | fields last",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -204,26 +172,22 @@
         "singleValue": {
           "recordField": "last",
           "labelMode": "none",
-          "trend": {
-            "isVisible": true
-          }
+          "trend": { "isVisible": true }
         }
       }
     },
     "6": {
-      "content": "### Movement & Thresholds\n\nPeak acceleration per controller and effective death/warning thresholds.\n\n-----",
+      "content": "### Resource Usage\n\nCPU and memory trends per service over time.\n\n-----",
       "type": "markdown"
     },
     "7": {
       "davis": {
-        "davisVisualization": {
-          "isAvailable": true
-        },
+        "davisVisualization": { "isAvailable": true },
         "enabled": false
       },
-      "title": "Peak Acceleration by Controller",
+      "title": "CPU Usage by Service",
       "type": "data",
-      "query": "timeseries peak = avg(game_player_peak_accel), by:{serial}",
+      "query": "timeseries cpu = avg(process_cpu_seconds_total, rate: 1m), by:{job}",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -231,23 +195,19 @@
         "maxResultMegaBytes": 1,
         "maxResultRecords": 1000
       },
-      "visualization": "lineChart",
+      "visualization": "areaChart",
       "visualizationSettings": {
         "autoSelectVisualization": false,
         "chartSettings": {
           "fieldMapping": {
-            "leftAxisValues": [
-              "peak"
-            ],
+            "leftAxisValues": ["cpu"],
             "timestamp": "timeframe"
           },
           "leftYAxisSettings": {
             "isLabelVisible": true,
-            "label": "Acceleration (g)"
+            "label": "CPU (cores)"
           },
-          "legend": {
-            "hidden": false
-          },
+          "legend": { "hidden": false },
           "truncationMode": "end"
         },
         "thresholds": []
@@ -255,14 +215,12 @@
     },
     "8": {
       "davis": {
-        "davisVisualization": {
-          "isAvailable": true
-        },
+        "davisVisualization": { "isAvailable": true },
         "enabled": false
       },
-      "title": "Effective Thresholds",
+      "title": "Memory Usage by Service",
       "type": "data",
-      "query": "timeseries warning = avg(game_effective_warning_threshold), death = avg(game_effective_death_threshold)",
+      "query": "timeseries mem = avg(process_resident_memory_bytes), by:{job}",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -270,43 +228,36 @@
         "maxResultMegaBytes": 1,
         "maxResultRecords": 1000
       },
-      "visualization": "lineChart",
+      "visualization": "areaChart",
       "visualizationSettings": {
         "autoSelectVisualization": false,
         "chartSettings": {
           "fieldMapping": {
-            "leftAxisValues": [
-              "warning",
-              "death"
-            ],
+            "leftAxisValues": ["mem"],
             "timestamp": "timeframe"
           },
           "leftYAxisSettings": {
             "isLabelVisible": true,
-            "label": "Threshold (g)"
+            "label": "Memory (bytes)"
           },
-          "legend": {
-            "hidden": false
-          },
+          "legend": { "hidden": false },
           "truncationMode": "end"
         },
         "thresholds": []
       }
     },
     "9": {
-      "content": "### Events & Tempo\n\nNear-death and warning event rates over time, alongside music tempo changes.\n\n-----",
+      "content": "### gRPC Traffic\n\nRequest rates and error rates across all services.\n\n-----",
       "type": "markdown"
     },
     "10": {
       "davis": {
-        "davisVisualization": {
-          "isAvailable": true
-        },
+        "davisVisualization": { "isAvailable": true },
         "enabled": false
       },
-      "title": "Near-Death Events Over Time",
+      "title": "gRPC Request Rate by Service",
       "type": "data",
-      "query": "timeseries nearDeaths = sum(game_near_death_events_total, rate: 1m), by:{serial, game_mode}",
+      "query": "timeseries requests = sum(grpc_requests_total, rate: 1m), by:{job}",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -319,17 +270,13 @@
         "autoSelectVisualization": false,
         "chartSettings": {
           "fieldMapping": {
-            "leftAxisValues": [
-              "nearDeaths"
-            ],
+            "leftAxisValues": ["requests"],
             "timestamp": "timeframe"
           },
           "categoricalBarChartSettings": {
             "groupMode": "stacked"
           },
-          "legend": {
-            "hidden": false
-          },
+          "legend": { "hidden": false },
           "truncationMode": "end"
         },
         "thresholds": []
@@ -337,14 +284,12 @@
     },
     "11": {
       "davis": {
-        "davisVisualization": {
-          "isAvailable": true
-        },
+        "davisVisualization": { "isAvailable": true },
         "enabled": false
       },
-      "title": "Warning Events Over Time",
+      "title": "gRPC Errors by Service",
       "type": "data",
-      "query": "timeseries warnings = sum(game_player_warnings_total, rate: 1m), by:{serial, game_mode}",
+      "query": "timeseries errors = sum(grpc_requests_total, rate: 1m), by:{job, status} | filter status != \"OK\"",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -357,17 +302,14 @@
         "autoSelectVisualization": false,
         "chartSettings": {
           "fieldMapping": {
-            "leftAxisValues": [
-              "warnings"
-            ],
+            "leftAxisValues": ["errors"],
             "timestamp": "timeframe"
           },
           "categoricalBarChartSettings": {
             "groupMode": "stacked"
           },
-          "legend": {
-            "hidden": false
-          },
+          "colorPalette": "fireplace",
+          "legend": { "hidden": false },
           "truncationMode": "end"
         },
         "thresholds": []
@@ -375,14 +317,12 @@
     },
     "12": {
       "davis": {
-        "davisVisualization": {
-          "isAvailable": true
-        },
+        "davisVisualization": { "isAvailable": true },
         "enabled": false
       },
-      "title": "Music Tempo Over Time",
+      "title": "Threads by Service",
       "type": "data",
-      "query": "timeseries tempo = avg(game_music_tempo)",
+      "query": "timeseries threads = avg(process_threads), by:{job}",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -395,14 +335,14 @@
         "autoSelectVisualization": false,
         "chartSettings": {
           "fieldMapping": {
-            "leftAxisValues": [
-              "tempo"
-            ],
+            "leftAxisValues": ["threads"],
             "timestamp": "timeframe"
           },
-          "legend": {
-            "hidden": true
+          "leftYAxisSettings": {
+            "isLabelVisible": true,
+            "label": "Threads"
           },
+          "legend": { "hidden": false },
           "truncationMode": "end"
         },
         "thresholds": []
@@ -410,83 +350,18 @@
     }
   },
   "layouts": {
-    "0": {
-      "x": 0,
-      "y": 0,
-      "w": 24,
-      "h": 2
-    },
-    "1": {
-      "x": 0,
-      "y": 2,
-      "w": 16,
-      "h": 8
-    },
-    "2": {
-      "x": 16,
-      "y": 2,
-      "w": 4,
-      "h": 4
-    },
-    "3": {
-      "x": 20,
-      "y": 2,
-      "w": 4,
-      "h": 4
-    },
-    "4": {
-      "x": 16,
-      "y": 6,
-      "w": 4,
-      "h": 4
-    },
-    "5": {
-      "x": 20,
-      "y": 6,
-      "w": 4,
-      "h": 4
-    },
-    "6": {
-      "x": 0,
-      "y": 10,
-      "w": 24,
-      "h": 2
-    },
-    "7": {
-      "x": 0,
-      "y": 12,
-      "w": 12,
-      "h": 7
-    },
-    "8": {
-      "x": 12,
-      "y": 12,
-      "w": 12,
-      "h": 7
-    },
-    "9": {
-      "x": 0,
-      "y": 19,
-      "w": 24,
-      "h": 2
-    },
-    "10": {
-      "x": 0,
-      "y": 21,
-      "w": 8,
-      "h": 7
-    },
-    "11": {
-      "x": 8,
-      "y": 21,
-      "w": 8,
-      "h": 7
-    },
-    "12": {
-      "x": 16,
-      "y": 21,
-      "w": 8,
-      "h": 7
-    }
+    "0":  { "x": 0,  "y": 0,  "w": 24, "h": 2 },
+    "1":  { "x": 0,  "y": 2,  "w": 16, "h": 10 },
+    "2":  { "x": 16, "y": 2,  "w": 4,  "h": 5 },
+    "3":  { "x": 20, "y": 2,  "w": 4,  "h": 5 },
+    "4":  { "x": 16, "y": 7,  "w": 4,  "h": 5 },
+    "5":  { "x": 20, "y": 7,  "w": 4,  "h": 5 },
+    "6":  { "x": 0,  "y": 12, "w": 24, "h": 2 },
+    "7":  { "x": 0,  "y": 14, "w": 12, "h": 7 },
+    "8":  { "x": 12, "y": 14, "w": 12, "h": 7 },
+    "9":  { "x": 0,  "y": 21, "w": 24, "h": 2 },
+    "10": { "x": 0,  "y": 23, "w": 8,  "h": 7 },
+    "11": { "x": 8,  "y": 23, "w": 8,  "h": 7 },
+    "12": { "x": 16, "y": 23, "w": 8,  "h": 7 }
   }
 }
