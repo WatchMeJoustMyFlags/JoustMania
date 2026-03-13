@@ -131,6 +131,7 @@ fn init_tracing() -> Option<opentelemetry_sdk::trace::TracerProvider> {
 /// - process_resident_memory_bytes (gauge)
 /// - process_threads (gauge)
 fn init_metrics() -> Option<opentelemetry_sdk::metrics::SdkMeterProvider> {
+    use opentelemetry::metrics::MeterProvider;
     use opentelemetry::KeyValue;
     use opentelemetry_otlp::WithExportConfig;
 
