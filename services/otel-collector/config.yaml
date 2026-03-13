@@ -52,6 +52,28 @@ receivers:
           static_configs:
             - targets: ['envoy:9901']
 
+  # Filelog receiver — tail Docker container JSON logs for non-OTLP services
+  # (connect-proxy, rust-hid, envoy, flagd, redis, etc.)
+  filelog/docker:
+    include:
+      - /var/lib/docker/containers/*/*-json.log
+    start_at: end
+    include_file_path: true
+    include_file_name: false
+    operators:
+      - type: json_parser
+        timestamp:
+          parse_from: attributes.time
+          layout: '%Y-%m-%dT%H:%M:%S.%LZ'
+      - type: move
+        from: attributes.log
+        to: body
+      - type: move
+        from: attributes.stream
+        to: attributes["log.iostream"]
+      - type: remove
+        field: attributes.time
+
   # Host: OS-level metrics from the Raspberry Pi
   prometheus/host:
     config:
@@ -101,6 +123,46 @@ processors:
       - key: service.namespace
         value: host
         action: insert
+
+  # Transform processor — promote Docker labels to OTEL resource attributes
+  transform/docker_logs:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        statements:
+          # service.name from compose service label
+          - set(resource.attributes["service.name"], attributes["attrs"]["com.docker.compose.service"])
+            where attributes["attrs"]["com.docker.compose.service"] != nil
+          # container.name (same as service name in compose)
+          - set(resource.attributes["container.name"], attributes["attrs"]["com.docker.compose.service"])
+            where attributes["attrs"]["com.docker.compose.service"] != nil
+          # container.image.name from full image reference (strip tag after)
+          - set(resource.attributes["container.image.name"], attributes["attrs"]["com.docker.compose.image"])
+            where attributes["attrs"]["com.docker.compose.image"] != nil
+          # container.image.tag — extract portion after last ':'
+          - set(resource.attributes["container.image.tag"], attributes["attrs"]["com.docker.compose.image"])
+            where attributes["attrs"]["com.docker.compose.image"] != nil
+          - replace_pattern(resource.attributes["container.image.name"], ":[^:]*$", "")
+            where resource.attributes["container.image.name"] != nil
+          - replace_pattern(resource.attributes["container.image.tag"], "^.*:", "")
+            where resource.attributes["container.image.tag"] != nil
+          # container.id from file path
+          - set(resource.attributes["container.id"], attributes["log.file.path"])
+            where attributes["log.file.path"] != nil
+          - replace_pattern(resource.attributes["container.id"], "^.*/([a-f0-9]+)/.*$", "$1")
+            where resource.attributes["container.id"] != nil
+          # Clean up intermediate attributes
+          - delete_key(attributes, "attrs")
+            where attributes["attrs"] != nil
+
+  # Filter processor — exclude services that already push OTLP logs + the collector itself
+  filter/exclude_otlp_services:
+    logs:
+      exclude:
+        match_type: regexp
+        resource_attributes:
+          - key: service.name
+            value: "^(controller-manager|game-coordinator|menu|audio|pairing-daemon|otel-collector)$"
 
   # Resource processor to add common attributes for OTLP-pushed metrics
   resource:
@@ -177,6 +239,12 @@ service:
     logs:
       receivers: [otlp]
       processors: [memory_limiter, batch, resource]
+      exporters: [otlphttp/loki, debug]
+
+    # Container logs pipeline — Docker JSON logs from non-OTLP services
+    logs/containers:
+      receivers: [filelog/docker]
+      processors: [memory_limiter, transform/docker_logs, filter/exclude_otlp_services, batch, resource]
       exporters: [otlphttp/loki, debug]
 
   extensions: [health_check]

@@ -32,6 +32,7 @@ x-logging: &default-logging
   options:
     max-size: "10m"
     max-file: "3"
+    labels: "com.docker.compose.service,com.docker.compose.image"
 
 services:
   # Redis for pub/sub messaging
@@ -135,6 +136,7 @@ services:
     command: [ "--config=/etc/otel-collector-config.yaml" ]
     volumes:
       - ./services/otel-collector/config.yaml:/etc/otel-collector-config.yaml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
     ports:
       # OTLP gRPC - exposed for host-network containers (pairing-daemon)
       - "4317:4317"

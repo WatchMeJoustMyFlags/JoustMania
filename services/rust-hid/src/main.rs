@@ -19,8 +19,11 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize OTLP log export (must live until end of main to flush)
+    let log_provider = init_logs();
+
     // Initialize tracing with optional OpenTelemetry bridge
-    let _otel_guard = init_tracing();
+    let _otel_guard = init_tracing(&log_provider);
 
     // Initialize OTEL metrics (process metrics pushed to collector)
     let _meter_provider = init_metrics();
@@ -61,14 +64,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Initialize OTLP log export.
+///
+/// When OTEL_EXPORTER_OTLP_ENDPOINT is set, creates a LoggerProvider that
+/// exports logs via OTLP. The provider is wired into tracing via the
+/// OpenTelemetryTracingBridge layer in `init_tracing()`.
+/// The provider must outlive the tracing subscriber to flush on shutdown.
+fn init_logs() -> Option<opentelemetry_sdk::logs::LoggerProvider> {
+    use opentelemetry::KeyValue;
+    use opentelemetry_otlp::WithExportConfig;
+
+    let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok()?;
+    let service_name =
+        std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "rust-hid".into());
+    let namespace =
+        std::env::var("OTEL_SERVICE_NAMESPACE").unwrap_or_else(|_| "infrastructure".into());
+
+    let exporter = opentelemetry_otlp::LogExporter::builder()
+        .with_tonic()
+        .with_endpoint(&endpoint)
+        .build()
+        .ok()?;
+
+    let resource = opentelemetry_sdk::Resource::new(vec![
+        KeyValue::new("service.name", service_name),
+        KeyValue::new("service.namespace", namespace),
+    ]);
+
+    let provider = opentelemetry_sdk::logs::LoggerProvider::builder()
+        .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
+        .with_resource(resource)
+        .build();
+
+    Some(provider)
+}
+
 /// Initialize tracing subscriber with optional OpenTelemetry bridge.
 ///
 /// When OTEL_EXPORTER_OTLP_ENDPOINT is set, traces are exported via OTLP
 /// with the tracing-opentelemetry bridge so `tracing` spans become OTEL spans.
+/// If a LoggerProvider is given, logs are also exported via OTLP using
+/// the OpenTelemetryTracingBridge layer.
 /// Returns a guard that shuts down the tracer provider on drop.
-fn init_tracing() -> Option<opentelemetry_sdk::trace::TracerProvider> {
+fn init_tracing(
+    log_provider: &Option<opentelemetry_sdk::logs::LoggerProvider>,
+) -> Option<opentelemetry_sdk::trace::TracerProvider> {
     use opentelemetry::trace::TracerProvider as _;
     use opentelemetry::KeyValue;
+    use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
     use opentelemetry_otlp::WithExportConfig;
     use tracing_opentelemetry::OpenTelemetryLayer;
     use tracing_subscriber::layer::SubscriberExt;
@@ -77,6 +120,7 @@ fn init_tracing() -> Option<opentelemetry_sdk::trace::TracerProvider> {
     let env_filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let fmt_layer = tracing_subscriber::fmt::layer();
+    let logs_layer = log_provider.as_ref().map(OpenTelemetryTracingBridge::new);
 
     let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok();
 
@@ -111,6 +155,7 @@ fn init_tracing() -> Option<opentelemetry_sdk::trace::TracerProvider> {
             .with(env_filter)
             .with(fmt_layer)
             .with(otel_layer)
+            .with(logs_layer)
             .init();
 
         Some(provider)
@@ -118,6 +163,7 @@ fn init_tracing() -> Option<opentelemetry_sdk::trace::TracerProvider> {
         tracing_subscriber::registry()
             .with(env_filter)
             .with(fmt_layer)
+            .with(logs_layer)
             .init();
 
         None

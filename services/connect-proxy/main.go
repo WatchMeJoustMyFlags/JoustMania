@@ -7,7 +7,7 @@ package main
 import (
 	"context"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 
@@ -44,30 +44,40 @@ func getEnv(key, defaultValue string) string {
 
 func main() {
 	ctx := context.Background()
+
+	logger, shutdownLogs := initLogs(ctx)
+	defer shutdownLogs(ctx)
+	slog.SetDefault(logger)
+
 	shutdownMetrics := initMetrics(ctx)
 	defer shutdownMetrics(ctx)
 
-	log.Println("JoustMania Connect Proxy starting...")
-	log.Printf("Controller Manager: %s", controllerManagerAddr)
-	log.Printf("Game Coordinator: %s", gameCoordinatorAddr)
-	log.Printf("Menu: %s", menuAddr)
+	slog.Info("JoustMania Connect Proxy starting...")
+	slog.Info("Backend services",
+		"controller_manager", controllerManagerAddr,
+		"game_coordinator", gameCoordinatorAddr,
+		"menu", menuAddr,
+	)
 
 	// Create gRPC connections to backend services
 	controllerConn, err := grpc.NewClient(controllerManagerAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		log.Fatalf("Failed to connect to controller manager: %v", err)
+		slog.Error("Failed to connect to controller manager", "error", err)
+		os.Exit(1)
 	}
 	defer controllerConn.Close()
 
 	gameConn, err := grpc.NewClient(gameCoordinatorAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		log.Fatalf("Failed to connect to game coordinator: %v", err)
+		slog.Error("Failed to connect to game coordinator", "error", err)
+		os.Exit(1)
 	}
 	defer gameConn.Close()
 
 	menuConn, err := grpc.NewClient(menuAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		log.Fatalf("Failed to connect to menu: %v", err)
+		slog.Error("Failed to connect to menu", "error", err)
+		os.Exit(1)
 	}
 	defer menuConn.Close()
 
@@ -107,7 +117,7 @@ func main() {
 	// Serve static files for dashboard (if mounted)
 	staticDir := "/app/static"
 	if _, err := os.Stat(staticDir); err == nil {
-		log.Printf("Serving static files from %s", staticDir)
+		slog.Info("Serving static files", "dir", staticDir)
 		mux.Handle("/", http.FileServer(http.Dir(staticDir)))
 	}
 
@@ -121,9 +131,10 @@ func main() {
 	}).Handler(mux)
 
 	// Start server
-	log.Printf("Connect proxy listening on %s", listenAddr)
+	slog.Info("Connect proxy listening", "addr", listenAddr)
 	if err := http.ListenAndServe(listenAddr, corsHandler); err != nil {
-		log.Fatalf("Server failed: %v", err)
+		slog.Error("Server failed", "error", err)
+		os.Exit(1)
 	}
 }
 
