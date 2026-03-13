@@ -10,7 +10,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
-use tracing::{info, warn};
+use tracing::{info, trace, warn};
 
 use crate::device_manager::{DeviceCmd, StreamSensorData};
 use crate::service::proto;
@@ -58,7 +58,11 @@ impl ControllerIoService for ControllerIoServiceImpl {
             .await
             .map_err(|_| Status::internal("Device manager did not respond"))?;
 
-        info!(count = discovered.len(), force = req.force, verify_only = req.verify_only, "Discover");
+        if req.verify_only {
+            trace!(count = discovered.len(), "Discover verify_only");
+        } else {
+            info!(count = discovered.len(), force = req.force, "Discover");
+        }
         let controllers = discovered
             .into_iter()
             .map(|c| DiscoveredController {
