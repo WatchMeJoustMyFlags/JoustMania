@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.6.0](https://github.com/WatchMeJoustMyFlags/JoustMania/compare/joustmania-v0.5.0...joustmania-v0.6.0) (2026-03-13)
+
+
+### Features
+
+* backend abstraction for canary releases ([#624](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/624)) ([74fea34](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/74fea346f11f83a85e7fa519a4b9aeacaa46a046))
+* per-controller poll health metrics and dashboard panels ([#601](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/601)) ([9a2e92c](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/9a2e92cad448fc71d3d13f358ca7fb2a345f5397))
+
+
+### Bug Fixes
+
+* adapter affinity via pairing dirs and dashboard query gaps ([#625](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/625)) ([d6680a5](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/d6680a5bb41a66269fc44c85f5d5a1b717031aec))
+* add SIGTERM handler for graceful service shutdown ([#629](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/629)) ([f1abeec](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/f1abeece2fae3227df0df569eb65381faf425c24))
+* add ZCM2 LED output report support ([#590](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/590)) ([1713048](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/17130484e42ce98eda244013b9ff67d69de93adf))
+* clean up broken and redundant dashboards ([#600](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/600)) ([5a96218](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/5a962187c54d3d59151d17af9ba894f2ca656eea))
+* decode ZCM2 (PS4-era) accelerometer/gyroscope as signed two's complement ([#599](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/599)) ([604d42e](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/604d42eb1b81978cb7e2192a8b025c1a3014f83a))
+* initialize poll counters at discovery to fix dashboard gaps ([#627](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/627)) ([a8b9201](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/a8b9201132c42613c176a2e44baa482aa44cd956))
+* Pin Docker Compose image tags to release-please version ([#425](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/425)) ([09cf4a8](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/09cf4a89704f701327f961e9513ac72019cef5f6))
+* poll health dashboard visibility and adapter affinity ([#603](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/603)) ([3243ba5](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/3243ba5198ef089dfa69fe6959071d22f1480047))
+* poll rate dashboard visibility for all controllers ([#628](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/628)) ([4b1da01](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/4b1da0123a3cd07debd9401dbe4979b7d5164b2a))
+* populate adapter affinity map at startup ([#626](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/626)) ([287a131](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/287a131dd960a62c8a1be817ca69d67f1546fa41))
+* prevent instant death on game start from first-frame EMA spike ([#598](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/598)) ([be6169b](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/be6169ba0b37179366a1d30b61e501f664e316c7))
+* re-pair controller when bluetoothctl trust fails on stale record ([#588](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/588)) ([21e78e4](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/21e78e49294c99c6b3db18753f5773c463f933a9))
+* return cached state for empty HID reads, finalize health on death ([#623](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/623)) ([20357a5](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/20357a545351545e0d3b775f1db2b1a9cb3af6ea))
+* show effective poll rate instead of drop rate in dashboards ([#622](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/622)) ([b25676a](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/b25676a61096fcb36a35dce5b9fe334c42515bfe))
+
+
+### Refactoring
+
+* migrate pairing daemon from psmoveapi to hidapi ([#610](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/610)) ([4cb5345](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/4cb5345c5f054d98f73aa61c54d16cfe16856fd9))
+* remove psmoveapi from controller_manager ([#618](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/618)) ([844e8d1](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/844e8d1ef6f0a90117fb188a6c609f214be50747))
+
 ## [0.5.0](https://github.com/WatchMeJoustMyFlags/JoustMania/compare/joustmania-v0.4.0...joustmania-v0.5.0) (2026-02-28)
 
 
