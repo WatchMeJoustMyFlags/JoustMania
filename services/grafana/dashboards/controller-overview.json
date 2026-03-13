@@ -32,6 +32,18 @@
       "tooltip": "Bluetooth adapter health and load balancing",
       "type": "link",
       "url": "/d/joustmania-bluetooth-adapter/bluetooth-adapter-overview"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Backend Comparison",
+      "tooltip": "Python vs Rust backend performance comparison",
+      "type": "link",
+      "url": "/d/backend-comparison/backend-comparison-python-vs-rust"
     }
   ],
   "liveNow": true,
