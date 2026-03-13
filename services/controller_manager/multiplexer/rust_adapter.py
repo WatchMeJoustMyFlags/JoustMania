@@ -18,7 +18,7 @@ import threading
 
 import grpc
 
-from lib.controller_constants import AxisKey, ButtonKey, StateKey
+from lib.controller_constants import AxisKey, ButtonKey, StateKey, normalize_serial
 from services.controller_manager.multiplexer.adapter import ControllerIOAdapter
 
 logger = logging.getLogger(__name__)
@@ -49,6 +49,7 @@ class RustServiceAdapter(ControllerIOAdapter):
         # Stream state
         self._command_queue: queue.Queue = queue.Queue(maxsize=256)
         self._latest_data: dict[str, dict] = {}
+        self._last_state: dict[str, dict] = {}  # cached last-known state per serial
         self._data_lock = threading.Lock()
         self._stream_thread: threading.Thread | None = None
         self._stream_running = False
@@ -64,6 +65,10 @@ class RustServiceAdapter(ControllerIOAdapter):
         """Start the bidir stream if not already running."""
         if self._stream_running:
             return
+
+        # Wait for old thread to finish before starting a new one
+        if self._stream_thread is not None:
+            self._stream_thread.join(timeout=1.0)
 
         self._stream_running = True
         self._stream_thread = threading.Thread(
@@ -88,9 +93,11 @@ class RustServiceAdapter(ControllerIOAdapter):
         try:
             responses = self._stub.StreamIO(command_iterator())
             for sensor_data in responses:
+                serial = normalize_serial(sensor_data.serial)
                 state = _sensor_data_to_dict(sensor_data)
+                state[StateKey.SERIAL] = serial
                 with self._data_lock:
-                    self._latest_data[sensor_data.serial] = state
+                    self._latest_data[serial] = state
         except grpc.RpcError as e:
             if self._stream_running:
                 logger.warning(f"StreamIO error: {e}")
@@ -107,9 +114,10 @@ class RustServiceAdapter(ControllerIOAdapter):
             response = self._stub.Discover(psmove_hid_pb2.DiscoverRequest(force=force, verify_only=verify_only))
             serials = []
             for c in response.controllers:
-                serials.append(c.serial)
+                serial = normalize_serial(c.serial)
+                serials.append(serial)
                 if c.adapter_name:
-                    self._adapter_names[c.serial] = c.adapter_name
+                    self._adapter_names[serial] = c.adapter_name
             return serials
         except grpc.RpcError as e:
             logger.warning(f"Discover RPC failed: {e}")
@@ -132,7 +140,12 @@ class RustServiceAdapter(ControllerIOAdapter):
 
     def poll(self, serial: str) -> dict | None:
         with self._data_lock:
-            return self._latest_data.pop(serial, None)
+            new_data = self._latest_data.pop(serial, None)
+        if new_data is not None:
+            self._last_state[serial] = new_data
+            return new_data
+        # No new stream data — return cached state so callers don't count as drop
+        return self._last_state.get(serial)
 
     def set_output(self, serial: str, r: int, g: int, b: int, rumble: int) -> bool:
         from proto import psmove_hid_pb2
@@ -160,6 +173,7 @@ class RustServiceAdapter(ControllerIOAdapter):
 
         with self._data_lock:
             self._latest_data.pop(serial, None)
+        self._last_state.pop(serial, None)
         self._adapter_names.pop(serial, None)
 
         try:
@@ -178,6 +192,7 @@ class RustServiceAdapter(ControllerIOAdapter):
 
         with self._data_lock:
             self._latest_data.clear()
+        self._last_state.clear()
         self._adapter_names.clear()
 
         try:

@@ -96,29 +96,6 @@ services:
           cpus: '0.25'
     logging: *default-logging
 
-  # flagd-ui for read-only feature flag browsing
-  flagd-ui:
-    image: ghcr.io/justinabrahms/flagd-ui:latest
-    container_name: joustmania-flagd-ui
-    environment:
-      - FLAGD_HOST=flagd
-      - FLAGD_PORT=8015
-    # Port exposed only within Docker network (envoy proxies to it)
-    expose:
-      - "3000"
-    depends_on:
-      flagd:
-        condition: service_started
-    networks:
-      - joustmania
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 128m
-          cpus: '0.25'
-    logging: *default-logging
-
   # Jaeger for distributed tracing UI
   jaeger:
     image: jaegertracing/jaeger:2.14.1
@@ -235,11 +212,16 @@ services:
       - OTEL_SERVICE_NAMESPACE=infrastructure
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
+      # Rust HID service for canary controller I/O backend
+      - RUST_HID_HOST=rust-hid
+      - RUST_HID_PORT=50058
     depends_on:
       redis:
         condition: service_healthy
       flagd:
         condition: service_started
+      rust-hid:
+        condition: service_healthy
     restart: unless-stopped
     # Healthcheck defined in Dockerfile (uses grpc_health_probe)
     deploy:

@@ -36,6 +36,7 @@ def _make_rust_adapter():
     adapter._stub = MagicMock()
     adapter._command_queue = queue.Queue(maxsize=256)
     adapter._latest_data = {}
+    adapter._last_state = {}
     adapter._data_lock = threading.Lock()
     adapter._stream_thread = None
     adapter._stream_running = False
