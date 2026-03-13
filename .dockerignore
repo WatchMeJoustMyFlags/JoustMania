@@ -40,6 +40,9 @@ docs/
 .DS_Store
 Thumbs.db
 
+# Rust
+**/target/
+
 # JoustMania specific
 *.tmp
 
