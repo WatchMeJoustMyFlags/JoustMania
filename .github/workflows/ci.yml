@@ -222,7 +222,9 @@ jobs:
       - name: Run tests
         if: steps.changes.outputs.exporter == 'true'
         working-directory: images/otel-collector/dtbizeventsexporter
-        run: go test -v -race ./...
+        run: |
+          go mod tidy
+          go test -v -race ./...
 
   lint-dockerfiles:
     name: Lint Dockerfiles

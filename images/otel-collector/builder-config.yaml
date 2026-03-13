@@ -46,7 +46,7 @@ exporters:
   - gomod: github.com/watchmejoustmyflags/joustmania/otel-collector/dtbizeventsexporter v0.0.0
 
 replaces:
-  - github.com/watchmejoustmyflags/joustmania/otel-collector/dtbizeventsexporter v0.0.0 => ./dtbizeventsexporter
+  - github.com/watchmejoustmyflags/joustmania/otel-collector/dtbizeventsexporter v0.0.0 => /build/dtbizeventsexporter
 
 providers:
   - gomod: go.opentelemetry.io/collector/confmap/provider/envprovider v1.53.0
