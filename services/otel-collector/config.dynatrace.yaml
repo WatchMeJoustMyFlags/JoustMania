@@ -90,6 +90,28 @@ processors:
         match_type: regexp
         metric_names: ["controller_accel_.*"]
 
+  # Resource processors for scraped targets — Dynatrace needs service.name
+  # to recognize these as services in the service overview. OTLP-pushed
+  # services (Python, Rust) set this in their SDK; scraped targets need it
+  # injected here.
+  resource/flagd:
+    attributes:
+      - key: service.name
+        value: flagd
+        action: insert
+      - key: service.namespace
+        value: infrastructure
+        action: insert
+
+  resource/otel-collector:
+    attributes:
+      - key: service.name
+        value: otel-collector
+        action: insert
+      - key: service.namespace
+        value: observability
+        action: insert
+
   # Cumulative-to-delta processor for Dynatrace.
   # Dynatrace requires delta temporality for counters; the local stack
   # (VictoriaMetrics/Prometheus) expects cumulative. This processor is only
@@ -207,12 +229,12 @@ service:
 
     metrics/observability-dynatrace:
       receivers: [prometheus/observability]
-      processors: [memory_limiter, batch, cumulativetodelta]
+      processors: [memory_limiter, resource/otel-collector, batch, cumulativetodelta]
       exporters: [otlphttp/dynatrace]
 
     metrics/infrastructure-dynatrace:
       receivers: [prometheus/infrastructure]
-      processors: [memory_limiter, batch, cumulativetodelta]
+      processors: [memory_limiter, resource/flagd, batch, cumulativetodelta]
       exporters: [otlphttp/dynatrace]
 
     logs/dynatrace:
