@@ -1,0 +1,16 @@
+# docker-compose.ci-rust.yml — adds rust-hid to CI test stack
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.ci.yml -f docker-compose.ci-rust.yml up
+#
+# Part of #611 (canary release architecture)
+services:
+  rust-hid:
+    image: ${IMAGE_PREFIX:-ghcr.io/watchmejoustmyflags/joustmania}/rust-hid:${IMAGE_TAG:-latest}
+    ports:
+      - "50058:50058"
+    healthcheck:
+      test: ["CMD", "grpc_health_probe", "-addr=:50058"]
+      interval: 5s
+      timeout: 3s
+      retries: 5

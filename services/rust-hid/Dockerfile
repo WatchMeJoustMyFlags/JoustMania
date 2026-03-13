@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # Multi-stage build for JoustMania Rust HID Service
 #
 # Serves PairingService and ControllerIOService gRPC on port 50058.
@@ -23,17 +24,24 @@ COPY proto/psmove_hid.proto proto/
 # -- Dependency caching layer --
 # Copy only manifests + build script first, build deps with a stub main.
 # This layer is cached unless Cargo.toml/Cargo.lock change.
+# BuildKit cache mounts keep the cargo registry + compiled deps across builds,
+# so even when Cargo.toml changes only new/changed deps recompile.
 COPY services/rust-hid/Cargo.toml services/rust-hid/Cargo.lock services/rust-hid/
 COPY services/rust-hid/build.rs services/rust-hid/
 
 WORKDIR /app/services/rust-hid
-RUN mkdir src && echo 'fn main() {}' > src/main.rs \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry \
+    --mount=type=cache,target=/usr/local/cargo/git,id=cargo-git \
+    mkdir src && echo 'fn main() {}' > src/main.rs \
     && cargo build --release 2>/dev/null || true \
     && rm -rf src
 
 # -- Build actual binary --
+# Cache mounts persist the cargo registry across source-only rebuilds too.
 COPY services/rust-hid/src/ src/
-RUN touch src/main.rs && cargo build --release
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry \
+    --mount=type=cache,target=/usr/local/cargo/git,id=cargo-git \
+    touch src/main.rs && cargo build --release
 
 # =============================================================================
 # Stage 2: Runtime image
