@@ -77,32 +77,33 @@
         ]
       }
     },
-    "frame-consistency": {
+    "frame-health": {
       "type": "data",
-      "title": "Frame Consistency",
-      "description": "% of frames within target timing",
-      "query": "timeseries avg(game_loop_frame_consistency_percent)",
+      "title": "Frame Health",
+      "description": "Frame consistency and jitter at a glance. Color = consistency %. Overlay shows jitter and dropped frames.",
+      "query": "timeseries consistency = avg(game_loop_frame_consistency_percent), jitter = avg(game_loop_jitter_ms), hz = avg(game_actual_update_frequency_hz) | fieldsAdd pctLast = arrayLast(consistency), jitterLast = arrayLast(jitter), hzLast = arrayLast(hz) | fields pctLast, jitterLast, hzLast",
       "queryConfig": {
         "additionalFilters": [],
         "version": "4.3.1",
         "datatype": "metrics"
       },
-      "visualization": "singleValue",
+      "visualization": "honeycomb",
       "visualizationConfig": {
-        "unit": "percent",
+        "colorMode": "threshold",
+        "shape": "hexagon",
+        "colorField": "pctLast",
         "thresholds": [
-          { "value": 0, "color": "red" },
-          { "value": 90, "color": "yellow" },
-          { "value": 95, "color": "green" }
-        ],
-        "colorMode": "background"
+          { "value": 0, "color": "red", "label": "Bad" },
+          { "value": 90, "color": "yellow", "label": "Degraded" },
+          { "value": 95, "color": "green", "label": "Healthy" }
+        ]
       }
     },
-    "frame-jitter": {
+    "dropped-frames": {
       "type": "data",
-      "title": "Frame Jitter",
-      "description": "Stddev of frame times (lower = better)",
-      "query": "timeseries avg(game_loop_jitter_ms)",
+      "title": "Dropped Frames",
+      "description": "Frames exceeding 2x target time",
+      "query": "timeseries sum(game_loop_frames_dropped_total, rate: 1m)",
       "queryConfig": {
         "additionalFilters": [],
         "version": "4.3.1",
@@ -110,11 +111,10 @@
       },
       "visualization": "singleValue",
       "visualizationConfig": {
-        "unit": "milliseconds",
         "thresholds": [
           { "value": 0, "color": "green" },
-          { "value": 5, "color": "yellow" },
-          { "value": 10, "color": "red" }
+          { "value": 10, "color": "yellow" },
+          { "value": 50, "color": "red" }
         ],
         "colorMode": "background"
       }
@@ -193,38 +193,35 @@
         "legend": { "position": "bottom" }
       }
     },
-    "dropped-frames": {
+    "deaths-by-mode": {
       "type": "data",
-      "title": "Dropped Frames",
-      "description": "Frames exceeding 2x target time",
-      "query": "timeseries sum(game_loop_frames_dropped_total, rate: 1m)",
+      "title": "Deaths by Mode",
+      "description": "Player death rate by game mode",
+      "query": "timeseries sum(game_player_deaths_total, rate: 1m), by:{mode}",
       "queryConfig": {
         "additionalFilters": [],
         "version": "4.3.1",
         "datatype": "metrics"
       },
-      "visualization": "singleValue",
+      "visualization": "graph",
       "visualizationConfig": {
-        "thresholds": [
-          { "value": 0, "color": "green" },
-          { "value": 10, "color": "yellow" },
-          { "value": 50, "color": "red" }
-        ],
-        "colorMode": "background"
+        "drawStyle": "bar",
+        "stacked": true,
+        "legend": { "position": "bottom" }
       }
     }
   },
   "layouts": {
-    "0":  { "x": 0,  "y": 0,  "w": 4, "h": 4, "key": "game-status" },
-    "1":  { "x": 4,  "y": 0,  "w": 4, "h": 4, "key": "active-players" },
-    "2":  { "x": 8,  "y": 0,  "w": 4, "h": 4, "key": "players-alive" },
-    "3":  { "x": 12, "y": 0,  "w": 4, "h": 4, "key": "game-duration" },
-    "4":  { "x": 16, "y": 0,  "w": 4, "h": 4, "key": "frame-consistency" },
-    "5":  { "x": 20, "y": 0,  "w": 4, "h": 4, "key": "frame-jitter" },
-    "6":  { "x": 0,  "y": 4,  "w": 12, "h": 7, "key": "game-loop-hz" },
-    "7":  { "x": 12, "y": 4,  "w": 12, "h": 7, "key": "game-loop-jitter-graph" },
+    "0":  { "x": 0,  "y": 0, "w": 4, "h": 4, "key": "game-status" },
+    "1":  { "x": 4,  "y": 0, "w": 4, "h": 4, "key": "active-players" },
+    "2":  { "x": 8,  "y": 0, "w": 4, "h": 4, "key": "players-alive" },
+    "3":  { "x": 12, "y": 0, "w": 4, "h": 4, "key": "game-duration" },
+    "4":  { "x": 16, "y": 0, "w": 4, "h": 4, "key": "frame-health" },
+    "5":  { "x": 20, "y": 0, "w": 4, "h": 4, "key": "dropped-frames" },
+    "6":  { "x": 0,  "y": 4, "w": 12, "h": 7, "key": "game-loop-hz" },
+    "7":  { "x": 12, "y": 4, "w": 12, "h": 7, "key": "game-loop-jitter-graph" },
     "8":  { "x": 0,  "y": 11, "w": 8,  "h": 7, "key": "games-by-mode" },
-    "9":  { "x": 8,  "y": 11, "w": 12, "h": 7, "key": "games-started" },
-    "10": { "x": 20, "y": 11, "w": 4,  "h": 4, "key": "dropped-frames" }
+    "9":  { "x": 8,  "y": 11, "w": 8,  "h": 7, "key": "games-started" },
+    "10": { "x": 16, "y": 11, "w": 8,  "h": 7, "key": "deaths-by-mode" }
   }
 }
