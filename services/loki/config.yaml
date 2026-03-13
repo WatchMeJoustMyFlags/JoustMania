@@ -10,6 +10,7 @@ common:
   storage:
     filesystem:
       chunks_directory: /tmp/loki/chunks
+      rules_directory: /tmp/loki/rules
   replication_factor: 1
   ring:
     kvstore:
@@ -18,7 +19,6 @@ common:
 # Disable ruler - we don't need alerting rules, just log aggregation
 ruler:
   enable_api: false
-  enable_alertmanager_v2: false
   storage:
     type: local
     local:
@@ -26,34 +26,27 @@ ruler:
 
 # 24 hour retention for post-game debugging
 limits_config:
-  retention_period:  24h
-  enforce_metric_name:  false
+  retention_period: 24h
   reject_old_samples: true
   reject_old_samples_max_age: 168h
   max_cache_freshness_per_query: 10m
   split_queries_by_interval: 15m
-
-# Enable table manager for retention
-table_manager:
-  retention_deletes_enabled: true
-  retention_period: 24h
+  # Allow OTLP log ingestion
+  allow_structured_metadata: true
 
 schema_config:
   configs:
     - from: 2020-10-24
-      store: boltdb-shipper
+      store: tsdb
       object_store: filesystem
-      schema:  v11
+      schema: v13
       index:
         prefix: index_
         period: 24h
 
-chunk_store_config:
-  max_look_back_period: 24h
-
 compactor:
   working_directory: /tmp/loki/compactor
-  shared_store: filesystem
+  delete_request_store: filesystem
   compaction_interval: 10m
   retention_enabled: true
   retention_delete_delay: 2h

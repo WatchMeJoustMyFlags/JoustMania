@@ -419,6 +419,9 @@ jobs:
           - service: rust-hid
             dockerfile: services/rust-hid/Dockerfile
             image_name: rust-hid
+          - service: bizevents-bridge
+            dockerfile: services/bizevents-bridge/Dockerfile
+            image_name: bizevents-bridge
     steps:
       - uses: actions/checkout@v4
 
