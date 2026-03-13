@@ -68,8 +68,13 @@ COPY services/audio/pyproject.toml /app/services/audio/
 # Install workspace packages and service dependencies (miniaudio + resampy instead of pygame + scipy)
 # Heavy deps (numpy, numba, resampy) are pre-compiled in the builder image;
 # only miniaudio and pyalsaaudio need compilation here.
+# ARM64: disable auto-vectorization to prevent libmvec.so dependency (x86-only in glibc)
 WORKDIR /app
-RUN uv pip install --system -e proto/ -e lib/ --no-binary miniaudio -e services/audio/
+ARG TARGETARCH
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+      export CFLAGS="-fno-tree-loop-vectorize -fno-tree-slp-vectorize"; \
+    fi && \
+    uv pip install --system -e proto/ -e lib/ --no-binary miniaudio -e services/audio/
 
 # =============================================================================
 # Stage 3: Runtime image - distroless for minimal size
