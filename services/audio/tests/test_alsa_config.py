@@ -5,6 +5,7 @@ from unittest.mock import mock_open, patch
 from services.audio.alsa_config import (
     ASOUND_CONF_PATH,
     _auto_detect_card,
+    _pick_best_card,
     _resolve_card_number,
     _write_asound_conf,
     configure_alsa_device,
@@ -30,17 +31,55 @@ class TestResolveCardNumber:
         mock_detect.assert_called_once()
 
 
+class TestPickBestCard:
+    @patch("alsaaudio.card_name", side_effect=[("vc4-hdmi-0",), ("vc4-hdmi-1",), ("USB Audio",)])
+    def test_prefers_usb_over_hdmi(self, _mock_name):
+        idx, name = _pick_best_card([0, 1, 2])
+        assert idx == 2
+        assert name == "USB Audio"
+
+    @patch("alsaaudio.card_name", side_effect=[("vc4-hdmi-0",), ("USB Audio",), ("vc4-hdmi-1",)])
+    def test_picks_first_usb_card(self, _mock_name):
+        idx, name = _pick_best_card([0, 1, 2])
+        assert idx == 1
+        assert name == "USB Audio"
+
+    @patch("alsaaudio.card_name", side_effect=[("vc4-hdmi-0",), ("Headphones",)])
+    def test_falls_back_to_first_when_no_usb(self, _mock_name):
+        idx, name = _pick_best_card([0, 1])
+        assert idx == 0
+        assert name == "vc4-hdmi-0"
+
+    @patch("alsaaudio.card_name", return_value=("usb audio device",))
+    def test_case_insensitive_usb_match(self, _mock_name):
+        idx, name = _pick_best_card([3])
+        assert idx == 3
+
+    @patch("alsaaudio.card_name", side_effect=[Exception("bad card"), ("USB Audio",)])
+    def test_unknown_name_on_error(self, _mock_name):
+        idx, name = _pick_best_card([0, 1])
+        assert idx == 1
+        assert name == "USB Audio"
+
+    @patch("alsaaudio.card_name", side_effect=[Exception("bad"), Exception("bad")])
+    def test_all_unknown_falls_back_to_first(self, _mock_name):
+        idx, name = _pick_best_card([5, 6])
+        assert idx == 5
+        assert name == "unknown"
+
+
 class TestAutoDetectCard:
     @patch("services.audio.alsa_config.time.sleep")
-    @patch("alsaaudio.card_name", return_value=("Headphones", "Headphones Audio"))
+    @patch("services.audio.alsa_config._pick_best_card", return_value=(0, "Headphones"))
     @patch("alsaaudio.card_indexes", return_value=[0, 1])
-    def test_returns_first_card_index(self, mock_indexes, mock_name, _mock_sleep):
+    def test_delegates_to_pick_best_card(self, mock_indexes, mock_pick, _mock_sleep):
         assert _auto_detect_card() == 0
+        mock_pick.assert_called_once_with([0, 1])
 
     @patch("services.audio.alsa_config.time.sleep")
-    @patch("alsaaudio.card_name", return_value=("USB Audio", "USB Audio Device"))
-    @patch("alsaaudio.card_indexes", return_value=[2, 5])
-    def test_returns_nonzero_first_index(self, mock_indexes, mock_name, _mock_sleep):
+    @patch("services.audio.alsa_config._pick_best_card", return_value=(2, "USB Audio"))
+    @patch("alsaaudio.card_indexes", return_value=[0, 1, 2])
+    def test_returns_usb_card_from_pick(self, mock_indexes, mock_pick, _mock_sleep):
         assert _auto_detect_card() == 2
 
     @patch("services.audio.alsa_config.time.sleep")
@@ -58,17 +97,17 @@ class TestAutoDetectCard:
         assert mock_indexes.call_count == 3
 
     @patch("services.audio.alsa_config.time.sleep")
-    @patch("alsaaudio.card_name", return_value=("USB Audio", "USB Audio Device"))
+    @patch("services.audio.alsa_config._pick_best_card", return_value=(1, "USB Audio"))
     @patch("alsaaudio.card_indexes", side_effect=[[], [1]])
-    def test_retry_succeeds_on_second_attempt(self, mock_indexes, mock_name, mock_sleep):
+    def test_retry_succeeds_on_second_attempt(self, mock_indexes, mock_pick, mock_sleep):
         assert _auto_detect_card() == 1
         assert mock_indexes.call_count == 2
         mock_sleep.assert_called_once()
 
     @patch("services.audio.alsa_config.time.sleep")
-    @patch("alsaaudio.card_name", return_value=("Headphones", "Headphones Audio"))
+    @patch("services.audio.alsa_config._pick_best_card", return_value=(0, "Headphones"))
     @patch("alsaaudio.card_indexes", side_effect=[Exception("not ready"), [0]])
-    def test_retry_after_exception_succeeds(self, mock_indexes, mock_name, mock_sleep):
+    def test_retry_after_exception_succeeds(self, mock_indexes, mock_pick, mock_sleep):
         assert _auto_detect_card() == 0
         assert mock_indexes.call_count == 2
 
