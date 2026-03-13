@@ -3,7 +3,13 @@
   "release-type": "python",
   "packages": {
     ".": {
-      "package-name": "joustmania"
+      "package-name": "joustmania",
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": ".env"
+        }
+      ]
     }
   },
   "changelog-sections": [
