@@ -10,6 +10,13 @@ environmentGroups:
           type: environment
           value: DYNATRACE_ENVIRONMENT_URL
         auth:
-          token:
-            type: environment
-            name: DYNATRACE_API_TOKEN
+          oAuth:
+            clientId:
+              type: environment
+              name: DYNATRACE_OAUTH_CLIENT_ID
+            clientSecret:
+              type: environment
+              name: DYNATRACE_OAUTH_CLIENT_SECRET
+            tokenEndpoint:
+              type: value
+              value: https://sso-sprint.dynatracelabs.com/sso/oauth2/token

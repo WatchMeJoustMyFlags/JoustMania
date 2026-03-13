@@ -5,7 +5,7 @@
     "game-intensity": {
       "type": "data",
       "title": "Game Intensity",
-      "description": "Overall game activity level based on average player acceleration",
+      "description": "Average player acceleration",
       "query": "timeseries avg(game_player_accel_magnitude)",
       "queryConfig": {
         "additionalFilters": [],
@@ -24,129 +24,10 @@
         ]
       }
     },
-    "peak-acceleration": {
-      "type": "data",
-      "title": "Peak Acceleration (Running Max)",
-      "description": "Peak acceleration per controller over time",
-      "query": "timeseries avg(game_player_peak_accel), by:{serial}",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
-      },
-      "visualization": "graph",
-      "visualizationConfig": {
-        "yAxisUnit": "g",
-        "legend": { "position": "right" }
-      }
-    },
-    "near-death-events": {
-      "type": "data",
-      "title": "Near-Death Events (per minute)",
-      "description": "Rate of near-death events per player",
-      "query": "timeseries sum(delta(game_near_death_events_total)) / duration(\"1m\") * 60, by:{serial, game_mode}",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
-      },
-      "visualization": "graph",
-      "visualizationConfig": {
-        "drawStyle": "bar",
-        "stacked": true,
-        "legend": { "position": "right" }
-      }
-    },
-    "warning-events": {
-      "type": "data",
-      "title": "Warning Events (per minute)",
-      "description": "Rate of warning events per player",
-      "query": "timeseries sum(delta(game_player_warnings_total)) / duration(\"1m\") * 60, by:{serial, game_mode}",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
-      },
-      "visualization": "graph",
-      "visualizationConfig": {
-        "drawStyle": "bar",
-        "stacked": true,
-        "legend": { "position": "right" }
-      }
-    },
-    "movement-zone-distribution": {
-      "type": "data",
-      "title": "Movement Zone Distribution",
-      "description": "Distribution of player movement across acceleration zones",
-      "query": "timeseries still = sum(delta(game_accel_distribution_bucket), filter:{le eq \"1.1\"}), active = sum(delta(game_accel_distribution_bucket), filter:{le eq \"1.5\"}) - sum(delta(game_accel_distribution_bucket), filter:{le eq \"1.1\"}), warning = sum(delta(game_accel_distribution_bucket), filter:{le eq \"2.0\"}) - sum(delta(game_accel_distribution_bucket), filter:{le eq \"1.5\"}), danger = sum(delta(game_accel_distribution_bucket), filter:{le eq \"+Inf\"}) - sum(delta(game_accel_distribution_bucket), filter:{le eq \"2.0\"})",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
-      },
-      "visualization": "pie",
-      "visualizationConfig": {
-        "pieType": "donut",
-        "legend": { "position": "right" }
-      }
-    },
-    "total-analytics-samples": {
-      "type": "data",
-      "title": "Total Analytics Samples",
-      "description": "Total number of analytics samples collected",
-      "query": "timeseries sum(game_analytics_samples_total)",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
-      },
-      "visualization": "singleValue",
-      "visualizationConfig": {
-        "thresholds": [
-          { "value": 0, "color": "green" }
-        ]
-      }
-    },
-    "total-near-death-events": {
-      "type": "data",
-      "title": "Total Near-Death Events",
-      "description": "Cumulative near-death events",
-      "query": "timeseries sum(game_near_death_events_total)",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
-      },
-      "visualization": "singleValue",
-      "visualizationConfig": {
-        "thresholds": [
-          { "value": 0, "color": "green" },
-          { "value": 10, "color": "yellow" },
-          { "value": 50, "color": "red" }
-        ]
-      }
-    },
-    "total-warning-events": {
-      "type": "data",
-      "title": "Total Warning Events",
-      "description": "Cumulative warning events",
-      "query": "timeseries sum(game_player_warnings_total)",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
-      },
-      "visualization": "singleValue",
-      "visualizationConfig": {
-        "thresholds": [
-          { "value": 0, "color": "green" }
-        ]
-      }
-    },
     "music-tempo": {
       "type": "data",
       "title": "Music Tempo",
-      "description": "Current music tempo (1.0=Slow, 1.3=Fast)",
+      "description": "Current music speed",
       "query": "timeseries avg(game_music_tempo)",
       "queryConfig": {
         "additionalFilters": [],
@@ -171,7 +52,7 @@
     "sensitivity": {
       "type": "data",
       "title": "Sensitivity",
-      "description": "Current game sensitivity level (0=most sensitive, 4=least sensitive)",
+      "description": "Current game sensitivity (0=most, 4=least)",
       "query": "timeseries avg(game_sensitivity)",
       "queryConfig": {
         "additionalFilters": [],
@@ -190,10 +71,96 @@
         "colorMode": "background"
       }
     },
+    "total-near-deaths": {
+      "type": "data",
+      "title": "Near-Death Events",
+      "description": "Cumulative near-death events",
+      "query": "timeseries sum(game_near_death_events_total)",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "singleValue",
+      "visualizationConfig": {
+        "thresholds": [
+          { "value": 0, "color": "green" },
+          { "value": 10, "color": "yellow" },
+          { "value": 50, "color": "red" }
+        ]
+      }
+    },
+    "total-warnings": {
+      "type": "data",
+      "title": "Warning Events",
+      "description": "Cumulative warning events",
+      "query": "timeseries sum(game_player_warnings_total)",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "singleValue",
+      "visualizationConfig": {
+        "thresholds": [
+          { "value": 0, "color": "green" }
+        ]
+      }
+    },
+    "peak-acceleration": {
+      "type": "data",
+      "title": "Peak Acceleration by Controller",
+      "description": "Peak acceleration per controller over time",
+      "query": "timeseries avg(game_player_peak_accel), by:{serial}",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "graph",
+      "visualizationConfig": {
+        "yAxisUnit": "g",
+        "legend": { "position": "right" }
+      }
+    },
+    "near-death-rate": {
+      "type": "data",
+      "title": "Near-Death Events Over Time",
+      "description": "Near-death event rate by player and mode",
+      "query": "timeseries sum(game_near_death_events_total, rate: 1m), by:{serial, game_mode}",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "graph",
+      "visualizationConfig": {
+        "drawStyle": "bar",
+        "stacked": true,
+        "legend": { "position": "right" }
+      }
+    },
+    "warning-rate": {
+      "type": "data",
+      "title": "Warning Events Over Time",
+      "description": "Warning event rate by player and mode",
+      "query": "timeseries sum(game_player_warnings_total, rate: 1m), by:{serial, game_mode}",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "graph",
+      "visualizationConfig": {
+        "drawStyle": "bar",
+        "stacked": true,
+        "legend": { "position": "right" }
+      }
+    },
     "effective-thresholds": {
       "type": "data",
-      "title": "Effective Thresholds (Sensitivity + Music Speed)",
-      "description": "Current effective warning and death thresholds",
+      "title": "Effective Thresholds",
+      "description": "Warning and death thresholds (sensitivity + music speed)",
       "query": "timeseries warning = avg(game_effective_warning_threshold), death = avg(game_effective_death_threshold)",
       "queryConfig": {
         "additionalFilters": [],
@@ -205,14 +172,10 @@
         "yAxisUnit": "g",
         "yAxisMin": 1.0,
         "yAxisMax": 4.0,
-        "legend": { "position": "right" },
-        "seriesOverrides": [
-          { "name": "warning", "color": "yellow" },
-          { "name": "death", "color": "red" }
-        ]
+        "legend": { "position": "right" }
       }
     },
-    "music-tempo-over-time": {
+    "music-tempo-graph": {
       "type": "data",
       "title": "Music Tempo Over Time",
       "description": "Music tempo changes during gameplay",
@@ -228,20 +191,36 @@
         "yAxisMax": 1.4,
         "legend": { "position": "bottom" }
       }
+    },
+    "analytics-samples": {
+      "type": "data",
+      "title": "Analytics Samples",
+      "description": "Total analytics samples collected",
+      "query": "timeseries sum(game_analytics_samples_total)",
+      "queryConfig": {
+        "additionalFilters": [],
+        "version": "4.3.1",
+        "datatype": "metrics"
+      },
+      "visualization": "singleValue",
+      "visualizationConfig": {
+        "thresholds": [
+          { "value": 0, "color": "green" }
+        ]
+      }
     }
   },
   "layouts": {
-    "0": { "x": 0, "y": 0, "w": 6, "h": 8, "key": "game-intensity" },
-    "1": { "x": 6, "y": 0, "w": 9, "h": 8, "key": "peak-acceleration" },
-    "2": { "x": 15, "y": 0, "w": 9, "h": 8, "key": "near-death-events" },
-    "3": { "x": 0, "y": 8, "w": 12, "h": 6, "key": "warning-events" },
-    "4": { "x": 12, "y": 8, "w": 12, "h": 6, "key": "movement-zone-distribution" },
-    "5": { "x": 0, "y": 14, "w": 6, "h": 4, "key": "total-analytics-samples" },
-    "6": { "x": 6, "y": 14, "w": 6, "h": 4, "key": "total-near-death-events" },
-    "7": { "x": 12, "y": 14, "w": 6, "h": 4, "key": "total-warning-events" },
-    "8": { "x": 18, "y": 14, "w": 6, "h": 4, "key": "music-tempo" },
-    "9": { "x": 0, "y": 18, "w": 4, "h": 4, "key": "sensitivity" },
-    "10": { "x": 4, "y": 18, "w": 20, "h": 5, "key": "effective-thresholds" },
-    "11": { "x": 0, "y": 23, "w": 24, "h": 5, "key": "music-tempo-over-time" }
+    "0":  { "x": 0,  "y": 0,  "w": 6,  "h": 6, "key": "game-intensity" },
+    "1":  { "x": 6,  "y": 0,  "w": 4,  "h": 3, "key": "music-tempo" },
+    "2":  { "x": 10, "y": 0,  "w": 4,  "h": 3, "key": "sensitivity" },
+    "3":  { "x": 6,  "y": 3,  "w": 4,  "h": 3, "key": "total-near-deaths" },
+    "4":  { "x": 10, "y": 3,  "w": 4,  "h": 3, "key": "total-warnings" },
+    "5":  { "x": 14, "y": 0,  "w": 10, "h": 6, "key": "peak-acceleration" },
+    "6":  { "x": 0,  "y": 6,  "w": 12, "h": 7, "key": "near-death-rate" },
+    "7":  { "x": 12, "y": 6,  "w": 12, "h": 7, "key": "warning-rate" },
+    "8":  { "x": 0,  "y": 13, "w": 12, "h": 6, "key": "effective-thresholds" },
+    "9":  { "x": 12, "y": 13, "w": 12, "h": 6, "key": "music-tempo-graph" },
+    "10": { "x": 0,  "y": 19, "w": 4,  "h": 3, "key": "analytics-samples" }
   }
 }

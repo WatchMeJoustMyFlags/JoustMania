@@ -2,139 +2,124 @@
   "version": 14,
   "variables": [],
   "tiles": {
-    "connected-controllers": {
+    "controller-honeycomb": {
       "type": "data",
-      "title": "Connected Controllers",
-      "description": "Number of currently connected controllers",
-      "query": "timeseries avg(controller_connected), by:{serial} | filter value[] == 1 | summarize count()",
+      "title": "Controller Status",
+      "description": "Each cell is a controller, colored by connection status",
+      "query": "timeseries connected = avg(controller_connected), by:{serial} | fieldsAdd last = arrayLast(connected) | fields serial, last",
       "queryConfig": {
         "additionalFilters": [],
         "version": "4.3.1",
         "datatype": "metrics"
       },
-      "visualization": "singleValue",
+      "visualization": "honeycomb",
       "visualizationConfig": {
+        "colorMode": "threshold",
+        "shape": "hexagon",
+        "label": "serial",
+        "colorField": "last",
         "thresholds": [
-          { "value": 0, "color": "green" }
+          { "value": 0, "color": "red", "label": "Offline" },
+          { "value": 0.5, "color": "green", "label": "Online" }
         ]
       }
     },
-    "low-battery": {
+    "battery-honeycomb": {
       "type": "data",
-      "title": "Low Battery",
-      "description": "Controllers with low battery (level <= 2)",
-      "query": "timeseries avg(controller_battery_level), by:{serial} | filter value[] <= 2 | summarize count() | fieldsAdd default(value, default:0)",
+      "title": "Battery Level",
+      "description": "Each cell is a controller, colored by battery level",
+      "query": "timeseries battery = avg(controller_battery_level), by:{serial} | fieldsAdd last = arrayLast(battery) | fields serial, last",
       "queryConfig": {
         "additionalFilters": [],
         "version": "4.3.1",
         "datatype": "metrics"
       },
-      "visualization": "singleValue",
+      "visualization": "honeycomb",
       "visualizationConfig": {
+        "colorMode": "threshold",
+        "shape": "hexagon",
+        "label": "serial",
+        "colorField": "last",
         "thresholds": [
-          { "value": 0, "color": "green" },
-          { "value": 1, "color": "yellow" },
-          { "value": 2, "color": "red" }
+          { "value": 0, "color": "red", "label": "Critical" },
+          { "value": 2, "color": "yellow", "label": "Low" },
+          { "value": 3, "color": "green", "label": "OK" }
         ]
       }
     },
-    "weak-signal": {
+    "signal-honeycomb": {
       "type": "data",
-      "title": "Weak Signal",
-      "description": "Controllers with weak signal (RSSI < -70 dBm)",
-      "query": "timeseries avg(bluetooth_device_rssi_dbm), by:{serial} | filter value[] < -70 | summarize count() | fieldsAdd default(value, default:0)",
+      "title": "Signal Strength",
+      "description": "Each cell is a controller, colored by Bluetooth RSSI",
+      "query": "timeseries rssi = avg(bluetooth_device_rssi_dbm), by:{serial} | fieldsAdd last = arrayLast(rssi) | fields serial, last",
       "queryConfig": {
         "additionalFilters": [],
         "version": "4.3.1",
         "datatype": "metrics"
       },
-      "visualization": "singleValue",
+      "visualization": "honeycomb",
       "visualizationConfig": {
+        "colorMode": "threshold",
+        "shape": "hexagon",
+        "label": "serial",
+        "colorField": "last",
         "thresholds": [
-          { "value": 0, "color": "green" },
-          { "value": 1, "color": "yellow" },
-          { "value": 2, "color": "red" }
+          { "value": -90, "color": "red", "label": "Weak" },
+          { "value": -70, "color": "yellow", "label": "Fair" },
+          { "value": -50, "color": "green", "label": "Strong" }
         ]
       }
     },
-    "controller-status-table": {
+    "controller-detail-table": {
       "type": "data",
-      "title": "Controller Status Table",
-      "description": "All connected controllers with battery, signal, and status",
+      "title": "Controller Details",
+      "description": "All controllers with battery, signal, and connection",
       "query": "timeseries battery = avg(controller_battery_level), rssi = avg(bluetooth_device_rssi_dbm), connected = avg(controller_connected), by:{serial}",
       "queryConfig": {
         "additionalFilters": [],
         "version": "4.3.1",
         "datatype": "metrics"
       },
-      "visualization": "table",
-      "visualizationConfig": {
-        "columns": ["serial", "battery", "rssi", "connected"],
-        "columnAliases": {
-          "serial": "Serial",
-          "battery": "Battery",
-          "rssi": "Signal (dBm)",
-          "connected": "Status"
-        }
-      }
+      "visualization": "table"
     },
-    "button-events-1m": {
+    "button-events": {
       "type": "data",
-      "title": "Button Events (1m)",
-      "description": "Total button events in last minute",
-      "query": "timeseries sum(delta(controller_button_events_total))",
+      "title": "Button Events",
+      "description": "Button event rate over time",
+      "query": "timeseries sum(controller_button_events_total, rate: 1m)",
       "queryConfig": {
         "additionalFilters": [],
         "version": "4.3.1",
         "datatype": "metrics"
       },
-      "visualization": "singleValue",
+      "visualization": "graph",
       "visualizationConfig": {
-        "thresholds": [
-          { "value": 0, "color": "blue" }
-        ]
+        "legend": { "position": "bottom" }
       }
     },
-    "disconnects-5m": {
+    "disconnects": {
       "type": "data",
-      "title": "Disconnects (5m)",
-      "description": "Total disconnects in last 5 minutes",
-      "query": "timeseries sum(delta(controller_disconnect_total))",
+      "title": "Disconnects",
+      "description": "Controller disconnect rate over time",
+      "query": "timeseries sum(controller_disconnect_total, rate: 1m)",
       "queryConfig": {
         "additionalFilters": [],
         "version": "4.3.1",
         "datatype": "metrics"
       },
-      "visualization": "singleValue",
+      "visualization": "graph",
       "visualizationConfig": {
+        "legend": { "position": "bottom" },
         "thresholds": [
-          { "value": 0, "color": "green" },
           { "value": 1, "color": "yellow" },
           { "value": 3, "color": "red" }
-        ]
-      }
-    },
-    "active-streams": {
-      "type": "data",
-      "title": "Active Streams",
-      "description": "Active data streams",
-      "query": "timeseries avg(controller_streams_active)",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
-      },
-      "visualization": "singleValue",
-      "visualizationConfig": {
-        "thresholds": [
-          { "value": 0, "color": "green" }
         ]
       }
     },
     "poll-mode": {
       "type": "data",
       "title": "Poll Mode",
-      "description": "Current polling mode: Idle (10Hz) or Gameplay (100Hz)",
+      "description": "Idle (10Hz) vs Gameplay (100Hz)",
       "query": "timeseries avg(controller_polling_mode)",
       "queryConfig": {
         "additionalFilters": [],
@@ -154,11 +139,11 @@
         "colorMode": "background"
       }
     },
-    "poll-rate": {
+    "active-streams": {
       "type": "data",
-      "title": "Poll Rate",
-      "description": "Current controller polling rate in Hz",
-      "query": "timeseries avg(controller_polling_target_hz)",
+      "title": "Active Streams",
+      "description": "Active data streams",
+      "query": "timeseries avg(controller_streams_active)",
       "queryConfig": {
         "additionalFilters": [],
         "version": "4.3.1",
@@ -166,23 +151,20 @@
       },
       "visualization": "singleValue",
       "visualizationConfig": {
-        "unit": "hertz",
         "thresholds": [
-          { "value": 0, "color": "blue" },
-          { "value": 60, "color": "green" }
+          { "value": 0, "color": "green" }
         ]
       }
     }
   },
   "layouts": {
-    "0": { "x": 0, "y": 0, "w": 4, "h": 4, "key": "connected-controllers" },
-    "1": { "x": 4, "y": 0, "w": 4, "h": 4, "key": "low-battery" },
-    "2": { "x": 8, "y": 0, "w": 4, "h": 4, "key": "weak-signal" },
-    "3": { "x": 12, "y": 0, "w": 12, "h": 8, "key": "controller-status-table" },
-    "4": { "x": 0, "y": 4, "w": 4, "h": 4, "key": "button-events-1m" },
-    "5": { "x": 4, "y": 4, "w": 4, "h": 4, "key": "disconnects-5m" },
-    "6": { "x": 8, "y": 4, "w": 4, "h": 4, "key": "active-streams" },
-    "7": { "x": 12, "y": 8, "w": 6, "h": 4, "key": "poll-mode" },
-    "8": { "x": 18, "y": 8, "w": 6, "h": 4, "key": "poll-rate" }
+    "0": { "x": 0, "y": 0, "w": 8, "h": 8, "key": "controller-honeycomb" },
+    "1": { "x": 8, "y": 0, "w": 8, "h": 8, "key": "battery-honeycomb" },
+    "2": { "x": 16, "y": 0, "w": 8, "h": 8, "key": "signal-honeycomb" },
+    "3": { "x": 0, "y": 8, "w": 16, "h": 6, "key": "controller-detail-table" },
+    "4": { "x": 16, "y": 8, "w": 4, "h": 3, "key": "poll-mode" },
+    "5": { "x": 20, "y": 8, "w": 4, "h": 3, "key": "active-streams" },
+    "6": { "x": 0, "y": 14, "w": 12, "h": 6, "key": "button-events" },
+    "7": { "x": 12, "y": 14, "w": 12, "h": 6, "key": "disconnects" }
   }
 }

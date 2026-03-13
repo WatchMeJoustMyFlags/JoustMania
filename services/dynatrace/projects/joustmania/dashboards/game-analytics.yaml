@@ -1,7 +1,9 @@
 configs:
   - id: game-analytics
     type:
-      api: document
+      document:
+        kind: dashboard
+        private: false
     config:
       name: "JoustMania - Game Analytics"
       template: game-analytics.json

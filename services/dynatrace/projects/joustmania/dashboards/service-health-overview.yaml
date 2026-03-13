@@ -1,7 +1,0 @@
-configs:
-  - id: service-health-overview
-    type:
-      api: document
-    config:
-      name: "JoustMania - Service Health Overview"
-      template: service-health-overview.json
