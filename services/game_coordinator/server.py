@@ -46,6 +46,7 @@ from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+from lib.otel_logging import init_logging
 from lib.otel_metrics import init_metrics
 from lib.profiling import init_profiling
 from lib.system_metrics import start_system_metrics_collector
@@ -68,6 +69,7 @@ async def serve(port=50053):
     # Initialize OTEL push metrics
     # Export interval read from flagd with per-service targeting (Issue #479)
     init_metrics()
+    init_logging()
     init_profiling()
 
     # Start system metrics collection

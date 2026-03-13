@@ -20,6 +20,43 @@ receivers:
               labels:
                 instance: 'raspberry-pi'
 
+  # Observability stack: monitoring tools that observe the system
+  prometheus/observability:
+    config:
+      scrape_configs:
+        - job_name: 'victoria-metrics'
+          scrape_interval: 30s
+          static_configs:
+            - targets: ['victoria-metrics:8428']
+        - job_name: 'prometheus'
+          scrape_interval: 30s
+          static_configs:
+            - targets: ['prometheus:9090']
+        # Self-telemetry: the collector exposes its own metrics on :8888.
+        # Rename otelcol_process_* to standard process_* for unified dashboards.
+        - job_name: 'otel-collector'
+          scrape_interval: 30s
+          static_configs:
+            - targets: ['localhost:8888']
+          metric_relabel_configs:
+            - source_labels: [__name__]
+              regex: 'otelcol_process_cpu_seconds'
+              target_label: __name__
+              replacement: 'process_cpu_seconds_total'
+            - source_labels: [__name__]
+              regex: 'otelcol_process_memory_rss'
+              target_label: __name__
+              replacement: 'process_resident_memory_bytes'
+
+  # Infrastructure: supporting services for the game platform
+  prometheus/infrastructure:
+    config:
+      scrape_configs:
+        - job_name: 'flagd'
+          scrape_interval: 30s
+          static_configs:
+            - targets: ['flagd:8014']
+
 processors:
   # Batch processor for better performance (traces/logs)
   batch:
@@ -120,6 +157,18 @@ service:
       processors: [memory_limiter, batch/fast]
       exporters: [prometheusremotewrite]
 
+    # Observability metrics — victoria-metrics, prometheus, otel-collector
+    metrics/observability:
+      receivers: [prometheus/observability]
+      processors: [memory_limiter, batch/fast]
+      exporters: [prometheusremotewrite]
+
+    # Infrastructure metrics — flagd (scraped, not OTLP-pushed)
+    metrics/infrastructure:
+      receivers: [prometheus/infrastructure]
+      processors: [memory_limiter, batch/fast]
+      exporters: [prometheusremotewrite]
+
     # Logs pipeline
     logs:
       receivers: [otlp]
@@ -146,10 +195,60 @@ service:
       processors: [memory_limiter, batch, cumulativetodelta]
       exporters: [otlphttp/dynatrace]
 
+    metrics/observability-dynatrace:
+      receivers: [prometheus/observability]
+      processors: [memory_limiter, batch, cumulativetodelta]
+      exporters: [otlphttp/dynatrace]
+
+    metrics/infrastructure-dynatrace:
+      receivers: [prometheus/infrastructure]
+      processors: [memory_limiter, batch, cumulativetodelta]
+      exporters: [otlphttp/dynatrace]
+
     logs/dynatrace:
       receivers: [otlp]
       processors: [memory_limiter, batch, resource]
       exporters: [otlphttp/dynatrace]
+
+    # TODO: Add bizevents pipeline for high-frequency acceleration data.
+    #
+    # Acceleration metrics (controller_accel_magnitude, controller_accel_x/y/z)
+    # are pushed to VictoriaMetrics at ~100Hz but Dynatrace's 1-min metric
+    # resolution is too coarse. Transform these into Dynatrace business events
+    # via the metricsaslogsconnector so they appear as biz events with trace
+    # correlation.
+    #
+    # BLOCKER: Requires collector upgrade from v0.110.0 to v0.141.0+
+    # (metricsaslogsconnector merged in opentelemetry-collector-contrib #42052)
+    #
+    # Implementation:
+    #   connectors:
+    #     metricsaslogs:
+    #       include_resource_attributes: true
+    #       include_scope_info: true
+    #
+    #   # Add filter processor to select only acceleration metrics:
+    #   filter/accel:
+    #     metrics:
+    #       include:
+    #         match_type: regexp
+    #         metric_names: ["controller_accel_.*"]
+    #
+    #   pipelines:
+    #     metrics/accel-bizevents:
+    #       receivers: [otlp]
+    #       processors: [memory_limiter, filter/accel, batch/fast, resource]
+    #       exporters: [metricsaslogs]
+    #
+    #     logs/bizevents-dynatrace:
+    #       receivers: [metricsaslogs]
+    #       processors: [memory_limiter, batch, resource]
+    #       exporters: [otlphttp/dynatrace]
+    #
+    # Then configure Dynatrace OpenPipeline to convert these OTLP logs into
+    # business events (route on metric.name, extract controller_id/axis/value).
+    # NOTE: Estimate Dynatrace log ingestion cost before enabling — at 100Hz
+    # per controller with 4 metrics, that's ~400 log records/sec per controller.
 
   extensions: [health_check]
 
