@@ -98,6 +98,7 @@ class MultiplexerBackend(ControllerBackend):
         if self._bt_discovery:
             try:
                 await self._bt_discovery.initialize()
+                await self._bt_discovery.get_all_attached_addresses()
             except Exception:
                 logger.exception("Failed to initialize CentralizedBTDiscovery")
 
@@ -259,10 +260,10 @@ class MultiplexerBackend(ControllerBackend):
         """Update Prometheus metrics for connected controllers."""
         for serial, adapter in seen.items():
             metrics.controller_backend_info.labels(serial=serial, backend=adapter.adapter_type).set(1)
+            hci = None
             if self._bt_discovery:
                 hci = self._bt_discovery.get_adapter_for_address(serial)
-                if hci:
-                    metrics.controller_adapter_info.labels(serial=serial, adapter=hci).set(1)
+            metrics.controller_adapter_info.labels(serial=serial, adapter=hci or "unknown").set(1)
 
     def update_all_leds(self) -> int:
         """Centralized LED refresh with keep-alive and color-change detection."""

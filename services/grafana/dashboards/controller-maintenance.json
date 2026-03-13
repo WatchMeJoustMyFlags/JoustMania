@@ -307,7 +307,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count((scalar(controller_polling_target_hz) - rate(controller_poll_drops_total[1m])) < 50) or vector(0)",
+          "expr": "count(((scalar(controller_polling_target_hz) - rate(controller_poll_drops_total[$__rate_interval])) * on(serial) group_left(name) controller_info or on(serial, name) (controller_info * 0 + scalar(controller_polling_target_hz))) < 50) or vector(0)",
           "legendFormat": "Controllers",
           "refId": "A"
         }
@@ -623,7 +623,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "scalar(controller_polling_target_hz) - rate(controller_poll_drops_total[1m])",
+          "expr": "scalar(controller_polling_target_hz) - (rate(controller_poll_drops_total[$__rate_interval]) or controller_info * 0)",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -1267,7 +1267,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "(scalar(controller_polling_target_hz) - rate(controller_poll_drops_total[1m])) * on(serial) group_left(name) controller_info",
+          "expr": "(scalar(controller_polling_target_hz) - rate(controller_poll_drops_total[$__rate_interval])) * on(serial) group_left(name) controller_info or on(serial, name) (controller_info * 0 + scalar(controller_polling_target_hz))",
           "legendFormat": "{{name}}",
           "refId": "A"
         }

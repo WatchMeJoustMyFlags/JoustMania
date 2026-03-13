@@ -38,6 +38,7 @@ class HidapiAdapter(ControllerIOAdapter):
         self._devices: dict[str, hid.device] = {}
         self._paths: dict[str, str] = {}
         self._product_ids: dict[str, int] = {}
+        self._last_state: dict[str, dict] = {}  # cached last-known state per serial
 
     @property
     def adapter_type(self) -> str:
@@ -156,7 +157,9 @@ class HidapiAdapter(ControllerIOAdapter):
                 data = report
 
             if data is None:
-                return None
+                # No new HID report available (normal for non-blocking reads).
+                # Return cached state so callers don't count this as a drop.
+                return self._last_state.get(serial)
 
             is_zcm2 = self._product_ids.get(serial) in (PRODUCT_ID_ZCM2, PRODUCT_ID_ZCM2E)
             parsed = parse_input_report(data, zcm2=is_zcm2)
@@ -175,7 +178,7 @@ class HidapiAdapter(ControllerIOAdapter):
             battery = battery_to_percent(parsed["battery"])
             buttons = parsed["buttons"]
 
-            return {
+            state = {
                 StateKey.SERIAL: serial,
                 StateKey.BATTERY: battery,
                 StateKey.TRIGGER: parsed["trigger"][1],
@@ -192,6 +195,8 @@ class HidapiAdapter(ControllerIOAdapter):
                 StateKey.GYRO: {AxisKey.X: gx, AxisKey.Y: gy, AxisKey.Z: gz},
                 StateKey.TEMPERATURE: parsed["temperature"],
             }
+            self._last_state[serial] = state
+            return state
 
         except OSError as e:
             logger.warning(f"I/O error reading controller {serial}: {e}")
@@ -233,6 +238,7 @@ class HidapiAdapter(ControllerIOAdapter):
         self._devices.clear()
         self._paths.clear()
         self._product_ids.clear()
+        self._last_state.clear()
 
     def _cleanup(self, serial: str) -> None:
         """Remove a controller that is no longer accessible."""
@@ -242,4 +248,5 @@ class HidapiAdapter(ControllerIOAdapter):
                 device.close()
         self._paths.pop(serial, None)
         self._product_ids.pop(serial, None)
+        self._last_state.pop(serial, None)
         logger.info(f"Cleaned up controller {serial}")

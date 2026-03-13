@@ -284,7 +284,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             # Wait for thread in executor to avoid blocking gRPC server
             if game_thread and game_thread.is_alive():
                 loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, lambda: game_thread.join(timeout=5.0))
+                await loop.run_in_executor(None, lambda: game_thread.join(timeout=2.0))
 
             # Thread-safe state transition
             with self._state_lock:
@@ -440,7 +440,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         # Run thread.join() in executor to avoid blocking event loop
         if game_thread and game_thread.is_alive():
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, lambda: game_thread.join(timeout=5.0))
+            await loop.run_in_executor(None, lambda: game_thread.join(timeout=2.0))
 
         # Centralized channel cleanup
         logger.info("Closing gRPC channels...")

@@ -12,6 +12,16 @@ import pytest
 from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDiscovery
 
 
+def _mock_pairing_resolve(discovery, serials, mapping):
+    """Helper to simulate _resolve_via_pairing_dir for integration tests."""
+    count = 0
+    for serial in serials:
+        if serial not in discovery._address_to_adapter and serial in mapping:
+            discovery._address_to_adapter[serial] = mapping[serial]
+            count += 1
+    return count
+
+
 @pytest.fixture
 def discovery():
     return CentralizedBTDiscovery()
@@ -255,15 +265,15 @@ class TestHidapiMode:
         assert len(addresses) == 1
 
     @pytest.mark.asyncio
-    async def test_sysfs_fallback_when_bluez_has_no_devices(self, discovery):
-        """Should resolve adapter affinity via sysfs when BlueZ cross-ref fails."""
-        discovery._adapters = {"hci0": "AA:00", "hci1": "BB:00"}
+    async def test_pairing_dir_fallback_when_bluez_has_no_devices(self, discovery):
+        """Should resolve adapter affinity via /var/lib/bluetooth/ when BlueZ cross-ref fails."""
+        discovery._adapters = {"hci0": "AA:BB:CC:DD:EE:00", "hci1": "AA:BB:CC:DD:EE:01"}
 
         mock_hid = MagicMock()
         mock_hid.enumerate.side_effect = [
             [
-                {"serial_number": "0006F7AABBCC", "path": b"/dev/hidraw0"},
-                {"serial_number": "0006F7DDEEFF", "path": b"/dev/hidraw1"},
+                {"serial_number": "0006F7AABBCC"},
+                {"serial_number": "0006F7DDEEFF"},
             ],
             [],  # ZCM2
             [],  # ZCM2E
@@ -275,11 +285,18 @@ class TestHidapiMode:
             patch("services.controller_manager.multiplexer.bt_discovery.hid", mock_hid, create=True),
             patch.object(
                 CentralizedBTDiscovery,
-                "_resolve_adapter_from_sysfs",
-                side_effect=lambda path: "hci0" if b"hidraw0" in path else "hci1",
+                "_resolve_via_pairing_dir",
+                side_effect=lambda serials: _mock_pairing_resolve(
+                    discovery,
+                    serials,
+                    {
+                        "0006F7AABBCC": "hci0",
+                        "0006F7DDEEFF": "hci1",
+                    },
+                ),
             ),
         ):
-            # BlueZ returns nothing — devices connected via hidraw, not BlueZ
+            # BlueZ returns nothing — devices connected via uhid, not BlueZ D-Bus
             mock_bt.get_attached_addresses = AsyncMock(return_value=[])
             await discovery.get_all_attached_addresses()
 
@@ -287,13 +304,13 @@ class TestHidapiMode:
         assert discovery.get_adapter_for_address("0006F7DDEEFF") == "hci1"
 
     @pytest.mark.asyncio
-    async def test_sysfs_fallback_skips_unknown_adapters(self, discovery):
-        """Sysfs fallback should ignore adapters not in the known adapter list."""
-        discovery._adapters = {"hci0": "AA:00"}
+    async def test_pairing_dir_fallback_no_match(self, discovery):
+        """Pairing dir fallback should leave affinity unset when no match found."""
+        discovery._adapters = {"hci0": "AA:BB:CC:DD:EE:00"}
 
         mock_hid = MagicMock()
         mock_hid.enumerate.side_effect = [
-            [{"serial_number": "0006F7AABBCC", "path": b"/dev/hidraw0"}],
+            [{"serial_number": "0006F7AABBCC"}],
             [],
             [],
         ]
@@ -304,8 +321,8 @@ class TestHidapiMode:
             patch("services.controller_manager.multiplexer.bt_discovery.hid", mock_hid, create=True),
             patch.object(
                 CentralizedBTDiscovery,
-                "_resolve_adapter_from_sysfs",
-                return_value="hci9",  # Not in _adapters
+                "_resolve_via_pairing_dir",
+                return_value=0,  # No matches found
             ),
         ):
             mock_bt.get_attached_addresses = AsyncMock(return_value=[])
@@ -313,37 +330,80 @@ class TestHidapiMode:
 
         assert discovery.get_adapter_for_address("0006F7AABBCC") is None
 
-    def test_resolve_adapter_from_sysfs_parses_hci(self):
-        """Should extract hci name from resolved sysfs path."""
-        with (
-            patch("pathlib.Path.exists", return_value=True),
-            patch(
-                "pathlib.Path.resolve",
-                return_value=pathlib.Path(
-                    "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-1/1-1:1.0"
-                    "/bluetooth/hci0/hci0:11/0005:054C:03D5.0001/hidraw/hidraw0"
-                ),
-            ),
-        ):
-            result = CentralizedBTDiscovery._resolve_adapter_from_sysfs(b"/dev/hidraw0")
-        assert result == "hci0"
 
-    def test_resolve_adapter_from_sysfs_no_hci(self):
-        """Should return None when sysfs path has no hci adapter (e.g. USB device)."""
-        with (
-            patch("pathlib.Path.exists", return_value=True),
-            patch(
-                "pathlib.Path.resolve",
-                return_value=pathlib.Path(
-                    "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-1/1-1:1.0/0003:054C:03D5.0001/hidraw/hidraw0"
-                ),
-            ),
-        ):
-            result = CentralizedBTDiscovery._resolve_adapter_from_sysfs(b"/dev/hidraw0")
-        assert result is None
+class TestResolvePairingDir:
+    """Tests for _resolve_via_pairing_dir."""
 
-    def test_resolve_adapter_from_sysfs_missing(self):
-        """Should return None when sysfs path doesn't exist."""
-        with patch("pathlib.Path.exists", return_value=False):
-            result = CentralizedBTDiscovery._resolve_adapter_from_sysfs(b"/dev/hidraw99")
-        assert result is None
+    def test_resolves_from_pairing_directory(self, discovery, tmp_path):
+        """Should find adapter for device via /var/lib/bluetooth/<adapter>/<device>/ dirs."""
+        discovery._adapters = {"hci0": "AA:BB:CC:DD:EE:00", "hci1": "AA:BB:CC:DD:EE:01"}
+
+        # Create fake pairing directories
+        adapter0_dir = tmp_path / "AA:BB:CC:DD:EE:00"
+        adapter0_dir.mkdir()
+        (adapter0_dir / "00:06:F7:AA:BB:CC").mkdir()  # Device paired on hci0
+        (adapter0_dir / "cache").mkdir()
+        (adapter0_dir / "settings").touch()
+
+        adapter1_dir = tmp_path / "AA:BB:CC:DD:EE:01"
+        adapter1_dir.mkdir()
+        (adapter1_dir / "00:06:F7:DD:EE:FF").mkdir()  # Device paired on hci1
+
+        with patch(
+            "services.controller_manager.multiplexer.bt_discovery.pathlib.Path",
+            side_effect=lambda p: tmp_path if p == "/var/lib/bluetooth" else pathlib.Path(p),
+        ):
+            count = discovery._resolve_via_pairing_dir({"0006F7AABBCC", "0006F7DDEEFF"})
+
+        assert count == 2
+        assert discovery.get_adapter_for_address("0006F7AABBCC") == "hci0"
+        assert discovery.get_adapter_for_address("0006F7DDEEFF") == "hci1"
+
+    def test_skips_already_resolved(self, discovery, tmp_path):
+        """Should not overwrite existing adapter affinity."""
+        discovery._adapters = {"hci0": "AA:BB:CC:DD:EE:00", "hci1": "AA:BB:CC:DD:EE:01"}
+        discovery._address_to_adapter["0006F7AABBCC"] = "hci1"  # Already resolved
+
+        adapter0_dir = tmp_path / "AA:BB:CC:DD:EE:00"
+        adapter0_dir.mkdir()
+        (adapter0_dir / "00:06:F7:AA:BB:CC").mkdir()
+
+        with patch(
+            "services.controller_manager.multiplexer.bt_discovery.pathlib.Path",
+            side_effect=lambda p: tmp_path if p == "/var/lib/bluetooth" else pathlib.Path(p),
+        ):
+            count = discovery._resolve_via_pairing_dir({"0006F7AABBCC"})
+
+        assert count == 0
+        assert discovery.get_adapter_for_address("0006F7AABBCC") == "hci1"  # Unchanged
+
+    def test_returns_zero_when_dir_missing(self, discovery, tmp_path):
+        """Should return 0 when /var/lib/bluetooth doesn't exist."""
+        discovery._adapters = {"hci0": "AA:BB:CC:DD:EE:00"}
+        nonexistent = tmp_path / "nonexistent"
+
+        with patch(
+            "services.controller_manager.multiplexer.bt_discovery.pathlib.Path",
+            return_value=nonexistent,
+        ):
+            count = discovery._resolve_via_pairing_dir({"0006F7AABBCC"})
+
+        assert count == 0
+
+    def test_ignores_unknown_adapter_addresses(self, discovery, tmp_path):
+        """Should skip adapter directories not in the known adapter list."""
+        discovery._adapters = {"hci0": "AA:BB:CC:DD:EE:00"}
+
+        # Device paired on unknown adapter
+        unknown_dir = tmp_path / "FF:FF:FF:FF:FF:FF"
+        unknown_dir.mkdir()
+        (unknown_dir / "00:06:F7:AA:BB:CC").mkdir()
+
+        with patch(
+            "services.controller_manager.multiplexer.bt_discovery.pathlib.Path",
+            side_effect=lambda p: tmp_path if p == "/var/lib/bluetooth" else pathlib.Path(p),
+        ):
+            count = discovery._resolve_via_pairing_dir({"0006F7AABBCC"})
+
+        assert count == 0
+        assert discovery.get_adapter_for_address("0006F7AABBCC") is None
