@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package joustmania.psmove_hid;
 
+option go_package = "github.com/joustmania/connect-proxy/gen/psmove_hid";
+
 service PairingService {
   rpc GetUSBControllers(GetUSBControllersRequest) returns (GetUSBControllersResponse);
   rpc PairController(PairControllerRequest) returns (PairControllerResponse);

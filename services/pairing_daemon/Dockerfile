@@ -32,6 +32,10 @@ COPY pyproject.toml /app/
 COPY lib/pyproject.toml /app/lib/
 RUN mkdir -p lib && touch lib/__init__.py
 
+# Copy proto package (gRPC stubs for rust-hid)
+COPY proto/pyproject.toml /app/proto/
+RUN mkdir -p proto && touch proto/__init__.py
+
 # Copy service dependencies
 COPY services/pairing_daemon/pyproject.toml /app/services/pairing_daemon/
 
@@ -41,9 +45,9 @@ RUN mkdir -p services/pairing_daemon/psmove_pairing && \
     touch services/pairing_daemon/psmove_pairing/__init__.py && \
     touch services/pairing_daemon/server.py
 
-# Install lib + service dependencies
+# Install lib + proto + service dependencies
 WORKDIR /app
-RUN uv pip install --system --no-cache-dir -e lib/ -e services/pairing_daemon/
+RUN uv pip install --system --no-cache-dir -e lib/ -e proto/ -e services/pairing_daemon/
 
 # =============================================================================
 # Stage 2: Runtime image
@@ -67,6 +71,7 @@ COPY --from=python-builder /usr/local/bin /usr/local/bin
 # Copy application code
 COPY --from=python-builder /app/pyproject.toml /app/
 COPY lib/ /app/lib/
+COPY proto/ /app/proto/
 COPY services/pairing_daemon/ /app/services/pairing_daemon/
 
 # Set Python path (includes /app for lib imports)
