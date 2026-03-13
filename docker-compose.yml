@@ -263,6 +263,9 @@ services:
       # Rust HID service (localhost because network_mode:host connects via exposed port)
       - RUST_HID_HOST=localhost
       - RUST_HID_PORT=50058
+    depends_on:
+      rust-hid:
+        condition: service_healthy
     restart: unless-stopped
     # Healthcheck defined in Dockerfile (uses HTTP /healthz)
 

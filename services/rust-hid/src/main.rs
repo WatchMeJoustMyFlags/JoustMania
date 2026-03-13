@@ -15,15 +15,8 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
-
-    // Initialize OpenTelemetry if OTLP endpoint is configured
-    let _otel_guard = init_otel();
+    // Initialize tracing with optional OpenTelemetry bridge
+    let _otel_guard = init_tracing();
 
     let addr = "[::]:50058".parse()?;
     info!(%addr, "Starting rust-hid gRPC server");
@@ -47,35 +40,65 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Initialize OpenTelemetry tracing with OTLP exporter.
+/// Initialize tracing subscriber with optional OpenTelemetry bridge.
 ///
+/// When OTEL_EXPORTER_OTLP_ENDPOINT is set, traces are exported via OTLP
+/// with the tracing-opentelemetry bridge so `tracing` spans become OTEL spans.
 /// Returns a guard that shuts down the tracer provider on drop.
-/// Returns None if OTLP endpoint is not configured.
-fn init_otel() -> Option<opentelemetry_sdk::trace::TracerProvider> {
+fn init_tracing() -> Option<opentelemetry_sdk::trace::TracerProvider> {
+    use opentelemetry::trace::TracerProvider as _;
     use opentelemetry::KeyValue;
     use opentelemetry_otlp::WithExportConfig;
+    use tracing_opentelemetry::OpenTelemetryLayer;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
 
-    let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok()?;
-    let service_name = std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "rust-hid".into());
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let fmt_layer = tracing_subscriber::fmt::layer();
 
-    info!(%endpoint, %service_name, "Initializing OpenTelemetry");
+    let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok();
 
-    let exporter = opentelemetry_otlp::SpanExporter::builder()
-        .with_tonic()
-        .with_endpoint(&endpoint)
-        .build()
-        .ok()?;
+    if let Some(endpoint) = endpoint {
+        let service_name =
+            std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "rust-hid".into());
+        let namespace =
+            std::env::var("OTEL_SERVICE_NAMESPACE").unwrap_or_else(|_| "infrastructure".into());
 
-    let resource = opentelemetry_sdk::Resource::new(vec![
-        KeyValue::new("service.name", service_name),
-    ]);
+        let exporter = opentelemetry_otlp::SpanExporter::builder()
+            .with_tonic()
+            .with_endpoint(&endpoint)
+            .build()
+            .ok()?;
 
-    let provider = opentelemetry_sdk::trace::TracerProvider::builder()
-        .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
-        .with_resource(resource)
-        .build();
+        let resource = opentelemetry_sdk::Resource::new(vec![
+            KeyValue::new("service.name", service_name.clone()),
+            KeyValue::new("service.namespace", namespace),
+        ]);
 
-    opentelemetry::global::set_tracer_provider(provider.clone());
+        let provider = opentelemetry_sdk::trace::TracerProvider::builder()
+            .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
+            .with_resource(resource)
+            .build();
 
-    Some(provider)
+        opentelemetry::global::set_tracer_provider(provider.clone());
+
+        let tracer = provider.tracer(service_name);
+        let otel_layer = OpenTelemetryLayer::new(tracer);
+
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt_layer)
+            .with(otel_layer)
+            .init();
+
+        Some(provider)
+    } else {
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt_layer)
+            .init();
+
+        None
+    }
 }

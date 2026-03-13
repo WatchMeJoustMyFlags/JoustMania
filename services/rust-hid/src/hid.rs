@@ -38,14 +38,19 @@ pub struct BtAddrInfo {
 /// Convert 6 LSB-first bytes to "AA:BB:CC:DD:EE:FF".
 ///
 /// The PS Move stores MAC addresses in reverse byte order.
-pub fn mac_bytes_to_string(data: &[u8]) -> String {
-    assert!(data.len() >= 6, "MAC address needs at least 6 bytes");
+pub fn mac_bytes_to_string(data: &[u8]) -> Result<String, String> {
+    if data.len() < 6 {
+        return Err(format!(
+            "MAC address needs at least 6 bytes, got {}",
+            data.len()
+        ));
+    }
     let reversed: Vec<u8> = data[..6].iter().rev().copied().collect();
-    reversed
+    Ok(reversed
         .iter()
         .map(|b| format!("{:02X}", b))
         .collect::<Vec<_>>()
-        .join(":")
+        .join(":"))
 }
 
 /// Convert "AA:BB:CC:DD:EE:FF" to 6 LSB-first bytes.
@@ -77,8 +82,8 @@ pub fn parse_btaddr_report(data: &[u8]) -> Result<BtAddrInfo, String> {
             data.len()
         ));
     }
-    let controller_mac = mac_bytes_to_string(&data[1..7]);
-    let host_mac = mac_bytes_to_string(&data[10..16]);
+    let controller_mac = mac_bytes_to_string(&data[1..7])?;
+    let host_mac = mac_bytes_to_string(&data[10..16])?;
     Ok(BtAddrInfo {
         controller_mac,
         host_mac,
@@ -207,7 +212,7 @@ mod tests {
     fn test_mac_bytes_to_string_known() {
         // LSB-first: FF EE DD CC BB AA -> "AA:BB:CC:DD:EE:FF"
         assert_eq!(
-            mac_bytes_to_string(&[0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA]),
+            mac_bytes_to_string(&[0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA]).unwrap(),
             "AA:BB:CC:DD:EE:FF"
         );
     }
@@ -215,7 +220,7 @@ mod tests {
     #[test]
     fn test_mac_bytes_to_string_all_zeros() {
         assert_eq!(
-            mac_bytes_to_string(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+            mac_bytes_to_string(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00]).unwrap(),
             "00:00:00:00:00:00"
         );
     }
@@ -223,7 +228,7 @@ mod tests {
     #[test]
     fn test_mac_bytes_to_string_broadcast() {
         assert_eq!(
-            mac_bytes_to_string(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]),
+            mac_bytes_to_string(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]).unwrap(),
             "FF:FF:FF:FF:FF:FF"
         );
     }
@@ -232,7 +237,7 @@ mod tests {
     fn test_mac_bytes_to_string_sony_prefix() {
         // Sony PS Move prefix 00:06:F7:AA:BB:CC -> LSB: CC BB AA F7 06 00
         assert_eq!(
-            mac_bytes_to_string(&[0xCC, 0xBB, 0xAA, 0xF7, 0x06, 0x00]),
+            mac_bytes_to_string(&[0xCC, 0xBB, 0xAA, 0xF7, 0x06, 0x00]).unwrap(),
             "00:06:F7:AA:BB:CC"
         );
     }
@@ -277,7 +282,7 @@ mod tests {
     #[test]
     fn test_mac_roundtrip_bytes_to_string() {
         let original = [0x11u8, 0x22, 0x33, 0x44, 0x55, 0x66];
-        let mac_str = mac_bytes_to_string(&original);
+        let mac_str = mac_bytes_to_string(&original).unwrap();
         assert_eq!(mac_string_to_bytes(&mac_str).unwrap(), original);
     }
 
@@ -285,7 +290,7 @@ mod tests {
     fn test_mac_roundtrip_string_to_bytes() {
         let original = "DC:A6:32:AA:BB:CC";
         let mac_bytes = mac_string_to_bytes(original).unwrap();
-        assert_eq!(mac_bytes_to_string(&mac_bytes), original);
+        assert_eq!(mac_bytes_to_string(&mac_bytes).unwrap(), original);
     }
 
     // --- Feature report 0x04 parsing tests ---
