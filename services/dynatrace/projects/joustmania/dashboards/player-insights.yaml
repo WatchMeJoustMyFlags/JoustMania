@@ -1,0 +1,11 @@
+config:
+  - id: player-insights
+    config:
+      name: "Player Insights"
+    type:
+      api: document
+      settings:
+        schema: builtin:document
+        scope: environment
+      kind: dashboard
+      private: false
