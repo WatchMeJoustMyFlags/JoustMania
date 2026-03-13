@@ -131,13 +131,6 @@ exporters:
     tls:
       insecure: true
 
-  # OTLP HTTP exporter to Grafana Live Publisher for real-time WebSocket streaming
-  otlphttp/grafana-live:
-    endpoint: "http://grafana-live-publisher:4318"
-    encoding: json
-    tls:
-      insecure: true
-
   # Debug exporter for local troubleshooting
   debug:
     verbosity: basic
@@ -151,11 +144,11 @@ service:
       exporters: [otlp/jaeger, debug]
 
     # Metrics pipeline - uses fast batch processor for sub-second updates
-    # Fan-out to VictoriaMetrics (storage), Prometheus (backward compat), and Grafana Live (streaming)
+    # Fan-out to VictoriaMetrics (storage) and Prometheus (backward compat)
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, batch/fast, resource]
-      exporters: [prometheusremotewrite, prometheus, otlphttp/grafana-live]
+      exporters: [prometheusremotewrite, prometheus]
 
     # Observability metrics — victoria-metrics, prometheus, otel-collector
     metrics/observability:

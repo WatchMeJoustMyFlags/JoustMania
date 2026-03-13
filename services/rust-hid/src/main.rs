@@ -22,6 +22,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing with optional OpenTelemetry bridge
     let _otel_guard = init_tracing();
 
+    // Initialize OTEL metrics (process metrics pushed to collector)
+    let _meter_provider = init_metrics();
+
     let addr = "[::]:50058".parse()?;
     info!(%addr, "Starting rust-hid gRPC server");
 
@@ -119,4 +122,94 @@ fn init_tracing() -> Option<opentelemetry_sdk::trace::TracerProvider> {
 
         None
     }
+}
+
+/// Initialize OTEL metrics with process metrics (CPU, memory, threads).
+///
+/// Reads from /proc/self/stat and /proc/self/status to report:
+/// - process_cpu_seconds_total (counter via observable gauge reporting cumulative value)
+/// - process_resident_memory_bytes (gauge)
+/// - process_threads (gauge)
+fn init_metrics() -> Option<opentelemetry_sdk::metrics::SdkMeterProvider> {
+    use opentelemetry::metrics::MeterProvider;
+    use opentelemetry::KeyValue;
+    use opentelemetry_otlp::WithExportConfig;
+
+    let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok()?;
+    let service_name =
+        std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "rust-hid".into());
+    let namespace =
+        std::env::var("OTEL_SERVICE_NAMESPACE").unwrap_or_else(|_| "infrastructure".into());
+
+    let exporter = opentelemetry_otlp::MetricExporter::builder()
+        .with_tonic()
+        .with_endpoint(&endpoint)
+        .build()
+        .ok()?;
+
+    let resource = opentelemetry_sdk::Resource::new(vec![
+        KeyValue::new("service.name", service_name),
+        KeyValue::new("service.namespace", namespace),
+    ]);
+
+    let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(
+        exporter,
+        opentelemetry_sdk::runtime::Tokio,
+    )
+    .with_interval(std::time::Duration::from_secs(1))
+    .build();
+
+    let provider = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
+        .with_reader(reader)
+        .with_resource(resource)
+        .build();
+
+    let meter = provider.meter("process");
+
+    // process_cpu_seconds_total — cumulative CPU time from /proc/self/stat
+    let _cpu = meter
+        .f64_observable_gauge("process_cpu_seconds_total")
+        .with_description("Total user and system CPU time spent in seconds")
+        .with_callback(|observer| {
+            if let Ok(me) = procfs::process::Process::myself() {
+                if let Ok(stat) = me.stat() {
+                    let ticks_per_sec = procfs::ticks_per_second() as f64;
+                    let total_secs =
+                        (stat.utime as f64 + stat.stime as f64) / ticks_per_sec;
+                    observer.observe(total_secs, &[]);
+                }
+            }
+        })
+        .build();
+
+    // process_resident_memory_bytes — RSS from /proc/self/stat
+    let _mem = meter
+        .i64_observable_gauge("process_resident_memory_bytes")
+        .with_description("Resident memory size in bytes")
+        .with_callback(|observer| {
+            if let Ok(me) = procfs::process::Process::myself() {
+                if let Ok(stat) = me.stat() {
+                    let page_size = procfs::page_size() as i64;
+                    let rss_bytes = stat.rss as i64 * page_size;
+                    observer.observe(rss_bytes, &[]);
+                }
+            }
+        })
+        .build();
+
+    // process_threads — thread count from /proc/self/stat
+    let _threads = meter
+        .i64_observable_gauge("process_threads")
+        .with_description("Number of OS threads in the process")
+        .with_callback(|observer| {
+            if let Ok(me) = procfs::process::Process::myself() {
+                if let Ok(stat) = me.stat() {
+                    observer.observe(stat.num_threads, &[]);
+                }
+            }
+        })
+        .build();
+
+    info!("OTEL metrics initialized (1s export interval)");
+    Some(provider)
 }

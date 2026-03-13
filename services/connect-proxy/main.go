@@ -43,6 +43,10 @@ func getEnv(key, defaultValue string) string {
 }
 
 func main() {
+	ctx := context.Background()
+	shutdownMetrics := initMetrics(ctx)
+	defer shutdownMetrics(ctx)
+
 	log.Println("JoustMania Connect Proxy starting...")
 	log.Printf("Controller Manager: %s", controllerManagerAddr)
 	log.Printf("Game Coordinator: %s", gameCoordinatorAddr)

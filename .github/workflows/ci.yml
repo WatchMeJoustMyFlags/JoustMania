@@ -438,9 +438,6 @@ jobs:
           - service: dashboard
             dockerfile: services/dashboard/Dockerfile
             image_name: dashboard
-          - service: grafana-live-publisher
-            dockerfile: services/grafana-live-publisher/Dockerfile
-            image_name: grafana-live-publisher
           - service: rust-hid
             dockerfile: services/rust-hid/Dockerfile
             image_name: rust-hid

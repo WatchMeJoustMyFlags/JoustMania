@@ -61,5 +61,4 @@ services/dashboard/
 ## See Also
 
 - [Connect Proxy](../connect-proxy/) -- gRPC-to-Connect bridge the dashboard talks through
-- [Grafana Live Publisher](../grafana-live-publisher/) -- pushes acceleration data for waveform panels
 - [Architecture](../../docs/ARCHITECTURE.md)

@@ -50,7 +50,6 @@ jobs:
           - pairing-daemon-service
           - connect-proxy
           - dashboard
-          - grafana-live-publisher
           - rust-hid
           - otel-collector
     steps:
