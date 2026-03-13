@@ -138,7 +138,7 @@ func initMetrics(ctx context.Context) func(context.Context) error {
 
 	// process_threads — Go goroutines mapped to OS threads
 	_, _ = meter.Int64ObservableGauge("process_threads",
-		otelmetric.WithDescription("Number of OS threads in the process"),
+		otelmetric.WithDescription("Number of active threads"),
 		otelmetric.WithInt64Callback(func(_ context.Context, o otelmetric.Int64Observer) error {
 			o.Observe(int64(runtime.NumGoroutine()))
 			return nil

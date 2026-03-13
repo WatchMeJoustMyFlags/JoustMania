@@ -247,7 +247,7 @@ fn init_metrics() -> Option<opentelemetry_sdk::metrics::SdkMeterProvider> {
     // process_threads — thread count from /proc/self/stat
     let _threads = meter
         .i64_observable_gauge("process_threads")
-        .with_description("Number of OS threads in the process")
+        .with_description("Number of active threads")
         .with_callback(|observer| {
             if let Ok(me) = procfs::process::Process::myself() {
                 if let Ok(stat) = me.stat() {
