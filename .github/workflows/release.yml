@@ -53,6 +53,7 @@ jobs:
           - grafana-live-publisher
           - rust-hid
           - bizevents-bridge
+          - otel-collector
     steps:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
