@@ -48,6 +48,9 @@
         <button class="tab-btn" data-tab="traces">
           <span class="tab-icon">&#128269;</span> Traces
         </button>
+        <button class="tab-btn" data-tab="flags">
+          <span class="tab-icon">&#9873;</span> Flags
+        </button>
       </nav>
 
       <main class="main-content">
@@ -87,6 +90,22 @@
               src="/jaeger/search?service=game_coordinator&limit=20"
               class="embed-iframe"
               title="Jaeger Game Traces Search"
+            ></iframe>
+          </div>
+        </div>
+
+        <!-- Flags Tab (flagd-ui) -->
+        <div id="tab-flags" class="tab-panel">
+          <div class="embed-container">
+            <div class="embed-header">
+              <h3>Feature Flags</h3>
+              <a href="/flags/" target="_blank" class="external-link">Open flagd-ui &#8599;</a>
+            </div>
+            <iframe
+              id="flagd-ui-embed"
+              src="/flags/"
+              class="embed-iframe"
+              title="Feature Flag Browser"
             ></iframe>
           </div>
         </div>
