@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.6.1](https://github.com/WatchMeJoustMyFlags/JoustMania/compare/joustmania-v0.6.0...joustmania-v0.6.1) (2026-03-13)
+
+
+### Bug Fixes
+
+* prefer USB audio cards over HDMI in ALSA auto-detection ([#641](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/641)) ([2aa7f5c](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/2aa7f5c020eb651e5a635318c2493613df3d7b10))
+* switch release workflow to workflow_run trigger ([#640](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/640)) ([897c08f](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/897c08f06f63a3579c5b166529180eebb8ca2113))
+
+
+### Performance
+
+* pre-compile audio deps in builder image ([#638](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/638)) ([e7fb305](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/e7fb305a1236cba2ffdd10161e30f6a6702f32c3))
+
 ## [0.6.0](https://github.com/WatchMeJoustMyFlags/JoustMania/compare/joustmania-v0.5.0...joustmania-v0.6.0) (2026-03-13)
 
 

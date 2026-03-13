@@ -1,6 +1,6 @@
 [project]
 name = "joustmania"
-version = "0.6.0"
+version = "0.6.1"
 description = "Microservices-based motion gaming platform for PlayStation Move controllers"
 readme = "README.md"
 license = "MIT"
