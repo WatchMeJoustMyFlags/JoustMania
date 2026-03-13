@@ -52,7 +52,6 @@ jobs:
           - dashboard
           - grafana-live-publisher
           - rust-hid
-          - bizevents-bridge
           - otel-collector
     steps:
       - name: Set up Docker Buildx

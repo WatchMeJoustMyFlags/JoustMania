@@ -22,34 +22,9 @@ services:
     environment:
       - DYNATRACE_ENDPOINT=${DYNATRACE_ENDPOINT}
       - DYNATRACE_API_TOKEN=${DYNATRACE_API_TOKEN}
-    depends_on:
-      bizevents-bridge:
-        condition: service_healthy
+      - DYNATRACE_BIZEVENTS_ENDPOINT=${DYNATRACE_BIZEVENTS_ENDPOINT}
+      - DYNATRACE_BIZEVENTS_TOKEN=${DYNATRACE_BIZEVENTS_TOKEN}
     deploy:
       resources:
         limits:
           memory: 384m  # bumped from 256m for extra Dynatrace pipelines
-
-  # Bizevents Bridge - OTLP logs to Dynatrace business events
-  # Receives OTLP log records (from metricsaslogs connector) and converts
-  # them to flat JSON bizevents for Dynatrace /api/v2/bizevents/ingest
-  bizevents-bridge:
-    image: ghcr.io/watchmejoustmyflags/joustmania/bizevents-bridge:${IMAGE_TAG:-latest}
-    build:
-      context: .
-      dockerfile: services/bizevents-bridge/Dockerfile
-    container_name: joustmania-bizevents-bridge
-    expose:
-      - "4319"
-    environment:
-      - DYNATRACE_BIZEVENTS_ENDPOINT=${DYNATRACE_BIZEVENTS_ENDPOINT}
-      - DYNATRACE_BIZEVENTS_TOKEN=${DYNATRACE_BIZEVENTS_TOKEN}
-    networks:
-      - joustmania
-    restart: unless-stopped
-    # Healthcheck defined in Dockerfile
-    deploy:
-      resources:
-        limits:
-          memory: 128m
-          cpus: '0.25'
