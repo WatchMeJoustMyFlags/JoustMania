@@ -9,7 +9,7 @@
 #
 # Note: Only Python application services are mounted. Infrastructure
 # services (redis, prometheus, grafana, etc.) and non-Python services
-# (connect-proxy, dashboard, grafana-live-publisher) are unchanged.
+# (connect-proxy, dashboard) are unchanged.
 #
 # After changing code, restart the affected service to pick up changes:
 #   docker compose restart game-coordinator
