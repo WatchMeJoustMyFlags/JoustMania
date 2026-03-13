@@ -151,6 +151,54 @@ jobs:
           path: services/${{ matrix.service }}/coverage.xml
           retention-days: 1
 
+  # Rust service checks (cargo test, clippy)
+  rust-checks:
+    name: Rust Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            rust:
+              - 'services/rust-hid/**'
+              - 'proto/psmove_hid.proto'
+
+      - name: Install system dependencies
+        if: steps.changes.outputs.rust == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libhidapi-dev libudev-dev pkg-config
+
+      - name: Install Rust toolchain
+        if: steps.changes.outputs.rust == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        if: steps.changes.outputs.rust == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            services/rust-hid/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('services/rust-hid/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Cargo test
+        if: steps.changes.outputs.rust == 'true'
+        working-directory: services/rust-hid
+        run: cargo test --verbose
+
+      - name: Cargo clippy
+        if: steps.changes.outputs.rust == 'true'
+        working-directory: services/rust-hid
+        run: cargo clippy -- -D warnings
+
   lint-dockerfiles:
     name: Lint Dockerfiles
     runs-on: ubuntu-latest
@@ -366,6 +414,9 @@ jobs:
           - service: grafana-live-publisher
             dockerfile: services/grafana-live-publisher/Dockerfile
             image_name: grafana-live-publisher
+          - service: rust-hid
+            dockerfile: services/rust-hid/Dockerfile
+            image_name: rust-hid
     steps:
       - uses: actions/checkout@v4
 
@@ -449,6 +500,7 @@ jobs:
     needs:
       - lib-tests
       - service-checks
+      - rust-checks
       - lint-dockerfiles
       - sonarcloud
       - validate-protos
@@ -469,6 +521,7 @@ jobs:
             echo "Job results:"
             echo "  lib-tests: ${{ needs.lib-tests.result }}"
             echo "  service-checks: ${{ needs.service-checks.result }}"
+            echo "  rust-checks: ${{ needs.rust-checks.result }}"
             echo "  lint-dockerfiles: ${{ needs.lint-dockerfiles.result }}"
             echo "  sonarcloud: ${{ needs.sonarcloud.result }}"
             echo "  validate-protos: ${{ needs.validate-protos.result }}"

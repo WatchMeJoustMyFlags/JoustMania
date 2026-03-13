@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package joustmania.psmove_hid;
+
+option go_package = "github.com/joustmania/connect-proxy/gen/psmove_hid";
+
+service PairingService {
+  rpc GetUSBControllers(GetUSBControllersRequest) returns (GetUSBControllersResponse);
+  rpc PairController(PairControllerRequest) returns (PairControllerResponse);
+}
+
+message GetUSBControllersRequest {}
+
+message USBController {
+  string device_path = 1;  // e.g. "/dev/hidraw3"
+  string serial = 2;       // e.g. "AA:BB:CC:DD:EE:FF"
+}
+
+message GetUSBControllersResponse {
+  repeated USBController controllers = 1;
+}
+
+message PairControllerRequest {
+  string device_path = 1;
+  string serial = 2;
+  string adapter_address = 3;
+}
+
+message PairControllerResponse {
+  bool success = 1;
+  bool already_paired = 2;
+  string previous_host = 3;
+}

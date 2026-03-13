@@ -4,7 +4,8 @@ version = "1.0.0"
 description = "PS Move controller pairing daemon for JoustMania"
 requires-python = ">=3.11,<3.13"
 dependencies = [
-    # Shared OTEL metrics + telemetry library
+    # Workspace packages
+    "joustmania-proto",
     "joustmania-lib",
 
     # OpenTelemetry tracing
@@ -30,6 +31,7 @@ test = [
 psmove-pairing = "server:main"
 
 [tool.uv.sources]
+joustmania-proto = { workspace = true }
 joustmania-lib = { workspace = true }
 
 [build-system]

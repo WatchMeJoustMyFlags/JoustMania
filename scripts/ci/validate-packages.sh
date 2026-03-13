@@ -17,7 +17,7 @@ docker run --rm \
         uv sync --all-packages
 
         echo "Testing proto imports..."
-        uv run python -c "from proto import controller_manager_pb2, game_coordinator_pb2; print(\"✅ Proto imports work\")"
+        uv run python -c "from proto import controller_manager_pb2, game_coordinator_pb2, psmove_hid_pb2; print(\"✅ Proto imports work\")"
 
         echo "Checking for dependency conflicts..."
         uv pip check
