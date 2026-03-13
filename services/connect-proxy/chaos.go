@@ -3,7 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -43,7 +43,7 @@ func registerChaosHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/chaos/reset", chaosResetHandler)
 	mux.HandleFunc("/chaos/status", chaosStatusHandler)
 
-	log.Printf("Chaos handlers registered (flagd config: %s)", flagdConfigPath)
+	slog.Info("Chaos handlers registered", "flagd_config", flagdConfigPath)
 }
 
 // faultRouteToVariant maps URL path segments to flagd variant names.
@@ -92,12 +92,12 @@ func chaosSetHandler(fault string) http.HandlerFunc {
 
 		variant := faultRouteToVariant(fault)
 		if err := setChaosVariant(variant, fraction); err != nil {
-			log.Printf("chaos: failed to set %s: %v", variant, err)
+			slog.Error("chaos: failed to set fault", "variant", variant, "error", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		log.Printf("chaos: activated fault %s (fraction=%d%%)", variant, fraction)
+		slog.Info("chaos: activated fault", "variant", variant, "fraction", fraction)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"status":   "ok",
@@ -115,12 +115,12 @@ func chaosResetHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := setChaosVariant("none", 100); err != nil {
-		log.Printf("chaos: failed to reset: %v", err)
+		slog.Error("chaos: failed to reset", "error", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("chaos: reset to none")
+	slog.Info("chaos: reset to none")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
 		"status": "ok",
