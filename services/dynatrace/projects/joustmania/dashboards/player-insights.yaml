@@ -1,11 +1,9 @@
-config:
+configs:
   - id: player-insights
-    config:
-      name: "Player Insights"
     type:
-      api: document
-      settings:
-        schema: builtin:document
-        scope: environment
-      kind: dashboard
-      private: false
+      document:
+        kind: dashboard
+        private: false
+    config:
+      name: "JoustMania - Player Insights"
+      template: player-insights.json
