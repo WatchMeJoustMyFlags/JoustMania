@@ -2,225 +2,361 @@
   "version": 14,
   "variables": [],
   "tiles": {
-    "game-intensity": {
-      "type": "data",
-      "title": "Game Intensity",
-      "description": "Average player acceleration",
-      "query": "timeseries avg(game_player_accel_magnitude)",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
+    "0": {
+      "content": "### Player Analytics\n\nMovement intensity per player. Hover a hexagon for peak acceleration and playstyle details.\n\n-----",
+      "type": "markdown"
+    },
+    "1": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
       },
-      "visualization": "gauge",
-      "visualizationConfig": {
-        "min": 0,
-        "max": 3,
-        "unit": "g",
-        "thresholds": [
-          { "value": 0, "color": "green" },
-          { "value": 1.0, "color": "yellow" },
-          { "value": 1.5, "color": "red" }
-        ]
+      "title": "Player Activity",
+      "type": "data",
+      "query": "timeseries accel = avg(game_player_accel_magnitude), peak = avg(game_player_peak_accel), by:{serial} | fieldsAdd accelLast = arrayLast(accel), peakLast = arrayLast(peak) | fields serial, accelLast, peakLast",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
+      },
+      "visualization": "honeycomb",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "honeycomb": {
+          "colorMode": "custom-colors",
+          "colorPalette": "blue",
+          "dataMappings": {
+            "value": "accelLast"
+          },
+          "displayedFields": ["serial", "accelLast", "peakLast"],
+          "customColors": [
+            {
+              "comparator": "\u2265",
+              "value": 0,
+              "color": { "Default": "var(--dt-colors-charts-categorical-color-09-default, #649438)" }
+            },
+            {
+              "comparator": "\u2265",
+              "value": 1.0,
+              "color": { "Default": "var(--dt-colors-charts-status-warning-default, #f5d30f)" }
+            },
+            {
+              "comparator": "\u2265",
+              "value": 1.5,
+              "color": { "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)" }
+            }
+          ]
+        },
+        "coloring": {
+          "colorRules": [
+            {
+              "colorMode": "custom-color",
+              "comparator": "\u2265",
+              "field": "accelLast",
+              "value": 0,
+              "customColor": { "Default": "var(--dt-colors-charts-categorical-color-09-default, #649438)" }
+            },
+            {
+              "colorMode": "custom-color",
+              "comparator": "\u2265",
+              "field": "accelLast",
+              "value": 1.0,
+              "customColor": { "Default": "var(--dt-colors-charts-status-warning-default, #f5d30f)" }
+            },
+            {
+              "colorMode": "custom-color",
+              "comparator": "\u2265",
+              "field": "accelLast",
+              "value": 1.5,
+              "customColor": { "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)" }
+            }
+          ]
+        }
       }
     },
-    "music-tempo": {
-      "type": "data",
+    "2": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
       "title": "Music Tempo",
-      "description": "Current music speed",
-      "query": "timeseries avg(game_music_tempo)",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
+      "type": "data",
+      "query": "timeseries tempo = avg(game_music_tempo) | fieldsAdd last = arrayLast(tempo) | fields last",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
       },
       "visualization": "singleValue",
-      "visualizationConfig": {
-        "thresholds": [
-          { "value": 0, "color": "gray" },
-          { "value": 0.5, "color": "green" },
-          { "value": 1.15, "color": "orange" }
-        ],
-        "valueMappings": [
-          { "value": 0, "displayValue": "No Game" },
-          { "value": 1, "displayValue": "Slow" },
-          { "value": 1.3, "displayValue": "Fast" }
-        ],
-        "colorMode": "background"
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "singleValue": {
+          "recordField": "last",
+          "labelMode": "none",
+          "trend": { "isVisible": true }
+        }
       }
     },
-    "sensitivity": {
-      "type": "data",
+    "3": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
       "title": "Sensitivity",
-      "description": "Current game sensitivity (0=most, 4=least)",
-      "query": "timeseries avg(game_sensitivity)",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
+      "type": "data",
+      "query": "timeseries sens = avg(game_sensitivity) | fieldsAdd last = arrayLast(sens) | fields last",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
       },
       "visualization": "singleValue",
-      "visualizationConfig": {
-        "valueMappings": [
-          { "value": 0, "displayValue": "Ultra Slow" },
-          { "value": 1, "displayValue": "Slow" },
-          { "value": 2, "displayValue": "Medium" },
-          { "value": 3, "displayValue": "Fast" },
-          { "value": 4, "displayValue": "Ultra Fast" }
-        ],
-        "colorMode": "background"
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "singleValue": {
+          "recordField": "last",
+          "labelMode": "none",
+          "trend": { "isVisible": true }
+        }
       }
     },
-    "total-near-deaths": {
+    "4": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
+      "title": "Near-Deaths",
       "type": "data",
-      "title": "Near-Death Events",
-      "description": "Cumulative near-death events",
-      "query": "timeseries sum(game_near_death_events_total)",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
+      "query": "timeseries nd = sum(game_near_death_events_total) | fieldsAdd last = arrayLast(nd) | fields last",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
       },
       "visualization": "singleValue",
-      "visualizationConfig": {
-        "thresholds": [
-          { "value": 0, "color": "green" },
-          { "value": 10, "color": "yellow" },
-          { "value": 50, "color": "red" }
-        ]
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "singleValue": {
+          "recordField": "last",
+          "labelMode": "none",
+          "trend": { "isVisible": true }
+        }
       }
     },
-    "total-warnings": {
+    "5": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
+      "title": "Warnings",
       "type": "data",
-      "title": "Warning Events",
-      "description": "Cumulative warning events",
-      "query": "timeseries sum(game_player_warnings_total)",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
+      "query": "timeseries w = sum(game_player_warnings_total) | fieldsAdd last = arrayLast(w) | fields last",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
       },
       "visualization": "singleValue",
-      "visualizationConfig": {
-        "thresholds": [
-          { "value": 0, "color": "green" }
-        ]
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "singleValue": {
+          "recordField": "last",
+          "labelMode": "none",
+          "trend": { "isVisible": true }
+        }
       }
     },
-    "peak-acceleration": {
-      "type": "data",
+    "6": {
+      "content": "### Movement & Thresholds\n\nPeak acceleration per controller and effective death/warning thresholds.\n\n-----",
+      "type": "markdown"
+    },
+    "7": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
       "title": "Peak Acceleration by Controller",
-      "description": "Peak acceleration per controller over time",
+      "type": "data",
       "query": "timeseries avg(game_player_peak_accel), by:{serial}",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
       },
-      "visualization": "graph",
-      "visualizationConfig": {
-        "yAxisUnit": "g",
-        "legend": { "position": "right" }
+      "visualization": "lineChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "leftAxisValues": ["avg(game_player_peak_accel)"],
+            "timestamp": "timeframe"
+          },
+          "leftYAxisSettings": {
+            "isLabelVisible": true,
+            "label": "Acceleration (g)"
+          },
+          "legend": { "hidden": false },
+          "truncationMode": "end"
+        },
+        "thresholds": []
       }
     },
-    "near-death-rate": {
-      "type": "data",
-      "title": "Near-Death Events Over Time",
-      "description": "Near-death event rate by player and mode",
-      "query": "timeseries sum(game_near_death_events_total, rate: 1m), by:{serial, game_mode}",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
+    "8": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
       },
-      "visualization": "graph",
-      "visualizationConfig": {
-        "drawStyle": "bar",
-        "stacked": true,
-        "legend": { "position": "right" }
-      }
-    },
-    "warning-rate": {
-      "type": "data",
-      "title": "Warning Events Over Time",
-      "description": "Warning event rate by player and mode",
-      "query": "timeseries sum(game_player_warnings_total, rate: 1m), by:{serial, game_mode}",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
-      },
-      "visualization": "graph",
-      "visualizationConfig": {
-        "drawStyle": "bar",
-        "stacked": true,
-        "legend": { "position": "right" }
-      }
-    },
-    "effective-thresholds": {
-      "type": "data",
       "title": "Effective Thresholds",
-      "description": "Warning and death thresholds (sensitivity + music speed)",
+      "type": "data",
       "query": "timeseries warning = avg(game_effective_warning_threshold), death = avg(game_effective_death_threshold)",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
       },
-      "visualization": "graph",
-      "visualizationConfig": {
-        "yAxisUnit": "g",
-        "yAxisMin": 1.0,
-        "yAxisMax": 4.0,
-        "legend": { "position": "right" }
+      "visualization": "lineChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "leftAxisValues": ["warning", "death"],
+            "timestamp": "timeframe"
+          },
+          "leftYAxisSettings": {
+            "isLabelVisible": true,
+            "label": "Threshold (g)"
+          },
+          "legend": { "hidden": false },
+          "truncationMode": "end"
+        },
+        "thresholds": []
       }
     },
-    "music-tempo-graph": {
+    "9": {
+      "content": "### Events & Tempo\n\nNear-death and warning event rates over time, alongside music tempo changes.\n\n-----",
+      "type": "markdown"
+    },
+    "10": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
+      "title": "Near-Death Events Over Time",
       "type": "data",
+      "query": "timeseries sum(game_near_death_events_total, rate: 1m), by:{serial, game_mode}",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
+      },
+      "visualization": "barChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "leftAxisValues": ["sum(game_near_death_events_total)"],
+            "timestamp": "timeframe"
+          },
+          "categoricalBarChartSettings": {
+            "groupMode": "stacked"
+          },
+          "legend": { "hidden": false },
+          "truncationMode": "end"
+        },
+        "thresholds": []
+      }
+    },
+    "11": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
+      "title": "Warning Events Over Time",
+      "type": "data",
+      "query": "timeseries sum(game_player_warnings_total, rate: 1m), by:{serial, game_mode}",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
+      },
+      "visualization": "barChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "leftAxisValues": ["sum(game_player_warnings_total)"],
+            "timestamp": "timeframe"
+          },
+          "categoricalBarChartSettings": {
+            "groupMode": "stacked"
+          },
+          "legend": { "hidden": false },
+          "truncationMode": "end"
+        },
+        "thresholds": []
+      }
+    },
+    "12": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
       "title": "Music Tempo Over Time",
-      "description": "Music tempo changes during gameplay",
-      "query": "timeseries avg(game_music_tempo)",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
-      },
-      "visualization": "graph",
-      "visualizationConfig": {
-        "yAxisMin": 0.9,
-        "yAxisMax": 1.4,
-        "legend": { "position": "bottom" }
-      }
-    },
-    "analytics-samples": {
       "type": "data",
-      "title": "Analytics Samples",
-      "description": "Total analytics samples collected",
-      "query": "timeseries sum(game_analytics_samples_total)",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
+      "query": "timeseries avg(game_music_tempo)",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
       },
-      "visualization": "singleValue",
-      "visualizationConfig": {
-        "thresholds": [
-          { "value": 0, "color": "green" }
-        ]
+      "visualization": "lineChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "leftAxisValues": ["avg(game_music_tempo)"],
+            "timestamp": "timeframe"
+          },
+          "legend": { "hidden": true },
+          "truncationMode": "end"
+        },
+        "thresholds": []
       }
     }
   },
   "layouts": {
-    "0":  { "x": 0,  "y": 0,  "w": 6,  "h": 6, "key": "game-intensity" },
-    "1":  { "x": 6,  "y": 0,  "w": 4,  "h": 3, "key": "music-tempo" },
-    "2":  { "x": 10, "y": 0,  "w": 4,  "h": 3, "key": "sensitivity" },
-    "3":  { "x": 6,  "y": 3,  "w": 4,  "h": 3, "key": "total-near-deaths" },
-    "4":  { "x": 10, "y": 3,  "w": 4,  "h": 3, "key": "total-warnings" },
-    "5":  { "x": 14, "y": 0,  "w": 10, "h": 6, "key": "peak-acceleration" },
-    "6":  { "x": 0,  "y": 6,  "w": 12, "h": 7, "key": "near-death-rate" },
-    "7":  { "x": 12, "y": 6,  "w": 12, "h": 7, "key": "warning-rate" },
-    "8":  { "x": 0,  "y": 13, "w": 12, "h": 6, "key": "effective-thresholds" },
-    "9":  { "x": 12, "y": 13, "w": 12, "h": 6, "key": "music-tempo-graph" },
-    "10": { "x": 0,  "y": 19, "w": 4,  "h": 3, "key": "analytics-samples" }
+    "0":  { "x": 0,  "y": 0,  "w": 24, "h": 2 },
+    "1":  { "x": 0,  "y": 2,  "w": 16, "h": 8 },
+    "2":  { "x": 16, "y": 2,  "w": 4,  "h": 4 },
+    "3":  { "x": 20, "y": 2,  "w": 4,  "h": 4 },
+    "4":  { "x": 16, "y": 6,  "w": 4,  "h": 4 },
+    "5":  { "x": 20, "y": 6,  "w": 4,  "h": 4 },
+    "6":  { "x": 0,  "y": 10, "w": 24, "h": 2 },
+    "7":  { "x": 0,  "y": 12, "w": 12, "h": 7 },
+    "8":  { "x": 12, "y": 12, "w": 12, "h": 7 },
+    "9":  { "x": 0,  "y": 19, "w": 24, "h": 2 },
+    "10": { "x": 0,  "y": 21, "w": 8,  "h": 7 },
+    "11": { "x": 8,  "y": 21, "w": 8,  "h": 7 },
+    "12": { "x": 16, "y": 21, "w": 8,  "h": 7 }
   }
 }

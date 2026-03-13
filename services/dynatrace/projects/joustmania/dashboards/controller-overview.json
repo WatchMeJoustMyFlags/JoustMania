@@ -2,169 +2,326 @@
   "version": 14,
   "variables": [],
   "tiles": {
-    "controller-honeycomb": {
+    "0": {
+      "content": "### Controllers & Adapters\n\nReal-time health overview. Each hexagon is a controller — hover for battery and signal details.\n\n-----",
+      "type": "markdown"
+    },
+    "1": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
+      "title": "Controller Health",
       "type": "data",
-      "title": "Controller Status",
-      "description": "Each cell is a controller, colored by connection status",
-      "query": "timeseries connected = avg(controller_connected), by:{serial} | fieldsAdd last = arrayLast(connected) | fields serial, last",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
+      "query": "timeseries connected = avg(controller_connected), battery = avg(controller_battery_level), rssi = avg(bluetooth_device_rssi_dbm), by:{serial} | fieldsAdd status = arrayLast(connected), batteryLevel = arrayLast(battery), signalDbm = arrayLast(rssi) | fields serial, status, batteryLevel, signalDbm",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
       },
       "visualization": "honeycomb",
-      "visualizationConfig": {
-        "colorMode": "threshold",
-        "shape": "hexagon",
-        "label": "serial",
-        "colorField": "last",
-        "thresholds": [
-          { "value": 0, "color": "red", "label": "Offline" },
-          { "value": 0.5, "color": "green", "label": "Online" }
-        ]
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "honeycomb": {
+          "colorMode": "custom-colors",
+          "colorPalette": "blue",
+          "dataMappings": {
+            "value": "status"
+          },
+          "displayedFields": ["serial", "status", "batteryLevel", "signalDbm"],
+          "customColors": [
+            {
+              "comparator": "\u2265",
+              "value": 0,
+              "color": { "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)" }
+            },
+            {
+              "comparator": "\u2265",
+              "value": 0.5,
+              "color": { "Default": "var(--dt-colors-charts-categorical-color-09-default, #649438)" }
+            }
+          ]
+        },
+        "coloring": {
+          "colorRules": [
+            {
+              "colorMode": "custom-color",
+              "comparator": "\u2265",
+              "field": "status",
+              "value": 0,
+              "customColor": { "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)" }
+            },
+            {
+              "colorMode": "custom-color",
+              "comparator": "\u2265",
+              "field": "status",
+              "value": 0.5,
+              "customColor": { "Default": "var(--dt-colors-charts-categorical-color-09-default, #649438)" }
+            }
+          ]
+        }
       }
     },
-    "battery-honeycomb": {
+    "2": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
+      "title": "Adapter Load",
       "type": "data",
-      "title": "Battery Level",
-      "description": "Each cell is a controller, colored by battery level",
-      "query": "timeseries battery = avg(controller_battery_level), by:{serial} | fieldsAdd last = arrayLast(battery) | fields serial, last",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
+      "query": "timeseries connections = avg(bluetooth_adapter_connections), by:{hci_adapter} | fieldsAdd load = arrayLast(connections) | fields hci_adapter, load",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
       },
       "visualization": "honeycomb",
-      "visualizationConfig": {
-        "colorMode": "threshold",
-        "shape": "hexagon",
-        "label": "serial",
-        "colorField": "last",
-        "thresholds": [
-          { "value": 0, "color": "red", "label": "Critical" },
-          { "value": 2, "color": "yellow", "label": "Low" },
-          { "value": 3, "color": "green", "label": "OK" }
-        ]
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "honeycomb": {
+          "colorMode": "custom-colors",
+          "colorPalette": "blue",
+          "dataMappings": {
+            "value": "load"
+          },
+          "displayedFields": ["hci_adapter", "load"],
+          "customColors": [
+            {
+              "comparator": "\u2265",
+              "value": 0,
+              "color": { "Default": "var(--dt-colors-charts-status-warning-default, #f5d30f)" }
+            },
+            {
+              "comparator": "\u2265",
+              "value": 1,
+              "color": { "Default": "var(--dt-colors-charts-categorical-color-09-default, #649438)" }
+            },
+            {
+              "comparator": "\u2265",
+              "value": 4,
+              "color": { "Default": "var(--dt-colors-charts-status-warning-default, #f5d30f)" }
+            },
+            {
+              "comparator": "\u2265",
+              "value": 6,
+              "color": { "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)" }
+            }
+          ]
+        },
+        "coloring": {
+          "colorRules": [
+            {
+              "colorMode": "custom-color",
+              "comparator": "\u2265",
+              "field": "load",
+              "value": 0,
+              "customColor": { "Default": "var(--dt-colors-charts-status-warning-default, #f5d30f)" }
+            },
+            {
+              "colorMode": "custom-color",
+              "comparator": "\u2265",
+              "field": "load",
+              "value": 1,
+              "customColor": { "Default": "var(--dt-colors-charts-categorical-color-09-default, #649438)" }
+            },
+            {
+              "colorMode": "custom-color",
+              "comparator": "\u2265",
+              "field": "load",
+              "value": 4,
+              "customColor": { "Default": "var(--dt-colors-charts-status-warning-default, #f5d30f)" }
+            },
+            {
+              "colorMode": "custom-color",
+              "comparator": "\u2265",
+              "field": "load",
+              "value": 6,
+              "customColor": { "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)" }
+            }
+          ]
+        }
       }
     },
-    "signal-honeycomb": {
-      "type": "data",
-      "title": "Signal Strength",
-      "description": "Each cell is a controller, colored by Bluetooth RSSI",
-      "query": "timeseries rssi = avg(bluetooth_device_rssi_dbm), by:{serial} | fieldsAdd last = arrayLast(rssi) | fields serial, last",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
+    "3": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
       },
-      "visualization": "honeycomb",
-      "visualizationConfig": {
-        "colorMode": "threshold",
-        "shape": "hexagon",
-        "label": "serial",
-        "colorField": "last",
-        "thresholds": [
-          { "value": -90, "color": "red", "label": "Weak" },
-          { "value": -70, "color": "yellow", "label": "Fair" },
-          { "value": -50, "color": "green", "label": "Strong" }
-        ]
-      }
-    },
-    "controller-detail-table": {
-      "type": "data",
-      "title": "Controller Details",
-      "description": "All controllers with battery, signal, and connection",
-      "query": "timeseries battery = avg(controller_battery_level), rssi = avg(bluetooth_device_rssi_dbm), connected = avg(controller_connected), by:{serial}",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
-      },
-      "visualization": "table"
-    },
-    "button-events": {
-      "type": "data",
-      "title": "Button Events",
-      "description": "Button event rate over time",
-      "query": "timeseries sum(controller_button_events_total, rate: 1m)",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
-      },
-      "visualization": "graph",
-      "visualizationConfig": {
-        "legend": { "position": "bottom" }
-      }
-    },
-    "disconnects": {
-      "type": "data",
-      "title": "Disconnects",
-      "description": "Controller disconnect rate over time",
-      "query": "timeseries sum(controller_disconnect_total, rate: 1m)",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
-      },
-      "visualization": "graph",
-      "visualizationConfig": {
-        "legend": { "position": "bottom" },
-        "thresholds": [
-          { "value": 1, "color": "yellow" },
-          { "value": 3, "color": "red" }
-        ]
-      }
-    },
-    "poll-mode": {
-      "type": "data",
       "title": "Poll Mode",
-      "description": "Idle (10Hz) vs Gameplay (100Hz)",
-      "query": "timeseries avg(controller_polling_mode)",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
+      "type": "data",
+      "query": "timeseries mode = avg(controller_polling_mode) | fieldsAdd last = arrayLast(mode) | fields last",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
       },
       "visualization": "singleValue",
-      "visualizationConfig": {
-        "thresholds": [
-          { "value": 0, "color": "blue" },
-          { "value": 1, "color": "green" }
-        ],
-        "valueMappings": [
-          { "value": 0, "displayValue": "Idle" },
-          { "value": 1, "displayValue": "Gameplay" }
-        ],
-        "colorMode": "background"
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "singleValue": {
+          "recordField": "last",
+          "labelMode": "none",
+          "trend": { "isVisible": true }
+        }
       }
     },
-    "active-streams": {
-      "type": "data",
+    "4": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
       "title": "Active Streams",
-      "description": "Active data streams",
-      "query": "timeseries avg(controller_streams_active)",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
+      "type": "data",
+      "query": "timeseries streams = avg(controller_streams_active) | fieldsAdd last = arrayLast(streams) | fields last",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
       },
       "visualization": "singleValue",
-      "visualizationConfig": {
-        "thresholds": [
-          { "value": 0, "color": "green" }
-        ]
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "singleValue": {
+          "recordField": "last",
+          "labelMode": "none",
+          "trend": { "isVisible": true }
+        }
+      }
+    },
+    "5": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
+      "title": "Controller Details",
+      "type": "data",
+      "query": "timeseries battery = avg(controller_battery_level), rssi = avg(bluetooth_device_rssi_dbm), connected = avg(controller_connected), by:{serial} | fieldsAdd lastBattery = arrayLast(battery), lastRssi = arrayLast(rssi), lastConnected = arrayLast(connected) | fields serial, lastConnected, lastBattery, lastRssi",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
+      },
+      "visualization": "table",
+      "visualizationSettings": {
+        "autoSelectVisualization": false
+      }
+    },
+    "6": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
+      "title": "Signal Strength by Adapter",
+      "type": "data",
+      "query": "timeseries avg(bluetooth_device_rssi_dbm), by:{hci_adapter}",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
+      },
+      "visualization": "lineChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "leftAxisValues": ["avg(bluetooth_device_rssi_dbm)"],
+            "timestamp": "timeframe"
+          },
+          "leftYAxisSettings": {
+            "isLabelVisible": true,
+            "label": "RSSI (dBm)"
+          },
+          "legend": { "hidden": false },
+          "truncationMode": "end"
+        },
+        "thresholds": []
+      }
+    },
+    "7": {
+      "content": "### Activity\n\nButton events and disconnect rates over time.\n\n-----",
+      "type": "markdown"
+    },
+    "8": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
+      "title": "Button Events",
+      "type": "data",
+      "query": "timeseries sum(controller_button_events_total, rate: 1m)",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
+      },
+      "visualization": "barChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "leftAxisValues": ["sum(controller_button_events_total)"],
+            "timestamp": "timeframe"
+          },
+          "legend": { "hidden": true },
+          "truncationMode": "end"
+        },
+        "thresholds": []
+      }
+    },
+    "9": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
+      "title": "Disconnects",
+      "type": "data",
+      "query": "timeseries sum(controller_disconnect_total, rate: 1m)",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
+      },
+      "visualization": "barChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "leftAxisValues": ["sum(controller_disconnect_total)"],
+            "timestamp": "timeframe"
+          },
+          "legend": { "hidden": true },
+          "truncationMode": "end"
+        },
+        "thresholds": []
       }
     }
   },
   "layouts": {
-    "0": { "x": 0, "y": 0, "w": 8, "h": 8, "key": "controller-honeycomb" },
-    "1": { "x": 8, "y": 0, "w": 8, "h": 8, "key": "battery-honeycomb" },
-    "2": { "x": 16, "y": 0, "w": 8, "h": 8, "key": "signal-honeycomb" },
-    "3": { "x": 0, "y": 8, "w": 16, "h": 6, "key": "controller-detail-table" },
-    "4": { "x": 16, "y": 8, "w": 4, "h": 3, "key": "poll-mode" },
-    "5": { "x": 20, "y": 8, "w": 4, "h": 3, "key": "active-streams" },
-    "6": { "x": 0, "y": 14, "w": 12, "h": 6, "key": "button-events" },
-    "7": { "x": 12, "y": 14, "w": 12, "h": 6, "key": "disconnects" }
+    "0": { "x": 0,  "y": 0,  "w": 24, "h": 2 },
+    "1": { "x": 0,  "y": 2,  "w": 14, "h": 10 },
+    "2": { "x": 14, "y": 2,  "w": 6,  "h": 10 },
+    "3": { "x": 20, "y": 2,  "w": 4,  "h": 5 },
+    "4": { "x": 20, "y": 7,  "w": 4,  "h": 5 },
+    "5": { "x": 0,  "y": 12, "w": 14, "h": 6 },
+    "6": { "x": 14, "y": 12, "w": 10, "h": 6 },
+    "7": { "x": 0,  "y": 18, "w": 24, "h": 2 },
+    "8": { "x": 0,  "y": 20, "w": 12, "h": 6 },
+    "9": { "x": 12, "y": 20, "w": 12, "h": 6 }
   }
 }

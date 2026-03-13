@@ -2,229 +2,398 @@
   "version": 14,
   "variables": [],
   "tiles": {
-    "game-status": {
-      "type": "data",
+    "0": {
+      "content": "### Game Status\n\nCurrent game state and player counts at a glance.\n\n-----",
+      "type": "markdown"
+    },
+    "1": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
       "title": "Game Status",
-      "description": "Current game state",
-      "query": "timeseries avg(game_active)",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
+      "type": "data",
+      "query": "timeseries active = avg(game_active) | fieldsAdd last = arrayLast(active) | fields last",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
       },
       "visualization": "singleValue",
-      "visualizationConfig": {
-        "thresholds": [
-          { "value": 0, "color": "gray" },
-          { "value": 1, "color": "green" }
-        ],
-        "valueMappings": [
-          { "value": 0, "displayValue": "No Game" },
-          { "value": 1, "displayValue": "Active" }
-        ],
-        "colorMode": "background"
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "singleValue": {
+          "recordField": "last",
+          "labelMode": "none",
+          "trend": { "isVisible": true }
+        }
       }
     },
-    "active-players": {
-      "type": "data",
+    "2": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
       "title": "Active Players",
-      "description": "Players in current game",
-      "query": "timeseries avg(game_active_players)",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
+      "type": "data",
+      "query": "timeseries players = avg(game_active_players) | fieldsAdd last = arrayLast(players) | fields last",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
       },
       "visualization": "singleValue",
-      "visualizationConfig": {
-        "thresholds": [
-          { "value": 0, "color": "green" }
-        ]
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "singleValue": {
+          "recordField": "last",
+          "labelMode": "none",
+          "trend": { "isVisible": true }
+        }
       }
     },
-    "players-alive": {
-      "type": "data",
+    "3": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
       "title": "Players Alive",
-      "description": "Players still in the game",
-      "query": "timeseries avg(game_players_alive)",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
+      "type": "data",
+      "query": "timeseries alive = avg(game_players_alive) | fieldsAdd last = arrayLast(alive) | fields last",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
       },
       "visualization": "singleValue",
-      "visualizationConfig": {
-        "thresholds": [
-          { "value": 0, "color": "green" }
-        ]
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "singleValue": {
+          "recordField": "last",
+          "labelMode": "none",
+          "trend": { "isVisible": true }
+        }
       }
     },
-    "game-duration": {
-      "type": "data",
+    "4": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
       "title": "Game Duration",
-      "description": "Current game duration",
-      "query": "timeseries avg(game_duration_seconds)",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
+      "type": "data",
+      "query": "timeseries dur = avg(game_duration_seconds) | fieldsAdd last = arrayLast(dur) | fields last",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
       },
       "visualization": "singleValue",
-      "visualizationConfig": {
-        "unit": "seconds",
-        "thresholds": [
-          { "value": 0, "color": "green" }
-        ]
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "singleValue": {
+          "recordField": "last",
+          "labelMode": "none",
+          "trend": { "isVisible": true }
+        }
       }
     },
-    "frame-consistency": {
-      "type": "data",
+    "5": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
       "title": "Frame Consistency",
-      "description": "% of frames within target timing",
-      "query": "timeseries avg(game_loop_frame_consistency_percent)",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
+      "type": "data",
+      "query": "timeseries pct = avg(game_loop_frame_consistency_percent) | fieldsAdd last = arrayLast(pct) | fields last",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
       },
       "visualization": "singleValue",
-      "visualizationConfig": {
-        "unit": "percent",
-        "thresholds": [
-          { "value": 0, "color": "red" },
-          { "value": 90, "color": "yellow" },
-          { "value": 95, "color": "green" }
-        ],
-        "colorMode": "background"
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "singleValue": {
+          "recordField": "last",
+          "labelMode": "none",
+          "trend": { "isVisible": true }
+        },
+        "coloring": {
+          "colorRules": [
+            {
+              "colorMode": "custom-color",
+              "comparator": "\u2265",
+              "field": "last",
+              "value": 0,
+              "customColor": { "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)" }
+            },
+            {
+              "colorMode": "custom-color",
+              "comparator": "\u2265",
+              "field": "last",
+              "value": 90,
+              "customColor": { "Default": "var(--dt-colors-charts-status-warning-default, #f5d30f)" }
+            },
+            {
+              "colorMode": "custom-color",
+              "comparator": "\u2265",
+              "field": "last",
+              "value": 95,
+              "customColor": { "Default": "var(--dt-colors-charts-categorical-color-09-default, #649438)" }
+            }
+          ]
+        }
       }
     },
-    "frame-jitter": {
-      "type": "data",
-      "title": "Frame Jitter",
-      "description": "Stddev of frame times (lower = better)",
-      "query": "timeseries avg(game_loop_jitter_ms)",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
+    "6": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
       },
-      "visualization": "singleValue",
-      "visualizationConfig": {
-        "unit": "milliseconds",
-        "thresholds": [
-          { "value": 0, "color": "green" },
-          { "value": 5, "color": "yellow" },
-          { "value": 10, "color": "red" }
-        ],
-        "colorMode": "background"
-      }
-    },
-    "game-loop-hz": {
-      "type": "data",
-      "title": "Game Loop Rate",
-      "description": "Actual game loop frequency over time",
-      "query": "timeseries avg(game_actual_update_frequency_hz)",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
-      },
-      "visualization": "graph",
-      "visualizationConfig": {
-        "yAxisUnit": "hertz",
-        "yAxisMin": 0,
-        "yAxisMax": 60,
-        "legend": { "position": "bottom" },
-        "thresholds": [
-          { "value": 50, "color": "red" }
-        ]
-      }
-    },
-    "game-loop-jitter-graph": {
-      "type": "data",
-      "title": "Game Loop Jitter Over Time",
-      "description": "Frame jitter trend (lower = smoother)",
-      "query": "timeseries avg(game_loop_jitter_ms)",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
-      },
-      "visualization": "graph",
-      "visualizationConfig": {
-        "yAxisUnit": "seconds",
-        "yAxisMin": 0,
-        "yAxisMax": 0.016,
-        "legend": { "position": "bottom" },
-        "thresholds": [
-          { "value": 0.016, "color": "red" }
-        ]
-      }
-    },
-    "games-by-mode": {
-      "type": "data",
-      "title": "Games by Mode",
-      "description": "Distribution of games started by mode",
-      "query": "timeseries sum(games_started_total, rate: 1m), by:{mode}",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
-      },
-      "visualization": "pie",
-      "visualizationConfig": {
-        "legend": { "position": "right" }
-      }
-    },
-    "games-started": {
-      "type": "data",
-      "title": "Games Started Over Time",
-      "description": "Game starts by mode",
-      "query": "timeseries sum(games_started_total, rate: 1m), by:{mode}",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
-      },
-      "visualization": "graph",
-      "visualizationConfig": {
-        "drawStyle": "bar",
-        "stacked": true,
-        "legend": { "position": "bottom" }
-      }
-    },
-    "dropped-frames": {
-      "type": "data",
       "title": "Dropped Frames",
-      "description": "Frames exceeding 2x target time",
-      "query": "timeseries sum(game_loop_frames_dropped_total, rate: 1m)",
-      "queryConfig": {
-        "additionalFilters": [],
-        "version": "4.3.1",
-        "datatype": "metrics"
+      "type": "data",
+      "query": "timeseries dropped = sum(game_loop_frames_dropped_total, rate: 1m) | fieldsAdd last = arrayLast(dropped) | fields last",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
       },
       "visualization": "singleValue",
-      "visualizationConfig": {
-        "thresholds": [
-          { "value": 0, "color": "green" },
-          { "value": 10, "color": "yellow" },
-          { "value": 50, "color": "red" }
-        ],
-        "colorMode": "background"
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "singleValue": {
+          "recordField": "last",
+          "labelMode": "none",
+          "trend": { "isVisible": true }
+        },
+        "coloring": {
+          "colorRules": [
+            {
+              "colorMode": "custom-color",
+              "comparator": "\u2265",
+              "field": "last",
+              "value": 0,
+              "customColor": { "Default": "var(--dt-colors-charts-categorical-color-09-default, #649438)" }
+            },
+            {
+              "colorMode": "custom-color",
+              "comparator": "\u2265",
+              "field": "last",
+              "value": 10,
+              "customColor": { "Default": "var(--dt-colors-charts-status-warning-default, #f5d30f)" }
+            },
+            {
+              "colorMode": "custom-color",
+              "comparator": "\u2265",
+              "field": "last",
+              "value": 50,
+              "customColor": { "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)" }
+            }
+          ]
+        }
+      }
+    },
+    "7": {
+      "content": "### Frame Timing\n\nGame loop rate and jitter over time. Red threshold = performance degradation.\n\n-----",
+      "type": "markdown"
+    },
+    "8": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
+      "title": "Game Loop Rate",
+      "type": "data",
+      "query": "timeseries avg(game_actual_update_frequency_hz)",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
+      },
+      "visualization": "lineChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "leftAxisValues": ["avg(game_actual_update_frequency_hz)"],
+            "timestamp": "timeframe"
+          },
+          "leftYAxisSettings": {
+            "isLabelVisible": true,
+            "label": "Hz"
+          },
+          "legend": { "hidden": true },
+          "truncationMode": "end"
+        },
+        "thresholds": []
+      }
+    },
+    "9": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
+      "title": "Game Loop Jitter Over Time",
+      "type": "data",
+      "query": "timeseries avg(game_loop_jitter_ms)",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
+      },
+      "visualization": "lineChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "leftAxisValues": ["avg(game_loop_jitter_ms)"],
+            "timestamp": "timeframe"
+          },
+          "leftYAxisSettings": {
+            "isLabelVisible": true,
+            "label": "Jitter (ms)"
+          },
+          "legend": { "hidden": true },
+          "truncationMode": "end"
+        },
+        "thresholds": []
+      }
+    },
+    "10": {
+      "content": "### Game Modes\n\nMode distribution and game start/death rates.\n\n-----",
+      "type": "markdown"
+    },
+    "11": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
+      "title": "Games by Mode",
+      "type": "data",
+      "query": "timeseries sum(games_started_total, rate: 1m), by:{mode}",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
+      },
+      "visualization": "pieChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "categoricalBarChartSettings": {
+            "categoryAxis": ["mode"],
+            "categoryAxisLabel": "mode",
+            "valueAxis": ["sum(games_started_total)"],
+            "valueAxisLabel": "sum(games_started_total)"
+          },
+          "circleChartSettings": {
+            "groupingThresholdType": "relative",
+            "valueType": "relative"
+          },
+          "legend": { "hidden": false },
+          "truncationMode": "end"
+        },
+        "thresholds": []
+      }
+    },
+    "12": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
+      "title": "Games Started Over Time",
+      "type": "data",
+      "query": "timeseries sum(games_started_total, rate: 1m), by:{mode}",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
+      },
+      "visualization": "barChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "leftAxisValues": ["sum(games_started_total)"],
+            "timestamp": "timeframe"
+          },
+          "categoricalBarChartSettings": {
+            "groupMode": "stacked"
+          },
+          "legend": { "hidden": false },
+          "truncationMode": "end"
+        },
+        "thresholds": []
+      }
+    },
+    "13": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
+      "title": "Deaths by Mode",
+      "type": "data",
+      "query": "timeseries sum(game_player_deaths_total, rate: 1m), by:{mode}",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
+      },
+      "visualization": "barChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "leftAxisValues": ["sum(game_player_deaths_total)"],
+            "timestamp": "timeframe"
+          },
+          "categoricalBarChartSettings": {
+            "groupMode": "stacked"
+          },
+          "legend": { "hidden": false },
+          "truncationMode": "end"
+        },
+        "thresholds": []
       }
     }
   },
   "layouts": {
-    "0":  { "x": 0,  "y": 0,  "w": 4, "h": 4, "key": "game-status" },
-    "1":  { "x": 4,  "y": 0,  "w": 4, "h": 4, "key": "active-players" },
-    "2":  { "x": 8,  "y": 0,  "w": 4, "h": 4, "key": "players-alive" },
-    "3":  { "x": 12, "y": 0,  "w": 4, "h": 4, "key": "game-duration" },
-    "4":  { "x": 16, "y": 0,  "w": 4, "h": 4, "key": "frame-consistency" },
-    "5":  { "x": 20, "y": 0,  "w": 4, "h": 4, "key": "frame-jitter" },
-    "6":  { "x": 0,  "y": 4,  "w": 12, "h": 7, "key": "game-loop-hz" },
-    "7":  { "x": 12, "y": 4,  "w": 12, "h": 7, "key": "game-loop-jitter-graph" },
-    "8":  { "x": 0,  "y": 11, "w": 8,  "h": 7, "key": "games-by-mode" },
-    "9":  { "x": 8,  "y": 11, "w": 12, "h": 7, "key": "games-started" },
-    "10": { "x": 20, "y": 11, "w": 4,  "h": 4, "key": "dropped-frames" }
+    "0":  { "x": 0,  "y": 0,  "w": 24, "h": 2 },
+    "1":  { "x": 0,  "y": 2,  "w": 4,  "h": 4 },
+    "2":  { "x": 4,  "y": 2,  "w": 4,  "h": 4 },
+    "3":  { "x": 8,  "y": 2,  "w": 4,  "h": 4 },
+    "4":  { "x": 12, "y": 2,  "w": 4,  "h": 4 },
+    "5":  { "x": 16, "y": 2,  "w": 4,  "h": 4 },
+    "6":  { "x": 20, "y": 2,  "w": 4,  "h": 4 },
+    "7":  { "x": 0,  "y": 6,  "w": 24, "h": 2 },
+    "8":  { "x": 0,  "y": 8,  "w": 12, "h": 7 },
+    "9":  { "x": 12, "y": 8,  "w": 12, "h": 7 },
+    "10": { "x": 0,  "y": 15, "w": 24, "h": 2 },
+    "11": { "x": 0,  "y": 17, "w": 8,  "h": 7 },
+    "12": { "x": 8,  "y": 17, "w": 8,  "h": 7 },
+    "13": { "x": 16, "y": 17, "w": 8,  "h": 7 }
   }
 }
