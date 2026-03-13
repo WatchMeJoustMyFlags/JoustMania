@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 from psmove_pairing.config import (
     _DEFAULT_BT_MONITOR_INTERVAL,
     _DEFAULT_POLL_INTERVAL,
+    get_adapter_routing_default,
     get_bt_monitor_interval,
     get_poll_interval,
 )
@@ -70,6 +71,36 @@ class TestGetBtMonitorInterval:
 
         with patch("psmove_pairing.config._flag_client", mock_client):
             assert get_bt_monitor_interval() == _DEFAULT_BT_MONITOR_INTERVAL
+
+
+class TestGetAdapterRoutingDefault:
+    """Tests for get_adapter_routing_default()."""
+
+    def test_returns_hidapi_when_no_flag_client(self):
+        """Falls back to 'hidapi' when flagd is unavailable."""
+        with patch("psmove_pairing.config._flag_client", None):
+            assert get_adapter_routing_default() == "hidapi"
+
+    def test_returns_flag_value(self):
+        """Returns value from flagd when available."""
+        mock_client = MagicMock()
+        mock_client.get_string_value.return_value = "rust"
+
+        with patch("psmove_pairing.config._flag_client", mock_client):
+            result = get_adapter_routing_default()
+
+        assert result == "rust"
+        args = mock_client.get_string_value.call_args
+        assert args[0][0] == "controller_adapter_routing"
+        assert args[0][1] == "hidapi"
+
+    def test_returns_hidapi_on_exception(self):
+        """Falls back to 'hidapi' when flag evaluation fails."""
+        mock_client = MagicMock()
+        mock_client.get_string_value.side_effect = RuntimeError("flagd down")
+
+        with patch("psmove_pairing.config._flag_client", mock_client):
+            assert get_adapter_routing_default() == "hidapi"
 
 
 class TestInitPerformanceFlags:

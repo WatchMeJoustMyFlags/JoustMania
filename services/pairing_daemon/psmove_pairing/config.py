@@ -52,6 +52,24 @@ def get_poll_interval() -> int:
         return _DEFAULT_POLL_INTERVAL
 
 
+def get_adapter_routing_default() -> str:
+    """Get the default adapter routing backend.
+
+    Reads controller_adapter_routing from the performance domain with
+    no targeting key. Returns "hidapi" or "rust".
+
+    Falls back to "hidapi" when flagd is unavailable.
+    """
+    if _flag_client is None:
+        return "hidapi"
+    try:
+        from openfeature.evaluation_context import EvaluationContext
+
+        return _flag_client.get_string_value("controller_adapter_routing", "hidapi", EvaluationContext())
+    except Exception:
+        return "hidapi"
+
+
 def get_bt_monitor_interval() -> int:
     """Get the current Bluetooth monitor interval in seconds.
 

@@ -9,6 +9,10 @@ VALID_COMBINATIONS = {
     frozenset({"mock"}),
     frozenset({"hidapi"}),
     frozenset({"mock", "hidapi"}),
+    frozenset({"rust"}),
+    frozenset({"mock", "rust"}),
+    frozenset({"hidapi", "rust"}),
+    frozenset({"mock", "hidapi", "rust"}),
 }
 
 
@@ -27,5 +31,5 @@ def validate_backend_combination(names: list[str]) -> None:
     combo = frozenset(names)
     if combo not in VALID_COMBINATIONS:
         raise ValueError(
-            f"Unsupported backend combination: {names}. Supported: mock, hidapi, and any of these with mock"
+            f"Unsupported backend combination: {names}. Supported: mock, hidapi, rust, and combinations thereof"
         )

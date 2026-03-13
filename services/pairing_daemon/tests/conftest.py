@@ -129,6 +129,39 @@ RSSI return value: -45
 """
 
 
+# HID test constants shared across test_pairing_backend.py and test_usb_pairing.py
+FAKE_PATH_1 = b"/dev/hidraw3"
+FAKE_PATH_2 = b"/dev/hidraw4"
+
+# Feature report 0x04 for controller AA:BB:CC:DD:EE:FF with host 11:22:33:44:55:66
+# Controller MAC LSB-first: FF EE DD CC BB AA
+# Host MAC LSB-first: 66 55 44 33 22 11
+SAMPLE_FEATURE_REPORT = bytes(
+    [0x04, 0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA, 0x00, 0x00, 0x00, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11]
+)
+
+# Zero host (unpaired)
+SAMPLE_FEATURE_REPORT_UNPAIRED = bytes(
+    [0x04, 0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+)
+
+
+def make_dev_info(
+    path: bytes = FAKE_PATH_1,
+    vendor_id: int = 0x054C,
+    product_id: int = 0x03D5,
+    interface_number: int = 0,
+) -> dict:
+    """Create a fake hid.enumerate() device info dict."""
+    return {
+        "path": path,
+        "vendor_id": vendor_id,
+        "product_id": product_id,
+        "interface_number": interface_number,
+        "serial_number": "",
+    }
+
+
 @pytest.fixture
 def sample_lsusb_no_psmove():
     return SAMPLE_LSUSB_NO_PSMOVE

@@ -1,27 +1,17 @@
 """USB controller pairing for PS Move controllers.
 
-Uses hidapi (hidraw backend) for direct HID feature report access,
-replacing the psmoveapi C library and its GIL-blocking pair_custom().
+Delegates hardware I/O to a PairingBackend selected by feature flags.
+The backend is resolved once per poll cycle for coherence and hot-switchability.
 """
 
 import logging
 import time
 
-import hidraw as hid
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
-from lib.psmove_hid import (
-    ALL_PRODUCT_IDS,
-    FEATURE_REPORT_GET_BTADDR,
-    FEATURE_REPORT_GET_SIZE,
-    VENDOR_ID,
-    build_set_btaddr_report,
-    parse_btaddr_report,
-)
-
 from .adapter_manager import AdapterManager, restart_systemd_unit
-from .config import DEBUG, get_poll_interval
+from .config import DEBUG, get_adapter_routing_default, get_poll_interval
 from .metrics import (
     pairing_adapter_device_count,
     pairing_adapter_selected_total,
@@ -32,6 +22,7 @@ from .metrics import (
     pairing_success_total,
     pairing_usb_controllers,
 )
+from .pairing_backend import HidapiBackend, PairingBackend, RustServiceBackend
 from .utils import run_command
 
 logger = logging.getLogger("psmove-pairing")
@@ -40,12 +31,55 @@ logger = logging.getLogger("psmove-pairing")
 _ATTR_CONTROLLER_SERIAL = "controller.serial"
 _ATTR_ADAPTER_ADDRESS = "adapter.address"
 
+_KNOWN_ROUTING_VALUES = {"hidapi", "rust"}
+
+
+def _resolve_routing() -> str:
+    """Resolve the routing name from feature flags.
+
+    Reads the controller_adapter_routing default variant and validates it.
+    Returns a known routing name, falling back to "hidapi" for unknown values.
+    """
+    routing = get_adapter_routing_default()
+
+    if routing in _KNOWN_ROUTING_VALUES:
+        return routing
+
+    logger.warning(f"Unknown adapter routing '{routing}', falling back to hidapi")
+    return "hidapi"
+
+
+def _create_backend(name: str) -> PairingBackend:
+    """Create a backend instance by name."""
+    if name == "rust":
+        logger.warning(
+            "Rust pairing backend selected but not yet implemented — "
+            "set controller_adapter_routing=hidapi to restore pairing"
+        )
+        return RustServiceBackend()
+    return HidapiBackend()
+
+
+def _resolve_backend() -> tuple[PairingBackend, str]:
+    """Resolve the pairing backend from feature flags.
+
+    Reads the controller_adapter_routing default variant:
+    - "hidapi" -> HidapiBackend (default)
+    - "rust" -> RustServiceBackend
+
+    Returns:
+        Tuple of (backend_instance, backend_name).
+    """
+    name = _resolve_routing()
+    return _create_backend(name), name
+
 
 class USBPairing:
     """Handles USB-connected PS Move controller pairing.
 
-    Uses hidapi to read/write HID feature reports for BT address
-    management, replacing the psmoveapi C library.
+    Delegates hardware I/O to a PairingBackend selected by feature flags.
+    The backend is resolved once per poll cycle — all operations within
+    a cycle use the same backend instance for coherence.
     """
 
     def __init__(self, tracer: trace.Tracer):
@@ -54,52 +88,24 @@ class USBPairing:
         self.adapter_manager = AdapterManager()
         # Track controllers verified this session to avoid re-processing every poll
         self._verified_serials: set[str] = set()
+        # Cached backend instance — reused across polls when routing is unchanged
+        self._current_backend: PairingBackend | None = None
+        self._current_backend_name: str | None = None
 
-    def get_usb_controllers(self) -> list[tuple[bytes, str]]:
-        """Get list of USB-connected controllers using hidapi.
+    def _get_backend(self) -> tuple[PairingBackend, str]:
+        """Return the cached backend, or resolve a new one.
 
-        Enumerates HID devices matching PS Move vendor/product IDs,
-        filters to USB-only (interface_number >= 0), and reads the
-        controller's BT MAC from feature report 0x04.
-
-        Returns:
-            List of tuples (device_path, serial) for USB-connected controllers.
+        Returns the backend cached from the most recent poll() call.
+        If no backend has been cached yet, resolves a fresh one.
         """
-        pairing_usb_controllers.set(0)
-
-        usb_controllers: list[tuple[bytes, str]] = []
-        devices = [d for pid in ALL_PRODUCT_IDS for d in hid.enumerate(VENDOR_ID, pid)]
-
-        for dev_info in devices:
-            # BT devices return interface_number == -1; USB returns >= 0
-            if dev_info.get("interface_number", -1) < 0:
-                continue
-
-            path = dev_info["path"]
-            try:
-                device = hid.device()
-                device.open_path(path)
-                try:
-                    report = device.get_feature_report(FEATURE_REPORT_GET_BTADDR, FEATURE_REPORT_GET_SIZE)
-                    if isinstance(report, list):
-                        report = bytes(report)
-                    serial, _ = parse_btaddr_report(report)
-                    usb_controllers.append((path, serial.upper()))
-                    logger.debug(f"USB controller at {path!r}: {serial}")
-                finally:
-                    device.close()
-            except Exception as e:
-                logger.debug(f"Error reading controller at {path!r}: {e}")
-
-        pairing_usb_controllers.set(len(usb_controllers))
-        return usb_controllers
+        if self._current_backend is not None and self._current_backend_name is not None:
+            return self._current_backend, self._current_backend_name
+        return _resolve_backend()
 
     async def pair_controller(self, device_path: bytes, serial: str, adapter_address: str) -> bool:
-        """Pair a controller by writing the host BT address via HID feature report.
+        """Pair a controller by writing the host BT address.
 
-        Opens the device, reads the current host address, and writes the
-        new adapter address if it differs. Direct HID call (~ms), no
-        subprocess or GIL issues.
+        Wraps the backend's pair_controller with tracing and metrics.
 
         Args:
             device_path: HID device path from enumerate()
@@ -117,35 +123,27 @@ class USBPairing:
             start_time = time.time()
 
             try:
-                device = hid.device()
-                device.open_path(device_path)
-                try:
-                    # Read current host address
-                    report = device.get_feature_report(FEATURE_REPORT_GET_BTADDR, FEATURE_REPORT_GET_SIZE)
-                    if isinstance(report, list):
-                        report = bytes(report)
-                    _, current_host = parse_btaddr_report(report)
-                    span.set_attribute("pair.current_host", current_host)
+                backend, backend_name = self._get_backend()
+                span.set_attribute("pairing.backend", backend_name)
 
-                    if current_host.upper() == adapter_address.upper():
-                        logger.info(f"Controller {serial} already paired to {adapter_address}")
-                        span.set_attribute("pair.already_paired", True)
-                    else:
-                        logger.info(f"Writing host address {adapter_address} (was {current_host})")
-
-                    # Write new host address (idempotent — safe to write even if same)
-                    set_report = build_set_btaddr_report(adapter_address)
-                    device.send_feature_report(set_report)
-                finally:
-                    device.close()
+                result = await backend.pair_controller(device_path, serial, adapter_address)
 
                 duration = time.time() - start_time
                 pairing_duration_seconds.observe(duration)
-                span.set_attribute("pair.result", True)
+                span.set_attribute("pair.result", result.success)
                 span.set_attribute("pair.duration_seconds", duration)
-                logger.info(f"Pairing succeeded for {serial}")
-                span.set_status(Status(StatusCode.OK))
-                return True
+                span.set_attribute("pair.already_paired", result.already_paired)
+                if result.previous_host:
+                    span.set_attribute("pair.current_host", result.previous_host)
+
+                if result.success:
+                    logger.info(f"Pairing succeeded for {serial}")
+                    span.set_status(Status(StatusCode.OK))
+                else:
+                    logger.error(f"Pairing failed for {serial}")
+                    span.set_status(Status(StatusCode.ERROR, "Backend pairing failed"))
+
+                return result.success
 
             except Exception as e:
                 duration = time.time() - start_time
@@ -243,7 +241,7 @@ class USBPairing:
             pairing_adapter_selected_total.labels(adapter=adapter.address).inc()
             pairing_adapter_device_count.labels(adapter=adapter.address).set(adapter.device_count)
 
-            # Pair controller to selected adapter via HID feature report
+            # Pair controller to selected adapter via backend
             if not await self.pair_controller(device_path, serial, adapter.address):
                 logger.error(f"PAIRING FAILED: Controller {serial} could not be paired")
                 pairing_failed_total.inc()
@@ -278,8 +276,26 @@ class USBPairing:
         with self.tracer.start_as_current_span("poll_cycle") as span:
             span.set_attribute("poll.count", self.poll_count)
 
-            # Get USB controllers using hidapi
-            controllers = self.get_usb_controllers()
+            # Resolve routing name, only creating a new backend when it changes
+            backend_name = _resolve_routing()
+            if backend_name == self._current_backend_name and self._current_backend is not None:
+                backend = self._current_backend
+            else:
+                if self._current_backend_name is None:
+                    logger.info(f"Pairing backend initialized: {backend_name}")
+                elif backend_name != self._current_backend_name:
+                    logger.info(f"Pairing backend switched: {self._current_backend_name} -> {backend_name}")
+                backend = _create_backend(backend_name)
+                self._current_backend = backend
+                self._current_backend_name = backend_name
+            span.set_attribute("pairing.backend", backend_name)
+
+            # Reset gauge before enumeration (prevents stale value if backend raises)
+            pairing_usb_controllers.set(0)
+
+            # Get USB controllers using resolved backend
+            controllers = await backend.get_usb_controllers()
+            pairing_usb_controllers.set(len(controllers))
             span.set_attribute("controllers.count", len(controllers))
 
             if not controllers:

@@ -98,7 +98,11 @@
       "variants": {
         "hidapi": "hidapi",
         "mock": "mock",
-        "mock_hidapi": "mock,hidapi"
+        "mock_hidapi": "mock,hidapi",
+        "rust": "rust",
+        "mock_rust": "mock,rust",
+        "hidapi_rust": "hidapi,rust",
+        "mock_hidapi_rust": "mock,hidapi,rust"
       },
       "defaultVariant": "mock"
     },
@@ -132,7 +136,8 @@
     "controller_adapter_routing": {
       "state": "ENABLED",
       "variants": {
-        "hidapi": "hidapi"
+        "hidapi": "hidapi",
+        "rust": "rust"
       },
       "defaultVariant": "hidapi",
       "targeting": {}
