@@ -19,7 +19,6 @@ common:
 # Disable ruler - we don't need alerting rules, just log aggregation
 ruler:
   enable_api: false
-  enable_alertmanager_v2: false
   storage:
     type: local
     local:
@@ -47,6 +46,7 @@ schema_config:
 
 compactor:
   working_directory: /tmp/loki/compactor
+  delete_request_store: filesystem
   compaction_interval: 10m
   retention_enabled: true
   retention_delete_delay: 2h
