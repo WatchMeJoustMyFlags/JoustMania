@@ -258,8 +258,44 @@ services:
       # flagd for runtime-tunable intervals (localhost because network_mode:host)
       - FLAGD_HOST=localhost
       - FLAGD_PORT=8015
+      # Rust HID service (localhost because network_mode:host connects via exposed port)
+      - RUST_HID_HOST=localhost
+      - RUST_HID_PORT=50058
+    depends_on:
+      rust-hid:
+        condition: service_healthy
     restart: unless-stopped
     # Healthcheck defined in Dockerfile (uses HTTP /healthz)
+
+  # Rust HID Service - PS Move HID operations via gRPC
+  rust-hid:
+    image: ghcr.io/watchmejoustmyflags/joustmania/rust-hid:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: services/rust-hid/Dockerfile
+    container_name: joustmania-rust-hid
+    privileged: true
+    pid: "host"
+    volumes:
+      - /dev:/dev:rslave
+    networks:
+      - joustmania
+    ports:
+      # Exposed to host for pairing-daemon (network_mode: host)
+      - "50058:50058"
+    environment:
+      - OTEL_SERVICE_NAME=rust-hid
+      - OTEL_SERVICE_NAMESPACE=infrastructure
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - RUST_LOG=info
+    restart: unless-stopped
+    # Healthcheck defined in Dockerfile (uses grpc_health_probe)
+    deploy:
+      resources:
+        limits:
+          memory: 64m
+          cpus: '0.25'
+    logging: *default-logging
 
   # Game Coordinator Service
   game-coordinator:

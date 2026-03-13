@@ -1,6 +1,6 @@
 """Tests for pairing backend implementations."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -156,18 +156,87 @@ class TestPairingResult:
 
 
 class TestRustServiceBackend:
-    """Tests for RustServiceBackend stub."""
+    """Tests for RustServiceBackend gRPC client."""
 
     @pytest.mark.asyncio
-    async def test_get_usb_controllers_raises(self):
-        """All methods raise NotImplementedError."""
-        backend = RustServiceBackend()
-        with pytest.raises(NotImplementedError, match="Rust pairing service not yet implemented"):
-            await backend.get_usb_controllers()
+    async def test_get_usb_controllers_returns_list(self):
+        """Delegates to gRPC stub and converts proto response to (bytes, str) tuples."""
+        mock_controller = MagicMock()
+        mock_controller.device_path = "/dev/hidraw3"
+        mock_controller.serial = "AA:BB:CC:DD:EE:FF"
+
+        mock_response = MagicMock()
+        mock_response.controllers = [mock_controller]
+
+        mock_stub = MagicMock()
+        mock_stub.GetUSBControllers = AsyncMock(return_value=mock_response)
+
+        backend = RustServiceBackend.__new__(RustServiceBackend)
+        backend._channel = MagicMock()
+        backend._stub = mock_stub
+
+        controllers = await backend.get_usb_controllers()
+
+        assert len(controllers) == 1
+        assert controllers[0] == (b"/dev/hidraw3", "AA:BB:CC:DD:EE:FF")
 
     @pytest.mark.asyncio
-    async def test_pair_controller_raises(self):
-        """pair_controller raises NotImplementedError."""
-        backend = RustServiceBackend()
-        with pytest.raises(NotImplementedError, match="Rust pairing service not yet implemented"):
-            await backend.pair_controller(b"/dev/hidraw0", "AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66")
+    async def test_get_usb_controllers_encodes_path(self):
+        """device_path string from proto is encoded to bytes."""
+        mock_stub = MagicMock()
+        mock_controller = MagicMock()
+        mock_controller.device_path = "/dev/hidraw0"
+        mock_controller.serial = "00:06:F7:AA:BB:CC"
+        mock_response = MagicMock()
+        mock_response.controllers = [mock_controller]
+        mock_stub.GetUSBControllers = AsyncMock(return_value=mock_response)
+
+        backend = RustServiceBackend.__new__(RustServiceBackend)
+        backend._channel = MagicMock()
+        backend._stub = mock_stub
+
+        controllers = await backend.get_usb_controllers()
+        path, serial = controllers[0]
+        assert isinstance(path, bytes)
+        assert path == b"/dev/hidraw0"
+
+    @pytest.mark.asyncio
+    async def test_pair_controller_returns_pairing_result(self):
+        """Converts proto PairControllerResponse to PairingResult."""
+        mock_stub = MagicMock()
+        mock_response = MagicMock()
+        mock_response.success = True
+        mock_response.already_paired = False
+        mock_response.previous_host = "00:00:00:00:00:00"
+        mock_stub.PairController = AsyncMock(return_value=mock_response)
+
+        backend = RustServiceBackend.__new__(RustServiceBackend)
+        backend._channel = MagicMock()
+        backend._stub = mock_stub
+
+        result = await backend.pair_controller(b"/dev/hidraw0", "AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66")
+
+        assert isinstance(result, PairingResult)
+        assert result.success is True
+        assert result.already_paired is False
+        assert result.previous_host == "00:00:00:00:00:00"
+
+    @pytest.mark.asyncio
+    async def test_pair_controller_decodes_bytes_path(self):
+        """device_path bytes are decoded to string for proto request."""
+        mock_stub = MagicMock()
+        mock_response = MagicMock()
+        mock_response.success = True
+        mock_response.already_paired = True
+        mock_response.previous_host = "11:22:33:44:55:66"
+        mock_stub.PairController = AsyncMock(return_value=mock_response)
+
+        backend = RustServiceBackend.__new__(RustServiceBackend)
+        backend._channel = MagicMock()
+        backend._stub = mock_stub
+
+        result = await backend.pair_controller(b"/dev/hidraw3", "AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66")
+
+        assert result.already_paired is True
+        # Verify the stub was called (path gets decoded in the real implementation)
+        mock_stub.PairController.assert_called_once()

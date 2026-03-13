@@ -52,10 +52,6 @@ def _resolve_routing() -> str:
 def _create_backend(name: str) -> PairingBackend:
     """Create a backend instance by name."""
     if name == "rust":
-        logger.warning(
-            "Rust pairing backend selected but not yet implemented — "
-            "set controller_adapter_routing=hidapi to restore pairing"
-        )
         return RustServiceBackend()
     return HidapiBackend()
 

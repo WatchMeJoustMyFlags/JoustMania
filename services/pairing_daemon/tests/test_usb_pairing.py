@@ -35,6 +35,7 @@ class TestResolveBackend:
         assert isinstance(backend, HidapiBackend)
         assert name == "hidapi"
 
+    @patch.object(RustServiceBackend, "__init__", lambda _self: None)
     def test_rust_returns_rust_backend(self):
         """Routing 'rust' returns RustServiceBackend."""
         with patch("psmove_pairing.usb_pairing.get_adapter_routing_default", return_value="rust"):
@@ -72,17 +73,15 @@ class TestResolveBackend:
         with patch("psmove_pairing.usb_pairing.get_adapter_routing_default", return_value="rust"):
             assert _resolve_routing() == "rust"
 
-    def test_rust_selection_logs_warning(self):
-        """Selecting rust backend logs an actionable warning."""
+    @patch.object(RustServiceBackend, "__init__", lambda _self: None)
+    def test_rust_selection_creates_backend_without_warning(self):
+        """Selecting rust backend creates RustServiceBackend without warnings."""
         with (
             patch("psmove_pairing.usb_pairing.get_adapter_routing_default", return_value="rust"),
             patch("psmove_pairing.usb_pairing.logger") as mock_logger,
         ):
             _resolve_backend()
-            mock_logger.warning.assert_called_once_with(
-                "Rust pairing backend selected but not yet implemented — "
-                "set controller_adapter_routing=hidapi to restore pairing"
-            )
+            mock_logger.warning.assert_not_called()
 
 
 class TestGetUSBControllers:

@@ -145,14 +145,46 @@ class HidapiBackend:
 
 
 class RustServiceBackend:
-    """Stub backend for a future Rust gRPC pairing service.
+    """Pairing backend that delegates to the Rust HID gRPC service.
 
-    Will eventually connect to a separate Rust pairing service via gRPC.
-    All methods raise NotImplementedError until #612 adds the Rust service.
+    Connects to the rust-hid service (port 50058) for USB controller
+    enumeration and BT address writing. The Rust service handles HID
+    device I/O directly, replacing the Python hidapi calls.
     """
 
+    def __init__(self):
+        import os
+
+        from proto import psmove_hid_pb2_grpc
+
+        from lib.grpc_utils import create_channel
+
+        host = os.getenv("RUST_HID_HOST", "localhost")
+        port = os.getenv("RUST_HID_PORT", "50058")
+        self._channel = create_channel(f"{host}:{port}")
+        self._stub = psmove_hid_pb2_grpc.PairingServiceStub(self._channel)
+
     async def get_usb_controllers(self) -> list[tuple[bytes, str]]:
-        raise NotImplementedError("Rust pairing service not yet implemented — see #612")
+        """Enumerate USB-connected PS Move controllers via Rust HID service."""
+        from proto import psmove_hid_pb2
+
+        response = await self._stub.GetUSBControllers(psmove_hid_pb2.GetUSBControllersRequest())
+        return [(c.device_path.encode(), c.serial) for c in response.controllers]
 
     async def pair_controller(self, device_path: bytes, serial: str, adapter_address: str) -> PairingResult:
-        raise NotImplementedError("Rust pairing service not yet implemented — see #612")
+        """Write the host BT address via Rust HID service."""
+        from proto import psmove_hid_pb2
+
+        path_str = device_path.decode() if isinstance(device_path, bytes) else device_path
+        response = await self._stub.PairController(
+            psmove_hid_pb2.PairControllerRequest(
+                device_path=path_str,
+                serial=serial,
+                adapter_address=adapter_address,
+            )
+        )
+        return PairingResult(
+            success=response.success,
+            already_paired=response.already_paired,
+            previous_host=response.previous_host,
+        )
