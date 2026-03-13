@@ -9,10 +9,12 @@ import sys
 from types import ModuleType
 from unittest.mock import MagicMock
 
-# Disable OTEL metrics before importing modules that use them
+# Disable OTEL metrics and logging before importing modules that use them
+from lib.otel_logging import disable_logging_for_tests
 from lib.otel_metrics import disable_metrics_for_tests
 
 disable_metrics_for_tests()
+disable_logging_for_tests()
 
 # Disable OTEL tracing
 os.environ["OTEL_SDK_DISABLED"] = "true"

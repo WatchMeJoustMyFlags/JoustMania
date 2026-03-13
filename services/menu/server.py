@@ -28,6 +28,7 @@ logging.basicConfig(
 import grpc.aio
 from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 
+from lib.otel_logging import init_logging
 from lib.otel_metrics import init_metrics
 from lib.profiling import init_profiling
 from lib.system_metrics import start_system_metrics_collector
@@ -43,6 +44,7 @@ async def serve(port=50054):
     """Start the Menu gRPC server."""
     # Initialize OTEL push metrics
     init_metrics()
+    init_logging()
     init_profiling()
     logger.info("OTEL push metrics initialized for menu service")
 

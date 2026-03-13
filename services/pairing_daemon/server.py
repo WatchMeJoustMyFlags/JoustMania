@@ -35,6 +35,7 @@ import logging
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
 
+from lib.otel_logging import init_logging
 from lib.otel_metrics import init_metrics
 from lib.system_metrics import start_system_metrics_collector_thread
 from psmove_pairing import PairingDaemon, init_telemetry, metrics
@@ -101,6 +102,7 @@ def main() -> None:
 
     # Initialize OTEL push metrics
     init_metrics()
+    init_logging()
     logger.info("OTEL push metrics initialized for pairing daemon")
 
     # Initialize feature flags for runtime-tunable intervals
