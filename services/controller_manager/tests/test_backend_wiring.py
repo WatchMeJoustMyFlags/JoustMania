@@ -1,22 +1,14 @@
-"""Integration tests for backend wiring -- verifies MultiplexerBackend
-correctly routes through adapters in a Docker Compose environment.
+"""Backend wiring tests -- verifies MultiplexerBackend correctly routes
+through adapters.
 
 These tests validate the plumbing between controller_manager and its
 adapters (hidapi + rust-hid gRPC), not actual hardware interaction.
 """
 
-import os
-import sys
-
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
-
-from lib.telemetry import disable_telemetry_for_tests
-from lib.otel_metrics import disable_metrics_for_tests
-
-disable_telemetry_for_tests()
-disable_metrics_for_tests()
+from services.controller_manager.multiplexer.mock_adapter import MockAdapter
+from services.controller_manager.multiplexer.multiplexer_backend import MultiplexerBackend
 
 
 class TestBackendWiring:
@@ -24,9 +16,6 @@ class TestBackendWiring:
 
     def test_multiplexer_accepts_multiple_adapters(self):
         """MultiplexerBackend initializes with a list of adapters."""
-        from services.controller_manager.multiplexer.mock_adapter import MockAdapter
-        from services.controller_manager.multiplexer.multiplexer_backend import MultiplexerBackend
-
         mock1 = MockAdapter(num_controllers=2)
         mock2 = MockAdapter(num_controllers=1)
         backend = MultiplexerBackend(adapters=[mock1, mock2])
@@ -34,17 +23,12 @@ class TestBackendWiring:
 
     def test_multiplexer_requires_at_least_one_adapter(self):
         """MultiplexerBackend raises ValueError with empty adapter list."""
-        from services.controller_manager.multiplexer.multiplexer_backend import MultiplexerBackend
-
         with pytest.raises(ValueError, match="at least one adapter"):
             MultiplexerBackend(adapters=[])
 
     @pytest.mark.asyncio
     async def test_mock_adapter_discovery_and_state(self):
         """MockAdapter discovers controllers and returns state dicts."""
-        from services.controller_manager.multiplexer.mock_adapter import MockAdapter
-        from services.controller_manager.multiplexer.multiplexer_backend import MultiplexerBackend
-
         adapter = MockAdapter(num_controllers=3)
         backend = MultiplexerBackend(adapters=[adapter])
 
@@ -66,9 +50,6 @@ class TestBackendWiring:
     @pytest.mark.asyncio
     async def test_led_and_rumble_round_trip(self):
         """Setting LED color and rumble stores state correctly."""
-        from services.controller_manager.multiplexer.mock_adapter import MockAdapter
-        from services.controller_manager.multiplexer.multiplexer_backend import MultiplexerBackend
-
         adapter = MockAdapter(num_controllers=1)
         backend = MultiplexerBackend(adapters=[adapter])
         await backend.initialize()
@@ -93,9 +74,6 @@ class TestBackendWiring:
     @pytest.mark.asyncio
     async def test_disconnect_cleans_up_state(self):
         """Disconnecting a controller removes all its tracked state."""
-        from services.controller_manager.multiplexer.mock_adapter import MockAdapter
-        from services.controller_manager.multiplexer.multiplexer_backend import MultiplexerBackend
-
         adapter = MockAdapter(num_controllers=2)
         backend = MultiplexerBackend(adapters=[adapter])
         await backend.initialize()
@@ -119,9 +97,6 @@ class TestBackendWiring:
     @pytest.mark.asyncio
     async def test_mock_adapter_state_includes_motion_data(self):
         """MockAdapter state includes accel and gyro with x/y/z axes."""
-        from services.controller_manager.multiplexer.mock_adapter import MockAdapter
-        from services.controller_manager.multiplexer.multiplexer_backend import MultiplexerBackend
-
         adapter = MockAdapter(num_controllers=1)
         backend = MultiplexerBackend(adapters=[adapter])
         await backend.initialize()
@@ -158,13 +133,13 @@ class TestRustAdapterWiring:
         adapter = RustServiceAdapter()
         assert isinstance(adapter, ControllerIOAdapter)
 
-    def test_rust_adapter_discover_raises_not_implemented(self):
-        """RustServiceAdapter.discover() raises NotImplementedError (stub)."""
+    def test_rust_adapter_discover_returns_empty_without_service(self):
+        """RustServiceAdapter.discover() returns empty list when service unavailable."""
         from services.controller_manager.multiplexer.rust_adapter import RustServiceAdapter
 
         adapter = RustServiceAdapter()
-        with pytest.raises(NotImplementedError, match="Rust I/O service not yet implemented"):
-            adapter.discover()
+        result = adapter.discover()
+        assert result == []
 
     def test_rust_adapter_interface_methods_exist(self):
         """RustServiceAdapter has all required ControllerIOAdapter methods."""
@@ -215,9 +190,6 @@ class TestAdapterRoutingWiring:
 
     def test_multiplexer_tracks_serial_to_adapter(self):
         """MultiplexerBackend maps serials to their owning adapter."""
-        from services.controller_manager.multiplexer.mock_adapter import MockAdapter
-        from services.controller_manager.multiplexer.multiplexer_backend import MultiplexerBackend
-
         adapter = MockAdapter(num_controllers=2)
         backend = MultiplexerBackend(adapters=[adapter])
 
@@ -234,9 +206,6 @@ class TestAdapterRoutingWiring:
 
     def test_unknown_serial_returns_unknown_type(self):
         """get_adapter_type returns 'unknown' for untracked serial."""
-        from services.controller_manager.multiplexer.mock_adapter import MockAdapter
-        from services.controller_manager.multiplexer.multiplexer_backend import MultiplexerBackend
-
         adapter = MockAdapter(num_controllers=0)
         backend = MultiplexerBackend(adapters=[adapter])
 
@@ -244,9 +213,6 @@ class TestAdapterRoutingWiring:
 
     def test_adapter_by_type_lookup(self):
         """MultiplexerBackend builds adapter_type -> adapter lookup."""
-        from services.controller_manager.multiplexer.mock_adapter import MockAdapter
-        from services.controller_manager.multiplexer.multiplexer_backend import MultiplexerBackend
-
         adapter = MockAdapter(num_controllers=0)
         backend = MultiplexerBackend(adapters=[adapter])
 
@@ -256,9 +222,6 @@ class TestAdapterRoutingWiring:
     @pytest.mark.asyncio
     async def test_shutdown_clears_all_state(self):
         """shutdown() removes all tracked state."""
-        from services.controller_manager.multiplexer.mock_adapter import MockAdapter
-        from services.controller_manager.multiplexer.multiplexer_backend import MultiplexerBackend
-
         adapter = MockAdapter(num_controllers=2)
         backend = MultiplexerBackend(adapters=[adapter])
         await backend.initialize()
@@ -280,9 +243,6 @@ class TestAdapterRoutingWiring:
     @pytest.mark.asyncio
     async def test_connect_controller_assigns_adapter(self):
         """connect_controller() assigns the adapter for a new serial."""
-        from services.controller_manager.multiplexer.mock_adapter import MockAdapter
-        from services.controller_manager.multiplexer.multiplexer_backend import MultiplexerBackend
-
         adapter = MockAdapter(num_controllers=0)
         backend = MultiplexerBackend(adapters=[adapter])
         await backend.initialize()
