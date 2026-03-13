@@ -8,7 +8,9 @@
     },
     "1": {
       "davis": {
-        "davisVisualization": { "isAvailable": true },
+        "davisVisualization": {
+          "isAvailable": true
+        },
         "enabled": false
       },
       "title": "Game Status",
@@ -27,13 +29,17 @@
         "singleValue": {
           "recordField": "last",
           "labelMode": "none",
-          "trend": { "isVisible": true }
+          "trend": {
+            "isVisible": true
+          }
         }
       }
     },
     "2": {
       "davis": {
-        "davisVisualization": { "isAvailable": true },
+        "davisVisualization": {
+          "isAvailable": true
+        },
         "enabled": false
       },
       "title": "Active Players",
@@ -52,13 +58,17 @@
         "singleValue": {
           "recordField": "last",
           "labelMode": "none",
-          "trend": { "isVisible": true }
+          "trend": {
+            "isVisible": true
+          }
         }
       }
     },
     "3": {
       "davis": {
-        "davisVisualization": { "isAvailable": true },
+        "davisVisualization": {
+          "isAvailable": true
+        },
         "enabled": false
       },
       "title": "Players Alive",
@@ -77,13 +87,17 @@
         "singleValue": {
           "recordField": "last",
           "labelMode": "none",
-          "trend": { "isVisible": true }
+          "trend": {
+            "isVisible": true
+          }
         }
       }
     },
     "4": {
       "davis": {
-        "davisVisualization": { "isAvailable": true },
+        "davisVisualization": {
+          "isAvailable": true
+        },
         "enabled": false
       },
       "title": "Game Duration",
@@ -102,13 +116,17 @@
         "singleValue": {
           "recordField": "last",
           "labelMode": "none",
-          "trend": { "isVisible": true }
+          "trend": {
+            "isVisible": true
+          }
         }
       }
     },
     "5": {
       "davis": {
-        "davisVisualization": { "isAvailable": true },
+        "davisVisualization": {
+          "isAvailable": true
+        },
         "enabled": false
       },
       "title": "Frame Consistency",
@@ -127,7 +145,9 @@
         "singleValue": {
           "recordField": "last",
           "labelMode": "none",
-          "trend": { "isVisible": true }
+          "trend": {
+            "isVisible": true
+          }
         },
         "coloring": {
           "colorRules": [
@@ -136,21 +156,27 @@
               "comparator": "\u2265",
               "field": "last",
               "value": 0,
-              "customColor": { "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)" }
+              "customColor": {
+                "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)"
+              }
             },
             {
               "colorMode": "custom-color",
               "comparator": "\u2265",
               "field": "last",
               "value": 90,
-              "customColor": { "Default": "var(--dt-colors-charts-status-warning-default, #f5d30f)" }
+              "customColor": {
+                "Default": "var(--dt-colors-charts-status-warning-default, #f5d30f)"
+              }
             },
             {
               "colorMode": "custom-color",
               "comparator": "\u2265",
               "field": "last",
               "value": 95,
-              "customColor": { "Default": "var(--dt-colors-charts-categorical-color-09-default, #649438)" }
+              "customColor": {
+                "Default": "var(--dt-colors-charts-categorical-color-09-default, #649438)"
+              }
             }
           ]
         }
@@ -158,7 +184,9 @@
     },
     "6": {
       "davis": {
-        "davisVisualization": { "isAvailable": true },
+        "davisVisualization": {
+          "isAvailable": true
+        },
         "enabled": false
       },
       "title": "Dropped Frames",
@@ -177,7 +205,9 @@
         "singleValue": {
           "recordField": "last",
           "labelMode": "none",
-          "trend": { "isVisible": true }
+          "trend": {
+            "isVisible": true
+          }
         },
         "coloring": {
           "colorRules": [
@@ -186,21 +216,27 @@
               "comparator": "\u2265",
               "field": "last",
               "value": 0,
-              "customColor": { "Default": "var(--dt-colors-charts-categorical-color-09-default, #649438)" }
+              "customColor": {
+                "Default": "var(--dt-colors-charts-categorical-color-09-default, #649438)"
+              }
             },
             {
               "colorMode": "custom-color",
               "comparator": "\u2265",
               "field": "last",
               "value": 10,
-              "customColor": { "Default": "var(--dt-colors-charts-status-warning-default, #f5d30f)" }
+              "customColor": {
+                "Default": "var(--dt-colors-charts-status-warning-default, #f5d30f)"
+              }
             },
             {
               "colorMode": "custom-color",
               "comparator": "\u2265",
               "field": "last",
               "value": 50,
-              "customColor": { "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)" }
+              "customColor": {
+                "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)"
+              }
             }
           ]
         }
@@ -212,12 +248,14 @@
     },
     "8": {
       "davis": {
-        "davisVisualization": { "isAvailable": true },
+        "davisVisualization": {
+          "isAvailable": true
+        },
         "enabled": false
       },
       "title": "Game Loop Rate",
       "type": "data",
-      "query": "timeseries avg(game_actual_update_frequency_hz)",
+      "query": "timeseries hz = avg(game_actual_update_frequency_hz)",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -230,14 +268,18 @@
         "autoSelectVisualization": false,
         "chartSettings": {
           "fieldMapping": {
-            "leftAxisValues": ["avg(game_actual_update_frequency_hz)"],
+            "leftAxisValues": [
+              "hz"
+            ],
             "timestamp": "timeframe"
           },
           "leftYAxisSettings": {
             "isLabelVisible": true,
             "label": "Hz"
           },
-          "legend": { "hidden": true },
+          "legend": {
+            "hidden": true
+          },
           "truncationMode": "end"
         },
         "thresholds": []
@@ -245,12 +287,14 @@
     },
     "9": {
       "davis": {
-        "davisVisualization": { "isAvailable": true },
+        "davisVisualization": {
+          "isAvailable": true
+        },
         "enabled": false
       },
       "title": "Game Loop Jitter Over Time",
       "type": "data",
-      "query": "timeseries avg(game_loop_jitter_ms)",
+      "query": "timeseries jitter = avg(game_loop_jitter_ms)",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -263,14 +307,18 @@
         "autoSelectVisualization": false,
         "chartSettings": {
           "fieldMapping": {
-            "leftAxisValues": ["avg(game_loop_jitter_ms)"],
+            "leftAxisValues": [
+              "jitter"
+            ],
             "timestamp": "timeframe"
           },
           "leftYAxisSettings": {
             "isLabelVisible": true,
             "label": "Jitter (ms)"
           },
-          "legend": { "hidden": true },
+          "legend": {
+            "hidden": true
+          },
           "truncationMode": "end"
         },
         "thresholds": []
@@ -282,12 +330,14 @@
     },
     "11": {
       "davis": {
-        "davisVisualization": { "isAvailable": true },
+        "davisVisualization": {
+          "isAvailable": true
+        },
         "enabled": false
       },
       "title": "Games by Mode",
       "type": "data",
-      "query": "timeseries sum(games_started_total, rate: 1m), by:{mode}",
+      "query": "timeseries started = sum(games_started_total, rate: 1m), by:{mode}",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -300,16 +350,22 @@
         "autoSelectVisualization": false,
         "chartSettings": {
           "categoricalBarChartSettings": {
-            "categoryAxis": ["mode"],
+            "categoryAxis": [
+              "mode"
+            ],
             "categoryAxisLabel": "mode",
-            "valueAxis": ["sum(games_started_total)"],
-            "valueAxisLabel": "sum(games_started_total)"
+            "valueAxis": [
+              "started"
+            ],
+            "valueAxisLabel": "started"
           },
           "circleChartSettings": {
             "groupingThresholdType": "relative",
             "valueType": "relative"
           },
-          "legend": { "hidden": false },
+          "legend": {
+            "hidden": false
+          },
           "truncationMode": "end"
         },
         "thresholds": []
@@ -317,12 +373,14 @@
     },
     "12": {
       "davis": {
-        "davisVisualization": { "isAvailable": true },
+        "davisVisualization": {
+          "isAvailable": true
+        },
         "enabled": false
       },
       "title": "Games Started Over Time",
       "type": "data",
-      "query": "timeseries sum(games_started_total, rate: 1m), by:{mode}",
+      "query": "timeseries started = sum(games_started_total, rate: 1m), by:{mode}",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -335,13 +393,17 @@
         "autoSelectVisualization": false,
         "chartSettings": {
           "fieldMapping": {
-            "leftAxisValues": ["sum(games_started_total)"],
+            "leftAxisValues": [
+              "started"
+            ],
             "timestamp": "timeframe"
           },
           "categoricalBarChartSettings": {
             "groupMode": "stacked"
           },
-          "legend": { "hidden": false },
+          "legend": {
+            "hidden": false
+          },
           "truncationMode": "end"
         },
         "thresholds": []
@@ -349,12 +411,14 @@
     },
     "13": {
       "davis": {
-        "davisVisualization": { "isAvailable": true },
+        "davisVisualization": {
+          "isAvailable": true
+        },
         "enabled": false
       },
       "title": "Deaths by Mode",
       "type": "data",
-      "query": "timeseries sum(game_player_deaths_total, rate: 1m), by:{mode}",
+      "query": "timeseries deaths = sum(game_player_deaths_total, rate: 1m), by:{mode}",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -367,13 +431,17 @@
         "autoSelectVisualization": false,
         "chartSettings": {
           "fieldMapping": {
-            "leftAxisValues": ["sum(game_player_deaths_total)"],
+            "leftAxisValues": [
+              "deaths"
+            ],
             "timestamp": "timeframe"
           },
           "categoricalBarChartSettings": {
             "groupMode": "stacked"
           },
-          "legend": { "hidden": false },
+          "legend": {
+            "hidden": false
+          },
           "truncationMode": "end"
         },
         "thresholds": []
@@ -381,19 +449,89 @@
     }
   },
   "layouts": {
-    "0":  { "x": 0,  "y": 0,  "w": 24, "h": 2 },
-    "1":  { "x": 0,  "y": 2,  "w": 4,  "h": 4 },
-    "2":  { "x": 4,  "y": 2,  "w": 4,  "h": 4 },
-    "3":  { "x": 8,  "y": 2,  "w": 4,  "h": 4 },
-    "4":  { "x": 12, "y": 2,  "w": 4,  "h": 4 },
-    "5":  { "x": 16, "y": 2,  "w": 4,  "h": 4 },
-    "6":  { "x": 20, "y": 2,  "w": 4,  "h": 4 },
-    "7":  { "x": 0,  "y": 6,  "w": 24, "h": 2 },
-    "8":  { "x": 0,  "y": 8,  "w": 12, "h": 7 },
-    "9":  { "x": 12, "y": 8,  "w": 12, "h": 7 },
-    "10": { "x": 0,  "y": 15, "w": 24, "h": 2 },
-    "11": { "x": 0,  "y": 17, "w": 8,  "h": 7 },
-    "12": { "x": 8,  "y": 17, "w": 8,  "h": 7 },
-    "13": { "x": 16, "y": 17, "w": 8,  "h": 7 }
+    "0": {
+      "x": 0,
+      "y": 0,
+      "w": 24,
+      "h": 2
+    },
+    "1": {
+      "x": 0,
+      "y": 2,
+      "w": 4,
+      "h": 4
+    },
+    "2": {
+      "x": 4,
+      "y": 2,
+      "w": 4,
+      "h": 4
+    },
+    "3": {
+      "x": 8,
+      "y": 2,
+      "w": 4,
+      "h": 4
+    },
+    "4": {
+      "x": 12,
+      "y": 2,
+      "w": 4,
+      "h": 4
+    },
+    "5": {
+      "x": 16,
+      "y": 2,
+      "w": 4,
+      "h": 4
+    },
+    "6": {
+      "x": 20,
+      "y": 2,
+      "w": 4,
+      "h": 4
+    },
+    "7": {
+      "x": 0,
+      "y": 6,
+      "w": 24,
+      "h": 2
+    },
+    "8": {
+      "x": 0,
+      "y": 8,
+      "w": 12,
+      "h": 7
+    },
+    "9": {
+      "x": 12,
+      "y": 8,
+      "w": 12,
+      "h": 7
+    },
+    "10": {
+      "x": 0,
+      "y": 15,
+      "w": 24,
+      "h": 2
+    },
+    "11": {
+      "x": 0,
+      "y": 17,
+      "w": 8,
+      "h": 7
+    },
+    "12": {
+      "x": 8,
+      "y": 17,
+      "w": 8,
+      "h": 7
+    },
+    "13": {
+      "x": 16,
+      "y": 17,
+      "w": 8,
+      "h": 7
+    }
   }
 }

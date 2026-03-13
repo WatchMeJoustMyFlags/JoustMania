@@ -8,7 +8,9 @@
     },
     "1": {
       "davis": {
-        "davisVisualization": { "isAvailable": true },
+        "davisVisualization": {
+          "isAvailable": true
+        },
         "enabled": false
       },
       "title": "Player Activity",
@@ -30,22 +32,32 @@
           "dataMappings": {
             "value": "accelLast"
           },
-          "displayedFields": ["serial", "accelLast", "peakLast"],
+          "displayedFields": [
+            "serial",
+            "accelLast",
+            "peakLast"
+          ],
           "customColors": [
             {
               "comparator": "\u2265",
               "value": 0,
-              "color": { "Default": "var(--dt-colors-charts-categorical-color-09-default, #649438)" }
+              "color": {
+                "Default": "var(--dt-colors-charts-categorical-color-09-default, #649438)"
+              }
             },
             {
               "comparator": "\u2265",
               "value": 1.0,
-              "color": { "Default": "var(--dt-colors-charts-status-warning-default, #f5d30f)" }
+              "color": {
+                "Default": "var(--dt-colors-charts-status-warning-default, #f5d30f)"
+              }
             },
             {
               "comparator": "\u2265",
               "value": 1.5,
-              "color": { "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)" }
+              "color": {
+                "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)"
+              }
             }
           ]
         },
@@ -56,21 +68,27 @@
               "comparator": "\u2265",
               "field": "accelLast",
               "value": 0,
-              "customColor": { "Default": "var(--dt-colors-charts-categorical-color-09-default, #649438)" }
+              "customColor": {
+                "Default": "var(--dt-colors-charts-categorical-color-09-default, #649438)"
+              }
             },
             {
               "colorMode": "custom-color",
               "comparator": "\u2265",
               "field": "accelLast",
               "value": 1.0,
-              "customColor": { "Default": "var(--dt-colors-charts-status-warning-default, #f5d30f)" }
+              "customColor": {
+                "Default": "var(--dt-colors-charts-status-warning-default, #f5d30f)"
+              }
             },
             {
               "colorMode": "custom-color",
               "comparator": "\u2265",
               "field": "accelLast",
               "value": 1.5,
-              "customColor": { "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)" }
+              "customColor": {
+                "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)"
+              }
             }
           ]
         }
@@ -78,7 +96,9 @@
     },
     "2": {
       "davis": {
-        "davisVisualization": { "isAvailable": true },
+        "davisVisualization": {
+          "isAvailable": true
+        },
         "enabled": false
       },
       "title": "Music Tempo",
@@ -97,13 +117,17 @@
         "singleValue": {
           "recordField": "last",
           "labelMode": "none",
-          "trend": { "isVisible": true }
+          "trend": {
+            "isVisible": true
+          }
         }
       }
     },
     "3": {
       "davis": {
-        "davisVisualization": { "isAvailable": true },
+        "davisVisualization": {
+          "isAvailable": true
+        },
         "enabled": false
       },
       "title": "Sensitivity",
@@ -122,13 +146,17 @@
         "singleValue": {
           "recordField": "last",
           "labelMode": "none",
-          "trend": { "isVisible": true }
+          "trend": {
+            "isVisible": true
+          }
         }
       }
     },
     "4": {
       "davis": {
-        "davisVisualization": { "isAvailable": true },
+        "davisVisualization": {
+          "isAvailable": true
+        },
         "enabled": false
       },
       "title": "Near-Deaths",
@@ -147,13 +175,17 @@
         "singleValue": {
           "recordField": "last",
           "labelMode": "none",
-          "trend": { "isVisible": true }
+          "trend": {
+            "isVisible": true
+          }
         }
       }
     },
     "5": {
       "davis": {
-        "davisVisualization": { "isAvailable": true },
+        "davisVisualization": {
+          "isAvailable": true
+        },
         "enabled": false
       },
       "title": "Warnings",
@@ -172,7 +204,9 @@
         "singleValue": {
           "recordField": "last",
           "labelMode": "none",
-          "trend": { "isVisible": true }
+          "trend": {
+            "isVisible": true
+          }
         }
       }
     },
@@ -182,12 +216,14 @@
     },
     "7": {
       "davis": {
-        "davisVisualization": { "isAvailable": true },
+        "davisVisualization": {
+          "isAvailable": true
+        },
         "enabled": false
       },
       "title": "Peak Acceleration by Controller",
       "type": "data",
-      "query": "timeseries avg(game_player_peak_accel), by:{serial}",
+      "query": "timeseries peak = avg(game_player_peak_accel), by:{serial}",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -200,14 +236,18 @@
         "autoSelectVisualization": false,
         "chartSettings": {
           "fieldMapping": {
-            "leftAxisValues": ["avg(game_player_peak_accel)"],
+            "leftAxisValues": [
+              "peak"
+            ],
             "timestamp": "timeframe"
           },
           "leftYAxisSettings": {
             "isLabelVisible": true,
             "label": "Acceleration (g)"
           },
-          "legend": { "hidden": false },
+          "legend": {
+            "hidden": false
+          },
           "truncationMode": "end"
         },
         "thresholds": []
@@ -215,7 +255,9 @@
     },
     "8": {
       "davis": {
-        "davisVisualization": { "isAvailable": true },
+        "davisVisualization": {
+          "isAvailable": true
+        },
         "enabled": false
       },
       "title": "Effective Thresholds",
@@ -233,14 +275,19 @@
         "autoSelectVisualization": false,
         "chartSettings": {
           "fieldMapping": {
-            "leftAxisValues": ["warning", "death"],
+            "leftAxisValues": [
+              "warning",
+              "death"
+            ],
             "timestamp": "timeframe"
           },
           "leftYAxisSettings": {
             "isLabelVisible": true,
             "label": "Threshold (g)"
           },
-          "legend": { "hidden": false },
+          "legend": {
+            "hidden": false
+          },
           "truncationMode": "end"
         },
         "thresholds": []
@@ -252,12 +299,14 @@
     },
     "10": {
       "davis": {
-        "davisVisualization": { "isAvailable": true },
+        "davisVisualization": {
+          "isAvailable": true
+        },
         "enabled": false
       },
       "title": "Near-Death Events Over Time",
       "type": "data",
-      "query": "timeseries sum(game_near_death_events_total, rate: 1m), by:{serial, game_mode}",
+      "query": "timeseries nearDeaths = sum(game_near_death_events_total, rate: 1m), by:{serial, game_mode}",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -270,13 +319,17 @@
         "autoSelectVisualization": false,
         "chartSettings": {
           "fieldMapping": {
-            "leftAxisValues": ["sum(game_near_death_events_total)"],
+            "leftAxisValues": [
+              "nearDeaths"
+            ],
             "timestamp": "timeframe"
           },
           "categoricalBarChartSettings": {
             "groupMode": "stacked"
           },
-          "legend": { "hidden": false },
+          "legend": {
+            "hidden": false
+          },
           "truncationMode": "end"
         },
         "thresholds": []
@@ -284,12 +337,14 @@
     },
     "11": {
       "davis": {
-        "davisVisualization": { "isAvailable": true },
+        "davisVisualization": {
+          "isAvailable": true
+        },
         "enabled": false
       },
       "title": "Warning Events Over Time",
       "type": "data",
-      "query": "timeseries sum(game_player_warnings_total, rate: 1m), by:{serial, game_mode}",
+      "query": "timeseries warnings = sum(game_player_warnings_total, rate: 1m), by:{serial, game_mode}",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -302,13 +357,17 @@
         "autoSelectVisualization": false,
         "chartSettings": {
           "fieldMapping": {
-            "leftAxisValues": ["sum(game_player_warnings_total)"],
+            "leftAxisValues": [
+              "warnings"
+            ],
             "timestamp": "timeframe"
           },
           "categoricalBarChartSettings": {
             "groupMode": "stacked"
           },
-          "legend": { "hidden": false },
+          "legend": {
+            "hidden": false
+          },
           "truncationMode": "end"
         },
         "thresholds": []
@@ -316,12 +375,14 @@
     },
     "12": {
       "davis": {
-        "davisVisualization": { "isAvailable": true },
+        "davisVisualization": {
+          "isAvailable": true
+        },
         "enabled": false
       },
       "title": "Music Tempo Over Time",
       "type": "data",
-      "query": "timeseries avg(game_music_tempo)",
+      "query": "timeseries tempo = avg(game_music_tempo)",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -334,10 +395,14 @@
         "autoSelectVisualization": false,
         "chartSettings": {
           "fieldMapping": {
-            "leftAxisValues": ["avg(game_music_tempo)"],
+            "leftAxisValues": [
+              "tempo"
+            ],
             "timestamp": "timeframe"
           },
-          "legend": { "hidden": true },
+          "legend": {
+            "hidden": true
+          },
           "truncationMode": "end"
         },
         "thresholds": []
@@ -345,18 +410,83 @@
     }
   },
   "layouts": {
-    "0":  { "x": 0,  "y": 0,  "w": 24, "h": 2 },
-    "1":  { "x": 0,  "y": 2,  "w": 16, "h": 8 },
-    "2":  { "x": 16, "y": 2,  "w": 4,  "h": 4 },
-    "3":  { "x": 20, "y": 2,  "w": 4,  "h": 4 },
-    "4":  { "x": 16, "y": 6,  "w": 4,  "h": 4 },
-    "5":  { "x": 20, "y": 6,  "w": 4,  "h": 4 },
-    "6":  { "x": 0,  "y": 10, "w": 24, "h": 2 },
-    "7":  { "x": 0,  "y": 12, "w": 12, "h": 7 },
-    "8":  { "x": 12, "y": 12, "w": 12, "h": 7 },
-    "9":  { "x": 0,  "y": 19, "w": 24, "h": 2 },
-    "10": { "x": 0,  "y": 21, "w": 8,  "h": 7 },
-    "11": { "x": 8,  "y": 21, "w": 8,  "h": 7 },
-    "12": { "x": 16, "y": 21, "w": 8,  "h": 7 }
+    "0": {
+      "x": 0,
+      "y": 0,
+      "w": 24,
+      "h": 2
+    },
+    "1": {
+      "x": 0,
+      "y": 2,
+      "w": 16,
+      "h": 8
+    },
+    "2": {
+      "x": 16,
+      "y": 2,
+      "w": 4,
+      "h": 4
+    },
+    "3": {
+      "x": 20,
+      "y": 2,
+      "w": 4,
+      "h": 4
+    },
+    "4": {
+      "x": 16,
+      "y": 6,
+      "w": 4,
+      "h": 4
+    },
+    "5": {
+      "x": 20,
+      "y": 6,
+      "w": 4,
+      "h": 4
+    },
+    "6": {
+      "x": 0,
+      "y": 10,
+      "w": 24,
+      "h": 2
+    },
+    "7": {
+      "x": 0,
+      "y": 12,
+      "w": 12,
+      "h": 7
+    },
+    "8": {
+      "x": 12,
+      "y": 12,
+      "w": 12,
+      "h": 7
+    },
+    "9": {
+      "x": 0,
+      "y": 19,
+      "w": 24,
+      "h": 2
+    },
+    "10": {
+      "x": 0,
+      "y": 21,
+      "w": 8,
+      "h": 7
+    },
+    "11": {
+      "x": 8,
+      "y": 21,
+      "w": 8,
+      "h": 7
+    },
+    "12": {
+      "x": 16,
+      "y": 21,
+      "w": 8,
+      "h": 7
+    }
   }
 }

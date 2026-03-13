@@ -3,12 +3,14 @@
   "variables": [],
   "tiles": {
     "0": {
-      "content": "### Controllers & Adapters\n\nReal-time health overview. Each hexagon is a controller — hover for battery and signal details.\n\n-----",
+      "content": "### Controllers & Adapters\n\nReal-time health overview. Each hexagon is a controller \u2014 hover for battery and signal details.\n\n-----",
       "type": "markdown"
     },
     "1": {
       "davis": {
-        "davisVisualization": { "isAvailable": true },
+        "davisVisualization": {
+          "isAvailable": true
+        },
         "enabled": false
       },
       "title": "Controller Health",
@@ -30,17 +32,26 @@
           "dataMappings": {
             "value": "status"
           },
-          "displayedFields": ["serial", "status", "batteryLevel", "signalDbm"],
+          "displayedFields": [
+            "serial",
+            "status",
+            "batteryLevel",
+            "signalDbm"
+          ],
           "customColors": [
             {
               "comparator": "\u2265",
               "value": 0,
-              "color": { "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)" }
+              "color": {
+                "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)"
+              }
             },
             {
               "comparator": "\u2265",
               "value": 0.5,
-              "color": { "Default": "var(--dt-colors-charts-categorical-color-09-default, #649438)" }
+              "color": {
+                "Default": "var(--dt-colors-charts-categorical-color-09-default, #649438)"
+              }
             }
           ]
         },
@@ -51,14 +62,18 @@
               "comparator": "\u2265",
               "field": "status",
               "value": 0,
-              "customColor": { "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)" }
+              "customColor": {
+                "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)"
+              }
             },
             {
               "colorMode": "custom-color",
               "comparator": "\u2265",
               "field": "status",
               "value": 0.5,
-              "customColor": { "Default": "var(--dt-colors-charts-categorical-color-09-default, #649438)" }
+              "customColor": {
+                "Default": "var(--dt-colors-charts-categorical-color-09-default, #649438)"
+              }
             }
           ]
         }
@@ -66,7 +81,9 @@
     },
     "2": {
       "davis": {
-        "davisVisualization": { "isAvailable": true },
+        "davisVisualization": {
+          "isAvailable": true
+        },
         "enabled": false
       },
       "title": "Adapter Load",
@@ -88,27 +105,38 @@
           "dataMappings": {
             "value": "load"
           },
-          "displayedFields": ["hci_adapter", "load"],
+          "displayedFields": [
+            "hci_adapter",
+            "load"
+          ],
           "customColors": [
             {
               "comparator": "\u2265",
               "value": 0,
-              "color": { "Default": "var(--dt-colors-charts-status-warning-default, #f5d30f)" }
+              "color": {
+                "Default": "var(--dt-colors-charts-status-warning-default, #f5d30f)"
+              }
             },
             {
               "comparator": "\u2265",
               "value": 1,
-              "color": { "Default": "var(--dt-colors-charts-categorical-color-09-default, #649438)" }
+              "color": {
+                "Default": "var(--dt-colors-charts-categorical-color-09-default, #649438)"
+              }
             },
             {
               "comparator": "\u2265",
               "value": 4,
-              "color": { "Default": "var(--dt-colors-charts-status-warning-default, #f5d30f)" }
+              "color": {
+                "Default": "var(--dt-colors-charts-status-warning-default, #f5d30f)"
+              }
             },
             {
               "comparator": "\u2265",
               "value": 6,
-              "color": { "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)" }
+              "color": {
+                "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)"
+              }
             }
           ]
         },
@@ -119,28 +147,36 @@
               "comparator": "\u2265",
               "field": "load",
               "value": 0,
-              "customColor": { "Default": "var(--dt-colors-charts-status-warning-default, #f5d30f)" }
+              "customColor": {
+                "Default": "var(--dt-colors-charts-status-warning-default, #f5d30f)"
+              }
             },
             {
               "colorMode": "custom-color",
               "comparator": "\u2265",
               "field": "load",
               "value": 1,
-              "customColor": { "Default": "var(--dt-colors-charts-categorical-color-09-default, #649438)" }
+              "customColor": {
+                "Default": "var(--dt-colors-charts-categorical-color-09-default, #649438)"
+              }
             },
             {
               "colorMode": "custom-color",
               "comparator": "\u2265",
               "field": "load",
               "value": 4,
-              "customColor": { "Default": "var(--dt-colors-charts-status-warning-default, #f5d30f)" }
+              "customColor": {
+                "Default": "var(--dt-colors-charts-status-warning-default, #f5d30f)"
+              }
             },
             {
               "colorMode": "custom-color",
               "comparator": "\u2265",
               "field": "load",
               "value": 6,
-              "customColor": { "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)" }
+              "customColor": {
+                "Default": "var(--dt-colors-charts-apdex-unacceptable-default, #cd3741)"
+              }
             }
           ]
         }
@@ -148,7 +184,9 @@
     },
     "3": {
       "davis": {
-        "davisVisualization": { "isAvailable": true },
+        "davisVisualization": {
+          "isAvailable": true
+        },
         "enabled": false
       },
       "title": "Poll Mode",
@@ -167,13 +205,17 @@
         "singleValue": {
           "recordField": "last",
           "labelMode": "none",
-          "trend": { "isVisible": true }
+          "trend": {
+            "isVisible": true
+          }
         }
       }
     },
     "4": {
       "davis": {
-        "davisVisualization": { "isAvailable": true },
+        "davisVisualization": {
+          "isAvailable": true
+        },
         "enabled": false
       },
       "title": "Active Streams",
@@ -192,13 +234,17 @@
         "singleValue": {
           "recordField": "last",
           "labelMode": "none",
-          "trend": { "isVisible": true }
+          "trend": {
+            "isVisible": true
+          }
         }
       }
     },
     "5": {
       "davis": {
-        "davisVisualization": { "isAvailable": true },
+        "davisVisualization": {
+          "isAvailable": true
+        },
         "enabled": false
       },
       "title": "Controller Details",
@@ -218,12 +264,14 @@
     },
     "6": {
       "davis": {
-        "davisVisualization": { "isAvailable": true },
+        "davisVisualization": {
+          "isAvailable": true
+        },
         "enabled": false
       },
       "title": "Signal Strength by Adapter",
       "type": "data",
-      "query": "timeseries avg(bluetooth_device_rssi_dbm), by:{hci_adapter}",
+      "query": "timeseries rssi = avg(bluetooth_device_rssi_dbm), by:{hci_adapter}",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -236,14 +284,18 @@
         "autoSelectVisualization": false,
         "chartSettings": {
           "fieldMapping": {
-            "leftAxisValues": ["avg(bluetooth_device_rssi_dbm)"],
+            "leftAxisValues": [
+              "rssi"
+            ],
             "timestamp": "timeframe"
           },
           "leftYAxisSettings": {
             "isLabelVisible": true,
             "label": "RSSI (dBm)"
           },
-          "legend": { "hidden": false },
+          "legend": {
+            "hidden": false
+          },
           "truncationMode": "end"
         },
         "thresholds": []
@@ -255,12 +307,14 @@
     },
     "8": {
       "davis": {
-        "davisVisualization": { "isAvailable": true },
+        "davisVisualization": {
+          "isAvailable": true
+        },
         "enabled": false
       },
       "title": "Button Events",
       "type": "data",
-      "query": "timeseries sum(controller_button_events_total, rate: 1m)",
+      "query": "timeseries buttons = sum(controller_button_events_total, rate: 1m)",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -273,10 +327,14 @@
         "autoSelectVisualization": false,
         "chartSettings": {
           "fieldMapping": {
-            "leftAxisValues": ["sum(controller_button_events_total)"],
+            "leftAxisValues": [
+              "buttons"
+            ],
             "timestamp": "timeframe"
           },
-          "legend": { "hidden": true },
+          "legend": {
+            "hidden": true
+          },
           "truncationMode": "end"
         },
         "thresholds": []
@@ -284,12 +342,14 @@
     },
     "9": {
       "davis": {
-        "davisVisualization": { "isAvailable": true },
+        "davisVisualization": {
+          "isAvailable": true
+        },
         "enabled": false
       },
       "title": "Disconnects",
       "type": "data",
-      "query": "timeseries sum(controller_disconnect_total, rate: 1m)",
+      "query": "timeseries disconnects = sum(controller_disconnect_total, rate: 1m)",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -302,10 +362,14 @@
         "autoSelectVisualization": false,
         "chartSettings": {
           "fieldMapping": {
-            "leftAxisValues": ["sum(controller_disconnect_total)"],
+            "leftAxisValues": [
+              "disconnects"
+            ],
             "timestamp": "timeframe"
           },
-          "legend": { "hidden": true },
+          "legend": {
+            "hidden": true
+          },
           "truncationMode": "end"
         },
         "thresholds": []
@@ -313,15 +377,65 @@
     }
   },
   "layouts": {
-    "0": { "x": 0,  "y": 0,  "w": 24, "h": 2 },
-    "1": { "x": 0,  "y": 2,  "w": 14, "h": 10 },
-    "2": { "x": 14, "y": 2,  "w": 6,  "h": 10 },
-    "3": { "x": 20, "y": 2,  "w": 4,  "h": 5 },
-    "4": { "x": 20, "y": 7,  "w": 4,  "h": 5 },
-    "5": { "x": 0,  "y": 12, "w": 14, "h": 6 },
-    "6": { "x": 14, "y": 12, "w": 10, "h": 6 },
-    "7": { "x": 0,  "y": 18, "w": 24, "h": 2 },
-    "8": { "x": 0,  "y": 20, "w": 12, "h": 6 },
-    "9": { "x": 12, "y": 20, "w": 12, "h": 6 }
+    "0": {
+      "x": 0,
+      "y": 0,
+      "w": 24,
+      "h": 2
+    },
+    "1": {
+      "x": 0,
+      "y": 2,
+      "w": 14,
+      "h": 10
+    },
+    "2": {
+      "x": 14,
+      "y": 2,
+      "w": 6,
+      "h": 10
+    },
+    "3": {
+      "x": 20,
+      "y": 2,
+      "w": 4,
+      "h": 5
+    },
+    "4": {
+      "x": 20,
+      "y": 7,
+      "w": 4,
+      "h": 5
+    },
+    "5": {
+      "x": 0,
+      "y": 12,
+      "w": 14,
+      "h": 6
+    },
+    "6": {
+      "x": 14,
+      "y": 12,
+      "w": 10,
+      "h": 6
+    },
+    "7": {
+      "x": 0,
+      "y": 18,
+      "w": 24,
+      "h": 2
+    },
+    "8": {
+      "x": 0,
+      "y": 20,
+      "w": 12,
+      "h": 6
+    },
+    "9": {
+      "x": 12,
+      "y": 20,
+      "w": 12,
+      "h": 6
+    }
   }
 }

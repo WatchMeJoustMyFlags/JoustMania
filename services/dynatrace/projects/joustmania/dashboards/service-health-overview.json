@@ -187,7 +187,7 @@
       },
       "title": "CPU Usage by Service",
       "type": "data",
-      "query": "timeseries avg(process_cpu_seconds_total, rate: 1m), by:{job}",
+      "query": "timeseries cpu = avg(process_cpu_seconds_total, rate: 1m), by:{job}",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -200,7 +200,7 @@
         "autoSelectVisualization": false,
         "chartSettings": {
           "fieldMapping": {
-            "leftAxisValues": ["avg(process_cpu_seconds_total)"],
+            "leftAxisValues": ["cpu"],
             "timestamp": "timeframe"
           },
           "leftYAxisSettings": {
@@ -220,7 +220,7 @@
       },
       "title": "Memory Usage by Service",
       "type": "data",
-      "query": "timeseries avg(process_resident_memory_bytes), by:{job}",
+      "query": "timeseries mem = avg(process_resident_memory_bytes), by:{job}",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -233,7 +233,7 @@
         "autoSelectVisualization": false,
         "chartSettings": {
           "fieldMapping": {
-            "leftAxisValues": ["avg(process_resident_memory_bytes)"],
+            "leftAxisValues": ["mem"],
             "timestamp": "timeframe"
           },
           "leftYAxisSettings": {
@@ -257,7 +257,7 @@
       },
       "title": "gRPC Request Rate by Service",
       "type": "data",
-      "query": "timeseries sum(grpc_requests_total, rate: 1m), by:{job}",
+      "query": "timeseries requests = sum(grpc_requests_total, rate: 1m), by:{job}",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -270,7 +270,7 @@
         "autoSelectVisualization": false,
         "chartSettings": {
           "fieldMapping": {
-            "leftAxisValues": ["sum(grpc_requests_total)"],
+            "leftAxisValues": ["requests"],
             "timestamp": "timeframe"
           },
           "categoricalBarChartSettings": {
@@ -289,7 +289,7 @@
       },
       "title": "gRPC Errors by Service",
       "type": "data",
-      "query": "timeseries sum(grpc_requests_total, rate: 1m), by:{job, status} | filter status != \"OK\"",
+      "query": "timeseries errors = sum(grpc_requests_total, rate: 1m), by:{job, status} | filter status != \"OK\"",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -302,7 +302,7 @@
         "autoSelectVisualization": false,
         "chartSettings": {
           "fieldMapping": {
-            "leftAxisValues": ["sum(grpc_requests_total)"],
+            "leftAxisValues": ["errors"],
             "timestamp": "timeframe"
           },
           "categoricalBarChartSettings": {
@@ -322,7 +322,7 @@
       },
       "title": "Threads by Service",
       "type": "data",
-      "query": "timeseries avg(process_threads), by:{job}",
+      "query": "timeseries threads = avg(process_threads), by:{job}",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -335,7 +335,7 @@
         "autoSelectVisualization": false,
         "chartSettings": {
           "fieldMapping": {
-            "leftAxisValues": ["avg(process_threads)"],
+            "leftAxisValues": ["threads"],
             "timestamp": "timeframe"
           },
           "leftYAxisSettings": {
