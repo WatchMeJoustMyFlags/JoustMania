@@ -19,6 +19,7 @@ services:
   otel-collector:
     volumes:
       - ./services/otel-collector/config.dynatrace.yaml:/etc/otel-collector-config.yaml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
     environment:
       - DYNATRACE_ENDPOINT=${DYNATRACE_ENDPOINT}
       - DYNATRACE_API_TOKEN=${DYNATRACE_API_TOKEN}
