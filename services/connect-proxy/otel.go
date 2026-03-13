@@ -3,18 +3,69 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/contrib/bridges/otelslog"
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	otelmetric "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/sdk/metric"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 )
+
+// initLogs sets up OTEL log export via OTLP and returns an slog.Logger backed by
+// the OpenTelemetry bridge, plus a shutdown function. When OTEL_EXPORTER_OTLP_ENDPOINT
+// is not set, returns slog.Default() and a no-op shutdown.
+func initLogs(ctx context.Context) (*slog.Logger, func(context.Context) error) {
+	endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	if endpoint == "" {
+		return slog.Default(), func(context.Context) error { return nil }
+	}
+
+	serviceName := getEnv("OTEL_SERVICE_NAME", "connect-proxy")
+	namespace := getEnv("OTEL_SERVICE_NAMESPACE", "infrastructure")
+
+	// Strip http:// prefix for gRPC endpoint
+	endpoint = strings.TrimPrefix(endpoint, "http://")
+
+	exporter, err := otlploggrpc.New(ctx,
+		otlploggrpc.WithEndpoint(endpoint),
+		otlploggrpc.WithInsecure(),
+	)
+	if err != nil {
+		fmt.Printf("Failed to create OTEL log exporter: %v\n", err)
+		return slog.Default(), func(context.Context) error { return nil }
+	}
+
+	res, err := resource.New(ctx,
+		resource.WithAttributes(
+			semconv.ServiceName(serviceName),
+			semconv.ServiceNamespace(namespace),
+		),
+	)
+	if err != nil {
+		fmt.Printf("Failed to create OTEL resource for logs: %v\n", err)
+		return slog.Default(), func(context.Context) error { return nil }
+	}
+
+	provider := sdklog.NewLoggerProvider(
+		sdklog.WithProcessor(sdklog.NewBatchProcessor(exporter)),
+		sdklog.WithResource(res),
+	)
+
+	handler := otelslog.NewHandler("connect-proxy", otelslog.WithLoggerProvider(provider))
+	logger := slog.New(handler)
+
+	fmt.Println("OTEL logs initialized")
+	return logger, provider.Shutdown
+}
 
 // initMetrics sets up OTEL metrics with process metrics pushed to the collector.
 // Returns a shutdown function. If OTEL_EXPORTER_OTLP_ENDPOINT is not set, returns a no-op.
