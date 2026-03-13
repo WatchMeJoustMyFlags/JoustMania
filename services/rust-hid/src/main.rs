@@ -127,7 +127,7 @@ fn init_tracing() -> Option<opentelemetry_sdk::trace::TracerProvider> {
 /// Initialize OTEL metrics with process metrics (CPU, memory, threads).
 ///
 /// Reads from /proc/self/stat and /proc/self/status to report:
-/// - process_cpu_seconds_total (counter via observable gauge reporting cumulative value)
+/// - process_cpu_seconds_total (observable counter)
 /// - process_resident_memory_bytes (gauge)
 /// - process_threads (gauge)
 fn init_metrics() -> Option<opentelemetry_sdk::metrics::SdkMeterProvider> {
@@ -167,8 +167,9 @@ fn init_metrics() -> Option<opentelemetry_sdk::metrics::SdkMeterProvider> {
     let meter = provider.meter("process");
 
     // process_cpu_seconds_total — cumulative CPU time from /proc/self/stat
+    // Must be counter (not gauge) to match Python services and Prometheus conventions.
     let _cpu = meter
-        .f64_observable_gauge("process_cpu_seconds_total")
+        .f64_observable_counter("process_cpu_seconds_total")
         .with_description("Total user and system CPU time spent in seconds")
         .with_callback(|observer| {
             if let Ok(me) = procfs::process::Process::myself() {
