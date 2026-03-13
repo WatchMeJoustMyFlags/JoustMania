@@ -151,6 +151,7 @@ impl ControllerIoService for ControllerIoServiceImpl {
         });
 
         // Convert sensor data channel to a gRPC response stream
+        #[allow(clippy::result_large_err)] // tonic::Status is inherently large
         let output_stream = ReceiverStream::new(sensor_rx).map(|data| {
             let report = &data.report;
             Ok(SensorData {

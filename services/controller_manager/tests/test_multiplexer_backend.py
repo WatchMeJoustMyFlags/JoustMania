@@ -540,26 +540,32 @@ class TestRouteControllers:
 
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_dynamic_switch_logs(self, mock_metrics, caplog):
-        """Switching adapter mid-session should log the change."""
+        """Switching adapter mid-session should log the change.
+
+        The dynamic-switch path fires when the old adapter is NOT among
+        the current discoverers (it held the serial from a prior cycle).
+        """
         import logging
 
         caplog.set_level(logging.INFO)
         a1 = _make_adapter("hidapi", serials=["AA:AA"])
-        a2 = _make_adapter("hidapi", serials=["AA:AA"])
+        a2 = _make_adapter("rust", serials=[])
         mux = MultiplexerBackend(adapters=[a1, a2])
 
-        # First discovery: targeting picks a1
+        # First discovery: a1 discovers, gets routed
         with patch.object(mux, "_resolve_adapter_for_serial", return_value=a1):
             mux.get_connected_controllers()
 
         assert mux._serial_to_adapter["AA:AA"] is a1
 
-        # Second discovery: targeting switches to a2
+        # Second discovery: only a2 discovers the serial now
+        a1.discover.return_value = []
+        a2.discover.return_value = ["AA:AA"]
         with patch.object(mux, "_resolve_adapter_for_serial", return_value=a2):
             mux.get_connected_controllers()
 
         assert mux._serial_to_adapter["AA:AA"] is a2
-        assert "Switched AA:AA: hidapi -> hidapi" in caplog.text
+        assert "Switched AA:AA: hidapi -> rust" in caplog.text
 
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_dynamic_switch_closes_old_adapter(self, mock_metrics):

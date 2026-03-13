@@ -184,7 +184,7 @@ class MultiplexerBackend(ControllerBackend):
 
             # Detect dynamic switch from previous cycle
             old = self._serial_to_adapter.get(serial)
-            if old and old is not winner:
+            if old and old is not winner and old not in adapters:
                 old.close(serial)
                 logger.info(f"Switched {serial}: {old.adapter_type} -> {winner.adapter_type}")
 
