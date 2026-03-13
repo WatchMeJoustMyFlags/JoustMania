@@ -22,11 +22,13 @@ LABEL org.opencontainers.image.title="joustmania-builder"
 
 # Build dependencies needed by various Python packages
 # - build-essential: Common build tools (includes gcc, g++)
+# - libasound2-dev: ALSA headers for pyalsaaudio (audio service)
 # - python3-dev: Python headers for C extensions
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     g++ \
     gcc \
+    libasound2-dev \
     python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
@@ -36,7 +38,13 @@ RUN pip install --no-cache-dir uv==0.5.11
 # Pre-install common Python dependencies
 # This is the key optimization - these packages are cached in the image
 COPY requirements-common.txt /tmp/
-RUN uv pip install --system --no-cache -r /tmp/requirements-common.txt && \
+# Disable GCC auto-vectorization on ARM64 to prevent libmvec.so dependency
+# (libmvec is x86-only in glibc, but QEMU cross-compilation incorrectly links to it)
+ARG TARGETARCH
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+      export CFLAGS="-fno-tree-loop-vectorize -fno-tree-slp-vectorize"; \
+    fi && \
+    uv pip install --system --no-cache -r /tmp/requirements-common.txt && \
     rm /tmp/requirements-common.txt
 
 # Set working directory convention
