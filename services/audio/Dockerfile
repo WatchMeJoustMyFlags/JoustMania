@@ -47,11 +47,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # =============================================================================
 FROM ${BUILDER_IMAGE} AS builder
 
-# Install ALSA dev libraries for pyalsaaudio compilation
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libasound2-dev \
-    && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 
 # Copy workspace configuration
@@ -71,14 +66,10 @@ RUN python -m compileall -q lib/
 COPY services/audio/pyproject.toml /app/services/audio/
 
 # Install workspace packages and service dependencies (miniaudio + resampy instead of pygame + scipy)
-# Disable GCC auto-vectorization to prevent libmvec.so dependency on ARM64 cross-compile
-# (libmvec is x86-only in glibc, but QEMU cross-compilation incorrectly links to it)
+# Heavy deps (numpy, numba, resampy) are pre-compiled in the builder image;
+# only miniaudio and pyalsaaudio need compilation here.
 WORKDIR /app
-ARG TARGETARCH
-RUN if [ "$TARGETARCH" = "arm64" ]; then \
-      export CFLAGS="-fno-tree-loop-vectorize -fno-tree-slp-vectorize"; \
-    fi && \
-    uv pip install --system -e proto/ -e lib/ --no-binary miniaudio -e services/audio/
+RUN uv pip install --system -e proto/ -e lib/ --no-binary miniaudio -e services/audio/
 
 # =============================================================================
 # Stage 3: Runtime image - distroless for minimal size
