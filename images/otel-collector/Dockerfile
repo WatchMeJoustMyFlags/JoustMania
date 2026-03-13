@@ -1,4 +1,4 @@
-# Custom OTEL Collector: contrib components + metricsaslogs connector.
+# Custom OTEL Collector: contrib components + dtbizevents exporter.
 #
 # Two-stage build:
 #   1. OCB (OpenTelemetry Collector Builder) compiles a custom binary
@@ -20,6 +20,7 @@ RUN go install go.opentelemetry.io/collector/cmd/builder@v${OCB_VERSION}
 
 WORKDIR /build
 COPY builder-config.yaml .
+COPY dtbizeventsexporter/ ./dtbizeventsexporter/
 
 # Build the custom collector binary
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \

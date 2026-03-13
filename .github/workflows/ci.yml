@@ -199,6 +199,33 @@ jobs:
         working-directory: services/rust-hid
         run: cargo clippy -- -D warnings
 
+  # Go exporter tests (dtbizevents custom exporter)
+  exporter-tests:
+    name: Exporter Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            exporter:
+              - 'images/otel-collector/dtbizeventsexporter/**'
+
+      - name: Set up Go
+        if: steps.changes.outputs.exporter == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Run tests
+        if: steps.changes.outputs.exporter == 'true'
+        working-directory: images/otel-collector/dtbizeventsexporter
+        run: |
+          go mod tidy
+          go test -v -race ./...
+
   lint-dockerfiles:
     name: Lint Dockerfiles
     runs-on: ubuntu-latest
@@ -416,9 +443,6 @@ jobs:
           - service: rust-hid
             dockerfile: services/rust-hid/Dockerfile
             image_name: rust-hid
-          - service: bizevents-bridge
-            dockerfile: services/bizevents-bridge/Dockerfile
-            image_name: bizevents-bridge
           - service: otel-collector
             dockerfile: images/otel-collector/Dockerfile
             context: images/otel-collector
@@ -508,6 +532,7 @@ jobs:
       - lib-tests
       - service-checks
       - rust-checks
+      - exporter-tests
       - lint-dockerfiles
       - sonarcloud
       - validate-protos
@@ -529,6 +554,7 @@ jobs:
             echo "  lib-tests: ${{ needs.lib-tests.result }}"
             echo "  service-checks: ${{ needs.service-checks.result }}"
             echo "  rust-checks: ${{ needs.rust-checks.result }}"
+            echo "  exporter-tests: ${{ needs.exporter-tests.result }}"
             echo "  lint-dockerfiles: ${{ needs.lint-dockerfiles.result }}"
             echo "  sonarcloud: ${{ needs.sonarcloud.result }}"
             echo "  validate-protos: ${{ needs.validate-protos.result }}"

@@ -60,7 +60,9 @@ func initMetrics(ctx context.Context) func(context.Context) error {
 	meter := provider.Meter("process")
 
 	// process_cpu_seconds_total — reads from /proc/self/stat
-	_, _ = meter.Float64ObservableGauge("process_cpu_seconds_total",
+	// Must be ObservableCounter (not Gauge) to match Python services' Counter type.
+	// CPU time is monotonically increasing, so Counter is semantically correct.
+	_, _ = meter.Float64ObservableCounter("process_cpu_seconds_total",
 		otelmetric.WithDescription("Total user and system CPU time spent in seconds"),
 		otelmetric.WithFloat64Callback(func(_ context.Context, o otelmetric.Float64Observer) error {
 			secs, err := readCPUSeconds()

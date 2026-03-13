@@ -1,9 +1,9 @@
 # Custom OpenTelemetry Collector build.
 #
 # Based on contrib v0.147.0, trimmed to only the components used by
-# config.yaml and config.dynatrace.yaml.  The sole addition over the
-# stock contrib image is the metricsaslogs connector (development
-# stability, not yet included in any official distribution).
+# config.yaml and config.dynatrace.yaml.  Includes a custom
+# dtbizevents exporter that converts metric data points directly to
+# Dynatrace business events (bypassing 1-min metric resolution).
 #
 # To update: bump the version numbers below and rebuild the image.
 # The full contrib manifest lives at:
@@ -13,7 +13,7 @@
 dist:
   module: github.com/watchmejoustmyflags/joustmania/otel-collector
   name: otelcol-joustmania
-  description: JoustMania OpenTelemetry Collector (contrib + metricsaslogs)
+  description: JoustMania OpenTelemetry Collector (contrib + dtbizevents)
   version: 0.147.0
   output_path: /build/_output
 
@@ -39,13 +39,14 @@ exporters:
   - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.147.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/prometheusexporter v0.147.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/prometheusremotewriteexporter v0.147.0
+  # dtbizevents: converts metric data points directly to Dynatrace
+  # business events. High-frequency accel data (100Hz) is invisible in
+  # Dynatrace's 1-min metric resolution — this exporter bypasses that
+  # limit by POSTing flat JSON to /api/v2/bizevents/ingest.
+  - gomod: github.com/watchmejoustmyflags/joustmania/otel-collector/dtbizeventsexporter v0.0.0
 
-connectors:
-  # metricsaslogs: converts metric data points to OTLP log records.
-  # Used by the Dynatrace bizevents pipeline to bridge 100Hz accel
-  # metrics into business events (Dynatrace has 1-min metric resolution).
-  # Status: development — not included in any official distribution.
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/connector/metricsaslogsconnector v0.147.0
+replaces:
+  - github.com/watchmejoustmyflags/joustmania/otel-collector/dtbizeventsexporter v0.0.0 => /build/dtbizeventsexporter
 
 providers:
   - gomod: go.opentelemetry.io/collector/confmap/provider/envprovider v1.53.0

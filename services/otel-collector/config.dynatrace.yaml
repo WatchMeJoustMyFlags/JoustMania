@@ -131,22 +131,15 @@ exporters:
     headers:
       Authorization: "Api-Token ${env:DYNATRACE_API_TOKEN}"
 
-  # OTLP HTTP exporter to bizevents bridge sidecar
-  # Sends metricsaslogs output (OTLP logs) for conversion to Dynatrace bizevents
-  otlphttp/bizevents-bridge:
-    endpoint: "http://bizevents-bridge:4319"
-    encoding: json
-    tls:
-      insecure: true
-
-connectors:
-  # Converts metric data points into OTLP log records for Dynatrace bizevents.
-  # Dynatrace has 1-minute metric resolution, so high-frequency acceleration
-  # data (100Hz) is invisible as metrics. Converting to logs lets Dynatrace
-  # OpenPipeline route them as business events for analysis.
-  metricsaslogs:
-    include_resource_attributes: true
-    include_scope_info: true
+  # Custom Dynatrace bizevents exporter.
+  # Converts metric data points directly to Dynatrace business events,
+  # bypassing the metrics→logs signal conversion. High-frequency acceleration
+  # data (100Hz) is invisible in Dynatrace's 1-minute metric resolution —
+  # bizevents bypass this limit.
+  dtbizevents:
+    endpoint: ${env:DYNATRACE_BIZEVENTS_ENDPOINT}
+    api_token: ${env:DYNATRACE_BIZEVENTS_TOKEN}
+    batch_interval_ms: 1000
 
 service:
   pipelines:
@@ -229,19 +222,13 @@ service:
 
     # ── Bizevents pipeline (acceleration → Dynatrace business events) ─
     # High-frequency accel metrics (100Hz) are invisible in Dynatrace's
-    # 1-minute metric resolution. The metricsaslogs connector converts
-    # them to log records, which the bizevents-bridge sidecar transforms
-    # into flat JSON and POSTs to /api/v2/bizevents/ingest.
+    # 1-minute metric resolution. The dtbizevents exporter converts them
+    # directly to flat JSON and POSTs to /api/v2/bizevents/ingest.
 
     metrics/accel-bizevents:
       receivers: [otlp]
       processors: [memory_limiter, filter/accel, batch/fast, resource]
-      exporters: [metricsaslogs]
-
-    logs/bizevents:
-      receivers: [metricsaslogs]
-      processors: [memory_limiter, batch, resource]
-      exporters: [otlphttp/bizevents-bridge]
+      exporters: [dtbizevents]
 
   extensions: [health_check]
 
