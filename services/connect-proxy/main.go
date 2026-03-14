@@ -144,10 +144,12 @@ func main() {
 		MaxAge:           86400,
 	}).Handler(mux)
 
+	// Wrap with OTEL HTTP tracing
+	tracedHandler := otelhttp.NewHandler(corsHandler, "connect-proxy")
+
 	// Start server
-	handler := otelhttp.NewHandler(corsHandler, "connect-proxy")
 	slog.Info("Connect proxy listening", "addr", listenAddr)
-	if err := http.ListenAndServe(listenAddr, handler); err != nil {
+	if err := http.ListenAndServe(listenAddr, tracedHandler); err != nil {
 		slog.Error("Server failed", "error", err)
 		os.Exit(1)
 	}

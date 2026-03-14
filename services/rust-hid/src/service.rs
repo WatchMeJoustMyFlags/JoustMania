@@ -33,7 +33,10 @@ impl PairingServiceImpl {
 
 #[tonic::async_trait]
 impl PairingService for PairingServiceImpl {
-    #[instrument(skip(self, _request))]
+    #[instrument(
+        skip(self, _request),
+        fields(rpc.system = "grpc", rpc.service = "PairingService", rpc.method = "GetUsbControllers")
+    )]
     async fn get_usb_controllers(
         &self,
         _request: Request<GetUsbControllersRequest>,
@@ -67,7 +70,10 @@ impl PairingService for PairingServiceImpl {
         }))
     }
 
-    #[instrument(skip(self, request), fields(serial, adapter_address))]
+    #[instrument(
+        skip(self, request),
+        fields(rpc.system = "grpc", rpc.service = "PairingService", rpc.method = "PairController", serial, adapter_address)
+    )]
     async fn pair_controller(
         &self,
         request: Request<PairControllerRequest>,
