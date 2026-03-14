@@ -13,6 +13,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/rs/cors"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
@@ -51,6 +52,9 @@ func main() {
 
 	shutdownMetrics := initMetrics(ctx)
 	defer shutdownMetrics(ctx)
+
+	shutdownTracing := initTracing(ctx)
+	defer shutdownTracing(ctx)
 
 	slog.Info("JoustMania Connect Proxy starting...")
 	slog.Info("Backend services",
@@ -130,9 +134,12 @@ func main() {
 		MaxAge:           86400,
 	}).Handler(mux)
 
+	// Wrap with OTEL HTTP tracing
+	tracedHandler := otelhttp.NewHandler(corsHandler, "connect-proxy")
+
 	// Start server
 	slog.Info("Connect proxy listening", "addr", listenAddr)
-	if err := http.ListenAndServe(listenAddr, corsHandler); err != nil {
+	if err := http.ListenAndServe(listenAddr, tracedHandler); err != nil {
 		slog.Error("Server failed", "error", err)
 		os.Exit(1)
 	}

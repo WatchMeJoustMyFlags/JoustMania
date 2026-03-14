@@ -11,12 +11,15 @@ import (
 	"time"
 
 	"go.opentelemetry.io/contrib/bridges/otelslog"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	otelmetric "go.opentelemetry.io/otel/metric"
-	"go.opentelemetry.io/otel/sdk/metric"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
+	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 )
 
@@ -146,6 +149,51 @@ func initMetrics(ctx context.Context) func(context.Context) error {
 	)
 
 	fmt.Println("OTEL metrics initialized (1s export interval)")
+	return provider.Shutdown
+}
+
+// initTracing sets up OTEL trace export via OTLP and returns a shutdown function.
+// When OTEL_EXPORTER_OTLP_ENDPOINT is not set, returns a no-op shutdown.
+func initTracing(ctx context.Context) func(context.Context) error {
+	endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	if endpoint == "" {
+		return func(context.Context) error { return nil }
+	}
+
+	serviceName := getEnv("OTEL_SERVICE_NAME", "connect-proxy")
+	namespace := getEnv("OTEL_SERVICE_NAMESPACE", "infrastructure")
+
+	// Strip http:// prefix for gRPC endpoint
+	endpoint = strings.TrimPrefix(endpoint, "http://")
+
+	exporter, err := otlptracegrpc.New(ctx,
+		otlptracegrpc.WithEndpoint(endpoint),
+		otlptracegrpc.WithInsecure(),
+	)
+	if err != nil {
+		fmt.Printf("Failed to create OTEL trace exporter: %v\n", err)
+		return func(context.Context) error { return nil }
+	}
+
+	res, err := resource.New(ctx,
+		resource.WithAttributes(
+			semconv.ServiceName(serviceName),
+			semconv.ServiceNamespace(namespace),
+		),
+	)
+	if err != nil {
+		fmt.Printf("Failed to create OTEL resource for tracing: %v\n", err)
+		return func(context.Context) error { return nil }
+	}
+
+	provider := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exporter),
+		sdktrace.WithResource(res),
+	)
+
+	otel.SetTracerProvider(provider)
+
+	fmt.Println("OTEL tracing initialized")
 	return provider.Shutdown
 }
 
