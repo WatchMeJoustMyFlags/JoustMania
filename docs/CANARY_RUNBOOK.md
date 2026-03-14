@@ -1,7 +1,7 @@
 # Canary Release Runbook: Python to Rust Controller Backend Migration
 
 Step-by-step guide for gradually migrating PS Move controllers from the Python
-`HidapiAdapter` backend to the Rust `RustServiceAdapter` gRPC backend using
+`PythonHidAdapter` backend to the Rust `RustServiceAdapter` gRPC backend using
 OpenFeature feature flags served by flagd.
 
 ## How It Works
@@ -14,45 +14,13 @@ opens/closes adapter handles accordingly. Changing the flag config in
 `services/flagd/performance.json` takes effect on the next discovery cycle --
 no service restart needed.
 
-### HTTP Canary Endpoints
-
-The connect-proxy provides HTTP endpoints for controlling canary rollout
-(same pattern as the chaos endpoints). These modify the flagd JSON config
-file directly, triggering a hot-reload with no service restart needed.
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/canary/rust` | POST | Route controllers to Rust backend |
-| `/canary/python` | POST | Route controllers to Python backend |
-| `/canary/rollback` | POST | Reset all controllers to Python (default) |
-| `/canary/status` | GET | Show current routing flag config |
-
-All POST endpoints support `?fraction=N` (1-100, default 100) for gradual
-rollout via flagd fractional targeting.
-
-**Examples:**
-
-```bash
-# Route all controllers to Rust
-curl -X POST http://localhost:8080/canary/rust
-
-# Route 25% of controllers to Rust (deterministic by serial hash)
-curl -X POST http://localhost:8080/canary/rust?fraction=25
-
-# Check current routing config
-curl http://localhost:8080/canary/status
-
-# Immediate rollback to Python
-curl -X POST http://localhost:8080/canary/rollback
-```
-
 Key source files:
 
 | File | Role |
 |------|------|
 | `services/controller_manager/multiplexer/multiplexer_backend.py` | `_resolve_adapter_for_serial()` routing logic |
 | `services/controller_manager/multiplexer/rust_adapter.py` | `RustServiceAdapter` (gRPC client to rust-hid) |
-| `services/controller_manager/multiplexer/hidapi_adapter.py` | `HidapiAdapter` (Python hidapi) |
+| `services/controller_manager/multiplexer/python_hid_adapter.py` | `PythonHidAdapter` (gRPC client to python-hid) |
 | `services/controller_manager/backend_factory.py` | Adapter instantiation, `controller_backend` flag |
 | `services/flagd/performance.json` | Feature flag configuration (file-watched by flagd) |
 | `services/controller_manager/metrics.py` | All controller metrics definitions |
@@ -66,23 +34,12 @@ Key source files:
    docker compose ps
    ```
 
-2. **rust-hid service deployed and healthy** -- the `controller_backend` flag must
-   include `rust` in its value so that `RustServiceAdapter` is instantiated.
-   Edit `services/flagd/performance.json` and set the `controller_backend` flag:
-   ```json
-   "controller_backend": {
-     "state": "ENABLED",
-     "variants": {
-       "hidapi_rust": "hidapi,rust",
-       ...
-     },
-     "defaultVariant": "hidapi_rust"
-   }
-   ```
-   This creates both adapters inside `MultiplexerBackend`. The
-   `controller_adapter_routing` flag then controls which adapter handles each
-   serial. Restart controller-manager after changing `controller_backend`
-   (it is read once at startup):
+2. **rust-hid and python-hid services deployed and healthy** -- the default
+   `controller_backend` flag is `"python,rust"`, which creates both adapters
+   inside `MultiplexerBackend`. The `controller_adapter_routing` flag then
+   controls which adapter handles each serial. If you changed
+   `controller_backend` from the default, ensure it includes both `python` and
+   `rust`, then restart controller-manager (it is read once at startup):
    ```bash
    docker compose restart controller-manager
    ```
@@ -101,7 +58,7 @@ Key source files:
 ## Step 1: Verify Baseline
 
 Before routing any controller to the Rust backend, record baseline metrics
-while all controllers are on `hidapi`.
+while all controllers are on `python`.
 
 ### Check Grafana dashboards
 
@@ -111,7 +68,7 @@ Open the observability stack at `http://localhost:8080/`:
   responsive
 - **Service Health Overview** -- verify controller-manager CPU/memory normal
 
-### Confirm all controllers on hidapi
+### Confirm all controllers on python
 
 Query Prometheus / VictoriaMetrics:
 
@@ -119,7 +76,7 @@ Query Prometheus / VictoriaMetrics:
 controller_backend_info == 1
 ```
 
-All results should have `backend="hidapi"`. No results should show
+All results should have `backend="python"`. No results should show
 `backend="rust"`.
 
 ### Record baseline numbers
@@ -143,31 +100,24 @@ rate(controller_discovery_full_enumerate_total[5m])
 
 Write down these values. They are your comparison baseline.
 
-### Confirm routing flag is defaulting to hidapi
+### Confirm routing flag is defaulting to python
 
 ```promql
-# All routing decisions should show adapter="hidapi"
+# All routing decisions should show adapter="python"
 controller_routing_decisions_total
 ```
 
 ---
 
-## Step 2: Route Controllers to Rust
+## Step 2: Route a Single Controller to Rust
 
-### Using the canary endpoint (recommended)
+Pick one controller serial (e.g., `aa:bb:cc:dd:ee:ff`) and route it to the
+Rust backend.
 
-```bash
-# Route a small fraction (e.g., 25%) of controllers to Rust
-curl -X POST http://localhost:8080/canary/rust?fraction=25
-```
+### Edit the flag config
 
-This uses flagd's fractional targeting to deterministically route ~25% of
-controllers (by serial hash) to the Rust backend.
-
-### Manual single-controller targeting (alternative)
-
-To target a specific serial (e.g., `aa:bb:cc:dd:ee:ff`), edit
-`services/flagd/performance.json` directly:
+Edit `services/flagd/performance.json`. Update the `controller_adapter_routing`
+flag's `targeting` block:
 
 ```json
 "controller_adapter_routing": {
@@ -193,8 +143,8 @@ To target a specific serial (e.g., `aa:bb:cc:dd:ee:ff`), edit
 }
 ```
 
-flagd watches the directory via inotify and reloads automatically -- no
-restart needed.
+Save the file. flagd watches the directory via inotify and reloads
+automatically -- no restart needed.
 
 ### Verify the switch
 
@@ -207,7 +157,7 @@ docker compose logs controller-manager --tail=20 | grep "Switched\|preferred ada
 
 You should see a log line like:
 ```
-Switched aa:bb:cc:dd:ee:ff: hidapi -> rust
+Switched aa:bb:cc:dd:ee:ff: python -> rust
 ```
 
 Confirm with metrics:
@@ -241,7 +191,7 @@ histogram_quantile(0.95, rate(controller_poll_batch_duration_seconds_bucket[5m])
 **Per-controller poll health** (compare your canary serial to others):
 
 ```promql
-# Poll drops -- Rust controller vs hidapi controllers
+# Poll drops -- Rust controller vs python controllers
 rate(controller_poll_drops_total{serial="aa:bb:cc:dd:ee:ff"}[5m])
 rate(controller_poll_drops_total{serial!="aa:bb:cc:dd:ee:ff"}[5m])
 ```
@@ -258,7 +208,7 @@ rate(controller_poll_errors_total{serial!="aa:bb:cc:dd:ee:ff"}[5m])
 # P95 input latency for the Rust-routed controller
 histogram_quantile(0.95, rate(controller_input_lag_seconds_bucket{serial="aa:bb:cc:dd:ee:ff"}[5m]))
 
-# P95 input latency for hidapi controllers
+# P95 input latency for python controllers
 histogram_quantile(0.95, rate(controller_input_lag_seconds_bucket{serial!="aa:bb:cc:dd:ee:ff"}[5m]))
 ```
 
@@ -304,22 +254,72 @@ cycle.
 
 ## Step 4: Gradual Rollout
 
-After the initial canary is stable, expand using the canary endpoint:
+After the single-controller canary is stable, expand to more controllers using
+flagd's `fractionalEvaluation` operator.
 
-```bash
-# 25% rollout
-curl -X POST http://localhost:8080/canary/rust?fraction=25
+### 25% rollout
 
-# 50% rollout
-curl -X POST http://localhost:8080/canary/rust?fraction=50
+```json
+"controller_adapter_routing": {
+  "state": "ENABLED",
+  "variants": {
+    "python": "python",
+    "rust": "rust"
+  },
+  "defaultVariant": "python",
+  "targeting": {
+    "fractionalEvaluation": [
+      { "var": "targetingKey" },
+      ["rust", 25],
+      ["python",75]
+    ]
+  }
+}
+```
 
-# 100% rollout
-curl -X POST http://localhost:8080/canary/rust
+### 50% rollout
+
+```json
+"controller_adapter_routing": {
+  "state": "ENABLED",
+  "variants": {
+    "python": "python",
+    "rust": "rust"
+  },
+  "defaultVariant": "python",
+  "targeting": {
+    "fractionalEvaluation": [
+      { "var": "targetingKey" },
+      ["rust", 50],
+      ["python",50]
+    ]
+  }
+}
+```
+
+### 100% rollout (via targeting)
+
+```json
+"controller_adapter_routing": {
+  "state": "ENABLED",
+  "variants": {
+    "python": "python",
+    "rust": "rust"
+  },
+  "defaultVariant": "python",
+  "targeting": {
+    "fractionalEvaluation": [
+      { "var": "targetingKey" },
+      ["rust", 100],
+      ["python",0]
+    ]
+  }
+}
 ```
 
 ### Between each stage
 
-- Check status: `curl http://localhost:8080/canary/status`
+- Wait for flagd to reload (check logs: `docker compose logs flagd --tail=5`)
 - Watch the routing decisions metric update:
   ```promql
   sum by (adapter) (rate(controller_routing_decisions_total[2m]))
@@ -335,11 +335,21 @@ If issues arise at any stage, roll back by reverting the flag config.
 
 ### Immediate rollback
 
-```bash
-curl -X POST http://localhost:8080/canary/rollback
+Set `defaultVariant` back to `"python"` and clear targeting:
+
+```json
+"controller_adapter_routing": {
+  "state": "ENABLED",
+  "variants": {
+    "python": "python",
+    "rust": "rust"
+  },
+  "defaultVariant": "python",
+  "targeting": {}
+}
 ```
 
-All controllers switch back to Python within one discovery cycle (~500ms).
+Save the file. All controllers switch back within one discovery cycle (~500ms).
 **No service restart needed.**
 
 ### Verify rollback
@@ -350,26 +360,26 @@ docker compose logs controller-manager --tail=20 | grep "Switched"
 
 You should see lines like:
 ```
-Switched aa:bb:cc:dd:ee:ff: rust -> hidapi
+Switched aa:bb:cc:dd:ee:ff: rust -> python
 ```
 
 Confirm with metrics:
 
 ```promql
-# All controllers back on hidapi
+# All controllers back on python
 controller_backend_info{backend="rust"} == 1
 # Should return no results
 ```
 
 ```promql
-# All routing decisions back to hidapi
+# All routing decisions back to python
 sum by (adapter) (rate(controller_routing_decisions_total[1m]))
 ```
 
 ### Fallback behavior
 
 If `RustServiceAdapter.open()` fails for a serial, `MultiplexerBackend`
-automatically falls back to the discovery adapter (hidapi). The routing
+automatically falls back to the discovery adapter (python). The routing
 decision is recorded with `method="fallback"`:
 
 ```promql
@@ -388,15 +398,21 @@ session (or longer), make it the permanent default.
 
 ### Set default to rust
 
-```bash
-curl -X POST http://localhost:8080/canary/rust
+```json
+"controller_adapter_routing": {
+  "state": "ENABLED",
+  "variants": {
+    "python": "python",
+    "rust": "rust"
+  },
+  "defaultVariant": "rust",
+  "targeting": {}
+}
 ```
-
-This sets `defaultVariant` to `"rust"` and clears any fractional targeting.
 
 ### Update controller_backend flag (optional)
 
-If you no longer need the hidapi adapter instantiated, change the
+If you no longer need the python adapter instantiated, change the
 `controller_backend` flag to `"rust"` only:
 
 ```json
@@ -487,7 +503,7 @@ process_resident_memory_bytes{job=~".*controller-manager.*"}
 | `method="fallback"` routing decisions increasing | rust-hid service unhealthy or not running | Check `docker compose ps rust-hid`, check logs |
 | Controller LEDs stop updating after switch | `set_output()` failing on Rust adapter | Check `_led_failures` via health counters in stream; rollback |
 | `controller_state_update_hz` drops to 0 for a serial | `poll()` returning None consistently | Check `controller_poll_drops_total`; may indicate gRPC timeout to rust-hid |
-| All controllers stuck on hidapi despite targeting | `controller_backend` flag doesn't include `rust` | Verify flag value includes `rust` (e.g., `"hidapi,rust"`); restart controller-manager |
+| All controllers stuck on python despite targeting | `controller_backend` flag doesn't include `rust` | Verify flag value includes `rust` (e.g., `"python,rust"`); restart controller-manager |
 | flagd not picking up config changes | File saved with atomic rename across filesystems | Verify `services/flagd/` directory is mounted, check flagd logs |
 | `NotImplementedError` in controller-manager logs | `RustServiceAdapter` stub not yet replaced (#612) | The Rust adapter is still a stub; wait for #612 to be merged |
 

@@ -42,19 +42,20 @@ JoustMania is a party game system for PS Move controllers, built as a collection
                                   │
                       ┌───────────┼───────────┐
                       │                       │
-               USB/Bluetooth            gRPC (StreamIO)
+               gRPC (StreamIO)          gRPC (StreamIO)
                       │                       │
              ┌────────┴────────┐    ┌─────────┴────────┐
-             │  PS Move        │    │    rust-hid       │
-             │  Controllers    │    │     :50058        │
-             └─────────────────┘    └─────────┬────────┘
-                                              │
-                                        USB/Bluetooth
-                                              │
-                                     ┌────────┴────────┐
-                                     │  PS Move        │
-                                     │  Controllers    │
-                                     └─────────────────┘
+             │   python-hid    │    │    rust-hid       │
+             │     :50059      │    │     :50058        │
+             └────────┬────────┘    └─────────┬────────┘
+                      │                       │
+                      └───────────┬───────────┘
+                            USB/Bluetooth
+                                  │
+                         ┌────────┴────────┐
+                         │  PS Move        │
+                         │  Controllers    │
+                         └─────────────────┘
 ```
 
 ## Services
@@ -79,7 +80,7 @@ JoustMania is a party game system for PS Move controllers, built as a collection
 | `PlayControllerEffect` | Unary | Trigger visual effect (flash, pulse, rainbow) |
 
 **Backends**:
-- `hidapi` - hidapi/hidraw (production, default)
+- `python` - Delegates to python-hid gRPC service (port 50059)
 - `rust` - Delegates to rust-hid gRPC service (port 50058)
 - `mock` - Simulated controllers (testing)
 
@@ -110,6 +111,29 @@ JoustMania is a party game system for PS Move controllers, built as a collection
 **Container Configuration**:
 - Privileged container with `/dev` access (HID/USB devices)
 - Bridge network with port 50058 exposed to host
+
+**Dependencies**: None (foundational service)
+
+---
+
+### Python HID Service (Port 50059)
+
+**Purpose**: PS Move HID device access via Python hidapi
+
+**Responsibilities**:
+- Raw HID device enumeration and access via hidapi/hidraw
+- Bidirectional controller I/O streaming (sensor data + LED/rumble commands)
+- Bluetooth pairing of PS Move controllers
+
+**gRPC Services**:
+| Service | Description |
+|---------|-------------|
+| `PairingService` | Bluetooth controller pairing |
+| `ControllerIOService` | Bidirectional `StreamIO` for sensor data and output commands |
+
+**Container Configuration**:
+- Privileged container with `/dev` access (HID/USB devices)
+- Bridge network with port 50059 exposed to host
 
 **Dependencies**: None (foundational service)
 
@@ -255,6 +279,7 @@ game-coordinator:50053
 menu:50054
 audio:50056
 rust-hid:50058
+python-hid:50059
 ```
 
 ### Streaming Patterns
@@ -348,7 +373,7 @@ Settings are configured via admin mode (hold all 4 face buttons):
 
 | Setting | Source | Default |
 |---------|--------|---------|
-| `controller_backend` | flagd (performance) | `hidapi` (`rust`, `mock` also available) |
+| `controller_backend` | flagd (performance) | `python,rust` (`mock` also available) |
 | `mock_controller_count` | flagd (performance) | `4` |
 | `play_audio` | flagd (user_preferences) | `on` |
 | `LOG_LEVEL` | env var | `INFO` |
@@ -428,6 +453,7 @@ make lint       # Run linting
 | Service | Privileged | Reason |
 |---------|------------|--------|
 | Controller Manager | Yes | Bluetooth/USB access |
+| Python HID | Yes | HID/USB device access |
 | Rust HID | Yes | HID/USB device access |
 | Audio | Yes | Audio device access |
 | Others | No | Standard containers |

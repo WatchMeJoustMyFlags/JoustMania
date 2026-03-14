@@ -33,18 +33,16 @@ The Controller Manager service is the central component for managing PS Move con
 │  LED keep-alive: 4s refresh cycle                            │
 ├─────────────────────────────────────────────────────────────┤
 │               ControllerIOAdapter (sync I/O)                 │
-│         ┌─────────────┐  ┌─────────────┐                     │
-│         │   Hidapi    │  │    Mock     │                     │
-│         │  Adapter    │  │   Adapter   │                     │
-│         │(hidapi/hidraw)│ │  (Testing)  │                     │
-│         └─────────────┘  └─────────────┘                     │
-├─────────────────────────────────────────────────────────────┤
-│            Legacy Backends (multiplexer disabled)             │
-│  BluetoothBackend | HidapiBackend | MockBackend              │
+│   ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
+│   │   Python    │  │    Rust    │  │    Mock     │         │
+│   │  Adapter    │  │   Adapter  │  │   Adapter   │         │
+│   │(gRPC →      │  │(gRPC →     │  │  (Testing)  │         │
+│   │ python-hid) │  │ rust-hid)  │  │             │         │
+│   └─────────────┘  └─────────────┘  └─────────────┘         │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-When `multiplexer_backend_enabled` is on, `MultiplexerBackend` routes per-controller calls through thin `ControllerIOAdapter` instances with centralized state. When off, legacy standalone backends are used directly. See [Controller Backend Architecture](../../docs/architecture/controller-backends.md) for details.
+`MultiplexerBackend` routes per-controller calls through thin `ControllerIOAdapter` instances with centralized state. See [Controller Backend Architecture](../../docs/architecture/controller-backends.md) for details.
 
 ## Configuration
 
@@ -52,8 +50,7 @@ Backend selection uses OpenFeature flags (performance domain):
 
 | Setting | Source | Default | Description |
 |---------|--------|---------|-------------|
-| `controller_backend` | flagd (performance) | `hidapi` | Backend: `hidapi`, `mock`, or comma-separated |
-| `multiplexer_backend_enabled` | flagd (performance) | `false` | Use adapter-based multiplexer |
+| `controller_backend` | flagd (performance) | `python,rust` | Backend: `python`, `rust`, `mock`, or comma-separated |
 | `mock_controller_count` | flagd (performance) | `4` | Number of mock controllers |
 | `GRPC_PORT` | env var | `50052` | gRPC server port |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | env var | `http://localhost:4317` | OpenTelemetry endpoint |
@@ -61,10 +58,10 @@ Backend selection uses OpenFeature flags (performance domain):
 ### Backend Selection
 
 The backend is selected via the `controller_backend` flag in flagd (`services/flagd/performance.json`).
-If the flag is not set or flagd is unavailable, the default hidapi backend is used.
+If the flag is not set or flagd is unavailable, the default python backend is used.
 Use `controller_backend=mock` for testing without hardware.
 
-Multi-adapter mode: set `controller_backend=mock,hidapi` to run mock and real controllers simultaneously.
+Multi-adapter mode: set `controller_backend=mock,python` to run mock and real controllers simultaneously.
 
 ## gRPC API
 
@@ -132,7 +129,7 @@ Used by `MultiplexerBackend`. Adapters handle raw hardware communication only:
 
 ```python
 class ControllerIOAdapter(ABC):
-    adapter_type: str              # "hidapi", "mock"
+    adapter_type: str              # "python", "rust", "mock"
     def discover(force=False) -> list[str]
     def open(serial) -> bool
     def poll(serial) -> dict | None
@@ -224,7 +221,8 @@ services/controller_manager/
 ├── multiplexer/
 │   ├── adapter.py         # ControllerIOAdapter ABC
 │   ├── multiplexer_backend.py  # Orchestrator with centralized state
-│   ├── hidapi_adapter.py  # HidapiAdapter (hidapi/hidraw I/O)
+│   ├── python_hid_adapter.py  # PythonHidAdapter (gRPC → python-hid)
+│   ├── rust_adapter.py    # RustAdapter (gRPC → rust-hid)
 │   ├── mock_adapter.py    # MockAdapter (simulated I/O)
 │   ├── bt_discovery.py    # CentralizedBTDiscovery
 │   └── validation.py      # Backend combination validation
