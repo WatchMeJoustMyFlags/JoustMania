@@ -159,6 +159,14 @@
       },
       "defaultVariant": "default"
     },
+    "grpc_rpc_spans": {
+      "state": "ENABLED",
+      "variants": {
+        "enabled": true,
+        "disabled": false
+      },
+      "defaultVariant": "disabled"
+    },
     "chaos_fault_type": {
       "state": "ENABLED",
       "variants": {
