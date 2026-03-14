@@ -1,7 +1,7 @@
 # Canary Release Runbook: Python to Rust Controller Backend Migration
 
 Step-by-step guide for gradually migrating PS Move controllers from the Python
-`HidapiAdapter` backend to the Rust `RustServiceAdapter` gRPC backend using
+`PythonHidAdapter` backend to the Rust `RustServiceAdapter` gRPC backend using
 OpenFeature feature flags served by flagd.
 
 ## How It Works
@@ -52,7 +52,7 @@ Key source files:
 |------|------|
 | `services/controller_manager/multiplexer/multiplexer_backend.py` | `_resolve_adapter_for_serial()` routing logic |
 | `services/controller_manager/multiplexer/rust_adapter.py` | `RustServiceAdapter` (gRPC client to rust-hid) |
-| `services/controller_manager/multiplexer/hidapi_adapter.py` | `HidapiAdapter` (Python hidapi) |
+| `services/controller_manager/multiplexer/python_hid_adapter.py` | `PythonHidAdapter` (gRPC client to python-hid) |
 | `services/controller_manager/backend_factory.py` | Adapter instantiation, `controller_backend` flag |
 | `services/flagd/performance.json` | Feature flag configuration (file-watched by flagd) |
 | `services/controller_manager/metrics.py` | All controller metrics definitions |
@@ -66,23 +66,12 @@ Key source files:
    docker compose ps
    ```
 
-2. **rust-hid service deployed and healthy** -- the `controller_backend` flag must
-   include `rust` in its value so that `RustServiceAdapter` is instantiated.
-   Edit `services/flagd/performance.json` and set the `controller_backend` flag:
-   ```json
-   "controller_backend": {
-     "state": "ENABLED",
-     "variants": {
-       "hidapi_rust": "hidapi,rust",
-       ...
-     },
-     "defaultVariant": "hidapi_rust"
-   }
-   ```
-   This creates both adapters inside `MultiplexerBackend`. The
-   `controller_adapter_routing` flag then controls which adapter handles each
-   serial. Restart controller-manager after changing `controller_backend`
-   (it is read once at startup):
+2. **rust-hid and python-hid services deployed and healthy** -- the default
+   `controller_backend` flag is `"python,rust"`, which creates both adapters
+   inside `MultiplexerBackend`. The `controller_adapter_routing` flag then
+   controls which adapter handles each serial. If you changed
+   `controller_backend` from the default, ensure it includes both `python` and
+   `rust`, then restart controller-manager (it is read once at startup):
    ```bash
    docker compose restart controller-manager
    ```
@@ -101,7 +90,7 @@ Key source files:
 ## Step 1: Verify Baseline
 
 Before routing any controller to the Rust backend, record baseline metrics
-while all controllers are on `hidapi`.
+while all controllers are on `python`.
 
 ### Check Grafana dashboards
 
@@ -111,7 +100,7 @@ Open the observability stack at `http://localhost:8080/`:
   responsive
 - **Service Health Overview** -- verify controller-manager CPU/memory normal
 
-### Confirm all controllers on hidapi
+### Confirm all controllers on python
 
 Query Prometheus / VictoriaMetrics:
 
@@ -119,7 +108,7 @@ Query Prometheus / VictoriaMetrics:
 controller_backend_info == 1
 ```
 
-All results should have `backend="hidapi"`. No results should show
+All results should have `backend="python"`. No results should show
 `backend="rust"`.
 
 ### Record baseline numbers
@@ -143,10 +132,10 @@ rate(controller_discovery_full_enumerate_total[5m])
 
 Write down these values. They are your comparison baseline.
 
-### Confirm routing flag is defaulting to hidapi
+### Confirm routing flag is defaulting to python
 
 ```promql
-# All routing decisions should show adapter="hidapi"
+# All routing decisions should show adapter="python"
 controller_routing_decisions_total
 ```
 
@@ -207,7 +196,7 @@ docker compose logs controller-manager --tail=20 | grep "Switched\|preferred ada
 
 You should see a log line like:
 ```
-Switched aa:bb:cc:dd:ee:ff: hidapi -> rust
+Switched aa:bb:cc:dd:ee:ff: python -> rust
 ```
 
 Confirm with metrics:
@@ -241,7 +230,7 @@ histogram_quantile(0.95, rate(controller_poll_batch_duration_seconds_bucket[5m])
 **Per-controller poll health** (compare your canary serial to others):
 
 ```promql
-# Poll drops -- Rust controller vs hidapi controllers
+# Poll drops -- Rust controller vs python controllers
 rate(controller_poll_drops_total{serial="aa:bb:cc:dd:ee:ff"}[5m])
 rate(controller_poll_drops_total{serial!="aa:bb:cc:dd:ee:ff"}[5m])
 ```
@@ -258,7 +247,7 @@ rate(controller_poll_errors_total{serial!="aa:bb:cc:dd:ee:ff"}[5m])
 # P95 input latency for the Rust-routed controller
 histogram_quantile(0.95, rate(controller_input_lag_seconds_bucket{serial="aa:bb:cc:dd:ee:ff"}[5m]))
 
-# P95 input latency for hidapi controllers
+# P95 input latency for python controllers
 histogram_quantile(0.95, rate(controller_input_lag_seconds_bucket{serial!="aa:bb:cc:dd:ee:ff"}[5m]))
 ```
 
@@ -350,26 +339,26 @@ docker compose logs controller-manager --tail=20 | grep "Switched"
 
 You should see lines like:
 ```
-Switched aa:bb:cc:dd:ee:ff: rust -> hidapi
+Switched aa:bb:cc:dd:ee:ff: rust -> python
 ```
 
 Confirm with metrics:
 
 ```promql
-# All controllers back on hidapi
+# All controllers back on python
 controller_backend_info{backend="rust"} == 1
 # Should return no results
 ```
 
 ```promql
-# All routing decisions back to hidapi
+# All routing decisions back to python
 sum by (adapter) (rate(controller_routing_decisions_total[1m]))
 ```
 
 ### Fallback behavior
 
 If `RustServiceAdapter.open()` fails for a serial, `MultiplexerBackend`
-automatically falls back to the discovery adapter (hidapi). The routing
+automatically falls back to the discovery adapter (python). The routing
 decision is recorded with `method="fallback"`:
 
 ```promql
@@ -396,7 +385,7 @@ This sets `defaultVariant` to `"rust"` and clears any fractional targeting.
 
 ### Update controller_backend flag (optional)
 
-If you no longer need the hidapi adapter instantiated, change the
+If you no longer need the python adapter instantiated, change the
 `controller_backend` flag to `"rust"` only:
 
 ```json
@@ -487,7 +476,7 @@ process_resident_memory_bytes{job=~".*controller-manager.*"}
 | `method="fallback"` routing decisions increasing | rust-hid service unhealthy or not running | Check `docker compose ps rust-hid`, check logs |
 | Controller LEDs stop updating after switch | `set_output()` failing on Rust adapter | Check `_led_failures` via health counters in stream; rollback |
 | `controller_state_update_hz` drops to 0 for a serial | `poll()` returning None consistently | Check `controller_poll_drops_total`; may indicate gRPC timeout to rust-hid |
-| All controllers stuck on hidapi despite targeting | `controller_backend` flag doesn't include `rust` | Verify flag value includes `rust` (e.g., `"hidapi,rust"`); restart controller-manager |
+| All controllers stuck on python despite targeting | `controller_backend` flag doesn't include `rust` | Verify flag value includes `rust` (e.g., `"python,rust"`); restart controller-manager |
 | flagd not picking up config changes | File saved with atomic rename across filesystems | Verify `services/flagd/` directory is mounted, check flagd logs |
 | `NotImplementedError` in controller-manager logs | `RustServiceAdapter` stub not yet replaced (#612) | The Rust adapter is still a stub; wait for #612 to be merged |
 
