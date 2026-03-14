@@ -122,6 +122,9 @@ func main() {
 	// Chaos fault injection endpoints (for presentation demos)
 	registerChaosHandlers(mux)
 
+	// Canary rollout control endpoints (mirrors chaos pattern)
+	registerCanaryHandlers(mux)
+
 	// Health check endpoint
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

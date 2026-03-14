@@ -96,13 +96,13 @@
     "controller_backend": {
       "state": "ENABLED",
       "variants": {
-        "python_hid": "python",
+        "python": "python",
         "mock": "mock",
-        "mock_python_hid": "mock,python",
+        "mock_python": "mock,python",
         "rust": "rust",
         "mock_rust": "mock,rust",
-        "python_hid_rust": "python,rust",
-        "mock_python_hid_rust": "mock,python,rust"
+        "python_rust": "python,rust",
+        "mock_python_rust": "mock,python,rust"
       },
       "defaultVariant": "mock"
     },
@@ -136,10 +136,10 @@
     "controller_adapter_routing": {
       "state": "ENABLED",
       "variants": {
-        "python_hid": "python",
+        "python": "python",
         "rust": "rust"
       },
-      "defaultVariant": "python_hid",
+      "defaultVariant": "python",
       "targeting": {}
     },
     "poll_drop_threshold": {
