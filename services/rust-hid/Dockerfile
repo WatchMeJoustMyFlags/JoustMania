@@ -11,6 +11,7 @@ FROM rust:1.88-slim AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     protobuf-compiler \
+    libprotobuf-dev \
     libhidapi-dev \
     libudev-dev \
     pkg-config \

@@ -91,8 +91,12 @@ where
             // Skip tracing for health check probes — they run every 2s
             // and would flood traces with noise
             if path.contains("grpc.health") {
-                let _guard = parent_cx.attach();
-                return svc.call(req).await;
+                // Attach context in a block so the non-Send guard is dropped before .await
+                let fut = {
+                    let _guard = parent_cx.attach();
+                    svc.call(req)
+                };
+                return fut.await;
             }
 
             let (service, method) = parse_grpc_method(&path);
@@ -128,8 +132,12 @@ where
                 response
             } else {
                 // No spans, but still propagate context
-                let _guard = parent_cx.attach();
-                svc.call(req).await
+                // Attach context in a block so the non-Send guard is dropped before .await
+                let fut = {
+                    let _guard = parent_cx.attach();
+                    svc.call(req)
+                };
+                fut.await
             }
         })
     }
