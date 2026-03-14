@@ -9,8 +9,8 @@
     "1": {
       "type": "data",
       "title": "Controllers on Python",
-      "description": "Controllers using the hidapi (Python) backend",
-      "query": "timeseries count = count(controller_backend_info), filter:{backend == \"hidapi\"}, by:{serial} | summarize total = countIf(arrayLast(count) > 0)",
+      "description": "Controllers using the Python backend",
+      "query": "timeseries count = count(controller_backend_info), filter:{backend == \"python\"}, by:{serial} | summarize total = countIf(arrayLast(count) > 0)",
       "queryConfig": {
         "additionalFilters": [],
         "version": "4.3.1",
@@ -71,8 +71,8 @@
     "5": {
       "type": "data",
       "title": "Pipeline CPU (Stacked)",
-      "description": "Combined CPU cost of controller-manager + rust-hid",
-      "query": "timeseries avg(process_cpu_seconds_total, rate: 5m), by:{service.name}, filter:{service.name IN (\"controller-manager-service\", \"rust-hid\")}",
+      "description": "Combined CPU cost of controller-manager + python-hid + rust-hid",
+      "query": "timeseries avg(process_cpu_seconds_total, rate: 5m), by:{service.name}, filter:{service.name IN (\"controller-manager-service\", \"python-hid\", \"rust-hid\")}",
       "queryConfig": {
         "additionalFilters": [],
         "version": "4.3.1",
@@ -89,8 +89,8 @@
     "6": {
       "type": "data",
       "title": "Pipeline Memory (Stacked)",
-      "description": "Combined resident memory of controller-manager + rust-hid",
-      "query": "timeseries avg(process_resident_memory_bytes), by:{service.name}, filter:{service.name IN (\"controller-manager-service\", \"rust-hid\")}",
+      "description": "Combined resident memory of controller-manager + python-hid + rust-hid",
+      "query": "timeseries avg(process_resident_memory_bytes), by:{service.name}, filter:{service.name IN (\"controller-manager-service\", \"python-hid\", \"rust-hid\")}",
       "queryConfig": {
         "additionalFilters": [],
         "version": "4.3.1",
@@ -107,8 +107,8 @@
     "7": {
       "type": "data",
       "title": "Pipeline Threads",
-      "description": "Thread count for controller-manager and rust-hid",
-      "query": "timeseries avg(process_threads), by:{service.name}, filter:{service.name IN (\"controller-manager-service\", \"rust-hid\")}",
+      "description": "Thread count for controller-manager, python-hid, and rust-hid",
+      "query": "timeseries avg(process_threads), by:{service.name}, filter:{service.name IN (\"controller-manager-service\", \"python-hid\", \"rust-hid\")}",
       "queryConfig": {
         "additionalFilters": [],
         "version": "4.3.1",
