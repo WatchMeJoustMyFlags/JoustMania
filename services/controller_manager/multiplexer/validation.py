@@ -7,12 +7,12 @@ enabled, so it appears in every combination automatically.
 
 VALID_COMBINATIONS = {
     frozenset({"mock"}),
-    frozenset({"hidapi"}),
-    frozenset({"mock", "hidapi"}),
+    frozenset({"python"}),
+    frozenset({"mock", "python"}),
     frozenset({"rust"}),
     frozenset({"mock", "rust"}),
-    frozenset({"hidapi", "rust"}),
-    frozenset({"mock", "hidapi", "rust"}),
+    frozenset({"python", "rust"}),
+    frozenset({"mock", "python", "rust"}),
 }
 
 
@@ -20,7 +20,7 @@ def validate_backend_combination(names: list[str]) -> None:
     """Raise ValueError if the backend combination is unsupported.
 
     Args:
-        names: List of backend name strings (e.g. ["mock", "hidapi"]).
+        names: List of backend name strings (e.g. ["mock", "python"]).
 
     Raises:
         ValueError: If the combination would cause hardware conflicts or
@@ -31,5 +31,5 @@ def validate_backend_combination(names: list[str]) -> None:
     combo = frozenset(names)
     if combo not in VALID_COMBINATIONS:
         raise ValueError(
-            f"Unsupported backend combination: {names}. Supported: mock, hidapi, rust, and combinations thereof"
+            f"Unsupported backend combination: {names}. Supported: mock, python, rust, and combinations thereof"
         )

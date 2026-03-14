@@ -96,15 +96,15 @@
     "controller_backend": {
       "state": "ENABLED",
       "variants": {
-        "hidapi": "hidapi",
+        "python_hid": "python",
         "mock": "mock",
-        "mock_hidapi": "mock,hidapi",
+        "mock_python_hid": "mock,python",
         "rust": "rust",
         "mock_rust": "mock,rust",
-        "hidapi_rust": "hidapi,rust",
-        "mock_hidapi_rust": "mock,hidapi,rust"
+        "python_hid_rust": "python,rust",
+        "mock_python_hid_rust": "mock,python,rust"
       },
-      "defaultVariant": "hidapi"
+      "defaultVariant": "python_hid"
     },
     "mock_controller_count": {
       "state": "ENABLED",
@@ -143,10 +143,10 @@
     "controller_adapter_routing": {
       "state": "ENABLED",
       "variants": {
-        "hidapi": "hidapi",
+        "python_hid": "python",
         "rust": "rust"
       },
-      "defaultVariant": "hidapi",
+      "defaultVariant": "python_hid",
       "targeting": {}
     },
     "poll_drop_threshold": {
