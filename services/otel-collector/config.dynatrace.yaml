@@ -235,18 +235,6 @@ exporters:
     batch_interval_ms: 1000
 
 service:
-  # Internal telemetry — the collector's own observability.
-  # level: detailed exposes granular pipeline metrics (queue sizes, batch send
-  # durations, exporter retry counts) beyond the default basic set.
-  # resource tags ensure Dynatrace recognizes this as a distinct service.
-  telemetry:
-    resource:
-      service.name: otel-collector
-      service.namespace: observability
-    metrics:
-      level: detailed
-      address: ":8888"
-
   pipelines:
     # ── Local pipelines (unchanged from config.yaml) ───────────────────
 

@@ -203,14 +203,6 @@ exporters:
     verbosity: basic
 
 service:
-  # Internal telemetry — the collector's own observability.
-  # level: detailed exposes granular pipeline metrics (queue sizes, batch send
-  # durations, exporter retry counts) beyond the default basic set.
-  telemetry:
-    metrics:
-      level: detailed
-      address: ":8888"
-
   pipelines:
     # Traces pipeline
     traces:
