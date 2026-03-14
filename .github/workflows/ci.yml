@@ -78,6 +78,7 @@ jobs:
           - menu
           - audio
           - pairing_daemon
+          - python_hid
     steps:
       - uses: actions/checkout@v4
 
@@ -443,6 +444,9 @@ jobs:
           - service: rust-hid
             dockerfile: services/rust-hid/Dockerfile
             image_name: rust-hid
+          - service: python-hid
+            dockerfile: services/python_hid/Dockerfile
+            image_name: python-hid
           - service: otel-collector
             dockerfile: images/otel-collector/Dockerfile
             context: images/otel-collector
