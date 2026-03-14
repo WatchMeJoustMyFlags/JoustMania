@@ -1,7 +1,7 @@
 [package]
 name = "rust-hid"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "PS Move HID gRPC service for JoustMania"
 
 [[bin]]
@@ -29,6 +29,13 @@ opentelemetry-otlp = { version = "0.27", features = ["tonic", "metrics", "logs"]
 opentelemetry-appender-tracing = "0.27"
 # Process metrics via /proc/self
 procfs = "0.17"
+# Feature flags (OpenFeature + flagd provider)
+open-feature = "0.3"
+open-feature-flagd = { version = "0.1", default-features = false, features = ["rpc"] }
+# Tower middleware for gRPC tracing layer
+tower = "0.5"
+# HTTP types (Request, Response, HeaderMap) used by tower tracing layer
+http = "1"
 
 [profile.release]
 strip = true

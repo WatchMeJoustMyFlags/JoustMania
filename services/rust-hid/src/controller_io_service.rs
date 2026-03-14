@@ -41,10 +41,6 @@ impl ControllerIoServiceImpl {
 
 #[tonic::async_trait]
 impl ControllerIoService for ControllerIoServiceImpl {
-    #[tracing::instrument(
-        skip(self, request),
-        fields(rpc.system = "grpc", rpc.service = "ControllerIoService", rpc.method = "Discover")
-    )]
     async fn discover(
         &self,
         request: Request<DiscoverRequest>,
@@ -79,10 +75,6 @@ impl ControllerIoService for ControllerIoServiceImpl {
         Ok(Response::new(DiscoverResponse { controllers }))
     }
 
-    #[tracing::instrument(
-        skip(self, request),
-        fields(rpc.system = "grpc", rpc.service = "ControllerIoService", rpc.method = "Open")
-    )]
     async fn open(
         &self,
         request: Request<OpenRequest>,
@@ -106,10 +98,6 @@ impl ControllerIoService for ControllerIoServiceImpl {
         Ok(Response::new(OpenResponse { success }))
     }
 
-    #[tracing::instrument(
-        skip(self, request),
-        fields(rpc.system = "grpc", rpc.service = "ControllerIoService", rpc.method = "Close")
-    )]
     async fn close(
         &self,
         request: Request<CloseRequest>,
@@ -119,10 +107,6 @@ impl ControllerIoService for ControllerIoServiceImpl {
         Ok(Response::new(CloseResponse {}))
     }
 
-    #[tracing::instrument(
-        skip(self, _request),
-        fields(rpc.system = "grpc", rpc.service = "ControllerIoService", rpc.method = "CloseAll")
-    )]
     async fn close_all(
         &self,
         _request: Request<CloseAllRequest>,
@@ -133,10 +117,6 @@ impl ControllerIoService for ControllerIoServiceImpl {
 
     type StreamIOStream = Pin<Box<dyn tokio_stream::Stream<Item = Result<SensorData, Status>> + Send>>;
 
-    #[tracing::instrument(
-        skip(self, request),
-        fields(rpc.system = "grpc", rpc.service = "ControllerIoService", rpc.method = "StreamIO")
-    )]
     async fn stream_io(
         &self,
         request: Request<Streaming<IoCommand>>,

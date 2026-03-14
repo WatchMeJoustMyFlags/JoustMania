@@ -5,6 +5,8 @@
 
 mod controller_io_service;
 mod device_manager;
+mod feature_flags;
+mod grpc_tracing;
 mod hid;
 mod service;
 
@@ -25,8 +27,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing with optional OpenTelemetry bridge
     let _otel_guard = init_tracing(&log_provider);
 
+    // Register W3C TraceContext propagator for incoming context extraction
+    opentelemetry::global::set_text_map_propagator(
+        opentelemetry_sdk::propagation::TraceContextPropagator::new(),
+    );
+
     // Initialize OTEL metrics (process metrics pushed to collector)
     let _meter_provider = init_metrics();
+
+    // Initialize OpenFeature flagd provider for feature flags
+    feature_flags::init_flagd().await;
 
     let addr = "[::]:50058".parse()?;
     info!(%addr, "Starting rust-hid gRPC server");
@@ -55,6 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await;
 
     Server::builder()
+        .layer(grpc_tracing::GrpcTracingLayer)
         .add_service(health_service)
         .add_service(PairingServiceServer::new(pairing_service))
         .add_service(ControllerIoServiceServer::new(controller_io_service))
