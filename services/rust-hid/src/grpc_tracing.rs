@@ -87,6 +87,14 @@ where
             });
 
             let path = req.uri().path().to_string();
+
+            // Skip tracing for health check probes — they run every 2s
+            // and would flood traces with noise
+            if path.contains("grpc.health") {
+                let _guard = parent_cx.attach();
+                return svc.call(req).await;
+            }
+
             let (service, method) = parse_grpc_method(&path);
 
             // Check feature flag to decide whether to create spans
