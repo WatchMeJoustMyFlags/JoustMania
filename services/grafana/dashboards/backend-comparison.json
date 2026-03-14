@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Compare Python (hidapi) and Rust backend performance during canary releases",
+  "description": "Compare Python and Rust backend performance during canary releases",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -73,8 +73,8 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "count(controller_backend_info{backend=\"hidapi\"}) or vector(0)",
-          "legendFormat": "hidapi",
+          "expr": "count(controller_backend_info{backend=\"python\"}) or vector(0)",
+          "legendFormat": "python",
           "refId": "A"
         }
       ],
@@ -217,7 +217,7 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Input lag p95 split by backend type (Python hidapi vs Rust)",
+      "description": "Input lag p95 split by backend type (Python vs Rust)",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -248,7 +248,7 @@
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "hidapi p95" },
+            "matcher": { "id": "byName", "options": "python p95" },
             "properties": [{ "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }]
           },
           {
@@ -256,7 +256,7 @@
             "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }]
           },
           {
-            "matcher": { "id": "byName", "options": "hidapi p50" },
+            "matcher": { "id": "byName", "options": "python p50" },
             "properties": [
               { "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } },
               { "id": "custom.lineStyle", "value": { "dash": [10, 10], "fill": "dash" } }
@@ -281,8 +281,8 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.95, sum by(le) (rate(controller_input_lag_seconds_bucket[1m]) * on(serial) group_left(backend) controller_backend_info{backend=\"hidapi\"}))",
-          "legendFormat": "hidapi p95",
+          "expr": "histogram_quantile(0.95, sum by(le) (rate(controller_input_lag_seconds_bucket[1m]) * on(serial) group_left(backend) controller_backend_info{backend=\"python\"}))",
+          "legendFormat": "python p95",
           "refId": "A"
         },
         {
@@ -293,8 +293,8 @@
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.50, sum by(le) (rate(controller_input_lag_seconds_bucket[1m]) * on(serial) group_left(backend) controller_backend_info{backend=\"hidapi\"}))",
-          "legendFormat": "hidapi p50",
+          "expr": "histogram_quantile(0.50, sum by(le) (rate(controller_input_lag_seconds_bucket[1m]) * on(serial) group_left(backend) controller_backend_info{backend=\"python\"}))",
+          "legendFormat": "python p50",
           "refId": "C"
         },
         {
@@ -340,7 +340,7 @@
         },
         "overrides": [
           {
-            "matcher": { "id": "byRegexp", "options": "hidapi.*" },
+            "matcher": { "id": "byRegexp", "options": "python.*" },
             "properties": [{ "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }]
           },
           {
@@ -359,8 +359,8 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "avg(controller_state_update_hz * on(serial) group_left(backend) controller_backend_info{backend=\"hidapi\"})",
-          "legendFormat": "hidapi avg Hz",
+          "expr": "avg(controller_state_update_hz * on(serial) group_left(backend) controller_backend_info{backend=\"python\"})",
+          "legendFormat": "python avg Hz",
           "refId": "A"
         },
         {
@@ -414,7 +414,7 @@
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "hidapi" },
+            "matcher": { "id": "byName", "options": "python" },
             "properties": [{ "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }]
           },
           {
@@ -474,7 +474,7 @@
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "hidapi" },
+            "matcher": { "id": "byName", "options": "python" },
             "properties": [{ "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }]
           },
           {
@@ -534,7 +534,7 @@
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "hidapi" },
+            "matcher": { "id": "byName", "options": "python" },
             "properties": [{ "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }]
           },
           {
@@ -715,7 +715,7 @@
               {
                 "id": "mappings",
                 "value": [
-                  { "options": { "hidapi": { "color": "blue", "index": 0, "text": "hidapi" } }, "type": "value" },
+                  { "options": { "python": { "color": "blue", "index": 0, "text": "python" } }, "type": "value" },
                   { "options": { "rust": { "color": "orange", "index": 1, "text": "rust" } }, "type": "value" },
                   { "options": { "mock": { "color": "dark-gray", "index": 2, "text": "mock" } }, "type": "value" }
                 ]
@@ -830,7 +830,7 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Combined CPU cost of the controller pipeline. When Rust backend is active, rust-hid does the HID I/O work while controller-manager handles orchestration. Stacked view shows true total cost.",
+      "description": "Combined CPU cost of the controller pipeline. python-hid and rust-hid do the HID I/O work while controller-manager handles orchestration. Stacked view shows true total cost.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -867,6 +867,10 @@
           {
             "matcher": { "id": "byName", "options": "rust-hid" },
             "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "python-hid" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }]
           }
         ]
       },
@@ -889,6 +893,12 @@
           "expr": "rate(process_cpu_seconds_total{job=~\".*rust-hid.*\"}[5m]) * 100",
           "legendFormat": "rust-hid",
           "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(process_cpu_seconds_total{job=~\".*python-hid.*\"}[5m]) * 100",
+          "legendFormat": "python-hid",
+          "refId": "C"
         }
       ],
       "title": "Pipeline CPU Usage (Stacked)",
@@ -896,7 +906,7 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Combined resident memory of the controller pipeline. Stacked view shows true total footprint of both processes.",
+      "description": "Combined resident memory of the controller pipeline (controller-manager, python-hid, rust-hid). Stacked view shows true total footprint.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -933,6 +943,10 @@
           {
             "matcher": { "id": "byName", "options": "rust-hid" },
             "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "python-hid" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }]
           }
         ]
       },
@@ -955,6 +969,12 @@
           "expr": "process_resident_memory_bytes{job=~\".*rust-hid.*\"}",
           "legendFormat": "rust-hid",
           "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "process_resident_memory_bytes{job=~\".*python-hid.*\"}",
+          "legendFormat": "python-hid",
+          "refId": "C"
         }
       ],
       "title": "Pipeline Memory Usage (Stacked)",
