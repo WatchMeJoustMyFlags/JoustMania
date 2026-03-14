@@ -17,6 +17,7 @@ direct access to hcitool for reliable signal strength readings.
 import asyncio
 import contextlib
 import logging
+import math
 import time
 from typing import TYPE_CHECKING
 
@@ -45,6 +46,19 @@ logger = logging.getLogger(__name__)
 
 # Lazy telemetry initialization - defers OTLP setup until first span
 tracer = get_tracer(__name__)
+
+# Button keys checked every poll cycle — tuple to avoid per-call list allocation
+_BUTTON_KEYS = (
+    ButtonKey.MOVE,
+    ButtonKey.TRIGGER,
+    ButtonKey.PS,
+    ButtonKey.CROSS,
+    ButtonKey.CIRCLE,
+    ButtonKey.SQUARE,
+    ButtonKey.TRIANGLE,
+    ButtonKey.SELECT,
+    ButtonKey.START,
+)
 
 
 class DiscoveryLoop:
@@ -131,6 +145,13 @@ class DiscoveryLoop:
         # Populated at spawn, cleaned up on disconnect
         self._accel_gauges: dict[str, dict] = {}
 
+        # Cached serial list — rebuilt on connect/disconnect, reused at 100Hz
+        self._cached_serials: list[str] | None = None
+
+        # Previous active/idle counts — only update gauge on change
+        self._prev_active_count = -1
+        self._prev_idle_count = -1
+
         # Debug logging throttle
         self._last_controller_count_log = 0.0
 
@@ -215,16 +236,16 @@ class DiscoveryLoop:
         # Fixed interval scheduling
         next_poll_time = time.monotonic()
 
+        # Set constant polling metrics once (not every 10ms)
+        metrics.polling_mode.set(1)  # Always in "gameplay mode" now
+        metrics.polling_target_hz.set(100)
+
         while self.running:
             try:
                 current_time = time.time()
 
                 # Fixed 100Hz polling - there's always either a menu or game stream active
                 poll_interval = self._poll_interval
-
-                # Update polling metrics
-                metrics.polling_mode.set(1)  # Always in "gameplay mode" now
-                metrics.polling_target_hz.set(100)
 
                 # Check for new controllers at 1Hz (not every poll cycle).
                 # Discovery involves gRPC calls + USB enumeration — running it
@@ -299,6 +320,8 @@ class DiscoveryLoop:
             disconnected_serials = tracked_serials - connected_set
             for serial in disconnected_serials:
                 logger.info(f"Controller {serial} disconnected - cleaning up server tracking")
+                # Invalidate cached serial list
+                self._cached_serials = None
                 # Capture name before removing from tracked_controllers
                 name = ""
                 if serial in self.tracked_controllers:
@@ -330,6 +353,8 @@ class DiscoveryLoop:
             # Check for new controllers
             for serial in connected_serials:
                 if serial not in self.tracked_controllers:
+                    # Invalidate cached serial list
+                    self._cached_serials = None
                     # New controller found - create event span
                     with tracer.start_as_current_span("controller_connected") as span:
                         span.set_attribute(SpanAttr.CONTROLLER_SERIAL, serial)
@@ -374,8 +399,11 @@ class DiscoveryLoop:
             return
 
         try:
-            # Get list of serials
-            all_serials = list(self.tracked_controllers.keys())
+            # Get list of serials (cached, rebuilt on connect/disconnect)
+            all_serials = self._cached_serials
+            if all_serials is None:
+                all_serials = list(self.tracked_controllers.keys())
+                self._cached_serials = all_serials
 
             if not all_serials:
                 return
@@ -393,9 +421,13 @@ class DiscoveryLoop:
                 else:
                     active_count += 1
 
-            # Update activity metrics
-            metrics.adaptive_polling_active_controllers.set(active_count)
-            metrics.adaptive_polling_idle_controllers.set(idle_count)
+            # Update activity metrics only when values change
+            if active_count != self._prev_active_count:
+                metrics.adaptive_polling_active_controllers.set(active_count)
+                self._prev_active_count = active_count
+            if idle_count != self._prev_idle_count:
+                metrics.adaptive_polling_idle_controllers.set(idle_count)
+                self._prev_idle_count = idle_count
 
             # Debug: Log tracked controller count periodically (every 5 seconds)
             if current_time - self._last_controller_count_log >= 5.0:
@@ -411,12 +443,18 @@ class DiscoveryLoop:
                 logger.info(msg)
                 self._last_controller_count_log = current_time
 
-            # Parallel polling - read all controllers concurrently
+            # Poll all controllers — direct loop instead of asyncio.gather()
+            # Post-PR #677, get_controller_state() is async but does zero I/O
+            # (just a dict read from adapter._latest_data), so gather() overhead
+            # (N coroutine objects + list + internal machinery) is pure waste.
             start_time = time.time()
 
-            # Gather all states in parallel
-            coros = [self.backend.get_controller_state(serial) for serial in all_serials]
-            results = await asyncio.gather(*coros, return_exceptions=True)
+            results = []
+            for serial in all_serials:
+                try:
+                    results.append(await self.backend.get_controller_state(serial))
+                except Exception as e:
+                    results.append(e)
 
             # Record metrics
             poll_duration = time.time() - start_time
@@ -471,18 +509,7 @@ class DiscoveryLoop:
         activity_detected = False
 
         # Check for any button activity
-        button_keys = [
-            ButtonKey.MOVE,
-            ButtonKey.TRIGGER,
-            ButtonKey.PS,
-            ButtonKey.CROSS,
-            ButtonKey.CIRCLE,
-            ButtonKey.SQUARE,
-            ButtonKey.TRIANGLE,
-            ButtonKey.SELECT,
-            ButtonKey.START,
-        ]
-        for key in button_keys:
+        for key in _BUTTON_KEYS:
             if state.get(key, False):
                 activity_detected = True
                 break
@@ -497,8 +524,6 @@ class DiscoveryLoop:
 
             # Issue #62: Record acceleration metrics for 100Hz visualization
             # Calculate magnitude for easier threshold-based alerts
-            import math
-
             magnitude = math.sqrt(ax * ax + ay * ay + az * az)
 
             # Issue #542: Use cached label children (avoids 5× label lookup per poll)

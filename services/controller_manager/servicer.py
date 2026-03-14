@@ -367,8 +367,9 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             GameplayDataUpdate protobuf message.
         """
         gameplay_data = []
-        # Snapshot to avoid RuntimeError if dict changes at await points
-        for serial, info in dict(self.tracked_controllers).items():
+        # No dict copy needed — _build_gameplay_update is synchronous (no await
+        # points), so no dict mutation can happen during iteration.
+        for serial, info in self.tracked_controllers.items():
             if current_filter is not None and serial not in current_filter:
                 continue
 
