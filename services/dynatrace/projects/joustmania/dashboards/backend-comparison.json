@@ -46,7 +46,7 @@
       "type": "data",
       "title": "Canary Rollout %",
       "description": "Percentage of controllers on Rust backend",
-      "query": "timeseries rust = count(controller_backend_info), filter:{backend == \"rust\"}, by:{serial} | summarize rustCount = count() | lookup [timeseries count(controller_backend_info), filter:{backend != \"mock\"}, by:{serial} | summarize totalCount = count()], sourceField:, lookupField: | fieldsAdd pct = rustCount / totalCount * 100 | fields pct",
+      "query": "timeseries cnt = count(controller_backend_info), filter:{backend != \"mock\"}, by:{serial, backend} | fieldsAdd lastCnt = arrayLast(cnt) | filter lastCnt > 0 | summarize rustCount = countIf(backend == \"rust\"), totalCount = count() | fieldsAdd pct = rustCount / totalCount * 100.0 | fields pct",
       "queryConfig": {
         "additionalFilters": [],
         "version": "4.3.1",
