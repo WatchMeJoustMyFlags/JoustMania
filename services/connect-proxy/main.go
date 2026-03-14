@@ -144,8 +144,12 @@ func main() {
 		MaxAge:           86400,
 	}).Handler(mux)
 
-	// Wrap with OTEL HTTP tracing
-	tracedHandler := otelhttp.NewHandler(corsHandler, "connect-proxy")
+	// Wrap with OTEL HTTP tracing (skip health checks to avoid noisy spans)
+	tracedHandler := otelhttp.NewHandler(corsHandler, "connect-proxy",
+		otelhttp.WithFilter(func(r *http.Request) bool {
+			return r.URL.Path != "/health"
+		}),
+	)
 
 	// Start server
 	slog.Info("Connect proxy listening", "addr", listenAddr)
