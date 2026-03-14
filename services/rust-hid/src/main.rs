@@ -64,6 +64,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Build a shared OTEL resource with standard + Dynatrace-relevant attributes.
+fn build_otel_resource() -> opentelemetry_sdk::Resource {
+    use opentelemetry::KeyValue;
+
+    let service_name =
+        std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "rust-hid".into());
+    let namespace =
+        std::env::var("OTEL_SERVICE_NAMESPACE").unwrap_or_else(|_| "infrastructure".into());
+    let version =
+        std::env::var("SERVICE_VERSION").unwrap_or_else(|_| "0.0.0-dev".into());
+    let hostname = gethostname::gethostname()
+        .into_string()
+        .unwrap_or_else(|_| "unknown".into());
+    let instance_id =
+        std::env::var("HOSTNAME").unwrap_or_else(|_| hostname.clone());
+    let environment =
+        std::env::var("DEPLOYMENT_ENVIRONMENT").unwrap_or_else(|_| "development".into());
+
+    opentelemetry_sdk::Resource::new(vec![
+        KeyValue::new("service.name", service_name),
+        KeyValue::new("service.namespace", namespace),
+        KeyValue::new("service.version", version),
+        KeyValue::new("service.instance.id", instance_id),
+        KeyValue::new("deployment.environment", environment),
+        KeyValue::new("host.name", hostname),
+    ])
+}
+
 /// Initialize OTLP log export.
 ///
 /// When OTEL_EXPORTER_OTLP_ENDPOINT is set, creates a LoggerProvider that
@@ -71,14 +99,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// OpenTelemetryTracingBridge layer in `init_tracing()`.
 /// The provider must outlive the tracing subscriber to flush on shutdown.
 fn init_logs() -> Option<opentelemetry_sdk::logs::LoggerProvider> {
-    use opentelemetry::KeyValue;
     use opentelemetry_otlp::WithExportConfig;
 
     let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok()?;
-    let service_name =
-        std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "rust-hid".into());
-    let namespace =
-        std::env::var("OTEL_SERVICE_NAMESPACE").unwrap_or_else(|_| "infrastructure".into());
 
     let exporter = opentelemetry_otlp::LogExporter::builder()
         .with_tonic()
@@ -86,10 +109,7 @@ fn init_logs() -> Option<opentelemetry_sdk::logs::LoggerProvider> {
         .build()
         .ok()?;
 
-    let resource = opentelemetry_sdk::Resource::new(vec![
-        KeyValue::new("service.name", service_name),
-        KeyValue::new("service.namespace", namespace),
-    ]);
+    let resource = build_otel_resource();
 
     let provider = opentelemetry_sdk::logs::LoggerProvider::builder()
         .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
@@ -110,7 +130,6 @@ fn init_tracing(
     log_provider: &Option<opentelemetry_sdk::logs::LoggerProvider>,
 ) -> Option<opentelemetry_sdk::trace::TracerProvider> {
     use opentelemetry::trace::TracerProvider as _;
-    use opentelemetry::KeyValue;
     use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
     use opentelemetry_otlp::WithExportConfig;
     use tracing_opentelemetry::OpenTelemetryLayer;
@@ -127,8 +146,6 @@ fn init_tracing(
     if let Some(endpoint) = endpoint {
         let service_name =
             std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "rust-hid".into());
-        let namespace =
-            std::env::var("OTEL_SERVICE_NAMESPACE").unwrap_or_else(|_| "infrastructure".into());
 
         let exporter = opentelemetry_otlp::SpanExporter::builder()
             .with_tonic()
@@ -136,10 +153,7 @@ fn init_tracing(
             .build()
             .ok()?;
 
-        let resource = opentelemetry_sdk::Resource::new(vec![
-            KeyValue::new("service.name", service_name.clone()),
-            KeyValue::new("service.namespace", namespace),
-        ]);
+        let resource = build_otel_resource();
 
         let provider = opentelemetry_sdk::trace::TracerProvider::builder()
             .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
@@ -178,14 +192,9 @@ fn init_tracing(
 /// - process_threads (gauge)
 fn init_metrics() -> Option<opentelemetry_sdk::metrics::SdkMeterProvider> {
     use opentelemetry::metrics::MeterProvider;
-    use opentelemetry::KeyValue;
     use opentelemetry_otlp::WithExportConfig;
 
     let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok()?;
-    let service_name =
-        std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "rust-hid".into());
-    let namespace =
-        std::env::var("OTEL_SERVICE_NAMESPACE").unwrap_or_else(|_| "infrastructure".into());
 
     let exporter = opentelemetry_otlp::MetricExporter::builder()
         .with_tonic()
@@ -193,10 +202,7 @@ fn init_metrics() -> Option<opentelemetry_sdk::metrics::SdkMeterProvider> {
         .build()
         .ok()?;
 
-    let resource = opentelemetry_sdk::Resource::new(vec![
-        KeyValue::new("service.name", service_name),
-        KeyValue::new("service.namespace", namespace),
-    ]);
+    let resource = build_otel_resource();
 
     let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(
         exporter,

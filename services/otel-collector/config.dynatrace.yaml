@@ -298,7 +298,7 @@ service:
 
     metrics/host-dynatrace:
       receivers: [prometheus/host]
-      processors: [memory_limiter, batch, cumulativetodelta]
+      processors: [memory_limiter, resource/host, batch, cumulativetodelta]
       exporters: [otlphttp/dynatrace]
 
     metrics/observability-dynatrace:

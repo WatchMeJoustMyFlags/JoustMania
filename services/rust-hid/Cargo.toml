@@ -29,6 +29,8 @@ opentelemetry-otlp = { version = "0.27", features = ["tonic", "metrics", "logs"]
 opentelemetry-appender-tracing = "0.27"
 # Process metrics via /proc/self
 procfs = "0.17"
+# Hostname for resource attributes
+gethostname = "0.5"
 
 [profile.release]
 strip = true

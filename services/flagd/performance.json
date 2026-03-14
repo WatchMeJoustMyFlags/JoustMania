@@ -165,7 +165,7 @@
         "enabled": true,
         "disabled": false
       },
-      "defaultVariant": "disabled"
+      "defaultVariant": "enabled"
     },
     "chaos_fault_type": {
       "state": "ENABLED",
