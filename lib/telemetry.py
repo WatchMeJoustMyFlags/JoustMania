@@ -28,9 +28,10 @@ from opentelemetry import context as otel_context
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.propagate import get_global_textmap
-from opentelemetry.sdk.resources import SERVICE_NAME, SERVICE_VERSION, Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+from lib.otel_resource import get_otel_resource
 
 logger = logging.getLogger(__name__)
 
@@ -88,15 +89,8 @@ def _do_init() -> None:
     """Perform actual OpenTelemetry initialization from env vars (internal)."""
     otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
     service_name = os.getenv("OTEL_SERVICE_NAME", "unknown-service")
-    namespace = os.getenv("OTEL_SERVICE_NAMESPACE", "joustmania")
 
-    resource = Resource(
-        attributes={
-            SERVICE_NAME: service_name,
-            SERVICE_VERSION: "1.0.0",
-            "service.namespace": namespace,
-        }
-    )
+    resource = get_otel_resource()
 
     provider = TracerProvider(resource=resource)
     otlp_exporter = OTLPSpanExporter(endpoint=otlp_endpoint, insecure=True)

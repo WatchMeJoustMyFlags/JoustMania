@@ -33,7 +33,8 @@ from opentelemetry import metrics
 from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
-from opentelemetry.sdk.resources import SERVICE_NAME, SERVICE_VERSION, Resource
+
+from lib.otel_resource import get_otel_resource
 
 logger = logging.getLogger(__name__)
 
@@ -131,18 +132,11 @@ def init_metrics(
 
         otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4317")
         service_name = os.getenv("OTEL_SERVICE_NAME", "unknown-service")
-        namespace = os.getenv("OTEL_SERVICE_NAMESPACE", "joustmania")
 
         if export_interval_ms is None:
             export_interval_ms = _get_export_interval_ms(service_name)
 
-        resource = Resource(
-            attributes={
-                SERVICE_NAME: service_name,
-                SERVICE_VERSION: "1.0.0",
-                "service.namespace": namespace,
-            }
-        )
+        resource = get_otel_resource()
 
         # Create OTLP exporter
         exporter = OTLPMetricExporter(endpoint=otlp_endpoint, insecure=True)

@@ -157,6 +157,15 @@ class Phase:
     execute: callable
 
 
+class PollDegradationError(Exception):
+    """Synthetic exception for poll degradation span events.
+
+    Not raised for control flow — only passed to span.record_exception()
+    so Dynatrace failure analysis can group and alert on poll health issues
+    by exception type (PollDegradationError) and message.
+    """
+
+
 class GameState(Enum):
     """Game lifecycle states."""
 
@@ -997,6 +1006,8 @@ class BaseGameMode(ABC):
 
                 player._poll_degraded_span.set_attribute("health.total_poll_drops", player.total_poll_drops)
                 player._poll_degraded_span.set_attribute("health.total_poll_errors", player.total_poll_errors)
+                msg = f"drops={player.total_poll_drops} errors={player.total_poll_errors} serial={serial}"
+                player._poll_degraded_span.record_exception(PollDegradationError(msg))
                 player._poll_degraded_span.set_status(Status(StatusCode.ERROR, "poll degradation detected"))
                 player._poll_degraded_span.end()
                 player._poll_degraded_span = None
@@ -1293,6 +1304,15 @@ class BaseGameMode(ABC):
             # State transitions
             self.state = GameState.STARTING
             self.running = True  # Set early to allow force_end during countdown
+            current_span = trace.get_current_span()
+            current_span.add_event(
+                "game.state_changed",
+                {
+                    "game.state": "STARTING",
+                    GAME_MODE_ATTR: self.get_game_name(),
+                    "game.id": self.game_id,
+                },
+            )
             await self.event_publisher(GameEvent.GAME_STARTING, {"game_id": self.game_id})
 
             # Phase 1: Initialization (setup only — no countdown)
@@ -1335,6 +1355,15 @@ class BaseGameMode(ABC):
 
             # Game starts
             self.state = GameState.RUNNING
+            current_span = trace.get_current_span()
+            current_span.add_event(
+                "game.state_changed",
+                {
+                    "game.state": "RUNNING",
+                    "player.count": len(self.players),
+                    "game.id": self.game_id,
+                },
+            )
             # Note: self.start_time is set in _game_loop when first data is received
             await self.event_publisher(
                 GameEvent.GAME_STARTED,
@@ -1411,7 +1440,14 @@ class BaseGameMode(ABC):
                     self._close_grouping_spans()
 
             # Phase 3: Teardown
-            with tracer.start_as_current_span("teardown_phase"):
+            with tracer.start_as_current_span("teardown_phase") as teardown_span:
+                teardown_span.add_event(
+                    "game.state_changed",
+                    {
+                        "game.state": "ENDING",
+                        "game.id": self.game_id,
+                    },
+                )
                 # Stop game music first (inside teardown_phase so StopMusic span is a child)
                 await self._stop_game_music()
 
@@ -1426,6 +1462,15 @@ class BaseGameMode(ABC):
         except Exception as e:
             logger.error(f"{self.get_game_name()} game error: {e}", exc_info=True)
             self.state = GameState.ENDED
+            current_span = trace.get_current_span()
+            current_span.add_event(
+                "game.state_changed",
+                {
+                    "game.state": "ENDED",
+                    "game.id": self.game_id,
+                    "game.error": str(e),
+                },
+            )
             await self.event_publisher(GameEvent.GAME_ERROR, {"game_id": self.game_id, "error": str(e)})
             raise
 
@@ -1491,6 +1536,9 @@ class BaseGameMode(ABC):
 
             player._poll_degraded_span.set_attribute("health.total_poll_drops", player.total_poll_drops)
             player._poll_degraded_span.set_attribute("health.total_poll_errors", player.total_poll_errors)
+            serial = getattr(player, "serial", "unknown")
+            msg = f"drops={player.total_poll_drops} errors={player.total_poll_errors} serial={serial}"
+            player._poll_degraded_span.record_exception(PollDegradationError(msg))
             player._poll_degraded_span.set_status(Status(StatusCode.ERROR, "poll degradation detected"))
             player._poll_degraded_span.end()
             player._poll_degraded_span = None

@@ -27,6 +27,15 @@ from .utils import run_command
 
 logger = logging.getLogger("psmove-pairing")
 
+
+class PairingError(Exception):
+    """Synthetic exception for pairing failure span events.
+
+    Not raised for control flow — only passed to span.record_exception()
+    so Dynatrace failure analysis can group and alert on pairing issues.
+    """
+
+
 # Span attribute constants
 _ATTR_CONTROLLER_SERIAL = "controller.serial"
 _ATTR_ADAPTER_ADDRESS = "adapter.address"
@@ -137,6 +146,7 @@ class USBPairing:
                     span.set_status(Status(StatusCode.OK))
                 else:
                     logger.error(f"Pairing failed for {serial}")
+                    span.record_exception(PairingError(f"Backend pairing failed for {serial}"))
                     span.set_status(Status(StatusCode.ERROR, "Backend pairing failed"))
 
                 return result.success
@@ -145,6 +155,7 @@ class USBPairing:
                 duration = time.time() - start_time
                 pairing_duration_seconds.observe(duration)
                 logger.error(f"Exception during pairing: {e}", exc_info=DEBUG)
+                span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 return False
 
@@ -224,6 +235,7 @@ class USBPairing:
             if not adapter:
                 logger.error("No Bluetooth adapters available for pairing")
                 pairing_failed_total.inc()
+                span.record_exception(PairingError("No Bluetooth adapters available"))
                 span.set_status(Status(StatusCode.ERROR, "No adapters available"))
                 return False
 
@@ -241,6 +253,7 @@ class USBPairing:
             if not await self.pair_controller(device_path, serial, adapter.address):
                 logger.error(f"PAIRING FAILED: Controller {serial} could not be paired")
                 pairing_failed_total.inc()
+                span.record_exception(PairingError(f"Controller {serial} pairing failed"))
                 span.set_status(Status(StatusCode.ERROR, "Pairing failed"))
                 return False
 

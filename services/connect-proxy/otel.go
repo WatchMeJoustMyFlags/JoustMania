@@ -12,6 +12,7 @@ import (
 
 	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
@@ -23,6 +24,21 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 )
+
+// newOTELResource builds a shared resource with standard + Dynatrace-relevant attributes.
+func newOTELResource(ctx context.Context, serviceName, namespace string) (*resource.Resource, error) {
+	hostname, _ := os.Hostname()
+	return resource.New(ctx,
+		resource.WithAttributes(
+			semconv.ServiceName(serviceName),
+			semconv.ServiceNamespace(namespace),
+			semconv.ServiceVersion(getEnv("SERVICE_VERSION", "0.0.0-dev")),
+			semconv.ServiceInstanceID(getEnv("HOSTNAME", hostname)),
+			attribute.String("deployment.environment", getEnv("DEPLOYMENT_ENVIRONMENT", "development")),
+			semconv.HostName(hostname),
+		),
+	)
+}
 
 // initLogs sets up OTEL log export via OTLP and returns an slog.Logger backed by
 // the OpenTelemetry bridge, plus a shutdown function. When OTEL_EXPORTER_OTLP_ENDPOINT
@@ -48,12 +64,7 @@ func initLogs(ctx context.Context) (*slog.Logger, func(context.Context) error) {
 		return slog.Default(), func(context.Context) error { return nil }
 	}
 
-	res, err := resource.New(ctx,
-		resource.WithAttributes(
-			semconv.ServiceName(serviceName),
-			semconv.ServiceNamespace(namespace),
-		),
-	)
+	res, err := newOTELResource(ctx, serviceName, namespace)
 	if err != nil {
 		fmt.Printf("Failed to create OTEL resource for logs: %v\n", err)
 		return slog.Default(), func(context.Context) error { return nil }
@@ -93,12 +104,7 @@ func initTracing(ctx context.Context) func(context.Context) error {
 		return func(context.Context) error { return nil }
 	}
 
-	res, err := resource.New(ctx,
-		resource.WithAttributes(
-			semconv.ServiceName(serviceName),
-			semconv.ServiceNamespace(namespace),
-		),
-	)
+	res, err := newOTELResource(ctx, serviceName, namespace)
 	if err != nil {
 		fmt.Printf("Failed to create OTEL resource for tracing: %v\n", err)
 		return func(context.Context) error { return nil }
@@ -141,12 +147,7 @@ func initMetrics(ctx context.Context) func(context.Context) error {
 		return func(context.Context) error { return nil }
 	}
 
-	res, err := resource.New(ctx,
-		resource.WithAttributes(
-			semconv.ServiceName(serviceName),
-			semconv.ServiceNamespace(namespace),
-		),
-	)
+	res, err := newOTELResource(ctx, serviceName, namespace)
 	if err != nil {
 		fmt.Printf("Failed to create OTEL resource: %v\n", err)
 		return func(context.Context) error { return nil }
