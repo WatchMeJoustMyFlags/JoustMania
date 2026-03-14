@@ -5,7 +5,7 @@
       "state": "ENABLED",
       "variants": {
         "rust": "rust",
-        "python_hid": "python",
+        "python": "python",
         "empty": ""
       },
       "defaultVariant": "rust",
