@@ -78,6 +78,11 @@ receivers:
           scrape_interval: 30s
           static_configs:
             - targets: ['flagd:8014']
+        - job_name: 'envoy'
+          scrape_interval: 30s
+          metrics_path: '/stats/prometheus'
+          static_configs:
+            - targets: ['envoy:9901']
 
 processors:
   # Batch processor for better performance (traces/logs)
