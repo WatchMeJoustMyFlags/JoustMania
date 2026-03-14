@@ -64,6 +64,9 @@ class MultiplexerBackend(ControllerBackend):
         # Health counter: LED failures accumulated between stream frames
         self._led_failures: dict[str, int] = {}
 
+        # Track last-known backend per serial for metric cleanup on switch
+        self._last_backend: dict[str, str] = {}
+
         adapter_names = [a.adapter_type for a in self._adapters]
         logger.info(f"MultiplexerBackend created with adapters: {adapter_names}")
 
@@ -101,6 +104,7 @@ class MultiplexerBackend(ControllerBackend):
         self._last_sent_color.clear()
         self._last_led_update.clear()
         self._effect_active.clear()
+        self._last_backend.clear()
 
     def get_connected_controllers(self, force_rescan: bool = False) -> list[str]:
         seen = self._route_controllers(force_rescan)
@@ -231,11 +235,22 @@ class MultiplexerBackend(ControllerBackend):
             self._last_sent_color.pop(serial, None)
             self._last_led_update.pop(serial, None)
             self._effect_active.discard(serial)
+            # Clear backend info metric so disconnected controllers don't
+            # appear in dashboard counts
+            prev = self._last_backend.pop(serial, None)
+            if prev:
+                metrics.controller_backend_info.labels(serial=serial, backend=prev).set(0)
 
     def _update_controller_metrics(self, seen: dict[str, ControllerIOAdapter]) -> None:
         """Update Prometheus metrics for connected controllers."""
         for serial, adapter in seen.items():
-            metrics.controller_backend_info.labels(serial=serial, backend=adapter.adapter_type).set(1)
+            backend = adapter.adapter_type
+            # Clear old backend label when backend changes (e.g. rust -> python)
+            prev = self._last_backend.get(serial)
+            if prev and prev != backend:
+                metrics.controller_backend_info.labels(serial=serial, backend=prev).set(0)
+            self._last_backend[serial] = backend
+            metrics.controller_backend_info.labels(serial=serial, backend=backend).set(1)
             hci = adapter.get_adapter_for_serial(serial)
             if hci:
                 metrics.controller_adapter_info.labels(serial=serial, adapter=hci).set(1)
@@ -372,4 +387,7 @@ class MultiplexerBackend(ControllerBackend):
         self._last_sent_color.pop(serial, None)
         self._last_led_update.pop(serial, None)
         self._effect_active.discard(serial)
+        prev = self._last_backend.pop(serial, None)
+        if prev:
+            metrics.controller_backend_info.labels(serial=serial, backend=prev).set(0)
         return True
