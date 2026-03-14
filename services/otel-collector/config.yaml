@@ -162,7 +162,7 @@ processors:
         match_type: regexp
         resource_attributes:
           - key: service.name
-            value: "^(controller-manager|game-coordinator|menu|audio|pairing-daemon|otel-collector)$"
+            value: "^(controller-manager|game-coordinator|menu|audio|pairing-daemon|otel-collector|connect-proxy|rust-hid)$"
 
   # Resource processor to add common attributes for OTLP-pushed metrics
   resource:

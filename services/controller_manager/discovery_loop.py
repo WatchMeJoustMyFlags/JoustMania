@@ -112,6 +112,11 @@ class DiscoveryLoop:
         # LED update timing (Phase 72: separated from polling)
         self._last_led_update = 0.0
 
+        # Discovery check throttle: 1Hz is sufficient for detecting
+        # connect/disconnect — no need to run at 100Hz polling rate
+        self._last_discovery_check = 0.0
+        self._discovery_interval = 1.0  # seconds
+
         # Fixed interval polling configuration - always 100Hz
         # There's always either a menu or game stream active, so no need for idle mode
         self._poll_interval = 0.010  # 100Hz
@@ -221,11 +226,14 @@ class DiscoveryLoop:
                 metrics.polling_mode.set(1)  # Always in "gameplay mode" now
                 metrics.polling_target_hz.set(100)
 
-                # Check for new controllers (metrics, no span)
-                # Run in thread pool since get_connected_controllers() has blocking USB calls
-                with metrics.discovery_check_duration_seconds.time():
-                    await self._check_for_new_controllers()
-                    metrics.discovery_checks_total.inc()
+                # Check for new controllers at 1Hz (not every poll cycle).
+                # Discovery involves gRPC calls + USB enumeration — running it
+                # at 100Hz wastes CPU and causes lag on the rust-hid service.
+                if current_time - self._last_discovery_check >= self._discovery_interval:
+                    with metrics.discovery_check_duration_seconds.time():
+                        await self._check_for_new_controllers()
+                        metrics.discovery_checks_total.inc()
+                    self._last_discovery_check = current_time
 
                 # Update controller states from backend
                 await self._update_controller_states()
