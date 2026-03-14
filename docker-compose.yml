@@ -216,6 +216,7 @@ services:
       - OTEL_SERVICE_NAME=controller-manager-service
       - OTEL_SERVICE_NAMESPACE=infrastructure
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - SERVICE_VERSION=${IMAGE_TAG:-dev}
       - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
       # Rust HID service for canary controller I/O backend
       - RUST_HID_HOST=rust-hid
@@ -268,6 +269,7 @@ services:
       - DBUS_SYSTEM_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket
       - OTEL_SERVICE_NAME=pairing-daemon
       - OTEL_SERVICE_NAMESPACE=infrastructure
+      - SERVICE_VERSION=${IMAGE_TAG:-dev}
       # localhost because network_mode:host can't use Docker DNS
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
       # flagd for runtime-tunable intervals (localhost because network_mode:host)
@@ -302,6 +304,7 @@ services:
       - OTEL_SERVICE_NAME=rust-hid
       - OTEL_SERVICE_NAMESPACE=infrastructure
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - SERVICE_VERSION=${IMAGE_TAG:-dev}
       - RUST_LOG=info
     restart: unless-stopped
     # Healthcheck defined in Dockerfile (uses grpc_health_probe)
@@ -333,6 +336,7 @@ services:
       - OTEL_SERVICE_NAME=python-hid
       - OTEL_SERVICE_NAMESPACE=infrastructure
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - SERVICE_VERSION=${IMAGE_TAG:-dev}
     restart: unless-stopped
     # Healthcheck defined in Dockerfile (uses grpc_health_probe)
     deploy:
@@ -359,6 +363,7 @@ services:
       - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME_GAME_COORDINATOR:-game-coordinator-service}
       - OTEL_SERVICE_NAMESPACE=joustmania
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+      - SERVICE_VERSION=${IMAGE_TAG:-dev}
       - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
     depends_on:
       redis:
@@ -393,6 +398,7 @@ services:
       - OTEL_SERVICE_NAME=menu-service
       - OTEL_SERVICE_NAMESPACE=joustmania
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - SERVICE_VERSION=${IMAGE_TAG:-dev}
       - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
       # Phase 60: Audio service connection
       - AUDIO_HOST=audio
@@ -441,6 +447,7 @@ services:
       - OTEL_SERVICE_NAME=audio-service
       - OTEL_SERVICE_NAMESPACE=joustmania
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - SERVICE_VERSION=${IMAGE_TAG:-dev}
       - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
       - FLAGD_HOST=flagd
       - FLAGD_PORT=8015
@@ -667,6 +674,7 @@ services:
       - OTEL_SERVICE_NAME=connect-proxy
       - OTEL_SERVICE_NAMESPACE=infrastructure
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - SERVICE_VERSION=${IMAGE_TAG:-dev}
     volumes:
       - ./services/flagd:/etc/flagd/flags
     networks:

@@ -231,6 +231,7 @@ class ContextPropagationInterceptor(grpc.aio.UnaryUnaryClientInterceptor):
                 span.set_status(Status(StatusCode.OK))
                 return response
             except grpc.aio.AioRpcError as e:
+                span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR, str(e.code())))
                 raise
 
@@ -289,6 +290,7 @@ class ContextPropagationStreamUnaryInterceptor(grpc.aio.StreamUnaryClientInterce
                 span.set_status(Status(StatusCode.OK))
                 return response
             except grpc.aio.AioRpcError as e:
+                span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR, str(e.code())))
                 raise
 
@@ -347,6 +349,7 @@ class ContextPropagationUnaryStreamInterceptor(grpc.aio.UnaryStreamClientInterce
                 span.set_status(Status(StatusCode.OK))
                 return call
             except grpc.aio.AioRpcError as e:
+                span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR, str(e.code())))
                 raise
 
@@ -405,6 +408,7 @@ class ContextPropagationStreamStreamInterceptor(grpc.aio.StreamStreamClientInter
                 span.set_status(Status(StatusCode.OK))
                 return call
             except grpc.aio.AioRpcError as e:
+                span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR, str(e.code())))
                 raise
 
@@ -504,7 +508,8 @@ class ServerUnaryUnaryInterceptor(grpc.aio.ServerInterceptor):
                                 span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, e.code().value[0])
                                 span.set_status(Status(StatusCode.ERROR, str(e.code())))
                                 raise
-                            except Exception:
+                            except Exception as exc:
+                                span.record_exception(exc)
                                 span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, grpc.StatusCode.UNKNOWN.value[0])
                                 span.set_status(Status(StatusCode.ERROR))
                                 raise
@@ -552,7 +557,8 @@ class ServerUnaryUnaryInterceptor(grpc.aio.ServerInterceptor):
                                 span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, e.code().value[0])
                                 span.set_status(Status(StatusCode.ERROR, str(e.code())))
                                 raise
-                            except Exception:
+                            except Exception as exc:
+                                span.record_exception(exc)
                                 span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, grpc.StatusCode.UNKNOWN.value[0])
                                 span.set_status(Status(StatusCode.ERROR))
                                 raise
@@ -600,7 +606,8 @@ class ServerUnaryUnaryInterceptor(grpc.aio.ServerInterceptor):
                                 span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, e.code().value[0])
                                 span.set_status(Status(StatusCode.ERROR, str(e.code())))
                                 raise
-                            except Exception:
+                            except Exception as exc:
+                                span.record_exception(exc)
                                 span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, grpc.StatusCode.UNKNOWN.value[0])
                                 span.set_status(Status(StatusCode.ERROR))
                                 raise
@@ -648,7 +655,8 @@ class ServerUnaryUnaryInterceptor(grpc.aio.ServerInterceptor):
                                 span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, e.code().value[0])
                                 span.set_status(Status(StatusCode.ERROR, str(e.code())))
                                 raise
-                            except Exception:
+                            except Exception as exc:
+                                span.record_exception(exc)
                                 span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, grpc.StatusCode.UNKNOWN.value[0])
                                 span.set_status(Status(StatusCode.ERROR))
                                 raise

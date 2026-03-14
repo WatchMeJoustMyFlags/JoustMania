@@ -22,7 +22,8 @@ import threading
 from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
-from opentelemetry.sdk.resources import SERVICE_NAME, SERVICE_VERSION, Resource
+
+from lib.otel_resource import get_otel_resource
 
 _initialized = False
 _init_lock = threading.Lock()
@@ -80,15 +81,8 @@ def init_logging() -> None:
 
         otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4317")
         service_name = os.getenv("OTEL_SERVICE_NAME", "unknown-service")
-        namespace = os.getenv("OTEL_SERVICE_NAMESPACE", "joustmania")
 
-        resource = Resource(
-            attributes={
-                SERVICE_NAME: service_name,
-                SERVICE_VERSION: "1.0.0",
-                "service.namespace": namespace,
-            }
-        )
+        resource = get_otel_resource()
 
         exporter = OTLPLogExporter(endpoint=otlp_endpoint, insecure=True)
         provider = LoggerProvider(resource=resource)

@@ -29,6 +29,8 @@ opentelemetry-otlp = { version = "0.27", features = ["tonic", "metrics", "logs"]
 opentelemetry-appender-tracing = "0.27"
 # Process metrics via /proc/self
 procfs = "0.17"
+# Hostname for resource attributes
+gethostname = "0.5"
 # Feature flags (OpenFeature + flagd provider)
 open-feature = "0.2"
 open-feature-flagd = { version = "0.1", default-features = false, features = ["rpc"] }
