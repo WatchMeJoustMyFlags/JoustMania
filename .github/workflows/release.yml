@@ -51,6 +51,7 @@ jobs:
           - connect-proxy
           - dashboard
           - rust-hid
+          - python-hid
           - otel-collector
     steps:
       - name: Set up Docker Buildx
