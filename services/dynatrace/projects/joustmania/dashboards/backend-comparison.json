@@ -78,12 +78,23 @@
         "version": "4.3.1",
         "datatype": "metrics"
       },
-      "visualization": "graph",
-      "visualizationConfig": {
-        "drawStyle": "area",
-        "stacked": true,
-        "legend": { "position": "bottom" },
-        "yAxisLabel": "CPU %"
+      "visualization": "areaChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "timestamp": "timeframe"
+          },
+          "leftYAxisSettings": {
+            "isLabelVisible": true,
+            "label": "CPU %"
+          },
+          "categoricalBarChartSettings": {
+            "groupMode": "stacked"
+          },
+          "gapPolicy": "connect",
+          "legend": { "hidden": false }
+        }
       }
     },
     "6": {
@@ -96,12 +107,23 @@
         "version": "4.3.1",
         "datatype": "metrics"
       },
-      "visualization": "graph",
-      "visualizationConfig": {
-        "drawStyle": "area",
-        "stacked": true,
-        "legend": { "position": "bottom" },
-        "yAxisUnit": "bytes"
+      "visualization": "areaChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "timestamp": "timeframe"
+          },
+          "leftYAxisSettings": {
+            "isLabelVisible": true,
+            "label": "Memory (bytes)"
+          },
+          "categoricalBarChartSettings": {
+            "groupMode": "stacked"
+          },
+          "gapPolicy": "connect",
+          "legend": { "hidden": false }
+        }
       }
     },
     "7": {
@@ -114,9 +136,16 @@
         "version": "4.3.1",
         "datatype": "metrics"
       },
-      "visualization": "graph",
-      "visualizationConfig": {
-        "legend": { "position": "bottom" }
+      "visualization": "lineChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "timestamp": "timeframe"
+          },
+          "gapPolicy": "connect",
+          "legend": { "hidden": false }
+        }
       }
     },
     "8": {
