@@ -4,6 +4,14 @@ Multiplayer motion-controlled party game system using PS Move controllers.
 
 **Main branch: `main`**
 
+## Session Management
+
+When resuming from a previous session, ask the user to confirm the current task before reading files or starting work. Do not assume context from prior sessions without verification.
+
+## Git Workflow
+
+Always create a feature branch before making changes. Never commit directly to main. Verify current branch with `git branch --show-current` before starting work.
+
 ## Quick Reference
 
 ```bash
@@ -36,6 +44,18 @@ cd ../JoustMania-issue-<NUMBER>
 ```
 
 This keeps the main checkout clean and isolates changes when multiple agents work in parallel.
+
+## Rust
+
+Always run Clippy checks (`cargo clippy -- -D warnings`) before committing Rust code. Watch for unnecessary borrows, redundant closures, and other common Clippy lints.
+
+## CI / Pre-push Checklist
+
+When working on CI/build fixes, run the full CI check locally before pushing (linting, type checks, tests). For Go: verify module versions and imports. For Rust: run with `--test-threads=1` if needed. For JS/TS: ensure @types/node is included.
+
+## Configuration Files
+
+When editing YAML config files (Docker Compose, OTEL Collector, dashboards), validate for duplicate keys and correct field names before committing. Use `python -c "import yaml; yaml.safe_load(open('file.yaml'))"` as a quick check.
 
 ## Key Documentation
 
