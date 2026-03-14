@@ -5,7 +5,7 @@ Detects platform and creates appropriate backend instance.
 
 Backend selection priority:
   1. OpenFeature "controller_backend" flag (runtime-switchable via flagd)
-  2. Platform auto-detection (Linux -> hidapi)
+  2. Platform auto-detection (Linux -> python)
 
 Flag values are read once at startup.
 Runtime changes to these flags require a service restart to take effect.
@@ -66,10 +66,10 @@ def _create_adapter_by_name(name: str) -> ControllerIOAdapter:
             from services.controller_manager.multiplexer.mock_adapter import MockAdapter
 
             return MockAdapter(num_controllers=0)
-        case "hidapi":
-            from services.controller_manager.multiplexer.hidapi_adapter import HidapiAdapter
+        case "python":
+            from services.controller_manager.multiplexer.python_hid_adapter import PythonHidAdapter
 
-            return HidapiAdapter()
+            return PythonHidAdapter()
         case "rust":
             from services.controller_manager.multiplexer.rust_adapter import RustServiceAdapter
 
@@ -123,10 +123,10 @@ def create_backend() -> ControllerBackend:
 
     Selection priority:
         1. OpenFeature "controller_backend" flag from performance domain
-        2. Platform auto-detection (Linux -> hidapi)
+        2. Platform auto-detection (Linux -> python)
 
     Creates ControllerIOAdapter instances wrapped in MultiplexerBackend.
-    Comma-separated flag values (e.g. "mock,bluetooth") create multiple
+    Comma-separated flag values (e.g. "mock,python") create multiple
     adapters. A mock adapter is always auto-injected (with 0 controllers)
     for dynamic RPC management.
 
@@ -135,14 +135,14 @@ def create_backend() -> ControllerBackend:
 
     Raises:
         RuntimeError: If no suitable backend available
-        ValueError: If backend combination is unsupported (e.g. bluetooth+hidapi)
+        ValueError: If backend combination is unsupported
     """
     from services.controller_manager.multiplexer import MultiplexerBackend
     from services.controller_manager.multiplexer.validation import validate_backend_combination
 
     backend_name = _resolve_backend_name()
     if not backend_name:
-        backend_name = "hidapi"  # Default on Linux
+        backend_name = "python"  # Default on Linux
 
     logger.info(f"Backend selection: backend_name={backend_name!r}")
 

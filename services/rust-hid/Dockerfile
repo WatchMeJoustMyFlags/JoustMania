@@ -7,10 +7,11 @@
 # =============================================================================
 # Stage 1: Build Rust binary
 # =============================================================================
-FROM rust:1.85-slim AS builder
+FROM rust:1.88-slim AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     protobuf-compiler \
+    libprotobuf-dev \
     libhidapi-dev \
     libudev-dev \
     pkg-config \
@@ -63,6 +64,8 @@ COPY --from=builder /app/services/rust-hid/target/release/rust-hid /usr/local/bi
 ENV OTEL_SERVICE_NAME=rust-hid
 ENV OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
 ENV RUST_LOG=info
+ENV FLAGD_HOST=flagd
+ENV FLAGD_PORT=8013
 
 EXPOSE 50058
 

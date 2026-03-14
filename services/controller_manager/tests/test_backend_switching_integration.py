@@ -150,23 +150,23 @@ class TestRustAdapterGracefulDegradation:
 
 
 class TestBackendSwitchHidapiToRust:
-    """Simulate flag change from 'hidapi' to 'rust', verify backend is recreated."""
+    """Simulate flag change from 'python' to 'rust', verify backend is recreated."""
 
     def test_backend_switch_produces_different_adapter_types(self):
-        """Switching flag from 'hidapi' to 'rust' produces different adapter types."""
-        # First creation: hidapi
-        mock_client_hidapi = MagicMock()
-        mock_client_hidapi.get_string_details.return_value = _mock_details("hidapi")
+        """Switching flag from 'python' to 'rust' produces different adapter types."""
+        # First creation: python
+        mock_client_python = MagicMock()
+        mock_client_python.get_string_details.return_value = _mock_details("python")
 
         with (
-            patch("lib.feature_flags.get_flag_client", return_value=mock_client_hidapi),
+            patch("lib.feature_flags.get_flag_client", return_value=mock_client_python),
             patch("services.controller_manager.backend_factory._create_adapter_by_name") as mock_create,
         ):
-            hidapi_adapter = MagicMock()
-            hidapi_adapter.adapter_type = "hidapi"
+            python_adapter = MagicMock()
+            python_adapter.adapter_type = "python"
             mock_adapter_1 = MagicMock()
             mock_adapter_1.adapter_type = "mock"
-            mock_create.side_effect = [hidapi_adapter, mock_adapter_1]
+            mock_create.side_effect = [python_adapter, mock_adapter_1]
 
             backend_1 = create_backend()
 
@@ -192,14 +192,14 @@ class TestBackendSwitchHidapiToRust:
         types_1 = {a.adapter_type for a in backend_1.adapters}
         types_2 = {a.adapter_type for a in backend_2.adapters}
 
-        assert "hidapi" in types_1
-        assert "hidapi" not in types_2
+        assert "python" in types_1
+        assert "python" not in types_2
         assert "rust" in types_2
         assert "rust" not in types_1
 
     def test_mock_auto_injected_in_both_modes(self):
         """Mock adapter is always auto-injected regardless of backend flag."""
-        for flag_value in ("hidapi", "rust"):
+        for flag_value in ("python", "rust"):
             mock_client = MagicMock()
             mock_client.get_string_details.return_value = _mock_details(flag_value)
 
