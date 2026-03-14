@@ -201,6 +201,7 @@
             "isLabelVisible": true,
             "label": "Acceleration (g)"
           },
+          "gapPolicy": "connect",
           "legend": {
             "hidden": false
           },
@@ -256,6 +257,7 @@
             "isLabelVisible": true,
             "label": "Accel X (g)"
           },
+          "gapPolicy": "connect",
           "legend": {
             "hidden": false
           },
@@ -296,6 +298,7 @@
             "isLabelVisible": true,
             "label": "Accel Y (g)"
           },
+          "gapPolicy": "connect",
           "legend": {
             "hidden": false
           },
@@ -336,6 +339,7 @@
             "isLabelVisible": true,
             "label": "Accel Z (g)"
           },
+          "gapPolicy": "connect",
           "legend": {
             "hidden": false
           },
@@ -517,6 +521,7 @@
             "isLabelVisible": true,
             "label": "Peak Accel (g)"
           },
+          "gapPolicy": "connect",
           "legend": {
             "hidden": false
           },
@@ -557,6 +562,7 @@
             "isLabelVisible": true,
             "label": "Threshold (g)"
           },
+          "gapPolicy": "connect",
           "legend": {
             "hidden": false
           },

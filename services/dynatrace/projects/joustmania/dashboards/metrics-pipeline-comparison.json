@@ -33,6 +33,7 @@
             "isLabelVisible": true,
             "label": "Acceleration (g)"
           },
+          "gapPolicy": "connect",
           "legend": { "hidden": false },
           "truncationMode": "end"
         },
@@ -66,6 +67,7 @@
             "isLabelVisible": true,
             "label": "Acceleration (g)"
           },
+          "gapPolicy": "connect",
           "legend": { "hidden": false },
           "truncationMode": "end"
         },
@@ -103,6 +105,7 @@
             "isLabelVisible": true,
             "label": "Peak (g)"
           },
+          "gapPolicy": "connect",
           "legend": { "hidden": false },
           "truncationMode": "end"
         },
@@ -137,6 +140,7 @@
             "isLabelVisible": true,
             "label": "Acceleration (g)"
           },
+          "gapPolicy": "connect",
           "legend": { "hidden": false },
           "truncationMode": "end"
         },
@@ -179,7 +183,7 @@
       },
       "title": "Bizevents: Events/min",
       "type": "data",
-      "query": "fetch bizevents\n| filter event.type == \"com.joustmania.acceleration\"\n| filter metric.name == \"controller_accel_magnitude\"\n| summarize count = count(), by:{bin(timestamp, 1m)}\n| fields interval = bin(timestamp, 1m), count\n| sort interval asc\n| summarize last = arrayLast(count)",
+      "query": "fetch bizevents\n| filter event.type == \"com.joustmania.acceleration\"\n| filter metric.name == \"controller_accel_magnitude\"\n| summarize count = count(), by:{interval = bin(timestamp, 1m)}\n| sort interval desc\n| limit 1\n| fields last = count",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
@@ -212,16 +216,13 @@
         "maxResultMegaBytes": 1,
         "maxResultRecords": 1000
       },
-      "visualization": "barChart",
+      "visualization": "lineChart",
       "visualizationSettings": {
         "autoSelectVisualization": false,
         "chartSettings": {
           "fieldMapping": {
             "leftAxisValues": ["events"],
             "timestamp": "interval"
-          },
-          "categoricalBarChartSettings": {
-            "groupMode": "stacked"
           },
           "legend": { "hidden": false },
           "truncationMode": "end"
@@ -256,6 +257,7 @@
             "isLabelVisible": true,
             "label": "Acceleration (g)"
           },
+          "gapPolicy": "connect",
           "legend": { "hidden": false },
           "truncationMode": "end"
         },

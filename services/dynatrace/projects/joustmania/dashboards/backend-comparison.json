@@ -10,7 +10,7 @@
       "type": "data",
       "title": "Controllers on Python",
       "description": "Controllers using the Python backend",
-      "query": "timeseries count = count(controller_backend_info), filter:{backend == \"python\"}, by:{serial} | summarize total = countIf(arrayLast(count) > 0)",
+      "query": "timeseries count = count(controller_backend_info), filter:{backend == \"python\"}, by:{serial} | fieldsAdd lastCount = arrayLast(count) | summarize total = countIf(lastCount > 0)",
       "queryConfig": {
         "additionalFilters": [],
         "version": "4.3.1",
@@ -28,7 +28,7 @@
       "type": "data",
       "title": "Controllers on Rust",
       "description": "Controllers using the rust-hid backend",
-      "query": "timeseries count = count(controller_backend_info), filter:{backend == \"rust\"}, by:{serial} | summarize total = countIf(arrayLast(count) > 0)",
+      "query": "timeseries count = count(controller_backend_info), filter:{backend == \"rust\"}, by:{serial} | fieldsAdd lastCount = arrayLast(count) | summarize total = countIf(lastCount > 0)",
       "queryConfig": {
         "additionalFilters": [],
         "version": "4.3.1",
@@ -46,7 +46,7 @@
       "type": "data",
       "title": "Canary Rollout %",
       "description": "Percentage of controllers on Rust backend",
-      "query": "timeseries rust = count(controller_backend_info), filter:{backend == \"rust\"}, by:{serial} | summarize rustCount = count() | lookup [timeseries count(controller_backend_info), filter:{backend != \"mock\"}, by:{serial} | summarize totalCount = count()], sourceField:, lookupField: | fieldsAdd pct = rustCount / totalCount * 100 | fields pct",
+      "query": "timeseries cnt = count(controller_backend_info), filter:{backend != \"mock\"}, by:{serial, backend} | fieldsAdd lastCnt = arrayLast(cnt) | filter lastCnt > 0 | summarize rustCount = countIf(backend == \"rust\"), totalCount = count() | fieldsAdd pct = rustCount / totalCount * 100.0 | fields pct",
       "queryConfig": {
         "additionalFilters": [],
         "version": "4.3.1",
@@ -72,51 +72,80 @@
       "type": "data",
       "title": "Pipeline CPU (Stacked)",
       "description": "Combined CPU cost of controller-manager + python-hid + rust-hid",
-      "query": "timeseries avg(process_cpu_seconds_total, rate: 5m), by:{service.name}, filter:{service.name IN (\"controller-manager-service\", \"python-hid\", \"rust-hid\")}",
+      "query": "timeseries avg(process_cpu_seconds_total, rate: 5m), by:{service.name}, filter:{service.name == \"controller-manager-service\" or service.name == \"python-hid\" or service.name == \"rust-hid\"}",
       "queryConfig": {
         "additionalFilters": [],
         "version": "4.3.1",
         "datatype": "metrics"
       },
-      "visualization": "graph",
-      "visualizationConfig": {
-        "drawStyle": "area",
-        "stacked": true,
-        "legend": { "position": "bottom" },
-        "yAxisLabel": "CPU %"
+      "visualization": "areaChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "timestamp": "timeframe"
+          },
+          "leftYAxisSettings": {
+            "isLabelVisible": true,
+            "label": "CPU %"
+          },
+          "categoricalBarChartSettings": {
+            "groupMode": "stacked"
+          },
+          "gapPolicy": "connect",
+          "legend": { "hidden": false }
+        }
       }
     },
     "6": {
       "type": "data",
       "title": "Pipeline Memory (Stacked)",
       "description": "Combined resident memory of controller-manager + python-hid + rust-hid",
-      "query": "timeseries avg(process_resident_memory_bytes), by:{service.name}, filter:{service.name IN (\"controller-manager-service\", \"python-hid\", \"rust-hid\")}",
+      "query": "timeseries avg(process_resident_memory_bytes), by:{service.name}, filter:{service.name == \"controller-manager-service\" or service.name == \"python-hid\" or service.name == \"rust-hid\"}",
       "queryConfig": {
         "additionalFilters": [],
         "version": "4.3.1",
         "datatype": "metrics"
       },
-      "visualization": "graph",
-      "visualizationConfig": {
-        "drawStyle": "area",
-        "stacked": true,
-        "legend": { "position": "bottom" },
-        "yAxisUnit": "bytes"
+      "visualization": "areaChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "timestamp": "timeframe"
+          },
+          "leftYAxisSettings": {
+            "isLabelVisible": true,
+            "label": "Memory (bytes)"
+          },
+          "categoricalBarChartSettings": {
+            "groupMode": "stacked"
+          },
+          "gapPolicy": "connect",
+          "legend": { "hidden": false }
+        }
       }
     },
     "7": {
       "type": "data",
       "title": "Pipeline Threads",
       "description": "Thread count for controller-manager, python-hid, and rust-hid",
-      "query": "timeseries avg(process_threads), by:{service.name}, filter:{service.name IN (\"controller-manager-service\", \"python-hid\", \"rust-hid\")}",
+      "query": "timeseries avg(process_threads), by:{service.name}, filter:{service.name == \"controller-manager-service\" or service.name == \"python-hid\" or service.name == \"rust-hid\"}",
       "queryConfig": {
         "additionalFilters": [],
         "version": "4.3.1",
         "datatype": "metrics"
       },
-      "visualization": "graph",
-      "visualizationConfig": {
-        "legend": { "position": "bottom" }
+      "visualization": "lineChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "timestamp": "timeframe"
+          },
+          "gapPolicy": "connect",
+          "legend": { "hidden": false }
+        }
       }
     },
     "8": {
@@ -127,7 +156,7 @@
       "type": "data",
       "title": "Input Lag by Backend",
       "description": "p95 input lag split by backend type",
-      "query": "timeseries percentile(controller_input_lag_seconds, 95), by:{serial} | lookup [timeseries count(controller_backend_info), by:{serial, backend}], sourceField:serial, lookupField:serial | fieldsAdd backend | summarize p95 = avg(arrayLast(`percentile(controller_input_lag_seconds, 95)`)), by:{backend}",
+      "query": "timeseries p95val = percentile(controller_input_lag_seconds, 95), by:{serial} | fieldsAdd lastP95 = arrayLast(p95val) | lookup [timeseries cnt = count(controller_backend_info), by:{serial, backend} | fieldsAdd lastCnt = arrayLast(cnt) | filter lastCnt > 0 | fields serial, backend], sourceField:serial, lookupField:serial | fieldsAdd backend = lookup.backend | filter isNotNull(backend) | summarize p95 = avg(lastP95), by:{backend}",
       "queryConfig": {
         "additionalFilters": [],
         "version": "4.3.1",
@@ -143,7 +172,7 @@
       "type": "data",
       "title": "Update Frequency by Backend",
       "description": "Controller update rate (Hz) split by backend",
-      "query": "timeseries avg(controller_state_update_hz), by:{serial} | lookup [timeseries count(controller_backend_info), by:{serial, backend}], sourceField:serial, lookupField:serial | fieldsAdd backend | summarize avgHz = avg(arrayLast(`avg(controller_state_update_hz)`)), by:{backend}",
+      "query": "timeseries hzval = avg(controller_state_update_hz), by:{serial} | fieldsAdd lastHz = arrayLast(hzval) | lookup [timeseries cnt = count(controller_backend_info), by:{serial, backend} | fieldsAdd lastCnt = arrayLast(cnt) | filter lastCnt > 0 | fields serial, backend], sourceField:serial, lookupField:serial | fieldsAdd backend = lookup.backend | filter isNotNull(backend) | summarize avgHz = avg(lastHz), by:{backend}",
       "queryConfig": {
         "additionalFilters": [],
         "version": "4.3.1",
@@ -163,7 +192,7 @@
       "type": "data",
       "title": "Poll Drops by Backend",
       "description": "Poll drop rate split by backend type",
-      "query": "timeseries sum(controller_poll_drops_total, rate: 1m), by:{serial} | lookup [timeseries count(controller_backend_info), by:{serial, backend}], sourceField:serial, lookupField:serial | fieldsAdd backend | summarize drops = sum(arrayLast(`sum(controller_poll_drops_total)`)), by:{backend}",
+      "query": "timeseries dropsval = sum(controller_poll_drops_total, rate: 1m), by:{serial} | fieldsAdd lastDrops = arrayLast(dropsval) | lookup [timeseries cnt = count(controller_backend_info), by:{serial, backend} | fieldsAdd lastCnt = arrayLast(cnt) | filter lastCnt > 0 | fields serial, backend], sourceField:serial, lookupField:serial | fieldsAdd backend = lookup.backend | filter isNotNull(backend) | summarize drops = sum(lastDrops), by:{backend}",
       "queryConfig": {
         "additionalFilters": [],
         "version": "4.3.1",
@@ -182,7 +211,7 @@
       "type": "data",
       "title": "Disconnects by Backend",
       "description": "Controller disconnect rate split by backend type",
-      "query": "timeseries sum(controller_disconnect_total, rate: 1m), by:{serial} | lookup [timeseries count(controller_backend_info), by:{serial, backend}], sourceField:serial, lookupField:serial | fieldsAdd backend | summarize disconnects = sum(arrayLast(`sum(controller_disconnect_total)`)), by:{backend}",
+      "query": "timeseries disconnval = sum(controller_disconnect_total, rate: 1m), by:{serial} | fieldsAdd lastDisconn = arrayLast(disconnval) | lookup [timeseries cnt = count(controller_backend_info), by:{serial, backend} | fieldsAdd lastCnt = arrayLast(cnt) | filter lastCnt > 0 | fields serial, backend], sourceField:serial, lookupField:serial | fieldsAdd backend = lookup.backend | filter isNotNull(backend) | summarize disconnects = sum(lastDisconn), by:{backend}",
       "queryConfig": {
         "additionalFilters": [],
         "version": "4.3.1",
