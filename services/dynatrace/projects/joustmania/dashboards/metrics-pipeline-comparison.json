@@ -66,7 +66,7 @@
             "isLabelVisible": true,
             "label": "Acceleration (g)"
           },
-          "connectNulls": true,
+          "gapPolicy": "connect",
           "legend": { "hidden": false },
           "truncationMode": "end"
         },
@@ -138,7 +138,7 @@
             "isLabelVisible": true,
             "label": "Acceleration (g)"
           },
-          "connectNulls": true,
+          "gapPolicy": "connect",
           "legend": { "hidden": false },
           "truncationMode": "end"
         },
