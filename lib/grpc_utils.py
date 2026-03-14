@@ -45,6 +45,41 @@ def is_local_address(address: str) -> bool:
     return host.startswith("127.")
 
 
+def _parse_address(address: str) -> tuple[str, int | None]:
+    """Parse a gRPC address into (host, port).
+
+    Handles standard "host:port", IPv6 "[::1]:port", and unix socket formats.
+
+    Returns:
+        Tuple of (host, port). Port is None for unix sockets or unparseable addresses.
+    """
+    if not address or address.startswith("unix:"):
+        return (address, None)
+
+    # IPv6 with brackets: [::1]:50052
+    if address.startswith("["):
+        bracket_end = address.find("]")
+        if bracket_end != -1:
+            host = address[1:bracket_end]
+            rest = address[bracket_end + 1 :]
+            if rest.startswith(":"):
+                try:
+                    return (host, int(rest[1:]))
+                except ValueError:
+                    return (host, None)
+            return (host, None)
+
+    # Standard host:port
+    parts = address.rsplit(":", 1)
+    if len(parts) == 2:
+        try:
+            return (parts[0], int(parts[1]))
+        except ValueError:
+            return (address, None)
+
+    return (address, None)
+
+
 def get_optimized_channel_options(enable_compression: bool = True) -> list[tuple[str, any]]:
     """
     Get standard gRPC channel options for JoustMania services (client-side).
@@ -162,7 +197,8 @@ def create_channel(
     if enable_tracing:
         from lib.grpc_tracing import get_context_propagation_interceptors
 
-        interceptors.extend(get_context_propagation_interceptors())
+        server_address, server_port = _parse_address(address)
+        interceptors.extend(get_context_propagation_interceptors(server_address, server_port))
 
     if interceptors:
         return grpc.aio.insecure_channel(address, options=options, interceptors=interceptors, **kwargs)
