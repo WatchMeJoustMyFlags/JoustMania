@@ -13,6 +13,8 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/rs/cors"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
@@ -52,6 +54,9 @@ func main() {
 	shutdownMetrics := initMetrics(ctx)
 	defer shutdownMetrics(ctx)
 
+	shutdownTracing := initTracing(ctx)
+	defer shutdownTracing(ctx)
+
 	slog.Info("JoustMania Connect Proxy starting...")
 	slog.Info("Backend services",
 		"controller_manager", controllerManagerAddr,
@@ -60,21 +65,30 @@ func main() {
 	)
 
 	// Create gRPC connections to backend services
-	controllerConn, err := grpc.NewClient(controllerManagerAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	controllerConn, err := grpc.NewClient(controllerManagerAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
+	)
 	if err != nil {
 		slog.Error("Failed to connect to controller manager", "error", err)
 		os.Exit(1)
 	}
 	defer controllerConn.Close()
 
-	gameConn, err := grpc.NewClient(gameCoordinatorAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	gameConn, err := grpc.NewClient(gameCoordinatorAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
+	)
 	if err != nil {
 		slog.Error("Failed to connect to game coordinator", "error", err)
 		os.Exit(1)
 	}
 	defer gameConn.Close()
 
-	menuConn, err := grpc.NewClient(menuAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	menuConn, err := grpc.NewClient(menuAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
+	)
 	if err != nil {
 		slog.Error("Failed to connect to menu", "error", err)
 		os.Exit(1)
@@ -131,8 +145,9 @@ func main() {
 	}).Handler(mux)
 
 	// Start server
+	handler := otelhttp.NewHandler(corsHandler, "connect-proxy")
 	slog.Info("Connect proxy listening", "addr", listenAddr)
-	if err := http.ListenAndServe(listenAddr, corsHandler); err != nil {
+	if err := http.ListenAndServe(listenAddr, handler); err != nil {
 		slog.Error("Server failed", "error", err)
 		os.Exit(1)
 	}

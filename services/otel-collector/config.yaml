@@ -162,7 +162,7 @@ processors:
         match_type: regexp
         resource_attributes:
           - key: service.name
-            value: "^(controller-manager|game-coordinator|menu|audio|pairing-daemon|otel-collector)$"
+            value: "^(controller-manager|game-coordinator|menu|audio|pairing-daemon|otel-collector|connect-proxy|rust-hid)$"
 
   # Resource processor to add common attributes for OTLP-pushed metrics
   resource:
@@ -203,6 +203,14 @@ exporters:
     verbosity: basic
 
 service:
+  # Internal telemetry — the collector's own observability.
+  # level: detailed exposes granular pipeline metrics (queue sizes, batch send
+  # durations, exporter retry counts) beyond the default basic set.
+  telemetry:
+    metrics:
+      level: detailed
+      address: ":8888"
+
   pipelines:
     # Traces pipeline
     traces:
