@@ -212,16 +212,13 @@
         "maxResultMegaBytes": 1,
         "maxResultRecords": 1000
       },
-      "visualization": "barChart",
+      "visualization": "lineChart",
       "visualizationSettings": {
         "autoSelectVisualization": false,
         "chartSettings": {
           "fieldMapping": {
             "leftAxisValues": ["events"],
             "timestamp": "interval"
-          },
-          "categoricalBarChartSettings": {
-            "groupMode": "stacked"
           },
           "legend": { "hidden": false },
           "truncationMode": "end"
