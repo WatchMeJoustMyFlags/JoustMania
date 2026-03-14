@@ -220,12 +220,17 @@ services:
       # Rust HID service for canary controller I/O backend
       - RUST_HID_HOST=rust-hid
       - RUST_HID_PORT=50058
+      # Python HID service for canary controller I/O backend
+      - PYTHON_HID_HOST=python-hid
+      - PYTHON_HID_PORT=50059
     depends_on:
       redis:
         condition: service_healthy
       flagd:
         condition: service_started
       rust-hid:
+        condition: service_healthy
+      python-hid:
         condition: service_healthy
     restart: unless-stopped
     # Healthcheck defined in Dockerfile (uses grpc_health_probe)
@@ -305,6 +310,36 @@ services:
         limits:
           memory: 64m
           cpus: '0.25'
+    logging: *default-logging
+
+  # Python HID Service - PS Move HID operations via gRPC (Python implementation)
+  python-hid:
+    image: ghcr.io/watchmejoustmyflags/joustmania/python-hid:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: services/python_hid/Dockerfile
+      args:
+        BUILDER_IMAGE: ${BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/builder:latest}
+    container_name: joustmania-python-hid
+    privileged: true
+    pid: "host"
+    volumes:
+      - /dev:/dev:rslave
+    networks:
+      - joustmania
+    expose:
+      - "50059"  # gRPC service
+    environment:
+      - OTEL_SERVICE_NAME=python-hid
+      - OTEL_SERVICE_NAMESPACE=infrastructure
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+    restart: unless-stopped
+    # Healthcheck defined in Dockerfile (uses grpc_health_probe)
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: '0.5'
     logging: *default-logging
 
   # Game Coordinator Service

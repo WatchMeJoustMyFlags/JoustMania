@@ -2,7 +2,7 @@
 through adapters.
 
 These tests validate the plumbing between controller_manager and its
-adapters (hidapi + rust-hid gRPC), not actual hardware interaction.
+adapters (python + rust-hid gRPC), not actual hardware interaction.
 """
 
 import pytest
@@ -158,22 +158,22 @@ class TestRustAdapterWiring:
         assert callable(adapter.set_output)
 
 
-class TestHidapiAdapterWiring:
-    """Verify HidapiAdapter construction and interface compliance."""
+class TestPythonAdapterWiring:
+    """Verify PythonHidAdapter construction and interface compliance."""
 
-    def test_hidapi_adapter_type(self):
-        """HidapiAdapter reports correct adapter_type."""
-        from services.controller_manager.multiplexer.hidapi_adapter import HidapiAdapter
+    def test_python_adapter_type(self):
+        """PythonHidAdapter reports correct adapter_type."""
+        from services.controller_manager.multiplexer.python_hid_adapter import PythonHidAdapter
 
-        adapter = HidapiAdapter()
-        assert adapter.adapter_type == "hidapi"
+        adapter = PythonHidAdapter()
+        assert adapter.adapter_type == "python"
 
-    def test_hidapi_adapter_interface(self):
-        """HidapiAdapter implements required ControllerIOAdapter methods."""
+    def test_python_adapter_interface(self):
+        """PythonHidAdapter implements required ControllerIOAdapter methods."""
         from services.controller_manager.multiplexer.adapter import ControllerIOAdapter
-        from services.controller_manager.multiplexer.hidapi_adapter import HidapiAdapter
+        from services.controller_manager.multiplexer.python_hid_adapter import PythonHidAdapter
 
-        adapter = HidapiAdapter()
+        adapter = PythonHidAdapter()
         assert isinstance(adapter, ControllerIOAdapter)
 
         # Check all abstract methods are implemented

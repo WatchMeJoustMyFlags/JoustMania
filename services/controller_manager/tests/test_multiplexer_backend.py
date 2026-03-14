@@ -43,13 +43,13 @@ class TestMultiplexerInit:
         assert len(mux.adapters) == 1
 
     def test_accepts_multiple_adapters(self):
-        adapters = [_make_adapter("mock"), _make_adapter("hidapi")]
+        adapters = [_make_adapter("mock"), _make_adapter("python")]
         mux = MultiplexerBackend(adapters=adapters)
         assert len(mux.adapters) == 2
 
     def test_exposes_adapters_property(self):
         a1 = _make_adapter("mock")
-        a2 = _make_adapter("hidapi")
+        a2 = _make_adapter("python")
         mux = MultiplexerBackend(adapters=[a1, a2])
         assert mux.adapters[0] is a1
         assert mux.adapters[1] is a2
@@ -95,7 +95,7 @@ class TestMultiplexerGetConnectedControllers:
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_merges_serials_from_adapters(self, mock_metrics):
         a1 = _make_adapter("mock", serials=["AA:AA"])
-        a2 = _make_adapter("hidapi", serials=["BB:BB"])
+        a2 = _make_adapter("python", serials=["BB:BB"])
         mux = MultiplexerBackend(adapters=[a1, a2])
 
         result = mux.get_connected_controllers()
@@ -106,8 +106,8 @@ class TestMultiplexerGetConnectedControllers:
     def test_both_adapters_discover_independently(self, mock_metrics):
         """All adapters call discover(); when both find the same serial,
         deduplication picks the first non-mock adapter."""
-        a1 = _make_adapter("hidapi", serials=["AA:AA"])
-        a2 = _make_adapter("hidapi", serials=["AA:AA"])
+        a1 = _make_adapter("python", serials=["AA:AA"])
+        a2 = _make_adapter("python", serials=["AA:AA"])
         mux = MultiplexerBackend(adapters=[a1, a2])
 
         with patch.object(mux, "_resolve_adapter_for_serial", return_value=None):
@@ -159,7 +159,7 @@ class TestMultiplexerRouting:
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def _setup_two_adapters(self, mock_metrics):
         a1 = _make_adapter("mock", serials=["AA:AA"])
-        a2 = _make_adapter("hidapi", serials=["BB:BB"])
+        a2 = _make_adapter("python", serials=["BB:BB"])
         a1.poll.return_value = {"serial": "AA:AA"}
         mux = MultiplexerBackend(adapters=[a1, a2])
         mux.get_connected_controllers()
@@ -480,8 +480,8 @@ class TestRouteControllers:
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_targeting_routes_to_preferred_adapter(self, mock_metrics):
         """Both adapters discover AA:AA; targeting picks a2, a1's handle is closed."""
-        a1 = _make_adapter("hidapi", serials=["AA:AA"])
-        a2 = _make_adapter("hidapi", serials=["AA:AA"])
+        a1 = _make_adapter("python", serials=["AA:AA"])
+        a2 = _make_adapter("python", serials=["AA:AA"])
         mux = MultiplexerBackend(adapters=[a1, a2])
 
         with patch.object(mux, "_resolve_adapter_for_serial", return_value=a2):
@@ -496,8 +496,8 @@ class TestRouteControllers:
     def test_fallback_when_preferred_not_in_discoverers(self, mock_metrics):
         """Preferred adapter didn't discover the serial; tries open() on demand.
         If open() fails, falls back to first non-mock discoverer."""
-        a1 = _make_adapter("hidapi", serials=["AA:AA"])
-        a2 = _make_adapter("hidapi", serials=[])
+        a1 = _make_adapter("python", serials=["AA:AA"])
+        a2 = _make_adapter("python", serials=[])
         a2.open.return_value = False
         mux = MultiplexerBackend(adapters=[a1, a2])
 
@@ -511,8 +511,8 @@ class TestRouteControllers:
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_preferred_adapter_open_on_demand(self, mock_metrics):
         """Preferred adapter didn't discover it but open() succeeds."""
-        a1 = _make_adapter("hidapi", serials=["AA:AA"])
-        a2 = _make_adapter("hidapi", serials=[])
+        a1 = _make_adapter("python", serials=["AA:AA"])
+        a2 = _make_adapter("python", serials=[])
         a2.open.return_value = True
         mux = MultiplexerBackend(adapters=[a1, a2])
 
@@ -527,7 +527,7 @@ class TestRouteControllers:
     def test_mock_excluded_from_targeting(self, mock_metrics):
         """Mock-only controllers (len==1, type==mock) skip targeting entirely."""
         a1 = _make_adapter("mock", serials=["MOCK01"])
-        a2 = _make_adapter("hidapi", serials=[])
+        a2 = _make_adapter("python", serials=[])
         mux = MultiplexerBackend(adapters=[a1, a2])
 
         resolve_mock = MagicMock()
@@ -548,7 +548,7 @@ class TestRouteControllers:
         import logging
 
         caplog.set_level(logging.INFO)
-        a1 = _make_adapter("hidapi", serials=["AA:AA"])
+        a1 = _make_adapter("python", serials=["AA:AA"])
         a2 = _make_adapter("rust", serials=[])
         mux = MultiplexerBackend(adapters=[a1, a2])
 
@@ -565,13 +565,13 @@ class TestRouteControllers:
             mux.get_connected_controllers()
 
         assert mux._serial_to_adapter["AA:AA"] is a2
-        assert "Switched AA:AA: hidapi -> rust" in caplog.text
+        assert "Switched AA:AA: python -> rust" in caplog.text
 
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_dynamic_switch_closes_old_adapter(self, mock_metrics):
         """Switching adapter should close the handle on the old adapter."""
-        a1 = _make_adapter("hidapi", serials=["AA:AA"])
-        a2 = _make_adapter("hidapi", serials=["AA:AA"])
+        a1 = _make_adapter("python", serials=["AA:AA"])
+        a2 = _make_adapter("python", serials=["AA:AA"])
         mux = MultiplexerBackend(adapters=[a1, a2])
 
         # First discovery: targeting picks a1
@@ -593,8 +593,8 @@ class TestRouteControllers:
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_different_serials_to_different_adapters(self, mock_metrics):
         """Each serial can route to a different adapter independently."""
-        a1 = _make_adapter("hidapi", serials=["AA:AA", "BB:BB"])
-        a2 = _make_adapter("hidapi", serials=["AA:AA", "BB:BB"])
+        a1 = _make_adapter("python", serials=["AA:AA", "BB:BB"])
+        a2 = _make_adapter("python", serials=["AA:AA", "BB:BB"])
         mux = MultiplexerBackend(adapters=[a1, a2])
 
         def route(serial):
@@ -610,8 +610,8 @@ class TestRouteControllers:
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_single_real_adapter_skips_targeting(self, mock_metrics):
         """When only one adapter discovers a serial, use it directly."""
-        a1 = _make_adapter("hidapi", serials=["AA:AA"])
-        a2 = _make_adapter("hidapi", serials=[])
+        a1 = _make_adapter("python", serials=["AA:AA"])
+        a2 = _make_adapter("python", serials=[])
         mux = MultiplexerBackend(adapters=[a1, a2])
 
         # _resolve returns None — but only one real adapter found it
@@ -623,8 +623,8 @@ class TestRouteControllers:
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_routing_metric_incremented(self, mock_metrics):
         """Routing decisions should increment the counter metric."""
-        a1 = _make_adapter("hidapi", serials=["AA:AA"])
-        a2 = _make_adapter("hidapi", serials=["AA:AA"])
+        a1 = _make_adapter("python", serials=["AA:AA"])
+        a2 = _make_adapter("python", serials=["AA:AA"])
         mux = MultiplexerBackend(adapters=[a1, a2])
 
         with patch.object(mux, "_resolve_adapter_for_serial", return_value=a2):
@@ -632,7 +632,7 @@ class TestRouteControllers:
 
         mock_metrics.controller_routing_decisions_total.labels.assert_any_call(
             serial="AA:AA",
-            adapter="hidapi",
+            adapter="python",
             method="targeted",
         )
 
@@ -643,8 +643,8 @@ class TestIndependentDiscovery:
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_all_adapters_discover_independently(self, mock_metrics):
         """Two non-mock adapters both get discover() called."""
-        a1 = _make_adapter("hidapi", serials=["AA:AA"])
-        a2 = _make_adapter("hidapi", serials=["BB:BB"])
+        a1 = _make_adapter("python", serials=["AA:AA"])
+        a2 = _make_adapter("python", serials=["BB:BB"])
         mux = MultiplexerBackend(adapters=[a1, a2])
 
         mux.get_connected_controllers()
@@ -654,9 +654,9 @@ class TestIndependentDiscovery:
 
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_deduplication_non_mock_wins_over_mock(self, mock_metrics):
-        """Serial found by both mock and hidapi — non-mock wins."""
+        """Serial found by both mock and python — non-mock wins."""
         a1 = _make_adapter("mock", serials=["AA:AA"])
-        a2 = _make_adapter("hidapi", serials=["AA:AA"])
+        a2 = _make_adapter("python", serials=["AA:AA"])
         mux = MultiplexerBackend(adapters=[a1, a2])
 
         with patch.object(mux, "_resolve_adapter_for_serial", return_value=None):
@@ -667,8 +667,8 @@ class TestIndependentDiscovery:
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_losing_adapter_handle_closed(self, mock_metrics):
         """When two adapters find the same serial, non-winner's handle is closed."""
-        a1 = _make_adapter("hidapi", serials=["AA:AA"])
-        a2 = _make_adapter("hidapi", serials=["AA:AA"])
+        a1 = _make_adapter("python", serials=["AA:AA"])
+        a2 = _make_adapter("python", serials=["AA:AA"])
         mux = MultiplexerBackend(adapters=[a1, a2])
 
         # Targeting picks a1 as winner
@@ -684,12 +684,12 @@ class TestResolveAdapterForSerial:
     """Tests for flag evaluation in _resolve_adapter_for_serial."""
 
     def test_returns_matching_adapter(self):
-        a1 = _make_adapter("hidapi")
-        a2 = _make_adapter("hidapi")
+        a1 = _make_adapter("python")
+        a2 = _make_adapter("python")
         mux = MultiplexerBackend(adapters=[a1, a2])
 
         mock_client = MagicMock()
-        mock_client.get_string_value.return_value = "hidapi"
+        mock_client.get_string_value.return_value = "python"
 
         with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
             result = mux._resolve_adapter_for_serial("AA:AA")
@@ -697,7 +697,7 @@ class TestResolveAdapterForSerial:
         assert result is a2
 
     def test_returns_none_when_no_match(self):
-        a1 = _make_adapter("hidapi")
+        a1 = _make_adapter("python")
         mux = MultiplexerBackend(adapters=[a1])
 
         mock_client = MagicMock()
@@ -709,7 +709,7 @@ class TestResolveAdapterForSerial:
         assert result is None
 
     def test_returns_none_when_empty_value(self):
-        a1 = _make_adapter("hidapi")
+        a1 = _make_adapter("python")
         mux = MultiplexerBackend(adapters=[a1])
 
         mock_client = MagicMock()
@@ -721,7 +721,7 @@ class TestResolveAdapterForSerial:
         assert result is None
 
     def test_returns_none_on_exception(self):
-        a1 = _make_adapter("hidapi")
+        a1 = _make_adapter("python")
         mux = MultiplexerBackend(adapters=[a1])
 
         with patch("lib.feature_flags.get_flag_client", side_effect=RuntimeError("flagd down")):
@@ -730,11 +730,11 @@ class TestResolveAdapterForSerial:
         assert result is None
 
     def test_passes_serial_as_targeting_key(self):
-        a1 = _make_adapter("hidapi")
+        a1 = _make_adapter("python")
         mux = MultiplexerBackend(adapters=[a1])
 
         mock_client = MagicMock()
-        mock_client.get_string_value.return_value = "hidapi"
+        mock_client.get_string_value.return_value = "python"
 
         with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
             mux._resolve_adapter_for_serial("E0AE5EE111AB")
@@ -747,11 +747,11 @@ class TestResolveAdapterForSerial:
 class TestGetAdapterType:
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_returns_adapter_type_for_known_serial(self, mock_metrics):
-        a1 = _make_adapter("hidapi", serials=["AA:AA"])
+        a1 = _make_adapter("python", serials=["AA:AA"])
         mux = MultiplexerBackend(adapters=[a1])
         mux.get_connected_controllers()
 
-        assert mux.get_adapter_type("AA:AA") == "hidapi"
+        assert mux.get_adapter_type("AA:AA") == "python"
 
     def test_returns_unknown_for_missing_serial(self):
         mux = MultiplexerBackend(adapters=[_make_adapter()])

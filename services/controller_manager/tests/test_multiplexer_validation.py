@@ -2,8 +2,8 @@
 Unit tests for multiplexer backend combination validation.
 
 Tests that only safe backend combinations are allowed:
-- Single backends: mock, hidapi, rust
-- Dual/triple: mock+hidapi, mock+rust, hidapi+rust, mock+hidapi+rust
+- Single backends: mock, python, rust
+- Dual/triple: mock+python, mock+rust, python+rust, mock+python+rust
 - Rejects: duplicates, unknown backends
 """
 
@@ -24,7 +24,7 @@ from services.controller_manager.multiplexer.validation import validate_backend_
 class TestValidSingleBackends:
     """Single backends should always be valid."""
 
-    @pytest.mark.parametrize("name", ["mock", "hidapi", "rust"])
+    @pytest.mark.parametrize("name", ["mock", "python", "rust"])
     def test_single_backend_passes(self, name):
         validate_backend_combination([name])
 
@@ -32,28 +32,28 @@ class TestValidSingleBackends:
 class TestValidMultiBackends:
     """Valid multi-backend combinations."""
 
-    def test_mock_hidapi(self):
-        validate_backend_combination(["mock", "hidapi"])
+    def test_mock_python(self):
+        validate_backend_combination(["mock", "python"])
 
     def test_mock_rust(self):
         validate_backend_combination(["mock", "rust"])
 
-    def test_hidapi_rust(self):
-        validate_backend_combination(["hidapi", "rust"])
+    def test_python_rust(self):
+        validate_backend_combination(["python", "rust"])
 
-    def test_mock_hidapi_rust(self):
-        validate_backend_combination(["mock", "hidapi", "rust"])
+    def test_mock_python_rust(self):
+        validate_backend_combination(["mock", "python", "rust"])
 
     def test_order_does_not_matter(self):
-        validate_backend_combination(["hidapi", "mock"])
+        validate_backend_combination(["python", "mock"])
 
 
 class TestInvalidCombinations:
     """Conflicting backend combinations should raise ValueError."""
 
-    def test_rejects_duplicate_hidapi(self):
+    def test_rejects_duplicate_python(self):
         with pytest.raises(ValueError, match="Unsupported backend combination"):
-            validate_backend_combination(["hidapi", "hidapi"])
+            validate_backend_combination(["python", "python"])
 
     def test_rejects_unknown_backend(self):
         with pytest.raises(ValueError, match="Unsupported backend combination"):
