@@ -245,6 +245,7 @@
             "isLabelVisible": true,
             "label": "Acceleration (g)"
           },
+          "gapPolicy": "connect",
           "legend": {
             "hidden": false
           },
@@ -285,6 +286,7 @@
             "isLabelVisible": true,
             "label": "Threshold (g)"
           },
+          "gapPolicy": "connect",
           "legend": {
             "hidden": false
           },

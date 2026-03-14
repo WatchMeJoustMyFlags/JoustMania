@@ -33,6 +33,7 @@
             "isLabelVisible": true,
             "label": "Acceleration (g)"
           },
+          "gapPolicy": "connect",
           "legend": { "hidden": false },
           "truncationMode": "end"
         },
@@ -104,6 +105,7 @@
             "isLabelVisible": true,
             "label": "Peak (g)"
           },
+          "gapPolicy": "connect",
           "legend": { "hidden": false },
           "truncationMode": "end"
         },
@@ -255,6 +257,7 @@
             "isLabelVisible": true,
             "label": "Acceleration (g)"
           },
+          "gapPolicy": "connect",
           "legend": { "hidden": false },
           "truncationMode": "end"
         },
