@@ -13,16 +13,13 @@ import threading
 from pathlib import Path
 
 import miniaudio
+from opentelemetry import trace
 
-from lib.telemetry import get_tracer
 from proto import audio_pb2, audio_pb2_grpc
 from services.audio import metrics
 from services.audio.music_player import DummyMusicPlayer, MusicPlayer
 
 logger = logging.getLogger(__name__)
-
-# Lazy telemetry initialization - defers OTLP setup until first span
-tracer = get_tracer(__name__)
 
 
 class SoundChannel:
@@ -660,19 +657,21 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         # Extract sound name for span (e.g., "congratulations" from "Joust/vox/ivy/congratulations.ogg")
         sound_name = Path(resolved_path).stem
 
-        with tracer.start_as_current_span(f"PlaySound:{sound_name}") as span:
-            span.set_attribute("audio.file", resolved_path)
+        # Enrich the server span created by the gRPC interceptor
+        span = trace.get_current_span()
+        span.update_name(f"PlaySound:{sound_name}")
+        span.set_attribute("audio.file", resolved_path)
 
-            # Check if audio is disabled via settings
-            if not self.audio_enabled:
-                span.set_attribute("audio.muted", True)
-                return audio_pb2.PlaySoundResponse(success=True, error="")  # Silently succeed
+        # Check if audio is disabled via settings
+        if not self.audio_enabled:
+            span.set_attribute("audio.muted", True)
+            return audio_pb2.PlaySoundResponse(success=True, error="")  # Silently succeed
 
-            success = self.audio_manager.play_sound(
-                file_path=resolved_path, volume=request.volume or 1.0, priority=request.priority
-            )
+        success = self.audio_manager.play_sound(
+            file_path=resolved_path, volume=request.volume or 1.0, priority=request.priority
+        )
 
-            return audio_pb2.PlaySoundResponse(success=success, error="" if success else "Failed to play sound")
+        return audio_pb2.PlaySoundResponse(success=success, error="" if success else "Failed to play sound")
 
     async def PlayMusic(self, request, _context):
         """Play background music."""
@@ -680,44 +679,47 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         # Extract music directory for span (e.g., "Joust" from "Joust/music/*.ogg")
         music_dir = request.file_pattern.split("/")[0] if "/" in request.file_pattern else "music"
 
-        with tracer.start_as_current_span(f"PlayMusic:{music_dir}") as span:
-            span.set_attribute("audio.pattern", request.file_pattern)
+        # Enrich the server span created by the gRPC interceptor
+        span = trace.get_current_span()
+        span.update_name(f"PlayMusic:{music_dir}")
+        span.set_attribute("audio.pattern", request.file_pattern)
 
-            # Check if audio is disabled via settings
-            if not self.audio_enabled:
-                span.set_attribute("audio.muted", True)
-                return audio_pb2.PlayMusicResponse(track_id="muted", success=True, error="")
+        # Check if audio is disabled via settings
+        if not self.audio_enabled:
+            span.set_attribute("audio.muted", True)
+            return audio_pb2.PlayMusicResponse(track_id="muted", success=True, error="")
 
-            track_id = self.audio_manager.play_music(
-                file_pattern=request.file_pattern,
-                _loop=request.loop,
-                tempo=request.tempo or 1.0,
-                _priority=request.priority,
-            )
+        track_id = self.audio_manager.play_music(
+            file_pattern=request.file_pattern,
+            _loop=request.loop,
+            tempo=request.tempo or 1.0,
+            _priority=request.priority,
+        )
 
-            if track_id:
-                return audio_pb2.PlayMusicResponse(track_id=track_id, success=True, error="")
-            return audio_pb2.PlayMusicResponse(track_id="", success=False, error="Failed to play music")
+        if track_id:
+            return audio_pb2.PlayMusicResponse(track_id=track_id, success=True, error="")
+        return audio_pb2.PlayMusicResponse(track_id="", success=False, error="Failed to play music")
 
     async def StopMusic(self, request, _context):
         """Stop music track."""
-        with tracer.start_as_current_span("StopMusic"):
-            success = self.audio_manager.stop_music(request.track_id)
-            return audio_pb2.StopMusicResponse(success=success, error="" if success else "Failed to stop music")
+        success = self.audio_manager.stop_music(request.track_id)
+        return audio_pb2.StopMusicResponse(success=success, error="" if success else "Failed to stop music")
 
     def ChangeTempo(self, request, _context):
         """Change music tempo."""
-        with tracer.start_as_current_span(f"ChangeTempo:{request.new_tempo:.1f}x") as span:
-            span.set_attribute("audio.new_tempo", request.new_tempo)
-            success = self.audio_manager.change_tempo(
-                track_id=request.track_id,
-                new_tempo=request.new_tempo,
-                transition_duration=request.transition_duration or 1.0,
-            )
-            return audio_pb2.ChangeTempoResponse(success=success, error="" if success else "Failed to change tempo")
+        span = trace.get_current_span()
+        span.update_name(f"ChangeTempo:{request.new_tempo:.1f}x")
+        span.set_attribute("audio.new_tempo", request.new_tempo)
+        success = self.audio_manager.change_tempo(
+            track_id=request.track_id,
+            new_tempo=request.new_tempo,
+            transition_duration=request.transition_duration or 1.0,
+        )
+        return audio_pb2.ChangeTempoResponse(success=success, error="" if success else "Failed to change tempo")
 
     def SetVolume(self, request, _context):
         """Set master volume."""
-        with tracer.start_as_current_span(f"SetVolume:{request.volume:.0%}"):
-            success = self.audio_manager.set_volume(request.volume)
-            return audio_pb2.SetVolumeResponse(success=success, error="" if success else "Failed to set volume")
+        span = trace.get_current_span()
+        span.update_name(f"SetVolume:{request.volume:.0%}")
+        success = self.audio_manager.set_volume(request.volume)
+        return audio_pb2.SetVolumeResponse(success=success, error="" if success else "Failed to set volume")

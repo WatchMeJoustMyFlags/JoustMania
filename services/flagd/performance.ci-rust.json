@@ -5,7 +5,7 @@
       "state": "ENABLED",
       "variants": {
         "rust": "rust",
-        "hidapi": "hidapi",
+        "python_hid": "python",
         "empty": ""
       },
       "defaultVariant": "rust",

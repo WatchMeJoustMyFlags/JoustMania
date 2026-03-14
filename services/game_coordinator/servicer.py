@@ -14,7 +14,6 @@ import threading
 import time
 
 from opentelemetry import trace
-from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 from lib.telemetry import get_tracer
 from lib.types import GameEvent, get_game_display_name
@@ -313,61 +312,54 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         """
         subscriber_id = f"events_{time.time()}"
 
-        # Extract trace context from gRPC metadata for cross-service propagation
-        propagator = TraceContextTextMapPropagator()
-        metadata: dict[str, str] = {}
-        if context.invocation_metadata():
-            for key, value in context.invocation_metadata():
-                metadata[key] = value
-        parent_ctx = propagator.extract(metadata)
+        # Enrich the server span created by the gRPC interceptor
+        span = trace.get_current_span()
+        span.set_attribute("subscriber.id", subscriber_id)
 
-        with tracer.start_as_current_span("StreamGameEvents", context=parent_ctx) as span:
-            span.set_attribute("subscriber.id", subscriber_id)
+        # Check if this is a game start request
+        if request.HasField("start_config"):
+            config = request.start_config
+            span.set_attribute("game.name", config.game_name)
+            span.set_attribute("player.count", len(config.players))
+            span.set_attribute("game.start_via_stream", True)
 
-            # Check if this is a game start request
-            if request.HasField("start_config"):
-                config = request.start_config
-                span.set_attribute("game.name", config.game_name)
-                span.set_attribute("player.count", len(config.players))
-                span.set_attribute("game.start_via_stream", True)
+            # Start the game
+            success, result = await self._start_game_from_config(config, span)
 
-                # Start the game
-                success, result = await self._start_game_from_config(config, span)
+            if not success:
+                # Yield error event and close stream
+                logger.error(f"Failed to start game via stream: {result}")
+                span.set_attribute("error", result)
+                yield game_coordinator_pb2.GameEvent(
+                    event_type="game_start_error",
+                    data={"error": result},
+                    timestamp=int(time.time() * 1000),
+                )
+                return
 
-                if not success:
-                    # Yield error event and close stream
-                    logger.error(f"Failed to start game via stream: {result}")
-                    span.set_attribute("error", result)
-                    yield game_coordinator_pb2.GameEvent(
-                        event_type="game_start_error",
-                        data={"error": result},
-                        timestamp=int(time.time() * 1000),
-                    )
-                    return
+            span.set_attribute("game.id", result)
+            logger.info(f"Game {result} started via stream")
 
-                span.set_attribute("game.id", result)
-                logger.info(f"Game {result} started via stream")
+        # Subscribe to event bus
+        event_queue = await self.event_bus.subscribe(subscriber_id)
 
-            # Subscribe to event bus
-            event_queue = await self.event_bus.subscribe(subscriber_id)
+        try:
+            while not context.cancelled():
+                try:
+                    # Async wait with timeout
+                    event = await asyncio.wait_for(event_queue.get(), timeout=1.0)
+                    yield event
 
-            try:
-                while not context.cancelled():
-                    try:
-                        # Async wait with timeout
-                        event = await asyncio.wait_for(event_queue.get(), timeout=1.0)
-                        yield event
+                except TimeoutError:
+                    # No event, continue (timeout keeps connection alive)
+                    continue
+                except Exception as e:
+                    logger.error(f"Stream error for {subscriber_id}: {e}")
+                    break
 
-                    except TimeoutError:
-                        # No event, continue (timeout keeps connection alive)
-                        continue
-                    except Exception as e:
-                        logger.error(f"Stream error for {subscriber_id}: {e}")
-                        break
-
-            finally:
-                # Cleanup via EventBus
-                await self.event_bus.unsubscribe(subscriber_id)
+        finally:
+            # Cleanup via EventBus
+            await self.event_bus.unsubscribe(subscriber_id)
 
     async def GetGameState(self, _request, _context):
         """

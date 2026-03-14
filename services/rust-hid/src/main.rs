@@ -5,6 +5,8 @@
 
 mod controller_io_service;
 mod device_manager;
+mod feature_flags;
+mod grpc_tracing;
 mod hid;
 mod service;
 
@@ -25,8 +27,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing with optional OpenTelemetry bridge
     let _otel_guard = init_tracing(&log_provider);
 
+    // Register W3C TraceContext propagator for incoming context extraction
+    opentelemetry::global::set_text_map_propagator(
+        opentelemetry_sdk::propagation::TraceContextPropagator::new(),
+    );
+
     // Initialize OTEL metrics (process metrics pushed to collector)
     let _meter_provider = init_metrics();
+
+    // Initialize OpenFeature flagd provider for feature flags
+    feature_flags::init_flagd().await;
 
     let addr = "[::]:50058".parse()?;
     info!(%addr, "Starting rust-hid gRPC server");
@@ -55,6 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await;
 
     Server::builder()
+        .layer(grpc_tracing::GrpcTracingLayer)
         .add_service(health_service)
         .add_service(PairingServiceServer::new(pairing_service))
         .add_service(ControllerIoServiceServer::new(controller_io_service))
@@ -218,13 +229,13 @@ fn init_metrics() -> Option<opentelemetry_sdk::metrics::SdkMeterProvider> {
         .f64_observable_counter("process_cpu_seconds_total")
         .with_description("Total user and system CPU time spent in seconds")
         .with_callback(|observer| {
-            if let Ok(me) = procfs::process::Process::myself() {
-                if let Ok(stat) = me.stat() {
-                    let ticks_per_sec = procfs::ticks_per_second() as f64;
-                    let total_secs =
-                        (stat.utime as f64 + stat.stime as f64) / ticks_per_sec;
-                    observer.observe(total_secs, &[]);
-                }
+            if let Ok(me) = procfs::process::Process::myself()
+                && let Ok(stat) = me.stat()
+            {
+                let ticks_per_sec = procfs::ticks_per_second() as f64;
+                let total_secs =
+                    (stat.utime as f64 + stat.stime as f64) / ticks_per_sec;
+                observer.observe(total_secs, &[]);
             }
         })
         .build();
@@ -234,12 +245,12 @@ fn init_metrics() -> Option<opentelemetry_sdk::metrics::SdkMeterProvider> {
         .i64_observable_gauge("process_resident_memory_bytes")
         .with_description("Resident memory size in bytes")
         .with_callback(|observer| {
-            if let Ok(me) = procfs::process::Process::myself() {
-                if let Ok(stat) = me.stat() {
-                    let page_size = procfs::page_size() as i64;
-                    let rss_bytes = stat.rss as i64 * page_size;
-                    observer.observe(rss_bytes, &[]);
-                }
+            if let Ok(me) = procfs::process::Process::myself()
+                && let Ok(stat) = me.stat()
+            {
+                let page_size = procfs::page_size() as i64;
+                let rss_bytes = stat.rss as i64 * page_size;
+                observer.observe(rss_bytes, &[]);
             }
         })
         .build();
@@ -249,10 +260,10 @@ fn init_metrics() -> Option<opentelemetry_sdk::metrics::SdkMeterProvider> {
         .i64_observable_gauge("process_threads")
         .with_description("Number of active threads")
         .with_callback(|observer| {
-            if let Ok(me) = procfs::process::Process::myself() {
-                if let Ok(stat) = me.stat() {
-                    observer.observe(stat.num_threads, &[]);
-                }
+            if let Ok(me) = procfs::process::Process::myself()
+                && let Ok(stat) = me.stat()
+            {
+                observer.observe(stat.num_threads, &[]);
             }
         })
         .build();

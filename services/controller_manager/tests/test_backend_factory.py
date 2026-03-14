@@ -40,11 +40,11 @@ class TestResolveBackendName:
     def test_openfeature_flag_used(self):
         """OpenFeature flag should be used as primary selection."""
         mock_client = MagicMock()
-        mock_client.get_string_details.return_value = _mock_details("hidapi")
+        mock_client.get_string_details.return_value = _mock_details("python")
 
         with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
             result = _resolve_backend_name()
-            assert result == "hidapi"
+            assert result == "python"
 
     def test_openfeature_flag_case_insensitive(self):
         """Flag value should be lowercased."""
@@ -84,6 +84,11 @@ class TestCreateAdapterByName:
         assert adapter.__class__.__name__ == "RustServiceAdapter"
         assert adapter.adapter_type == "rust"
 
+    def test_python_adapter(self):
+        adapter = _create_adapter_by_name("python")
+        assert adapter.__class__.__name__ == "PythonHidAdapter"
+        assert adapter.adapter_type == "python"
+
     def test_unknown_adapter_raises(self):
         with pytest.raises(RuntimeError, match="Unknown adapter"):
             _create_adapter_by_name("nonexistent")
@@ -103,23 +108,23 @@ class TestCreateBackendIntegration:
             assert len(backend.adapters) == 1
             assert backend.adapters[0].adapter_type == "mock"
 
-    def test_defaults_to_hidapi_when_flag_fails(self):
-        """Should default to hidapi when flag evaluation fails."""
+    def test_defaults_to_python_when_flag_fails(self):
+        """Should default to python when flag evaluation fails."""
         with (
             patch("lib.feature_flags.get_flag_client", side_effect=Exception("flagd unavailable")),
             patch("services.controller_manager.backend_factory._create_adapter_by_name") as mock_create,
         ):
-            hidapi_adapter = MagicMock()
-            hidapi_adapter.adapter_type = "hidapi"
+            python_adapter = MagicMock()
+            python_adapter.adapter_type = "python"
             mock_adapter = MagicMock()
             mock_adapter.adapter_type = "mock"
-            mock_create.side_effect = [hidapi_adapter, mock_adapter]
+            mock_create.side_effect = [python_adapter, mock_adapter]
 
             backend = create_backend()
 
         assert backend.__class__.__name__ == "MultiplexerBackend"
         call_names = [call[0][0] for call in mock_create.call_args_list]
-        assert "hidapi" in call_names
+        assert "python" in call_names
         assert "mock" in call_names
 
 
@@ -137,10 +142,10 @@ class TestMultiAdapterCreation:
         ):
             create_backend()
 
-    def test_mock_hidapi_creates_two_adapters(self):
-        """flag='mock,hidapi' -> MultiplexerBackend with 2 adapters."""
+    def test_mock_python_creates_two_adapters(self):
+        """flag='mock,python' -> MultiplexerBackend with 2 adapters."""
         mock_client = MagicMock()
-        mock_client.get_string_details.return_value = _mock_details("mock,hidapi")
+        mock_client.get_string_details.return_value = _mock_details("mock,python")
 
         with (
             patch("lib.feature_flags.get_flag_client", return_value=mock_client),
@@ -148,9 +153,9 @@ class TestMultiAdapterCreation:
         ):
             mock_adapter = MagicMock()
             mock_adapter.adapter_type = "mock"
-            hidapi_adapter = MagicMock()
-            hidapi_adapter.adapter_type = "hidapi"
-            mock_create.side_effect = [mock_adapter, hidapi_adapter]
+            python_adapter = MagicMock()
+            python_adapter.adapter_type = "python"
+            mock_create.side_effect = [mock_adapter, python_adapter]
 
             backend = create_backend()
 
@@ -158,7 +163,7 @@ class TestMultiAdapterCreation:
         assert len(backend.adapters) == 2
         call_names = [call[0][0] for call in mock_create.call_args_list]
         assert "mock" in call_names
-        assert "hidapi" in call_names
+        assert "python" in call_names
 
     def test_single_name_creates_adapter(self):
         """flag='mock' -> MultiplexerBackend with 1 adapter."""
@@ -195,9 +200,9 @@ class TestMultiAdapterCreation:
         assert "mock" in call_names
 
     def test_whitespace_in_comma_separated_is_trimmed(self):
-        """flag='mock , hidapi' -> names trimmed properly."""
+        """flag='mock , python' -> names trimmed properly."""
         mock_client = MagicMock()
-        mock_client.get_string_details.return_value = _mock_details("mock , hidapi")
+        mock_client.get_string_details.return_value = _mock_details("mock , python")
 
         with (
             patch("lib.feature_flags.get_flag_client", return_value=mock_client),
@@ -205,13 +210,13 @@ class TestMultiAdapterCreation:
         ):
             mock_adapter = MagicMock()
             mock_adapter.adapter_type = "mock"
-            hidapi_adapter = MagicMock()
-            hidapi_adapter.adapter_type = "hidapi"
-            mock_create.side_effect = [mock_adapter, hidapi_adapter]
+            python_adapter = MagicMock()
+            python_adapter.adapter_type = "python"
+            mock_create.side_effect = [mock_adapter, python_adapter]
 
             backend = create_backend()
 
         assert backend.__class__.__name__ == "MultiplexerBackend"
         call_names = [call[0][0] for call in mock_create.call_args_list]
         assert "mock" in call_names
-        assert "hidapi" in call_names
+        assert "python" in call_names

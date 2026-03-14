@@ -244,129 +244,129 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
     async def StartMenu(self, _request, _context):
         """Start the menu."""
         start_time = time.time()
-        with tracer.start_as_current_span("StartMenu") as span:
-            try:
-                if self.state == menu_pb2.MenuState.RUNNING:
-                    metrics.grpc_requests_total.labels(method="StartMenu", status="already_running").inc()
-                    return menu_pb2.StartMenuResponse(success=False, error="Menu already running")
+        span = trace.get_current_span()
+        try:
+            if self.state == menu_pb2.MenuState.RUNNING:
+                metrics.grpc_requests_total.labels(method="StartMenu", status="already_running").inc()
+                return menu_pb2.StartMenuResponse(success=False, error="Menu already running")
 
-                self.state = menu_pb2.MenuState.RUNNING
-                self._clear_ready_state()
+            self.state = menu_pb2.MenuState.RUNNING
+            self._clear_ready_state()
 
-                # Load settings from flagd (user_preferences domain)
-                self.voice_actor = self.user_prefs_client.get_string_value("menu_voice", DEFAULT_VOICE_ACTOR)
-                current_game_name = self.user_prefs_client.get_string_value("current_game", DEFAULT_GAME_MODE.name)
-                game = Games.from_name(current_game_name)
-                self.current_selection = game if game and game.name in GAME_MODES else DEFAULT_GAME_MODE
-                self.state_manager.set_game_mode(self.current_selection)
+            # Load settings from flagd (user_preferences domain)
+            self.voice_actor = self.user_prefs_client.get_string_value("menu_voice", DEFAULT_VOICE_ACTOR)
+            current_game_name = self.user_prefs_client.get_string_value("current_game", DEFAULT_GAME_MODE.name)
+            game = Games.from_name(current_game_name)
+            self.current_selection = game if game and game.name in GAME_MODES else DEFAULT_GAME_MODE
+            self.state_manager.set_game_mode(self.current_selection)
 
-                await self.audio.start_lobby_music()
-                self.idle_monitor.start()
-                await self.event_publisher.publish("menu_started", {})
+            await self.audio.start_lobby_music()
+            self.idle_monitor.start()
+            await self.event_publisher.publish("menu_started", {})
 
-                logger.info("Menu started")
-                span.set_attribute("menu.state", "RUNNING")
-                metrics.grpc_requests_total.labels(method="StartMenu", status="ok").inc()
+            logger.info("Menu started")
+            span.set_attribute("menu.state", "RUNNING")
+            metrics.grpc_requests_total.labels(method="StartMenu", status="ok").inc()
 
-                return menu_pb2.StartMenuResponse(success=True, error="")
+            return menu_pb2.StartMenuResponse(success=True, error="")
 
-            except Exception as e:
-                span.record_exception(e)
-                span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
-                logger.error(f"StartMenu error: {e}", exc_info=True)
-                metrics.grpc_requests_total.labels(method="StartMenu", status="error").inc()
-                return menu_pb2.StartMenuResponse(success=False, error=str(e))
-            finally:
-                metrics.grpc_request_duration_seconds.labels(method="StartMenu").observe(time.time() - start_time)
+        except Exception as e:
+            span.record_exception(e)
+            span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
+            logger.error(f"StartMenu error: {e}", exc_info=True)
+            metrics.grpc_requests_total.labels(method="StartMenu", status="error").inc()
+            return menu_pb2.StartMenuResponse(success=False, error=str(e))
+        finally:
+            metrics.grpc_request_duration_seconds.labels(method="StartMenu").observe(time.time() - start_time)
 
     async def StopMenu(self, _request, _context):
         """Stop the menu."""
         start_time = time.time()
-        with tracer.start_as_current_span("StopMenu") as span:
-            try:
-                if self.state == menu_pb2.MenuState.STOPPED:
-                    metrics.grpc_requests_total.labels(method="StopMenu", status="already_stopped").inc()
-                    return menu_pb2.StopMenuResponse(success=False, error="Menu already stopped")
+        span = trace.get_current_span()
+        try:
+            if self.state == menu_pb2.MenuState.STOPPED:
+                metrics.grpc_requests_total.labels(method="StopMenu", status="already_stopped").inc()
+                return menu_pb2.StopMenuResponse(success=False, error="Menu already stopped")
 
-                self.state = menu_pb2.MenuState.STOPPED
+            self.state = menu_pb2.MenuState.STOPPED
 
-                # Stop idle monitor
-                self.idle_monitor.stop()
+            # Stop idle monitor
+            self.idle_monitor.stop()
 
-                # Clear all lobby state
-                self._clear_ready_state()
-                self.state_manager.controller_states.clear()
+            # Clear all lobby state
+            self._clear_ready_state()
+            self.state_manager.controller_states.clear()
 
-                await self.event_publisher.publish("menu_stopped", {})
+            await self.event_publisher.publish("menu_stopped", {})
 
-                logger.info("Menu stopped")
-                span.set_attribute("menu.state", "STOPPED")
-                metrics.grpc_requests_total.labels(method="StopMenu", status="ok").inc()
+            logger.info("Menu stopped")
+            span.set_attribute("menu.state", "STOPPED")
+            metrics.grpc_requests_total.labels(method="StopMenu", status="ok").inc()
 
-                return menu_pb2.StopMenuResponse(success=True, error="")
+            return menu_pb2.StopMenuResponse(success=True, error="")
 
-            except Exception as e:
-                span.record_exception(e)
-                span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
-                logger.error(f"StopMenu error: {e}", exc_info=True)
-                metrics.grpc_requests_total.labels(method="StopMenu", status="error").inc()
-                return menu_pb2.StopMenuResponse(success=False, error=str(e))
-            finally:
-                metrics.grpc_request_duration_seconds.labels(method="StopMenu").observe(time.time() - start_time)
+        except Exception as e:
+            span.record_exception(e)
+            span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
+            logger.error(f"StopMenu error: {e}", exc_info=True)
+            metrics.grpc_requests_total.labels(method="StopMenu", status="error").inc()
+            return menu_pb2.StopMenuResponse(success=False, error=str(e))
+        finally:
+            metrics.grpc_request_duration_seconds.labels(method="StopMenu").observe(time.time() - start_time)
 
     async def ProcessInput(self, request, _context):
         """Process menu input."""
         start_time = time.time()
-        with tracer.start_as_current_span("ProcessInput") as span:
-            span.set_attribute("input.type", request.input_type)
+        span = trace.get_current_span()
+        span.set_attribute("input.type", request.input_type)
 
-            try:
-                input_type = request.input_type
-                data = dict(request.data)
+        try:
+            input_type = request.input_type
+            data = dict(request.data)
 
-                if input_type == "button_press":
-                    await self._handle_button_input(data, span)
-                elif input_type == "web_command":
-                    await self._handle_web_command(data, span)
-                elif input_type == "reset_menu":
-                    await self._handle_reset_menu()
+            if input_type == "button_press":
+                await self._handle_button_input(data, span)
+            elif input_type == "web_command":
+                await self._handle_web_command(data, span)
+            elif input_type == "reset_menu":
+                await self._handle_reset_menu()
 
-                metrics.grpc_requests_total.labels(method="ProcessInput", status="ok").inc()
-                return menu_pb2.ProcessInputResponse(success=True, error="")
+            metrics.grpc_requests_total.labels(method="ProcessInput", status="ok").inc()
+            return menu_pb2.ProcessInputResponse(success=True, error="")
 
-            except Exception as e:
-                span.record_exception(e)
-                span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
-                logger.error(f"ProcessInput error: {e}", exc_info=True)
-                metrics.grpc_requests_total.labels(method="ProcessInput", status="error").inc()
-                return menu_pb2.ProcessInputResponse(success=False, error=str(e))
-            finally:
-                metrics.grpc_request_duration_seconds.labels(method="ProcessInput").observe(time.time() - start_time)
+        except Exception as e:
+            span.record_exception(e)
+            span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
+            logger.error(f"ProcessInput error: {e}", exc_info=True)
+            metrics.grpc_requests_total.labels(method="ProcessInput", status="error").inc()
+            return menu_pb2.ProcessInputResponse(success=False, error=str(e))
+        finally:
+            metrics.grpc_request_duration_seconds.labels(method="ProcessInput").observe(time.time() - start_time)
 
     async def StreamMenuEvents(self, _request, context):
         """Stream menu events in real-time."""
         subscriber_id = f"menu_events_{time.time()}"
         metrics.stream_connections_active.inc()
 
-        with tracer.start_as_current_span("StreamMenuEvents") as span:
-            span.set_attribute("subscriber.id", subscriber_id)
+        span = trace.get_current_span()
+        span.set_attribute("subscriber.id", subscriber_id)
 
-            event_queue = await self.event_publisher.subscribe(subscriber_id)
+        event_queue = await self.event_publisher.subscribe(subscriber_id)
 
-            try:
-                while not context.cancelled():
-                    try:
-                        event = await asyncio.wait_for(event_queue.get(), timeout=1.0)
-                        yield event
-                    except TimeoutError:
-                        continue
-                    except Exception as e:
-                        logger.error(f"Stream error for {subscriber_id}: {e}")
-                        break
-            finally:
-                await self.event_publisher.unsubscribe(subscriber_id)
-                metrics.stream_connections_active.dec()
-                metrics.stream_disconnections_total.inc()
+        try:
+            while not context.cancelled():
+                try:
+                    event = await asyncio.wait_for(event_queue.get(), timeout=1.0)
+                    yield event
+                except TimeoutError:
+                    continue
+                except Exception as e:
+                    logger.error(f"Stream error for {subscriber_id}: {e}")
+                    break
+        finally:
+            await self.event_publisher.unsubscribe(subscriber_id)
+            metrics.stream_connections_active.dec()
+            metrics.stream_disconnections_total.inc()
 
     # Input handlers
 
