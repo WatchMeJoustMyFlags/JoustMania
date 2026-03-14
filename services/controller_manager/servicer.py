@@ -18,8 +18,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 import contextlib
 
+from opentelemetry import trace
+
 from lib.controller_constants import ControllerInfoKey, normalize_serial
-from lib.telemetry import get_tracer
 from proto import controller_manager_pb2, controller_manager_pb2_grpc
 from services.controller_manager import metrics
 
@@ -36,9 +37,6 @@ from services.controller_manager.name_manager import NameManager
 from services.controller_manager.state_cache import StateCache
 
 logger = logging.getLogger(__name__)
-
-# Lazy telemetry initialization - defers OTLP setup until first span
-tracer = get_tracer(__name__)
 
 
 class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerServiceServicer, ControllerEffectsBase):
@@ -233,9 +231,9 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         if self.event_publisher.main_loop is None:
             self.event_publisher.set_main_loop(asyncio.get_running_loop())
 
-        # Note: We manually manage the span instead of using context manager
-        # because GeneratorExit during stream disconnect causes context token issues
-        span = tracer.start_span("StreamButtonEvents")
+        # Enrich the server span created by the gRPC interceptor
+        span = trace.get_current_span()
+        span.update_name("StreamButtonEvents")
         span.set_attribute("subscriber.id", subscriber_id)
 
         # Create queue for this subscriber (Phase 34: asyncio.Queue)
@@ -291,9 +289,6 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                     break
 
         finally:
-            # End span manually (avoids context token issues on GeneratorExit)
-            span.end()
-
             # Cleanup: Cancel background task
             control_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -434,9 +429,9 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
 
         subscriber_id = f"gameplay_stream_{time.time()}"
 
-        # Note: We manually manage the span instead of using context manager
-        # because GeneratorExit during stream disconnect causes context token issues
-        span = tracer.start_span("StreamGameplayData")
+        # Enrich the server span created by the gRPC interceptor
+        span = trace.get_current_span()
+        span.update_name("StreamGameplayData")
         span.set_attribute("subscriber.id", subscriber_id)
 
         # Update stream metrics
@@ -513,9 +508,6 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                     break
 
         finally:
-            # End span manually (avoids context token issues on GeneratorExit)
-            span.end()
-
             # Cleanup: Cancel background task
             update_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -533,34 +525,32 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
 
     async def RenameController(self, request, _context):
         """Rename a controller with a custom human-readable name (Issue #7)."""
-        with tracer.start_as_current_span("RenameController") as span:
-            span.set_attribute("serial", request.serial)
-            span.set_attribute("name", request.name)
+        span = trace.get_current_span()
+        span.set_attribute("serial", request.serial)
+        span.set_attribute("name", request.name)
 
-            try:
-                if not request.serial:
-                    return controller_manager_pb2.RenameControllerResponse(
-                        success=False, error="Serial number is required"
-                    )
-                if not request.name:
-                    return controller_manager_pb2.RenameControllerResponse(success=False, error="Name is required")
+        try:
+            if not request.serial:
+                return controller_manager_pb2.RenameControllerResponse(success=False, error="Serial number is required")
+            if not request.name:
+                return controller_manager_pb2.RenameControllerResponse(success=False, error="Name is required")
 
-                serial = normalize_serial(request.serial)
+            serial = normalize_serial(request.serial)
 
-                # Update the name
-                self.name_manager.set_name(serial, request.name)
+            # Update the name
+            self.name_manager.set_name(serial, request.name)
 
-                # Update tracked_controllers if the controller is currently connected
-                if serial in self.tracked_controllers:
-                    self.tracked_controllers[serial][ControllerInfoKey.NAME] = request.name
+            # Update tracked_controllers if the controller is currently connected
+            if serial in self.tracked_controllers:
+                self.tracked_controllers[serial][ControllerInfoKey.NAME] = request.name
 
-                logger.info(f"Renamed controller {serial} to '{request.name}'")
-                return controller_manager_pb2.RenameControllerResponse(success=True, error="")
+            logger.info(f"Renamed controller {serial} to '{request.name}'")
+            return controller_manager_pb2.RenameControllerResponse(success=True, error="")
 
-            except Exception as e:
-                span.record_exception(e)
-                logger.error(f"RenameController error: {e}", exc_info=True)
-                return controller_manager_pb2.RenameControllerResponse(success=False, error=str(e))
+        except Exception as e:
+            span.record_exception(e)
+            logger.error(f"RenameController error: {e}", exc_info=True)
+            return controller_manager_pb2.RenameControllerResponse(success=False, error=str(e))
 
     async def shutdown(self):
         """Shutdown the controller manager."""
