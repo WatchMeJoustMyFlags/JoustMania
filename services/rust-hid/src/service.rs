@@ -79,8 +79,8 @@ impl PairingService for PairingServiceImpl {
         request: Request<PairControllerRequest>,
     ) -> Result<Response<PairControllerResponse>, Status> {
         let req = request.into_inner();
-        tracing::Span::current().record("serial", &req.serial.as_str());
-        tracing::Span::current().record("adapter_address", &req.adapter_address.as_str());
+        tracing::Span::current().record("serial", req.serial.as_str());
+        tracing::Span::current().record("adapter_address", req.adapter_address.as_str());
 
         if req.device_path.is_empty() {
             return Err(Status::invalid_argument("device_path is required"));
