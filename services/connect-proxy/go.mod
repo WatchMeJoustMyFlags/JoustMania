@@ -6,6 +6,7 @@ require (
 	connectrpc.com/connect v1.17.0
 	github.com/rs/cors v1.11.0
 	go.opentelemetry.io/contrib/bridges/otelslog v0.6.0
+	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.56.0
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.56.0
 	go.opentelemetry.io/otel v1.31.0
 	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc v0.7.0

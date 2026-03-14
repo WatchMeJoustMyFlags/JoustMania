@@ -3,7 +3,7 @@
 use hidapi::HidApi;
 use std::sync::Mutex;
 use tonic::{Request, Response, Status};
-use tracing::{info, warn};
+use tracing::{info, instrument, warn};
 
 pub mod proto {
     tonic::include_proto!("joustmania.psmove_hid");
@@ -33,7 +33,7 @@ impl PairingServiceImpl {
 
 #[tonic::async_trait]
 impl PairingService for PairingServiceImpl {
-    #[tracing::instrument(
+    #[instrument(
         skip(self, _request),
         fields(rpc.system = "grpc", rpc.service = "PairingService", rpc.method = "GetUsbControllers")
     )]
@@ -70,15 +70,17 @@ impl PairingService for PairingServiceImpl {
         }))
     }
 
-    #[tracing::instrument(
+    #[instrument(
         skip(self, request),
-        fields(rpc.system = "grpc", rpc.service = "PairingService", rpc.method = "PairController")
+        fields(rpc.system = "grpc", rpc.service = "PairingService", rpc.method = "PairController", serial, adapter_address)
     )]
     async fn pair_controller(
         &self,
         request: Request<PairControllerRequest>,
     ) -> Result<Response<PairControllerResponse>, Status> {
         let req = request.into_inner();
+        tracing::Span::current().record("serial", req.serial.as_str());
+        tracing::Span::current().record("adapter_address", req.adapter_address.as_str());
 
         if req.device_path.is_empty() {
             return Err(Status::invalid_argument("device_path is required"));

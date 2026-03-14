@@ -181,7 +181,7 @@ processors:
         match_type: regexp
         resource_attributes:
           - key: service.name
-            value: "^(controller-manager|game-coordinator|menu|audio|pairing-daemon|otel-collector)$"
+            value: "^(controller-manager|game-coordinator|menu|audio|pairing-daemon|otel-collector|connect-proxy|rust-hid)$"
 
   # Cumulative-to-delta processor for Dynatrace.
   # Dynatrace requires delta temporality for counters; the local stack

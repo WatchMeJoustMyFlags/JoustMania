@@ -10,7 +10,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
-use tracing::{info, trace, warn};
+use tracing::{info, instrument, trace, warn};
 
 use crate::device_manager::{DeviceCmd, StreamSensorData};
 use crate::service::proto;
@@ -41,15 +41,16 @@ impl ControllerIoServiceImpl {
 
 #[tonic::async_trait]
 impl ControllerIoService for ControllerIoServiceImpl {
-    #[tracing::instrument(
+    #[instrument(
         skip(self, request),
-        fields(rpc.system = "grpc", rpc.service = "ControllerIoService", rpc.method = "Discover")
+        fields(rpc.system = "grpc", rpc.service = "ControllerIoService", rpc.method = "Discover", force)
     )]
     async fn discover(
         &self,
         request: Request<DiscoverRequest>,
     ) -> Result<Response<DiscoverResponse>, Status> {
         let req = request.into_inner();
+        tracing::Span::current().record("force", req.force);
         let (reply_tx, reply_rx) = oneshot::channel();
 
         self.send_cmd(DeviceCmd::Discover {
@@ -79,15 +80,16 @@ impl ControllerIoService for ControllerIoServiceImpl {
         Ok(Response::new(DiscoverResponse { controllers }))
     }
 
-    #[tracing::instrument(
+    #[instrument(
         skip(self, request),
-        fields(rpc.system = "grpc", rpc.service = "ControllerIoService", rpc.method = "Open")
+        fields(rpc.system = "grpc", rpc.service = "ControllerIoService", rpc.method = "Open", serial)
     )]
     async fn open(
         &self,
         request: Request<OpenRequest>,
     ) -> Result<Response<OpenResponse>, Status> {
         let serial = request.into_inner().serial;
+        tracing::Span::current().record("serial", serial.as_str());
         if serial.is_empty() {
             return Err(Status::invalid_argument("serial is required"));
         }
@@ -106,7 +108,7 @@ impl ControllerIoService for ControllerIoServiceImpl {
         Ok(Response::new(OpenResponse { success }))
     }
 
-    #[tracing::instrument(
+    #[instrument(
         skip(self, request),
         fields(rpc.system = "grpc", rpc.service = "ControllerIoService", rpc.method = "Close")
     )]
@@ -119,7 +121,7 @@ impl ControllerIoService for ControllerIoServiceImpl {
         Ok(Response::new(CloseResponse {}))
     }
 
-    #[tracing::instrument(
+    #[instrument(
         skip(self, _request),
         fields(rpc.system = "grpc", rpc.service = "ControllerIoService", rpc.method = "CloseAll")
     )]
@@ -133,7 +135,7 @@ impl ControllerIoService for ControllerIoServiceImpl {
 
     type StreamIOStream = Pin<Box<dyn tokio_stream::Stream<Item = Result<SensorData, Status>> + Send>>;
 
-    #[tracing::instrument(
+    #[instrument(
         skip(self, request),
         fields(rpc.system = "grpc", rpc.service = "ControllerIoService", rpc.method = "StreamIO")
     )]

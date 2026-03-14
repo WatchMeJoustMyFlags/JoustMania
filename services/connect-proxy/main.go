@@ -13,6 +13,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/rs/cors"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -64,21 +65,30 @@ func main() {
 	)
 
 	// Create gRPC connections to backend services
-	controllerConn, err := grpc.NewClient(controllerManagerAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	controllerConn, err := grpc.NewClient(controllerManagerAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
+	)
 	if err != nil {
 		slog.Error("Failed to connect to controller manager", "error", err)
 		os.Exit(1)
 	}
 	defer controllerConn.Close()
 
-	gameConn, err := grpc.NewClient(gameCoordinatorAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	gameConn, err := grpc.NewClient(gameCoordinatorAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
+	)
 	if err != nil {
 		slog.Error("Failed to connect to game coordinator", "error", err)
 		os.Exit(1)
 	}
 	defer gameConn.Close()
 
-	menuConn, err := grpc.NewClient(menuAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	menuConn, err := grpc.NewClient(menuAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
+	)
 	if err != nil {
 		slog.Error("Failed to connect to menu", "error", err)
 		os.Exit(1)
@@ -134,8 +144,12 @@ func main() {
 		MaxAge:           86400,
 	}).Handler(mux)
 
-	// Wrap with OTEL HTTP tracing
-	tracedHandler := otelhttp.NewHandler(corsHandler, "connect-proxy")
+	// Wrap with OTEL HTTP tracing (skip health checks to avoid noisy spans)
+	tracedHandler := otelhttp.NewHandler(corsHandler, "connect-proxy",
+		otelhttp.WithFilter(func(r *http.Request) bool {
+			return r.URL.Path != "/health"
+		}),
+	)
 
 	// Start server
 	slog.Info("Connect proxy listening", "addr", listenAddr)
