@@ -157,6 +157,7 @@ def test_api_level_context_uses_env_vars(mock_api, _mock_provider):
         os.environ,
         {
             "OTEL_SERVICE_NAME": "test-service",
+            "OTEL_SERVICE_NAMESPACE": "joustmania",
             "ENVIRONMENT": "staging",
         },
     ):
@@ -166,6 +167,8 @@ def test_api_level_context_uses_env_vars(mock_api, _mock_provider):
     call_args = mock_api.set_evaluation_context.call_args
     ctx = call_args[0][0]
     assert ctx.attributes["service_name"] == "test-service"
+    assert ctx.attributes["service_namespace"] == "joustmania"
+    assert ctx.attributes["language"] == "python"
     assert ctx.attributes["environment"] == "staging"
     assert "hostname" in ctx.attributes
 
