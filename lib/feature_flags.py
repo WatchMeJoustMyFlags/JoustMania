@@ -7,7 +7,7 @@ via flagd's flagSetId-based domain scoping. Each domain maps to a separate
 flag file and OpenFeature provider.
 
 Implements three-layer evaluation context merging (Issue #422):
-  1. API-level: service_name, environment, hostname (set once at startup)
+  1. API-level: service_name, service_namespace, language, environment, hostname (set once at startup)
   2. Transaction: game_mode, controller_count (set per game session)
   3. Per-evaluation: player-specific attributes (set per flag call)
 
@@ -54,6 +54,7 @@ def _init_global_context() -> None:
 
     # Set API-level context with service identity (always available to all evaluations)
     service_name = os.environ.get("OTEL_SERVICE_NAME", "unknown")
+    service_namespace = os.environ.get("OTEL_SERVICE_NAMESPACE", "unknown")
     environment = os.environ.get("ENVIRONMENT", "production")
     hostname = platform.node()
 
@@ -61,13 +62,17 @@ def _init_global_context() -> None:
         EvaluationContext(
             attributes={
                 "service_name": service_name,
+                "service_namespace": service_namespace,
+                "language": "python",
                 "environment": environment,
                 "hostname": hostname,
             }
         )
     )
     logger.info(
-        f"API-level evaluation context set: service_name={service_name}, environment={environment}, hostname={hostname}"
+        f"API-level evaluation context set: service_name={service_name}, "
+        f"service_namespace={service_namespace}, language=python, "
+        f"environment={environment}, hostname={hostname}"
     )
 
     _propagator_registered = True
