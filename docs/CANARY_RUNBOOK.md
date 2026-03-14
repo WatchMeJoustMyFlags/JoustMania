@@ -14,6 +14,38 @@ opens/closes adapter handles accordingly. Changing the flag config in
 `services/flagd/performance.json` takes effect on the next discovery cycle --
 no service restart needed.
 
+### HTTP Canary Endpoints
+
+The connect-proxy provides HTTP endpoints for controlling canary rollout
+(same pattern as the chaos endpoints). These modify the flagd JSON config
+file directly, triggering a hot-reload with no service restart needed.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/canary/rust` | POST | Route controllers to Rust backend |
+| `/canary/python` | POST | Route controllers to Python backend |
+| `/canary/rollback` | POST | Reset all controllers to Python (default) |
+| `/canary/status` | GET | Show current routing flag config |
+
+All POST endpoints support `?fraction=N` (1-100, default 100) for gradual
+rollout via flagd fractional targeting.
+
+**Examples:**
+
+```bash
+# Route all controllers to Rust
+curl -X POST http://localhost:8080/canary/rust
+
+# Route 25% of controllers to Rust (deterministic by serial hash)
+curl -X POST http://localhost:8080/canary/rust?fraction=25
+
+# Check current routing config
+curl http://localhost:8080/canary/status
+
+# Immediate rollback to Python
+curl -X POST http://localhost:8080/canary/rollback
+```
+
 Key source files:
 
 | File | Role |
@@ -109,15 +141,22 @@ controller_routing_decisions_total
 
 ---
 
-## Step 2: Route a Single Controller to Rust
+## Step 2: Route Controllers to Rust
 
-Pick one controller serial (e.g., `aa:bb:cc:dd:ee:ff`) and route it to the
-Rust backend.
+### Using the canary endpoint (recommended)
 
-### Edit the flag config
+```bash
+# Route a small fraction (e.g., 25%) of controllers to Rust
+curl -X POST http://localhost:8080/canary/rust?fraction=25
+```
 
-Edit `services/flagd/performance.json`. Update the `controller_adapter_routing`
-flag's `targeting` block:
+This uses flagd's fractional targeting to deterministically route ~25% of
+controllers (by serial hash) to the Rust backend.
+
+### Manual single-controller targeting (alternative)
+
+To target a specific serial (e.g., `aa:bb:cc:dd:ee:ff`), edit
+`services/flagd/performance.json` directly:
 
 ```json
 "controller_adapter_routing": {
@@ -143,8 +182,8 @@ flag's `targeting` block:
 }
 ```
 
-Save the file. flagd watches the directory via inotify and reloads
-automatically -- no restart needed.
+flagd watches the directory via inotify and reloads automatically -- no
+restart needed.
 
 ### Verify the switch
 
@@ -254,72 +293,22 @@ cycle.
 
 ## Step 4: Gradual Rollout
 
-After the single-controller canary is stable, expand to more controllers using
-flagd's `fractionalEvaluation` operator.
+After the initial canary is stable, expand using the canary endpoint:
 
-### 25% rollout
+```bash
+# 25% rollout
+curl -X POST http://localhost:8080/canary/rust?fraction=25
 
-```json
-"controller_adapter_routing": {
-  "state": "ENABLED",
-  "variants": {
-    "python": "python",
-    "rust": "rust"
-  },
-  "defaultVariant": "python",
-  "targeting": {
-    "fractionalEvaluation": [
-      { "var": "targetingKey" },
-      ["rust", 25],
-      ["python",75]
-    ]
-  }
-}
-```
+# 50% rollout
+curl -X POST http://localhost:8080/canary/rust?fraction=50
 
-### 50% rollout
-
-```json
-"controller_adapter_routing": {
-  "state": "ENABLED",
-  "variants": {
-    "python": "python",
-    "rust": "rust"
-  },
-  "defaultVariant": "python",
-  "targeting": {
-    "fractionalEvaluation": [
-      { "var": "targetingKey" },
-      ["rust", 50],
-      ["python",50]
-    ]
-  }
-}
-```
-
-### 100% rollout (via targeting)
-
-```json
-"controller_adapter_routing": {
-  "state": "ENABLED",
-  "variants": {
-    "python": "python",
-    "rust": "rust"
-  },
-  "defaultVariant": "python",
-  "targeting": {
-    "fractionalEvaluation": [
-      { "var": "targetingKey" },
-      ["rust", 100],
-      ["python",0]
-    ]
-  }
-}
+# 100% rollout
+curl -X POST http://localhost:8080/canary/rust
 ```
 
 ### Between each stage
 
-- Wait for flagd to reload (check logs: `docker compose logs flagd --tail=5`)
+- Check status: `curl http://localhost:8080/canary/status`
 - Watch the routing decisions metric update:
   ```promql
   sum by (adapter) (rate(controller_routing_decisions_total[2m]))
@@ -335,21 +324,11 @@ If issues arise at any stage, roll back by reverting the flag config.
 
 ### Immediate rollback
 
-Set `defaultVariant` back to `"python"` and clear targeting:
-
-```json
-"controller_adapter_routing": {
-  "state": "ENABLED",
-  "variants": {
-    "python": "python",
-    "rust": "rust"
-  },
-  "defaultVariant": "python",
-  "targeting": {}
-}
+```bash
+curl -X POST http://localhost:8080/canary/rollback
 ```
 
-Save the file. All controllers switch back within one discovery cycle (~500ms).
+All controllers switch back to Python within one discovery cycle (~500ms).
 **No service restart needed.**
 
 ### Verify rollback
@@ -398,17 +377,11 @@ session (or longer), make it the permanent default.
 
 ### Set default to rust
 
-```json
-"controller_adapter_routing": {
-  "state": "ENABLED",
-  "variants": {
-    "python": "python",
-    "rust": "rust"
-  },
-  "defaultVariant": "rust",
-  "targeting": {}
-}
+```bash
+curl -X POST http://localhost:8080/canary/rust
 ```
+
+This sets `defaultVariant` to `"rust"` and clears any fractional targeting.
 
 ### Update controller_backend flag (optional)
 
