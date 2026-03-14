@@ -179,7 +179,7 @@
       },
       "title": "Bizevents: Events/min",
       "type": "data",
-      "query": "fetch bizevents\n| filter event.type == \"com.joustmania.acceleration\"\n| filter metric.name == \"controller_accel_magnitude\"\n| summarize count = count(), by:{bin(timestamp, 1m)}\n| fields interval = bin(timestamp, 1m), count\n| sort interval asc\n| summarize last = arrayLast(count)",
+      "query": "fetch bizevents\n| filter event.type == \"com.joustmania.acceleration\"\n| filter metric.name == \"controller_accel_magnitude\"\n| summarize count = count(), by:{interval = bin(timestamp, 1m)}\n| sort interval desc\n| limit 1\n| fields last = count",
       "querySettings": {
         "defaultSamplingRatio": 10,
         "defaultScanLimitGbytes": 500,
