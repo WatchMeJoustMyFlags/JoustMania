@@ -6,20 +6,6 @@ receivers:
       http:
         endpoint: 0.0.0.0:4318
 
-  # Prometheus receiver to scrape infrastructure targets that don't push via OTLP.
-  # These metrics flow to VictoriaMetrics so Grafana dashboards (which default to
-  # VictoriaMetrics) can display host metrics alongside OTEL-pushed service metrics.
-  prometheus/infra:
-    config:
-      scrape_configs:
-        - job_name: 'node'
-          scrape_interval: 30s
-          scrape_timeout: 25s
-          static_configs:
-            - targets: ['node-exporter:9100']
-              labels:
-                instance: 'raspberry-pi'
-
   # Observability stack: monitoring tools that observe the system
   prometheus/observability:
     config:
@@ -70,6 +56,18 @@ receivers:
       - type: remove
         field: attributes.time
 
+  # Host: OS-level metrics from the Raspberry Pi
+  prometheus/host:
+    config:
+      scrape_configs:
+        - job_name: 'node'
+          scrape_interval: 30s
+          scrape_timeout: 25s
+          static_configs:
+            - targets: ['node-exporter:9100']
+              labels:
+                instance: 'raspberry-pi'
+
   # Infrastructure: supporting services for the game platform
   prometheus/infrastructure:
     config:
@@ -111,6 +109,12 @@ processors:
       include:
         match_type: regexp
         metric_names: ["controller_accel_.*"]
+
+  resource/host:
+    attributes:
+      - key: service.namespace
+        value: host
+        action: insert
 
   # Resource processors for scraped targets — Dynatrace needs service.name
   # to recognize these as services in the service overview. OTLP-pushed
@@ -242,13 +246,10 @@ service:
       processors: [memory_limiter, batch/fast, resource]
       exporters: [prometheusremotewrite, prometheus]
 
-    # Infrastructure metrics pipeline — scraped targets (node-exporter, etc.)
-    # Only exports to VictoriaMetrics since Prometheus already scrapes these directly.
-    # Does NOT use the resource processor (no need to tag host metrics with
-    # deployment.environment, and avoids any future service.namespace issues).
-    metrics/infra:
-      receivers: [prometheus/infra]
-      processors: [memory_limiter, batch/fast]
+    # Host metrics — node-exporter (OS-level)
+    metrics/host:
+      receivers: [prometheus/host]
+      processors: [memory_limiter, resource/host, batch/fast]
       exporters: [prometheusremotewrite]
 
     # Observability metrics — victoria-metrics, prometheus, otel-collector
@@ -290,8 +291,8 @@ service:
       processors: [memory_limiter, batch, resource, cumulativetodelta]
       exporters: [otlphttp/dynatrace]
 
-    metrics/infra-dynatrace:
-      receivers: [prometheus/infra]
+    metrics/host-dynatrace:
+      receivers: [prometheus/host]
       processors: [memory_limiter, batch, cumulativetodelta]
       exporters: [otlphttp/dynatrace]
 
