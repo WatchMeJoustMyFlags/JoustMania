@@ -104,7 +104,7 @@
         "python_hid_rust": "python,rust",
         "mock_python_hid_rust": "mock,python,rust"
       },
-      "defaultVariant": "python_hid"
+      "defaultVariant": "python_hid_rust"
     },
     "mock_controller_count": {
       "state": "ENABLED",
