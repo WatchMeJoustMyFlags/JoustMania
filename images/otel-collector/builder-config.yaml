@@ -36,6 +36,8 @@ processors:
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/cumulativetodeltaprocessor v0.147.0
   # Transform — OTTL-based attribute manipulation (promote Docker labels to resource attributes)
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/transformprocessor v0.147.0
+  # Resource detection — auto-enrich signals with host, OS, and container metadata
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourcedetectionprocessor v0.147.0
 
 exporters:
   - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.147.0

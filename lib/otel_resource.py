@@ -9,6 +9,7 @@ topology linking.
 
 import os
 import platform
+import sys
 
 from opentelemetry.sdk.resources import Resource
 
@@ -23,6 +24,8 @@ def get_otel_resource() -> Resource:
     - service.instance.id: Per-instance metrics, process group instance detection
     - deployment.environment: Environment filtering, release comparison
     - host.name: Host entity linking in Smartscape topology
+    - process.*: Process group detection, runtime vulnerability matching
+    - telemetry.sdk.*: SDK identification and language detection
     """
     return Resource(
         attributes={
@@ -32,5 +35,11 @@ def get_otel_resource() -> Resource:
             "service.instance.id": os.getenv("HOSTNAME", platform.node()),
             "deployment.environment": os.getenv("DEPLOYMENT_ENVIRONMENT", "development"),
             "host.name": platform.node(),
+            "process.pid": os.getpid(),
+            "process.executable.name": os.path.basename(sys.executable),
+            "process.runtime.name": platform.python_implementation().lower(),
+            "process.runtime.version": platform.python_version(),
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.language": "python",
         }
     )
