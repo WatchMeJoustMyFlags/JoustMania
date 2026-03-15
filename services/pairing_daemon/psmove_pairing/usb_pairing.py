@@ -40,7 +40,7 @@ class PairingError(Exception):
 _ATTR_CONTROLLER_SERIAL = "controller.serial"
 _ATTR_ADAPTER_ADDRESS = "adapter.address"
 
-_KNOWN_ROUTING_VALUES = {"hidapi", "rust"}
+_KNOWN_ROUTING_VALUES = {"hidapi", "python", "rust"}
 
 
 def _resolve_routing() -> str:
