@@ -1,0 +1,17 @@
+configs:
+  - id: service-runs-on-host
+    type:
+      settings:
+        schema: builtin:monitoredentities.generic.relation
+        scope: environment
+    config:
+      name: "service-runs-on-joustmania-host"
+      template: service-runs-on-host.json
+  - id: container-runs-on-host
+    type:
+      settings:
+        schema: builtin:monitoredentities.generic.relation
+        scope: environment
+    config:
+      name: "container-runs-on-joustmania-host"
+      template: container-runs-on-host.json

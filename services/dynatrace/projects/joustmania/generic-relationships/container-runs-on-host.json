@@ -1,0 +1,19 @@
+{
+  "enabled": true,
+  "createdBy": "monaco",
+  "fromType": "joustmania:container",
+  "toType": "joustmania:host",
+  "typeOfRelation": "RUNS_ON",
+  "sources": [
+    {
+      "sourceType": "Metrics",
+      "condition": "$prefix(container.cpu)",
+      "mappingRules": [
+        {
+          "sourceProperty": "host.name",
+          "destinationProperty": "host.name"
+        }
+      ]
+    }
+  ]
+}
