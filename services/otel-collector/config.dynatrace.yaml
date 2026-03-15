@@ -69,13 +69,19 @@ receivers:
                 instance: 'raspberry-pi'
 
   # Infrastructure: supporting services for the game platform
-  prometheus/infrastructure:
+  # Split into separate receivers so each gets its own resource processor
+  # (service.name) in the Dynatrace pipelines.
+  prometheus/flagd:
     config:
       scrape_configs:
         - job_name: 'flagd'
           scrape_interval: 30s
           static_configs:
             - targets: ['flagd:8014']
+
+  prometheus/envoy:
+    config:
+      scrape_configs:
         - job_name: 'envoy'
           scrape_interval: 30s
           metrics_path: '/stats/prometheus'
@@ -129,6 +135,15 @@ processors:
     attributes:
       - key: service.name
         value: flagd
+        action: insert
+      - key: service.namespace
+        value: infrastructure
+        action: insert
+
+  resource/envoy:
+    attributes:
+      - key: service.name
+        value: envoy
         action: insert
       - key: service.namespace
         value: infrastructure
@@ -286,9 +301,14 @@ service:
       processors: [memory_limiter, batch/fast]
       exporters: [prometheusremotewrite]
 
-    # Infrastructure metrics — flagd (scraped, not OTLP-pushed)
-    metrics/infrastructure:
-      receivers: [prometheus/infrastructure]
+    # Infrastructure metrics — flagd + envoy (scraped, not OTLP-pushed)
+    metrics/flagd:
+      receivers: [prometheus/flagd]
+      processors: [memory_limiter, batch/fast]
+      exporters: [prometheusremotewrite]
+
+    metrics/envoy:
+      receivers: [prometheus/envoy]
       processors: [memory_limiter, batch/fast]
       exporters: [prometheusremotewrite]
 
@@ -329,9 +349,14 @@ service:
       processors: [memory_limiter, resourcedetection, resource/otel-collector, batch, cumulativetodelta]
       exporters: [otlphttp/dynatrace]
 
-    metrics/infrastructure-dynatrace:
-      receivers: [prometheus/infrastructure]
+    metrics/flagd-dynatrace:
+      receivers: [prometheus/flagd]
       processors: [memory_limiter, resourcedetection, resource/flagd, batch, cumulativetodelta]
+      exporters: [otlphttp/dynatrace]
+
+    metrics/envoy-dynatrace:
+      receivers: [prometheus/envoy]
+      processors: [memory_limiter, resourcedetection, resource/envoy, batch, cumulativetodelta]
       exporters: [otlphttp/dynatrace]
 
     logs/dynatrace:
