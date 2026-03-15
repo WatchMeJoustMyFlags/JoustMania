@@ -157,6 +157,34 @@ class TestButtonParsing:
         assert result["buttons"] & Button.CROSS
         assert not (result["buttons"] & Button.CIRCLE)
 
+    def test_report_with_report_id_prefix(self):
+        """hidraw on Linux includes the report ID byte (0x01) as the first byte.
+
+        When a 49-byte read returns [0x01, ...48 bytes of payload], the
+        report ID must be stripped so button bytes are at the correct offsets.
+        """
+        # Build a 48-byte payload with CROSS button pressed
+        payload = _build_test_report(buttons_lo=Button.CROSS)
+        # Prepend report ID 0x01 (simulating hidraw behavior)
+        data_with_id = bytes([0x01]) + payload[:48]
+        assert len(data_with_id) == 49  # Same total length as INPUT_REPORT_SIZE
+
+        result = parse_input_report(data_with_id)
+        assert result["buttons"] & Button.CROSS, "CROSS button should be detected with report ID prefix"
+        assert not (result["buttons"] & Button.MOVE), "MOVE should not be set"
+
+    def test_report_with_report_id_all_face_buttons(self):
+        """All face buttons pressed with report ID prefix."""
+        lo = Button.CROSS | Button.CIRCLE | Button.SQUARE | Button.TRIANGLE
+        payload = _build_test_report(buttons_lo=lo)
+        data_with_id = bytes([0x01]) + payload[:48]
+
+        result = parse_input_report(data_with_id)
+        assert result["buttons"] & Button.CROSS
+        assert result["buttons"] & Button.CIRCLE
+        assert result["buttons"] & Button.SQUARE
+        assert result["buttons"] & Button.TRIANGLE
+
 
 class TestTriggerParsing:
     """Test analog trigger value parsing."""

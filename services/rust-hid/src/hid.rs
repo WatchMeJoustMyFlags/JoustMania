@@ -285,17 +285,21 @@ pub fn battery_to_percent(raw: u8) -> i32 {
 /// `zcm2`: If true, decode accel/gyro as signed 16-bit two's complement
 /// (ZCM2/PS4-era). If false, decode as unsigned 16-bit offset by 0x8000.
 pub fn parse_input_report(data: &[u8], zcm2: bool) -> Result<ParsedInputReport, String> {
-    // Strip leading report ID byte (0x01) if present
-    let data = if data.len() > INPUT_REPORT_SIZE && data[0] == 0x01 {
+    // Strip leading report ID byte (0x01) if present.
+    // On Linux hidraw, the report ID is included in the read data, so a
+    // 49-byte read returns [0x01, ...48 bytes of payload].  The old check
+    // (len > 49) never triggered because the total was exactly 49.
+    let data = if data.len() >= INPUT_REPORT_SIZE && data[0] == 0x01 {
         &data[1..]
     } else {
         data
     };
 
-    if data.len() < INPUT_REPORT_SIZE {
+    if data.len() < INPUT_REPORT_SIZE - 1 {
         return Err(format!(
-            "Input report too short: {} bytes (need {INPUT_REPORT_SIZE})",
-            data.len()
+            "Input report too short: {} bytes (need at least {})",
+            data.len(),
+            INPUT_REPORT_SIZE - 1
         ));
     }
 
