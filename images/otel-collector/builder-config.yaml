@@ -23,10 +23,12 @@ extensions:
 receivers:
   # OTLP (gRPC + HTTP) — all services push here
   - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.147.0
-  # Prometheus scrape — node-exporter, flagd, victoria-metrics, self-telemetry
+  # Prometheus scrape — flagd, victoria-metrics, self-telemetry
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver v0.147.0
   # Filelog — tail Docker container JSON logs for non-OTLP services
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/filelogreceiver v0.147.0
+  # Host metrics — CPU, memory, disk, filesystem, load, network (replaces node-exporter)
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/hostmetricsreceiver v0.147.0
 
 processors:
   - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.147.0

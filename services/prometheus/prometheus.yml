@@ -44,14 +44,7 @@ scrape_configs:
     static_configs:
       - targets: ['localhost:9090']
 
-  # Node Exporter (host metrics - CPU, memory, disk, temperature)
-  - job_name: 'node'
-    scrape_interval: 30s
-    scrape_timeout: 25s
-    static_configs:
-      - targets: ['node-exporter:9100']
-        labels:
-          instance: 'raspberry-pi'
+  # Host metrics now collected by OTEL hostmetrics receiver (node-exporter removed)
 
   # flagd feature flag service (management port exposes Prometheus metrics)
   - job_name: 'flagd'

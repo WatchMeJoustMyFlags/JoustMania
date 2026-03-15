@@ -74,17 +74,24 @@ receivers:
       - type: remove
         field: attributes.time
 
-  # Host: OS-level metrics from the Raspberry Pi
-  prometheus/host:
-    config:
-      scrape_configs:
-        - job_name: 'node'
-          scrape_interval: 30s
-          scrape_timeout: 25s
-          static_configs:
-            - targets: ['node-exporter:9100']
-              labels:
-                instance: 'raspberry-pi'
+  # Host: OS-level metrics from the Raspberry Pi (replaces node-exporter)
+  # Requires hostfs volume mounts: /proc, /sys, / → /hostfs/
+  hostmetrics:
+    root_path: /hostfs/root
+    collection_interval: 30s
+    scrapers:
+      cpu:
+      memory:
+      disk:
+      filesystem:
+        exclude_mount_points:
+          match_type: regexp
+          mount_points: ['^/(sys|proc|dev|host|etc)($$|/)']
+      load:
+      network:
+        exclude:
+          match_type: regexp
+          interfaces: ['^(lo|veth.*|docker.*|br-.*)$$']
 
 processors:
   # Batch processor for better performance (traces/logs)
@@ -122,6 +129,9 @@ processors:
     attributes:
       - key: service.namespace
         value: host
+        action: insert
+      - key: service.name
+        value: node
         action: insert
 
   # Transform processor — promote Docker labels to OTEL resource attributes
@@ -229,9 +239,9 @@ service:
       processors: [memory_limiter, resource/infrastructure, batch/fast]
       exporters: [prometheusremotewrite]
 
-    # Host metrics — node-exporter (OS-level)
+    # Host metrics — OTEL hostmetrics receiver (replaces node-exporter)
     metrics/host:
-      receivers: [prometheus/host]
+      receivers: [hostmetrics]
       processors: [memory_limiter, resource/host, batch/fast]
       exporters: [prometheusremotewrite]
 

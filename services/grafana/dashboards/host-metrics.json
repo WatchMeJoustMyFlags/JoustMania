@@ -33,8 +33,6 @@
             "mode": "thresholds"
           },
           "mappings": [],
-          "max": 100,
-          "min": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -44,15 +42,15 @@
               },
               {
                 "color": "yellow",
-                "value": 70
+                "value": 2
               },
               {
                 "color": "red",
-                "value": 85
+                "value": 4
               }
             ]
           },
-          "unit": "celsius"
+          "unit": "short"
         },
         "overrides": []
       },
@@ -64,14 +62,16 @@
       },
       "id": 1,
       "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
           "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
-        "showThresholdLabels": false,
-        "showThresholdMarkers": true
+        "textMode": "auto"
       },
       "pluginVersion": "10.2.3",
       "targets": [
@@ -80,13 +80,13 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "node_hwmon_temp_celsius{job=\"host/node\"}",
-          "legendFormat": "CPU Temp",
+          "expr": "system_cpu_load_average_1m{job=\"host/node\"}",
+          "legendFormat": "Load 1m",
           "refId": "A"
         }
       ],
-      "title": "CPU Temperature",
-      "type": "gauge"
+      "title": "Load Average (1m)",
+      "type": "stat"
     },
     {
       "datasource": {
@@ -146,7 +146,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "100 - (avg(irate(node_cpu_seconds_total{mode=\"idle\",job=\"host/node\"}[5m])) * 100)",
+          "expr": "100 - (avg(irate(system_cpu_time_seconds_total{state=\"idle\",job=\"host/node\"}[5m])) * 100)",
           "legendFormat": "CPU Usage",
           "refId": "A"
         }
@@ -212,7 +212,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "100 * (1 - ((node_memory_MemAvailable_bytes{job=\"host/node\"} or node_memory_MemFree_bytes{job=\"host/node\"}) / node_memory_MemTotal_bytes{job=\"host/node\"}))",
+          "expr": "100 * system_memory_usage_bytes{state=\"used\",job=\"host/node\"} / (system_memory_usage_bytes{state=\"used\",job=\"host/node\"} + system_memory_usage_bytes{state=\"free\",job=\"host/node\"} + system_memory_usage_bytes{state=\"buffered\",job=\"host/node\"} + system_memory_usage_bytes{state=\"cached\",job=\"host/node\"})",
           "legendFormat": "Memory Usage",
           "refId": "A"
         }
@@ -278,7 +278,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "100 - ((node_filesystem_avail_bytes{job=\"host/node\",mountpoint=\"/\",fstype!=\"rootfs\"} / node_filesystem_size_bytes{job=\"host/node\",mountpoint=\"/\",fstype!=\"rootfs\"}) * 100)",
+          "expr": "100 * system_filesystem_usage_bytes{state=\"used\",job=\"host/node\",mountpoint=\"/\"} / (system_filesystem_usage_bytes{state=\"used\",job=\"host/node\",mountpoint=\"/\"} + system_filesystem_usage_bytes{state=\"free\",job=\"host/node\",mountpoint=\"/\"})",
           "legendFormat": "Disk Usage",
           "refId": "A"
         }
@@ -336,7 +336,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "node_time_seconds{job=\"host/node\"} - node_boot_time_seconds{job=\"host/node\"}",
+          "expr": "system_uptime_seconds{job=\"host/node\"}",
           "legendFormat": "Uptime",
           "refId": "A"
         }
@@ -402,7 +402,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "node_load1{job=\"host/node\"}",
+          "expr": "system_cpu_load_average_1m{job=\"host/node\"}",
           "legendFormat": "Load 1m",
           "refId": "A"
         }
@@ -553,12 +553,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by(mode) (irate(node_cpu_seconds_total{job=\"host/node\"}[5m])) * 100",
-          "legendFormat": "{{mode}}",
+          "expr": "sum by(state) (irate(system_cpu_time_seconds_total{job=\"host/node\"}[5m])) * 100",
+          "legendFormat": "{{state}}",
           "refId": "A"
         }
       ],
-      "title": "CPU Usage by Mode",
+      "title": "CPU Usage by State",
       "type": "timeseries"
     },
     {
@@ -702,7 +702,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "node_memory_MemTotal_bytes{job=\"host/node\"} - node_memory_MemFree_bytes{job=\"host/node\"} - node_memory_Buffers_bytes{job=\"host/node\"} - node_memory_Cached_bytes{job=\"host/node\"}",
+          "expr": "system_memory_usage_bytes{state=\"used\",job=\"host/node\"}",
           "legendFormat": "Used",
           "refId": "A"
         },
@@ -711,7 +711,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "node_memory_Buffers_bytes{job=\"host/node\"}",
+          "expr": "system_memory_usage_bytes{state=\"buffered\",job=\"host/node\"}",
           "legendFormat": "Buffers",
           "refId": "B"
         },
@@ -720,7 +720,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "node_memory_Cached_bytes{job=\"host/node\"}",
+          "expr": "system_memory_usage_bytes{state=\"cached\",job=\"host/node\"}",
           "legendFormat": "Cached",
           "refId": "C"
         },
@@ -729,7 +729,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "node_memory_MemFree_bytes{job=\"host/node\"}",
+          "expr": "system_memory_usage_bytes{state=\"free\",job=\"host/node\"}",
           "legendFormat": "Free",
           "refId": "D"
         }
@@ -797,7 +797,7 @@
               }
             ]
           },
-          "unit": "celsius"
+          "unit": "percent"
         },
         "overrides": []
       },
@@ -827,12 +827,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "node_hwmon_temp_celsius{job=\"host/node\"}",
-          "legendFormat": "CPU Temperature",
+          "expr": "100 - (avg(irate(system_cpu_time_seconds_total{state=\"idle\",job=\"host/node\"}[5m])) * 100)",
+          "legendFormat": "CPU Usage %",
           "refId": "A"
         }
       ],
-      "title": "CPU Temperature Over Time",
+      "title": "CPU Usage Over Time",
       "type": "timeseries"
     },
     {
@@ -915,7 +915,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "node_load1{job=\"host/node\"}",
+          "expr": "system_cpu_load_average_1m{job=\"host/node\"}",
           "legendFormat": "1 min",
           "refId": "A"
         },
@@ -924,7 +924,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "node_load5{job=\"host/node\"}",
+          "expr": "system_cpu_load_average_5m{job=\"host/node\"}",
           "legendFormat": "5 min",
           "refId": "B"
         },
@@ -933,7 +933,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "node_load15{job=\"host/node\"}",
+          "expr": "system_cpu_load_average_15m{job=\"host/node\"}",
           "legendFormat": "15 min",
           "refId": "C"
         }
@@ -1034,7 +1034,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "irate(node_network_receive_bytes_total{job=\"host/node\",device!~\"lo|veth.*|docker.*|br-.*\"}[5m])",
+          "expr": "irate(system_network_io_bytes_total{job=\"host/node\",direction=\"receive\"}[5m])",
           "legendFormat": "{{device}} Receive",
           "refId": "A"
         },
@@ -1043,7 +1043,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "irate(node_network_transmit_bytes_total{job=\"host/node\",device!~\"lo|veth.*|docker.*|br-.*\"}[5m])",
+          "expr": "irate(system_network_io_bytes_total{job=\"host/node\",direction=\"transmit\"}[5m])",
           "legendFormat": "{{device}} Transmit",
           "refId": "B"
         }
@@ -1144,7 +1144,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "irate(node_disk_read_bytes_total{job=\"host/node\",device!~\"loop.*\"}[5m])",
+          "expr": "irate(system_disk_io_bytes_total{job=\"host/node\",direction=\"read\",device!~\"loop.*\"}[5m])",
           "legendFormat": "{{device}} Read",
           "refId": "A"
         },
@@ -1153,7 +1153,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "irate(node_disk_written_bytes_total{job=\"host/node\",device!~\"loop.*\"}[5m])",
+          "expr": "irate(system_disk_io_bytes_total{job=\"host/node\",direction=\"write\",device!~\"loop.*\"}[5m])",
           "legendFormat": "{{device}} Write",
           "refId": "B"
         }
@@ -1219,7 +1219,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "100 - ((node_filesystem_avail_bytes{job=\"host/node\",fstype!~\"tmpfs|overlay\",mountpoint!~\"/run.*|/sys.*|/proc.*\"} / node_filesystem_size_bytes{job=\"host/node\",fstype!~\"tmpfs|overlay\",mountpoint!~\"/run.*|/sys.*|/proc.*\"}) * 100)",
+          "expr": "100 * system_filesystem_usage_bytes{state=\"used\",job=\"host/node\",type!~\"tmpfs|overlay\",mountpoint!~\"/run.*|/sys.*|/proc.*\"} / (system_filesystem_usage_bytes{state=\"used\",job=\"host/node\",type!~\"tmpfs|overlay\",mountpoint!~\"/run.*|/sys.*|/proc.*\"} + system_filesystem_usage_bytes{state=\"free\",job=\"host/node\",type!~\"tmpfs|overlay\",mountpoint!~\"/run.*|/sys.*|/proc.*\"})",
           "legendFormat": "{{mountpoint}}",
           "refId": "A"
         }
