@@ -29,6 +29,8 @@ receivers:
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/filelogreceiver v0.147.0
   # Host metrics — CPU, memory, disk, filesystem, load, network (replaces node-exporter)
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/hostmetricsreceiver v0.147.0
+  # Docker stats — per-container CPU, memory, network, block I/O
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/dockerstatsreceiver v0.147.0
 
 processors:
   - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.147.0

@@ -75,6 +75,30 @@ receivers:
           match_type: regexp
           interfaces: ['^(lo|veth.*|docker.*|br-.*)$$']
 
+  # Container metrics — per-container CPU, memory, network, block I/O
+  # Requires Docker socket mount: /var/run/docker.sock
+  docker_stats:
+    endpoint: unix:///var/run/docker.sock
+    collection_interval: 30s
+    provide_per_core_cpu_metrics: false
+    metrics:
+      container.cpu.usage.total:
+        enabled: true
+      container.memory.usage.total:
+        enabled: true
+      container.memory.usage.limit:
+        enabled: true
+      container.network.io.usage.rx_bytes:
+        enabled: true
+      container.network.io.usage.tx_bytes:
+        enabled: true
+      container.blockio.io_service_bytes_recursive:
+        enabled: true
+      container.cpu.percent:
+        enabled: true
+      container.memory.percent:
+        enabled: true
+
   # Infrastructure: supporting services for the game platform
   prometheus/infrastructure:
     config:
@@ -129,6 +153,12 @@ processors:
         action: insert
       - key: service.name
         value: node
+        action: insert
+
+  resource/containers:
+    attributes:
+      - key: service.namespace
+        value: containers
         action: insert
 
   # Resource processors for scraped targets — Dynatrace needs service.name
@@ -290,6 +320,12 @@ service:
       processors: [memory_limiter, resource/host, batch/fast]
       exporters: [prometheusremotewrite]
 
+    # Container metrics — per-container resource usage from Docker API
+    metrics/containers:
+      receivers: [docker_stats]
+      processors: [memory_limiter, resource/containers, batch/fast]
+      exporters: [prometheusremotewrite]
+
     # Observability metrics — victoria-metrics, prometheus, otel-collector
     metrics/observability:
       receivers: [prometheus/observability]
@@ -332,6 +368,11 @@ service:
     metrics/host-dynatrace:
       receivers: [hostmetrics]
       processors: [memory_limiter, resourcedetection, resource/host, batch, cumulativetodelta]
+      exporters: [otlphttp/dynatrace]
+
+    metrics/containers-dynatrace:
+      receivers: [docker_stats]
+      processors: [memory_limiter, resourcedetection, resource/containers, batch, cumulativetodelta]
       exporters: [otlphttp/dynatrace]
 
     metrics/observability-dynatrace:

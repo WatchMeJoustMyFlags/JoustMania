@@ -137,6 +137,7 @@ services:
     volumes:
       - ./services/otel-collector/config.yaml:/etc/otel-collector-config.yaml:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
       # Host filesystem mounts for hostmetrics receiver (replaces node-exporter)
       - /proc:/hostfs/proc:ro
       - /sys:/hostfs/sys:ro
