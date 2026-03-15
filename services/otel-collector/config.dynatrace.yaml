@@ -246,7 +246,7 @@ processors:
     timeout: 5s
     override: false
     system:
-      hostname_sources: ["os"]
+      hostname_sources: ["lookup"]
       resource_attributes:
         host.name:
           enabled: true

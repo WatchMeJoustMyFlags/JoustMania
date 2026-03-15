@@ -142,6 +142,9 @@ services:
       - /proc:/hostfs/proc:ro
       - /sys:/hostfs/sys:ro
       - /:/hostfs/root:ro
+      # Host identity for resourcedetection processor (real hostname + machine-id)
+      - /etc/hostname:/etc/hostname:ro
+      - /etc/machine-id:/etc/machine-id:ro
     ports:
       # OTLP gRPC - exposed for host-network containers (pairing-daemon)
       - "4317:4317"
