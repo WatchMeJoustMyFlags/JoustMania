@@ -115,7 +115,8 @@ def init_flag_domain(domain: str) -> None:
             port=flagd_port,
             resolver_type=ResolverType.IN_PROCESS,
             selector=f"flagSetId={domain}",
-            keep_alive_time=30000,  # 30s — default 0 causes 1ms pings → flagd GOAWAY
+            keep_alive_time=600000,  # 10min — flagd's Go gRPC server enforces MinPingInterval=5min;
+            # 30s pings triggered GOAWAY(ENHANCE_YOUR_CALM) → gRPC C-core epoll1 crash on ARM
         )
         api.set_provider(provider, domain=domain)
         _initialized_domains.add(domain)
