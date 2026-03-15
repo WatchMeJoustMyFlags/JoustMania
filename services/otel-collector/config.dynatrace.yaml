@@ -183,6 +183,31 @@ processors:
           - key: service.name
             value: "^(controller-manager|game-coordinator|menu|audio|pairing-daemon|otel-collector|connect-proxy|rust-hid|python-hid)$"
 
+  # Resource detection — auto-enrich all signals with host, OS, and container
+  # metadata for Dynatrace Smartscape topology (host → process → service).
+  # override: false preserves SDK-set attributes (service.name, host.name, etc.).
+  resourcedetection:
+    detectors: [env, system, docker]
+    timeout: 5s
+    override: false
+    system:
+      hostname_sources: ["os"]
+      resource_attributes:
+        host.name:
+          enabled: true
+        host.id:
+          enabled: true
+        os.type:
+          enabled: true
+    docker:
+      resource_attributes:
+        container.id:
+          enabled: true
+        container.image.name:
+          enabled: true
+        container.image.tag:
+          enabled: true
+
   # Cumulative-to-delta processor for Dynatrace.
   # Dynatrace requires delta temporality for counters; the local stack
   # (VictoriaMetrics/Prometheus) expects cumulative. This processor is only
@@ -288,38 +313,38 @@ service:
 
     traces/dynatrace:
       receivers: [otlp]
-      processors: [memory_limiter, batch, resource]
+      processors: [memory_limiter, resourcedetection, batch, resource]
       exporters: [otlphttp/dynatrace]
 
     metrics/dynatrace:
       receivers: [otlp]
-      processors: [memory_limiter, batch, resource, cumulativetodelta]
+      processors: [memory_limiter, resourcedetection, batch, resource, cumulativetodelta]
       exporters: [otlphttp/dynatrace]
 
     metrics/host-dynatrace:
       receivers: [prometheus/host]
-      processors: [memory_limiter, resource/host, batch, cumulativetodelta]
+      processors: [memory_limiter, resourcedetection, resource/host, batch, cumulativetodelta]
       exporters: [otlphttp/dynatrace]
 
     metrics/observability-dynatrace:
       receivers: [prometheus/observability]
-      processors: [memory_limiter, resource/otel-collector, batch, cumulativetodelta]
+      processors: [memory_limiter, resourcedetection, resource/otel-collector, batch, cumulativetodelta]
       exporters: [otlphttp/dynatrace]
 
     metrics/infrastructure-dynatrace:
       receivers: [prometheus/infrastructure]
-      processors: [memory_limiter, resource/flagd, batch, cumulativetodelta]
+      processors: [memory_limiter, resourcedetection, resource/flagd, batch, cumulativetodelta]
       exporters: [otlphttp/dynatrace]
 
     logs/dynatrace:
       receivers: [otlp]
-      processors: [memory_limiter, batch, resource]
+      processors: [memory_limiter, resourcedetection, batch, resource]
       exporters: [otlphttp/dynatrace]
 
     # Container logs to Dynatrace — container.* attributes create proper entities
     logs/containers-dynatrace:
       receivers: [filelog/docker]
-      processors: [memory_limiter, transform/docker_logs, filter/exclude_otlp_services, batch, resource]
+      processors: [memory_limiter, transform/docker_logs, filter/exclude_otlp_services, resourcedetection, batch, resource]
       exporters: [otlphttp/dynatrace]
 
     # ── Bizevents pipeline (acceleration → Dynatrace business events) ─

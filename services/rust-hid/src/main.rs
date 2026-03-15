@@ -100,6 +100,11 @@ fn build_otel_resource() -> opentelemetry_sdk::Resource {
         KeyValue::new("service.instance.id", instance_id),
         KeyValue::new("deployment.environment", environment),
         KeyValue::new("host.name", hostname),
+        KeyValue::new("process.pid", std::process::id() as i64),
+        KeyValue::new("process.executable.name", "rust-hid"),
+        KeyValue::new("process.runtime.name", "rustc"),
+        KeyValue::new("telemetry.sdk.name", "opentelemetry"),
+        KeyValue::new("telemetry.sdk.language", "rust"),
     ])
 }
 
