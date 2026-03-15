@@ -21,6 +21,9 @@ services:
       - ./services/otel-collector/config.dynatrace.yaml:/etc/otel-collector-config.yaml:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /proc:/hostfs/proc:ro
+      - /sys:/hostfs/sys:ro
+      - /:/hostfs/root:ro
     environment:
       - DYNATRACE_ENDPOINT=${DYNATRACE_ENDPOINT}
       - DYNATRACE_API_TOKEN=${DYNATRACE_API_TOKEN}

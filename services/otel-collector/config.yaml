@@ -74,17 +74,48 @@ receivers:
       - type: remove
         field: attributes.time
 
-  # Host: OS-level metrics from the Raspberry Pi
-  prometheus/host:
-    config:
-      scrape_configs:
-        - job_name: 'node'
-          scrape_interval: 30s
-          scrape_timeout: 25s
-          static_configs:
-            - targets: ['node-exporter:9100']
-              labels:
-                instance: 'raspberry-pi'
+  # Host: OS-level metrics from the Raspberry Pi (replaces node-exporter)
+  # Requires hostfs volume mounts: /proc, /sys, / → /hostfs/
+  hostmetrics:
+    root_path: /hostfs/root
+    collection_interval: 30s
+    scrapers:
+      cpu:
+      memory:
+      disk:
+      filesystem:
+        exclude_mount_points:
+          match_type: regexp
+          mount_points: ['^/(sys|proc|dev|host|etc)($$|/)']
+      load:
+      network:
+        exclude:
+          match_type: regexp
+          interfaces: ['^(lo|veth.*|docker.*|br-.*)$$']
+
+  # Container metrics — per-container CPU, memory, network, block I/O
+  # Requires Docker socket mount: /var/run/docker.sock
+  docker_stats:
+    endpoint: unix:///var/run/docker.sock
+    collection_interval: 30s
+    provide_per_core_cpu_metrics: false
+    metrics:
+      container.cpu.usage.total:
+        enabled: true
+      container.memory.usage.total:
+        enabled: true
+      container.memory.usage.limit:
+        enabled: true
+      container.network.io.usage.rx_bytes:
+        enabled: true
+      container.network.io.usage.tx_bytes:
+        enabled: true
+      container.blockio.io_service_bytes_recursive:
+        enabled: true
+      container.cpu.percent:
+        enabled: true
+      container.memory.percent:
+        enabled: true
 
 processors:
   # Batch processor for better performance (traces/logs)
@@ -122,6 +153,15 @@ processors:
     attributes:
       - key: service.namespace
         value: host
+        action: insert
+      - key: service.name
+        value: node
+        action: insert
+
+  resource/containers:
+    attributes:
+      - key: service.namespace
+        value: containers
         action: insert
 
   # Transform processor — promote Docker labels to OTEL resource attributes
@@ -229,10 +269,16 @@ service:
       processors: [memory_limiter, resource/infrastructure, batch/fast]
       exporters: [prometheusremotewrite]
 
-    # Host metrics — node-exporter (OS-level)
+    # Host metrics — OTEL hostmetrics receiver (replaces node-exporter)
     metrics/host:
-      receivers: [prometheus/host]
+      receivers: [hostmetrics]
       processors: [memory_limiter, resource/host, batch/fast]
+      exporters: [prometheusremotewrite]
+
+    # Container metrics — per-container resource usage from Docker API
+    metrics/containers:
+      receivers: [docker_stats]
+      processors: [memory_limiter, resource/containers, batch/fast]
       exporters: [prometheusremotewrite]
 
     # Logs pipeline
