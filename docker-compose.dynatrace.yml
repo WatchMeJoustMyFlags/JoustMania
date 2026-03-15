@@ -24,6 +24,8 @@ services:
       - /proc:/hostfs/proc:ro
       - /sys:/hostfs/sys:ro
       - /:/hostfs/root:ro
+      - /etc/hostname:/etc/hostname:ro
+      - /etc/machine-id:/etc/machine-id:ro
     environment:
       - DYNATRACE_ENDPOINT=${DYNATRACE_ENDPOINT}
       - DYNATRACE_API_TOKEN=${DYNATRACE_API_TOKEN}
