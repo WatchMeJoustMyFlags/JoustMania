@@ -15,6 +15,7 @@
 # Environment Variables (can be set in shell or .env file):
 # - IMAGE_TAG: Image tag to use [default: latest]
 # - LOG_LEVEL: Logging level for all services (DEBUG, INFO, WARNING, ERROR) [default: INFO]
+# - JOUSTMANIA_HOST: Hostname for OTEL resource attributes (Dynatrace Smartscape) [default: joustmania]
 #
 # Controller backend is configured via the "controller_backend" flag in flagd (performance domain).
 #
@@ -76,6 +77,7 @@ services:
       - "otel-collector:4317"
     environment:
       - OTEL_SERVICE_NAME=flagd
+      - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
     volumes:
       # Mount directory (not individual files) so inotify detects edits
       # (editors do atomic save via temp+rename, which changes the inode)
@@ -224,6 +226,7 @@ services:
       - OTEL_SERVICE_NAME=controller-manager-service
       - OTEL_SERVICE_NAMESPACE=infrastructure
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
       - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
       # Rust HID service for canary controller I/O backend
@@ -277,6 +280,7 @@ services:
       - DBUS_SYSTEM_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket
       - OTEL_SERVICE_NAME=pairing-daemon
       - OTEL_SERVICE_NAMESPACE=infrastructure
+      - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
       # localhost because network_mode:host can't use Docker DNS
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
@@ -312,6 +316,7 @@ services:
       - OTEL_SERVICE_NAME=rust-hid
       - OTEL_SERVICE_NAMESPACE=infrastructure
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
       - RUST_LOG=info
     restart: unless-stopped
@@ -344,6 +349,7 @@ services:
       - OTEL_SERVICE_NAME=python-hid
       - OTEL_SERVICE_NAMESPACE=infrastructure
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
       - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
     restart: unless-stopped
@@ -372,6 +378,7 @@ services:
       - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME_GAME_COORDINATOR:-game-coordinator-service}
       - OTEL_SERVICE_NAMESPACE=joustmania
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+      - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
       - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
     depends_on:
@@ -407,6 +414,7 @@ services:
       - OTEL_SERVICE_NAME=menu-service
       - OTEL_SERVICE_NAMESPACE=joustmania
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
       - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
       # Phase 60: Audio service connection
@@ -456,6 +464,7 @@ services:
       - OTEL_SERVICE_NAME=audio-service
       - OTEL_SERVICE_NAMESPACE=joustmania
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
       - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
       - FLAGD_HOST=flagd
@@ -629,6 +638,7 @@ services:
       - OTEL_SERVICE_NAME=connect-proxy
       - OTEL_SERVICE_NAMESPACE=infrastructure
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
     volumes:
       - ./services/flagd:/etc/flagd/flags
