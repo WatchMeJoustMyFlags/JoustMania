@@ -201,11 +201,9 @@ processors:
           enabled: true
     docker:
       resource_attributes:
-        container.id:
+        container.name:
           enabled: true
         container.image.name:
-          enabled: true
-        container.image.tag:
           enabled: true
 
   # Cumulative-to-delta processor for Dynatrace.
