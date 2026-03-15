@@ -4,14 +4,13 @@ Centralized Bluetooth Discovery for multi-adapter setups.
 Manages all Bluetooth adapters for setups with multiple USB BT dongles.
 Each adapter supports ~7 controllers, so multi-adapter setups scale capacity.
 
-Supports two discovery modes:
-- "bluez": Scans via BlueZ D-Bus per adapter (for psmoveapi/BluetoothBackend)
-- "hidapi": Scans via hid.enumerate() with BlueZ cross-ref for adapter affinity
+Scans via hid.enumerate() with BlueZ cross-ref for adapter affinity.
 """
 
 from __future__ import annotations
 
 import logging
+import pathlib
 
 from services.controller_manager import bluetooth, metrics
 
@@ -27,22 +26,13 @@ class CentralizedBTDiscovery:
     - Adapter affinity tracking (which adapter each address is on)
     - Periodic refresh for hot-plug support
 
-    Discovery modes:
-    - "bluez": Uses BlueZ get_attached_addresses() per adapter.
-      Best for psmoveapi (BluetoothBackend) which uses BlueZ for pairing.
-    - "hidapi": Uses hid.enumerate() for device discovery, with BlueZ
-      cross-reference for adapter affinity. Best for HidapiBackend which
-      talks to controllers via HID (hidraw) instead of BlueZ.
+    Uses hid.enumerate() for device discovery, with BlueZ cross-reference
+    for adapter affinity.
     """
 
-    def __init__(self, discovery_mode: str = "bluez"):
-        self._discovery_mode = discovery_mode
+    def __init__(self):
         self._adapters: dict[str, str] = {}  # {hci: bt_address}
         self._address_to_adapter: dict[str, str] = {}  # {normalized_addr: hci}
-
-    @property
-    def discovery_mode(self) -> str:
-        return self._discovery_mode
 
     @property
     def adapters(self) -> dict[str, str]:
@@ -63,6 +53,40 @@ class CentralizedBTDiscovery:
         Accepts addresses in any format (with/without colons).
         """
         return self._address_to_adapter.get(self._normalize_address(address))
+
+    def _resolve_via_pairing_dir(self, serials: set[str]) -> int:
+        """Resolve adapter affinity from BlueZ pairing directories.
+
+        BlueZ stores paired devices under /var/lib/bluetooth/<adapter-addr>/<device-addr>/.
+        Builds a reverse map from adapter BT address to hci name, then checks
+        which adapter directory contains each device serial.
+
+        Returns the number of newly resolved devices.
+        """
+        bt_dir = pathlib.Path("/var/lib/bluetooth")
+        if not bt_dir.exists():
+            return 0
+
+        # Reverse map: adapter BT address (uppercase) -> hci name
+        addr_to_hci = {addr.upper().replace(":", ""): hci for hci, addr in self._adapters.items()}
+
+        resolved_count = 0
+        for normalized in serials:
+            if normalized in self._address_to_adapter:
+                continue
+            # Format as colon-separated MAC for directory lookup
+            mac = ":".join(normalized[i : i + 2] for i in range(0, 12, 2))
+            for adapter_dir in bt_dir.iterdir():
+                if not adapter_dir.is_dir() or adapter_dir.name in ("cache", "settings"):
+                    continue
+                if (adapter_dir / mac).exists():
+                    adapter_key = self._normalize_address(adapter_dir.name)
+                    hci = addr_to_hci.get(adapter_key)
+                    if hci:
+                        self._address_to_adapter[normalized] = hci
+                        resolved_count += 1
+                        break
+        return resolved_count
 
     async def initialize(self) -> dict[str, str]:
         """Enumerate all BT adapters and enable them. Returns adapter dict."""
@@ -86,31 +110,10 @@ class CentralizedBTDiscovery:
     async def get_all_attached_addresses(self) -> list[str]:
         """Scan for attached device addresses. Updates affinity map.
 
-        Uses the configured discovery_mode:
-        - "bluez": scans each adapter via BlueZ D-Bus
-        - "hidapi": enumerates HID devices, cross-refs with BlueZ for affinity
+        Enumerates HID devices via hidapi, then cross-references with BlueZ
+        for adapter affinity.
         """
-        if self._discovery_mode == "hidapi":
-            return await self._scan_via_hidapi()
-        return await self._scan_via_bluez()
-
-    async def _scan_via_bluez(self) -> list[str]:
-        """Scan via BlueZ D-Bus per adapter."""
-        all_addresses: list[str] = []
-        self._address_to_adapter.clear()
-
-        for hci in self._adapters:
-            try:
-                addresses = await bluetooth.get_attached_addresses(hci)
-                for addr in addresses:
-                    key = self._normalize_address(addr)
-                    if key not in self._address_to_adapter:
-                        self._address_to_adapter[key] = hci
-                        all_addresses.append(addr)
-            except Exception:
-                logger.exception(f"Failed to scan {hci}")
-
-        return all_addresses
+        return await self._scan_via_hidapi()
 
     async def _scan_via_hidapi(self) -> list[str]:
         """Scan via hid.enumerate() with BlueZ cross-reference for adapter affinity."""
@@ -141,6 +144,15 @@ class CentralizedBTDiscovery:
                         self._address_to_adapter[key] = hci
             except Exception:
                 logger.exception(f"Failed to scan {hci} for adapter affinity")
+
+        # Pairing directory fallback for devices not found in BlueZ D-Bus.
+        # BlueZ stores pairings at /var/lib/bluetooth/<adapter>/<device>/.
+        # This resolves uhid devices whose sysfs paths lack hci info.
+        unresolved = seen - set(self._address_to_adapter.keys())
+        if unresolved:
+            count = self._resolve_via_pairing_dir(unresolved)
+            if count:
+                logger.info(f"Pairing directory resolved adapter affinity for {count} device(s)")
 
         return hid_serials
 

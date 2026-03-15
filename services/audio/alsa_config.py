@@ -81,12 +81,44 @@ def _resolve_card_number(card: str) -> int:
     return _auto_detect_card()
 
 
-def _auto_detect_card() -> int:
-    """Auto-detect the first available ALSA card with retry, falling back to 0.
+def _pick_best_card(indexes: list[int]) -> tuple[int, str]:
+    """Pick the best card from available indexes, preferring USB over built-in.
 
-    Retries up to _DETECT_MAX_RETRIES times with a delay between attempts.
-    This handles the startup race where /dev/snd is not yet populated when
-    the container starts (common with USB audio on Raspberry Pi).
+    On Raspberry Pi, HDMI cards (vc4-hdmi) are enumerated first but are
+    usually not connected to speakers. USB audio cards are the typical
+    output device for JoustMania. This selects the first USB card if one
+    exists, otherwise falls back to the first available card.
+
+    Returns:
+        (card_index, card_name) tuple.
+    """
+    import alsaaudio
+
+    cards = []
+    for idx in indexes:
+        try:
+            name = alsaaudio.card_name(idx)[0]
+        except Exception:
+            name = "unknown"
+        cards.append((idx, name))
+
+    for idx, name in cards:
+        if "USB" in name.upper():
+            logger.info("Detected ALSA cards: %s — preferring USB card %d (%s)", cards, idx, name)
+            return idx, name
+
+    idx, name = cards[0]
+    logger.info("Detected ALSA cards: %s — no USB card found, using card %d (%s)", cards, idx, name)
+    return idx, name
+
+
+def _auto_detect_card() -> int:
+    """Auto-detect the best available ALSA card with retry, falling back to 0.
+
+    Prefers USB audio cards over built-in HDMI. Retries up to
+    _DETECT_MAX_RETRIES times with a delay between attempts to handle the
+    startup race where /dev/snd is not yet populated (common with USB audio
+    on Raspberry Pi).
     """
     for attempt in range(_DETECT_MAX_RETRIES):
         try:
@@ -113,12 +145,7 @@ def _auto_detect_card() -> int:
             time.sleep(_DETECT_RETRY_DELAY_S)
             continue
 
-        card_index = indexes[0]
-        try:
-            name = alsaaudio.card_name(card_index)[0]
-        except Exception:
-            name = "unknown"
-        logger.info("Detected ALSA card indexes: %s — using card %d (%s)", indexes, card_index, name)
+        card_index, _ = _pick_best_card(indexes)
         return card_index
 
     return 0

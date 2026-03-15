@@ -1,7 +1,9 @@
 configs:
   - id: service-health-overview
     type:
-      api: document
+      document:
+        kind: dashboard
+        private: false
     config:
       name: "JoustMania - Service Health Overview"
       template: service-health-overview.json

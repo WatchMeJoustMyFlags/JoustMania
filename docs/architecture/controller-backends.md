@@ -7,11 +7,9 @@ The controller manager uses a two-layer backend system:
 1. **ControllerBackend** — high-level async interface used by the servicer
 2. **ControllerIOAdapter** — thin sync I/O interface for raw hardware communication
 
-When the `multiplexer_backend_enabled` flag is on (default for new deployments), `MultiplexerBackend` orchestrates one or more adapters with centralized state tracking. When off, legacy standalone backends are used directly.
+`MultiplexerBackend` orchestrates one or more adapters with centralized state tracking.
 
 ## Architecture
-
-### Multiplexer Path (recommended)
 
 ```
 ┌──────────────────────────────────────────────────┐
@@ -32,22 +30,16 @@ When the `multiplexer_backend_enabled` flag is on (default for new deployments),
 │  - Adapter affinity tracking                       │
 └──────────────┬───────────────────────────────────┘
                │
-     ┌─────────┼─────────┐
-     ▼         ▼         ▼
-┌──────────┐ ┌────────┐ ┌──────────┐
-│ PsMove   │ │ Hidapi │ │  Mock    │
-│ Adapter  │ │Adapter │ │ Adapter  │
-│          │ │        │ │          │
-│ psmoveapi│ │libhidapi│ │ Testing  │
-│ + BlueZ  │ │(Linux) │ │ (No HW)  │
-└──────────┘ └────────┘ └──────────┘
-```
-
-### Legacy Path (multiplexer disabled)
-
-```
-ControllerManagerServicer → ControllerBackend (direct)
-  → BluetoothBackend | HidapiBackend | MockBackend
+     ┌────────┴────────┬────────────┐
+     ▼                ▼            ▼
+  ┌────────┐   ┌──────────┐  ┌────────┐
+  │ Python │   │  Rust   │  │  Mock  │
+  │Adapter │   │ Adapter  │  │Adapter │
+  │        │   │          │  │        │
+  │ gRPC → │   │ gRPC →  │  │Testing │
+  │python- │   │ rust-hid │  │(No HW) │
+  │  hid   │   │          │  │        │
+  └────────┘   └──────────┘  └────────┘
 ```
 
 ## Adapters (ControllerIOAdapter)
@@ -57,7 +49,7 @@ Adapters handle device handles and raw I/O only. All methods are sync (blocking)
 **Interface** (`multiplexer/adapter.py`):
 ```python
 class ControllerIOAdapter(ABC):
-    adapter_type: str              # "psmove", "hidapi", "mock"
+    adapter_type: str              # "python", "rust", "mock"
     def discover(force=False) -> list[str]
     def open(serial) -> bool
     def poll(serial) -> dict | None
@@ -68,23 +60,29 @@ class ControllerIOAdapter(ABC):
 
 `set_output()` combines LED + rumble in one call — this matches HID output report reality and prevents rumble from being reset when LEDs refresh.
 
-### PsMoveAdapter
+### PythonHidAdapter
 
-**File**: `multiplexer/psmove_adapter.py`
+**File**: `multiplexer/python_hid_adapter.py`
 
-Uses the `psmove` C library. Handles are opened during `discover()` since psmove uses an index-based API. Includes retry logic for flaky USB enumeration.
+Delegates all HID I/O to the `python-hid` gRPC service (port 50059). Uses sync `grpc.insecure_channel` (called via `asyncio.to_thread()` like other adapters). Architecturally mirrors `RustAdapter` — both are gRPC clients to standalone HID services implementing `psmove_hid.proto`.
 
-### HidapiAdapter
-
-**File**: `multiplexer/hidapi_adapter.py`
-
-Uses `hid` (hidapi) library. Reads HID input reports via `device.read()`, parses via `lib.psmove_hid.parse_input_report()`. Normalizes serials (uppercase, no colons).
+- Environment variables: `PYTHON_HID_HOST` (default: `localhost`), `PYTHON_HID_PORT` (default: `50059`)
 
 ### MockAdapter
 
 **File**: `multiplexer/mock_adapter.py`
 
 Simulated I/O for testing without hardware. Extra methods for `MockControllerService`: `add_controller()`, `remove_controller()`, `add_observer()`, `get_led_color()`.
+
+### RustAdapter
+
+**File**: `multiplexer/rust_adapter.py`
+
+Delegates all HID I/O to the `rust-hid` gRPC service (port 50058). Uses sync `grpc.insecure_channel` (called via `asyncio.to_thread()` like other adapters). A background thread manages a bidirectional `StreamIO` stream for continuous sensor data and output commands.
+
+- `poll()` reads from a cached sensor data dict (last-write-wins per serial)
+- `set_output()` queues an `IOCommand` on a bounded queue (capacity 256)
+- Environment variables: `RUST_HID_HOST` (default: `localhost`), `RUST_HID_PORT` (default: `50058`)
 
 ### ChaosAdapter (Fault Injection)
 
@@ -147,36 +145,30 @@ The `controller_backend` flag accepts comma-separated values to run multiple ada
 "controller_backend": { "defaultVariant": "mock,bluetooth" }
 ```
 
-This creates a `MultiplexerBackend` with both a `MockAdapter` and a `PsMoveAdapter`, allowing real and simulated controllers in the same session. Valid combinations:
+This creates a `MultiplexerBackend` with both a `MockAdapter` and a `PythonHidAdapter`, allowing real and simulated controllers in the same session. Valid combinations:
 - `mock` — mock only
-- `bluetooth` — psmove only
-- `hidapi` — hidapi only
-- `mock,bluetooth` — mock + psmove
-- `mock,hidapi` — mock + hidapi
-
-Invalid: `bluetooth,hidapi` (both use the same hardware).
+- `python` — python-hid only
+- `rust` — rust-hid only
+- `python,rust` — python-hid + rust-hid (default)
+- `mock,python` — mock + python-hid
+- `mock,rust` — mock + rust-hid
 
 ## Backend Selection
 
 ### Priority
 
 1. **OpenFeature flag** (`controller_backend` in performance domain) — runtime-switchable via flagd
-2. **Default** — Linux bluetooth backend
-
-### Multiplexer Toggle
-
-When `multiplexer_backend_enabled` is `true`, the factory creates adapters wrapped in `MultiplexerBackend`. When `false`, legacy standalone backends are used.
+2. **Default** — `python,rust` (both adapters loaded)
 
 ### Fallback
 
-If the flagd flag is empty or flagd is unavailable, the system defaults to `BluetoothBackend` (legacy path).
+If the flagd flag is empty or flagd is unavailable, the system defaults to the `python,rust` backend configuration.
 
 ## Configuration (flagd)
 
 | Flag | Domain | Values | Default | Description |
 |------|--------|--------|---------|-------------|
-| `controller_backend` | performance | `bluetooth`, `mock`, `hidapi`, comma-separated | `bluetooth` | Select backend(s) |
-| `multiplexer_backend_enabled` | performance | `true`, `false` | `false` | Use adapter-based multiplexer |
+| `controller_backend` | performance | `mock`, `python`, `rust`, comma-separated | `python,rust` | Select backend(s) |
 | `mock_controller_count` | performance | 2, 4, 6, 8 | 4 | Mock controllers count |
 | `chaos_fault_type` | performance | `none`, `poll_drop`, `accel_spike`, `led_failure`, `disconnect` | `none` | Fault injection (use fractional targeting) |
 
@@ -203,3 +195,9 @@ make up-mock  # Uses CI flagd config (controller_backend=mock)
 - [ControllerBackend Interface](../../services/controller_manager/backend.py)
 - [ControllerIOAdapter ABC](../../services/controller_manager/multiplexer/adapter.py)
 - [MultiplexerBackend](../../services/controller_manager/multiplexer/multiplexer_backend.py)
+- [PythonHidAdapter](../../services/controller_manager/multiplexer/python_hid_adapter.py)
+- [RustAdapter](../../services/controller_manager/multiplexer/rust_adapter.py)
+
+## History
+
+The controller backend originally used [psmoveapi](https://github.com/thp/psmoveapi) (C library with SWIG Python bindings) for PS Move communication. This required a separate `psmove-builder` Docker image to compile the C library from source. The migration to hidapi (pure Python HID via the `hidraw` kernel interface) eliminated this build dependency while maintaining identical controller behavior. The in-process `HidapiAdapter` was subsequently extracted into a standalone `python-hid` gRPC service (port 50059), mirroring the `rust-hid` architecture. The controller manager now communicates with both services via gRPC through `PythonHidAdapter` and `RustAdapter`. The HID report format documentation in `lib/psmove_hid.py` was derived from psmoveapi's protocol implementation.

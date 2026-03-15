@@ -13,6 +13,7 @@ members = [
     "joustmania-menu",
     "joustmania-pairing-daemon",
     "joustmania-proto",
+    "joustmania-python-hid",
 ]
 
 [[package]]
@@ -387,7 +388,7 @@ wheels = [
 
 [[package]]
 name = "joustmania"
-version = "0.4.0"
+version = "0.6.1"
 source = { editable = "." }
 
 [package.dev-dependencies]
@@ -673,7 +674,9 @@ version = "1.0.0"
 source = { editable = "services/pairing_daemon" }
 dependencies = [
     { name = "dbus-fast", marker = "sys_platform == 'linux'" },
+    { name = "hidapi" },
     { name = "joustmania-lib" },
+    { name = "joustmania-proto" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-grpc" },
     { name = "opentelemetry-sdk" },
@@ -689,7 +692,9 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "dbus-fast", marker = "sys_platform == 'linux'", specifier = ">=2.0.0" },
+    { name = "hidapi", specifier = ">=0.14.0" },
     { name = "joustmania-lib", editable = "lib" },
+    { name = "joustmania-proto", editable = "proto" },
     { name = "opentelemetry-api", specifier = ">=1.20.0" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.20.0" },
     { name = "opentelemetry-sdk", specifier = ">=1.20.0" },
@@ -715,6 +720,50 @@ requires-dist = [
     { name = "grpcio-tools", specifier = ">=1.70.0" },
     { name = "protobuf", specifier = ">=5.29.0" },
 ]
+
+[[package]]
+name = "joustmania-python-hid"
+version = "1.0.0"
+source = { editable = "services/python_hid" }
+dependencies = [
+    { name = "grpcio" },
+    { name = "grpcio-health-checking" },
+    { name = "hidapi" },
+    { name = "joustmania-lib" },
+    { name = "joustmania-proto" },
+    { name = "opentelemetry-distro" },
+    { name = "opentelemetry-exporter-otlp" },
+    { name = "opentelemetry-instrumentation-grpc" },
+    { name = "prometheus-client" },
+    { name = "psutil" },
+    { name = "uvloop", marker = "sys_platform == 'linux'" },
+]
+
+[package.optional-dependencies]
+test = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "grpcio", specifier = ">=1.70.0" },
+    { name = "grpcio-health-checking", specifier = ">=1.70.0" },
+    { name = "hidapi", specifier = ">=0.14.0" },
+    { name = "joustmania-lib", editable = "lib" },
+    { name = "joustmania-proto", editable = "proto" },
+    { name = "opentelemetry-distro", specifier = ">=0.49b0" },
+    { name = "opentelemetry-exporter-otlp", specifier = ">=1.28.0" },
+    { name = "opentelemetry-instrumentation-grpc", specifier = ">=0.49b0" },
+    { name = "prometheus-client", specifier = ">=0.19.0" },
+    { name = "psutil", specifier = ">=5.9.0" },
+    { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.23.0" },
+    { name = "pytest-cov", marker = "extra == 'test'", specifier = ">=4.1.0" },
+    { name = "uvloop", marker = "sys_platform == 'linux'", specifier = ">=0.19.0" },
+]
+provides-extras = ["test"]
 
 [[package]]
 name = "llvmlite"

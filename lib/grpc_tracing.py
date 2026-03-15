@@ -7,10 +7,14 @@ This module provides manual interceptors for both client and server:
 CLIENT INTERCEPTORS:
 - Inject W3C Trace Context (traceparent, tracestate) into outgoing gRPC metadata
 - Optionally create client spans (disabled by default, enable with OTEL_GRPC_CLIENT_SPANS=true)
+- When grpc_rpc_spans flag is enabled, create CLIENT spans with full RPC semantic convention
+  attributes for Dynatrace service topology (Smartscape)
 
 SERVER INTERCEPTORS:
 - Extract W3C Trace Context from incoming gRPC metadata
 - Attach extracted context so service spans are linked to the parent trace
+- When grpc_rpc_spans flag is enabled, create SERVER spans with full RPC semantic convention
+  attributes for Dynatrace service topology (Smartscape)
 
 Usage (Client):
     from lib.grpc_tracing import get_context_propagation_interceptors
@@ -46,6 +50,51 @@ _CREATE_CLIENT_SPANS = os.getenv("OTEL_GRPC_CLIENT_SPANS", "false").lower() == "
 # Span attribute keys (S1192 - avoid duplicate string literals)
 RPC_SYSTEM_ATTR = "rpc.system"
 RPC_METHOD_ATTR = "rpc.method"
+RPC_SERVICE_ATTR = "rpc.service"
+RPC_GRPC_STATUS_CODE_ATTR = "rpc.grpc.status_code"
+SERVER_ADDRESS_ATTR = "server.address"
+SERVER_PORT_ATTR = "server.port"
+
+
+def _parse_method(method: str | bytes) -> tuple[str, str]:
+    """Parse a gRPC method string into (service_name, method_name).
+
+    gRPC methods follow the format ``/pkg.ServiceName/MethodName``.
+
+    Args:
+        method: The full gRPC method path, e.g. ``/pkg.ServiceName/MethodName``.
+                May be bytes (decoded to str automatically).
+
+    Returns:
+        Tuple of (service_name, method_name). Falls back to ("unknown", method)
+        when the format is unexpected.
+    """
+    if isinstance(method, bytes):
+        method = method.decode("utf-8")
+
+    path = method.lstrip("/")
+    parts = path.split("/")
+    if len(parts) == 2:
+        service_part = parts[0]
+        service_name = service_part.rsplit(".", 1)[-1] if "." in service_part else service_part
+        return (service_name, parts[1])
+
+    return ("unknown", method)
+
+
+def _rpc_spans_enabled() -> bool:
+    """Check if the grpc_rpc_spans feature flag is enabled.
+
+    Evaluated at runtime on each RPC call to support hot-reload via flagd.
+    Returns False if flagd is unavailable or the flag is not defined.
+    """
+    try:
+        from lib.feature_flags import get_flag_client
+
+        client = get_flag_client("performance")
+        return client.get_boolean_value("grpc_rpc_spans", False)
+    except Exception:
+        return False
 
 
 def _safe_detach(token: object) -> None:
@@ -103,17 +152,38 @@ def _extract_method_name(method: str | bytes) -> str:
     return method[1:] if method.startswith("/") else method
 
 
+def _build_rpc_attributes(
+    service: str,
+    method: str,
+    server_address: str | None = None,
+    server_port: int | None = None,
+) -> dict[str, Any]:
+    """Build RPC semantic convention attributes for a span."""
+    attrs: dict[str, Any] = {
+        RPC_SYSTEM_ATTR: "grpc",
+        RPC_SERVICE_ATTR: service,
+        RPC_METHOD_ATTR: method,
+    }
+    if server_address is not None:
+        attrs[SERVER_ADDRESS_ATTR] = server_address
+    if server_port is not None:
+        attrs[SERVER_PORT_ATTR] = server_port
+    return attrs
+
+
 class ContextPropagationInterceptor(grpc.aio.UnaryUnaryClientInterceptor):
     """
     Async unary-unary client interceptor for trace context propagation.
 
     Injects current trace context into gRPC metadata so server-side spans
     are linked to the parent trace. Optionally creates client spans when
-    OTEL_GRPC_CLIENT_SPANS=true.
+    OTEL_GRPC_CLIENT_SPANS=true or when the grpc_rpc_spans flag is enabled.
     """
 
-    def __init__(self):
+    def __init__(self, server_address: str | None = None, server_port: int | None = None):
         self._tracer = trace.get_tracer(__name__) if _CREATE_CLIENT_SPANS else None
+        self._server_address = server_address
+        self._server_port = server_port
 
     async def intercept_unary_unary(
         self,
@@ -130,19 +200,38 @@ class ContextPropagationInterceptor(grpc.aio.UnaryUnaryClientInterceptor):
             wait_for_ready=client_call_details.wait_for_ready,
         )
 
-        if not _CREATE_CLIENT_SPANS:
+        rpc_spans = _rpc_spans_enabled()
+
+        if not _CREATE_CLIENT_SPANS and not rpc_spans:
             return await continuation(new_details, request)
 
-        # Optional: Create client span for debugging
-        method = _extract_method_name(client_call_details.method)
+        service, method = _parse_method(client_call_details.method)
+
+        if rpc_spans:
+            tracer = self._tracer or trace.get_tracer(__name__)
+            attrs = _build_rpc_attributes(service, method, self._server_address, self._server_port)
+            with tracer.start_as_current_span(f"{service}/{method}", kind=SpanKind.CLIENT, attributes=attrs) as span:
+                try:
+                    response = await continuation(new_details, request)
+                    span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, grpc.StatusCode.OK.value[0])
+                    span.set_status(Status(StatusCode.OK))
+                    return response
+                except grpc.aio.AioRpcError as e:
+                    span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, e.code().value[0])
+                    span.set_status(Status(StatusCode.ERROR, str(e.code())))
+                    raise
+
+        # Legacy OTEL_GRPC_CLIENT_SPANS path
+        clean_method = _extract_method_name(client_call_details.method)
         with self._tracer.start_as_current_span(
-            method, kind=SpanKind.CLIENT, attributes={RPC_SYSTEM_ATTR: "grpc", RPC_METHOD_ATTR: method}
+            clean_method, kind=SpanKind.CLIENT, attributes={RPC_SYSTEM_ATTR: "grpc", RPC_METHOD_ATTR: clean_method}
         ) as span:
             try:
                 response = await continuation(new_details, request)
                 span.set_status(Status(StatusCode.OK))
                 return response
             except grpc.aio.AioRpcError as e:
+                span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR, str(e.code())))
                 raise
 
@@ -150,8 +239,10 @@ class ContextPropagationInterceptor(grpc.aio.UnaryUnaryClientInterceptor):
 class ContextPropagationStreamUnaryInterceptor(grpc.aio.StreamUnaryClientInterceptor):
     """Async stream-unary client interceptor for trace context propagation."""
 
-    def __init__(self):
+    def __init__(self, server_address: str | None = None, server_port: int | None = None):
         self._tracer = trace.get_tracer(__name__) if _CREATE_CLIENT_SPANS else None
+        self._server_address = server_address
+        self._server_port = server_port
 
     async def intercept_stream_unary(
         self,
@@ -168,18 +259,38 @@ class ContextPropagationStreamUnaryInterceptor(grpc.aio.StreamUnaryClientInterce
             wait_for_ready=client_call_details.wait_for_ready,
         )
 
-        if not _CREATE_CLIENT_SPANS:
+        rpc_spans = _rpc_spans_enabled()
+
+        if not _CREATE_CLIENT_SPANS and not rpc_spans:
             return await continuation(new_details, request_iterator)
 
-        method = _extract_method_name(client_call_details.method)
+        service, method = _parse_method(client_call_details.method)
+
+        if rpc_spans:
+            tracer = self._tracer or trace.get_tracer(__name__)
+            attrs = _build_rpc_attributes(service, method, self._server_address, self._server_port)
+            with tracer.start_as_current_span(f"{service}/{method}", kind=SpanKind.CLIENT, attributes=attrs) as span:
+                try:
+                    response = await continuation(new_details, request_iterator)
+                    span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, grpc.StatusCode.OK.value[0])
+                    span.set_status(Status(StatusCode.OK))
+                    return response
+                except grpc.aio.AioRpcError as e:
+                    span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, e.code().value[0])
+                    span.set_status(Status(StatusCode.ERROR, str(e.code())))
+                    raise
+
+        # Legacy OTEL_GRPC_CLIENT_SPANS path
+        clean_method = _extract_method_name(client_call_details.method)
         with self._tracer.start_as_current_span(
-            method, kind=SpanKind.CLIENT, attributes={RPC_SYSTEM_ATTR: "grpc", RPC_METHOD_ATTR: method}
+            clean_method, kind=SpanKind.CLIENT, attributes={RPC_SYSTEM_ATTR: "grpc", RPC_METHOD_ATTR: clean_method}
         ) as span:
             try:
                 response = await continuation(new_details, request_iterator)
                 span.set_status(Status(StatusCode.OK))
                 return response
             except grpc.aio.AioRpcError as e:
+                span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR, str(e.code())))
                 raise
 
@@ -187,8 +298,10 @@ class ContextPropagationStreamUnaryInterceptor(grpc.aio.StreamUnaryClientInterce
 class ContextPropagationUnaryStreamInterceptor(grpc.aio.UnaryStreamClientInterceptor):
     """Async unary-stream client interceptor for trace context propagation."""
 
-    def __init__(self):
+    def __init__(self, server_address: str | None = None, server_port: int | None = None):
         self._tracer = trace.get_tracer(__name__) if _CREATE_CLIENT_SPANS else None
+        self._server_address = server_address
+        self._server_port = server_port
 
     async def intercept_unary_stream(
         self,
@@ -205,18 +318,38 @@ class ContextPropagationUnaryStreamInterceptor(grpc.aio.UnaryStreamClientInterce
             wait_for_ready=client_call_details.wait_for_ready,
         )
 
-        if not _CREATE_CLIENT_SPANS:
+        rpc_spans = _rpc_spans_enabled()
+
+        if not _CREATE_CLIENT_SPANS and not rpc_spans:
             return await continuation(new_details, request)
 
-        method = _extract_method_name(client_call_details.method)
+        service, method = _parse_method(client_call_details.method)
+
+        if rpc_spans:
+            tracer = self._tracer or trace.get_tracer(__name__)
+            attrs = _build_rpc_attributes(service, method, self._server_address, self._server_port)
+            with tracer.start_as_current_span(f"{service}/{method}", kind=SpanKind.CLIENT, attributes=attrs) as span:
+                try:
+                    call = await continuation(new_details, request)
+                    span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, grpc.StatusCode.OK.value[0])
+                    span.set_status(Status(StatusCode.OK))
+                    return call
+                except grpc.aio.AioRpcError as e:
+                    span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, e.code().value[0])
+                    span.set_status(Status(StatusCode.ERROR, str(e.code())))
+                    raise
+
+        # Legacy OTEL_GRPC_CLIENT_SPANS path
+        clean_method = _extract_method_name(client_call_details.method)
         with self._tracer.start_as_current_span(
-            method, kind=SpanKind.CLIENT, attributes={RPC_SYSTEM_ATTR: "grpc", RPC_METHOD_ATTR: method}
+            clean_method, kind=SpanKind.CLIENT, attributes={RPC_SYSTEM_ATTR: "grpc", RPC_METHOD_ATTR: clean_method}
         ) as span:
             try:
                 call = await continuation(new_details, request)
                 span.set_status(Status(StatusCode.OK))
                 return call
             except grpc.aio.AioRpcError as e:
+                span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR, str(e.code())))
                 raise
 
@@ -224,8 +357,10 @@ class ContextPropagationUnaryStreamInterceptor(grpc.aio.UnaryStreamClientInterce
 class ContextPropagationStreamStreamInterceptor(grpc.aio.StreamStreamClientInterceptor):
     """Async stream-stream client interceptor for trace context propagation."""
 
-    def __init__(self):
+    def __init__(self, server_address: str | None = None, server_port: int | None = None):
         self._tracer = trace.get_tracer(__name__) if _CREATE_CLIENT_SPANS else None
+        self._server_address = server_address
+        self._server_port = server_port
 
     async def intercept_stream_stream(
         self,
@@ -242,40 +377,67 @@ class ContextPropagationStreamStreamInterceptor(grpc.aio.StreamStreamClientInter
             wait_for_ready=client_call_details.wait_for_ready,
         )
 
-        if not _CREATE_CLIENT_SPANS:
+        rpc_spans = _rpc_spans_enabled()
+
+        if not _CREATE_CLIENT_SPANS and not rpc_spans:
             return await continuation(new_details, request_iterator)
 
-        method = _extract_method_name(client_call_details.method)
+        service, method = _parse_method(client_call_details.method)
+
+        if rpc_spans:
+            tracer = self._tracer or trace.get_tracer(__name__)
+            attrs = _build_rpc_attributes(service, method, self._server_address, self._server_port)
+            with tracer.start_as_current_span(f"{service}/{method}", kind=SpanKind.CLIENT, attributes=attrs) as span:
+                try:
+                    call = await continuation(new_details, request_iterator)
+                    span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, grpc.StatusCode.OK.value[0])
+                    span.set_status(Status(StatusCode.OK))
+                    return call
+                except grpc.aio.AioRpcError as e:
+                    span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, e.code().value[0])
+                    span.set_status(Status(StatusCode.ERROR, str(e.code())))
+                    raise
+
+        # Legacy OTEL_GRPC_CLIENT_SPANS path
+        clean_method = _extract_method_name(client_call_details.method)
         with self._tracer.start_as_current_span(
-            method, kind=SpanKind.CLIENT, attributes={RPC_SYSTEM_ATTR: "grpc", RPC_METHOD_ATTR: method}
+            clean_method, kind=SpanKind.CLIENT, attributes={RPC_SYSTEM_ATTR: "grpc", RPC_METHOD_ATTR: clean_method}
         ) as span:
             try:
                 call = await continuation(new_details, request_iterator)
                 span.set_status(Status(StatusCode.OK))
                 return call
             except grpc.aio.AioRpcError as e:
+                span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR, str(e.code())))
                 raise
 
 
-def get_context_propagation_interceptors() -> list:
+def get_context_propagation_interceptors(
+    server_address: str | None = None,
+    server_port: int | None = None,
+) -> list:
     """
     Get all context propagation interceptors for async gRPC clients.
 
     These interceptors inject W3C Trace Context headers into gRPC metadata
-    so that server-side spans are linked to the parent trace. They do NOT
-    create client spans - server-side services should create their own
-    manual spans with descriptive names.
+    so that server-side spans are linked to the parent trace. When the
+    grpc_rpc_spans feature flag is enabled, they also create CLIENT spans
+    with full RPC semantic convention attributes.
+
+    Args:
+        server_address: Target server hostname/IP (used in RPC span attributes).
+        server_port: Target server port (used in RPC span attributes).
 
     Returns:
         List of interceptors covering all RPC patterns (unary-unary, stream-unary,
         unary-stream, stream-stream).
     """
     return [
-        ContextPropagationInterceptor(),
-        ContextPropagationStreamUnaryInterceptor(),
-        ContextPropagationUnaryStreamInterceptor(),
-        ContextPropagationStreamStreamInterceptor(),
+        ContextPropagationInterceptor(server_address, server_port),
+        ContextPropagationStreamUnaryInterceptor(server_address, server_port),
+        ContextPropagationUnaryStreamInterceptor(server_address, server_port),
+        ContextPropagationStreamStreamInterceptor(server_address, server_port),
     ]
 
 
@@ -302,7 +464,10 @@ def _extract_context_from_metadata(context: grpc.aio.ServicerContext) -> otel_co
 
 
 class ServerUnaryUnaryInterceptor(grpc.aio.ServerInterceptor):
-    """Server interceptor for unary-unary RPCs that extracts trace context."""
+    """Server interceptor that extracts trace context and optionally creates SERVER spans."""
+
+    def __init__(self):
+        self._tracer = trace.get_tracer(__name__)
 
     async def intercept_service(
         self,
@@ -315,20 +480,54 @@ class ServerUnaryUnaryInterceptor(grpc.aio.ServerInterceptor):
         if handler is None:
             return None
 
+        rpc_spans = _rpc_spans_enabled()
+        method_path = handler_call_details.method
+        service, method = _parse_method(method_path) if rpc_spans else ("", "")
+
         if handler.unary_unary:
             original_handler = handler.unary_unary
 
-            async def wrapped_unary_unary(request, context):
-                parent_ctx = _extract_context_from_metadata(context)
-                token = otel_context.attach(parent_ctx)
-                try:
-                    result = original_handler(request, context)
-                    # Handle both sync and async handlers
-                    if inspect.iscoroutine(result):
-                        return await result
-                    return result
-                finally:
-                    _safe_detach(token)
+            if rpc_spans:
+
+                async def wrapped_unary_unary(request, context):
+                    parent_ctx = _extract_context_from_metadata(context)
+                    token = otel_context.attach(parent_ctx)
+                    try:
+                        attrs = _build_rpc_attributes(service, method)
+                        with self._tracer.start_as_current_span(
+                            f"{service}/{method}", kind=SpanKind.SERVER, attributes=attrs
+                        ) as span:
+                            try:
+                                result = original_handler(request, context)
+                                if inspect.iscoroutine(result):
+                                    result = await result
+                                span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, grpc.StatusCode.OK.value[0])
+                                span.set_status(Status(StatusCode.OK))
+                                return result
+                            except grpc.aio.AioRpcError as e:
+                                span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, e.code().value[0])
+                                span.set_status(Status(StatusCode.ERROR, str(e.code())))
+                                raise
+                            except Exception as exc:
+                                span.record_exception(exc)
+                                span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, grpc.StatusCode.UNKNOWN.value[0])
+                                span.set_status(Status(StatusCode.ERROR))
+                                raise
+                    finally:
+                        _safe_detach(token)
+
+            else:
+
+                async def wrapped_unary_unary(request, context):
+                    parent_ctx = _extract_context_from_metadata(context)
+                    token = otel_context.attach(parent_ctx)
+                    try:
+                        result = original_handler(request, context)
+                        if inspect.iscoroutine(result):
+                            return await result
+                        return result
+                    finally:
+                        _safe_detach(token)
 
             return grpc.unary_unary_rpc_method_handler(
                 wrapped_unary_unary,
@@ -339,14 +538,43 @@ class ServerUnaryUnaryInterceptor(grpc.aio.ServerInterceptor):
         if handler.unary_stream:
             original_handler = handler.unary_stream
 
-            async def wrapped_unary_stream(request, context):
-                parent_ctx = _extract_context_from_metadata(context)
-                token = otel_context.attach(parent_ctx)
-                try:
-                    async for response in original_handler(request, context):
-                        yield response
-                finally:
-                    _safe_detach(token)
+            if rpc_spans:
+
+                async def wrapped_unary_stream(request, context):
+                    parent_ctx = _extract_context_from_metadata(context)
+                    token = otel_context.attach(parent_ctx)
+                    try:
+                        attrs = _build_rpc_attributes(service, method)
+                        with self._tracer.start_as_current_span(
+                            f"{service}/{method}", kind=SpanKind.SERVER, attributes=attrs
+                        ) as span:
+                            try:
+                                async for response in original_handler(request, context):
+                                    yield response
+                                span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, grpc.StatusCode.OK.value[0])
+                                span.set_status(Status(StatusCode.OK))
+                            except grpc.aio.AioRpcError as e:
+                                span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, e.code().value[0])
+                                span.set_status(Status(StatusCode.ERROR, str(e.code())))
+                                raise
+                            except Exception as exc:
+                                span.record_exception(exc)
+                                span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, grpc.StatusCode.UNKNOWN.value[0])
+                                span.set_status(Status(StatusCode.ERROR))
+                                raise
+                    finally:
+                        _safe_detach(token)
+
+            else:
+
+                async def wrapped_unary_stream(request, context):
+                    parent_ctx = _extract_context_from_metadata(context)
+                    token = otel_context.attach(parent_ctx)
+                    try:
+                        async for response in original_handler(request, context):
+                            yield response
+                    finally:
+                        _safe_detach(token)
 
             return grpc.unary_stream_rpc_method_handler(
                 wrapped_unary_stream,
@@ -357,17 +585,47 @@ class ServerUnaryUnaryInterceptor(grpc.aio.ServerInterceptor):
         if handler.stream_unary:
             original_handler = handler.stream_unary
 
-            async def wrapped_stream_unary(request_iterator, context):
-                parent_ctx = _extract_context_from_metadata(context)
-                token = otel_context.attach(parent_ctx)
-                try:
-                    result = original_handler(request_iterator, context)
-                    # Handle both sync and async handlers
-                    if inspect.iscoroutine(result):
-                        return await result
-                    return result
-                finally:
-                    _safe_detach(token)
+            if rpc_spans:
+
+                async def wrapped_stream_unary(request_iterator, context):
+                    parent_ctx = _extract_context_from_metadata(context)
+                    token = otel_context.attach(parent_ctx)
+                    try:
+                        attrs = _build_rpc_attributes(service, method)
+                        with self._tracer.start_as_current_span(
+                            f"{service}/{method}", kind=SpanKind.SERVER, attributes=attrs
+                        ) as span:
+                            try:
+                                result = original_handler(request_iterator, context)
+                                if inspect.iscoroutine(result):
+                                    result = await result
+                                span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, grpc.StatusCode.OK.value[0])
+                                span.set_status(Status(StatusCode.OK))
+                                return result
+                            except grpc.aio.AioRpcError as e:
+                                span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, e.code().value[0])
+                                span.set_status(Status(StatusCode.ERROR, str(e.code())))
+                                raise
+                            except Exception as exc:
+                                span.record_exception(exc)
+                                span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, grpc.StatusCode.UNKNOWN.value[0])
+                                span.set_status(Status(StatusCode.ERROR))
+                                raise
+                    finally:
+                        _safe_detach(token)
+
+            else:
+
+                async def wrapped_stream_unary(request_iterator, context):
+                    parent_ctx = _extract_context_from_metadata(context)
+                    token = otel_context.attach(parent_ctx)
+                    try:
+                        result = original_handler(request_iterator, context)
+                        if inspect.iscoroutine(result):
+                            return await result
+                        return result
+                    finally:
+                        _safe_detach(token)
 
             return grpc.stream_unary_rpc_method_handler(
                 wrapped_stream_unary,
@@ -378,14 +636,43 @@ class ServerUnaryUnaryInterceptor(grpc.aio.ServerInterceptor):
         if handler.stream_stream:
             original_handler = handler.stream_stream
 
-            async def wrapped_stream_stream(request_iterator, context):
-                parent_ctx = _extract_context_from_metadata(context)
-                token = otel_context.attach(parent_ctx)
-                try:
-                    async for response in original_handler(request_iterator, context):
-                        yield response
-                finally:
-                    _safe_detach(token)
+            if rpc_spans:
+
+                async def wrapped_stream_stream(request_iterator, context):
+                    parent_ctx = _extract_context_from_metadata(context)
+                    token = otel_context.attach(parent_ctx)
+                    try:
+                        attrs = _build_rpc_attributes(service, method)
+                        with self._tracer.start_as_current_span(
+                            f"{service}/{method}", kind=SpanKind.SERVER, attributes=attrs
+                        ) as span:
+                            try:
+                                async for response in original_handler(request_iterator, context):
+                                    yield response
+                                span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, grpc.StatusCode.OK.value[0])
+                                span.set_status(Status(StatusCode.OK))
+                            except grpc.aio.AioRpcError as e:
+                                span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, e.code().value[0])
+                                span.set_status(Status(StatusCode.ERROR, str(e.code())))
+                                raise
+                            except Exception as exc:
+                                span.record_exception(exc)
+                                span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, grpc.StatusCode.UNKNOWN.value[0])
+                                span.set_status(Status(StatusCode.ERROR))
+                                raise
+                    finally:
+                        _safe_detach(token)
+
+            else:
+
+                async def wrapped_stream_stream(request_iterator, context):
+                    parent_ctx = _extract_context_from_metadata(context)
+                    token = otel_context.attach(parent_ctx)
+                    try:
+                        async for response in original_handler(request_iterator, context):
+                            yield response
+                    finally:
+                        _safe_detach(token)
 
             return grpc.stream_stream_rpc_method_handler(
                 wrapped_stream_stream,
@@ -401,8 +688,9 @@ def get_server_interceptors() -> list:
     Get server-side interceptors for trace context extraction.
 
     These interceptors extract W3C Trace Context from incoming gRPC metadata
-    and attach it to the current OpenTelemetry context. This allows spans
-    created in service handlers to be linked to the parent trace.
+    and attach it to the current OpenTelemetry context. When the grpc_rpc_spans
+    feature flag is enabled, they also create SERVER spans with full RPC
+    semantic convention attributes.
 
     Returns:
         List of server interceptors.

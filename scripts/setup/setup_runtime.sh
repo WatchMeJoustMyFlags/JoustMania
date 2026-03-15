@@ -12,11 +12,9 @@
 #
 # What this does NOT install:
 #   - Python/uv (not needed - runs in Docker)
-#   - psmoveapi build (not needed if already installed, or for manual pairing)
 #
 # Prerequisites:
 #   - Raspberry Pi OS (64-bit recommended)
-#   - psmove CLI (for pairing daemon) - already present on old JoustMania installs
 #
 
 set -e  # Exit on error
@@ -124,8 +122,8 @@ else
 fi
 echo -e "  → ${GREEN}Bluetooth configured${NC}"
 
-# Step 4: Done (pairing daemon and psmoveapi are built into Docker images)
-echo "[4/4] Pairing daemon and psmoveapi run via Docker Compose (no host install needed)"
+# Step 4: Done (pairing daemon runs as a Docker container)
+echo "[4/4] Pairing daemon runs via Docker Compose (no host install needed)"
 
 # Configure audio - set all devices to max volume
 echo ""

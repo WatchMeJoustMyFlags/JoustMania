@@ -13,7 +13,7 @@ from .conftest import MockCommandRunner
 @pytest.fixture
 def daemon(mock_tracer):
     """Provide PairingDaemon instance for tests."""
-    return PairingDaemon(mock_tracer, "/usr/bin/psmove")
+    return PairingDaemon(mock_tracer)
 
 
 class TestValidatePrerequisites:
@@ -23,7 +23,6 @@ class TestValidatePrerequisites:
     async def test_all_prerequisites_pass(self, daemon):
         """Test when all prerequisites are available."""
         runner = MockCommandRunner()
-        runner.add_response(["/usr/bin/psmove", "list"], (0, "Controller 0: ..."))
         runner.add_response(["bluetoothctl", "show"], (0, "Controller ..."))
 
         with patch("psmove_pairing.daemon.run_command", runner):
@@ -32,25 +31,28 @@ class TestValidatePrerequisites:
                 assert result is True
 
     @pytest.mark.asyncio
-    async def test_psmove_fails(self, daemon):
-        """Test when psmove binary fails."""
+    async def test_bluetoothctl_not_found(self, daemon):
+        """Test when bluetoothctl is not found."""
         runner = MockCommandRunner()
-        runner.add_response(["/usr/bin/psmove", "list"], (1, "error"))
-        runner.add_response(["bluetoothctl", "show"], (0, "Controller ..."))
+
+        def mock_which(cmd):
+            if cmd == "bluetoothctl":
+                return None
+            return f"/usr/bin/{cmd}"
 
         with patch("psmove_pairing.daemon.run_command", runner):
-            with patch("psmove_pairing.daemon.shutil.which", return_value="/usr/bin/tool"):
+            with patch("psmove_pairing.daemon.shutil.which", side_effect=mock_which):
                 result = await daemon.validate_prerequisites()
                 assert result is False
 
     @pytest.mark.asyncio
-    async def test_bluetoothctl_not_found(self, daemon):
-        """Test when bluetoothctl is not found."""
+    async def test_hciconfig_not_found(self, daemon):
+        """Test when hciconfig is not found."""
         runner = MockCommandRunner()
-        runner.add_response(["/usr/bin/psmove", "list"], (0, "ok"))
+        runner.add_response(["bluetoothctl", "show"], (0, "Controller ..."))
 
         def mock_which(cmd):
-            if cmd == "bluetoothctl":
+            if cmd == "hciconfig":
                 return None
             return f"/usr/bin/{cmd}"
 
@@ -157,7 +159,6 @@ class TestRun:
         daemon._bt_monitor_loop = mock_bt_loop
 
         runner = MockCommandRunner()
-        runner.add_response(["/usr/bin/psmove", "list"], (0, "ok"))
         runner.add_response(["bluetoothctl", "show"], (0, "ok"))
 
         with patch("psmove_pairing.daemon.run_command", runner):

@@ -2,9 +2,9 @@
 Unit tests for CentralizedBTDiscovery.
 
 Tests multi-adapter enumeration, scanning, affinity tracking, and hot-plug.
-Covers both discovery modes: "bluez" (default) and "hidapi".
 """
 
+import pathlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,14 +12,19 @@ import pytest
 from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDiscovery
 
 
+def _mock_pairing_resolve(discovery, serials, mapping):
+    """Helper to simulate _resolve_via_pairing_dir for integration tests."""
+    count = 0
+    for serial in serials:
+        if serial not in discovery._address_to_adapter and serial in mapping:
+            discovery._address_to_adapter[serial] = mapping[serial]
+            count += 1
+    return count
+
+
 @pytest.fixture
 def discovery():
     return CentralizedBTDiscovery()
-
-
-@pytest.fixture
-def hidapi_discovery():
-    return CentralizedBTDiscovery(discovery_mode="hidapi")
 
 
 class TestInitialize:
@@ -75,71 +80,6 @@ class TestInitialize:
         # Both adapters were attempted
         assert mock_bt.enable_adapter.call_count == 2
         mock_metrics.bluetooth_adapter_count.set.assert_called_once_with(2)
-
-
-class TestGetAllAttachedAddresses:
-    """Tests for consolidated address scanning."""
-
-    @pytest.mark.asyncio
-    async def test_scans_all_adapters_and_deduplicates(self, discovery):
-        """Should scan each adapter and deduplicate addresses."""
-        discovery._adapters = {"hci0": "AA:00", "hci1": "BB:00"}
-
-        with patch("services.controller_manager.multiplexer.bt_discovery.bluetooth") as mock_bt:
-            mock_bt.get_attached_addresses = AsyncMock(
-                side_effect=[
-                    ["00:06:F7:AA:BB:CC", "00:06:F7:DD:EE:FF"],
-                    ["00:06:F7:DD:EE:FF", "00:06:F7:11:22:33"],  # DD:EE:FF is duplicate
-                ]
-            )
-
-            addresses = await discovery.get_all_attached_addresses()
-
-        assert len(addresses) == 3
-        assert "00:06:F7:AA:BB:CC" in addresses
-        assert "00:06:F7:DD:EE:FF" in addresses
-        assert "00:06:F7:11:22:33" in addresses
-
-    @pytest.mark.asyncio
-    async def test_builds_affinity_map(self, discovery):
-        """Should track which adapter owns which address."""
-        discovery._adapters = {"hci0": "AA:00", "hci1": "BB:00"}
-
-        with patch("services.controller_manager.multiplexer.bt_discovery.bluetooth") as mock_bt:
-            mock_bt.get_attached_addresses = AsyncMock(
-                side_effect=[
-                    ["00:06:F7:AA:BB:CC"],
-                    ["00:06:F7:DD:EE:FF"],
-                ]
-            )
-
-            await discovery.get_all_attached_addresses()
-
-        assert discovery.get_adapter_for_address("00:06:F7:AA:BB:CC") == "hci0"
-        assert discovery.get_adapter_for_address("00:06:F7:DD:EE:FF") == "hci1"
-
-    @pytest.mark.asyncio
-    async def test_scan_failure_on_one_adapter_continues(self, discovery):
-        """Failure scanning one adapter should not prevent scanning others."""
-        discovery._adapters = {"hci0": "AA:00", "hci1": "BB:00"}
-
-        with patch("services.controller_manager.multiplexer.bt_discovery.bluetooth") as mock_bt:
-            mock_bt.get_attached_addresses = AsyncMock(
-                side_effect=[
-                    Exception("D-Bus error"),
-                    ["00:06:F7:DD:EE:FF"],
-                ]
-            )
-
-            addresses = await discovery.get_all_attached_addresses()
-
-        assert addresses == ["00:06:F7:DD:EE:FF"]
-
-    @pytest.mark.asyncio
-    async def test_empty_adapters_returns_empty(self, discovery):
-        """No adapters should return empty list."""
-        addresses = await discovery.get_all_attached_addresses()
-        assert addresses == []
 
 
 class TestGetAdapterForAddress:
@@ -239,15 +179,7 @@ class TestRefreshAdapters:
 
 
 class TestDiscoveryMode:
-    """Tests for discovery_mode parameter."""
-
-    def test_default_mode_is_bluez(self):
-        d = CentralizedBTDiscovery()
-        assert d.discovery_mode == "bluez"
-
-    def test_hidapi_mode(self):
-        d = CentralizedBTDiscovery(discovery_mode="hidapi")
-        assert d.discovery_mode == "hidapi"
+    """Tests for normalize_address utility."""
 
     def test_normalize_address(self):
         assert CentralizedBTDiscovery._normalize_address("00:06:F7:AA:BB:CC") == "0006F7AABBCC"
@@ -256,12 +188,12 @@ class TestDiscoveryMode:
 
 
 class TestHidapiMode:
-    """Tests for hidapi discovery mode."""
+    """Tests for hidapi discovery."""
 
     @pytest.mark.asyncio
-    async def test_scan_via_hidapi_enumerates_devices(self, hidapi_discovery):
+    async def test_scan_via_hidapi_enumerates_devices(self, discovery):
         """Should use hid.enumerate to find PS Move controllers."""
-        hidapi_discovery._adapters = {"hci0": "AA:00"}
+        discovery._adapters = {"hci0": "AA:00"}
 
         mock_hid = MagicMock()
         mock_hid.enumerate.side_effect = [
@@ -276,16 +208,16 @@ class TestHidapiMode:
             patch("services.controller_manager.multiplexer.bt_discovery.hid", mock_hid, create=True),
         ):
             mock_bt.get_attached_addresses = AsyncMock(return_value=["00:06:F7:AA:BB:CC", "00:06:F7:DD:EE:FF"])
-            addresses = await hidapi_discovery.get_all_attached_addresses()
+            addresses = await discovery.get_all_attached_addresses()
 
         assert len(addresses) == 2
         assert "0006F7AABBCC" in addresses
         assert "0006F7DDEEFF" in addresses
 
     @pytest.mark.asyncio
-    async def test_scan_via_hidapi_builds_affinity(self, hidapi_discovery):
+    async def test_scan_via_hidapi_builds_affinity(self, discovery):
         """Should cross-reference HID serials with BlueZ for adapter affinity."""
-        hidapi_discovery._adapters = {"hci0": "AA:00", "hci1": "BB:00"}
+        discovery._adapters = {"hci0": "AA:00", "hci1": "BB:00"}
 
         mock_hid = MagicMock()
         mock_hid.enumerate.side_effect = [
@@ -305,15 +237,15 @@ class TestHidapiMode:
                     ["00:06:F7:DD:EE:FF"],  # hci1 has second controller
                 ]
             )
-            await hidapi_discovery.get_all_attached_addresses()
+            await discovery.get_all_attached_addresses()
 
-        assert hidapi_discovery.get_adapter_for_address("0006F7AABBCC") == "hci0"
-        assert hidapi_discovery.get_adapter_for_address("0006F7DDEEFF") == "hci1"
+        assert discovery.get_adapter_for_address("0006F7AABBCC") == "hci0"
+        assert discovery.get_adapter_for_address("0006F7DDEEFF") == "hci1"
 
     @pytest.mark.asyncio
-    async def test_scan_via_hidapi_deduplicates(self, hidapi_discovery):
+    async def test_scan_via_hidapi_deduplicates(self, discovery):
         """Should deduplicate controllers seen on multiple HID paths."""
-        hidapi_discovery._adapters = {"hci0": "AA:00"}
+        discovery._adapters = {"hci0": "AA:00"}
 
         mock_hid = MagicMock()
         mock_hid.enumerate.side_effect = [
@@ -328,18 +260,150 @@ class TestHidapiMode:
             patch("services.controller_manager.multiplexer.bt_discovery.hid", mock_hid, create=True),
         ):
             mock_bt.get_attached_addresses = AsyncMock(return_value=["00:06:F7:AA:BB:CC"])
-            addresses = await hidapi_discovery.get_all_attached_addresses()
+            addresses = await discovery.get_all_attached_addresses()
 
         assert len(addresses) == 1
 
     @pytest.mark.asyncio
-    async def test_bluez_mode_uses_bluez_scanning(self, discovery):
-        """Default (bluez) mode should NOT call hid.enumerate."""
-        discovery._adapters = {"hci0": "AA:00"}
+    async def test_pairing_dir_fallback_when_bluez_has_no_devices(self, discovery):
+        """Should resolve adapter affinity via /var/lib/bluetooth/ when BlueZ cross-ref fails."""
+        discovery._adapters = {"hci0": "AA:BB:CC:DD:EE:00", "hci1": "AA:BB:CC:DD:EE:01"}
 
-        with patch("services.controller_manager.multiplexer.bt_discovery.bluetooth") as mock_bt:
-            mock_bt.get_attached_addresses = AsyncMock(return_value=["00:06:F7:AA:BB:CC"])
-            addresses = await discovery.get_all_attached_addresses()
+        mock_hid = MagicMock()
+        mock_hid.enumerate.side_effect = [
+            [
+                {"serial_number": "0006F7AABBCC"},
+                {"serial_number": "0006F7DDEEFF"},
+            ],
+            [],  # ZCM2
+            [],  # ZCM2E
+        ]
 
-        assert len(addresses) == 1
-        assert "00:06:F7:AA:BB:CC" in addresses
+        with (
+            patch("services.controller_manager.multiplexer.bt_discovery.bluetooth") as mock_bt,
+            patch.dict("sys.modules", {"hidraw": mock_hid}),
+            patch("services.controller_manager.multiplexer.bt_discovery.hid", mock_hid, create=True),
+            patch.object(
+                CentralizedBTDiscovery,
+                "_resolve_via_pairing_dir",
+                side_effect=lambda serials: _mock_pairing_resolve(
+                    discovery,
+                    serials,
+                    {
+                        "0006F7AABBCC": "hci0",
+                        "0006F7DDEEFF": "hci1",
+                    },
+                ),
+            ),
+        ):
+            # BlueZ returns nothing — devices connected via uhid, not BlueZ D-Bus
+            mock_bt.get_attached_addresses = AsyncMock(return_value=[])
+            await discovery.get_all_attached_addresses()
+
+        assert discovery.get_adapter_for_address("0006F7AABBCC") == "hci0"
+        assert discovery.get_adapter_for_address("0006F7DDEEFF") == "hci1"
+
+    @pytest.mark.asyncio
+    async def test_pairing_dir_fallback_no_match(self, discovery):
+        """Pairing dir fallback should leave affinity unset when no match found."""
+        discovery._adapters = {"hci0": "AA:BB:CC:DD:EE:00"}
+
+        mock_hid = MagicMock()
+        mock_hid.enumerate.side_effect = [
+            [{"serial_number": "0006F7AABBCC"}],
+            [],
+            [],
+        ]
+
+        with (
+            patch("services.controller_manager.multiplexer.bt_discovery.bluetooth") as mock_bt,
+            patch.dict("sys.modules", {"hidraw": mock_hid}),
+            patch("services.controller_manager.multiplexer.bt_discovery.hid", mock_hid, create=True),
+            patch.object(
+                CentralizedBTDiscovery,
+                "_resolve_via_pairing_dir",
+                return_value=0,  # No matches found
+            ),
+        ):
+            mock_bt.get_attached_addresses = AsyncMock(return_value=[])
+            await discovery.get_all_attached_addresses()
+
+        assert discovery.get_adapter_for_address("0006F7AABBCC") is None
+
+
+class TestResolvePairingDir:
+    """Tests for _resolve_via_pairing_dir."""
+
+    def test_resolves_from_pairing_directory(self, discovery, tmp_path):
+        """Should find adapter for device via /var/lib/bluetooth/<adapter>/<device>/ dirs."""
+        discovery._adapters = {"hci0": "AA:BB:CC:DD:EE:00", "hci1": "AA:BB:CC:DD:EE:01"}
+
+        # Create fake pairing directories
+        adapter0_dir = tmp_path / "AA:BB:CC:DD:EE:00"
+        adapter0_dir.mkdir()
+        (adapter0_dir / "00:06:F7:AA:BB:CC").mkdir()  # Device paired on hci0
+        (adapter0_dir / "cache").mkdir()
+        (adapter0_dir / "settings").touch()
+
+        adapter1_dir = tmp_path / "AA:BB:CC:DD:EE:01"
+        adapter1_dir.mkdir()
+        (adapter1_dir / "00:06:F7:DD:EE:FF").mkdir()  # Device paired on hci1
+
+        with patch(
+            "services.controller_manager.multiplexer.bt_discovery.pathlib.Path",
+            side_effect=lambda p: tmp_path if p == "/var/lib/bluetooth" else pathlib.Path(p),
+        ):
+            count = discovery._resolve_via_pairing_dir({"0006F7AABBCC", "0006F7DDEEFF"})
+
+        assert count == 2
+        assert discovery.get_adapter_for_address("0006F7AABBCC") == "hci0"
+        assert discovery.get_adapter_for_address("0006F7DDEEFF") == "hci1"
+
+    def test_skips_already_resolved(self, discovery, tmp_path):
+        """Should not overwrite existing adapter affinity."""
+        discovery._adapters = {"hci0": "AA:BB:CC:DD:EE:00", "hci1": "AA:BB:CC:DD:EE:01"}
+        discovery._address_to_adapter["0006F7AABBCC"] = "hci1"  # Already resolved
+
+        adapter0_dir = tmp_path / "AA:BB:CC:DD:EE:00"
+        adapter0_dir.mkdir()
+        (adapter0_dir / "00:06:F7:AA:BB:CC").mkdir()
+
+        with patch(
+            "services.controller_manager.multiplexer.bt_discovery.pathlib.Path",
+            side_effect=lambda p: tmp_path if p == "/var/lib/bluetooth" else pathlib.Path(p),
+        ):
+            count = discovery._resolve_via_pairing_dir({"0006F7AABBCC"})
+
+        assert count == 0
+        assert discovery.get_adapter_for_address("0006F7AABBCC") == "hci1"  # Unchanged
+
+    def test_returns_zero_when_dir_missing(self, discovery, tmp_path):
+        """Should return 0 when /var/lib/bluetooth doesn't exist."""
+        discovery._adapters = {"hci0": "AA:BB:CC:DD:EE:00"}
+        nonexistent = tmp_path / "nonexistent"
+
+        with patch(
+            "services.controller_manager.multiplexer.bt_discovery.pathlib.Path",
+            return_value=nonexistent,
+        ):
+            count = discovery._resolve_via_pairing_dir({"0006F7AABBCC"})
+
+        assert count == 0
+
+    def test_ignores_unknown_adapter_addresses(self, discovery, tmp_path):
+        """Should skip adapter directories not in the known adapter list."""
+        discovery._adapters = {"hci0": "AA:BB:CC:DD:EE:00"}
+
+        # Device paired on unknown adapter
+        unknown_dir = tmp_path / "FF:FF:FF:FF:FF:FF"
+        unknown_dir.mkdir()
+        (unknown_dir / "00:06:F7:AA:BB:CC").mkdir()
+
+        with patch(
+            "services.controller_manager.multiplexer.bt_discovery.pathlib.Path",
+            side_effect=lambda p: tmp_path if p == "/var/lib/bluetooth" else pathlib.Path(p),
+        ):
+            count = discovery._resolve_via_pairing_dir({"0006F7AABBCC"})
+
+        assert count == 0
+        assert discovery.get_adapter_for_address("0006F7AABBCC") is None

@@ -1,79 +1,105 @@
 configs:
   - id: controller-low-battery
     type:
-      api: builtin:anomaly-detection.metric-events
+      settings:
+        schema: builtin:anomaly-detection.metric-events
+        scope: environment
     config:
       template: alert-templates/controller-low-battery.json
       name: ControllerLowBattery
   - id: controller-disconnected
     type:
-      api: builtin:anomaly-detection.metric-events
+      settings:
+        schema: builtin:anomaly-detection.metric-events
+        scope: environment
     config:
       template: alert-templates/controller-disconnected.json
       name: ControllerDisconnected
   - id: high-input-latency
     type:
-      api: builtin:anomaly-detection.metric-events
+      settings:
+        schema: builtin:anomaly-detection.metric-events
+        scope: environment
     config:
       template: alert-templates/high-input-latency.json
       name: HighInputLatency
   - id: high-cpu-usage
     type:
-      api: builtin:anomaly-detection.metric-events
+      settings:
+        schema: builtin:anomaly-detection.metric-events
+        scope: environment
     config:
       template: alert-templates/high-cpu-usage.json
       name: HighCpuUsage
   - id: high-memory-usage
     type:
-      api: builtin:anomaly-detection.metric-events
+      settings:
+        schema: builtin:anomaly-detection.metric-events
+        scope: environment
     config:
       template: alert-templates/high-memory-usage.json
       name: HighMemoryUsage
   - id: low-game-loop-hz
     type:
-      api: builtin:anomaly-detection.metric-events
+      settings:
+        schema: builtin:anomaly-detection.metric-events
+        scope: environment
     config:
       template: alert-templates/low-game-loop-hz.json
       name: LowGameLoopHz
   - id: high-grpc-latency
     type:
-      api: builtin:anomaly-detection.metric-events
+      settings:
+        schema: builtin:anomaly-detection.metric-events
+        scope: environment
     config:
       template: alert-templates/high-grpc-latency.json
       name: HighGrpcLatency
   - id: service-down
     type:
-      api: builtin:anomaly-detection.metric-events
+      settings:
+        schema: builtin:anomaly-detection.metric-events
+        scope: environment
     config:
       template: alert-templates/service-down.json
       name: ServiceDown
   - id: poor-frame-consistency
     type:
-      api: builtin:anomaly-detection.metric-events
+      settings:
+        schema: builtin:anomaly-detection.metric-events
+        scope: environment
     config:
       template: alert-templates/poor-frame-consistency.json
       name: PoorFrameConsistency
   - id: high-gc-pauses
     type:
-      api: builtin:anomaly-detection.metric-events
+      settings:
+        schema: builtin:anomaly-detection.metric-events
+        scope: environment
     config:
       template: alert-templates/high-gc-pauses.json
       name: HighGcPauses
   - id: game-crash-rate
     type:
-      api: builtin:anomaly-detection.metric-events
+      settings:
+        schema: builtin:anomaly-detection.metric-events
+        scope: environment
     config:
       template: alert-templates/game-crash-rate.json
       name: GameCrashRate
   - id: service-update-pending
     type:
-      api: builtin:anomaly-detection.metric-events
+      settings:
+        schema: builtin:anomaly-detection.metric-events
+        scope: environment
     config:
       template: alert-templates/service-update-pending.json
       name: ServiceUpdatePending
   - id: high-grpc-client-error-rate
     type:
-      api: builtin:anomaly-detection.metric-events
+      settings:
+        schema: builtin:anomaly-detection.metric-events
+        scope: environment
     config:
       template: alert-templates/high-grpc-client-error-rate.json
       name: HighGrpcClientErrorRate

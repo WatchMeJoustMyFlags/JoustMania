@@ -13,6 +13,7 @@ See services/game_coordinator/servicer.py for the GameCoordinatorServicer implem
 import asyncio
 import logging
 import os
+import signal
 import sys
 
 # Configure logging early, before any logging calls
@@ -45,6 +46,7 @@ from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+from lib.otel_logging import init_logging
 from lib.otel_metrics import init_metrics
 from lib.profiling import init_profiling
 from lib.system_metrics import start_system_metrics_collector
@@ -67,6 +69,7 @@ async def serve(port=50053):
     # Initialize OTEL push metrics
     # Export interval read from flagd with per-service targeting (Issue #479)
     init_metrics()
+    init_logging()
     init_profiling()
 
     # Start system metrics collection
@@ -106,12 +109,18 @@ async def serve(port=50053):
 
     logger.info(f"GameCoordinator server listening on port {port}")
 
-    try:
-        await server.wait_for_termination()
-    except KeyboardInterrupt:
-        logger.info("Shutting down GameCoordinator server...")
-        await game_servicer.shutdown()
-        await server.stop(grace=5)
+    # Use asyncio.Event for signal-driven shutdown so both SIGTERM (Docker stop)
+    # and SIGINT (Ctrl-C / KeyboardInterrupt) trigger graceful shutdown.
+    shutdown_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, shutdown_event.set)
+
+    await shutdown_event.wait()
+
+    logger.info("Shutting down GameCoordinator server...")
+    await game_servicer.shutdown()
+    await server.stop(grace=5)
 
 
 if __name__ == "__main__":

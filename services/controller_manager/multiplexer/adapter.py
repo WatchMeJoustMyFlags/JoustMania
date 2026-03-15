@@ -20,16 +20,23 @@ class ControllerIOAdapter(ABC):
     @property
     @abstractmethod
     def adapter_type(self) -> str:
-        """Identifier: 'psmove', 'hidapi', 'mock'."""
+        """Identifier: 'hidapi', 'mock', 'rust'."""
 
     @abstractmethod
-    def discover(self, force: bool = False, verify_only: bool = False) -> list[str]:
+    def discover(
+        self,
+        force: bool = False,
+        verify_only: bool = False,
+        exclude_serials: list[str] | None = None,
+    ) -> list[str]:
         """Scan for available controllers. Returns list of serials.
 
         Args:
             force: Force a full rescan, removing stale devices.
             verify_only: When True, only verify existing devices are
                 accessible — skip expensive enumeration for new devices.
+            exclude_serials: Serials claimed by another adapter — the adapter
+                should avoid opening HID handles for these devices.
         """
 
     @abstractmethod
@@ -47,6 +54,10 @@ class ControllerIOAdapter(ABC):
     @abstractmethod
     def close(self, serial: str) -> None:
         """Release controller handle."""
+
+    def get_adapter_for_serial(self, serial: str) -> str | None:  # noqa: ARG002
+        """Return BT adapter name (e.g. 'hci0') for this serial, if known."""
+        return None
 
     def close_all(self) -> None:  # noqa: B027
         """Release all handles (shutdown). Default: no-op."""

@@ -157,6 +157,15 @@ class Phase:
     execute: callable
 
 
+class PollDegradationError(Exception):
+    """Synthetic exception for poll degradation span events.
+
+    Not raised for control flow — only passed to span.record_exception()
+    so Dynatrace failure analysis can group and alert on poll health issues
+    by exception type (PollDegradationError) and message.
+    """
+
+
 class GameState(Enum):
     """Game lifecycle states."""
 
@@ -515,6 +524,36 @@ class BaseGameMode(ABC):
         """
         await self._create_gameplay_stream()
 
+    async def _warmup_ema(self):
+        """
+        Drain buffered stream data and prime EMA filters before game loop.
+
+        The gameplay stream opens ~2.25s before the game loop starts (before
+        countdown). Data buffered during that time can contain stale spikes
+        that cause instant deaths when the EMA is uninitialized. This method
+        reads and discards buffered frames while priming each player's EMA
+        with real sensor data — no death checks run.
+        """
+        warmup_duration = 0.1  # 100ms — enough to drain buffer and get ~6 frames at 60Hz
+        warmup_start = time.time()
+        frames_consumed = 0
+
+        try:
+            async for gameplay_update in self.gameplay_stream:
+                for controller_data in gameplay_update.controllers:
+                    serial = controller_data.serial
+                    if serial in self.players and self.players[serial].alive:
+                        accel_mag = self._compute_accel_magnitude(controller_data.accel)
+                        self._update_ema(self.players[serial], accel_mag)
+                frames_consumed += 1
+
+                if time.time() - warmup_start >= warmup_duration:
+                    break
+        except Exception as e:
+            logger.warning(f"EMA warmup interrupted: {e}")
+
+        logger.info(f"EMA warmup complete: drained {frames_consumed} buffered frames")
+
     async def _process_gameplay_update(self, gameplay_update) -> bool:
         """
         Process a single gameplay update: handle disconnects then run death detection.
@@ -689,8 +728,13 @@ class BaseGameMode(ABC):
 
             logger.info("Starting game loop (stream rate controlled by controller-manager)")
 
-            # Stream was already created in _start_gameplay_stream() before countdown
-            # EMA filter was primed during countdown by _warmup_ema()
+            # Stream was already created in _start_gameplay_stream() before countdown.
+            # EMA filters were primed and buffered data drained by _warmup_ema().
+            # Apply startup grace period so any residual spikes can't cause instant death.
+            grace_until = time.time() + 0.3
+            for player in self.players.values():
+                if player.alive:
+                    player.grace_until = grace_until
 
             # Track current alive set for detecting changes
             last_alive_serials = {p.serial for p in self.players.values() if p.alive}
@@ -962,6 +1006,8 @@ class BaseGameMode(ABC):
 
                 player._poll_degraded_span.set_attribute("health.total_poll_drops", player.total_poll_drops)
                 player._poll_degraded_span.set_attribute("health.total_poll_errors", player.total_poll_errors)
+                msg = f"drops={player.total_poll_drops} errors={player.total_poll_errors} serial={serial}"
+                player._poll_degraded_span.record_exception(PollDegradationError(msg))
                 player._poll_degraded_span.set_status(Status(StatusCode.ERROR, "poll degradation detected"))
                 player._poll_degraded_span.end()
                 player._poll_degraded_span = None
@@ -1121,16 +1167,9 @@ class BaseGameMode(ABC):
         # span even after the subclass impl ends it. (#456)
         trace_parent, trace_state = inject_trace_context(player.span)
 
-        # Play death explosion sound under the player's span (player-specific)
-        if player.span:
-            ctx = trace.set_span_in_context(player.span)
-            token = otel_context.attach(ctx)
-            try:
-                await self._play_sound(Sound.SFX_EXPLOSION, priority=2)
-            finally:
-                otel_context.detach(token)
-        else:
-            await self._play_sound(Sound.SFX_EXPLOSION, priority=2)
+        # Play death explosion sound under the player's span
+        player_ctx = trace.set_span_in_context(player.span) if player.span else None
+        await self._play_sound(Sound.SFX_EXPLOSION, priority=2, parent_context=player_ctx)
 
         # Add death event to player's lifecycle span (Phase 3: Per-Player Sensitivity)
         if player.span:
@@ -1144,6 +1183,10 @@ class BaseGameMode(ABC):
                     "alive_remaining": alive_count_before - 1,
                 },
             )
+
+        # Finalize health attributes BEFORE _kill_player_impl() which may close the span.
+        # Without this, dead players lose their health.total_poll_drops etc. attributes.
+        self._finalize_player_health(player)
 
         # Call subclass-specific death handling
         await self._kill_player_impl(serial, accel_mag)
@@ -1261,6 +1304,15 @@ class BaseGameMode(ABC):
             # State transitions
             self.state = GameState.STARTING
             self.running = True  # Set early to allow force_end during countdown
+            current_span = trace.get_current_span()
+            current_span.add_event(
+                "game.state_changed",
+                {
+                    "game.state": "STARTING",
+                    GAME_MODE_ATTR: self.get_game_name(),
+                    "game.id": self.game_id,
+                },
+            )
             await self.event_publisher(GameEvent.GAME_STARTING, {"game_id": self.game_id})
 
             # Phase 1: Initialization (setup only — no countdown)
@@ -1303,6 +1355,15 @@ class BaseGameMode(ABC):
 
             # Game starts
             self.state = GameState.RUNNING
+            current_span = trace.get_current_span()
+            current_span.add_event(
+                "game.state_changed",
+                {
+                    "game.state": "RUNNING",
+                    "player.count": len(self.players),
+                    "game.id": self.game_id,
+                },
+            )
             # Note: self.start_time is set in _game_loop when first data is received
             await self.event_publisher(
                 GameEvent.GAME_STARTED,
@@ -1359,6 +1420,9 @@ class BaseGameMode(ABC):
 
                     await self.audio_client.SetVolume(audio_pb2.SetVolumeRequest(volume=GAME_VOLUME))
 
+                # Drain buffered stream data and prime EMA filters
+                await self._warmup_ema()
+
                 # Start music loop as background task (uses game_cycle_context)
                 self.music_loop_task = asyncio.create_task(self._music_loop())
 
@@ -1376,7 +1440,14 @@ class BaseGameMode(ABC):
                     self._close_grouping_spans()
 
             # Phase 3: Teardown
-            with tracer.start_as_current_span("teardown_phase"):
+            with tracer.start_as_current_span("teardown_phase") as teardown_span:
+                teardown_span.add_event(
+                    "game.state_changed",
+                    {
+                        "game.state": "ENDING",
+                        "game.id": self.game_id,
+                    },
+                )
                 # Stop game music first (inside teardown_phase so StopMusic span is a child)
                 await self._stop_game_music()
 
@@ -1391,6 +1462,15 @@ class BaseGameMode(ABC):
         except Exception as e:
             logger.error(f"{self.get_game_name()} game error: {e}", exc_info=True)
             self.state = GameState.ENDED
+            current_span = trace.get_current_span()
+            current_span.add_event(
+                "game.state_changed",
+                {
+                    "game.state": "ENDED",
+                    "game.id": self.game_id,
+                    "game.error": str(e),
+                },
+            )
             await self.event_publisher(GameEvent.GAME_ERROR, {"game_id": self.game_id, "error": str(e)})
             raise
 
@@ -1456,6 +1536,9 @@ class BaseGameMode(ABC):
 
             player._poll_degraded_span.set_attribute("health.total_poll_drops", player.total_poll_drops)
             player._poll_degraded_span.set_attribute("health.total_poll_errors", player.total_poll_errors)
+            serial = getattr(player, "serial", "unknown")
+            msg = f"drops={player.total_poll_drops} errors={player.total_poll_errors} serial={serial}"
+            player._poll_degraded_span.record_exception(PollDegradationError(msg))
             player._poll_degraded_span.set_status(Status(StatusCode.ERROR, "poll degradation detected"))
             player._poll_degraded_span.end()
             player._poll_degraded_span = None
@@ -1515,16 +1598,21 @@ class BaseGameMode(ABC):
             self._game_cycle_span = None
             self.game_cycle_context = None
 
-    async def _play_sound(self, sound: str | Sound, priority: int = 2):
+    async def _play_sound(
+        self,
+        sound: str | Sound,
+        priority: int = 2,
+        parent_context: otel_context.Context | None = None,
+    ):
         """
         Play sound via Audio service (Phase 29).
-
-        When game_cycle_context is set, sounds are parented to the game_cycle
-        span so all audio instrumentation is grouped together in traces.
 
         Args:
             sound: Sound enum or string name (e.g., Sound.VOX_CONGRATULATIONS or "congratulations")
             priority: Audio priority (0=LOW, 1=MEDIUM, 2=HIGH, 3=CRITICAL)
+            parent_context: Explicit parent context. When set, overrides
+                game_cycle_context so the sound span is parented to a specific
+                span (e.g., a player lifecycle span for death explosions).
         """
         if not self.audio_client:
             return
@@ -1536,9 +1624,10 @@ class BaseGameMode(ABC):
             sound_name = sound.value if isinstance(sound, Sound) else sound
             request = audio_pb2.PlaySoundRequest(file_path=sound_name, volume=1.0, priority=priority)
 
-            # Parent sound spans under game_cycle when available
-            if self.game_cycle_context:
-                token = otel_context.attach(self.game_cycle_context)
+            # Use explicit parent if provided, otherwise fall back to game_cycle
+            ctx = parent_context or self.game_cycle_context
+            if ctx:
+                token = otel_context.attach(ctx)
                 try:
                     await self.audio_client.PlaySound(request)
                 finally:

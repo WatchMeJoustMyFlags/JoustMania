@@ -14,13 +14,19 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from lib.psmove_hid import (
+    FEATURE_REPORT_GET_SIZE,
+    FEATURE_REPORT_SET_SIZE,
     INPUT_REPORT_SIZE,
     OUTPUT_REPORT_SIZE,
     Battery,
     Button,
     Frame,
+    _mac_bytes_to_string,
+    _mac_string_to_bytes,
     battery_to_percent,
     build_output_report,
+    build_set_btaddr_report,
+    parse_btaddr_report,
     parse_input_report,
 )
 
@@ -335,7 +341,7 @@ class TestOutputReport:
 
     def test_output_report_type_byte(self):
         report = build_output_report()
-        assert report[0] == 0x02
+        assert report[0] == 0x06
 
     def test_rgb_values(self):
         report = build_output_report(r=255, g=128, b=64)
@@ -368,6 +374,20 @@ class TestOutputReport:
         for i in range(7, OUTPUT_REPORT_SIZE):
             assert report[i] == 0, f"Byte {i} should be 0, got {report[i]}"
 
+    def test_reserved_byte_1_is_zero(self):
+        """Byte 1 (reserved) should always be zero."""
+        report = build_output_report(r=255, g=255, b=255, rumble=255)
+        assert report[1] == 0
+
+    def test_reserved_byte_5_is_zero(self):
+        """Byte 5 (rumble2) should always be zero."""
+        report = build_output_report(r=255, g=255, b=255, rumble=255)
+        assert report[5] == 0
+
+    def test_output_report_is_9_bytes(self):
+        assert OUTPUT_REPORT_SIZE == 9
+        assert len(build_output_report()) == 9
+
 
 class TestButtonIntFlag:
     """Test Button IntFlag values and operations."""
@@ -396,3 +416,214 @@ class TestFrameEnum:
     def test_frame_values(self):
         assert Frame.FIRST == 0
         assert Frame.SECOND == 1
+
+
+# ---------------------------------------------------------------------------
+# ZCM2 (PS4-era) tests — signed 16-bit two's complement decoding
+# ---------------------------------------------------------------------------
+
+
+def _build_zcm2_test_report(
+    buttons_lo=0,
+    buttons_hi=0,
+    sequence=0,
+    trigger1=0,
+    trigger2=0,
+    battery=Battery.MAX,
+    ax1=0,
+    ay1=0,
+    az1=0,
+    ax2=0,
+    ay2=0,
+    az2=0,
+    gx1=0,
+    gy1=0,
+    gz1=0,
+    gx2=0,
+    gy2=0,
+    gz2=0,
+    temperature=0,
+) -> bytes:
+    """Build a synthetic 49-byte HID input report with ZCM2-style signed sensor values."""
+    data = bytearray(INPUT_REPORT_SIZE)
+
+    data[1] = buttons_lo & 0xFF
+    data[2] = (buttons_lo >> 8) & 0xFF
+    data[3] = buttons_hi & 0xFF
+    data[4] = sequence
+    data[6] = trigger1
+    data[7] = trigger2
+    data[12] = battery
+
+    # Pack as signed int16 (same raw bytes a ZCM2 controller would produce)
+    struct.pack_into("<hhh", data, 13, ax1, ay1, az1)
+    struct.pack_into("<hhh", data, 19, ax2, ay2, az2)
+    struct.pack_into("<hhh", data, 25, gx1, gy1, gz1)
+    struct.pack_into("<hhh", data, 31, gx2, gy2, gz2)
+    struct.pack_into("<H", data, 37, temperature)
+
+    return bytes(data)
+
+
+class TestZCM2AccelerometerParsing:
+    """Test ZCM2 (PS4-era) accelerometer parsing with signed two's complement."""
+
+    def test_zcm2_positive_acceleration(self):
+        """Signed 4096 (0x1000) parses as +4096."""
+        data = _build_zcm2_test_report(ax1=4096)
+        result = parse_input_report(data, zcm2=True)
+        assert result["accel"][0][0] == 4096
+
+    def test_zcm2_negative_acceleration(self):
+        """Signed -4096 (0xF000 unsigned) parses as -4096."""
+        data = _build_zcm2_test_report(ax1=-4096)
+        result = parse_input_report(data, zcm2=True)
+        assert result["accel"][0][0] == -4096
+
+    def test_zcm2_gravity_on_z_axis(self):
+        """0x1000 on Z gives +4096 (same magnitude as ZCM1 but no offset)."""
+        data = _build_zcm2_test_report(az1=4096)
+        result = parse_input_report(data, zcm2=True)
+        assert result["accel"][0][2] == 4096
+
+    def test_zcm2_zero_acceleration(self):
+        """0x0000 parses as 0 (not -32768 like ZCM1 decoding would give)."""
+        data = _build_zcm2_test_report(ax1=0, ay1=0, az1=0)
+        result = parse_input_report(data, zcm2=True)
+        assert result["accel"][0] == (0, 0, 0)
+
+
+class TestZCM2GyroscopeParsing:
+    """Test ZCM2 (PS4-era) gyroscope parsing with signed two's complement."""
+
+    def test_zcm2_gyro_stationary(self):
+        """0x0000 parses as 0."""
+        data = _build_zcm2_test_report(gx1=0, gy1=0, gz1=0)
+        result = parse_input_report(data, zcm2=True)
+        assert result["gyro"][0] == (0, 0, 0)
+
+    def test_zcm2_gyro_rotation(self):
+        """Signed values parsed correctly."""
+        data = _build_zcm2_test_report(gx1=256, gy1=-256, gz1=0)
+        result = parse_input_report(data, zcm2=True)
+        assert result["gyro"][0][0] == 256
+        assert result["gyro"][0][1] == -256
+        assert result["gyro"][0][2] == 0
+
+
+# ---------------------------------------------------------------------------
+# Feature report tests (BT address get/set for USB pairing)
+# ---------------------------------------------------------------------------
+
+
+class TestMacBytesToString:
+    """Test _mac_bytes_to_string() LSB-first → colon string."""
+
+    def test_known_mac(self):
+        # LSB-first: FF EE DD CC BB AA → "AA:BB:CC:DD:EE:FF"
+        assert _mac_bytes_to_string(b"\xff\xee\xdd\xcc\xbb\xaa") == "AA:BB:CC:DD:EE:FF"
+
+    def test_all_zeros(self):
+        assert _mac_bytes_to_string(b"\x00\x00\x00\x00\x00\x00") == "00:00:00:00:00:00"
+
+    def test_broadcast(self):
+        assert _mac_bytes_to_string(b"\xff\xff\xff\xff\xff\xff") == "FF:FF:FF:FF:FF:FF"
+
+    def test_sony_prefix(self):
+        # Sony PS Move prefix 00:06:F7 → LSB bytes: F7 06 00 ...
+        data = b"\xcc\xbb\xaa\xf7\x06\x00"
+        assert _mac_bytes_to_string(data) == "00:06:F7:AA:BB:CC"
+
+
+class TestMacStringToBytes:
+    """Test _mac_string_to_bytes() colon string → LSB-first."""
+
+    def test_known_mac(self):
+        result = _mac_string_to_bytes("AA:BB:CC:DD:EE:FF")
+        assert result == b"\xff\xee\xdd\xcc\xbb\xaa"
+
+    def test_all_zeros(self):
+        result = _mac_string_to_bytes("00:00:00:00:00:00")
+        assert result == b"\x00\x00\x00\x00\x00\x00"
+
+    def test_broadcast(self):
+        result = _mac_string_to_bytes("FF:FF:FF:FF:FF:FF")
+        assert result == b"\xff\xff\xff\xff\xff\xff"
+
+    def test_lowercase_accepted(self):
+        result = _mac_string_to_bytes("aa:bb:cc:dd:ee:ff")
+        assert result == b"\xff\xee\xdd\xcc\xbb\xaa"
+
+    def test_invalid_mac_raises(self):
+        import pytest
+
+        with pytest.raises(ValueError, match="Invalid MAC"):
+            _mac_string_to_bytes("AA:BB:CC")
+
+
+class TestMacRoundtrip:
+    """Test bytes→string→bytes roundtrip."""
+
+    def test_roundtrip(self):
+        original = b"\x11\x22\x33\x44\x55\x66"
+        mac_str = _mac_bytes_to_string(original)
+        assert _mac_string_to_bytes(mac_str) == original
+
+    def test_roundtrip_string(self):
+        original = "DC:A6:32:AA:BB:CC"
+        mac_bytes = _mac_string_to_bytes(original)
+        assert _mac_bytes_to_string(mac_bytes) == original
+
+
+class TestParseBtaddrReport:
+    """Test parse_btaddr_report() for GET_FEATURE 0x04."""
+
+    def test_known_report(self):
+        # Build a 16-byte report:
+        # [0x04, ctrl_lsb(6B), pad(3B), host_lsb(6B)]
+        # Controller: 00:06:F7:AA:BB:CC → LSB: CC BB AA F7 06 00
+        # Host:       DC:A6:32:11:22:33 → LSB: 33 22 11 32 A6 DC
+        report = bytearray(FEATURE_REPORT_GET_SIZE)
+        report[0] = 0x04
+        report[1:7] = b"\xcc\xbb\xaa\xf7\x06\x00"
+        report[7:10] = b"\x00\x00\x00"  # padding
+        report[10:16] = b"\x33\x22\x11\x32\xa6\xdc"
+
+        ctrl, host = parse_btaddr_report(bytes(report))
+        assert ctrl == "00:06:F7:AA:BB:CC"
+        assert host == "DC:A6:32:11:22:33"
+
+    def test_all_zeros(self):
+        report = bytes(FEATURE_REPORT_GET_SIZE)
+        ctrl, host = parse_btaddr_report(report)
+        assert ctrl == "00:00:00:00:00:00"
+        assert host == "00:00:00:00:00:00"
+
+    def test_report_too_short_raises(self):
+        import pytest
+
+        with pytest.raises(ValueError, match="too short"):
+            parse_btaddr_report(b"\x04\x00\x00")
+
+
+class TestBuildSetBtaddrReport:
+    """Test build_set_btaddr_report() for SET_FEATURE 0x05."""
+
+    def test_report_structure(self):
+        report = build_set_btaddr_report("DC:A6:32:11:22:33")
+        assert len(report) == FEATURE_REPORT_SET_SIZE
+        assert report[0] == 0x05
+        # Bytes 1-6: LSB-first MAC
+        assert report[1:7] == b"\x33\x22\x11\x32\xa6\xdc"
+        # Remaining bytes are zero
+        assert report[7:] == b"\x00" * 16
+
+    def test_all_zeros_host(self):
+        report = build_set_btaddr_report("00:00:00:00:00:00")
+        assert report == bytes([0x05] + [0x00] * 22)
+
+    def test_broadcast_host(self):
+        report = build_set_btaddr_report("FF:FF:FF:FF:FF:FF")
+        assert report[0] == 0x05
+        assert report[1:7] == b"\xff\xff\xff\xff\xff\xff"
+        assert report[7:] == b"\x00" * 16

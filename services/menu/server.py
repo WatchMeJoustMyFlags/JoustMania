@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import signal
 
 # Configure logging early, before any logging calls
 # This must happen before any logging.warning/info/etc to ensure LOG_LEVEL is respected
@@ -27,6 +28,7 @@ logging.basicConfig(
 import grpc.aio
 from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 
+from lib.otel_logging import init_logging
 from lib.otel_metrics import init_metrics
 from lib.profiling import init_profiling
 from lib.system_metrics import start_system_metrics_collector
@@ -42,6 +44,7 @@ async def serve(port=50054):
     """Start the Menu gRPC server."""
     # Initialize OTEL push metrics
     init_metrics()
+    init_logging()
     init_profiling()
     logger.info("OTEL push metrics initialized for menu service")
 
@@ -96,22 +99,28 @@ async def serve(port=50054):
         menu_servicer.current_selection = Games.JoustFFA
         logger.info("Menu auto-started (menu_auto_start flag=true)")
 
-    try:
-        await server.wait_for_termination()
-    except KeyboardInterrupt:
-        logger.info("Shutting down Menu server...")
+    # Use asyncio.Event for signal-driven shutdown so both SIGTERM (Docker stop)
+    # and SIGINT (Ctrl-C / KeyboardInterrupt) trigger graceful shutdown.
+    shutdown_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, shutdown_event.set)
 
-        # Cancel background tasks
-        for task in background_tasks:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        logger.info("Background tasks cancelled")
+    await shutdown_event.wait()
 
-        await menu_servicer.stop_button_monitor()
-        await menu_servicer.stop_game_event_monitor()
-        await menu_servicer.shutdown()
-        await server.stop(grace=5)
+    logger.info("Shutting down Menu server...")
+
+    # Cancel background tasks
+    for task in background_tasks:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    logger.info("Background tasks cancelled")
+
+    await menu_servicer.stop_button_monitor()
+    await menu_servicer.stop_game_event_monitor()
+    await menu_servicer.shutdown()
+    await server.stop(grace=5)
 
 
 if __name__ == "__main__":

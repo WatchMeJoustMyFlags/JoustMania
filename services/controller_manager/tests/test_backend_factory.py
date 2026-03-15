@@ -19,7 +19,6 @@ sys.path.insert(0, str(project_root))
 
 from services.controller_manager.backend_factory import (
     _create_adapter_by_name,
-    _create_bt_discovery,
     _resolve_backend_name,
     create_backend,
 )
@@ -41,11 +40,11 @@ class TestResolveBackendName:
     def test_openfeature_flag_used(self):
         """OpenFeature flag should be used as primary selection."""
         mock_client = MagicMock()
-        mock_client.get_string_details.return_value = _mock_details("hidapi")
+        mock_client.get_string_details.return_value = _mock_details("python")
 
         with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
             result = _resolve_backend_name()
-            assert result == "hidapi"
+            assert result == "python"
 
     def test_openfeature_flag_case_insensitive(self):
         """Flag value should be lowercased."""
@@ -80,6 +79,16 @@ class TestCreateAdapterByName:
         assert adapter.__class__.__name__ == "MockAdapter"
         assert adapter.adapter_type == "mock"
 
+    def test_rust_adapter(self):
+        adapter = _create_adapter_by_name("rust")
+        assert adapter.__class__.__name__ == "RustServiceAdapter"
+        assert adapter.adapter_type == "rust"
+
+    def test_python_adapter(self):
+        adapter = _create_adapter_by_name("python")
+        assert adapter.__class__.__name__ == "PythonHidAdapter"
+        assert adapter.adapter_type == "python"
+
     def test_unknown_adapter_raises(self):
         with pytest.raises(RuntimeError, match="Unknown adapter"):
             _create_adapter_by_name("nonexistent")
@@ -99,23 +108,23 @@ class TestCreateBackendIntegration:
             assert len(backend.adapters) == 1
             assert backend.adapters[0].adapter_type == "mock"
 
-    def test_defaults_to_bluetooth_when_flag_fails(self):
-        """Should default to bluetooth when flag evaluation fails."""
+    def test_defaults_to_python_when_flag_fails(self):
+        """Should default to python when flag evaluation fails."""
         with (
             patch("lib.feature_flags.get_flag_client", side_effect=Exception("flagd unavailable")),
             patch("services.controller_manager.backend_factory._create_adapter_by_name") as mock_create,
         ):
-            bt_adapter = MagicMock()
-            bt_adapter.adapter_type = "psmove"
+            python_adapter = MagicMock()
+            python_adapter.adapter_type = "python"
             mock_adapter = MagicMock()
             mock_adapter.adapter_type = "mock"
-            mock_create.side_effect = [bt_adapter, mock_adapter]
+            mock_create.side_effect = [python_adapter, mock_adapter]
 
             backend = create_backend()
 
         assert backend.__class__.__name__ == "MultiplexerBackend"
         call_names = [call[0][0] for call in mock_create.call_args_list]
-        assert "bluetooth" in call_names
+        assert "python" in call_names
         assert "mock" in call_names
 
 
@@ -133,10 +142,10 @@ class TestMultiAdapterCreation:
         ):
             create_backend()
 
-    def test_mock_bluetooth_creates_two_adapters(self):
-        """flag='mock,bluetooth' -> MultiplexerBackend with 2 adapters."""
+    def test_mock_python_creates_two_adapters(self):
+        """flag='mock,python' -> MultiplexerBackend with 2 adapters."""
         mock_client = MagicMock()
-        mock_client.get_string_details.return_value = _mock_details("mock,bluetooth")
+        mock_client.get_string_details.return_value = _mock_details("mock,python")
 
         with (
             patch("lib.feature_flags.get_flag_client", return_value=mock_client),
@@ -144,9 +153,9 @@ class TestMultiAdapterCreation:
         ):
             mock_adapter = MagicMock()
             mock_adapter.adapter_type = "mock"
-            bt_adapter = MagicMock()
-            bt_adapter.adapter_type = "psmove"
-            mock_create.side_effect = [mock_adapter, bt_adapter]
+            python_adapter = MagicMock()
+            python_adapter.adapter_type = "python"
+            mock_create.side_effect = [mock_adapter, python_adapter]
 
             backend = create_backend()
 
@@ -154,33 +163,7 @@ class TestMultiAdapterCreation:
         assert len(backend.adapters) == 2
         call_names = [call[0][0] for call in mock_create.call_args_list]
         assert "mock" in call_names
-        assert "bluetooth" in call_names
-
-    def test_bluetooth_hidapi_creates_three_adapters(self):
-        """flag='bluetooth,hidapi' -> MultiplexerBackend with 3 adapters (+ auto-injected mock)."""
-        mock_client = MagicMock()
-        mock_client.get_string_details.return_value = _mock_details("bluetooth,hidapi")
-
-        with (
-            patch("lib.feature_flags.get_flag_client", return_value=mock_client),
-            patch("services.controller_manager.backend_factory._create_adapter_by_name") as mock_create,
-        ):
-            bt_adapter = MagicMock()
-            bt_adapter.adapter_type = "psmove"
-            hidapi_adapter = MagicMock()
-            hidapi_adapter.adapter_type = "hidapi"
-            mock_adapter = MagicMock()
-            mock_adapter.adapter_type = "mock"
-            mock_create.side_effect = [bt_adapter, hidapi_adapter, mock_adapter]
-
-            backend = create_backend()
-
-        assert backend.__class__.__name__ == "MultiplexerBackend"
-        assert len(backend.adapters) == 3
-        call_names = [call[0][0] for call in mock_create.call_args_list]
-        assert "bluetooth" in call_names
-        assert "hidapi" in call_names
-        assert "mock" in call_names
+        assert "python" in call_names
 
     def test_single_name_creates_adapter(self):
         """flag='mock' -> MultiplexerBackend with 1 adapter."""
@@ -194,10 +177,32 @@ class TestMultiAdapterCreation:
         assert len(backend.adapters) == 1
         assert backend.adapters[0].adapter_type == "mock"
 
-    def test_whitespace_in_comma_separated_is_trimmed(self):
-        """flag='mock , bluetooth' -> names trimmed properly."""
+    def test_rust_flag_creates_rust_adapter(self):
+        """flag='rust' -> MultiplexerBackend with rust + mock adapters."""
         mock_client = MagicMock()
-        mock_client.get_string_details.return_value = _mock_details("mock , bluetooth")
+        mock_client.get_string_details.return_value = _mock_details("rust")
+
+        with (
+            patch("lib.feature_flags.get_flag_client", return_value=mock_client),
+            patch("services.controller_manager.backend_factory._create_adapter_by_name") as mock_create,
+        ):
+            rust_adapter = MagicMock()
+            rust_adapter.adapter_type = "rust"
+            mock_adapter = MagicMock()
+            mock_adapter.adapter_type = "mock"
+            mock_create.side_effect = [rust_adapter, mock_adapter]
+
+            backend = create_backend()
+
+        assert backend.__class__.__name__ == "MultiplexerBackend"
+        call_names = [call[0][0] for call in mock_create.call_args_list]
+        assert "rust" in call_names
+        assert "mock" in call_names
+
+    def test_whitespace_in_comma_separated_is_trimmed(self):
+        """flag='mock , python' -> names trimmed properly."""
+        mock_client = MagicMock()
+        mock_client.get_string_details.return_value = _mock_details("mock , python")
 
         with (
             patch("lib.feature_flags.get_flag_client", return_value=mock_client),
@@ -205,80 +210,13 @@ class TestMultiAdapterCreation:
         ):
             mock_adapter = MagicMock()
             mock_adapter.adapter_type = "mock"
-            bt_adapter = MagicMock()
-            bt_adapter.adapter_type = "psmove"
-            mock_create.side_effect = [mock_adapter, bt_adapter]
+            python_adapter = MagicMock()
+            python_adapter.adapter_type = "python"
+            mock_create.side_effect = [mock_adapter, python_adapter]
 
             backend = create_backend()
 
         assert backend.__class__.__name__ == "MultiplexerBackend"
         call_names = [call[0][0] for call in mock_create.call_args_list]
         assert "mock" in call_names
-        assert "bluetooth" in call_names
-
-
-class TestBTDiscoveryInjection:
-    """Test CentralizedBTDiscovery creation and injection."""
-
-    def test_bluetooth_gets_bluez_discovery(self):
-        from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDiscovery
-
-        discovery = _create_bt_discovery(["bluetooth"])
-        assert isinstance(discovery, CentralizedBTDiscovery)
-        assert discovery.discovery_mode == "bluez"
-
-    def test_hidapi_gets_hidapi_discovery(self):
-        from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDiscovery
-
-        discovery = _create_bt_discovery(["hidapi"])
-        assert isinstance(discovery, CentralizedBTDiscovery)
-        assert discovery.discovery_mode == "hidapi"
-
-    def test_mock_gets_no_discovery(self):
-        discovery = _create_bt_discovery(["mock"])
-        assert discovery is None
-
-    def test_mock_bluetooth_gets_bluez_discovery(self):
-        from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDiscovery
-
-        discovery = _create_bt_discovery(["mock", "bluetooth"])
-        assert isinstance(discovery, CentralizedBTDiscovery)
-        assert discovery.discovery_mode == "bluez"
-
-    def test_mock_hidapi_gets_hidapi_discovery(self):
-        from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDiscovery
-
-        discovery = _create_bt_discovery(["mock", "hidapi"])
-        assert isinstance(discovery, CentralizedBTDiscovery)
-        assert discovery.discovery_mode == "hidapi"
-
-    def test_multiplexer_receives_bt_discovery(self):
-        """MultiplexerBackend should hold bt_discovery when bluetooth adapter used."""
-        mock_client = MagicMock()
-        mock_client.get_string_details.return_value = _mock_details("mock,bluetooth")
-
-        with (
-            patch("lib.feature_flags.get_flag_client", return_value=mock_client),
-            patch("services.controller_manager.backend_factory._create_adapter_by_name") as mock_create,
-        ):
-            mock_adapter = MagicMock()
-            mock_adapter.adapter_type = "mock"
-            bt_adapter = MagicMock()
-            bt_adapter.adapter_type = "psmove"
-            mock_create.side_effect = [mock_adapter, bt_adapter]
-
-            backend = create_backend()
-
-        assert backend.__class__.__name__ == "MultiplexerBackend"
-        assert backend.bt_discovery is not None
-        assert backend.bt_discovery.discovery_mode == "bluez"
-
-    def test_mock_only_receives_no_discovery(self):
-        """Mock-only should pass bt_discovery=None."""
-        mock_client = MagicMock()
-        mock_client.get_string_details.return_value = _mock_details("mock")
-
-        with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
-            backend = create_backend()
-
-        assert backend.bt_discovery is None
+        assert "python" in call_names

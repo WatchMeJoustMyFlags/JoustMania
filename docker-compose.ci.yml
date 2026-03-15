@@ -37,6 +37,12 @@ services:
     devices: !reset []
     volumes: !reset []
     privileged: false
+    # Override depends_on to remove rust-hid and python-hid (hardware profile, not available in CI)
+    depends_on: !override
+      redis:
+        condition: service_healthy
+      flagd:
+        condition: service_started
     environment: !override
       OTEL_SERVICE_NAME: controller-manager-service
       OTEL_SERVICE_NAMESPACE: infrastructure
@@ -50,6 +56,16 @@ services:
 
   # Pairing Daemon - Requires hardware, excluded from CI
   pairing-daemon:
+    profiles:
+      - hardware  # Only starts when 'hardware' profile is active
+
+  # Rust HID Service - Requires hardware, excluded from CI
+  rust-hid:
+    profiles:
+      - hardware  # Only starts when 'hardware' profile is active
+
+  # Python HID Service - Requires hardware, excluded from CI
+  python-hid:
     profiles:
       - hardware  # Only starts when 'hardware' profile is active
 

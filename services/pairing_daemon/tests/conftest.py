@@ -1,29 +1,30 @@
 """
 Pytest fixtures for pairing daemon tests.
 
-Mocks psmove module and provides test utilities.
+Mocks hidraw module and provides test utilities.
 """
 
 import os
 import sys
+from types import ModuleType
+from unittest.mock import MagicMock
 
-# Disable OTEL metrics before importing modules that use them
+# Disable OTEL metrics and logging before importing modules that use them
+from lib.otel_logging import disable_logging_for_tests
 from lib.otel_metrics import disable_metrics_for_tests
 
 disable_metrics_for_tests()
+disable_logging_for_tests()
 
 # Disable OTEL tracing
 os.environ["OTEL_SDK_DISABLED"] = "true"
 os.environ["OTEL_TRACES_EXPORTER"] = "none"
 
-# Mock psmove module before it gets imported
-from unittest.mock import MagicMock
-
-mock_psmove = MagicMock()
-mock_psmove.Conn_USB = 1
-mock_psmove.Conn_Bluetooth = 2
-mock_psmove.count_connected.return_value = 0
-sys.modules["psmove"] = mock_psmove
+# Mock hidraw module before it gets imported (same pattern as test_hidapi_adapter.py)
+_mock_hid = ModuleType("hidraw")
+_mock_hid.enumerate = MagicMock(return_value=[])
+_mock_hid.device = MagicMock
+sys.modules.setdefault("hidraw", _mock_hid)
 
 import pytest
 
@@ -89,12 +90,6 @@ def mock_tracer():
     return tracer
 
 
-@pytest.fixture
-def mock_psmove_module():
-    """Provide a configurable mock psmove module."""
-    return mock_psmove
-
-
 # Sample command outputs for testing
 SAMPLE_LSUSB_NO_PSMOVE = """\
 Bus 001 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
@@ -134,6 +129,39 @@ Connections:
 SAMPLE_HCITOOL_RSSI = """\
 RSSI return value: -45
 """
+
+
+# HID test constants shared across test_pairing_backend.py and test_usb_pairing.py
+FAKE_PATH_1 = b"/dev/hidraw3"
+FAKE_PATH_2 = b"/dev/hidraw4"
+
+# Feature report 0x04 for controller AA:BB:CC:DD:EE:FF with host 11:22:33:44:55:66
+# Controller MAC LSB-first: FF EE DD CC BB AA
+# Host MAC LSB-first: 66 55 44 33 22 11
+SAMPLE_FEATURE_REPORT = bytes(
+    [0x04, 0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA, 0x00, 0x00, 0x00, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11]
+)
+
+# Zero host (unpaired)
+SAMPLE_FEATURE_REPORT_UNPAIRED = bytes(
+    [0x04, 0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+)
+
+
+def make_dev_info(
+    path: bytes = FAKE_PATH_1,
+    vendor_id: int = 0x054C,
+    product_id: int = 0x03D5,
+    interface_number: int = 0,
+) -> dict:
+    """Create a fake hid.enumerate() device info dict."""
+    return {
+        "path": path,
+        "vendor_id": vendor_id,
+        "product_id": product_id,
+        "interface_number": interface_number,
+        "serial_number": "",
+    }
 
 
 @pytest.fixture

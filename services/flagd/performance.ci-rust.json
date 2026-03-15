@@ -1,0 +1,15 @@
+{
+  "$schema": "https://flagd.dev/schema/v0/flags.json",
+  "flags": {
+    "controller_adapter_routing": {
+      "state": "ENABLED",
+      "variants": {
+        "rust": "rust",
+        "python": "python",
+        "empty": ""
+      },
+      "defaultVariant": "rust",
+      "targeting": {}
+    }
+  }
+}

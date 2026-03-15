@@ -77,7 +77,6 @@ get-docker.sh
 
 # Builder marker files
 .builder-built
-.psmove-builder-built
 
 # Linter cache
 .ruff_cache/

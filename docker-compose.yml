@@ -32,6 +32,7 @@ x-logging: &default-logging
   options:
     max-size: "10m"
     max-file: "3"
+    labels: "com.docker.compose.service,com.docker.compose.image"
 
 services:
   # Redis for pub/sub messaging
@@ -125,13 +126,17 @@ services:
           cpus: '0.5'
     logging: *default-logging
 
-  # OpenTelemetry Collector
+  # OpenTelemetry Collector (custom build: contrib + dtbizevents exporter)
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.110.0
+    image: ghcr.io/watchmejoustmyflags/joustmania/otel-collector:${IMAGE_TAG:-latest}
+    build:
+      context: images/otel-collector
+      dockerfile: Dockerfile
     container_name: joustmania-otel-collector
     command: [ "--config=/etc/otel-collector-config.yaml" ]
     volumes:
       - ./services/otel-collector/config.yaml:/etc/otel-collector-config.yaml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
     ports:
       # OTLP gRPC - exposed for host-network containers (pairing-daemon)
       - "4317:4317"
@@ -144,13 +149,13 @@ services:
         condition: service_healthy
       victoria-metrics:
         condition: service_healthy
-      grafana-live-publisher:
-        condition: service_healthy
     networks:
       - joustmania
-    # No healthcheck: otel-collector-contrib is a scratch image with no shell/wget/curl.
-    # The health_check extension exposes :13133 but we can't probe it from within the container.
-    # No healthcheck: distroless image has no shell/wget/curl
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:13133"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     deploy:
       resources:
         limits:
@@ -186,7 +191,6 @@ services:
       dockerfile: services/controller_manager/Dockerfile
       args:
         BUILDER_IMAGE: ${BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/builder:latest}
-        PSMOVE_BUILDER_IMAGE: ${PSMOVE_BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/psmove-builder:latest}
     container_name: joustmania-controller-manager
     privileged: true
     # Required for controller hot-plug: run in host PID namespace to see new devices
@@ -196,8 +200,6 @@ services:
       - /var/run/dbus:/var/run/dbus:ro
       # Bluetooth device info (read-only, pairing handled by host daemon)
       - /var/lib/bluetooth:/var/lib/bluetooth:ro
-      # PS Move calibration data (shared with pairing daemon)
-      - psmoveapi-data:/root/.psmoveapi:ro
       # Mount devtmpfs with rslave for hot-plug device visibility
       - /dev:/dev:rslave
       # Persist controller names across restarts
@@ -215,12 +217,23 @@ services:
       - OTEL_SERVICE_NAME=controller-manager-service
       - OTEL_SERVICE_NAMESPACE=infrastructure
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - SERVICE_VERSION=${IMAGE_TAG:-dev}
       - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
+      # Rust HID service for canary controller I/O backend
+      - RUST_HID_HOST=rust-hid
+      - RUST_HID_PORT=50058
+      # Python HID service for canary controller I/O backend
+      - PYTHON_HID_HOST=python-hid
+      - PYTHON_HID_PORT=50059
     depends_on:
       redis:
         condition: service_healthy
       flagd:
         condition: service_started
+      rust-hid:
+        condition: service_healthy
+      python-hid:
+        condition: service_healthy
     restart: unless-stopped
     # Healthcheck defined in Dockerfile (uses grpc_health_probe)
     deploy:
@@ -238,7 +251,6 @@ services:
       dockerfile: services/pairing_daemon/Dockerfile
       args:
         BUILDER_IMAGE: ${BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/builder:latest}
-        PSMOVE_BUILDER_IMAGE: ${PSMOVE_BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/psmove-builder:latest}
     container_name: joustmania-pairing-daemon
     privileged: true
     pid: "host"
@@ -252,22 +264,89 @@ services:
       - /var/lib/bluetooth:/var/lib/bluetooth
       # USB device access
       - /dev:/dev:rslave
-      # PS Move calibration data (shared with controller-manager)
-      - psmoveapi-data:/root/.psmoveapi
     # Port 8002 (health) binds directly on host via network_mode: host
     environment:
       - METRICS_PORT=8002
-      - PSMOVE_PATH=/usr/local/bin/psmove
       - DBUS_SYSTEM_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket
       - OTEL_SERVICE_NAME=pairing-daemon
       - OTEL_SERVICE_NAMESPACE=infrastructure
+      - SERVICE_VERSION=${IMAGE_TAG:-dev}
       # localhost because network_mode:host can't use Docker DNS
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
       # flagd for runtime-tunable intervals (localhost because network_mode:host)
       - FLAGD_HOST=localhost
       - FLAGD_PORT=8015
+      # Rust HID service (localhost because network_mode:host connects via exposed port)
+      - RUST_HID_HOST=localhost
+      - RUST_HID_PORT=50058
+    depends_on:
+      rust-hid:
+        condition: service_healthy
     restart: unless-stopped
     # Healthcheck defined in Dockerfile (uses HTTP /healthz)
+
+  # Rust HID Service - PS Move HID operations via gRPC
+  rust-hid:
+    image: ghcr.io/watchmejoustmyflags/joustmania/rust-hid:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: services/rust-hid/Dockerfile
+    container_name: joustmania-rust-hid
+    privileged: true
+    pid: "host"
+    volumes:
+      - /dev:/dev:rslave
+    networks:
+      - joustmania
+    ports:
+      # Exposed to host for pairing-daemon (network_mode: host)
+      - "50058:50058"
+    environment:
+      - OTEL_SERVICE_NAME=rust-hid
+      - OTEL_SERVICE_NAMESPACE=infrastructure
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - SERVICE_VERSION=${IMAGE_TAG:-dev}
+      - RUST_LOG=info
+    restart: unless-stopped
+    # Healthcheck defined in Dockerfile (uses grpc_health_probe)
+    deploy:
+      resources:
+        limits:
+          memory: 64m
+          cpus: '0.25'
+    logging: *default-logging
+
+  # Python HID Service - PS Move HID operations via gRPC (Python implementation)
+  python-hid:
+    image: ghcr.io/watchmejoustmyflags/joustmania/python-hid:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: services/python_hid/Dockerfile
+      args:
+        BUILDER_IMAGE: ${BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/builder:latest}
+    container_name: joustmania-python-hid
+    privileged: true
+    pid: "host"
+    volumes:
+      - /dev:/dev:rslave
+    networks:
+      - joustmania
+    expose:
+      - "50059"  # gRPC service
+    environment:
+      - OTEL_SERVICE_NAME=python-hid
+      - OTEL_SERVICE_NAMESPACE=infrastructure
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
+      - SERVICE_VERSION=${IMAGE_TAG:-dev}
+    restart: unless-stopped
+    # Healthcheck defined in Dockerfile (uses grpc_health_probe)
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: '0.5'
+    logging: *default-logging
 
   # Game Coordinator Service
   game-coordinator:
@@ -286,6 +365,7 @@ services:
       - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME_GAME_COORDINATOR:-game-coordinator-service}
       - OTEL_SERVICE_NAMESPACE=joustmania
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+      - SERVICE_VERSION=${IMAGE_TAG:-dev}
       - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
     depends_on:
       redis:
@@ -295,7 +375,7 @@ services:
     networks:
       - joustmania
     restart: unless-stopped
-    stop_grace_period: 30s
+    stop_grace_period: 10s
     # Healthcheck defined in Dockerfile (uses grpc_health_probe)
     deploy:
       resources:
@@ -320,6 +400,7 @@ services:
       - OTEL_SERVICE_NAME=menu-service
       - OTEL_SERVICE_NAMESPACE=joustmania
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - SERVICE_VERSION=${IMAGE_TAG:-dev}
       - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
       # Phase 60: Audio service connection
       - AUDIO_HOST=audio
@@ -368,6 +449,7 @@ services:
       - OTEL_SERVICE_NAME=audio-service
       - OTEL_SERVICE_NAMESPACE=joustmania
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - SERVICE_VERSION=${IMAGE_TAG:-dev}
       - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
       - FLAGD_HOST=flagd
       - FLAGD_PORT=8015
@@ -580,7 +662,7 @@ services:
 
   # Loki for log aggregation with 24h retention
   loki:
-    image: grafana/loki:2.9.3
+    image: grafana/loki:3.4.3
     container_name: joustmania-loki
     user: "0"  # Run as root to avoid permission issues with volume
     # Port exposed only within Docker network (envoy proxies to it)
@@ -598,42 +680,12 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 10s
+      start_period: 20s
     deploy:
       resources:
         limits:
           memory: 192m
           cpus: '0.5'
-    logging: *default-logging
-
-  # Grafana Live Publisher - OTLP to Grafana Live WebSocket bridge
-  # Receives OTLP metrics from OTEL Collector and pushes to Grafana Live for real-time streaming
-  grafana-live-publisher:
-    image: ghcr.io/watchmejoustmyflags/joustmania/grafana-live-publisher:${IMAGE_TAG:-latest}
-    build:
-      context: .
-      dockerfile: services/grafana-live-publisher/Dockerfile
-    container_name: joustmania-grafana-live-publisher
-    # Port exposed only within Docker network
-    expose:
-      - "4318"  # OTLP HTTP receiver
-    environment:
-      - GRAFANA_URL=http://grafana:3000/grafana
-      - GRAFANA_PUSH_PATH=joustmania-accel
-      - GRAFANA_USER=admin
-      - GRAFANA_PASSWORD=admin
-    depends_on:
-      grafana:
-        condition: service_healthy
-    networks:
-      - joustmania
-    restart: unless-stopped
-    # Healthcheck defined in Dockerfile
-    deploy:
-      resources:
-        limits:
-          memory: 128m
-          cpus: '0.25'
     logging: *default-logging
 
   # Connect-Web Proxy (gRPC to Connect protocol translation)
@@ -652,6 +704,10 @@ services:
       - GAME_COORDINATOR_SERVICE=game-coordinator:50053
       - MENU_SERVICE=menu:50054
       - FLAGD_CONFIG_PATH=/etc/flagd/flags/performance.json
+      - OTEL_SERVICE_NAME=connect-proxy
+      - OTEL_SERVICE_NAMESPACE=infrastructure
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - SERVICE_VERSION=${IMAGE_TAG:-dev}
     volumes:
       - ./services/flagd:/etc/flagd/flags
     networks:
@@ -725,5 +781,4 @@ volumes:
   loki-data:
   jaeger-data:
   controller-names:
-  psmoveapi-data:
   pyroscope-data:

@@ -56,7 +56,6 @@ Environment variables (set via systemd override):
 | `BT_MONITOR_INTERVAL` | `5` | Seconds between Bluetooth monitoring |
 | `DEBUG` | `0` | Set to `1` for verbose logging |
 | `METRICS_PORT` | `8002` | Prometheus metrics port |
-| `PSMOVE_PATH` | auto-detect | Path to psmove binary |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | OTLP collector endpoint |
 
 To override:

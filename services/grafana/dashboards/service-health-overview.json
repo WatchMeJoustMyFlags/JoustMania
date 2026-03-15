@@ -304,7 +304,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(increase(grpc_requests_total{status!=\"ok\"}[5m])) or vector(0)",
+          "expr": "sum(increase(grpc_client_request_duration_seconds_count{grpc_code!=\"OK\"}[5m])) or vector(0)",
           "legendFormat": "Errors",
           "refId": "A"
         }
@@ -475,7 +475,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count(up{job=~\"pairing-daemon|controller-manager-pull|node\"} == 1)",
+          "expr": "count(up{job=~\"infrastructure/pairing-daemon|controller-manager-pull|host/node\"} == 1)",
           "legendFormat": "Infrastructure",
           "refId": "A"
         }
@@ -560,7 +560,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "up{job=~\"pairing-daemon|controller-manager-pull|node\"}",
+          "expr": "up{job=~\"infrastructure/pairing-daemon|controller-manager-pull|host/node\"}",
           "format": "table",
           "instant": true,
           "refId": "A"
@@ -646,7 +646,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count(up{job=~\"prometheus|grafana|loki|victoria-metrics|otel-collector\"} == 1)",
+          "expr": "count(up{job=~\"observability/prometheus|observability/victoria-metrics|observability/otel-collector\"} == 1)",
           "legendFormat": "Observability",
           "refId": "A"
         }
@@ -731,7 +731,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "up{job=~\"prometheus|grafana|loki|victoria-metrics|otel-collector\"}",
+          "expr": "up{job=~\"observability/prometheus|observability/victoria-metrics|observability/otel-collector\"}",
           "format": "table",
           "instant": true,
           "refId": "A"
@@ -1231,7 +1231,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by(job) (rate(grpc_requests_total[1m]))",
+          "expr": "sum by(service) (rate(grpc_client_request_duration_seconds_count[1m]))",
           "legendFormat": "{{job}}",
           "refId": "A"
         }
@@ -1327,7 +1327,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum by(job, le) (rate(grpc_request_duration_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.95, sum by(job, le) (rate(grpc_client_request_duration_seconds_bucket[5m])))",
           "legendFormat": "{{job}}",
           "refId": "A"
         }
@@ -1418,7 +1418,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by(job) (rate(grpc_requests_total{status!=\"ok\"}[1m]))",
+          "expr": "sum by(service) (rate(grpc_client_request_duration_seconds_count{grpc_code!=\"OK\"}[1m]))",
           "legendFormat": "{{job}}",
           "refId": "A"
         }
@@ -1605,8 +1605,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by(service, method, code) (rate(grpc_client_errors_total[5m]))",
-          "legendFormat": "{{service}}/{{method}} ({{code}})",
+          "expr": "sum by(service, method, grpc_code) (rate(grpc_client_request_duration_seconds_count{grpc_code!=\"OK\"}[5m]))",
+          "legendFormat": "{{service}}/{{method}} ({{grpc_code}})",
           "refId": "A"
         }
       ],

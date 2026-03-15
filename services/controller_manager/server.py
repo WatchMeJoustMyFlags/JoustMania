@@ -8,11 +8,13 @@ The actual servicer implementation is in servicer.py.
 import asyncio
 import logging
 import os
+import signal
 
 import grpc
 import grpc.aio
 from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 
+from lib.otel_logging import init_logging
 from lib.otel_metrics import init_metrics
 from lib.profiling import init_profiling
 from lib.system_metrics import start_system_metrics_collector
@@ -62,11 +64,20 @@ async def serve(port=50052):
     # Export interval read from flagd with per-service targeting (Issue #479)
     # Controller-manager gets 100ms (realtime), other services get 1000ms (normal)
     init_metrics()
+    init_logging()
     init_profiling()
 
     from services.controller_manager.servicer import init_frequency_listener
 
     init_frequency_listener()
+
+    # Enable Bluetooth adapters before backend creation (rfkill unblock)
+    try:
+        from services.controller_manager.backend_factory import initialize_bt_adapters
+
+        await initialize_bt_adapters()
+    except Exception:
+        logger.warning("Failed to initialize Bluetooth adapters (may not be available)", exc_info=True)
 
     # Create servicer BEFORE initializing other flag domains.
     # The FlagdProvider in-process resolver loses flags from the performance domain
@@ -165,20 +176,26 @@ async def serve(port=50052):
         await mobile_server.start()
         logger.info(f"MobileControllerService listening on port {mobile_port}")
 
-    try:
-        await server.wait_for_termination()
-    except KeyboardInterrupt:
-        logger.info("Shutting down ControllerManager server...")
-        await controller_servicer.shutdown()
-        await server.stop(grace=5)
+    # Use asyncio.Event for signal-driven shutdown so both SIGTERM (Docker stop)
+    # and SIGINT (Ctrl-C / KeyboardInterrupt) trigger graceful shutdown.
+    shutdown_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, shutdown_event.set)
 
-        # Stop mock server if running
-        if mock_server:
-            await mock_server.stop(grace=5)
+    await shutdown_event.wait()
 
-        # Stop mobile server if running
-        if mobile_server:
-            await mobile_server.stop(grace=5)
+    logger.info("Shutting down ControllerManager server...")
+    await controller_servicer.shutdown()
+    await server.stop(grace=5)
+
+    # Stop mock server if running
+    if mock_server:
+        await mock_server.stop(grace=5)
+
+    # Stop mobile server if running
+    if mobile_server:
+        await mobile_server.stop(grace=5)
 
 
 if __name__ == "__main__":

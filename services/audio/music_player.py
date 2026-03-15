@@ -157,6 +157,22 @@ def _resample_audio(samples, ratio_val, vol_val):
             yield data
 
 
+def _warmup_resampler():
+    """Pre-initialize resampy's filter cache to avoid audio dropout on first tempo change.
+
+    On Raspberry Pi, resampy's first resample at a new ratio triggers filter
+    coefficient computation and numpy allocations that can stall the pipeline
+    long enough to drain the ALSA buffer. Running dummy resamples at common
+    tempo ratios before playback starts eliminates this cold-start cost.
+    """
+    warmup_start = time.monotonic()
+    dummy_chunk = np.zeros(4096 * 2, dtype=np.int16).tobytes()  # 4096 stereo frames of silence
+    for ratio in [1.0, 1.3, 1.5, 2.0]:
+        _resample_chunk(dummy_chunk, ratio, 1.0)
+    elapsed_ms = (time.monotonic() - warmup_start) * 1000
+    logger.info("Resampler warmup completed in %.1f ms", elapsed_ms)
+
+
 def _write_samples(device, write_size, samples, stop_proc, generation, play_gen):
     """Write resampled audio samples to an ALSA device.
 
@@ -322,6 +338,7 @@ def _linux_audio_loop(song_array: Array, ratio: Value, volume: Value, stop_proc:
                     continue
                 song_loaded = True
                 loaded_pattern = current_pattern
+                _warmup_resampler()
                 continue
 
             play_gen = generation.value

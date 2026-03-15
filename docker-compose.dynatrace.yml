@@ -12,14 +12,20 @@
 # Required environment variables (set in .env or shell):
 #   DYNATRACE_ENDPOINT    - e.g. https://{env-id}.live.dynatrace.com/api/v2/otlp
 #   DYNATRACE_API_TOKEN   - API token with metrics.ingest, traces.ingest, logs.ingest scopes
+#   DYNATRACE_BIZEVENTS_ENDPOINT - e.g. https://{env-id}.live.dynatrace.com/api/v2/bizevents/ingest
+#   DYNATRACE_BIZEVENTS_TOKEN    - API token with bizevents.ingest scope
 
 services:
   otel-collector:
     volumes:
       - ./services/otel-collector/config.dynatrace.yaml:/etc/otel-collector-config.yaml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
       - DYNATRACE_ENDPOINT=${DYNATRACE_ENDPOINT}
       - DYNATRACE_API_TOKEN=${DYNATRACE_API_TOKEN}
+      - DYNATRACE_BIZEVENTS_ENDPOINT=${DYNATRACE_BIZEVENTS_ENDPOINT}
+      - DYNATRACE_BIZEVENTS_TOKEN=${DYNATRACE_BIZEVENTS_TOKEN}
     deploy:
       resources:
         limits:

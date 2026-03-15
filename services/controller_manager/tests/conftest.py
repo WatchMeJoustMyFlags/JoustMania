@@ -5,19 +5,21 @@ Pytest fixtures for controller_manager tests.
 import pytest
 
 # Disable OpenTelemetry and profiling for tests - must be done before importing service modules
+from lib.otel_logging import disable_logging_for_tests
 from lib.otel_metrics import disable_metrics_for_tests
 from lib.profiling import disable_profiling_for_tests
 from lib.telemetry import disable_telemetry_for_tests
 
 disable_telemetry_for_tests()
 disable_metrics_for_tests()
+disable_logging_for_tests()
 disable_profiling_for_tests()
 
 
 class FakeMove:
     """Mock PS Move controller for testing without hardware.
 
-    Simulates the psmove API for unit testing controller logic.
+    Simulates the controller I/O API for unit testing controller logic.
     """
 
     def __init__(self):
@@ -25,7 +27,7 @@ class FakeMove:
         self.gyro = (0, 0, 0)
         self.buttons = 0
         self.trigger = 0
-        self.battery = 5  # psmove.Batt_MAX equivalent
+        self.battery = 5
         self.last_poll_ = False
         self.led_r = 0
         self.led_g = 0

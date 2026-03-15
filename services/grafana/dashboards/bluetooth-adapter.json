@@ -623,7 +623,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Poll drop rate aggregated by Bluetooth adapter (hci device)",
+      "description": "Effective poll rate aggregated by Bluetooth adapter. Shows average poll rate across controllers on each adapter. Low values indicate adapter-level connection issues.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -631,15 +631,32 @@
           },
           "custom": {
             "axisCenteredZero": false,
-            "axisLabel": "drops/sec",
+            "axisLabel": "Hz",
             "fillOpacity": 20,
             "lineWidth": 2,
             "spanNulls": false,
             "stacking": {
               "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line+area"
             }
           },
-          "unit": "ops"
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "transparent",
+                "value": 50
+              }
+            ]
+          },
+          "min": 0,
+          "unit": "hertz"
         },
         "overrides": []
       },
@@ -652,7 +669,7 @@
       "id": 108,
       "options": {
         "legend": {
-          "calcs": ["mean", "max"],
+          "calcs": ["mean", "min"],
           "displayMode": "table",
           "placement": "right",
           "showLegend": true
@@ -660,7 +677,8 @@
         "tooltip": {
           "mode": "multi",
           "sort": "desc"
-        }
+        },
+        "noDataMessage": "No adapter affinity data (controller_adapter_info empty)"
       },
       "targets": [
         {
@@ -668,12 +686,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by(adapter) (rate(controller_poll_drops_total[1m]) * on(serial) group_left(adapter) controller_adapter_info)",
+          "expr": "avg by(adapter) ((scalar(controller_polling_target_hz) - rate(controller_poll_drops_total[$__rate_interval])) * on(serial) group_left(adapter) controller_adapter_info or on(serial, adapter) (controller_adapter_info * 0 + scalar(controller_polling_target_hz)))",
           "legendFormat": "{{adapter}}",
           "refId": "A"
         }
       ],
-      "title": "Poll Drop Rate (per adapter)",
+      "title": "Effective Poll Rate (per adapter)",
       "type": "timeseries"
     },
     {
@@ -681,7 +699,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Poll error rate aggregated by Bluetooth adapter (hci device)",
+      "description": "Poll error rate aggregated by Bluetooth adapter (hci device). Any errors indicate connection problems at the adapter level.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -718,7 +736,8 @@
         "tooltip": {
           "mode": "multi",
           "sort": "desc"
-        }
+        },
+        "noDataMessage": "No adapter affinity data (controller_adapter_info empty)"
       },
       "targets": [
         {

@@ -40,7 +40,17 @@ JoustMania is a party game system for PS Move controllers, built as a collection
                          │     :50052       │
                          └────────┬─────────┘
                                   │
-                           USB/Bluetooth
+                      ┌───────────┼───────────┐
+                      │                       │
+               gRPC (StreamIO)          gRPC (StreamIO)
+                      │                       │
+             ┌────────┴────────┐    ┌─────────┴────────┐
+             │   python-hid    │    │    rust-hid       │
+             │     :50059      │    │     :50058        │
+             └────────┬────────┘    └─────────┬────────┘
+                      │                       │
+                      └───────────┬───────────┘
+                            USB/Bluetooth
                                   │
                          ┌────────┴────────┐
                          │  PS Move        │
@@ -70,14 +80,60 @@ JoustMania is a party game system for PS Move controllers, built as a collection
 | `PlayControllerEffect` | Unary | Trigger visual effect (flash, pulse, rainbow) |
 
 **Backends**:
-- `bluetooth` - Linux BlueZ (production)
-- `hidapi` - libhidapi (alternative)
+- `python` - Delegates to python-hid gRPC service (port 50059)
+- `rust` - Delegates to rust-hid gRPC service (port 50058)
 - `mock` - Simulated controllers (testing)
 
 **Special Features**:
 - Adaptive polling: 60Hz active, 10Hz idle
 - LED batch updates at 20Hz
 - Effect priority system (cancellable vs non-cancellable)
+
+**Dependencies**: None (foundational service)
+
+---
+
+### Rust HID Service (Port 50058)
+
+**Purpose**: PS Move HID device access (pairing and controller I/O)
+
+**Responsibilities**:
+- Bluetooth pairing of PS Move controllers
+- Raw HID device enumeration and access
+- Bidirectional controller I/O streaming (sensor data + LED/rumble commands)
+
+**gRPC Services**:
+| Service | Description |
+|---------|-------------|
+| `PairingService` | Bluetooth controller pairing |
+| `ControllerIOService` | Bidirectional `StreamIO` for sensor data and output commands |
+
+**Container Configuration**:
+- Privileged container with `/dev` access (HID/USB devices)
+- Bridge network with port 50058 exposed to host
+
+**Dependencies**: None (foundational service)
+
+---
+
+### Python HID Service (Port 50059)
+
+**Purpose**: PS Move HID device access via Python hidapi
+
+**Responsibilities**:
+- Raw HID device enumeration and access via hidapi/hidraw
+- Bidirectional controller I/O streaming (sensor data + LED/rumble commands)
+- Bluetooth pairing of PS Move controllers
+
+**gRPC Services**:
+| Service | Description |
+|---------|-------------|
+| `PairingService` | Bluetooth controller pairing |
+| `ControllerIOService` | Bidirectional `StreamIO` for sensor data and output commands |
+
+**Container Configuration**:
+- Privileged container with `/dev` access (HID/USB devices)
+- Bridge network with port 50059 exposed to host
 
 **Dependencies**: None (foundational service)
 
@@ -222,6 +278,8 @@ controller-manager:50052
 game-coordinator:50053
 menu:50054
 audio:50056
+rust-hid:50058
+python-hid:50059
 ```
 
 ### Streaming Patterns
@@ -315,7 +373,7 @@ Settings are configured via admin mode (hold all 4 face buttons):
 
 | Setting | Source | Default |
 |---------|--------|---------|
-| `controller_backend` | flagd (performance) | `bluetooth` |
+| `controller_backend` | flagd (performance) | `python,rust` (`mock` also available) |
 | `mock_controller_count` | flagd (performance) | `4` |
 | `play_audio` | flagd (user_preferences) | `on` |
 | `LOG_LEVEL` | env var | `INFO` |
@@ -332,7 +390,6 @@ Settings are configured via admin mode (hold all 4 face buttons):
 
 ### Persistence
 
-- `~/.psmoveapi/` - Controller calibration (Linux)
 - Feature flags managed via flagd (JSON flag files in `services/flagd/`)
 
 ---
@@ -396,6 +453,8 @@ make lint       # Run linting
 | Service | Privileged | Reason |
 |---------|------------|--------|
 | Controller Manager | Yes | Bluetooth/USB access |
+| Python HID | Yes | HID/USB device access |
+| Rust HID | Yes | HID/USB device access |
 | Audio | Yes | Audio device access |
 | Others | No | Standard containers |
 
@@ -425,8 +484,15 @@ Located in `/proto/`:
 | `game_coordinator.proto` | GameCoordinatorService |
 | `menu.proto` | MenuService |
 | `audio.proto` | AudioService |
+| `psmove_hid.proto` | PairingService, ControllerIOService |
 
 Regenerate after changes:
 ```bash
 make protos
 ```
+
+---
+
+## Acknowledgments
+
+JoustMania's PS Move controller support was originally built on [psmoveapi](https://github.com/thp/psmoveapi) by Thomas Perl. The project has since migrated to direct HID communication via [hidapi](https://github.com/trezor/cython-hidapi), but psmoveapi's protocol documentation and reference implementation were instrumental in understanding the PS Move HID report format.

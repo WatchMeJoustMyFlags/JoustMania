@@ -5,7 +5,7 @@ Detects platform and creates appropriate backend instance.
 
 Backend selection priority:
   1. OpenFeature "controller_backend" flag (runtime-switchable via flagd)
-  2. Platform auto-detection (Linux -> bluetooth)
+  2. Platform auto-detection (Linux -> python)
 
 Flag values are read once at startup.
 Runtime changes to these flags require a service restart to take effect.
@@ -24,7 +24,6 @@ from services.controller_manager.backend import ControllerBackend
 
 if TYPE_CHECKING:
     from services.controller_manager.multiplexer.adapter import ControllerIOAdapter
-    from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDiscovery
 
 logger = logging.getLogger(__name__)
 
@@ -67,14 +66,14 @@ def _create_adapter_by_name(name: str) -> ControllerIOAdapter:
             from services.controller_manager.multiplexer.mock_adapter import MockAdapter
 
             return MockAdapter(num_controllers=0)
-        case "bluetooth":
-            from services.controller_manager.multiplexer.psmove_adapter import PsMoveAdapter
+        case "python":
+            from services.controller_manager.multiplexer.python_hid_adapter import PythonHidAdapter
 
-            return PsMoveAdapter()
-        case "hidapi":
-            from services.controller_manager.multiplexer.hidapi_adapter import HidapiAdapter
+            return PythonHidAdapter()
+        case "rust":
+            from services.controller_manager.multiplexer.rust_adapter import RustServiceAdapter
 
-            return HidapiAdapter()
+            return RustServiceAdapter()
         case "mobile":
             from services.controller_manager.multiplexer.mobile_adapter import MobileAdapter
 
@@ -83,21 +82,12 @@ def _create_adapter_by_name(name: str) -> ControllerIOAdapter:
             raise RuntimeError(f"Unknown adapter: {name}")
 
 
-def _create_bt_discovery(names: list[str]) -> CentralizedBTDiscovery | None:
-    """Create CentralizedBTDiscovery if any backend needs Bluetooth.
-
-    Returns None if no backend in the list uses Bluetooth.
-    Discovery mode is determined by the backend type:
-    - "bluez" for BluetoothBackend (psmoveapi + BlueZ scanning)
-    - "hidapi" for HidapiBackend (hid.enumerate scanning)
-    """
+async def initialize_bt_adapters() -> None:
+    """Enable Bluetooth adapters (rfkill unblock). Call once at startup."""
     from services.controller_manager.multiplexer.bt_discovery import CentralizedBTDiscovery
 
-    if "bluetooth" in names:
-        return CentralizedBTDiscovery(discovery_mode="bluez")
-    if "hidapi" in names:
-        return CentralizedBTDiscovery(discovery_mode="hidapi")
-    return None
+    discovery = CentralizedBTDiscovery()
+    await discovery.initialize()
 
 
 def _is_mobile_enabled() -> bool:
@@ -151,10 +141,10 @@ def create_backend() -> ControllerBackend:
 
     Selection priority:
         1. OpenFeature "controller_backend" flag from performance domain
-        2. Platform auto-detection (Linux -> bluetooth)
+        2. Platform auto-detection (Linux -> python)
 
     Creates ControllerIOAdapter instances wrapped in MultiplexerBackend.
-    Comma-separated flag values (e.g. "mock,bluetooth") create multiple
+    Comma-separated flag values (e.g. "mock,python") create multiple
     adapters. A mock adapter is always auto-injected (with 0 controllers)
     for dynamic RPC management.
 
@@ -163,14 +153,14 @@ def create_backend() -> ControllerBackend:
 
     Raises:
         RuntimeError: If no suitable backend available
-        ValueError: If backend combination is unsupported (e.g. bluetooth+hidapi)
+        ValueError: If backend combination is unsupported
     """
     from services.controller_manager.multiplexer import MultiplexerBackend
     from services.controller_manager.multiplexer.validation import validate_backend_combination
 
     backend_name = _resolve_backend_name()
     if not backend_name:
-        backend_name = "bluetooth"  # Default on Linux
+        backend_name = "python"  # Default on Linux
 
     logger.info(f"Backend selection: backend_name={backend_name!r}")
 
@@ -188,8 +178,7 @@ def create_backend() -> ControllerBackend:
     if len(names) > 1:
         validate_backend_combination(names)
 
-    bt_discovery = _create_bt_discovery(names)
     adapters = [_create_adapter_by_name(n) for n in names]
     adapters = _maybe_wrap_chaos(adapters)
     logger.info(f"MultiplexerBackend with adapters: {names}")
-    return MultiplexerBackend(adapters=adapters, bt_discovery=bt_discovery)
+    return MultiplexerBackend(adapters=adapters)

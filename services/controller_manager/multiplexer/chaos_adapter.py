@@ -44,8 +44,17 @@ class ChaosAdapter(ControllerIOAdapter):
     def adapter_type(self) -> str:
         return self._inner.adapter_type  # transparent to routing
 
-    def discover(self, force: bool = False, verify_only: bool = False) -> list[str]:
-        serials = self._inner.discover(force=force, verify_only=verify_only)
+    def discover(
+        self,
+        force: bool = False,
+        verify_only: bool = False,
+        exclude_serials: list[str] | None = None,
+    ) -> list[str]:
+        serials = self._inner.discover(
+            force=force,
+            verify_only=verify_only,
+            exclude_serials=exclude_serials,
+        )
         # Track and evaluate new serials
         for s in serials:
             if s not in self._known_serials:
@@ -83,6 +92,9 @@ class ChaosAdapter(ControllerIOAdapter):
             metrics.chaos_faults_injected_total.labels(fault="led_failure", serial=serial).inc()
             return False
         return self._inner.set_output(serial, r, g, b, rumble)
+
+    def get_adapter_for_serial(self, serial: str) -> str | None:
+        return self._inner.get_adapter_for_serial(serial)
 
     def close(self, serial: str) -> None:
         self._inner.close(serial)

@@ -1,0 +1,9 @@
+configs:
+  - id: player-insights
+    type:
+      document:
+        kind: dashboard
+        private: false
+    config:
+      name: "JoustMania - Player Insights"
+      template: player-insights.json

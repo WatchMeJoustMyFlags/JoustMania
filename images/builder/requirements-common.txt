@@ -19,6 +19,11 @@ psutil>=5.9.0
 # Common utilities
 pyyaml>=6.0
 
+# Audio processing - pre-compiled to speed up audio service builds
+numpy>=1.24.0
+numba>=0.59.0
+resampy>=0.4.0
+
 # Build tools needed for some dependencies
 setuptools>=45
 wheel

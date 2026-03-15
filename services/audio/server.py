@@ -11,13 +11,16 @@ See services/audio/servicer.py for the AudioServiceServicer implementation.
 import asyncio
 import logging
 import os
+import signal
 
 import grpc.aio
 from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 
+from lib.otel_logging import init_logging
 from lib.otel_metrics import init_metrics
 from lib.profiling import init_profiling
 from lib.system_metrics import start_system_metrics_collector
+from lib.telemetry import get_tracer
 from proto import audio_pb2_grpc
 from services.audio import metrics
 from services.audio.servicer import AudioServiceServicer
@@ -41,9 +44,11 @@ async def serve():
 
     configure_alsa_device(os.getenv("ALSA_CARD", "auto"))
 
-    # Initialize OTEL push metrics
+    # Initialize OTEL (get_tracer triggers TracerProvider setup for trace export)
     init_metrics()
+    init_logging()
     init_profiling()
+    get_tracer("audio")
     logger.info("OTEL push metrics initialized for audio service")
 
     # Start system metrics collection
@@ -89,11 +94,17 @@ async def serve():
 
     logger.info("Audio service ready")
 
-    try:
-        await server.wait_for_termination()
-    except KeyboardInterrupt:
-        logger.info("Shutting down Audio service...")
-        await server.stop(grace=5)
+    # Use asyncio.Event for signal-driven shutdown so both SIGTERM (Docker stop)
+    # and SIGINT (Ctrl-C / KeyboardInterrupt) trigger graceful shutdown.
+    shutdown_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, shutdown_event.set)
+
+    await shutdown_event.wait()
+
+    logger.info("Shutting down Audio service...")
+    await server.stop(grace=5)
 
 
 if __name__ == "__main__":

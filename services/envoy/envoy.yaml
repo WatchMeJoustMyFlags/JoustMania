@@ -130,6 +130,24 @@ static_resources:
                           route:
                             cluster: dashboard
 
+                # Generate trace context and propagate W3C traceparent headers.
+                # Envoy sends spans to the OTEL Collector via gRPC, which
+                # forwards them to Jaeger (local) and Dynatrace (cloud).
+                generate_request_id: true
+                tracing:
+                  provider:
+                    name: envoy.tracers.opentelemetry
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.config.trace.v3.OpenTelemetryConfig
+                      grpc_service:
+                        envoy_grpc:
+                          cluster_name: otel_collector
+                        timeout: 5s
+                      service_name: envoy
+                      resource_detectors:
+                        - name: envoy.tracers.opentelemetry.resource_detectors.environment
+                          typed_config:
+                            "@type": type.googleapis.com/envoy.extensions.tracers.opentelemetry.resource_detectors.v3.EnvironmentResourceDetectorConfig
                 http_filters:
                   - name: envoy.filters.http.router
                     typed_config:
@@ -248,8 +266,27 @@ static_resources:
                       address: dashboard
                       port_value: 8080
 
+    # OTEL Collector for trace export (gRPC on port 4317)
+    - name: otel_collector
+      type: STRICT_DNS
+      lb_policy: ROUND_ROBIN
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}
+      load_assignment:
+        cluster_name: otel_collector
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: otel-collector
+                      port_value: 4317
+
 admin:
   address:
     socket_address:
-      address: 127.0.0.1
+      address: 0.0.0.0
       port_value: 9901

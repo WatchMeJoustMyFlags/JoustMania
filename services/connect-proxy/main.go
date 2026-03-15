@@ -7,12 +7,14 @@ package main
 import (
 	"context"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 
 	"connectrpc.com/connect"
 	"github.com/rs/cors"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
@@ -43,27 +45,53 @@ func getEnv(key, defaultValue string) string {
 }
 
 func main() {
-	log.Println("JoustMania Connect Proxy starting...")
-	log.Printf("Controller Manager: %s", controllerManagerAddr)
-	log.Printf("Game Coordinator: %s", gameCoordinatorAddr)
-	log.Printf("Menu: %s", menuAddr)
+	ctx := context.Background()
+
+	logger, shutdownLogs := initLogs(ctx)
+	defer shutdownLogs(ctx)
+	slog.SetDefault(logger)
+
+	shutdownMetrics := initMetrics(ctx)
+	defer shutdownMetrics(ctx)
+
+	shutdownTracing := initTracing(ctx)
+	defer shutdownTracing(ctx)
+
+	slog.Info("JoustMania Connect Proxy starting...")
+	slog.Info("Backend services",
+		"controller_manager", controllerManagerAddr,
+		"game_coordinator", gameCoordinatorAddr,
+		"menu", menuAddr,
+	)
 
 	// Create gRPC connections to backend services
-	controllerConn, err := grpc.NewClient(controllerManagerAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	controllerConn, err := grpc.NewClient(controllerManagerAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
+	)
 	if err != nil {
-		log.Fatalf("Failed to connect to controller manager: %v", err)
+		slog.Error("Failed to connect to controller manager", "error", err)
+		os.Exit(1)
 	}
 	defer controllerConn.Close()
 
-	gameConn, err := grpc.NewClient(gameCoordinatorAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	gameConn, err := grpc.NewClient(gameCoordinatorAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
+	)
 	if err != nil {
-		log.Fatalf("Failed to connect to game coordinator: %v", err)
+		slog.Error("Failed to connect to game coordinator", "error", err)
+		os.Exit(1)
 	}
 	defer gameConn.Close()
 
-	menuConn, err := grpc.NewClient(menuAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	menuConn, err := grpc.NewClient(menuAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
+	)
 	if err != nil {
-		log.Fatalf("Failed to connect to menu: %v", err)
+		slog.Error("Failed to connect to menu", "error", err)
+		os.Exit(1)
 	}
 	defer menuConn.Close()
 
@@ -94,6 +122,9 @@ func main() {
 	// Chaos fault injection endpoints (for presentation demos)
 	registerChaosHandlers(mux)
 
+	// Canary rollout control endpoints (mirrors chaos pattern)
+	registerCanaryHandlers(mux)
+
 	// Health check endpoint
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -103,7 +134,7 @@ func main() {
 	// Serve static files for dashboard (if mounted)
 	staticDir := "/app/static"
 	if _, err := os.Stat(staticDir); err == nil {
-		log.Printf("Serving static files from %s", staticDir)
+		slog.Info("Serving static files", "dir", staticDir)
 		mux.Handle("/", http.FileServer(http.Dir(staticDir)))
 	}
 
@@ -116,10 +147,18 @@ func main() {
 		MaxAge:           86400,
 	}).Handler(mux)
 
+	// Wrap with OTEL HTTP tracing (skip health checks to avoid noisy spans)
+	tracedHandler := otelhttp.NewHandler(corsHandler, "connect-proxy",
+		otelhttp.WithFilter(func(r *http.Request) bool {
+			return r.URL.Path != "/health"
+		}),
+	)
+
 	// Start server
-	log.Printf("Connect proxy listening on %s", listenAddr)
-	if err := http.ListenAndServe(listenAddr, corsHandler); err != nil {
-		log.Fatalf("Server failed: %v", err)
+	slog.Info("Connect proxy listening", "addr", listenAddr)
+	if err := http.ListenAndServe(listenAddr, tracedHandler); err != nil {
+		slog.Error("Server failed", "error", err)
+		os.Exit(1)
 	}
 }
 

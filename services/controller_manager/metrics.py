@@ -283,7 +283,7 @@ controller_mobile_data_received_total = Counter(
     "Total sensor data updates received from phone controllers",
 )
 
-# Per-controller health metrics (Issue #594: observable connection quality)
+# Per-controller health metrics (observable connection quality)
 controller_poll_drops_total = Counter(
     "controller_poll_drops_total",
     "Total poll() calls returning None per controller",

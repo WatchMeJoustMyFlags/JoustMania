@@ -2,14 +2,12 @@
 
 import logging
 import os
-import sys
 
 logger = logging.getLogger("psmove-pairing")
 
 # Static configuration from environment
 DEBUG = os.getenv("DEBUG", "0") == "1"
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8002"))
-PSMOVE_PATH = os.getenv("PSMOVE_PATH", "")
 OTEL_ENDPOINT = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
 
 # Default intervals (used as fallback when flagd is unavailable)
@@ -54,6 +52,24 @@ def get_poll_interval() -> int:
         return _DEFAULT_POLL_INTERVAL
 
 
+def get_adapter_routing_default() -> str:
+    """Get the default adapter routing backend.
+
+    Reads controller_adapter_routing from the performance domain with
+    no targeting key. Returns "hidapi" or "rust".
+
+    Falls back to "hidapi" when flagd is unavailable.
+    """
+    if _flag_client is None:
+        return "hidapi"
+    try:
+        from openfeature.evaluation_context import EvaluationContext
+
+        return _flag_client.get_string_value("controller_adapter_routing", "hidapi", EvaluationContext())
+    except Exception:
+        return "hidapi"
+
+
 def get_bt_monitor_interval() -> int:
     """Get the current Bluetooth monitor interval in seconds.
 
@@ -69,40 +85,6 @@ def get_bt_monitor_interval() -> int:
     except Exception:
         return _DEFAULT_BT_MONITOR_INTERVAL
 
-
-def _find_psmove_bindings() -> str | None:
-    """Find psmove Python bindings.
-
-    In Docker, psmove is installed to site-packages and imports directly.
-    Falls back to PSMOVEAPI_BUILD_PATH env var for development.
-
-    Returns:
-        Path to add to sys.path, or None if psmove is already importable
-    """
-    # Check if psmove is already importable (Docker, or installed to site-packages)
-    try:
-        import psmove  # noqa: F401
-
-        return None  # Already available, no path modification needed
-    except ImportError:
-        pass
-
-    # Check environment variable for development
-    env_path = os.getenv("PSMOVEAPI_BUILD_PATH")
-    if env_path and os.path.isdir(env_path) and os.path.exists(os.path.join(env_path, "psmove.py")):
-        return env_path
-
-    return None
-
-
-# Set up psmove import path
-_psmove_path = _find_psmove_bindings()
-if _psmove_path and _psmove_path not in sys.path:
-    sys.path.insert(0, _psmove_path)
-
-# PS Move USB Vendor/Product IDs
-PSMOVE_USB_IDS = ["054c:03d5", "054c:042f"]  # Motion Controller variants
-PSMOVE_NAV_ID = "054c:03d4"  # Navigation Controller
 
 # PS Move Bluetooth MAC prefix (Sony)
 PSMOVE_BT_PREFIX = "00:06:F7"

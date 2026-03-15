@@ -6,10 +6,58 @@ receivers:
       http:
         endpoint: 0.0.0.0:4318
 
-  # Prometheus receiver to scrape infrastructure targets that don't push via OTLP.
-  # These metrics flow to VictoriaMetrics so Grafana dashboards (which default to
-  # VictoriaMetrics) can display host metrics alongside OTEL-pushed service metrics.
-  prometheus/infra:
+  # Observability stack: monitoring tools that observe the system
+  prometheus/observability:
+    config:
+      scrape_configs:
+        - job_name: 'victoria-metrics'
+          scrape_interval: 30s
+          static_configs:
+            - targets: ['victoria-metrics:8428']
+        - job_name: 'prometheus'
+          scrape_interval: 30s
+          static_configs:
+            - targets: ['prometheus:9090']
+        # Self-telemetry: the collector exposes its own metrics on :8888.
+        # Rename otelcol_process_* to standard process_* for unified dashboards.
+        - job_name: 'otel-collector'
+          scrape_interval: 30s
+          static_configs:
+            - targets: ['localhost:8888']
+          metric_relabel_configs:
+            - source_labels: [__name__]
+              regex: 'otelcol_process_cpu_seconds'
+              target_label: __name__
+              replacement: 'process_cpu_seconds_total'
+            - source_labels: [__name__]
+              regex: 'otelcol_process_memory_rss'
+              target_label: __name__
+              replacement: 'process_resident_memory_bytes'
+
+  # Filelog receiver — tail Docker container JSON logs for non-OTLP services
+  # (connect-proxy, rust-hid, envoy, flagd, redis, etc.)
+  filelog/docker:
+    include:
+      - /var/lib/docker/containers/*/*-json.log
+    start_at: end
+    include_file_path: true
+    include_file_name: false
+    operators:
+      - type: json_parser
+        timestamp:
+          parse_from: attributes.time
+          layout: '%Y-%m-%dT%H:%M:%S.%LZ'
+      - type: move
+        from: attributes.log
+        to: body
+      - type: move
+        from: attributes.stream
+        to: attributes["log.iostream"]
+      - type: remove
+        field: attributes.time
+
+  # Host: OS-level metrics from the Raspberry Pi
+  prometheus/host:
     config:
       scrape_configs:
         - job_name: 'node'
@@ -19,6 +67,26 @@ receivers:
             - targets: ['node-exporter:9100']
               labels:
                 instance: 'raspberry-pi'
+
+  # Infrastructure: supporting services for the game platform
+  # Split into separate receivers so each gets its own resource processor
+  # (service.name) in the Dynatrace pipelines.
+  prometheus/flagd:
+    config:
+      scrape_configs:
+        - job_name: 'flagd'
+          scrape_interval: 30s
+          static_configs:
+            - targets: ['flagd:8014']
+
+  prometheus/envoy:
+    config:
+      scrape_configs:
+        - job_name: 'envoy'
+          scrape_interval: 30s
+          metrics_path: '/stats/prometheus'
+          static_configs:
+            - targets: ['envoy:9901']
 
 processors:
   # Batch processor for better performance (traces/logs)
@@ -46,6 +114,113 @@ processors:
       # exporter prefixes the job label (e.g. "joustmania/controller-manager")
       # which breaks dashboard queries expecting just "controller-manager".
 
+  # Filter processor to select only acceleration metrics for bizevents pipeline
+  filter/accel:
+    metrics:
+      include:
+        match_type: regexp
+        metric_names: ["controller_accel_.*"]
+
+  resource/host:
+    attributes:
+      - key: service.namespace
+        value: host
+        action: insert
+
+  # Resource processors for scraped targets — Dynatrace needs service.name
+  # to recognize these as services in the service overview. OTLP-pushed
+  # services (Python, Rust) set this in their SDK; scraped targets need it
+  # injected here.
+  resource/flagd:
+    attributes:
+      - key: service.name
+        value: flagd
+        action: insert
+      - key: service.namespace
+        value: infrastructure
+        action: insert
+
+  resource/envoy:
+    attributes:
+      - key: service.name
+        value: envoy
+        action: insert
+      - key: service.namespace
+        value: infrastructure
+        action: insert
+
+  resource/otel-collector:
+    attributes:
+      - key: service.name
+        value: otel-collector
+        action: insert
+      - key: service.namespace
+        value: observability
+        action: insert
+
+  # Transform processor — promote Docker labels to OTEL resource attributes
+  transform/docker_logs:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        statements:
+          # service.name from compose service label
+          - set(resource.attributes["service.name"], attributes["attrs"]["com.docker.compose.service"])
+            where attributes["attrs"]["com.docker.compose.service"] != nil
+          # container.name (same as service name in compose)
+          - set(resource.attributes["container.name"], attributes["attrs"]["com.docker.compose.service"])
+            where attributes["attrs"]["com.docker.compose.service"] != nil
+          # container.image.name from full image reference (strip tag after)
+          - set(resource.attributes["container.image.name"], attributes["attrs"]["com.docker.compose.image"])
+            where attributes["attrs"]["com.docker.compose.image"] != nil
+          # container.image.tag — extract portion after last ':'
+          - set(resource.attributes["container.image.tag"], attributes["attrs"]["com.docker.compose.image"])
+            where attributes["attrs"]["com.docker.compose.image"] != nil
+          - replace_pattern(resource.attributes["container.image.name"], ":[^:]*$", "")
+            where resource.attributes["container.image.name"] != nil
+          - replace_pattern(resource.attributes["container.image.tag"], "^.*:", "")
+            where resource.attributes["container.image.tag"] != nil
+          # container.id from file path
+          - set(resource.attributes["container.id"], attributes["log.file.path"])
+            where attributes["log.file.path"] != nil
+          - replace_pattern(resource.attributes["container.id"], "^.*/([a-f0-9]+)/.*$", "$1")
+            where resource.attributes["container.id"] != nil
+          # Clean up intermediate attributes
+          - delete_key(attributes, "attrs")
+            where attributes["attrs"] != nil
+
+  # Filter processor — exclude services that already push OTLP logs + the collector itself
+  filter/exclude_otlp_services:
+    logs:
+      exclude:
+        match_type: regexp
+        resource_attributes:
+          - key: service.name
+            value: "^(controller-manager|game-coordinator|menu|audio|pairing-daemon|otel-collector|connect-proxy|rust-hid|python-hid)$"
+
+  # Resource detection — auto-enrich all signals with host, OS, and container
+  # metadata for Dynatrace Smartscape topology (host → process → service).
+  # override: false preserves SDK-set attributes (service.name, host.name, etc.).
+  resourcedetection:
+    detectors: [env, system, docker]
+    timeout: 5s
+    override: false
+    system:
+      hostname_sources: ["os"]
+      resource_attributes:
+        host.name:
+          enabled: true
+        host.id:
+          enabled: true
+        os.type:
+          enabled: true
+    docker:
+      resource_attributes:
+        container.name:
+          enabled: true
+        container.image.name:
+          enabled: true
+
   # Cumulative-to-delta processor for Dynatrace.
   # Dynatrace requires delta temporality for counters; the local stack
   # (VictoriaMetrics/Prometheus) expects cumulative. This processor is only
@@ -70,16 +245,9 @@ exporters:
   prometheus:
     endpoint: "0.0.0.0:8889"
 
-  # Loki exporter for logs
-  loki:
-    endpoint: http://loki:3100/loki/api/v1/push
-    tls:
-      insecure: true
-
-  # OTLP HTTP exporter to Grafana Live Publisher for real-time WebSocket streaming
-  otlphttp/grafana-live:
-    endpoint: "http://grafana-live-publisher:4318"
-    encoding: json
+  # Loki exporter for logs (OTLP native ingestion, Loki 3.x)
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
     tls:
       insecure: true
 
@@ -94,6 +262,16 @@ exporters:
     headers:
       Authorization: "Api-Token ${env:DYNATRACE_API_TOKEN}"
 
+  # Custom Dynatrace bizevents exporter.
+  # Converts metric data points directly to Dynatrace business events,
+  # bypassing the metrics→logs signal conversion. High-frequency acceleration
+  # data (100Hz) is invisible in Dynatrace's 1-minute metric resolution —
+  # bizevents bypass this limit.
+  dtbizevents:
+    endpoint: ${env:DYNATRACE_BIZEVENTS_ENDPOINT}
+    api_token: ${env:DYNATRACE_BIZEVENTS_TOKEN}
+    batch_interval_ms: 1000
+
 service:
   pipelines:
     # ── Local pipelines (unchanged from config.yaml) ───────────────────
@@ -105,18 +283,32 @@ service:
       exporters: [otlp/jaeger, debug]
 
     # Metrics pipeline - uses fast batch processor for sub-second updates
-    # Fan-out to VictoriaMetrics (storage), Prometheus (backward compat), and Grafana Live (streaming)
+    # Fan-out to VictoriaMetrics (storage) and Prometheus (backward compat)
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, batch/fast, resource]
-      exporters: [prometheusremotewrite, prometheus, otlphttp/grafana-live]
+      exporters: [prometheusremotewrite, prometheus]
 
-    # Infrastructure metrics pipeline — scraped targets (node-exporter, etc.)
-    # Only exports to VictoriaMetrics since Prometheus already scrapes these directly.
-    # Does NOT use the resource processor (no need to tag host metrics with
-    # deployment.environment, and avoids any future service.namespace issues).
-    metrics/infra:
-      receivers: [prometheus/infra]
+    # Host metrics — node-exporter (OS-level)
+    metrics/host:
+      receivers: [prometheus/host]
+      processors: [memory_limiter, resource/host, batch/fast]
+      exporters: [prometheusremotewrite]
+
+    # Observability metrics — victoria-metrics, prometheus, otel-collector
+    metrics/observability:
+      receivers: [prometheus/observability]
+      processors: [memory_limiter, batch/fast]
+      exporters: [prometheusremotewrite]
+
+    # Infrastructure metrics — flagd + envoy (scraped, not OTLP-pushed)
+    metrics/flagd:
+      receivers: [prometheus/flagd]
+      processors: [memory_limiter, batch/fast]
+      exporters: [prometheusremotewrite]
+
+    metrics/envoy:
+      receivers: [prometheus/envoy]
       processors: [memory_limiter, batch/fast]
       exporters: [prometheusremotewrite]
 
@@ -124,7 +316,13 @@ service:
     logs:
       receivers: [otlp]
       processors: [memory_limiter, batch, resource]
-      exporters: [loki, debug]
+      exporters: [otlphttp/loki, debug]
+
+    # Container logs pipeline — Docker JSON logs from non-OTLP services
+    logs/containers:
+      receivers: [filelog/docker]
+      processors: [memory_limiter, transform/docker_logs, filter/exclude_otlp_services, batch, resource]
+      exporters: [otlphttp/loki, debug]
 
     # ── Dynatrace pipelines ────────────────────────────────────────────
     # Parallel export to Dynatrace. Uses batch (10s) instead of batch/fast
@@ -133,23 +331,54 @@ service:
 
     traces/dynatrace:
       receivers: [otlp]
-      processors: [memory_limiter, batch, resource]
+      processors: [memory_limiter, resourcedetection, batch, resource]
       exporters: [otlphttp/dynatrace]
 
     metrics/dynatrace:
       receivers: [otlp]
-      processors: [memory_limiter, batch, resource, cumulativetodelta]
+      processors: [memory_limiter, resourcedetection, batch, resource, cumulativetodelta]
       exporters: [otlphttp/dynatrace]
 
-    metrics/infra-dynatrace:
-      receivers: [prometheus/infra]
-      processors: [memory_limiter, batch, cumulativetodelta]
+    metrics/host-dynatrace:
+      receivers: [prometheus/host]
+      processors: [memory_limiter, resourcedetection, resource/host, batch, cumulativetodelta]
+      exporters: [otlphttp/dynatrace]
+
+    metrics/observability-dynatrace:
+      receivers: [prometheus/observability]
+      processors: [memory_limiter, resourcedetection, resource/otel-collector, batch, cumulativetodelta]
+      exporters: [otlphttp/dynatrace]
+
+    metrics/flagd-dynatrace:
+      receivers: [prometheus/flagd]
+      processors: [memory_limiter, resourcedetection, resource/flagd, batch, cumulativetodelta]
+      exporters: [otlphttp/dynatrace]
+
+    metrics/envoy-dynatrace:
+      receivers: [prometheus/envoy]
+      processors: [memory_limiter, resourcedetection, resource/envoy, batch, cumulativetodelta]
       exporters: [otlphttp/dynatrace]
 
     logs/dynatrace:
       receivers: [otlp]
-      processors: [memory_limiter, batch, resource]
+      processors: [memory_limiter, resourcedetection, batch, resource]
       exporters: [otlphttp/dynatrace]
+
+    # Container logs to Dynatrace — container.* attributes create proper entities
+    logs/containers-dynatrace:
+      receivers: [filelog/docker]
+      processors: [memory_limiter, transform/docker_logs, filter/exclude_otlp_services, resourcedetection, batch, resource]
+      exporters: [otlphttp/dynatrace]
+
+    # ── Bizevents pipeline (acceleration → Dynatrace business events) ─
+    # High-frequency accel metrics (100Hz) are invisible in Dynatrace's
+    # 1-minute metric resolution. The dtbizevents exporter converts them
+    # directly to flat JSON and POSTs to /api/v2/bizevents/ingest.
+
+    metrics/accel-bizevents:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/accel, batch/fast, resource]
+      exporters: [dtbizevents]
 
   extensions: [health_check]
 

@@ -1,0 +1,286 @@
+{
+  "version": 14,
+  "variables": [],
+  "tiles": {
+    "0": {
+      "content": "### Metrics Pipeline Comparison\n\nCompares two data paths for **controller acceleration** (`controller_accel_magnitude`).\n\n| Path | Source | Resolution | Best for |\n|------|--------|------------|----------|\n| **Dynatrace Metrics** | `timeseries` DQL | ~1 min (aggregated) | Trends, alerting, long-term storage |\n| **Bizevents (HD)** | `fetch bizevents` DQL | ~10ms (every data point) | Full-fidelity replay, peak detection |\n\n**Key takeaway:** The same 100Hz source data looks completely different depending on how it reaches Dynatrace. Metrics aggregate away peaks; bizevents preserve every gesture.\n\n-----",
+      "type": "markdown"
+    },
+    "1": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
+      "title": "Metrics: Acceleration (1-min avg)",
+      "type": "data",
+      "query": "timeseries accel = avg(controller_accel_magnitude), by:{serial}",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
+      },
+      "visualization": "lineChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "leftAxisValues": ["accel"],
+            "timestamp": "timeframe"
+          },
+          "leftYAxisSettings": {
+            "isLabelVisible": true,
+            "label": "Acceleration (g)"
+          },
+          "gapPolicy": "connect",
+          "legend": { "hidden": false },
+          "truncationMode": "end"
+        },
+        "thresholds": []
+      }
+    },
+    "2": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
+      "title": "Bizevents: Acceleration (full 100Hz)",
+      "type": "data",
+      "query": "fetch bizevents\n| filter event.type == \"com.joustmania.acceleration\"\n| filter metric.name == \"controller_accel_magnitude\"\n| fields timestamp, serial, accel = metric.value\n| sort timestamp asc",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 10000
+      },
+      "visualization": "lineChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "leftAxisValues": ["accel"],
+            "timestamp": "timestamp"
+          },
+          "leftYAxisSettings": {
+            "isLabelVisible": true,
+            "label": "Acceleration (g)"
+          },
+          "gapPolicy": "connect",
+          "legend": { "hidden": false },
+          "truncationMode": "end"
+        },
+        "thresholds": []
+      }
+    },
+    "3": {
+      "content": "### Side-by-Side Detail\n\nMetrics (left) show smoothed 1-min averages. Bizevents (right) show every individual reading — peaks, valleys, and micro-gestures that metrics miss entirely.\n\n-----",
+      "type": "markdown"
+    },
+    "4": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
+      "title": "Metrics: Peak Acceleration",
+      "type": "data",
+      "query": "timeseries peak = max(controller_accel_magnitude), by:{serial}",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
+      },
+      "visualization": "lineChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "leftAxisValues": ["peak"],
+            "timestamp": "timeframe"
+          },
+          "leftYAxisSettings": {
+            "isLabelVisible": true,
+            "label": "Peak (g)"
+          },
+          "gapPolicy": "connect",
+          "legend": { "hidden": false },
+          "truncationMode": "end"
+        },
+        "thresholds": []
+      }
+    },
+    "5": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
+      "title": "Bizevents: Per-Axis Acceleration",
+      "type": "data",
+      "query": "fetch bizevents\n| filter event.type == \"com.joustmania.acceleration\"\n| filter metric.name == \"controller_accel_x\" or metric.name == \"controller_accel_y\" or metric.name == \"controller_accel_z\"\n| fields timestamp, serial, axis = metric.name, value = metric.value\n| sort timestamp asc",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 10000
+      },
+      "visualization": "lineChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "leftAxisValues": ["value"],
+            "seriesField": "axis",
+            "timestamp": "timestamp"
+          },
+          "leftYAxisSettings": {
+            "isLabelVisible": true,
+            "label": "Acceleration (g)"
+          },
+          "gapPolicy": "connect",
+          "legend": { "hidden": false },
+          "truncationMode": "end"
+        },
+        "thresholds": []
+      }
+    },
+    "6": {
+      "content": "### Data Density & Fidelity\n\nHow many data points each path delivers per minute, and event counts over time.\n\n-----",
+      "type": "markdown"
+    },
+    "7": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
+      "title": "Metrics: Samples/min",
+      "type": "data",
+      "query": "timeseries accel = avg(controller_accel_magnitude) | fieldsAdd last = arrayLast(accel) | fields last",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
+      },
+      "visualization": "singleValue",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "singleValue": {
+          "recordField": "last",
+          "labelMode": "none",
+          "trend": { "isVisible": true }
+        }
+      }
+    },
+    "8": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
+      "title": "Bizevents: Events/min",
+      "type": "data",
+      "query": "fetch bizevents\n| filter event.type == \"com.joustmania.acceleration\"\n| filter metric.name == \"controller_accel_magnitude\"\n| summarize count = count(), by:{interval = bin(timestamp, 1m)}\n| sort interval desc\n| limit 1\n| fields last = count",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
+      },
+      "visualization": "singleValue",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "singleValue": {
+          "recordField": "last",
+          "labelMode": "none",
+          "trend": { "isVisible": true }
+        }
+      }
+    },
+    "9": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
+      "title": "Bizevents Volume Over Time",
+      "type": "data",
+      "query": "fetch bizevents\n| filter event.type == \"com.joustmania.acceleration\"\n| filter metric.name == \"controller_accel_magnitude\"\n| summarize events = count(), by:{interval = bin(timestamp, 1m), serial}",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
+      },
+      "visualization": "lineChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "leftAxisValues": ["events"],
+            "timestamp": "interval"
+          },
+          "legend": { "hidden": false },
+          "truncationMode": "end"
+        },
+        "thresholds": []
+      }
+    },
+    "10": {
+      "davis": {
+        "davisVisualization": { "isAvailable": true },
+        "enabled": false
+      },
+      "title": "Metrics: Avg vs Max Acceleration",
+      "type": "data",
+      "query": "timeseries avg_accel = avg(controller_accel_magnitude), max_accel = max(controller_accel_magnitude)",
+      "querySettings": {
+        "defaultSamplingRatio": 10,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000
+      },
+      "visualization": "lineChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "fieldMapping": {
+            "leftAxisValues": ["avg_accel", "max_accel"],
+            "timestamp": "timeframe"
+          },
+          "leftYAxisSettings": {
+            "isLabelVisible": true,
+            "label": "Acceleration (g)"
+          },
+          "gapPolicy": "connect",
+          "legend": { "hidden": false },
+          "truncationMode": "end"
+        },
+        "thresholds": []
+      }
+    },
+    "11": {
+      "content": "### Summary\n\n| | Dynatrace Metrics | Bizevents (HD) |\n|---|---|---|\n| **Source** | OTEL → Dynatrace metrics ingest | OTEL → dtbizevents exporter → bizevents ingest |\n| **Resolution** | ~1 min (aggregated by Dynatrace) | ~10ms (every data point preserved) |\n| **Samples/min** | 1 (aggregated) | ~6,000 per controller |\n| **Storage cost** | Low (standard metrics) | Higher (log/bizevent ingestion) |\n| **Catches peaks?** | Only within 1-min max aggregation | Every peak, valley, and micro-gesture |\n| **Best for** | Trends, alerting, long-term analysis | Full-fidelity replay, motion forensics |\n| **Retention** | Metrics retention (default 3y) | Bizevent retention (configurable) |\n\n**When to use Metrics:** Alerting on sustained high acceleration, capacity planning, SLO tracking.  \n**When to use Bizevents:** Investigating specific player movements, debugging death detection thresholds, replaying exact game moments.\n\n-----",
+      "type": "markdown"
+    }
+  },
+  "layouts": {
+    "0":  { "x": 0,  "y": 0,  "w": 24, "h": 4 },
+    "1":  { "x": 0,  "y": 4,  "w": 12, "h": 8 },
+    "2":  { "x": 12, "y": 4,  "w": 12, "h": 8 },
+    "3":  { "x": 0,  "y": 12, "w": 24, "h": 2 },
+    "4":  { "x": 0,  "y": 14, "w": 12, "h": 7 },
+    "5":  { "x": 12, "y": 14, "w": 12, "h": 7 },
+    "6":  { "x": 0,  "y": 21, "w": 24, "h": 2 },
+    "7":  { "x": 0,  "y": 23, "w": 4,  "h": 4 },
+    "8":  { "x": 4,  "y": 23, "w": 4,  "h": 4 },
+    "9":  { "x": 8,  "y": 23, "w": 8,  "h": 7 },
+    "10": { "x": 16, "y": 23, "w": 8,  "h": 7 },
+    "11": { "x": 0,  "y": 30, "w": 24, "h": 6 }
+  }
+}

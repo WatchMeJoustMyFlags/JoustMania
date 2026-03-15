@@ -1,0 +1,46 @@
+[package]
+name = "rust-hid"
+version = "0.1.0"
+edition = "2024"
+description = "PS Move HID gRPC service for JoustMania"
+
+[[bin]]
+name = "rust-hid"
+path = "src/main.rs"
+
+[dependencies]
+# gRPC
+tonic = "0.12"
+prost = "0.13"
+tonic-health = "0.12"
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+# HID device access (hidraw backend for Linux)
+hidapi = { version = "2.6", features = ["linux-static-hidraw"] }
+# Logging/tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
+tracing-opentelemetry = "0.28"
+# OpenTelemetry
+opentelemetry = { version = "0.27", features = ["metrics"] }
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio", "metrics", "logs"] }
+opentelemetry-otlp = { version = "0.27", features = ["tonic", "metrics", "logs"] }
+opentelemetry-appender-tracing = "0.27"
+# Process metrics via /proc/self
+procfs = "0.17"
+# Hostname for resource attributes
+gethostname = "0.5"
+# Feature flags (OpenFeature + flagd provider)
+open-feature = "0.2"
+open-feature-flagd = { version = "0.1", default-features = false, features = ["rpc"] }
+# Tower middleware for gRPC tracing layer
+tower = "0.5"
+# HTTP types (Request, Response, HeaderMap) used by tower tracing layer
+http = "1"
+
+[profile.release]
+strip = true
+
+[build-dependencies]
+tonic-build = "0.12"

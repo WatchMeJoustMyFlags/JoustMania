@@ -2,9 +2,8 @@
 Unit tests for multiplexer backend combination validation.
 
 Tests that only safe backend combinations are allowed:
-- Single backends: mock, bluetooth, hidapi
-- Mock + real: mock+bluetooth, mock+hidapi
-- Dual real: bluetooth+hidapi (both with and without mock)
+- Single backends: mock, python, rust
+- Dual/triple: mock+python, mock+rust, python+rust, mock+python+rust
 - Rejects: duplicates, unknown backends
 """
 
@@ -25,51 +24,41 @@ from services.controller_manager.multiplexer.validation import validate_backend_
 class TestValidSingleBackends:
     """Single backends should always be valid."""
 
-    @pytest.mark.parametrize("name", ["mock", "bluetooth", "hidapi"])
+    @pytest.mark.parametrize("name", ["mock", "python", "rust"])
     def test_single_backend_passes(self, name):
         validate_backend_combination([name])
 
 
-class TestValidDualBackends:
-    """Mock + real backend combinations should be valid."""
+class TestValidMultiBackends:
+    """Valid multi-backend combinations."""
 
-    def test_mock_bluetooth(self):
-        validate_backend_combination(["mock", "bluetooth"])
+    def test_mock_python(self):
+        validate_backend_combination(["mock", "python"])
 
-    def test_mock_hidapi(self):
-        validate_backend_combination(["mock", "hidapi"])
+    def test_mock_rust(self):
+        validate_backend_combination(["mock", "rust"])
 
-    def test_bluetooth_hidapi(self):
-        validate_backend_combination(["bluetooth", "hidapi"])
+    def test_python_rust(self):
+        validate_backend_combination(["python", "rust"])
 
-    def test_order_does_not_matter(self):
-        validate_backend_combination(["bluetooth", "mock"])
-        validate_backend_combination(["hidapi", "mock"])
-        validate_backend_combination(["hidapi", "bluetooth"])
-
-
-class TestValidTripleBackends:
-    """All three backends together should be valid (mock auto-injected)."""
-
-    def test_mock_bluetooth_hidapi(self):
-        validate_backend_combination(["mock", "bluetooth", "hidapi"])
+    def test_mock_python_rust(self):
+        validate_backend_combination(["mock", "python", "rust"])
 
     def test_order_does_not_matter(self):
-        validate_backend_combination(["bluetooth", "hidapi", "mock"])
-        validate_backend_combination(["hidapi", "mock", "bluetooth"])
+        validate_backend_combination(["python", "mock"])
 
 
 class TestInvalidCombinations:
     """Conflicting backend combinations should raise ValueError."""
 
-    def test_rejects_duplicate_bluetooth(self):
+    def test_rejects_duplicate_python(self):
         with pytest.raises(ValueError, match="Unsupported backend combination"):
-            validate_backend_combination(["bluetooth", "bluetooth"])
-
-    def test_rejects_duplicate_hidapi(self):
-        with pytest.raises(ValueError, match="Unsupported backend combination"):
-            validate_backend_combination(["hidapi", "hidapi"])
+            validate_backend_combination(["python", "python"])
 
     def test_rejects_unknown_backend(self):
         with pytest.raises(ValueError, match="Unsupported backend combination"):
             validate_backend_combination(["mock", "windows"])
+
+    def test_rejects_bluetooth(self):
+        with pytest.raises(ValueError, match="Unsupported backend combination"):
+            validate_backend_combination(["bluetooth"])

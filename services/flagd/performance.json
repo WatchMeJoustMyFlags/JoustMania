@@ -96,12 +96,15 @@
     "controller_backend": {
       "state": "ENABLED",
       "variants": {
-        "bluetooth": "bluetooth",
-        "hidapi": "hidapi",
+        "python": "python",
         "mock": "mock",
-        "bluetooth_hidapi": "bluetooth,hidapi"
+        "mock_python": "mock,python",
+        "rust": "rust",
+        "mock_rust": "mock,rust",
+        "python_rust": "python,rust",
+        "mock_python_rust": "mock,python,rust"
       },
-      "defaultVariant": "hidapi"
+      "defaultVariant": "python_rust"
     },
     "mock_controller_count": {
       "state": "ENABLED",
@@ -140,10 +143,10 @@
     "controller_adapter_routing": {
       "state": "ENABLED",
       "variants": {
-        "bluetooth": "psmove",
-        "hidapi": "hidapi"
+        "python": "python",
+        "rust": "rust"
       },
-      "defaultVariant": "hidapi",
+      "defaultVariant": "python",
       "targeting": {}
     },
     "poll_drop_threshold": {
@@ -155,6 +158,14 @@
         "high": 20
       },
       "defaultVariant": "default"
+    },
+    "grpc_rpc_spans": {
+      "state": "ENABLED",
+      "variants": {
+        "enabled": true,
+        "disabled": false
+      },
+      "defaultVariant": "enabled"
     },
     "mobile_gateway_enabled": {
       "state": "ENABLED",

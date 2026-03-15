@@ -6,7 +6,9 @@ replacing the need for psmoveapi C library for basic controller I/O.
 
 The PS Move uses standard HID over Bluetooth with:
 - 49-byte input reports (buttons, trigger, accelerometer, gyroscope, battery)
-- 49-byte output reports (LED RGB, rumble)
+- 9-byte output reports (report 0x06 SetLEDs: LED RGB, rumble)
+- Feature report 0x04 GET (16 bytes): read controller + host BT addresses
+- Feature report 0x05 SET (23 bytes): write new host BT address for pairing
 
 References:
 - https://github.com/nitsch/movern/wiki/Input-report
@@ -25,7 +27,13 @@ ALL_PRODUCT_IDS = (PRODUCT_ID_ZCM1, PRODUCT_ID_ZCM2, PRODUCT_ID_ZCM2E)
 
 # HID report sizes
 INPUT_REPORT_SIZE = 49
-OUTPUT_REPORT_SIZE = 49
+OUTPUT_REPORT_SIZE = 9  # Output report 0x06 (SetLEDs, works for all models)
+
+# Feature report IDs and sizes (USB pairing)
+FEATURE_REPORT_GET_BTADDR = 0x04
+FEATURE_REPORT_SET_BTADDR = 0x05
+FEATURE_REPORT_GET_SIZE = 16
+FEATURE_REPORT_SET_SIZE = 23
 
 
 class Button(IntFlag):
@@ -87,12 +95,15 @@ class Frame(IntEnum):
     SECOND = 1
 
 
-def parse_input_report(data: bytes) -> dict:
+def parse_input_report(data: bytes, zcm2: bool = False) -> dict:
     """Parse a PS Move HID input report into structured data.
 
     Args:
         data: Raw HID input report bytes (49 bytes).
               May include a leading report ID byte (0x01) which is stripped.
+        zcm2: If True, decode accelerometer/gyroscope as signed 16-bit
+              two's complement (ZCM2/PS4-era). If False (default), decode as
+              unsigned 16-bit offset by 0x8000 (ZCM1/PS3-era).
 
     Returns:
         Dict with parsed controller state:
@@ -134,31 +145,31 @@ def parse_input_report(data: bytes) -> dict:
     # Battery: byte 12
     battery = data[12]
 
-    # Accelerometer frame 1: bytes 13-18 (3x uint16 little-endian)
-    ax1, ay1, az1 = struct.unpack_from("<HHH", data, 13)
-    # Accelerometer frame 2: bytes 19-24
-    ax2, ay2, az2 = struct.unpack_from("<HHH", data, 19)
+    if zcm2:
+        # ZCM2 (PS4-era): signed 16-bit two's complement, no offset
+        ax1, ay1, az1 = struct.unpack_from("<hhh", data, 13)
+        ax2, ay2, az2 = struct.unpack_from("<hhh", data, 19)
+        gx1, gy1, gz1 = struct.unpack_from("<hhh", data, 25)
+        gx2, gy2, gz2 = struct.unpack_from("<hhh", data, 31)
+    else:
+        # ZCM1 (PS3-era): unsigned 16-bit offset by 0x8000
+        ax1, ay1, az1 = struct.unpack_from("<HHH", data, 13)
+        ax2, ay2, az2 = struct.unpack_from("<HHH", data, 19)
+        ax1 -= 0x8000
+        ay1 -= 0x8000
+        az1 -= 0x8000
+        ax2 -= 0x8000
+        ay2 -= 0x8000
+        az2 -= 0x8000
 
-    # Convert to signed: raw values are offset by 0x8000
-    ax1 -= 0x8000
-    ay1 -= 0x8000
-    az1 -= 0x8000
-    ax2 -= 0x8000
-    ay2 -= 0x8000
-    az2 -= 0x8000
-
-    # Gyroscope frame 1: bytes 25-30 (3x uint16 little-endian)
-    gx1, gy1, gz1 = struct.unpack_from("<HHH", data, 25)
-    # Gyroscope frame 2: bytes 31-36
-    gx2, gy2, gz2 = struct.unpack_from("<HHH", data, 31)
-
-    # Convert to signed
-    gx1 -= 0x8000
-    gy1 -= 0x8000
-    gz1 -= 0x8000
-    gx2 -= 0x8000
-    gy2 -= 0x8000
-    gz2 -= 0x8000
+        gx1, gy1, gz1 = struct.unpack_from("<HHH", data, 25)
+        gx2, gy2, gz2 = struct.unpack_from("<HHH", data, 31)
+        gx1 -= 0x8000
+        gy1 -= 0x8000
+        gz1 -= 0x8000
+        gx2 -= 0x8000
+        gy2 -= 0x8000
+        gz2 -= 0x8000
 
     # Temperature: bytes 37-38 (12-bit value)
     temp_raw = struct.unpack_from("<H", data, 37)[0]
@@ -175,8 +186,20 @@ def parse_input_report(data: bytes) -> dict:
     }
 
 
+def _clamp_byte(value: int) -> int:
+    """Clamp an integer to the 0-255 range."""
+    return max(0, min(255, value))
+
+
 def build_output_report(r: int = 0, g: int = 0, b: int = 0, rumble: int = 0) -> bytes:
     """Build a PS Move HID output report for LED and rumble control.
+
+    Uses output report 0x06 (SetLEDs, 9 bytes), which works for both ZCM1
+    (PS3-era) and ZCM2 (PS4-era) controllers. This matches psmoveapi which
+    switched from report 0x02 to 0x06 in 2018 for universal compatibility.
+
+    The byte layout matches psmoveapi's PSMove_Data_LEDs struct:
+        [0x06, 0x00, R, G, B, 0x00, rumble, 0x00, 0x00]
 
     Args:
         r: Red LED intensity (0-255)
@@ -185,20 +208,88 @@ def build_output_report(r: int = 0, g: int = 0, b: int = 0, rumble: int = 0) -> 
         rumble: Rumble motor intensity (0-255)
 
     Returns:
-        49-byte output report.
+        9-byte output report with report ID 0x06.
     """
-    r = max(0, min(255, r))
-    g = max(0, min(255, g))
-    b = max(0, min(255, b))
-    rumble = max(0, min(255, rumble))
+    r = _clamp_byte(r)
+    g = _clamp_byte(g)
+    b = _clamp_byte(b)
+    rumble = _clamp_byte(rumble)
 
     report = bytearray(OUTPUT_REPORT_SIZE)
-    report[0] = 0x02  # Report type for LED/rumble
-    # Bytes 1: 0x00 (reserved)
+    report[0] = 0x06  # SetLEDs report type (works for all PS Move models)
+    # Byte 1: 0x00 (reserved)
     report[2] = r
     report[3] = g
     report[4] = b
-    # Byte 5: 0x00 (reserved)
+    # Byte 5: 0x00 (rumble2, reserved)
     report[6] = rumble
-    # Bytes 7-48: 0x00 (padding)
+    # Bytes 7-8: 0x00 (padding)
+    return bytes(report)
+
+
+# ---------------------------------------------------------------------------
+# Feature report helpers for USB pairing (report 0x04 GET / 0x05 SET)
+# ---------------------------------------------------------------------------
+
+
+def _mac_bytes_to_string(data: bytes) -> str:
+    """Convert 6 LSB-first bytes to 'AA:BB:CC:DD:EE:FF'.
+
+    The PS Move stores MAC addresses in reverse (least-significant byte first),
+    so we reverse before formatting.
+    """
+    return ":".join(f"{b:02X}" for b in reversed(data[:6]))
+
+
+def _mac_string_to_bytes(mac: str) -> bytes:
+    """Convert 'AA:BB:CC:DD:EE:FF' to 6 LSB-first bytes.
+
+    Reverses the octets so the most-significant byte ends up last,
+    matching the PS Move's wire format.
+    """
+    octets = [int(x, 16) for x in mac.split(":")]
+    if len(octets) != 6:
+        raise ValueError(f"Invalid MAC address: {mac}")
+    return bytes(reversed(octets))
+
+
+def parse_btaddr_report(data: bytes) -> tuple[str, str]:
+    """Parse a GET_FEATURE 0x04 report into controller and host MAC addresses.
+
+    Report layout (16 bytes):
+        [0x04, ctrl[0..5], pad(3B), host[0..5]]
+    Bytes 1-6: controller BT address (LSB-first).
+    Bytes 10-15: host BT address (LSB-first).
+
+    Args:
+        data: Raw 16-byte feature report (may include leading report ID).
+
+    Returns:
+        (controller_mac, host_mac) as 'AA:BB:CC:DD:EE:FF' strings.
+
+    Raises:
+        ValueError: If data is too short.
+    """
+    if len(data) < FEATURE_REPORT_GET_SIZE:
+        raise ValueError(f"Feature report too short: {len(data)} bytes (need {FEATURE_REPORT_GET_SIZE})")
+    controller_mac = _mac_bytes_to_string(data[1:7])
+    host_mac = _mac_bytes_to_string(data[10:16])
+    return controller_mac, host_mac
+
+
+def build_set_btaddr_report(host_mac: str) -> bytes:
+    """Build a SET_FEATURE 0x05 report to write a new host BT address.
+
+    Report layout (23 bytes):
+        [0x05, addr[0..5], 0x00 * 16]
+
+    Args:
+        host_mac: Target host address as 'AA:BB:CC:DD:EE:FF'.
+
+    Returns:
+        23-byte feature report ready for send_feature_report().
+    """
+    report = bytearray(FEATURE_REPORT_SET_SIZE)
+    report[0] = FEATURE_REPORT_SET_BTADDR
+    report[1:7] = _mac_string_to_bytes(host_mac)
     return bytes(report)

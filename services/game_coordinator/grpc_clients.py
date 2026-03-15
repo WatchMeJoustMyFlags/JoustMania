@@ -107,7 +107,7 @@ class GrpcClientManager:
         """
         import asyncio
 
-        close_timeout = 2.0  # seconds
+        close_timeout = 0.5  # seconds — channels on same Docker network close quickly
 
         if self._controller_manager_channel:
             try:
