@@ -202,21 +202,6 @@ class StateManager:
         """
         self.controller_states[serial] = ControllerState.CONNECTED
 
-        # Initialize button state tracking so the admin combo check in
-        # servicer.on_button() sees a complete dict from the first press
-        if serial not in self.button_states:
-            self.button_states[serial] = {
-                "trigger": False,
-                "move": False,
-                "cross": False,
-                "circle": False,
-                "square": False,
-                "triangle": False,
-                "ps": False,
-                "select": False,
-                "start": False,
-            }
-
         # Call enter handler for CONNECTED state
         handler = self._handlers.get(ControllerState.CONNECTED)
         if handler:
