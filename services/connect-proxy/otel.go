@@ -25,9 +25,26 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 )
 
+// resolveHostName reads host.name from OTEL_RESOURCE_ATTRIBUTES if set,
+// falling back to os.Hostname(). Inside Docker, os.Hostname() returns the
+// container ID; OTEL_RESOURCE_ATTRIBUTES provides the real host name.
+func resolveHostName() string {
+	if attrs := os.Getenv("OTEL_RESOURCE_ATTRIBUTES"); attrs != "" {
+		for _, pair := range strings.Split(attrs, ",") {
+			if k, v, ok := strings.Cut(pair, "="); ok {
+				if strings.TrimSpace(k) == "host.name" {
+					return strings.TrimSpace(v)
+				}
+			}
+		}
+	}
+	h, _ := os.Hostname()
+	return h
+}
+
 // newOTELResource builds a shared resource with standard + Dynatrace-relevant attributes.
 func newOTELResource(ctx context.Context, serviceName, namespace string) (*resource.Resource, error) {
-	hostname, _ := os.Hostname()
+	hostname := resolveHostName()
 	return resource.New(ctx,
 		resource.WithAttributes(
 			semconv.ServiceName(serviceName),

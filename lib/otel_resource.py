@@ -14,6 +14,22 @@ import sys
 from opentelemetry.sdk.resources import Resource
 
 
+def _get_host_name() -> str:
+    """Resolve host.name from OTEL_RESOURCE_ATTRIBUTES or fall back to platform.node().
+
+    Inside Docker, platform.node() returns the container ID. The
+    OTEL_RESOURCE_ATTRIBUTES env var (set in docker-compose.yml) provides
+    the real host name for Dynatrace Smartscape topology linking.
+    """
+    otel_attrs = os.getenv("OTEL_RESOURCE_ATTRIBUTES", "")
+    for pair in otel_attrs.split(","):
+        if "=" in pair:
+            key, value = pair.split("=", 1)
+            if key.strip() == "host.name":
+                return value.strip()
+    return platform.node()
+
+
 def get_otel_resource() -> Resource:
     """Build a shared OTEL Resource with standard + Dynatrace-relevant attributes.
 
@@ -34,7 +50,7 @@ def get_otel_resource() -> Resource:
             "service.version": os.getenv("SERVICE_VERSION", "0.0.0-dev"),
             "service.instance.id": os.getenv("HOSTNAME", platform.node()),
             "deployment.environment": os.getenv("DEPLOYMENT_ENVIRONMENT", "development"),
-            "host.name": platform.node(),
+            "host.name": _get_host_name(),
             "process.pid": os.getpid(),
             "process.executable.name": os.path.basename(sys.executable),
             "process.runtime.name": platform.python_implementation().lower(),
