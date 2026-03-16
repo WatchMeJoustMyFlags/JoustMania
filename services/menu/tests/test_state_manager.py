@@ -190,7 +190,5 @@ class TestStateManagerHelpers:
         assert state_manager.controller_states == {"s1": ControllerState.CONNECTED, "s2": ControllerState.CONNECTED}
         # Ready controllers should be cleared
         assert state_manager.ready_controllers == set()
-        # Button states should be re-initialized (all False) for re-registered controllers
-        assert set(state_manager.button_states.keys()) == {"s1", "s2"}
-        assert all(v is False for v in state_manager.button_states["s1"].values())
-        assert all(v is False for v in state_manager.button_states["s2"].values())
+        # Button states should be cleared
+        assert state_manager.button_states == {}

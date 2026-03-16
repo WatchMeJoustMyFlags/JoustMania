@@ -120,15 +120,12 @@ def parse_input_report(data: bytes, zcm2: bool = False) -> dict:
     Raises:
         ValueError: If data is too short to parse.
     """
-    # Strip leading report ID byte (0x01) if present.
-    # On Linux hidraw, the report ID is included in the read data, so a
-    # 49-byte read returns [0x01, ...48 bytes of payload].  The old check
-    # (len > 49) never triggered because the total was exactly 49.
-    if len(data) >= INPUT_REPORT_SIZE and data[0] == 0x01:
+    # Strip leading report ID byte (0x01) if present
+    if len(data) > INPUT_REPORT_SIZE and data[0] == 0x01:
         data = data[1:]
 
-    if len(data) < INPUT_REPORT_SIZE - 1:
-        raise ValueError(f"Input report too short: {len(data)} bytes (need at least {INPUT_REPORT_SIZE - 1})")
+    if len(data) < INPUT_REPORT_SIZE:
+        raise ValueError(f"Input report too short: {len(data)} bytes (need {INPUT_REPORT_SIZE})")
 
     # Buttons: bytes 1-3 as little-endian, plus byte 4 shifted up
     # Byte 0 is typically 0x00 or sequence
