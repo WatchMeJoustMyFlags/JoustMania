@@ -312,18 +312,21 @@ class DiscoveryLoop:
 
             # Get list of connected controllers from backend
             # Run in thread pool since this has blocking USB calls.
-            # Capture OTEL context so gRPC interceptors propagate the
-            # current trace to HID services (context doesn't cross threads).
-            ctx = otel_context.get_current()
+            # Wrap in a span so HID service spans are linked via trace context.
+            # Capture the span's context and attach it in the thread — OTEL
+            # context doesn't automatically cross asyncio.to_thread() boundaries.
+            with tracer.start_as_current_span("controller.discover") as span:
+                span.set_attribute("discover.force_rescan", force_rescan)
+                ctx = otel_context.get_current()
 
-            def _discover_with_context(force: bool) -> list[str]:
-                token = otel_context.attach(ctx)
-                try:
-                    return self.backend.get_connected_controllers(force)
-                finally:
-                    otel_context.detach(token)
+                def _discover_with_context(force: bool) -> list[str]:
+                    token = otel_context.attach(ctx)
+                    try:
+                        return self.backend.get_connected_controllers(force)
+                    finally:
+                        otel_context.detach(token)
 
-            connected_serials = await asyncio.to_thread(_discover_with_context, force_rescan)
+                connected_serials = await asyncio.to_thread(_discover_with_context, force_rescan)
             connected_set = set(connected_serials)
 
             # Check for disconnected controllers (in tracked but not in connected)
