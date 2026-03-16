@@ -442,6 +442,108 @@ def get_context_propagation_interceptors(
 
 
 # =============================================================================
+# Sync client interceptors (for blocking gRPC channels)
+# =============================================================================
+
+
+class SyncUnaryUnaryInterceptor(grpc.UnaryUnaryClientInterceptor):
+    """Sync unary-unary client interceptor for trace context propagation.
+
+    Used by adapters that use blocking gRPC channels (e.g. python_hid_adapter,
+    rust_adapter) to inject W3C traceparent into outgoing RPCs.
+    """
+
+    def __init__(self, server_address: str | None = None, server_port: int | None = None):
+        self._server_address = server_address
+        self._server_port = server_port
+
+    def intercept_unary_unary(self, continuation, client_call_details, request):
+        new_details = _ClientCallDetails(
+            client_call_details.method,
+            client_call_details.timeout,
+            _prepare_metadata(client_call_details.metadata),
+            client_call_details.credentials,
+            client_call_details.wait_for_ready,
+            client_call_details.compression,
+        )
+
+        if not _rpc_spans_enabled():
+            return continuation(new_details, request)
+
+        service, method = _parse_method(client_call_details.method)
+        tracer = trace.get_tracer(__name__)
+        attrs = _build_rpc_attributes(service, method, self._server_address, self._server_port)
+        with tracer.start_as_current_span(f"{service}/{method}", kind=SpanKind.CLIENT, attributes=attrs) as span:
+            try:
+                response = continuation(new_details, request)
+                span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, grpc.StatusCode.OK.value[0])
+                span.set_status(Status(StatusCode.OK))
+                return response
+            except grpc.RpcError as e:
+                span.set_attribute(RPC_GRPC_STATUS_CODE_ATTR, e.code().value[0])
+                span.set_status(Status(StatusCode.ERROR, str(e.code())))
+                raise
+
+
+class SyncStreamStreamInterceptor(grpc.StreamStreamClientInterceptor):
+    """Sync stream-stream client interceptor for trace context propagation.
+
+    Used by adapters for bidirectional streaming RPCs (e.g. StreamIO).
+    """
+
+    def __init__(self, server_address: str | None = None, server_port: int | None = None):
+        self._server_address = server_address
+        self._server_port = server_port
+
+    def intercept_stream_stream(self, continuation, client_call_details, request_iterator):
+        new_details = _ClientCallDetails(
+            client_call_details.method,
+            client_call_details.timeout,
+            _prepare_metadata(client_call_details.metadata),
+            client_call_details.credentials,
+            client_call_details.wait_for_ready,
+            client_call_details.compression,
+        )
+        return continuation(new_details, request_iterator)
+
+
+class _ClientCallDetails(
+    grpc.ClientCallDetails,
+):
+    """Wrapper for sync ClientCallDetails with updated metadata."""
+
+    def __init__(self, method, timeout, metadata, credentials, wait_for_ready, compression):
+        self.method = method
+        self.timeout = timeout
+        self.metadata = metadata
+        self.credentials = credentials
+        self.wait_for_ready = wait_for_ready
+        self.compression = compression
+
+
+def get_sync_context_propagation_interceptors(
+    server_address: str | None = None,
+    server_port: int | None = None,
+) -> list:
+    """Get context propagation interceptors for sync (blocking) gRPC channels.
+
+    Use with grpc.intercept_channel() to add trace context to outgoing RPCs
+    on sync channels (e.g. HID adapter → python-hid/rust-hid).
+
+    Args:
+        server_address: Target server hostname/IP (used in RPC span attributes).
+        server_port: Target server port (used in RPC span attributes).
+
+    Returns:
+        List of sync interceptors for unary-unary and stream-stream RPCs.
+    """
+    return [
+        SyncUnaryUnaryInterceptor(server_address, server_port),
+        SyncStreamStreamInterceptor(server_address, server_port),
+    ]
+
+
+# =============================================================================
 # Server-side interceptors
 # =============================================================================
 
