@@ -427,11 +427,45 @@ processors:
           - key: service.name
             value: "^(controller-manager|game-coordinator|menu|audio|pairing-daemon|otel-collector|connect-proxy|rust-hid|python-hid)$"
 
-  # Resource detection — auto-enrich all signals with host, OS, and container
-  # metadata. Expanded per Dynatrace Host Monitoring extension requirements
-  # to enable otel:host entity creation in Infrastructure & Operations.
+  # Resource detection for service pipelines (traces, metrics, logs from OTLP).
+  # Uses env + system only — NOT docker. The docker detector would stamp the
+  # collector's own container.name on all service data, breaking Dynatrace
+  # entity linking (every service appears to run in the collector container).
+  # Services set their own container.name via the SDK.
   # override: false preserves SDK-set attributes (service.name, host.name, etc.).
-  resourcedetection:
+  resourcedetection/services:
+    detectors: [env, system]
+    timeout: 5s
+    override: false
+    system:
+      hostname_sources: ["lookup"]
+      resource_attributes:
+        host.name:
+          enabled: true
+        host.id:
+          enabled: true
+        host.arch:
+          enabled: true
+        host.ip:
+          enabled: true
+        host.mac:
+          enabled: true
+        host.cpu.model.name:
+          enabled: true
+        os.type:
+          enabled: true
+        os.description:
+          enabled: true
+        os.name:
+          enabled: true
+        os.version:
+          enabled: true
+
+  # Resource detection for infrastructure pipelines (hostmetrics, docker_stats,
+  # scraped targets, container logs). Includes docker detector because these
+  # pipelines originate from the collector itself — the collector's container
+  # metadata is correct context here.
+  resourcedetection/infra:
     detectors: [env, system, docker]
     timeout: 5s
     override: false
@@ -577,54 +611,52 @@ service:
 
     # ── Dynatrace pipelines ──────────────────────────────────────────
 
+    # Service pipelines use resourcedetection/services (no docker detector)
     traces/dynatrace:
       receivers: [otlp]
-      processors: [memory_limiter, resourcedetection, batch, resource]
+      processors: [memory_limiter, resourcedetection/services, batch, resource]
       exporters: [otlphttp/dynatrace]
 
     metrics/dynatrace:
       receivers: [otlp]
-      processors: [memory_limiter, resourcedetection, batch, resource, cumulativetodelta]
-      exporters: [otlphttp/dynatrace]
-
-    # Host metrics to Dynatrace — per OpenTelemetry Host Monitoring extension.
-    # Uses filter + transform processors to match the reference config that
-    # the extension's built-in dashboards expect. Creates otel:host and
-    # otel:process entities in Infrastructure & Operations.
-    metrics/host-dynatrace:
-      receivers: [hostmetrics/1m, hostmetrics/5m, hostmetrics/1h]
-      processors: [filter/hostmetrics, resourcedetection, transform/hostmetrics, cumulativetodelta, batch/dynatrace]
-      exporters: [otlphttp/dynatrace]
-
-    metrics/containers-dynatrace:
-      receivers: [docker_stats]
-      processors: [memory_limiter, resourcedetection, resource/containers, batch, cumulativetodelta]
-      exporters: [otlphttp/dynatrace]
-
-    metrics/observability-dynatrace:
-      receivers: [prometheus/observability]
-      processors: [memory_limiter, resourcedetection, resource/otel-collector, batch, cumulativetodelta]
-      exporters: [otlphttp/dynatrace]
-
-    metrics/flagd-dynatrace:
-      receivers: [prometheus/flagd]
-      processors: [memory_limiter, resourcedetection, resource/flagd, batch, cumulativetodelta]
-      exporters: [otlphttp/dynatrace]
-
-    metrics/envoy-dynatrace:
-      receivers: [prometheus/envoy]
-      processors: [memory_limiter, resourcedetection, resource/envoy, batch, cumulativetodelta]
+      processors: [memory_limiter, resourcedetection/services, batch, resource, cumulativetodelta]
       exporters: [otlphttp/dynatrace]
 
     logs/dynatrace:
       receivers: [otlp]
-      processors: [memory_limiter, resourcedetection, batch, resource]
+      processors: [memory_limiter, resourcedetection/services, batch, resource]
+      exporters: [otlphttp/dynatrace]
+
+    # Infrastructure pipelines use resourcedetection/infra (with docker detector)
+    metrics/host-dynatrace:
+      receivers: [hostmetrics/1m, hostmetrics/5m, hostmetrics/1h]
+      processors: [filter/hostmetrics, resourcedetection/infra, transform/hostmetrics, cumulativetodelta, batch/dynatrace]
+      exporters: [otlphttp/dynatrace]
+
+    metrics/containers-dynatrace:
+      receivers: [docker_stats]
+      processors: [memory_limiter, resourcedetection/infra, resource/containers, batch, cumulativetodelta]
+      exporters: [otlphttp/dynatrace]
+
+    metrics/observability-dynatrace:
+      receivers: [prometheus/observability]
+      processors: [memory_limiter, resourcedetection/infra, resource/otel-collector, batch, cumulativetodelta]
+      exporters: [otlphttp/dynatrace]
+
+    metrics/flagd-dynatrace:
+      receivers: [prometheus/flagd]
+      processors: [memory_limiter, resourcedetection/infra, resource/flagd, batch, cumulativetodelta]
+      exporters: [otlphttp/dynatrace]
+
+    metrics/envoy-dynatrace:
+      receivers: [prometheus/envoy]
+      processors: [memory_limiter, resourcedetection/infra, resource/envoy, batch, cumulativetodelta]
       exporters: [otlphttp/dynatrace]
 
     # Container logs to Dynatrace — container.* attributes create proper entities
     logs/containers-dynatrace:
       receivers: [filelog/docker]
-      processors: [memory_limiter, transform/docker_logs, filter/exclude_otlp_services, resourcedetection, batch, resource]
+      processors: [memory_limiter, transform/docker_logs, filter/exclude_otlp_services, resourcedetection/infra, batch, resource]
       exporters: [otlphttp/dynatrace]
 
     # ── Bizevents pipeline (acceleration → Dynatrace business events) ─

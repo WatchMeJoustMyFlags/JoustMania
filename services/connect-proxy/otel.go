@@ -53,6 +53,7 @@ func newOTELResource(ctx context.Context, serviceName, namespace string) (*resou
 			semconv.ServiceInstanceID(getEnv("HOSTNAME", hostname)),
 			attribute.String("deployment.environment", getEnv("DEPLOYMENT_ENVIRONMENT", "development")),
 			semconv.HostName(hostname),
+			semconv.ContainerName(serviceName),
 			attribute.Int("process.pid", os.Getpid()),
 			attribute.String("process.executable.name", "connect-proxy"),
 			attribute.String("process.runtime.name", "go"),
