@@ -1416,9 +1416,12 @@ class BaseGameMode(ABC):
 
                 # Ramp music volume up to game level after countdown
                 if self.audio_client:
-                    from proto import audio_pb2
+                    try:
+                        from proto import audio_pb2
 
-                    await self.audio_client.SetVolume(audio_pb2.SetVolumeRequest(volume=GAME_VOLUME))
+                        await self.audio_client.SetVolume(audio_pb2.SetVolumeRequest(volume=GAME_VOLUME))
+                    except Exception as e:
+                        logger.warning(f"Failed to set game volume: {e}")
 
                 # Drain buffered stream data and prime EMA filters
                 await self._warmup_ema()
