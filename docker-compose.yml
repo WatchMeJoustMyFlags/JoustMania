@@ -136,6 +136,8 @@ services:
       dockerfile: Dockerfile
     container_name: joustmania-otel-collector
     command: [ "--config=/etc/otel-collector-config.yaml" ]
+    environment:
+      - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
     volumes:
       - ./services/otel-collector/config.yaml:/etc/otel-collector-config.yaml:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
