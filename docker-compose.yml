@@ -481,10 +481,13 @@ services:
       - joustmania
     restart: unless-stopped
     # Healthcheck defined in Dockerfile (uses grpc_health_probe)
+    # Memory: largest OGG (classical.ogg 5.7MB) decodes to ~60MB PCM + resampler
+    # buffers (~20MB) + Python/gRPC/OTEL baseline (~60MB) + headroom for
+    # concurrent track transitions = ~320MB peak
     deploy:
       resources:
         limits:
-          memory: 192m
+          memory: 320m
           cpus: '0.5'
     logging: *default-logging
 
