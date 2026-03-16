@@ -278,14 +278,18 @@ pub fn battery_to_percent(raw: u8) -> i32 {
 
 /// Parse a 49-byte PS Move HID input report.
 ///
-/// Matches Python `parse_input_report()`. Uses second frame of sensor data
-/// (bytes 19-24 for accel, 31-36 for gyro) and second trigger value (byte 7),
-/// matching the HidapiAdapter convention.
+/// Matches Python `parse_input_report()` and psmoveapi's PSMove_Data_Input_Common.
+/// Uses second frame of sensor data (bytes 19-24 for accel, 31-36 for gyro)
+/// and second trigger value (byte 6), matching the HidapiAdapter convention.
+///
+/// The 49-byte report includes the report ID (0x01) at byte 0. Button bytes
+/// are at offsets 1-4 and are combined using psmoveapi's formula:
+///   buttons2 | (buttons1 << 8) | ((buttons3 & 0x01) << 16) | ((buttons4 & 0xF0) << 13)
 ///
 /// `zcm2`: If true, decode accel/gyro as signed 16-bit two's complement
 /// (ZCM2/PS4-era). If false, decode as unsigned 16-bit offset by 0x8000.
 pub fn parse_input_report(data: &[u8], zcm2: bool) -> Result<ParsedInputReport, String> {
-    // Strip leading report ID byte (0x01) if present
+    // Strip redundant leading report ID byte if the HID library prepended one
     let data = if data.len() > INPUT_REPORT_SIZE && data[0] == 0x01 {
         &data[1..]
     } else {
@@ -299,13 +303,15 @@ pub fn parse_input_report(data: &[u8], zcm2: bool) -> Result<ParsedInputReport, 
         ));
     }
 
-    // Buttons: bytes 1-3 as little-endian, plus byte 3 shifted up
-    let btn_lo = (data[1] as u32) | ((data[2] as u32) << 8);
-    let btn_hi = data[3] as u32;
-    let buttons = btn_lo | (btn_hi << 16);
+    // Buttons: psmoveapi formula (PSMove_Data_Input_Common bytes 1-4)
+    //   buttons2 | (buttons1 << 8) | ((buttons3 & 0x01) << 16) | ((buttons4 & 0xF0) << 13)
+    let buttons = (data[2] as u32)                          // buttons2: face buttons
+        | ((data[1] as u32) << 8)                           // buttons1: Select, Start
+        | (((data[3] & 0x01) as u32) << 16)                 // buttons3 bit 0: PS
+        | (((data[4] & 0xF0) as u32) << 13);                // buttons4 bits 4-7: Move, T
 
-    // Trigger analog: byte 7 (frame 2)
-    let trigger = data[7];
+    // Trigger analog: byte 6 (frame 2)
+    let trigger = data[6];
 
     // Battery: byte 12
     let battery = battery_to_percent(data[12]);
@@ -669,6 +675,14 @@ mod tests {
 
     // --- Input report parsing tests ---
 
+    /// Build a test input report with the psmoveapi byte layout.
+    ///
+    /// Encodes buttons using psmoveapi's PSMove_Data_Input_Common format:
+    ///   Byte 0: report ID (0x01)
+    ///   Byte 1: buttons1 (bits 8-15 of button mask)
+    ///   Byte 2: buttons2 (bits 0-7 of button mask)
+    ///   Byte 3: buttons3 (PS = bit 0)
+    ///   Byte 4: buttons4 (Move/T in high nibble, seq in low nibble)
     fn make_input_report(
         buttons: u32,
         trigger2: u8,
@@ -678,12 +692,18 @@ mod tests {
         temperature: u16,
     ) -> [u8; INPUT_REPORT_SIZE] {
         let mut data = [0u8; INPUT_REPORT_SIZE];
-        // Buttons: bytes 1-3
-        data[1] = (buttons & 0xFF) as u8;
-        data[2] = ((buttons >> 8) & 0xFF) as u8;
-        data[3] = ((buttons >> 16) & 0xFF) as u8;
-        // Trigger frame 2: byte 7
-        data[7] = trigger2;
+        data[0] = 0x01; // Report ID
+        // Reverse the psmoveapi formula to encode buttons into raw bytes:
+        //   result = buttons2 | (buttons1 << 8) | ((buttons3 & 0x01) << 16) | ((buttons4 & 0xF0) << 13)
+        // So: buttons2 = result & 0xFF, buttons1 = (result >> 8) & 0xFF
+        //     buttons3 bit 0 = (result >> 16) & 0x01
+        //     buttons4 high nibble = (result >> 13) & 0xF0
+        data[1] = ((buttons >> 8) & 0xFF) as u8;        // buttons1
+        data[2] = (buttons & 0xFF) as u8;                // buttons2
+        data[3] = ((buttons >> 16) & 0x01) as u8;        // buttons3
+        data[4] = ((buttons >> 13) & 0xF0) as u8;        // buttons4 high nibble
+        // Trigger frame 2: byte 6
+        data[6] = trigger2;
         // Battery: byte 12
         data[12] = battery;
         // Accel frame 2: bytes 19-24 (little-endian u16)
