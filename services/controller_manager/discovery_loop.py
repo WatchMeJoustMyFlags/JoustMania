@@ -21,6 +21,7 @@ import math
 import time
 from typing import TYPE_CHECKING
 
+from opentelemetry import context as otel_context
 from opentelemetry import trace
 
 from lib.controller_constants import (
@@ -310,8 +311,19 @@ class DiscoveryLoop:
             force_rescan = self.rescan_timer.should_force_rescan()
 
             # Get list of connected controllers from backend
-            # Run in thread pool since this has blocking USB calls
-            connected_serials = await asyncio.to_thread(self.backend.get_connected_controllers, force_rescan)
+            # Run in thread pool since this has blocking USB calls.
+            # Capture OTEL context so gRPC interceptors propagate the
+            # current trace to HID services (context doesn't cross threads).
+            ctx = otel_context.get_current()
+
+            def _discover_with_context(force: bool) -> list[str]:
+                token = otel_context.attach(ctx)
+                try:
+                    return self.backend.get_connected_controllers(force)
+                finally:
+                    otel_context.detach(token)
+
+            connected_serials = await asyncio.to_thread(_discover_with_context, force_rescan)
             connected_set = set(connected_serials)
 
             # Check for disconnected controllers (in tracked but not in connected)
