@@ -81,10 +81,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn resolve_host_name() -> String {
     if let Ok(attrs) = std::env::var("OTEL_RESOURCE_ATTRIBUTES") {
         for pair in attrs.split(',') {
-            if let Some((key, value)) = pair.split_once('=') {
-                if key.trim() == "host.name" {
-                    return value.trim().to_string();
-                }
+            if let Some((key, value)) = pair.split_once('=')
+                && key.trim() == "host.name"
+            {
+                return value.trim().to_string();
             }
         }
     }
