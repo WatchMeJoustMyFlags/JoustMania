@@ -75,6 +75,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Resolve host.name from OTEL_RESOURCE_ATTRIBUTES if set, falling back to
+/// gethostname(). Inside Docker, gethostname() returns the container ID;
+/// OTEL_RESOURCE_ATTRIBUTES provides the real host name.
+fn resolve_host_name() -> String {
+    if let Ok(attrs) = std::env::var("OTEL_RESOURCE_ATTRIBUTES") {
+        for pair in attrs.split(',') {
+            if let Some((key, value)) = pair.split_once('=') {
+                if key.trim() == "host.name" {
+                    return value.trim().to_string();
+                }
+            }
+        }
+    }
+    gethostname::gethostname()
+        .into_string()
+        .unwrap_or_else(|_| "unknown".into())
+}
+
 /// Build a shared OTEL resource with standard + Dynatrace-relevant attributes.
 fn build_otel_resource() -> opentelemetry_sdk::Resource {
     use opentelemetry::KeyValue;
@@ -85,9 +103,7 @@ fn build_otel_resource() -> opentelemetry_sdk::Resource {
         std::env::var("OTEL_SERVICE_NAMESPACE").unwrap_or_else(|_| "infrastructure".into());
     let version =
         std::env::var("SERVICE_VERSION").unwrap_or_else(|_| "0.0.0-dev".into());
-    let hostname = gethostname::gethostname()
-        .into_string()
-        .unwrap_or_else(|_| "unknown".into());
+    let hostname = resolve_host_name();
     let instance_id =
         std::env::var("HOSTNAME").unwrap_or_else(|_| hostname.clone());
     let environment =
