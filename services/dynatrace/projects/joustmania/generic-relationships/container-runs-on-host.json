@@ -1,0 +1,20 @@
+{
+  "enabled": true,
+  "createdBy": "monaco",
+  "fromType": "joustmania:container",
+  "toType": "joustmania:host",
+  "typeOfRelation": "RUNS_ON",
+  "sources": [
+    {
+      "sourceType": "Entities",
+      "mappingRules": [
+        {
+          "sourceProperty": "host_name",
+          "sourceTransformation": "Leave text as-is",
+          "destinationProperty": "host_name",
+          "destinationTransformation": "Leave text as-is"
+        }
+      ]
+    }
+  ]
+}

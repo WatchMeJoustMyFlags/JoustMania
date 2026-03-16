@@ -1,5 +1,5 @@
 {
-  "summary": "Controller {{dims:serial}} is disconnected",
+  "summary": "Controller {{ "{{dims:serial}}" }} is disconnected",
   "queryDefinition": {
     "type": "METRIC_KEY",
     "metricKey": "controller_connected",
@@ -19,7 +19,7 @@
   },
   "eventTemplate": {
     "title": "Controller Disconnected",
-    "description": "Controller {{dims:serial}} has been disconnected. Check Bluetooth connectivity and controller power.",
+    "description": "Controller {{ "{{dims:serial}}" }} has been disconnected. Check Bluetooth connectivity and controller power.",
     "eventType": "ERROR_EVENT",
     "davisMerge": true,
     "metadata": [

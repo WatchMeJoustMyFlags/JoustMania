@@ -1,5 +1,5 @@
 {
-  "summary": "High GC pause duration on {{dims:job}} (P90 > 10ms)",
+  "summary": "High GC pause duration on {{ "{{dims:job}}" }} (P90 > 10ms)",
   "queryDefinition": {
     "type": "METRIC_KEY",
     "metricKey": "gc_pause_seconds",
@@ -19,7 +19,7 @@
   },
   "eventTemplate": {
     "title": "High GC Pauses",
-    "description": "Garbage collection pause duration P90 on {{dims:job}} exceeds 10ms. This may cause frame drops and gameplay stuttering. Consider memory optimization.",
+    "description": "Garbage collection pause duration P90 on {{ "{{dims:job}}" }} exceeds 10ms. This may cause frame drops and gameplay stuttering. Consider memory optimization.",
     "eventType": "CUSTOM_ALERT",
     "davisMerge": true,
     "metadata": [

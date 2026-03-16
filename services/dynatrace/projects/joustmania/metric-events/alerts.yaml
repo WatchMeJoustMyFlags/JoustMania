@@ -1,3 +1,6 @@
+# Metric event alerts — skipped on DPS (Dynatrace Platform).
+# DPS does not support the builtin:anomaly-detection.metric-events schema.
+# These alerts need to be rewritten as Grail-based DQL alerts for DPS.
 configs:
   - id: controller-low-battery
     type:
@@ -7,6 +10,7 @@ configs:
     config:
       template: alert-templates/controller-low-battery.json
       name: ControllerLowBattery
+      skip: true
   - id: controller-disconnected
     type:
       settings:
@@ -15,6 +19,7 @@ configs:
     config:
       template: alert-templates/controller-disconnected.json
       name: ControllerDisconnected
+      skip: true
   - id: high-input-latency
     type:
       settings:
@@ -23,6 +28,7 @@ configs:
     config:
       template: alert-templates/high-input-latency.json
       name: HighInputLatency
+      skip: true
   - id: high-cpu-usage
     type:
       settings:
@@ -31,6 +37,7 @@ configs:
     config:
       template: alert-templates/high-cpu-usage.json
       name: HighCpuUsage
+      skip: true
   - id: high-memory-usage
     type:
       settings:
@@ -39,6 +46,7 @@ configs:
     config:
       template: alert-templates/high-memory-usage.json
       name: HighMemoryUsage
+      skip: true
   - id: low-game-loop-hz
     type:
       settings:
@@ -47,6 +55,7 @@ configs:
     config:
       template: alert-templates/low-game-loop-hz.json
       name: LowGameLoopHz
+      skip: true
   - id: high-grpc-latency
     type:
       settings:
@@ -55,6 +64,7 @@ configs:
     config:
       template: alert-templates/high-grpc-latency.json
       name: HighGrpcLatency
+      skip: true
   - id: service-down
     type:
       settings:
@@ -63,6 +73,7 @@ configs:
     config:
       template: alert-templates/service-down.json
       name: ServiceDown
+      skip: true
   - id: poor-frame-consistency
     type:
       settings:
@@ -71,6 +82,7 @@ configs:
     config:
       template: alert-templates/poor-frame-consistency.json
       name: PoorFrameConsistency
+      skip: true
   - id: high-gc-pauses
     type:
       settings:
@@ -79,6 +91,7 @@ configs:
     config:
       template: alert-templates/high-gc-pauses.json
       name: HighGcPauses
+      skip: true
   - id: game-crash-rate
     type:
       settings:
@@ -87,6 +100,7 @@ configs:
     config:
       template: alert-templates/game-crash-rate.json
       name: GameCrashRate
+      skip: true
   - id: service-update-pending
     type:
       settings:
@@ -95,6 +109,7 @@ configs:
     config:
       template: alert-templates/service-update-pending.json
       name: ServiceUpdatePending
+      skip: true
   - id: high-grpc-client-error-rate
     type:
       settings:
@@ -103,3 +118,4 @@ configs:
     config:
       template: alert-templates/high-grpc-client-error-rate.json
       name: HighGrpcClientErrorRate
+      skip: true

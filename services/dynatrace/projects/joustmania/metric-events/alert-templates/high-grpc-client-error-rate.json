@@ -1,5 +1,5 @@
 {
-  "summary": "High gRPC client error rate on {{dims:job}} (> 30 errors/min)",
+  "summary": "High gRPC client error rate on {{ "{{dims:job}}" }} (> 30 errors/min)",
   "queryDefinition": {
     "type": "METRIC_KEY",
     "metricKey": "grpc_client_errors_total",
@@ -19,7 +19,7 @@
   },
   "eventTemplate": {
     "title": "High gRPC Client Error Rate",
-    "description": "gRPC client error rate on {{dims:job}} exceeds 30 errors per minute (equivalent to Prometheus rate > 0.5/s). Check downstream service availability and network connectivity.",
+    "description": "gRPC client error rate on {{ "{{dims:job}}" }} exceeds 30 errors per minute (equivalent to Prometheus rate > 0.5/s). Check downstream service availability and network connectivity.",
     "eventType": "CUSTOM_ALERT",
     "davisMerge": true,
     "metadata": [

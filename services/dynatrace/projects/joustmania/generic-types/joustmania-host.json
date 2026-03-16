@@ -1,0 +1,36 @@
+{
+  "enabled": true,
+  "name": "joustmania:host",
+  "displayName": "JoustMania Host",
+  "createdBy": "monaco",
+  "rules": [
+    {
+      "idPattern": "joustmania_host_{host.name}",
+      "instanceNamePattern": "{host.name}",
+      "iconPattern": "raspberry-pi",
+      "sources": [
+        {
+          "sourceType": "Metrics",
+          "condition": "$prefix(system.cpu)"
+        }
+      ],
+      "attributes": [
+        {
+          "key": "host_name",
+          "displayName": "Hostname",
+          "pattern": "{host.name}"
+        },
+        {
+          "key": "os_type",
+          "displayName": "OS Type",
+          "pattern": "{os.type}"
+        }
+      ],
+      "requiredDimensions": [
+        {
+          "key": "host.name"
+        }
+      ]
+    }
+  ]
+}

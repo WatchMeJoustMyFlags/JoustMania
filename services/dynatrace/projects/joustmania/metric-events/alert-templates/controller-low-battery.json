@@ -1,5 +1,5 @@
 {
-  "summary": "Controller {{dims:serial}} has low battery",
+  "summary": "Controller {{ "{{dims:serial}}" }} has low battery",
   "queryDefinition": {
     "type": "METRIC_KEY",
     "metricKey": "controller_battery_level",
@@ -19,7 +19,7 @@
   },
   "eventTemplate": {
     "title": "Controller Low Battery",
-    "description": "Controller {{dims:serial}} battery level is below 2/5. Replace or charge soon.",
+    "description": "Controller {{ "{{dims:serial}}" }} battery level is below 2/5. Replace or charge soon.",
     "eventType": "CUSTOM_ALERT",
     "davisMerge": true,
     "metadata": [
