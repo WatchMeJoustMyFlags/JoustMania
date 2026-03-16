@@ -1,5 +1,87 @@
 # Changelog
 
+## [0.7.0](https://github.com/WatchMeJoustMyFlags/JoustMania/compare/joustmania-v0.6.1...joustmania-v0.7.0) (2026-03-16)
+
+
+### Features
+
+* add flagd-ui for read-only flag browsing ([#647](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/647)) ([c2e6b00](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/c2e6b0012c8751151197c1bf8062ef356b887874))
+* add HTTP canary rollout endpoints ([#686](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/686)) ([1bec007](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/1bec007648867099cbbfdbd9d02a1a3e7cc866b9))
+* add OpenFeature flagd + gRPC server spans to rust-hid ([#675](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/675)) ([c69f630](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/c69f630ec53d5ba827c2a24ae337c54a5f9fcd56))
+* add OTEL process metrics to rust-hid, connect-proxy, grafana-live-publisher ([#655](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/655)) ([fc27e87](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/fc27e8734ad94bfbb6ac7248e3b9c7122cd1f6f3))
+* add OTLP log export to rust-hid and connect-proxy ([#664](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/664)) ([4bd556a](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/4bd556ae1301b0a7065a480b18f96bdc68c6d898))
+* add OTLP tracing to envoy for Dynatrace + Jaeger visibility ([#670](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/670)) ([2d24c91](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/2d24c919d79251bac1d370f2d59cd81a5ce2e6e4))
+* add resourcedetection for Dynatrace Smartscape topology ([#688](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/688)) ([095ae86](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/095ae861d70c8a36fa395df41561228661d45ed9))
+* add RPC semantic convention spans for Dynatrace gRPC topology ([#669](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/669)) ([38334f7](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/38334f70572b2d82fd46b8f3e20cf5216434c39b))
+* add tracing to rust-hid and connect-proxy for Dynatrace visibility ([#668](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/668)) ([3fd21bd](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/3fd21bd89b81e6e05fc8dc072faddc095aa1345a))
+* backend wiring tests + speed up Docker builds ([#616](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/616)) ([#637](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/637)) ([0c63424](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/0c6342401f657819ade40572b52d1ba16825a0bb))
+* combined pipeline resource view in backend comparison dashboards ([#659](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/659)) ([8713977](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/8713977fc4088b455daff22039cd9c209b67b93f))
+* custom OTEL Collector image with metricsaslogs connector ([#656](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/656)) ([26ee646](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/26ee6464f3859128a3fb860438507c93ffce4223))
+* Docker container log ingest for non-OTLP services ([#663](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/663)) ([1c02bd2](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/1c02bd29c6589ad5a8ae164040cd5b74b2475e21))
+* enhance OTEL for connect-proxy, rust-hid, and collector ([#671](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/671)) ([4aa916a](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/4aa916a985b4f0623d89520b328ba783b709e64a))
+* enrich OpenFeature API-level context with namespace and language ([#674](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/674)) ([1dbb2b0](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/1dbb2b06dd2c746e40609b22322e7c8532f1c6cd))
+* extract python-hid service for fair canary comparison ([#677](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/677)) ([cc54ce9](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/cc54ce929c1d77392b32d425d2c37a37c59da08d))
+* Grafana dashboard for Python vs Rust backend comparison ([#634](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/634)) ([f8f2a26](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/f8f2a265905ecab70cee799dd3d2d289749b38f0))
+* improve Rust Docker build with dep caching ([#615](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/615)) ([#633](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/633)) ([fe9fd2a](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/fe9fd2a99fb4b73fb65d05bde1b71bd602f6a19d))
+* move discovery + adapter affinity into I/O layer ([#631](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/631)) ([2be917d](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/2be917d71811db092a63c12d980215ffe9943ea3))
+* OTLP log export pipeline with bizevents bridge ([#645](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/645)) ([32306bd](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/32306bdc6a070eeae0ea52e69717f86f5f98491f))
+* OTLP log export with trace correlation + Dynatrace scrape coverage ([#644](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/644)) ([e7295c0](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/e7295c06140629f1a81f7a9d1d5a29864bbcab16))
+* replace bizevents-bridge with dtbizevents exporter ([#658](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/658)) ([f73b4d8](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/f73b4d85fe42a00510084b4e86d3eb9b61400c95))
+* replace node-exporter with OTEL hostmetrics receiver ([#693](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/693)) ([1212a13](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/1212a13d676400be69135292a3bf2ae394fe0010))
+* rework Dynatrace dashboards with multi-column layouts ([#651](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/651)) ([41e66c3](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/41e66c378822c2d7cc401a2ab7f977a56fd787f4))
+* Rust HID pairing service ([#612](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/612)) ([#635](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/635)) ([977798d](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/977798db92a3254c1b9247658522f7b2884d7e62))
+* set host.name on all services for Dynatrace Smartscape ([#697](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/697)) ([27cb033](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/27cb033ad1edaef72a66b6f057daaa7b1202899b))
+* use Dynatrace OpenTelemetry Host Monitoring extension ([#701](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/701)) ([dfcf86f](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/dfcf86fb765acd365b0f2e72c6bc4c049a3b1098))
+* wire up Rust controller I/O backend for canary releases ([#649](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/649)) ([0b30bc0](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/0b30bc08ac76cdc4fc118edee44b08bfe951ba24))
+
+
+### Bug Fixes
+
+* add 'python' to pairing daemon known routing values ([#695](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/695)) ([0303ea0](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/0303ea01d1996722af34f80ea3b05f15b805de37))
+* add controller.discover span for HID trace propagation ([#706](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/706)) ([41251ac](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/41251acec36b26597b8eb05405ae8b3272b16b57))
+* add python-hid to Dynatrace dashboards and log filter ([#684](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/684)) ([743c268](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/743c2689bc26d5df9c7e2038b49459940199d073))
+* add resource/host processor to Dynatrace collector config ([#667](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/667)) ([8331a4e](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/8331a4e863f252477fb44a5d0de7a03b57153019))
+* add service.name to scraped metrics for Dynatrace visibility ([#661](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/661)) ([2743d2c](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/2743d2c15e5f0e37275c3f9102a0dfcd273af4ae))
+* add trace context propagation to HID adapter gRPC channels ([#704](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/704)) ([4cdfc2a](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/4cdfc2a549c6f4101df4731424de35ccb46dcf54))
+* align process_threads description across services ([#666](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/666)) ([a052292](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/a0522925805563fabd721e5a769e8ee18712c730))
+* apply ARM64 CFLAGS when compiling miniaudio ([#643](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/643)) ([815752f](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/815752f37201267e09c57b0b7ad14c22967a9373))
+* clear stale controller_backend_info metric on backend switch ([#685](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/685)) ([afa1c4f](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/afa1c4fff49af6e7cdc181237509500d52d39a63))
+* close Dynatrace observability gaps across all services ([#678](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/678)) ([2ba6fe7](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/2ba6fe7c2007fa6196ee873d7983f96f60c8bdb3))
+* Dynatrace backend-comparison dashboard DQL and layout ([#662](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/662)) ([44cd9c2](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/44cd9c26439f570e7f59f4113a88ab918485fb71))
+* Dynatrace dashboard DQL syntax errors ([#683](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/683)) ([41d48e6](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/41d48e6c80a3999a83010b3765c08f4032693ab2))
+* eliminate redundant trace spans by enriching server spans ([#676](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/676)) ([1a4ff26](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/1a4ff2618a8ae0c406874ea78636f122f44d7b7c))
+* increase flagd keepalive interval to prevent gRPC GOAWAY crash ([#691](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/691)) ([ff8728c](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/ff8728c46c5f8dfb93d1b8d15b2a4c3f9ea50bc1))
+* initialize TracerProvider in python-hid for Dynatrace visibility ([#692](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/692)) ([7c2f574](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/7c2f574b7e80d55f675bb644583803090db3fb10))
+* load both python and rust adapters by default ([#681](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/681)) ([5c7eb42](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/5c7eb42e20ac01cedcc0f970b45bb570194f6721))
+* Monaco DPS compatibility and custom Smartscape topology ([#699](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/699)) ([1fca422](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/1fca422d5d5960f3e6a62d2ed878cac04a5e7286))
+* mount host identity for OTEL resourcedetection in Dynatrace ([#696](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/696)) ([4413053](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/4413053c62bc097698425790bb4d16ce2e6a0482))
+* observability gaps + LED flash fix + player insights dashboard ([#665](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/665)) ([2c336d6](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/2c336d6eb0f0375b0e2450eb2cf9d7271b648f94))
+* prevent audio OOM from crashing games ([#708](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/708)) ([5b1d1d0](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/5b1d1d010ab213b7058ffc3efa082e1c56a5dad6))
+* propagate OTEL context across thread boundary for HID trace linkage ([#705](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/705)) ([8506402](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/850640254f66dd999815a952a082ffceb10b1909))
+* python-hid OTEL gaps — duplicate logs and missing Pyroscope ([#680](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/680)) ([1c06177](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/1c0617742544eb962b2b53ec7f60815f31824c8f))
+* remove invalid docker resource_attributes from resourcedetection ([#689](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/689)) ([f292463](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/f292463fc589593861b113b29c5770d3bbcb7371))
+* resolve host.name from OTEL_RESOURCE_ATTRIBUTES in all services ([#700](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/700)) ([75ce9ad](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/75ce9ad3f3dfdbf6d1f7692e9bbe8678d1278c5c))
+* **rust-hid:** reduce Discover log spam from verify_only polls ([#652](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/652)) ([884ea9b](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/884ea9b5045d9db04262519e2faa482880a54fa0))
+* set host.name on collector for otel:host entity naming ([#702](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/702)) ([92c3356](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/92c3356226b96938c9354fc2974d460b7e2a0326))
+* split infrastructure pipelines and add SDK attributes for Dynatrace ([#690](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/690)) ([1ce4d09](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/1ce4d09c18895bb2b627e8f1a692b8479964feb9))
+* split resourcedetection to prevent collector container.name leaking into services ([#703](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/703)) ([3d07d39](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/3d07d39a67788933c139965d0bc3ce0412861b0e))
+* strip HID report ID byte to restore face button detection ([#694](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/694)) ([3172b79](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/3172b795102772c3809f8acba3924eaf2f39aeb7))
+* throttle discovery check from 100Hz to 1Hz ([#672](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/672)) ([93b59e6](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/93b59e6d31971f926f229a2481be04d85c8aff29))
+* update Dynatrace Monaco config and rewrite dashboards in valid DQL ([#646](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/646)) ([a147016](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/a147016b12e378ea4074139141d45e33bbbe32e4))
+* use counter for process_cpu_seconds_total in Go/Rust ([#660](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/660)) ([617fd5d](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/617fd5db1870f6cc2bcea55611259f5248f520f2))
+
+
+### Refactoring
+
+* remove grafana-live-publisher and realtime-accel dashboard ([#654](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/654)) ([32b518e](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/32b518eb3d72e8a26a90f5c554e86c735e41c395))
+
+
+### Documentation
+
+* add development guidelines to CLAUDE.md ([#673](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/673)) ([23ac848](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/23ac8487c2af20d33825b08c5162b09f6ef3f520))
+* canary release runbook for Python-&gt;Rust migration ([#636](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/636)) ([5d5fdea](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/5d5fdeadbd78d35a58d6d0caa5a89cd7411edffb))
+* update documentation for python-hid service ([#687](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/687)) ([8627a67](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/8627a67edbe3f0d6f178b3017270e16b6a557cba))
+
 ## [0.6.1](https://github.com/WatchMeJoustMyFlags/JoustMania/compare/joustmania-v0.6.0...joustmania-v0.6.1) (2026-03-13)
 
 
