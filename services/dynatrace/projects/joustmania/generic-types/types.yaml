@@ -1,0 +1,17 @@
+configs:
+  - id: joustmania-host
+    type:
+      settings:
+        schema: builtin:monitoredentities.generic.type
+        scope: environment
+    config:
+      name: "joustmania:host"
+      template: joustmania-host.json
+  - id: joustmania-container
+    type:
+      settings:
+        schema: builtin:monitoredentities.generic.type
+        scope: environment
+    config:
+      name: "joustmania:container"
+      template: joustmania-container.json

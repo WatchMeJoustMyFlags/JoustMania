@@ -1,5 +1,5 @@
 {
-  "summary": "High CPU usage on {{dims:job}} (> 80%)",
+  "summary": "High CPU usage on {{ "{{dims:job}}" }} (> 80%)",
   "queryDefinition": {
     "type": "METRIC_KEY",
     "metricKey": "process_cpu_percent",
@@ -19,7 +19,7 @@
   },
   "eventTemplate": {
     "title": "High CPU Usage",
-    "description": "Process CPU usage on {{dims:job}} exceeds 80%. Sustained high CPU may degrade game performance and controller responsiveness.",
+    "description": "Process CPU usage on {{ "{{dims:job}}" }} exceeds 80%. Sustained high CPU may degrade game performance and controller responsiveness.",
     "eventType": "CUSTOM_ALERT",
     "davisMerge": true,
     "metadata": [

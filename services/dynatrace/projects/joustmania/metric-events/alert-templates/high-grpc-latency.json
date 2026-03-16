@@ -1,5 +1,5 @@
 {
-  "summary": "High gRPC request latency on {{dims:job}} (P90 > 100ms)",
+  "summary": "High gRPC request latency on {{ "{{dims:job}}" }} (P90 > 100ms)",
   "queryDefinition": {
     "type": "METRIC_KEY",
     "metricKey": "grpc_request_duration_seconds",
@@ -19,7 +19,7 @@
   },
   "eventTemplate": {
     "title": "High gRPC Latency",
-    "description": "gRPC request latency P90 on {{dims:job}} exceeds 100ms. Inter-service communication is degraded. Check service health and network.",
+    "description": "gRPC request latency P90 on {{ "{{dims:job}}" }} exceeds 100ms. Inter-service communication is degraded. Check service health and network.",
     "eventType": "CUSTOM_ALERT",
     "davisMerge": true,
     "metadata": [

@@ -1,5 +1,5 @@
 {
-  "summary": "Service {{dims:job}} is down",
+  "summary": "Service {{ "{{dims:job}}" }} is down",
   "queryDefinition": {
     "type": "METRIC_KEY",
     "metricKey": "up",
@@ -19,7 +19,7 @@
   },
   "eventTemplate": {
     "title": "Service Down",
-    "description": "Service {{dims:job}} is not responding. Check container status and service logs for errors.",
+    "description": "Service {{ "{{dims:job}}" }} is not responding. Check container status and service logs for errors.",
     "eventType": "ERROR_EVENT",
     "davisMerge": true,
     "metadata": [
