@@ -110,13 +110,13 @@ fn build_otel_resource() -> opentelemetry_sdk::Resource {
         std::env::var("DEPLOYMENT_ENVIRONMENT").unwrap_or_else(|_| "development".into());
 
     opentelemetry_sdk::Resource::new(vec![
+        KeyValue::new("container.name", service_name.clone()),
         KeyValue::new("service.name", service_name),
         KeyValue::new("service.namespace", namespace),
         KeyValue::new("service.version", version),
         KeyValue::new("service.instance.id", instance_id),
         KeyValue::new("deployment.environment", environment),
         KeyValue::new("host.name", hostname),
-        KeyValue::new("container.name", service_name.clone()),
         KeyValue::new("process.pid", std::process::id() as i64),
         KeyValue::new("process.executable.name", "rust-hid"),
         KeyValue::new("process.runtime.name", "rustc"),
