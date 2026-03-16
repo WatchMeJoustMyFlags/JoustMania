@@ -31,4 +31,4 @@ python_hid_active_streams = Gauge("python_hid_active_streams", "Number of active
 # Process metrics (standard OTEL process metrics)
 process_cpu_seconds_total = Counter("process_cpu_seconds_total", "Total user and system CPU time spent in seconds")
 process_resident_memory_bytes = Gauge("process_resident_memory_bytes", "Resident memory size in bytes")
-process_threads = Gauge("process_threads", "Number of OS threads in the process")
+process_threads = Gauge("process_threads", "Number of active threads")
