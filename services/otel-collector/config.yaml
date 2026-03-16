@@ -75,23 +75,44 @@ receivers:
         field: attributes.time
 
   # Host: OS-level metrics from the Raspberry Pi (replaces node-exporter)
+  # Split into three collection intervals matching the Dynatrace config
+  # so both configs use the same receiver names.
   # Requires hostfs volume mounts: /proc, /sys, / → /hostfs/
-  hostmetrics:
+  hostmetrics/1m:
     root_path: /hostfs/root
-    collection_interval: 30s
+    collection_interval: 1m
     scrapers:
       cpu:
       memory:
+      load:
+
+  hostmetrics/5m:
+    root_path: /hostfs/root
+    collection_interval: 5m
+    scrapers:
       disk:
       filesystem:
         exclude_mount_points:
           match_type: regexp
           mount_points: ['^/(sys|proc|dev|host|etc)($$|/)']
-      load:
       network:
         exclude:
           match_type: regexp
           interfaces: ['^(lo|veth.*|docker.*|br-.*)$$']
+      paging:
+
+  hostmetrics/1h:
+    root_path: /hostfs/root
+    collection_interval: 1h
+    scrapers:
+      cpu:
+        metrics:
+          system.cpu.logical.count:
+            enabled: true
+          system.cpu.physical.count:
+            enabled: true
+          system.cpu.time:
+            enabled: false
 
   # Container metrics — per-container CPU, memory, network, block I/O
   # Requires Docker socket mount: /var/run/docker.sock
@@ -271,7 +292,7 @@ service:
 
     # Host metrics — OTEL hostmetrics receiver (replaces node-exporter)
     metrics/host:
-      receivers: [hostmetrics]
+      receivers: [hostmetrics/1m, hostmetrics/5m, hostmetrics/1h]
       processors: [memory_limiter, resource/host, batch/fast]
       exporters: [prometheusremotewrite]
 
