@@ -40,17 +40,20 @@ def get_otel_resource() -> Resource:
     - service.instance.id: Per-instance metrics, process group instance detection
     - deployment.environment: Environment filtering, release comparison
     - host.name: Host entity linking in Smartscape topology
+    - container.name: Container entity linking (from OTEL_SERVICE_NAME)
     - process.*: Process group detection, runtime vulnerability matching
     - telemetry.sdk.*: SDK identification and language detection
     """
+    service_name = os.getenv("OTEL_SERVICE_NAME", "unknown")
     return Resource(
         attributes={
-            "service.name": os.getenv("OTEL_SERVICE_NAME", "unknown"),
+            "service.name": service_name,
             "service.namespace": os.getenv("OTEL_SERVICE_NAMESPACE", "joustmania"),
             "service.version": os.getenv("SERVICE_VERSION", "0.0.0-dev"),
             "service.instance.id": os.getenv("HOSTNAME", platform.node()),
             "deployment.environment": os.getenv("DEPLOYMENT_ENVIRONMENT", "development"),
             "host.name": _get_host_name(),
+            "container.name": service_name,
             "process.pid": os.getpid(),
             "process.executable.name": os.path.basename(sys.executable),
             "process.runtime.name": platform.python_implementation().lower(),

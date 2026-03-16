@@ -110,6 +110,7 @@ fn build_otel_resource() -> opentelemetry_sdk::Resource {
         std::env::var("DEPLOYMENT_ENVIRONMENT").unwrap_or_else(|_| "development".into());
 
     opentelemetry_sdk::Resource::new(vec![
+        KeyValue::new("container.name", service_name.clone()),
         KeyValue::new("service.name", service_name),
         KeyValue::new("service.namespace", namespace),
         KeyValue::new("service.version", version),
