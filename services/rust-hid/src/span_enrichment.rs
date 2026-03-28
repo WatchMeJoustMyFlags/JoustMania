@@ -6,7 +6,7 @@
 
 use open_feature::{EvaluationContext, OpenFeature};
 use std::sync::atomic::{AtomicBool, Ordering};
-use tracing::Span;
+use std::sync::OnceLock;
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::Layer;
 
@@ -20,6 +20,11 @@ const SET_SERVICE_IDENTITY: u8 = 1;
 const SET_FLAG_VALUES: u8 = 2;
 const SET_RUNTIME: u8 = 4;
 const SET_SYSTEM: u8 = 8;
+
+// Cached values for hot-path span enrichment (immutable after first read)
+static HOSTNAME: OnceLock<String> = OnceLock::new();
+static SERVICE_NAME: OnceLock<String> = OnceLock::new();
+static SERVICE_NS: OnceLock<String> = OnceLock::new();
 
 /// A tracing Layer that adds enrichment attributes to spans.
 pub struct FlagdSpanEnrichmentLayer;
@@ -57,15 +62,21 @@ where
                 let mut attrs = Vec::new();
 
                 if sets & SET_SERVICE_IDENTITY != 0 {
+                    let svc = SERVICE_NAME.get_or_init(|| {
+                        std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "unknown".into())
+                    });
+                    let ns = SERVICE_NS.get_or_init(|| {
+                        std::env::var("OTEL_SERVICE_NAMESPACE").unwrap_or_else(|_| "unknown".into())
+                    });
                     attrs.push(opentelemetry::KeyValue::new("demo.enriched", true));
                     attrs.push(opentelemetry::KeyValue::new("demo.language", "rust"));
                     attrs.push(opentelemetry::KeyValue::new(
                         "demo.service",
-                        std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "unknown".into()),
+                        svc.clone(),
                     ));
                     attrs.push(opentelemetry::KeyValue::new(
                         "demo.namespace",
-                        std::env::var("OTEL_SERVICE_NAMESPACE").unwrap_or_else(|_| "unknown".into()),
+                        ns.clone(),
                     ));
                 }
 
@@ -81,11 +92,14 @@ where
                 }
 
                 if sets & SET_SYSTEM != 0 {
-                    attrs.push(opentelemetry::KeyValue::new(
-                        "demo.system.hostname",
+                    let hostname = HOSTNAME.get_or_init(|| {
                         gethostname::gethostname()
                             .into_string()
-                            .unwrap_or_else(|_| "unknown".into()),
+                            .unwrap_or_else(|_| "unknown".into())
+                    });
+                    attrs.push(opentelemetry::KeyValue::new(
+                        "demo.system.hostname",
+                        hostname.clone(),
                     ));
                     attrs.push(opentelemetry::KeyValue::new(
                         "demo.system.cpu_count",

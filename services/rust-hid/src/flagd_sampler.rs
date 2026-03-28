@@ -10,7 +10,8 @@ use opentelemetry::KeyValue;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Shared cached sampling rate between the reader and background updater.
-static CACHED_RATE: AtomicU64 = AtomicU64::new(u64::MAX); // sentinel for "not set"
+/// Initialized to f64::to_bits(1.0) so we sample all spans until the updater sets the real value.
+static CACHED_RATE: AtomicU64 = AtomicU64::new(0x3FF0_0000_0000_0000);
 
 /// Sampler that reads trace_sampling_rate from flagd.
 #[derive(Debug, Clone, Default)]
@@ -69,16 +70,10 @@ impl ShouldSample for FlagdSampler {
     }
 }
 
-/// Synchronous wrapper to get sampling rate from flagd.
-/// Uses tokio::Runtime::block_on since ShouldSample is sync.
+/// Return the cached sampling rate.
+/// Always valid — initialized to 1.0, updated by background task.
 fn get_sampling_rate_sync() -> f64 {
-    let cached = CACHED_RATE.load(Ordering::Relaxed);
-    if cached != u64::MAX {
-        return f64::from_bits(cached);
-    }
-
-    // Default to 1.0 (sample all) — the async updater will set the real value
-    1.0
+    f64::from_bits(CACHED_RATE.load(Ordering::Relaxed))
 }
 
 /// Spawn a background task that periodically updates the cached sampling rate.

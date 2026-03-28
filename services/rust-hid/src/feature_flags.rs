@@ -89,14 +89,3 @@ pub async fn grpc_rpc_spans_enabled() -> bool {
         .await
         .unwrap_or(false)
 }
-
-/// Check if `verbose_logging` flag is enabled.
-pub async fn is_verbose_logging() -> bool {
-    let of = OpenFeature::singleton().await;
-    let client = of.create_client();
-    let ctx = build_eval_context();
-    client
-        .get_bool_value("verbose_logging", Some(&ctx), None)
-        .await
-        .unwrap_or(false)
-}
