@@ -51,8 +51,18 @@ func RenderCollectorConfig(flags FlagValues) ([]byte, error) {
 		sevNum = severityToNumber["INFO"]
 	}
 
+	// Clamp rate to [0, 1.0] — values outside this range from flagd would
+	// produce invalid sampling percentages (negative or >100).
+	rate := flags.TailSamplingRate
+	if rate < 0 {
+		rate = 0
+	}
+	if rate > 1.0 {
+		rate = 1.0
+	}
+
 	data := templateData{
-		SamplingPercentage: flags.TailSamplingRate * 100,
+		SamplingPercentage: rate * 100,
 		SeverityNumber:     sevNum,
 	}
 

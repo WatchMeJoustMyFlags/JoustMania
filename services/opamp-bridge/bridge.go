@@ -165,6 +165,10 @@ func (b *Bridge) pollLoop(ctx context.Context) {
 func (b *Bridge) readFlags(ctx context.Context) FlagValues {
 	evalCtx := openfeature.NewEvaluationContext("", map[string]interface{}{})
 
+	// Each flag read is independent; if one fails, the SDK returns the default
+	// value (1.0 for sampling, "INFO" for severity), which are safe defaults.
+	// This means partial failures produce a mix of live and default values,
+	// which is intentional — we prefer safe defaults over rejecting all flags.
 	samplingRate, err := b.client.FloatValue(ctx, "collector_tail_sampling_rate", 1.0, evalCtx)
 	if err != nil {
 		log.Printf("flagd: failed to read collector_tail_sampling_rate: %v", err)

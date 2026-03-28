@@ -31,7 +31,7 @@ func main() {
 		flagd.WithPort(flagdPort),
 	)
 	if err := openfeature.SetProviderAndWait(provider); err != nil {
-		log.Fatalf("failed to set OpenFeature provider: %v", err)
+		log.Printf("WARNING: failed to connect to flagd provider: %v — continuing with defaults", err)
 	}
 	defer openfeature.Shutdown()
 
