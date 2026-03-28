@@ -21,8 +21,9 @@ func initFlagd() {
 
 	err := openfeature.SetProviderAndWait(provider)
 	if err != nil {
-		slog.Warn("Failed to initialize flagd provider — flags will use defaults", "error", err)
-		return
+		// Log warning but continue — the provider reconnects in the background,
+		// and polling loops will log when flag reads recover.
+		slog.Warn("Failed to initialize flagd provider — flags will use defaults until reconnect", "error", err)
 	}
 
 	// Set API-level evaluation context (available to all flag evaluations)

@@ -27,6 +27,7 @@ type SpanEnrichmentProcessor struct {
 	enabled atomic.Bool
 	sets    atomic.Uint32
 	client  openfeature.IClient
+	failing atomic.Bool
 }
 
 const (
@@ -113,7 +114,12 @@ func (p *SpanEnrichmentProcessor) updateConfig(ctx context.Context) {
 	}, openfeature.EvaluationContext{})
 	if err != nil {
 		slog.Debug("flagd: failed to read span_enrichment_config", "error", err)
+		p.failing.Store(true)
 		return
+	}
+	if p.failing.Load() {
+		slog.Info("flagd: span_enrichment_config recovered")
+		p.failing.Store(false)
 	}
 
 	// Parse the value
