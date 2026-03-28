@@ -62,7 +62,11 @@ func (b *Bridge) Start(ctx context.Context) error {
 								b.mu.Unlock()
 
 								// Send current config to newly connected agent.
-								cfg := RenderCollectorConfig(current)
+								cfg, err := RenderCollectorConfig(current)
+								if err != nil {
+									log.Printf("failed to render config for new agent: %v", err)
+									return
+								}
 								if err := conn.Send(connCtx, &protobufs.ServerToAgent{
 									RemoteConfig: &protobufs.AgentRemoteConfig{
 										Config: &protobufs.AgentConfigMap{
@@ -125,7 +129,9 @@ func (b *Bridge) Stop() {
 		b.cancel()
 	}
 	if b.srv != nil {
-		b.srv.Stop(context.Background())
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		b.srv.Stop(ctx)
 	}
 }
 
@@ -159,8 +165,14 @@ func (b *Bridge) pollLoop(ctx context.Context) {
 func (b *Bridge) readFlags(ctx context.Context) FlagValues {
 	evalCtx := openfeature.NewEvaluationContext("", map[string]interface{}{})
 
-	samplingRate, _ := b.client.FloatValue(ctx, "collector_tail_sampling_rate", 1.0, evalCtx)
-	logSeverity, _ := b.client.StringValue(ctx, "collector_log_filter_severity", "INFO", evalCtx)
+	samplingRate, err := b.client.FloatValue(ctx, "collector_tail_sampling_rate", 1.0, evalCtx)
+	if err != nil {
+		log.Printf("flagd: failed to read collector_tail_sampling_rate: %v", err)
+	}
+	logSeverity, err2 := b.client.StringValue(ctx, "collector_log_filter_severity", "INFO", evalCtx)
+	if err2 != nil {
+		log.Printf("flagd: failed to read collector_log_filter_severity: %v", err2)
+	}
 
 	return FlagValues{
 		TailSamplingRate:  samplingRate,
@@ -169,11 +181,19 @@ func (b *Bridge) readFlags(ctx context.Context) FlagValues {
 }
 
 func (b *Bridge) pushConfig(ctx context.Context) {
+	// Snapshot current values and connections in a single lock acquisition.
 	b.mu.Lock()
 	current := b.current
+	conns := make([]types.Connection, len(b.conns))
+	copy(conns, b.conns)
 	b.mu.Unlock()
 
-	cfg := RenderCollectorConfig(current)
+	cfg, err := RenderCollectorConfig(current)
+	if err != nil {
+		log.Printf("failed to render collector config: %v", err)
+		return
+	}
+
 	msg := &protobufs.ServerToAgent{
 		RemoteConfig: &protobufs.AgentRemoteConfig{
 			Config: &protobufs.AgentConfigMap{
@@ -186,11 +206,6 @@ func (b *Bridge) pushConfig(ctx context.Context) {
 			},
 		},
 	}
-
-	b.mu.Lock()
-	conns := make([]types.Connection, len(b.conns))
-	copy(conns, b.conns)
-	b.mu.Unlock()
 
 	for _, conn := range conns {
 		if err := conn.Send(ctx, msg); err != nil {

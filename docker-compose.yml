@@ -192,7 +192,7 @@ services:
       flagd:
         condition: service_started
       otel-collector:
-        condition: service_healthy
+        condition: service_started
     networks:
       - joustmania
     restart: unless-stopped

@@ -48,14 +48,15 @@ func main() {
 	}
 
 	// Health endpoint for Docker healthcheck.
+	healthMux := http.NewServeMux()
+	healthMux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	healthSrv := &http.Server{Addr: ":8080", Handler: healthMux}
 	go func() {
-		mux := http.NewServeMux()
-		mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("ok"))
-		})
 		log.Printf("health endpoint on :8080")
-		if err := http.ListenAndServe(":8080", mux); err != nil {
+		if err := healthSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("health server error: %v", err)
 		}
 	}()
@@ -71,6 +72,12 @@ func main() {
 	log.Println("shutting down opamp-bridge")
 	cancel()
 	bridge.Stop()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	if err := healthSrv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("health server shutdown error: %v", err)
+	}
 }
 
 func getEnv(key, fallback string) string {

@@ -45,7 +45,7 @@ type templateData struct {
 }
 
 // RenderCollectorConfig produces YAML config bytes from current flag values.
-func RenderCollectorConfig(flags FlagValues) []byte {
+func RenderCollectorConfig(flags FlagValues) ([]byte, error) {
 	sevNum, ok := severityToNumber[strings.ToUpper(flags.LogFilterSeverity)]
 	if !ok {
 		sevNum = severityToNumber["INFO"]
@@ -58,8 +58,8 @@ func RenderCollectorConfig(flags FlagValues) []byte {
 
 	var buf bytes.Buffer
 	if err := parsedTemplate.Execute(&buf, data); err != nil {
-		panic(fmt.Sprintf("failed to execute collector config template: %v", err))
+		return nil, fmt.Errorf("failed to execute collector config template: %w", err)
 	}
 
-	return buf.Bytes()
+	return buf.Bytes(), nil
 }
