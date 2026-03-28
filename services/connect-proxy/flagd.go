@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"log/slog"
 	"os"
 
@@ -14,10 +13,14 @@ func initFlagd() {
 	host := getEnv("FLAGD_HOST", "flagd")
 	port := 8013
 
-	provider := flagd.NewProvider(
+	provider, providerErr := flagd.NewProvider(
 		flagd.WithHost(host),
 		flagd.WithPort(uint16(port)),
 	)
+	if providerErr != nil {
+		slog.Warn("Failed to create flagd provider — flags will use defaults", "error", providerErr)
+		return
+	}
 
 	err := openfeature.SetProviderAndWait(provider)
 	if err != nil {
