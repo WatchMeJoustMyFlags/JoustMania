@@ -8,18 +8,29 @@ PATCH_TARGET = "lib.feature_flags.get_flag_client"
 
 
 def _make_log_record(severity_number_value: int) -> MagicMock:
-    """Create a mock ReadableLogRecord with the given severity number."""
-    record = MagicMock()
+    """Create a mock ReadWriteLogRecord (OTEL SDK 1.39+) with the given severity number.
+
+    In OTEL SDK 1.39+, ReadWriteLogRecord wraps a LogRecord via the
+    ``log_record`` attribute.  severity_number lives on the inner object.
+    """
     severity = MagicMock()
     severity.value = severity_number_value
-    record.severity_number = severity
+
+    inner = MagicMock()
+    inner.severity_number = severity
+
+    record = MagicMock()
+    record.log_record = inner
     return record
 
 
 def _make_log_record_no_severity() -> MagicMock:
-    """Create a mock ReadableLogRecord with severity_number=None."""
+    """Create a mock ReadWriteLogRecord with severity_number=None on the inner log_record."""
+    inner = MagicMock()
+    inner.severity_number = None
+
     record = MagicMock()
-    record.severity_number = None
+    record.log_record = inner
     return record
 
 

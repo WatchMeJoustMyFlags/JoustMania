@@ -29,7 +29,10 @@ class FlagdLogLevelFilter(LogRecordProcessor):
 
     def on_emit(self, log_data: ReadableLogRecord) -> None:
         if not self._is_verbose():
-            severity = log_data.severity_number
+            # OTEL SDK 1.39+ wraps log records in ReadWriteLogRecord;
+            # severity_number lives on the inner log_record object.
+            inner = getattr(log_data, "log_record", log_data)
+            severity = getattr(inner, "severity_number", None)
             # OTel severity: TRACE=1-4, DEBUG=5-8, INFO=9-12
             if severity is not None and severity.value < 9:
                 return  # Drop DEBUG/TRACE when not verbose
