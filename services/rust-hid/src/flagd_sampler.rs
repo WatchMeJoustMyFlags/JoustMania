@@ -4,8 +4,8 @@
 //! on every sampling decision. Falls back to 1.0 (sample all) if
 //! flagd is unavailable.
 
-use opentelemetry::trace::{Link, SpanKind, TraceId, TraceState};
-use opentelemetry_sdk::trace::{ShouldSample, SamplingDecision, SamplingResult};
+use opentelemetry::trace::{Link, SamplingDecision, SamplingResult, SpanKind, TraceId, TraceState};
+use opentelemetry_sdk::trace::ShouldSample;
 use opentelemetry::KeyValue;
 use std::sync::atomic::{AtomicU64, Ordering};
 

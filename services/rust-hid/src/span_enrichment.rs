@@ -137,11 +137,16 @@ async fn update_enrichment_config() {
     let client = of.create_client();
     let ctx = EvaluationContext::default();
 
-    // get_object_value returns a serde_json::Value
-    let config = client
-        .get_struct_value::<serde_json::Value>("span_enrichment_config", Some(&ctx), None)
+    // Fetch the config as a string and parse as JSON.
+    // get_struct_value requires TryFrom<StructValue> which serde_json::Value doesn't implement,
+    // so we use get_string_value and parse manually.
+    let config: serde_json::Value = match client
+        .get_string_value("span_enrichment_config", Some(&ctx), None)
         .await
-        .unwrap_or_default();
+    {
+        Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+        Err(_) => serde_json::Value::default(),
+    };
 
     let enabled = config
         .get("enabled")

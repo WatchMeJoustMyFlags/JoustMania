@@ -56,22 +56,19 @@ fn build_eval_context() -> EvaluationContext {
     ctx.add_custom_field(
         "service_name",
         std::env::var("OTEL_SERVICE_NAME")
-            .unwrap_or_else(|_| "rust-hid".into())
-            .into(),
+            .unwrap_or_else(|_| "rust-hid".into()),
     );
-    ctx.add_custom_field("language", "rust".into());
+    ctx.add_custom_field("language", String::from("rust"));
     ctx.add_custom_field(
         "service_namespace",
         std::env::var("OTEL_SERVICE_NAMESPACE")
-            .unwrap_or_else(|_| "infrastructure".into())
-            .into(),
+            .unwrap_or_else(|_| "infrastructure".into()),
     );
     ctx.add_custom_field(
         "hostname",
         gethostname::gethostname()
             .into_string()
-            .unwrap_or_else(|_| "unknown".into())
-            .into(),
+            .unwrap_or_else(|_| "unknown".into()),
     );
     ctx
 }
