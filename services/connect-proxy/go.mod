@@ -1,6 +1,6 @@
 module github.com/joustmania/connect-proxy
 
-go 1.22
+go 1.25
 
 require (
 	connectrpc.com/connect v1.17.0
