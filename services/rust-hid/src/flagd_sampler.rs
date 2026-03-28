@@ -7,10 +7,13 @@
 use opentelemetry::trace::{Link, SpanKind, TraceId, TraceState};
 use opentelemetry_sdk::trace::{ShouldSample, SamplingDecision, SamplingResult};
 use opentelemetry::KeyValue;
-use std::borrow::Cow;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Shared cached sampling rate between the reader and background updater.
+static CACHED_RATE: AtomicU64 = AtomicU64::new(u64::MAX); // sentinel for "not set"
 
 /// Sampler that reads trace_sampling_rate from flagd.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct FlagdSampler;
 
 impl FlagdSampler {
@@ -69,12 +72,6 @@ impl ShouldSample for FlagdSampler {
 /// Synchronous wrapper to get sampling rate from flagd.
 /// Uses tokio::Runtime::block_on since ShouldSample is sync.
 fn get_sampling_rate_sync() -> f64 {
-    // Try to get the current tokio handle — if we're in an async context
-    // we can't block_on. Use a cached value or default instead.
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static CACHED_RATE: AtomicU64 = AtomicU64::new(u64::MAX); // sentinel for "not set"
-
     let cached = CACHED_RATE.load(Ordering::Relaxed);
     if cached != u64::MAX {
         return f64::from_bits(cached);
@@ -87,11 +84,6 @@ fn get_sampling_rate_sync() -> f64 {
 /// Spawn a background task that periodically updates the cached sampling rate.
 /// Call this once during initialization.
 pub fn spawn_rate_updater() {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    // Share the same static as get_sampling_rate_sync
-    static CACHED_RATE: AtomicU64 = AtomicU64::new(u64::MAX);
-
     tokio::spawn(async move {
         loop {
             let rate = get_sampling_rate_async().await;
