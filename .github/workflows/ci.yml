@@ -9,8 +9,6 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  # Repository name in lowercase for GHCR
-  IMAGE_PREFIX: ghcr.io/watchmejoustmyflags/joustmania
   # Main branch - used for :latest Docker tag
   MAIN_BRANCH: main
 
@@ -241,6 +239,8 @@ jobs:
     name: SonarCloud Analysis
     runs-on: ubuntu-latest
     needs: [service-checks, lib-tests]
+    # Skip on forks that don't have SONAR_TOKEN configured
+    if: ${{ github.repository == 'WatchMeJoustMyFlags/JoustMania' || vars.ENABLE_SONARCLOUD == 'true' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -328,6 +328,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set image prefix
+        run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
+
       - name: Set up QEMU
         if: needs.detect-builder-changes.outputs.builder == 'true'
         uses: docker/setup-qemu-action@v3
@@ -361,10 +364,24 @@ jobs:
       # Re-tag stable image when unchanged (much faster)
       - name: Reuse stable image (unchanged)
         if: needs.detect-builder-changes.outputs.builder != 'true'
+        id: reuse
+        continue-on-error: true
         run: |
           docker buildx imagetools create \
             --tag ${{ env.IMAGE_PREFIX }}/builder:${{ github.sha }} \
             ${{ env.IMAGE_PREFIX }}/builder:main
+
+      # Fallback: full build if reuse failed (e.g., first run on a fork)
+      - name: Build builder (fallback)
+        if: needs.detect-builder-changes.outputs.builder != 'true' && steps.reuse.outcome != 'success'
+        uses: docker/build-push-action@v5
+        with:
+          context: images/builder
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE_PREFIX }}/builder:${{ github.sha }}
+          cache-from: type=gha,scope=builder
+          cache-to: type=gha,mode=max,scope=builder
 
   docker-build:
     name: Build ${{ matrix.service }}
@@ -384,6 +401,9 @@ jobs:
           - pairing_daemon
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set image prefix
+        run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -454,6 +474,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set image prefix
+        run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -488,6 +511,9 @@ jobs:
     needs: [build-builder]
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set image prefix
+        run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
 
       - uses: dorny/paths-filter@v3
         id: changes
