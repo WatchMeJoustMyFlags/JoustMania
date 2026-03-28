@@ -5,6 +5,8 @@ Reads the ``span_enrichment_config`` structured flag from flagd and adds
 diagnostic attributes to every span. The flag controls *which* attribute
 sets are added, enabling progressive enrichment during live demos.
 
+Flag values are cached for 2 seconds to avoid per-span flagd calls.
+
 Attribute sets (same across Python, Rust, and Go):
   service_identity  — demo.enriched, demo.language, demo.service, demo.namespace
   flag_values       — demo.flag.trace_sampling_rate, demo.flag.verbose_logging, …
@@ -17,6 +19,7 @@ import os
 import platform
 import sys
 import threading
+import time
 from collections.abc import Callable
 
 from opentelemetry.context import Context
@@ -24,9 +27,17 @@ from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 
 logger = logging.getLogger(__name__)
 
+_CACHE_TTL = 2.0  # seconds
+
+_DEFAULT_CONFIG: dict = {"enabled": False, "attribute_sets": []}
+
 
 class FlagdSpanEnrichmentProcessor(SpanProcessor):
     """Adds diagnostic attributes to spans based on flagd config."""
+
+    def __init__(self) -> None:
+        self._cached_config: dict = dict(_DEFAULT_CONFIG)
+        self._last_fetch: float = 0.0
 
     def on_start(self, span: Span, parent_context: Context | None = None) -> None:
         config = self._get_config()
@@ -51,20 +62,24 @@ class FlagdSpanEnrichmentProcessor(SpanProcessor):
 
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _get_config() -> dict:
+    def _get_config(self) -> dict:
+        now = time.monotonic()
+        if now - self._last_fetch < _CACHE_TTL:
+            return self._cached_config
+
         try:
             from lib.feature_flags import get_flag_client
 
             client = get_flag_client("performance")
             result = client.get_object_value(
                 "span_enrichment_config",
-                {"enabled": False, "attribute_sets": []},
+                dict(_DEFAULT_CONFIG),
             )
-            return result if isinstance(result, dict) else {}
+            self._cached_config = result if isinstance(result, dict) else dict(_DEFAULT_CONFIG)
+            self._last_fetch = now
         except Exception:
-            logger.debug("Failed to read span_enrichment_config from flagd", exc_info=True)
-            return {"enabled": False, "attribute_sets": []}
+            logger.debug("Failed to read span_enrichment_config from flagd, using cached value", exc_info=True)
+        return self._cached_config
 
 
 # ── Attribute set builders ───────────────────────────────────────────

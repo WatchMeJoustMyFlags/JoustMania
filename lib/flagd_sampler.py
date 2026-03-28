@@ -2,12 +2,12 @@
 FlagdSampler — Dynamic trace sampling via OpenFeature/flagd.
 
 Reads the ``trace_sampling_rate`` flag (float 0.0–1.0) from the flagd
-``performance`` domain on every sampling decision. Because the flagd
-in-process provider syncs flag state to local memory, each evaluation
-is a cheap local read — safe even at 1 000 Hz.
+``performance`` domain. Flag values are cached for 2 seconds to avoid
+per-decision flagd calls at high sampling rates (up to 1 000 Hz).
 """
 
 import logging
+import time
 
 from opentelemetry.context import Context
 from opentelemetry.sdk.trace.sampling import Decision, Sampler, SamplingResult
@@ -16,9 +16,15 @@ from opentelemetry.util.types import Attributes
 
 logger = logging.getLogger(__name__)
 
+_CACHE_TTL = 2.0  # seconds
+
 
 class FlagdSampler(Sampler):
     """Sampler that reads trace_sampling_rate from flagd."""
+
+    def __init__(self) -> None:
+        self._cached_rate: float = 1.0
+        self._last_fetch: float = 0.0
 
     def should_sample(  # noqa: ARG002
         self,
@@ -41,8 +47,11 @@ class FlagdSampler(Sampler):
 
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _get_rate(attributes: Attributes | None) -> float:
+    def _get_rate(self, attributes: Attributes | None) -> float:
+        now = time.monotonic()
+        if now - self._last_fetch < _CACHE_TTL:
+            return self._cached_rate
+
         try:
             from lib.feature_flags import get_flag_client
 
@@ -57,7 +66,8 @@ class FlagdSampler(Sampler):
 
                     eval_ctx = EvaluationContext(attributes={"controller_serial": str(serial)})
 
-            return client.get_float_value("trace_sampling_rate", 1.0, eval_ctx)
+            self._cached_rate = client.get_float_value("trace_sampling_rate", 1.0, eval_ctx)
+            self._last_fetch = now
         except Exception:
-            logger.debug("Failed to read trace_sampling_rate from flagd, defaulting to 1.0", exc_info=True)
-            return 1.0
+            logger.debug("Failed to read trace_sampling_rate from flagd, using cached value", exc_info=True)
+        return self._cached_rate
