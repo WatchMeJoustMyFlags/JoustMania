@@ -12,6 +12,7 @@
       }
     ]
   },
+  "description": "Real-time monitoring of OTel pipeline control: trace sampling, log verbosity, span enrichment, and collector throughput.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -100,7 +101,7 @@
       "type": "timeseries",
       "targets": [
         {
-          "expr": "sum by(level) (rate({job=~\".+\"} |= \"\" [$__interval]))",
+          "expr": "sum by(level) (rate({job=~\".+\"} [$__interval]))",
           "legendFormat": "{{level}}",
           "refId": "A",
           "datasource": { "type": "loki", "uid": "loki" }
@@ -130,7 +131,7 @@
       "type": "stat",
       "targets": [
         {
-          "expr": "sum(rate({level=\"debug\"} |= \"\" [$__interval])) / sum(rate({job=~\".+\"} |= \"\" [$__interval])) * 100",
+          "expr": "(sum(rate({level=\"debug\"} [$__interval])) / sum(rate({job=~\".+\"} [$__interval])) * 100) or vector(0)",
           "legendFormat": "Debug %",
           "refId": "A",
           "datasource": { "type": "loki", "uid": "loki" }
@@ -225,7 +226,7 @@
       "type": "stat",
       "targets": [
         {
-          "expr": "count({__name__=~\".+\"})",
+          "expr": "sum(scrape_series_added)",
           "legendFormat": "Series",
           "refId": "A"
         }
