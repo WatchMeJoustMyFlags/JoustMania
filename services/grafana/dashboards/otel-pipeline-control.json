@@ -101,7 +101,7 @@
       "type": "timeseries",
       "targets": [
         {
-          "expr": "sum by(level) (rate({job=~\".+\"} [$__interval]))",
+          "expr": "sum by(level) (rate({job=~\".+\"} | logfmt | level != \"\" [1m]))",
           "legendFormat": "{{level}}",
           "refId": "A",
           "datasource": { "type": "loki", "uid": "loki" }
@@ -114,6 +114,7 @@
         "defaults": {
           "color": { "mode": "thresholds" },
           "thresholds": {
+            "mode": "absolute",
             "steps": [
               { "color": "green", "value": null },
               { "color": "yellow", "value": 10 },
@@ -131,7 +132,7 @@
       "type": "stat",
       "targets": [
         {
-          "expr": "(sum(rate({level=\"debug\"} [$__interval])) / sum(rate({job=~\".+\"} [$__interval])) * 100) or vector(0)",
+          "expr": "(sum(rate({job=~\".+\"} | logfmt | level=\"debug\" [1m])) / sum(rate({job=~\".+\"} | logfmt | level != \"\" [1m])) * 100) or vector(0)",
           "legendFormat": "Debug %",
           "refId": "A",
           "datasource": { "type": "loki", "uid": "loki" }
@@ -151,6 +152,7 @@
         "defaults": {
           "color": { "mode": "thresholds" },
           "thresholds": {
+            "mode": "absolute",
             "steps": [
               { "color": "gray", "value": null },
               { "color": "green", "value": 1 }
@@ -209,6 +211,7 @@
         "defaults": {
           "color": { "mode": "thresholds" },
           "thresholds": {
+            "mode": "absolute",
             "steps": [
               { "color": "green", "value": null },
               { "color": "yellow", "value": 500 },
@@ -226,7 +229,7 @@
       "type": "stat",
       "targets": [
         {
-          "expr": "sum(scrape_series_added)",
+          "expr": "sum(prometheus_tsdb_head_series)",
           "legendFormat": "Series",
           "refId": "A"
         }
