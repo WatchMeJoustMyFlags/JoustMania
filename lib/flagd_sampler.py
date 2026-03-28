@@ -33,7 +33,7 @@ class FlagdSampler(Sampler):
         # Use trace_id for deterministic sampling (consistent across parent/child spans)
         hash_value = (trace_id & 0xFFFFFFFFFFFFFFFF) / (1 << 64)
         if rate >= 1.0 or hash_value < rate:
-            return SamplingResult(Decision.RECORD_AND_SAMPLE, attributes or {})
+            return SamplingResult(Decision.RECORD_AND_SAMPLE)
         return SamplingResult(Decision.DROP)
 
     def get_description(self) -> str:

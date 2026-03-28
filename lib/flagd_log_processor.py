@@ -8,7 +8,6 @@ INFO severity when the ``verbose_logging`` flag is *off*. When toggled
 
 import logging
 
-from opentelemetry.context import Context
 from opentelemetry.sdk._logs import LogRecordProcessor, ReadableLogRecord
 
 logger = logging.getLogger(__name__)
@@ -20,13 +19,13 @@ class FlagdLogLevelFilter(LogRecordProcessor):
     def __init__(self, delegate: LogRecordProcessor) -> None:
         self._delegate = delegate
 
-    def on_emit(self, log_data: ReadableLogRecord, context: Context | None = None) -> None:
+    def on_emit(self, log_data: ReadableLogRecord) -> None:
         if not self._is_verbose():
             severity = log_data.severity_number
             # OTel severity: TRACE=1-4, DEBUG=5-8, INFO=9-12
             if severity is not None and severity.value < 9:
                 return  # Drop DEBUG/TRACE when not verbose
-        self._delegate.on_emit(log_data, context)
+        self._delegate.on_emit(log_data)
 
     def shutdown(self) -> None:
         self._delegate.shutdown()

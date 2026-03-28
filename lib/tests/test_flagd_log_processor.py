@@ -16,6 +16,13 @@ def _make_log_record(severity_number_value: int) -> MagicMock:
     return record
 
 
+def _make_log_record_no_severity() -> MagicMock:
+    """Create a mock ReadableLogRecord with severity_number=None."""
+    record = MagicMock()
+    record.severity_number = None
+    return record
+
+
 class TestFlagdLogLevelFilter:
     def setup_method(self):
         self.delegate = MagicMock()
@@ -56,6 +63,17 @@ class TestFlagdLogLevelFilter:
         record = _make_log_record(5)  # DEBUG
         self.filter.on_emit(record)
         self.delegate.on_emit.assert_not_called()
+
+    @patch(PATCH_TARGET)
+    def test_passes_through_when_severity_number_is_none(self, mock_get_client):
+        """Records with no severity_number set should always pass through."""
+        mock_client = MagicMock()
+        mock_client.get_boolean_value.return_value = False
+        mock_get_client.return_value = mock_client
+
+        record = _make_log_record_no_severity()
+        self.filter.on_emit(record)
+        self.delegate.on_emit.assert_called_once()
 
     def test_delegates_shutdown(self):
         self.filter.shutdown()
