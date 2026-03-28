@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -73,9 +74,26 @@ func obsSamplingHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "variant required: off, low, half, full", http.StatusBadRequest)
 		return
 	}
+	if err := validateVariant(variant); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	service := r.URL.Query().Get("service")
 	serial := r.URL.Query().Get("serial")
+
+	if service != "" {
+		if err := validateContextValue(service); err != nil {
+			http.Error(w, "invalid service: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	if serial != "" {
+		if err := validateContextValue(serial); err != nil {
+			http.Error(w, "invalid serial: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
 
 	var targeting interface{}
 	if serial != "" {
@@ -101,6 +119,10 @@ func obsVerboseLoggingHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	variant := strings.TrimPrefix(r.URL.Path, "/observability/verbose-logging/")
+	if err := validateVariant(variant); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if variant != "on" && variant != "off" {
 		http.Error(w, "variant must be 'on' or 'off'", http.StatusBadRequest)
 		return
@@ -108,6 +130,19 @@ func obsVerboseLoggingHandler(w http.ResponseWriter, r *http.Request) {
 
 	service := r.URL.Query().Get("service")
 	gameMode := r.URL.Query().Get("game_mode")
+
+	if service != "" {
+		if err := validateContextValue(service); err != nil {
+			http.Error(w, "invalid service: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	if gameMode != "" {
+		if err := validateContextValue(gameMode); err != nil {
+			http.Error(w, "invalid game_mode: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
 
 	var targeting interface{}
 	if gameMode != "" && service != "" {
@@ -142,8 +177,18 @@ func obsEnrichmentHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "variant required: off, basic, flags, full", http.StatusBadRequest)
 		return
 	}
+	if err := validateVariant(variant); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	lang := r.URL.Query().Get("language")
+	if lang != "" {
+		if err := validateContextValue(lang); err != nil {
+			http.Error(w, "invalid language: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
 	var targeting interface{}
 	if lang != "" {
 		targeting = buildContextTargeting("language", lang, variant)
@@ -170,8 +215,18 @@ func obsMetricsFilterHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "variant required: none, poll_only, process_only", http.StatusBadRequest)
 		return
 	}
+	if err := validateVariant(variant); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	service := r.URL.Query().Get("service")
+	if service != "" {
+		if err := validateContextValue(service); err != nil {
+			http.Error(w, "invalid service: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
 	var targeting interface{}
 	if service != "" {
 		targeting = buildContextTargeting("service_name", service, variant)
@@ -210,9 +265,10 @@ func obsResetHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for flagName, defaultVariant := range defaults {
-		if flag, ok := cfg.Flags[flagName]; ok {
-			flag.DefaultVariant = defaultVariant
-			flag.Targeting = nil
+		if err := setFlagInConfig(cfg, flagName, defaultVariant, nil); err != nil {
+			slog.Error("observability: reset failed for flag", "flag", flagName, "error", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 	}
 
@@ -237,6 +293,10 @@ func obsPresetDebugController(w http.ResponseWriter, r *http.Request) {
 	serial := r.URL.Query().Get("serial")
 	if serial == "" {
 		http.Error(w, "serial query param required", http.StatusBadRequest)
+		return
+	}
+	if err := validateContextValue(serial); err != nil {
+		http.Error(w, "invalid serial: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -360,6 +420,32 @@ func obsPresetFullBlast(w http.ResponseWriter, r *http.Request) {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
+
+// validateVariant checks that a URL path variant is safe (max 64 chars, alphanumeric + _ -).
+func validateVariant(variant string) error {
+	if len(variant) > 64 {
+		return fmt.Errorf("variant too long (max 64 chars)")
+	}
+	for _, c := range variant {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-') {
+			return fmt.Errorf("variant contains invalid character: %c", c)
+		}
+	}
+	return nil
+}
+
+// validateContextValue checks that a query parameter value is safe (max 128 chars, alphanumeric + _ - . :).
+func validateContextValue(value string) error {
+	if len(value) > 128 {
+		return fmt.Errorf("context value too long (max 128 chars)")
+	}
+	for _, c := range value {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.' || c == ':') {
+			return fmt.Errorf("context value contains invalid character: %c", c)
+		}
+	}
+	return nil
+}
 
 // setObsFlag sets a single observability flag variant and optional targeting.
 func setObsFlag(flagName, variant string, targeting interface{}) error {
