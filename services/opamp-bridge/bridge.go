@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -62,7 +63,7 @@ func (b *Bridge) Start(ctx context.Context) error {
 
 								// Send current config to newly connected agent.
 								cfg := RenderCollectorConfig(current)
-								_ = conn.Send(connCtx, &protobufs.ServerToAgent{
+								if err := conn.Send(connCtx, &protobufs.ServerToAgent{
 									RemoteConfig: &protobufs.AgentRemoteConfig{
 										Config: &protobufs.AgentConfigMap{
 											ConfigMap: map[string]*protobufs.AgentConfigFile{
@@ -73,7 +74,9 @@ func (b *Bridge) Start(ctx context.Context) error {
 											},
 										},
 									},
-								})
+								}); err != nil {
+									log.Printf("failed to send initial config to agent: %v", err)
+								}
 							},
 							OnMessage: func(_ context.Context, conn types.Connection, msg *protobufs.AgentToServer) *protobufs.ServerToAgent {
 								return &protobufs.ServerToAgent{}
@@ -105,9 +108,12 @@ func (b *Bridge) Start(ctx context.Context) error {
 	b.cancel = cancel
 
 	// Initial flag read.
-	b.current = b.readFlags(pollCtx)
+	initial := b.readFlags(pollCtx)
+	b.mu.Lock()
+	b.current = initial
+	b.mu.Unlock()
 	log.Printf("initial flags: sampling_rate=%.2f, log_severity=%s",
-		b.current.TailSamplingRate, b.current.LogFilterSeverity)
+		initial.TailSamplingRate, initial.LogFilterSeverity)
 
 	go b.pollLoop(pollCtx)
 	return nil
@@ -133,12 +139,18 @@ func (b *Bridge) pollLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			newValues := b.readFlags(ctx)
-			if newValues != b.current {
+
+			b.mu.Lock()
+			current := b.current
+			if newValues != current {
 				log.Printf("flag change detected: sampling_rate=%.2f->%.2f, log_severity=%s->%s",
-					b.current.TailSamplingRate, newValues.TailSamplingRate,
-					b.current.LogFilterSeverity, newValues.LogFilterSeverity)
+					current.TailSamplingRate, newValues.TailSamplingRate,
+					current.LogFilterSeverity, newValues.LogFilterSeverity)
 				b.current = newValues
+				b.mu.Unlock()
 				b.pushConfig(ctx)
+			} else {
+				b.mu.Unlock()
 			}
 		}
 	}
@@ -152,12 +164,16 @@ func (b *Bridge) readFlags(ctx context.Context) FlagValues {
 
 	return FlagValues{
 		TailSamplingRate:  samplingRate,
-		LogFilterSeverity: logSeverity,
+		LogFilterSeverity: strings.ToUpper(logSeverity),
 	}
 }
 
 func (b *Bridge) pushConfig(ctx context.Context) {
-	cfg := RenderCollectorConfig(b.current)
+	b.mu.Lock()
+	current := b.current
+	b.mu.Unlock()
+
+	cfg := RenderCollectorConfig(current)
 	msg := &protobufs.ServerToAgent{
 		RemoteConfig: &protobufs.AgentRemoteConfig{
 			Config: &protobufs.AgentConfigMap{

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"strings"
 	"text/template"
 )
 
@@ -24,18 +25,6 @@ const collectorConfigTemplate = `processors:
     logs:
       log_record:
         - severity_number < {{ .SeverityNumber }}
-
-service:
-  pipelines:
-    traces:
-      receivers: [otlp]
-      processors: [memory_limiter, probabilistic_sampler, batch, resource]
-      exporters: [otlp/jaeger, debug]
-
-    logs:
-      receivers: [otlp]
-      processors: [memory_limiter, filter/log_severity, batch, resource]
-      exporters: [otlphttp/loki, debug]
 `
 
 // severityToNumber maps OTEL log severity names to their numeric values.
@@ -47,6 +36,9 @@ var severityToNumber = map[string]int{
 	"ERROR": 17,
 }
 
+// parsedTemplate is parsed once at init time to avoid re-parsing on every call.
+var parsedTemplate = template.Must(template.New("collector").Parse(collectorConfigTemplate))
+
 type templateData struct {
 	SamplingPercentage float64
 	SeverityNumber     int
@@ -54,7 +46,7 @@ type templateData struct {
 
 // RenderCollectorConfig produces YAML config bytes from current flag values.
 func RenderCollectorConfig(flags FlagValues) []byte {
-	sevNum, ok := severityToNumber[flags.LogFilterSeverity]
+	sevNum, ok := severityToNumber[strings.ToUpper(flags.LogFilterSeverity)]
 	if !ok {
 		sevNum = severityToNumber["INFO"]
 	}
@@ -64,14 +56,8 @@ func RenderCollectorConfig(flags FlagValues) []byte {
 		SeverityNumber:     sevNum,
 	}
 
-	tmpl, err := template.New("collector").Parse(collectorConfigTemplate)
-	if err != nil {
-		// Template is a compile-time constant; this should never fail.
-		panic(fmt.Sprintf("failed to parse collector config template: %v", err))
-	}
-
 	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
+	if err := parsedTemplate.Execute(&buf, data); err != nil {
 		panic(fmt.Sprintf("failed to execute collector config template: %v", err))
 	}
 

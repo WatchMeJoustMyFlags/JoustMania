@@ -7,9 +7,11 @@ package main
 import (
 	"context"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -83,14 +85,12 @@ func getEnvUint16(key string, fallback uint16) uint16 {
 	if v == "" {
 		return fallback
 	}
-	var port uint16
-	for _, c := range v {
-		if c < '0' || c > '9' {
-			return fallback
-		}
-		port = port*10 + uint16(c-'0')
+	n, err := strconv.ParseUint(v, 10, 64)
+	if err != nil || n > math.MaxUint16 {
+		log.Printf("invalid %s=%q, using default %d", key, v, fallback)
+		return fallback
 	}
-	return port
+	return uint16(n)
 }
 
 func getEnvDuration(key string, fallback time.Duration) time.Duration {
