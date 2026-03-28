@@ -8,7 +8,6 @@ is a cheap local read — safe even at 1 000 Hz.
 """
 
 import logging
-import random
 
 from opentelemetry.context import Context
 from opentelemetry.sdk.trace.sampling import Decision, Sampler, SamplingResult
@@ -31,7 +30,9 @@ class FlagdSampler(Sampler):
         links: list[Link] | None = None,
     ) -> SamplingResult:
         rate = self._get_rate(attributes)
-        if rate >= 1.0 or random.random() < rate:
+        # Use trace_id for deterministic sampling (consistent across parent/child spans)
+        hash_value = (trace_id & 0xFFFFFFFFFFFFFFFF) / (1 << 64)
+        if rate >= 1.0 or hash_value < rate:
             return SamplingResult(Decision.RECORD_AND_SAMPLE, attributes or {})
         return SamplingResult(Decision.DROP)
 
@@ -58,4 +59,5 @@ class FlagdSampler(Sampler):
 
             return client.get_float_value("trace_sampling_rate", 1.0, eval_ctx)
         except Exception:
+            logger.debug("Failed to read trace_sampling_rate from flagd, defaulting to 1.0", exc_info=True)
             return 1.0

@@ -15,7 +15,9 @@ Attribute sets (same across Python, Rust, and Go):
 import logging
 import os
 import platform
+import sys
 import threading
+from collections.abc import Callable
 
 from opentelemetry.context import Context
 from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
@@ -61,6 +63,7 @@ class FlagdSpanEnrichmentProcessor(SpanProcessor):
             )
             return result if isinstance(result, dict) else {}
         except Exception:
+            logger.debug("Failed to read span_enrichment_config from flagd", exc_info=True)
             return {"enabled": False, "attribute_sets": []}
 
 
@@ -87,6 +90,7 @@ def _flag_values_attrs() -> dict[str, float | bool]:
             "demo.flag.grpc_rpc_spans": client.get_boolean_value("grpc_rpc_spans", False),
         }
     except Exception:
+        logger.debug("Failed to read flag values from flagd", exc_info=True)
         return {}
 
 
@@ -103,9 +107,13 @@ def _system_attrs() -> dict[str, str | int]:
     try:
         import resource
 
-        mem_bytes = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
+        if sys.platform == "darwin":
+            mem_bytes = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss  # already bytes on macOS
+        else:
+            mem_bytes = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024  # KB on Linux
         mem_mb = mem_bytes // (1024 * 1024)
     except Exception:
+        logger.debug("Failed to read system memory usage", exc_info=True)
         mem_mb = 0
     return {
         "demo.system.hostname": platform.node(),
@@ -114,7 +122,7 @@ def _system_attrs() -> dict[str, str | int]:
     }
 
 
-_ATTRIBUTE_BUILDERS: dict[str, callable] = {
+_ATTRIBUTE_BUILDERS: dict[str, Callable[[], dict]] = {
     "service_identity": _service_identity_attrs,
     "flag_values": _flag_values_attrs,
     "runtime": _runtime_attrs,

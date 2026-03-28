@@ -44,4 +44,5 @@ class FlagdLogLevelFilter(LogRecordProcessor):
             client = get_flag_client("performance")
             return client.get_boolean_value("verbose_logging", False)
         except Exception:
+            logger.debug("Failed to read verbose_logging from flagd, defaulting to False", exc_info=True)
             return False

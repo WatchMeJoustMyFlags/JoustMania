@@ -32,12 +32,27 @@ class TestFlagdSampler:
         assert result.decision == Decision.DROP
 
     @patch(PATCH_TARGET)
-    def test_probabilistic_sampling(self, mock_get_client):
+    def test_deterministic_sampling_same_trace_id(self, mock_get_client):
+        """Same trace_id always produces the same sampling decision."""
         mock_client = MagicMock()
         mock_client.get_float_value.return_value = 0.5
         mock_get_client.return_value = mock_client
 
-        decisions = [self.sampler.should_sample(None, i, "test-span").decision for i in range(1000)]
+        trace_id = 0xABCDEF1234567890
+        decisions = [self.sampler.should_sample(None, trace_id, "test-span").decision for _ in range(10)]
+        assert len(set(decisions)) == 1, "Same trace_id should always yield the same decision"
+
+    @patch(PATCH_TARGET)
+    def test_probabilistic_sampling_distribution(self, mock_get_client):
+        """Deterministic trace-ID-based sampling produces roughly expected distribution."""
+        mock_client = MagicMock()
+        mock_client.get_float_value.return_value = 0.5
+        mock_get_client.return_value = mock_client
+
+        # Use trace IDs spread across the full 64-bit space for realistic distribution
+        step = (1 << 64) // 1000
+        trace_ids = [i * step for i in range(1000)]
+        decisions = [self.sampler.should_sample(None, tid, "test-span").decision for tid in trace_ids]
         sampled = sum(1 for d in decisions if d == Decision.RECORD_AND_SAMPLE)
         assert 300 < sampled < 700
 
