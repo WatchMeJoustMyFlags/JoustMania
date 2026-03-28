@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -14,10 +15,18 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
+// Cached values to avoid syscalls on every span.
+var (
+	cachedHostname    = sync.OnceValue(func() string { h, _ := os.Hostname(); return h })
+	cachedServiceName = sync.OnceValue(func() string { return os.Getenv("OTEL_SERVICE_NAME") })
+	cachedServiceNS   = sync.OnceValue(func() string { return os.Getenv("OTEL_SERVICE_NAMESPACE") })
+)
+
 // SpanEnrichmentProcessor adds diagnostic attributes to spans based on flagd config.
 type SpanEnrichmentProcessor struct {
 	enabled atomic.Bool
 	sets    atomic.Uint32
+	client  openfeature.IClient
 }
 
 const (
@@ -29,7 +38,9 @@ const (
 
 // NewSpanEnrichmentProcessor creates a new enrichment processor.
 func NewSpanEnrichmentProcessor() *SpanEnrichmentProcessor {
-	return &SpanEnrichmentProcessor{}
+	return &SpanEnrichmentProcessor{
+		client: getFlagClient(),
+	}
 }
 
 // OnStart adds enrichment attributes to spans.
@@ -47,8 +58,8 @@ func (p *SpanEnrichmentProcessor) OnStart(parent context.Context, s sdktrace.Rea
 		s.SetAttributes(
 			attribute.Bool("demo.enriched", true),
 			attribute.String("demo.language", "go"),
-			attribute.String("demo.service", os.Getenv("OTEL_SERVICE_NAME")),
-			attribute.String("demo.namespace", os.Getenv("OTEL_SERVICE_NAMESPACE")),
+			attribute.String("demo.service", cachedServiceName()),
+			attribute.String("demo.namespace", cachedServiceNS()),
 		)
 	}
 
@@ -61,9 +72,8 @@ func (p *SpanEnrichmentProcessor) OnStart(parent context.Context, s sdktrace.Rea
 	}
 
 	if sets&setSystem != 0 {
-		hostname, _ := os.Hostname()
 		s.SetAttributes(
-			attribute.String("demo.system.hostname", hostname),
+			attribute.String("demo.system.hostname", cachedHostname()),
 			attribute.Int("demo.system.cpu_count", runtime.NumCPU()),
 		)
 	}
@@ -96,10 +106,8 @@ func (p *SpanEnrichmentProcessor) StartConfigUpdater(ctx context.Context) {
 }
 
 func (p *SpanEnrichmentProcessor) updateConfig(ctx context.Context) {
-	client := getFlagClient()
-
 	// Get the structured flag value as a JSON-like interface{}
-	val, err := client.ObjectValue(ctx, "span_enrichment_config", map[string]interface{}{
+	val, err := p.client.ObjectValue(ctx, "span_enrichment_config", map[string]interface{}{
 		"enabled":        false,
 		"attribute_sets": []interface{}{},
 	}, openfeature.EvaluationContext{})

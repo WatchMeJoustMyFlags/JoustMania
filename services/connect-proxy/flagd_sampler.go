@@ -47,7 +47,13 @@ func (s *FlagdSampler) ShouldSample(p sdktrace.SamplingParameters) sdktrace.Samp
 	// Deterministic sampling based on trace ID
 	traceID := p.TraceID
 	hash := binary.BigEndian.Uint64(traceID[8:16])
-	threshold := uint64(rate * float64(math.MaxUint64))
+	// Clamp to avoid uint64 overflow for rates near 1.0
+	var threshold uint64
+	if rate >= 1.0 {
+		threshold = math.MaxUint64
+	} else {
+		threshold = uint64(rate * float64(math.MaxUint64))
+	}
 
 	decision := sdktrace.Drop
 	if hash < threshold {

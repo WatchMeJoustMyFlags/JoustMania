@@ -134,9 +134,15 @@ func initTracing(ctx context.Context) func(context.Context) error {
 		return func(context.Context) error { return nil }
 	}
 
+	// Create flagd-driven sampler and span enrichment processor.
+	sampler := NewFlagdSampler()
+	enricher := NewSpanEnrichmentProcessor()
+
 	provider := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exporter),
 		sdktrace.WithResource(res),
+		sdktrace.WithSampler(sampler),
+		sdktrace.WithSpanProcessor(enricher),
 	)
 	otel.SetTracerProvider(provider)
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
@@ -144,7 +150,11 @@ func initTracing(ctx context.Context) func(context.Context) error {
 		propagation.Baggage{},
 	))
 
-	fmt.Println("OTEL tracing initialized")
+	// Start background updaters for flag-driven components.
+	sampler.StartRateUpdater(ctx)
+	enricher.StartConfigUpdater(ctx)
+
+	fmt.Println("OTEL tracing initialized (with flagd sampler + enrichment)")
 	return provider.Shutdown
 }
 

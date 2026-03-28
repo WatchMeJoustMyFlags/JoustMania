@@ -47,6 +47,10 @@ func getEnv(key, defaultValue string) string {
 func main() {
 	ctx := context.Background()
 
+	// Initialize flagd before tracing so sampler/enricher can read flags.
+	initFlagd()
+	defer shutdownFlagd()
+
 	logger, shutdownLogs := initLogs(ctx)
 	defer shutdownLogs(ctx)
 	slog.SetDefault(logger)
