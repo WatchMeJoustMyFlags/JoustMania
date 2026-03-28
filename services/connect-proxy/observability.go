@@ -27,7 +27,7 @@ func registerObservabilityHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/observability/preset/quiet", obsPresetQuiet)
 	mux.HandleFunc("/observability/preset/full-blast", obsPresetFullBlast)
 
-	slog.Info("Observability handlers registered")
+	slog.Info("Observability handlers registered", "flagd_config", flagdConfigPath)
 }
 
 // obsStatusHandler returns the current state of all observability flags.
@@ -42,6 +42,7 @@ func obsStatusHandler(w http.ResponseWriter, r *http.Request) {
 
 	cfg, err := readFlagdConfig()
 	if err != nil {
+		slog.Error("observability: failed to read config", "error", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -248,12 +249,21 @@ func obsPresetDebugController(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	setFlagInConfig(cfg, "trace_sampling_rate", "full",
-		buildContextTargeting("controller_serial", serial, "full"))
-	setFlagInConfig(cfg, "verbose_logging", "on",
-		buildContextTargeting("controller_serial", serial, "on"))
-	setFlagInConfig(cfg, "span_enrichment_config", "full",
-		buildContextTargeting("controller_serial", serial, "full"))
+	if err := setFlagInConfig(cfg, "trace_sampling_rate", "full",
+		buildContextTargeting("controller_serial", serial, "full")); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := setFlagInConfig(cfg, "verbose_logging", "on",
+		buildContextTargeting("controller_serial", serial, "on")); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := setFlagInConfig(cfg, "span_enrichment_config", "full",
+		buildContextTargeting("controller_serial", serial, "full")); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	if err := writeFlagdConfig(cfg); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -282,10 +292,22 @@ func obsPresetQuiet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	setFlagInConfig(cfg, "trace_sampling_rate", "low", nil)
-	setFlagInConfig(cfg, "verbose_logging", "off", nil)
-	setFlagInConfig(cfg, "span_enrichment_config", "off", nil)
-	setFlagInConfig(cfg, "metrics_filter_pattern", "poll_only", nil)
+	if err := setFlagInConfig(cfg, "trace_sampling_rate", "low", nil); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := setFlagInConfig(cfg, "verbose_logging", "off", nil); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := setFlagInConfig(cfg, "span_enrichment_config", "off", nil); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := setFlagInConfig(cfg, "metrics_filter_pattern", "poll_only", nil); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	if err := writeFlagdConfig(cfg); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -311,10 +333,22 @@ func obsPresetFullBlast(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	setFlagInConfig(cfg, "trace_sampling_rate", "full", nil)
-	setFlagInConfig(cfg, "verbose_logging", "on", nil)
-	setFlagInConfig(cfg, "span_enrichment_config", "full", nil)
-	setFlagInConfig(cfg, "metrics_filter_pattern", "none", nil)
+	if err := setFlagInConfig(cfg, "trace_sampling_rate", "full", nil); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := setFlagInConfig(cfg, "verbose_logging", "on", nil); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := setFlagInConfig(cfg, "span_enrichment_config", "full", nil); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := setFlagInConfig(cfg, "metrics_filter_pattern", "none", nil); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	if err := writeFlagdConfig(cfg); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -368,7 +402,6 @@ func setFlagInConfig(cfg *flagdConfig, flagName, variant string, targeting inter
 
 // buildContextTargeting creates a JSONLogic "if" rule for context-based targeting.
 func buildContextTargeting(contextVar, contextValue, variant string) interface{} {
-	defaultVariant := "full" // safe default
 	return map[string]interface{}{
 		"if": []interface{}{
 			map[string]interface{}{
@@ -378,8 +411,7 @@ func buildContextTargeting(contextVar, contextValue, variant string) interface{}
 				},
 			},
 			variant,
-			nil,
-			defaultVariant,
+			// Intentionally omitted: flagd uses the flag's defaultVariant as fallback
 		},
 	}
 }
@@ -400,8 +432,7 @@ func buildAndTargeting(conditions map[string]string, variant string) interface{}
 		"if": []interface{}{
 			map[string]interface{}{"and": andClauses},
 			variant,
-			nil,
-			getDefaultForFlag("verbose_logging"),
+			// Intentionally omitted: flagd uses the flag's defaultVariant as fallback
 		},
 	}
 }
