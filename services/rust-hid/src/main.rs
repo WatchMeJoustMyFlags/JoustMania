@@ -6,9 +6,11 @@
 mod controller_io_service;
 mod device_manager;
 mod feature_flags;
+mod flagd_sampler;
 mod grpc_tracing;
 mod hid;
 mod service;
+mod span_enrichment;
 
 use controller_io_service::ControllerIoServiceImpl;
 use service::proto::controller_io_service_server::ControllerIoServiceServer;
@@ -190,6 +192,7 @@ fn init_tracing(
 
         let provider = opentelemetry_sdk::trace::TracerProvider::builder()
             .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
+            .with_sampler(flagd_sampler::FlagdSampler::new())
             .with_resource(resource)
             .build();
 
@@ -203,7 +206,12 @@ fn init_tracing(
             .with(fmt_layer)
             .with(otel_layer)
             .with(logs_layer)
+            .with(span_enrichment::FlagdSpanEnrichmentLayer)
             .init();
+
+        // Spawn background tasks for dynamic flag updates
+        flagd_sampler::spawn_rate_updater();
+        span_enrichment::spawn_enrichment_updater();
 
         Some(provider)
     } else {

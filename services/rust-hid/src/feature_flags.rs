@@ -50,6 +50,32 @@ pub async fn init_flagd() {
     }
 }
 
+/// Build evaluation context with service identity for flag targeting.
+fn build_eval_context() -> EvaluationContext {
+    let mut ctx = EvaluationContext::default();
+    ctx.add_custom_field(
+        "service_name",
+        std::env::var("OTEL_SERVICE_NAME")
+            .unwrap_or_else(|_| "rust-hid".into())
+            .into(),
+    );
+    ctx.add_custom_field("language", "rust".into());
+    ctx.add_custom_field(
+        "service_namespace",
+        std::env::var("OTEL_SERVICE_NAMESPACE")
+            .unwrap_or_else(|_| "infrastructure".into())
+            .into(),
+    );
+    ctx.add_custom_field(
+        "hostname",
+        gethostname::gethostname()
+            .into_string()
+            .unwrap_or_else(|_| "unknown".into())
+            .into(),
+    );
+    ctx
+}
+
 /// Check if the `grpc_rpc_spans` feature flag is enabled.
 ///
 /// Returns false if flagd is unavailable or the flag is not defined.
@@ -57,9 +83,20 @@ pub async fn init_flagd() {
 pub async fn grpc_rpc_spans_enabled() -> bool {
     let of = OpenFeature::singleton().await;
     let client = of.create_client();
-    let ctx = EvaluationContext::default();
+    let ctx = build_eval_context();
     client
         .get_bool_value("grpc_rpc_spans", Some(&ctx), None)
+        .await
+        .unwrap_or(false)
+}
+
+/// Check if `verbose_logging` flag is enabled.
+pub async fn is_verbose_logging() -> bool {
+    let of = OpenFeature::singleton().await;
+    let client = of.create_client();
+    let ctx = build_eval_context();
+    client
+        .get_bool_value("verbose_logging", Some(&ctx), None)
         .await
         .unwrap_or(false)
 }
