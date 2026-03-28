@@ -86,7 +86,9 @@ def init_logging() -> None:
 
         exporter = OTLPLogExporter(endpoint=otlp_endpoint, insecure=True)
         provider = LoggerProvider(resource=resource)
-        provider.add_log_record_processor(BatchLogRecordProcessor(exporter))
+        from lib.flagd_log_processor import FlagdLogLevelFilter
+
+        provider.add_log_record_processor(FlagdLogLevelFilter(BatchLogRecordProcessor(exporter)))
 
         # Attach OTEL handler to root logger so all existing loggers flow through OTLP
         log_level_str = os.getenv("LOG_LEVEL", "INFO").upper()

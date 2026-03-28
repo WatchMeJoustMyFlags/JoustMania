@@ -57,6 +57,8 @@ ignore = ["ANN"]
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
 "tests/*.py" = ["ARG002", "E402"]
+"flagd_sampler.py" = ["ARG002"]  # OTel Sampler interface has unused params
+"flagd_span_processor.py" = ["ARG002"]  # OTel SpanProcessor interface has unused params
 
 [tool.ruff.lint.isort]
 known-first-party = ["lib"]

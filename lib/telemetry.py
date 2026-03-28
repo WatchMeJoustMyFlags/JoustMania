@@ -92,9 +92,13 @@ def _do_init() -> None:
 
     resource = get_otel_resource()
 
-    provider = TracerProvider(resource=resource)
+    from lib.flagd_sampler import FlagdSampler
+    from lib.flagd_span_processor import FlagdSpanEnrichmentProcessor
+
+    provider = TracerProvider(resource=resource, sampler=FlagdSampler())
     otlp_exporter = OTLPSpanExporter(endpoint=otlp_endpoint, insecure=True)
     provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
+    provider.add_span_processor(FlagdSpanEnrichmentProcessor())
 
     # Trace-profile correlation: link Pyroscope CPU profiles to trace spans
     from lib.profiling import _is_profiling_enabled
