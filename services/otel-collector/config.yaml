@@ -314,8 +314,12 @@ service:
       processors: [memory_limiter, transform/docker_logs, filter/exclude_otlp_services, batch, resource]
       exporters: [otlphttp/loki, debug]
 
-  extensions: [health_check]
+  extensions: [health_check, opamp]
 
 extensions:
   health_check:
     endpoint: :13133
+  opamp:
+    server:
+      ws:
+        endpoint: ws://opamp-bridge:4320/v1/opamp

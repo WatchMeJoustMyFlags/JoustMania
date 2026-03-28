@@ -219,6 +219,25 @@
       },
       "defaultVariant": "none",
       "targeting": {}
+    },
+    "collector_tail_sampling_rate": {
+      "state": "ENABLED",
+      "variants": {
+        "tenth": 0.1,
+        "half": 0.5,
+        "full": 1.0
+      },
+      "defaultVariant": "full"
+    },
+    "collector_log_filter_severity": {
+      "state": "ENABLED",
+      "variants": {
+        "debug": "DEBUG",
+        "info": "INFO",
+        "warn": "WARN",
+        "error": "ERROR"
+      },
+      "defaultVariant": "info"
     }
   }
 }

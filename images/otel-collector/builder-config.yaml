@@ -19,6 +19,7 @@ dist:
 
 extensions:
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/healthcheckextension v0.147.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/opampextension v0.147.0
 
 receivers:
   # OTLP (gRPC + HTTP) — all services push here
