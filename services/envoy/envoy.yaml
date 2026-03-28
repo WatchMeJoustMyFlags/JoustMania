@@ -100,6 +100,13 @@ static_resources:
                           route:
                             cluster: connect_proxy
 
+                        # Observability control API
+                        # PRESERVE prefix - connect-proxy handles /observability/* paths
+                        - match:
+                            prefix: "/observability/"
+                          route:
+                            cluster: connect_proxy
+
                         # Health check endpoint
                         - match:
                             path: "/health"

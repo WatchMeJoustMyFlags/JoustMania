@@ -1,0 +1,440 @@
+package main
+
+import (
+	"encoding/json"
+	"log/slog"
+	"net/http"
+	"strings"
+)
+
+// observability flag names in flagd performance.json
+var observabilityFlags = []string{
+	"trace_sampling_rate",
+	"verbose_logging",
+	"span_enrichment_config",
+	"metrics_filter_pattern",
+}
+
+// registerObservabilityHandlers adds /observability/* endpoints to the mux.
+func registerObservabilityHandlers(mux *http.ServeMux) {
+	mux.HandleFunc("/observability/status", obsStatusHandler)
+	mux.HandleFunc("/observability/sampling/", obsSamplingHandler)
+	mux.HandleFunc("/observability/verbose-logging/", obsVerboseLoggingHandler)
+	mux.HandleFunc("/observability/enrichment/", obsEnrichmentHandler)
+	mux.HandleFunc("/observability/metrics-filter/", obsMetricsFilterHandler)
+	mux.HandleFunc("/observability/reset", obsResetHandler)
+	mux.HandleFunc("/observability/preset/debug-controller", obsPresetDebugController)
+	mux.HandleFunc("/observability/preset/quiet", obsPresetQuiet)
+	mux.HandleFunc("/observability/preset/full-blast", obsPresetFullBlast)
+
+	slog.Info("Observability handlers registered")
+}
+
+// obsStatusHandler returns the current state of all observability flags.
+func obsStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	flagdMu.Lock()
+	defer flagdMu.Unlock()
+
+	cfg, err := readFlagdConfig()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	status := make(map[string]interface{})
+	for _, name := range observabilityFlags {
+		if flag, ok := cfg.Flags[name]; ok {
+			status[name] = map[string]interface{}{
+				"defaultVariant": flag.DefaultVariant,
+				"targeting":      flag.Targeting,
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(status)
+}
+
+// obsSamplingHandler sets trace_sampling_rate. Path: /observability/sampling/{rate}
+func obsSamplingHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	variant := strings.TrimPrefix(r.URL.Path, "/observability/sampling/")
+	if variant == "" {
+		http.Error(w, "variant required: off, low, half, full", http.StatusBadRequest)
+		return
+	}
+
+	service := r.URL.Query().Get("service")
+	serial := r.URL.Query().Get("serial")
+
+	var targeting interface{}
+	if serial != "" {
+		targeting = buildContextTargeting("controller_serial", serial, variant)
+	} else if service != "" {
+		targeting = buildContextTargeting("service_name", service, variant)
+	}
+
+	if err := setObsFlag("trace_sampling_rate", variant, targeting); err != nil {
+		slog.Error("observability: failed to set sampling", "error", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	respondOK(w, "trace_sampling_rate", variant)
+}
+
+// obsVerboseLoggingHandler toggles verbose_logging. Path: /observability/verbose-logging/{on|off}
+func obsVerboseLoggingHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	variant := strings.TrimPrefix(r.URL.Path, "/observability/verbose-logging/")
+	if variant != "on" && variant != "off" {
+		http.Error(w, "variant must be 'on' or 'off'", http.StatusBadRequest)
+		return
+	}
+
+	service := r.URL.Query().Get("service")
+	gameMode := r.URL.Query().Get("game_mode")
+
+	var targeting interface{}
+	if gameMode != "" && service != "" {
+		targeting = buildAndTargeting(
+			map[string]string{"service_name": service, "game_mode": gameMode},
+			variant,
+		)
+	} else if service != "" {
+		targeting = buildContextTargeting("service_name", service, variant)
+	} else if gameMode != "" {
+		targeting = buildContextTargeting("game_mode", gameMode, variant)
+	}
+
+	if err := setObsFlag("verbose_logging", variant, targeting); err != nil {
+		slog.Error("observability: failed to set verbose logging", "error", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	respondOK(w, "verbose_logging", variant)
+}
+
+// obsEnrichmentHandler sets span_enrichment_config. Path: /observability/enrichment/{level}
+func obsEnrichmentHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	variant := strings.TrimPrefix(r.URL.Path, "/observability/enrichment/")
+	if variant == "" {
+		http.Error(w, "variant required: off, basic, flags, full", http.StatusBadRequest)
+		return
+	}
+
+	lang := r.URL.Query().Get("language")
+	var targeting interface{}
+	if lang != "" {
+		targeting = buildContextTargeting("language", lang, variant)
+	}
+
+	if err := setObsFlag("span_enrichment_config", variant, targeting); err != nil {
+		slog.Error("observability: failed to set enrichment", "error", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	respondOK(w, "span_enrichment_config", variant)
+}
+
+// obsMetricsFilterHandler sets metrics_filter_pattern. Path: /observability/metrics-filter/{pattern}
+func obsMetricsFilterHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	variant := strings.TrimPrefix(r.URL.Path, "/observability/metrics-filter/")
+	if variant == "" {
+		http.Error(w, "variant required: none, poll_only, process_only", http.StatusBadRequest)
+		return
+	}
+
+	service := r.URL.Query().Get("service")
+	var targeting interface{}
+	if service != "" {
+		targeting = buildContextTargeting("service_name", service, variant)
+	}
+
+	if err := setObsFlag("metrics_filter_pattern", variant, targeting); err != nil {
+		slog.Error("observability: failed to set metrics filter", "error", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	respondOK(w, "metrics_filter_pattern", variant)
+}
+
+// obsResetHandler resets all observability flags to defaults.
+func obsResetHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	defaults := map[string]string{
+		"trace_sampling_rate":   "full",
+		"verbose_logging":       "off",
+		"span_enrichment_config": "off",
+		"metrics_filter_pattern": "none",
+	}
+
+	flagdMu.Lock()
+	defer flagdMu.Unlock()
+
+	cfg, err := readFlagdConfig()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	for flagName, defaultVariant := range defaults {
+		if flag, ok := cfg.Flags[flagName]; ok {
+			flag.DefaultVariant = defaultVariant
+			flag.Targeting = nil
+		}
+	}
+
+	if err := writeFlagdConfig(cfg); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	slog.Info("observability: reset all flags to defaults")
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "action": "reset"})
+}
+
+// ── Presets ─────────────────────────────────────────────────────────
+
+func obsPresetDebugController(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	serial := r.URL.Query().Get("serial")
+	if serial == "" {
+		http.Error(w, "serial query param required", http.StatusBadRequest)
+		return
+	}
+
+	flagdMu.Lock()
+	defer flagdMu.Unlock()
+
+	cfg, err := readFlagdConfig()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	setFlagInConfig(cfg, "trace_sampling_rate", "full",
+		buildContextTargeting("controller_serial", serial, "full"))
+	setFlagInConfig(cfg, "verbose_logging", "on",
+		buildContextTargeting("controller_serial", serial, "on"))
+	setFlagInConfig(cfg, "span_enrichment_config", "full",
+		buildContextTargeting("controller_serial", serial, "full"))
+
+	if err := writeFlagdConfig(cfg); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	slog.Info("observability: preset debug-controller", "serial", serial)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "ok", "preset": "debug-controller", "serial": serial,
+	})
+}
+
+func obsPresetQuiet(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	flagdMu.Lock()
+	defer flagdMu.Unlock()
+
+	cfg, err := readFlagdConfig()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	setFlagInConfig(cfg, "trace_sampling_rate", "low", nil)
+	setFlagInConfig(cfg, "verbose_logging", "off", nil)
+	setFlagInConfig(cfg, "span_enrichment_config", "off", nil)
+	setFlagInConfig(cfg, "metrics_filter_pattern", "poll_only", nil)
+
+	if err := writeFlagdConfig(cfg); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	slog.Info("observability: preset quiet")
+	respondOK(w, "preset", "quiet")
+}
+
+func obsPresetFullBlast(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	flagdMu.Lock()
+	defer flagdMu.Unlock()
+
+	cfg, err := readFlagdConfig()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	setFlagInConfig(cfg, "trace_sampling_rate", "full", nil)
+	setFlagInConfig(cfg, "verbose_logging", "on", nil)
+	setFlagInConfig(cfg, "span_enrichment_config", "full", nil)
+	setFlagInConfig(cfg, "metrics_filter_pattern", "none", nil)
+
+	if err := writeFlagdConfig(cfg); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	slog.Info("observability: preset full-blast")
+	respondOK(w, "preset", "full-blast")
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────
+
+// setObsFlag sets a single observability flag variant and optional targeting.
+func setObsFlag(flagName, variant string, targeting interface{}) error {
+	flagdMu.Lock()
+	defer flagdMu.Unlock()
+
+	cfg, err := readFlagdConfig()
+	if err != nil {
+		return err
+	}
+
+	if err := setFlagInConfig(cfg, flagName, variant, targeting); err != nil {
+		return err
+	}
+
+	return writeFlagdConfig(cfg)
+}
+
+// setFlagInConfig modifies a flag in the config struct (caller holds flagdMu).
+func setFlagInConfig(cfg *flagdConfig, flagName, variant string, targeting interface{}) error {
+	flag, ok := cfg.Flags[flagName]
+	if !ok {
+		return &flagNotFoundError{flagName}
+	}
+
+	if _, ok := flag.Variants[variant]; !ok {
+		return &variantNotFoundError{flagName, variant}
+	}
+
+	if targeting != nil {
+		flag.DefaultVariant = getDefaultForFlag(flagName)
+		flag.Targeting = targeting
+	} else {
+		flag.DefaultVariant = variant
+		flag.Targeting = nil
+	}
+
+	return nil
+}
+
+// buildContextTargeting creates a JSONLogic "if" rule for context-based targeting.
+func buildContextTargeting(contextVar, contextValue, variant string) interface{} {
+	defaultVariant := "full" // safe default
+	return map[string]interface{}{
+		"if": []interface{}{
+			map[string]interface{}{
+				"==": []interface{}{
+					map[string]interface{}{"var": contextVar},
+					contextValue,
+				},
+			},
+			variant,
+			nil,
+			defaultVariant,
+		},
+	}
+}
+
+// buildAndTargeting creates a JSONLogic "if" rule with AND conditions.
+func buildAndTargeting(conditions map[string]string, variant string) interface{} {
+	andClauses := make([]interface{}, 0, len(conditions))
+	for k, v := range conditions {
+		andClauses = append(andClauses, map[string]interface{}{
+			"==": []interface{}{
+				map[string]interface{}{"var": k},
+				v,
+			},
+		})
+	}
+
+	return map[string]interface{}{
+		"if": []interface{}{
+			map[string]interface{}{"and": andClauses},
+			variant,
+			nil,
+			getDefaultForFlag("verbose_logging"),
+		},
+	}
+}
+
+// getDefaultForFlag returns the safe default variant for a flag.
+func getDefaultForFlag(flagName string) string {
+	defaults := map[string]string{
+		"trace_sampling_rate":    "full",
+		"verbose_logging":        "off",
+		"span_enrichment_config": "off",
+		"metrics_filter_pattern": "none",
+	}
+	if d, ok := defaults[flagName]; ok {
+		return d
+	}
+	return "off"
+}
+
+func respondOK(w http.ResponseWriter, flag, variant string) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":  "ok",
+		"flag":    flag,
+		"variant": variant,
+	})
+}
+
+type flagNotFoundError struct{ name string }
+
+func (e *flagNotFoundError) Error() string { return "flag not found: " + e.name }
+
+type variantNotFoundError struct{ flag, variant string }
+
+func (e *variantNotFoundError) Error() string {
+	return "unknown variant " + e.variant + " for flag " + e.flag
+}

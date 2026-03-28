@@ -129,6 +129,9 @@ func main() {
 	// Canary rollout control endpoints (mirrors chaos pattern)
 	registerCanaryHandlers(mux)
 
+	// Observability control endpoints (dynamic OTel pipeline control)
+	registerObservabilityHandlers(mux)
+
 	// Health check endpoint
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
