@@ -163,6 +163,47 @@
       },
       "defaultVariant": "none",
       "targeting": {}
+    },
+    "trace_sampling_rate": {
+      "state": "ENABLED",
+      "variants": {
+        "off": 0.0,
+        "low": 0.1,
+        "half": 0.5,
+        "full": 1.0
+      },
+      "defaultVariant": "full",
+      "targeting": {}
+    },
+    "verbose_logging": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "off",
+      "targeting": {}
+    },
+    "span_enrichment_config": {
+      "state": "ENABLED",
+      "variants": {
+        "off": { "enabled": false, "attribute_sets": [] },
+        "basic": { "enabled": true, "attribute_sets": ["service_identity"] },
+        "flags": { "enabled": true, "attribute_sets": ["service_identity", "flag_values"] },
+        "full": { "enabled": true, "attribute_sets": ["service_identity", "flag_values", "runtime", "system"] }
+      },
+      "defaultVariant": "off",
+      "targeting": {}
+    },
+    "metrics_filter_pattern": {
+      "state": "ENABLED",
+      "variants": {
+        "none": "",
+        "poll_only": "controller_poll_*",
+        "process_only": "process_*"
+      },
+      "defaultVariant": "none",
+      "targeting": {}
     }
   }
 }
