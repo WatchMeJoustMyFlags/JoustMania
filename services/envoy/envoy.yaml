@@ -102,6 +102,7 @@ static_resources:
 
                         # Observability control API
                         # PRESERVE prefix - connect-proxy handles /observability/* paths
+                        # NOTE: No auth — intentional for local demo/presentation environment.
                         - match:
                             prefix: "/observability/"
                           route:

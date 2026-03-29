@@ -16,6 +16,15 @@ var observabilityFlags = []string{
 	"metrics_filter_pattern",
 }
 
+// observabilityDefaults maps each observability flag to its safe default variant.
+// Used by obsResetHandler (bulk reset) and getDefaultForFlag (per-flag fallback).
+var observabilityDefaults = map[string]string{
+	"trace_sampling_rate":    "full",
+	"verbose_logging":        "off",
+	"span_enrichment_config": "off",
+	"metrics_filter_pattern": "none",
+}
+
 // registerObservabilityHandlers adds /observability/* endpoints to the mux.
 func registerObservabilityHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/observability/status", obsStatusHandler)
@@ -81,6 +90,7 @@ func obsSamplingHandler(w http.ResponseWriter, r *http.Request) {
 
 	service := r.URL.Query().Get("service")
 	serial := r.URL.Query().Get("serial")
+	// TODO: normalize serial format (e.g. case, separator) for consistent targeting
 
 	if service != "" {
 		if err := validateContextValue(service); err != nil {
@@ -248,13 +258,6 @@ func obsResetHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	defaults := map[string]string{
-		"trace_sampling_rate":   "full",
-		"verbose_logging":       "off",
-		"span_enrichment_config": "off",
-		"metrics_filter_pattern": "none",
-	}
-
 	flagdMu.Lock()
 	defer flagdMu.Unlock()
 
@@ -264,7 +267,7 @@ func obsResetHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for flagName, defaultVariant := range defaults {
+	for flagName, defaultVariant := range observabilityDefaults {
 		if err := setFlagInConfig(cfg, flagName, defaultVariant, nil); err != nil {
 			slog.Error("observability: reset failed for flag", "flag", flagName, "error", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -291,6 +294,7 @@ func obsPresetDebugController(w http.ResponseWriter, r *http.Request) {
 	}
 
 	serial := r.URL.Query().Get("serial")
+	// TODO: normalize serial format (e.g. case, separator) for consistent targeting
 	if serial == "" {
 		http.Error(w, "serial query param required", http.StatusBadRequest)
 		return
@@ -497,7 +501,7 @@ func buildContextTargeting(contextVar, contextValue, variant string) interface{}
 				},
 			},
 			variant,
-			// Intentionally omitted: flagd uses the flag's defaultVariant as fallback
+			nil, // explicit else: flagd falls back to the flag's defaultVariant
 		},
 	}
 }
@@ -518,20 +522,14 @@ func buildAndTargeting(conditions map[string]string, variant string) interface{}
 		"if": []interface{}{
 			map[string]interface{}{"and": andClauses},
 			variant,
-			// Intentionally omitted: flagd uses the flag's defaultVariant as fallback
+			nil, // explicit else: flagd falls back to the flag's defaultVariant
 		},
 	}
 }
 
 // getDefaultForFlag returns the safe default variant for a flag.
 func getDefaultForFlag(flagName string) string {
-	defaults := map[string]string{
-		"trace_sampling_rate":    "full",
-		"verbose_logging":        "off",
-		"span_enrichment_config": "off",
-		"metrics_filter_pattern": "none",
-	}
-	if d, ok := defaults[flagName]; ok {
+	if d, ok := observabilityDefaults[flagName]; ok {
 		return d
 	}
 	return "off"

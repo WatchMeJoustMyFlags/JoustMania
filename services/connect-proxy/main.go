@@ -129,7 +129,8 @@ func main() {
 	// Canary rollout control endpoints (mirrors chaos pattern)
 	registerCanaryHandlers(mux)
 
-	// Observability control endpoints (dynamic OTel pipeline control)
+	// Observability control endpoints (dynamic OTel pipeline control).
+	// NOTE: No auth — intentional for local demo/presentation environment.
 	registerObservabilityHandlers(mux)
 
 	// Health check endpoint
