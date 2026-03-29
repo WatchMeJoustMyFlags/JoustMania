@@ -191,8 +191,6 @@ services:
     depends_on:
       flagd:
         condition: service_started
-      otel-collector:
-        condition: service_started
     networks:
       - joustmania
     restart: unless-stopped

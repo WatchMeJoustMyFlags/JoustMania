@@ -14,7 +14,7 @@ import (
 // The template produces a partial config that the opamp extension merges with
 // the collector's existing config. Only the sections that change are included.
 const collectorConfigTemplate = `processors:
-  # Tail sampling — probability controlled by collector_tail_sampling_rate flag.
+  # Probabilistic (head-based) sampling — controlled by collector_tail_sampling_rate flag.
   # Applied to the traces pipeline. Rate 1.0 = pass all traces through.
   probabilistic_sampler:
     sampling_percentage: {{ .SamplingPercentage }}

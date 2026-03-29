@@ -1,6 +1,6 @@
 module github.com/watchmejoustmyflags/joustmania/opamp-bridge
 
-go 1.23.0
+go 1.23
 
 require (
 	github.com/open-feature/go-sdk v1.14.0

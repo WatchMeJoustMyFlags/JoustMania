@@ -35,11 +35,17 @@ type Bridge struct {
 }
 
 // NewBridge creates a new OpAMP bridge.
+// current is initialized to safe defaults so that agents connecting before the
+// first flag read receive a valid config (sampling=100%, severity=INFO).
 func NewBridge(client *openfeature.Client, listenAddr string, pollInterval time.Duration) *Bridge {
 	return &Bridge{
 		client:       client,
 		listenAddr:   listenAddr,
 		pollInterval: pollInterval,
+		current: FlagValues{
+			TailSamplingRate:  1.0,
+			LogFilterSeverity: "INFO",
+		},
 	}
 }
 
