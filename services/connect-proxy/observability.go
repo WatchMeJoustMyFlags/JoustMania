@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 )
 
@@ -114,7 +116,7 @@ func obsSamplingHandler(w http.ResponseWriter, r *http.Request) {
 
 	if err := setObsFlag("trace_sampling_rate", variant, targeting); err != nil {
 		slog.Error("observability: failed to set sampling", "error", err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, err.Error(), obsFlagErrorStatus(err))
 		return
 	}
 
@@ -168,7 +170,7 @@ func obsVerboseLoggingHandler(w http.ResponseWriter, r *http.Request) {
 
 	if err := setObsFlag("verbose_logging", variant, targeting); err != nil {
 		slog.Error("observability: failed to set verbose logging", "error", err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, err.Error(), obsFlagErrorStatus(err))
 		return
 	}
 
@@ -206,7 +208,7 @@ func obsEnrichmentHandler(w http.ResponseWriter, r *http.Request) {
 
 	if err := setObsFlag("span_enrichment_config", variant, targeting); err != nil {
 		slog.Error("observability: failed to set enrichment", "error", err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, err.Error(), obsFlagErrorStatus(err))
 		return
 	}
 
@@ -244,7 +246,7 @@ func obsMetricsFilterHandler(w http.ResponseWriter, r *http.Request) {
 
 	if err := setObsFlag("metrics_filter_pattern", variant, targeting); err != nil {
 		slog.Error("observability: failed to set metrics filter", "error", err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, err.Error(), obsFlagErrorStatus(err))
 		return
 	}
 
@@ -507,9 +509,17 @@ func buildContextTargeting(contextVar, contextValue, variant string) interface{}
 }
 
 // buildAndTargeting creates a JSONLogic "if" rule with AND conditions.
+// Map keys are sorted to produce deterministic JSON output.
 func buildAndTargeting(conditions map[string]string, variant string) interface{} {
+	keys := make([]string, 0, len(conditions))
+	for k := range conditions {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
 	andClauses := make([]interface{}, 0, len(conditions))
-	for k, v := range conditions {
+	for _, k := range keys {
+		v := conditions[k]
 		andClauses = append(andClauses, map[string]interface{}{
 			"==": []interface{}{
 				map[string]interface{}{"var": k},
@@ -542,6 +552,17 @@ func respondOK(w http.ResponseWriter, flag, variant string) {
 		"flag":    flag,
 		"variant": variant,
 	})
+}
+
+// obsFlagErrorStatus returns HTTP 400 for validation errors (flag/variant not found)
+// and HTTP 500 for I/O or other internal errors.
+func obsFlagErrorStatus(err error) int {
+	var fnf *flagNotFoundError
+	var vnf *variantNotFoundError
+	if errors.As(err, &fnf) || errors.As(err, &vnf) {
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
 }
 
 type flagNotFoundError struct{ name string }
