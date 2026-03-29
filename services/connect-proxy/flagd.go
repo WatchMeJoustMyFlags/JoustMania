@@ -3,6 +3,7 @@ package main
 import (
 	"log/slog"
 	"os"
+	"strconv"
 
 	"github.com/open-feature/go-sdk/openfeature"
 	flagd "github.com/open-feature/go-sdk-contrib/providers/flagd/pkg"
@@ -12,6 +13,13 @@ import (
 func initFlagd() {
 	host := getEnv("FLAGD_HOST", "flagd")
 	port := 8013
+	if portStr := os.Getenv("FLAGD_PORT"); portStr != "" {
+		if p, err := strconv.Atoi(portStr); err == nil {
+			port = p
+		} else {
+			slog.Warn("Invalid FLAGD_PORT, using default", "value", portStr, "default", port)
+		}
+	}
 
 	provider, providerErr := flagd.NewProvider(
 		flagd.WithHost(host),

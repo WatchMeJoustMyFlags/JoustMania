@@ -4,6 +4,8 @@ go 1.25
 
 require (
 	connectrpc.com/connect v1.17.0
+	github.com/open-feature/go-sdk v1.14.1
+	github.com/open-feature/go-sdk-contrib/providers/flagd v0.4.5
 	github.com/rs/cors v1.11.0
 	go.opentelemetry.io/contrib/bridges/otelslog v0.10.0
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.59.0

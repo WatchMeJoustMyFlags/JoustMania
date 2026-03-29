@@ -90,6 +90,16 @@ func (s *FlagdSampler) StartRateUpdater(ctx context.Context) {
 					slog.Info("flagd: trace_sampling_rate recovered", "rate", rate)
 					failing = false
 				}
+				// Validate: reject NaN and clamp to [0, 1]
+				if math.IsNaN(rate) {
+					slog.Warn("flagd: trace_sampling_rate is NaN, ignoring")
+					continue
+				}
+				if rate < 0 {
+					rate = 0
+				} else if rate > 1 {
+					rate = 1
+				}
 				s.cachedRate.Store(math.Float64bits(rate))
 			}
 		}

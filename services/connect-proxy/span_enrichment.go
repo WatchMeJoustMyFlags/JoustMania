@@ -68,9 +68,14 @@ func (p *SpanEnrichmentProcessor) OnStart(parent context.Context, s sdktrace.Rea
 		s.SetAttributes(
 			attribute.String("demo.runtime.version", runtime.Version()),
 			attribute.Int("demo.runtime.pid", os.Getpid()),
-			attribute.Int("demo.runtime.threads", runtime.NumGoroutine()),
+			// NumGoroutine returns goroutine count, not OS threads. Named
+			// "goroutines" to avoid confusion with POSIX thread semantics.
+			attribute.Int("demo.runtime.goroutines", runtime.NumGoroutine()),
 		)
 	}
+
+	// TODO: when setFlagValues is enabled, add current flag evaluation
+	// results as span attributes (e.g. demo.flag.<flag_name> = <value>).
 
 	if sets&setSystem != 0 {
 		s.SetAttributes(
@@ -122,9 +127,10 @@ func (p *SpanEnrichmentProcessor) updateConfig(ctx context.Context) {
 		p.failing.Store(false)
 	}
 
-	// Parse the value
+	// Parse the value via JSON round-trip (flagd returns interface{})
 	data, err := json.Marshal(val)
 	if err != nil {
+		slog.Debug("flagd: failed to marshal span_enrichment_config value", "error", err)
 		return
 	}
 
@@ -133,6 +139,7 @@ func (p *SpanEnrichmentProcessor) updateConfig(ctx context.Context) {
 		AttributeSets []string `json:"attribute_sets"`
 	}
 	if err := json.Unmarshal(data, &config); err != nil {
+		slog.Debug("flagd: failed to unmarshal span_enrichment_config", "error", err)
 		return
 	}
 
