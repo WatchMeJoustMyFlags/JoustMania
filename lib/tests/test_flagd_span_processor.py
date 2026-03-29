@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
+import lib.flagd_span_processor as span_proc_module
 from lib.flagd_span_processor import FlagdSpanEnrichmentProcessor
 
 PATCH_TARGET = "lib.feature_flags.get_flag_client"
@@ -10,6 +11,9 @@ PATCH_TARGET = "lib.feature_flags.get_flag_client"
 class TestFlagdSpanEnrichmentProcessor:
     def setup_method(self):
         self.processor = FlagdSpanEnrichmentProcessor()
+        # Reset module-level flag_values cache so tests are independent
+        span_proc_module._flag_values_cache = {}
+        span_proc_module._flag_values_last_fetch = 0.0
 
     @patch(PATCH_TARGET)
     def test_no_attributes_when_disabled(self, mock_get_client):

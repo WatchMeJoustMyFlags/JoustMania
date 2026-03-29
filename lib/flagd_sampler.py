@@ -12,6 +12,7 @@ import time
 from opentelemetry.context import Context
 from opentelemetry.sdk.trace.sampling import Decision, Sampler, SamplingResult
 from opentelemetry.trace import Link, SpanKind
+from opentelemetry.trace.span import TraceState
 from opentelemetry.util.types import Attributes
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,7 @@ class FlagdSampler(Sampler):
         kind: SpanKind | None = None,
         attributes: Attributes | None = None,
         links: list[Link] | None = None,
+        trace_state: TraceState | None = None,
     ) -> SamplingResult:
         rate = self._get_rate(attributes)
         # Use trace_id for deterministic sampling (consistent across parent/child spans)

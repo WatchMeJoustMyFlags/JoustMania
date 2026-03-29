@@ -86,7 +86,12 @@ def init_logging() -> None:
 
         exporter = OTLPLogExporter(endpoint=otlp_endpoint, insecure=True)
         provider = LoggerProvider(resource=resource)
+        from lib.feature_flags import init_flag_domain
         from lib.flagd_log_processor import FlagdLogLevelFilter
+
+        # Ensure the performance flag domain is initialized before creating
+        # flag-driven components so they don't evaluate against a no-op provider.
+        init_flag_domain("performance")
 
         provider.add_log_record_processor(FlagdLogLevelFilter(BatchLogRecordProcessor(exporter)))
 

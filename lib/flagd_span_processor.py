@@ -97,19 +97,32 @@ def _service_identity_attrs() -> dict[str, str | bool]:
     }
 
 
+_flag_values_cache: dict[str, float | bool] = {}
+_flag_values_last_fetch: float = 0.0
+
+
 def _flag_values_attrs() -> dict[str, float | bool]:
+    global _flag_values_cache, _flag_values_last_fetch
+
+    now = time.monotonic()
+    if now - _flag_values_last_fetch < _CACHE_TTL:
+        return _flag_values_cache
+
     try:
         from lib.feature_flags import get_flag_client
 
         client = get_flag_client("performance")
-        return {
+        _flag_values_cache = {
             "demo.flag.trace_sampling_rate": client.get_float_value("trace_sampling_rate", 1.0),
             "demo.flag.verbose_logging": client.get_boolean_value("verbose_logging", False),
             "demo.flag.grpc_rpc_spans": client.get_boolean_value("grpc_rpc_spans", False),
         }
+        _flag_values_last_fetch = now
     except Exception:
+        # Advance on failure to honor TTL as backoff
+        _flag_values_last_fetch = now
         logger.debug("Failed to read flag values from flagd", exc_info=True)
-        return {}
+    return _flag_values_cache
 
 
 def _runtime_attrs() -> dict[str, str | int]:
