@@ -80,6 +80,16 @@ where
                     ));
                 }
 
+                if sets & SET_FLAG_VALUES != 0 {
+                    // TODO: read actual flag values from the OpenFeature client
+                    // (requires async access or a second cache layer). For now,
+                    // emit a marker so dashboards can detect the set is active.
+                    attrs.push(opentelemetry::KeyValue::new(
+                        "demo.flag.enrichment_active",
+                        true,
+                    ));
+                }
+
                 if sets & SET_RUNTIME != 0 {
                     attrs.push(opentelemetry::KeyValue::new(
                         "demo.runtime.version",
@@ -89,14 +99,16 @@ where
                         "demo.runtime.pid",
                         std::process::id() as i64,
                     ));
+                    // Thread count: use available parallelism as a proxy since
+                    // tokio runtime metrics require the tokio_unstable cfg flag.
+                    attrs.push(opentelemetry::KeyValue::new(
+                        "demo.runtime.threads",
+                        num_cpus() as i64,
+                    ));
                 }
 
                 if sets & SET_SYSTEM != 0 {
-                    let hostname = HOSTNAME.get_or_init(|| {
-                        gethostname::gethostname()
-                            .into_string()
-                            .unwrap_or_else(|_| "unknown".into())
-                    });
+                    let hostname = HOSTNAME.get_or_init(resolve_host_name);
                     attrs.push(opentelemetry::KeyValue::new(
                         "demo.system.hostname",
                         hostname.clone(),
@@ -104,6 +116,10 @@ where
                     attrs.push(opentelemetry::KeyValue::new(
                         "demo.system.cpu_count",
                         num_cpus() as i64,
+                    ));
+                    attrs.push(opentelemetry::KeyValue::new(
+                        "demo.system.os_type",
+                        std::env::consts::OS,
                     ));
                 }
 
@@ -114,6 +130,24 @@ where
             }
         }
     }
+}
+
+/// Resolve host.name from OTEL_RESOURCE_ATTRIBUTES if set, falling back to
+/// gethostname(). Inside Docker, gethostname() returns the container ID;
+/// OTEL_RESOURCE_ATTRIBUTES provides the real host name.
+fn resolve_host_name() -> String {
+    if let Ok(attrs) = std::env::var("OTEL_RESOURCE_ATTRIBUTES") {
+        for pair in attrs.split(',') {
+            if let Some((key, value)) = pair.split_once('=')
+                && key.trim() == "host.name"
+            {
+                return value.trim().to_string();
+            }
+        }
+    }
+    gethostname::gethostname()
+        .into_string()
+        .unwrap_or_else(|_| "unknown".into())
 }
 
 fn num_cpus() -> usize {
@@ -132,41 +166,37 @@ pub fn spawn_enrichment_updater() {
     });
 }
 
+/// Map a flagd variant name to (enabled, attribute_sets) config.
+/// These mirror the variants defined in `services/flagd/performance.json`.
+fn variant_to_config(variant: &str) -> (bool, u8) {
+    match variant {
+        "basic" => (true, SET_SERVICE_IDENTITY),
+        "flags" => (true, SET_SERVICE_IDENTITY | SET_FLAG_VALUES),
+        "full" => (
+            true,
+            SET_SERVICE_IDENTITY | SET_FLAG_VALUES | SET_RUNTIME | SET_SYSTEM,
+        ),
+        // "off" and any unknown variant
+        _ => (false, 0),
+    }
+}
+
 async fn update_enrichment_config() {
     let of = OpenFeature::singleton().await;
     let client = of.create_client();
     let ctx = EvaluationContext::default();
 
-    // Fetch the config as a string and parse as JSON.
-    // get_struct_value requires TryFrom<StructValue> which serde_json::Value doesn't implement,
-    // so we use get_string_value and parse manually.
-    let config: serde_json::Value = match client
+    // span_enrichment_config is an object-typed flag in flagd. The Rust
+    // OpenFeature SDK's get_struct_value requires TryFrom<StructValue>,
+    // which serde_json::Value doesn't implement. Instead we fetch the
+    // resolved variant name via get_string_value and map it locally to
+    // the known (enabled, attribute_sets) configuration.
+    let variant = client
         .get_string_value("span_enrichment_config", Some(&ctx), None)
         .await
-    {
-        Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
-        Err(_) => serde_json::Value::default(),
-    };
+        .unwrap_or_else(|_| "off".into());
 
-    let enabled = config
-        .get("enabled")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let (enabled, sets) = variant_to_config(&variant);
     ENRICHMENT_ENABLED.store(enabled, Ordering::Relaxed);
-
-    let mut sets: u8 = 0;
-    if let Some(arr) = config.get("attribute_sets").and_then(|v| v.as_array()) {
-        for item in arr {
-            if let Some(s) = item.as_str() {
-                match s {
-                    "service_identity" => sets |= SET_SERVICE_IDENTITY,
-                    "flag_values" => sets |= SET_FLAG_VALUES,
-                    "runtime" => sets |= SET_RUNTIME,
-                    "system" => sets |= SET_SYSTEM,
-                    _ => {}
-                }
-            }
-        }
-    }
     ATTR_SETS.store(sets, Ordering::Relaxed);
 }

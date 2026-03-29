@@ -1,8 +1,8 @@
 //! FlagdSampler — Dynamic trace sampling via OpenFeature/flagd.
 //!
 //! Reads the `trace_sampling_rate` flag (float 0.0–1.0) from flagd
-//! on every sampling decision. Falls back to 1.0 (sample all) if
-//! flagd is unavailable.
+//! via a background task that refreshes the cached rate every 2 seconds.
+//! Falls back to 1.0 (sample all) if flagd is unavailable.
 
 use opentelemetry::trace::{Link, SamplingDecision, SamplingResult, SpanKind, TraceId, TraceState};
 use opentelemetry_sdk::trace::ShouldSample;
@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Shared cached sampling rate between the reader and background updater.
 /// Initialized to f64::to_bits(1.0) so we sample all spans until the updater sets the real value.
-static CACHED_RATE: AtomicU64 = AtomicU64::new(0x3FF0_0000_0000_0000);
+static CACHED_RATE: AtomicU64 = AtomicU64::new({ 1.0f64.to_bits() });
 
 /// Sampler that reads trace_sampling_rate from flagd.
 #[derive(Debug, Clone, Default)]

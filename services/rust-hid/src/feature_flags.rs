@@ -50,6 +50,24 @@ pub async fn init_flagd() {
     }
 }
 
+/// Resolve host.name from OTEL_RESOURCE_ATTRIBUTES if set, falling back to
+/// gethostname(). Inside Docker, gethostname() returns the container ID;
+/// OTEL_RESOURCE_ATTRIBUTES provides the real host name.
+fn resolve_host_name() -> String {
+    if let Ok(attrs) = std::env::var("OTEL_RESOURCE_ATTRIBUTES") {
+        for pair in attrs.split(',') {
+            if let Some((key, value)) = pair.split_once('=')
+                && key.trim() == "host.name"
+            {
+                return value.trim().to_string();
+            }
+        }
+    }
+    gethostname::gethostname()
+        .into_string()
+        .unwrap_or_else(|_| "unknown".into())
+}
+
 /// Build evaluation context with service identity for flag targeting.
 fn build_eval_context() -> EvaluationContext {
     let mut ctx = EvaluationContext::default();
@@ -64,12 +82,7 @@ fn build_eval_context() -> EvaluationContext {
         std::env::var("OTEL_SERVICE_NAMESPACE")
             .unwrap_or_else(|_| "infrastructure".into()),
     );
-    ctx.add_custom_field(
-        "hostname",
-        gethostname::gethostname()
-            .into_string()
-            .unwrap_or_else(|_| "unknown".into()),
-    );
+    ctx.add_custom_field("hostname", resolve_host_name());
     ctx
 }
 
