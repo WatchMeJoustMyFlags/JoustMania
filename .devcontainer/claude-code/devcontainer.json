@@ -1,0 +1,36 @@
+{
+  "name": "Claude Code Agent",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "workspaceFolder": "/workspace",
+
+  "containerEnv": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
+
+  "secrets": {
+    "ANTHROPIC_API_KEY": {
+      "description": "Anthropic API key for Claude Code"
+    },
+    "GH_TOKEN": {
+      "description": "GitHub fine-grained PAT (contents:read, pull_requests:write, issues:write)"
+    }
+  },
+
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
+
+  "postCreateCommand": "git config --global url.\"https://${GH_TOKEN}@github.com/\".insteadOf \"git@github.com:\" && uv sync --all-packages 2>/dev/null; true",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "anthropics.claude-code"
+      ]
+    }
+  },
+
+  "remoteUser": "claude"
+}
