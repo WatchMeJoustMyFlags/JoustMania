@@ -78,6 +78,9 @@ class FlagdSpanEnrichmentProcessor(SpanProcessor):
             self._cached_config = result if isinstance(result, dict) else dict(_DEFAULT_CONFIG)
             self._last_fetch = now
         except Exception:
+            # Advance _last_fetch on failure to honor TTL as backoff,
+            # preventing per-span retries when flagd is down.
+            self._last_fetch = now
             logger.debug("Failed to read span_enrichment_config from flagd, using cached value", exc_info=True)
         return self._cached_config
 

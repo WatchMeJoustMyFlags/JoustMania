@@ -92,8 +92,13 @@ def _do_init() -> None:
 
     resource = get_otel_resource()
 
+    from lib.feature_flags import init_flag_domain
     from lib.flagd_sampler import FlagdSampler
     from lib.flagd_span_processor import FlagdSpanEnrichmentProcessor
+
+    # Ensure the performance flag domain is initialized before creating
+    # flag-driven components so they don't evaluate against a no-op provider.
+    init_flag_domain("performance")
 
     provider = TracerProvider(resource=resource, sampler=FlagdSampler())
     otlp_exporter = OTLPSpanExporter(endpoint=otlp_endpoint, insecure=True)

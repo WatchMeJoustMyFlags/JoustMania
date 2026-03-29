@@ -58,5 +58,9 @@ class FlagdLogLevelFilter(LogRecordProcessor):
             self._cached_verbose = client.get_boolean_value("verbose_logging", False)
             self._last_fetch = now
         except Exception:
+            # Advance _last_fetch on failure to honor TTL as backoff,
+            # preventing per-record retries and potential recursion when
+            # this filter's own debug log flows through the same pipeline.
+            self._last_fetch = now
             logger.debug("Failed to read verbose_logging from flagd, using cached value", exc_info=True)
         return self._cached_verbose

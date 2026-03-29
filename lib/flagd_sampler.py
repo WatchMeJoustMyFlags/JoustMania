@@ -69,5 +69,8 @@ class FlagdSampler(Sampler):
             self._cached_rate = client.get_float_value("trace_sampling_rate", 1.0, eval_ctx)
             self._last_fetch = now
         except Exception:
+            # Advance _last_fetch on failure to honor TTL as backoff,
+            # preventing per-decision retries when flagd is down.
+            self._last_fetch = now
             logger.debug("Failed to read trace_sampling_rate from flagd, using cached value", exc_info=True)
         return self._cached_rate
