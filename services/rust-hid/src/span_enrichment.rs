@@ -4,6 +4,7 @@
 //! diagnostic attributes to spans. Uses the same attribute sets as the
 //! Python and Go implementations for cross-language consistency.
 
+use crate::feature_flags::resolve_host_name;
 use open_feature::{EvaluationContext, OpenFeature};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
@@ -130,24 +131,6 @@ where
             }
         }
     }
-}
-
-/// Resolve host.name from OTEL_RESOURCE_ATTRIBUTES if set, falling back to
-/// gethostname(). Inside Docker, gethostname() returns the container ID;
-/// OTEL_RESOURCE_ATTRIBUTES provides the real host name.
-fn resolve_host_name() -> String {
-    if let Ok(attrs) = std::env::var("OTEL_RESOURCE_ATTRIBUTES") {
-        for pair in attrs.split(',') {
-            if let Some((key, value)) = pair.split_once('=')
-                && key.trim() == "host.name"
-            {
-                return value.trim().to_string();
-            }
-        }
-    }
-    gethostname::gethostname()
-        .into_string()
-        .unwrap_or_else(|_| "unknown".into())
 }
 
 fn num_cpus() -> usize {

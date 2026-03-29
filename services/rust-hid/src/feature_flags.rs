@@ -53,7 +53,7 @@ pub async fn init_flagd() {
 /// Resolve host.name from OTEL_RESOURCE_ATTRIBUTES if set, falling back to
 /// gethostname(). Inside Docker, gethostname() returns the container ID;
 /// OTEL_RESOURCE_ATTRIBUTES provides the real host name.
-fn resolve_host_name() -> String {
+pub fn resolve_host_name() -> String {
     if let Ok(attrs) = std::env::var("OTEL_RESOURCE_ATTRIBUTES") {
         for pair in attrs.split(',') {
             if let Some((key, value)) = pair.split_once('=')
