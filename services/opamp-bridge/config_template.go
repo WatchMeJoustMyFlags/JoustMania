@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"strings"
 	"text/template"
 )
@@ -51,9 +52,13 @@ func RenderCollectorConfig(flags FlagValues) ([]byte, error) {
 		sevNum = severityToNumber["INFO"]
 	}
 
-	// Clamp rate to [0, 1.0] — values outside this range from flagd would
-	// produce invalid sampling percentages (negative or >100).
-	rate := flags.TailSamplingRate
+	// Guard against NaN/Inf from flagd (e.g., division-by-zero in targeting
+	// rules) then clamp to [0, 1.0] — values outside this range would produce
+	// invalid sampling percentages (negative or >100).
+	rate := flags.HeadSamplingRate
+	if math.IsNaN(rate) || math.IsInf(rate, 0) {
+		rate = 1.0 // safe default: keep all traces
+	}
 	if rate < 0 {
 		rate = 0
 	}

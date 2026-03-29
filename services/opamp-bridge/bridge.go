@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -16,7 +17,7 @@ import (
 
 // FlagValues holds the current collector-level flag values.
 type FlagValues struct {
-	TailSamplingRate  float64
+	HeadSamplingRate  float64
 	LogFilterSeverity string
 }
 
@@ -43,7 +44,7 @@ func NewBridge(client *openfeature.Client, listenAddr string, pollInterval time.
 		listenAddr:   listenAddr,
 		pollInterval: pollInterval,
 		current: FlagValues{
-			TailSamplingRate:  1.0,
+			HeadSamplingRate:  1.0,
 			LogFilterSeverity: "INFO",
 		},
 	}
@@ -51,7 +52,20 @@ func NewBridge(client *openfeature.Client, listenAddr string, pollInterval time.
 
 // Start begins the OpAMP server and flag polling loop.
 func (b *Bridge) Start(ctx context.Context) error {
+	if b.pollInterval <= 0 {
+		return fmt.Errorf("pollInterval must be positive, got %s", b.pollInterval)
+	}
+
 	b.srv = server.New(newLogger())
+
+	// Read flags before starting the server so that agents connecting
+	// immediately after Start() receive live values instead of defaults.
+	initial := b.readFlags(ctx)
+	b.mu.Lock()
+	b.current = initial
+	b.mu.Unlock()
+	log.Printf("initial flags: sampling_rate=%.2f, log_severity=%s",
+		initial.HeadSamplingRate, initial.LogFilterSeverity)
 
 	settings := server.StartSettings{
 		Settings: server.Settings{
@@ -73,7 +87,9 @@ func (b *Bridge) Start(ctx context.Context) error {
 									log.Printf("failed to render config for new agent: %v", err)
 									return
 								}
-								if err := conn.Send(connCtx, &protobufs.ServerToAgent{
+								sendCtx, sendCancel := context.WithTimeout(connCtx, 5*time.Second)
+								defer sendCancel()
+								if err := conn.Send(sendCtx, &protobufs.ServerToAgent{
 									RemoteConfig: &protobufs.AgentRemoteConfig{
 										Config: &protobufs.AgentConfigMap{
 											ConfigMap: map[string]*protobufs.AgentConfigFile{
@@ -117,14 +133,6 @@ func (b *Bridge) Start(ctx context.Context) error {
 	pollCtx, cancel := context.WithCancel(ctx)
 	b.cancel = cancel
 
-	// Initial flag read.
-	initial := b.readFlags(pollCtx)
-	b.mu.Lock()
-	b.current = initial
-	b.mu.Unlock()
-	log.Printf("initial flags: sampling_rate=%.2f, log_severity=%s",
-		initial.TailSamplingRate, initial.LogFilterSeverity)
-
 	go b.pollLoop(pollCtx)
 	return nil
 }
@@ -156,7 +164,7 @@ func (b *Bridge) pollLoop(ctx context.Context) {
 			current := b.current
 			if newValues != current {
 				log.Printf("flag change detected: sampling_rate=%.2f->%.2f, log_severity=%s->%s",
-					current.TailSamplingRate, newValues.TailSamplingRate,
+					current.HeadSamplingRate, newValues.HeadSamplingRate,
 					current.LogFilterSeverity, newValues.LogFilterSeverity)
 				b.current = newValues
 				b.mu.Unlock()
@@ -185,7 +193,7 @@ func (b *Bridge) readFlags(ctx context.Context) FlagValues {
 	}
 
 	return FlagValues{
-		TailSamplingRate:  samplingRate,
+		HeadSamplingRate:  samplingRate,
 		LogFilterSeverity: strings.ToUpper(logSeverity),
 	}
 }
@@ -218,9 +226,11 @@ func (b *Bridge) pushConfig(ctx context.Context) {
 	}
 
 	for _, conn := range conns {
-		if err := conn.Send(ctx, msg); err != nil {
+		sendCtx, sendCancel := context.WithTimeout(ctx, 5*time.Second)
+		if err := conn.Send(sendCtx, msg); err != nil {
 			log.Printf("failed to send config to agent: %v", err)
 		}
+		sendCancel()
 	}
 	log.Printf("pushed config to %d agent(s)", len(conns))
 }
