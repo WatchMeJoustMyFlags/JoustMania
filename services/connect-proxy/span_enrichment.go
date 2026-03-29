@@ -17,9 +17,19 @@ import (
 
 // Cached values to avoid syscalls on every span.
 var (
-	cachedHostname    = sync.OnceValue(func() string { h, _ := os.Hostname(); return h })
-	cachedServiceName = sync.OnceValue(func() string { return os.Getenv("OTEL_SERVICE_NAME") })
-	cachedServiceNS   = sync.OnceValue(func() string { return os.Getenv("OTEL_SERVICE_NAMESPACE") })
+	cachedHostname = sync.OnceValue(resolveHostName)
+	cachedServiceName = sync.OnceValue(func() string {
+		if v := os.Getenv("OTEL_SERVICE_NAME"); v != "" {
+			return v
+		}
+		return "connect-proxy"
+	})
+	cachedServiceNS = sync.OnceValue(func() string {
+		if v := os.Getenv("OTEL_SERVICE_NAMESPACE"); v != "" {
+			return v
+		}
+		return "infrastructure"
+	})
 )
 
 // SpanEnrichmentProcessor adds diagnostic attributes to spans based on flagd config.
@@ -97,6 +107,8 @@ func (p *SpanEnrichmentProcessor) ForceFlush(ctx context.Context) error { return
 // StartConfigUpdater spawns a goroutine that polls flagd every 2 seconds.
 func (p *SpanEnrichmentProcessor) StartConfigUpdater(ctx context.Context) {
 	go func() {
+		p.updateConfig(ctx) // fetch immediately on startup
+
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
 

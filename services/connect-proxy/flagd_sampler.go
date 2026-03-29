@@ -71,6 +71,19 @@ func (s *FlagdSampler) Description() string {
 // StartRateUpdater spawns a goroutine that polls flagd every 2 seconds.
 func (s *FlagdSampler) StartRateUpdater(ctx context.Context) {
 	go func() {
+		// Fetch immediately on startup, then poll every 2s.
+		rate, err := s.client.FloatValue(ctx, "trace_sampling_rate", 1.0, openfeature.EvaluationContext{})
+		if err == nil {
+			if !math.IsNaN(rate) {
+				if rate < 0 {
+					rate = 0
+				} else if rate > 1 {
+					rate = 1
+				}
+				s.cachedRate.Store(math.Float64bits(rate))
+			}
+		}
+
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
 

@@ -45,11 +45,12 @@ func getEnv(key, defaultValue string) string {
 }
 
 func main() {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
 
 	// Initialize flagd before tracing so sampler/enricher can read flags.
 	initFlagd()
 	defer shutdownFlagd()
+	defer cancel() // stop sampler/enricher updater goroutines before provider shutdown
 
 	logger, shutdownLogs := initLogs(ctx)
 	defer shutdownLogs(ctx)
