@@ -74,6 +74,10 @@ def _create_adapter_by_name(name: str) -> ControllerIOAdapter:
             from services.controller_manager.multiplexer.rust_adapter import RustServiceAdapter
 
             return RustServiceAdapter()
+        case "mobile":
+            from services.controller_manager.multiplexer.mobile_adapter import MobileAdapter
+
+            return MobileAdapter()
         case _:
             raise RuntimeError(f"Unknown adapter: {name}")
 
@@ -84,6 +88,20 @@ async def initialize_bt_adapters() -> None:
 
     discovery = CentralizedBTDiscovery()
     await discovery.initialize()
+
+
+def _is_mobile_enabled() -> bool:
+    """Check if mobile gateway feature flag is enabled."""
+    try:
+        from openfeature.evaluation_context import EvaluationContext
+
+        from lib.feature_flags import get_flag_client
+
+        client = get_flag_client("performance")
+        value = client.get_boolean_value("mobile_gateway_enabled", False, EvaluationContext())
+        return value is True  # Strict identity check (MagicMock objects won't match)
+    except Exception:
+        return False
 
 
 def _is_chaos_enabled() -> bool:
@@ -152,6 +170,10 @@ def create_backend() -> ControllerBackend:
     # Mock starts with 0 controllers; tests/demos add them via AddController.
     if "mock" not in names:
         names.append("mock")
+
+    # Conditionally inject mobile adapter if mobile_gateway_enabled flag is on
+    if "mobile" not in names and _is_mobile_enabled():
+        names.append("mobile")
 
     if len(names) > 1:
         validate_backend_combination(names)

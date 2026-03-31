@@ -71,6 +71,7 @@ ignore = ["ANN"]
 "__init__.py" = ["F401"]  # Unused imports OK in __init__
 "servicer.py" = ["N802"]  # gRPC methods use PascalCase (protocol requirement)
 "mock_control_service.py" = ["N802"]  # Mock gRPC service uses PascalCase
+"mobile_servicer.py" = ["N802"]  # Mobile gRPC service uses PascalCase
 "backend.py" = ["B027"]  # Intentional no-op methods for optional subclass override
 "server.py" = ["E402"]  # sys.path manipulation before imports
 "tests/*.py" = ["ARG002", "E402"]  # Test fixtures, sys.path manipulation

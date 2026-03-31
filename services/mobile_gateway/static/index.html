@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>JoustMania - Phone Controller</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; overflow: hidden; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  background: #111;
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+#join-screen {
+  text-align: center;
+}
+
+#join-screen h1 {
+  font-size: 2rem;
+  margin-bottom: 1rem;
+}
+
+#name-input {
+  font-size: 1.2rem;
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  border: 2px solid #555;
+  background: #222;
+  color: #fff;
+  width: 80%;
+  max-width: 300px;
+  margin-bottom: 1rem;
+  text-align: center;
+}
+
+#join-btn {
+  font-size: 1.5rem;
+  padding: 1rem 3rem;
+  border-radius: 16px;
+  border: none;
+  background: #4CAF50;
+  color: #fff;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#join-btn:active { background: #388E3C; }
+
+#controller-screen {
+  display: none;
+  width: 100%;
+  height: 100%;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+#status {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  font-size: 0.75rem;
+  opacity: 0.5;
+}
+
+#move-btn {
+  width: 70vmin;
+  height: 70vmin;
+  max-width: 300px;
+  max-height: 300px;
+  border-radius: 50%;
+  border: 4px solid rgba(255,255,255,0.3);
+  background: rgba(255,255,255,0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.5rem;
+  font-weight: bold;
+  -webkit-tap-highlight-color: transparent;
+  cursor: pointer;
+}
+
+#move-btn:active, #move-btn.pressed {
+  border-color: rgba(255,255,255,0.8);
+  background: rgba(255,255,255,0.25);
+}
+
+#ps-btn {
+  margin-top: 1.5rem;
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.3);
+  background: rgba(255,255,255,0.05);
+  font-size: 0.7rem;
+  color: rgba(255,255,255,0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  -webkit-tap-highlight-color: transparent;
+  cursor: pointer;
+}
+
+#ps-btn:active, #ps-btn.pressed {
+  border-color: rgba(255,255,255,0.8);
+}
+
+#error-msg {
+  color: #f44;
+  margin-top: 1rem;
+  font-size: 0.9rem;
+}
+</style>
+</head>
+<body>
+
+<div id="join-screen">
+  <h1>JoustMania</h1>
+  <p style="margin-bottom:1.5rem;opacity:0.7">Phone Controller</p>
+  <input id="name-input" type="text" placeholder="Your name" maxlength="20" autocomplete="off">
+  <br>
+  <button id="join-btn">Tap to Join</button>
+  <div id="error-msg"></div>
+</div>
+
+<div id="controller-screen">
+  <div id="status">Connecting...</div>
+  <div id="move-btn">MOVE</div>
+  <div id="ps-btn">PS</div>
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  const GRAVITY = 9.81;
+  let ws = null;
+  let wakeLock = null;
+  let buttons = 0;
+
+  const joinScreen = document.getElementById('join-screen');
+  const controllerScreen = document.getElementById('controller-screen');
+  const joinBtn = document.getElementById('join-btn');
+  const nameInput = document.getElementById('name-input');
+  const statusEl = document.getElementById('status');
+  const moveBtn = document.getElementById('move-btn');
+  const psBtn = document.getElementById('ps-btn');
+  const errorMsg = document.getElementById('error-msg');
+
+  // Build WebSocket URL relative to page location
+  function getWsUrl() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return proto + '//' + location.host + '/mobile/ws';
+  }
+
+  // Request Wake Lock to prevent screen dimming
+  async function requestWakeLock() {
+    try {
+      if ('wakeLock' in navigator) {
+        wakeLock = await navigator.wakeLock.request('screen');
+      }
+    } catch (e) {
+      // Wake Lock not supported or failed
+    }
+  }
+
+  // Request DeviceMotion permission (required on iOS 13+)
+  async function requestMotionPermission() {
+    if (typeof DeviceMotionEvent !== 'undefined' &&
+        typeof DeviceMotionEvent.requestPermission === 'function') {
+      const perm = await DeviceMotionEvent.requestPermission();
+      if (perm !== 'granted') {
+        throw new Error('Motion permission denied');
+      }
+    }
+  }
+
+  // Start sensor streaming
+  function startMotionStream() {
+    window.addEventListener('devicemotion', function(e) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+      const a = e.accelerationIncludingGravity || {};
+      const g = e.rotationRate || {};
+
+      ws.send(JSON.stringify({
+        type: 'motion',
+        ax: (a.x || 0) / GRAVITY,
+        ay: (a.y || 0) / GRAVITY,
+        az: (a.z || 0) / GRAVITY,
+        gx: (g.alpha || 0) * Math.PI / 180,
+        gy: (g.beta || 0) * Math.PI / 180,
+        gz: (g.gamma || 0) * Math.PI / 180,
+        buttons: buttons,
+        battery: 100
+      }));
+    }, { frequency: 60 });
+  }
+
+  // Button handlers
+  function setupButtons() {
+    function setButton(bit, pressed) {
+      if (pressed) {
+        buttons |= (1 << bit);
+      } else {
+        buttons &= ~(1 << bit);
+      }
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'button', buttons: buttons }));
+      }
+    }
+
+    // MOVE button (bit 0)
+    moveBtn.addEventListener('touchstart', function(e) {
+      e.preventDefault();
+      moveBtn.classList.add('pressed');
+      setButton(0, true);
+    });
+    moveBtn.addEventListener('touchend', function(e) {
+      e.preventDefault();
+      moveBtn.classList.remove('pressed');
+      setButton(0, false);
+    });
+
+    // PS button (bit 1)
+    psBtn.addEventListener('touchstart', function(e) {
+      e.preventDefault();
+      psBtn.classList.add('pressed');
+      setButton(1, true);
+    });
+    psBtn.addEventListener('touchend', function(e) {
+      e.preventDefault();
+      psBtn.classList.remove('pressed');
+      setButton(1, false);
+    });
+  }
+
+  // Handle incoming commands from server
+  function handleServerMessage(data) {
+    if (data.type === 'joined') {
+      statusEl.textContent = 'Connected: ' + data.serial;
+    } else if (data.type === 'led') {
+      // Set screen background color
+      document.body.style.backgroundColor =
+        'rgb(' + data.r + ',' + data.g + ',' + data.b + ')';
+    } else if (data.type === 'rumble') {
+      // Vibrate phone
+      if (data.intensity > 0 && navigator.vibrate) {
+        navigator.vibrate(Math.min(data.intensity * 2, 500));
+      }
+    } else if (data.type === 'error') {
+      errorMsg.textContent = data.message;
+    }
+  }
+
+  // Connect WebSocket
+  function connect(name) {
+    ws = new WebSocket(getWsUrl());
+
+    ws.onopen = function() {
+      ws.send(JSON.stringify({ type: 'join', name: name }));
+      startMotionStream();
+    };
+
+    ws.onmessage = function(e) {
+      try {
+        handleServerMessage(JSON.parse(e.data));
+      } catch (err) {
+        // Ignore parse errors
+      }
+    };
+
+    ws.onclose = function() {
+      statusEl.textContent = 'Disconnected';
+      // Attempt reconnect after 2s
+      setTimeout(function() {
+        if (controllerScreen.style.display !== 'none') {
+          connect(name);
+        }
+      }, 2000);
+    };
+
+    ws.onerror = function() {
+      errorMsg.textContent = 'Connection error';
+    };
+  }
+
+  // Join button handler
+  joinBtn.addEventListener('click', async function() {
+    try {
+      errorMsg.textContent = '';
+      await requestMotionPermission();
+      await requestWakeLock();
+
+      const name = nameInput.value.trim() || 'Phone';
+
+      joinScreen.style.display = 'none';
+      controllerScreen.style.display = 'flex';
+
+      setupButtons();
+      connect(name);
+    } catch (e) {
+      errorMsg.textContent = e.message || 'Failed to start';
+    }
+  });
+})();
+</script>
+</body>
+</html>

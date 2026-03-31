@@ -1,0 +1,70 @@
+syntax = "proto3";
+
+package joustmania.mobile_controller;
+
+option go_package = "github.com/WatchMeJoustMyFlags/JoustMania/services/mobile_gateway/proto/mobile_controller";
+
+// MobileControllerService — gRPC interface between mobile-gateway and controller-manager.
+// Runs on controller-manager port 50063.
+service MobileControllerService {
+  // Register a phone as a controller. Returns assigned serial.
+  rpc RegisterPhone(RegisterPhoneRequest) returns (RegisterPhoneResponse);
+
+  // Unregister a phone controller.
+  rpc UnregisterPhone(UnregisterPhoneRequest) returns (UnregisterPhoneResponse);
+
+  // Bidirectional stream: gateway pushes sensor data, receives LED/rumble commands.
+  rpc StreamPhoneData(stream PhoneDataUpdate) returns (stream PhoneCommand);
+}
+
+message RegisterPhoneRequest {
+  string name = 1;  // User-chosen display name (e.g. "Simon's iPhone")
+}
+
+message RegisterPhoneResponse {
+  string serial = 1;   // Assigned serial (e.g. "PHONE0000")
+  bool success = 2;
+}
+
+message UnregisterPhoneRequest {
+  string serial = 1;
+}
+
+message UnregisterPhoneResponse {
+  bool success = 1;
+}
+
+// Sensor data pushed from phone via gateway at ~60Hz.
+message PhoneDataUpdate {
+  string serial = 1;
+  Vector3 accel = 2;    // Acceleration in g-force
+  Vector3 gyro = 3;     // Angular velocity in rad/s
+  uint32 buttons = 4;   // Button bitmask (bit 0 = MOVE, bit 1 = PS)
+  int32 battery = 5;    // Battery percentage 0-100
+  uint64 seq = 6;       // Sequence number for drop detection
+}
+
+// Command sent back to phone via gateway.
+message PhoneCommand {
+  string serial = 1;
+  oneof command {
+    LedColor led = 2;
+    RumbleCommand rumble = 3;
+  }
+}
+
+message Vector3 {
+  float x = 1;
+  float y = 2;
+  float z = 3;
+}
+
+message LedColor {
+  uint32 r = 1;
+  uint32 g = 2;
+  uint32 b = 3;
+}
+
+message RumbleCommand {
+  uint32 intensity = 1;  // 0-255
+}

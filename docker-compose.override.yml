@@ -13,6 +13,12 @@ services:
     ports:
       - "50052:50052"  # Main gRPC port
       - "50062:50062"  # Mock control API
+      - "50063:50063"  # Mobile controller gRPC
+
+  # Mobile Gateway - Expose port for testing
+  mobile-gateway:
+    ports:
+      - "8070:8070"  # HTTP/WebSocket
 
   # Game Coordinator - Expose ports for testing
   game-coordinator:

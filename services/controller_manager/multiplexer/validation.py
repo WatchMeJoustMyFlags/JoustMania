@@ -13,6 +13,11 @@ VALID_COMBINATIONS = {
     frozenset({"mock", "rust"}),
     frozenset({"python", "rust"}),
     frozenset({"mock", "python", "rust"}),
+    frozenset({"mobile"}),
+    frozenset({"mock", "mobile"}),
+    frozenset({"mock", "python", "mobile"}),
+    frozenset({"mock", "rust", "mobile"}),
+    frozenset({"mock", "python", "rust", "mobile"}),
 }
 
 

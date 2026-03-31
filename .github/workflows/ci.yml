@@ -77,6 +77,7 @@ jobs:
           - audio
           - pairing_daemon
           - python_hid
+          - mobile_gateway
     steps:
       - uses: actions/checkout@v4
 
@@ -467,6 +468,9 @@ jobs:
           - service: python-hid
             dockerfile: services/python_hid/Dockerfile
             image_name: python-hid
+          - service: mobile-gateway
+            dockerfile: services/mobile_gateway/Dockerfile
+            image_name: mobile-gateway
           - service: otel-collector
             dockerfile: images/otel-collector/Dockerfile
             context: images/otel-collector

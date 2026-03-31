@@ -1,0 +1,15 @@
+version: v2
+# Docker build version for mobile-gateway — outputs to /workspace/gen
+# Note: Without paths=source_relative, files are organized by go_package path
+plugins:
+  # Generate Go message types
+  - remote: buf.build/protocolbuffers/go:v1.35.1
+    out: ../gen
+  # Generate Go gRPC client/server code
+  - remote: buf.build/grpc/go:v1.5.1
+    out: ../gen
+inputs:
+  # Only generate for mobile_controller.proto
+  - directory: .
+    paths:
+      - mobile_controller.proto

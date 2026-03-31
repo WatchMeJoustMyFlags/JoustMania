@@ -93,6 +93,9 @@ EXPOSE 50052
 # Expose Prometheus metrics port (Phase 38)
 EXPOSE 8000
 
+# Expose mobile controller gRPC port (Issue #594)
+EXPOSE 50063
+
 # Note: Controller manager needs privileged access for bluetooth
 # Run with: docker run --privileged or docker-compose privileged: true
 
