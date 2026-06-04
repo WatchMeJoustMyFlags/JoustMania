@@ -9,6 +9,7 @@ import (
 	"context"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -79,7 +80,8 @@ type EvalTrigger struct {
 const throttleInterval = time.Second
 
 // Loop wires the rules engine to the action sink and is invoked once per gated
-// signal update.
+// signal update. It is safe for concurrent use: the gRPC trace and metrics
+// Export handlers each invoke OnEvaluate from their own goroutines.
 type Loop struct {
 	Rules   RulesEngine
 	Actions ActionSink
@@ -88,6 +90,8 @@ type Loop struct {
 	// Tracer produces the audit spans; tests inject a recording tracer.
 	Tracer trace.Tracer
 
+	// mu guards the log-throttle state below.
+	mu      sync.Mutex
 	lastLog time.Time
 	now     func() time.Time
 }
@@ -115,12 +119,7 @@ func NewLoop(log *slog.Logger) *Loop {
 // evaluations cost no spans; the root span is backdated to trig.T0 so its
 // duration covers the whole Export processing.
 func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig EvalTrigger) {
-	now := l.now
-	if now == nil {
-		now = time.Now
-	}
-	if t := now(); t.Sub(l.lastLog) >= throttleInterval {
-		l.lastLog = t
+	if l.shouldLog() {
 		l.Log.Info("agent.evaluate",
 			"session_id", c.SessionID,
 			"player_count", len(c.Players),
@@ -134,6 +133,12 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 		return // no decision, no trace
 	}
 
+	// The root span wraps the inbound OTLP Export with rpc.* semconv attrs and
+	// kind SERVER. There is no otelgrpc interceptor on this server today, so
+	// this is the only span representing the Export. CAVEAT: if
+	// otelgrpc.NewServerHandler is ever added to the agent's gRPC server,
+	// demote this span to SpanKindInternal and drop the rpc.* attributes to
+	// avoid a duplicate server span for the same RPC.
 	rootCtx, root := l.Tracer.Start(ctx, SpanReceived,
 		trace.WithTimestamp(trig.T0),
 		trace.WithSpanKind(trace.SpanKindServer),
@@ -166,6 +171,10 @@ func (l *Loop) runDecision(ctx context.Context, d Decision, allowed []string) {
 	// The interventions.allowed evaluation as a feature_flag.* span event
 	// (semconv) — same shape the openfeature OTel hooks emit in the Python
 	// services. The stub provider is replaced by flagd in #725.
+	// NOTE: the bare event name "feature_flag" is intentional — it matches the
+	// openfeature contrib TracingHook used by the Python services (current
+	// semconv drafts call the log event "feature_flag.evaluation"); do not
+	// "fix" this without also migrating the Python side, or the traces diverge.
 	dSpan.AddEvent("feature_flag", trace.WithAttributes(
 		semconv.FeatureFlagKey(interventionsAllowedFlagKey),
 		semconv.FeatureFlagProviderName(flagProviderStub),
@@ -185,11 +194,31 @@ func (l *Loop) runDecision(ctx context.Context, d Decision, allowed []string) {
 	}
 	if err := l.Actions.Apply(dCtx, d); err != nil {
 		aSpan.RecordError(err)
-		aSpan.SetAttributes(semconv.ErrorTypeKey.String("apply_failed"))
+		// semconv.ErrorType derives the low-cardinality error class from the
+		// Go error's dynamic type, per the error.type convention.
+		aSpan.SetAttributes(semconv.ErrorType(err))
 		aSpan.SetStatus(codes.Error, err.Error())
 		l.Log.Error("agent.apply_failed",
 			"error", err, "intervention", d.Intervention)
 	}
+}
+
+// shouldLog rate-limits the evaluate log line to once per throttleInterval.
+// Mutex-guarded: OnEvaluate runs concurrently from the trace and metrics
+// Export handler goroutines.
+func (l *Loop) shouldLog() bool {
+	now := l.now
+	if now == nil {
+		now = time.Now
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	t := now()
+	if t.Sub(l.lastLog) < throttleInterval {
+		return false
+	}
+	l.lastLog = t
+	return true
 }
 
 // permissions returns the configured permission source, defaulting to

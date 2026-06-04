@@ -39,6 +39,17 @@ const (
 	probeInterval = 5 * time.Second
 )
 
+// defaultServiceName is the agent's OTEL service name default. It MUST stay
+// identical everywhere it is used: the exported resource (otel.go) and the
+// extractor self-skip (SetOwnService) rely on matching values to break the
+// otlp/agent self-ingestion loop.
+const defaultServiceName = "agent"
+
+// resolveServiceName resolves the agent's OTEL service name (env override or default).
+func resolveServiceName() string {
+	return getEnv("OTEL_SERVICE_NAME", defaultServiceName)
+}
+
 func getEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
@@ -79,7 +90,7 @@ func main() {
 	store := gamecontext.NewStore(playerTTL, sessionGrace, nil)
 	// Skip the agent's own telemetry when the collector fans it back to us
 	// (otlp/agent exporter) — breaks the self-ingestion feedback loop.
-	store.SetOwnService(getEnv("OTEL_SERVICE_NAME", "agent"))
+	store.SetOwnService(resolveServiceName())
 
 	loop := decision.NewLoop(logger)
 	if strings.EqualFold(getEnv("AGENT_PROBE_DECISIONS", ""), "true") {

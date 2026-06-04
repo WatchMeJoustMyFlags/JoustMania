@@ -51,7 +51,7 @@ func newOTELResource(ctx context.Context, serviceName, namespace string) (*resou
 			semconv.HostName(hostname),
 			semconv.ContainerName(serviceName),
 			attribute.Int("process.pid", os.Getpid()),
-			attribute.String("process.executable.name", "agent"),
+			attribute.String("process.executable.name", defaultServiceName),
 			attribute.String("process.runtime.name", "go"),
 			attribute.String("process.runtime.version", runtime.Version()),
 			attribute.String("telemetry.sdk.name", "opentelemetry"),
@@ -68,7 +68,7 @@ func initTracing(ctx context.Context) func(context.Context) error {
 		return func(context.Context) error { return nil }
 	}
 
-	serviceName := getEnv("OTEL_SERVICE_NAME", "agent")
+	serviceName := resolveServiceName()
 	namespace := getEnv("OTEL_SERVICE_NAMESPACE", "infrastructure")
 
 	endpoint = strings.TrimPrefix(endpoint, "http://")
@@ -110,7 +110,7 @@ func initMetrics(ctx context.Context) func(context.Context) error {
 		return func(context.Context) error { return nil }
 	}
 
-	serviceName := getEnv("OTEL_SERVICE_NAME", "agent")
+	serviceName := resolveServiceName()
 	namespace := getEnv("OTEL_SERVICE_NAMESPACE", "infrastructure")
 
 	endpoint = strings.TrimPrefix(endpoint, "http://")

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,12 +24,12 @@ type fakeRules struct{ out []Decision }
 func (f fakeRules) Evaluate(context.Context, gamecontext.GameContext) []Decision { return f.out }
 
 type fakeSink struct {
-	calls int
+	calls atomic.Int32
 	err   error
 }
 
 func (f *fakeSink) Apply(context.Context, Decision) error {
-	f.calls++
+	f.calls.Add(1)
 	return f.err
 }
 
@@ -168,8 +170,8 @@ func TestOnEvaluate_EmitsFullHierarchy(t *testing.T) {
 		t.Error("decision span must carry a feature_flag event")
 	}
 
-	if sink.calls != 1 {
-		t.Errorf("sink calls = %d, want 1", sink.calls)
+	if got := sink.calls.Load(); got != 1 {
+		t.Errorf("sink calls = %d, want 1", got)
 	}
 }
 
@@ -190,8 +192,8 @@ func TestOnEvaluate_MultipleDecisions(t *testing.T) {
 		len(spansByName(ended, SpanAction)) != 2 {
 		t.Fatalf("spans = %d, want 1 root + 2 decisions + 2 actions", len(ended))
 	}
-	if sink.calls != 2 {
-		t.Errorf("sink calls = %d, want 2", sink.calls)
+	if got := sink.calls.Load(); got != 2 {
+		t.Errorf("sink calls = %d, want 2", got)
 	}
 }
 
@@ -204,8 +206,8 @@ func TestOnEvaluate_BlockedDecisionRecordedNotApplied(t *testing.T) {
 
 	l.OnEvaluate(context.Background(), gamecontext.GameContext{}, testTrigger())
 
-	if sink.calls != 0 {
-		t.Fatalf("sink calls = %d, want 0 (blocked action must not apply)", sink.calls)
+	if got := sink.calls.Load(); got != 0 {
+		t.Fatalf("sink calls = %d, want 0 (blocked action must not apply)", got)
 	}
 	ended := sr.Ended()
 	if len(ended) != 3 {
@@ -236,8 +238,8 @@ func TestOnEvaluate_ApplyErrorRecorded(t *testing.T) {
 	if act.Status().Code != codes.Error {
 		t.Errorf("action status = %v, want error", act.Status().Code)
 	}
-	if v, ok := attrValue(act, "error.type"); !ok || v.AsString() == "" {
-		t.Error("action span must carry error.type (semconv)")
+	if v, ok := attrValue(act, "error.type"); !ok || v.AsString() != "*errors.errorString" {
+		t.Errorf("error.type = %q, want the Go error class per semconv.ErrorType", v.AsString())
 	}
 }
 
@@ -254,5 +256,29 @@ func TestProbeRules_RateLimited(t *testing.T) {
 	clock = clock.Add(6 * time.Second)
 	if d := p.Evaluate(context.Background(), gamecontext.GameContext{}); len(d) != 1 {
 		t.Fatalf("probe after interval = %d decisions, want 1", len(d))
+	}
+}
+
+// TestOnEvaluate_ConcurrentExportHandlers exercises the production call shape:
+// the trace and metrics gRPC Export handlers invoke OnEvaluate from separate
+// goroutines. Run under -race this guards the loop's shared throttle state.
+func TestOnEvaluate_ConcurrentExportHandlers(t *testing.T) {
+	l, sr := newTestLoop(t)
+	sink := &fakeSink{}
+	l.Rules = fakeRules{out: []Decision{{Intervention: "noop", Reason: "race"}}}
+	l.Actions = sink
+
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			l.OnEvaluate(context.Background(), gamecontext.GameContext{}, testTrigger())
+		}()
+	}
+	wg.Wait()
+
+	if got := len(spansByName(sr.Ended(), SpanReceived)); got != 50 {
+		t.Fatalf("root spans = %d, want 50", got)
 	}
 }
