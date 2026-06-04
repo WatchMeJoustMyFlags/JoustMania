@@ -33,6 +33,20 @@ type Store struct {
 	playerTTL    time.Duration
 	sessionGrace time.Duration
 	now          func() time.Time
+
+	// ownService is this agent's own OTEL service name. Telemetry from this
+	// service is skipped by the extractors: the collector fans the agent's own
+	// spans back to it (otlp/agent exporter), and while those spans carry no
+	// recognized signals anyway, the skip is cheap defense-in-depth against a
+	// self-ingestion feedback loop. Set once before serving; not mutex-guarded.
+	ownService string
+}
+
+// SetOwnService records the agent's own OTEL service name so the extractors
+// can skip the agent's own telemetry. Must be called before the store starts
+// receiving Apply* calls.
+func (s *Store) SetOwnService(name string) {
+	s.ownService = name
 }
 
 // NewStore constructs a Store. playerTTL bounds how long a silent player is

@@ -74,6 +74,70 @@ Both are stubs today. See
 [`docs/research/722-intervention-surface.md`](../../docs/research/722-intervention-surface.md)
 for the intervention-surface design.
 
+## Span schema (#724) — the trace is the audit log
+
+Every evaluation that produces decisions emits one trace (hierarchy always
+parent → child):
+
+```
+agent.span_received          one per triggering OTLP Export (backdated to arrival)
+  └─ agent.decision          one per Decision the rules engine returns
+       └─ agent.action       one per decision, wrapping the ActionSink call
+```
+
+**Traces are emitted only when the rules engine returns ≥ 1 decision** —
+including decisions that end up *blocked*. Idle evaluations cost no spans.
+Blocked actions are recorded (`decision.blocked = true` on both the decision
+and action spans, ActionSink **not** called), never silently dropped.
+
+### Decision-span attributes
+
+Every `agent.decision` span always carries the **full** schema; subsystems that
+do not exist yet contribute explicit placeholders so the trace shows its
+complete shape from day one:
+
+| Attribute | Today | Real value arrives with |
+|-----------|-------|-------------------------|
+| `agent.mode` | `"rules"` | LLM backend issue |
+| `agent.objectives` | `"unset"` | #725 / #731 |
+| `interventions.allowed` | `"unrestricted"` | #725 (flagd) |
+| `inference.configured` / `inference.used` | `"none"` | LLM backend |
+| `inference.fallback_reason` | `""` | LLM backend |
+| `decision.action` / `decision.reason` | real (rules/probe) | — |
+| `decision.objective_served` | `"unset"` | #731 |
+| `decision.blocked` | from `Permissions.Allowed()` | #725 |
+| `fitness.evaluated` | `[]` | #731 |
+| `gen_ai.agent.name` | `"joustmania-agent"` | — |
+
+### Semantic conventions
+
+OTel semantic conventions ([semconv v1.34.0](https://pkg.go.dev/go.opentelemetry.io/otel/semconv/v1.34.0))
+are used wherever one honestly applies:
+
+| Where | Convention |
+|-------|-----------|
+| `agent.span_received` | `rpc.system=grpc`, `rpc.service` (OTLP `TraceService`/`MetricsService`), `rpc.method=Export`; span kind `SERVER` |
+| `agent.decision` | `gen_ai.agent.name` identity (the full [GenAI agent conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-agent-spans/) apply once an LLM inference path exists — `gen_ai.provider.name` etc. land as a `gen_ai.*` child span in llm mode) |
+| `agent.decision` event | `feature_flag` span event (`feature_flag.key=interventions.allowed`, `feature_flag.provider.name`, `feature_flag.result.variant`) — same shape the openfeature OTel hooks emit in the Python services; provider is `"stub"` until flagd (#725) |
+| `agent.action` failures | `span.RecordError` + `error.type` + status `ERROR` |
+
+`decision.*`, `fitness.*`, `agent.mode`, `agent.objectives` and
+`interventions.allowed` have no semantic convention and are custom to this
+project.
+
+### Self-ingestion safety
+
+The collector's `otlp/agent` exporter fans the **agent's own spans back to the
+agent**. Two layers prevent a feedback loop:
+
+1. Naturally: the agent's spans carry no recognized game signals, so extraction
+   reports "nothing updated" and no evaluation (hence no new span) is triggered.
+2. Defense-in-depth: the extractors skip any resource whose `service.name`
+   equals the agent's own `OTEL_SERVICE_NAME`.
+
+A collector-side filtered pipeline (excluding the agent from its own fan-out)
+is a possible follow-up but not needed today.
+
 ## Configuration
 
 All configuration is via environment variables:
@@ -83,7 +147,9 @@ All configuration is via environment variables:
 | `AGENT_LISTEN_ADDR` | `:4317` | OTLP gRPC receiver listen address |
 | `AGENT_HEALTH_ADDR` | `:13134` | HTTP health endpoint listen address (`GET /healthz`) |
 | `LOG_LEVEL` | `info` | Log verbosity |
-| `OTEL_*` | _unset_ | Self-telemetry; currently **no-op** (tracked in a separate issue) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | set in compose | Self-telemetry export (decision audit traces → collector → Jaeger); no-op when unset |
+| `OTEL_SERVICE_NAME` | `agent` | Service identity; also drives the self-ingestion skip |
+| `AGENT_PROBE_DECISIONS` | _unset_ | `true` enables the demo/verification probe: a synthetic `noop` decision (and thus a full audit trace) at most every 5 s. Never for production sessions |
 
 | Property | Value |
 |----------|-------|

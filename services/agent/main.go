@@ -35,6 +35,8 @@ const (
 	playerTTL    = 5 * time.Second
 	sessionGrace = 15 * time.Second
 	evictEvery   = 1 * time.Second
+	// probeInterval rate-limits the AGENT_PROBE_DECISIONS demo probe.
+	probeInterval = 5 * time.Second
 )
 
 func getEnv(key, defaultValue string) string {
@@ -75,7 +77,18 @@ func main() {
 	defer shutdownMetrics(context.Background())
 
 	store := gamecontext.NewStore(playerTTL, sessionGrace, nil)
+	// Skip the agent's own telemetry when the collector fans it back to us
+	// (otlp/agent exporter) — breaks the self-ingestion feedback loop.
+	store.SetOwnService(getEnv("OTEL_SERVICE_NAME", "agent"))
+
 	loop := decision.NewLoop(logger)
+	if strings.EqualFold(getEnv("AGENT_PROBE_DECISIONS", ""), "true") {
+		// Demo/verification mode: emit a synthetic noop decision (and thus the
+		// full audit trace, #724) at most once per probe interval.
+		loop.Rules = decision.NewProbeRules(probeInterval, nil)
+		slog.Warn("Probe decisions enabled (demo/verification mode)",
+			"interval", probeInterval)
+	}
 	pipe := newPipeline(store, loop, playerTTL)
 
 	grpcServer := grpc.NewServer()

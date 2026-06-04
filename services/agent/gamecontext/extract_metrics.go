@@ -41,6 +41,9 @@ func (s *Store) ApplyMetrics(md pmetric.Metrics) bool {
 	updated := false
 	rms := md.ResourceMetrics()
 	for i := 0; i < rms.Len(); i++ {
+		if s.isOwnResource(rms.At(i).Resource()) {
+			continue
+		}
 		sms := rms.At(i).ScopeMetrics()
 		for j := 0; j < sms.Len(); j++ {
 			ms := sms.At(j).Metrics()

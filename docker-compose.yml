@@ -681,7 +681,8 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - OTEL_SERVICE_NAME=agent
       - OTEL_SERVICE_NAMESPACE=infrastructure
-      # NOTE: No OTEL_EXPORTER_OTLP_ENDPOINT — agent self-telemetry is a separate issue.
+      # Self-telemetry (#724): the agent's own decision-audit spans flow to Jaeger.
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
     networks:
