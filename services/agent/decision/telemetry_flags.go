@@ -13,4 +13,8 @@ const (
 	// default dispatches nothing. Distinct from the #724 "unrestricted"
 	// placeholder, which meant "no permission information".
 	AllowedNone = "none"
+	// AttrDecisionBlockReason carries the structured BlockReason (#728) on a
+	// blocked decision span (not_allowed / battery_threshold / rate_limit), so
+	// #729 finds the attribution on the span as well as in the LayerState.
+	AttrDecisionBlockReason = "decision.block_reason"
 )

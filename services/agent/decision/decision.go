@@ -5,21 +5,29 @@
 // (issue #724). ObjectiveRules (#726) is the objective-weighted rules engine;
 // the action sink stays a no-op until the intervention API (#730).
 //
-// On every gated cycle the loop also evaluates the agent's OpenFeature control
-// flags (issue #727) — never cached at startup — and applies them in order:
+// On every gated cycle the loop evaluates the agent's OpenFeature control flags
+// across all four layers (issues #727, #728) — never cached at startup — and
+// applies them in order:
 //
-//	enabled               kill switch; false short-circuits the whole loop
-//	mode                  selects the "rules" vs "llm" decision path
-//	objectives            session-goal weights fed into the rules engine
-//	interventions_allowed permission gate; decisions not on the allow-list are
-//	                      blocked (decision.blocked=true on the span) before they
-//	                      reach the action sink
+//	Existence:  enabled    kill switch; false short-circuits the whole loop
+//	            mode       selects the "rules" vs "llm" decision path
+//	Objective:  objectives session-goal weights driven into the rules engine via
+//	                       a LiveObjectives source (#726 engine reads it each cycle)
+//	Capability: model, prompt_variant   recorded for the M4 LLM path
+//	Permission: interventions_allowed   allow-list gate (#727)
+//	            policy.battery_threshold blocks player-targeted interventions when
+//	                                     the target's battery is below threshold
+//	            policy.max_interventions_per_minute  weighted sliding-window rate
+//	                                     limit across all dispatched interventions
+//	            policy.movement_variance_window      recorded; parameterizes the
+//	                                     #726/#731 variance rules
 //
-// The objectives flag drives the engine through a LiveObjectives source: the
-// loop publishes the per-cycle weights before running the rules, and the engine
-// reads them inside Evaluate. When the flag yields no objectives the engine
-// falls back to its DefaultObjectiveWeights (#726 config), so flagd being
-// unreachable degrades to the deterministic {endurance: 1.0} baseline.
+// Every decision that the rules return is audited as an agent.decision ->
+// agent.action span pair (#724); decisions blocked by any permission gate carry
+// decision.blocked=true (with the specific BlockReason) and are NOT applied,
+// never silently dropped. Every evaluated flag value plus the per-decision
+// outcomes are captured in a LayerState (see layerstate.go) — the span-attribute
+// source of truth for #729 — which OnEvaluate returns and retains.
 package decision
 
 import (
@@ -121,10 +129,18 @@ type Loop struct {
 	// Tracer produces the audit spans; tests inject a recording tracer.
 	Tracer trace.Tracer
 
-	// mu guards the log-throttle state below.
+	// mu guards the log-throttle state and lastLayer below.
 	mu      sync.Mutex
 	lastLog time.Time
 	now     func() time.Time
+
+	// limiter is the unified weighted per-minute rate limiter spanning all
+	// dispatched interventions across cycles (#726 + #728, see ratelimit.go). It
+	// is mutex-guarded internally for the concurrent Export handlers.
+	limiter rateLimiter
+	// lastLayer is the most recent fully-evaluated LayerState, retained so #729
+	// (span attribution) and tests can read the per-cycle layer snapshot.
+	lastLayer LayerState
 }
 
 // NewLoop builds a Loop with the no-op rules/actions stubs, the global tracer,
@@ -148,28 +164,39 @@ func NewLoop(flagSource FlagSource, log *slog.Logger) *Loop {
 	}
 }
 
-// OnEvaluate runs one evaluation pass:
-//  1. evaluate the control flags (never cached);
-//  2. kill switch — if enabled is false, return before any rules or spans;
-//  3. publish the objectives flag into the rules engine;
-//  4. emit a throttled (max 1/second) info log and run the rules;
-//  5. when the rules return at least one decision, emit the full audit trace —
-//     lazily, so idle evaluations cost no spans; the root span is backdated to
-//     trig.T0 so its duration covers the whole Export processing;
-//  6. per decision: gate on interventions_allowed (blocked decisions are
-//     recorded with decision.blocked=true, never silently dropped) and apply the
-//     permitted ones through the action sink.
-func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig EvalTrigger) {
-	snapshot := l.Flags.Evaluate(ctx)
-
-	// Kill switch: enabled=false short-circuits before any rules evaluation or
-	// span emission. This is the safe default when flagd is unreachable.
-	if !snapshot.Enabled {
-		return
+// OnEvaluate runs one evaluation pass and returns the cycle's LayerState (also
+// retained on the loop for #729). Steps:
+//  1. evaluate all four flag layers (never cached);
+//  2. existence — if enabled is false, return the disabled LayerState before
+//     any rules run or spans are emitted;
+//  3. publish the objectives flag into the rules engine and run the rules;
+//  4. when the rules return at least one decision, emit the audit trace lazily
+//     (idle evaluations cost no spans); the root span is backdated to trig.T0 so
+//     its duration covers the whole Export processing;
+//  5. per decision: run the permission chain (allow-list -> battery threshold ->
+//     weighted rate limit), record the outcome (dispatched or the BlockReason)
+//     in the LayerState and on the decision/action spans, and apply only the
+//     fully-permitted decisions through the action sink.
+func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig EvalTrigger) LayerState {
+	now := l.now
+	if now == nil {
+		now = time.Now
 	}
 
-	// Publish the per-cycle objectives flag into the rules engine. The engine
-	// reads them inside Evaluate; engines that ignore objectives skip this.
+	snapshot := l.Flags.Evaluate(ctx)
+	state := newLayerState(snapshot)
+
+	// Existence layer: enabled=false short-circuits before any rules evaluation
+	// or span emission. This is the safe default when flagd is unreachable. The
+	// disabled state is still recorded so #729 can show "agent off" on the span.
+	if !snapshot.Enabled {
+		l.setLastLayer(state)
+		return state
+	}
+
+	// Objective layer: publish the per-cycle objectives flag into the rules
+	// engine. The engine reads them inside Evaluate; engines that ignore
+	// objectives (Noop/Probe) skip this.
 	if pub, ok := l.Rules.(objectivePublisher); ok {
 		pub.SetObjectives(snapshot.Objectives)
 	}
@@ -181,12 +208,18 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 			"game_mode", derefStr(c.Session.GameMode),
 			"duration", derefFloat(c.Session.DurationSeconds),
 			"mode", snapshot.Mode,
+			"model", snapshot.Capability.Model,
+			"prompt_variant", snapshot.Capability.PromptVariant,
+			"battery_threshold", snapshot.Policy.BatteryThreshold,
+			"variance_window", snapshot.Policy.MovementVarianceWindow,
+			"max_per_minute", snapshot.Policy.MaxInterventionsPerMinute,
 		)
 	}
 
 	decisions := l.decide(ctx, snapshot, c)
 	if len(decisions) == 0 {
-		return // no decision, no trace
+		l.setLastLayer(state) // no decision, no trace
+		return state
 	}
 
 	// The root span wraps the inbound OTLP Export with rpc.* semconv attrs and
@@ -208,19 +241,41 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 	)
 	defer root.End()
 
-	allowed := snapshot.InterventionsAllowed
 	for _, d := range decisions {
-		l.runDecision(rootCtx, snapshot, d, allowed)
+		l.runDecision(rootCtx, snapshot, c, d, now(), &state)
 	}
+
+	l.setLastLayer(state)
+	return state
+}
+
+// LastLayerState returns the LayerState from the most recent OnEvaluate call.
+// Issue #729 reads it to populate the decision span.
+func (l *Loop) LastLayerState() LayerState {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.lastLayer
+}
+
+// setLastLayer stores the cycle's LayerState under the loop mutex (OnEvaluate
+// runs concurrently from the trace and metrics Export handler goroutines).
+func (l *Loop) setLastLayer(state LayerState) {
+	l.mu.Lock()
+	l.lastLayer = state
+	l.mu.Unlock()
 }
 
 // decide selects the decision path from snapshot.Mode and runs it. The "llm"
-// path (M4) does not exist yet, so it logs a note and falls back to rules.
+// path (M4) does not exist yet, so it logs a note (with the capability-layer
+// model/prompt selection) and falls back to the rules engine.
 func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext) []Decision {
 	switch snapshot.Mode {
 	case "llm":
 		l.Log.Info("agent.mode_llm_fallback",
-			"note", "llm decision path not implemented (M4); falling back to rules")
+			"note", "llm decision path not implemented (M4); falling back to rules",
+			"model", snapshot.Capability.Model,
+			"prompt_variant", snapshot.Capability.PromptVariant,
+		)
 		return l.Rules.Evaluate(ctx, c)
 	default:
 		// "rules" and any unrecognized mode use the deterministic rules path.
@@ -229,14 +284,17 @@ func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, c gamecontex
 }
 
 // runDecision emits one agent.decision span (full #724 schema) and its
-// agent.action child, applying the decision unless its intervention is blocked
-// by the interventions_allowed permission gate. Blocked actions are recorded,
-// never silently dropped.
-func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, d Decision, allowed []string) {
-	blocked := !snapshot.Permits(d.Intervention)
+// agent.action child, runs the permission chain, records the outcome in state,
+// and applies the decision only if it passes every gate. Blocked decisions carry
+// decision.blocked=true (and the BlockReason) on both spans and in the
+// LayerState — recorded, never silently dropped.
+func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext, d Decision, now time.Time, state *LayerState) {
+	allowed := snapshot.InterventionsAllowed
+	cost := interventionCost(d.Intervention)
+	reason, blocked := l.evaluatePermission(snapshot, c, d, now, cost)
 
 	dCtx, dSpan := l.Tracer.Start(ctx, SpanDecision,
-		trace.WithAttributes(decisionAttributes(snapshot, d, blocked, allowed)...))
+		trace.WithAttributes(decisionAttributes(snapshot, d, blocked, reason, allowed)...))
 	defer dSpan.End()
 
 	// The interventions.allowed evaluation as a feature_flag.* span event
@@ -259,15 +317,18 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, d Decis
 	defer aSpan.End()
 
 	if blocked {
-		// Blocked: not in the allow-list. Structured for span annotation (#729).
+		state.recordBlocked(d, reason, cost)
 		l.Log.Warn("agent.decision_blocked",
 			"blocked", true,
+			"reason", string(reason),
 			"intervention", d.Intervention,
 			"target_serial", d.TargetSerial,
-			"reason", d.Reason,
+			"decision_reason", d.Reason,
 			"allowed", allowed)
 		return
 	}
+
+	state.recordDispatched(d, cost)
 	if err := l.Actions.Apply(dCtx, d); err != nil {
 		aSpan.RecordError(err)
 		// semconv.ErrorType derives the low-cardinality error class from the
@@ -277,6 +338,55 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, d Decis
 		l.Log.Error("agent.apply_failed",
 			"error", err, "intervention", d.Intervention)
 	}
+}
+
+// evaluatePermission runs the permission chain over one decision in order:
+// allow-list gate (#727), battery threshold, then the weighted rate limit
+// (#728). It returns the BlockReason and whether the decision is blocked. The
+// rate limit is charged ONLY when the decision passes the allow-list and
+// battery gates AND fits the budget — so the budget is spent on decisions the
+// agent actually dispatches, the unification chosen over #726's
+// charge-every-emitted-decision model now that the loop can see permissions.
+func (l *Loop) evaluatePermission(snapshot flags.Snapshot, c gamecontext.GameContext, d Decision, now time.Time, cost float64) (BlockReason, bool) {
+	// 1. Allow-list gate (#727): not in interventions_allowed.
+	if !snapshot.Permits(d.Intervention) {
+		return ReasonNotAllowed, true
+	}
+	// 2. Battery threshold: block player-targeted interventions when the target's
+	// battery is below the threshold. Session-scoped decisions (empty
+	// TargetSerial) are unaffected; missing battery is treated as unknown (does
+	// not block, but is noted).
+	if l.batteryBlocks(snapshot, c, d) {
+		return ReasonBatteryThreshold, true
+	}
+	// 3. Weighted rate limit: block when the per-minute budget is exhausted. The
+	// limiter charges the cost only when it admits, so blocked decisions above do
+	// not draw down the budget.
+	if !l.limiter.allow(now, cost, float64(snapshot.Policy.MaxInterventionsPerMinute)) {
+		return ReasonRateLimit, true
+	}
+	return "", false
+}
+
+// batteryBlocks reports whether a player-targeted decision must be blocked
+// because the target's battery is below policy.battery_threshold. A threshold of
+// 0 disables the check. Session-scoped decisions and unknown battery never block;
+// unknown battery is logged so the gap is visible (and recorded for #729).
+func (l *Loop) batteryBlocks(snapshot flags.Snapshot, c gamecontext.GameContext, d Decision) bool {
+	if d.TargetSerial == "" || snapshot.Policy.BatteryThreshold <= 0 {
+		return false
+	}
+	player := c.Players[d.TargetSerial]
+	if player == nil || player.BatteryPct == nil {
+		// Unknown battery: do not block, but make the gap visible.
+		l.Log.Debug("agent.battery_unknown",
+			"target_serial", d.TargetSerial,
+			"intervention", d.Intervention,
+			"threshold", snapshot.Policy.BatteryThreshold,
+		)
+		return false
+	}
+	return *player.BatteryPct < float64(snapshot.Policy.BatteryThreshold)
 }
 
 // shouldLog rate-limits the evaluate log line to once per throttleInterval.
@@ -298,10 +408,12 @@ func (l *Loop) shouldLog() bool {
 }
 
 // decisionAttributes builds the complete #724 decision-span schema. Every span
-// carries every attribute; subsystems that do not exist yet contribute
-// explicit placeholder values (see telemetry.go). The mode, objectives, and
-// interventions.allowed values now come from the evaluated flag snapshot (#727).
-func decisionAttributes(snapshot flags.Snapshot, d Decision, blocked bool, allowed []string) []attribute.KeyValue {
+// carries every attribute; subsystems that do not exist yet contribute explicit
+// placeholder values (see telemetry.go). The mode, objectives, and
+// interventions.allowed values come from the evaluated flag snapshot (#727); the
+// block reason (#728) is carried when a decision is blocked so #729 sees the
+// attribution on the span as well as in the LayerState.
+func decisionAttributes(snapshot flags.Snapshot, d Decision, blocked bool, reason BlockReason, allowed []string) []attribute.KeyValue {
 	objective := d.ObjectiveServed
 	if objective == "" {
 		objective = DefaultObjectives
@@ -310,7 +422,7 @@ func decisionAttributes(snapshot flags.Snapshot, d Decision, blocked bool, allow
 	if mode == "" {
 		mode = DefaultMode
 	}
-	return []attribute.KeyValue{
+	attrs := []attribute.KeyValue{
 		semconv.GenAIAgentName(AgentName),
 		attribute.String(AttrMode, mode),
 		attribute.String(AttrObjectives, summarizeObjectives(d.Objectives)),
@@ -324,6 +436,10 @@ func decisionAttributes(snapshot flags.Snapshot, d Decision, blocked bool, allow
 		attribute.Bool(AttrDecisionBlocked, blocked),
 		attribute.StringSlice(AttrFitnessEvaluated, renderFitness(d.Fitness)),
 	}
+	if blocked {
+		attrs = append(attrs, attribute.String(AttrDecisionBlockReason, string(reason)))
+	}
+	return attrs
 }
 
 // summarizeObjectives renders the objective weights as a stable sorted "k=v"

@@ -77,6 +77,7 @@ func TestOnEvaluate_PermissionGateFiltersBlocked(t *testing.T) {
 		Enabled:              true,
 		Mode:                 "rules",
 		InterventionsAllowed: []string{"play_audio_cue", "grant_shield"},
+		Policy:               flags.Policy{MaxInterventionsPerMinute: 10},
 	}
 	loop := newFlagLoop(snap, rules, actions)
 
@@ -131,6 +132,7 @@ func TestOnEvaluate_LLMModeFallsBackToRules(t *testing.T) {
 		Enabled:              true,
 		Mode:                 "llm",
 		InterventionsAllowed: []string{"play_audio_cue"},
+		Policy:               flags.Policy{MaxInterventionsPerMinute: 10},
 	}
 	loop := newFlagLoop(snap, rules, actions)
 
