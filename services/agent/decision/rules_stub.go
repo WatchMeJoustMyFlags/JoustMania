@@ -7,7 +7,7 @@ import (
 )
 
 // NoopRules is the scaffold rules engine: it never proposes an intervention.
-// It will be replaced by the real rules engine in issue #726.
+// It is superseded by ObjectiveRules (#726) but retained for tests.
 type NoopRules struct{}
 
 // Evaluate always returns nil (no decisions).
