@@ -7,11 +7,11 @@ OpenFeature feature flags served by flagd.
 ## How It Works
 
 The `MultiplexerBackend` routes each controller through a `ControllerIOAdapter`.
-On every discovery cycle (~500ms), it evaluates the `controller_adapter_routing`
-flag in the `performance` domain, passing the controller's serial as the
+On every discovery cycle (~500ms), it evaluates the `bluetooth_backend`
+flag in the `controller` domain, passing the controller's serial as the
 targeting key. The flag returns `"rust"` or `"python"`, and the multiplexer
 opens/closes adapter handles accordingly. Changing the flag config in
-`services/flagd/performance.json` takes effect on the next discovery cycle --
+`services/flagd/controller.json` takes effect on the next discovery cycle --
 no service restart needed.
 
 ### HTTP Canary Endpoints
@@ -53,8 +53,8 @@ Key source files:
 | `services/controller_manager/multiplexer/multiplexer_backend.py` | `_resolve_adapter_for_serial()` routing logic |
 | `services/controller_manager/multiplexer/rust_adapter.py` | `RustServiceAdapter` (gRPC client to rust-hid) |
 | `services/controller_manager/multiplexer/python_hid_adapter.py` | `PythonHidAdapter` (gRPC client to python-hid) |
-| `services/controller_manager/backend_factory.py` | Adapter instantiation, `controller_backend` flag |
-| `services/flagd/performance.json` | Feature flag configuration (file-watched by flagd) |
+| `services/controller_manager/backend_factory.py` | Adapter instantiation, `backend` flag |
+| `services/flagd/controller.json` | Feature flag configuration (file-watched by flagd) |
 | `services/controller_manager/metrics.py` | All controller metrics definitions |
 
 ---
@@ -67,16 +67,16 @@ Key source files:
    ```
 
 2. **rust-hid and python-hid services deployed and healthy** -- the default
-   `controller_backend` flag is `"python,rust"`, which creates both adapters
-   inside `MultiplexerBackend`. The `controller_adapter_routing` flag then
+   `backend` flag is `"python,rust"`, which creates both adapters
+   inside `MultiplexerBackend`. The `bluetooth_backend` flag then
    controls which adapter handles each serial. If you changed
-   `controller_backend` from the default, ensure it includes both `python` and
+   `backend` from the default, ensure it includes both `python` and
    `rust`, then restart controller-manager (it is read once at startup):
    ```bash
    docker compose restart controller-manager
    ```
 
-3. **flagd running** and watching `services/flagd/performance.json`:
+3. **flagd running** and watching `services/flagd/controller.json`:
    ```bash
    docker compose logs flagd --tail=5
    # Should show "watching file" or "flag configuration changed"
@@ -156,10 +156,10 @@ controllers (by serial hash) to the Rust backend.
 ### Manual single-controller targeting (alternative)
 
 To target a specific serial (e.g., `aa:bb:cc:dd:ee:ff`), edit
-`services/flagd/performance.json` directly:
+`services/flagd/controller.json` directly:
 
 ```json
-"controller_adapter_routing": {
+"bluetooth_backend": {
   "state": "ENABLED",
   "variants": {
     "python": "python",
@@ -168,7 +168,7 @@ To target a specific serial (e.g., `aa:bb:cc:dd:ee:ff`), edit
   "defaultVariant": "python",
   "targeting": {
     "if": [
-      { "==": [{ "var": "$flagd.flagKey" }, "controller_adapter_routing"] },
+      { "==": [{ "var": "$flagd.flagKey" }, "bluetooth_backend"] },
       {
         "if": [
           { "in": [{ "var": "targetingKey" }, ["aa:bb:cc:dd:ee:ff"]] },
@@ -383,13 +383,13 @@ curl -X POST http://localhost:8080/canary/rust
 
 This sets `defaultVariant` to `"rust"` and clears any fractional targeting.
 
-### Update controller_backend flag (optional)
+### Update backend flag (optional)
 
 If you no longer need the python adapter instantiated, change the
-`controller_backend` flag to `"rust"` only:
+`backend` flag to `"rust"` only:
 
 ```json
-"controller_backend": {
+"backend": {
   "state": "ENABLED",
   "variants": {
     "rust": "rust",
@@ -400,7 +400,7 @@ If you no longer need the python adapter instantiated, change the
 ```
 
 This requires a controller-manager restart (`docker compose restart
-controller-manager`) since `controller_backend` is read once at startup.
+controller-manager`) since `backend` is read once at startup.
 
 ### Make rust-hid a required dependency (optional)
 
@@ -434,7 +434,7 @@ docker compose logs controller-manager --tail=100 | grep -E "Switched|adapter|ro
 # Check service health
 docker compose ps
 
-# Restart controller-manager (needed after controller_backend flag change)
+# Restart controller-manager (needed after backend flag change)
 docker compose restart controller-manager
 
 # View flagd flag reload events
@@ -476,7 +476,7 @@ process_resident_memory_bytes{job=~".*controller-manager.*"}
 | `method="fallback"` routing decisions increasing | rust-hid service unhealthy or not running | Check `docker compose ps rust-hid`, check logs |
 | Controller LEDs stop updating after switch | `set_output()` failing on Rust adapter | Check `_led_failures` via health counters in stream; rollback |
 | `controller_state_update_hz` drops to 0 for a serial | `poll()` returning None consistently | Check `controller_poll_drops_total`; may indicate gRPC timeout to rust-hid |
-| All controllers stuck on python despite targeting | `controller_backend` flag doesn't include `rust` | Verify flag value includes `rust` (e.g., `"python,rust"`); restart controller-manager |
+| All controllers stuck on python despite targeting | `backend` flag doesn't include `rust` | Verify flag value includes `rust` (e.g., `"python,rust"`); restart controller-manager |
 | flagd not picking up config changes | File saved with atomic rename across filesystems | Verify `services/flagd/` directory is mounted, check flagd logs |
 | `NotImplementedError` in controller-manager logs | `RustServiceAdapter` stub not yet replaced (#612) | The Rust adapter is still a stub; wait for #612 to be merged |
 

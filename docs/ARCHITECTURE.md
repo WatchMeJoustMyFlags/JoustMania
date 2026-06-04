@@ -202,8 +202,9 @@ JoustMania is a party game system for PS Move controllers, built as a collection
 - 60 second timeout
 - Move button: Cycle through options
 - Trigger/Cross: Increase/decrease value
-- Configurable options: sensitivity, num_teams, random_assignment, nonstop_time_limit,
-  invincibility, fight_club_min_rounds, werewolf_reveal_time, force_all_start
+- Configurable options: sensitivity, num_teams, random_assignment,
+  nonstop.time_limit_seconds, invincibility_seconds, fight_club.min_rounds,
+  werewolf.reveal_time_seconds, force_all_start
 
 **Dependencies**: ControllerManager, GameCoordinator
 
@@ -336,11 +337,14 @@ and passed to Game Coordinator via typed proto messages when starting games.
 | `sensitivity` | int | 0-4 | Movement threshold (0=Ultra Slow, 4=Ultra Fast) |
 | `num_teams` | int | 2-6 | Number of teams (Teams, RandomTeams, Traitor) |
 | `random_assignment` | bool | - | Random team assignment in Teams mode |
-| `nonstop_time_limit` | int | 0, 60-300 | Time limit in seconds (0=unlimited) |
-| `invincibility` | float | 2.0-8.0 | Spawn protection seconds (Tournament, FightClub) |
-| `fight_club_min_rounds` | int | 5-20 | Minimum rounds before game can end |
-| `werewolf_reveal_time` | float | 20.0-60.0 | Seconds before werewolves are revealed |
+| `nonstop.time_limit_seconds` | int | 0, 60-300 | Time limit in seconds (0=unlimited) |
+| `invincibility_seconds` | float | 2.0-8.0 | Spawn protection seconds (Tournament, FightClub) |
+| `fight_club.min_rounds` | int | 5-20 | Minimum rounds before game can end |
+| `werewolf.reveal_time_seconds` | float | 20.0-60.0 | Seconds before werewolves are revealed |
 | `force_all_start` | bool | - | Force start with all connected controllers |
+
+These are served from the `game` flag domain (`services/flagd/game.json`); see
+[Feature Flags](feature-flags.md) for the full schema.
 
 ### Typed Config Messages (Proto)
 
@@ -373,9 +377,8 @@ Settings are configured via admin mode (hold all 4 face buttons):
 
 | Setting | Source | Default |
 |---------|--------|---------|
-| `controller_backend` | flagd (performance) | `python,rust` (`mock` also available) |
-| `mock_controller_count` | flagd (performance) | `4` |
-| `play_audio` | flagd (user_preferences) | `on` |
+| `backend` | flagd (`controller` domain) | `python,rust` (`mock` also available) |
+| `play_audio` | flagd (`user` domain) | `on` |
 | `LOG_LEVEL` | env var | `INFO` |
 
 ### Docker Compose Variants
