@@ -663,6 +663,43 @@ services:
           cpus: '0.5'
     logging: *default-logging
 
+  # Agent (OTLP fan-out target — receives traces/metrics pushed by the collector)
+  # No dependencies and no depends_on FROM the collector: the collector must run
+  # standalone even when the agent is down (best-effort delivery).
+  agent:
+    image: ghcr.io/watchmejoustmyflags/joustmania/agent:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: services/agent/Dockerfile
+    container_name: joustmania-agent
+    # Port exposed only within Docker network (the collector pushes OTLP to it)
+    expose:
+      - "4317"
+    environment:
+      - AGENT_LISTEN_ADDR=:4317
+      - AGENT_HEALTH_ADDR=:13134
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - OTEL_SERVICE_NAME=agent
+      - OTEL_SERVICE_NAMESPACE=infrastructure
+      # NOTE: No OTEL_EXPORTER_OTLP_ENDPOINT — agent self-telemetry is a separate issue.
+      - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
+      - SERVICE_VERSION=${IMAGE_TAG:-dev}
+    networks:
+      - joustmania
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:13134/healthz"]
+      interval: 2s
+      timeout: 2s
+      retries: 3
+      start_period: 1s
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: '0.5'
+    logging: *default-logging
+
   # Dashboard (Real-time controller visualization SPA)
   dashboard:
     image: ghcr.io/watchmejoustmyflags/joustmania/dashboard:${IMAGE_TAG:-latest}
