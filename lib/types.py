@@ -383,6 +383,12 @@ class GameEvent(StrEnum):
     TEAM_FORMATION_END = "team_formation_end"
     TEAM_ELIMINATED = "team_eliminated"
 
+    # Agent intervention audit event (#730, #722 §8 enforcement step 5).
+    # Published by the flag-application layer in a later PR for every applied or
+    # blocked agent intervention, alongside the game.intervention span and the
+    # game_interventions_total counter. Defined here so later PRs can publish it.
+    AGENT_INTERVENTION = "agent_intervention"
+
     @classmethod
     def is_game_starting(cls, event_type: str) -> bool:
         """Check if event indicates game is starting (any start phase)."""
