@@ -225,6 +225,34 @@ jobs:
           go mod tidy
           go test -v -race ./...
 
+  # Go agent service tests (OTLP fan-out target)
+  agent-tests:
+    name: Agent Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            agent:
+              - 'services/agent/**'
+
+      - name: Set up Go
+        if: steps.changes.outputs.agent == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Run tests
+        if: steps.changes.outputs.agent == 'true'
+        working-directory: services/agent
+        run: |
+          go mod tidy
+          go test -v -race ./...
+          go vet ./...
+
   lint-dockerfiles:
     name: Lint Dockerfiles
     runs-on: ubuntu-latest
@@ -458,6 +486,9 @@ jobs:
           - service: connect-proxy
             dockerfile: services/connect-proxy/Dockerfile
             image_name: connect-proxy
+          - service: agent
+            dockerfile: services/agent/Dockerfile
+            image_name: agent
           - service: dashboard
             dockerfile: services/dashboard/Dockerfile
             image_name: dashboard
@@ -563,6 +594,7 @@ jobs:
       - service-checks
       - rust-checks
       - exporter-tests
+      - agent-tests
       - lint-dockerfiles
       - sonarcloud
       - validate-protos
@@ -585,6 +617,7 @@ jobs:
             echo "  service-checks: ${{ needs.service-checks.result }}"
             echo "  rust-checks: ${{ needs.rust-checks.result }}"
             echo "  exporter-tests: ${{ needs.exporter-tests.result }}"
+            echo "  agent-tests: ${{ needs.agent-tests.result }}"
             echo "  lint-dockerfiles: ${{ needs.lint-dockerfiles.result }}"
             echo "  sonarcloud: ${{ needs.sonarcloud.result }}"
             echo "  validate-protos: ${{ needs.validate-protos.result }}"
