@@ -30,7 +30,7 @@ var (
 )
 
 func init() {
-	flagdConfigPath = getEnv("FLAGD_CONFIG_PATH", "/etc/flagd/flags/performance.json")
+	flagdConfigPath = getEnv("FLAGD_CONFIG_PATH", "/etc/flagd/flags/controller.json")
 }
 
 // registerChaosHandlers adds chaos fault injection endpoints to the mux.

@@ -1,0 +1,201 @@
+{
+  "metadata": {
+    "flagSetId": "agent"
+  },
+  "flags": {
+    "enabled": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "off"
+    },
+    "mode": {
+      "state": "ENABLED",
+      "variants": {
+        "rules": "rules",
+        "llm": "llm"
+      },
+      "defaultVariant": "rules"
+    },
+    "objectives": {
+      "state": "ENABLED",
+      "variants": {
+        "endurance_focused": {
+          "endurance": 0.7,
+          "balanced": 0.1,
+          "accelerate": 0.1,
+          "chaos": 0.1
+        },
+        "balanced_focused": {
+          "endurance": 0.1,
+          "balanced": 0.7,
+          "accelerate": 0.1,
+          "chaos": 0.1
+        },
+        "accelerate_focused": {
+          "endurance": 0.1,
+          "balanced": 0.1,
+          "accelerate": 0.7,
+          "chaos": 0.1
+        },
+        "chaos_focused": {
+          "endurance": 0.1,
+          "balanced": 0.1,
+          "accelerate": 0.1,
+          "chaos": 0.7
+        },
+        "mixed": {
+          "endurance": 0.25,
+          "balanced": 0.25,
+          "accelerate": 0.25,
+          "chaos": 0.25
+        }
+      },
+      "defaultVariant": "balanced_focused"
+    },
+    "model": {
+      "state": "ENABLED",
+      "variants": {
+        "phi4-mini": "phi4-mini",
+        "gemma3_4b": "gemma3:4b",
+        "claude": "claude",
+        "copilot": "copilot"
+      },
+      "defaultVariant": "phi4-mini"
+    },
+    "prompt_variant": {
+      "state": "ENABLED",
+      "variants": {
+        "conservative": "conservative",
+        "aggressive": "aggressive",
+        "balanced": "balanced"
+      },
+      "defaultVariant": "conservative"
+    },
+    "interventions_allowed": {
+      "state": "ENABLED",
+      "variants": {
+        "none": [],
+        "ambient": [
+          "play_audio_cue",
+          "send_controller_effect",
+          "adjust_volume"
+        ],
+        "standard": [
+          "play_audio_cue",
+          "send_controller_effect",
+          "adjust_volume",
+          "adjust_music_tempo",
+          "adjust_player_sensitivity",
+          "grant_shield"
+        ],
+        "full": [
+          "play_audio_cue",
+          "send_controller_effect",
+          "adjust_volume",
+          "adjust_music_tempo",
+          "adjust_player_sensitivity",
+          "grant_shield",
+          "adjust_global_sensitivity",
+          "eliminate_player",
+          "revive_player",
+          "end_game"
+        ]
+      },
+      "defaultVariant": "ambient"
+    },
+    "policy.battery_threshold": {
+      "state": "ENABLED",
+      "variants": {
+        "strict": 30,
+        "default": 20,
+        "lenient": 10,
+        "off": 0
+      },
+      "defaultVariant": "default"
+    },
+    "policy.movement_variance_window": {
+      "state": "ENABLED",
+      "variants": {
+        "short": 5,
+        "default": 10,
+        "long": 20
+      },
+      "defaultVariant": "default"
+    },
+    "policy.max_interventions_per_minute": {
+      "state": "ENABLED",
+      "variants": {
+        "conservative": 1,
+        "default": 2,
+        "aggressive": 4
+      },
+      "defaultVariant": "default"
+    },
+    "fitness.endurance.min_session_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "short": 60,
+        "default": 120,
+        "long": 300
+      },
+      "defaultVariant": "default"
+    },
+    "fitness.balanced.max_skill_gap": {
+      "state": "ENABLED",
+      "variants": {
+        "tight": 0.2,
+        "default": 0.4,
+        "loose": 0.6
+      },
+      "defaultVariant": "default"
+    },
+    "fitness.balanced.spike_survival_threshold": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 0.8,
+        "strict": 0.9,
+        "lenient": 0.7
+      },
+      "defaultVariant": "default"
+    },
+    "fitness.accelerate.target_session_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 60,
+        "fast": 30,
+        "slow": 120
+      },
+      "defaultVariant": "default"
+    },
+    "fitness.bluetooth.max_event_gap_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 50,
+        "strict": 25,
+        "lenient": 100
+      },
+      "defaultVariant": "default"
+    },
+    "fitness.bluetooth.max_dropped_events_pct": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 0.02,
+        "strict": 0.01,
+        "lenient": 0.05
+      },
+      "defaultVariant": "default"
+    },
+    "fitness.bluetooth.min_movement_update_hz": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 10,
+        "strict": 20,
+        "lenient": 5
+      },
+      "defaultVariant": "default"
+    }
+  }
+}

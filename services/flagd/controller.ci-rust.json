@@ -1,11 +1,12 @@
 {
   "$schema": "https://flagd.dev/schema/v0/flags.json",
   "flags": {
-    "controller_adapter_routing": {
+    "bluetooth_backend": {
       "state": "ENABLED",
       "variants": {
         "rust": "rust",
         "python": "python",
+        "unstable": "unstable",
         "empty": ""
       },
       "defaultVariant": "rust",

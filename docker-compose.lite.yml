@@ -34,15 +34,30 @@ services:
     command:
       - "start"
       - "--uri"
-      - "file:/etc/flagd/performance.json"
+      - "file:/etc/flagd/system.json"
       - "--uri"
-      - "file:/etc/flagd/game_settings.json"
+      - "file:/etc/flagd/controller.json"
       - "--uri"
-      - "file:/etc/flagd/user_preferences.json"
+      - "file:/etc/flagd/observability.json"
+      - "--uri"
+      - "file:/etc/flagd/game.json"
+      - "--uri"
+      - "file:/etc/flagd/user.json"
+      - "--uri"
+      - "file:/etc/flagd/agent.json"
+      - "--uri"
+      - "file:/etc/flagd/interventions.json"
+      - "--uri"
+      - "file:/etc/flagd/rollout.json"
     volumes:
-      - ./services/flagd/performance.json:/etc/flagd/performance.json
-      - ./services/flagd/game_settings.json:/etc/flagd/game_settings.json
-      - ./services/flagd/user_preferences.json:/etc/flagd/user_preferences.json
+      - ./services/flagd/system.json:/etc/flagd/system.json
+      - ./services/flagd/controller.json:/etc/flagd/controller.json
+      - ./services/flagd/observability.json:/etc/flagd/observability.json
+      - ./services/flagd/game.json:/etc/flagd/game.json
+      - ./services/flagd/user.json:/etc/flagd/user.json
+      - ./services/flagd/agent.json:/etc/flagd/agent.json
+      - ./services/flagd/interventions.json:/etc/flagd/interventions.json
+      - ./services/flagd/rollout.json:/etc/flagd/rollout.json
     expose:
       - "8013"
       - "8015"
@@ -152,8 +167,8 @@ services:
       - FLAGD_PORT=8015
       - FLAGD_DIR=/etc/flagd
     volumes:
-      - ./services/flagd/game_settings.json:/etc/flagd/game_settings.json
-      - ./services/flagd/user_preferences.json:/etc/flagd/user_preferences.json
+      - ./services/flagd/game.json:/etc/flagd/game.json
+      - ./services/flagd/user.json:/etc/flagd/user.json
     depends_on:
       redis:
         condition: service_healthy
@@ -210,7 +225,7 @@ services:
       - CONTROLLER_MANAGER_SERVICE=controller-manager:50052
       - GAME_COORDINATOR_SERVICE=game-coordinator:50053
       - MENU_SERVICE=menu:50054
-      - FLAGD_CONFIG_PATH=/etc/flagd/flags/performance.json
+      - FLAGD_CONFIG_PATH=/etc/flagd/flags/controller.json
     volumes:
       - ./services/flagd:/etc/flagd/flags
     networks:

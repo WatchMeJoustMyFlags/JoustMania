@@ -1,0 +1,95 @@
+{
+  "metadata": {
+    "flagSetId": "interventions"
+  },
+  "flags": {
+    "music_tempo_override": {
+      "state": "ENABLED",
+      "variants": {
+        "none": 0,
+        "slow": 1.0,
+        "medium": 1.15,
+        "fast": 1.3
+      },
+      "defaultVariant": "none"
+    },
+    "global_sensitivity_override": {
+      "state": "ENABLED",
+      "variants": {
+        "none": -1,
+        "ultra_slow": 0,
+        "slow": 1,
+        "medium": 2,
+        "fast": 3,
+        "ultra_fast": 4
+      },
+      "defaultVariant": "none"
+    },
+    "player_sensitivity_factor": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 1.0,
+        "protect": 0.7,
+        "handicap": 1.5
+      },
+      "defaultVariant": "default",
+      "targeting": {}
+    },
+    "shield_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "none": 0,
+        "short": 3,
+        "default": 5,
+        "long": 10
+      },
+      "defaultVariant": "none",
+      "targeting": {}
+    },
+    "volume_override": {
+      "state": "ENABLED",
+      "variants": {
+        "none": -1,
+        "quiet": 0.3,
+        "normal": 0.7,
+        "loud": 1.0
+      },
+      "defaultVariant": "none"
+    },
+    "eliminate_player": {
+      "state": "ENABLED",
+      "variants": {
+        "none": ""
+      },
+      "defaultVariant": "none"
+    },
+    "revive_player": {
+      "state": "ENABLED",
+      "variants": {
+        "none": ""
+      },
+      "defaultVariant": "none"
+    },
+    "audio_cue": {
+      "state": "ENABLED",
+      "variants": {
+        "none": ""
+      },
+      "defaultVariant": "none"
+    },
+    "controller_effect": {
+      "state": "ENABLED",
+      "variants": {
+        "none": ""
+      },
+      "defaultVariant": "none"
+    },
+    "end_game": {
+      "state": "ENABLED",
+      "variants": {
+        "none": ""
+      },
+      "defaultVariant": "none"
+    }
+  }
+}

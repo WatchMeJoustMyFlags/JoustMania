@@ -17,21 +17,23 @@ services:
     devices: !reset []
     volumes:
       - ./services/audio/assets:/app/services/audio/assets:ro
-      - ./services/flagd/user_preferences.ci.json:/app/services/flagd/user_preferences.ci.json:ro
+      - ./services/flagd/user.ci.json:/app/services/flagd/user.ci.json:ro
     environment: !override
       OTEL_SERVICE_NAME: audio-service
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       FLAGD_HOST: flagd
       FLAGD_PORT: "8015"
 
-  # flagd - Use CI overrides (play_audio=off, controller_backend=mock)
+  # flagd - Use CI overrides (play_audio=off, backend=mock)
   flagd:
     volumes:
-      - ./services/flagd/performance.ci.json:/etc/flagd/performance.json
-      - ./services/flagd/game_settings.ci.json:/etc/flagd/game_settings.json
-      - ./services/flagd/user_preferences.ci.json:/etc/flagd/user_preferences.json
+      - ./services/flagd/system.ci.json:/etc/flagd/system.json
+      - ./services/flagd/controller.ci.json:/etc/flagd/controller.json
+      - ./services/flagd/observability.ci.json:/etc/flagd/observability.json
+      - ./services/flagd/game.ci.json:/etc/flagd/game.json
+      - ./services/flagd/user.ci.json:/etc/flagd/user.json
 
-  # Controller Manager - Mock mode via flagd (controller_backend=mock in performance.ci.json)
+  # Controller Manager - Mock mode via flagd (backend=mock in controller.ci.json)
   controller-manager:
     # Clear devices and volumes from base compose (requires docker compose v2.24.0+)
     devices: !reset []
@@ -48,7 +50,7 @@ services:
       OTEL_SERVICE_NAMESPACE: infrastructure
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
 
-  # Game Coordinator - Countdown and rainbow timing now controlled via flagd game_settings (Issue #464)
+  # Game Coordinator - Countdown and rainbow timing now controlled via flagd game domain (Issue #464)
   game-coordinator:
     environment: !override
       OTEL_SERVICE_NAME: game-coordinator-service

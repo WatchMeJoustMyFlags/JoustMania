@@ -1,0 +1,46 @@
+{
+  "metadata": {
+    "flagSetId": "observability"
+  },
+  "flags": {
+    "metrics_export_interval_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "overkill": 10,
+        "realtime": 100,
+        "normal": 1000
+      },
+      "defaultVariant": "normal",
+      "targeting": {
+        "if": [
+          {
+            "==": [
+              {
+                "var": "service"
+              },
+              "controller-manager-service"
+            ]
+          },
+          "realtime",
+          null
+        ]
+      }
+    },
+    "profiling_enabled": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "off"
+    },
+    "grpc_rpc_spans": {
+      "state": "ENABLED",
+      "variants": {
+        "enabled": true,
+        "disabled": false
+      },
+      "defaultVariant": "enabled"
+    }
+  }
+}

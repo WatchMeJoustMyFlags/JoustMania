@@ -17,7 +17,7 @@
 # - LOG_LEVEL: Logging level for all services (DEBUG, INFO, WARNING, ERROR) [default: INFO]
 # - JOUSTMANIA_HOST: Hostname for OTEL resource attributes (Dynatrace Smartscape) [default: joustmania]
 #
-# Controller backend is configured via the "controller_backend" flag in flagd (performance domain).
+# Controller backend is configured via the "backend" flag in flagd (controller domain).
 #
 # Notes:
 # - All images default to ghcr.io/watchmejoustmyflags/joustmania registry
@@ -66,11 +66,21 @@ services:
     command:
       - "start"
       - "--uri"
-      - "file:/etc/flagd/performance.json"
+      - "file:/etc/flagd/system.json"
       - "--uri"
-      - "file:/etc/flagd/game_settings.json"
+      - "file:/etc/flagd/controller.json"
       - "--uri"
-      - "file:/etc/flagd/user_preferences.json"
+      - "file:/etc/flagd/observability.json"
+      - "--uri"
+      - "file:/etc/flagd/game.json"
+      - "--uri"
+      - "file:/etc/flagd/user.json"
+      - "--uri"
+      - "file:/etc/flagd/agent.json"
+      - "--uri"
+      - "file:/etc/flagd/interventions.json"
+      - "--uri"
+      - "file:/etc/flagd/rollout.json"
       - "--metrics-exporter"
       - "otel"
       - "--otel-collector-uri"
@@ -639,7 +649,7 @@ services:
       - CONTROLLER_MANAGER_SERVICE=controller-manager:50052
       - GAME_COORDINATOR_SERVICE=game-coordinator:50053
       - MENU_SERVICE=menu:50054
-      - FLAGD_CONFIG_PATH=/etc/flagd/flags/performance.json
+      - FLAGD_CONFIG_PATH=/etc/flagd/flags/controller.json
       - OTEL_SERVICE_NAME=connect-proxy
       - OTEL_SERVICE_NAMESPACE=infrastructure
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
