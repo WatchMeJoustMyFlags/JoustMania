@@ -82,7 +82,7 @@ up-dynatrace:
 	@echo "  Traces, metrics, and logs are exported to both"
 	@echo "  the local stack and Dynatrace in parallel."
 
-# Mock mode uses CI flagd config (controller_backend=mock)
+# Mock mode uses CI flagd config (controller domain: backend=mock)
 .PHONY: up-mock
 up-mock:
 	docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d $(if $(BUILD),--build)
@@ -90,7 +90,7 @@ up-mock:
 	@echo "=========================================="
 	@echo "JoustMania is running (MOCK MODE)"
 	@echo "=========================================="
-	@echo "  Using flagd performance.ci.json (controller_backend=mock)"
+	@echo "  Using flagd controller.ci.json (backend=mock)"
 	@echo "  Dashboard:  http://localhost/"
 	@echo "  Jaeger:     http://localhost/jaeger/"
 	@echo "  Prometheus: http://localhost/prometheus/"

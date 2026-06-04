@@ -50,8 +50,10 @@ async def serve(port=50052):
     init_flag_domain("system")
     # controller domain: backend, bluetooth_backend, chaos_fault_type, poll_drop_threshold
     init_flag_domain("controller")
-    # Wait for flagd to be ready so flag evaluations in create_backend() succeed.
+    # Wait for both domains to be ready: create_backend() evaluates the
+    # controller domain, the frequency listener evaluates the system domain.
     # Deadline must be shorter than the Docker HEALTHCHECK window (start_period + retries * interval).
+    await wait_for_provider_ready("system", deadline_seconds=5.0)
     await wait_for_provider_ready("controller", deadline_seconds=5.0)
 
     # Initialize OTEL push metrics

@@ -125,21 +125,27 @@ func setCanaryRouting(backend string, fraction int) error {
 		return fmt.Errorf("no variant with value %q in bluetooth_backend", backend)
 	}
 
-	// Find the "other" backend for fractional targeting
-	otherKey := ""
-	for k := range flag.Variants {
-		if k != variantKey {
-			otherKey = k
-			break
-		}
-	}
-
 	if fraction >= 100 {
 		// All controllers: set default, clear targeting
 		flag.DefaultVariant = variantKey
 		flag.Targeting = nil
 	} else {
-		// Fractional rollout: default stays as other, targeting routes fraction% to backend
+		// Fractional rollout: the non-canary share must deterministically stay
+		// on the stable counterpart (python<->rust). bluetooth_backend has more
+		// than two variants ("unstable" exists for the agent rollout work), so
+		// picking "any other variant" via map iteration would be both random
+		// and could route the majority share to "unstable".
+		counterpart := map[string]string{"python": "rust", "rust": "python"}[backend]
+		otherKey := ""
+		for k, v := range flag.Variants {
+			if str, ok := v.(string); ok && str == counterpart {
+				otherKey = k
+				break
+			}
+		}
+		if otherKey == "" {
+			return fmt.Errorf("fractional rollout of %q unsupported: no stable counterpart variant in bluetooth_backend", backend)
+		}
 		flag.DefaultVariant = otherKey
 		flag.Targeting = buildFractionalTargeting(variantKey, fraction)
 	}
