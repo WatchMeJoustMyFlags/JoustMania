@@ -253,7 +253,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             self.state = menu_pb2.MenuState.RUNNING
             self._clear_ready_state()
 
-            # Load settings from flagd (user_preferences domain)
+            # Load settings from flagd (user domain)
             self.voice_actor = self.user_prefs_client.get_string_value("menu_voice", DEFAULT_VOICE_ACTOR)
             current_game_name = self.user_prefs_client.get_string_value("current_game", DEFAULT_GAME_MODE.name)
             game = Games.from_name(current_game_name)

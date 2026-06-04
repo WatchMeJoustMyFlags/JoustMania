@@ -5,8 +5,9 @@ through ControllerIOAdapter instances with centralized state tracking.
 LED state, rumble, and effect tracking are centralized here instead of
 being duplicated across each backend.
 
-Adapter routing uses OpenFeature targeting via the ``controller_adapter_routing``
-flag to decide which adapter handles each controller when multiple adapters
+Adapter routing uses OpenFeature targeting via the ``bluetooth_backend``
+flag (controller domain) to decide which adapter handles each controller
+when multiple adapters
 discover the same serial.  Changing the flag value takes effect on the next
 discovery cycle — no reconnect needed.
 """
