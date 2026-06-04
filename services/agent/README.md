@@ -66,24 +66,56 @@ Sessions are not carried in every signal, so the Agent synthesizes them:
 
 After each context update the Agent evaluates `should_evaluate`. When the gate
 opens it runs the decision loop, which evaluates the **OpenFeature** control
-flags from flagd on **every cycle** (never cached) and applies them in order:
+flags from flagd on **every cycle** (never cached). The flags form a **four-layer
+model**, applied in order:
 
-1. **Kill switch** — `enabled` (bool). When `false` the loop short-circuits
-   immediately, before any rules evaluation or span emission. This is also the
-   safe default when flagd is unreachable, so the agent comes up inert.
-2. **Mode** — `mode` (string) selects the decision path. `rules` runs the
-   deterministic rules engine; `llm` is reserved for M4 and currently logs a
-   note and falls back to rules.
-3. **Objectives** — `objectives` (object → `map[string]float64`) weights the
-   session goals. The loop publishes the per-cycle value into the rules engine
-   through a `LiveObjectives` source (`decision/objectives.go`); the engine
-   reads it inside `Evaluate`, falling back to `{endurance: 1.0}` when the flag
-   resolves nothing. This replaces the engine's static objective source.
-4. **Permission gate** — `interventions_allowed` (object → `[]string`) is the
-   allow-list. For each decision the rules engine returns, an intervention not
-   on the list is **blocked** (`decision.blocked = true` on the decision and
-   action spans, logged with `blocked=true` for #729) and never reaches the
-   action sink. An empty allow-list dispatches nothing.
+### The four flag layers
+
+1. **Existence** (gates the loop) —
+   - `enabled` (bool): the kill switch. When `false` the loop short-circuits
+     immediately, before any rules run or spans are emitted. This is also the
+     safe default when flagd is unreachable, so the agent comes up inert.
+   - `mode` (string): selects the decision path. `rules` runs the deterministic
+     rules engine; `llm` is reserved for M4 and currently logs a note (including
+     the capability selection) and falls back to rules.
+2. **Objective** (steers the rules) —
+   - `objectives` (object → `map[string]float64`): per-session goal weights. The
+     loop publishes the per-cycle value into the rules engine through a
+     `LiveObjectives` source (`decision/objectives.go`); the engine reads it
+     inside `Evaluate`, falling back to `{endurance: 1.0}` when the flag resolves
+     nothing. This replaces the engine's static objective source (#726).
+3. **Capability** (selects the model/prompt for the M4 LLM path) —
+   - `model` (string, default `phi4-mini`) and `prompt_variant` (string, default
+     `conservative`). Evaluated and **recorded** every cycle; not consumed until
+     the M4 LLM path lands. They are passed along the `llm` path stub.
+4. **Permission** (constrains which actions dispatch, and how fast) — applied to
+   each candidate decision in this order, blocking with an attributed reason:
+   - `interventions_allowed` (object → `[]string`): the allow-list gate (#727).
+     A decision whose intervention is not on the list is blocked
+     (`reason=not_allowed`). An empty allow-list dispatches nothing.
+   - `policy.battery_threshold` (int %, default 20): a **player-targeted**
+     decision is blocked (`reason=battery_threshold`) when the target player's
+     battery is below the threshold — a low-battery controller signals unreliable
+     input. Session-scoped decisions are unaffected; missing battery data is
+     treated as unknown (does not block, but is noted).
+   - `policy.max_interventions_per_minute` (int, default 2): a **weighted
+     sliding-window** rate limiter across all dispatched interventions. Weights:
+     soft (`play_audio_cue`, `send_controller_effect`, `adjust_volume`) = 0.5;
+     medium (`adjust_music_tempo`, `adjust_player_sensitivity`, `grant_shield`) =
+     1; hard (`adjust_global_sensitivity`, `eliminate_player`, `revive_player`,
+     `end_game`) = 2 (see `docs/research/722-intervention-surface.md` §5). When
+     the budget for the trailing minute is exhausted, further decisions are
+     blocked (`reason=rate_limit`), not queued.
+   - `policy.movement_variance_window` (int seconds, default 10): evaluated and
+     **recorded in the LayerState**. The rules engine reads the window from its
+     `PolicySource` (flagd-schema default); the recorded value is what #731's
+     variance logic and #729's span attribution consume.
+
+Every value evaluated this cycle plus the per-decision outcomes (dispatched /
+blocked + reason, with the rate-limit weight charged) are captured in a single
+cohesive **`LayerState`** (`decision/layerstate.go`), returned from `OnEvaluate`
+and retained via `LastLayerState()`. It is the span-attribute **source of truth**
+that #729 lifts onto the decision span verbatim.
 
 The two decision hooks:
 
@@ -106,8 +138,9 @@ intelligence and the final link of the inference fallback chain. Each rule
 yields candidates with an urgency (0–1) and the objective they serve; the
 final score is `urgency × weight[objective]`. Candidates below a minimum score
 (0.10) are dropped, the rest are admitted best-first (ties: cheaper first, then
-name) while the weighted budget allows — at most 2 decisions per evaluation,
-and the rule set runs at most once per second.
+name) — at most 2 decisions per evaluation, and the rule set runs at most once
+per second. The weighted per-minute budget is enforced downstream by the loop
+(see the permission layer above), not by the engine.
 
 | Rule | Objective | Trigger | Intervention |
 |------|-----------|---------|--------------|
@@ -135,10 +168,14 @@ and the rule set runs at most once per second.
   the [#722 research §5](../../docs/research/722-intervention-surface.md):
   soft 0.5 (audio cue, controller effect, volume), medium 1 (tempo, player
   sensitivity, shield), hard 2 (global sensitivity, eliminate, revive,
-  end_game). The engine charges every decision it **emits**, including ones
-  the permission layer later blocks — it cannot see permissions (layering),
-  and the game coordinator's flag-application layer (#730) is the
-  authoritative backstop.
+  end_game). **Enforced by the decision loop's permission layer, not the
+  engine** (the reconciled #727/#728 stack unified #726's and #728's limiters
+  into one — `decision/ratelimit.go`). Because the loop sees the allow-list and
+  battery gates, the budget is charged only on decisions that pass those and
+  fit — an improvement over #726's original "charge every emitted decision"
+  (the engine could not see permissions). The engine now only caps emission at
+  2 decisions per evaluation; `cd.cost` survives as a deterministic
+  cheaper-first tie-break.
 
 **Configuration seam (#726/#727):** objectives, policy, and fitness thresholds
 come from the `ObjectivesSource` / `PolicySource` / `FitnessSource` interfaces
@@ -247,8 +284,8 @@ services/agent/
 ├── receiver.go     # OTLP span/metric ingestion + extraction into GameContext
 ├── gamecontext/    # GameContext accumulation, session identity, eviction
 ├── gate/           # should_evaluate gating logic
-├── flags/          # OpenFeature/flagd control-flag wrapper (kill switch, mode, objectives, permissions)
-├── decision/       # Decision loop + stub hooks (rules engine #726, action sink #730)
+├── flags/          # OpenFeature/flagd four-layer control flags (existence, objective, capability, permission)
+├── decision/       # Decision loop + LayerState + rate limiter + stub hooks (rules engine #726, action sink #730)
 ├── go.mod
 └── go.sum
 ```
