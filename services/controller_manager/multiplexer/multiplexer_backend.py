@@ -5,8 +5,9 @@ through ControllerIOAdapter instances with centralized state tracking.
 LED state, rumble, and effect tracking are centralized here instead of
 being duplicated across each backend.
 
-Adapter routing uses OpenFeature targeting via the ``controller_adapter_routing``
-flag to decide which adapter handles each controller when multiple adapters
+Adapter routing uses OpenFeature targeting via the ``bluetooth_backend``
+flag (controller domain) to decide which adapter handles each controller
+when multiple adapters
 discover the same serial.  Changing the flag value takes effect on the next
 discovery cycle — no reconnect needed.
 """
@@ -199,7 +200,7 @@ class MultiplexerBackend(ControllerBackend):
         return seen
 
     def _resolve_adapter_for_serial(self, serial: str) -> ControllerIOAdapter | None:
-        """Evaluate the controller_adapter_routing flag for a serial.
+        """Evaluate the bluetooth_backend flag for a serial.
 
         Returns the matching adapter instance, or None if targeting is
         unavailable, errors, or the result doesn't match any adapter.
@@ -209,16 +210,16 @@ class MultiplexerBackend(ControllerBackend):
 
             from lib.feature_flags import get_flag_client
 
-            client = get_flag_client("performance")
+            client = get_flag_client("controller")
             adapter_type = client.get_string_value(
-                "controller_adapter_routing",
+                "bluetooth_backend",
                 "",
                 EvaluationContext(targeting_key=serial),
             )
             if adapter_type:
                 return self._adapter_by_type.get(adapter_type)
         except Exception:
-            logger.debug(f"Failed to evaluate controller_adapter_routing for {serial}", exc_info=True)
+            logger.debug(f"Failed to evaluate bluetooth_backend for {serial}", exc_info=True)
         return None
 
     def get_adapter_type(self, serial: str) -> str:

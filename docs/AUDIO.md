@@ -123,7 +123,7 @@ Example: Add custom Joust music to `services/audio/assets/Joust/music/`
 
 ### Configuration (flagd)
 
-- **Voice actor:** Selectable via admin mode (persisted in `user_preferences.json`)
+- **Voice actor:** Selectable via admin mode (persisted in `user.json`)
 - **Play audio:** Can be disabled entirely via admin mode
 - **Volume:** Controlled per-game by the game coordinator
 

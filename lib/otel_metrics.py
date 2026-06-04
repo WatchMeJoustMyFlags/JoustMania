@@ -84,8 +84,8 @@ def _get_export_interval_ms(service_name: str) -> int:
 
         from lib.feature_flags import get_flag_client, init_flag_domain
 
-        init_flag_domain("performance")
-        client = get_flag_client("performance")
+        init_flag_domain("observability")
+        client = get_flag_client("observability")
         interval = client.get_integer_value(
             "metrics_export_interval_ms",
             1000,

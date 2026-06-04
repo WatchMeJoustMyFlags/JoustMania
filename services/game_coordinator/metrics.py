@@ -105,14 +105,14 @@ actual_update_frequency_hz = Gauge(
 config_changes_total = Counter(
     "game_config_changes_total",
     "Total number of configuration changes",
-    ["parameter"],  # 'sensitivity_mode', 'update_frequency_hz', etc.
+    ["parameter"],  # 'update_frequency_hz', 'poll_drop_threshold', etc.
 )
 
 # Feature flag metrics (Phase 44)
 flag_evaluations_total = Counter(
     "game_flag_evaluations_total",
     "Total number of feature flag evaluations",
-    ["flag_key"],  # 'update_frequency_hz', 'sensitivity_mode', etc.
+    ["flag_key"],  # 'update_frequency_hz', 'poll_drop_threshold', etc.
 )
 
 flag_configuration_changes_total = Counter(

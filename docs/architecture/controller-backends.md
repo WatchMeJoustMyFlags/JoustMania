@@ -139,10 +139,10 @@ This would make ~10% of controllers experience poll drops, ~5% appear disconnect
 
 ## Multi-Adapter Support
 
-The `controller_backend` flag accepts comma-separated values to run multiple adapters simultaneously:
+The `backend` flag (in the `controller` domain) accepts comma-separated values to run multiple adapters simultaneously:
 
 ```json
-"controller_backend": { "defaultVariant": "mock,bluetooth" }
+"backend": { "defaultVariant": "mock,bluetooth" }
 ```
 
 This creates a `MultiplexerBackend` with both a `MockAdapter` and a `PythonHidAdapter`, allowing real and simulated controllers in the same session. Valid combinations:
@@ -157,7 +157,7 @@ This creates a `MultiplexerBackend` with both a `MockAdapter` and a `PythonHidAd
 
 ### Priority
 
-1. **OpenFeature flag** (`controller_backend` in performance domain) — runtime-switchable via flagd
+1. **OpenFeature flag** (`backend` in the `controller` domain) — runtime-switchable via flagd
 2. **Default** — `python,rust` (both adapters loaded)
 
 ### Fallback
@@ -168,9 +168,9 @@ If the flagd flag is empty or flagd is unavailable, the system defaults to the `
 
 | Flag | Domain | Values | Default | Description |
 |------|--------|--------|---------|-------------|
-| `controller_backend` | performance | `mock`, `python`, `rust`, comma-separated | `python,rust` | Select backend(s) |
-| `mock_controller_count` | performance | 2, 4, 6, 8 | 4 | Mock controllers count |
-| `chaos_fault_type` | performance | `none`, `poll_drop`, `accel_spike`, `led_failure`, `disconnect` | `none` | Fault injection (use fractional targeting) |
+| `backend` | controller | `mock`, `python`, `rust`, comma-separated | `python,rust` | Select backend(s) |
+| `bluetooth_backend` | controller | `python`, `rust`, `unstable` | `python` | Per-serial Bluetooth adapter routing (canary rollout target) |
+| `chaos_fault_type` | controller | `none`, `poll_drop`, `accel_spike`, `led_failure`, `disconnect` | `none` | Fault injection (use fractional targeting) |
 
 ## Docker Compose Integration
 
@@ -187,7 +187,7 @@ controller-manager:
 ### Mock Mode
 
 ```bash
-make up-mock  # Uses CI flagd config (controller_backend=mock)
+make up-mock  # Uses CI flagd config (backend=mock)
 ```
 
 ## See Also

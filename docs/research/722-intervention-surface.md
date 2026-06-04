@@ -1,7 +1,7 @@
 # Research: JoustMania Intervention Surface Analysis (#722)
 
 Analysis of what an agent can change at runtime in JoustMania, mapped to session
-objectives and policy constraints. This document populates `interventions.allowed`
+objectives and policy constraints. This document populates `interventions_allowed`
 in the flag schema (#725) and informs the M2 intervention API (#730).
 
 ## 1. Scope & Method
@@ -101,7 +101,7 @@ reveal roles; the API must consult a per-mode capability matrix (§9).
 
 **Excluded:** chaos fault injection and canary routing endpoints
 (`connect-proxy/chaos.go`, `canary.go`) mutate the *infrastructure*, not the
-game, and are test tooling — they do not belong in `interventions.allowed`.
+game, and are test tooling — they do not belong in `interventions_allowed`.
 
 ### 3.2 What must be created (M2, #730)
 
@@ -206,13 +206,15 @@ flag-application layer** (§8), not only in the agent, so a misbehaving agent
 flipping flags rapidly cannot exceed it — excess flag changes are ignored and
 recorded as `blocked`.
 
-## 6. Proposed `interventions.allowed` Values
+## 6. Proposed `interventions_allowed` Values
 
-Flag values for the permission layer in #725. Names are stable identifiers; the
+Flag values for the permission layer in #725 (implemented as the
+`interventions_allowed` flag in the `agent` flagSetId domain,
+`services/flagd/agent.json`). Names are stable identifiers; the
 game coordinator maps each to the intervention flag(s) it is allowed to honor (§8).
 
 ```json
-"interventions.allowed": {
+"interventions_allowed": {
   "variants": {
     "none":     [],
     "ambient":  ["play_audio_cue", "send_controller_effect", "adjust_volume"],
@@ -301,11 +303,11 @@ value, and reverting the flag reverts the intervention:
 
 | Flag | Type | Evaluation | Maps to |
 |---|---|---|---|
-| `intervention.music_tempo_override` | number, `0` = no override, else `1.0–1.3` | session | N6 — `_music_loop` adopts the override instead of its own schedule |
-| `intervention.global_sensitivity_override` | int, `-1` = no override, else `0–4` | session | N2 — live update of `self.sensitivity` |
-| `intervention.player_sensitivity_factor` | number `0.5–2.0`, default `1.0` | **per player**: flagd targeting rules keyed on `targetingKey = serial` | N1 — game loop evaluates per player and sets `sensitivity_factor` |
-| `intervention.shield` | number (remaining duration s), default `0` | per player (targeting on serial) | N3 — `BaseGameMode` sets `grace_until = now + value` on rising edge + LED pulse; expiry is game-side, agent doesn't need to flip it back |
-| `intervention.volume` | number, `-1` = no override | session | E3 |
+| `music_tempo_override` | number, `0` = no override, else `1.0–1.3` | session | N6 — `_music_loop` adopts the override instead of its own schedule |
+| `global_sensitivity_override` | int, `-1` = no override, else `0–4` | session | N2 — live update of `self.sensitivity` |
+| `player_sensitivity_factor` | number `0.5–2.0`, default `1.0` | **per player**: flagd targeting rules keyed on `targetingKey = serial` | N1 — game loop evaluates per player and sets `sensitivity_factor` |
+| `shield_seconds` | number (remaining duration s), default `0` | per player (targeting on serial) | N3 — `BaseGameMode` sets `grace_until = now + value` on rising edge + LED pulse; expiry is game-side, agent doesn't need to flip it back |
+| `volume_override` | number, `-1` = no override | session | E3 |
 
 **b) Edge-triggered (one-shot) interventions** — a flag change *is* the
 command. The variant value carries a **nonce** (monotonic `intervention_id`) so
@@ -314,11 +316,11 @@ re-evaluation after reconnect is idempotent:
 
 | Flag | Value shape | Maps to |
 |---|---|---|
-| `intervention.eliminate_player` | `"<nonce>:<serial>"` (empty = none) | N4 — wraps `_kill_player()` with reason `agent_intervention` |
-| `intervention.revive_player` | `"<nonce>:<serial>"` | N5 |
-| `intervention.audio_cue` | `"<nonce>:<sound_id>"` | E2 |
-| `intervention.controller_effect` | `"<nonce>:<serial>:<effect>"` (serial empty = broadcast) | E4 |
-| `intervention.end_game` | `"<nonce>"` | E5 — wraps the existing `ForceEndGame` path |
+| `eliminate_player` | `"<nonce>:<serial>"` (empty = none) | N4 — wraps `_kill_player()` with reason `agent_intervention` |
+| `revive_player` | `"<nonce>:<serial>"` | N5 |
+| `audio_cue` | `"<nonce>:<sound_id>"` | E2 |
+| `controller_effect` | `"<nonce>:<serial>:<effect>"` (serial empty = broadcast) | E4 |
+| `end_game` | `"<nonce>"` | E5 — wraps the existing `ForceEndGame` path |
 
 The game coordinator stores the last-applied nonce per flag; a changed nonce
 triggers exactly one application. State-shaped flags should be preferred
@@ -327,11 +329,11 @@ duration value, not a one-shot).
 
 ### Enforcement in the game coordinator (defense in depth)
 
-The agent already checks `interventions.allowed` in its decision loop (#726,
+The agent already checks `interventions_allowed` in its decision loop (#726,
 #728); the game coordinator's flag-application layer is the backstop — it
 ignores (and records as blocked) any flag change that fails:
 
-1. `interventions.allowed` membership — the permission flag is evaluated by
+1. `interventions_allowed` membership — the permission flag is evaluated by
    **both** sides; an intervention flag not covered by the current variant is
    never applied
 2. weighted rate limit (§5) per `policy.max_interventions_per_minute`, counted
@@ -364,7 +366,7 @@ ignores (and records as blocked) any flag change that fails:
 - `revive_player` requires per-mode opt-in (see §9).
 - Open question for #730: whether per-player values use flagd **targeting
   rules** (one flag, rules per serial — richer, but the agent must rewrite rule
-  blocks) or **per-serial flag keys** (`intervention.shield.<serial>` — simpler
+  blocks) or **per-serial flag keys** (`shield_seconds.<serial>` — simpler
   writes, more keys). Targeting rules are the OpenFeature-idiomatic choice and
   keep `interventions.json` schema-stable; recommended starting point.
 
@@ -401,7 +403,7 @@ ignores (and records as blocked) any flag change that fails:
 4. **Shields** (`grant_shield`) are the recommended new balancing primitive,
    FFA-first, built on the existing grace-period mechanism and generalized in
    `BaseGameMode`.
-5. **`interventions.allowed`** should ship as a variant flag
+5. **`interventions_allowed`** should ship as a variant flag
    (`none`/`ambient`/`standard`/`full`) with `ambient` as the rollout default (§6).
 6. **The OBSERVE layer can largely read existing metrics**; five additive
    metrics close the gap to the schema's signal list, and the `game_id` label +

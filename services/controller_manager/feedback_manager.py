@@ -37,10 +37,10 @@ _winner_rainbow_duration_ms: int | None = None
 
 
 def get_winner_rainbow_duration_ms() -> int:
-    """Get winner rainbow duration from flagd game_settings domain.
+    """Get winner rainbow duration from flagd game domain.
 
     Falls back to 3000ms if flagd is unavailable.
-    The value is cached and updated via _on_game_settings_changed().
+    The value is cached and updated via _on_game_flags_changed().
     """
     if _winner_rainbow_duration_ms is not None:
         return _winner_rainbow_duration_ms
@@ -48,7 +48,7 @@ def get_winner_rainbow_duration_ms() -> int:
 
 
 def init_game_settings_listener() -> None:
-    """Initialize flagd game_settings domain and register change listener.
+    """Initialize flagd game domain and register change listener.
 
     Called from server.py during startup to set up dynamic flag-based
     winner_rainbow_duration_ms configuration.
@@ -61,21 +61,21 @@ def init_game_settings_listener() -> None:
 
         from lib.feature_flags import get_flag_client, init_flag_domain
 
-        init_flag_domain("game_settings")
-        client = get_flag_client("game_settings")
+        init_flag_domain("game")
+        client = get_flag_client("game")
 
         # Initial read
         _winner_rainbow_duration_ms = client.get_integer_value("winner_rainbow_duration_ms", 3000, EvaluationContext())
         logger.info(f"winner_rainbow_duration_ms initialized from flagd: {_winner_rainbow_duration_ms}ms")
 
         # Register for changes
-        api.add_handler(ProviderEvent.PROVIDER_CONFIGURATION_CHANGED, _on_game_settings_changed)
+        api.add_handler(ProviderEvent.PROVIDER_CONFIGURATION_CHANGED, _on_game_flags_changed)
 
     except Exception as e:
-        logger.warning(f"Could not initialize game_settings flags, using defaults: {e}")
+        logger.warning(f"Could not initialize game flags, using defaults: {e}")
 
 
-def _on_game_settings_changed(event_details) -> None:
+def _on_game_flags_changed(event_details) -> None:
     """Update winner_rainbow_duration_ms when flagd config changes."""
     global _winner_rainbow_duration_ms
 
@@ -89,7 +89,7 @@ def _on_game_settings_changed(event_details) -> None:
 
         from lib.feature_flags import get_flag_client
 
-        client = get_flag_client("game_settings")
+        client = get_flag_client("game")
         new_val = client.get_integer_value("winner_rainbow_duration_ms", 3000, EvaluationContext())
         if new_val != _winner_rainbow_duration_ms:
             logger.info(f"winner_rainbow_duration_ms updated from flagd: {_winner_rainbow_duration_ms} -> {new_val}ms")

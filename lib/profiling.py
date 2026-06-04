@@ -40,13 +40,13 @@ def disable_profiling_for_tests() -> None:
 
 
 def _is_profiling_enabled() -> bool:
-    """Read profiling_enabled from flagd performance domain with hardcoded default fallback."""
+    """Read profiling_enabled from flagd observability domain with hardcoded default fallback."""
     try:
         from openfeature.evaluation_context import EvaluationContext
 
         from lib.feature_flags import get_flag_client
 
-        client = get_flag_client("performance")
+        client = get_flag_client("observability")
         return client.get_boolean_value("profiling_enabled", False, EvaluationContext())
     except Exception:
         return False

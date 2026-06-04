@@ -2,9 +2,9 @@
 Feature Flag Wrapper for JoustMania
 Integrates OpenFeature with flagd provider using domain-scoped providers.
 
-Supports multiple flag domains (performance, game_settings, user_preferences)
-via flagd's flagSetId-based domain scoping. Each domain maps to a separate
-flag file and OpenFeature provider.
+Supports multiple flag domains (system, controller, game, user, observability,
+and others) via flagd's flagSetId-based domain scoping. Each domain maps to a
+separate flag file and OpenFeature provider.
 
 Implements three-layer evaluation context merging (Issue #422):
   1. API-level: service_name, service_namespace, language, environment, hostname (set once at startup)
@@ -90,7 +90,7 @@ def init_flag_domain(domain: str) -> None:
     sets API-level evaluation context.
 
     Args:
-        domain: Domain name and flagSetId (e.g., "game_settings")
+        domain: Domain name and flagSetId (e.g., "game")
     """
     # Initialize global context on first domain init
     _init_global_context()

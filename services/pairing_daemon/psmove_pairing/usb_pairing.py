@@ -46,7 +46,7 @@ _KNOWN_ROUTING_VALUES = {"hidapi", "python", "rust"}
 def _resolve_routing() -> str:
     """Resolve the routing name from feature flags.
 
-    Reads the controller_adapter_routing default variant and validates it.
+    Reads the bluetooth_backend default variant and validates it.
     Returns a known routing name, falling back to "hidapi" for unknown values.
     """
     routing = get_adapter_routing_default()
@@ -68,7 +68,7 @@ def _create_backend(name: str) -> PairingBackend:
 def _resolve_backend() -> tuple[PairingBackend, str]:
     """Resolve the pairing backend from feature flags.
 
-    Reads the controller_adapter_routing default variant:
+    Reads the bluetooth_backend default variant:
     - "hidapi" -> HidapiBackend (default)
     - "rust" -> RustServiceBackend
 

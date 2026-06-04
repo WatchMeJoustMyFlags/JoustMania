@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "flagSetId": "game_settings"
+    "flagSetId": "game"
   },
   "flags": {
     "sensitivity": {
@@ -47,7 +47,7 @@
       },
       "defaultVariant": "on"
     },
-    "nonstop_time_limit": {
+    "nonstop.time_limit_seconds": {
       "state": "ENABLED",
       "variants": {
         "unlimited": 0,
@@ -59,7 +59,7 @@
       },
       "defaultVariant": "unlimited"
     },
-    "invincibility": {
+    "invincibility_seconds": {
       "state": "ENABLED",
       "variants": {
         "2s": 2.0,
@@ -72,7 +72,7 @@
       },
       "defaultVariant": "2s"
     },
-    "fight_club_min_rounds": {
+    "fight_club.min_rounds": {
       "state": "ENABLED",
       "variants": {
         "five": 5,
@@ -82,7 +82,7 @@
       },
       "defaultVariant": "five"
     },
-    "werewolf_reveal_time": {
+    "werewolf.reveal_time_seconds": {
       "state": "ENABLED",
       "variants": {
         "20s": 20.0,

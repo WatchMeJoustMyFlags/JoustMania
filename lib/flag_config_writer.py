@@ -17,7 +17,7 @@ class FlagConfigWriter:
     """
     Read-modify-write for a single flagd flag file.
 
-    Each instance manages one flag file (e.g., game_settings.json).
+    Each instance manages one flag file (e.g., game.json).
     Writes directly to the file (not via temp + rename) because
     os.replace() fails with EBUSY on Docker bind mounts.
 
