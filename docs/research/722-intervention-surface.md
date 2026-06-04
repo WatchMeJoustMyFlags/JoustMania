@@ -92,9 +92,9 @@ Mode differences that matter for interventions:
 **Caveat on E1:** the running game's `_music_loop` owns tempo scheduling and will
 override an external `ChangeTempo` at its next scheduled transition, and the
 `track_id` must match the current track ([servicer.py:379-396](../../services/audio/servicer.py)).
-A direct call "works" but races the game. The M2 API must route tempo
-interventions **through the game coordinator** so the music loop adopts the
-agent's tempo instead of fighting it.
+A direct call "works" but races the game. The M2 design must route tempo
+interventions **through the game coordinator** (tempo-override flag, §8) so the
+music loop adopts the agent's tempo instead of fighting it.
 
 **Caveat on E4:** in hidden-role modes (Werewolf, Traitor) LED interventions can
 reveal roles; the API must consult a per-mode capability matrix (§9).
@@ -107,16 +107,26 @@ game, and are test tooling — they do not belong in `interventions.allowed`.
 
 The user-facing hypothesis "there is currently little to no surface" is **half
 right**: ambient/session-level surface exists (above), but **no per-player
-gameplay intervention has a runtime code path today**. These must be built:
+gameplay intervention has a runtime code path today**. These must be built.
+
+**Control plane decision:** interventions are controlled via **OpenFeature
+feature flags** (a dedicated flagd `interventions` domain), *not* via new gRPC
+RPCs. The agent ACTs by writing flag config; the game coordinator subscribes to
+flag changes and applies them. This reuses infrastructure that already exists
+end-to-end: domain-scoped flagd providers ([feature_flags.py:81-124](../../lib/feature_flags.py)),
+event-driven refresh on `PROVIDER_CONFIGURATION_CHANGED` with <100 ms
+propagation ([runtime_config.py](../../services/game_coordinator/runtime_config.py)),
+and the flag write path already used by admin mode
+([flag_config_writer.py](../../lib/flag_config_writer.py)). See §8 for the design.
 
 | # | Intervention | Existing foundation | New work needed |
 |---|---|---|---|
-| N1 | Set per-player sensitivity | `Player.sensitivity_factor` field + threshold math already implemented (`base.py:877-881`) | RPC + plumbing to running game instance |
-| N2 | Set global sensitivity mid-game | threshold tables exist; `self.sensitivity` frozen at init | RPC + safe live-update of `self.sensitivity` |
-| N3 | **Grant shield** (temporary invulnerability) | `grace_until` (base), `invincible_until` (Tournament/FightClub), `spawn_protected` (Nonstop) | unify as a shield primitive in `BaseGameMode`; LED feedback effect; **FFA first**, inherited by all modes |
-| N4 | Eliminate player | `_kill_player()` exists, internal only (`base.py:1174-1208`) | RPC wrapping the existing kill path with reason `agent_intervention` |
-| N5 | Revive player | `player_revive` event exists; respawn logic only in Nonstop/Zombie | RPC; mode capability matrix (invalid where elimination is the win condition unless mode opts in) |
-| N6 | Set music tempo (coordinated) | `_apply_tempo_change()` (`base.py:1748-1800`) | RPC on game coordinator that overrides the music loop's schedule |
+| N1 | Set per-player sensitivity | `Player.sensitivity_factor` field + threshold math already implemented (`base.py:877-881`) | intervention flag with per-serial targeting + live re-evaluation in the game loop |
+| N2 | Set global sensitivity mid-game | threshold tables exist; `self.sensitivity` frozen at init | intervention flag + safe live-update of `self.sensitivity` |
+| N3 | **Grant shield** (temporary invulnerability) | `grace_until` (base), `invincible_until` (Tournament/FightClub), `spawn_protected` (Nonstop) | unify as a shield primitive in `BaseGameMode`, driven by a per-serial shield flag; LED feedback effect; **FFA first**, inherited by all modes |
+| N4 | Eliminate player | `_kill_player()` exists, internal only (`base.py:1174-1208`) | edge-triggered intervention flag wrapping the existing kill path with reason `agent_intervention` |
+| N5 | Revive player | `player_revive` event exists; respawn logic only in Nonstop/Zombie | edge-triggered intervention flag; mode capability matrix (invalid where elimination is the win condition unless mode opts in) |
+| N6 | Set music tempo (coordinated) | `_apply_tempo_change()` (`base.py:1748-1800`) | tempo-override flag the music loop adopts instead of its own schedule |
 
 **N3 (shields)** is called out per project direction: target **FFA first** — it
 currently has no protection mechanic at all — but implement at the
@@ -191,13 +201,15 @@ With a budget of 2/min, interventions must be **weighted**, not counted equally:
 
 Rationale: a physical party game tolerates ambient nudges far better than
 visible state changes; one wrong `eliminate_player` damages trust more than ten
-rumble pulses. The rate limiter should live **server-side in the intervention
-API** (§8), not only in the agent, so a misbehaving agent cannot exceed it.
+rumble pulses. The rate limiter should live **in the game coordinator's
+flag-application layer** (§8), not only in the agent, so a misbehaving agent
+flipping flags rapidly cannot exceed it — excess flag changes are ignored and
+recorded as `blocked`.
 
 ## 6. Proposed `interventions.allowed` Values
 
 Flag values for the permission layer in #725. Names are stable identifiers; the
-API maps them to RPCs.
+game coordinator maps each to the intervention flag(s) it is allowed to honor (§8).
 
 ```json
 "interventions.allowed": {
@@ -252,65 +264,109 @@ Cardinality note: `serial` and `game_id` labels are bounded (≤ ~16 controllers
 games are short); this matches the existing exposure and is safe for
 VictoriaMetrics.
 
-## 8. M2 Intervention API Sketch (#730)
+## 8. M2 Intervention Design: OpenFeature Flags as the Control Plane (#730)
 
-Single entry point on the **game coordinator** (it owns game state and the
-music loop; routing everything through it avoids the E1 tempo race and gives one
-place to enforce policy):
+**Interventions are controlled via feature flags, not gRPC.** The agent
+manipulates the game exclusively through OpenFeature: it *writes* intervention
+flag config, and the **game coordinator** evaluates those flags and applies the
+effects. The game coordinator remains the single application point (it owns game
+state and the music loop, which avoids the E1 tempo race and gives one place to
+enforce policy) — but its inbound interface is flag evaluation, not an RPC.
 
-```proto
-// proto/game_coordinator.proto (additions)
-service GameCoordinator {
-  // ... existing RPCs ...
-  rpc ApplyIntervention(InterventionRequest) returns (InterventionResponse);
-}
-
-message InterventionRequest {
-  string intervention_id = 1;      // idempotency key
-  string reason = 2;               // human-readable, recorded on span + event
-  string objective = 3;            // endurance|balanced|accelerate|chaos
-  oneof action {
-    AdjustMusicTempo adjust_music_tempo = 10;          // speed 1.0–1.3, transition_s
-    AdjustPlayerSensitivity adjust_player_sensitivity = 11;  // serial, factor 0.5–2.0
-    AdjustGlobalSensitivity adjust_global_sensitivity = 12;  // sensitivity 0–4
-    GrantShield grant_shield = 13;                     // serial, duration_s
-    EliminatePlayer eliminate_player = 14;             // serial
-    RevivePlayer revive_player = 15;                   // serial
-    ControllerEffect controller_effect = 16;           // reuse GameEffectCommand
-    PlayAudioCue play_audio_cue = 17;                  // file_pattern, volume
-    EndGame end_game = 18;
-  }
-}
-
-message InterventionResponse {
-  bool applied = 1;
-  string blocked_reason = 2;  // "not_in_allowed" | "rate_limited" |
-                              // "battery_policy" | "mode_unsupported" | "no_active_game"
-}
+```
+agent (#726 rules / LLM)
+  │ writes flag config            (FlagConfigWriter — same path admin mode uses,
+  ▼                                lib/flag_config_writer.py)
+flagd  `interventions` domain     (new flag file, flagSetId="interventions")
+  │ PROVIDER_CONFIGURATION_CHANGED, <100 ms
+  ▼                                (existing event-driven refresh pattern,
+game coordinator                   runtime_config.py:99-154)
+  │ re-evaluates intervention flags, enforces policy, applies effects
+  ▼
+running game (BaseGameMode)
 ```
 
-Server-side enforcement (defense in depth — the agent also checks flags, per
-the #726 decision loop, but the API is the backstop):
+### New flagd domain: `interventions`
 
-1. `interventions.allowed` membership (flag re-evaluated per request)
-2. weighted rate limit (§5) per `policy.max_interventions_per_minute`
+A fourth flag file `services/flagd/interventions.json` (`flagSetId:
+"interventions"`), alongside `performance` / `game_settings` /
+`user_preferences`. Initialized via the existing `init_flag_domain()`
+([feature_flags.py:81](../../lib/feature_flags.py)).
+
+Two flag shapes are needed, because flags are **declarative state, not
+commands**:
+
+**a) State-shaped interventions** — natural fit; the game converges on the flag
+value, and reverting the flag reverts the intervention:
+
+| Flag | Type | Evaluation | Maps to |
+|---|---|---|---|
+| `intervention.music_tempo_override` | number, `0` = no override, else `1.0–1.3` | session | N6 — `_music_loop` adopts the override instead of its own schedule |
+| `intervention.global_sensitivity_override` | int, `-1` = no override, else `0–4` | session | N2 — live update of `self.sensitivity` |
+| `intervention.player_sensitivity_factor` | number `0.5–2.0`, default `1.0` | **per player**: flagd targeting rules keyed on `targetingKey = serial` | N1 — game loop evaluates per player and sets `sensitivity_factor` |
+| `intervention.shield` | number (remaining duration s), default `0` | per player (targeting on serial) | N3 — `BaseGameMode` sets `grace_until = now + value` on rising edge + LED pulse; expiry is game-side, agent doesn't need to flip it back |
+| `intervention.volume` | number, `-1` = no override | session | E3 |
+
+**b) Edge-triggered (one-shot) interventions** — a flag change *is* the
+command. The variant value carries a **nonce** (monotonic `intervention_id`) so
+the game coordinator can distinguish a new trigger from a re-read, and
+re-evaluation after reconnect is idempotent:
+
+| Flag | Value shape | Maps to |
+|---|---|---|
+| `intervention.eliminate_player` | `"<nonce>:<serial>"` (empty = none) | N4 — wraps `_kill_player()` with reason `agent_intervention` |
+| `intervention.revive_player` | `"<nonce>:<serial>"` | N5 |
+| `intervention.audio_cue` | `"<nonce>:<sound_id>"` | E2 |
+| `intervention.controller_effect` | `"<nonce>:<serial>:<effect>"` (serial empty = broadcast) | E4 |
+| `intervention.end_game` | `"<nonce>"` | E5 — wraps the existing `ForceEndGame` path |
+
+The game coordinator stores the last-applied nonce per flag; a changed nonce
+triggers exactly one application. State-shaped flags should be preferred
+whenever an intervention can be expressed as state (which is why `shield` is a
+duration value, not a one-shot).
+
+### Enforcement in the game coordinator (defense in depth)
+
+The agent already checks `interventions.allowed` in its decision loop (#726,
+#728); the game coordinator's flag-application layer is the backstop — it
+ignores (and records as blocked) any flag change that fails:
+
+1. `interventions.allowed` membership — the permission flag is evaluated by
+   **both** sides; an intervention flag not covered by the current variant is
+   never applied
+2. weighted rate limit (§5) per `policy.max_interventions_per_minute`, counted
+   on applied flag changes
 3. battery guard per `policy.battery_threshold`
 4. mode capability matrix (§9)
-5. every decision recorded as a `game.intervention` span + `agent_intervention`
-   EventBus event + `game_interventions_total` increment
+5. every applied/blocked intervention recorded as a `game.intervention` span +
+   `agent_intervention` EventBus event + `game_interventions_total{type,
+   objective, blocked}` increment — this is also how flag evaluation becomes
+   visible in traces (#729)
 
-Implementation notes:
+### Implementation notes
 
 - `grant_shield`: implement in `BaseGameMode` as
   `grant_shield(serial, duration)` ⇒ `player.grace_until = now + duration` + LED
   pulse effect; **FFA is the first target** (no protection mechanic today);
   Tournament/FightClub map it onto their existing `invincible_until` so semantics
   stay consistent.
+- Per-player targeting uses OpenFeature `EvaluationContext` with
+  `targetingKey = serial` — the global context infrastructure already exists
+  (`feature_flags.py:39-78`); the game loop adds the per-player context when
+  evaluating per-player intervention flags.
+- The agent's write path is `FlagConfigWriter` (already proven by admin mode,
+  [admin.py:755-820](../../services/menu/handlers/admin.py)); flagd file-watch
+  picks up the change. No new transport, no new proto.
 - `eliminate_player` wraps the existing `_kill_player()` with reason
   `agent_intervention` so spans/events/metrics fire identically to a natural death.
 - `adjust_player_sensitivity` only sets the already-implemented
   `sensitivity_factor`; the threshold math needs no change.
 - `revive_player` requires per-mode opt-in (see §9).
+- Open question for #730: whether per-player values use flagd **targeting
+  rules** (one flag, rules per serial — richer, but the agent must rewrite rule
+  blocks) or **per-serial flag keys** (`intervention.shield.<serial>` — simpler
+  writes, more keys). Targeting rules are the OpenFeature-idiomatic choice and
+  keep `interventions.json` schema-stable; recommended starting point.
 
 ## 9. Mode Capability Matrix
 
@@ -331,19 +387,25 @@ Implementation notes:
 1. **Session-level ambient surface exists today** (tempo, audio, controller
    effects, force-end); **per-player gameplay surface does not** — it must be
    created in M2 (#730), but the foundations (`sensitivity_factor`,
-   `grace_until`, `_kill_player()`) are already implemented and only need an RPC
-   and plumbing.
-2. **Music tempo is the strongest existing lever** because it directly scales
-   death thresholds — but it must be routed through the game coordinator to
-   avoid racing the game's own music loop.
-3. **Shields** (`grant_shield`) are the recommended new balancing primitive,
+   `grace_until`, `_kill_player()`) are already implemented and only need
+   flag-driven plumbing.
+2. **OpenFeature flags are the control plane, not gRPC** — the agent writes
+   intervention flag config (a new flagd `interventions` domain); the game
+   coordinator subscribes, enforces policy, and applies. State-shaped flags for
+   continuous interventions, nonce'd edge-triggered flags for one-shots (§8).
+   The entire path (domain providers, <100 ms change events, flag writer) is
+   existing, proven infrastructure.
+3. **Music tempo is the strongest existing lever** because it directly scales
+   death thresholds — but it must be applied by the game coordinator (tempo
+   override flag) to avoid racing the game's own music loop.
+4. **Shields** (`grant_shield`) are the recommended new balancing primitive,
    FFA-first, built on the existing grace-period mechanism and generalized in
    `BaseGameMode`.
-4. **`interventions.allowed`** should ship as a variant flag
+5. **`interventions.allowed`** should ship as a variant flag
    (`none`/`ambient`/`standard`/`full`) with `ambient` as the rollout default (§6).
-5. **The OBSERVE layer can largely read existing metrics**; four additive
+6. **The OBSERVE layer can largely read existing metrics**; five additive
    metrics close the gap to the schema's signal list, and the `game_id` label +
    existing Redis analytics persistence cover per-game history (§7).
-6. All interventions are assessed against the three policy constraints in §5;
-   enforcement must be server-side in the intervention API, with weighted
-   rate-limit costs rather than a flat count.
+7. All interventions are assessed against the three policy constraints in §5;
+   enforcement must live in the game coordinator's flag-application layer, with
+   weighted rate-limit costs rather than a flat count.
