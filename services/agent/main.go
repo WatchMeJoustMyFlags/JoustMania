@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -28,6 +29,7 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/joustmania/agent/decision"
+	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
 )
 
@@ -56,6 +58,15 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+// parsePort parses a uint16 TCP port, returning fallback on any parse error.
+func parsePort(s string, fallback uint16) uint16 {
+	n, err := strconv.ParseUint(strings.TrimSpace(s), 10, 16)
+	if err != nil {
+		return fallback
+	}
+	return uint16(n)
 }
 
 // parseLevel maps a LOG_LEVEL string to an slog.Level (default info).
@@ -88,18 +99,36 @@ func main() {
 	shutdownMetrics := initMetrics(ctx)
 	defer shutdownMetrics(context.Background())
 
+	// OpenFeature / flagd control layer. Setup is non-blocking: if flagd is
+	// unreachable the provider connects in the background and every evaluation
+	// falls back to its safe default (enabled=false), so the agent still starts.
+	flagCfg := flags.ProviderConfig{
+		Host: getEnv("FLAGD_HOST", "flagd"),
+		Port: parsePort(getEnv("FLAGD_PORT", "8013"), 8013),
+	}
+	agentFlags, shutdownFlags, err := flags.SetupFlagd(flagCfg, logger)
+	if err != nil {
+		slog.Error("Failed to set up flagd provider", "error", err)
+		os.Exit(1)
+	}
+	defer shutdownFlags()
+	slog.Info("OpenFeature flagd provider registered", "host", flagCfg.Host, "port", flagCfg.Port)
+
 	store := gamecontext.NewStore(playerTTL, sessionGrace, nil)
 	// Skip the agent's own telemetry when the collector fans it back to us
 	// (otlp/agent exporter) — breaks the self-ingestion feedback loop.
 	store.SetOwnService(resolveServiceName())
 
-	loop := decision.NewLoop(logger)
-	// The objective-weighted rules engine (#726) is the active default:
-	// decisions are traced through the audit spans, but the action sink is
-	// still a no-op until the intervention API (#730), so nothing is applied.
-	// Objectives/policy run on flagd-schema defaults until #727 wires the
-	// OpenFeature sources.
-	loop.Rules = decision.NewObjectiveRules(nil)
+	// The decision loop is driven by the OpenFeature/flagd control layer (#727):
+	// flags are evaluated every cycle, the kill switch / objectives / permission
+	// gate are applied, and decisions flow through the #724 audit spans.
+	loop := decision.NewLoop(agentFlags, logger)
+	// The objective-weighted rules engine (#726) is the active default. Its
+	// objective weights are driven live from the `objectives` flag each cycle
+	// (NewObjectiveRulesLive publishes a LiveObjectives source the loop updates);
+	// policy/fitness run on flagd-schema defaults. The action sink is still a
+	// no-op until the intervention API (#730), so nothing is applied to the game.
+	loop.Rules = decision.NewObjectiveRulesLive(nil)
 	if strings.EqualFold(getEnv("AGENT_PROBE_DECISIONS", ""), "true") {
 		// Demo/verification mode: emit a synthetic noop decision (and thus the
 		// full audit trace, #724) at most once per probe interval. Overrides
