@@ -61,7 +61,7 @@ func sessionDuration(c gamecontext.GameContext) float64 {
 // gate "players are dying fast" rules. Returns 0 when nothing is known.
 func elimFraction(c gamecontext.GameContext, active int) float64 {
 	elims := len(c.Session.EliminationSequence)
-	if elims == 0 || elims+active == 0 {
+	if elims == 0 {
 		return 0
 	}
 	return float64(elims) / float64(elims+active)
@@ -80,8 +80,8 @@ func enduranceCandidates(c gamecontext.GameContext, fit FitnessThresholds) []can
 	if ef == 0 {
 		return nil // nobody eliminated yet — the session is not at risk
 	}
-	timeURgency := clamp01((fit.EnduranceMinSessionSeconds - dur) / fit.EnduranceMinSessionSeconds)
-	urgency := clamp01(timeURgency * 2 * ef)
+	timeUrgency := clamp01((fit.EnduranceMinSessionSeconds - dur) / fit.EnduranceMinSessionSeconds)
+	urgency := clamp01(timeUrgency * 2 * ef)
 	if urgency == 0 {
 		return nil
 	}

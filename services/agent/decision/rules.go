@@ -134,14 +134,21 @@ func (r *ObjectiveRules) chaosRoll(c gamecontext.GameContext) (float64, string) 
 	return r.rng.Float64(), active[r.rng.IntN(len(active))].Serial
 }
 
-// normalizedWeights returns the active objective weights, falling back to
-// DefaultObjectiveWeights when the source provides none (#726 acceptance:
-// works with {endurance: 1.0} when no flag value is provided).
+// normalizedWeights returns a COPY of the active objective weights, falling
+// back to DefaultObjectiveWeights when the source provides none (#726
+// acceptance: works with {endurance: 1.0} when no flag value is provided).
+// The copy matters: the weights are handed out on every emitted Decision and
+// read later on other goroutines (span rendering); a live map from a future
+// OpenFeature-backed source (#727) must not be shared unprotected.
 func normalizedWeights(w map[string]float64) map[string]float64 {
 	if len(w) == 0 {
 		return DefaultObjectiveWeights()
 	}
-	return w
+	cp := make(map[string]float64, len(w))
+	for k, v := range w {
+		cp[k] = v
+	}
+	return cp
 }
 
 // applyBatteryPolicy enforces policy.battery_threshold (#722 §5): players
@@ -179,6 +186,9 @@ func applyBatteryPolicy(cands []candidate, c gamecontext.GameContext, pol Policy
 			if !accelerateDominant(weights) {
 				continue // graceful exit is an accelerate move only
 			}
+			if cd.decision.Fitness == nil {
+				cd.decision.Fitness = map[string]float64{}
+			}
 			cd.decision.Fitness["battery_pct"] = *target.BatteryPct
 			cd.decision.Fitness["battery_threshold"] = pol.BatteryThreshold
 		}
@@ -188,9 +198,11 @@ func applyBatteryPolicy(cands []candidate, c gamecontext.GameContext, pol Policy
 }
 
 // applyVarianceCooldown enforces policy.movement_variance_window: after any
-// difficulty intervention the variance baseline is invalid (players adapt),
-// so variance-triggered chaos candidates are suppressed for one full window.
-// Caller holds r.mu.
+// difficulty intervention the variance baseline is invalid and players are
+// still adapting, so ALL chaos candidates — variance-triggered (R8) and the
+// random nudge (R9) alike — are suppressed for one full window. Suppressing
+// R9 too is deliberate: a random rumble right after a tempo/sensitivity change
+// muddies attribution of the difficulty intervention's effect. Caller holds r.mu.
 func (r *ObjectiveRules) applyVarianceCooldown(cands []candidate, now time.Time, pol Policy) []candidate {
 	if r.lastDifficultyAt.IsZero() || now.Sub(r.lastDifficultyAt) >= pol.MovementVarianceWindow {
 		return cands

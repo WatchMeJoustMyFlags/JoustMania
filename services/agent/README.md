@@ -89,7 +89,7 @@ and the rule set runs at most once per second.
 |------|-----------|---------|--------------|
 | R1/R2 | endurance | session younger than `fitness.endurance.min_session_seconds` while players are eliminated | `adjust_music_tempo` (slow) / `play_audio_cue` |
 | R3 | balanced | skill spread > `fitness.balanced.max_skill_gap` | `adjust_player_sensitivity` → highest-skill outlier |
-| R4 | balanced | weakest player while the field shrinks | `grant_shield` → weakest |
+| R4 | balanced | weakest player while the field shrinks (needs ≥ 2 players with known skill — "weakest" is only meaningful relative to others) | `grant_shield` → weakest |
 | R5 | accelerate | duration > `fitness.accelerate.target_session_seconds` | `adjust_music_tempo` (fast) |
 | R6 | accelerate | duration > 1.5× target, > 2 players | `eliminate_player` → least active |
 | R7 | accelerate | duration > 2× target **and accelerate strictly dominant** (a tie never ends a game) | `end_game` |
@@ -102,9 +102,11 @@ and the rule set runs at most once per second.
   difficulty raises; session-wide demand raises are blocked while *anyone* is
   low; `eliminate_player` of a low-battery player stays available only as the
   accelerate-dominant graceful exit.
-- `movement_variance_window` (10s): variance/chaos candidates are suppressed
-  for one window after any difficulty intervention (the baseline is invalid —
-  players adapt).
+- `movement_variance_window` (10s): ALL chaos candidates (variance-triggered
+  statue nudges and the random R9 nudge alike) are suppressed for one window
+  after any difficulty intervention — the variance baseline is invalid, and a
+  random rumble right after a tempo change would muddy attribution of the
+  difficulty intervention's effect.
 - `max_interventions_per_minute` (2): a **weighted** sliding-window budget per
   the [#722 research §5](../../docs/research/722-intervention-surface.md):
   soft 0.5 (audio cue, controller effect, volume), medium 1 (tempo, player

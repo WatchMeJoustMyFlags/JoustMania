@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/joustmania/agent/gamecontext"
 )
 
 // newTestEngine builds an ObjectiveRules with injected clock, fixed-seed rng,
@@ -210,4 +212,58 @@ func TestObjectiveRules_ConcurrentEvaluate(t *testing.T) {
 		}()
 	}
 	wg.Wait() // -race validates the engine's locking
+}
+
+func TestObjectiveRules_EmptyContext(t *testing.T) {
+	cfg := DefaultStaticConfig()
+	clock := time.Unix(10_000, 0)
+	r := newTestEngine(cfg, &clock)
+	if out := r.Evaluate(context.Background(), gamecontext.GameContext{}); out != nil {
+		t.Fatalf("decisions = %v, want nil on an empty context", out)
+	}
+}
+
+func TestObjectiveRules_ZeroThresholdsSafe(t *testing.T) {
+	// A misbehaving flag source could deliver zero thresholds — the engine
+	// must not divide by zero or emit garbage.
+	cfg := DefaultStaticConfig()
+	cfg.ObjectiveWeights = map[string]float64{
+		ObjectiveEndurance: 1, ObjectiveBalanced: 1, ObjectiveAccelerate: 1, ObjectiveChaos: 1,
+	}
+	cfg.FitnessThresholds = FitnessThresholds{} // all zero
+	cfg.PolicyValues = Policy{}                 // all zero (battery policy off, budget zero)
+	clock := time.Unix(10_000, 0)
+	r := newTestEngine(cfg, &clock)
+
+	c := gameCtx(100, []string{"GONE"}, map[string]testPlayer{
+		"A": {skill: fptr(0.2), intensity: fptr(0.3), active: true},
+		"B": {skill: fptr(0.9), intensity: fptr(1.5), active: true},
+	})
+	out := r.Evaluate(context.Background(), c) // must not panic
+	// Budget 0 admits nothing regardless of candidates.
+	if len(out) != 0 {
+		t.Fatalf("decisions = %v, want none with a zero budget", out)
+	}
+}
+
+func TestObjectiveRules_WeightsMapIsCopied(t *testing.T) {
+	// A live map from a future OpenFeature source (#727) must not be shared
+	// with emitted decisions: the engine hands out a copy.
+	live := map[string]float64{ObjectiveEndurance: 1.0}
+	cfg := DefaultStaticConfig()
+	cfg.ObjectiveWeights = live
+	clock := time.Unix(10_000, 0)
+	r := newTestEngine(cfg, &clock)
+
+	c := gameCtx(20, []string{"GONE"}, map[string]testPlayer{
+		"A": {active: true}, "B": {active: true},
+	})
+	out := r.Evaluate(context.Background(), c)
+	if len(out) == 0 {
+		t.Fatal("expected decisions")
+	}
+	live[ObjectiveEndurance] = 0.123 // source mutates its map afterwards
+	if out[0].Objectives[ObjectiveEndurance] != 1.0 {
+		t.Fatalf("decision weights = %v, want a snapshot unaffected by source mutation", out[0].Objectives)
+	}
 }
