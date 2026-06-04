@@ -136,7 +136,7 @@ class TestOnPerformanceFlagsChanged:
         self._reset()
         try:
             event = MagicMock()
-            event.flags_changed = ["sensitivity_mode"]
+            event.flags_changed = ["poll_drop_threshold"]
 
             servicer_mod._on_performance_flags_changed(event)
             assert servicer_mod._frequency_override is None
@@ -155,7 +155,7 @@ class TestOnPerformanceFlagsChanged:
             mock_get_client.return_value = mock_client
 
             event = MagicMock()
-            event.flags_changed = ["sensitivity_mode", "update_frequency_hz"]
+            event.flags_changed = ["poll_drop_threshold", "update_frequency_hz"]
 
             servicer_mod._on_performance_flags_changed(event)
             assert servicer_mod._frequency_override == 45

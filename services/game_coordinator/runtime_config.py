@@ -67,9 +67,6 @@ class GamePerformanceConfig:
     # Analytics configuration
     analytics: AnalyticsConfig = field(default_factory=AnalyticsConfig)
 
-    # Sensitivity
-    sensitivity_mode: str = "MEDIUM"  # SLOW, MEDIUM, FAST
-
     # Poll drop threshold: rolling-window drop rate (drops/sec) at or below this
     # value is considered normal USB/Bluetooth noise and won't open a
     # controller_poll_degraded span. Evaluated over a 2-second window.
@@ -103,7 +100,7 @@ class RuntimeConfigManager:
 
             from lib.feature_flags import get_flag_client, init_flag_domain
 
-            # Performance domain (update_frequency_hz, sensitivity_mode)
+            # Performance domain (update_frequency_hz, poll_drop_threshold)
             init_flag_domain("performance")
             self.flag_client = get_flag_client("performance")
 
@@ -161,7 +158,7 @@ class RuntimeConfigManager:
         event fires. Thread-safe and includes metrics tracking.
 
         Reads from two domains:
-        - performance: update_frequency_hz, sensitivity_mode
+        - performance: update_frequency_hz, poll_drop_threshold
         - game_settings: countdown_phase_duration_ms, winner_rainbow_duration_ms
         """
         if not self.flag_client:
@@ -186,19 +183,6 @@ class RuntimeConfigManager:
 
                 # Track flag evaluation
                 metrics.flag_evaluations_total.labels(flag_key="update_frequency_hz").inc()
-
-                # Sensitivity mode (low/medium/high)
-                old_sensitivity = self.config.sensitivity_mode
-                new_sensitivity = self.flag_client.get_string_value(
-                    "sensitivity_mode", self.config.sensitivity_mode, EvaluationContext()
-                )
-                if new_sensitivity != old_sensitivity:
-                    logger.info(f"Config updated: sensitivity_mode {old_sensitivity} -> {new_sensitivity}")
-                    self.config.sensitivity_mode = new_sensitivity
-                    metrics.config_changes_total.labels(parameter="sensitivity_mode").inc()
-
-                # Track flag evaluation
-                metrics.flag_evaluations_total.labels(flag_key="sensitivity_mode").inc()
 
                 # Poll drop threshold (per-frame drops below this are normal noise)
                 old_threshold = self.config.poll_drop_threshold
