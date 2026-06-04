@@ -22,6 +22,7 @@ from services.game_coordinator import metrics
 from services.game_coordinator.event_bus import EventBus
 from services.game_coordinator.game_factory import GameFactory
 from services.game_coordinator.grpc_clients import GrpcClientManager
+from services.game_coordinator.interventions import InterventionManager
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,27 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         # gRPC client manager
         self.clients = GrpcClientManager()
 
+        # Agent intervention manager (#730): subscribes to the flagd
+        # `interventions` domain and applies agent interventions to the live
+        # game via the enforcement chain. Handlers are no-op stubs in this PR
+        # (PR A); PRs C/D/E register real effect handlers. get_live_game()
+        # returns the running BaseGameMode so handlers act on current state.
+        self.intervention_manager = InterventionManager(
+            event_publisher=self.event_bus.publish,
+            get_game=self.get_live_game,
+        )
+        self.intervention_manager.start()
+
         logger.info("GameCoordinator initialized")
+
+    def get_live_game(self):
+        """Return the currently running game instance, or None.
+
+        Used by the InterventionManager so intervention handlers act on the
+        live game state. Thread-safe via the state lock.
+        """
+        with self._state_lock:
+            return self.current_game
 
     def _on_event_state_sync(self, event_type: str):
         """
@@ -423,6 +444,12 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
     async def shutdown(self):
         """Shutdown the game coordinator."""
         logger.info("Shutting down GameCoordinator...")
+
+        # Stop intervention flag subscription (#730)
+        try:
+            self.intervention_manager.stop()
+        except Exception as e:
+            logger.debug(f"InterventionManager stop failed: {e}")
 
         # Thread-safe state access
         with self._state_lock:
