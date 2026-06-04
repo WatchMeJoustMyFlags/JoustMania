@@ -25,10 +25,15 @@ import (
 
 // Flag keys as defined in services/flagd/agent.json (flagSetId "agent").
 const (
-	keyEnabled              = "enabled"
-	keyMode                 = "mode"
-	keyObjectives           = "objectives"
-	keyInterventionsAllowed = "interventions_allowed"
+	keyEnabled                   = "enabled"
+	keyMode                      = "mode"
+	keyObjectives                = "objectives"
+	keyModel                     = "model"
+	keyPromptVariant             = "prompt_variant"
+	keyInterventionsAllowed      = "interventions_allowed"
+	keyBatteryThreshold          = "policy.battery_threshold"
+	keyMovementVarianceWindow    = "policy.movement_variance_window"
+	keyMaxInterventionsPerMinute = "policy.max_interventions_per_minute"
 )
 
 // Safe defaults applied when flagd is unreachable or a flag is undefined.
@@ -38,6 +43,18 @@ const (
 	DefaultEnabled = false
 	// DefaultMode falls back to the deterministic rules path.
 	DefaultMode = "rules"
+	// DefaultModel is the capability-layer LLM model selection (M4 path).
+	DefaultModel = "phi4-mini"
+	// DefaultPromptVariant is the capability-layer prompt selection (M4 path).
+	DefaultPromptVariant = "conservative"
+	// DefaultBatteryThreshold (percent): player-targeted interventions are
+	// blocked when the target controller's battery is below this.
+	DefaultBatteryThreshold = 20
+	// DefaultMovementVarianceWindow (seconds): the rolling window that
+	// variance-triggered logic (#726/#731) must observe before acting.
+	DefaultMovementVarianceWindow = 10
+	// DefaultMaxInterventionsPerMinute is the weighted per-minute budget.
+	DefaultMaxInterventionsPerMinute = 2
 )
 
 // defaultObjectives is the fallback objectives weighting. Returned as a fresh
@@ -52,7 +69,31 @@ func defaultObjectives() map[string]float64 {
 type Evaluator interface {
 	BooleanValue(ctx context.Context, flag string, defaultValue bool, evalCtx openfeature.EvaluationContext, options ...openfeature.Option) (bool, error)
 	StringValue(ctx context.Context, flag string, defaultValue string, evalCtx openfeature.EvaluationContext, options ...openfeature.Option) (string, error)
+	IntValue(ctx context.Context, flag string, defaultValue int64, evalCtx openfeature.EvaluationContext, options ...openfeature.Option) (int64, error)
 	ObjectValue(ctx context.Context, flag string, defaultValue any, evalCtx openfeature.EvaluationContext, options ...openfeature.Option) (any, error)
+}
+
+// Capability is the capability layer: which LLM model and prompt the agent
+// would use on the M4 llm path. Evaluated and recorded every cycle but not yet
+// consumed (the llm path is still a fallback stub).
+type Capability struct {
+	// Model is the LLM model selection, e.g. "phi4-mini".
+	Model string
+	// PromptVariant is the prompt template selection, e.g. "conservative".
+	PromptVariant string
+}
+
+// Policy is the policy half of the permission layer: the numeric constraints
+// applied to decisions after the interventions_allowed allow-list gate.
+type Policy struct {
+	// BatteryThreshold (percent): player-targeted interventions are blocked when
+	// the target controller's battery is below this value.
+	BatteryThreshold int
+	// MovementVarianceWindow (seconds): the rolling window variance-triggered
+	// logic must observe before acting (parameterizes #726/#731 rules).
+	MovementVarianceWindow int
+	// MaxInterventionsPerMinute is the weighted per-minute dispatch budget.
+	MaxInterventionsPerMinute int
 }
 
 // Snapshot is the set of agent control flags captured for a single decision
@@ -64,9 +105,13 @@ type Snapshot struct {
 	Mode string
 	// Objectives weights the session goals the rules engine optimizes for.
 	Objectives map[string]float64
+	// Capability is the capability-layer model/prompt selection.
+	Capability Capability
 	// InterventionsAllowed is the permission gate: only decisions whose
 	// intervention appears here may be dispatched. Empty means dispatch nothing.
 	InterventionsAllowed []string
+	// Policy holds the numeric permission-layer constraints.
+	Policy Policy
 }
 
 // Permits reports whether the named intervention is in the allow-list.
@@ -99,11 +144,40 @@ func New(client Evaluator, log *slog.Logger) *Flags {
 // Each flag falls back to its safe default on any evaluation error.
 func (f *Flags) Evaluate(ctx context.Context) Snapshot {
 	return Snapshot{
-		Enabled:              f.enabled(ctx),
-		Mode:                 f.mode(ctx),
-		Objectives:           f.objectives(ctx),
+		Enabled:    f.enabled(ctx),
+		Mode:       f.mode(ctx),
+		Objectives: f.objectives(ctx),
+		Capability: Capability{
+			Model:         f.stringFlag(ctx, keyModel, DefaultModel),
+			PromptVariant: f.stringFlag(ctx, keyPromptVariant, DefaultPromptVariant),
+		},
 		InterventionsAllowed: f.interventionsAllowed(ctx),
+		Policy: Policy{
+			BatteryThreshold:          f.intFlag(ctx, keyBatteryThreshold, DefaultBatteryThreshold),
+			MovementVarianceWindow:    f.intFlag(ctx, keyMovementVarianceWindow, DefaultMovementVarianceWindow),
+			MaxInterventionsPerMinute: f.intFlag(ctx, keyMaxInterventionsPerMinute, DefaultMaxInterventionsPerMinute),
+		},
 	}
+}
+
+// stringFlag resolves a string flag, falling back to def on any error.
+func (f *Flags) stringFlag(ctx context.Context, key, def string) string {
+	v, err := f.client.StringValue(ctx, key, def, openfeature.EvaluationContext{})
+	if err != nil {
+		f.log.Debug("flags string fell back to default", "key", key, "error", err, "default", def)
+		return def
+	}
+	return v
+}
+
+// intFlag resolves an integer policy flag, falling back to def on any error.
+func (f *Flags) intFlag(ctx context.Context, key string, def int) int {
+	v, err := f.client.IntValue(ctx, key, int64(def), openfeature.EvaluationContext{})
+	if err != nil {
+		f.log.Debug("flags int fell back to default", "key", key, "error", err, "default", def)
+		return def
+	}
+	return int(v)
 }
 
 func (f *Flags) enabled(ctx context.Context) bool {

@@ -15,6 +15,7 @@ import (
 type stubEvaluator struct {
 	booleans map[string]bool
 	strings  map[string]string
+	ints     map[string]int64
 	objects  map[string]any
 	errs     map[string]error
 }
@@ -39,6 +40,16 @@ func (s stubEvaluator) StringValue(_ context.Context, flag string, def string, _
 	return def, nil
 }
 
+func (s stubEvaluator) IntValue(_ context.Context, flag string, def int64, _ openfeature.EvaluationContext, _ ...openfeature.Option) (int64, error) {
+	if err := s.errs[flag]; err != nil {
+		return def, err
+	}
+	if v, ok := s.ints[flag]; ok {
+		return v, nil
+	}
+	return def, nil
+}
+
 func (s stubEvaluator) ObjectValue(_ context.Context, flag string, def any, _ openfeature.EvaluationContext, _ ...openfeature.Option) (any, error) {
 	if err := s.errs[flag]; err != nil {
 		return def, err
@@ -52,7 +63,16 @@ func (s stubEvaluator) ObjectValue(_ context.Context, flag string, def any, _ op
 func TestEvaluate_FlagdShape(t *testing.T) {
 	stub := stubEvaluator{
 		booleans: map[string]bool{keyEnabled: true},
-		strings:  map[string]string{keyMode: "llm"},
+		strings: map[string]string{
+			keyMode:          "llm",
+			keyModel:         "claude",
+			keyPromptVariant: "aggressive",
+		},
+		ints: map[string]int64{
+			keyBatteryThreshold:          30,
+			keyMovementVarianceWindow:    20,
+			keyMaxInterventionsPerMinute: 4,
+		},
 		objects: map[string]any{
 			// flagd surfaces object flags as map[string]any / []any.
 			keyObjectives:           map[string]any{"endurance": 0.7, "chaos": 0.3},
@@ -72,9 +92,17 @@ func TestEvaluate_FlagdShape(t *testing.T) {
 	if !reflect.DeepEqual(got.Objectives, wantObj) {
 		t.Errorf("Objectives = %v, want %v", got.Objectives, wantObj)
 	}
+	wantCap := Capability{Model: "claude", PromptVariant: "aggressive"}
+	if got.Capability != wantCap {
+		t.Errorf("Capability = %+v, want %+v", got.Capability, wantCap)
+	}
 	wantAllowed := []string{"play_audio_cue", "grant_shield"}
 	if !reflect.DeepEqual(got.InterventionsAllowed, wantAllowed) {
 		t.Errorf("InterventionsAllowed = %v, want %v", got.InterventionsAllowed, wantAllowed)
+	}
+	wantPolicy := Policy{BatteryThreshold: 30, MovementVarianceWindow: 20, MaxInterventionsPerMinute: 4}
+	if got.Policy != wantPolicy {
+		t.Errorf("Policy = %+v, want %+v", got.Policy, wantPolicy)
 	}
 }
 
@@ -96,6 +124,18 @@ func TestEvaluate_DefaultsWhenMissing(t *testing.T) {
 	if len(got.InterventionsAllowed) != 0 {
 		t.Errorf("InterventionsAllowed = %v, want empty", got.InterventionsAllowed)
 	}
+	wantCap := Capability{Model: DefaultModel, PromptVariant: DefaultPromptVariant}
+	if got.Capability != wantCap {
+		t.Errorf("Capability = %+v, want defaults %+v", got.Capability, wantCap)
+	}
+	wantPolicy := Policy{
+		BatteryThreshold:          DefaultBatteryThreshold,
+		MovementVarianceWindow:    DefaultMovementVarianceWindow,
+		MaxInterventionsPerMinute: DefaultMaxInterventionsPerMinute,
+	}
+	if got.Policy != wantPolicy {
+		t.Errorf("Policy = %+v, want defaults %+v", got.Policy, wantPolicy)
+	}
 }
 
 func TestEvaluate_DefaultsOnError(t *testing.T) {
@@ -103,10 +143,15 @@ func TestEvaluate_DefaultsOnError(t *testing.T) {
 	// the agent must come up disabled with no permitted interventions.
 	boom := errors.New("flagd unreachable")
 	stub := stubEvaluator{errs: map[string]error{
-		keyEnabled:              boom,
-		keyMode:                 boom,
-		keyObjectives:           boom,
-		keyInterventionsAllowed: boom,
+		keyEnabled:                   boom,
+		keyMode:                      boom,
+		keyObjectives:                boom,
+		keyModel:                     boom,
+		keyPromptVariant:             boom,
+		keyInterventionsAllowed:      boom,
+		keyBatteryThreshold:          boom,
+		keyMovementVarianceWindow:    boom,
+		keyMaxInterventionsPerMinute: boom,
 	}}
 	f := New(stub, nil)
 	got := f.Evaluate(context.Background())
@@ -122,6 +167,18 @@ func TestEvaluate_DefaultsOnError(t *testing.T) {
 	}
 	if len(got.InterventionsAllowed) != 0 {
 		t.Errorf("InterventionsAllowed = %v, want empty", got.InterventionsAllowed)
+	}
+	wantCap := Capability{Model: DefaultModel, PromptVariant: DefaultPromptVariant}
+	if got.Capability != wantCap {
+		t.Errorf("Capability = %+v on error, want defaults %+v", got.Capability, wantCap)
+	}
+	wantPolicy := Policy{
+		BatteryThreshold:          DefaultBatteryThreshold,
+		MovementVarianceWindow:    DefaultMovementVarianceWindow,
+		MaxInterventionsPerMinute: DefaultMaxInterventionsPerMinute,
+	}
+	if got.Policy != wantPolicy {
+		t.Errorf("Policy = %+v on error, want defaults %+v", got.Policy, wantPolicy)
 	}
 }
 
