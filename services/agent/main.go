@@ -4,8 +4,9 @@
 // an OTLP gRPC receiver that ingests both spans and metrics emitted by the game
 // services, accumulates them into a denormalized GameContext, gates on whether a
 // game is live with fresh player data, and on each gated update runs a decision
-// loop. The rules engine and action sink are stubbed in this scaffold; later
-// issues replace them with real interventions written to a flagd domain.
+// loop. The objective-weighted rules engine (#726) produces decisions; the
+// action sink is stubbed until the intervention API (#730) writes them to a
+// flagd domain.
 //
 // Self-observability (exporting the agent's own telemetry) follows the house
 // pattern in otel.go and is a no-op until OTEL_EXPORTER_OTLP_ENDPOINT is set.
@@ -93,9 +94,16 @@ func main() {
 	store.SetOwnService(resolveServiceName())
 
 	loop := decision.NewLoop(logger)
+	// The objective-weighted rules engine (#726) is the active default:
+	// decisions are traced through the audit spans, but the action sink is
+	// still a no-op until the intervention API (#730), so nothing is applied.
+	// Objectives/policy run on flagd-schema defaults until #727 wires the
+	// OpenFeature sources.
+	loop.Rules = decision.NewObjectiveRules(nil)
 	if strings.EqualFold(getEnv("AGENT_PROBE_DECISIONS", ""), "true") {
 		// Demo/verification mode: emit a synthetic noop decision (and thus the
-		// full audit trace, #724) at most once per probe interval.
+		// full audit trace, #724) at most once per probe interval. Overrides
+		// the rules engine.
 		loop.Rules = decision.NewProbeRules(probeInterval, nil)
 		slog.Warn("Probe decisions enabled (demo/verification mode)",
 			"interval", probeInterval)

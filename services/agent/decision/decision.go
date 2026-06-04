@@ -2,12 +2,15 @@
 // turns a GameContext snapshot into interventions via a pluggable rules engine
 // and action sink, and emits the agent.span_received -> agent.decision ->
 // agent.action audit trace for every evaluation that produces decisions
-// (issue #724). The concrete rules and actions are stubbed in this scaffold.
+// (issue #724). ObjectiveRules (#726) is the objective-weighted rules engine;
+// the action sink stays a no-op until the intervention API (#730).
 package decision
 
 import (
 	"context"
 	"log/slog"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,9 +34,17 @@ type Decision struct {
 	// Reason is a human-readable explanation, recorded as decision.reason.
 	Reason string
 	// ObjectiveServed names the session objective this decision serves
-	// (endurance/balanced/accelerate/chaos); empty until objectives exist
-	// (#725/#731), recorded as decision.objective_served.
+	// (endurance/balanced/accelerate/chaos), recorded as
+	// decision.objective_served.
 	ObjectiveServed string
+	// Fitness holds the fitness values the rule evaluated to reach this
+	// decision (e.g. session_duration, target_session_seconds), recorded as
+	// fitness.evaluated.
+	Fitness map[string]float64
+	// Objectives holds the active objective weights used to score this
+	// decision, recorded as agent.objectives. Nil/empty (the Noop/Probe/stub
+	// engines) renders the "unset" placeholder.
+	Objectives map[string]float64
 }
 
 // RulesEngine turns a context snapshot into zero or more Decisions. The
@@ -241,7 +252,7 @@ func decisionAttributes(d Decision, blocked bool, allowed []string) []attribute.
 	return []attribute.KeyValue{
 		semconv.GenAIAgentName(AgentName),
 		attribute.String(AttrMode, DefaultMode),
-		attribute.String(AttrObjectives, DefaultObjectives),
+		attribute.String(AttrObjectives, summarizeObjectives(d.Objectives)),
 		attribute.String(AttrInterventionsAllowed, allowedSummary(allowed)),
 		attribute.String(AttrInferenceConfigured, DefaultInference),
 		attribute.String(AttrInferenceUsed, DefaultInference),
@@ -250,8 +261,35 @@ func decisionAttributes(d Decision, blocked bool, allowed []string) []attribute.
 		attribute.String(AttrDecisionReason, d.Reason),
 		attribute.String(AttrDecisionObjective, objective),
 		attribute.Bool(AttrDecisionBlocked, blocked),
-		attribute.StringSlice(AttrFitnessEvaluated, []string{}),
+		attribute.StringSlice(AttrFitnessEvaluated, renderFitness(d.Fitness)),
 	}
+}
+
+// summarizeObjectives renders the objective weights as a stable sorted "k=v"
+// summary (e.g. "balanced=0.3,endurance=0.7"); nil/empty keeps the "unset"
+// placeholder for engines that carry no weights.
+func summarizeObjectives(weights map[string]float64) string {
+	if len(weights) == 0 {
+		return DefaultObjectives
+	}
+	parts := make([]string, 0, len(weights))
+	for k, v := range weights {
+		parts = append(parts, k+"="+strconv.FormatFloat(v, 'g', -1, 64))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
+}
+
+// renderFitness renders the evaluated fitness values as sorted "k=v" strings
+// for the fitness.evaluated attribute; an empty map renders the empty slice
+// (the schema attribute is always present).
+func renderFitness(fitness map[string]float64) []string {
+	out := make([]string, 0, len(fitness))
+	for k, v := range fitness {
+		out = append(out, k+"="+strconv.FormatFloat(v, 'g', -1, 64))
+	}
+	sort.Strings(out)
+	return out
 }
 
 // permits reports whether the intervention is allowed. A nil list means no
