@@ -578,7 +578,7 @@ _frequency_listener_initialized = False
 
 
 def init_frequency_listener() -> None:
-    """Register event handler for update_frequency_hz flag changes."""
+    """Register event handler for game_loop.update_frequency_hz flag changes."""
     global _frequency_listener_initialized
     if _frequency_listener_initialized:
         return
@@ -587,20 +587,20 @@ def init_frequency_listener() -> None:
 
     from lib.feature_flags import get_flag_client
 
-    client = get_flag_client("performance")
-    client.add_handler(ProviderEvent.PROVIDER_CONFIGURATION_CHANGED, _on_performance_flags_changed)
+    client = get_flag_client("system")
+    client.add_handler(ProviderEvent.PROVIDER_CONFIGURATION_CHANGED, _on_system_flags_changed)
     _frequency_listener_initialized = True
 
     # Initial read
-    _on_performance_flags_changed(None)
-    logger.info("Frequency flag listener registered on performance client")
+    _on_system_flags_changed(None)
+    logger.info("Frequency flag listener registered on system client")
 
 
-def _on_performance_flags_changed(event_details) -> None:
+def _on_system_flags_changed(event_details) -> None:
     """Update frequency override when flagd config changes."""
     # Skip if event specifies changed flags and ours isn't among them
     changed = getattr(event_details, "flags_changed", None)
-    if changed is not None and "update_frequency_hz" not in changed:
+    if changed is not None and "game_loop.update_frequency_hz" not in changed:
         return
 
     global _frequency_override
@@ -609,8 +609,8 @@ def _on_performance_flags_changed(event_details) -> None:
 
         from lib.feature_flags import get_flag_client
 
-        client = get_flag_client("performance")
-        hz = client.get_integer_value("update_frequency_hz", 0, EvaluationContext())
+        client = get_flag_client("system")
+        hz = client.get_integer_value("game_loop.update_frequency_hz", 0, EvaluationContext())
         if hz <= 0:
             return
         new_hz = max(1, min(100, hz))

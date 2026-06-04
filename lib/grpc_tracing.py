@@ -91,7 +91,7 @@ def _rpc_spans_enabled() -> bool:
     try:
         from lib.feature_flags import get_flag_client
 
-        client = get_flag_client("performance")
+        client = get_flag_client("observability")
         return client.get_boolean_value("grpc_rpc_spans", False)
     except Exception:
         return False

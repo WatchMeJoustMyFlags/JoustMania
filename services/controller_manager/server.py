@@ -46,10 +46,13 @@ async def serve(port=50052):
     # Initialize flagd for dynamic streaming frequency and tuning flags
     from lib.feature_flags import init_flag_domain, wait_for_provider_ready
 
-    init_flag_domain("performance")
+    # system domain: game_loop.update_frequency_hz (streaming frequency override)
+    init_flag_domain("system")
+    # controller domain: backend, bluetooth_backend, chaos_fault_type, poll_drop_threshold
+    init_flag_domain("controller")
     # Wait for flagd to be ready so flag evaluations in create_backend() succeed.
     # Deadline must be shorter than the Docker HEALTHCHECK window (start_period + retries * interval).
-    await wait_for_provider_ready("performance", deadline_seconds=5.0)
+    await wait_for_provider_ready("controller", deadline_seconds=5.0)
 
     # Initialize OTEL push metrics
     # Export interval read from flagd with per-service targeting (Issue #479)
@@ -71,12 +74,12 @@ async def serve(port=50052):
         logger.warning("Failed to initialize Bluetooth adapters (may not be available)", exc_info=True)
 
     # Create servicer BEFORE initializing other flag domains.
-    # The FlagdProvider in-process resolver loses flags from the performance domain
-    # when a second provider (game_settings) is initialized — causing FLAG_NOT_FOUND
-    # for controller_backend.
+    # The FlagdProvider in-process resolver loses flags from the controller domain
+    # when a second provider (game) is initialized — causing FLAG_NOT_FOUND
+    # for the backend flag.
     controller_servicer = ControllerManagerServicer()
 
-    # Initialize flagd game_settings for winner_rainbow_duration_ms (Issue #464)
+    # Initialize flagd game domain for winner_rainbow_duration_ms (Issue #464)
     from services.controller_manager.feedback_manager import init_game_settings_listener
 
     init_game_settings_listener()

@@ -8,7 +8,7 @@ Phase 44: OpenFeature integration with event-driven flag updates.
 Uses PROVIDER_CONFIGURATION_CHANGED events to reactively update config.
 
 Issue #464: Game timing parameters (countdown_phase_duration_ms,
-winner_rainbow_duration_ms) are now read from flagd game_settings domain.
+winner_rainbow_duration_ms) are now read from flagd game domain.
 countdown_duration_seconds removed; countdown skip is now controlled by
 setting countdown_phase_duration_ms=0 (the "skip" variant).
 """
@@ -55,12 +55,12 @@ class GamePerformanceConfig:
     update_frequency_hz: int = 60  # Game loop frequency
 
     # Winner rainbow effect duration (milliseconds)
-    # Controlled via flagd game_settings domain (Issue #464)
+    # Controlled via flagd game domain (Issue #464)
     winner_rainbow_duration_ms: int = 3000
 
     # Countdown phase duration (milliseconds) - each LED phase (red/yellow/green)
     # This value is shared between game_coordinator (beep timing) and controller_manager (LED timing)
-    # Controlled via flagd game_settings domain (Issue #464)
+    # Controlled via flagd game domain (Issue #464)
     # Set to 0 (the "skip" variant) to skip countdown entirely
     countdown_phase_duration_ms: int = 750
 
@@ -89,8 +89,9 @@ class RuntimeConfigManager:
         self._config_lock = threading.RLock()  # Protect config updates
 
         # Initialize feature flag clients
-        self.flag_client = None  # performance domain
-        self.game_settings_client = None  # game_settings domain
+        self.system_client = None  # system domain
+        self.controller_client = None  # controller domain
+        self.game_client = None  # game domain
         self._setup_feature_flags()
 
     def _setup_feature_flags(self):
@@ -100,15 +101,19 @@ class RuntimeConfigManager:
 
             from lib.feature_flags import get_flag_client, init_flag_domain
 
-            # Performance domain (update_frequency_hz, poll_drop_threshold)
-            init_flag_domain("performance")
-            self.flag_client = get_flag_client("performance")
+            # System domain (game_loop.update_frequency_hz)
+            init_flag_domain("system")
+            self.system_client = get_flag_client("system")
 
-            # Game settings domain (countdown_phase_duration_ms, winner_rainbow_duration_ms)
-            init_flag_domain("game_settings")
-            self.game_settings_client = get_flag_client("game_settings")
+            # Controller domain (poll_drop_threshold)
+            init_flag_domain("controller")
+            self.controller_client = get_flag_client("controller")
 
-            logger.info("Feature flag clients initialized (performance, game_settings)")
+            # Game domain (countdown_phase_duration_ms, winner_rainbow_duration_ms)
+            init_flag_domain("game")
+            self.game_client = get_flag_client("game")
+
+            logger.info("Feature flag clients initialized (system, controller, game)")
 
             # Register event handler for configuration changes
             api.add_handler(ProviderEvent.PROVIDER_CONFIGURATION_CHANGED, self._on_flags_changed)
@@ -118,12 +123,14 @@ class RuntimeConfigManager:
             self._refresh_from_flags()
 
         except ImportError:
-            self.flag_client = None
-            self.game_settings_client = None
+            self.system_client = None
+            self.controller_client = None
+            self.game_client = None
             logger.warning("Could not initialize feature flags, using defaults")
         except Exception as e:
-            self.flag_client = None
-            self.game_settings_client = None
+            self.system_client = None
+            self.controller_client = None
+            self.game_client = None
             logger.error(f"Failed to initialize feature flags: {e}")
 
     def _on_flags_changed(self, event_details):
@@ -157,11 +164,12 @@ class RuntimeConfigManager:
         Called during initialization and when PROVIDER_CONFIGURATION_CHANGED
         event fires. Thread-safe and includes metrics tracking.
 
-        Reads from two domains:
-        - performance: update_frequency_hz, poll_drop_threshold
-        - game_settings: countdown_phase_duration_ms, winner_rainbow_duration_ms
+        Reads from three domains:
+        - system: game_loop.update_frequency_hz
+        - controller: poll_drop_threshold
+        - game: countdown_phase_duration_ms, winner_rainbow_duration_ms
         """
-        if not self.flag_client:
+        if not self.system_client:
             return
 
         try:
@@ -169,12 +177,12 @@ class RuntimeConfigManager:
             from services.game_coordinator import metrics
 
             with self._config_lock:
-                # === Performance domain flags ===
+                # === System domain flags ===
 
                 # Update frequency (15/30/60 Hz)
                 old_hz = self.config.update_frequency_hz
-                new_hz = self.flag_client.get_integer_value(
-                    "update_frequency_hz", self.config.update_frequency_hz, EvaluationContext()
+                new_hz = self.system_client.get_integer_value(
+                    "game_loop.update_frequency_hz", self.config.update_frequency_hz, EvaluationContext()
                 )
                 if new_hz != old_hz:
                     logger.info(f"Config updated: update_frequency_hz {old_hz} -> {new_hz} Hz")
@@ -182,29 +190,32 @@ class RuntimeConfigManager:
                     metrics.config_changes_total.labels(parameter="update_frequency_hz").inc()
 
                 # Track flag evaluation
-                metrics.flag_evaluations_total.labels(flag_key="update_frequency_hz").inc()
+                metrics.flag_evaluations_total.labels(flag_key="game_loop.update_frequency_hz").inc()
+
+                # === Controller domain flags ===
 
                 # Poll drop threshold (per-frame drops below this are normal noise)
-                old_threshold = self.config.poll_drop_threshold
-                new_threshold = self.flag_client.get_integer_value(
-                    "poll_drop_threshold", self.config.poll_drop_threshold, EvaluationContext()
-                )
-                if new_threshold != old_threshold:
-                    logger.info(f"Config updated: poll_drop_threshold {old_threshold} -> {new_threshold}")
-                    self.config.poll_drop_threshold = new_threshold
-                    metrics.config_changes_total.labels(parameter="poll_drop_threshold").inc()
+                if self.controller_client:
+                    old_threshold = self.config.poll_drop_threshold
+                    new_threshold = self.controller_client.get_integer_value(
+                        "poll_drop_threshold", self.config.poll_drop_threshold, EvaluationContext()
+                    )
+                    if new_threshold != old_threshold:
+                        logger.info(f"Config updated: poll_drop_threshold {old_threshold} -> {new_threshold}")
+                        self.config.poll_drop_threshold = new_threshold
+                        metrics.config_changes_total.labels(parameter="poll_drop_threshold").inc()
 
-                metrics.flag_evaluations_total.labels(flag_key="poll_drop_threshold").inc()
+                    metrics.flag_evaluations_total.labels(flag_key="poll_drop_threshold").inc()
 
                 # Update current config gauges
                 metrics.current_update_frequency_hz.set(self.config.update_frequency_hz)
 
-                # === Game settings domain flags ===
+                # === Game domain flags ===
 
-                if self.game_settings_client:
+                if self.game_client:
                     # Countdown phase duration (0 = skip countdown entirely)
                     old_phase = self.config.countdown_phase_duration_ms
-                    new_phase = self.game_settings_client.get_integer_value(
+                    new_phase = self.game_client.get_integer_value(
                         "countdown_phase_duration_ms", self.config.countdown_phase_duration_ms, EvaluationContext()
                     )
                     if new_phase != old_phase:
@@ -216,7 +227,7 @@ class RuntimeConfigManager:
 
                     # Winner rainbow duration
                     old_rainbow = self.config.winner_rainbow_duration_ms
-                    new_rainbow = self.game_settings_client.get_integer_value(
+                    new_rainbow = self.game_client.get_integer_value(
                         "winner_rainbow_duration_ms", self.config.winner_rainbow_duration_ms, EvaluationContext()
                     )
                     if new_rainbow != old_rainbow:

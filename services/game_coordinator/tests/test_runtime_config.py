@@ -27,12 +27,12 @@ def test_runtime_config_no_countdown_duration_seconds():
 @patch("lib.feature_flags.get_flag_client")
 def test_runtime_config_flag_updates(mock_get_client, mock_add_handler):
     """Test that config updates when flags are evaluated."""
-    # Setup mock client (used for both performance and game_settings domains)
+    # Setup mock client (used for all of system, controller and game domains)
     mock_client = MagicMock()
     mock_get_client.return_value = mock_client
 
     # Configure mock evaluations
-    # get_integer_value is called for: update_frequency_hz, poll_drop_threshold,
+    # get_integer_value is called for: game_loop.update_frequency_hz, poll_drop_threshold,
     # countdown_phase_duration_ms, winner_rainbow_duration_ms
     mock_client.get_integer_value.side_effect = [30, 3, 500, 1000]
 
@@ -43,7 +43,7 @@ def test_runtime_config_flag_updates(mock_get_client, mock_add_handler):
     mock_add_handler.assert_called_once()
 
     # Verify mock was called with correct keys and EvaluationContext
-    mock_client.get_integer_value.assert_any_call("update_frequency_hz", 60, ANY)
+    mock_client.get_integer_value.assert_any_call("game_loop.update_frequency_hz", 60, ANY)
     mock_client.get_integer_value.assert_any_call("poll_drop_threshold", 10, ANY)
     mock_client.get_integer_value.assert_any_call("countdown_phase_duration_ms", 750, ANY)
     mock_client.get_integer_value.assert_any_call("winner_rainbow_duration_ms", 3000, ANY)
@@ -108,7 +108,7 @@ def test_on_flags_changed_event(mock_get_client, _mock_add_handler, caplog):
 
     # Trigger event handler
     mock_event = MagicMock()
-    mock_event.flags_changed = ["update_frequency_hz", "countdown_phase_duration_ms"]
+    mock_event.flags_changed = ["game_loop.update_frequency_hz", "countdown_phase_duration_ms"]
 
     with caplog.at_level(logging.INFO):
         manager._on_flags_changed(mock_event)
@@ -199,8 +199,8 @@ def test_setup_feature_flags_import_error(caplog):
         with caplog.at_level(logging.WARNING):
             manager = RuntimeConfigManager()
 
-        assert manager.flag_client is None
-        assert manager.game_settings_client is None
+        assert manager.system_client is None
+        assert manager.game_client is None
         assert "Could not initialize feature flags" in caplog.text
 
 
@@ -211,8 +211,8 @@ def test_setup_feature_flags_generic_error(_mock_add_handler, caplog):
         with caplog.at_level(logging.ERROR):
             manager = RuntimeConfigManager()
 
-        assert manager.flag_client is None
-        assert manager.game_settings_client is None
+        assert manager.system_client is None
+        assert manager.game_client is None
         assert "Failed to initialize feature flags" in caplog.text
 
 
@@ -272,9 +272,9 @@ def test_on_flags_changed_with_metrics(mock_get_client, _mock_add_handler):
 
 
 def test_refresh_from_flags_no_client():
-    """Test that _refresh_from_flags does nothing when flag_client is None."""
+    """Test that _refresh_from_flags does nothing when system_client is None."""
     manager = RuntimeConfigManager()
-    manager.flag_client = None
+    manager.system_client = None
 
     # Should not raise exception
     manager._refresh_from_flags()
@@ -282,8 +282,8 @@ def test_refresh_from_flags_no_client():
 
 @patch("openfeature.api.add_handler")
 @patch("lib.feature_flags.get_flag_client")
-def test_game_settings_flags_read_on_init(mock_get_client, _mock_add_handler):
-    """Test that game_settings flags are read during initialization."""
+def test_game_flags_read_on_init(mock_get_client, _mock_add_handler):
+    """Test that game domain flags are read during initialization."""
     mock_client = MagicMock()
     mock_get_client.return_value = mock_client
 
@@ -292,20 +292,21 @@ def test_game_settings_flags_read_on_init(mock_get_client, _mock_add_handler):
     manager = RuntimeConfigManager()
     config = manager.get_config()
 
-    # Both game_settings flags should be read
+    # Both game domain flags should be read
     assert config.countdown_phase_duration_ms == 500
     assert config.winner_rainbow_duration_ms == 5000
 
 
 @patch("openfeature.api.add_handler")
 @patch("lib.feature_flags.get_flag_client")
-def test_game_settings_client_initialized(mock_get_client, _mock_add_handler):
-    """Test that game_settings_client is initialized alongside performance client."""
+def test_game_client_initialized(mock_get_client, _mock_add_handler):
+    """Test that game_client is initialized alongside the system and controller clients."""
     mock_client = MagicMock()
     mock_get_client.return_value = mock_client
     mock_client.get_integer_value.side_effect = [60, 3, 750, 3000]
 
     manager = RuntimeConfigManager()
 
-    assert manager.flag_client is not None
-    assert manager.game_settings_client is not None
+    assert manager.system_client is not None
+    assert manager.controller_client is not None
+    assert manager.game_client is not None
