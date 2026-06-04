@@ -437,6 +437,10 @@ class DeviceManager:
             if data is None:
                 return None
 
+            # Diagnostic hex dump: log raw bytes when any button is pressed
+            if any(b != 0 for b in data[1:5]):
+                logger.debug(f"HID raw [{len(data)}B]: {data[:8].hex(' ')}")
+
             is_zcm2 = self._product_ids.get(serial) in (PRODUCT_ID_ZCM2, PRODUCT_ID_ZCM2E)
             parsed = parse_input_report(data, zcm2=is_zcm2)
 

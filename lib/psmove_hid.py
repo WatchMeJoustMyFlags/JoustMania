@@ -39,8 +39,12 @@ FEATURE_REPORT_SET_SIZE = 23
 class Button(IntFlag):
     """PS Move button bitmask values.
 
-    Buttons are encoded as a 3-byte little-endian bitmask in the input report
-    (bytes 1-3), extended with byte 4 for the PS and Move buttons.
+    Matches psmoveapi's PSMove_Button enum. The 32-bit button mask is
+    constructed from four raw bytes (buttons1-4) using psmoveapi's formula:
+        buttons2 | (buttons1 << 8) | ((buttons3 & 0x01) << 16)
+                                   | ((buttons4 & 0xF0) << 13)
+
+    See PSMove_Data_Input_Common in psmoveapi/src/psmove.c.
     """
 
     TRIANGLE = 0x0010
@@ -98,9 +102,30 @@ class Frame(IntEnum):
 def parse_input_report(data: bytes, zcm2: bool = False) -> dict:
     """Parse a PS Move HID input report into structured data.
 
+    The 49-byte report includes the report ID (0x01) as byte 0, matching
+    psmoveapi's PSMove_Data_Input_Common struct layout:
+
+        Byte 0:     Report ID (0x01)
+        Byte 1:     buttons1 (Select, Start — dpad bits unused on PS Move)
+        Byte 2:     buttons2 (Triangle, Circle, Cross, Square)
+        Byte 3:     buttons3 (PS button at bit 0)
+        Byte 4:     buttons4 (Move at bit 6, T at bit 7; low nibble = seq)
+        Byte 5:     trigger analog (frame 1)
+        Byte 6:     trigger analog (frame 2)
+        Bytes 7-11: unknown / timestamp
+        Byte 12:    battery
+        Bytes 13-18: accelerometer frame 1 (3× uint16 LE)
+        Bytes 19-24: accelerometer frame 2
+        Bytes 25-30: gyroscope frame 1
+        Bytes 31-36: gyroscope frame 2
+        Bytes 37-38: temperature (12-bit)
+
+    If some HID libraries prepend a redundant report ID byte (50 bytes total),
+    the extra leading 0x01 is stripped before parsing.
+
     Args:
         data: Raw HID input report bytes (49 bytes).
-              May include a leading report ID byte (0x01) which is stripped.
+              May include a redundant leading report ID byte (50 bytes).
         zcm2: If True, decode accelerometer/gyroscope as signed 16-bit
               two's complement (ZCM2/PS4-era). If False (default), decode as
               unsigned 16-bit offset by 0x8000 (ZCM1/PS3-era).
@@ -120,27 +145,29 @@ def parse_input_report(data: bytes, zcm2: bool = False) -> dict:
     Raises:
         ValueError: If data is too short to parse.
     """
-    # Strip leading report ID byte (0x01) if present
+    # Strip redundant leading report ID byte if the HID library prepended one
     if len(data) > INPUT_REPORT_SIZE and data[0] == 0x01:
         data = data[1:]
 
     if len(data) < INPUT_REPORT_SIZE:
         raise ValueError(f"Input report too short: {len(data)} bytes (need {INPUT_REPORT_SIZE})")
 
-    # Buttons: bytes 1-3 as little-endian, plus byte 4 shifted up
-    # Byte 0 is typically 0x00 or sequence
-    # Bytes 1-2: main buttons (little-endian 16-bit)
-    # Byte 3: extended buttons
-    btn_lo = data[1] | (data[2] << 8)
-    btn_hi = data[3]
-    buttons = btn_lo | (btn_hi << 16)
+    # Buttons: psmoveapi formula (PSMove_Data_Input_Common bytes 1-4)
+    #   buttons2 | (buttons1 << 8) | ((buttons3 & 0x01) << 16)
+    #                               | ((buttons4 & 0xF0) << 13)
+    buttons = (
+        data[2]  # buttons2: face buttons (Triangle, Circle, Cross, Square)
+        | (data[1] << 8)  # buttons1: Select, Start
+        | ((data[3] & 0x01) << 16)  # buttons3 bit 0: PS
+        | ((data[4] & 0xF0) << 13)  # buttons4 bits 4-7: Move (bit 6), T (bit 7)
+    )
 
-    # Sequence number: byte 4
-    sequence = data[4]
+    # Sequence number: buttons4 low nibble
+    sequence = data[4] & 0x0F
 
-    # Trigger analog: byte 6 (frame 1), byte 7 (frame 2)
-    trigger1 = data[6]
-    trigger2 = data[7]
+    # Trigger analog: byte 5 (frame 1), byte 6 (frame 2)
+    trigger1 = data[5]
+    trigger2 = data[6]
 
     # Battery: byte 12
     battery = data[12]

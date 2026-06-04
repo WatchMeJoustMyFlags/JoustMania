@@ -32,8 +32,7 @@ from lib.psmove_hid import (
 
 
 def _build_test_report(
-    buttons_lo=0,
-    buttons_hi=0,
+    buttons=0,
     sequence=0,
     trigger1=0,
     trigger2=0,
@@ -52,20 +51,39 @@ def _build_test_report(
     gz2=0x8000,
     temperature=0,
 ) -> bytes:
-    """Build a synthetic 49-byte HID input report for testing."""
+    """Build a synthetic 49-byte HID input report for testing.
+
+    Uses psmoveapi's PSMove_Data_Input_Common byte layout:
+        Byte 0: Report ID (0x01)
+        Byte 1: buttons1 (bits 8-15 of button mask)
+        Byte 2: buttons2 (bits 0-7 of button mask)
+        Byte 3: buttons3 (PS = bit 0)
+        Byte 4: buttons4 (Move/T in high nibble, sequence in low nibble)
+        Byte 5: trigger frame 1
+        Byte 6: trigger frame 2
+        Byte 12: battery
+        ...
+
+    The `buttons` parameter takes a combined bitmask (e.g. Button.TRIANGLE | Button.PS)
+    and encodes it into the raw bytes by reversing the psmoveapi formula:
+        result = buttons2 | (buttons1 << 8) | ((buttons3 & 0x01) << 16)
+                                             | ((buttons4 & 0xF0) << 13)
+    """
     data = bytearray(INPUT_REPORT_SIZE)
 
-    # Buttons: bytes 1-2 (little-endian 16-bit), byte 3 (extended)
-    data[1] = buttons_lo & 0xFF
-    data[2] = (buttons_lo >> 8) & 0xFF
-    data[3] = buttons_hi & 0xFF
+    # Report ID
+    data[0] = 0x01
 
-    # Sequence: byte 4
-    data[4] = sequence
+    # Reverse the psmoveapi formula to encode buttons into raw bytes
+    data[1] = (buttons >> 8) & 0xFF  # buttons1
+    data[2] = buttons & 0xFF  # buttons2
+    data[3] = (buttons >> 16) & 0x01  # buttons3 (PS bit)
+    data[4] = (buttons >> 13) & 0xF0  # buttons4 high nibble (Move, T)
+    data[4] |= sequence & 0x0F  # buttons4 low nibble (sequence)
 
-    # Trigger: byte 6 (frame1), byte 7 (frame2)
-    data[6] = trigger1
-    data[7] = trigger2
+    # Trigger: byte 5 (frame1), byte 6 (frame2)
+    data[5] = trigger1
+    data[6] = trigger2
 
     # Battery: byte 12
     data[12] = battery
@@ -101,61 +119,100 @@ class TestButtonParsing:
         assert result["buttons"] & Button.PS == 0
 
     def test_triangle_button(self):
-        data = _build_test_report(buttons_lo=Button.TRIANGLE)
+        data = _build_test_report(buttons=Button.TRIANGLE)
         result = parse_input_report(data)
         assert result["buttons"] & Button.TRIANGLE
 
     def test_circle_button(self):
-        data = _build_test_report(buttons_lo=Button.CIRCLE)
+        data = _build_test_report(buttons=Button.CIRCLE)
         result = parse_input_report(data)
         assert result["buttons"] & Button.CIRCLE
 
     def test_cross_button(self):
-        data = _build_test_report(buttons_lo=Button.CROSS)
+        data = _build_test_report(buttons=Button.CROSS)
         result = parse_input_report(data)
         assert result["buttons"] & Button.CROSS
 
     def test_square_button(self):
-        data = _build_test_report(buttons_lo=Button.SQUARE)
+        data = _build_test_report(buttons=Button.SQUARE)
         result = parse_input_report(data)
         assert result["buttons"] & Button.SQUARE
 
     def test_select_button(self):
-        data = _build_test_report(buttons_lo=Button.SELECT)
+        data = _build_test_report(buttons=Button.SELECT)
         result = parse_input_report(data)
         assert result["buttons"] & Button.SELECT
 
     def test_start_button(self):
-        data = _build_test_report(buttons_lo=Button.START)
+        data = _build_test_report(buttons=Button.START)
         result = parse_input_report(data)
         assert result["buttons"] & Button.START
 
     def test_ps_button(self):
-        """PS button is in the extended byte (byte 3)."""
-        data = _build_test_report(buttons_hi=(Button.PS >> 16))
+        """PS button is in buttons3 byte (byte 3), bit 0."""
+        data = _build_test_report(buttons=Button.PS)
         result = parse_input_report(data)
         assert result["buttons"] & Button.PS
 
     def test_move_button(self):
-        """Move button is in the extended byte (byte 3)."""
-        data = _build_test_report(buttons_hi=(Button.MOVE >> 16))
+        """Move button is in buttons4 byte (byte 4), bit 6."""
+        data = _build_test_report(buttons=Button.MOVE)
         result = parse_input_report(data)
         assert result["buttons"] & Button.MOVE
 
     def test_trigger_digital(self):
-        """T (trigger digital) button in extended byte."""
-        data = _build_test_report(buttons_hi=(Button.T >> 16))
+        """T (trigger digital) button in buttons4 byte (byte 4), bit 7."""
+        data = _build_test_report(buttons=Button.T)
         result = parse_input_report(data)
         assert result["buttons"] & Button.T
 
     def test_multiple_buttons(self):
         """Multiple buttons pressed simultaneously."""
-        lo = Button.TRIANGLE | Button.CROSS
-        data = _build_test_report(buttons_lo=lo)
+        data = _build_test_report(buttons=Button.TRIANGLE | Button.CROSS)
         result = parse_input_report(data)
         assert result["buttons"] & Button.TRIANGLE
         assert result["buttons"] & Button.CROSS
         assert not (result["buttons"] & Button.CIRCLE)
+
+    def test_all_buttons(self):
+        """All 9 buttons pressed simultaneously."""
+        all_buttons = (
+            Button.TRIANGLE
+            | Button.CIRCLE
+            | Button.CROSS
+            | Button.SQUARE
+            | Button.SELECT
+            | Button.START
+            | Button.PS
+            | Button.MOVE
+            | Button.T
+        )
+        data = _build_test_report(buttons=all_buttons)
+        result = parse_input_report(data)
+        assert result["buttons"] & Button.TRIANGLE
+        assert result["buttons"] & Button.CIRCLE
+        assert result["buttons"] & Button.CROSS
+        assert result["buttons"] & Button.SQUARE
+        assert result["buttons"] & Button.SELECT
+        assert result["buttons"] & Button.START
+        assert result["buttons"] & Button.PS
+        assert result["buttons"] & Button.MOVE
+        assert result["buttons"] & Button.T
+
+    def test_face_buttons_isolated_from_extended(self):
+        """Face buttons don't trigger PS/Move/T and vice versa."""
+        face = _build_test_report(buttons=Button.TRIANGLE | Button.CIRCLE | Button.CROSS | Button.SQUARE)
+        result = parse_input_report(face)
+        assert not (result["buttons"] & Button.PS)
+        assert not (result["buttons"] & Button.MOVE)
+        assert not (result["buttons"] & Button.T)
+
+        extended = _build_test_report(buttons=Button.PS | Button.MOVE | Button.T)
+        result = parse_input_report(extended)
+        assert not (result["buttons"] & Button.TRIANGLE)
+        assert not (result["buttons"] & Button.CIRCLE)
+        assert not (result["buttons"] & Button.CROSS)
+        assert not (result["buttons"] & Button.SQUARE)
 
 
 class TestTriggerParsing:
@@ -299,12 +356,18 @@ class TestTemperatureParsing:
 
 
 class TestSequenceParsing:
-    """Test sequence number parsing."""
+    """Test sequence number parsing (from buttons4 low nibble)."""
 
     def test_sequence_number(self):
-        data = _build_test_report(sequence=42)
+        data = _build_test_report(sequence=7)
         result = parse_input_report(data)
-        assert result["sequence"] == 42
+        assert result["sequence"] == 7
+
+    def test_sequence_max_nibble(self):
+        """Sequence is only 4 bits (0-15)."""
+        data = _build_test_report(sequence=15)
+        result = parse_input_report(data)
+        assert result["sequence"] == 15
 
 
 class TestInputReportEdgeCases:
@@ -317,10 +380,11 @@ class TestInputReportEdgeCases:
         with pytest.raises(ValueError, match="too short"):
             parse_input_report(b"\x00" * 10)
 
-    def test_strips_leading_report_id(self):
-        """Leading 0x01 report ID byte should be stripped."""
+    def test_strips_redundant_report_id(self):
+        """Redundant leading 0x01 byte (50 bytes) should be stripped."""
         inner = _build_test_report(trigger2=42)
         data = b"\x01" + inner
+        assert len(data) == 50
         result = parse_input_report(data)
         assert result["trigger"][1] == 42
 
@@ -424,8 +488,7 @@ class TestFrameEnum:
 
 
 def _build_zcm2_test_report(
-    buttons_lo=0,
-    buttons_hi=0,
+    buttons=0,
     sequence=0,
     trigger1=0,
     trigger2=0,
@@ -447,12 +510,14 @@ def _build_zcm2_test_report(
     """Build a synthetic 49-byte HID input report with ZCM2-style signed sensor values."""
     data = bytearray(INPUT_REPORT_SIZE)
 
-    data[1] = buttons_lo & 0xFF
-    data[2] = (buttons_lo >> 8) & 0xFF
-    data[3] = buttons_hi & 0xFF
-    data[4] = sequence
-    data[6] = trigger1
-    data[7] = trigger2
+    # psmoveapi byte layout (same as _build_test_report)
+    data[0] = 0x01  # Report ID
+    data[1] = (buttons >> 8) & 0xFF  # buttons1
+    data[2] = buttons & 0xFF  # buttons2
+    data[3] = (buttons >> 16) & 0x01  # buttons3
+    data[4] = ((buttons >> 13) & 0xF0) | (sequence & 0x0F)  # buttons4
+    data[5] = trigger1
+    data[6] = trigger2
     data[12] = battery
 
     # Pack as signed int16 (same raw bytes a ZCM2 controller would produce)
