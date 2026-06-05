@@ -67,12 +67,124 @@ Sessions are not carried in every signal, so the Agent synthesizes them:
 After each context update the Agent evaluates `should_evaluate`. When the gate
 opens it invokes the decision hooks:
 
-- **Rules engine** (#726) — evaluates the `GameContext` into intervention intents.
-- **Action sink** (#730) — applies intents via OpenFeature/flagd.
+- **Rules engine** (#726) — `ObjectiveRules`, the objective-weighted decision
+  logic below. Active by default.
+- **Action sink** (#730) — applies intents via OpenFeature/flagd. **Still a
+  no-op**: decisions are traced, nothing is applied yet.
 
-Both are stubs today. See
-[`docs/research/722-intervention-surface.md`](../../docs/research/722-intervention-surface.md)
+See [`docs/research/722-intervention-surface.md`](../../docs/research/722-intervention-surface.md)
 for the intervention-surface design.
+
+## Rules engine (#726)
+
+`ObjectiveRules` is the `rules_decide(context, objectives)` path — the non-LLM
+intelligence and the final link of the inference fallback chain. Each rule
+yields candidates with an urgency (0–1) and the objective they serve; the
+final score is `urgency × weight[objective]`. Candidates below a minimum score
+(0.10) are dropped, the rest are admitted best-first (ties: cheaper first, then
+name) while the weighted budget allows — at most 2 decisions per evaluation,
+and the rule set runs at most once per second.
+
+| Rule | Objective | Trigger | Intervention |
+|------|-----------|---------|--------------|
+| R1/R2 | endurance | session younger than `fitness.endurance.min_session_seconds` while players are eliminated | `adjust_music_tempo` (slow) / `play_audio_cue` |
+| R3 | balanced | skill spread > `fitness.balanced.max_skill_gap` | `adjust_player_sensitivity` → highest-skill outlier |
+| R4 | balanced | weakest player while the field shrinks (needs ≥ 2 players with known skill — "weakest" is only meaningful relative to others) | `grant_shield` → weakest |
+| R5 | accelerate | duration > `fitness.accelerate.target_session_seconds` | `adjust_music_tempo` (fast) |
+| R6 | accelerate | duration > 1.5× target, > 2 players | `eliminate_player` → least active |
+| R7 | accelerate | duration > 2× target **and accelerate strictly dominant** (a tie never ends a game) | `end_game` |
+| R8 | chaos | movement variance ≈ 0 ("statue") — dormant until producers ship the variance metric | `send_controller_effect` |
+| R9 | chaos | periodic random nudge (injectable rng) | `send_controller_effect` |
+
+**Policy constraints** (`policy.*` flags):
+
+- `battery_threshold` (20): players below it lose controller effects and
+  difficulty raises; session-wide demand raises are blocked while *anyone* is
+  low; `eliminate_player` of a low-battery player stays available only as the
+  accelerate-dominant graceful exit.
+- `movement_variance_window` (10s): ALL chaos candidates (variance-triggered
+  statue nudges and the random R9 nudge alike) are suppressed for one window
+  after any difficulty intervention — the variance baseline is invalid, and a
+  random rumble right after a tempo change would muddy attribution of the
+  difficulty intervention's effect.
+- `max_interventions_per_minute` (2): a **weighted** sliding-window budget per
+  the [#722 research §5](../../docs/research/722-intervention-surface.md):
+  soft 0.5 (audio cue, controller effect, volume), medium 1 (tempo, player
+  sensitivity, shield), hard 2 (global sensitivity, eliminate, revive,
+  end_game). The engine charges every decision it **emits**, including ones
+  the permission layer later blocks — it cannot see permissions (layering),
+  and the game coordinator's flag-application layer (#730) is the
+  authoritative backstop.
+
+**Configuration seam (#727):** objectives, policy, and fitness thresholds come
+from the `ObjectivesSource` / `PolicySource` / `FitnessSource` interfaces
+(`decision/config.go`). Until #727 wires OpenFeature, `DefaultStaticConfig()`
+supplies the flagd-schema defaults with objectives `{endurance: 1.0}` (the
+flag's own `balanced_focused` default surfaces once the flag is actually read).
+
+## Span schema (#724) — the trace is the audit log
+
+Every evaluation that produces decisions emits one trace (hierarchy always
+parent → child):
+
+```
+agent.span_received          one per triggering OTLP Export (backdated to arrival)
+  └─ agent.decision          one per Decision the rules engine returns
+       └─ agent.action       one per decision, wrapping the ActionSink call
+```
+
+**Traces are emitted only when the rules engine returns ≥ 1 decision** —
+including decisions that end up *blocked*. Idle evaluations cost no spans.
+Blocked actions are recorded (`decision.blocked = true` on both the decision
+and action spans, ActionSink **not** called), never silently dropped.
+
+### Decision-span attributes
+
+Every `agent.decision` span always carries the **full** schema; subsystems that
+do not exist yet contribute explicit placeholders so the trace shows its
+complete shape from day one:
+
+| Attribute | Today | Real value arrives with |
+|-----------|-------|-------------------------|
+| `agent.mode` | `"rules"` | LLM backend issue |
+| `agent.objectives` | `"unset"` | #725 / #731 |
+| `interventions.allowed` | `"unrestricted"` | #725 (flagd) |
+| `inference.configured` / `inference.used` | `"none"` | LLM backend |
+| `inference.fallback_reason` | `""` | LLM backend |
+| `decision.action` / `decision.reason` | real (rules/probe) | — |
+| `decision.objective_served` | `"unset"` | #731 |
+| `decision.blocked` | from `Permissions.Allowed()` | #725 |
+| `fitness.evaluated` | `[]` | #731 |
+| `gen_ai.agent.name` | `"joustmania-agent"` | — |
+
+### Semantic conventions
+
+OTel semantic conventions ([semconv v1.34.0](https://pkg.go.dev/go.opentelemetry.io/otel/semconv/v1.34.0))
+are used wherever one honestly applies:
+
+| Where | Convention |
+|-------|-----------|
+| `agent.span_received` | `rpc.system=grpc`, `rpc.service` (OTLP `TraceService`/`MetricsService`), `rpc.method=Export`; span kind `SERVER` |
+| `agent.decision` | `gen_ai.agent.name` identity (the full [GenAI agent conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-agent-spans/) apply once an LLM inference path exists — `gen_ai.provider.name` etc. land as a `gen_ai.*` child span in llm mode) |
+| `agent.decision` event | `feature_flag` span event (`feature_flag.key=interventions.allowed`, `feature_flag.provider.name`, `feature_flag.result.variant`) — same shape the openfeature OTel hooks emit in the Python services; provider is `"stub"` until flagd (#725) |
+| `agent.action` failures | `span.RecordError` + `error.type` + status `ERROR` |
+
+`decision.*`, `fitness.*`, `agent.mode`, `agent.objectives` and
+`interventions.allowed` have no semantic convention and are custom to this
+project.
+
+### Self-ingestion safety
+
+The collector's `otlp/agent` exporter fans the **agent's own spans back to the
+agent**. Two layers prevent a feedback loop:
+
+1. Naturally: the agent's spans carry no recognized game signals, so extraction
+   reports "nothing updated" and no evaluation (hence no new span) is triggered.
+2. Defense-in-depth: the extractors skip any resource whose `service.name`
+   equals the agent's own `OTEL_SERVICE_NAME`.
+
+A collector-side filtered pipeline (excluding the agent from its own fan-out)
+is a possible follow-up but not needed today.
 
 ## Configuration
 
@@ -83,7 +195,9 @@ All configuration is via environment variables:
 | `AGENT_LISTEN_ADDR` | `:4317` | OTLP gRPC receiver listen address |
 | `AGENT_HEALTH_ADDR` | `:13134` | HTTP health endpoint listen address (`GET /healthz`) |
 | `LOG_LEVEL` | `info` | Log verbosity |
-| `OTEL_*` | _unset_ | Self-telemetry; currently **no-op** (tracked in a separate issue) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | set in compose | Self-telemetry export (decision audit traces → collector → Jaeger); no-op when unset |
+| `OTEL_SERVICE_NAME` | `agent` | Service identity; also drives the self-ingestion skip |
+| `AGENT_PROBE_DECISIONS` | _unset_ | `true` enables the demo/verification probe: a synthetic `noop` decision (and thus a full audit trace) at most every 5 s. Never for production sessions |
 
 | Property | Value |
 |----------|-------|

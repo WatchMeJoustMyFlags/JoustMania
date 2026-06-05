@@ -1,6 +1,7 @@
 package gamecontext
 
 import (
+	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 )
 
@@ -10,7 +11,22 @@ const (
 	spanAttrGameMode = "game.mode"
 	spanAttrGameID   = "game.id"
 	spanEventDeath   = "player_death"
+
+	// resourceAttrServiceName mirrors semconv service.name, used for the
+	// own-telemetry skip.
+	resourceAttrServiceName = "service.name"
 )
+
+// isOwnResource reports whether a resource belongs to this agent itself
+// (service.name matches ownService) — its telemetry is skipped to break the
+// otlp/agent fan-out feedback loop.
+func (s *Store) isOwnResource(res pcommon.Resource) bool {
+	if s.ownService == "" {
+		return false
+	}
+	v, ok := res.Attributes().Get(resourceAttrServiceName)
+	return ok && v.AsString() == s.ownService
+}
 
 // ApplySpans applies trace data to the store. Spans are a LATE signal in this
 // system: player_lifecycle spans only end at game end, and the collector batches
@@ -21,6 +37,9 @@ func (s *Store) ApplySpans(td ptrace.Traces) bool {
 	updated := false
 	rss := td.ResourceSpans()
 	for i := 0; i < rss.Len(); i++ {
+		if s.isOwnResource(rss.At(i).Resource()) {
+			continue
+		}
 		sss := rss.At(i).ScopeSpans()
 		for j := 0; j < sss.Len(); j++ {
 			spans := sss.At(j).Spans()

@@ -69,3 +69,24 @@ func TestApplySpans_Unrecognized(t *testing.T) {
 		t.Fatal("span with no recognized attrs/events should return false")
 	}
 }
+
+func TestApplySpans_SkipsOwnService(t *testing.T) {
+	s := newTestStore()
+	s.SetOwnService("agent")
+
+	td := spanWith(map[string]string{"player.serial": "A"}, []string{"player_death"})
+	td.ResourceSpans().At(0).Resource().Attributes().PutStr("service.name", "agent")
+	if s.ApplySpans(td) {
+		t.Fatal("own-service spans must be skipped (self-ingestion loop defense)")
+	}
+	if s.Snapshot().Players["A"] != nil {
+		t.Fatal("own-service span must not create players")
+	}
+
+	// Other services still apply.
+	td = spanWith(map[string]string{"player.serial": "A"}, nil)
+	td.ResourceSpans().At(0).Resource().Attributes().PutStr("service.name", "game-coordinator")
+	if !s.ApplySpans(td) {
+		t.Fatal("non-own service spans must still apply")
+	}
+}

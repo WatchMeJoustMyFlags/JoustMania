@@ -214,3 +214,24 @@ func TestApplyMetrics_MissingSerialSkipped(t *testing.T) {
 		t.Fatal("data point without serial should be skipped")
 	}
 }
+
+func TestApplyMetrics_SkipsOwnService(t *testing.T) {
+	s := newTestStore()
+	s.SetOwnService("agent")
+
+	md := metricsWith(metricGameAlive, 1, serial("A"))
+	md.ResourceMetrics().At(0).Resource().Attributes().PutStr("service.name", "agent")
+	if s.ApplyMetrics(md) {
+		t.Fatal("own-service metrics must be skipped (self-ingestion loop defense)")
+	}
+	if s.Snapshot().Players["A"] != nil {
+		t.Fatal("own-service metrics must not create players")
+	}
+
+	// Other services still apply.
+	md = metricsWith(metricGameAlive, 1, serial("A"))
+	md.ResourceMetrics().At(0).Resource().Attributes().PutStr("service.name", "controller-manager")
+	if !s.ApplyMetrics(md) {
+		t.Fatal("non-own service metrics must still apply")
+	}
+}

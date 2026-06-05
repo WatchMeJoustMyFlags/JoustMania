@@ -4,8 +4,9 @@
 // an OTLP gRPC receiver that ingests both spans and metrics emitted by the game
 // services, accumulates them into a denormalized GameContext, gates on whether a
 // game is live with fresh player data, and on each gated update runs a decision
-// loop. The rules engine and action sink are stubbed in this scaffold; later
-// issues replace them with real interventions written to a flagd domain.
+// loop. The objective-weighted rules engine (#726) produces decisions; the
+// action sink is stubbed until the intervention API (#730) writes them to a
+// flagd domain.
 //
 // Self-observability (exporting the agent's own telemetry) follows the house
 // pattern in otel.go and is a no-op until OTEL_EXPORTER_OTLP_ENDPOINT is set.
@@ -35,7 +36,20 @@ const (
 	playerTTL    = 5 * time.Second
 	sessionGrace = 15 * time.Second
 	evictEvery   = 1 * time.Second
+	// probeInterval rate-limits the AGENT_PROBE_DECISIONS demo probe.
+	probeInterval = 5 * time.Second
 )
+
+// defaultServiceName is the agent's OTEL service name default. It MUST stay
+// identical everywhere it is used: the exported resource (otel.go) and the
+// extractor self-skip (SetOwnService) rely on matching values to break the
+// otlp/agent self-ingestion loop.
+const defaultServiceName = "agent"
+
+// resolveServiceName resolves the agent's OTEL service name (env override or default).
+func resolveServiceName() string {
+	return getEnv("OTEL_SERVICE_NAME", defaultServiceName)
+}
 
 func getEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
@@ -75,7 +89,25 @@ func main() {
 	defer shutdownMetrics(context.Background())
 
 	store := gamecontext.NewStore(playerTTL, sessionGrace, nil)
+	// Skip the agent's own telemetry when the collector fans it back to us
+	// (otlp/agent exporter) — breaks the self-ingestion feedback loop.
+	store.SetOwnService(resolveServiceName())
+
 	loop := decision.NewLoop(logger)
+	// The objective-weighted rules engine (#726) is the active default:
+	// decisions are traced through the audit spans, but the action sink is
+	// still a no-op until the intervention API (#730), so nothing is applied.
+	// Objectives/policy run on flagd-schema defaults until #727 wires the
+	// OpenFeature sources.
+	loop.Rules = decision.NewObjectiveRules(nil)
+	if strings.EqualFold(getEnv("AGENT_PROBE_DECISIONS", ""), "true") {
+		// Demo/verification mode: emit a synthetic noop decision (and thus the
+		// full audit trace, #724) at most once per probe interval. Overrides
+		// the rules engine.
+		loop.Rules = decision.NewProbeRules(probeInterval, nil)
+		slog.Warn("Probe decisions enabled (demo/verification mode)",
+			"interval", probeInterval)
+	}
 	pipe := newPipeline(store, loop, playerTTL)
 
 	grpcServer := grpc.NewServer()

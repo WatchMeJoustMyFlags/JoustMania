@@ -12,6 +12,13 @@ import (
 	"github.com/joustmania/agent/gate"
 )
 
+// Full OTLP gRPC service names, recorded as rpc.service (semconv) on the
+// agent.span_received root span.
+const (
+	otlpTraceService   = "opentelemetry.proto.collector.trace.v1.TraceService"
+	otlpMetricsService = "opentelemetry.proto.collector.metrics.v1.MetricsService"
+)
+
 // pipeline ties the context store and decision loop together. On each signal
 // update it snapshots the store and, if the gate allows, runs the loop.
 type pipeline struct {
@@ -30,15 +37,17 @@ func newPipeline(store *gamecontext.Store, loop *decision.Loop, playerTTL time.D
 	}
 }
 
-// signalUpdated is called after any received signal mutates the store.
-func (p *pipeline) signalUpdated() {
+// signalUpdated is called after any received signal mutates the store. The
+// caller's gRPC context and EvalTrigger flow through so the decision loop can
+// emit its audit trace (issue #724) with accurate timing and rpc.* attributes.
+func (p *pipeline) signalUpdated(ctx context.Context, trig decision.EvalTrigger) {
 	now := p.now
 	if now == nil {
 		now = time.Now
 	}
 	snap := p.store.Snapshot()
 	if gate.ShouldEvaluate(snap, now(), p.playerTTL) {
-		p.loop.OnEvaluate(snap)
+		p.loop.OnEvaluate(ctx, snap, trig)
 	}
 }
 
@@ -49,9 +58,14 @@ type traceReceiver struct {
 }
 
 // Export ingests a batch of traces.
-func (r *traceReceiver) Export(_ context.Context, req ptraceotlp.ExportRequest) (ptraceotlp.ExportResponse, error) {
+func (r *traceReceiver) Export(ctx context.Context, req ptraceotlp.ExportRequest) (ptraceotlp.ExportResponse, error) {
+	t0 := time.Now()
 	if r.pipe.store.ApplySpans(req.Traces()) {
-		r.pipe.signalUpdated()
+		r.pipe.signalUpdated(ctx, decision.EvalTrigger{
+			Signal:     "traces",
+			RPCService: otlpTraceService,
+			T0:         t0,
+		})
 	}
 	return ptraceotlp.NewExportResponse(), nil
 }
@@ -63,9 +77,14 @@ type metricsReceiver struct {
 }
 
 // Export ingests a batch of metrics.
-func (r *metricsReceiver) Export(_ context.Context, req pmetricotlp.ExportRequest) (pmetricotlp.ExportResponse, error) {
+func (r *metricsReceiver) Export(ctx context.Context, req pmetricotlp.ExportRequest) (pmetricotlp.ExportResponse, error) {
+	t0 := time.Now()
 	if r.pipe.store.ApplyMetrics(req.Metrics()) {
-		r.pipe.signalUpdated()
+		r.pipe.signalUpdated(ctx, decision.EvalTrigger{
+			Signal:     "metrics",
+			RPCService: otlpMetricsService,
+			T0:         t0,
+		})
 	}
 	return pmetricotlp.NewExportResponse(), nil
 }
