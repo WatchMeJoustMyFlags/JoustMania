@@ -184,26 +184,6 @@ services:
           memory: 256m
           cpus: '0.5'
     logging: *default-logging
-  # Pyroscope for continuous profiling (CPU flame graphs)
-  # Only starts with: docker compose --profile profiling up
-  pyroscope:
-    image: grafana/pyroscope:latest
-    container_name: joustmania-pyroscope
-    profiles:
-      - profiling
-    expose:
-      - "4040"
-    networks:
-      - joustmania
-    volumes:
-      - pyroscope-data:/data
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 256m
-          cpus: '0.5'
-    logging: *default-logging
 
   # Controller Manager Service
   controller-manager:
@@ -240,7 +220,6 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
-      - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
       # Rust HID service for canary controller I/O backend
       - RUST_HID_HOST=rust-hid
       - RUST_HID_PORT=50058
@@ -362,7 +341,6 @@ services:
       - OTEL_SERVICE_NAMESPACE=infrastructure
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
-      - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
     restart: unless-stopped
     # Healthcheck defined in Dockerfile (uses grpc_health_probe)
@@ -392,7 +370,6 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
       - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
-      - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
     depends_on:
       redis:
         condition: service_healthy
@@ -428,7 +405,6 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
-      - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
       # Phase 60: Audio service connection
       - AUDIO_HOST=audio
       - AUDIO_PORT=50056
@@ -478,7 +454,6 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
-      - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
       - FLAGD_HOST=flagd
       - FLAGD_PORT=8015
       - ALSA_CARD=auto  # Auto-detect sound card; set to card number (e.g. "1") to override
@@ -800,4 +775,3 @@ volumes:
   loki-data:
   jaeger-data:
   controller-names:
-  pyroscope-data:

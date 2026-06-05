@@ -26,14 +26,6 @@
         ]
       }
     },
-    "profiling_enabled": {
-      "state": "ENABLED",
-      "variants": {
-        "on": true,
-        "off": false
-      },
-      "defaultVariant": "off"
-    },
     "grpc_rpc_spans": {
       "state": "ENABLED",
       "variants": {
