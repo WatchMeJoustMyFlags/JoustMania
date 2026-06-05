@@ -41,6 +41,8 @@ const (
 	flagPlayerSensitivityFactor   = "player_sensitivity_factor"
 	flagShieldSeconds             = "shield_seconds"
 	flagVolumeOverride            = "volume_override"
+	flagGlobalDifficultyFactor    = "global_difficulty_factor" // #766 F6
+	flagPacingProfile             = "pacing_profile"           // #766 F6
 	flagEliminatePlayer           = "eliminate_player"
 	flagRevivePlayer              = "revive_player"
 	flagAudioCue                  = "audio_cue"
@@ -73,6 +75,8 @@ const (
 	defaultGlobalSensitivity = 2    // matches "medium"
 	defaultPlayerSensitivity = 1.5  // matches "handicap"
 	defaultShieldSeconds     = 5    // matches "default"
+	defaultGlobalDifficulty  = 1.5  // matches interventions.json "hard" (#766 F6)
+	defaultPacingProfile     = "frantic"
 )
 
 // Writer is the production ActionSink. It is safe for concurrent use; the agent
@@ -202,6 +206,8 @@ var stateNeutral = map[string]string{
 	flagMusicTempoOverride:        neutralNone,
 	flagGlobalSensitivityOverride: neutralNone,
 	flagVolumeOverride:            neutralNone,
+	flagGlobalDifficultyFactor:    neutralDefault, // #766 F6 (neutral = 1.0 "default")
+	flagPacingProfile:             neutralNone,    // #766 F6 (neutral = "none")
 }
 
 var targetedNeutral = map[string]string{
@@ -232,6 +238,10 @@ func (w *Writer) mutate(doc *orderedDoc, d decision.Decision) error {
 		return w.setState(doc, flagVolumeOverride, w.numOr(d.Value, defaultVolume))
 	case decision.InterventionAdjustGlobalSensitivity:
 		return w.setState(doc, flagGlobalSensitivityOverride, w.numOr(d.Value, defaultGlobalSensitivity))
+	case decision.InterventionAdjustGlobalDifficulty: // #766 F6
+		return w.setState(doc, flagGlobalDifficultyFactor, w.numOr(d.Value, defaultGlobalDifficulty))
+	case decision.InterventionSetPacingProfile: // #766 F6 (string state-shaped)
+		return w.setStateString(doc, flagPacingProfile, w.payloadOr(d.Value, defaultPacingProfile))
 
 	// Per-player state-shaped overrides (flagd targeting if-ladder).
 	case decision.InterventionAdjustPlayerSensitivity:
@@ -269,6 +279,23 @@ func (w *Writer) setEdge(doc *orderedDoc, flagKey, payload string) error {
 // setState writes a session-scoped state-shaped flag: overwrite the "active"
 // variant with the typed value and flip defaultVariant to it.
 func (w *Writer) setState(doc *orderedDoc, flagKey string, value float64) error {
+	f, err := doc.flag(flagKey)
+	if err != nil {
+		return err
+	}
+	if err := setVariant(f, activeVariant, value); err != nil {
+		return err
+	}
+	if err := f.set("defaultVariant", activeVariant); err != nil {
+		return err
+	}
+	return doc.putFlag(flagKey, f)
+}
+
+// setStateString writes a session-scoped STRING state-shaped flag (#766 F6
+// pacing_profile): overwrite the "active" variant with the string value and flip
+// defaultVariant to it. Mirrors setState but for string-typed flags.
+func (w *Writer) setStateString(doc *orderedDoc, flagKey, value string) error {
 	f, err := doc.flag(flagKey)
 	if err != nil {
 		return err

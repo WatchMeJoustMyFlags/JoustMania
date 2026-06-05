@@ -56,6 +56,27 @@
       },
       "defaultVariant": "none"
     },
+    "global_difficulty_factor": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 1.0,
+        "easier": 0.5,
+        "easy": 0.75,
+        "hard": 1.5,
+        "harder": 2.0
+      },
+      "defaultVariant": "default"
+    },
+    "pacing_profile": {
+      "state": "ENABLED",
+      "variants": {
+        "none": "none",
+        "default": "default",
+        "calm": "calm",
+        "frantic": "frantic"
+      },
+      "defaultVariant": "none"
+    },
     "eliminate_player": {
       "state": "ENABLED",
       "variants": {

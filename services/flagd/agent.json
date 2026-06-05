@@ -88,6 +88,7 @@
           "send_controller_effect",
           "adjust_volume",
           "adjust_music_tempo",
+          "set_pacing_profile",
           "adjust_player_sensitivity",
           "grant_shield"
         ],
@@ -96,9 +97,11 @@
           "send_controller_effect",
           "adjust_volume",
           "adjust_music_tempo",
+          "set_pacing_profile",
           "adjust_player_sensitivity",
           "grant_shield",
           "adjust_global_sensitivity",
+          "adjust_global_difficulty",
           "eliminate_player",
           "revive_player",
           "end_game"

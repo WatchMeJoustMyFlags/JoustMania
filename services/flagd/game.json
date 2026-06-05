@@ -305,7 +305,20 @@
           "end_max_music_slow_time": 8
         }
       },
-      "defaultVariant": "default"
+      "defaultVariant": "default",
+      "targeting": {
+        "if": [
+          { "===": [{ "var": "targetingKey" }, "calm"] },
+          "calm",
+          {
+            "if": [
+              { "===": [{ "var": "targetingKey" }, "frantic"] },
+              "frantic",
+              "default"
+            ]
+          }
+        ]
+      }
     }
   }
 }

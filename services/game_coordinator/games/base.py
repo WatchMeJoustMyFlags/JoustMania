@@ -505,6 +505,17 @@ class BaseGameMode(ABC):
         # ``pacing_profile`` intervention that atomically swaps
         # ``self.music_windows`` mid-game — see MusicWindows for the seam.
         self.music_windows = resolve_music_windows(read_object_flag("game", "windows", {}))
+        # #766 F6: the init-resolved windows are retained so the LIVE
+        # ``pacing_profile`` intervention can restore them when it reverts to the
+        # neutral profile. Never reassigned after init (the live handler swaps
+        # ``self.music_windows`` only).
+        self.init_music_windows = self.music_windows
+        # #766 F6: live global difficulty factor (analogue of per-player
+        # ``sensitivity_factor``). Combined with the per-player factor in
+        # ``_compute_effective_thresholds``; 1.0 is neutral (baseline behavior).
+        # Set/cleared by the global_difficulty_factor intervention handler and
+        # live-read every frame.
+        self.global_difficulty_factor: float = 1.0
 
         # Phase 70: Music tempo control state
         self.music_track_id = None
@@ -1165,10 +1176,13 @@ class BaseGameMode(ABC):
         base_warn = self._lerp(self.slow_warning[sens_idx], self.fast_warning[sens_idx], speed_percent)
         base_death = self._lerp(self.slow_max[sens_idx], self.fast_max[sens_idx], speed_percent)
 
-        # Apply per-player sensitivity factor
-        # Clamp factor to [0.5, 2.0] for safety, then divide thresholds
-        # Higher factor = lower threshold = easier to die
-        clamped_factor = max(0.5, min(2.0, player.sensitivity_factor))
+        # Apply per-player sensitivity factor combined with the live global
+        # difficulty factor (#766 F6). Both are multiplied, then the COMBINED
+        # factor is clamped to [0.5, 2.0] for safety before dividing thresholds.
+        # Higher combined factor = lower threshold = easier to die. At the
+        # neutral 1.0/1.0 this preserves the prior behavior exactly.
+        combined_factor = player.sensitivity_factor * self.global_difficulty_factor
+        clamped_factor = max(0.5, min(2.0, combined_factor))
         return base_warn / clamped_factor, base_death / clamped_factor
 
     def _record_player_analytics(
