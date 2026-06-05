@@ -212,6 +212,35 @@ async def ensure_game_stopped(docker_compose):
     await force_end_game()
 
 
+@pytest.fixture(autouse=True)
+async def coordinator_idle(docker_compose):
+    """Enforce the no-leftover-games invariant before EVERY integration test.
+
+    Tests must leave the coordinator idle. A live session leaking out of a
+    test occupies one of the GAME_MAX_CONCURRENT_GAMES slots, so the next test
+    that starts a game gets "Game already in progress" (this rejected one mode
+    per batch on the first CI run of the parallel lifecycle tests). This
+    fixture force-ends any leak and reports it loudly — when it fires, the
+    LEAKING test is the one that ran immediately before the reporting test.
+
+    NOTE (cross-test parallelism): this global quiesce assumes the sequential
+    single-process suite. If pytest-xdist with a shared stack is introduced,
+    scope this to tests needing exclusive coordinator access instead.
+    """
+    from tests.integration.helpers import quiesce_coordinator
+
+    host = docker_compose.get_service_host("game-coordinator", 50053)
+    port = docker_compose.get_service_port("game-coordinator", 50053)
+    channel = grpc.aio.insecure_channel(f"{host}:{port}")
+    game_client = game_coordinator_pb2_grpc.GameCoordinatorServiceStub(channel)
+    try:
+        await quiesce_coordinator(game_client, context="pre-test idle check")
+    finally:
+        await channel.close()
+
+    yield
+
+
 @pytest.fixture
 async def headless_cleanup(docker_compose):
     """Per-test cleanup for headless (shadow) games.

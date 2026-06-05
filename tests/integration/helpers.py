@@ -472,6 +472,54 @@ async def list_games(game_client) -> list:
     return list(response.games)
 
 
+_LIVE_GAME_STATES = (
+    game_coordinator_pb2.GameState.STARTING,
+    game_coordinator_pb2.GameState.RUNNING,
+)
+
+
+async def quiesce_coordinator(game_client, timeout: float = 15.0, context: str = "") -> list:
+    """Ensure the coordinator has no live sessions; force-end and report leaks.
+
+    Tests must leave the coordinator idle — a live leftover session occupies a
+    concurrency slot and gets the NEXT test rejected with "Game already in
+    progress". This helper makes that invariant explicit: any live session it
+    finds is a cleanup leak in a previous test, reported loudly (the leaker is
+    the test that ran right before the reporting one in the log).
+
+    NOTE: this assumes tests run sequentially in one process. If cross-test
+    parallelism (pytest-xdist with a shared stack) is ever introduced, this
+    global force-end would kill other workers' games — it must then be scoped
+    to tests that need exclusive coordinator access (menu-flow, full batches).
+
+    Returns:
+        The list of leaked GameInfo sessions found (empty = clean).
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    leaked = [g for g in await list_games(game_client) if g.state in _LIVE_GAME_STATES]
+    if not leaked:
+        return []
+
+    print(
+        f"COORDINATOR LEAK{f' ({context})' if context else ''}: "
+        f"{len(leaked)} live session(s) left behind by a previous test: "
+        + ", ".join(f"{g.game_id}/{g.game_mode}(state={g.state})" for g in leaked)
+    )
+    live = leaked
+    while live:
+        for game in live:
+            await force_end_game_by_id(game_client, game.game_id, reason="quiesce_leak_cleanup")
+        if loop.time() > deadline:
+            raise AssertionError(
+                f"Coordinator did not quiesce within {timeout}s: "
+                f"{[(g.game_id, g.state) for g in live]}"
+            )
+        await asyncio.sleep(0.5)
+        live = [g for g in await list_games(game_client) if g.state in _LIVE_GAME_STATES]
+    return leaked
+
+
 async def start_game_headless(
     game_client,
     start_config,
