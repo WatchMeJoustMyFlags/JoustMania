@@ -178,6 +178,36 @@ def get_flag_client(domain: str):
     return api.get_client(domain=domain)
 
 
+def read_object_flag(domain: str, flag_key: str, default: dict) -> dict:
+    """
+    Read an object-typed flag once at init time, with a hardcoded fallback.
+
+    Init-frozen read helper for calibration flags (#766): the value is fetched
+    once (e.g. in a game mode ``__init__``) and never re-evaluated mid-game.
+    The domain is initialized lazily on first use, so callers do not need a
+    pre-wired client. On ANY failure (provider not ready, missing flag,
+    evaluation error) the supplied ``default`` is returned unchanged so the
+    promotion stays behavior-neutral.
+
+    Args:
+        domain: OpenFeature domain / flagSetId (e.g. "game")
+        flag_key: Object flag key (e.g. "thresholds")
+        default: Fallback value returned on any error or missing flag
+
+    Returns:
+        The flag's object value, or ``default`` on failure.
+    """
+    try:
+        init_flag_domain(domain)
+        client = get_flag_client(domain)
+        value = client.get_object_value(flag_key, default, EvaluationContext())
+        # get_object_value may return the default sentinel itself; either is fine.
+        return value if isinstance(value, dict) else default
+    except Exception as e:
+        logger.warning(f"read_object_flag({domain!r}, {flag_key!r}) failed, using default: {e}")
+        return default
+
+
 def set_game_transaction_context(
     game_mode: str,
     controller_count: int,

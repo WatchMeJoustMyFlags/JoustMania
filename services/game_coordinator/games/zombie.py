@@ -21,9 +21,17 @@ from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
 from lib.colors import Colors
+from lib.feature_flags import read_object_flag
 from lib.types import Sound
 from proto import controller_manager_pb2
-from services.game_coordinator.games.base import GAME_MODE_ATTR, BaseGameMode, Phase, Player, Sensitivity
+from services.game_coordinator.games.base import (
+    GAME_MODE_ATTR,
+    BaseGameMode,
+    Phase,
+    Player,
+    Sensitivity,
+    resolve_mode_thresholds,
+)
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -113,6 +121,12 @@ class ZombieGame(BaseGameMode):
             game_id=game_id,
             initial_players=initial_players,
             sensitivity=sensitivity,
+        )
+
+        # #766 F1: zombie threshold overrides promoted to ``game.zombie.thresholds``.
+        # Read once at init (init-frozen); malformed values fall back to ZOMBIE_THRESHOLDS.
+        self.zombie_thresholds = resolve_mode_thresholds(
+            read_object_flag("game", "zombie.thresholds", {}), ZOMBIE_THRESHOLDS
         )
 
         self.zombie_serials: list[str] = []
@@ -264,7 +278,7 @@ class ZombieGame(BaseGameMode):
         """
         zombie_player = player
         if zombie_player.is_zombie:
-            return ZOMBIE_THRESHOLDS.get(self.sensitivity, (2.1, 2.6))
+            return self.zombie_thresholds.get(self.sensitivity, (2.1, 2.6))
         return super()._compute_effective_thresholds(player)
 
     async def _game_timer(self):

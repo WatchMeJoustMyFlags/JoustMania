@@ -17,9 +17,17 @@ from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
 from lib.colors import Colors
+from lib.feature_flags import read_object_flag
 from lib.types import Sound
 from proto import controller_manager_pb2
-from services.game_coordinator.games.base import GAME_MODE_ATTR, BaseGameMode, Phase, Player, Sensitivity
+from services.game_coordinator.games.base import (
+    GAME_MODE_ATTR,
+    BaseGameMode,
+    Phase,
+    Player,
+    Sensitivity,
+    resolve_mode_thresholds,
+)
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -91,6 +99,12 @@ class WerewolfGame(BaseGameMode):
             game_id=game_id,
             initial_players=initial_players,
             sensitivity=sensitivity,
+        )
+
+        # #766 F1: werewolf threshold overrides promoted to ``game.werewolf.thresholds``.
+        # Read once at init (init-frozen); malformed values fall back to WEREWOLF_THRESHOLDS.
+        self.werewolf_thresholds = resolve_mode_thresholds(
+            read_object_flag("game", "werewolf.thresholds", {}), WEREWOLF_THRESHOLDS
         )
 
         self.werewolf_serials: list[str] = []
@@ -317,7 +331,7 @@ class WerewolfGame(BaseGameMode):
         """
         wolf_player = player
         if wolf_player.is_werewolf:
-            return WEREWOLF_THRESHOLDS.get(self.sensitivity, (2.1, 2.6))
+            return self.werewolf_thresholds.get(self.sensitivity, (2.1, 2.6))
         return super()._compute_effective_thresholds(player)
 
     async def _check_win_condition(self) -> bool:
