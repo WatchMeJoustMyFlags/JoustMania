@@ -16,6 +16,14 @@ therefore acts on one of three axes:
 2. **Aliveness** — change who is in the game (eliminate, revive, shield)
 3. **Ambience** — influence player behavior without touching game state (audio, LEDs, rumble)
 
+A codebase-wide constant audit (2026-06) surfaced a second, distinct surface:
+**calibration** — hardcoded constants *upstream* of the intervention pipeline
+(threshold tables, EMA weight, music schedule windows, role distributions).
+Calibration knobs are not interventions: they are tuned per venue/session, not
+mid-game per decision, and are exempt from the intervention policy budget (§5).
+They do, however, bound what interventions can achieve. See §2b for the
+distinction and the placement rule.
+
 The analysis is grounded in the observable signals from the schema (#725):
 
 | Signal | Source today | Gap |
@@ -66,6 +74,24 @@ Tunable inputs to this pipeline:
   already implement the same idea as `invincible_until`, Nonstop as
   `spawn_protected`.
 
+Fixed (hardcoded) parameters of the same pipeline — equally upstream, but
+currently **not** tunable at all (see §2b for where they should live):
+
+- **The threshold tables themselves** — `SLOW_WARNING` / `SLOW_MAX` /
+  `FAST_WARNING` / `FAST_MAX` (`base.py:95-98`). The sensitivity index and
+  `global_sensitivity_override` only *select a row*; the rows are constants.
+  Flagging the tables (or a continuous scale factor over them, §8) turns 5
+  discrete difficulty steps into a continuous range.
+- **EMA smoothing weight** — `(prev·4 + raw)/5` (`base.py:850`). Changes what
+  "smoothed movement" means; affects every threshold comparison *and* the
+  variance baseline (§5).
+- **Music schedule windows** — `MIN/MAX_MUSIC_FAST_TIME`,
+  `MIN/MAX_MUSIC_SLOW_TIME` and the end-game variants (`base.py:72-81`). These
+  define the *rhythm* of the fast/slow cycle that `music_tempo_override` can
+  only momentarily interrupt.
+- **Per-mode threshold overrides** — Zombie and Werewolf carry their own
+  hardcoded tables (`zombie.py:41-47`, `werewolf.py:34-40`).
+
 Mode differences that matter for interventions:
 
 | Mode family | Modes | Relevant property |
@@ -75,6 +101,69 @@ Mode differences that matter for interventions:
 | Hidden role | Werewolf, Traitor | LED interventions can **leak roles** — restricted |
 | Asymmetric thresholds | Zombie, Werewolf | per-role threshold overrides already exist |
 | 1v1 queue | Tournament, Fight Club | most players idle; per-player interventions only meaningful for active fighters |
+
+## 2b. Calibration Surface (distinct from interventions)
+
+> Added 2026-06 from the codebase-wide constant audit. Numbered `2b` to keep
+> existing §3–§10 cross-references stable.
+
+**Calibration ≠ intervention.** An *intervention* is a runtime decision the
+agent makes mid-game, subject to the policy budget (§5), the permission flag
+(§6), and the mode matrix (§9), flowing through `interventions.json`. A
+*calibration* knob is a parameter of the system itself — tuned per venue,
+session, or experiment — that belongs in `game.json` / `agent.json` /
+`system.json` with **no nonce, no rate limit, and (usually) read-at-game-init
+semantics**.
+
+The placement rule for new flags:
+
+| Question | Yes → | No → |
+|---|---|---|
+| Does the agent change it *mid-game* in response to signals? | `interventions.json` (policy-enforced, §8) | calibration domain |
+| Does it shape gameplay/difficulty? | `game.json` | — |
+| Does it shape the agent's own perception/decision loop? | `agent.json` | — |
+| Is it infrastructure cadence (poll rates, timeouts)? | `system.json` / `controller.json` | — |
+
+### Calibration candidates by tier
+
+**Tier 1 — bounds the difficulty axis** (`game.json`, read at game init —
+inherits the §2 "frozen at init" semantics, which is *correct* for calibration):
+
+| Candidate | Today | Why |
+|---|---|---|
+| Death/warning threshold tables | `base.py:95-98`, hardcoded arrays | The real difficulty surface behind every sensitivity flag |
+| Music schedule windows | `base.py:72-81` | Pacing rhythm; complements `music_tempo_override` |
+| Grace periods (`DEATH_GRACE_PERIOD`, spawn protection) | `base.py:106`, `nonstop_joust.py:33` | Complements `shield_seconds` |
+| Round/match durations, time between matches | `fight_club.py:29`, `tournament.py:40-42` | Session-length lever for `accelerate` |
+| Role distributions (werewolf ~44%, traitor tiers, initial zombies) | `werewolf.py:117`, `traitor.py:110-116`, `zombie.py:32-34` | Between-game composition lever for `chaos` (extends E6) |
+| Nonstop scoring weights (`100 − deaths·10`) | `nonstop_joust.py:494` | Handicapping lever |
+
+**Tier 2 — the agent's own perception layer** (`agent.json`, next to the
+existing `fitness.*` block):
+
+| Candidate | Today | Why |
+|---|---|---|
+| Analytics zone boundaries (still/active/warning g) | `runtime_config.py:40-42` | Feed playstyle → proposed `skill_level` (§7); static baselines drift when the agent shifts difficulty |
+| Playstyle classification thresholds (30 % / 70 %) | `analytics.py:266-270` | Same |
+| EMA smoothing weight | `base.py:850` | Changes the observed signal; calibration-only — see §5 caveat |
+| Agent freshness gates (`playerTTL` 5 s, `sessionGrace` 15 s, `evictEvery` 1 s) | `services/agent/main.go:35-37` | Hardcoded assumptions under the whole OBSERVE layer |
+| Decision-loop throttle (1/s) | `services/agent/decision/decision.go:35` | Should evolve with `prompt_variant` / `mode` |
+
+**Tier 3 — ambient parameterization** (`game.json` / `user.json`; these
+parameterize E2–E4, they are *not* new interventions):
+
+- Feedback effect timings (warning flash 200 ms @ 5 Hz, death rumble 255/150 ms,
+  death fade 700 ms — `feedback_manager.py:351-380`)
+- Per-channel volumes (game 0.7 / countdown 0.15 — `base.py:84-85`; sound 0.8 /
+  voice 0.9 / lobby 0.4 — `menu/utils/audio.py`)
+- Sentinel idle animation (brightness 9–30 %, 4 s breath, 30 s hue —
+  `menu/idle_monitor.py:30-34`)
+- Team/effect color palettes (`teams_base.py:29-38`, `fight_club.py:35-37`)
+
+**Explicitly not worth flagging:** HID protocol constants (report sizes,
+report ID `0x06`), accelerometer scale (4096 ADC/g), ALSA sample rate/channels,
+gRPC/shutdown timeouts and retry backoffs (operational; change-via-PR is fine),
+and state-machine enums.
 
 ## 3. Intervention Inventory
 
@@ -87,7 +176,7 @@ Mode differences that matter for interventions:
 | E3 | Set master volume | `Audio.SetVolume` RPC | session | yes | yes |
 | E4 | Controller effect (rumble, LED pulse/flash, color) | `GameEffectCommand` via `StreamButtonEvents` / `StreamGameplayData` ([controller_manager.proto](../../proto/controller_manager.proto)) | per player or broadcast | yes (auto-restore) | yes |
 | E5 | Force end game | `GameCoordinator.ForceEndGame` RPC | session | **no** | yes |
-| E6 | Pre-game config (sensitivity, teams, time limits, invincibility, reveal time) | flagd `game_settings.json` → `StartGameConfig` | next game only | yes | between games |
+| E6 | Pre-game config (sensitivity, teams, time limits, invincibility, reveal time) | flagd `game.json` → `StartGameConfig` | next game only | yes | between games |
 
 **Caveat on E1:** the running game's `_music_loop` owns tempo scheduling and will
 override an external `ChangeTempo` at its next scheduled transition, and the
@@ -98,6 +187,13 @@ music loop adopts the agent's tempo instead of fighting it.
 
 **Caveat on E4:** in hidden-role modes (Werewolf, Traitor) LED interventions can
 reveal roles; the API must consult a per-mode capability matrix (§9).
+
+**E6 is broader than listed:** the constant audit (§2b) shows the real
+next-game-configurable surface also includes role distributions, round/match
+durations, respawn timing, grace periods, and scoring weights — today hardcoded,
+all promotable to `game.json` with zero mid-game risk. For `accelerate` and
+`chaos` objectives, between-game composition changes are the *cheapest*
+interventions: fully reversible, no trust risk, no policy budget.
 
 **Excluded:** chaos fault injection and canary routing endpoints
 (`connect-proxy/chaos.go`, `canary.go`) mutate the *infrastructure*, not the
@@ -154,6 +250,7 @@ Objectives from the flag schema (#725): `endurance` (long sessions),
 | N4 `eliminate_player` | — | ✅ remove runaway leader (drastic; prefer N1) | ✅✅ primary accelerate lever | ✅ random elimination | wraps `_kill_player()` |
 | N5 `revive_player` | ✅ re-grow the field | ✅ second chance for early eliminations | — | ✅ surprise returns | re-enter player |
 | E5 `end_game` | — | — | ✅ terminal action | — | hard stop |
+| E6 next-game config (incl. §2b Tier 1: durations, role distributions, thresholds) | ✅ longer rounds, lower thresholds | ✅ handicaps via scoring weights | ✅✅ shorter rounds — cheapest accelerate lever | ✅ reshape role composition each game | applied at next `StartGameConfig`; zero mid-game risk |
 
 Signal → intervention examples (input to the rules engine, #726):
 
@@ -185,6 +282,10 @@ The normalization (§7) must land before this constraint is enforceable.
 - Difficulty interventions (E1, N1, N2, N6) **invalidate the variance baseline** —
   players change behavior in response. After any of these, variance-triggered
   decisions must observe a cooldown of one full window before re-evaluating.
+- The same invalidation applies to the **EMA smoothing weight** (`base.py:850`)
+  if it becomes tunable (§2b Tier 2): changing it redefines what "smoothed
+  movement" means. For this reason the EMA weight must be **calibration-only**
+  (frozen per game, never changed mid-game) — it is not an intervention.
 - Current Welford implementation is cumulative over the whole game
   (`analytics.py:110-157`); the windowed variant is new work (§7).
 
@@ -256,6 +357,15 @@ unless noted, following the existing `game_player_*{serial}` pattern):
 | `game_player_elimination_order{serial, game_id}` | Gauge | order index (1 = first out); makes `session.elimination_sequence` queryable; follows the `game_player_peak_accel{serial, game_id}` labeling pattern |
 | `game_interventions_total{type, objective, blocked}` | Counter | every agent intervention attempt — the ACT layer's own audit metric (also needed for the rate limiter and #731 fitness functions) |
 
+**Perception thresholds must be flags, not constants.** The proposed
+`game_player_skill_level` builds on the playstyle classification, whose
+thresholds (30 %/70 %, `analytics.py:266-270`) and zone boundaries
+(1.1/1.5/2.0 g, `runtime_config.py:40-42`) are hardcoded today. If the agent
+shifts difficulty, these static baselines drift — they belong in `agent.json`
+next to the `fitness.*` block (§2b Tier 2). The same goes for the agent's own
+freshness gate (`playerTTL` = 5 s, `services/agent/main.go:35`), which silently
+defines what "fresh data" means for `ShouldEvaluate`.
+
 Persistence: the `game_id` label (pattern already established by
 `game_player_peak_accel`) keeps per-game history in the TSDB; `PlayerAnalytics`
 already persists end-of-game summaries (incl. `std_accel`) to Redis
@@ -290,10 +400,10 @@ running game (BaseGameMode)
 
 ### New flagd domain: `interventions`
 
-A fourth flag file `services/flagd/interventions.json` (`flagSetId:
-"interventions"`), alongside `performance` / `game_settings` /
-`user_preferences`. Initialized via the existing `init_flag_domain()`
-([feature_flags.py:81](../../lib/feature_flags.py)).
+The flag file `services/flagd/interventions.json` (`flagSetId:
+"interventions"`), one of the eight domains shipped with #749 (see
+[feature-flags.md](../feature-flags.md#domains)). Initialized via the existing
+`init_flag_domain()` ([feature_flags.py:81](../../lib/feature_flags.py)).
 
 Two flag shapes are needed, because flags are **declarative state, not
 commands**:
@@ -370,6 +480,22 @@ ignores (and records as blocked) any flag change that fails:
   writes, more keys). Targeting rules are the OpenFeature-idiomatic choice and
   keep `interventions.json` schema-stable; recommended starting point.
 
+### Candidate additions from the calibration audit (proposed, decide in #730)
+
+Two further **state-shaped** flags follow from §2b and stay consistent with the
+"prefer state-shaped" principle:
+
+| Flag | Type | Evaluation | Rationale |
+|---|---|---|---|
+| `global_difficulty_factor` | number `0.5–2.0`, default `1.0` | session | Continuous global analogue of `player_sensitivity_factor` — same threshold-division math (`base.py:877-881`), no init-freeze problem. Strictly finer-grained than `global_sensitivity_override`'s 5 discrete rows; the preferred lever for `balanced`. |
+| `pacing_profile` | string (`calm`, `default`, `frantic`) | session | Selects a preset over the music schedule windows (§2 fixed parameters) so the `_music_loop` *itself* paces differently — declarative, instead of the agent repeatedly flipping `music_tempo_override` against the loop's schedule. |
+
+Placement note: the threshold **tables** themselves stay calibration
+(`game.json`, next-game-only, §2b Tier 1) — flagging them as live interventions
+would inherit N2's "safe live-update" problem for no benefit once
+`global_difficulty_factor` exists. Cleanest split: **tables = calibration,
+factor = live intervention.**
+
 ## 9. Mode Capability Matrix
 
 | Intervention | FFA | Teams/Random | Nonstop | Tournament | FightClub | Zombie | Werewolf | Traitor | Swapper |
@@ -383,6 +509,10 @@ ignores (and records as blocked) any flag change that fails:
 | eliminate_player | ✅ | ✅ | ✅ (respawns) | ✅ (forfeits match) | ✅ | ✅ | ✅ | ✅ | ⚠️ swaps team instead — mode semantics |
 | revive_player | ⚠️ opt-in | ⚠️ opt-in | ✅ native | ❌ breaks bracket | ❌ breaks queue | ✅ native (zombies) | ❌ breaks hidden roles | ❌ same | ❌ team state ambiguous |
 | end_game | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+The proposed `global_difficulty_factor` inherits the `adjust_global_sensitivity`
+row (same ⚠️ in modes with role threshold overrides); `pacing_profile` inherits
+the `adjust_music_tempo` row (✅ everywhere).
 
 ## 10. Summary of Findings
 
@@ -411,3 +541,35 @@ ignores (and records as blocked) any flag change that fails:
 7. All interventions are assessed against the three policy constraints in §5;
    enforcement must live in the game coordinator's flag-application layer, with
    weighted rate-limit costs rather than a flat count.
+8. **The intervention surface sits on top of a calibration surface** (§2b):
+   hardcoded threshold tables, music schedule windows, role distributions, and
+   perception thresholds bound what interventions can achieve. Promoting them
+   to flags is separate work from #730 — calibration flags go to `game.json` /
+   `agent.json` with no policy budget, and only two new state-shaped levers
+   (`global_difficulty_factor`, `pacing_profile`) touch `interventions.json`
+   (§8). See §11 for the follow-up plan.
+
+## 11. Follow-Up Work (calibration promotion plan)
+
+What must land, in dependency order, to make the calibration surface real and
+keep docs/schema consistent. Each item is one focused PR.
+
+| # | Work item | Domain | Depends on |
+|---|---|---|---|
+| F1 | Promote death/warning threshold tables + per-mode overrides to flags (read at game init) | `game.json` | — |
+| F2 | Promote grace periods, round/match durations, role distributions, scoring weights | `game.json` | — |
+| F3 | Promote music schedule windows; define the `pacing_profile` presets over them | `game.json` (+ §8 flag in #730) | F2 |
+| F4 | Move perception thresholds (zone boundaries, playstyle %, EMA weight) to flags; EMA frozen-per-game | `agent.json` | — |
+| F5 | Replace agent Go constants (`playerTTL`, `sessionGrace`, `evictEvery`, throttle) with agent-domain flags — requires a Go OpenFeature/flagd client in the agent service | `agent.json` | — |
+| F6 | Add `global_difficulty_factor` + `pacing_profile` to `interventions.json` with policy class *Medium* (§5) | `interventions.json` | #730, F3 |
+| F7 | Ambient parameterization (effect timings, per-channel volumes, sentinel animation) | `game.json` / `user.json` | — |
+| F8 | Update [feature-flags.md](../feature-flags.md) flag tables as each of F1–F7 lands; keep §2b placement rule and the doc's "Adding New Flags" guidance in sync | docs | F1–F7 |
+
+Consistency rules for all of the above:
+
+- Follow the #725 naming convention (bare `snake_case`, dots only for genuine
+  sub-structure, no domain prefix in keys).
+- Every promoted constant keeps its current value as the flag default — the
+  promotion itself must be behavior-neutral.
+- Calibration flags are read at game init (no live re-evaluation) unless a §8
+  intervention flag explicitly covers the live path.
