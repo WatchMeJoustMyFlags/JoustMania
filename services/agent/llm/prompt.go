@@ -157,8 +157,8 @@ func joinInterventions(allowed []string) string {
 // rendered as the captured_at timestamp in UTC RFC3339.
 func buildUser(ctx gamecontext.GameContext, now time.Time) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "GAME SNAPSHOT (session=%s, mode=%s, captured_at=%s)\n",
-		ctx.SessionID, stringOrUnknown(ctx.Session.GameMode), now.UTC().Format(time.RFC3339))
+	fmt.Fprintf(&b, "GAME SNAPSHOT (session=%s, kind=%s, mode=%s, captured_at=%s)\n",
+		ctx.SessionID, gameKindOrUnknown(ctx.GameKind), stringOrUnknown(ctx.Session.GameMode), now.UTC().Format(time.RFC3339))
 
 	b.WriteString("Session:\n")
 	fmt.Fprintf(&b, "  duration_seconds: %s\n", floatPtrOrUnknown(ctx.Session.DurationSeconds))
@@ -226,4 +226,14 @@ func stringOrUnknown(v *string) string {
 		return unknown
 	}
 	return *v
+}
+
+// gameKindOrUnknown renders GameContext.GameKind ("real"/"shadow") as-is, or
+// "unknown" when empty (never observed on a labeled signal). GameKind is a plain
+// string (not a pointer), so "" is the unobserved sentinel (#845).
+func gameKindOrUnknown(kind string) string {
+	if kind == "" {
+		return unknown
+	}
+	return kind
 }

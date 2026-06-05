@@ -36,7 +36,7 @@ RESPONSE CONTRACT — reply with EXACTLY ONE JSON object, no prose, matching:
 }
 If no tweak is warranted, return "suggestions": [].
 === USER ===
-SESSION RETROSPECTIVE (session=session-7, mode=ffa, captured_at=2026-06-05T12:30:00Z)
+SESSION RETROSPECTIVE (session=session-7, kind=real, mode=ffa, captured_at=2026-06-05T12:30:00Z)
 
 Outcome:
   duration_seconds: 132.00

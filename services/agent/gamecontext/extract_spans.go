@@ -10,12 +10,29 @@ const (
 	spanAttrSerial   = "player.serial"
 	spanAttrGameMode = "game.mode"
 	spanAttrGameID   = "game.id"
+	spanAttrGameKind = "game.kind"
 	spanEventDeath   = "player_death"
 
 	// resourceAttrServiceName mirrors semconv service.name, used for the
 	// own-telemetry skip.
 	resourceAttrServiceName = "service.name"
 )
+
+// spanGameLabels resolves the game identity from a span's attributes: the
+// game.id / game.kind attributes carried by the game-session span (always) and
+// the player_lifecycle span (since #845's producer change). Mirrors
+// metricGameLabels so the metric and span paths share the gameLabels routing
+// key PR B builds its multiplexer on.
+func spanGameLabels(attrs pcommon.Map) gameLabels {
+	var labels gameLabels
+	if v, ok := attrs.Get(spanAttrGameID); ok {
+		labels.GameID = v.AsString()
+	}
+	if v, ok := attrs.Get(spanAttrGameKind); ok {
+		labels.GameKind = v.AsString()
+	}
+	return labels
+}
 
 // isOwnResource reports whether a resource belongs to this agent itself
 // (service.name matches ownService) — its telemetry is skipped to break the
@@ -57,6 +74,9 @@ func (s *Store) applySpan(span ptrace.Span) bool {
 	attrs := span.Attributes()
 	updated := false
 
+	// Resolve the span's game identity once and thread it (PR-B routing key, #845).
+	labels := spanGameLabels(attrs)
+
 	var serial string
 	if sv, ok := attrs.Get(spanAttrSerial); ok {
 		serial = sv.AsString()
@@ -70,8 +90,12 @@ func (s *Store) applySpan(span ptrace.Span) bool {
 		s.SetGameMode(mv.AsString())
 		updated = true
 	}
-	if gv, ok := attrs.Get(spanAttrGameID); ok {
-		s.AdoptSessionID(gv.AsString())
+	if labels.GameID != "" {
+		s.AdoptSessionID(labels.GameID)
+		updated = true
+	}
+	if labels.GameKind != "" {
+		s.SetGameKind(labels.GameKind)
 		updated = true
 	}
 

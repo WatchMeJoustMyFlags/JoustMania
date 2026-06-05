@@ -30,6 +30,7 @@ func retroSnapshot() flags.Snapshot {
 func retroThreePlayers() gamecontext.GameContext {
 	return gamecontext.GameContext{
 		SessionID: "session-7",
+		GameKind:  "real",
 		Session: gamecontext.SessionSignals{
 			DurationSeconds:     fptr(132.0),
 			ActivePlayerCount:   iptr(1),
@@ -79,6 +80,7 @@ func retroCases() []retroCase {
 			snapshot: retroSnapshot(),
 			context: gamecontext.GameContext{
 				SessionID: "session-9",
+				GameKind:  "shadow",
 				Session: gamecontext.SessionSignals{
 					DurationSeconds:     fptr(60.0),
 					ActivePlayerCount:   iptr(0),

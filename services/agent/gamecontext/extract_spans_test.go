@@ -42,6 +42,39 @@ func TestApplySpans_Enrichment(t *testing.T) {
 	}
 }
 
+// TestApplySpans_AdoptsGameKind verifies the player_lifecycle / game-session span
+// now carries game.kind (#845) and the store records it alongside game.id.
+func TestApplySpans_AdoptsGameKind(t *testing.T) {
+	s := newTestStore()
+	td := spanWith(map[string]string{
+		"player.serial": "A",
+		"game.id":       "game-9",
+		"game.kind":     "real",
+	}, nil)
+	if !s.ApplySpans(td) {
+		t.Fatal("expected span to be recognized")
+	}
+	snap := s.Snapshot()
+	if snap.SessionID != "game-9" {
+		t.Fatalf("SessionID = %q, want game-9", snap.SessionID)
+	}
+	if snap.GameKind != "real" {
+		t.Fatalf("GameKind = %q, want real (adopted from game.kind span attr)", snap.GameKind)
+	}
+}
+
+// TestApplySpans_GameKindAttrAloneIsRecognized verifies a span carrying only
+// game.kind (no serial/mode/id) is still recognized and records the kind.
+func TestApplySpans_GameKindAttrAloneIsRecognized(t *testing.T) {
+	s := newTestStore()
+	if !s.ApplySpans(spanWith(map[string]string{"game.kind": "shadow"}, nil)) {
+		t.Fatal("span with only game.kind should be recognized")
+	}
+	if k := s.Snapshot().GameKind; k != "shadow" {
+		t.Fatalf("GameKind = %q, want shadow", k)
+	}
+}
+
 func TestApplySpans_DeathEventAppendsElimination(t *testing.T) {
 	s := newTestStore()
 	td := spanWith(map[string]string{"player.serial": "A"}, []string{"player_death"})

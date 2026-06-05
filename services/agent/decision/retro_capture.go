@@ -129,6 +129,7 @@ func (rc *RetroCoordinator) OnGameEnd(c gamecontext.GameContext) {
 		trace.WithAttributes(retroPromptAttributes(retroPromptAttrs{
 			prompt:     prompt,
 			sessionID:  c.SessionID,
+			gameKind:   c.GameKind,
 			objectives: snapshot.Objectives,
 			allowed:    snapshot.InterventionsAllowed,
 		})...))
@@ -160,6 +161,7 @@ func (rc *RetroCoordinator) claimSession(sessionID string) bool {
 type retroPromptAttrs struct {
 	prompt     llm.RetroPrompt
 	sessionID  string
+	gameKind   string
 	objectives map[string]float64
 	allowed    []string
 }
@@ -197,6 +199,7 @@ func retroPromptAttributes(in retroPromptAttrs) []attribute.KeyValue {
 		genAIOutputTypeJSON,
 		// Agent attribution (same vocabulary as the in-game capture / decision span).
 		attribute.String(AttrMode, retroModeValue),
+		attribute.String(AttrGameKind, in.gameKind),
 		attribute.String(AttrObjectives, summarizeObjectives(in.objectives)),
 		attribute.String(AttrInterventionsAllowed, allowedSummary(in.allowed)),
 		attribute.String("session.id", in.sessionID),

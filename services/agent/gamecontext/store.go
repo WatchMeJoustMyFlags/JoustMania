@@ -270,6 +270,19 @@ func (s *Store) SetGameActive(active bool) {
 	}
 }
 
+// SetGameKind records the game kind ("real"/"shadow") from the game_kind
+// datapoint label or the game.kind span attribute (#845). An empty kind is
+// ignored so an unlabeled signal never clobbers a previously observed kind.
+func (s *Store) SetGameKind(kind string) {
+	if kind == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ctx.GameKind = kind
+	s.touchSession()
+}
+
 // AdoptSessionID overrides the synthetic SessionID with a real game_id label.
 func (s *Store) AdoptSessionID(id string) {
 	if id == "" {
@@ -388,6 +401,7 @@ func (s *Store) EvictStale() {
 	if !s.endedAt.IsZero() && now.Sub(s.endedAt) > s.sessionGrace {
 		s.ctx.Session = SessionSignals{GameActive: ptr(false)}
 		s.ctx.SessionID = ""
+		s.ctx.GameKind = ""
 		s.elimOrder = make(map[string]int)
 		s.endedAt = time.Time{}
 		s.ctx.UpdatedAt = now

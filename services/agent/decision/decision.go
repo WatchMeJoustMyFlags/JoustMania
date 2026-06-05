@@ -380,6 +380,7 @@ func (l *Loop) captureLLMPrompt(ctx context.Context, snapshot flags.Snapshot, c 
 			prompt:     prompt,
 			objectives: snapshot.Objectives,
 			allowed:    snapshot.InterventionsAllowed,
+			gameKind:   c.GameKind,
 		})...))
 	span.End()
 
@@ -403,7 +404,7 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	reason, blocked := l.evaluatePermission(snapshot, c, d, now, cost)
 
 	dCtx, dSpan := l.Tracer.Start(ctx, SpanDecision,
-		trace.WithAttributes(decisionAttributes(state, d, blocked, reason)...))
+		trace.WithAttributes(decisionAttributes(state, d, blocked, reason, c.GameKind)...))
 	defer dSpan.End()
 
 	// The interventions.allowed evaluation as a feature_flag.* span event
@@ -480,7 +481,7 @@ func (l *Loop) emitDisabledSpan(ctx context.Context, snapshot flags.Snapshot, c 
 	// nothing. AttrDecisionAction is empty (no action) and AttrDecisionBlocked is
 	// false (no decision was blocked by a permission gate — the loop never ran).
 	_, dSpan := l.Tracer.Start(rootCtx, SpanDisabled,
-		trace.WithAttributes(decisionAttributes(&state, Decision{}, false, "")...))
+		trace.WithAttributes(decisionAttributes(&state, Decision{}, false, "", c.GameKind)...))
 	dSpan.End()
 }
 
@@ -564,12 +565,16 @@ func (l *Loop) shouldLog() bool {
 // attribute; subsystems that do not exist yet contribute explicit placeholder
 // values (see telemetry.go). The block reason (#728) is carried only when a
 // decision is blocked.
-func decisionAttributes(state *LayerState, d Decision, blocked bool, reason BlockReason) []attribute.KeyValue {
+func decisionAttributes(state *LayerState, d Decision, blocked bool, reason BlockReason, gameKind string) []attribute.KeyValue {
 	objective := d.ObjectiveServed
 	if objective == "" {
 		objective = DefaultObjectives
 	}
-	attrs := []attribute.KeyValue{semconv.GenAIAgentName(AgentName)}
+	attrs := []attribute.KeyValue{
+		semconv.GenAIAgentName(AgentName),
+		// game.kind (#845): schema-complete — empty string when unknown.
+		attribute.String(AttrGameKind, gameKind),
+	}
 	// Cycle-level flag attribution: lift the whole LayerState onto the span so a
 	// single trace answers "which flags were in effect" (#729). agent.objectives
 	// is recorded there from the cycle's evaluated weights; the rules engine
