@@ -1,9 +1,11 @@
 package decision
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
+	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/infracontext"
 )
 
@@ -268,4 +270,60 @@ func TestLiveBluetoothFitness_SeedsDefaultsAndSet(t *testing.T) {
 	}
 	// Interface conformance.
 	var _ BluetoothFitnessSource = src
+}
+
+// fakeBluetoothFlags is a mutable bluetoothFitnessEvaluator: each
+// BluetoothFitness call returns whatever value is currently stored, so a test
+// can flip the thresholds between two reads and assert the source re-reads them.
+type fakeBluetoothFlags struct {
+	value flags.BluetoothFitness
+	calls int
+}
+
+func (f *fakeBluetoothFlags) BluetoothFitness(_ context.Context) flags.BluetoothFitness {
+	f.calls++
+	return f.value
+}
+
+// TestFlagBluetoothFitness_ReReadsEachEvaluation is the #735 liveness contract:
+// the flag-backed source re-evaluates the fitness.bluetooth.* flags on EVERY
+// BluetoothThresholds call, so a threshold flipped between two evaluations takes
+// effect on the second — no restart, no cached startup value.
+func TestFlagBluetoothFitness_ReReadsEachEvaluation(t *testing.T) {
+	fake := &fakeBluetoothFlags{value: flags.BluetoothFitness{
+		MaxEventGapMs: 50, MaxDroppedEventsPct: 0.02, MinMovementUpdateHz: 10,
+	}}
+	src := NewFlagBluetoothFitness(fake)
+
+	// First evaluation sees the initial thresholds.
+	first := src.BluetoothThresholds()
+	want1 := BluetoothThresholds{MaxEventGapMs: 50, MaxDroppedEventsPct: 0.02, MinMovementUpdateHz: 10}
+	if first != want1 {
+		t.Fatalf("first eval = %+v, want %+v", first, want1)
+	}
+
+	// Operator flips the thresholds on stage (flagd change).
+	fake.value = flags.BluetoothFitness{MaxEventGapMs: 25, MaxDroppedEventsPct: 0.05, MinMovementUpdateHz: 20}
+
+	// Second evaluation MUST observe the new values (live, not frozen at startup).
+	second := src.BluetoothThresholds()
+	want2 := BluetoothThresholds{MaxEventGapMs: 25, MaxDroppedEventsPct: 0.05, MinMovementUpdateHz: 20}
+	if second != want2 {
+		t.Errorf("second eval = %+v, want %+v (thresholds not live)", second, want2)
+	}
+	if fake.calls != 2 {
+		t.Errorf("flags evaluated %d times, want 2 (once per BluetoothThresholds call)", fake.calls)
+	}
+
+	var _ BluetoothFitnessSource = src
+}
+
+// TestFlagBluetoothFitness_NilClientServesDefaults pins the fail-safe: a nil
+// flags client serves the flagd-schema defaults rather than a zero-value
+// (thresholdless) struct, so the infra loop is never thresholdless.
+func TestFlagBluetoothFitness_NilClientServesDefaults(t *testing.T) {
+	src := NewFlagBluetoothFitness(nil)
+	if got := src.BluetoothThresholds(); got != DefaultBluetoothThresholds() {
+		t.Errorf("nil-client thresholds = %+v, want defaults %+v", got, DefaultBluetoothThresholds())
+	}
 }

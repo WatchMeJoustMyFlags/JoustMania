@@ -14,14 +14,14 @@ import (
 // is auditable end-to-end in the trace timeline. Two kinds of assertions:
 //
 //  1. Schema completeness — every emitted agent.infrastructure.decision span,
-//     across ALL decision outcomes, carries the four core attributes (present, not
+//     across ALL decision outcomes, carries the five core attributes (present, not
 //     absent), so a future change that drops one on some path is caught here.
 //  2. The narrative — the ordered remediation.action sequence of a full incident
 //     (expand → expand → rollback → settle → cooldown → re-expand) reconstructs the
 //     story exactly, and the violations string is non-empty exactly on the failing
 //     cycles.
 
-// requireCoreAttrs asserts the four core attributes are PRESENT on a span and
+// requireCoreAttrs asserts the five core attributes are PRESENT on a span and
 // returns the action + violations so callers can assert the narrative. A missing
 // core attribute is a fatal schema regression.
 func requireCoreAttrs(t *testing.T, s sdktrace.ReadOnlySpan, idx int) (action, violations string) {
@@ -42,6 +42,11 @@ func requireCoreAttrs(t *testing.T, s sdktrace.ReadOnlySpan, idx int) (action, v
 	if !ok {
 		t.Fatalf("span[%d] missing core attribute %q", idx, AttrRemediationAction)
 	}
+	// rollout.dry_run is core (#737 + M3 audit): present on every span so a
+	// rehearsed expand/rollback is distinguishable from a real one.
+	if _, ok := spanBool(s, AttrRolloutDryRun); !ok {
+		t.Fatalf("span[%d] missing core attribute %q", idx, AttrRolloutDryRun)
+	}
 	// bluetooth.target_backend + bluetooth.rollout_count always accompany the
 	// decision (the observed signals that drove it).
 	if _, ok := spanStr(s, AttrBluetoothTargetBackend); !ok {
@@ -55,7 +60,7 @@ func requireCoreAttrs(t *testing.T, s sdktrace.ReadOnlySpan, idx int) (action, v
 
 // TestInfraSchemaCompleteness_AllOutcomes drives the loop through EVERY decision
 // outcome (expand, none-while-passing/terminal, rollback, recommended_only,
-// none-while-settling, none-during-cooldown) and asserts the four core attributes
+// none-while-settling, none-during-cooldown) and asserts the five core attributes
 // are present on every resulting span. This is the regression net: a future
 // emission path that forgets to route through infraDecisionAttributes fails here.
 func TestInfraSchemaCompleteness_AllOutcomes(t *testing.T) {
@@ -141,7 +146,7 @@ func TestInfraSchemaCompleteness_PassingSpanHasEmptyViolations(t *testing.T) {
 // TestInfraNarrative_FullIncident is the milestone acceptance test: it drives a
 // complete rollout → instability → rollback → recovery → re-expand incident and
 // asserts the recorded remediation.action timeline tells exactly that story, with
-// the four attributes present on every span and the violations string non-empty
+// the five attributes present on every span and the violations string non-empty
 // on exactly the failing cycles.
 func TestInfraNarrative_FullIncident(t *testing.T) {
 	clock := time.Unix(1000, 0)
@@ -252,6 +257,42 @@ func TestInfraNarrative_RecommendedOnlyStalls(t *testing.T) {
 	// rollback was applied because remediation was not allowed.
 	if got := rollout.calls(); len(got) != 2 || got[0] != "one" || got[1] != "three" {
 		t.Fatalf("writes = %v, want [one three] only (recommendation never writes)", got)
+	}
+}
+
+// TestInfraNarrative_DryRunTagsEverySpan is the M3 trace-honesty narrative: with
+// the dry-run actuator the loop still DECIDES and SPANS the same
+// expand→...→rollback story, but rollout.dry_run=true on EVERY span so a Jaeger
+// consumer can tell the rehearsal apart from a real rollout. The real-actuator
+// narrative (TestInfraNarrative_FullIncident) is the dry_run=false counterpart.
+func TestInfraNarrative_DryRunTagsEverySpan(t *testing.T) {
+	clock := time.Unix(1000, 0)
+	rollout := &dryRollout{}
+	l, sr := newInfraLoop(t, rollout, &clock)
+	l.SetRemediationSource(StaticRemediation(true))
+	l.SetCooldown(30 * time.Second)
+
+	// Same incident shape as the real-actuator narrative: expand, expand, rollback.
+	l.OnInfraEvaluate(context.Background(), infraSnap("rust", 0, clock, passingHz))
+	clock = clock.Add(DefaultRolloutDwell)
+	l.OnInfraEvaluate(context.Background(), infraSnap("rust", 1, clock, passingHz))
+	clock = clock.Add(time.Second)
+	l.OnInfraEvaluate(context.Background(), infraSnap("rust", 3, clock, failingHz))
+
+	wantActions := []string{RemediationExpand, RemediationExpand, RemediationRollback}
+	spans := infraSpans(sr)
+	if len(spans) != len(wantActions) {
+		t.Fatalf("got %d spans, want %d", len(spans), len(wantActions))
+	}
+	for i, want := range wantActions {
+		action, _ := requireCoreAttrs(t, spans[i], i)
+		if action != want {
+			t.Errorf("dry-run span[%d] action = %q, want %q", i, action, want)
+		}
+		dry, ok := spanBool(spans[i], AttrRolloutDryRun)
+		if !ok || !dry {
+			t.Errorf("dry-run span[%d] rollout.dry_run = %v (ok=%v), want true", i, dry, ok)
+		}
 	}
 }
 

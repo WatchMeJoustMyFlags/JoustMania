@@ -207,6 +207,10 @@ func (w *RolloutWriter) StageVariantForValue(value int) (string, bool) {
 	return StageVariantForValue(value)
 }
 
+// DryRun reports false: the real writer applies flips to rollout.json. The loop
+// records this on the rollout.dry_run span attribute.
+func (w *RolloutWriter) DryRun() bool { return false }
+
 // DryRunRolloutWriter satisfies the same actuator seam as RolloutWriter but
 // NEVER writes the rollout file: SetControllerCount logs the would-be flip and
 // returns nil. It is the disabled-mode (AGENT_ROLLOUT_ENABLED=false) actuator —
@@ -239,3 +243,8 @@ func (w *DryRunRolloutWriter) NextStage(current int) (variant string, value int,
 func (w *DryRunRolloutWriter) StageVariantForValue(value int) (string, bool) {
 	return StageVariantForValue(value)
 }
+
+// DryRun reports true: SetControllerCount never writes the rollout file. The
+// loop records this on the rollout.dry_run span attribute so a rehearsed
+// expand/rollback is distinguishable from a real one in Jaeger.
+func (w *DryRunRolloutWriter) DryRun() bool { return true }

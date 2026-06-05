@@ -198,6 +198,37 @@ func defaultBluetoothFitness() BluetoothFitness {
 	}
 }
 
+// TestBluetoothFitness_Accessor pins the narrow #735 accessor the infra loop
+// reads each cycle: it returns the three fitness.bluetooth.* thresholds and
+// nothing else, falling back to defaults on an evaluation error.
+func TestBluetoothFitness_Accessor(t *testing.T) {
+	stub := stubEvaluator{
+		floats: map[string]float64{
+			keyBluetoothMaxEventGapMs:       25,
+			keyBluetoothMaxDroppedEventsPct: 0.05,
+			keyBluetoothMinMovementUpdateHz: 20,
+		},
+	}
+	f := New(stub, nil)
+	got := f.BluetoothFitness(context.Background())
+	want := BluetoothFitness{MaxEventGapMs: 25, MaxDroppedEventsPct: 0.05, MinMovementUpdateHz: 20}
+	if got != want {
+		t.Errorf("BluetoothFitness = %+v, want %+v", got, want)
+	}
+
+	// On error every threshold falls back to its flagd-schema default, so a down
+	// flagd reverts the infra loop to safe defaults rather than failing.
+	boom := errors.New("flagd down")
+	errStub := stubEvaluator{errs: map[string]error{
+		keyBluetoothMaxEventGapMs:       boom,
+		keyBluetoothMaxDroppedEventsPct: boom,
+		keyBluetoothMinMovementUpdateHz: boom,
+	}}
+	if got := New(errStub, nil).BluetoothFitness(context.Background()); got != defaultBluetoothFitness() {
+		t.Errorf("BluetoothFitness on error = %+v, want defaults %+v", got, defaultBluetoothFitness())
+	}
+}
+
 func TestEvaluate_DefaultsOnError(t *testing.T) {
 	// Every evaluation errors (e.g. flagd unreachable). Defaults must apply and
 	// the agent must come up disabled with no permitted interventions.

@@ -58,6 +58,18 @@ func (f *fakeRollout) StageVariantForValue(value int) (string, bool) {
 	return n, ok
 }
 
+// DryRun reports false: the fake applies its (in-memory) writes, mirroring the
+// real RolloutWriter. dryRollout below overrides this to true.
+func (f *fakeRollout) DryRun() bool { return false }
+
+// dryRollout is a fakeRollout that reports DryRun()==true: it still records
+// would-be writes (so dwell/ladder behavior matches), but the loop tags every
+// span rollout.dry_run=true. Mirrors actions.DryRunRolloutWriter for the loop's
+// purposes while keeping the in-memory call log.
+type dryRollout struct{ fakeRollout }
+
+func (d *dryRollout) DryRun() bool { return true }
+
 // infraSnap builds an active-rollout InfraContext: a target backend, a rollout
 // count (stage), one fresh controller, and a passing or failing window.
 func infraSnap(target string, stage int, now time.Time, hz float64) infracontext.InfraContext {
@@ -111,6 +123,15 @@ func spanInt(s sdktrace.ReadOnlySpan, key string) (int64, bool) {
 		}
 	}
 	return 0, false
+}
+
+func spanBool(s sdktrace.ReadOnlySpan, key string) (bool, bool) {
+	for _, kv := range s.Attributes() {
+		if string(kv.Key) == key {
+			return kv.Value.AsBool(), true
+		}
+	}
+	return false, false
 }
 
 func TestInfraLoop_ExpandsWhenPassing(t *testing.T) {
@@ -299,5 +320,44 @@ func TestInfraLoop_NilActuatorNeverExpands(t *testing.T) {
 	}
 	if v, _ := spanStr(spans[0], AttrRemediationAction); v != RemediationNone {
 		t.Errorf("remediation.action = %q, want %q (nil actuator never expands)", v, RemediationNone)
+	}
+}
+
+// TestInfraLoop_DryRunAttributeReflectsActuator is the M3 trace-honesty test: the
+// rollout.dry_run span attribute must distinguish a rehearsed decision from a
+// real one. A real actuator → false; a dry-run actuator → true (the same
+// remediation.action="expand" span otherwise); a nil actuator (never writes) →
+// true.
+func TestInfraLoop_DryRunAttributeReflectsActuator(t *testing.T) {
+	cases := []struct {
+		name    string
+		rollout RolloutActuator
+		want    bool
+	}{
+		{"real actuator", &fakeRollout{}, false},
+		{"dry-run actuator", &dryRollout{}, true},
+		{"nil actuator", nil, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := time.Unix(1000, 0)
+			l, sr := newInfraLoop(t, tc.rollout, &clock)
+
+			// Passing fitness at stage 0 → an expand decision (real/dry), or "none"
+			// (nil), but the span is emitted on every active-rollout cycle either way.
+			l.OnInfraEvaluate(context.Background(), infraSnap("rust", 0, clock, 30))
+
+			spans := infraSpans(sr)
+			if len(spans) != 1 {
+				t.Fatalf("got %d spans, want 1", len(spans))
+			}
+			got, ok := spanBool(spans[0], AttrRolloutDryRun)
+			if !ok {
+				t.Fatalf("rollout.dry_run absent; want present on every decision span")
+			}
+			if got != tc.want {
+				t.Errorf("rollout.dry_run = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

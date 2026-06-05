@@ -327,11 +327,22 @@ func (f *Flags) Evaluate(ctx context.Context) Snapshot {
 			BalancedSpikeSurvivalThreshold: f.floatFlag(ctx, keyBalancedSpikeSurvival, DefaultBalancedSpikeSurvivalThreshold),
 			AccelerateTargetSessionSeconds: f.intFlag(ctx, keyAccelerateTargetSessionSecs, DefaultAccelerateTargetSessionSeconds),
 		},
-		BluetoothFitness: BluetoothFitness{
-			MaxEventGapMs:       f.floatFlag(ctx, keyBluetoothMaxEventGapMs, DefaultBluetoothMaxEventGapMs),
-			MaxDroppedEventsPct: f.floatFlag(ctx, keyBluetoothMaxDroppedEventsPct, DefaultBluetoothMaxDroppedEventsPct),
-			MinMovementUpdateHz: f.floatFlag(ctx, keyBluetoothMinMovementUpdateHz, DefaultBluetoothMinMovementUpdateHz),
-		},
+		BluetoothFitness: f.BluetoothFitness(ctx),
+	}
+}
+
+// BluetoothFitness evaluates ONLY the three fitness.bluetooth.* thresholds
+// (#735). It is the narrow accessor the infrastructure loop reads on every
+// observe cycle (~1Hz) so the Bluetooth fitness thresholds are tunable live on
+// stage with no restart — without paying for a full four-layer Evaluate the
+// infra path never consumes. Each flag falls back to its safe default on any
+// evaluation error (e.g. flagd unreachable), so a down control plane reverts to
+// the flagd-schema defaults rather than failing the cycle.
+func (f *Flags) BluetoothFitness(ctx context.Context) BluetoothFitness {
+	return BluetoothFitness{
+		MaxEventGapMs:       f.floatFlag(ctx, keyBluetoothMaxEventGapMs, DefaultBluetoothMaxEventGapMs),
+		MaxDroppedEventsPct: f.floatFlag(ctx, keyBluetoothMaxDroppedEventsPct, DefaultBluetoothMaxDroppedEventsPct),
+		MinMovementUpdateHz: f.floatFlag(ctx, keyBluetoothMinMovementUpdateHz, DefaultBluetoothMinMovementUpdateHz),
 	}
 }
 
