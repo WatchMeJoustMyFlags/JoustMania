@@ -6,7 +6,9 @@ requires-python = ">=3.11"
 dependencies = [
     "grpcio>=1.70.0",
     "grpcio-tools>=1.70.0",
-    "protobuf>=5.29.0",
+    # >=6.33.5: openfeature-provider-flagd 0.5.0 ships proto gencode built with
+    # protobuf 6.33.5; an older runtime fails the gencode/runtime guarantee (#843).
+    "protobuf>=6.33.5",
 ]
 
 [build-system]

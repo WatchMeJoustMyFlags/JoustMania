@@ -32,7 +32,7 @@ dependencies = [
     "psutil>=5.9.0",
 
     # Feature Flags (OpenFeature SDK for flag evaluation; provider comes via joustmania-lib)
-    "openfeature-sdk>=0.6.0",
+    "openfeature-sdk>=0.8.4",
 
     # Performance: uvloop for faster event loop (Linux only)
     "uvloop>=0.19.0; sys_platform == 'linux'",
