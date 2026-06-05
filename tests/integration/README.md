@@ -132,6 +132,40 @@ The integration tests cover:
 - ✅ Distributed tracing propagation across services
 - ✅ Multiple games in sequence
 
+## Rollout plumbing (agent remediation control plane, #737)
+
+`test_rollout_plumbing.py` covers the CONTROL-PLANE half of the agent's
+progressive-rollout / auto-rollback loop end-to-end, mirroring the
+`test_intervention_flow.py` live-flagd-RPC pattern.
+
+**Scope decision.** Two parts of the loop are deliberately NOT asserted here, and
+why:
+
+- **The agent service does not run in CI.** It sits behind the `agent` compose
+  profile (`docker-compose.ci.yml`), exactly like the intervention `ActionSink`
+  (scenario 6 in `test_intervention_flow.py`). So we cannot assert the agent emits
+  `agent.infrastructure.decision` spans from this harness — that is covered by the
+  Go narrative test (`services/agent/decision/infra_narrative_test.go`), which
+  drives the loop deterministically with a fake clock/actuator/remediation and
+  asserts the full incident span timeline.
+- **The controller-manager runs in mock mode.** Mock controllers route via the
+  mock adapter (`method="default"`), so the multiplexer rollout router — and the
+  `controller_routing_decisions_total{method="rollout"}` metric — is only reached
+  with non-mock adapters (hardware profile), which CI does not run. The unstable
+  adapter wraps python-hid and is likewise unreachable in CI.
+
+**What this test DOES assert** is that the agent's rollout write SHAPE is
+schema-valid and consumable by the same live flagd the controller-manager reads:
+it writes `rollout.json` exactly as the Go `RolloutWriter` does (flip
+`current_controller_count`'s `defaultVariant` along the `none→one→three→six→all`
+ladder; set `strategy=progressive` + a `target_backend`; rollback resets to
+`none`) and resolves each value via the flagd RPC (`flagSetId=rollout`, port
+8013). It also pins the `remediation_allowed` gate schema the agent's
+`RemediationReader` depends on (both boolean variants, default OFF / fail-closed).
+This catches schema/variant drift the Go unit tests (which never touch real flagd)
+cannot. `rollout.json` is snapshotted and restored byte-for-byte by the
+`rollout_file` fixture so mutations never leak.
+
 ## How Tests Work
 
 ### Docker Compose Orchestration

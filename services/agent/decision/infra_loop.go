@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
@@ -382,30 +381,14 @@ func (l *InfraLoop) emitDecisionSpan(
 	wroteVariant string,
 	writeErr error,
 ) {
-	attrs := []attribute.KeyValue{
-		attribute.String(AttrRolloutTarget, target),
-		attribute.Bool(AttrFitnessPassing, fit.Evaluated && fit.Passing),
-		attribute.String(AttrFitnessViolations, fit.ViolationsString()),
-		attribute.String(AttrRemediationAction, action),
-		attribute.String(AttrBluetoothTargetBackend, snap.Window.TargetBackend),
-		attribute.Int(AttrBluetoothRolloutCount, snap.Window.RolloutCount),
-	}
-	if v := snap.Window.EventGapMs; v != nil {
-		attrs = append(attrs, attribute.Float64(AttrBluetoothEventGapMs, *v))
-	}
-	if v := snap.Window.DroppedEventsPct; v != nil {
-		attrs = append(attrs, attribute.Float64(AttrBluetoothDroppedEventsPct, *v))
-	}
-	if v := snap.Window.MovementUpdateHz; v != nil {
-		attrs = append(attrs, attribute.Float64(AttrBluetoothMovementUpdateHz, *v))
-	}
-	if v := snap.Window.ActiveControllers; v != nil {
-		attrs = append(attrs, attribute.Int(AttrBluetoothActiveControllers, *v))
-	}
-	if action == RemediationExpand {
-		// The stage the loop expanded to (the WOULD-be stage in DRY-RUN).
-		attrs = append(attrs, attribute.Int(AttrRolloutControllerCount, expandedTo))
-	}
+	// Single builder: EVERY emission path lands the full attribute schema (#737).
+	attrs := infraDecisionAttributes(infraDecisionAttrs{
+		snap:       snap,
+		fit:        fit,
+		target:     target,
+		action:     action,
+		expandedTo: expandedTo,
+	})
 
 	_, span := l.tracer.Start(ctx, SpanInfraDecision,
 		trace.WithSpanKind(trace.SpanKindInternal),

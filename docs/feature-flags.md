@@ -38,7 +38,7 @@ The flag schema follows a strict convention (issue #725):
 | `user.json` | `user` | User preferences (persist across sessions) | menu, audio |
 | `agent.json` | `agent` | Autonomous agent control (existence/objective/capability/permission + fitness) | agent, game-coordinator |
 | `interventions.json` | `interventions` | Runtime ACT control plane written by the agent | agent (writer), game-coordinator (applier) |
-| `rollout.json` | `rollout` | Act 2 progressive backend rollout control | controller-manager |
+| `rollout.json` | `rollout` | Act 2 progressive backend rollout control | controller-manager (reads), agent (writes `current_controller_count`, reads `remediation_allowed`) |
 
 ## Architecture
 
@@ -445,14 +445,17 @@ design rationale behind this control plane.
 
 ### Rollout (`services/flagd/rollout.json`, `flagSetId: "rollout"`)
 
-Act 2 progressive backend rollout control.
+Act 2 progressive backend rollout control. The **controller-manager reads** this
+domain to route controllers; the **agent writes** `current_controller_count` to
+advance/roll-back the rollout (#734/#736) and **reads** `remediation_allowed` to
+gate auto-rollback (resolved directly from this file by `RemediationReader`).
 
 | Flag | Type | Values | Description |
 |------|------|--------|-------------|
-| `target_backend` | string | backend name | Backend to migrate controllers toward |
+| `target_backend` | string | `python`, `rust`, `unstable` | Backend to migrate controllers toward (agent leaves untouched on rollback) |
 | `strategy` | string | `progressive`, `immediate`, `off` | Rollout strategy |
-| `current_controller_count` | integer | count | Controllers currently on the target backend |
-| `remediation_allowed` | boolean | true, false | Allow automatic rollback/remediation |
+| `current_controller_count` | integer | `0`/`1`/`3`/`6`/`99` (variants `none`/`one`/`three`/`six`/`all`) | Controllers on the target backend; **written by the agent** along the expansion ladder, reset to `none` on rollback |
+| `remediation_allowed` | boolean | `true`, `false` (default `false`, fail-closed) | Allow the agent's automatic rollback; **read by the agent** each cycle |
 
 ### Adding New Flags
 

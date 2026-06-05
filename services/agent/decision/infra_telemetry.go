@@ -1,5 +1,11 @@
 package decision
 
+import (
+	"go.opentelemetry.io/otel/attribute"
+
+	"github.com/joustmania/agent/infracontext"
+)
+
 // Infrastructure-domain decision telemetry constants (#733, M3). The agent runs
 // a parallel OBSERVE path over the controller.bluetooth_health span: it tracks
 // Bluetooth transport health and (in later stacked PRs D/E/F) evaluates fitness
@@ -41,3 +47,76 @@ const (
 	AttrBluetoothTargetBackend     = "bluetooth.target_backend"
 	AttrBluetoothRolloutCount      = "bluetooth.rollout_count"
 )
+
+// infraDecisionAttrs is the input bundle for the single span-attribute builder.
+// Bundling the inputs (rather than a long parameter list) keeps the call site in
+// emitDecisionSpan a one-liner and makes the "every path goes through the
+// builder" invariant easy to audit: there is exactly ONE producer of
+// agent.infrastructure.decision attributes.
+type infraDecisionAttrs struct {
+	// snap is the observed Bluetooth-health window + controllers that drove the
+	// decision; its window signals are lifted onto the span verbatim.
+	snap infracontext.InfraContext
+	// fit is the fitness verdict for this cycle (passing + violations string).
+	fit InfraFitnessResult
+	// target is the rollout target adapter in effect (rollout.target).
+	target string
+	// action is the remediation the loop selected (one of the Remediation*
+	// constants).
+	action string
+	// expandedTo is the rollout stage VALUE the loop expanded to; only meaningful
+	// (and only recorded) when action == RemediationExpand.
+	expandedTo int
+}
+
+// infraDecisionAttributes is the SOLE builder of the agent.infrastructure.decision
+// span attribute set (#737). Every span-emission path in the loop must route
+// through it, so the schema is guaranteed complete and consistent.
+//
+// The contract — enforced by the schema-completeness test — is that EVERY emitted
+// decision span carries ALL FOUR core attributes, present (not absent) on every
+// outcome:
+//
+//   - rollout.target        — the rollout target adapter (always)
+//   - fitness.passing       — bool, always
+//   - fitness.violations    — the violation string; the EMPTY string when passing
+//     (present-but-empty, never absent, so a query can distinguish "passing" from
+//     "attribute missing")
+//   - remediation.action    — the selected action (always)
+//
+// Plus the observed bluetooth.* window signals (target_backend + rollout_count
+// always; the four optional float/int signals only when present in the window so
+// the span never fabricates a reading), and rollout.controller_count only on an
+// expand (the stage the loop advanced to).
+func infraDecisionAttributes(in infraDecisionAttrs) []attribute.KeyValue {
+	attrs := []attribute.KeyValue{
+		// The four core attributes — unconditional on every path.
+		attribute.String(AttrRolloutTarget, in.target),
+		attribute.Bool(AttrFitnessPassing, in.fit.Evaluated && in.fit.Passing),
+		attribute.String(AttrFitnessViolations, in.fit.ViolationsString()),
+		attribute.String(AttrRemediationAction, in.action),
+		// Window context that always exists on an active-rollout cycle.
+		attribute.String(AttrBluetoothTargetBackend, in.snap.Window.TargetBackend),
+		attribute.Int(AttrBluetoothRolloutCount, in.snap.Window.RolloutCount),
+	}
+	// Optional window signals: recorded only when observed (a missing signal
+	// contributes no attribute rather than a fabricated zero).
+	if v := in.snap.Window.EventGapMs; v != nil {
+		attrs = append(attrs, attribute.Float64(AttrBluetoothEventGapMs, *v))
+	}
+	if v := in.snap.Window.DroppedEventsPct; v != nil {
+		attrs = append(attrs, attribute.Float64(AttrBluetoothDroppedEventsPct, *v))
+	}
+	if v := in.snap.Window.MovementUpdateHz; v != nil {
+		attrs = append(attrs, attribute.Float64(AttrBluetoothMovementUpdateHz, *v))
+	}
+	if v := in.snap.Window.ActiveControllers; v != nil {
+		attrs = append(attrs, attribute.Int(AttrBluetoothActiveControllers, *v))
+	}
+	// The stage the loop expanded to (the WOULD-be stage in dry-run); only an
+	// expand has a meaningful destination.
+	if in.action == RemediationExpand {
+		attrs = append(attrs, attribute.Int(AttrRolloutControllerCount, in.expandedTo))
+	}
+	return attrs
+}

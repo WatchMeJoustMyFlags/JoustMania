@@ -285,6 +285,63 @@ failing cycle retries (mirrors the expansion error path).
 loop drops back to `recommended_only`); restart the agent to clear an in-progress
 cooldown.
 
+### Incident narrative (#737) — the rollout story is auditable in traces
+
+Every active-rollout cycle emits one `agent.infrastructure.decision` span, and the
+**ordered timeline of those spans reconstructs the whole incident** — rollout
+expanded → transport degraded → fitness violated → rollback executed → fitness
+recovered → re-expanded — with no extra logging. The spans are built by a **single
+attribute builder** (`infraDecisionAttributes`), so **every** decision span — on
+**every** outcome — carries the same four core attributes:
+
+| Attribute | Type | On every span | Meaning |
+|-----------|------|---------------|---------|
+| `rollout.target` | string | yes | the rollout target adapter in effect |
+| `fitness.passing` | bool | yes | did the Bluetooth fitness check pass this cycle |
+| `fitness.violations` | string | yes (**empty when passing**, never absent) | the failing checks, e.g. `movement_update_hz[AA:BB] 8.3<10` |
+| `remediation.action` | string | yes | `none \| expand \| rollback \| recommended_only` |
+
+plus the observed `bluetooth.*` window signals (`target_backend` + `rollout_count`
+always; `event_gap_ms` / `dropped_events_pct` / `movement_update_hz` /
+`active_controllers` when present in the window), and `rollout.controller_count`
+(the stage expanded to) **only** on an `expand`.
+
+`fitness.violations` is **present-but-empty** on a passing cycle, never dropped —
+so a trace query can tell "passing" apart from "attribute missing".
+
+**The span timeline of a full episode** (read top-to-bottom in Jaeger):
+
+| # | cycle | `remediation.action` | `fitness.passing` | `fitness.violations` |
+|---|-------|----------------------|-------------------|----------------------|
+| 1 | rollout active, healthy | `expand` (`→1`) | true | *(empty)* |
+| 2 | dwell elapsed, still healthy | `expand` (`→3`) | true | *(empty)* |
+| 3 | transport degrades | `rollback` | false | non-empty |
+| 4 | settling (count still > 0) | `none` | false | non-empty |
+| 5 | reset landed, recovered, in cooldown | `none` | true | *(empty)* |
+| 6 | cooldown elapsed, healthy | `expand` (`→1`) | true | *(empty)* |
+
+The `recommended_only` variant (operator has **not** set `remediation_allowed`)
+stalls at step 3: the loop records `recommended_only` (with the violations) and
+never writes, so the story does not progress to recovery.
+
+**Query it in Jaeger.** The observability stack is at `http://localhost:8080/`
+with Jaeger under the `/jaeger` base path:
+
+- UI: select **service `agent`**, **operation `agent.infrastructure.decision`**,
+  order by time, and read the `remediation.action` timeline down the trace list.
+- Jaeger v2 API (note the `/jaeger` prefix):
+  `http://localhost:8080/jaeger/api/traces?service=agent&operation=agent.infrastructure.decision`
+  (or `http://jaeger:16686/jaeger/api/traces?service=agent` from inside the
+  compose network). Filter for `remediation.action=rollback` to jump straight to
+  the remediation events.
+
+The Go narrative test (`decision/infra_narrative_test.go`,
+`TestInfraNarrative_FullIncident`) drives this exact sequence with a fake
+clock/actuator/remediation and asserts the timeline; the schema-completeness test
+(`TestInfraSchemaCompleteness_AllOutcomes`) asserts the four core attributes are
+present on **every** outcome, catching any future emission path that forgets the
+builder.
+
 ## Gating & decisions
 
 After each context update the Agent evaluates `should_evaluate`. When the gate
