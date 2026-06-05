@@ -317,3 +317,39 @@ chaos_faults_injected_total = Counter(
     "Total chaos faults injected by ChaosAdapter",
     ["fault", "serial"],
 )
+
+# Bluetooth health metrics (#732 M3). Emitted once per ~1s health window
+# alongside the controller.bluetooth_health span. These feed dashboards; the
+# agent's OBSERVE input is the span, not these metrics.
+#
+# Histogram of the window-max inter-event gap (in SECONDS — repo convention is
+# *_seconds for durations). The span carries the same value in ms.
+controller_bluetooth_event_gap_seconds = Histogram(
+    "controller_bluetooth_event_gap_seconds",
+    "Worst-case inter-event gap across controllers per health window (seconds)",
+    buckets=[0.010, 0.025, 0.050, 0.075, 0.100, 0.150, 0.200, 0.350, 0.500, 1.0],
+)
+
+# Per-serial dropped-event ratio (0-1) over the window, plus an unlabeled
+# window aggregate (the worst-case across serials). The Gauge family supports a
+# no-label observation only when the metric has no label keys, so we declare two
+# separate gauges (mirroring the prom_*/labeled split used elsewhere).
+controller_bluetooth_dropped_events_ratio = Gauge(
+    "controller_bluetooth_dropped_events_ratio",
+    "Fraction of polls returning no fresh frame per controller over the window (0-1)",
+    ["serial"],
+)
+
+controller_bluetooth_dropped_events_ratio_window = Gauge(
+    "controller_bluetooth_dropped_events_ratio_window",
+    "Window-aggregate dropped-event ratio across all controllers (0-1)",
+)
+
+# Per-serial movement update rate: genuinely-new frames per second over the
+# window. Stale replays (identical poll objects) are NOT counted as fresh, so a
+# throttled/degraded backend shows a depressed rate here.
+controller_bluetooth_movement_update_hz = Gauge(
+    "controller_bluetooth_movement_update_hz",
+    "Genuinely-new frame rate per controller over the health window (Hz)",
+    ["serial"],
+)
