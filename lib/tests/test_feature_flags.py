@@ -11,6 +11,7 @@ from lib.feature_flags import (
     init_flag_domain,
     read_float_flag,
     read_int_flag,
+    read_string_flag,
 )
 
 
@@ -66,6 +67,34 @@ def test_read_int_flag_rejects_nonintegral_bool_nonnumeric():
 def test_read_int_flag_fails_safe_on_exception():
     with patch("lib.feature_flags.init_flag_domain", side_effect=RuntimeError("boom")):
         assert read_int_flag("game", "k", 3) == 3
+
+
+def _mock_string_flag_value(value):
+    """Patch init/get_flag_client so the client's get_string_value returns ``value``."""
+    client = MagicMock()
+    client.get_string_value.return_value = value
+    return (
+        patch("lib.feature_flags.init_flag_domain"),
+        patch("lib.feature_flags.get_flag_client", return_value=client),
+    )
+
+
+def test_read_string_flag_returns_string():
+    init_p, get_p = _mock_string_flag_value("allow")
+    with init_p, get_p:
+        assert read_string_flag("game", "shadow_policy", "block") == "allow"
+
+
+def test_read_string_flag_rejects_nonstring():
+    for bad in (1, True, None, ["allow"]):
+        init_p, get_p = _mock_string_flag_value(bad)
+        with init_p, get_p:
+            assert read_string_flag("game", "shadow_policy", "block") == "block"
+
+
+def test_read_string_flag_fails_safe_on_exception():
+    with patch("lib.feature_flags.init_flag_domain", side_effect=RuntimeError("boom")):
+        assert read_string_flag("game", "shadow_policy", "block") == "block"
 
 
 @patch("lib.feature_flags.FlagdProvider")

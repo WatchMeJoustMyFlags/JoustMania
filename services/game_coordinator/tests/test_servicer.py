@@ -72,11 +72,17 @@ class MockSpan:
         pass
 
 
-def _config(game_name="FFA", serials=("p1", "p2"), sensitivity=2, **kwargs):
+def _config(game_name="FFA", serials=("p1", "p2"), sensitivity=2, origin=None, **kwargs):
+    # Default to MENU origin (#837): these characterization tests assert the
+    # legacy "first start becomes primary" behavior, which is now reserved for
+    # the real (menu-origin) game. Pass origin explicitly to exercise shadows.
+    if origin is None:
+        origin = game_coordinator_pb2.GAME_ORIGIN_MENU
     return game_coordinator_pb2.StartGameConfig(
         game_name=game_name,
         players=[game_coordinator_pb2.Player(serial=s) for s in serials],
         sensitivity=sensitivity,
+        origin=origin,
         **kwargs,
     )
 

@@ -46,6 +46,20 @@ games_completed_total = Counter(
     ["mode", "game_kind"],
 )
 
+# Shadow game governance (#837).
+# Shadow starts rejected by the resource gate while a real (menu-origin) game is
+# live and policy=block.
+shadow_games_blocked_total = Counter(
+    "game_shadow_games_blocked_total",
+    "Total shadow game starts rejected because a real game is running (policy=block)",
+)
+
+# Shadow games force-ended because a real game started and preempted them.
+shadow_games_preempted_total = Counter(
+    "game_shadow_games_preempted_total",
+    "Total shadow games force-ended (preempted) when a real game started",
+)
+
 # Player metrics
 active_players = Gauge(
     "game_active_players",
