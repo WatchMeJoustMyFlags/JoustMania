@@ -274,3 +274,73 @@ func TestObjectiveRules_WeightsMapIsCopied(t *testing.T) {
 		t.Fatalf("decision weights = %v, want a snapshot unaffected by source mutation", out[0].Objectives)
 	}
 }
+
+// TestObjectiveRules_FitnessAmplifiesWinner verifies #731's core selection
+// effect: with two objectives weighted EQUALLY and both firing a candidate, the
+// objective whose fitness is failing wins because its candidate's urgency is
+// amplified by the failing-fitness pressure. The same candidate set with that
+// objective's fitness satisfied lets the other objective win instead.
+func TestObjectiveRules_FitnessAmplifiesWinner(t *testing.T) {
+	// Equal weights so the base scores tie and fitness pressure is the tiebreaker.
+	weights := map[string]float64{ObjectiveEndurance: 0.5, ObjectiveBalanced: 0.5}
+
+	// A context that fires BOTH an endurance candidate (young session with
+	// eliminations) and a balanced candidate (skill gap 0.6 > the 0.4 max). The
+	// gap is chosen so the balanced score sits BETWEEN endurance's amplified
+	// (failing) and un-amplified (satisfied) scores — so the endurance fitness
+	// state alone decides the winner.
+	c := gameCtx(20, []string{"GONE"}, map[string]testPlayer{
+		"WEAK":   {skill: fptr(0.2), active: true},
+		"STRONG": {skill: fptr(0.8), active: true}, // gap 0.6 > 0.4
+	})
+
+	// Case 1: endurance threshold high (120s) -> a 20s session is deep in
+	// endurance failure -> strong endurance pressure -> endurance wins.
+	cfgFail := DefaultStaticConfig()
+	cfgFail.ObjectiveWeights = weights
+	clock1 := time.Unix(10_000, 0)
+	rFail := newTestEngine(cfgFail, &clock1)
+	failOut := rFail.Evaluate(context.Background(), c)
+	if len(failOut) == 0 {
+		t.Fatal("expected decisions (failing endurance)")
+	}
+	if failOut[0].ObjectiveServed != ObjectiveEndurance {
+		t.Fatalf("failing endurance fitness must amplify endurance to the top, got %q", failOut[0].ObjectiveServed)
+	}
+
+	// Case 2: endurance threshold lowered below the session age (10s) so the 20s
+	// session SATISFIES endurance -> zero endurance pressure. Balance still fails
+	// (gap 0.8 > 0.4) so balanced pressure now dominates -> balanced wins. Same
+	// candidate set, fitness flips the winner.
+	cfgPass := DefaultStaticConfig()
+	cfgPass.ObjectiveWeights = weights
+	cfgPass.FitnessThresholds.EnduranceMinSessionSeconds = 10
+	clock2 := time.Unix(10_000, 0)
+	rPass := newTestEngine(cfgPass, &clock2)
+	passOut := rPass.Evaluate(context.Background(), c)
+	if len(passOut) == 0 {
+		t.Fatal("expected decisions (satisfied endurance)")
+	}
+	if passOut[0].ObjectiveServed != ObjectiveBalanced {
+		t.Fatalf("satisfied endurance + failing balance must let balanced win, got %q", passOut[0].ObjectiveServed)
+	}
+}
+
+// TestObjectiveRules_LastFitnessExposed verifies the engine retains the cycle's
+// fitness evaluation for the loop to lift onto the span (#731), under the dotted
+// key vocabulary.
+func TestObjectiveRules_LastFitnessExposed(t *testing.T) {
+	cfg := DefaultStaticConfig()
+	clock := time.Unix(10_000, 0)
+	r := newTestEngine(cfg, &clock)
+	c := gameCtx(30, nil, map[string]testPlayer{"A": {active: true}})
+
+	_ = r.Evaluate(context.Background(), c)
+	vals := r.LastFitness().Evaluated()
+	if vals["endurance.session_seconds"] != 30 {
+		t.Errorf("endurance.session_seconds = %v, want 30", vals["endurance.session_seconds"])
+	}
+	if vals["accelerate.target_session_seconds"] != 60 {
+		t.Errorf("accelerate.target_session_seconds = %v, want 60", vals["accelerate.target_session_seconds"])
+	}
+}
