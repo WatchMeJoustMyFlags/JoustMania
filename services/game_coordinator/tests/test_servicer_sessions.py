@@ -73,11 +73,27 @@ class MockGrpcContext:
         return []
 
 
-def _config(game_name="FFA", serials=("p1", "p2"), sensitivity=2):
+def _config(game_name="FFA", serials=("p1", "p2"), sensitivity=2, origin=None):
+    # Default to MENU origin (#837): the characterization tests assert the legacy
+    # "first start becomes primary" semantics, now reserved for the real
+    # (menu-origin) game. Use _shadow_config() for agent/shadow starts.
+    if origin is None:
+        origin = game_coordinator_pb2.GAME_ORIGIN_MENU
     return game_coordinator_pb2.StartGameConfig(
         game_name=game_name,
         players=[game_coordinator_pb2.Player(serial=s) for s in serials],
         sensitivity=sensitivity,
+        origin=origin,
+    )
+
+
+def _shadow_config(game_name="FFA", serials=("p1", "p2"), sensitivity=2):
+    """A non-menu (AGENT) start that is ALWAYS classified shadow (#837)."""
+    return _config(
+        game_name=game_name,
+        serials=serials,
+        sensitivity=sensitivity,
+        origin=game_coordinator_pb2.GAME_ORIGIN_AGENT,
     )
 
 
@@ -242,6 +258,13 @@ class TestSingleGameCharacterization:
 class TestMultiSession:
     """Concurrent-session behavior with GAME_MAX_CONCURRENT_GAMES raised (#775)."""
 
+    @pytest.fixture(autouse=True)
+    def allow_shadows(self):
+        """These tests run shadow + real games concurrently (the CI scenario),
+        so the resource gate must be in ``allow`` mode (#837)."""
+        with patch("services.game_coordinator.servicer._shadow_policy", lambda: "allow"):
+            yield
+
     @pytest.fixture
     def servicer(self):
         return GameCoordinatorServicer()
@@ -254,10 +277,10 @@ class TestMultiSession:
 
     @pytest.mark.asyncio
     async def test_two_sessions_distinct_ids_and_kinds(self, servicer, cap_two):
-        """Two concurrent starts get distinct game_ids; first primary, second shadow."""
+        """A menu start (primary) + an agent start (shadow) get distinct ids/kinds."""
         with _NO_THREAD:
             ok1, gid1 = await servicer._start_game_from_config(_config(serials=("a1", "a2")), _MockSpan())
-            ok2, gid2 = await servicer._start_game_from_config(_config(serials=("b1", "b2")), _MockSpan())
+            ok2, gid2 = await servicer._start_game_from_config(_shadow_config(serials=("b1", "b2")), _MockSpan())
 
         assert ok1 and ok2
         assert gid1 != gid2
@@ -271,7 +294,7 @@ class TestMultiSession:
         """Each session's bus only delivers its own game's events."""
         with _NO_THREAD:
             _, gid1 = await servicer._start_game_from_config(_config(serials=("a1", "a2")), _MockSpan())
-            _, gid2 = await servicer._start_game_from_config(_config(serials=("b1", "b2")), _MockSpan())
+            _, gid2 = await servicer._start_game_from_config(_shadow_config(serials=("b1", "b2")), _MockSpan())
 
         bus1 = servicer.sessions[gid1].event_bus
         bus2 = servicer.sessions[gid2].event_bus
@@ -295,12 +318,19 @@ class TestMultiSession:
         assert q2.empty()
 
     @pytest.mark.asyncio
+    @patch("services.game_coordinator.servicer._shadow_policy", lambda: "allow")
     async def test_third_start_rejected_at_cap(self, servicer, cap_two):
-        """With cap=2, the third concurrent start is rejected."""
+        """With cap=2, a third shadow start is rejected once the cap is full.
+
+        Uses one menu primary + two agent shadows so the third start does NOT
+        preempt (only a real-game start preempts shadows, #837). Policy=allow so
+        the gate admits shadows and the third hits the concurrency CAP, not the
+        resource gate.
+        """
         with _NO_THREAD:
             await servicer._start_game_from_config(_config(serials=("a1", "a2")), _MockSpan())
-            await servicer._start_game_from_config(_config(serials=("b1", "b2")), _MockSpan())
-            ok3, error = await servicer._start_game_from_config(_config(serials=("c1", "c2")), _MockSpan())
+            await servicer._start_game_from_config(_shadow_config(serials=("b1", "b2")), _MockSpan())
+            ok3, error = await servicer._start_game_from_config(_shadow_config(serials=("c1", "c2")), _MockSpan())
 
         assert ok3 is False
         assert "already in progress" in error.lower()
@@ -387,6 +417,13 @@ class TestMultiSession:
 
 class TestGameIdRouting:
     """game_id routing in the proto + coordinator wiring (#776)."""
+
+    @pytest.fixture(autouse=True)
+    def allow_shadows(self):
+        """Routing tests run concurrent sessions; keep the resource gate in
+        ``allow`` mode so shadows are admitted alongside the primary (#837)."""
+        with patch("services.game_coordinator.servicer._shadow_policy", lambda: "allow"):
+            yield
 
     @pytest.fixture
     def servicer(self):
@@ -580,6 +617,201 @@ class TestGameIdRouting:
         resp = await servicer.ForceEndGame(game_coordinator_pb2.ForceEndGameRequest(reason="done"), MockGrpcContext())
         assert resp.success is True
         assert servicer.game_state == game_coordinator_pb2.GameState.IDLE
+
+
+class TestShadowGameGovernance:
+    """Origin marking + resource gate + preemption (#837)."""
+
+    @pytest.fixture
+    def servicer(self):
+        return GameCoordinatorServicer()
+
+    @pytest.fixture
+    def cap_two(self):
+        with patch.dict(os.environ, {"GAME_MAX_CONCURRENT_GAMES": "2"}):
+            yield
+
+    @pytest.fixture
+    def policy_block(self):
+        with patch("services.game_coordinator.servicer._shadow_policy", lambda: "block"):
+            yield
+
+    @pytest.fixture
+    def policy_allow(self):
+        with patch("services.game_coordinator.servicer._shadow_policy", lambda: "allow"):
+            yield
+
+    # -- Origin classification ----------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_menu_origin_start_is_primary(self, servicer):
+        """A GAME_ORIGIN_MENU start claims the primary slot + persistent bus."""
+        with _NO_THREAD:
+            ok, gid = await servicer._start_game_from_config(_config(serials=("a1", "a2")), _MockSpan())
+        assert ok is True
+        session = servicer.sessions[gid]
+        assert session.game_kind == "primary"
+        assert servicer._primary_game_id == gid
+        assert session.event_bus is servicer.primary_event_bus
+
+    @pytest.mark.asyncio
+    async def test_agent_origin_start_is_shadow_even_when_idle(self, servicer):
+        """An AGENT start is ALWAYS shadow, even with NO primary live (idle)."""
+        with _NO_THREAD:
+            ok, gid = await servicer._start_game_from_config(_shadow_config(serials=("a1", "a2")), _MockSpan())
+        assert ok is True
+        session = servicer.sessions[gid]
+        # The first-come-first-served hazard is gone: idle-time agent game does
+        # NOT claim primary.
+        assert session.game_kind == "shadow"
+        assert servicer._primary_game_id is None
+        assert session.event_bus is not servicer.primary_event_bus
+
+    @pytest.mark.asyncio
+    async def test_unspecified_origin_start_is_shadow_when_idle(self, servicer):
+        """OLD assumption gone: an UNSPECIFIED-origin start while idle is shadow.
+
+        Previously the first start (any origin) became primary. Now only MENU may
+        be primary; an unmarked start is a shadow even when the system is idle.
+        """
+        with _NO_THREAD:
+            ok, gid = await servicer._start_game_from_config(
+                _config(serials=("a1", "a2"), origin=game_coordinator_pb2.GAME_ORIGIN_UNSPECIFIED),
+                _MockSpan(),
+            )
+        assert ok is True
+        assert servicer.sessions[gid].game_kind == "shadow"
+        assert servicer._primary_game_id is None
+
+    @pytest.mark.asyncio
+    @patch("services.game_coordinator.servicer.metrics")
+    async def test_metrics_labeled_by_kind(self, mock_metrics, servicer):
+        """Shadow starts label their lifecycle metrics game_kind='shadow'."""
+        with _NO_THREAD:
+            await servicer._start_game_from_config(_shadow_config(serials=("a1", "a2")), _MockSpan())
+        mock_metrics.active_game.labels.assert_any_call(game_kind="shadow")
+        mock_metrics.games_started_total.labels.assert_any_call(mode="FFA", game_kind="shadow")
+
+    # -- Resource gate ------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_gate_blocks_shadow_while_real_running(self, servicer, cap_two, policy_block):
+        """policy=block: a shadow start is rejected (distinct message) while a
+        real game is STARTING/RUNNING."""
+        with _NO_THREAD:
+            _, gid_real = await servicer._start_game_from_config(_config(serials=("a1", "a2")), _MockSpan())
+            ok, error = await servicer._start_game_from_config(_shadow_config(serials=("b1", "b2")), _MockSpan())
+
+        assert ok is False
+        # DISTINCT message — NOT the legacy "Game already in progress".
+        assert error == "Shadow games blocked while a real game is running"
+        assert "already in progress" not in error.lower()
+        # The real game is untouched and still primary.
+        assert servicer._primary_game_id == gid_real
+
+    @pytest.mark.asyncio
+    async def test_gate_allows_shadow_when_policy_allow(self, servicer, cap_two, policy_allow):
+        """policy=allow: a shadow start is admitted alongside a real game (CI)."""
+        with _NO_THREAD:
+            _, gid_real = await servicer._start_game_from_config(_config(serials=("a1", "a2")), _MockSpan())
+            ok, gid_shadow = await servicer._start_game_from_config(_shadow_config(serials=("b1", "b2")), _MockSpan())
+
+        assert ok is True
+        assert servicer.sessions[gid_shadow].game_kind == "shadow"
+        assert servicer._primary_game_id == gid_real
+
+    @pytest.mark.asyncio
+    async def test_gate_does_not_block_shadow_when_idle(self, servicer, policy_block):
+        """policy=block but NO real game running -> shadow start admitted."""
+        with _NO_THREAD:
+            ok, gid = await servicer._start_game_from_config(_shadow_config(serials=("a1", "a2")), _MockSpan())
+        assert ok is True
+        assert servicer.sessions[gid].game_kind == "shadow"
+
+    # -- Preemption ---------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_real_start_preempts_live_shadow(self, servicer, cap_two, policy_allow):
+        """A real (menu) start force-ends running shadows and becomes primary."""
+        # A shadow is running idle-time.
+        gid_shadow, shadow = await _start_running(servicer, _shadow_config(serials=("s1", "s2")))
+        assert shadow.game_kind == "shadow"
+
+        # Subscribe to the shadow's bus to observe the preemption notice.
+        q = await shadow.event_bus.subscribe("watch")
+
+        with _NO_THREAD:
+            ok, gid_real = await servicer._start_game_from_config(_config(serials=("a1", "a2")), _MockSpan())
+
+        assert ok is True
+        # Shadow was force-ended + retired; real game is the new primary.
+        assert gid_shadow not in servicer.sessions
+        assert servicer.sessions[gid_real].game_kind == "primary"
+        assert servicer._primary_game_id == gid_real
+
+        # The shadow's bus received game_force_ended with the preemption reason.
+        events = []
+        while not q.empty():
+            events.append(q.get_nowait())
+        force_ended = [e for e in events if e.event_type == "game_force_ended"]
+        assert force_ended, f"expected game_force_ended, saw {[e.event_type for e in events]}"
+        assert force_ended[0].data["reason"] == "preempted_by_real_game"
+
+    @pytest.mark.asyncio
+    async def test_real_start_preempts_even_when_policy_block(self, servicer, cap_two, policy_block):
+        """Preemption applies regardless of policy — the real game always wins.
+
+        Even though policy=block (which would reject a NEW shadow), an already
+        running shadow is preempted so the real game starts.
+        """
+        gid_shadow, _ = await _start_running(servicer, _shadow_config(serials=("s1", "s2")))
+        with _NO_THREAD:
+            ok, gid_real = await servicer._start_game_from_config(_config(serials=("a1", "a2")), _MockSpan())
+        assert ok is True
+        assert gid_shadow not in servicer.sessions
+        assert servicer.sessions[gid_real].game_kind == "primary"
+
+    @pytest.mark.asyncio
+    async def test_real_start_not_rejected_when_shadows_fill_cap(self, servicer, cap_two, policy_allow):
+        """Freed shadow slots count before the cap check — the real game (cap=2)
+        is never rejected because shadows filled the cap (#837)."""
+        # Fill BOTH slots with shadows.
+        await _start_running(servicer, _shadow_config(serials=("s1", "s2")))
+        await _start_running(servicer, _shadow_config(serials=("s3", "s4")))
+        assert len(servicer.sessions) == 2
+
+        with _NO_THREAD:
+            ok, gid_real = await servicer._start_game_from_config(_config(serials=("a1", "a2")), _MockSpan())
+
+        assert ok is True
+        assert servicer.sessions[gid_real].game_kind == "primary"
+        # Both shadows were preempted to make room.
+        assert len(servicer.sessions) == 1
+
+    @pytest.mark.asyncio
+    async def test_shadow_start_does_not_preempt_other_shadow(self, servicer, cap_two, policy_allow):
+        """A shadow start must NOT preempt another shadow (only real games do)."""
+        gid1, _ = await _start_running(servicer, _shadow_config(serials=("s1", "s2")))
+        with _NO_THREAD:
+            ok, gid2 = await servicer._start_game_from_config(_shadow_config(serials=("s3", "s4")), _MockSpan())
+        assert ok is True
+        # Both shadows coexist.
+        assert gid1 in servicer.sessions
+        assert servicer.sessions[gid1].game_kind == "shadow"
+        assert servicer.sessions[gid2].game_kind == "shadow"
+
+    @pytest.mark.asyncio
+    async def test_idle_shadow_preempted_by_menu_becomes_primary(self, servicer, cap_two, policy_block):
+        """End-to-end: an agent game runs as shadow while idle; a menu start
+        preempts it and becomes primary (the canonical #837 flow)."""
+        gid_shadow, _ = await _start_running(servicer, _shadow_config(serials=("s1", "s2")))
+        assert servicer.sessions[gid_shadow].game_kind == "shadow"
+        assert servicer._primary_game_id is None  # shadow never claimed primary
+
+        gid_real, real = await _start_running(servicer, _config(serials=("a1", "a2")))
+        assert gid_shadow not in servicer.sessions
+        assert real.game_kind == "primary"
+        assert servicer._primary_game_id == gid_real
 
 
 class _MockSpan:

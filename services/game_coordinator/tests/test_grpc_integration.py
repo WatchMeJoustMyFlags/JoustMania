@@ -67,12 +67,19 @@ async def _wait_for_subscribers(servicer, count=1, max_wait=2.0):
         await asyncio.sleep(0.01)
 
 
-def _make_start_config(game_name="FFA", num_players=3, sensitivity=2):
-    """Build a StartGameConfig with the given parameters."""
+def _make_start_config(game_name="FFA", num_players=3, sensitivity=2, origin=None):
+    """Build a StartGameConfig with the given parameters.
+
+    Defaults to MENU origin (#837): these tests assert the legacy single primary
+    game behavior, now reserved for the real (menu-origin) game.
+    """
+    if origin is None:
+        origin = game_coordinator_pb2.GAME_ORIGIN_MENU
     return game_coordinator_pb2.StartGameConfig(
         game_name=game_name,
         players=[game_coordinator_pb2.Player(serial=f"p{i}") for i in range(num_players)],
         sensitivity=sensitivity,
+        origin=origin,
     )
 
 

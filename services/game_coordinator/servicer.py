@@ -10,13 +10,18 @@ Manages game lifecycle:
 Multi-session (#775): the servicer holds ``dict[game_id, GameSession]`` instead
 of a single game's fields, so multiple games can run concurrently. A persistent
 PRIMARY EventBus (created here, never destroyed) preserves the legacy
-"subscribe before any game exists" semantics: the first session started while no
-primary is active becomes the primary and publishes to this bus; concurrent
-secondary (shadow) sessions each get their own EventBus. Zero-arg
-``StreamGameEvents`` subscribers attach to the primary bus exactly as before; a
-``StreamGameEvents`` call WITH start_config subscribes to the bus of the session
-it just created. ``ForceEndGame`` / ``GetGameState`` (no game_id in the proto
-yet — that is #776) operate on the primary session.
+"subscribe before any game exists" semantics. Zero-arg ``StreamGameEvents``
+subscribers attach to the primary bus exactly as before; a ``StreamGameEvents``
+call WITH start_config subscribes to the bus of the session it just created.
+
+Shadow game governance (#837): primary is NO LONGER first-come-first-served.
+Only a ``GAME_ORIGIN_MENU`` start (the real game) may claim the primary slot +
+persistent primary bus; UNSPECIFIED/AGENT starts are ALWAYS shadow sessions
+(own EventBus), even when the system is idle. A real game start preempts
+(force-ends) running shadows so it gets all resources, and — when
+``shadow_policy=block`` (prod default) — a shadow start is rejected while a real
+game is live. ``ForceEndGame`` / ``GetGameState`` with an empty game_id operate
+on the primary session (game_id routing is #776).
 """
 
 import asyncio
@@ -57,6 +62,25 @@ def _max_concurrent_games() -> int:
     except (TypeError, ValueError):
         return DEFAULT_MAX_CONCURRENT_GAMES
     return max(1, value)
+
+
+# Shadow game resource policy (#837). ``block`` (prod default) rejects shadow
+# starts while a real game is live; ``allow`` (CI) permits concurrent shadow +
+# real games (the #779 isolation test + #826 parallel batches need this).
+DEFAULT_SHADOW_POLICY = "block"
+
+
+def _shadow_policy() -> str:
+    """Read the shadow-game policy from the ``game`` flagd domain (#837).
+
+    Live per-call read so a flag flip takes effect immediately. Any unknown
+    value falls back to the safe default (``block``). Kept module-level so unit
+    tests can patch it (mirroring how flag-dependent behavior is tested
+    elsewhere)."""
+    from lib.feature_flags import read_string_flag
+
+    value = read_string_flag("game", "shadow_policy", DEFAULT_SHADOW_POLICY)
+    return value if value in ("block", "allow") else DEFAULT_SHADOW_POLICY
 
 
 class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceServicer):
@@ -203,14 +227,88 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
     # Start path
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _is_real_origin(config) -> bool:
+        """A start is the REAL game only when the menu marked it (#837).
+
+        Only ``GAME_ORIGIN_MENU`` may claim the primary slot. UNSPECIFIED (origin
+        not set by the caller) and AGENT are ALWAYS shadow, even when no primary
+        is live — this kills the first-come-first-served hazard where an idle-time
+        agent game could grab primary and block real players.
+        """
+        return getattr(config, "origin", game_coordinator_pb2.GAME_ORIGIN_UNSPECIFIED) == (
+            game_coordinator_pb2.GAME_ORIGIN_MENU
+        )
+
+    def _live_shadow_sessions(self) -> list["GameSession"]:
+        """Snapshot the shadow sessions in a STARTING/RUNNING state (#837)."""
+        with self._sessions_lock:
+            return [
+                sess
+                for sess in self.sessions.values()
+                if sess.game_kind == GAME_KIND_SHADOW
+                and sess.game_state
+                in (
+                    game_coordinator_pb2.GameState.STARTING,
+                    game_coordinator_pb2.GameState.RUNNING,
+                )
+            ]
+
+    def _has_live_real_game(self) -> bool:
+        """True when a real (menu-origin/primary) game is STARTING or RUNNING (#837).
+
+        The primary slot is reserved for the real game, so a live primary session
+        is exactly "a real game is running". ENDED sessions don't count.
+        """
+        session = self._get_primary_session()
+        if session is None:
+            return False
+        return session.game_state in (
+            game_coordinator_pb2.GameState.STARTING,
+            game_coordinator_pb2.GameState.RUNNING,
+        )
+
+    async def _preempt_shadow_sessions(self) -> int:
+        """Force-end every live shadow session so a real game gets all resources.
+
+        Publishes ``game_force_ended`` with reason ``preempted_by_real_game`` on
+        each shadow's bus (so agent runners learn why their game vanished), then
+        retires the session to free its concurrency slot. Returns the count of
+        shadows preempted. Logged loudly. Applies regardless of ``shadow_policy``
+        — the real game always wins resources (#837).
+        """
+        shadows = self._live_shadow_sessions()
+        if not shadows:
+            return 0
+
+        logger.warning(
+            "Preempting %d live shadow game(s) for an incoming real game: %s",
+            len(shadows),
+            [s.game_id for s in shadows],
+        )
+        preempted = 0
+        for shadow in shadows:
+            success, error = await shadow.force_end("preempted_by_real_game")
+            if success:
+                self._retire_session(shadow.game_id)
+                metrics.shadow_games_preempted_total.inc()
+                preempted += 1
+                logger.warning("Preempted shadow game %s for real game", shadow.game_id)
+            else:
+                logger.error("Failed to preempt shadow game %s: %s", shadow.game_id, error)
+        return preempted
+
     async def _start_game_from_config(self, config, parent_span) -> tuple[bool, str]:
         """
         Start a game from StartGameConfig (internal helper).
 
-        Creates a new GameSession, registers it, and launches its background
-        thread. The first session started while no primary is active becomes the
-        primary (and uses the persistent primary bus); additional concurrent
-        sessions are shadow sessions, each with its own EventBus.
+        Origin governs classification (#837): a ``GAME_ORIGIN_MENU`` start is the
+        REAL game and claims the primary slot + persistent primary bus when no
+        primary is live; it also preempts (force-ends) any running shadow games
+        first. Every other origin (UNSPECIFIED/AGENT) is ALWAYS a shadow session
+        with its own EventBus, even when the system is idle. A shadow start is
+        rejected by the resource gate while a real game is live and
+        ``shadow_policy=block``.
 
         Returns:
             Tuple of (success, error_message_or_game_id)
@@ -219,6 +317,24 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             # Validate player count (cheap, no lock needed).
             if len(config.players) < 2:
                 return False, "Need at least 2 players"
+
+            is_real = self._is_real_origin(config)
+
+            if is_real:
+                # The real game always wins resources: evict running shadows
+                # BEFORE the cap check so freed slots count and the real game is
+                # never rejected because shadows filled the cap (#837). Done
+                # outside the lock because force_end joins the game thread.
+                await self._preempt_shadow_sessions()
+            else:
+                # Resource gate (#837): a shadow must not run while a real game is
+                # live when policy=block. A DISTINCT message (not the legacy
+                # "Game already in progress") so agent runners can tell the
+                # difference between "capacity full" and "blocked by real game".
+                if self._has_live_real_game() and _shadow_policy() == "block":
+                    metrics.shadow_games_blocked_total.inc()
+                    logger.info("Shadow start rejected: a real game is running and shadow_policy=block")
+                    return False, "Shadow games blocked while a real game is running"
 
             with self._sessions_lock:
                 # Retire sessions whose games already ENDED (#775). A natural
@@ -247,9 +363,11 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 if len(self.sessions) >= _max_concurrent_games():
                     return False, "Game already in progress"
 
-                # Decide kind + bus. First session with no live primary becomes
-                # the primary and reuses the persistent primary bus.
-                if self._primary_game_id is None:
+                # Decide kind + bus (#837). ONLY a real (menu-origin) game with no
+                # live primary claims the primary slot + persistent primary bus.
+                # Everything else is a shadow session with its own EventBus, even
+                # when idle.
+                if is_real and self._primary_game_id is None:
                     game_kind = GAME_KIND_PRIMARY
                     event_bus = self.primary_event_bus
                 else:
