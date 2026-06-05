@@ -69,7 +69,7 @@ type SessionSignals struct {
 	GameActive *bool
 
 	// GameMode is the current game mode.
-	// Source: current_game_mode{mode} label (value != 0) (live), or span
+	// Source: game_current_mode{mode} label (value != 0) (live), or span
 	// attribute game.mode.
 	GameMode *string
 

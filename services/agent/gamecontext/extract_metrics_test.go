@@ -159,7 +159,7 @@ func TestApplyMetrics_SessionScalars(t *testing.T) {
 	// mode with value 0 must be ignored.
 	s2 := newTestStore()
 	if s2.ApplyMetrics(metricsWith(metricGameMode, 0, map[string]string{"mode": "off"})) {
-		t.Fatal("current_game_mode with value 0 should be ignored")
+		t.Fatal("game_current_mode with value 0 should be ignored")
 	}
 }
 
