@@ -32,6 +32,7 @@ import (
 	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
+	"github.com/joustmania/agent/gate"
 	"github.com/joustmania/agent/infracontext"
 )
 
@@ -96,6 +97,36 @@ func actionSink(logger *slog.Logger) decision.ActionSink {
 	logger.Warn("Agent intervention writes enabled (#730)",
 		"path", getEnv("INTERVENTIONS_FLAG_PATH", actions.DefaultPath))
 	return actions.NewWriterFromEnv(logger)
+}
+
+// rolloutActuator returns the rollout write seam for the infra loop (#734). When
+// AGENT_ROLLOUT_ENABLED=true it is the real RolloutWriter (flips
+// current_controller_count in ROLLOUT_FLAG_PATH); otherwise it is a dry-run
+// actuator that decides+spans expansions but never writes the file. Mirrors the
+// actionSink env-gate shape, but always returns a non-nil actuator so the loop
+// reports disabled expansions as decided-but-not-applied.
+func rolloutActuator(logger *slog.Logger) decision.RolloutActuator {
+	if strings.EqualFold(getEnv("AGENT_ROLLOUT_ENABLED", ""), "true") {
+		logger.Warn("Agent rollout expansion enabled (#734)",
+			"path", getEnv("ROLLOUT_FLAG_PATH", actions.DefaultRolloutPath))
+		return actions.NewRolloutWriterFromEnv(logger)
+	}
+	logger.Info("Agent rollout expansion disabled (dry-run; decisions spanned, not applied)")
+	return actions.NewDryRunRolloutWriter(logger)
+}
+
+// rolloutDwell reads the per-stage dwell from AGENT_ROLLOUT_DWELL_SECONDS,
+// falling back to decision.DefaultRolloutDwell.
+func rolloutDwell() time.Duration {
+	s := strings.TrimSpace(os.Getenv("AGENT_ROLLOUT_DWELL_SECONDS"))
+	if s == "" {
+		return decision.DefaultRolloutDwell
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n <= 0 {
+		return decision.DefaultRolloutDwell
+	}
+	return time.Duration(n) * time.Second
 }
 
 func main() {
@@ -175,18 +206,26 @@ func main() {
 		slog.Warn("Probe decisions enabled (demo/verification mode)",
 			"interval", probeInterval)
 	}
-	// Infrastructure observe path (#733, M3 PR C): a parallel store fed by the
-	// controller.bluetooth_health span on the same OTLP trace receiver. It honors
-	// the same self-ingestion skip as the game store. The InfraLoop is an
-	// OBSERVE-only logging stub for this PR; the real fitness/remediation loop
-	// plugs in behind the decision.InfraEvaluator seam in PR E.
+	// Infrastructure observe + rollout path (#733/#734, M3): a parallel store fed
+	// by the controller.bluetooth_health span on the same OTLP trace receiver. It
+	// honors the same self-ingestion skip as the game store. The InfraLoop runs the
+	// progressive-rollout expansion controller (#734): when Bluetooth fitness passes
+	// and the per-stage dwell has elapsed it advances current_controller_count one
+	// stage up the ladder, emitting an agent.infrastructure.decision span every
+	// active-rollout cycle.
 	infraStore := infracontext.NewStore(infraControllerTTL, nil)
 	infraStore.SetOwnService(resolveServiceName())
 	// Bluetooth fitness source (#735): seeds the flagd-schema defaults; the infra
-	// loop reads the live fitness.bluetooth.* thresholds through it each cycle. The
-	// real fitness/remediation consumer arrives in PR E.
+	// loop reads the live fitness.bluetooth.* thresholds through it each cycle.
 	bluetoothFitness := decision.NewLiveBluetoothFitness()
-	infraLoop := decision.NewInfraLoop(logger, lifecycle.DecisionThrottle, bluetoothFitness)
+	// Rollout actuator (#734): real RolloutWriter when AGENT_ROLLOUT_ENABLED=true,
+	// else a dry-run actuator (decides+spans but does not write rollout.json).
+	infraLoop := decision.NewInfraLoop(logger, rolloutDwell(), bluetoothFitness, rolloutActuator(logger))
+	// Freshness gate (#734): evaluate the rollout only when ≥1 controller is
+	// reporting fresh Bluetooth health. Game-state-independent (lobby connects).
+	infraLoop.SetGate(func(snap infracontext.InfraContext, now time.Time) bool {
+		return gate.ShouldEvaluateInfra(snap, now, infraControllerTTL)
+	})
 	pipe := newPipeline(store, loop, lifecycle.PlayerTTL).withInfra(infraStore, infraLoop)
 
 	grpcServer := grpc.NewServer()

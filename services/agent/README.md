@@ -120,8 +120,9 @@ independently with no cross-contamination.
 Bluetooth transport against three **flag-sourced** thresholds and returns a
 structured `InfraFitnessResult` (`Evaluated` / `Passing` / `Violations` /
 `Values`). This is the infra-domain parallel to the game fitness functions
-(#731); it makes no rollout decision — rollout **expansion** (#734) and
-**rollback** (#736) consume the result in stacked follow-ups.
+(#731); it makes no rollout decision itself — rollout **expansion** (#734,
+[below](#progressive-rollout-expansion-734)) consumes the result, and
+**rollback** (#736) plugs into the same loop.
 
 | Fitness function | Flag key (default) | Violated when |
 |------------------|--------------------|---------------|
@@ -134,8 +135,8 @@ structured `InfraFitnessResult` (`Evaluated` / `Passing` / `Violations` /
 (`decision.LiveBluetoothFitness`, seeded with the flagd-schema defaults), so a
 threshold change on stage takes effect on the next evaluation with no restart.
 This source is **separate** from the game-objective `FitnessSource` — distinct
-flags, distinct concerns. (Until PR E wires the consumer, the observe-loop stub
-only logs the thresholds in effect.)
+flags, distinct concerns. The rollout-expansion loop (#734) reads these
+thresholds through it every cycle.
 
 **Missing signals are skipped, not failed** (mirroring game fitness): a `nil`
 window signal contributes no violation, and a context with *no* window signals at
@@ -151,6 +152,70 @@ attribute — `"<signal>[<serial>] <observed><cmp><threshold>"`, joined by `"; "
 ```
 event_gap_ms 87.5>50; movement_update_hz[AA:BB] 8.3<10
 ```
+
+### Progressive rollout expansion (#734)
+
+`decision.InfraLoop` consumes the infra fitness result to **expand the Bluetooth
+backend rollout controller-by-controller**. When fitness passes it advances
+`rollout.current_controller_count` one stage up a fixed ladder by rewriting
+`services/flagd/rollout.json` (the controller-manager watches the file and
+converges on it). The agent is the **sole writer** of `rollout.json`, via the
+same order-preserving in-place RMW as the interventions writer
+(`actions.RolloutWriter`); untouched flags round-trip byte-for-byte.
+
+**Stage ladder** (`current_controller_count` variants):
+
+| Variant | `none` | `one` | `three` | `six` | `all` |
+|---------|--------|-------|---------|-------|-------|
+| Value   | 0      | 1     | 3       | 6     | 99    |
+
+flagd flips by **variant name**, not value, so the loop maps the observed count
+(a number, read from the `controller.bluetooth_health` span's
+`bluetooth.rollout_count`) to the next variant via `actions.NextStage` /
+`actions.StageVariantForValue`. `all` (99) is terminal.
+
+**Decision matrix** (per observe cycle; observed state comes from the health
+span, **not** a flag re-read):
+
+| Rollout state | Fitness | Dwell elapsed & not held | Action | `remediation.action` | Span? |
+|---------------|---------|--------------------------|--------|----------------------|-------|
+| inactive (`target_backend==""`) | — | — | nothing | — | **no span** |
+| active, stage `< all` | passing | yes | flip to next variant | `expand` | yes |
+| active, stage `< all` | passing | no (dwell / hold) | nothing | `none` | yes |
+| active, stage `== all` | passing | — | nothing (terminal) | `none` | yes |
+| active | **failing** | — | **nothing** (no write — rollback is PR F) | `none` | yes |
+| active | write error | — | attempted, failed | `expand` (+ span error/status) | yes |
+
+**Dwell:** after each expansion the loop waits `AGENT_ROLLOUT_DWELL_SECONDS`
+(default **15s**) before expanding again, so fitness has time to observe the
+newly-added controllers at the current stage. The first expansion (no prior
+`lastExpansion`) is not delayed. A failed write does **not** advance the dwell
+clock, so the next passing cycle retries.
+
+**Fitness-failing branch (observe-only in this PR):** PR E records but never
+rolls back — a failing cycle emits the span with `remediation.action="none"` and
+the populated `fitness.violations`. **Rollback (PR F)** plugs into the
+`holdExpansion` hook (`InfraLoop.SetHoldExpansion`, always false here) for its
+post-rollback cooldown, and adds the rollback write (reset toward `none`).
+
+**Freshness gate** (`gate.ShouldEvaluateInfra`): the loop only evaluates when
+≥1 controller reported fresh `controller.bluetooth_health` within the controller
+TTL (5s). It is **game-state-independent** — controllers connect and stream in
+the lobby, and the rollout is driven by transport health alone.
+
+**Span** — `agent.infrastructure.decision`, emitted on **every active-rollout
+cycle**, carries `rollout.target`, `fitness.passing`, `fitness.violations`
+(empty when passing), `remediation.action`, the observed `bluetooth.*` signals,
+and `rollout.controller_count` (the new stage value) when expanding. A write
+failure sets the span status to error and records the error.
+
+**Env gates:**
+
+| Env | Default | Effect |
+|-----|---------|--------|
+| `AGENT_ROLLOUT_ENABLED` | `false` | `true` → real `RolloutWriter` applies flips. `false` → **dry-run**: the loop still decides and spans expansions (`remediation.action="expand"`, `rollout.controller_count` set) but does **not** write `rollout.json` (decided-but-not-applied; logged `agent.rollout_dry_run`). |
+| `ROLLOUT_FLAG_PATH` | `/etc/flagd/rollout.json` | rollout flag file path |
+| `AGENT_ROLLOUT_DWELL_SECONDS` | `15` | per-stage dwell before re-expansion |
 
 ## Gating & decisions
 
