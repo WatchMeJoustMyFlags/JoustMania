@@ -17,6 +17,11 @@ dependencies = [
 
     # gRPC client libraries for testing
     "grpcio>=1.50.0",
+
+    # OpenFeature flagd client — evaluate intervention targeting rules directly
+    # against live flagd RPC (test_intervention_flow.py, #730).
+    "openfeature-sdk>=0.6.0",
+    "openfeature-provider-flagd>=0.2.7",
 ]
 
 [tool.uv.sources]

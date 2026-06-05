@@ -6,6 +6,12 @@
 # Base config (docker-compose.yml) already defaults to mock mode.
 
 services:
+  # flagd - Expose the RPC evaluation port so integration tests can evaluate
+  # intervention targeting rules directly against the live flag store (#730).
+  flagd:
+    ports:
+      - "8013:8013"  # flagd RPC evaluation port (gRPC)
+
   # Controller Manager - Expose ports for testing
   controller-manager:
     expose:

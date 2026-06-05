@@ -61,9 +61,19 @@ class FakeFlagClient:
         return self.values.get(key, default)
 
 
+class FakePlayer:
+    def __init__(self, serial, alive=True):
+        self.serial = serial
+        self.alive = alive
+        self.sensitivity_factor = 1.0
+
+
 class FakeGame:
-    def __init__(self, name):
+    def __init__(self, name, players=None):
         self._name = name
+        # Player-targeted state flags (shield_seconds, player_sensitivity_factor)
+        # are resolved per active serial, so tests exercising them need players.
+        self.players = players or {}
 
     def get_game_name(self):
         return self._name
@@ -509,9 +519,77 @@ async def test_multiple_flags_evaluated_in_one_pass():
             "audio_cue": "1:beep",
             "shield_seconds": 5,
         },
+        # shield_seconds is player-targeted: it resolves per active serial, so a
+        # live game with at least one player is required for it to apply.
+        game=FakeGame("Nonstop Joust", players={"p1": FakePlayer("p1")}),
         budget=10,
     )
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
     applied_types = {d["type"] for et, d in events if et == GameEvent.AGENT_INTERVENTION and d["blocked"] == "false"}
     assert {"adjust_music_tempo", "play_audio_cue", "grant_shield"} <= applied_types
+
+
+# --------------------------------------------------------------------------- #
+# Player-targeted state-flag change detection (#730, PR G)
+#
+# These flags are driven via flagd's per-serial targeting if-ladder; the agent
+# writer leaves the global defaultVariant on neutral, so change detection keys on
+# the per-serial RESOLVED map, not the global evaluated value. The FakeFlagClient
+# ignores targeting_key (returns the global value for every serial), which is
+# enough to exercise the resolved-map change-detection branch.
+# --------------------------------------------------------------------------- #
+def _applied(events, type_id):
+    return [
+        d for et, d in events if et == GameEvent.AGENT_INTERVENTION and d["type"] == type_id and d["blocked"] == "false"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_player_targeted_state_dispatches_on_resolved_change():
+    """A player-targeted state flag dispatches when its per-serial resolved value
+    moves off neutral, even though the global defaultVariant never changes."""
+    game = FakeGame("Nonstop Joust", players={"p1": FakePlayer("p1")})
+    mgr, events = make_manager(interventions={"player_sensitivity_factor": 1.0}, game=game, budget=10)
+    with patch("services.game_coordinator.metrics.interventions_total"):
+        await mgr.evaluate_all()  # neutral 1.0 -> no dispatch
+    assert _applied(events, "adjust_player_sensitivity") == []
+
+    with patch("services.game_coordinator.metrics.interventions_total"):
+        mgr._interventions_client.set("player_sensitivity_factor", 1.5)
+        await mgr.evaluate_all()  # resolved 1.5 -> dispatch
+    assert len(_applied(events, "adjust_player_sensitivity")) == 1
+
+
+@pytest.mark.asyncio
+async def test_player_targeted_state_no_redispatch_when_unchanged():
+    """Re-evaluating an unchanged resolved map does not re-fire (no spurious
+    metric/event or rate-limit consumption)."""
+    game = FakeGame("Nonstop Joust", players={"p1": FakePlayer("p1")})
+    mgr, events = make_manager(interventions={"player_sensitivity_factor": 1.5}, game=game, budget=10)
+    with patch("services.game_coordinator.metrics.interventions_total"):
+        await mgr.evaluate_all()
+        await mgr.evaluate_all()  # same resolved map -> no second dispatch
+    assert len(_applied(events, "adjust_player_sensitivity")) == 1
+
+
+@pytest.mark.asyncio
+async def test_player_targeted_state_no_game_is_noop():
+    """No live game means no serials to target: no dispatch, no crash."""
+    mgr, events = make_manager(interventions={"shield_seconds": 5}, game=None, budget=10)
+    with patch("services.game_coordinator.metrics.interventions_total"):
+        await mgr.evaluate_all()
+    assert _applied(events, "grant_shield") == []
+
+
+@pytest.mark.asyncio
+async def test_player_targeted_state_revert_to_neutral_does_not_fire():
+    """Reverting all serials back to neutral collapses the change key to empty
+    and dispatches nothing (shields/factors simply expire/reset)."""
+    game = FakeGame("Nonstop Joust", players={"p1": FakePlayer("p1")})
+    mgr, events = make_manager(interventions={"shield_seconds": 5}, game=game, budget=10)
+    with patch("services.game_coordinator.metrics.interventions_total"):
+        await mgr.evaluate_all()  # 5 -> applied
+        mgr._interventions_client.set("shield_seconds", 0)
+        await mgr.evaluate_all()  # back to neutral -> no enforced intervention
+    assert len(_applied(events, "grant_shield")) == 1

@@ -359,6 +359,15 @@ class InterventionManager:
         self._lock = threading.RLock()
         self._started = False
 
+        # The asyncio loop the servicer runs on, captured at start(). The
+        # OpenFeature provider fires PROVIDER_CONFIGURATION_CHANGED on a
+        # background thread, so evaluate_all() (which makes gRPC calls bound to
+        # this loop) MUST be scheduled back onto it via run_coroutine_threadsafe.
+        # Scheduling it on the firing thread's loop (or a fresh asyncio.run loop)
+        # binds the gRPC futures to a different loop and they fail with
+        # "attached to a different loop".
+        self._loop: object | None = None
+
     # ------------------------------------------------------------------ #
     # Handler registry (the contract PRs C/D/E follow)
     # ------------------------------------------------------------------ #
@@ -526,6 +535,16 @@ class InterventionManager:
         """Initialize flag clients, register change handler, initial evaluate."""
         if self._started:
             return
+
+        # Capture the servicer's running loop so the (background-thread) flag
+        # change handler can schedule evaluate_all() back onto it.
+        import asyncio
+
+        try:
+            self._loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._loop = None
+
         try:
             from openfeature import api
 
@@ -590,19 +609,28 @@ class InterventionManager:
     def _on_flags_changed(self, _event_details) -> None:
         """Event handler: re-evaluate all intervention flags.
 
-        Synchronous (OpenFeature handler), so it schedules the async evaluation
-        on the running loop. Falls back to a fresh loop if none is running
-        (e.g. unit-test direct invocation handled via ``evaluate_all``).
+        Synchronous (OpenFeature handler) and fired on a background thread, so it
+        schedules evaluate_all() onto the servicer's loop (captured at start())
+        via run_coroutine_threadsafe — the only safe way to drive loop-bound gRPC
+        clients from another thread. Falls back to the current running loop, then
+        to a fresh loop, for direct/test invocations where no servicer loop was
+        captured.
         """
         import asyncio
 
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            # Cross-thread-safe: bind the coroutine to the servicer's loop.
+            asyncio.run_coroutine_threadsafe(self.evaluate_all(), loop)
+            return
 
-        if loop is not None:
-            loop.create_task(self.evaluate_all())
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+
+        if running is not None:
+            running.create_task(self.evaluate_all())
         else:
             asyncio.run(self.evaluate_all())
 
@@ -620,6 +648,16 @@ class InterventionManager:
                 logger.error(f"InterventionManager: error evaluating {spec.flag_key}: {e}")
 
     async def _evaluate_one(self, spec: InterventionSpec) -> None:
+        # Player-targeted state flags (player_sensitivity_factor, shield_seconds)
+        # are driven entirely through flagd's per-serial targeting if-ladder; the
+        # agent writer leaves the flag's global defaultVariant on its neutral
+        # value, so the global evaluated read NEVER changes and can't be used for
+        # change detection. Resolve the per-serial values instead and key change
+        # detection on them (handled separately below).
+        if spec.player_targeted and not spec.edge_triggered:
+            await self._evaluate_targeted_state(spec)
+            return
+
         raw = self._read_flag(spec)
 
         if spec.edge_triggered:
@@ -677,6 +715,57 @@ class InterventionManager:
             value = raw
 
         await self._enforce_and_dispatch(spec, value, payload, target)
+
+    async def _evaluate_targeted_state(self, spec: InterventionSpec) -> None:
+        """Change-detect and dispatch a player-targeted state flag.
+
+        The agent writer drives these flags via a per-serial targeting if-ladder
+        and never moves the global ``defaultVariant`` off neutral, so a global
+        read is useless for change detection. Instead resolve the flag per active
+        serial and key change detection on that resolved map. The handler (PR C/D)
+        re-resolves and applies; dispatch is idempotent so re-applying an
+        unchanged map would be harmless, but we still gate on change to avoid
+        spurious metrics/events and needless rate-limit consumption.
+
+        With no live game there are no serials to target, so this is a no-op
+        (and the baseline is reset to empty so a later game picks up the flag).
+        """
+        game = self._get_game()
+        if game is None:
+            with self._lock:
+                self._last_state_value[spec.flag_key] = None
+            return
+
+        default = float(spec.none_value) if isinstance(spec.none_value, (int, float)) else 1.0
+        resolved = self.resolve_player_targets(
+            spec.flag_key,
+            default,
+            game,
+            value_kind=spec.value_kind if spec.value_kind in ("int", "float") else "float",
+            battery_gate=True,
+        )
+
+        # Change key: the set of (serial, value) pairs that differ from neutral.
+        # Reverting all serials to neutral collapses to the empty key, matching a
+        # never-applied baseline so a fresh revert does not spuriously re-fire.
+        active = {s: v for s, v in resolved.items() if not _is_none_value(spec, v)}
+        change_key = tuple(sorted(active.items()))
+
+        with self._lock:
+            last = self._last_state_value.get(spec.flag_key)
+            changed = change_key != last
+            self._last_state_value[spec.flag_key] = change_key
+        if not changed:
+            return
+        if not active:
+            # All serials reverted to neutral: nothing to apply (shields/factors
+            # simply expire / reset to default). No enforced intervention.
+            return
+
+        # Per-serial battery gating already happened in resolve_player_targets;
+        # the chain-level target is None (fan-out), so the chain's single-target
+        # battery check is a no-op here.
+        await self._enforce_and_dispatch(spec, default, "", None)
 
     # ------------------------------------------------------------------ #
     # Enforcement chain
