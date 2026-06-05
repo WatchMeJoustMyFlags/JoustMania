@@ -177,26 +177,26 @@ flagd flips by **variant name**, not value, so the loop maps the observed count
 **Decision matrix** (per observe cycle; observed state comes from the health
 span, **not** a flag re-read):
 
-| Rollout state | Fitness | Dwell elapsed & not held | Action | `remediation.action` | Span? |
+| Rollout state | Fitness | Allowed / Dwell-or-hold | Action | `remediation.action` | Span? |
 |---------------|---------|--------------------------|--------|----------------------|-------|
 | inactive (`target_backend==""`) | — | — | nothing | — | **no span** |
-| active, stage `< all` | passing | yes | flip to next variant | `expand` | yes |
-| active, stage `< all` | passing | no (dwell / hold) | nothing | `none` | yes |
+| active, stage `< all` | passing | dwell elapsed, not held | flip to next variant | `expand` | yes |
+| active, stage `< all` | passing | dwell not elapsed / held (cooldown) | nothing | `none` | yes |
 | active, stage `== all` | passing | — | nothing (terminal) | `none` | yes |
-| active | **failing** | — | **nothing** (no write — rollback is PR F) | `none` | yes |
-| active | write error | — | attempted, failed | `expand` (+ span error/status) | yes |
+| active, stage `> none` | **failing** | **allowed** | reset to `none` (roll back) | `rollback` | yes |
+| active, stage `> none` | **failing** | **not allowed** | nothing (recommend) | `recommended_only` | yes |
+| active, stage `> none` | **failing** | rollback already in flight (settling) | nothing | `none` | yes |
+| active, stage `== none` | **failing** | — | nothing (nothing to roll back) | `none` | yes |
+| active | write error | — | attempted, failed | `expand` / `rollback` (+ span error/status) | yes |
+
+See [Auto-remediation / rollback](#auto-remediation--rollback-736) for the
+failing-fitness rows.
 
 **Dwell:** after each expansion the loop waits `AGENT_ROLLOUT_DWELL_SECONDS`
 (default **15s**) before expanding again, so fitness has time to observe the
 newly-added controllers at the current stage. The first expansion (no prior
 `lastExpansion`) is not delayed. A failed write does **not** advance the dwell
 clock, so the next passing cycle retries.
-
-**Fitness-failing branch (observe-only in this PR):** PR E records but never
-rolls back — a failing cycle emits the span with `remediation.action="none"` and
-the populated `fitness.violations`. **Rollback (PR F)** plugs into the
-`holdExpansion` hook (`InfraLoop.SetHoldExpansion`, always false here) for its
-post-rollback cooldown, and adds the rollback write (reset toward `none`).
 
 **Freshness gate** (`gate.ShouldEvaluateInfra`): the loop only evaluates when
 ≥1 controller reported fresh `controller.bluetooth_health` within the controller
@@ -214,8 +214,76 @@ failure sets the span status to error and records the error.
 | Env | Default | Effect |
 |-----|---------|--------|
 | `AGENT_ROLLOUT_ENABLED` | `false` | `true` → real `RolloutWriter` applies flips. `false` → **dry-run**: the loop still decides and spans expansions (`remediation.action="expand"`, `rollout.controller_count` set) but does **not** write `rollout.json` (decided-but-not-applied; logged `agent.rollout_dry_run`). |
-| `ROLLOUT_FLAG_PATH` | `/etc/flagd/rollout.json` | rollout flag file path |
+| `ROLLOUT_FLAG_PATH` | `/etc/flagd/rollout.json` | rollout flag file path (read for `remediation_allowed`, written on expand/rollback) |
 | `AGENT_ROLLOUT_DWELL_SECONDS` | `15` | per-stage dwell before re-expansion |
+| `AGENT_ROLLOUT_COOLDOWN_SECONDS` | `30` | post-rollback cooldown: re-expansion is suppressed this long after a rollback |
+
+### Auto-remediation / rollback (#736)
+
+When infrastructure fitness **fails** during an active rollout, the loop closes
+the remediation loop: it can **roll the backend rollout back** by resetting
+`current_controller_count` to `none` (value 0), pulling **all** controllers back
+to the stable default backend. `target_backend` is **left untouched** — that
+preserves the operator's intent for the next attempt; only the controller count
+is wound back.
+
+**The loop:**
+
+```
+if not fitness.passing and stage > none:
+    if remediation_allowed:
+        rollback_backend()                 # writes current_controller_count = "none"
+        span: remediation.action = "rollback"
+        start cooldown                     # suppress re-expansion for AGENT_ROLLOUT_COOLDOWN_SECONDS
+    else:
+        span: remediation.action = "recommended_only"   # no write
+```
+
+**`remediation_allowed` gating.** Auto-rollback is gated on the
+`remediation_allowed` flag. That flag lives in the **`rollout` flagd domain**
+(`services/flagd/rollout.json`, `flagSetId: "rollout"`), **not** the agent
+domain. The agent already owns that file (it is the sole writer of
+`rollout.json`), so it resolves the gate by reading the flag's `defaultVariant`
+**directly from that document** each cycle (`actions.RemediationReader`), rather
+than standing up a second flagd RPC domain client. Any read/parse error →
+**`false`** (recommend-only) — the fail-closed safe default. Flip the flag's
+`defaultVariant` to `on`/`off` to enable/disable auto-rollback live (no restart).
+
+**Cooldown.** After a successful rollback the loop starts a cooldown
+(`AGENT_ROLLOUT_COOLDOWN_SECONDS`, default **30s**), wired through the
+`holdExpansion` hook. While in cooldown the loop will **not** re-expand even if
+fitness recovers — otherwise it would roll back, immediately see passing fitness
+at stage `none`, and climb straight back into the same failure. The cooldown is
+held **in-memory** (`cooldownUntil`), so restarting the agent process clears it
+(a demo reset path).
+
+**Span value set & the settling window.** `remediation.action` is a **closed
+set** of exactly four values — `none | expand | rollback | recommended_only`.
+The rollback is written **once per failure episode**: after the write, the
+controller-manager takes several windows to converge `current_controller_count`
+back to 0. During that **settling window** (rollback written, observed
+`bluetooth.rollout_count` still `> 0`), further failing cycles record
+**`none`** (with the populated `fitness.violations`) and do **not** re-write —
+re-emitting `rollback` without a write would lie. The episode ends when the
+observed count returns to 0; a later failure can then trigger a fresh rollback.
+
+| Failing-fitness state | observed `rollout_count` | allowed | write | `remediation.action` |
+|------------------------|--------------------------|---------|-------|----------------------|
+| active stage           | `> 0`, no rollback in flight | yes | `current_controller_count="none"` | `rollback` |
+| active stage           | `> 0`, no rollback in flight | no  | none | `recommended_only` |
+| rollback in flight (settling) | `> 0` | — | none | `none` |
+| at stable default      | `0` | — | none (nothing to roll back) | `none` |
+
+**Dry-run** (`AGENT_ROLLOUT_ENABLED=false`): the rollback is **decided and
+spanned** (`remediation.action="rollback"`) but the `DryRunRolloutWriter`'s
+`SetControllerCount("none")` is a no-op — decided-but-not-applied, consistent
+with dry-run expansion. A rollback **write error** sets the span status to error,
+records the error, and does **not** mark the episode in flight, so the next
+failing cycle retries (mirrors the expansion error path).
+
+**Demo reset.** Flip `remediation_allowed` to `off` to stop auto-rollback (the
+loop drops back to `recommended_only`); restart the agent to clear an in-progress
+cooldown.
 
 ## Gating & decisions
 
