@@ -92,6 +92,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         self.intervention_manager = InterventionManager(
             event_publisher=self.primary_event_bus.publish,
             get_game=self.get_live_game,
+            battery_provider=self._battery_pct_for_serial,
             end_game_fn=self._force_end_current_game,
         )
         # PR E: register the ambient/session handlers (audio cue, volume,
@@ -159,6 +160,34 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         live (menu-driven) game.
         """
         return self.current_game
+
+    def _battery_pct_for_serial(self, serial: str) -> float | None:
+        """Return the live battery percentage (0-100) for a controller serial.
+
+        Backs the InterventionManager battery guard (#798). The authoritative
+        in-process source is the running game's per-player ``battery_pct``, which
+        the game updates from each ``GameplayData.battery`` frame (the same signal
+        that feeds the controller manager's ``controller_battery_pct`` metric).
+
+        Multi-session note (#775/#793): interventions target the PRIMARY session
+        only (``get_live_game`` returns the primary game), so this reads the
+        primary game's players. If/when interventions become game-id scoped or
+        shadow sessions can hold targeted players, this should search the owning
+        session instead. For the current single-active-game reality the primary
+        lookup is correct.
+
+        Returns None when no game is running, the serial is unknown, or no battery
+        frame has been seen yet — None means "unknown", so the guard does not
+        block (missing data must never block, per #798).
+        """
+        game = self.get_live_game()
+        players = getattr(game, "players", None) if game is not None else None
+        if not isinstance(players, dict):
+            return None
+        player = players.get(serial)
+        if player is None:
+            return None
+        return getattr(player, "battery_pct", None)
 
     def _on_primary_event_state_sync(self, event_type: str):
         """State-sync callback for the persistent primary bus.

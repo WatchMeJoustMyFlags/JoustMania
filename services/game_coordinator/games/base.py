@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 from opentelemetry import context as otel_context
 from opentelemetry import trace
 
+from lib.controller_constants import battery_to_pct
 from lib.feature_flags import read_float_flag, read_object_flag, set_game_transaction_context
 from lib.telemetry import inject_trace_context
 from lib.types import GameEvent, Sensitivity, Sound
@@ -348,6 +349,11 @@ class Player:
     alive: bool = True
     color: tuple = (255, 255, 255)
     last_accel_mag: float = 0.0
+    # Latest battery percentage (0-100) seen on this player's gameplay frames,
+    # or None until the first frame carrying a battery reading arrives. Sourced
+    # from GameplayData.battery and normalized via lib.controller_constants
+    # (#798). Read by the InterventionManager battery guard.
+    battery_pct: float | None = None
     # Exponential moving average of acceleration (from original JoustMania)
     # EMA smooths sensor noise and prevents false positives from single-frame spikes
     smoothed_accel: float = 0.0
@@ -1372,6 +1378,11 @@ class BaseGameMode(ABC):
 
         # Process controller health counters (#571)
         self._process_health(player, serial, controller_state)
+
+        # Capture the latest battery reading (#798) so the intervention battery
+        # guard has a live in-process source. GameplayData.battery is the same
+        # signal that feeds controller_battery_pct; normalize identically.
+        player.battery_pct = battery_to_pct(controller_state.battery)
 
         accel = controller_state.accel
         accel_mag = self._compute_accel_magnitude(accel)
