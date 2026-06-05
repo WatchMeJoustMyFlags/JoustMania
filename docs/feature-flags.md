@@ -317,7 +317,14 @@ Act 2 progressive backend rollout control.
 ### Adding New Flags
 
 1. Pick the domain (file) the flag belongs to and add it to that file only —
-   the file's `flagSetId` is its namespace.
+   the file's `flagSetId` is its namespace. **Calibration vs intervention:**
+   a flag the agent changes *mid-game* in response to signals is an
+   intervention and belongs in `interventions.json` (policy-enforced, nonce'd
+   if one-shot); a parameter tuned per venue/session/experiment is calibration
+   and belongs in `game.json` / `agent.json` / `system.json` with plain
+   defaults and no policy budget — see
+   [722-intervention-surface.md §2b](research/722-intervention-surface.md) for
+   the placement rule and the audited candidate list.
 2. Name the key in bare `snake_case`. Use a dotted sub-key only if it is one
    leaf of a genuine sub-structure (e.g. `idle.timeout_minutes`), never to
    re-encode the domain.
