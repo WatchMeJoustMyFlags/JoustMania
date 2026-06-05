@@ -9,6 +9,7 @@ Tests the core Zombie mechanics:
 """
 
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -293,6 +294,27 @@ class TestZombieKillMechanics:
         assert len(conversion_events) == 1
         assert conversion_events[0]["serial"] == human_serial
         assert conversion_events[0]["remaining_humans"] == initial_human_count - 1
+
+    @pytest.mark.asyncio
+    async def test_human_conversion_sets_grace_period(self, zombie_game):
+        """Conversion must grant grace so the death spike that converted the
+        human can't instantly re-kill the fresh zombie (#757)."""
+        game, mock_controller_manager, _ = zombie_game
+        game.gameplay_stream = MockGameplayStream()
+        game.running = True
+
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        human_serial = game.human_serials[0]
+        player = game.players[human_serial]
+        assert player.grace_until <= time.time()
+
+        before = time.time()
+        await game._kill_player_impl(human_serial, accel_mag=3.0)
+
+        # Grace should extend ~2s past the conversion
+        assert player.grace_until >= before + 1.9
+        assert player.grace_until <= time.time() + 2.1
 
     @pytest.mark.asyncio
     async def test_zombie_killed_sets_respawn(self, zombie_game):
