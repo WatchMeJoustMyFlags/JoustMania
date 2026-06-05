@@ -64,7 +64,7 @@ Voice selection is configured in Settings (admin mode or settings service).
 
 **Recommended:** WAV files (44.1 kHz, 16-bit, stereo)
 
-**Supported with conversion overhead:** MP3, FLAC, OGG (converted via pydub)
+**Supported with conversion overhead:** MP3, FLAC, OGG (decoded via miniaudio)
 
 For best performance, use WAV files. Other formats require runtime conversion which adds latency.
 
