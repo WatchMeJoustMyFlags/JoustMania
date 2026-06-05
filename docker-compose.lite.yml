@@ -29,7 +29,7 @@ services:
 
   # flagd for feature flag evaluation
   flagd:
-    image: ghcr.io/open-feature/flagd:v0.13.2
+    image: ghcr.io/open-feature/flagd:v0.16.0
     container_name: joustmania-flagd
     command:
       - "start"
