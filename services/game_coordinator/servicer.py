@@ -76,7 +76,11 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         self.intervention_manager = InterventionManager(
             event_publisher=self.event_bus.publish,
             get_game=self.get_live_game,
+            end_game_fn=self._force_end_current_game,
         )
+        # PR E: register the ambient/session handlers (audio cue, volume,
+        # controller effect, end game). PR C registers difficulty handlers.
+        self.intervention_manager.register_ambient_handlers()
         self.intervention_manager.start()
 
         logger.info("GameCoordinator initialized")
@@ -280,46 +284,57 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 await self.clients.close()
                 logger.info("Closed gRPC channels")
 
+    async def _force_end_current_game(self, reason: str) -> tuple[bool, str]:
+        """Force end the running game (shared by ForceEndGame RPC and the
+        ``end_game`` agent intervention, #730).
+
+        Stops the game loop, calls ``force_end()`` on the live game, joins the
+        game thread, transitions to ENDED, and publishes ``game_force_ended``.
+        No-ops safely (returns ``(False, ...)``) when no game is in progress.
+
+        Returns ``(success, error)``.
+        """
+        # Thread-safe state check and update
+        with self._state_lock:
+            if self.game_state not in [
+                game_coordinator_pb2.GameState.STARTING,
+                game_coordinator_pb2.GameState.RUNNING,
+            ]:
+                return False, "No game in progress"
+
+            # Stop game loop
+            self.game_running = False
+            current_game = self.current_game
+            game_thread = self.game_thread
+            game_id = self.game_id
+
+        # Call force_end on current game if it exists
+        if current_game and hasattr(current_game, "force_end"):
+            current_game.force_end()
+
+        # Wait for thread in executor to avoid blocking gRPC server
+        if game_thread and game_thread.is_alive():
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, lambda: game_thread.join(timeout=2.0))
+
+        # Thread-safe state transition
+        with self._state_lock:
+            self.game_state = game_coordinator_pb2.GameState.ENDED
+
+        # Publish event
+        await self.event_bus.publish(
+            "game_force_ended",
+            {"reason": reason, "game_id": game_id or "unknown"},
+        )
+
+        logger.info(f"Force ended game: {reason}")
+        return True, ""
+
     async def ForceEndGame(self, request, _context):
         """Force end the current game."""
         try:
-            # Thread-safe state check and update
-            with self._state_lock:
-                if self.game_state not in [
-                    game_coordinator_pb2.GameState.STARTING,
-                    game_coordinator_pb2.GameState.RUNNING,
-                ]:
-                    return game_coordinator_pb2.ForceEndGameResponse(success=False, error="No game in progress")
-
-                # Stop game loop
-                self.game_running = False
-                current_game = self.current_game
-                game_thread = self.game_thread
-                game_id = self.game_id
-
-            # Call force_end on current game if it exists
-            if current_game and hasattr(current_game, "force_end"):
-                current_game.force_end()
-
-            # Wait for thread in executor to avoid blocking gRPC server
-            if game_thread and game_thread.is_alive():
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, lambda: game_thread.join(timeout=2.0))
-
-            # Thread-safe state transition
-            with self._state_lock:
-                self.game_state = game_coordinator_pb2.GameState.ENDED
-
-            # Publish event
-            await self.event_bus.publish(
-                "game_force_ended",
-                {"reason": request.reason, "game_id": game_id or "unknown"},
-            )
-
-            logger.info(f"Force ended game: {request.reason}")
-
-            return game_coordinator_pb2.ForceEndGameResponse(success=True, error="")
-
+            success, error = await self._force_end_current_game(request.reason)
+            return game_coordinator_pb2.ForceEndGameResponse(success=success, error=error)
         except Exception as e:
             logger.error(f"ForceEndGame error: {e}", exc_info=True)
             return game_coordinator_pb2.ForceEndGameResponse(success=False, error=str(e))
