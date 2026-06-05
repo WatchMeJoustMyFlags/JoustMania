@@ -32,10 +32,17 @@ import (
 	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
+	"github.com/joustmania/agent/infracontext"
 )
 
 // probeInterval rate-limits the AGENT_PROBE_DECISIONS demo probe.
 const probeInterval = 5 * time.Second
+
+// infraControllerTTL bounds how long a controller is retained in the
+// infrastructure observe path (#733) after it stops appearing in
+// controller.bluetooth_health spans. Health spans arrive at ~1Hz, so 5s ≈ five
+// missed windows before a controller is considered gone.
+const infraControllerTTL = 5 * time.Second
 
 // defaultServiceName is the agent's OTEL service name default. It MUST stay
 // identical everywhere it is used: the exported resource (otel.go) and the
@@ -168,7 +175,15 @@ func main() {
 		slog.Warn("Probe decisions enabled (demo/verification mode)",
 			"interval", probeInterval)
 	}
-	pipe := newPipeline(store, loop, lifecycle.PlayerTTL)
+	// Infrastructure observe path (#733, M3 PR C): a parallel store fed by the
+	// controller.bluetooth_health span on the same OTLP trace receiver. It honors
+	// the same self-ingestion skip as the game store. The InfraLoop is an
+	// OBSERVE-only logging stub for this PR; the real fitness/remediation loop
+	// plugs in behind the decision.InfraEvaluator seam in PR E.
+	infraStore := infracontext.NewStore(infraControllerTTL, nil)
+	infraStore.SetOwnService(resolveServiceName())
+	infraLoop := decision.NewInfraLoop(logger, lifecycle.DecisionThrottle)
+	pipe := newPipeline(store, loop, lifecycle.PlayerTTL).withInfra(infraStore, infraLoop)
 
 	grpcServer := grpc.NewServer()
 	ptraceotlp.RegisterGRPCServer(grpcServer, &traceReceiver{pipe: pipe})
@@ -208,6 +223,7 @@ func main() {
 				return
 			case <-ticker.C:
 				store.EvictStale()
+				infraStore.EvictStale()
 			}
 		}
 	}()
