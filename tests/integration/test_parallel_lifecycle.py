@@ -143,13 +143,17 @@ class ModeSpec:
     players: int
     end: EndStrategy
     timeout: int  # seconds to await the terminal event after the end strategy
+    pre_end_delay: float = 0.0  # wait before the end strategy (e.g. formation phase)
 
 
 # Per-mode specs. JoustFFA + JoustTeams stay in the sequential menu-flow set
 # (test_full_game_lifecycle) to keep menu ready-up / lobby-restore coverage, so
 # they are intentionally absent here.
 _SPECS = {
-    "JoustRandomTeams": ModeSpec("JoustRandomTeams", 4, end_team, 15),
+    # RandomTeams runs a 5s team-formation phase (TEAM_FORMATION_DURATION in
+    # random_teams.py) before the game proper — kills during it are swallowed,
+    # so wait it out before driving the win condition (caught in CI).
+    "JoustRandomTeams": ModeSpec("JoustRandomTeams", 4, end_team, 20, pre_end_delay=6.5),
     "Swapper": ModeSpec("Swapper", 4, end_swapper, 15),
     "Zombies": ModeSpec("Zombies", 4, end_zombies, 15),
     "NonStop": ModeSpec("NonStop", 2, end_force, 15),
@@ -249,7 +253,10 @@ async def _run_mode_headless(docker_compose, spec: ModeSpec, tag: str) -> None:
         # GetColor); polled, since parallel load can delay the feedback stream.
         await _wait_for_game_colors(mock_client, serials)
 
-        # Drive the mode's win condition on THIS game only.
+        # Drive the mode's win condition on THIS game only (after any
+        # mode-specific warm-up phase, e.g. RandomTeams team formation).
+        if spec.pre_end_delay:
+            await asyncio.sleep(spec.pre_end_delay)
         await spec.end(mock_client, serials, game_client, game_id)
 
         # The mode's terminal event must arrive for this game_id. (Force-end
