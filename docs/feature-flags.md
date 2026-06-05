@@ -33,7 +33,7 @@ The flag schema follows a strict convention (issue #725):
 |------|-------------|---------|-------------------|
 | `system.json` | `system` | Game loop cadence, idle behavior, sentinel rotation, pairing intervals | game-coordinator, controller-manager |
 | `controller.json` | `controller` | Controller backend selection, Bluetooth routing, fault injection | controller-manager |
-| `observability.json` | `observability` | Metrics export cadence, profiling, span detail | all services |
+| `observability.json` | `observability` | Metrics export cadence, span detail | all services |
 | `game.json` | `game` | Game-mode settings (admin-adjustable) | game-coordinator, menu |
 | `user.json` | `user` | User preferences (persist across sessions) | menu, audio |
 | `agent.json` | `agent` | Autonomous agent control (existence/objective/capability/permission + fitness) | agent, game-coordinator |
@@ -214,7 +214,6 @@ hardcoded defaults (each must be a positive integer).
 | Flag | Type | Values | Description |
 |------|------|--------|-------------|
 | `metrics_export_interval_ms` | integer | milliseconds | Metrics export cadence (supports per-service targeting via `service.name`) |
-| `profiling_enabled` | boolean | true, false | Enable runtime profiling |
 | `grpc_rpc_spans` | boolean | true, false | Emit per-RPC gRPC spans |
 
 ### Game (`services/flagd/game.json`, `flagSetId: "game"`)
