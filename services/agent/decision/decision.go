@@ -113,6 +113,23 @@ type objectivePublisher interface {
 	SetObjectives(map[string]float64)
 }
 
+// fitnessPublisher is the optional seam the loop uses to push the per-cycle
+// fitness thresholds (fitness.* flags, #731) into the rules engine, mirroring
+// objectivePublisher. *ObjectiveRules (via its LiveFitness source) satisfies it;
+// engines that ignore fitness (Noop/Probe) do not.
+type fitnessPublisher interface {
+	SetFitness(FitnessThresholds)
+}
+
+// fitnessReader is the optional seam the loop uses to read back the per-cycle
+// fitness evaluation the engine computed, so the cycle-level values can be lifted
+// onto the decision span as fitness.evaluated (#731). *ObjectiveRules satisfies
+// it; engines without a fitness function do not, and the span simply carries no
+// cycle-level fitness values for them.
+type fitnessReader interface {
+	LastFitness() FitnessEvaluation
+}
+
 // EvalTrigger describes the OTLP Export that triggered an evaluation, used to
 // annotate the agent.span_received root span with rpc.* semconv attributes and
 // backdate it to the moment the Export arrived.
@@ -216,6 +233,13 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 	if pub, ok := l.Rules.(objectivePublisher); ok {
 		pub.SetObjectives(snapshot.Objectives)
 	}
+	// Objective layer (fitness half, #731): publish the per-cycle fitness
+	// thresholds so the engine's fitness functions score against the live flag
+	// values. Per-cycle publication is what makes a mid-session flag change take
+	// effect on the very next decision.
+	if pub, ok := l.Rules.(fitnessPublisher); ok {
+		pub.SetFitness(fitnessThresholds(snapshot.Fitness))
+	}
 
 	if l.shouldLog() {
 		l.Log.Info("agent.evaluate",
@@ -233,6 +257,18 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 	}
 
 	decisions := l.decide(ctx, snapshot, c)
+
+	// Lift the cycle-level fitness evaluation the engine just computed onto the
+	// LayerState so it rides the decision span as fitness.evaluated (#731). Read
+	// after decide so it reflects this cycle's thresholds and live context. This
+	// happens even on an empty-decision cycle so a future cycle-scoped consumer
+	// still sees the evaluation, but it only reaches a span when a decision emits.
+	if rd, ok := l.Rules.(fitnessReader); ok {
+		if vals := rd.LastFitness().Evaluated(); len(vals) > 0 {
+			state.FitnessEvaluated = vals
+		}
+	}
+
 	if len(decisions) == 0 {
 		l.setLastLayer(state) // no decision, no trace
 		return state
@@ -484,8 +520,17 @@ func decisionAttributes(state *LayerState, d Decision, blocked bool, reason Bloc
 		attribute.String(AttrDecisionReason, d.Reason),
 		attribute.String(AttrDecisionObjective, objective),
 		attribute.Bool(AttrDecisionBlocked, blocked),
-		attribute.StringSlice(AttrFitnessEvaluated, renderFitness(d.Fitness)),
 	)
+	// fitness.evaluated (#731): the cycle-level fitness evaluation (dotted
+	// per-objective keys) is authoritative and was already emitted by
+	// layerStateAttributes when populated. Only fall back to the per-decision
+	// rule fitness (the pre-#731 view, e.g. the rule's own session_duration) when
+	// the cycle-level evaluation is absent — engines without a fitness function
+	// (Probe/Noop) still surface what the rule recorded, and the attribute is
+	// always present on the span.
+	if len(state.FitnessEvaluated) == 0 {
+		attrs = append(attrs, attribute.StringSlice(AttrFitnessEvaluated, renderFitness(d.Fitness)))
+	}
 	if blocked {
 		attrs = append(attrs, attribute.String(AttrDecisionBlockReason, string(reason)))
 	}
@@ -590,6 +635,18 @@ type disabledFlags struct{}
 
 func (disabledFlags) Evaluate(context.Context) flags.Snapshot {
 	return flags.Snapshot{Enabled: flags.DefaultEnabled, Mode: flags.DefaultMode}
+}
+
+// fitnessThresholds converts the flag-layer fitness snapshot into the engine's
+// FitnessThresholds (the flag carries seconds as ints; the engine works in
+// float seconds). #731.
+func fitnessThresholds(f flags.Fitness) FitnessThresholds {
+	return FitnessThresholds{
+		EnduranceMinSessionSeconds:     float64(f.EnduranceMinSessionSeconds),
+		BalancedMaxSkillGap:            f.BalancedMaxSkillGap,
+		BalancedSpikeSurvivalThreshold: f.BalancedSpikeSurvivalThreshold,
+		AccelerateTargetSessionSeconds: float64(f.AccelerateTargetSessionSeconds),
+	}
 }
 
 func derefStr(p *string) string {
