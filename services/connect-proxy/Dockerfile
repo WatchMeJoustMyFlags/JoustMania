@@ -32,7 +32,7 @@ RUN mv gen/github.com/joustmania/connect-proxy/gen/* gen/ && \
     done
 
 # Stage 2: Build the Go binary
-FROM --platform=$BUILDPLATFORM golang:1.22-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
 
 # Build arguments for cross-compilation
 ARG TARGETARCH
