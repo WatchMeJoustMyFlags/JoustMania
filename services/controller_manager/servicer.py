@@ -28,7 +28,7 @@ from services.controller_manager import metrics
 from services.controller_manager.backend_factory import create_backend
 from services.controller_manager.button_detector import ButtonDetector
 from services.controller_manager.discovery import PeriodicRescanTimer
-from services.controller_manager.discovery_loop import DiscoveryLoop
+from services.controller_manager.discovery_loop import DiscoveryLoop, visible_serials
 from services.controller_manager.effects_base import ControllerEffectsBase
 from services.controller_manager.event_publisher import EventPublisher as EventPublisherHelper
 from services.controller_manager.feedback_manager import FeedbackManager
@@ -159,8 +159,13 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         """
         # Snapshot to avoid RuntimeError if dict changes at await points
         tracked_snapshot = dict(self.tracked_controllers)
-        all_serials = list(tracked_snapshot.keys())
+        # Reserved controllers (#777) are never announced to button-stream
+        # consumers (the menu): skip their connect events and exclude them
+        # from the connected_serials roster.
+        all_serials = visible_serials(tracked_snapshot)
         for serial, info in tracked_snapshot.items():
+            if info.get(ControllerInfoKey.RESERVED, False):
+                continue
             battery = info.get(ControllerInfoKey.BATTERY, 0)
             name = info.get(ControllerInfoKey.NAME, "")
             connect_event = controller_manager_pb2.ButtonEvent(
@@ -177,7 +182,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             except asyncio.QueueFull:
                 logger.warning(f"[{subscriber_id}] Queue full, skipping initial event for {serial}")
 
-        logger.info(f"[{subscriber_id}] Sent initial connection events for {len(self.tracked_controllers)} controllers")
+        logger.info(f"[{subscriber_id}] Sent initial connection events for {len(all_serials)} controllers")
 
     async def _process_base_color_command(self, cmd, subscriber_id: str, stream_label: str) -> None:
         """Process a base_color command from either stream type.

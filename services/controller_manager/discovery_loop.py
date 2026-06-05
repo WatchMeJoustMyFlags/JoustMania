@@ -48,6 +48,16 @@ logger = logging.getLogger(__name__)
 # Lazy telemetry initialization - defers OTLP setup until first span
 tracer = get_tracer(__name__)
 
+
+def visible_serials(tracked_controllers: dict[str, dict]) -> list[str]:
+    """Return serials that button-stream consumers (the menu) may learn about.
+
+    Reserved controllers (#777) are excluded — they are never announced via
+    connect/disconnect events nor included in the connected_serials roster.
+    """
+    return [serial for serial, info in tracked_controllers.items() if not info.get(ControllerInfoKey.RESERVED, False)]
+
+
 # Button keys checked every poll cycle — tuple to avoid per-call list allocation
 _BUTTON_KEYS = (
     ButtonKey.MOVE,
@@ -337,10 +347,12 @@ class DiscoveryLoop:
                 logger.info(f"Controller {serial} disconnected - cleaning up server tracking")
                 # Invalidate cached serial list
                 self._cached_serials = None
-                # Capture name before removing from tracked_controllers
+                # Capture name + reservation before removing from tracked_controllers
                 name = ""
+                reserved = False
                 if serial in self.tracked_controllers:
                     name = self.tracked_controllers[serial].get(ControllerInfoKey.NAME, "")
+                    reserved = self.tracked_controllers[serial].get(ControllerInfoKey.RESERVED, False)
                     del self.tracked_controllers[serial]
                 if serial in self.controller_states:
                     del self.controller_states[serial]
@@ -353,13 +365,15 @@ class DiscoveryLoop:
                 self._accel_gauges.pop(serial, None)
                 self._poll_drops.pop(serial, None)
                 self._poll_errors.pop(serial, None)
-                # Publish disconnect event to button event stream subscribers
-                self.button_detector.publish_connection_event(
-                    serial,
-                    is_connect=False,
-                    name=name,
-                    connected_serials=list(self.tracked_controllers.keys()),
-                )
+                # Publish disconnect event to button event stream subscribers —
+                # but never announce reserved controllers to the menu (#777).
+                if not reserved:
+                    self.button_detector.publish_connection_event(
+                        serial,
+                        is_connect=False,
+                        name=name,
+                        connected_serials=visible_serials(self.tracked_controllers),
+                    )
                 # Queue disconnect for gameplay stream subscribers (#580)
                 self._gameplay_disconnects.append(serial)
                 metrics.controller_disconnect_total.labels(serial=serial).inc()
@@ -382,17 +396,19 @@ class DiscoveryLoop:
                             spawn_span.set_attribute(SpanAttr.CONTROLLER_SERIAL, serial)
                             await self._spawn_controller_process(serial)
 
-                        # Publish connect event to button event stream subscribers
+                        # Publish connect event to button event stream subscribers —
+                        # but never announce reserved controllers to the menu (#777).
                         info = self.tracked_controllers.get(serial, {})
                         battery = info.get(ControllerInfoKey.BATTERY, 0)
                         name = info.get(ControllerInfoKey.NAME, "")
-                        self.button_detector.publish_connection_event(
-                            serial,
-                            is_connect=True,
-                            battery=battery,
-                            name=name,
-                            connected_serials=list(self.tracked_controllers.keys()),
-                        )
+                        if not info.get(ControllerInfoKey.RESERVED, False):
+                            self.button_detector.publish_connection_event(
+                                serial,
+                                is_connect=True,
+                                battery=battery,
+                                name=name,
+                                connected_serials=visible_serials(self.tracked_controllers),
+                            )
 
                         # Restore base color if we had one before (reconnection case)
                         if serial in self.base_colors:
@@ -636,6 +652,18 @@ class DiscoveryLoop:
             if hasattr(self.backend, "get_adapter_type"):
                 adapter_type = self.backend.get_adapter_type(serial)
 
+            # Resolve reservation metadata if backend supports it. Reserved
+            # controllers are hidden from button-stream consumers (the menu)
+            # but stay fully usable via gameplay-data streams and explicit-serial
+            # LED/feedback commands (#777).
+            reserved = False
+            tag = ""
+            if hasattr(self.backend, "get_controller_metadata"):
+                metadata = self.backend.get_controller_metadata(serial)
+                if metadata:
+                    reserved = metadata.get(ControllerInfoKey.RESERVED, False)
+                    tag = metadata.get(ControllerInfoKey.TAG, "")
+
             # Track controller
             self.tracked_controllers[serial] = {
                 ControllerInfoKey.SERIAL: serial,
@@ -644,6 +672,8 @@ class DiscoveryLoop:
                 ControllerInfoKey.CONNECTED_AT: time.time(),
                 ControllerInfoKey.NAME: name,
                 ControllerInfoKey.ADAPTER: adapter_type,
+                ControllerInfoKey.RESERVED: reserved,
+                ControllerInfoKey.TAG: tag,
             }
 
             # Store initial state
