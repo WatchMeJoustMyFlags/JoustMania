@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any
 from opentelemetry import context as otel_context
 from opentelemetry import trace
 
-from lib.feature_flags import set_game_transaction_context
+from lib.feature_flags import read_object_flag, set_game_transaction_context
 from lib.telemetry import inject_trace_context
 from lib.types import GameEvent, Sensitivity, Sound
 from services.game_coordinator import metrics
@@ -96,6 +96,85 @@ SLOW_WARNING = [1.2, 1.3, 1.6, 2.0, 2.5]  # Warning thresholds when music is slo
 SLOW_MAX = [1.3, 1.5, 1.8, 2.5, 3.2]  # Death thresholds when music is slow
 FAST_WARNING = [1.4, 1.6, 1.9, 2.7, 2.8]  # Warning thresholds when music is fast
 FAST_MAX = [1.6, 1.8, 2.8, 3.2, 3.5]  # Death thresholds when music is fast
+
+# Number of sensitivity levels (0=ULTRA_SLOW .. 4=ULTRA_FAST); every threshold
+# array must carry exactly this many entries.
+SENSITIVITY_LEVELS = 5
+
+
+def _valid_threshold_row(row) -> bool:
+    """A threshold array must hold exactly SENSITIVITY_LEVELS numeric entries."""
+    if not isinstance(row, (list, tuple)) or len(row) != SENSITIVITY_LEVELS:
+        return False
+    return all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in row)
+
+
+def resolve_base_thresholds(flag_value: dict) -> dict[str, list]:
+    """
+    Validate the ``game.thresholds`` object flag and resolve the four arrays.
+
+    Each of slow_warning/slow_max/fast_warning/fast_max must be a 5-element
+    numeric array, and per sensitivity row warning < max (slow and fast). On
+    ANY malformed entry the corresponding hardcoded module constant is used as
+    the fallback source of truth, keeping the promotion behavior-neutral.
+
+    Args:
+        flag_value: Object value from the ``thresholds`` flag (may be partial/invalid)
+
+    Returns:
+        Dict with keys slow_warning, slow_max, fast_warning, fast_max -> lists.
+    """
+    defaults = {
+        "slow_warning": list(SLOW_WARNING),
+        "slow_max": list(SLOW_MAX),
+        "fast_warning": list(FAST_WARNING),
+        "fast_max": list(FAST_MAX),
+    }
+    if not isinstance(flag_value, dict):
+        return defaults
+
+    resolved = {}
+    for key in ("slow_warning", "slow_max", "fast_warning", "fast_max"):
+        candidate = flag_value.get(key)
+        resolved[key] = list(candidate) if _valid_threshold_row(candidate) else defaults[key]
+
+    # Per-row sanity: warning must be strictly below max at every sensitivity.
+    # If any row violates it, fall back to the matching default pair so we never
+    # ship an unkillable or instant-death configuration.
+    for warn_key, max_key in (("slow_warning", "slow_max"), ("fast_warning", "fast_max")):
+        if any(w >= m for w, m in zip(resolved[warn_key], resolved[max_key], strict=False)):
+            resolved[warn_key] = defaults[warn_key]
+            resolved[max_key] = defaults[max_key]
+
+    return resolved
+
+
+def resolve_mode_thresholds(flag_value: dict, default_table: dict) -> dict:
+    """
+    Validate a per-mode override flag (zombie/werewolf) -> ``{Sensitivity: (warn, max)}``.
+
+    The flag carries two 5-element arrays ``warning`` and ``max`` (indexed by
+    sensitivity 0..4). On any malformed entry or warning>=max row, the supplied
+    ``default_table`` (the mode's hardcoded dict) is returned unchanged.
+
+    Args:
+        flag_value: Object value from ``<mode>.thresholds`` flag
+        default_table: Hardcoded ``{Sensitivity: (warn, max)}`` fallback
+
+    Returns:
+        A ``{Sensitivity: (warn, max)}`` dict.
+    """
+    if not isinstance(flag_value, dict):
+        return default_table
+
+    warning = flag_value.get("warning")
+    death = flag_value.get("max")
+    if not _valid_threshold_row(warning) or not _valid_threshold_row(death):
+        return default_table
+    if any(w >= m for w, m in zip(warning, death, strict=False)):
+        return default_table
+
+    return {Sensitivity(i): (warning[i], death[i]) for i in range(SENSITIVITY_LEVELS)}
 
 
 # Warning feedback duration (seconds) - flash + rumble time
@@ -241,6 +320,16 @@ class BaseGameMode(ABC):
         else:
             logger.warning(f"Sensitivity {sensitivity} out of range, using MEDIUM")
             self.sensitivity = Sensitivity.MEDIUM
+
+        # #766 F1: death/warning threshold tables promoted to the ``game.thresholds``
+        # object flag. Read ONCE here (init-frozen by design — no live re-evaluation);
+        # malformed/missing values fall back to the module constants.
+        flag_thresholds = read_object_flag("game", "thresholds", {})
+        tables = resolve_base_thresholds(flag_thresholds)
+        self.slow_warning = tables["slow_warning"]
+        self.slow_max = tables["slow_max"]
+        self.fast_warning = tables["fast_warning"]
+        self.fast_max = tables["fast_max"]
 
         # Phase 70: Music tempo control state
         self.music_track_id = None
@@ -883,9 +972,9 @@ class BaseGameMode(ABC):
         speed_percent = (self.music_speed - SLOW_MUSIC_SPEED) / speed_range if speed_range > 0 else 0.0
         speed_percent = max(0.0, min(1.0, speed_percent))  # Clamp to [0, 1]
 
-        # LERP between slow and fast thresholds
-        base_warn = self._lerp(SLOW_WARNING[sens_idx], FAST_WARNING[sens_idx], speed_percent)
-        base_death = self._lerp(SLOW_MAX[sens_idx], FAST_MAX[sens_idx], speed_percent)
+        # LERP between slow and fast thresholds (instance tables, #766 F1)
+        base_warn = self._lerp(self.slow_warning[sens_idx], self.fast_warning[sens_idx], speed_percent)
+        base_death = self._lerp(self.slow_max[sens_idx], self.fast_max[sens_idx], speed_percent)
 
         # Apply per-player sensitivity factor
         # Clamp factor to [0.5, 2.0] for safety, then divide thresholds
@@ -1859,8 +1948,8 @@ class BaseGameMode(ABC):
         speed_percent = (self.music_speed - SLOW_MUSIC_SPEED) / speed_range if speed_range > 0 else 0.0
         speed_percent = max(0.0, min(1.0, speed_percent))
 
-        effective_warn = self._lerp(SLOW_WARNING[sens_idx], FAST_WARNING[sens_idx], speed_percent)
-        effective_death = self._lerp(SLOW_MAX[sens_idx], FAST_MAX[sens_idx], speed_percent)
+        effective_warn = self._lerp(self.slow_warning[sens_idx], self.fast_warning[sens_idx], speed_percent)
+        effective_death = self._lerp(self.slow_max[sens_idx], self.fast_max[sens_idx], speed_percent)
 
         metrics.effective_warning_threshold.set(effective_warn)
         metrics.effective_death_threshold.set(effective_death)
