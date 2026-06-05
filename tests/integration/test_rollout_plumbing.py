@@ -140,7 +140,7 @@ def _rollout_client(docker_compose):
     flagd (port 8013) the controller-manager reads the rollout domain from."""
     from openfeature import api
     from openfeature.contrib.provider.flagd import FlagdProvider
-    from openfeature.contrib.provider.flagd.config import ResolverType
+    from openfeature.contrib.provider.flagd.config import CacheType, ResolverType
 
     host = docker_compose.get_service_host("flagd", 8013)
     port = int(docker_compose.get_service_port("flagd", 8013))
@@ -150,6 +150,12 @@ def _rollout_client(docker_compose):
         port=port,
         resolver_type=ResolverType.RPC,
         selector="flagSetId=rollout",
+        # The RPC resolver's default LRU cache serves the FIRST resolution of a
+        # flag forever if change-event invalidation doesn't arrive for the
+        # selector'd flag set — observed in CI (run 27029212634): the file had
+        # defaultVariant='one' while the client kept resolving the cached 0.
+        # This test asserts live re-resolution, so the cache must be off.
+        cache=CacheType.DISABLED,
     )
     api.set_provider(provider, domain="it_rollout")
     return api.get_client("it_rollout"), provider
