@@ -692,6 +692,11 @@ services:
       # (gRPC evaluation port 8013), not the in-process sync port 8015.
       - FLAGD_HOST=flagd
       - FLAGD_PORT=8013
+      # Action sink (#730): when enabled the agent applies decisions by rewriting
+      # the flagd interventions file in place (bind-mounted below). Default off so
+      # the scaffold stays inert.
+      - AGENT_INTERVENTIONS_ENABLED=${AGENT_INTERVENTIONS_ENABLED:-false}
+      - INTERVENTIONS_FLAG_PATH=/etc/flagd/interventions.json
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - OTEL_SERVICE_NAME=agent
       - OTEL_SERVICE_NAMESPACE=infrastructure
@@ -699,6 +704,11 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
+    volumes:
+      # The agent is the sole writer of the interventions flag file; flagd watches
+      # it and the game coordinator converges on its contents (#730). In-place
+      # rewrite (no temp+rename) avoids EBUSY on this bind mount.
+      - ./services/flagd:/etc/flagd
     depends_on:
       flagd:
         condition: service_started
