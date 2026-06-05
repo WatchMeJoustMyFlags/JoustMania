@@ -116,6 +116,7 @@ async def ensure_game_stopped(docker_compose):
     Use this fixture explicitly in tests that start games to prevent
     'Game already in progress' errors between tests.
     """
+
     async def force_end_game():
         """Force end any running game."""
         try:
@@ -141,3 +142,62 @@ async def ensure_game_stopped(docker_compose):
 
     # After test: cleanup any game that was started
     await force_end_game()
+
+
+@pytest.fixture
+async def headless_cleanup(docker_compose):
+    """Per-test cleanup for headless (shadow) games.
+
+    Menu-flow tests use ``ensure_game_stopped`` (force-ends the single primary
+    game). Headless tests instead own specific game_ids and reserved-controller
+    tags, so cleanup must be targeted: this fixture returns a registry the test
+    populates, then force-ends each registered game_id and removes each reserved
+    controller tag on teardown — even if the test body raised.
+
+    Usage:
+        async def test_x(docker_compose, headless_cleanup):
+            game_id, collector = await start_game_headless(...)
+            headless_cleanup.add_game(game_id)
+            headless_cleanup.add_tag("shadow-x")
+            ...
+    """
+    from tests.integration.helpers import (
+        force_end_game_by_id,
+        remove_reserved_controllers,
+    )
+
+    class _Registry:
+        def __init__(self):
+            self.game_ids: list[str] = []
+            self.tags: list[str] = []
+
+        def add_game(self, game_id: str) -> str:
+            if game_id and game_id not in self.game_ids:
+                self.game_ids.append(game_id)
+            return game_id
+
+        def add_tag(self, tag: str) -> str:
+            if tag and tag not in self.tags:
+                self.tags.append(tag)
+            return tag
+
+    registry = _Registry()
+
+    yield registry
+
+    # Teardown: best-effort force-end every registered game and sweep tags.
+    host = docker_compose.get_service_host("game-coordinator", 50053)
+    port = docker_compose.get_service_port("game-coordinator", 50053)
+    channel = grpc.aio.insecure_channel(f"{host}:{port}")
+    game_client = game_coordinator_pb2_grpc.GameCoordinatorServiceStub(channel)
+    try:
+        for game_id in registry.game_ids:
+            await force_end_game_by_id(game_client, game_id, reason="headless_cleanup")
+        for tag in registry.tags:
+            try:
+                await remove_reserved_controllers(docker_compose, tag)
+            except Exception:
+                pass
+        await asyncio.sleep(0.3)
+    finally:
+        await channel.close()
