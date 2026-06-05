@@ -42,7 +42,7 @@ WORKDIR /app
 
 # Copy grpc-health-probe for health checks
 # Copy grpc-health-probe from official multi-arch image
-COPY --from=ghcr.io/grpc-ecosystem/grpc-health-probe:v0.4.38 /ko-app/grpc-health-probe /bin/grpc_health_probe
+COPY --from=ghcr.io/grpc-ecosystem/grpc-health-probe:v0.4.52 /ko-app/grpc-health-probe /bin/grpc_health_probe
 
 # Copy installed packages from builder to distroless stdlib location
 COPY --from=builder /usr/local/lib/python3.11/site-packages/ /usr/lib/python3.11/
