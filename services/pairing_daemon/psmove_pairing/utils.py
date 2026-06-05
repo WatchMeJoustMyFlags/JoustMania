@@ -19,6 +19,7 @@ async def run_command(
         capture_stderr: Whether to capture stderr in output
         env: Additional environment variables to set (merged with current env)
     """
+    proc = None
     try:
         stderr = asyncio.subprocess.STDOUT if capture_stderr else asyncio.subprocess.DEVNULL
 
@@ -39,6 +40,13 @@ async def run_command(
         return proc.returncode or 0, output
     except TimeoutError:
         logger.error(f"Command timed out: {' '.join(cmd)}")
+        # Kill the leaked subprocess so its transport gets cleaned up
+        if proc is not None:
+            try:
+                proc.kill()
+                await proc.wait()
+            except ProcessLookupError:
+                pass  # Process already exited
         return -1, "timeout"
     except Exception as e:
         logger.error(f"Command failed: {e}")
