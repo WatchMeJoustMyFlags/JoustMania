@@ -129,6 +129,30 @@ class PlayerAnalytics:
     # Track last zone for metrics
     _last_zone: MovementZone = MovementZone.STILL
 
+    # Playstyle classification thresholds (percentages). Promoted to the agent
+    # domain `perception.playstyle.*` flags (#766 F4) and populated from
+    # AnalyticsConfig when the tracker is created (see games that instantiate
+    # PlayerAnalytics). Defaults reproduce the previously hardcoded literals so
+    # callers that do not pass them keep the historical behavior.
+    playstyle_aggressive_warning_danger_min: float = 30.0
+    playstyle_calm_still_min: float = 70.0
+    playstyle_calm_warning_danger_max: float = 10.0
+    playstyle_balanced_still_min: float = 40.0
+    playstyle_balanced_warning_danger_max: float = 20.0
+
+    @classmethod
+    def from_config(cls, serial: str, game_start_time: float, config: "AnalyticsConfig") -> "PlayerAnalytics":
+        """Create a tracker with playstyle thresholds sourced from config (#766 F4)."""
+        return cls(
+            serial=serial,
+            game_start_time=game_start_time,
+            playstyle_aggressive_warning_danger_min=config.playstyle_aggressive_warning_danger_min,
+            playstyle_calm_still_min=config.playstyle_calm_still_min,
+            playstyle_calm_warning_danger_max=config.playstyle_calm_warning_danger_max,
+            playstyle_balanced_still_min=config.playstyle_balanced_still_min,
+            playstyle_balanced_warning_danger_max=config.playstyle_balanced_warning_danger_max,
+        )
+
     def record_sample(
         self,
         accel_x: float,
@@ -296,11 +320,14 @@ class PlayerAnalytics:
         zones = self.get_zone_percentages()
         warning_danger = zones["warning"] + zones["danger"]
 
-        if warning_danger > 30:
+        if warning_danger > self.playstyle_aggressive_warning_danger_min:
             return Playstyle.AGGRESSIVE
-        if zones["still"] > 70 and warning_danger < 10:
+        if zones["still"] > self.playstyle_calm_still_min and warning_danger < self.playstyle_calm_warning_danger_max:
             return Playstyle.CALM
-        if zones["still"] > 40 and warning_danger < 20:
+        if (
+            zones["still"] > self.playstyle_balanced_still_min
+            and warning_danger < self.playstyle_balanced_warning_danger_max
+        ):
             return Playstyle.BALANCED
         return Playstyle.ACTIVE
 

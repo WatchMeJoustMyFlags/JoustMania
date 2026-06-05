@@ -196,6 +196,87 @@
         "lenient": 5
       },
       "defaultVariant": "default"
+    },
+    "perception.zone_still_max": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 1.1,
+        "twitchy": 0.9,
+        "relaxed": 1.3
+      },
+      "defaultVariant": "default"
+    },
+    "perception.zone_active_max": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 1.5,
+        "twitchy": 1.3,
+        "relaxed": 1.7
+      },
+      "defaultVariant": "default"
+    },
+    "perception.zone_warning_max": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 2.0,
+        "twitchy": 1.8,
+        "relaxed": 2.2
+      },
+      "defaultVariant": "default"
+    },
+    "perception.playstyle.aggressive_warning_danger_min": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 30,
+        "strict": 40,
+        "lenient": 20
+      },
+      "defaultVariant": "default"
+    },
+    "perception.playstyle.calm_still_min": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 70,
+        "strict": 80,
+        "lenient": 60
+      },
+      "defaultVariant": "default"
+    },
+    "perception.playstyle.calm_warning_danger_max": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 10,
+        "strict": 5,
+        "lenient": 15
+      },
+      "defaultVariant": "default"
+    },
+    "perception.playstyle.balanced_still_min": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 40,
+        "strict": 50,
+        "lenient": 30
+      },
+      "defaultVariant": "default"
+    },
+    "perception.playstyle.balanced_warning_danger_max": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 20,
+        "strict": 15,
+        "lenient": 25
+      },
+      "defaultVariant": "default"
+    },
+    "perception.ema_weight": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 4.0,
+        "smooth": 6.0,
+        "responsive": 2.0
+      },
+      "defaultVariant": "default"
     }
   }
 }
