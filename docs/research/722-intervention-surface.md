@@ -149,8 +149,9 @@ existing `fitness.*` block):
 | Agent freshness gates (`playerTTL` 5 s, `sessionGrace` 15 s, `evictEvery` 1 s) | `services/agent/main.go:35-37` | Hardcoded assumptions under the whole OBSERVE layer |
 | Decision-loop throttle (1/s) | `services/agent/decision/decision.go:35` | Should evolve with `prompt_variant` / `mode` |
 
-**Tier 3 — ambient parameterization** (`game.json` / `user.json`; these
-parameterize E2–E4, they are *not* new interventions):
+**Tier 3 — ambient parameterization** (placed by consumer: effect timings →
+`controller.json`, volumes → `user.json`, sentinel animation → `system.json`;
+these parameterize E2–E4, they are *not* new interventions):
 
 - Feedback effect timings (warning flash 200 ms @ 5 Hz, death rumble 255/150 ms,
   death fade 700 ms — `feedback_manager.py:351-380`)
@@ -560,9 +561,9 @@ keep docs/schema consistent. Each item is one focused PR.
 | F2 | Promote grace periods, round/match durations, role distributions, scoring weights | `game.json` | — |
 | F3 | Promote music schedule windows; define the `pacing_profile` presets over them | `game.json` (+ §8 flag in #730) | F2 |
 | F4 | Move perception thresholds (zone boundaries, playstyle %, EMA weight) to flags; EMA frozen-per-game | `agent.json` | — |
-| F5 | Replace agent Go constants (`playerTTL`, `sessionGrace`, `evictEvery`, throttle) with agent-domain flags — requires a Go OpenFeature/flagd client in the agent service | `agent.json` | — |
+| F5 | Replace agent Go constants (`playerTTL`, `sessionGrace`, `evictEvery`, throttle) with agent-domain flags — the agent's existing flags package ([services/agent/flags](../../services/agent/flags/flags.go)) just needs new keys + `Snapshot` fields | `agent.json` | — |
 | F6 | Add `global_difficulty_factor` + `pacing_profile` to `interventions.json` with policy class *Medium* (§5) | `interventions.json` | #730, F3 |
-| F7 | Ambient parameterization (effect timings, per-channel volumes, sentinel animation) | `game.json` / `user.json` | — |
+| F7 | Ambient parameterization (effect timings, per-channel volumes, sentinel animation) | `controller.json` / `user.json` / `system.json` | — |
 | F8 | Update [feature-flags.md](../feature-flags.md) flag tables as each of F1–F7 lands; keep §2b placement rule and the doc's "Adding New Flags" guidance in sync | docs | F1–F7 |
 
 Consistency rules for all of the above:
