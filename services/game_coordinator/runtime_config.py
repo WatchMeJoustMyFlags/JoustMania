@@ -14,6 +14,7 @@ setting countdown_phase_duration_ms=0 (the "skip" variant).
 """
 
 import logging
+import math
 import threading
 from dataclasses import dataclass, field
 
@@ -35,12 +36,24 @@ class AnalyticsConfig:
     enable_replay: bool = False  # Store 60Hz samples for replay/testing
     replay_ttl_seconds: int = 3600  # Redis TTL for replay data (1 hour)
 
-    # Fixed zone thresholds (in g-force units, ~4096 raw = 1g)
-    # These define movement intensity zones for activity classification
+    # Zone thresholds (in g-force units, ~4096 raw = 1g). Defaults promoted to
+    # the agent domain `perception.zone_*` flags (#766 F4); the values here are
+    # the behavior-neutral fallbacks used when flagd is unavailable/malformed.
+    # These define movement intensity zones for activity classification.
     zone_still_max: float = 1.1  # < 1.1g = still
     zone_active_max: float = 1.5  # 1.1-1.5g = active movement
     zone_warning_max: float = 2.0  # 1.5-2.0g = warning zone
     # > 2.0g = danger zone
+
+    # Playstyle classification thresholds (percentages of time-in-zone).
+    # Promoted to agent-domain `perception.playstyle.*` flags (#766 F4); the
+    # defaults below reproduce the previously hardcoded analytics.py literals.
+    # Consumed by PlayerAnalytics.get_playstyle (see games/analytics.py).
+    playstyle_aggressive_warning_danger_min: float = 30.0  # > this => AGGRESSIVE
+    playstyle_calm_still_min: float = 70.0  # still % above this (+ low w/d) => CALM
+    playstyle_calm_warning_danger_max: float = 10.0  # w/d % below this for CALM
+    playstyle_balanced_still_min: float = 40.0  # still % above this => BALANCED
+    playstyle_balanced_warning_danger_max: float = 20.0  # w/d % below this for BALANCED
 
     # Metrics emission interval (emit Prometheus gauges every N frames)
     metrics_emit_interval_frames: int = 6  # ~100ms at 60Hz (10Hz updates)
@@ -72,6 +85,17 @@ class GamePerformanceConfig:
     # controller_poll_degraded span. Evaluated over a 2-second window.
     poll_drop_threshold: int = 10
 
+    # EMA filter weight for acceleration smoothing (#766 F4, agent domain flag
+    # `perception.ema_weight`). Formula: smoothed = (smoothed * W + raw) / (W + 1).
+    # W=4 gives 80% weight to the previous value (the historical default).
+    #
+    # READ AT GAME INIT ONLY — never re-evaluated mid-game. Changing the EMA
+    # weight while a game is running would invalidate the per-player variance
+    # baseline that the agent's perception layer depends on (#722 §5: difficulty
+    # interventions "invalidate the variance baseline"). The value is therefore
+    # frozen into each game at __init__ and not refreshed by flag-change events.
+    ema_weight: float = 4.0
+
 
 class RuntimeConfigManager:
     """
@@ -92,6 +116,7 @@ class RuntimeConfigManager:
         self.system_client = None  # system domain
         self.controller_client = None  # controller domain
         self.game_client = None  # game domain
+        self.agent_client = None  # agent domain (perception.* — #766 F4)
         self._setup_feature_flags()
 
     def _setup_feature_flags(self):
@@ -113,7 +138,13 @@ class RuntimeConfigManager:
             init_flag_domain("game")
             self.game_client = get_flag_client("game")
 
-            logger.info("Feature flag clients initialized (system, controller, game)")
+            # Agent domain (perception.* — #766 F4): zone boundaries + playstyle
+            # classification thresholds (change-event refreshed) and ema_weight
+            # (read once per game at init; see read_ema_weight).
+            init_flag_domain("agent")
+            self.agent_client = get_flag_client("agent")
+
+            logger.info("Feature flag clients initialized (system, controller, game, agent)")
 
             # Register event handler for configuration changes
             api.add_handler(ProviderEvent.PROVIDER_CONFIGURATION_CHANGED, self._on_flags_changed)
@@ -126,11 +157,13 @@ class RuntimeConfigManager:
             self.system_client = None
             self.controller_client = None
             self.game_client = None
+            self.agent_client = None
             logger.warning("Could not initialize feature flags, using defaults")
         except Exception as e:
             self.system_client = None
             self.controller_client = None
             self.game_client = None
+            self.agent_client = None
             logger.error(f"Failed to initialize feature flags: {e}")
 
     def _on_flags_changed(self, event_details):
@@ -237,9 +270,106 @@ class RuntimeConfigManager:
 
                     metrics.flag_evaluations_total.labels(flag_key="winner_rainbow_duration_ms").inc()
 
+                # === Agent domain flags (#766 F4: perception.*) ===
+                #
+                # Zone boundaries and playstyle thresholds follow the natural read
+                # point of their consumers — they live on `config.analytics`, read
+                # fresh by each game at start — so they are refreshed here on flag
+                # change, consistent with this manager's other domains.
+                #
+                # NOTE: `perception.ema_weight` is deliberately NOT read here. It is
+                # read once at game init (see _read_ema_weight_at_init) and frozen
+                # for the life of the game (#722 §5 variance-baseline caveat).
+                if self.agent_client:
+                    self._refresh_perception_flags(metrics)
+
         except Exception as e:
             # Don't crash on flag evaluation failure, just log and keep defaults
             logger.warning(f"Failed to evaluate flags: {e}")
+
+    def _refresh_perception_flags(self, metrics) -> None:
+        """Refresh zone-boundary and playstyle thresholds from the agent domain.
+
+        Each value validates to a positive number; on malformed/invalid values
+        the current config value (ultimately the hardcoded default) is kept, so
+        the promotion is behavior-neutral. Caller holds ``self._config_lock``.
+        """
+        analytics = self.config.analytics
+
+        # Zone boundaries (g-force). Must be strictly increasing and positive.
+        zone_specs = [
+            ("perception.zone_still_max", "zone_still_max"),
+            ("perception.zone_active_max", "zone_active_max"),
+            ("perception.zone_warning_max", "zone_warning_max"),
+        ]
+        new_zones = {}
+        for flag_key, attr in zone_specs:
+            current = getattr(analytics, attr)
+            value = self.agent_client.get_float_value(flag_key, current, EvaluationContext())
+            metrics.flag_evaluations_total.labels(flag_key=flag_key).inc()
+            new_zones[attr] = value if self._valid_positive(value) else current
+
+        # Only apply zone boundaries if they form a strictly increasing ladder;
+        # otherwise keep the existing (default) values to avoid corrupting
+        # classification.
+        if new_zones["zone_still_max"] < new_zones["zone_active_max"] < new_zones["zone_warning_max"]:
+            for attr, value in new_zones.items():
+                if value != getattr(analytics, attr):
+                    logger.info(f"Config updated: analytics.{attr} -> {value}")
+                    setattr(analytics, attr, value)
+                    metrics.config_changes_total.labels(parameter=attr).inc()
+        else:
+            logger.warning(f"Ignoring perception zone flags (not strictly increasing): {new_zones}; keeping defaults")
+
+        # Playstyle classification thresholds (percentages, 0-100).
+        playstyle_specs = [
+            ("perception.playstyle.aggressive_warning_danger_min", "playstyle_aggressive_warning_danger_min"),
+            ("perception.playstyle.calm_still_min", "playstyle_calm_still_min"),
+            ("perception.playstyle.calm_warning_danger_max", "playstyle_calm_warning_danger_max"),
+            ("perception.playstyle.balanced_still_min", "playstyle_balanced_still_min"),
+            ("perception.playstyle.balanced_warning_danger_max", "playstyle_balanced_warning_danger_max"),
+        ]
+        for flag_key, attr in playstyle_specs:
+            current = getattr(analytics, attr)
+            value = self.agent_client.get_float_value(flag_key, current, EvaluationContext())
+            metrics.flag_evaluations_total.labels(flag_key=flag_key).inc()
+            if not self._valid_percentage(value):
+                value = current
+            if value != current:
+                logger.info(f"Config updated: analytics.{attr} -> {value}")
+                setattr(analytics, attr, value)
+                metrics.config_changes_total.labels(parameter=attr).inc()
+
+    @staticmethod
+    def _valid_positive(value) -> bool:
+        """True if value is a finite, strictly positive number."""
+        return isinstance(value, (int, float)) and math.isfinite(value) and value > 0
+
+    @staticmethod
+    def _valid_percentage(value) -> bool:
+        """True if value is a finite number in [0, 100]."""
+        return isinstance(value, (int, float)) and math.isfinite(value) and 0 <= value <= 100
+
+    def read_ema_weight(self) -> float:
+        """Read the EMA filter weight from the agent domain (#766 F4).
+
+        Called ONCE per game at game init (BaseGameMode.__init__). The value is
+        frozen for the life of the game and never re-evaluated mid-game: changing
+        the EMA weight while running would invalidate the per-player movement
+        variance baseline the agent's perception layer relies on (#722 §5).
+
+        Returns the validated flag value, or the hardcoded default
+        (``config.ema_weight``) on a missing/malformed/non-positive value.
+        """
+        default = self.config.ema_weight
+        if not self.agent_client:
+            return default
+        try:
+            value = self.agent_client.get_float_value("perception.ema_weight", default, EvaluationContext())
+        except Exception as e:
+            logger.warning(f"Failed to read perception.ema_weight, using default: {e}")
+            return default
+        return value if self._valid_positive(value) else default
 
     def get_config(self) -> GamePerformanceConfig:
         """

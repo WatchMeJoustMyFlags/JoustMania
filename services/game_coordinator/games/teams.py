@@ -71,9 +71,10 @@ class SimpleTeamsGame(TeamsGameBase):
             # Initialize analytics if enabled
             analytics = None
             if config.analytics.enabled:
-                analytics = PlayerAnalytics(
+                analytics = PlayerAnalytics.from_config(
                     serial=controller.serial,
                     game_start_time=game_start_time,
+                    config=config.analytics,
                 )
 
             player = Player(

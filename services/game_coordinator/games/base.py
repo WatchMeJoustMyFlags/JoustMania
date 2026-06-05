@@ -331,6 +331,15 @@ class BaseGameMode(ABC):
         self.fast_warning = tables["fast_warning"]
         self.fast_max = tables["fast_max"]
 
+        # EMA filter weight (#766 F4, agent-domain `perception.ema_weight`).
+        # READ ONCE HERE AT GAME INIT and frozen for the life of the game. It is
+        # intentionally never re-evaluated mid-game: changing the smoothing
+        # weight while running would invalidate the per-player movement variance
+        # baseline that the agent's perception layer relies on (#722 §5 —
+        # difficulty/filter changes "invalidate the variance baseline"). Falls
+        # back to the hardcoded default (4.0) when flagd is unavailable.
+        self._ema_weight = get_config_manager().read_ema_weight()
+
         # Phase 70: Music tempo control state
         self.music_track_id = None
         self.music_speed = SLOW_MUSIC_SPEED
@@ -646,7 +655,7 @@ class BaseGameMode(ABC):
                     serial = controller_data.serial
                     if serial in self.players and self.players[serial].alive:
                         accel_mag = self._compute_accel_magnitude(controller_data.accel)
-                        self._update_ema(self.players[serial], accel_mag)
+                        self._update_ema(self.players[serial], accel_mag, self._ema_weight)
                 frames_consumed += 1
 
                 if time.time() - warmup_start >= warmup_duration:
@@ -934,22 +943,30 @@ class BaseGameMode(ABC):
         return math.sqrt(accel.x**2 + accel.y**2 + accel.z**2)
 
     @staticmethod
-    def _update_ema(player: Player, accel_mag: float) -> None:
+    def _update_ema(player: Player, accel_mag: float, weight: float = 4.0) -> None:
         """
         Apply exponential moving average filter to acceleration.
 
-        Formula: smoothed = (smoothed * 4 + raw) / 5
-        Gives 80% weight to previous value, 20% to current - smooths sensor noise.
-        First reading primes the filter to prevent false deaths at game start.
+        Formula: smoothed = (smoothed * weight + raw) / (weight + 1)
+        With weight=4 (default): 80% weight to previous value, 20% to current —
+        smooths sensor noise. First reading primes the filter to prevent false
+        deaths at game start.
+
+        ``weight`` is sourced from the agent-domain ``perception.ema_weight`` flag
+        (#766 F4), frozen per game at init (``self._ema_weight``); see __init__
+        for why it is never re-read mid-game (#722 §5 variance-baseline caveat).
+        The default of 4.0 preserves the historical hardcoded behavior for
+        callers that do not pass a weight (e.g. unit tests).
 
         Args:
             player: Player whose EMA to update
             accel_mag: Raw acceleration magnitude for this frame
+            weight: EMA weight on the previous smoothed value (default 4.0)
         """
         if player.smoothed_accel < 1e-9:  # Check for uninitialized (avoids float equality)
             player.smoothed_accel = accel_mag  # Prime filter with first real reading
         else:
-            player.smoothed_accel = (player.smoothed_accel * 4 + accel_mag) / 5
+            player.smoothed_accel = (player.smoothed_accel * weight + accel_mag) / (weight + 1)
         player.last_accel_mag = player.smoothed_accel
 
     def _compute_effective_thresholds(self, player: Player) -> tuple[float, float]:
@@ -1185,7 +1202,7 @@ class BaseGameMode(ABC):
             )
             return  # In grace period, skip death/warning checks
 
-        self._update_ema(player, accel_mag)
+        self._update_ema(player, accel_mag, self._ema_weight)
 
         effective_warn, effective_death = self._compute_effective_thresholds(player)
         smoothed = player.smoothed_accel
