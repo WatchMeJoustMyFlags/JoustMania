@@ -570,7 +570,7 @@ services:
 
   # Grafana for metrics visualization (Phase 38)
   grafana:
-    image: grafana/grafana:10.2.3
+    image: grafana/grafana:10.4.19
     container_name: joustmania-grafana
     # Port exposed only within Docker network (envoy proxies to it)
     expose:
