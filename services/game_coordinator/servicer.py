@@ -207,6 +207,11 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                     self.sessions.pop(ended_id, None)
                     if self._primary_game_id == ended_id:
                         self._primary_game_id = None
+                        # Mirror _retire_session: the persistent primary bus
+                        # must not keep stamping the retired game's id (#776).
+                        # A new primary re-stamps it below; this covers the
+                        # cap-rejected early return.
+                        self.primary_event_bus.current_game_id = ""
 
                 # Concurrency gate (#775). Default cap 1 reproduces the legacy
                 # single-game rejection message exactly.
