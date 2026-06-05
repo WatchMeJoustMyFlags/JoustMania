@@ -270,6 +270,42 @@
         }
       },
       "defaultVariant": "default"
+    },
+    "windows": {
+      "state": "ENABLED",
+      "variants": {
+        "default": {
+          "min_music_fast_time": 4,
+          "max_music_fast_time": 8,
+          "min_music_slow_time": 10,
+          "max_music_slow_time": 23,
+          "end_min_music_fast_time": 6,
+          "end_max_music_fast_time": 10,
+          "end_min_music_slow_time": 8,
+          "end_max_music_slow_time": 12
+        },
+        "calm": {
+          "min_music_fast_time": 3,
+          "max_music_fast_time": 6,
+          "min_music_slow_time": 13,
+          "max_music_slow_time": 30,
+          "end_min_music_fast_time": 4,
+          "end_max_music_fast_time": 7,
+          "end_min_music_slow_time": 10,
+          "end_max_music_slow_time": 16
+        },
+        "frantic": {
+          "min_music_fast_time": 6,
+          "max_music_fast_time": 11,
+          "min_music_slow_time": 6,
+          "max_music_slow_time": 14,
+          "end_min_music_fast_time": 8,
+          "end_max_music_fast_time": 14,
+          "end_min_music_slow_time": 5,
+          "end_max_music_slow_time": 8
+        }
+      },
+      "defaultVariant": "default"
     }
   }
 }
