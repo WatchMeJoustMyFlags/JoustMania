@@ -271,6 +271,10 @@ class InterventionContext:
         game: The live game instance (BaseGameMode) or ``None`` if no game is
             running.
         objective: Dominant session objective label for metrics/events.
+        game_id: The owning session's game id (#838). Handlers that re-resolve
+            per-player targets (e.g. player_sensitivity_factor) MUST pass this
+            into ``resolve_player_targets(game_id=...)`` so per-game targeting
+            composes. ``""`` for the synthesized primary session (no gameId).
     """
 
     spec: InterventionSpec
@@ -279,6 +283,7 @@ class InterventionContext:
     target_serial: str | None
     game: object
     objective: str
+    game_id: str = ""
 
 
 class _RateLimiter:
@@ -842,6 +847,7 @@ class InterventionManager:
                         target_serial=None,
                         game=session.game,
                         objective=self._dominant_objective(),
+                        game_id=session.game_id,
                     )
                     try:
                         await revert(ctx)
@@ -928,6 +934,7 @@ class InterventionManager:
             target_serial=target,
             game=game,
             objective=objective,
+            game_id=session.game_id,
         )
         handler = self._handlers.get(spec.flag_key, self._noop_handler)
         try:

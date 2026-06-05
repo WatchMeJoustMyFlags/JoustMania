@@ -124,6 +124,7 @@ async def handle_player_sensitivity_factor(ctx: InterventionContext, manager: In
         game=game,
         value_kind="float",
         battery_gate=True,
+        game_id=ctx.game_id,
     )
 
     players = getattr(game, "players", {})

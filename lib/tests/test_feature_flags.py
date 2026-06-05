@@ -302,3 +302,88 @@ def test_set_game_transaction_context_without_sensitivity(mock_api):
     assert ctx.attributes["game_mode"] == "Werewolf"
     assert ctx.attributes["controller_count"] == 6
     assert "sensitivity" not in ctx.attributes
+
+
+# --------------------------------------------------------------------------- #
+# gameId calibration context (#838)
+# --------------------------------------------------------------------------- #
+from lib.feature_flags import _calibration_context, read_object_flag  # noqa: E402
+
+
+class _GameIdAwareClient:
+    """Resolves a calibration flag by the gameId in the EvaluationContext.
+
+    Mimics flagd targeting: gameId == experiment_id -> the experiment value,
+    else the baseline value. Records the contexts it saw for assertions.
+    """
+
+    def __init__(self, baseline, experiment_id, experiment_value):
+        self.baseline = baseline
+        self.experiment_id = experiment_id
+        self.experiment_value = experiment_value
+        self.seen_contexts = []
+
+    def get_object_value(self, _key, default, ctx):
+        self.seen_contexts.append(ctx)
+        attrs = getattr(ctx, "attributes", None) or {}
+        if attrs.get("gameId") == self.experiment_id:
+            return self.experiment_value
+        return self.baseline
+
+
+def _mock_client(client):
+    return (
+        patch("lib.feature_flags.init_flag_domain"),
+        patch("lib.feature_flags.get_flag_client", return_value=client),
+    )
+
+
+def test_calibration_context_adds_gameid_when_present():
+    ctx = _calibration_context("game_abc")
+    assert ctx.attributes["gameId"] == "game_abc"
+
+
+def test_calibration_context_empty_when_no_gameid():
+    for empty in (None, ""):
+        ctx = _calibration_context(empty)
+        assert "gameId" not in (ctx.attributes or {})
+
+
+def test_read_object_flag_targeted_variant_for_matching_game():
+    """A gameId-targeted calibration flag resolves the experiment variant for the
+    matching game and the baseline for every other game / no game."""
+    client = _GameIdAwareClient(
+        baseline={"slow_warning": [1, 2]},
+        experiment_id="game_shadow",
+        experiment_value={"slow_warning": [9, 9]},
+    )
+    init_p, get_p = _mock_client(client)
+    with init_p, get_p:
+        # Matching shadow game -> experiment variant.
+        assert read_object_flag("game", "thresholds", {}, game_id="game_shadow") == {"slow_warning": [9, 9]}
+        # A different game -> baseline.
+        assert read_object_flag("game", "thresholds", {}, game_id="game_real") == {"slow_warning": [1, 2]}
+        # No gameId (un-targeted) -> baseline, and NO gameId leaked into context.
+        assert read_object_flag("game", "thresholds", {}) == {"slow_warning": [1, 2]}
+    last_ctx = client.seen_contexts[-1]
+    assert "gameId" not in (last_ctx.attributes or {})
+
+
+def test_read_float_flag_threads_gameid_context():
+    client = MagicMock()
+    client.get_object_value.return_value = 4.0
+    init_p, get_p = _mock_client(client)
+    with init_p, get_p:
+        assert read_float_flag("game", "death_grace_period_seconds", 1.0, game_id="game_x") == 4.0
+    ctx = client.get_object_value.call_args[0][2]
+    assert ctx.attributes["gameId"] == "game_x"
+
+
+def test_read_int_flag_threads_gameid_context():
+    client = MagicMock()
+    client.get_object_value.return_value = 3
+    init_p, get_p = _mock_client(client)
+    with init_p, get_p:
+        assert read_int_flag("game", "zombie.initial_count", 1, game_id="game_y") == 3
+    ctx = client.get_object_value.call_args[0][2]
+    assert ctx.attributes["gameId"] == "game_y"
