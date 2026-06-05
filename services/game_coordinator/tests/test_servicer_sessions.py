@@ -20,7 +20,7 @@ import asyncio
 import os
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import pytest
 
@@ -722,7 +722,7 @@ class TestShadowGameGovernance:
         """Shadow starts label their lifecycle metrics game_kind='shadow'."""
         with _NO_THREAD:
             await servicer._start_game_from_config(_shadow_config(serials=("a1", "a2")), _MockSpan())
-        mock_metrics.active_game.labels.assert_any_call(game_kind="shadow")
+        mock_metrics.active_game.labels.assert_any_call(game_kind="shadow", game_id=ANY)
         mock_metrics.games_started_total.labels.assert_any_call(mode="FFA", game_kind="shadow")
 
     # -- Resource gate ------------------------------------------------------

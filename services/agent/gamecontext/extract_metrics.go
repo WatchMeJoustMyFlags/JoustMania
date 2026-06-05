@@ -17,7 +17,7 @@ const (
 	metricDuration       = "game_duration_seconds"       // live
 	metricActivePlayers  = "game_active_players"         // live
 	metricGameActive     = "game_active"                 // live
-	metricGameMode       = "current_game_mode"           // live
+	metricGameMode       = "game_current_mode"           // live (coordinator emits game_current_mode; #848)
 	metricDeathsTotal    = "game_player_deaths_total"    // live
 	metricPeakAccel      = "game_player_peak_accel"      // live (game_id carrier)
 

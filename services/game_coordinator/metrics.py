@@ -19,7 +19,7 @@ from lib.otel_metrics import Counter, Gauge, Histogram
 active_game = Gauge(
     "game_active",
     "Whether a game is currently running (0=no, 1=yes)",
-    ["game_kind"],
+    ["game_kind", "game_id"],
 )
 
 current_game_mode = Gauge(
@@ -31,7 +31,7 @@ current_game_mode = Gauge(
 game_duration_seconds = Gauge(
     "game_duration_seconds",
     "Duration of current game in seconds",
-    ["game_kind"],
+    ["game_kind", "game_id"],
 )
 
 games_started_total = Counter(
@@ -64,12 +64,12 @@ shadow_games_preempted_total = Counter(
 active_players = Gauge(
     "game_active_players",
     "Number of players currently in game",
-    ["game_kind"],
+    ["game_kind", "game_id"],
 )
 
 players_alive = Gauge("game_players_alive", "Number of players currently alive")
 
-player_deaths_total = Counter("game_player_deaths_total", "Total player deaths", ["mode", "serial"])
+player_deaths_total = Counter("game_player_deaths_total", "Total player deaths", ["mode", "serial", "game_id"])
 
 player_kills_total = Counter("game_player_kills_total", "Total player kills", ["mode", "serial"])
 
@@ -205,13 +205,13 @@ gameplay_stream_reconnects_total = Counter(
 player_accel_magnitude = Gauge(
     "game_player_accel_magnitude",
     "Current acceleration magnitude for player (g-force)",
-    ["serial"],
+    ["serial", "game_id"],
 )
 
 player_movement_zone = Gauge(
     "game_player_movement_zone",
     "Current movement zone (0=still, 1=active, 2=warning, 3=danger)",
-    ["serial"],
+    ["serial", "game_id"],
 )
 
 player_peak_accel = Gauge(
@@ -223,13 +223,13 @@ player_peak_accel = Gauge(
 player_playstyle = Gauge(
     "game_player_playstyle",
     "Player playstyle classification (0=calm, 1=balanced, 2=active, 3=aggressive)",
-    ["serial"],
+    ["serial", "game_id"],
 )
 
 player_alive = Gauge(
     "game_player_alive",
     "Player alive status (1=alive, 0=dead)",
-    ["serial"],
+    ["serial", "game_id"],
 )
 
 # Intervention observability metrics (#730, closes gaps from #722 §7).
@@ -239,14 +239,14 @@ player_movement_variance = Gauge(
     "game_player_movement_variance",
     "Rolling-window variance of acceleration magnitude (g^2). "
     "Near zero indicates a player gaming the EMA by holding still.",
-    ["serial"],
+    ["serial", "game_id"],
 )
 
 player_skill_level = Gauge(
     "game_player_skill_level",
     "Derived player skill level in [0.0, 1.0] (blend of playstyle control and "
     "motion smoothness). Complements game_player_playstyle.",
-    ["serial"],
+    ["serial", "game_id"],
 )
 
 player_elimination_order = Gauge(
@@ -300,26 +300,30 @@ def clear_player_analytics(serial: str, game_id: str = "") -> None:
     Normal player death sets player_alive=0 instead, letting dashboard queries
     filter dead players via game_player_alive==1 in template variables.
     Bulk cleanup at game end uses clear_all_player_analytics().
+
+    The per-player gauges carry both a ``serial`` and a ``game_id`` label (#845),
+    so removal must supply the same tuple the emitter set; ``game_id`` is the
+    ending session's id (mirrors how peak_accel / elimination_order are scoped).
     """
     with suppress(KeyError, ValueError):
-        player_accel_magnitude.remove(serial)
+        player_accel_magnitude.remove(serial, game_id)
 
     with suppress(KeyError, ValueError):
-        player_movement_zone.remove(serial)
+        player_movement_zone.remove(serial, game_id)
 
     with suppress(KeyError, ValueError):
-        player_playstyle.remove(serial)
+        player_playstyle.remove(serial, game_id)
 
     with suppress(KeyError, ValueError):
-        player_movement_variance.remove(serial)
+        player_movement_variance.remove(serial, game_id)
 
     with suppress(KeyError, ValueError):
-        player_skill_level.remove(serial)
+        player_skill_level.remove(serial, game_id)
 
     with suppress(KeyError, ValueError):
-        player_alive.remove(serial)
+        player_alive.remove(serial, game_id)
 
-    # peak_accel and elimination_order have both serial and game_id labels
+    # peak_accel and elimination_order also carry serial + game_id labels.
     if game_id:
         with suppress(KeyError, ValueError):
             player_peak_accel.remove(serial, game_id)
