@@ -304,6 +304,11 @@ async def test_player_sensitivity_factor_targets_one_player(flag_files, docker_c
     GetGameState.sensitivity_factor and an unblocked agent_intervention event.
     """
     set_interventions_allowed("full")  # adjust_player_sensitivity must be allowed
+    # The weighted rate-limit window (60s) is process-global and shared across
+    # all tests in a session; a preceding test can leave residual weight in it.
+    # Raise the budget so this single applied write always has headroom
+    # regardless of test ordering (matches the other multi-apply tests below).
+    set_policy_budget(50)
     await setup_mock_controllers(docker_compose, count=4)
     serials = await get_mock_controller_serials(docker_compose)
     target, other = serials[0], serials[1]
