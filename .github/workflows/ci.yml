@@ -18,9 +18,9 @@ jobs:
     name: Lib Unit Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v8.2.0
 
       - name: Build proto package
         run: |
@@ -56,7 +56,7 @@ jobs:
           sed -i 's|filename="|filename="lib/|g' coverage.xml
 
       - name: Upload coverage report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-lib
           path: lib/coverage.xml
@@ -78,9 +78,9 @@ jobs:
           - pairing_daemon
           - python_hid
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: dorny/paths-filter@v3
+      - uses: dorny/paths-filter@v4
         id: changes
         with:
           filters: |
@@ -91,7 +91,7 @@ jobs:
 
       - name: Install uv
         if: steps.changes.outputs.service == 'true'
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v8.2.0
 
       # Install system dependencies for services with native Python packages
       - name: Install system dependencies
@@ -120,7 +120,7 @@ jobs:
 
       # Always run tests with coverage for SonarCloud (no path filter)
       - name: Install uv for tests
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v8.2.0
 
       - name: Install system dependencies for tests
         if: matrix.service == 'controller_manager' || matrix.service == 'audio' || matrix.service == 'pairing_daemon'
@@ -144,7 +144,7 @@ jobs:
           sed -i 's|filename="|filename="services/${{ matrix.service }}/|g' coverage.xml
 
       - name: Upload coverage report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-${{ matrix.service }}
           path: services/${{ matrix.service }}/coverage.xml
@@ -155,9 +155,9 @@ jobs:
     name: Rust Checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: dorny/paths-filter@v3
+      - uses: dorny/paths-filter@v4
         id: changes
         with:
           filters: |
@@ -179,7 +179,7 @@ jobs:
 
       - name: Cache cargo
         if: steps.changes.outputs.rust == 'true'
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -203,9 +203,9 @@ jobs:
     name: Exporter Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: dorny/paths-filter@v3
+      - uses: dorny/paths-filter@v4
         id: changes
         with:
           filters: |
@@ -214,9 +214,11 @@ jobs:
 
       - name: Set up Go
         if: steps.changes.outputs.exporter == 'true'
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: '1.25'
+          # No go.sum committed (go mod tidy runs at test time), so module caching can't key off it
+          cache: false
 
       - name: Run tests
         if: steps.changes.outputs.exporter == 'true'
@@ -230,10 +232,10 @@ jobs:
     name: Agent Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # Pinned to a full commit SHA (SonarCloud security hotspot remediation)
-      - uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590 # v3
+      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
         id: changes
         with:
           filters: |
@@ -242,9 +244,10 @@ jobs:
 
       - name: Set up Go
         if: steps.changes.outputs.agent == 'true'
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: '1.25'
+          cache-dependency-path: services/agent/go.sum
 
       - name: Run tests
         if: steps.changes.outputs.agent == 'true'
@@ -258,7 +261,7 @@ jobs:
     name: Lint Dockerfiles
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Lint Dockerfiles
         run: make ci-lint-dockerfiles
@@ -271,12 +274,12 @@ jobs:
     # Skip on forks that don't have SONAR_TOKEN configured
     if: ${{ github.repository == 'WatchMeJoustMyFlags/JoustMania' || vars.ENABLE_SONARCLOUD == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0  # Full history for better analysis
 
       - name: Download coverage reports
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: coverage-*
           path: coverage-reports
@@ -301,7 +304,7 @@ jobs:
           fi
 
       - name: SonarCloud Scan
-        uses: SonarSource/sonarcloud-github-action@master
+        uses: SonarSource/sonarqube-scan-action@v8
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -313,7 +316,7 @@ jobs:
     name: Validate Proto Files
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Validate protos
         run: make ci-validate-protos
@@ -322,7 +325,7 @@ jobs:
     name: Validate Python Packages
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Validate packages
         run: make ci-validate-packages
@@ -334,9 +337,9 @@ jobs:
     outputs:
       builder: ${{ steps.filter.outputs.builder }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: dorny/paths-filter@v3
+      - uses: dorny/paths-filter@v4
         id: filter
         with:
           filters: |
@@ -355,20 +358,20 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set image prefix
         run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
 
       - name: Set up QEMU
         if: needs.detect-builder-changes.outputs.builder == 'true'
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Login to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -377,7 +380,7 @@ jobs:
       # Full build when files changed
       - name: Build and push builder
         if: needs.detect-builder-changes.outputs.builder == 'true'
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: images/builder
           # Only build amd64 on PRs (arm64 via QEMU is very slow, not needed for validation)
@@ -403,7 +406,7 @@ jobs:
       # Fallback: full build if reuse failed (e.g., first run on a fork)
       - name: Build builder (fallback)
         if: needs.detect-builder-changes.outputs.builder != 'true' && steps.reuse.outcome != 'success'
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: images/builder
           platforms: linux/amd64
@@ -429,19 +432,19 @@ jobs:
           - audio
           - pairing_daemon
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set image prefix
         run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Login to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -456,7 +459,7 @@ jobs:
           echo "name=${IMAGE_NAME}" >> $GITHUB_OUTPUT
 
       - name: Build and push service
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: services/${{ matrix.service }}/Dockerfile
@@ -504,26 +507,26 @@ jobs:
             context: images/otel-collector
             image_name: otel-collector
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set image prefix
         run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Login to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push service
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context || '.' }}
           file: ${{ matrix.dockerfile }}
@@ -542,12 +545,12 @@ jobs:
     runs-on: ubuntu-latest
     needs: [build-builder]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set image prefix
         run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
 
-      - uses: dorny/paths-filter@v3
+      - uses: dorny/paths-filter@v4
         id: changes
         with:
           filters: |
@@ -561,16 +564,16 @@ jobs:
               - 'docker-compose.ci.yml'
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Login to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v8.2.0
 
       # Fast path: pull latest images, overlay current source
       - name: Run integration tests (fast - source only)

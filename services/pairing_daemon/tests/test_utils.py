@@ -1,6 +1,6 @@
 """Tests for psmove_pairing.utils module."""
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -39,11 +39,22 @@ class TestRunCommand:
 
     @pytest.mark.asyncio
     async def test_timeout_handling(self):
-        """Test that commands time out properly."""
-        with patch("psmove_pairing.utils.asyncio.wait_for", side_effect=TimeoutError):
+        """Test that commands time out properly and the subprocess is killed."""
+        # Fake process: communicate() is never awaited (wait_for is patched to raise),
+        # kill() is sync, wait() is awaited by the timeout cleanup path.
+        fake_proc = MagicMock()
+        fake_proc.communicate = MagicMock()
+        fake_proc.kill = MagicMock()
+        fake_proc.wait = AsyncMock()
+
+        with (
+            patch("psmove_pairing.utils.asyncio.create_subprocess_exec", return_value=fake_proc),
+            patch("psmove_pairing.utils.asyncio.wait_for", side_effect=TimeoutError),
+        ):
             exit_code, output = await run_command(["sleep", "100"])
             assert exit_code == -1
             assert output == "timeout"
+            fake_proc.kill.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_exception_handling(self):
