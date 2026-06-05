@@ -24,6 +24,7 @@ from services.game_coordinator.event_bus import EventBus
 from services.game_coordinator.game_factory import GameFactory
 from services.game_coordinator.grpc_clients import GrpcClientManager
 from services.game_coordinator.interventions import InterventionManager
+from services.game_coordinator.lifecycle_handlers import register_lifecycle_handlers
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,9 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         # Register difficulty intervention handlers (#730 PR C): music tempo
         # override, global sensitivity override, per-player sensitivity factor.
         register_difficulty_handlers(self.intervention_manager)
+        # Register shield + lifecycle intervention handlers (#730 PR D):
+        # shield_seconds (per-player grace shield), eliminate_player, revive_player.
+        register_lifecycle_handlers(self.intervention_manager)
         self.intervention_manager.start()
 
         logger.info("GameCoordinator initialized")
