@@ -13,6 +13,7 @@ For each game mode, tests:
 """
 
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -410,20 +411,34 @@ class TestZombieMotionProcessing:
 
     @pytest.mark.asyncio
     async def test_lethal_motion_causes_death(self, game):
-        """Lethal motion with real proto should kill human player."""
+        """Lethal motion with real proto should convert human, then (after
+        the conversion grace period) kill the resulting zombie."""
         game, mock_cm = game
         game.gameplay_stream = MockGameplayStream()
         await game._initialize_players_impl(mock_cm.controllers)
 
         # Find a human player
         serial = next(s for s, p in game.players.items() if not p.is_zombie)
-        game.players[serial].grace_until = 0.0
+        player = game.players[serial]
+        player.grace_until = 0.0
 
         for _ in range(10):
-            if game.players[serial].alive:
+            if player.alive and not player.is_zombie:
                 await game._process_controller_state(_lethal_state(serial))
 
-        assert game.players[serial].alive is False
+        # Human's "death" is conversion; the fresh zombie is protected by
+        # the conversion grace period (#757), not insta-rekilled
+        assert player.is_zombie is True
+        assert player.alive is True
+        assert player.grace_until > time.time()
+
+        # Once grace expires, sustained lethal motion kills the zombie
+        player.grace_until = 0.0
+        for _ in range(10):
+            if player.alive:
+                await game._process_controller_state(_lethal_state(serial))
+
+        assert player.alive is False
 
     @pytest.mark.asyncio
     async def test_zombie_survives_human_lethal_accel(self, game):

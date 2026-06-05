@@ -198,6 +198,71 @@ class TestBaseColorDuringEffect:
         # 5. Should show lobby color
         assert mock_backend.get_current_color(serial) == lobby_color
 
+    @pytest.mark.asyncio
+    async def test_death_effect_sets_black_base_before_fade_spawns(self, feedback_manager, mock_backend):
+        """
+        Regression test for #757: base_colors must be black BEFORE the fade
+        task is spawned. If it's written after, a base_color command (menu
+        lobby reset) interleaving during the fade setup gets clobbered, and
+        the fade restore leaves the LED permanently black.
+        """
+        serial = "test_ctrl"
+        feedback_manager.base_colors[serial] = (255, 255, 0)
+
+        base_at_spawn = {}
+        orig = feedback_manager.play_effect_with_restore
+
+        async def capture(s, *args, **kwargs):
+            base_at_spawn["value"] = feedback_manager.base_colors.get(s)
+            return await orig(s, *args, **kwargs)
+
+        with patch.object(feedback_manager, "play_effect_with_restore", side_effect=capture):
+            await feedback_manager.handle_game_effect(
+                serial,
+                controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH,
+                "test_stream",
+            )
+            active = feedback_manager.active_effects.get(serial)
+            if active:
+                await active.task
+
+        assert base_at_spawn["value"] == (0, 0, 0), (
+            "base_colors must already be black when the fade spawns, so a "
+            "concurrent lobby reset always wins the write race"
+        )
+
+    @pytest.mark.asyncio
+    async def test_lobby_reset_during_death_fade_wins(self, feedback_manager, mock_backend):
+        """
+        A menu lobby reset arriving while the death fade is still running
+        must end with the lobby color, not black (#757).
+        """
+        serial = "test_ctrl"
+        team_color = (255, 255, 0)
+        lobby_color = (0, 60, 76)
+
+        feedback_manager.base_colors[serial] = team_color
+        await feedback_manager.set_controller_color(serial, team_color)
+
+        # Death effect: red phase + spawns 700ms fade task
+        await feedback_manager.handle_game_effect(
+            serial,
+            controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH,
+            "test_stream",
+        )
+        active = feedback_manager.active_effects.get(serial)
+        assert active is not None, "Fade task should be running"
+
+        # Menu lobby reset lands mid-fade
+        await feedback_manager.apply_base_color(serial, lobby_color, label="test")
+
+        await active.task
+
+        assert feedback_manager.base_colors[serial] == lobby_color
+        assert mock_backend.get_current_color(serial) == lobby_color, (
+            "Fade restore must pick up the lobby color set during the fade"
+        )
+
 
 class TestEffectRestoreLogic:
     """Test the restore_color logic in play_effect_with_restore."""

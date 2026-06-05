@@ -1073,6 +1073,29 @@ class BaseGameMode(ABC):
 
         accel = controller_state.accel
         accel_mag = self._compute_accel_magnitude(accel)
+
+        # Check grace period first - no death or warning during grace period
+        # Matches original JoustMania: if time.time() > no_rumble
+        current_time = time.time()
+        if current_time < player.grace_until:
+            # During grace, reset the EMA so it re-primes from the first
+            # post-grace frame. Invincibility must *forget* the death spike:
+            # otherwise the EMA still holds it when grace expires and the
+            # player is instantly re-killed by stale filter memory (#757).
+            # Same re-prime pattern as NonStop revive (nonstop_joust.py).
+            player.smoothed_accel = 0.0
+            player.last_accel_mag = accel_mag
+            self._record_player_analytics(
+                player,
+                serial,
+                accel,
+                accel_mag,
+                accel_mag,
+                self._compute_effective_thresholds(player)[1],
+                controller_state,
+            )
+            return  # In grace period, skip death/warning checks
+
         self._update_ema(player, accel_mag)
 
         effective_warn, effective_death = self._compute_effective_thresholds(player)
@@ -1080,12 +1103,6 @@ class BaseGameMode(ABC):
 
         # Record analytics (handles enabled check internally)
         self._record_player_analytics(player, serial, accel, accel_mag, smoothed, effective_death, controller_state)
-
-        # Check grace period first - no death or warning during grace period
-        # Matches original JoustMania: if time.time() > no_rumble
-        current_time = time.time()
-        if current_time < player.grace_until:
-            return  # In grace period, skip all checks
 
         # Death and warning checks (matches original JoustMania logic)
         # Key: warning is just feedback, NOT protection - player can die during warning!

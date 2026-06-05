@@ -377,8 +377,12 @@ class FeedbackManager(ControllerEffectsBase):
             await asyncio.sleep(0.3)
 
             span.add_event("fade_to_black", {"duration_ms": 700})
-            await self.play_effect_with_restore(serial, "fade_out", Colors.Red.value, 700, 1, Colors.Black.value)
+            # Set base color to black BEFORE spawning the fade so a concurrent
+            # base_color command (e.g., menu lobby reset) that lands during the
+            # effect setup can't be clobbered afterwards — apply_base_color
+            # writes win, and the fade's restore picks up the latest value (#757).
             self.base_colors[serial] = Colors.Black.value
+            await self.play_effect_with_restore(serial, "fade_out", Colors.Red.value, 700, 1, Colors.Black.value)
 
     async def _effect_player_respawn(self, serial: str, **_kwargs) -> None:
         """White during spawn protection."""

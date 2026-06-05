@@ -302,6 +302,105 @@ class TestWarningBehavior:
         assert messages_after == messages_before, "Should not send warning when already in warning state"
 
 
+class TestGracePeriodSpikeMemory:
+    """Grace period must forget the death spike (#757).
+
+    Without this, the EMA still holds the spike that killed the player when
+    grace expires, and the first post-grace frame instantly re-kills them
+    (Swapper bounce-back, zombie insta-rekill).
+    """
+
+    @pytest.fixture
+    def game_with_player(self):
+        """Create game with one alive player in grace period."""
+        mock_cm = MockControllerManagerService(num_controllers=2)
+
+        game = FFAGame(
+            controller_manager_client=mock_cm,
+            event_publisher=async_noop,
+            audio_client=None,
+            game_id="test_grace_spike",
+        )
+
+        game.players["test_serial"] = Player(
+            serial="test_serial",
+            team=0,
+            alive=True,
+            color=(255, 0, 0),
+            smoothed_accel=1.0,  # Prime EMA
+        )
+        game.gameplay_stream = MockGameplayStream()
+        game.music_speed = SLOW_MUSIC_SPEED
+        game.start_time = time.time()
+
+        return game
+
+    @staticmethod
+    def _frame(x: float, y: float, z: float):
+        return controller_manager_pb2.GameplayData(
+            serial="test_serial",
+            accel=controller_manager_pb2.Vector3(x=x, y=y, z=z),
+        )
+
+    @pytest.mark.asyncio
+    async def test_spike_during_grace_does_not_kill_after_grace(self, game_with_player):
+        """Lethal frames during grace must not leave EMA memory that kills
+        the player on the first calm frame after grace expires."""
+        game = game_with_player
+        player = game.players["test_serial"]
+        player.grace_until = time.time() + 60.0  # In grace
+
+        kill_called = []
+
+        async def mock_kill(serial, accel_mag):
+            kill_called.append((serial, accel_mag))
+            player.alive = False
+
+        game._kill_player = mock_kill
+
+        # Feed sustained lethal acceleration (~7g) during grace —
+        # this is exactly what the mock's held death accel produces
+        for _ in range(30):
+            await game._process_controller_state(self._frame(5.0, 3.0, 4.0))
+
+        assert not kill_called, "Player must not die during grace"
+
+        # Grace expires; motion is calm again (~1g)
+        player.grace_until = 0.0
+        await game._process_controller_state(self._frame(0.0, 0.0, 1.0))
+
+        assert not kill_called, "Calm frame after grace must not kill — EMA held stale spike memory"
+
+    @pytest.mark.asyncio
+    async def test_sustained_motion_past_grace_still_kills(self, game_with_player):
+        """Grace forgives the spike, not ongoing violent motion: if lethal
+        acceleration continues past grace expiry, the player dies."""
+        game = game_with_player
+        player = game.players["test_serial"]
+        player.grace_until = time.time() + 60.0  # In grace
+
+        kill_called = []
+
+        async def mock_kill(serial, accel_mag):
+            kill_called.append((serial, accel_mag))
+            player.alive = False
+
+        game._kill_player = mock_kill
+
+        # Lethal acceleration during grace
+        for _ in range(10):
+            await game._process_controller_state(self._frame(5.0, 3.0, 4.0))
+        assert not kill_called
+
+        # Grace expires; lethal acceleration continues
+        player.grace_until = 0.0
+        for _ in range(3):
+            if player.alive:
+                await game._process_controller_state(self._frame(5.0, 3.0, 4.0))
+
+        assert kill_called, "Sustained lethal motion past grace expiry must kill"
+
+
 class TestDeathDetection:
     """Tests for death detection at threshold boundaries."""
 
@@ -518,7 +617,9 @@ class TestEMAFilter:
         """First reading should prime EMA instead of smoothing from 0."""
         game = game_with_player
         player = game.players["test_serial"]
-        player.grace_until = time.time() + 10.0  # Grace period to prevent death
+        # No grace: during grace the EMA is held reset (#757). The readings
+        # here are sub-threshold, so no death can trigger.
+        player.grace_until = 0.0
 
         assert player.smoothed_accel == 0.0
 
@@ -538,7 +639,9 @@ class TestEMAFilter:
         """Subsequent readings should be smoothed with 80/20 weighting."""
         game = game_with_player
         player = game.players["test_serial"]
-        player.grace_until = time.time() + 10.0
+        # No grace: during grace the EMA is held reset (#757). The smoothed
+        # result (1.2) stays below all thresholds, so no death can trigger.
+        player.grace_until = 0.0
         player.smoothed_accel = 1.0  # Pre-prime
 
         # New reading of 2.0
