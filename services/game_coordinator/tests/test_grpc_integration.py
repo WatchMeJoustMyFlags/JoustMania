@@ -25,8 +25,15 @@ service_dir = test_dir.parent
 project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 
+from lib.types import GameEvent
 from proto import game_coordinator_pb2, game_coordinator_pb2_grpc
+from services.game_coordinator import game_session as game_session_mod
 from services.game_coordinator.servicer import GameCoordinatorServicer
+
+# #775: the game-loop thread moved onto GameSession. Patch its start_thread to
+# keep the real background thread from spinning while still registering the
+# session and publishing game_start on the (primary) bus.
+_NO_THREAD = patch.object(game_session_mod.GameSession, "start_thread", lambda _self: None)
 
 
 @pytest_asyncio.fixture
@@ -69,6 +76,22 @@ def _make_start_config(game_name="FFA", num_players=3, sensitivity=2):
     )
 
 
+class _MockSpan:
+    """Minimal span for direct _start_game_from_config calls (no gRPC span)."""
+
+    def set_attribute(self, key, value):
+        pass
+
+    def add_event(self, name, attributes=None):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Unary RPCs
 # ---------------------------------------------------------------------------
@@ -108,12 +131,15 @@ class TestForceEndGame:
         """ForceEndGame stops a running game and returns success."""
         servicer, stub = grpc_service
 
-        # Simulate a running game
-        servicer.game_state = game_coordinator_pb2.GameState.RUNNING
-        servicer.game_running = True
-        servicer.game_id = "test_game_123"
+        # Start a primary game (no real thread), advance it to RUNNING, and
+        # attach a mock live game so force_end() is invoked.
+        with _NO_THREAD:
+            config = _make_start_config("FFA", num_players=3)
+            _, game_id = await servicer._start_game_from_config(config, _MockSpan())
+            await servicer.event_bus.publish(GameEvent.GAME_STARTED, {"game_id": game_id})
+
         mock_game = MagicMock()
-        servicer.current_game = mock_game
+        servicer.sessions[game_id].current_game = mock_game
 
         response = await stub.ForceEndGame(game_coordinator_pb2.ForceEndGameRequest(reason="user requested"))
 
@@ -121,9 +147,9 @@ class TestForceEndGame:
         assert response.error == ""
         mock_game.force_end.assert_called_once()
 
-        # Verify state transitioned to ENDED
+        # After force-end the primary slot frees -> GetGameState reports IDLE.
         state_resp = await stub.GetGameState(game_coordinator_pb2.GetGameStateRequest())
-        assert state_resp.game_info.state == game_coordinator_pb2.GameState.ENDED
+        assert state_resp.game_info.state == game_coordinator_pb2.GameState.IDLE
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +295,7 @@ class TestStreamGameStart:
         received = []
 
         # Patch _run_game_loop_threaded so no real background thread starts
-        with patch.object(servicer, "_run_game_loop_threaded"):
+        with _NO_THREAD:
 
             async def consume():
                 stream = stub.StreamGameEvents(request)
@@ -316,16 +342,17 @@ class TestStreamGameStart:
         """Second start attempt → game_start_error."""
         servicer, stub = grpc_service
 
-        # Simulate an already-running game
-        servicer.game_state = game_coordinator_pb2.GameState.RUNNING
-        servicer.game_running = True
+        # Occupy the single (default cap=1) game slot with a real primary game.
+        with _NO_THREAD:
+            _, game_id = await servicer._start_game_from_config(_make_start_config("FFA", num_players=3), _MockSpan())
+            await servicer.event_bus.publish(GameEvent.GAME_STARTED, {"game_id": game_id})
 
-        config = _make_start_config("FFA", num_players=3)
-        request = game_coordinator_pb2.StreamEventsRequest(start_config=config)
+            config = _make_start_config("FFA", num_players=3)
+            request = game_coordinator_pb2.StreamEventsRequest(start_config=config)
 
-        events = []
-        async for event in stub.StreamGameEvents(request):
-            events.append(event)
+            events = []
+            async for event in stub.StreamGameEvents(request):
+                events.append(event)
 
         assert len(events) == 1
         assert events[0].event_type == "game_start_error"
@@ -343,7 +370,7 @@ class TestStreamGameStart:
         request = game_coordinator_pb2.StreamEventsRequest(start_config=config)
         received = []
 
-        with patch.object(servicer, "_run_game_loop_threaded"):
+        with _NO_THREAD:
 
             async def consume():
                 stream = stub.StreamGameEvents(request)
@@ -374,7 +401,7 @@ class TestStreamGameStart:
         request = game_coordinator_pb2.StreamEventsRequest(start_config=config)
         received = []
 
-        with patch.object(servicer, "_run_game_loop_threaded"):
+        with _NO_THREAD:
 
             async def consume():
                 stream = stub.StreamGameEvents(request)

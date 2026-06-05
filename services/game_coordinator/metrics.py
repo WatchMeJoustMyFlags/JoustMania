@@ -10,7 +10,17 @@ from contextlib import suppress
 from lib.otel_metrics import Counter, Gauge, Histogram
 
 # Game state metrics
-active_game = Gauge("game_active", "Whether a game is currently running (0=no, 1=yes)")
+#
+# Multi-session (#775): lifecycle metrics carry a ``game_kind`` label
+# ("primary" / "shadow") so shadow games are observable in their own series
+# instead of being invisible or clobbering the primary game's series. The
+# primary (menu-driven) session reports game_kind="primary"; concurrent
+# agent/shadow sessions report game_kind="shadow".
+active_game = Gauge(
+    "game_active",
+    "Whether a game is currently running (0=no, 1=yes)",
+    ["game_kind"],
+)
 
 current_game_mode = Gauge(
     "game_current_mode",
@@ -18,14 +28,30 @@ current_game_mode = Gauge(
     ["mode"],  # 'ffa', 'teams_simple', 'teams_random', 'nonstop_joust', 'none'
 )
 
-game_duration_seconds = Gauge("game_duration_seconds", "Duration of current game in seconds")
+game_duration_seconds = Gauge(
+    "game_duration_seconds",
+    "Duration of current game in seconds",
+    ["game_kind"],
+)
 
-games_started_total = Counter("games_started_total", "Total number of games started", ["mode"])
+games_started_total = Counter(
+    "games_started_total",
+    "Total number of games started",
+    ["mode", "game_kind"],
+)
 
-games_completed_total = Counter("games_completed_total", "Total number of games completed", ["mode"])
+games_completed_total = Counter(
+    "games_completed_total",
+    "Total number of games completed",
+    ["mode", "game_kind"],
+)
 
 # Player metrics
-active_players = Gauge("game_active_players", "Number of players currently in game")
+active_players = Gauge(
+    "game_active_players",
+    "Number of players currently in game",
+    ["game_kind"],
+)
 
 players_alive = Gauge("game_players_alive", "Number of players currently alive")
 
@@ -288,6 +314,39 @@ def clear_player_analytics(serial: str, game_id: str = "") -> None:
             player_elimination_order.remove(serial, game_id)
 
 
+def clear_session_player_analytics(
+    serials: list[str],
+    game_id: str = "",
+    reset_global_gauges: bool = True,
+) -> None:
+    """
+    Clear analytics metrics for a single game session at game end (#775).
+
+    Multi-session-safe replacement for ``clear_all_player_analytics()``: removes
+    only the gauges belonging to ``serials`` (the ending session's players)
+    rather than globally wiping every player gauge. With two concurrent games
+    this prevents the first game to end from erasing the live game's dashboard.
+
+    The game-state gauges (music_tempo, game_sensitivity, effective_*_threshold)
+    are genuinely single-game/primary concepts, so they are reset to 0 only when
+    ``reset_global_gauges`` is True (i.e. the PRIMARY session ending). A shadow
+    session ending must not zero them out from under the primary game.
+
+    Args:
+        serials: Controller serials of the ending session's players.
+        game_id: The ending session's game_id (for serial+game_id gauges).
+        reset_global_gauges: Reset the single-game state gauges (primary only).
+    """
+    for serial in serials:
+        clear_player_analytics(serial, game_id)
+
+    if reset_global_gauges:
+        music_tempo.set(0)
+        game_sensitivity.set(0)
+        effective_warning_threshold.set(0)
+        effective_death_threshold.set(0)
+
+
 def clear_all_player_analytics() -> None:
     """
     Clear all player analytics metrics at game end.
@@ -296,6 +355,10 @@ def clear_all_player_analytics() -> None:
     label combinations so the Player Insights dashboard shows no data
     between games. Per-death metric removal was eliminated (Issue #458)
     to prevent dashboard flicker during game transitions.
+
+    DEPRECATED for multi-session use (#775): does a global wipe that clobbers
+    concurrent sessions. Prefer ``clear_session_player_analytics()``. Retained
+    for any callers that genuinely want a full reset.
     """
     player_accel_magnitude._metrics.clear()
     player_accel_magnitude._values.clear()

@@ -6,23 +6,35 @@ Manages game lifecycle:
 - Monitor game state
 - Force end games
 - Stream game events (deaths, scoring, game end)
+
+Multi-session (#775): the servicer holds ``dict[game_id, GameSession]`` instead
+of a single game's fields, so multiple games can run concurrently. A persistent
+PRIMARY EventBus (created here, never destroyed) preserves the legacy
+"subscribe before any game exists" semantics: the first session started while no
+primary is active becomes the primary and publishes to this bus; concurrent
+secondary (shadow) sessions each get their own EventBus. Zero-arg
+``StreamGameEvents`` subscribers attach to the primary bus exactly as before; a
+``StreamGameEvents`` call WITH start_config subscribes to the bus of the session
+it just created. ``ForceEndGame`` / ``GetGameState`` (no game_id in the proto
+yet — that is #776) operate on the primary session.
 """
 
 import asyncio
 import logging
+import os
 import threading
 import time
+import uuid
 
 from opentelemetry import trace
 
 from lib.telemetry import get_tracer
-from lib.types import GameEvent, get_game_display_name
+from lib.types import GameEvent
 from proto import game_coordinator_pb2, game_coordinator_pb2_grpc
 from services.game_coordinator import metrics
 from services.game_coordinator.difficulty_handlers import register_difficulty_handlers
 from services.game_coordinator.event_bus import EventBus
-from services.game_coordinator.game_factory import GameFactory
-from services.game_coordinator.grpc_clients import GrpcClientManager
+from services.game_coordinator.game_session import GAME_KIND_PRIMARY, GAME_KIND_SHADOW, GameSession
 from services.game_coordinator.interventions import InterventionManager
 from services.game_coordinator.lifecycle_handlers import register_lifecycle_handlers
 
@@ -31,52 +43,54 @@ logger = logging.getLogger(__name__)
 # Lazy telemetry initialization - defers OTLP setup until first span
 tracer = get_tracer(__name__)
 
+# Concurrency cap (#775). Default 1 preserves today's behavior exactly: the
+# second concurrent start is rejected with the legacy "Game already in progress"
+# message. Tests/agents raise it for multi-session.
+DEFAULT_MAX_CONCURRENT_GAMES = 1
+
+
+def _max_concurrent_games() -> int:
+    """Read the concurrent-games cap from the environment (default 1)."""
+    raw = os.getenv("GAME_MAX_CONCURRENT_GAMES", str(DEFAULT_MAX_CONCURRENT_GAMES))
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_CONCURRENT_GAMES
+    return max(1, value)
+
 
 class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceServicer):
     """
     GameCoordinator gRPC servicer.
 
-    Manages game lifecycle:
-    - Start games
-    - Monitor game state
-    - Force end games
-    - Stream game events
+    Manages the lifecycle of one or more concurrent games via a session
+    registry. See the module docstring for the primary/shadow bus design.
     """
 
     def __init__(self):
         """Initialize game coordinator."""
-        self.current_game = None
-        self.game_state = game_coordinator_pb2.GameState.IDLE
-        self.game_name = ""
-        self.players: list[game_coordinator_pb2.Player] = []
-        self.game_config = None  # Full StartGameConfig proto
-        self.game_start_time = None
-        self.game_id = None
+        # Session registry: game_id -> GameSession. Guarded by _sessions_lock for
+        # dict mutation (add/remove); each session has its own state lock.
+        self.sessions: dict[str, GameSession] = {}
+        self._sessions_lock = threading.Lock()
+        # game_id of the active primary session, or None when no primary is live.
+        self._primary_game_id: str | None = None
 
-        # Thread-safe state access lock
-        # Protects: game_state, current_game, players
-        self._state_lock = threading.Lock()
-
-        # Event bus for pub/sub
-        self.event_bus = EventBus(state_sync_callback=self._on_event_state_sync)
+        # Persistent PRIMARY EventBus — created once, NEVER destroyed. Zero-arg
+        # StreamGameEvents subscribers (the menu) attach here even before any
+        # game exists, preserving legacy subscribe-before-start semantics. Its
+        # state-sync callback routes to whichever session owns the primary slot.
+        self.primary_event_bus = EventBus(state_sync_callback=self._on_primary_event_state_sync)
 
         # Random game history
         self.random_history: list[str] = []
 
-        # Mock game thread
-        self.game_thread: threading.Thread | None = None
-        self.game_running = False
-
-        # gRPC client manager
-        self.clients = GrpcClientManager()
-
         # Agent intervention manager (#730): subscribes to the flagd
         # `interventions` domain and applies agent interventions to the live
-        # game via the enforcement chain. Handlers are no-op stubs in this PR
-        # (PR A); PRs C/D/E register real effect handlers. get_live_game()
-        # returns the running BaseGameMode so handlers act on current state.
+        # (primary) game via the enforcement chain. get_live_game() returns the
+        # primary session's running BaseGameMode so handlers act on it.
         self.intervention_manager = InterventionManager(
-            event_publisher=self.event_bus.publish,
+            event_publisher=self.primary_event_bus.publish,
             get_game=self.get_live_game,
             end_game_fn=self._force_end_current_game,
         )
@@ -93,253 +107,172 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
 
         logger.info("GameCoordinator initialized")
 
+    # ------------------------------------------------------------------
+    # Primary-session accessors (ForceEndGame / GetGameState / interventions
+    # all operate on the primary session until game_id routing lands in #776).
+    # ------------------------------------------------------------------
+
+    @property
+    def event_bus(self) -> EventBus:
+        """Primary EventBus (back-compat alias used by tests and interventions)."""
+        return self.primary_event_bus
+
+    def _get_primary_session(self) -> GameSession | None:
+        """Return the active primary session, or None."""
+        with self._sessions_lock:
+            if self._primary_game_id is None:
+                return None
+            return self.sessions.get(self._primary_game_id)
+
+    @property
+    def current_game(self):
+        """Primary session's running game instance (back-compat for tests)."""
+        session = self._get_primary_session()
+        return session.current_game if session else None
+
+    @property
+    def game_state(self):
+        """Primary session's state (back-compat). IDLE when no primary."""
+        session = self._get_primary_session()
+        return session.game_state if session else game_coordinator_pb2.GameState.IDLE
+
+    @property
+    def game_id(self):
+        """Primary session's game_id (back-compat), or None."""
+        return self._primary_game_id
+
     def get_live_game(self):
-        """Return the currently running game instance, or None.
+        """Return the currently running PRIMARY game instance, or None.
 
         Used by the InterventionManager so intervention handlers act on the
-        live game state. Thread-safe via the state lock.
+        live (menu-driven) game.
         """
-        with self._state_lock:
-            return self.current_game
+        return self.current_game
 
-    def _on_event_state_sync(self, event_type: str):
-        """
-        Callback for EventBus to sync game state on lifecycle events.
+    def _on_primary_event_state_sync(self, event_type: str):
+        """State-sync callback for the persistent primary bus.
 
-        Called by EventBus.publish() while holding event lock.
-        Updates game_state based on event type.
+        Routes to the primary session's own state-sync so the primary session's
+        ``game_state`` tracks lifecycle events. No-ops when no primary is live.
         """
-        if event_type == GameEvent.GAME_STARTED:
-            self.game_state = game_coordinator_pb2.GameState.RUNNING
-            logger.info("Game state transitioned to RUNNING")
-        elif GameEvent.is_game_ending(event_type):
-            self.game_state = game_coordinator_pb2.GameState.ENDED
-            logger.info("Game state transitioned to ENDED")
+        session = self._get_primary_session()
+        if session is not None:
+            session.on_event_state_sync(event_type)
+
+    # ------------------------------------------------------------------
+    # Start path
+    # ------------------------------------------------------------------
 
     async def _start_game_from_config(self, config, parent_span) -> tuple[bool, str]:
         """
         Start a game from StartGameConfig (internal helper).
 
-        Args:
-            config: StartGameConfig with game_name, players, settings
-            parent_span: Parent span for trace context
+        Creates a new GameSession, registers it, and launches its background
+        thread. The first session started while no primary is active becomes the
+        primary (and uses the persistent primary bus); additional concurrent
+        sessions are shadow sessions, each with its own EventBus.
 
         Returns:
             Tuple of (success, error_message_or_game_id)
         """
         try:
-            # Thread-safe state check and transition
-            with self._state_lock:
-                # Check if game already running
-                if self.game_state in [
-                    game_coordinator_pb2.GameState.STARTING,
-                    game_coordinator_pb2.GameState.RUNNING,
-                ]:
+            # Validate player count (cheap, no lock needed).
+            if len(config.players) < 2:
+                return False, "Need at least 2 players"
+
+            with self._sessions_lock:
+                # Concurrency gate (#775). Default cap 1 reproduces the legacy
+                # single-game rejection message exactly.
+                if len(self.sessions) >= _max_concurrent_games():
                     return False, "Game already in progress"
 
-                # Validate player count
-                if len(config.players) < 2:
-                    return False, "Need at least 2 players"
+                # Decide kind + bus. First session with no live primary becomes
+                # the primary and reuses the persistent primary bus.
+                if self._primary_game_id is None:
+                    game_kind = GAME_KIND_PRIMARY
+                    event_bus = self.primary_event_bus
+                else:
+                    game_kind = GAME_KIND_SHADOW
+                    event_bus = EventBus()
 
-                # Store game configuration
-                self.game_name = config.game_name
-                self.players = list(config.players)
-                self.game_config = config  # Store full config for typed game options
-                self.game_id = f"game_{int(time.time())}"
-                self.game_start_time = time.time()
+                game_id = f"game_{uuid.uuid4().hex[:12]}"
+                parent_context = trace.set_span_in_context(parent_span)
 
-                # Capture parent context for game span in background thread
-                self.game_parent_context = trace.set_span_in_context(parent_span)
+                session = GameSession(
+                    game_id=game_id,
+                    game_name=config.game_name,
+                    players=list(config.players),
+                    game_config=config,
+                    event_bus=event_bus,
+                    game_kind=game_kind,
+                    parent_context=parent_context,
+                )
+                # Shadow sessions own their bus; bind its state-sync to the
+                # session so the bus updates that session's state directly.
+                if game_kind == GAME_KIND_SHADOW:
+                    event_bus._state_sync_callback = session.on_event_state_sync
 
-                # Update state
-                self.game_state = game_coordinator_pb2.GameState.STARTING
+                self.sessions[game_id] = session
+                if game_kind == GAME_KIND_PRIMARY:
+                    self._primary_game_id = game_id
 
-            # Update metrics
-            metrics.active_game.set(1)
-            metrics.games_started_total.labels(mode=self.game_name).inc()
-            metrics.active_players.set(len(self.players))
+            # Update lifecycle metrics for this session's kind.
+            metrics.active_game.labels(game_kind=game_kind).set(1)
+            metrics.games_started_total.labels(mode=session.game_name, game_kind=game_kind).inc()
+            metrics.active_players.labels(game_kind=game_kind).set(len(session.players))
 
-            # Publish game_start event
-            await self.event_bus.publish(
+            # Publish game_start on this session's bus.
+            await session.event_bus.publish(
                 GameEvent.GAME_START,
                 {
-                    "game_name": self.game_name,
-                    "game_id": self.game_id,
-                    "player_count": str(len(self.players)),
+                    "game_name": session.game_name,
+                    "game_id": game_id,
+                    "player_count": str(len(session.players)),
                 },
             )
 
-            # Start game in background thread (with async support)
-            self.game_running = True
-            self.game_thread = threading.Thread(target=self._run_game_loop_threaded, daemon=True)
-            self.game_thread.start()
+            # Start game in background thread (with async support).
+            session.start_thread()
 
-            logger.info(f"Started game: {self.game_name} with {len(self.players)} players")
-            return True, self.game_id
+            logger.info(f"Started {game_kind} game {game_id}: {session.game_name} with {len(session.players)} players")
+            return True, game_id
 
         except Exception as e:
             logger.error(f"StartGame error: {e}", exc_info=True)
             return False, str(e)
 
-    def _run_game_loop_threaded(self):
-        """Run the game loop in background thread (creates async event loop)."""
-        # Create new event loop for this thread
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(self._run_game_loop_async())
-        finally:
-            # Properly cleanup gRPC async resources before closing loop
-            # This prevents BlockingIOError from gRPC's PollerCompletionQueue
-            try:
-                # Cancel any remaining tasks
-                pending = asyncio.all_tasks(loop)
-                if pending:
-                    logger.debug(f"Cancelling {len(pending)} pending tasks before loop close")
-                    for task in pending:
-                        task.cancel()
-                    # Wait for cancellation to complete (with timeout)
-                    loop.run_until_complete(asyncio.wait(pending, timeout=1.0))
-
-                # Give gRPC pollers time to drain their queues
-                loop.run_until_complete(asyncio.sleep(0.1))
-            except Exception as e:
-                logger.debug(f"Cleanup before loop close: {e}")
-            finally:
-                loop.close()
-
-    async def _run_game_loop_async(self):
-        """Run the async game loop."""
-        # Initialize async gRPC clients in this event loop
-        await self.clients.connect()
-
-        # Get the display name for the game span
-        game_span_name = get_game_display_name(self.game_name)
-
-        # Get parent context captured from StartGame RPC span
-        # This keeps the game span in the same trace as the StartGame call
-        parent_context = getattr(self, "game_parent_context", None)
-
-        # Create the game span as a child of StartGame, keeping it in the same trace
-        with tracer.start_as_current_span(game_span_name, context=parent_context) as game_span:
-            game_span.set_attribute("game.name", self.game_name)
-            game_span.set_attribute("game.id", self.game_id)
-            game_span.set_attribute("player.count", len(self.players))
-
-            try:
-                # Check if gRPC clients are available
-                if not self.clients.is_connected:
-                    error_msg = "gRPC clients not initialized - ControllerManager service must be running"
-                    logger.error(error_msg)
-                    # Thread-safe state transition
-                    with self._state_lock:
-                        self.game_state = game_coordinator_pb2.GameState.ENDED
-                    await self.event_bus.publish("game_error", {"error": error_msg})
-                    # Cleanup any partially initialized channels
-                    await self.clients.close()
-                    return
-
-                # Create game instance using factory
-                try:
-                    game = GameFactory.create_game(
-                        game_name=self.game_name,
-                        controller_manager_client=self.clients.controller_manager,
-                        event_publisher=self.event_bus.publish,
-                        audio_client=self.clients.audio,
-                        game_id=self.game_id,
-                        initial_players=self.players,
-                        sensitivity=self.game_config.sensitivity if self.game_config else 2,
-                        game_config=self.game_config,
-                    )
-                except ValueError as e:
-                    # Unknown game mode
-                    error_msg = str(e)
-                    logger.error(error_msg)
-                    with self._state_lock:
-                        self.game_state = game_coordinator_pb2.GameState.ENDED
-                    await self.event_bus.publish("game_error", {"error": error_msg})
-                    await self.clients.close()
-                    return
-
-                # Store reference and run game
-                self.current_game = game
-                await game.run()
-                logger.info(f"{self.game_name} game completed")
-
-            except Exception as e:
-                logger.error(f"Game loop error: {e}", exc_info=True)
-                # Thread-safe state transition
-                with self._state_lock:
-                    self.game_state = game_coordinator_pb2.GameState.ENDED
-                await self.event_bus.publish("game_error", {"error": str(e)})
-            finally:
-                # Thread-safe state cleanup
-                with self._state_lock:
-                    self.game_running = False
-                    self.current_game = None
-
-                # Update metrics
-                metrics.active_game.set(0)
-                metrics.active_players.set(0)
-                metrics.players_alive.set(0)
-                if self.game_name:
-                    metrics.games_completed_total.labels(mode=self.game_name).inc()
-                if self.game_start_time:
-                    duration = time.time() - self.game_start_time
-                    metrics.game_duration_seconds.set(duration)
-
-                # Cleanup channels
-                await self.clients.close()
-                logger.info("Closed gRPC channels")
+    # ------------------------------------------------------------------
+    # Force-end path
+    # ------------------------------------------------------------------
 
     async def _force_end_current_game(self, reason: str) -> tuple[bool, str]:
-        """Force end the running game (shared by ForceEndGame RPC and the
+        """Force end the PRIMARY game (shared by ForceEndGame RPC and the
         ``end_game`` agent intervention, #730).
 
-        Stops the game loop, calls ``force_end()`` on the live game, joins the
-        game thread, transitions to ENDED, and publishes ``game_force_ended``.
-        No-ops safely (returns ``(False, ...)``) when no game is in progress.
+        Until game_id routing lands (#776), this targets the primary session.
+        No-ops safely (returns ``(False, ...)``) when no primary game is running.
 
         Returns ``(success, error)``.
         """
-        # Thread-safe state check and update
-        with self._state_lock:
-            if self.game_state not in [
-                game_coordinator_pb2.GameState.STARTING,
-                game_coordinator_pb2.GameState.RUNNING,
-            ]:
-                return False, "No game in progress"
+        session = self._get_primary_session()
+        if session is None:
+            return False, "No game in progress"
 
-            # Stop game loop
-            self.game_running = False
-            current_game = self.current_game
-            game_thread = self.game_thread
-            game_id = self.game_id
+        success, error = await session.force_end(reason)
+        if success:
+            self._retire_session(session.game_id)
+        return success, error
 
-        # Call force_end on current game if it exists
-        if current_game and hasattr(current_game, "force_end"):
-            current_game.force_end()
-
-        # Wait for thread in executor to avoid blocking gRPC server
-        if game_thread and game_thread.is_alive():
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, lambda: game_thread.join(timeout=2.0))
-
-        # Thread-safe state transition
-        with self._state_lock:
-            self.game_state = game_coordinator_pb2.GameState.ENDED
-
-        # Publish event
-        await self.event_bus.publish(
-            "game_force_ended",
-            {"reason": reason, "game_id": game_id or "unknown"},
-        )
-
-        logger.info(f"Force ended game: {reason}")
-        return True, ""
+    def _retire_session(self, game_id: str) -> None:
+        """Remove a finished session from the registry and free the primary slot
+        if it owned it, so a new primary can start."""
+        with self._sessions_lock:
+            self.sessions.pop(game_id, None)
+            if self._primary_game_id == game_id:
+                self._primary_game_id = None
 
     async def ForceEndGame(self, request, _context):
-        """Force end the current game."""
+        """Force end the current (primary) game."""
         try:
             success, error = await self._force_end_current_game(request.reason)
             return game_coordinator_pb2.ForceEndGameResponse(success=success, error=error)
@@ -347,18 +280,27 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             logger.error(f"ForceEndGame error: {e}", exc_info=True)
             return game_coordinator_pb2.ForceEndGameResponse(success=False, error=str(e))
 
+    # ------------------------------------------------------------------
+    # Streaming
+    # ------------------------------------------------------------------
+
     async def StreamGameEvents(self, request, context):
         """
         Stream game events in real-time.
 
-        If start_config is provided, starts a new game before streaming events.
-        Otherwise, subscribes to current/upcoming game events.
+        If start_config is provided, starts a new game and subscribes to THAT
+        session's bus (so a headless starter receives its own game's events).
+        Otherwise, subscribes to the persistent primary bus (legacy zero-arg
+        behavior — the menu's subscribe-before-start path).
         """
         subscriber_id = f"events_{time.time()}"
 
         # Enrich the server span created by the gRPC interceptor
         span = trace.get_current_span()
         span.set_attribute("subscriber.id", subscriber_id)
+
+        # Default subscription target is the persistent primary bus.
+        event_bus = self.primary_event_bus
 
         # Check if this is a game start request
         if request.HasField("start_config"):
@@ -384,8 +326,15 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             span.set_attribute("game.id", result)
             logger.info(f"Game {result} started via stream")
 
+            # Subscribe to the bus of the session we just created so a headless
+            # starter receives its own game's events (works without proto
+            # changes; #776 adds explicit game_id routing).
+            started = self.sessions.get(result)
+            if started is not None:
+                event_bus = started.event_bus
+
         # Subscribe to event bus
-        event_queue = await self.event_bus.subscribe(subscriber_id)
+        event_queue = await event_bus.subscribe(subscriber_id)
 
         try:
             while not context.cancelled():
@@ -403,37 +352,49 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
 
         finally:
             # Cleanup via EventBus
-            await self.event_bus.unsubscribe(subscriber_id)
+            await event_bus.unsubscribe(subscriber_id)
+
+    # ------------------------------------------------------------------
+    # State query
+    # ------------------------------------------------------------------
 
     async def GetGameState(self, _request, _context):
         """
-        Get current game state for testing and observability.
+        Get current (primary) game state for testing and observability.
 
         Returns detailed player information including team assignments,
-        colors, and alive status.
+        colors, and alive status. Operates on the primary session until game_id
+        routing lands (#776).
         """
         try:
-            with self._state_lock:
-                # Build game info response
+            session = self._get_primary_session()
+
+            if session is None:
                 game_info = game_coordinator_pb2.GameInfo(
-                    game_mode=self.game_name or "",
-                    state=self.game_state,
-                    game_id=self.game_id or "",
-                    start_time_ms=int((self.game_start_time or 0) * 1000),
+                    game_mode="",
+                    state=game_coordinator_pb2.GameState.IDLE,
+                    game_id="",
+                    start_time_ms=0,
+                )
+                return game_coordinator_pb2.GetGameStateResponse(success=True, error="", game_info=game_info)
+
+            with session._state_lock:
+                game_info = game_coordinator_pb2.GameInfo(
+                    game_mode=session.game_name or "",
+                    state=session.game_state,
+                    game_id=session.game_id or "",
+                    start_time_ms=int((session.game_start_time or 0) * 1000),
                 )
 
-                # Get player info from current game if running
-                if self.current_game and hasattr(self.current_game, "players"):
-                    # Get team info if available (for team-based games)
-                    teams = getattr(self.current_game, "teams", {})
+                current_game = session.current_game
+                if current_game and hasattr(current_game, "players"):
+                    teams = getattr(current_game, "teams", {})
 
-                    for serial, player in self.current_game.players.items():
-                        # Get team name from teams dict if available
+                    for serial, player in current_game.players.items():
                         team_name = ""
                         if player.team >= 0 and player.team in teams:
                             team_name = teams[player.team].name
 
-                        # Get color components
                         color = player.color if player.color else (0, 0, 0)
                         r, g, b = color[0], color[1], color[2]
 
@@ -464,8 +425,12 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 error=str(e),
             )
 
+    # ------------------------------------------------------------------
+    # Shutdown
+    # ------------------------------------------------------------------
+
     async def shutdown(self):
-        """Shutdown the game coordinator."""
+        """Shutdown the game coordinator: join all session threads."""
         logger.info("Shutting down GameCoordinator...")
 
         # Stop intervention flag subscription (#730)
@@ -474,16 +439,12 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         except Exception as e:
             logger.debug(f"InterventionManager stop failed: {e}")
 
-        # Thread-safe state access
-        with self._state_lock:
-            self.game_running = False
-            game_thread = self.game_thread
+        with self._sessions_lock:
+            sessions = list(self.sessions.values())
 
-        # Run thread.join() in executor to avoid blocking event loop
-        if game_thread and game_thread.is_alive():
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, lambda: game_thread.join(timeout=2.0))
-
-        # Centralized channel cleanup
-        logger.info("Closing gRPC channels...")
-        await self.clients.close()
+        logger.info(f"Joining {len(sessions)} game session thread(s)...")
+        for session in sessions:
+            try:
+                await session.join_thread()
+            except Exception as e:
+                logger.debug(f"Session {session.game_id} join failed: {e}")
