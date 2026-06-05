@@ -55,7 +55,13 @@ ROLLOUT_PATH = os.path.join(_FLAGD_DIR, "rollout.json")
 # load (#805 is a known timing flake on the game path; the rollout path is
 # simpler but we stay conservative).
 RELOAD_SETTLE_SECONDS = 2.0
-RESOLVE_TIMEOUT_SECONDS = 15.0
+# Generous: one CI run (27028642150) showed a defaultVariant flip never resolving
+# within 15s while EARLIER flips on the same file did — a missed/coalesced
+# file-watch reload under load. _poll_until therefore also supports re-writing
+# the file mid-poll (see its `rewrite` param), which produces a fresh inotify
+# event and self-heals that case.
+RESOLVE_TIMEOUT_SECONDS = 30.0
+REWRITE_INTERVAL_SECONDS = 2.0
 
 
 # =============================================================================
@@ -149,13 +155,22 @@ def _rollout_client(docker_compose):
     return api.get_client("it_rollout"), provider
 
 
-def _poll_until(predicate, timeout: float = RESOLVE_TIMEOUT_SECONDS) -> bool:
+def _poll_until(predicate, timeout: float = RESOLVE_TIMEOUT_SECONDS, rewrite=None) -> bool:
     """Poll predicate() until true or timeout (provider connect + flagd reload may
-    lag the file write). Returns the final predicate value."""
+    lag the file write). Returns the final predicate value.
+
+    ``rewrite``, when given, is an IDEMPOTENT re-application of the file write
+    being waited on, re-invoked every REWRITE_INTERVAL_SECONDS. Each re-write
+    touches the file → fresh inotify event → flagd reloads, self-healing a
+    missed or coalesced file-watch event (observed under CI load)."""
     deadline = time.time() + timeout
+    last_rewrite = time.time()
     while time.time() < deadline:
         if predicate():
             return True
+        if rewrite is not None and time.time() - last_rewrite >= REWRITE_INTERVAL_SECONDS:
+            rewrite()
+            last_rewrite = time.time()
         time.sleep(0.3)
     return predicate()
 
@@ -185,7 +200,8 @@ async def test_rollout_write_shape_resolves_via_live_flagd(rollout_file, docker_
 
         # strategy + target_backend resolve as written.
         assert _poll_until(
-            lambda: client.get_string_value("strategy", "off", empty) == "progressive"
+            lambda: client.get_string_value("strategy", "off", empty) == "progressive",
+            rewrite=lambda: set_default_variant("strategy", "progressive"),
         ), f"strategy resolved to {client.get_string_value('strategy', 'off', empty)!r}"
         assert client.get_string_value("target_backend", "python", empty) == "rust", (
             "target_backend did not resolve to the written rust"
@@ -196,17 +212,21 @@ async def test_rollout_write_shape_resolves_via_live_flagd(rollout_file, docker_
         for variant, expected in ladder:
             set_controller_count_variant(variant)
             assert _poll_until(
-                lambda e=expected: client.get_integer_value("current_controller_count", -1, empty) == e
+                lambda e=expected: client.get_integer_value("current_controller_count", -1, empty) == e,
+                rewrite=lambda v=variant: set_controller_count_variant(v),
             ), (
                 f"current_controller_count={variant!r} resolved to "
-                f"{client.get_integer_value('current_controller_count', -1, empty)}, want {expected}"
+                f"{client.get_integer_value('current_controller_count', -1, empty)}, want {expected}; "
+                f"file defaultVariant="
+                f"{_load()['flags']['current_controller_count']['defaultVariant']!r}"
             )
 
         # Rollback shape: the loop resets current_controller_count to "none" (0) on
         # an allowed rollback — assert that exact flip lands too.
         set_controller_count_variant("none")
         assert _poll_until(
-            lambda: client.get_integer_value("current_controller_count", -1, empty) == 0
+            lambda: client.get_integer_value("current_controller_count", -1, empty) == 0,
+            rewrite=lambda: set_controller_count_variant("none"),
         ), "rollback-to-none did not resolve to 0"
     finally:
         provider.shutdown()
