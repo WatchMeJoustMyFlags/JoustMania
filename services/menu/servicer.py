@@ -798,11 +798,14 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         # Read game settings from flagd (game domain)
         sensitivity = self.game_settings_client.get_integer_value("sensitivity", 2)
 
-        # Build base config with the game mode's name
+        # Build base config with the game mode's name. The menu is the REAL game
+        # (#837): mark its origin so the coordinator reserves the primary slot
+        # for it (and preempts any running shadow games).
         config = game_coordinator_pb2.StartGameConfig(
             game_name=game_mode.name,
             players=players,
             sensitivity=sensitivity,
+            origin=game_coordinator_pb2.GAME_ORIGIN_MENU,
         )
 
         # Build mode-specific config using pattern matching

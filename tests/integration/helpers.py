@@ -1434,8 +1434,19 @@ async def end_swapper_game(
 
         team_1 = [s for s, p in players.items() if p.team == 1]
         if not team_1:
-            # All players on team 0 — game end should be imminent
-            return killed
+            if killed:
+                # All players on team 0 after at least one swap — end imminent.
+                return killed
+            # Startup race (caught on #837 CI): proto3 PlayerInfo.team defaults
+            # to 0, so a query landing before Swapper assigns teams looks
+            # exactly like "everyone converged on team 0". A real Swapper start
+            # always splits players two ways, so empty team 1 with NO kills yet
+            # means teams are not assigned yet — wait and re-query instead of
+            # returning (which left the 2v2 game running with no terminal event).
+            if asyncio.get_event_loop().time() >= deadline:
+                raise TimeoutError(f"Swapper teams never got assigned within {timeout}s")
+            await asyncio.sleep(delay)
+            continue
 
         if asyncio.get_event_loop().time() >= deadline:
             counts = {s: p.team for s, p in players.items()}
