@@ -80,9 +80,34 @@ END_MAX_MUSIC_FAST_TIME = 10
 END_MIN_MUSIC_SLOW_TIME = 8
 END_MAX_MUSIC_SLOW_TIME = 12
 
-# Volume levels
+# Volume levels — module constants double as flagd defaults and as the
+# revert target for the volume_override intervention (interventions.py).
 GAME_VOLUME = 0.7
 COUNTDOWN_MUSIC_VOLUME = 0.15  # Soft background music during countdown
+
+
+def _read_volume_flag(flag_name: str, default: float) -> float:
+    """Read a per-channel volume from the flagd user domain (F7, #766).
+
+    Validates the value is a number in [0.0, 1.0]; falls back to the hardcoded
+    default on malformed values or any read error, so promotion stays
+    behavior-neutral. Read at game init only (init-frozen).
+    """
+    try:
+        from openfeature.evaluation_context import EvaluationContext
+
+        from lib.feature_flags import get_flag_client, init_flag_domain
+
+        init_flag_domain("user")
+        client = get_flag_client("user")
+        value = client.get_float_value(flag_name, default, EvaluationContext())
+        if not isinstance(value, int | float) or isinstance(value, bool) or not (0.0 <= value <= 1.0):
+            logger.warning(f"Malformed volume {flag_name}={value!r}, using default {default}")
+            return default
+        return float(value)
+    except Exception as e:
+        logger.warning(f"Failed to read volume {flag_name}, using default {default}: {e}")
+        return default
 
 
 # Threshold arrays from original JoustMania (in g-force units, 1.0 = 1g)
@@ -359,6 +384,12 @@ class BaseGameMode(ABC):
 
         # Tracked async tasks for automatic cleanup on game end
         self._tasks: set[asyncio.Task] = set()
+
+        # Per-channel volumes (F7, #766) — read once at game init from the user
+        # domain (init-frozen). Defaults reproduce the original constants, so
+        # promotion is behavior-neutral. Malformed values fall back to defaults.
+        self.game_volume = _read_volume_flag("audio_volume.game", GAME_VOLUME)
+        self.countdown_music_volume = _read_volume_flag("audio_volume.countdown_music", COUNTDOWN_MUSIC_VOLUME)
 
         logger.info(f"{self.get_game_name()} game initialized: {self.game_id}")
 
@@ -1643,7 +1674,7 @@ class BaseGameMode(ABC):
 
                 # Start game music BEFORE countdown at low volume.
                 # OGG decode happens during countdown, so music is ready instantly after.
-                await self._start_game_music(volume=COUNTDOWN_MUSIC_VOLUME)
+                await self._start_game_music(volume=self.countdown_music_volume)
 
             # Game starts
             self.state = GameState.RUNNING
@@ -1711,7 +1742,7 @@ class BaseGameMode(ABC):
                     try:
                         from proto import audio_pb2
 
-                        await self.audio_client.SetVolume(audio_pb2.SetVolumeRequest(volume=GAME_VOLUME))
+                        await self.audio_client.SetVolume(audio_pb2.SetVolumeRequest(volume=self.game_volume))
                     except Exception as e:
                         logger.warning(f"Failed to set game volume: {e}")
 
@@ -1954,15 +1985,19 @@ class BaseGameMode(ABC):
         metrics.effective_warning_threshold.set(effective_warn)
         metrics.effective_death_threshold.set(effective_death)
 
-    async def _start_game_music(self, volume: float = GAME_VOLUME):
+    async def _start_game_music(self, volume: float | None = None):
         """
         Start game music with tempo control (Phase 70).
 
-        Sets volume and starts music at normal speed.
+        Sets volume and starts music at normal speed. When ``volume`` is None,
+        uses the per-game configured game volume (F7, #766).
         Note: play_audio setting is checked centrally in audio service.
         """
         if not self.audio_client:
             return
+
+        if volume is None:
+            volume = self.game_volume
 
         try:
             from proto import audio_pb2

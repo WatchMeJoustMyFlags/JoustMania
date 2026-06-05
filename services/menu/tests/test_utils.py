@@ -22,6 +22,63 @@ class TestAudioHelper:
         """AudioHelper should initialize correctly."""
         assert audio.lobby_music_track_id is None
 
+    def test_default_volumes_without_client(self, audio):
+        """Without a user-prefs client, volumes equal the hardcoded defaults (F7, #766)."""
+        from services.menu.utils.audio import (
+            DEFAULT_LOBBY_MUSIC_VOLUME,
+            DEFAULT_SOUND_VOLUME,
+            DEFAULT_VOICE_VOLUME,
+        )
+
+        assert audio.sound_volume == DEFAULT_SOUND_VOLUME == 0.8
+        assert audio.voice_volume == DEFAULT_VOICE_VOLUME == 0.9
+        assert audio.lobby_music_volume == DEFAULT_LOBBY_MUSIC_VOLUME == 0.4
+
+    def test_valid_volume_overrides_from_flags(self):
+        """Valid user-domain flag values override the channel volumes."""
+        values = {
+            "audio_volume.menu_sound": 0.6,
+            "audio_volume.menu_voice": 1.0,
+            "audio_volume.lobby_music": 0.2,
+        }
+        client = MagicMock()
+        client.get_float_value.side_effect = lambda name, default: values.get(name, default)
+
+        audio = AudioHelper(MagicMock(), user_prefs_client=client)
+        assert audio.sound_volume == 0.6
+        assert audio.voice_volume == 1.0
+        assert audio.lobby_music_volume == 0.2
+
+    def test_malformed_volume_falls_back_to_default(self):
+        """Out-of-range / non-numeric flag values fall back to defaults."""
+        from services.menu.utils.audio import DEFAULT_SOUND_VOLUME, DEFAULT_VOICE_VOLUME
+
+        bad = {"audio_volume.menu_sound": 5.0, "audio_volume.menu_voice": "loud"}
+        client = MagicMock()
+        client.get_float_value.side_effect = lambda name, default: bad.get(name, default)
+
+        audio = AudioHelper(MagicMock(), user_prefs_client=client)
+        assert audio.sound_volume == DEFAULT_SOUND_VOLUME
+        assert audio.voice_volume == DEFAULT_VOICE_VOLUME
+
+    @pytest.mark.asyncio
+    async def test_play_sound_uses_configured_volume(self):
+        """play_sound with no explicit volume uses the configured sound volume."""
+        client = MagicMock()
+        client.get_float_value.side_effect = lambda name, default: (
+            0.55 if name == "audio_volume.menu_sound" else default
+        )
+        audio = AudioHelper(MagicMock(), user_prefs_client=client)
+
+        with patch("proto.audio_pb2_grpc.AudioServiceStub") as mock_stub_class:
+            mock_stub = MagicMock()
+            mock_stub.PlaySound = AsyncMock()
+            mock_stub_class.return_value = mock_stub
+
+            await audio.play_sound("test/sound.ogg")
+
+            assert mock_stub.PlaySound.call_args.args[0].volume == pytest.approx(0.55)
+
     @pytest.mark.asyncio
     async def test_play_sound_string(self, audio):
         """play_sound should handle string sound paths."""

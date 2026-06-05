@@ -8,6 +8,31 @@ from lib.types import Sound
 
 logger = logging.getLogger(__name__)
 
+# Default per-channel volumes (F7, #766). These double as the flagd user-domain
+# defaults, so promotion is behavior-neutral.
+DEFAULT_SOUND_VOLUME = 0.8
+DEFAULT_VOICE_VOLUME = 0.9
+DEFAULT_LOBBY_MUSIC_VOLUME = 0.4
+
+
+def _read_volume(client, flag_name: str, default: float) -> float:
+    """Read a per-channel volume from the user domain with validation.
+
+    Falls back to the hardcoded default on malformed values (not a number in
+    [0.0, 1.0]) or any read error / missing client.
+    """
+    if client is None:
+        return default
+    try:
+        value = client.get_float_value(flag_name, default)
+        if not isinstance(value, int | float) or isinstance(value, bool) or not (0.0 <= value <= 1.0):
+            logger.warning(f"Malformed volume {flag_name}={value!r}, using default {default}")
+            return default
+        return float(value)
+    except Exception as e:
+        logger.warning(f"Failed to read volume {flag_name}, using default {default}: {e}")
+        return default
+
 
 # Game mode voice announcements
 GAME_MODE_VOICE: dict[str, Sound] = {
@@ -33,24 +58,36 @@ class AudioHelper:
     Provides methods for playing sounds, voice announcements, and lobby music.
     """
 
-    def __init__(self, audio_channel: grpc.aio.Channel):
+    def __init__(self, audio_channel: grpc.aio.Channel, user_prefs_client=None):
         """
         Initialize audio helper.
 
         Args:
             audio_channel: gRPC channel to Audio service
+            user_prefs_client: OpenFeature client for the user domain (F7, #766).
+                Per-channel volumes are read once at init; falls back to the
+                hardcoded defaults when None or on malformed flag values.
         """
         self.audio_channel = audio_channel
         self.lobby_music_track_id: str | None = None
 
-    async def play_sound(self, sound: str | Sound, volume: float = 0.8) -> None:
+        # Per-channel volumes — read once at menu init (init-frozen).
+        self.sound_volume = _read_volume(user_prefs_client, "audio_volume.menu_sound", DEFAULT_SOUND_VOLUME)
+        self.voice_volume = _read_volume(user_prefs_client, "audio_volume.menu_voice", DEFAULT_VOICE_VOLUME)
+        self.lobby_music_volume = _read_volume(
+            user_prefs_client, "audio_volume.lobby_music", DEFAULT_LOBBY_MUSIC_VOLUME
+        )
+
+    async def play_sound(self, sound: str | Sound, volume: float | None = None) -> None:
         """
         Play a sound effect via the audio service (fire-and-forget).
 
         Args:
             sound: Sound enum or relative path to audio file
-            volume: Volume level 0.0-1.0
+            volume: Volume level 0.0-1.0; None uses the configured sound volume
         """
+        if volume is None:
+            volume = self.sound_volume
         try:
             from proto import audio_pb2, audio_pb2_grpc
 
@@ -69,14 +106,16 @@ class AudioHelper:
         except Exception as e:
             logger.debug(f"Could not play sound {sound}: {e}")
 
-    async def play_voice(self, voice: str | Sound, volume: float = 0.9) -> None:
+    async def play_voice(self, voice: str | Sound, volume: float | None = None) -> None:
         """
         Play a voice announcement.
 
         Args:
             voice: Sound enum or voice file name (audio service resolves the path)
-            volume: Volume level 0.0-1.0
+            volume: Volume level 0.0-1.0; None uses the configured voice volume
         """
+        if volume is None:
+            volume = self.voice_volume
         await self.play_sound(voice, volume)
 
     async def play_game_mode_voice(self, game_mode: str) -> None:
@@ -102,7 +141,7 @@ class AudioHelper:
             stub = audio_pb2_grpc.AudioServiceStub(self.audio_channel)
 
             # Set lobby volume (quieter than game)
-            await stub.SetVolume(audio_pb2.SetVolumeRequest(volume=0.4))
+            await stub.SetVolume(audio_pb2.SetVolumeRequest(volume=self.lobby_music_volume))
 
             # Start lobby music
             response = await stub.PlayMusic(
