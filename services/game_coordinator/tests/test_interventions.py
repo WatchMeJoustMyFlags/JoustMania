@@ -498,7 +498,7 @@ async def test_metric_recorded_with_labels():
     )
     with patch("services.game_coordinator.metrics.interventions_total") as metric:
         await mgr.evaluate_all()
-    metric.labels.assert_any_call(type="play_audio_cue", objective="endurance", blocked="false")
+    metric.labels.assert_any_call(type="play_audio_cue", objective="endurance", blocked="false", block_reason="")
     metric.labels.return_value.inc.assert_called()
 
 

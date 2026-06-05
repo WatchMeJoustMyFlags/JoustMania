@@ -113,3 +113,22 @@ groups:
         annotations:
           summary: "High gRPC client error rate on {{ $labels.service }}/{{ $labels.method }}"
           description: "Service {{ $labels.service }} method {{ $labels.method }} has error rate {{ $value }}/s for 2+ minutes"
+
+      # Intervention machinery alerts (#803)
+      - alert: InterventionHandlerErrors
+        expr: sum(rate(game_interventions_total{block_reason="handler_error"}[5m])) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Intervention handlers are failing"
+          description: "Dispatched intervention handlers raised at {{ $value }}/s for 2+ minutes (block_reason=handler_error)."
+
+      - alert: AgentInterventionWriteFailures
+        expr: sum(rate(agent_intervention_writes_total{result="error"}[5m])) > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Agent cannot write intervention flags"
+          description: "The agent ActionSink failed flag-file writes at {{ $value }}/s for 2+ minutes (flagd file unreachable?). The ACT path is degraded."

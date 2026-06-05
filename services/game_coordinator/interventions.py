@@ -871,6 +871,7 @@ class InterventionManager:
                 type=spec.type_id,
                 objective=objective,
                 blocked=str(blocked).lower(),
+                block_reason=block_reason,
             ).inc()
         except Exception as e:
             logger.debug(f"InterventionManager: metric record failed: {e}")

@@ -325,13 +325,17 @@ def clear_all_player_analytics() -> None:
 # intervention attempt — applied or blocked. Also feeds the weighted rate limiter
 # (#722 §5) and the #731 fitness functions. Defined here now so the metric name
 # exists in the registry; zero usages in this PR is intentional.
-#   type:      intervention identifier (e.g. 'adjust_player_sensitivity', 'grant_shield')
-#   objective: active session objective ('endurance'/'balanced'/'accelerate'/'chaos')
-#   blocked:   'true' if rejected by policy/permission enforcement, else 'false'
+#   type:         intervention identifier (e.g. 'adjust_player_sensitivity', 'grant_shield')
+#   objective:    active session objective ('endurance'/'balanced'/'accelerate'/'chaos')
+#   blocked:      'true' if rejected by policy/permission enforcement, else 'false'
+#   block_reason: why a blocked attempt was rejected ('not_allowed', 'rate_limited',
+#                 'low_battery', 'mode_unsupported', 'no_game', 'handler_error'); empty
+#                 string for applied (blocked='false') attempts. Cardinality is bounded
+#                 to this fixed reason set, so it is safe as a label.
 interventions_total = Counter(
     "game_interventions_total",
     "Total agent intervention attempts (applied or blocked by policy)",
-    ["type", "objective", "blocked"],
+    ["type", "objective", "blocked", "block_reason"],
 )
 
 # EventBus stream health metrics (Issue #337)
