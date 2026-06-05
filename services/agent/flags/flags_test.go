@@ -88,8 +88,11 @@ func TestEvaluate_FlagdShape(t *testing.T) {
 			keyAccelerateTargetSessionSecs: 30,
 		},
 		floats: map[string]float64{
-			keyBalancedMaxSkillGap:   0.2,
-			keyBalancedSpikeSurvival: 0.9,
+			keyBalancedMaxSkillGap:          0.2,
+			keyBalancedSpikeSurvival:        0.9,
+			keyBluetoothMaxEventGapMs:       25,
+			keyBluetoothMaxDroppedEventsPct: 0.05,
+			keyBluetoothMinMovementUpdateHz: 20,
 		},
 		objects: map[string]any{
 			// flagd surfaces object flags as map[string]any / []any.
@@ -131,6 +134,10 @@ func TestEvaluate_FlagdShape(t *testing.T) {
 	if got.Fitness != wantFitness {
 		t.Errorf("Fitness = %+v, want %+v", got.Fitness, wantFitness)
 	}
+	wantBT := BluetoothFitness{MaxEventGapMs: 25, MaxDroppedEventsPct: 0.05, MinMovementUpdateHz: 20}
+	if got.BluetoothFitness != wantBT {
+		t.Errorf("BluetoothFitness = %+v, want %+v", got.BluetoothFitness, wantBT)
+	}
 }
 
 func TestEvaluate_DefaultsWhenMissing(t *testing.T) {
@@ -166,6 +173,9 @@ func TestEvaluate_DefaultsWhenMissing(t *testing.T) {
 	if got.Fitness != defaultFitness() {
 		t.Errorf("Fitness = %+v, want defaults %+v", got.Fitness, defaultFitness())
 	}
+	if got.BluetoothFitness != defaultBluetoothFitness() {
+		t.Errorf("BluetoothFitness = %+v, want defaults %+v", got.BluetoothFitness, defaultBluetoothFitness())
+	}
 }
 
 // defaultFitness is the expected fitness snapshot when every flag falls back.
@@ -178,24 +188,37 @@ func defaultFitness() Fitness {
 	}
 }
 
+// defaultBluetoothFitness is the expected infra fitness snapshot when every
+// fitness.bluetooth.* flag falls back to its safe default (#735).
+func defaultBluetoothFitness() BluetoothFitness {
+	return BluetoothFitness{
+		MaxEventGapMs:       DefaultBluetoothMaxEventGapMs,
+		MaxDroppedEventsPct: DefaultBluetoothMaxDroppedEventsPct,
+		MinMovementUpdateHz: DefaultBluetoothMinMovementUpdateHz,
+	}
+}
+
 func TestEvaluate_DefaultsOnError(t *testing.T) {
 	// Every evaluation errors (e.g. flagd unreachable). Defaults must apply and
 	// the agent must come up disabled with no permitted interventions.
 	boom := errors.New("flagd unreachable")
 	stub := stubEvaluator{errs: map[string]error{
-		keyEnabled:                     boom,
-		keyMode:                        boom,
-		keyObjectives:                  boom,
-		keyModel:                       boom,
-		keyPromptVariant:               boom,
-		keyInterventionsAllowed:        boom,
-		keyBatteryThreshold:            boom,
-		keyMovementVarianceWindow:      boom,
-		keyMaxInterventionsPerMinute:   boom,
-		keyEnduranceMinSessionSeconds:  boom,
-		keyBalancedMaxSkillGap:         boom,
-		keyBalancedSpikeSurvival:       boom,
-		keyAccelerateTargetSessionSecs: boom,
+		keyEnabled:                      boom,
+		keyMode:                         boom,
+		keyObjectives:                   boom,
+		keyModel:                        boom,
+		keyPromptVariant:                boom,
+		keyInterventionsAllowed:         boom,
+		keyBatteryThreshold:             boom,
+		keyMovementVarianceWindow:       boom,
+		keyMaxInterventionsPerMinute:    boom,
+		keyEnduranceMinSessionSeconds:   boom,
+		keyBalancedMaxSkillGap:          boom,
+		keyBalancedSpikeSurvival:        boom,
+		keyAccelerateTargetSessionSecs:  boom,
+		keyBluetoothMaxEventGapMs:       boom,
+		keyBluetoothMaxDroppedEventsPct: boom,
+		keyBluetoothMinMovementUpdateHz: boom,
 	}}
 	f := New(stub, nil)
 	got := f.Evaluate(context.Background())
@@ -226,6 +249,9 @@ func TestEvaluate_DefaultsOnError(t *testing.T) {
 	}
 	if got.Fitness != defaultFitness() {
 		t.Errorf("Fitness = %+v on error, want defaults %+v", got.Fitness, defaultFitness())
+	}
+	if got.BluetoothFitness != defaultBluetoothFitness() {
+		t.Errorf("BluetoothFitness = %+v on error, want defaults %+v", got.BluetoothFitness, defaultBluetoothFitness())
 	}
 }
 
