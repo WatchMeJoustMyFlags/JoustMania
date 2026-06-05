@@ -317,6 +317,7 @@ class InterventionManager:
         get_game: Callable[[], object | None],
         battery_provider: Callable[[str], float | None] | None = None,
         time_fn: Callable[[], float] = time.monotonic,
+        end_game_fn: Callable[[str], Awaitable[tuple[bool, str]]] | None = None,
     ):
         """
         Args:
@@ -327,11 +328,15 @@ class InterventionManager:
                 testability (the real source is the controller manager's
                 ``controller_battery_pct`` metric).
             time_fn: Monotonic clock (injectable for tests).
+            end_game_fn: Async ``end_game(reason) -> (success, error)`` used by
+                the ``end_game`` intervention handler to share the servicer's
+                force-end path (#730, PR E). None disables the handler's effect.
         """
         self._publish = event_publisher
         self._get_game = get_game
         self._battery_provider = battery_provider
         self._time_fn = time_fn
+        self._end_game_fn = end_game_fn
 
         self._interventions_client = None  # interventions domain
         self._agent_client = None  # agent domain (backstop reads)
@@ -346,6 +351,10 @@ class InterventionManager:
         # Handler registry: flag_key -> Handler. Defaults to the no-op stub for
         # every spec. PRs C/D/E replace entries via register_handler().
         self._handlers: dict[str, Handler] = {spec.flag_key: self._noop_handler for spec in INTERVENTION_SPECS}
+        # Optional per-flag handlers run when a state-shaped flag reverts to its
+        # neutral value (e.g. volume_override -> default game volume). Additive;
+        # absence means "do nothing on revert" (the default for all flags).
+        self._revert_handlers: dict[str, Handler] = {}
 
         self._lock = threading.RLock()
         self._started = False
@@ -380,6 +389,135 @@ class InterventionManager:
             f"(flag={ctx.spec.flag_key}, target={ctx.target_serial}, "
             f"value={ctx.value!r}, payload={ctx.payload!r}) — no-op (PR A)"
         )
+
+    # ------------------------------------------------------------------ #
+    # Ambient + session intervention handlers (#730, PR E)
+    #
+    # These reuse the exact audio/effect paths the games already use; they do
+    # NOT touch the audio/controller services. Registered via
+    # register_ambient_handlers(); the enforcement chain has already passed when
+    # they run, so they only do the effect (defensively).
+    # ------------------------------------------------------------------ #
+    def register_ambient_handlers(self) -> None:
+        """Register the PR E ambient/session handlers (one line per flag).
+
+        Additive: PR C registers its own difficulty handlers separately. Call
+        once after construction (the servicer does this on startup).
+        """
+        self.register_handler("audio_cue", self._handle_audio_cue)
+        self.register_handler("volume_override", self._handle_volume_override)
+        self.register_handler("controller_effect", self._handle_controller_effect)
+        self.register_handler("end_game", self._handle_end_game)
+        # volume_override restores the configured game volume when reverted.
+        self._revert_handlers["volume_override"] = self._handle_volume_revert
+
+    async def _handle_audio_cue(self, ctx: InterventionContext) -> None:
+        """Play ``ctx.payload`` as a sound id through the live game's audio path.
+
+        Unknown/empty sound id or no running game -> log and return.
+        """
+        sound_id = ctx.payload.strip()
+        if not sound_id:
+            logger.info("audio_cue: empty sound id, skipping")
+            return
+        game = ctx.game
+        play = getattr(game, "_play_sound", None) if game is not None else None
+        if not callable(play):
+            logger.info(f"audio_cue: no live game audio path for sound '{sound_id}', skipping")
+            return
+        # _play_sound already swallows unknown-sound / audio errors defensively.
+        await play(sound_id, priority=2)
+        logger.info(f"audio_cue: played sound '{sound_id}'")
+
+    async def _handle_volume_override(self, ctx: InterventionContext) -> None:
+        """Set the audio volume via the game's audio client.
+
+        State-shaped: ``ctx.value`` is the float volume. ``none_value`` (-1)
+        never reaches here (the manager skips reverts-to-neutral), so reverting
+        to the configured game volume is handled in ``_handle_volume_revert``,
+        invoked by the manager's neutral-revert path.
+        """
+        volume = _coerce_float(ctx.value)
+        if volume is None or volume < 0:
+            logger.info(f"volume_override: non-applicable value {ctx.value!r}, skipping")
+            return
+        await self._set_volume(ctx.game, volume)
+        logger.info(f"volume_override: set volume to {volume}")
+
+    async def _handle_volume_revert(self, ctx: InterventionContext) -> None:
+        """Restore the configured game volume when the override reverts to none.
+
+        Dispatched by the manager when ``volume_override`` returns to its
+        ``none_value`` (-1). Restores exactly ``games.base.GAME_VOLUME``.
+        """
+        from services.game_coordinator.games.base import GAME_VOLUME
+
+        await self._set_volume(ctx.game, GAME_VOLUME)
+        logger.info(f"volume_override: reverted volume to game default {GAME_VOLUME}")
+
+    async def _set_volume(self, game: object, volume: float) -> None:
+        """Send a SetVolume RPC via the live game's audio client (no-op if
+        there is no running game / audio client)."""
+        audio_client = getattr(game, "audio_client", None) if game is not None else None
+        if audio_client is None:
+            logger.info("volume_override: no live game audio client, skipping")
+            return
+        from proto import audio_pb2
+
+        await audio_client.SetVolume(audio_pb2.SetVolumeRequest(volume=float(volume)))
+
+    async def _handle_controller_effect(self, ctx: InterventionContext) -> None:
+        """Send a controller effect via the live game's gameplay stream.
+
+        Payload is ``"<serial>:<effect>"``; an empty serial broadcasts the
+        effect to all active (alive) players. Effect names are validated against
+        the supported set; unknown effects / malformed payloads -> log + return.
+        """
+        serial, effect_name = _parse_effect_payload(ctx.payload)
+        if effect_name is None:
+            logger.info(f"controller_effect: malformed payload {ctx.payload!r}, skipping")
+            return
+        effect_enum = _resolve_effect(effect_name)
+        if effect_enum is None:
+            logger.info(f"controller_effect: unknown effect '{effect_name}', skipping")
+            return
+
+        game = ctx.game
+        stream = getattr(game, "gameplay_stream", None) if game is not None else None
+        if stream is None:
+            logger.info("controller_effect: no live gameplay stream, skipping")
+            return
+
+        targets = _effect_targets(game, serial)
+        if not targets:
+            logger.info(f"controller_effect: no active target for serial '{serial}', skipping")
+            return
+
+        from proto import controller_manager_pb2
+
+        for target_serial in targets:
+            cmd = controller_manager_pb2.GameplayStreamControl(
+                game_effect=controller_manager_pb2.GameEffectCommand(
+                    serial=target_serial,
+                    effect=effect_enum,
+                )
+            )
+            await stream.write(cmd)
+        logger.info(f"controller_effect: sent '{effect_name}' to {len(targets)} controller(s)")
+
+    async def _handle_end_game(self, _ctx: InterventionContext) -> None:
+        """End the running game via the servicer's shared force-end path.
+
+        No-ops safely when no game is running or no end_game_fn is wired.
+        """
+        if self._end_game_fn is None:
+            logger.info("end_game: no end_game_fn wired, skipping")
+            return
+        success, error = await self._end_game_fn("agent_intervention")
+        if success:
+            logger.info("end_game: game force-ended via agent intervention")
+        else:
+            logger.info(f"end_game: no-op ({error})")
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -510,7 +648,30 @@ class InterventionManager:
             if not changed:
                 return
             if _is_none_value(spec, raw):
-                return  # reverting to neutral is not an intervention to dispatch
+                # Reverting to neutral is not an enforced intervention, but some
+                # state flags need to actively restore a default on revert (e.g.
+                # volume_override -> configured game volume, #730 PR E). Such
+                # flags register a revert handler; it runs without enforcement
+                # (restoring a default is always safe / not rate-limited).
+                # Only fire when the PREVIOUS value was a real (non-none)
+                # intervention — a fresh none-to-none transition (unknown prior
+                # baseline) must not spuriously restore.
+                was_active = last is not None and not _is_none_value(spec, last)
+                revert = self._revert_handlers.get(spec.flag_key)
+                if was_active and revert is not None:
+                    ctx = InterventionContext(
+                        spec=spec,
+                        value=raw,
+                        payload="",
+                        target_serial=None,
+                        game=self._get_game(),
+                        objective=self._dominant_objective(),
+                    )
+                    try:
+                        await revert(ctx)
+                    except Exception as e:
+                        logger.error(f"InterventionManager: revert handler for {spec.flag_key} raised: {e}")
+                return
             payload = ""
             target = self._state_target_serial(spec)
             value = raw
@@ -739,3 +900,72 @@ def _game_mode_name(game: object) -> str:
         except Exception:
             return ""
     return ""
+
+
+# --- PR E ambient/session helpers -------------------------------------- #
+
+# Effect names the agent may request -> controller_manager GameEffectType enum
+# value name. Only the agent-safe subset (signalling / ambient feedback) is
+# exposed; per-player lifecycle effects (warning/death/respawn/countdown) and
+# admin effects are intentionally NOT addressable via this intervention. The
+# mode-capability matrix already blocks send_controller_effect in hidden-role
+# modes (LED leak), so this map does not re-encode that policy.
+_CONTROLLER_EFFECT_NAMES: dict[str, str] = {
+    "rumble": "GAME_EFFECT_RUMBLE",
+    "pulse": "GAME_EFFECT_PULSE",
+    "flash": "GAME_EFFECT_FLASH",
+    "show_battery": "GAME_EFFECT_SHOW_BATTERY",
+}
+
+
+def _coerce_float(value: object) -> float | None:
+    """Best-effort float coercion; returns None on failure."""
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_effect_payload(payload: str) -> tuple[str, str | None]:
+    """Split a controller_effect payload ``"<serial>:<effect>"``.
+
+    Returns ``(serial, effect_name)``. ``serial`` may be empty (broadcast).
+    A payload with no ``:`` or an empty effect is malformed -> effect_name None.
+    """
+    if ":" not in payload:
+        return "", None
+    serial, effect = payload.split(":", 1)
+    serial = serial.strip()
+    effect = effect.strip().lower()
+    if not effect:
+        return serial, None
+    return serial, effect
+
+
+def _resolve_effect(effect_name: str) -> int | None:
+    """Map a validated effect name to its GameEffectType enum value, or None."""
+    enum_name = _CONTROLLER_EFFECT_NAMES.get(effect_name)
+    if enum_name is None:
+        return None
+    try:
+        from proto import controller_manager_pb2
+
+        return getattr(controller_manager_pb2, enum_name)
+    except Exception:
+        return None
+
+
+def _effect_targets(game: object, serial: str) -> list[str]:
+    """Resolve controller serials for an effect.
+
+    Empty ``serial`` broadcasts to all alive players; a specific serial routes
+    to that one player when present and alive. Unknown / dead serials -> [].
+    """
+    players = getattr(game, "players", None) if game is not None else None
+    if not isinstance(players, dict):
+        # No player map (e.g. test stub): honor an explicit serial, else nothing.
+        return [serial] if serial else []
+    if serial:
+        player = players.get(serial)
+        return [serial] if player is not None and getattr(player, "alive", False) else []
+    return [s for s, p in players.items() if getattr(p, "alive", False)]
