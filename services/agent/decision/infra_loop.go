@@ -27,6 +27,10 @@ type InfraEvaluator interface {
 type InfraLoop struct {
 	log      *slog.Logger
 	throttle time.Duration
+	// fitness supplies the live fitness.bluetooth.* thresholds (#735). The real
+	// fitness/remediation consumer arrives in PR E; for now the stub only logs the
+	// thresholds in effect so the seam is exercised. May be nil (defaults logged).
+	fitness BluetoothFitnessSource
 
 	mu      sync.Mutex
 	lastLog time.Time
@@ -34,8 +38,10 @@ type InfraLoop struct {
 }
 
 // NewInfraLoop builds the observe-only stub. log may be nil (slog.Default() is
-// used). A non-positive throttle falls back to DefaultThrottleInterval.
-func NewInfraLoop(log *slog.Logger, throttle time.Duration) *InfraLoop {
+// used). A non-positive throttle falls back to DefaultThrottleInterval. fitness
+// may be nil; the per-cycle Bluetooth thresholds it provides (#735) are only
+// logged in this PR — PR E plugs the fitness evaluation in behind this seam.
+func NewInfraLoop(log *slog.Logger, throttle time.Duration, fitness BluetoothFitnessSource) *InfraLoop {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -45,6 +51,7 @@ func NewInfraLoop(log *slog.Logger, throttle time.Duration) *InfraLoop {
 	return &InfraLoop{
 		log:      log,
 		throttle: throttle,
+		fitness:  fitness,
 		now:      time.Now,
 	}
 }
@@ -62,10 +69,17 @@ func (l *InfraLoop) OnInfraEvaluate(_ context.Context, snap infracontext.InfraCo
 	l.lastLog = now
 	l.mu.Unlock()
 
+	th := DefaultBluetoothThresholds()
+	if l.fitness != nil {
+		th = l.fitness.BluetoothThresholds()
+	}
 	l.log.Debug("infrastructure observe (#733 stub)",
 		"active_controllers", snap.Window.ActiveControllers,
 		"target_backend", snap.Window.TargetBackend,
 		"rollout_count", snap.Window.RolloutCount,
 		"controllers", len(snap.Controllers),
+		"max_event_gap_ms", th.MaxEventGapMs,
+		"max_dropped_events_pct", th.MaxDroppedEventsPct,
+		"min_movement_update_hz", th.MinMovementUpdateHz,
 	)
 }

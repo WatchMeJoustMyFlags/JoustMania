@@ -182,7 +182,11 @@ func main() {
 	// plugs in behind the decision.InfraEvaluator seam in PR E.
 	infraStore := infracontext.NewStore(infraControllerTTL, nil)
 	infraStore.SetOwnService(resolveServiceName())
-	infraLoop := decision.NewInfraLoop(logger, lifecycle.DecisionThrottle)
+	// Bluetooth fitness source (#735): seeds the flagd-schema defaults; the infra
+	// loop reads the live fitness.bluetooth.* thresholds through it each cycle. The
+	// real fitness/remediation consumer arrives in PR E.
+	bluetoothFitness := decision.NewLiveBluetoothFitness()
+	infraLoop := decision.NewInfraLoop(logger, lifecycle.DecisionThrottle, bluetoothFitness)
 	pipe := newPipeline(store, loop, lifecycle.PlayerTTL).withInfra(infraStore, infraLoop)
 
 	grpcServer := grpc.NewServer()
