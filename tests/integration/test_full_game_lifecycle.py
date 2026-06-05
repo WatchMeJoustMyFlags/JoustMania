@@ -34,8 +34,8 @@ from tests.integration.helpers import (
     setup_mock_controllers,
     start_game_via_menu,
     verify_controllers_have_color,
-    verify_lobby_colors,
     verify_lobby_colors_restored,
+    wait_for_lobby_colors,
 )
 
 # =============================================================================
@@ -72,33 +72,33 @@ async def configure_test_settings(docker_compose, game_mode: str):
     pass
 
 
-async def end_ffa_game(mock_client, serials: list[str], _game_client, _event_collector) -> None:
-    """End FFA game by killing all but one player."""
-    await kill_players_until_one_remains(mock_client, serials, delay=0.1)
+async def end_ffa_game(mock_client, serials: list[str], game_client, _event_collector) -> None:
+    """End FFA game by killing all but one player (verified kills)."""
+    await kill_players_until_one_remains(mock_client, serials, delay=0.1, game_client=game_client)
 
 
-async def end_team_game(mock_client, serials: list[str], _game_client, _event_collector) -> None:
-    """End team game by eliminating one team."""
-    await kill_players_for_team_win(mock_client, serials, delay=0.1)
+async def end_team_game(mock_client, serials: list[str], game_client, _event_collector) -> None:
+    """End team game by eliminating one team (verified kills)."""
+    await kill_players_for_team_win(mock_client, serials, delay=0.1, game_client=game_client)
 
 
 async def end_swapper(mock_client, serials: list[str], game_client, _event_collector) -> None:
-    """End Swapper by swapping all to one team."""
+    """End Swapper by swapping all to one team (state-driven convergence)."""
     await end_swapper_game(mock_client, serials, game_client, delay=0.3)
 
 
-async def end_zombies(mock_client, serials: list[str], _game_client, _event_collector) -> None:
-    """End Zombies by converting all humans."""
-    await end_zombies_game(mock_client, serials, delay=0.3)
+async def end_zombies(mock_client, serials: list[str], game_client, _event_collector) -> None:
+    """End Zombies by converting all humans (state-driven, verified kills)."""
+    await end_zombies_game(mock_client, serials, delay=0.3, game_client=game_client)
 
 
-async def end_werewolf(mock_client, serials: list[str], _game_client, _event_collector) -> None:
-    """End Werewolf by killing all but one player.
+async def end_werewolf(mock_client, serials: list[str], game_client, _event_collector) -> None:
+    """End Werewolf by killing all but one player (verified kills).
 
     Werewolf roles are randomly assigned, so we can't target specific roles.
     Killing all but one guarantees one team is fully eliminated.
     """
-    await end_werewolf_game(mock_client, serials, delay=0.3)
+    await end_werewolf_game(mock_client, serials, delay=0.3, game_client=game_client)
 
 
 async def end_tournament(mock_client, serials: list[str], _game_client, _event_collector) -> None:
@@ -241,11 +241,9 @@ async def test_full_game_lifecycle(
                         print(f"  - {event.event_type}: {dict(event.data)}")
                     raise
 
-            # 6. Wait for menu to fully reset controller colors
-            await asyncio.sleep(3.0)
-
-            # 7. Verify LED colors are restored (not stuck at black)
-            await verify_lobby_colors(mock_client, serials)
+            # 6+7. Wait for menu to reset controller colors (poll instead of a
+            # fixed sleep — menu reset timing varies under CI load, #757)
+            await wait_for_lobby_colors(mock_client, serials, timeout=10.0)
 
             # 8. Verify event sequence shows lobby colors restored
             events = observer.get_events()

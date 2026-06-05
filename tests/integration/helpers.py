@@ -767,16 +767,98 @@ def verify_lobby_colors_restored(events: list, serials: list[str]):
 # Game kill helpers
 # =============================================================================
 
+# SimulateDeath holds death-level acceleration for 1.0s (DEATH_HOLD_SECONDS in
+# mock_control_service.py). Retry no sooner than that, so a retry only fires
+# once the previous attempt's hold has fully expired.
+KILL_RETRY_INTERVAL = 1.5
+KILL_VERIFY_TIMEOUT = 12.0
+_VERIFY_POLL_INTERVAL = 0.2
+
+
+async def get_player_states(game_client) -> dict | None:
+    """Query current game state and return {serial: PlayerInfo}.
+
+    Returns None if the game is no longer running (ended or not started),
+    so callers can distinguish "game over" from "kill not registered yet".
+    """
+    response = await game_client.GetGameState(game_coordinator_pb2.GetGameStateRequest())
+    if not response.success:
+        return None
+    if response.game_info.state != game_coordinator_pb2.RUNNING:
+        return None
+    return {p.serial: p for p in response.game_info.players}
+
+
+async def kill_player_verified(
+    mock_client,
+    game_client,
+    serial: str,
+    registered,
+    timeout: float = KILL_VERIFY_TIMEOUT,
+) -> bool:
+    """SimulateDeath and verify it registered in the game, retrying if dropped.
+
+    Kills fired during countdown/EMA-warmup/grace windows are silently ignored
+    by the game loop (#757), so a single fire-and-forget SimulateDeath is not
+    reliable under CI load. This helper polls GetGameState until `registered`
+    is satisfied and re-fires SimulateDeath every KILL_RETRY_INTERVAL.
+
+    Args:
+        mock_client: Mock controller service gRPC client
+        game_client: GameCoordinator gRPC client
+        serial: Controller serial to kill
+        registered: Predicate PlayerInfo -> bool, true once the kill took
+            effect (e.g., lambda p: not p.alive)
+        timeout: Max total time to keep trying
+
+    Returns:
+        True if the kill registered, False if the game stopped running first
+        (e.g., this kill ended the game before the poll observed it).
+
+    Raises:
+        TimeoutError: If the kill never registered while the game kept running
+    """
+    deadline = asyncio.get_event_loop().time() + timeout
+    next_kill_at = 0.0
+
+    while True:
+        now = asyncio.get_event_loop().time()
+        if now >= next_kill_at:
+            response = await mock_client.SimulateDeath(
+                controller_manager_mock_pb2.DeathRequest(serial=serial)
+            )
+            assert response.success, f"SimulateDeath RPC failed for {serial}"
+            next_kill_at = now + KILL_RETRY_INTERVAL
+
+        players = await get_player_states(game_client)
+        if players is None:
+            # Game ended (possibly because this kill landed) — nothing left to verify
+            return False
+        player = players.get(serial)
+        if player is None or registered(player):
+            return True
+
+        if asyncio.get_event_loop().time() >= deadline:
+            raise TimeoutError(
+                f"Kill of {serial} did not register within {timeout}s "
+                f"(alive={player.alive}, team={player.team})"
+            )
+        await asyncio.sleep(_VERIFY_POLL_INTERVAL)
+
 
 async def kill_players_until_one_remains(
-    mock_client, serials: list[str], delay: float = 0.5
+    mock_client, serials: list[str], delay: float = 0.5, game_client=None
 ) -> list[str]:
     """Kill players one by one until only one remains.
+
+    Each kill is verified via GetGameState (player no longer alive) and
+    retried if it was dropped by the game loop.
 
     Args:
         mock_client: Mock controller service gRPC client
         serials: List of all controller serials
         delay: Delay between kills in seconds
+        game_client: GameCoordinator gRPC client for kill verification
 
     Returns:
         List of serials that were killed (all except the last one)
@@ -785,25 +867,27 @@ async def kill_players_until_one_remains(
     # Kill all but the last player
     for serial in serials[:-1]:
         await asyncio.sleep(delay)
-        response = await mock_client.SimulateDeath(
-            controller_manager_mock_pb2.DeathRequest(serial=serial)
-        )
-        assert response.success, f"Failed to kill {serial}"
+        if not await kill_player_verified(
+            mock_client, game_client, serial, lambda p: not p.alive
+        ):
+            break  # Game already ended
         killed.append(serial)
     return killed
 
 
 async def kill_players_for_team_win(
-    mock_client, serials: list[str], delay: float = 0.5
+    mock_client, serials: list[str], delay: float = 0.5, game_client=None
 ) -> list[str]:
     """Kill enough players to trigger a team game win.
 
     For team games, killing 3 of 4 players guarantees one team is eliminated.
+    Each kill is verified via GetGameState and retried if dropped.
 
     Args:
         mock_client: Mock controller service gRPC client
         serials: List of all controller serials
         delay: Delay between kills in seconds
+        game_client: GameCoordinator gRPC client for kill verification
 
     Returns:
         List of serials that were killed
@@ -813,10 +897,10 @@ async def kill_players_for_team_win(
     players_to_kill = serials[:3] if len(serials) >= 4 else serials[:-1]
     for serial in players_to_kill:
         await asyncio.sleep(delay)
-        response = await mock_client.SimulateDeath(
-            controller_manager_mock_pb2.DeathRequest(serial=serial)
-        )
-        assert response.success, f"Failed to kill {serial}"
+        if not await kill_player_verified(
+            mock_client, game_client, serial, lambda p: not p.alive
+        ):
+            break  # Game already ended
         killed.append(serial)
     return killed
 
@@ -827,7 +911,7 @@ async def kill_players_for_team_win(
 
 
 async def end_swapper_game(
-    mock_client, serials: list[str], game_client, delay: float = 0.3
+    mock_client, serials: list[str], game_client, delay: float = 0.3, timeout: float = 30.0
 ) -> list[str]:
     """End a Swapper game by swapping all players to one team.
 
@@ -835,43 +919,50 @@ async def end_swapper_game(
     Game ends when all players are on the same team.
     The last player to swap is excluded from winners.
 
-    Strategy: Query actual team assignments via GetGameState, then kill
-    all players on one team to swap them to the other.
+    Strategy: State-driven convergence loop. Re-query team assignments via
+    GetGameState each round and kill one player on team 1, verifying the swap
+    registered. Re-querying makes this robust against dropped kills and
+    against "bounce-backs" (a player swapping twice off one death spike, #757).
 
     Args:
         mock_client: Mock controller service gRPC client
         serials: List of all controller serials (unused, kept for API compat)
         game_client: GameCoordinator client for GetGameState
         delay: Delay between kills in seconds
+        timeout: Max total time for the convergence loop
 
     Returns:
         List of serials that were swapped (killed)
     """
-    # Get actual team assignments from game state
-    state_response = await game_client.GetGameState(
-        game_coordinator_pb2.GetGameStateRequest()
-    )
-    if not state_response.success:
-        raise RuntimeError(f"GetGameState failed: {state_response.error}")
-
-    # Find players on team 1 (we'll swap them all to team 0)
-    team_1_players = [p.serial for p in state_response.game_info.players if p.team == 1]
-    print(f"Swapper: Found {len(team_1_players)} players on team 1: {team_1_players}")
-
     killed = []
-    for serial in team_1_players:
-        await asyncio.sleep(delay)
-        response = await mock_client.SimulateDeath(
-            controller_manager_mock_pb2.DeathRequest(serial=serial)
-        )
-        assert response.success, f"Failed to kill {serial}"
-        killed.append(serial)
+    deadline = asyncio.get_event_loop().time() + timeout
 
-    return killed
+    while True:
+        players = await get_player_states(game_client)
+        if players is None:
+            return killed  # Game ended — converged
+
+        team_1 = [s for s, p in players.items() if p.team == 1]
+        if not team_1:
+            # All players on team 0 — game end should be imminent
+            return killed
+
+        if asyncio.get_event_loop().time() >= deadline:
+            counts = {s: p.team for s, p in players.items()}
+            raise TimeoutError(f"Swapper did not converge within {timeout}s: {counts}")
+
+        serial = team_1[0]
+        print(f"Swapper: killing {serial} (team 1 has {len(team_1)} players)")
+        await asyncio.sleep(delay)
+        if not await kill_player_verified(
+            mock_client, game_client, serial, lambda p: p.team == 0
+        ):
+            return killed  # Game ended during the kill
+        killed.append(serial)
 
 
 async def end_werewolf_game(
-    mock_client, serials: list[str], delay: float = 0.3
+    mock_client, serials: list[str], delay: float = 0.3, game_client=None
 ) -> list[str]:
     """End a Werewolf game by killing all but one player.
 
@@ -879,12 +970,14 @@ async def end_werewolf_game(
     Win conditions: all humans dead OR all werewolves dead.
 
     Strategy: Kill all but one player. This guarantees one team is fully
-    eliminated regardless of random role assignment.
+    eliminated regardless of random role assignment. Each kill is verified
+    via GetGameState and retried if dropped.
 
     Args:
         mock_client: Mock controller service gRPC client
         serials: List of all controller serials
         delay: Delay between kills in seconds
+        game_client: GameCoordinator gRPC client for kill verification
 
     Returns:
         List of serials that were killed
@@ -894,49 +987,64 @@ async def end_werewolf_game(
     print(f"Killing {len(serials) - 1} players to end Werewolf game")
     for serial in serials[:-1]:
         await asyncio.sleep(delay)
-        response = await mock_client.SimulateDeath(
-            controller_manager_mock_pb2.DeathRequest(serial=serial)
-        )
-        assert response.success, f"Failed to kill {serial}"
+        if not await kill_player_verified(
+            mock_client, game_client, serial, lambda p: not p.alive
+        ):
+            break  # Game already ended (one team eliminated early)
         killed.append(serial)
 
     return killed
 
 
 async def end_zombies_game(
-    mock_client, serials: list[str], delay: float = 0.3
+    mock_client, serials: list[str], delay: float = 0.3, game_client=None, timeout: float = 30.0
 ) -> list[str]:
     """End a Zombies game by converting all humans to zombies.
 
     In Zombies, humans become zombies when killed (not eliminated).
     Game ends when all humans are converted OR time expires.
 
-    Strategy: Kill all players. Zombie assignment is random, so we can't
-    know which are humans. Killing a zombie just triggers a respawn (no
-    impact on win condition). Killing a human converts them to zombie.
-    After killing all, every human is converted and the game ends.
+    Strategy: State-driven loop. Humans are team 0, zombies team 1 — query
+    GetGameState and kill only the remaining humans, verifying each
+    conversion (team flips to 1). Re-query each round so dropped kills are
+    retried. Killing zombies is avoided entirely (it only causes respawn
+    churn and death-effect LED noise near game end, #757).
 
     Args:
         mock_client: Mock controller service gRPC client
-        serials: List of all controller serials
+        serials: List of all controller serials (unused, kept for API compat)
         delay: Delay between kills in seconds
+        game_client: GameCoordinator gRPC client for state queries
+        timeout: Max total time for the conversion loop
 
     Returns:
-        List of serials that were killed
+        List of serials that were killed (converted)
     """
     killed = []
-    # Kill all players — zombies just respawn, humans convert to zombies
-    # Game ends when 0 humans remain
-    print(f"Killing all {len(serials)} players to end Zombies game")
-    for serial in serials:
-        await asyncio.sleep(delay)
-        response = await mock_client.SimulateDeath(
-            controller_manager_mock_pb2.DeathRequest(serial=serial)
-        )
-        assert response.success, f"Failed to kill {serial}"
-        killed.append(serial)
+    deadline = asyncio.get_event_loop().time() + timeout
 
-    return killed
+    while True:
+        players = await get_player_states(game_client)
+        if players is None:
+            return killed  # Game ended — all humans converted
+
+        humans = [s for s, p in players.items() if p.team == 0]
+        if not humans:
+            return killed  # Conversion complete — game end imminent
+
+        if asyncio.get_event_loop().time() >= deadline:
+            raise TimeoutError(
+                f"Zombies: {len(humans)} humans still unconverted after {timeout}s: {humans}"
+            )
+
+        serial = humans[0]
+        print(f"Zombies: converting {serial} ({len(humans)} humans remain)")
+        await asyncio.sleep(delay)
+        if not await kill_player_verified(
+            mock_client, game_client, serial, lambda p: p.team == 1
+        ):
+            return killed  # Game ended during the kill
+        killed.append(serial)
 
 
 async def end_fight_club_game(
