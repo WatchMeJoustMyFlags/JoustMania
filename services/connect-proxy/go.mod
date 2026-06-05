@@ -4,7 +4,7 @@ go 1.22
 
 require (
 	connectrpc.com/connect v1.17.0
-	github.com/rs/cors v1.11.0
+	github.com/rs/cors v1.11.1
 	go.opentelemetry.io/contrib/bridges/otelslog v0.6.0
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.56.0
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.56.0
