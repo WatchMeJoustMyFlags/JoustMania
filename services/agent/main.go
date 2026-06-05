@@ -265,9 +265,13 @@ func main() {
 	// active-rollout cycle.
 	infraStore := infracontext.NewStore(infraControllerTTL, nil)
 	infraStore.SetOwnService(resolveServiceName())
-	// Bluetooth fitness source (#735): seeds the flagd-schema defaults; the infra
-	// loop reads the live fitness.bluetooth.* thresholds through it each cycle.
-	bluetoothFitness := decision.NewLiveBluetoothFitness()
+	// Bluetooth fitness source (#735): backed DIRECTLY by the flags client, so the
+	// infra loop re-reads the live fitness.bluetooth.* thresholds on every observe
+	// cycle (~1Hz) — tunable live on stage with no restart, and in the lobby too
+	// (the game loop only publishes thresholds while a session is active, so it
+	// cannot keep the infra loop live on its own). On any evaluation error the
+	// accessor falls back to the flagd-schema defaults.
+	bluetoothFitness := decision.NewFlagBluetoothFitness(agentFlags)
 	// Rollout actuator (#734): real RolloutWriter when AGENT_ROLLOUT_ENABLED=true,
 	// else a dry-run actuator (decides+spans but does not write rollout.json).
 	infraLoop := decision.NewInfraLoop(logger, rolloutDwell(), bluetoothFitness, rolloutActuator(logger))

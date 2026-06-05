@@ -131,12 +131,20 @@ structured `InfraFitnessResult` (`Evaluated` / `Passing` / `Violations` /
 | movement rate | `fitness.bluetooth.min_movement_update_hz` (10) | an update rate `< threshold`, evaluated at both window-min and **per-controller** granularity |
 
 **Live-tunable:** the thresholds are read from the `fitness.bluetooth.*` flags on
-**every** evaluation through a `decision.BluetoothFitnessSource`
-(`decision.LiveBluetoothFitness`, seeded with the flagd-schema defaults), so a
-threshold change on stage takes effect on the next evaluation with no restart.
-This source is **separate** from the game-objective `FitnessSource` — distinct
-flags, distinct concerns. The rollout-expansion loop (#734) reads these
-thresholds through it every cycle.
+**every** infra observe cycle through a `decision.BluetoothFitnessSource`. In
+production that source is `decision.FlagBluetoothFitness`, which is backed
+**directly by the flags client** (`flags.Flags.BluetoothFitness`, a narrow
+accessor that evaluates only the three `fitness.bluetooth.*` flags, not the full
+four-layer agent `Snapshot`). The infra loop re-reads it once per ~1Hz cycle, so
+a threshold flipped on stage takes effect on the **next** evaluation with no
+restart — and it does so **in the lobby too**, independent of whether a game is
+active (the game decision loop only publishes thresholds while a session runs, so
+it cannot keep the infra loop live on its own). On any evaluation error the
+accessor falls back to the flagd-schema defaults, so a down flagd reverts to safe
+thresholds rather than failing the cycle. This source is **separate** from the
+game-objective `FitnessSource` — distinct flags, distinct concerns. (A
+`decision.LiveBluetoothFitness` push-source also exists, seeded with the defaults,
+used as a static seed in tests.)
 
 **Missing signals are skipped, not failed** (mirroring game fitness): a `nil`
 window signal contributes no violation, and a context with *no* window signals at
