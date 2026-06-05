@@ -35,6 +35,52 @@ CONTROLLER_SERIAL_ATTR = "controller.serial"
 # Module-level cache for winner rainbow duration from flagd
 _winner_rainbow_duration_ms: int | None = None
 
+# Effect timing constants (milliseconds) — hardcoded fallbacks that also serve
+# as the flagd defaults in the controller domain (F7, #766). Promotion is
+# behavior-neutral: these values reproduce the original inline magic numbers.
+DEFAULT_EFFECT_TIMINGS: dict[str, int] = {
+    "warning_flash_ms": 200,
+    "warning_vibration_ms": 200,
+    "death_rumble_ms": 150,
+    "death_red_hold_ms": 300,
+    "death_fade_ms": 700,
+}
+
+# Effect timing flag names in the controller domain (effect.<key> sub-structure).
+_EFFECT_TIMING_FLAGS: dict[str, str] = {key: f"effect.{key}" for key in DEFAULT_EFFECT_TIMINGS}
+
+# Module-level cache for effect timings, populated at init from the controller
+# domain. Starts as a copy of the defaults so reads work even before init.
+_effect_timings: dict[str, int] = dict(DEFAULT_EFFECT_TIMINGS)
+
+
+def get_effect_timing_ms(name: str) -> int:
+    """Get an effect timing (ms) from the controller-domain cache.
+
+    Falls back to the hardcoded default if the name is unknown or flagd was
+    never initialized. Read at init only (init-frozen), per F7 (#766).
+    """
+    return _effect_timings.get(name, DEFAULT_EFFECT_TIMINGS.get(name, 0))
+
+
+def _read_effect_timing(client, flag_name: str, default: int) -> int:
+    """Read and validate a single effect timing flag.
+
+    Returns the hardcoded default on any malformed (non-positive) value or
+    read error, so promotion stays behavior-neutral and crash-safe.
+    """
+    from openfeature.evaluation_context import EvaluationContext
+
+    try:
+        value = client.get_integer_value(flag_name, default, EvaluationContext())
+        if not isinstance(value, int) or value <= 0:
+            logger.warning(f"Malformed effect timing {flag_name}={value!r}, using default {default}")
+            return default
+        return value
+    except Exception as e:
+        logger.warning(f"Failed to read effect timing {flag_name}, using default {default}: {e}")
+        return default
+
 
 def get_winner_rainbow_duration_ms() -> int:
     """Get winner rainbow duration from flagd game domain.
@@ -73,6 +119,34 @@ def init_game_settings_listener() -> None:
 
     except Exception as e:
         logger.warning(f"Could not initialize game flags, using defaults: {e}")
+
+    # Effect timings live in the controller domain (this service is the consumer).
+    # Read once at init (init-frozen) with per-flag validation + fallback (F7, #766).
+    init_effect_timings()
+
+
+def init_effect_timings() -> None:
+    """Initialize effect timings from the flagd controller domain.
+
+    Read once at startup (init-frozen). Each flag is validated; malformed or
+    unavailable values fall back to the hardcoded defaults, keeping promotion
+    behavior-neutral.
+    """
+    global _effect_timings
+    try:
+        from lib.feature_flags import get_flag_client, init_flag_domain
+
+        init_flag_domain("controller")
+        client = get_flag_client("controller")
+
+        _effect_timings = {
+            key: _read_effect_timing(client, flag_name, DEFAULT_EFFECT_TIMINGS[key])
+            for key, flag_name in _EFFECT_TIMING_FLAGS.items()
+        }
+        logger.info(f"Effect timings initialized from flagd: {_effect_timings}")
+    except Exception as e:
+        _effect_timings = dict(DEFAULT_EFFECT_TIMINGS)
+        logger.warning(f"Could not initialize effect timings, using defaults: {e}")
 
 
 def _on_game_flags_changed(event_details) -> None:
@@ -344,14 +418,16 @@ class FeedbackManager(ControllerEffectsBase):
 
         Always pass truthy value to ensure restoration to base_colors at effect end.
         """
+        flash_ms = get_effect_timing_ms("warning_flash_ms")
+        vibration_ms = get_effect_timing_ms("warning_vibration_ms")
         with tracer.start_as_current_span("effect_player_warning", context=trace_context) as span:
             span.set_attribute(CONTROLLER_SERIAL_ATTR, serial)
 
-            span.add_event("flash_start", {"color": "white", "duration_ms": 200})
-            await self.play_effect_with_restore(serial, "flash", Colors.White.value, 200, 5, restore_color or True)
+            span.add_event("flash_start", {"color": "white", "duration_ms": flash_ms})
+            await self.play_effect_with_restore(serial, "flash", Colors.White.value, flash_ms, 5, restore_color or True)
 
-            span.add_event("vibration", {"intensity": 100, "duration_ms": 200})
-            await self.set_vibration(serial, 100, 200)
+            span.add_event("vibration", {"intensity": 100, "duration_ms": vibration_ms})
+            await self.set_vibration(serial, 100, vibration_ms)
 
     async def _effect_player_death(self, serial: str, trace_context: Context | None = None, **_kwargs) -> None:
         """Red + vibrate, then fade to off to signal player is out.
@@ -359,6 +435,9 @@ class FeedbackManager(ControllerEffectsBase):
         Improved transition: short sharp rumble + solid red briefly + fade to black.
         This feels more immediate and satisfying than slow blinking.
         """
+        rumble_ms = get_effect_timing_ms("death_rumble_ms")
+        red_hold_ms = get_effect_timing_ms("death_red_hold_ms")
+        fade_ms = get_effect_timing_ms("death_fade_ms")
         with tracer.start_as_current_span("effect_player_death", context=trace_context) as span:
             span.set_attribute(CONTROLLER_SERIAL_ATTR, serial)
 
@@ -366,23 +445,23 @@ class FeedbackManager(ControllerEffectsBase):
             span.add_event("cancel_existing_effect")
             await self.cancel_effect(serial)
 
-            # Short, sharp rumble (150ms feels snappier than 250ms)
-            span.add_event("vibration", {"intensity": 255, "duration_ms": 150})
-            await self.set_vibration(serial, 255, 150)
+            # Short, sharp rumble (default 150ms feels snappier than 250ms)
+            span.add_event("vibration", {"intensity": 255, "duration_ms": rumble_ms})
+            await self.set_vibration(serial, 255, rumble_ms)
 
-            # Solid red briefly (300ms) then fade to black (700ms) - total 1000ms
+            # Solid red briefly (default 300ms) then fade to black (default 700ms)
             # This replaces the awkward slow blink (1Hz over 1500ms)
             span.add_event("led_red")
             await self._set_led_color(serial, Colors.Red.value)
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(red_hold_ms / 1000.0)
 
-            span.add_event("fade_to_black", {"duration_ms": 700})
+            span.add_event("fade_to_black", {"duration_ms": fade_ms})
             # Set base color to black BEFORE spawning the fade so a concurrent
             # base_color command (e.g., menu lobby reset) that lands during the
             # effect setup can't be clobbered afterwards — apply_base_color
             # writes win, and the fade's restore picks up the latest value (#757).
             self.base_colors[serial] = Colors.Black.value
-            await self.play_effect_with_restore(serial, "fade_out", Colors.Red.value, 700, 1, Colors.Black.value)
+            await self.play_effect_with_restore(serial, "fade_out", Colors.Red.value, fade_ms, 1, Colors.Black.value)
 
     async def _effect_player_respawn(self, serial: str, **_kwargs) -> None:
         """White during spawn protection."""

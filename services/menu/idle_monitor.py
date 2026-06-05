@@ -14,6 +14,7 @@ import asyncio
 import logging
 import math
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from opentelemetry import context as otel_context
@@ -26,12 +27,79 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Sentinel LED parameters
+# Sentinel LED parameters — these defaults double as the flagd system-domain
+# defaults (F7, #766), so promotion is behavior-neutral.
 _SENTINEL_UPDATE_HZ = 10  # LED update rate for sentinel pulse
 _SENTINEL_MIN_BRIGHTNESS = 0.09  # 9% minimum brightness
 _SENTINEL_MAX_BRIGHTNESS = 0.30  # 30% maximum brightness
 _SENTINEL_BREATH_PERIOD = 4.0  # Seconds per breathing cycle
 _SENTINEL_HUE_PERIOD = 30.0  # Seconds for full hue rotation
+
+
+@dataclass(frozen=True)
+class SentinelAnimation:
+    """Sentinel pulse animation parameters (F7, #766).
+
+    Read once at sentinel-loop start (init-frozen): a 10Hz loop must not call
+    flagd per frame.
+    """
+
+    update_hz: float = _SENTINEL_UPDATE_HZ
+    min_brightness: float = _SENTINEL_MIN_BRIGHTNESS
+    max_brightness: float = _SENTINEL_MAX_BRIGHTNESS
+    breath_period_seconds: float = _SENTINEL_BREATH_PERIOD
+    hue_period_seconds: float = _SENTINEL_HUE_PERIOD
+
+
+def _read_positive_float(client, flag_name: str, default: float) -> float:
+    """Read a strictly-positive float flag, falling back to default on error."""
+    try:
+        value = client.get_float_value(flag_name, default)
+        if not isinstance(value, int | float) or isinstance(value, bool) or value <= 0:
+            logger.warning(f"Malformed sentinel param {flag_name}={value!r}, using default {default}")
+            return default
+        return float(value)
+    except Exception as e:
+        logger.warning(f"Failed to read sentinel param {flag_name}, using default {default}: {e}")
+        return default
+
+
+def _read_unit_float(client, flag_name: str, default: float) -> float:
+    """Read a float flag constrained to [0.0, 1.0], falling back on error."""
+    try:
+        value = client.get_float_value(flag_name, default)
+        if not isinstance(value, int | float) or isinstance(value, bool) or not (0.0 <= value <= 1.0):
+            logger.warning(f"Malformed sentinel param {flag_name}={value!r}, using default {default}")
+            return default
+        return float(value)
+    except Exception as e:
+        logger.warning(f"Failed to read sentinel param {flag_name}, using default {default}: {e}")
+        return default
+
+
+def read_sentinel_animation(client) -> SentinelAnimation:
+    """Build a validated SentinelAnimation from the system flag domain (F7, #766).
+
+    Each field falls back to its hardcoded default on malformed values or any
+    read error. Brightness ordering (min < max) is enforced; if violated, both
+    revert to defaults.
+    """
+    if client is None:
+        return SentinelAnimation()
+
+    min_b = _read_unit_float(client, "sentinel.min_brightness", _SENTINEL_MIN_BRIGHTNESS)
+    max_b = _read_unit_float(client, "sentinel.max_brightness", _SENTINEL_MAX_BRIGHTNESS)
+    if min_b >= max_b:
+        logger.warning(f"sentinel brightness range invalid (min={min_b} >= max={max_b}), using defaults")
+        min_b, max_b = _SENTINEL_MIN_BRIGHTNESS, _SENTINEL_MAX_BRIGHTNESS
+
+    return SentinelAnimation(
+        update_hz=_read_positive_float(client, "sentinel.update_hz", _SENTINEL_UPDATE_HZ),
+        min_brightness=min_b,
+        max_brightness=max_b,
+        breath_period_seconds=_read_positive_float(client, "sentinel.breath_period_seconds", _SENTINEL_BREATH_PERIOD),
+        hue_period_seconds=_read_positive_float(client, "sentinel.hue_period_seconds", _SENTINEL_HUE_PERIOD),
+    )
 
 
 def _hsv_to_rgb(h: float, s: float, v: float) -> tuple[int, int, int]:
@@ -80,6 +148,7 @@ class IdleMonitor:
         get_idle_timeout: callable,
         get_sentinel_count: callable,
         get_rotation_minutes: callable,
+        get_sentinel_animation: callable | None = None,
     ):
         """
         Initialize idle monitor.
@@ -90,12 +159,15 @@ class IdleMonitor:
             get_idle_timeout: Callable returning int for timeout in minutes
             get_sentinel_count: Callable returning int for number of sentinels
             get_rotation_minutes: Callable returning int for rotation interval
+            get_sentinel_animation: Callable returning a SentinelAnimation (F7, #766).
+                Read once at sentinel-loop start; defaults to hardcoded params.
         """
         self._state_manager = state_manager
         self._get_idle_enabled = get_idle_enabled
         self._get_idle_timeout = get_idle_timeout
         self._get_sentinel_count = get_sentinel_count
         self._get_rotation_minutes = get_rotation_minutes
+        self._get_sentinel_animation = get_sentinel_animation or SentinelAnimation
 
         self._last_activity_time: float = time.monotonic()
         self._idle_active: bool = False
@@ -328,7 +400,10 @@ class IdleMonitor:
 
     async def _sentinel_pulse_loop(self) -> None:
         """Animate sentinel controllers with a slow breathing HSV color pulse."""
-        interval = 1.0 / _SENTINEL_UPDATE_HZ
+        # Read animation params once at loop start (init-frozen): the 10Hz loop
+        # must not call flagd per frame (F7, #766).
+        anim = self._get_sentinel_animation()
+        interval = 1.0 / anim.update_hz
         start_time = time.monotonic()
 
         try:
@@ -336,12 +411,12 @@ class IdleMonitor:
                 elapsed = time.monotonic() - start_time
 
                 # Breathing brightness: sine wave between min and max
-                breath_phase = (elapsed / _SENTINEL_BREATH_PERIOD) * 2 * math.pi
-                brightness_range = _SENTINEL_MAX_BRIGHTNESS - _SENTINEL_MIN_BRIGHTNESS
-                brightness = _SENTINEL_MIN_BRIGHTNESS + (brightness_range * (0.5 + 0.5 * math.sin(breath_phase)))
+                breath_phase = (elapsed / anim.breath_period_seconds) * 2 * math.pi
+                brightness_range = anim.max_brightness - anim.min_brightness
+                brightness = anim.min_brightness + (brightness_range * (0.5 + 0.5 * math.sin(breath_phase)))
 
                 # Slow hue rotation
-                hue = (elapsed / _SENTINEL_HUE_PERIOD) % 1.0
+                hue = (elapsed / anim.hue_period_seconds) % 1.0
 
                 # Convert to RGB
                 color = _hsv_to_rgb(hue, 1.0, brightness)

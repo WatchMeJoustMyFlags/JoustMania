@@ -21,7 +21,7 @@ from services.menu.controller_events import ControllerEventLoop
 from services.menu.event_publisher import EventPublisher
 from services.menu.handlers import AdminModeHandler, ConnectedHandler, IdleHandler, ReadyHandler
 from services.menu.handlers.base import ControllerState
-from services.menu.idle_monitor import IdleMonitor
+from services.menu.idle_monitor import IdleMonitor, read_sentinel_animation
 from services.menu.state_manager import StateManager
 from services.menu.utils import AudioHelper, LedController
 from services.menu.utils.audio import GAME_MODE_VOICE
@@ -87,7 +87,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
 
         # Utility classes
         self.led = LedController(self.controller_channel)
-        self.audio = AudioHelper(self.audio_channel)
+        self.audio = AudioHelper(self.audio_channel, user_prefs_client=self.user_prefs_client)
 
         # Event publisher for streaming menu events
         self.event_publisher = EventPublisher(tracer, metrics)
@@ -129,6 +129,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             get_idle_timeout=lambda: self.system_client.get_integer_value("idle.timeout_minutes", 15),
             get_sentinel_count=lambda: self.system_client.get_integer_value("sentinel.count", 2),
             get_rotation_minutes=lambda: self.system_client.get_integer_value("sentinel.rotation_minutes", 5),
+            get_sentinel_animation=lambda: read_sentinel_animation(self.system_client),
         )
 
         # Wire idle handler's wake callback to idle monitor
