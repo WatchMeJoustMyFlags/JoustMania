@@ -104,3 +104,33 @@ class TestDefensive:
         client.get_string_value = MagicMock(side_effect=ValueError("boom"))
         with patch("lib.feature_flags.get_flag_client", return_value=client):
             assert router.target_for("A", ALL) is None
+
+
+def _current(**kw):
+    router = RolloutRouter()
+    with patch("lib.feature_flags.get_flag_client", return_value=_client(**kw)):
+        return router.current_target()
+
+
+class TestCurrentTarget:
+    """Window-level rollout summary used by the bluetooth-health span (#732 M3)."""
+
+    def test_off_reports_empty(self):
+        assert _current(strategy="off", count=99) == ("", 0)
+
+    def test_immediate_reports_target_and_count(self):
+        assert _current(strategy="immediate", target="unstable", count=0) == ("unstable", 0)
+
+    def test_progressive_reports_target_and_count(self):
+        assert _current(strategy="progressive", target="unstable", count=3) == ("unstable", 3)
+
+    def test_empty_target_reports_off(self):
+        assert _current(strategy="immediate", target="", count=5) == ("", 0)
+
+    def test_negative_count_clamped_to_zero(self):
+        assert _current(strategy="progressive", target="unstable", count=-4) == ("unstable", 0)
+
+    def test_flag_client_error_reports_off(self):
+        router = RolloutRouter()
+        with patch("lib.feature_flags.get_flag_client", side_effect=RuntimeError("flagd down")):
+            assert router.current_target() == ("", 0)

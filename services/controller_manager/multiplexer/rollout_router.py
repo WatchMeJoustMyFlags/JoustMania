@@ -33,6 +33,43 @@ _DOMAIN = "rollout"
 class RolloutRouter:
     """Evaluates the ``rollout`` domain to pick a target backend per serial."""
 
+    def current_target(self) -> tuple[str, int]:
+        """Return the window-level rollout summary ``(target_backend, count)``.
+
+        Used by the bluetooth-health span to report which backend the rollout is
+        steering toward and how many controllers are in the cohort. Returns
+        ``("", 0)`` when the strategy is "off" or on any evaluation error, so a
+        flagd outage never breaks span emission.
+
+        For ``immediate`` the cohort is effectively the whole fleet, but the
+        ``current_controller_count`` flag is only meaningful for ``progressive``;
+        callers treat a 0 count as "not a bounded cohort".
+        """
+        try:
+            from openfeature.evaluation_context import EvaluationContext
+
+            from lib.feature_flags import get_flag_client
+
+            client = get_flag_client(_DOMAIN)
+
+            strategy = client.get_string_value("strategy", "off", EvaluationContext())
+            if strategy == "off":
+                return "", 0
+
+            target = client.get_string_value("target_backend", "", EvaluationContext())
+            if not target:
+                return "", 0
+
+            count = client.get_integer_value(
+                "current_controller_count",
+                0,
+                EvaluationContext(),
+            )
+            return target, max(0, int(count))
+        except Exception:
+            logger.debug("RolloutRouter.current_target failed; reporting off", exc_info=True)
+            return "", 0
+
     def target_for(self, serial: str, all_serials: list[str]) -> str | None:
         """Return the rollout target adapter_type for ``serial``, or None.
 
