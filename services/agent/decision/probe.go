@@ -42,7 +42,7 @@ func (p *ProbeRules) Evaluate(context.Context, gamecontext.GameContext) []Decisi
 	}
 	p.last = t
 	return []Decision{{
-		Intervention: "noop",
+		Intervention: InterventionNoop,
 		Reason:       "probe decision for trace pipeline verification",
 	}}
 }

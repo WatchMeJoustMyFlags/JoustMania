@@ -310,6 +310,26 @@ func TestUnknownIntervention(t *testing.T) {
 	}
 }
 
+// TestNoopDispatchIsByteStableSuccess asserts that dispatching the probe-mode
+// `noop` intervention succeeds (it is NOT an unknown-intervention error) and
+// writes nothing — every flag round-trips byte-for-byte. Probe mode can thus
+// exercise the full ACT path harmlessly.
+func TestNoopDispatchIsByteStableSuccess(t *testing.T) {
+	w, path := newTestWriter(t)
+	before := readAllFlagsRaw(t, path)
+
+	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionNoop}); err != nil {
+		t.Fatalf("noop dispatch must succeed, got: %v", err)
+	}
+
+	after := readAllFlagsRaw(t, path)
+	for key, rawBefore := range before {
+		if string(after[key]) != string(rawBefore) {
+			t.Fatalf("noop must not mutate flag %q:\n before=%s\n after =%s", key, rawBefore, after[key])
+		}
+	}
+}
+
 // TestPreservesUnrelatedFlags asserts that flags the agent does not touch are
 // byte-identical before and after a write, and that touched flags are the only
 // difference.

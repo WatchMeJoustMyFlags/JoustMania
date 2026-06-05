@@ -249,6 +249,13 @@ func (w *Writer) mutate(doc *orderedDoc, d decision.Decision) error {
 	case decision.InterventionGrantShield:
 		return w.setTargeted(doc, flagShieldSeconds, neutralNone, d.TargetSerial, w.numOr(d.Value, defaultShieldSeconds))
 
+	// Probe-mode synthetic intervention: no game effect, but a dispatched success
+	// so probe mode (AGENT_PROBE_DECISIONS + the `probe` interventions_allowed
+	// variant) exercises the full ACT path, including the agent.action span,
+	// without rewriting any flag.
+	case decision.InterventionNoop:
+		return nil
+
 	default:
 		return fmt.Errorf("unknown intervention %q", d.Intervention)
 	}
