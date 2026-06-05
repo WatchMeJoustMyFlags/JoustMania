@@ -189,6 +189,30 @@ class TestSingleGameCharacterization:
         assert "at least 2 players" in error.lower()
 
     @pytest.mark.asyncio
+    async def test_new_game_can_start_after_natural_end(self, servicer):
+        """Regression (#775, integration CI): a naturally-ended game (win
+        condition, no ForceEndGame) must not occupy the concurrency slot or pin
+        the primary role — the next start must succeed at the default cap of 1.
+        """
+        gid1, session1 = await _start_running(servicer, _config(serials=("a1", "a2")))
+        # Natural end: the game publishes its ending event; nobody force-ends.
+        await session1.event_bus.publish(GameEvent.GAME_ENDED, {"game_id": gid1})
+        assert session1.game_state == game_coordinator_pb2.GameState.ENDED
+
+        # Legacy behavior: GetGameState keeps reporting the ended game until
+        # the next start (lazy retirement happens at start time).
+        state = await servicer.GetGameState(game_coordinator_pb2.GetGameStateRequest(), MockGrpcContext())
+        assert state.game_info.state == game_coordinator_pb2.GameState.ENDED
+
+        gid2, session2 = await _start_running(servicer, _config(serials=("b1", "b2")))
+        assert gid2 != gid1
+        assert gid1 not in servicer.sessions
+        assert session2.game_kind == "primary"
+        assert servicer._primary_game_id == gid2
+        # The new primary reuses the persistent primary bus (menu compat).
+        assert session2.event_bus is servicer.primary_event_bus
+
+    @pytest.mark.asyncio
     async def test_second_concurrent_start_rejected_by_default(self, servicer):
         """With the default cap (1), a second start is rejected: 'already in progress'."""
         with _NO_THREAD:

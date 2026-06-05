@@ -181,6 +181,22 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 return False, "Need at least 2 players"
 
             with self._sessions_lock:
+                # Retire sessions whose games already ENDED (#775). A natural
+                # game end (win condition) leaves the session registered so
+                # GetGameState keeps reporting ENDED until the next start —
+                # mirroring the legacy single-game behavior — but an ended
+                # session must not occupy a concurrency slot or pin the
+                # primary role. (Force-end retires eagerly; this covers the
+                # natural-end path.)
+                for ended_id in [
+                    gid
+                    for gid, sess in self.sessions.items()
+                    if sess.game_state == game_coordinator_pb2.GameState.ENDED
+                ]:
+                    self.sessions.pop(ended_id, None)
+                    if self._primary_game_id == ended_id:
+                        self._primary_game_id = None
+
                 # Concurrency gate (#775). Default cap 1 reproduces the legacy
                 # single-game rejection message exactly.
                 if len(self.sessions) >= _max_concurrent_games():

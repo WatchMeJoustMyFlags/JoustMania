@@ -209,6 +209,12 @@ class GameSession:
                 with self._state_lock:
                     self.game_running = False
                     self.current_game = None
+                    # Defensive: the event-sync callback normally sets ENDED
+                    # when the game publishes its ending event, but the
+                    # session must reach ENDED even if a mode exits without
+                    # one — otherwise it would occupy a concurrency slot
+                    # forever (#775 natural-end retirement relies on this).
+                    self.game_state = game_coordinator_pb2.GameState.ENDED
 
                 # Update lifecycle metrics for THIS session's kind (#775).
                 metrics.active_game.labels(game_kind=self.game_kind).set(0)
