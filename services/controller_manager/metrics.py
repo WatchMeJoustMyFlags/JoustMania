@@ -90,7 +90,7 @@ controller_disconnect_total = Counter(
 controller_routing_decisions_total = Counter(
     "controller_routing_decisions_total",
     "Adapter routing decisions",
-    ["serial", "adapter", "method"],  # method: targeted, fallback, default
+    ["serial", "adapter", "method"],  # method: targeted, rollout, fallback, default
 )
 
 controller_reconnect_total = Counter("controller_reconnect_total", "Total number of controller reconnects", ["serial"])

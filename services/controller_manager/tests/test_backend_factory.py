@@ -165,6 +165,57 @@ class TestMultiAdapterCreation:
         assert "mock" in call_names
         assert "python" in call_names
 
+    def test_python_registers_unstable_routing_only_adapter(self):
+        """When python is loaded, an UnstableAdapter sharing it is registered
+        as a routing-only target (not as a discoverer)."""
+        mock_client = MagicMock()
+        mock_client.get_string_details.return_value = _mock_details("python")
+
+        with (
+            patch("lib.feature_flags.get_flag_client", return_value=mock_client),
+            patch("services.controller_manager.backend_factory._create_adapter_by_name") as mock_create,
+        ):
+            python_adapter = MagicMock()
+            python_adapter.adapter_type = "python"
+            python_adapter.inner = None
+            mock_adapter = MagicMock()
+            mock_adapter.adapter_type = "mock"
+            mock_adapter.inner = None
+            mock_create.side_effect = [python_adapter, mock_adapter]
+
+            backend = create_backend()
+
+        # Unstable is routable by type but not an independent discoverer.
+        unstable = backend._adapter_by_type.get("unstable")
+        assert unstable is not None
+        assert unstable.adapter_type == "unstable"
+        # It shares the same python-typed adapter instance the plain route uses
+        # (which may be chaos-wrapped, but stays type "python").
+        python_route = backend._adapter_by_type["python"]
+        assert unstable.inner is python_route
+        assert unstable not in backend.adapters
+
+    def test_no_python_means_no_unstable_adapter(self):
+        """rust-only -> no unstable routing-only adapter registered."""
+        mock_client = MagicMock()
+        mock_client.get_string_details.return_value = _mock_details("rust")
+
+        with (
+            patch("lib.feature_flags.get_flag_client", return_value=mock_client),
+            patch("services.controller_manager.backend_factory._create_adapter_by_name") as mock_create,
+        ):
+            rust_adapter = MagicMock()
+            rust_adapter.adapter_type = "rust"
+            rust_adapter.inner = None
+            mock_adapter = MagicMock()
+            mock_adapter.adapter_type = "mock"
+            mock_adapter.inner = None
+            mock_create.side_effect = [rust_adapter, mock_adapter]
+
+            backend = create_backend()
+
+        assert "unstable" not in backend._adapter_by_type
+
     def test_single_name_creates_adapter(self):
         """flag='mock' -> MultiplexerBackend with 1 adapter."""
         mock_client = MagicMock()

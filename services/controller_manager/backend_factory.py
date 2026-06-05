@@ -158,5 +158,28 @@ def create_backend() -> ControllerBackend:
 
     adapters = [_create_adapter_by_name(n) for n in names]
     adapters = _maybe_wrap_chaos(adapters)
+    routing_only = _build_routing_only_adapters(adapters)
     logger.info(f"MultiplexerBackend with adapters: {names}")
-    return MultiplexerBackend(adapters=adapters)
+    return MultiplexerBackend(adapters=adapters, routing_only_adapters=routing_only)
+
+
+def _build_routing_only_adapters(
+    adapters: list[ControllerIOAdapter],
+) -> list[ControllerIOAdapter]:
+    """Build routing-only adapters (selectable by targeting/rollout, not by default).
+
+    Whenever a python adapter is loaded, an :class:`UnstableAdapter` wrapping the
+    *same* python instance is registered so the ``unstable`` backend is routable
+    via explicit ``bluetooth_backend`` targeting or the rollout domain. It shares
+    the inner python adapter (see UnstableAdapter docstring for why a second
+    independent instance is unsafe), so it must NOT be added as an independent
+    discoverer and is never chosen as a default/fallback winner.
+    """
+    from services.controller_manager.multiplexer.unstable_adapter import UnstableAdapter
+
+    routing_only: list[ControllerIOAdapter] = []
+    for adapter in adapters:
+        if adapter.adapter_type == "python":
+            routing_only.append(UnstableAdapter(adapter))
+            logger.info("Registered UnstableAdapter (shared inner python) as routing-only target")
+    return routing_only
