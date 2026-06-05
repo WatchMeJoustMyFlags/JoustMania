@@ -525,6 +525,8 @@ def build_start_config(
     game_name: str,
     serials: list[str],
     sensitivity: int = 2,
+    invincibility_seconds: float = 2.0,
+    min_rounds: int = 5,
 ):
     """Build a minimal StartGameConfig for a headless game start.
 
@@ -533,10 +535,20 @@ def build_start_config(
     required. Mirrors the menu's ``_build_game_config`` for the modes used by
     the concurrent/isolation tests; uses CI-friendly defaults.
 
+    Note on timing-sensitive modes: the headless path resolves mode config from
+    this proto via ``GameFactory._extract_mode_config`` and does NOT consult
+    flagd, so an unset (0) invincibility/min_rounds falls back to the
+    coordinator's slow production defaults (4.0s / 10 rounds), NOT the CI flagd
+    values the menu-flow uses. We therefore set them explicitly to the CI
+    defaults (2.0s / 5) so the ``end_tournament``/``end_fight_club`` round-wait
+    timings line up.
+
     Args:
         game_name: Game mode name (e.g. "JoustFFA", "JoustTeams", "Swapper").
         serials: Controller serials to use as players.
         sensitivity: Common sensitivity 0-4 (default 2 = MEDIUM).
+        invincibility_seconds: Tournament/FightClub invincibility (CI default 2.0).
+        min_rounds: FightClub minimum rounds before a winner (CI default 5).
     """
     players = [
         game_coordinator_pb2.Player(serial=serial, team=i % 2, alive=True, score=0)
@@ -571,6 +583,24 @@ def build_start_config(
     elif game_name == "NonStop":
         config.nonstop_config.CopyFrom(
             game_coordinator_pb2.NonstopConfig(time_limit_seconds=0)
+        )
+    elif game_name == "Tournament":
+        config.tournament_config.CopyFrom(
+            game_coordinator_pb2.TournamentConfig(
+                invincibility_seconds=invincibility_seconds
+            )
+        )
+    elif game_name == "FightClub":
+        config.fight_club_config.CopyFrom(
+            game_coordinator_pb2.FightClubConfig(
+                invincibility_seconds=invincibility_seconds,
+                min_rounds=min_rounds,
+            )
+        )
+    elif game_name == "Traitor":
+        # num_teams=0 lets the coordinator auto-calculate from player count.
+        config.traitor_config.CopyFrom(
+            game_coordinator_pb2.TraitorConfig(num_teams=0)
         )
 
     return config
@@ -1281,7 +1311,7 @@ async def kill_players_until_one_remains(
 
 
 async def kill_players_for_team_win(
-    mock_client, serials: list[str], delay: float = 0.5, game_client=None
+    mock_client, serials: list[str], delay: float = 0.5, game_client=None, game_id: str = ""
 ) -> list[str]:
     """Kill enough players to trigger a team game win.
 
@@ -1293,6 +1323,7 @@ async def kill_players_for_team_win(
         serials: List of all controller serials
         delay: Delay between kills in seconds
         game_client: GameCoordinator gRPC client for kill verification
+        game_id: Target a specific session (empty = primary/legacy).
 
     Returns:
         List of serials that were killed
@@ -1303,7 +1334,7 @@ async def kill_players_for_team_win(
     for serial in players_to_kill:
         await asyncio.sleep(delay)
         if not await kill_player_verified(
-            mock_client, game_client, serial, lambda p: not p.alive
+            mock_client, game_client, serial, lambda p: not p.alive, game_id=game_id
         ):
             break  # Game already ended
         killed.append(serial)
@@ -1321,6 +1352,7 @@ async def end_swapper_game(
     game_client,
     delay: float = 0.3,
     timeout: float = 30.0,
+    game_id: str = "",
 ) -> list[str]:
     """End a Swapper game by swapping all players to one team.
 
@@ -1339,6 +1371,7 @@ async def end_swapper_game(
         game_client: GameCoordinator client for GetGameState
         delay: Delay between kills in seconds
         timeout: Max total time for the convergence loop
+        game_id: Target a specific session (empty = primary/legacy).
 
     Returns:
         List of serials that were swapped (killed)
@@ -1347,7 +1380,7 @@ async def end_swapper_game(
     deadline = asyncio.get_event_loop().time() + timeout
 
     while True:
-        players = await get_player_states(game_client)
+        players = await get_player_states(game_client, game_id=game_id)
         if players is None:
             return killed  # Game ended — converged
 
@@ -1364,14 +1397,14 @@ async def end_swapper_game(
         print(f"Swapper: killing {serial} (team 1 has {len(team_1)} players)")
         await asyncio.sleep(delay)
         if not await kill_player_verified(
-            mock_client, game_client, serial, lambda p: p.team == 0
+            mock_client, game_client, serial, lambda p: p.team == 0, game_id=game_id
         ):
             return killed  # Game ended during the kill
         killed.append(serial)
 
 
 async def end_werewolf_game(
-    mock_client, serials: list[str], delay: float = 0.3, game_client=None
+    mock_client, serials: list[str], delay: float = 0.3, game_client=None, game_id: str = ""
 ) -> list[str]:
     """End a Werewolf game by killing all but one player.
 
@@ -1387,6 +1420,7 @@ async def end_werewolf_game(
         serials: List of all controller serials
         delay: Delay between kills in seconds
         game_client: GameCoordinator gRPC client for kill verification
+        game_id: Target a specific session (empty = primary/legacy).
 
     Returns:
         List of serials that were killed
@@ -1397,7 +1431,7 @@ async def end_werewolf_game(
     for serial in serials[:-1]:
         await asyncio.sleep(delay)
         if not await kill_player_verified(
-            mock_client, game_client, serial, lambda p: not p.alive
+            mock_client, game_client, serial, lambda p: not p.alive, game_id=game_id
         ):
             break  # Game already ended (one team eliminated early)
         killed.append(serial)
@@ -1411,6 +1445,7 @@ async def end_zombies_game(
     delay: float = 0.3,
     game_client=None,
     timeout: float = 30.0,
+    game_id: str = "",
 ) -> list[str]:
     """End a Zombies game by converting all humans to zombies.
 
@@ -1429,6 +1464,7 @@ async def end_zombies_game(
         delay: Delay between kills in seconds
         game_client: GameCoordinator gRPC client for state queries
         timeout: Max total time for the conversion loop
+        game_id: Target a specific session (empty = primary/legacy).
 
     Returns:
         List of serials that were killed (converted)
@@ -1437,7 +1473,7 @@ async def end_zombies_game(
     deadline = asyncio.get_event_loop().time() + timeout
 
     while True:
-        players = await get_player_states(game_client)
+        players = await get_player_states(game_client, game_id=game_id)
         if players is None:
             return killed  # Game ended — all humans converted
 
@@ -1454,7 +1490,7 @@ async def end_zombies_game(
         print(f"Zombies: converting {serial} ({len(humans)} humans remain)")
         await asyncio.sleep(delay)
         if not await kill_player_verified(
-            mock_client, game_client, serial, lambda p: p.team == 1
+            mock_client, game_client, serial, lambda p: p.team == 1, game_id=game_id
         ):
             return killed  # Game ended during the kill
         killed.append(serial)
