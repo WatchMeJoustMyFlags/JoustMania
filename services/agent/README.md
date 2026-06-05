@@ -595,7 +595,7 @@ decision in the cycle):
 | `policy.max_interventions_per_minute` | policy flag | live int | — |
 | `inference.configured` | the `model` flag value | live (e.g. `"phi4-mini"`) | — |
 | `inference.used` | the engine that ran | `"rules"` | `"llm"` once M4 lands |
-| `inference.fallback_reason` | why `llm` fell back | `"llm_path_not_implemented"` when `mode=llm`, else `""` | empties once M4 lands |
+| `inference.fallback_reason` | why `llm` fell back | `"no_backend_available"` when `mode=llm`, else `""` | #741 `resolve_backend()` supplies the real reason / empties |
 | `fitness.evaluated` (cycle) | `LayerState.FitnessEvaluated` — dotted per-objective thresholds + results (#731) | live (e.g. `endurance.session_progress=0.5`) | — |
 | `gen_ai.agent.name` | agent identity | `"joustmania-agent"` | — |
 
@@ -622,6 +622,44 @@ single `agent.disabled` child (no `agent.action` child — nothing was decided)
 carrying the same cycle-level flag attribution above (`agent.enabled=false`, the
 capability and permission flags that were in effect). Throttled to one per second
 so a disabled agent under heavy signal load does not flood the trace backend.
+
+#### LLM prompt capture (M4 spike, #739)
+
+When `agent.mode = "llm"` the loop has no inference backend yet, so it **captures
+the prompt it would send** and falls back to the rules engine. Because the
+`agent.decision` spans are lazy (emitted only when a decision is produced), the
+prompt is recorded on a **dedicated** span, `agent.llm.prompt`, that emits on
+every llm cycle regardless of whether a decision was made — greppable in Jaeger
+by name. It is **throttled** on the same `decision.throttle_seconds` slot as the
+evaluate log and `agent.disabled` (default 1s), so a steady-state llm agent emits
+at most one capture per interval.
+
+The span carries the full prompt plus its attribution (single builder
+`llmPromptAttributes`, schema-complete every emission):
+
+| Attribute | Value |
+|-----------|-------|
+| `gen_ai.operation.name` | `"chat"` |
+| `gen_ai.request.model` | the `model` capability flag |
+| `gen_ai.output.type` | `"json"` |
+| `agent.mode` | `"llm"` |
+| `agent.prompt_variant` | resolved prompt variant |
+| `agent.objectives` | sorted `k=v` weights |
+| `interventions.allowed` | the allow-list summary |
+| `llm.prompt.system` / `llm.prompt.user` | the **full** prompt text (uncapped) |
+| `llm.prompt.bytes` | `len(system)+len(user)` |
+| `inference.configured` | the `model` flag |
+| `inference.used` | `"rules"` (the rules engine decided) |
+| `inference.fallback_reason` | `"no_backend_available"` |
+
+The companion log line `agent.llm.prompt_captured` carries only metadata
+(`session_id`, `variant`, `model`, `bytes`, `fallback_reason`) — the prompt text
+lives on the span alone. **View in Jaeger:** open `http://localhost:8080/jaeger/`,
+service `agent`, operation `agent.llm.prompt`. To replay a captured prompt against
+a real model, copy `llm.prompt.system` / `llm.prompt.user` into two files and run
+`scripts/replay-prompt.sh`. See
+[docs/research/739-prompt-capture.md](../../docs/research/739-prompt-capture.md)
+for the response contract and the forward path (#741 backend, #742 auth).
 
 #### `fitness.evaluated` (#731)
 
