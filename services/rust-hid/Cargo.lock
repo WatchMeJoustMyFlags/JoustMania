@@ -1318,7 +1318,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "procfs",
- "prost 0.13.5",
+ "prost 0.14.3",
  "tokio",
  "tokio-stream",
  "tonic 0.12.3",
