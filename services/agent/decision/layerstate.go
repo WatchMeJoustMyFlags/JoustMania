@@ -62,6 +62,15 @@ type LayerState struct {
 	PolicyMovementVarianceWin int
 	PolicyMaxPerMinute        int
 
+	// --- Fitness layer (#731 hook) ---
+	// FitnessEvaluated holds the cycle-level fitness-function results that #731
+	// will populate (e.g. session_duration, target_session_seconds). It is the
+	// span-attribute hook for fitness.evaluated at the cycle scope: empty/absent
+	// until #731 wires the fitness engine, lifted onto the decision span only
+	// when non-empty. Per-decision fitness already rides on Decision.Fitness and
+	// the per-decision fitness.evaluated attribute; this is the cycle-wide view.
+	FitnessEvaluated map[string]float64
+
 	// --- Per-decision outcomes ---
 	Candidates int
 	Dispatched int

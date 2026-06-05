@@ -10,6 +10,8 @@
 // applies them in order:
 //
 //	Existence:  enabled    kill switch; false short-circuits the whole loop
+//	                       (a throttled agent.disabled span still records the
+//	                       evaluated flags so "agent off" is visible in traces)
 //	            mode       selects the "rules" vs "llm" decision path
 //	Objective:  objectives session-goal weights driven into the rules engine via
 //	                       a LiveObjectives source (#726 engine reads it each cycle)
@@ -167,8 +169,9 @@ func NewLoop(flagSource FlagSource, log *slog.Logger) *Loop {
 // OnEvaluate runs one evaluation pass and returns the cycle's LayerState (also
 // retained on the loop for #729). Steps:
 //  1. evaluate all four flag layers (never cached);
-//  2. existence — if enabled is false, return the disabled LayerState before
-//     any rules run or spans are emitted;
+//  2. existence — if enabled is false, emit a throttled agent.disabled span with
+//     the evaluated-flag attribution and return the disabled LayerState before
+//     any rules run;
 //  3. publish the objectives flag into the rules engine and run the rules;
 //  4. when the rules return at least one decision, emit the audit trace lazily
 //     (idle evaluations cost no spans); the root span is backdated to trig.T0 so
@@ -186,10 +189,13 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 	snapshot := l.Flags.Evaluate(ctx)
 	state := newLayerState(snapshot)
 
-	// Existence layer: enabled=false short-circuits before any rules evaluation
-	// or span emission. This is the safe default when flagd is unreachable. The
-	// disabled state is still recorded so #729 can show "agent off" on the span.
+	// Existence layer: enabled=false short-circuits before any rules evaluation.
+	// This is the safe default when flagd is unreachable. The disabled state is
+	// still recorded AND emitted as a throttled agent.disabled span so a Jaeger
+	// trace shows "agent off" with the flags in effect (#729). Throttled so a
+	// disabled agent under heavy signal load does not flood the trace backend.
 	if !snapshot.Enabled {
+		l.emitDisabledSpan(ctx, snapshot, c, trig, state)
 		l.setLastLayer(state)
 		return state
 	}
@@ -294,7 +300,7 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	reason, blocked := l.evaluatePermission(snapshot, c, d, now, cost)
 
 	dCtx, dSpan := l.Tracer.Start(ctx, SpanDecision,
-		trace.WithAttributes(decisionAttributes(snapshot, d, blocked, reason, allowed)...))
+		trace.WithAttributes(decisionAttributes(state, d, blocked, reason)...))
 	defer dSpan.End()
 
 	// The interventions.allowed evaluation as a feature_flag.* span event
@@ -338,6 +344,41 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 		l.Log.Error("agent.apply_failed",
 			"error", err, "intervention", d.Intervention)
 	}
+}
+
+// emitDisabledSpan emits the kill-switch trace for a cycle where the existence
+// layer reported the agent off (enabled=false): a root agent.span_received with
+// a single agent.decision child (no action child — nothing was decided) carrying
+// the existence + capability + permission attribution lifted from the disabled
+// LayerState. This makes "agent off, here are the flags that were in effect"
+// visible in a Jaeger trace (#729). It is throttled to one per throttleInterval
+// (shared with the evaluate log) so a disabled agent under heavy signal load
+// does not flood the trace backend — the steady-state disabled agent is silent.
+func (l *Loop) emitDisabledSpan(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext, trig EvalTrigger, state LayerState) {
+	if !l.shouldLog() {
+		return
+	}
+	rootCtx, root := l.Tracer.Start(ctx, SpanReceived,
+		trace.WithTimestamp(trig.T0),
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes(
+			semconv.RPCSystemGRPC,
+			semconv.RPCService(trig.RPCService),
+			semconv.RPCMethod("Export"),
+			attribute.String("otlp.signal", trig.Signal),
+			attribute.String("session.id", c.SessionID),
+		),
+	)
+	defer root.End()
+
+	// One agent.disabled span carrying the full flag attribution; it is named
+	// distinctly (not agent.decision) so kill-switch traces are trivial to find
+	// in Jaeger. There is no action child because the kill switch decided
+	// nothing. AttrDecisionAction is empty (no action) and AttrDecisionBlocked is
+	// false (no decision was blocked by a permission gate — the loop never ran).
+	_, dSpan := l.Tracer.Start(rootCtx, SpanDisabled,
+		trace.WithAttributes(decisionAttributes(&state, Decision{}, false, "")...))
+	dSpan.End()
 }
 
 // evaluatePermission runs the permission chain over one decision in order:
@@ -407,39 +448,91 @@ func (l *Loop) shouldLog() bool {
 	return true
 }
 
-// decisionAttributes builds the complete #724 decision-span schema. Every span
-// carries every attribute; subsystems that do not exist yet contribute explicit
-// placeholder values (see telemetry.go). The mode, objectives, and
-// interventions.allowed values come from the evaluated flag snapshot (#727); the
-// block reason (#728) is carried when a decision is blocked so #729 sees the
-// attribution on the span as well as in the LayerState.
-func decisionAttributes(snapshot flags.Snapshot, d Decision, blocked bool, reason BlockReason, allowed []string) []attribute.KeyValue {
+// decisionAttributes builds the complete #724 + #729 decision-span schema for
+// one decision. It lifts every evaluated flag from the cycle's LayerState
+// verbatim (cycle-level: existence/capability/permission/policy), the
+// path-agnostic inference attribution, and the per-decision outcome (action,
+// reason, objective served, fitness, blocked + reason). Every span carries every
+// attribute; subsystems that do not exist yet contribute explicit placeholder
+// values (see telemetry.go). The block reason (#728) is carried only when a
+// decision is blocked.
+func decisionAttributes(state *LayerState, d Decision, blocked bool, reason BlockReason) []attribute.KeyValue {
 	objective := d.ObjectiveServed
 	if objective == "" {
 		objective = DefaultObjectives
 	}
-	mode := snapshot.Mode
-	if mode == "" {
-		mode = DefaultMode
-	}
-	attrs := []attribute.KeyValue{
-		semconv.GenAIAgentName(AgentName),
-		attribute.String(AttrMode, mode),
-		attribute.String(AttrObjectives, summarizeObjectives(d.Objectives)),
-		attribute.String(AttrInterventionsAllowed, allowedSummary(allowed)),
-		attribute.String(AttrInferenceConfigured, DefaultInference),
-		attribute.String(AttrInferenceUsed, DefaultInference),
-		attribute.String(AttrInferenceFallback, ""),
+	attrs := []attribute.KeyValue{semconv.GenAIAgentName(AgentName)}
+	// Cycle-level flag attribution: lift the whole LayerState onto the span so a
+	// single trace answers "which flags were in effect" (#729). agent.objectives
+	// is recorded there from the cycle's evaluated weights; the rules engine
+	// stamps the same normalized weights onto each Decision, so the per-decision
+	// view (d.Objectives) is identical and not re-emitted.
+	attrs = append(attrs, layerStateAttributes(state)...)
+	// Per-decision attribution: the chosen action and why.
+	attrs = append(attrs,
 		attribute.String(AttrDecisionAction, d.Intervention),
 		attribute.String(AttrDecisionReason, d.Reason),
 		attribute.String(AttrDecisionObjective, objective),
 		attribute.Bool(AttrDecisionBlocked, blocked),
 		attribute.StringSlice(AttrFitnessEvaluated, renderFitness(d.Fitness)),
-	}
+	)
 	if blocked {
 		attrs = append(attrs, attribute.String(AttrDecisionBlockReason, string(reason)))
 	}
 	return attrs
+}
+
+// layerStateAttributes lifts the cycle's evaluated flag set from the LayerState
+// onto a span verbatim — the heart of #729. It is path-agnostic (rules and the
+// M4 llm path converge on the same LayerState) and used by both the live
+// decision span and the disabled kill-switch span. Inference attribution is
+// derived from the mode: configured = the capability model flag, used = the
+// engine that actually ran (rules until M4), fallback_reason set only when
+// mode=llm fell back.
+func layerStateAttributes(state *LayerState) []attribute.KeyValue {
+	mode := state.Mode
+	if mode == "" {
+		mode = DefaultMode
+	}
+	inferenceUsed, fallback := inferenceAttribution(mode)
+	attrs := []attribute.KeyValue{
+		// Existence layer.
+		attribute.Bool(AttrEnabled, state.Enabled),
+		attribute.String(AttrMode, mode),
+		// Objective layer (cycle-wide weights as evaluated this cycle).
+		attribute.String(AttrObjectives, summarizeObjectives(state.Objectives)),
+		// Capability layer.
+		attribute.String(AttrModel, state.Model),
+		attribute.String(AttrPromptVariant, state.PromptVariant),
+		// Inference attribution (path-agnostic).
+		attribute.String(AttrInferenceConfigured, state.Model),
+		attribute.String(AttrInferenceUsed, inferenceUsed),
+		attribute.String(AttrInferenceFallback, fallback),
+		// Permission layer.
+		attribute.String(AttrInterventionsAllowed, allowedSummary(state.InterventionsAllowed)),
+		attribute.Int(AttrPolicyBatteryThreshold, state.PolicyBatteryThreshold),
+		attribute.Int(AttrPolicyMovementVarianceWindow, state.PolicyMovementVarianceWin),
+		attribute.Int(AttrPolicyMaxPerMinute, state.PolicyMaxPerMinute),
+	}
+	// Fitness layer (#731 hook): only present when populated, so the attribute
+	// stays absent until the fitness engine lands rather than carrying an
+	// empty-slice placeholder that looks like "evaluated nothing".
+	if len(state.FitnessEvaluated) > 0 {
+		attrs = append(attrs, attribute.StringSlice(AttrFitnessEvaluated, renderFitness(state.FitnessEvaluated)))
+	}
+	return attrs
+}
+
+// inferenceAttribution maps the decision mode to the inference.used /
+// inference.fallback_reason pair. mode=llm falls back to the rules engine until
+// the M4 LLM path exists, recording why; mode=rules (and any unknown mode) runs
+// rules with no fallback. inference.configured is the model flag, set by the
+// caller. Path-agnostic: once M4 lands, the llm branch returns ("llm", "").
+func inferenceAttribution(mode string) (used, fallbackReason string) {
+	if mode == "llm" {
+		return InferenceRules, FallbackLLMNotImplemented
+	}
+	return InferenceRules, ""
 }
 
 // summarizeObjectives renders the objective weights as a stable sorted "k=v"
