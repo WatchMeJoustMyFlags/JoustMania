@@ -1,0 +1,67 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests",
+    ":semanticCommits"
+  ],
+  "timezone": "Europe/Vienna",
+  "schedule": ["before 6am on monday"],
+  "labels": ["dependencies"],
+  "prConcurrentLimit": 5,
+  "dependencyDashboard": true,
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 6am on monday"]
+  },
+  "packageRules": [
+    {
+      "description": "Group the OpenTelemetry Python suite — versions are interdependent",
+      "matchManagers": ["pep621"],
+      "matchPackageNames": ["/^opentelemetry/"],
+      "groupName": "opentelemetry (python)"
+    },
+    {
+      "description": "Group OpenFeature SDK + providers + hooks (co-constrained, see flagd provider 0.5.0 bump)",
+      "matchManagers": ["pep621"],
+      "matchPackageNames": ["/^openfeature/"],
+      "groupName": "openfeature (python)"
+    },
+    {
+      "description": "protobuf/gRPC toolchain: generated code is COMMITTED (proto/*_pb2.py, services/agent/gen, dashboard gen). Regenerate via `make protos-all` + `make protos-agent` when grpcio-tools/protobuf move; `ci-validate-protos` gates drift.",
+      "matchPackageNames": [
+        "protobuf",
+        "grpcio",
+        "grpcio-tools",
+        "grpcio-health-checking",
+        "googleapis-common-protos"
+      ],
+      "groupName": "protobuf/grpc toolchain",
+      "prBodyNotes": [
+        "⚠️ Generated proto code is committed. If `grpcio-tools` or `protobuf` changed, run `make protos-all` (and `make protos-agent` for the Go agent stubs) and commit the regenerated output before merging — the `Validate Proto Files` CI job gates drift."
+      ]
+    },
+    {
+      "description": "Group the OpenTelemetry Go suite",
+      "matchManagers": ["gomod"],
+      "matchPackageNames": ["/^go\\.opentelemetry\\.io//"],
+      "groupName": "opentelemetry (go)"
+    },
+    {
+      "description": "Group buf.build generated flagd Go modules (move together)",
+      "matchManagers": ["gomod"],
+      "matchPackageNames": ["/^buf\\.build\\/gen\\/go\\//"],
+      "groupName": "buf.build flagd gen (go)"
+    },
+    {
+      "description": "GitHub Actions in one weekly PR; digests pinned via helpers:pinGitHubActionDigests (setup-uv needs exact tags — see PR #763 gotchas)",
+      "matchManagers": ["github-actions"],
+      "groupName": "github actions"
+    },
+    {
+      "description": "Majors need explicit approval via the dependency dashboard",
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true
+    }
+  ]
+}
