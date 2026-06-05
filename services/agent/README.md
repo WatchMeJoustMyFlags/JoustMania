@@ -114,6 +114,44 @@ The same **self-ingestion skip** as the game path applies: any resource whose
 path too. A mixed batch (game spans + health spans) feeds both stores
 independently with no cross-contamination.
 
+### Infrastructure fitness (#735)
+
+`decision.EvaluateInfraFitness(InfraContext, BluetoothThresholds)` scores the
+Bluetooth transport against three **flag-sourced** thresholds and returns a
+structured `InfraFitnessResult` (`Evaluated` / `Passing` / `Violations` /
+`Values`). This is the infra-domain parallel to the game fitness functions
+(#731); it makes no rollout decision — rollout **expansion** (#734) and
+**rollback** (#736) consume the result in stacked follow-ups.
+
+| Fitness function | Flag key (default) | Violated when |
+|------------------|--------------------|---------------|
+| event gap | `fitness.bluetooth.max_event_gap_ms` (50) | `Window.EventGapMs > threshold` |
+| dropped events | `fitness.bluetooth.max_dropped_events_pct` (0.02) | `Window.DroppedEventsPct > threshold` |
+| movement rate | `fitness.bluetooth.min_movement_update_hz` (10) | an update rate `< threshold`, evaluated at both window-min and **per-controller** granularity |
+
+**Live-tunable:** the thresholds are read from the `fitness.bluetooth.*` flags on
+**every** evaluation through a `decision.BluetoothFitnessSource`
+(`decision.LiveBluetoothFitness`, seeded with the flagd-schema defaults), so a
+threshold change on stage takes effect on the next evaluation with no restart.
+This source is **separate** from the game-objective `FitnessSource` — distinct
+flags, distinct concerns. (Until PR E wires the consumer, the observe-loop stub
+only logs the thresholds in effect.)
+
+**Missing signals are skipped, not failed** (mirroring game fitness): a `nil`
+window signal contributes no violation, and a context with *no* window signals at
+all returns `Evaluated=false`. The movement-rate dedup: when the window min **and**
+a specific controller both breach the hz floor, only the **per-serial**
+violation(s) are emitted (each names its offending serial); the window-level hz
+violation fires **only** when no per-controller rate is available to attribute it.
+
+**Violation string** (`InfraFitnessResult.ViolationsString()`) is the stable,
+deterministic (sorted-serial) form PR F/G lifts onto the `fitness.violations` span
+attribute — `"<signal>[<serial>] <observed><cmp><threshold>"`, joined by `"; "`:
+
+```
+event_gap_ms 87.5>50; movement_update_hz[AA:BB] 8.3<10
+```
+
 ## Gating & decisions
 
 After each context update the Agent evaluates `should_evaluate`. When the gate

@@ -36,12 +36,17 @@ const (
 	keyMovementVarianceWindow    = "policy.movement_variance_window"
 	keyMaxInterventionsPerMinute = "policy.max_interventions_per_minute"
 
-	// Fitness thresholds (#731). The game-objective fitness flags; the
-	// fitness.bluetooth.* flags are system-level and out of scope here.
+	// Fitness thresholds (#731). The game-objective fitness flags.
 	keyEnduranceMinSessionSeconds  = "fitness.endurance.min_session_seconds"
 	keyBalancedMaxSkillGap         = "fitness.balanced.max_skill_gap"
 	keyBalancedSpikeSurvival       = "fitness.balanced.spike_survival_threshold"
 	keyAccelerateTargetSessionSecs = "fitness.accelerate.target_session_seconds"
+
+	// Infrastructure (Bluetooth) fitness thresholds (#735). Read every cycle so
+	// they can be tuned live on stage; they drive the infra fitness evaluation.
+	keyBluetoothMaxEventGapMs       = "fitness.bluetooth.max_event_gap_ms"
+	keyBluetoothMaxDroppedEventsPct = "fitness.bluetooth.max_dropped_events_pct"
+	keyBluetoothMinMovementUpdateHz = "fitness.bluetooth.min_movement_update_hz"
 
 	// Lifecycle + throttle calibration flags (#766 F5). Unlike the layers above
 	// these are READ ONCE AT STARTUP (main.go), not per cycle: they configure the
@@ -89,6 +94,19 @@ const (
 	// DefaultAccelerateTargetSessionSeconds: sessions running past this overshoot
 	// the accelerate target (fitness.accelerate.target_session_seconds).
 	DefaultAccelerateTargetSessionSeconds = 60
+
+	// Infrastructure (Bluetooth) fitness defaults (#735), mirroring the
+	// services/flagd/agent.json fitness.bluetooth.* defaultVariants.
+
+	// DefaultBluetoothMaxEventGapMs: a window event gap above this fails infra
+	// fitness (fitness.bluetooth.max_event_gap_ms).
+	DefaultBluetoothMaxEventGapMs = 50.0
+	// DefaultBluetoothMaxDroppedEventsPct: a window drop ratio above this fails
+	// infra fitness (fitness.bluetooth.max_dropped_events_pct).
+	DefaultBluetoothMaxDroppedEventsPct = 0.02
+	// DefaultBluetoothMinMovementUpdateHz: an update rate below this fails infra
+	// fitness (fitness.bluetooth.min_movement_update_hz).
+	DefaultBluetoothMinMovementUpdateHz = 10.0
 
 	// Lifecycle + throttle defaults (#766 F5), mirroring the former hardcoded
 	// constants in main.go (playerTTL/sessionGrace/evictEvery) and decision.go
@@ -173,6 +191,23 @@ type Fitness struct {
 	AccelerateTargetSessionSeconds int
 }
 
+// BluetoothFitness is the infrastructure (Bluetooth) fitness thresholds (#735):
+// the transport-health limits the infra fitness evaluation scores the live
+// Bluetooth context against. Evaluated every cycle (never cached) so flipping a
+// threshold mid-stage changes the next infra evaluation. Kept SEPARATE from
+// Fitness (game objectives) — distinct flags, distinct concerns.
+type BluetoothFitness struct {
+	// MaxEventGapMs: a window event gap above this fails fitness
+	// (fitness.bluetooth.max_event_gap_ms, default 50).
+	MaxEventGapMs float64
+	// MaxDroppedEventsPct: a window drop ratio above this fails fitness
+	// (fitness.bluetooth.max_dropped_events_pct, default 0.02).
+	MaxDroppedEventsPct float64
+	// MinMovementUpdateHz: an update rate below this fails fitness
+	// (fitness.bluetooth.min_movement_update_hz, default 10).
+	MinMovementUpdateHz float64
+}
+
 // Lifecycle holds the agent's lifecycle + throttle calibration values (#766 F5).
 //
 // These are READ ONCE AT STARTUP, not per decision cycle: they configure the
@@ -239,6 +274,8 @@ type Snapshot struct {
 	Policy Policy
 	// Fitness holds the per-objective fitness thresholds (#731).
 	Fitness Fitness
+	// BluetoothFitness holds the infrastructure fitness thresholds (#735).
+	BluetoothFitness BluetoothFitness
 }
 
 // Permits reports whether the named intervention is in the allow-list.
@@ -289,6 +326,11 @@ func (f *Flags) Evaluate(ctx context.Context) Snapshot {
 			BalancedMaxSkillGap:            f.floatFlag(ctx, keyBalancedMaxSkillGap, DefaultBalancedMaxSkillGap),
 			BalancedSpikeSurvivalThreshold: f.floatFlag(ctx, keyBalancedSpikeSurvival, DefaultBalancedSpikeSurvivalThreshold),
 			AccelerateTargetSessionSeconds: f.intFlag(ctx, keyAccelerateTargetSessionSecs, DefaultAccelerateTargetSessionSeconds),
+		},
+		BluetoothFitness: BluetoothFitness{
+			MaxEventGapMs:       f.floatFlag(ctx, keyBluetoothMaxEventGapMs, DefaultBluetoothMaxEventGapMs),
+			MaxDroppedEventsPct: f.floatFlag(ctx, keyBluetoothMaxDroppedEventsPct, DefaultBluetoothMaxDroppedEventsPct),
+			MinMovementUpdateHz: f.floatFlag(ctx, keyBluetoothMinMovementUpdateHz, DefaultBluetoothMinMovementUpdateHz),
 		},
 	}
 }
