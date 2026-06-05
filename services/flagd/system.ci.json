@@ -66,6 +66,51 @@
         "slow": 15
       },
       "defaultVariant": "normal"
+    },
+    "sentinel.update_hz": {
+      "state": "ENABLED",
+      "variants": {
+        "slow": 5,
+        "default": 10,
+        "fast": 20
+      },
+      "defaultVariant": "default"
+    },
+    "sentinel.min_brightness": {
+      "state": "ENABLED",
+      "variants": {
+        "dim": 0.05,
+        "default": 0.09,
+        "bright": 0.15
+      },
+      "defaultVariant": "default"
+    },
+    "sentinel.max_brightness": {
+      "state": "ENABLED",
+      "variants": {
+        "dim": 0.2,
+        "default": 0.3,
+        "bright": 0.5
+      },
+      "defaultVariant": "default"
+    },
+    "sentinel.breath_period_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "fast": 2.0,
+        "default": 4.0,
+        "slow": 8.0
+      },
+      "defaultVariant": "default"
+    },
+    "sentinel.hue_period_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "fast": 15.0,
+        "default": 30.0,
+        "slow": 60.0
+      },
+      "defaultVariant": "default"
     }
   }
 }

@@ -47,6 +47,51 @@
       },
       "defaultVariant": "none",
       "targeting": {}
+    },
+    "effect.warning_flash_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "short": 100,
+        "default": 200,
+        "long": 400
+      },
+      "defaultVariant": "default"
+    },
+    "effect.warning_vibration_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "short": 100,
+        "default": 200,
+        "long": 400
+      },
+      "defaultVariant": "default"
+    },
+    "effect.death_rumble_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "short": 100,
+        "default": 150,
+        "long": 250
+      },
+      "defaultVariant": "default"
+    },
+    "effect.death_red_hold_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "short": 150,
+        "default": 300,
+        "long": 500
+      },
+      "defaultVariant": "default"
+    },
+    "effect.death_fade_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "short": 400,
+        "default": 700,
+        "long": 1200
+      },
+      "defaultVariant": "default"
     }
   }
 }

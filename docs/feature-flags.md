@@ -427,6 +427,8 @@ design rationale behind this control plane.
 |------|------|-----------|-------------|
 | `music_tempo_override` | object/number | — | Override music tempo |
 | `global_sensitivity_override` | object/number | — | Override death-detection sensitivity globally |
+| `global_difficulty_factor` | object/number | — | Continuous difficulty scale 0.5–2.0 (default 1.0); combines with the per-player factor in the effective-threshold division (#766 F6) |
+| `pacing_profile` | object/string | — | Live-swap the active music windows to a named preset (`default`/`calm`/`frantic`) from the `game.windows` flag variants; revert restores the game's init-resolved windows (#766 F6) |
 | `player_sensitivity_factor` | object/number | per-serial | Per-player sensitivity multiplier |
 | `shield_seconds` | object/number | per-serial | Grant per-player shield duration |
 | `volume_override` | object/number | — | Override audio volume |

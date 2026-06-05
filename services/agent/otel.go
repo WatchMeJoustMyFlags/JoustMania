@@ -137,6 +137,11 @@ func initMetrics(ctx context.Context) func(context.Context) error {
 		metric.WithResource(res),
 	)
 
+	// Publish as the global meter provider so instrumented packages (e.g.
+	// actions.Writer) can obtain meters via otel.Meter(...) without threading
+	// the provider through their constructors.
+	otel.SetMeterProvider(provider)
+
 	meter := provider.Meter("process")
 
 	// process_cpu_seconds_total — reads from /proc/self/stat
