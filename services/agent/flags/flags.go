@@ -19,6 +19,7 @@ package flags
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/open-feature/go-sdk/openfeature"
 )
@@ -41,6 +42,15 @@ const (
 	keyBalancedMaxSkillGap         = "fitness.balanced.max_skill_gap"
 	keyBalancedSpikeSurvival       = "fitness.balanced.spike_survival_threshold"
 	keyAccelerateTargetSessionSecs = "fitness.accelerate.target_session_seconds"
+
+	// Lifecycle + throttle calibration flags (#766 F5). Unlike the layers above
+	// these are READ ONCE AT STARTUP (main.go), not per cycle: they configure the
+	// gamecontext store TTLs / eviction ticker and the decision loop's throttle,
+	// which are fixed at construction. Changing them requires an agent restart.
+	keyPlayerTTLSeconds     = "lifecycle.player_ttl_seconds"
+	keySessionGraceSeconds  = "lifecycle.session_grace_seconds"
+	keyEvictIntervalSeconds = "lifecycle.evict_interval_seconds"
+	keyDecisionThrottleSecs = "decision.throttle_seconds"
 )
 
 // Safe defaults applied when flagd is unreachable or a flag is undefined.
@@ -79,6 +89,26 @@ const (
 	// DefaultAccelerateTargetSessionSeconds: sessions running past this overshoot
 	// the accelerate target (fitness.accelerate.target_session_seconds).
 	DefaultAccelerateTargetSessionSeconds = 60
+
+	// Lifecycle + throttle defaults (#766 F5), mirroring the former hardcoded
+	// constants in main.go (playerTTL/sessionGrace/evictEvery) and decision.go
+	// (throttleInterval). Promotion is behavior-neutral: these defaults reproduce
+	// the prior values exactly. Applied at startup when flagd is unreachable.
+
+	// DefaultPlayerTTLSeconds: how long a silent player is retained before
+	// eviction (lifecycle.player_ttl_seconds; was main.go playerTTL = 5s).
+	DefaultPlayerTTLSeconds = 5.0
+	// DefaultSessionGraceSeconds: how long an ended session lingers before its
+	// session-scoped state resets (lifecycle.session_grace_seconds; was main.go
+	// sessionGrace = 15s).
+	DefaultSessionGraceSeconds = 15.0
+	// DefaultEvictIntervalSeconds: how often the eviction ticker fires
+	// (lifecycle.evict_interval_seconds; was main.go evictEvery = 1s).
+	DefaultEvictIntervalSeconds = 1.0
+	// DefaultDecisionThrottleSeconds: how often the evaluate log line and the
+	// agent.disabled span are emitted (decision.throttle_seconds; was decision.go
+	// throttleInterval = 1s).
+	DefaultDecisionThrottleSeconds = 1.0
 )
 
 // defaultObjectives is the fallback objectives weighting. Returned as a fresh
@@ -141,6 +171,54 @@ type Fitness struct {
 	// AccelerateTargetSessionSeconds: sessions past this overshoot the accelerate
 	// target (fitness.accelerate.target_session_seconds, default 60).
 	AccelerateTargetSessionSeconds int
+}
+
+// Lifecycle holds the agent's lifecycle + throttle calibration values (#766 F5).
+//
+// These are READ ONCE AT STARTUP, not per decision cycle: they configure the
+// gamecontext store TTLs, the eviction ticker, and the decision loop's log/span
+// throttle, all of which are fixed at construction. A flag change here requires
+// an agent restart to take effect (deliberately NOT hot-reload — the issue's
+// read-at-startup decision for the store TTLs). All values are durations.
+type Lifecycle struct {
+	// PlayerTTL bounds how long a silent player is retained before eviction
+	// (lifecycle.player_ttl_seconds, default 5s).
+	PlayerTTL time.Duration
+	// SessionGrace bounds how long an ended session lingers before its
+	// session-scoped state resets (lifecycle.session_grace_seconds, default 15s).
+	SessionGrace time.Duration
+	// EvictInterval is how often the eviction ticker fires
+	// (lifecycle.evict_interval_seconds, default 1s).
+	EvictInterval time.Duration
+	// DecisionThrottle bounds how often the evaluate log line and agent.disabled
+	// span are emitted (decision.throttle_seconds, default 1s).
+	DecisionThrottle time.Duration
+}
+
+// Lifecycle evaluates the read-at-startup lifecycle + throttle flags. Unlike
+// Evaluate (per cycle), this is called ONCE during main()'s startup, after the
+// flagd provider is registered. Each flag falls back to its safe default on any
+// evaluation error (e.g. flagd not yet ready), reproducing the former hardcoded
+// constants. Non-positive values fall back to the default to avoid a zero/negative
+// TTL or ticker interval.
+func (f *Flags) Lifecycle(ctx context.Context) Lifecycle {
+	return Lifecycle{
+		PlayerTTL:        f.durationFlag(ctx, keyPlayerTTLSeconds, DefaultPlayerTTLSeconds),
+		SessionGrace:     f.durationFlag(ctx, keySessionGraceSeconds, DefaultSessionGraceSeconds),
+		EvictInterval:    f.durationFlag(ctx, keyEvictIntervalSeconds, DefaultEvictIntervalSeconds),
+		DecisionThrottle: f.durationFlag(ctx, keyDecisionThrottleSecs, DefaultDecisionThrottleSeconds),
+	}
+}
+
+// durationFlag resolves a float "seconds" flag into a time.Duration, falling
+// back to def seconds on any error or on a non-positive value.
+func (f *Flags) durationFlag(ctx context.Context, key string, def float64) time.Duration {
+	secs := f.floatFlag(ctx, key, def)
+	if secs <= 0 {
+		f.log.Warn("flags duration non-positive, using default", "key", key, "value", secs, "default", def)
+		secs = def
+	}
+	return time.Duration(secs * float64(time.Second))
 }
 
 // Snapshot is the set of agent control flags captured for a single decision

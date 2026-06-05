@@ -392,6 +392,28 @@ All configuration is via environment variables:
 > The Go agent uses the flagd **RPC** resolver (gRPC evaluation port `8013`),
 > not the in-process sync port `8015` that the Python services use.
 
+### Lifecycle flags — read at startup (#766 F5)
+
+The agent's lifecycle and throttle calibration values live in the flagd `agent`
+domain ([`services/flagd/agent.json`](../flagd/agent.json)). Unlike the four
+decision-cycle flag layers above (evaluated **every cycle**, hot-reloadable),
+these are **read once at startup**: they configure the GameContext store TTLs,
+the eviction ticker, and the decision-loop log/span throttle, all of which are
+fixed at construction. **Changing one requires an agent restart** — it is *not*
+hot-reload by design (per #766 F5). If flagd is not yet reachable at startup each
+value falls back to its safe default, which reproduces the former hardcoded
+constant exactly (promotion is behavior-neutral).
+
+| Flag | Default | Configures |
+|------|---------|------------|
+| `lifecycle.player_ttl_seconds` | `5` | How long a silent player is retained before eviction |
+| `lifecycle.session_grace_seconds` | `15` | How long an ended session lingers before its session-scoped state resets |
+| `lifecycle.evict_interval_seconds` | `1` | How often the eviction ticker fires |
+| `decision.throttle_seconds` | `1` | How often the `agent.evaluate` log line and the `agent.disabled` span are emitted |
+
+A non-positive value for any of these falls back to its default (a zero TTL or
+ticker interval would be unsafe).
+
 ## Action sink (#730) — applying decisions as flag writes
 
 The agent **never calls the game services over gRPC**. It applies a decision by

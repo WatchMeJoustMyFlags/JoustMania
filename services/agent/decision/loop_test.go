@@ -359,3 +359,60 @@ func TestOnEvaluate_RendersFitnessAndObjectives(t *testing.T) {
 		t.Errorf("fitness.evaluated = %v, want %v", got, want)
 	}
 }
+
+// TestSetThrottle_HonorsConfiguredInterval verifies the read-at-startup throttle
+// (decision.throttle_seconds, #766 F5) governs how often the agent.disabled span
+// is emitted. With a disabled flag source, each gated update tries to emit a
+// throttled disabled span; the loop's injectable clock lets us assert the span
+// is suppressed until the configured interval has elapsed.
+func TestSetThrottle_HonorsConfiguredInterval(t *testing.T) {
+	l, sr, fl := newTestLoop(t)
+	fl.snap.Enabled = false // disabled path goes through the throttled span
+	l.SetThrottle(10 * time.Second)
+
+	clock := time.Now()
+	l.now = func() time.Time { return clock }
+
+	disabledSpans := func() int { return len(spansByName(sr.Ended(), SpanDisabled)) }
+
+	// First evaluation emits one disabled span (throttle "fires" on first call).
+	l.OnEvaluate(context.Background(), gamecontext.GameContext{}, testTrigger())
+	if got := disabledSpans(); got != 1 {
+		t.Fatalf("first eval: disabled spans = %d, want 1", got)
+	}
+
+	// Within the 10s window, further evals are throttled — no new span.
+	clock = clock.Add(9 * time.Second)
+	l.OnEvaluate(context.Background(), gamecontext.GameContext{}, testTrigger())
+	if got := disabledSpans(); got != 1 {
+		t.Fatalf("within throttle window: disabled spans = %d, want 1", got)
+	}
+
+	// Past the configured interval, a new span is emitted.
+	clock = clock.Add(2 * time.Second) // now 11s since first
+	l.OnEvaluate(context.Background(), gamecontext.GameContext{}, testTrigger())
+	if got := disabledSpans(); got != 2 {
+		t.Fatalf("after throttle window: disabled spans = %d, want 2", got)
+	}
+}
+
+// TestSetThrottle_NonPositiveKeepsDefault verifies a non-positive throttle leaves
+// the default in place (does not disable throttling).
+func TestSetThrottle_NonPositiveKeepsDefault(t *testing.T) {
+	l := NewLoop(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if l.throttle != DefaultThrottleInterval {
+		t.Fatalf("initial throttle = %v, want %v", l.throttle, DefaultThrottleInterval)
+	}
+	l.SetThrottle(0)
+	if l.throttle != DefaultThrottleInterval {
+		t.Errorf("after SetThrottle(0): throttle = %v, want default %v", l.throttle, DefaultThrottleInterval)
+	}
+	l.SetThrottle(-5 * time.Second)
+	if l.throttle != DefaultThrottleInterval {
+		t.Errorf("after SetThrottle(negative): throttle = %v, want default %v", l.throttle, DefaultThrottleInterval)
+	}
+	l.SetThrottle(3 * time.Second)
+	if l.throttle != 3*time.Second {
+		t.Errorf("after SetThrottle(3s): throttle = %v, want 3s", l.throttle)
+	}
+}
