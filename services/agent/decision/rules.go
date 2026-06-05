@@ -42,7 +42,6 @@ type ObjectiveRules struct {
 	rng              *rand.Rand
 	lastEval         time.Time
 	lastDifficultyAt time.Time
-	limiter          windowLimiter
 }
 
 // NewObjectiveRules builds the engine. cfg may be nil, in which case
@@ -104,13 +103,16 @@ func (r *ObjectiveRules) Evaluate(_ context.Context, c gamecontext.GameContext) 
 	cands = r.applyVarianceCooldown(cands, now, pol)
 	cands = scoreAndSort(cands, weights)
 
+	// Emission is bounded to maxDecisionsPerEval per evaluation. The weighted
+	// per-minute budget (policy.max_interventions_per_minute) is NOT enforced
+	// here any more: the unified rate limiter moved to the decision loop's
+	// permission chain (ratelimit.go) so the budget is spent only on decisions
+	// that survive the allow-list and battery gates. cd.cost is still used by
+	// scoreAndSort for deterministic cheaper-first tie-breaking.
 	var out []Decision
 	for _, cd := range cands {
 		if len(out) == maxDecisionsPerEval {
 			break
-		}
-		if !r.limiter.admit(now, cd.cost, pol.MaxInterventionsPerMinute) {
-			continue
 		}
 		d := cd.decision
 		d.Objectives = weights

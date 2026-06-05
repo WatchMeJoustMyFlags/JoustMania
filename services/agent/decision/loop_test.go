@@ -56,6 +56,9 @@ func newTestLoop(t *testing.T) (*Loop, *tracetest.SpanRecorder, *settableFlags) 
 			"noop", "grant_shield", "play_audio_cue",
 			"eliminate_player", "adjust_music_tempo",
 		},
+		// Generous budget so the audit-trace tests are not rate-limited; the
+		// limiter itself is covered by limiter_test.go and layers_test.go.
+		Policy: flags.Policy{MaxInterventionsPerMinute: 100},
 	}}
 	l := NewLoop(fl, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	l.Tracer = tp.Tracer("test")

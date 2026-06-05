@@ -103,14 +103,15 @@ func TestObjectiveRules_CadenceGate(t *testing.T) {
 	r.Evaluate(context.Background(), c) // must not panic; gate reopened
 }
 
-func TestObjectiveRules_MaxTwoDecisionsAndBudget(t *testing.T) {
+func TestObjectiveRules_MaxTwoDecisions(t *testing.T) {
 	cfg := DefaultStaticConfig()
 	cfg.ObjectiveWeights = map[string]float64{ObjectiveEndurance: 1.0, ObjectiveBalanced: 1.0}
 	clock := time.Unix(10_000, 0)
 	r := newTestEngine(cfg, &clock)
 
 	// Young dying session with skill gap: endurance tempo (1) + cue (0.5) +
-	// balanced sensitivity (1) + shield (1) candidates available.
+	// balanced sensitivity (1) + shield (1) candidates available — more than the
+	// per-evaluation cap, so emission is bounded to maxDecisionsPerEval.
 	c := gameCtx(20, []string{"GONE"}, map[string]testPlayer{
 		"WEAK":   {skill: fptr(0.1), active: true},
 		"STRONG": {skill: fptr(0.9), active: true},
@@ -121,17 +122,14 @@ func TestObjectiveRules_MaxTwoDecisionsAndBudget(t *testing.T) {
 		t.Fatalf("decisions = %d, want capped at %d", len(out), maxDecisionsPerEval)
 	}
 
-	// Budget 2 is now spent (top candidates cost 1+1) — the next evaluation
-	// admits nothing.
+	// NOTE: the weighted per-minute *budget* is no longer enforced by the engine
+	// (the reconciled #727/#728 stack moved the unified rate limiter to the
+	// decision loop's permission chain — see layers_test.go's RateLimit* tests).
+	// The engine only caps per-evaluation emission; across cycles, after the 1s
+	// cadence gate, it can decide again.
 	advance(&clock, 2*time.Second)
-	if out := r.Evaluate(context.Background(), c); len(out) != 0 {
-		t.Fatalf("decisions = %v, want none with the minute budget spent", out)
-	}
-
-	// After the window expires the budget recovers.
-	advance(&clock, time.Minute)
-	if out := r.Evaluate(context.Background(), c); len(out) == 0 {
-		t.Fatal("budget must recover after the sliding window")
+	if out := r.Evaluate(context.Background(), c); len(out) != maxDecisionsPerEval {
+		t.Fatalf("decisions = %d, want %d again (no engine-level budget)", len(out), maxDecisionsPerEval)
 	}
 }
 
@@ -239,10 +237,19 @@ func TestObjectiveRules_ZeroThresholdsSafe(t *testing.T) {
 		"A": {skill: fptr(0.2), intensity: fptr(0.3), active: true},
 		"B": {skill: fptr(0.9), intensity: fptr(1.5), active: true},
 	})
-	out := r.Evaluate(context.Background(), c) // must not panic
-	// Budget 0 admits nothing regardless of candidates.
-	if len(out) != 0 {
-		t.Fatalf("decisions = %v, want none with a zero budget", out)
+	out := r.Evaluate(context.Background(), c) // must not panic on zero thresholds
+	// The engine no longer enforces the per-minute budget (the reconciled
+	// #727/#728 stack moved the unified rate limiter to the decision loop — a
+	// zero budget there is what admits nothing; see layers_test.go). The engine's
+	// contract here is "do not panic / divide by zero", and it still caps
+	// emission at maxDecisionsPerEval.
+	if len(out) > maxDecisionsPerEval {
+		t.Fatalf("decisions = %v, want at most %d", out, maxDecisionsPerEval)
+	}
+	for _, d := range out {
+		if d.Intervention == "" {
+			t.Errorf("emitted a decision with no intervention: %+v", d)
+		}
 	}
 }
 
