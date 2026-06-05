@@ -25,6 +25,11 @@
 # manual eyeball. It only invokes the CLI; #741 (resolve_backend) will wire a
 # real backend and #742 settles Claude auth (Claude Max sub, no API key — the
 # `claude` CLI headless path is the current candidate).
+#
+# It ALSO replays post-game `agent.llm.retro` spans (#844) identically: copy the
+# `llm.retro.system` / `llm.retro.user` attribute values out of an
+# `agent.llm.retro` span (instead of llm.prompt.system/user) into the two files
+# and run the same way.
 
 set -euo pipefail
 
