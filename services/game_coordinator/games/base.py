@@ -1153,13 +1153,177 @@ class BaseGameMode(ABC):
             )
             await self.gameplay_stream.write(effect_cmd)
 
-    async def _kill_player(self, serial: str, accel_mag: float):
+    async def grant_shield(self, serial: str, seconds: float) -> bool:
+        """
+        Grant a temporary shield (invulnerability) to a player (#730, N3).
+
+        A shield extends the player's ``grace_until`` timestamp: the per-frame
+        check in ``_process_controller_state`` already skips all death/warning
+        checks while ``time.time() < grace_until``, so this is the natural,
+        mode-agnostic shield primitive (Tournament/Fight Club ``invincible_until``
+        and Nonstop ``spawn_protected`` are the same idea). FFA-first per
+        docs/research/722-intervention-surface.md §3, but the primitive lives on
+        ``BaseGameMode`` so every mode inherits it. Mode-level opt-outs (e.g.
+        hidden-role LED leaks) are enforced by the intervention manager's §9
+        capability matrix BEFORE the handler runs — this primitive does not
+        re-check mode.
+
+        Idempotent-extend semantics: a new shield only ever extends an existing
+        one. If the player is already shielded past ``now + seconds`` the existing
+        (longer) grace is kept; a shorter request never shortens it.
+
+        A visible pulse effect (``GAME_EFFECT_PULSE``) is sent to the controller
+        so the shield is observable, reusing the same gameplay-stream effect
+        mechanism as warnings/deaths.
+
+        Args:
+            serial: Controller serial number.
+            seconds: Shield duration in seconds. Non-positive durations are a
+                no-op (returns False).
+
+        Returns:
+            True if a shield was granted/extended, False if the player is
+            unknown/dead or the duration was non-positive.
+        """
+        if seconds <= 0:
+            return False
+
+        player = self.players.get(serial)
+        if not player or not player.alive:
+            return False
+
+        new_grace = time.time() + seconds
+        # Extend-not-shorten: never pull an existing (longer) shield in.
+        if new_grace <= player.grace_until:
+            logger.info(
+                f"Shield for {serial}: existing grace ({player.grace_until:.2f}) "
+                f"already exceeds requested ({new_grace:.2f}); kept"
+            )
+            return True
+
+        player.grace_until = new_grace
+        logger.info(f"Shield granted to {serial} for {seconds:.1f}s (grace_until={new_grace:.2f})")
+
+        if player.span:
+            player.span.add_event("shield_granted", attributes={"shield_seconds": seconds})
+
+        # Visible pulse effect so the shield is observable on the controller.
+        if self.gameplay_stream:
+            from proto import controller_manager_pb2
+
+            trace_parent, trace_state = inject_trace_context(player.span)
+            effect_cmd = controller_manager_pb2.GameplayStreamControl(
+                game_effect=controller_manager_pb2.GameEffectCommand(
+                    serial=serial,
+                    effect=controller_manager_pb2.GAME_EFFECT_PULSE,
+                    trace_parent=trace_parent,
+                    trace_state=trace_state,
+                )
+            )
+            await self.gameplay_stream.write(effect_cmd)
+
+        return True
+
+    # Spawn grace applied to a revived player so they don't instantly re-die
+    # before they can stop moving (#730, N5). Mirrors Nonstop/Zombie respawn grace.
+    REVIVE_SPAWN_GRACE = 2.0
+
+    async def revive_player(self, serial: str, spawn_grace: float | None = None) -> bool:
+        """
+        Revive a dead player, re-entering them into the game (#730, N5).
+
+        Whether reviving is allowed at all in a given mode is decided by the
+        intervention manager's §9 capability matrix BEFORE this runs (it denies
+        ``revive_player`` for permanent-elimination / bracket / hidden-role
+        modes). This method only implements the actual re-entry once allowed.
+
+        Re-entry restores the player to the alive state, clears stale
+        warning/motion state, restores the controller LED to the player's color,
+        and grants a brief spawn grace (via the shield grace mechanism) so the
+        revived player can't instantly re-die. Modes with a native respawn path
+        (Nonstop ``_respawn_player``) delegate to it so their mode-specific state
+        (spawn protection, scoring) stays consistent; other modes use the generic
+        re-entry below.
+
+        Args:
+            serial: Controller serial number.
+            spawn_grace: Spawn-protection grace in seconds; defaults to
+                ``REVIVE_SPAWN_GRACE``.
+
+        Returns:
+            True if the player was revived, False if unknown / already alive.
+        """
+        player = self.players.get(serial)
+        if player is None:
+            logger.warning(f"revive_player: unknown serial {serial}, ignoring")
+            return False
+        if player.alive:
+            logger.info(f"revive_player: {serial} already alive, no-op")
+            return False
+
+        grace = self.REVIVE_SPAWN_GRACE if spawn_grace is None else spawn_grace
+
+        # Prefer a mode-native respawn path so mode-specific state stays correct.
+        native = getattr(self, "_respawn_player", None)
+        if callable(native):
+            await native(serial)
+            # Ensure spawn grace even if the native path uses its own scheme.
+            player.grace_until = max(player.grace_until, time.time() + grace)
+            logger.info(f"revive_player: {serial} revived via native respawn")
+            return True
+
+        # Generic re-entry for modes without a native respawn path.
+        player.alive = True
+        player.warning_until = 0.0
+        player.smoothed_accel = 0.0
+        player.grace_until = time.time() + grace
+
+        metrics.player_alive.labels(serial=serial).set(1)
+        alive_count = len([p for p in self.players.values() if p.alive])
+        metrics.players_alive.set(alive_count)
+
+        if player.span:
+            player.span.add_event("player_revived", attributes={"spawn_grace": grace})
+
+        if self.gameplay_stream:
+            from proto import controller_manager_pb2
+
+            trace_parent, trace_state = inject_trace_context(player.span)
+            # Restore the player's base LED color, then a respawn pulse.
+            base_color_cmd = controller_manager_pb2.GameplayStreamControl(
+                base_color=controller_manager_pb2.ControllerColorConfig(
+                    serial=serial,
+                    color=controller_manager_pb2.RGB(r=player.color[0], g=player.color[1], b=player.color[2]),
+                )
+            )
+            await self.gameplay_stream.write(base_color_cmd)
+            respawn_cmd = controller_manager_pb2.GameplayStreamControl(
+                game_effect=controller_manager_pb2.GameEffectCommand(
+                    serial=serial,
+                    effect=controller_manager_pb2.GAME_EFFECT_PLAYER_RESPAWN,
+                    trace_parent=trace_parent,
+                    trace_state=trace_state,
+                )
+            )
+            await self.gameplay_stream.write(respawn_cmd)
+
+        await self.event_publisher("player_revived", {"serial": serial})
+        logger.info(f"revive_player: {serial} revived (generic re-entry, grace {grace:.1f}s)")
+        return True
+
+    async def _kill_player(self, serial: str, accel_mag: float, reason: str = "motion"):
         """
         Kill a player (template method calling subclass implementation).
 
         Args:
             serial: Controller serial number
-            accel_mag: Acceleration magnitude that caused death
+            accel_mag: Acceleration magnitude that caused death (0.0 for
+                non-motion deaths such as agent interventions)
+            reason: What caused the death. ``"motion"`` for natural threshold
+                deaths; ``"agent_intervention"`` (#730) when the death is forced
+                by an ``eliminate_player`` agent intervention. Recorded on the
+                player_death span event so forced deaths are distinguishable from
+                natural ones while still emitting identical spans/events/metrics.
         """
         player = self.players.get(serial)
         if not player or not player.alive:
@@ -1202,6 +1366,7 @@ class BaseGameMode(ABC):
                     "sensitivity_factor": player.sensitivity_factor,
                     "music_speed": self.music_speed,
                     "alive_remaining": alive_count_before - 1,
+                    "death.reason": reason,
                 },
             )
 

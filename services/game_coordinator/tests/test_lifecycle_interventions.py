@@ -1,0 +1,352 @@
+"""
+Unit tests for the shield + lifecycle intervention handlers (#730, PR D).
+
+Covers the three shield/lifecycle interventions and the BaseGameMode primitives
+they drive:
+
+- grant_shield (BaseGameMode): sets grace_until, sends a visible pulse effect,
+  and extends-not-shortens an existing shield; defensive on unknown/dead player.
+- shield_seconds handler: per-serial targeting (targeted serials shielded,
+  value-0 default skipped), battery-gated skip, no-live-game no-op.
+- eliminate_player handler: routes through _kill_player with reason
+  ``agent_intervention`` + accel 0.0; defensive on unknown / already-dead /
+  empty serial / no game.
+- revive_player handler + revive_player primitive: native respawn path (Nonstop),
+  generic re-entry with spawn grace, defensive on unknown / already-alive.
+
+Telemetry is disabled via conftest; the intervention metric is patched per the
+repo metric-testing convention (.claude/rules/development.md).
+"""
+
+import sys
+import time
+from pathlib import Path
+
+import pytest
+
+# Setup paths for imports
+test_dir = Path(__file__).parent
+service_dir = test_dir.parent
+project_root = service_dir.parent.parent
+sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(test_dir))
+
+from conftest import MockControllerManagerService, async_noop
+
+from proto import controller_manager_pb2
+from services.game_coordinator.games.base import Player
+from services.game_coordinator.games.ffa import FFAGame
+from services.game_coordinator.games.nonstop_joust import NonstopJoustGame
+from services.game_coordinator.interventions import (
+    INTERVENTION_SPECS,
+    InterventionContext,
+    InterventionManager,
+)
+from services.game_coordinator.lifecycle_handlers import (
+    ELIMINATE_REASON,
+    handle_eliminate_player,
+    handle_revive_player,
+    handle_shield_seconds,
+    register_lifecycle_handlers,
+)
+
+
+# --------------------------------------------------------------------------- #
+# Fixtures / fakes
+# --------------------------------------------------------------------------- #
+class RecordingGameplayStream:
+    """Gameplay stream mock that records every written GameplayStreamControl."""
+
+    def __init__(self):
+        self.writes = []
+
+    async def write(self, message):
+        self.writes.append(message)
+
+    def effects(self):
+        """Return the list of GameEffectCommand effect enums written."""
+        return [m.game_effect.effect for m in self.writes if m.HasField("game_effect")]
+
+
+def make_ffa_game(num_players=2, record_stream=True):
+    """Build a real FFAGame with a recording gameplay stream."""
+    mock_cm = MockControllerManagerService(num_controllers=num_players)
+    game = FFAGame(
+        controller_manager_client=mock_cm,
+        event_publisher=async_noop,
+        audio_client=None,
+        game_id="test_lifecycle_ffa",
+    )
+    if record_stream:
+        game.gameplay_stream = RecordingGameplayStream()
+    for i in range(num_players):
+        s = f"p{i + 1}"
+        game.players[s] = Player(serial=s, alive=True, color=(255, 0, 0))
+    return game
+
+
+def make_nonstop_game(num_players=2):
+    """Build a real NonstopJoustGame with initialized players + recording stream."""
+    mock_cm = MockControllerManagerService(num_controllers=num_players)
+    game = NonstopJoustGame(
+        controller_manager_client=mock_cm,
+        event_publisher=async_noop,
+        audio_client=None,
+        game_id="test_lifecycle_nonstop",
+    )
+    game.gameplay_stream = RecordingGameplayStream()
+    return game, mock_cm
+
+
+class TargetingFlagClient:
+    """Flag client resolving per-serial via EvaluationContext.targeting_key."""
+
+    def __init__(self, default, per_serial=None):
+        self.default = default
+        self.per_serial = per_serial or {}
+
+    def _resolve(self, ctx, default):
+        key = getattr(ctx, "targeting_key", None) if ctx is not None else None
+        if key in self.per_serial:
+            return self.per_serial[key]
+        return self.default if self.default is not None else default
+
+    def get_float_value(self, _key, default, ctx=None):
+        return float(self._resolve(ctx, default))
+
+    def get_integer_value(self, _key, default, ctx=None):
+        return int(self._resolve(ctx, default))
+
+
+class _AgentStub:
+    def __init__(self, threshold):
+        self._threshold = threshold
+
+    def get_integer_value(self, key, default, _ctx=None):
+        if key == "policy.battery_threshold":
+            return self._threshold
+        return default
+
+    def get_object_value(self, _key, default, _ctx=None):
+        return default
+
+
+def make_manager(game=None, battery=None, threshold=20):
+    """Manager bypassing start(); records published events."""
+    events = []
+
+    async def publisher(event_type, data):
+        events.append((event_type, data))
+
+    mgr = InterventionManager(
+        event_publisher=publisher,
+        get_game=lambda: game,
+        battery_provider=(lambda s: battery.get(s)) if battery is not None else None,
+    )
+    mgr._agent_client = _AgentStub(threshold)
+    return mgr, events
+
+
+def _spec(flag_key):
+    return next(s for s in INTERVENTION_SPECS if s.flag_key == flag_key)
+
+
+def make_ctx(flag_key, value, game, *, payload="", target=None):
+    return InterventionContext(
+        spec=_spec(flag_key),
+        value=value,
+        payload=payload,
+        target_serial=target,
+        game=game,
+        objective="balanced",
+    )
+
+
+# --------------------------------------------------------------------------- #
+# grant_shield primitive (BaseGameMode)
+# --------------------------------------------------------------------------- #
+class TestGrantShieldPrimitive:
+    @pytest.mark.asyncio
+    async def test_sets_grace_and_pulse(self):
+        game = make_ffa_game()
+        before = time.time()
+        granted = await game.grant_shield("p1", 5.0)
+        assert granted is True
+        # grace_until pushed roughly 5s into the future.
+        assert game.players["p1"].grace_until >= before + 4.5
+        # A visible pulse effect was sent.
+        assert controller_manager_pb2.GAME_EFFECT_PULSE in game.gameplay_stream.effects()
+
+    @pytest.mark.asyncio
+    async def test_extends_not_shortens(self):
+        game = make_ffa_game()
+        await game.grant_shield("p1", 10.0)
+        long_grace = game.players["p1"].grace_until
+        # A shorter shield must NOT pull the longer grace in.
+        await game.grant_shield("p1", 1.0)
+        assert game.players["p1"].grace_until == pytest.approx(long_grace)
+
+    @pytest.mark.asyncio
+    async def test_extends_when_longer(self):
+        game = make_ffa_game()
+        await game.grant_shield("p1", 1.0)
+        short_grace = game.players["p1"].grace_until
+        await game.grant_shield("p1", 10.0)
+        assert game.players["p1"].grace_until > short_grace
+
+    @pytest.mark.asyncio
+    async def test_unknown_or_dead_or_nonpositive_is_noop(self):
+        game = make_ffa_game()
+        assert await game.grant_shield("nope", 5.0) is False
+        assert await game.grant_shield("p1", 0.0) is False
+        game.players["p1"].alive = False
+        assert await game.grant_shield("p1", 5.0) is False
+
+
+# --------------------------------------------------------------------------- #
+# shield_seconds handler
+# --------------------------------------------------------------------------- #
+class TestShieldSecondsHandler:
+    @pytest.mark.asyncio
+    async def test_shields_only_targeted_serials(self):
+        game = make_ffa_game(num_players=3)
+        mgr, _ = make_manager(game=game)
+        # p1 gets a 5s shield; p2/p3 resolve to the neutral default (0).
+        mgr._interventions_client = TargetingFlagClient(default=0, per_serial={"p1": 5})
+
+        before = time.time()
+        await handle_shield_seconds(make_ctx("shield_seconds", 5, game), mgr)
+
+        assert game.players["p1"].grace_until >= before + 4.5
+        assert game.players["p2"].grace_until == 0.0
+        assert game.players["p3"].grace_until == 0.0
+
+    @pytest.mark.asyncio
+    async def test_battery_gated_serial_skipped(self):
+        game = make_ffa_game(num_players=2)
+        # p2 below threshold -> dropped by resolve_player_targets entirely.
+        mgr, _ = make_manager(game=game, battery={"p1": 90, "p2": 5}, threshold=20)
+        mgr._interventions_client = TargetingFlagClient(default=0, per_serial={"p1": 5, "p2": 5})
+
+        await handle_shield_seconds(make_ctx("shield_seconds", 5, game), mgr)
+        assert game.players["p1"].grace_until > 0.0
+        assert game.players["p2"].grace_until == 0.0
+
+    @pytest.mark.asyncio
+    async def test_no_live_game_is_noop(self):
+        mgr, _ = make_manager(game=None)
+        mgr._interventions_client = TargetingFlagClient(default=0)
+        await handle_shield_seconds(make_ctx("shield_seconds", 5, None), mgr)  # no raise
+
+
+# --------------------------------------------------------------------------- #
+# eliminate_player handler
+# --------------------------------------------------------------------------- #
+class TestEliminatePlayerHandler:
+    @pytest.mark.asyncio
+    async def test_kills_via_kill_player_with_agent_reason(self):
+        game = make_ffa_game(num_players=2)
+        captured = {}
+        orig_kill = game._kill_player
+
+        async def spy_kill(serial, accel_mag, reason="motion"):
+            captured["serial"] = serial
+            captured["accel_mag"] = accel_mag
+            captured["reason"] = reason
+            await orig_kill(serial, accel_mag, reason)
+
+        game._kill_player = spy_kill
+
+        await handle_eliminate_player(make_ctx("eliminate_player", "n1:p1", game, payload="p1", target="p1"))
+
+        assert captured["serial"] == "p1"
+        assert captured["accel_mag"] == 0.0
+        assert captured["reason"] == ELIMINATE_REASON
+        assert game.players["p1"].alive is False
+
+    @pytest.mark.asyncio
+    async def test_defensive_paths(self):
+        game = make_ffa_game(num_players=1)
+        calls = []
+        orig = game._kill_player
+
+        async def counting_kill(serial, accel_mag, reason="motion"):
+            calls.append(serial)
+            await orig(serial, accel_mag, reason)
+
+        game._kill_player = counting_kill
+
+        # Unknown serial -> no kill.
+        await handle_eliminate_player(make_ctx("eliminate_player", "", game, payload="ghost"))
+        # Empty serial -> no kill.
+        await handle_eliminate_player(make_ctx("eliminate_player", "", game, payload=""))
+        # Already dead -> no kill.
+        game.players["p1"].alive = False
+        await handle_eliminate_player(make_ctx("eliminate_player", "", game, payload="p1"))
+        # No game -> no raise.
+        await handle_eliminate_player(make_ctx("eliminate_player", "", None, payload="p1"))
+
+        assert calls == []
+
+
+# --------------------------------------------------------------------------- #
+# revive_player handler + primitive
+# --------------------------------------------------------------------------- #
+class TestRevivePlayer:
+    @pytest.mark.asyncio
+    async def test_revive_in_respawn_mode_uses_native_path(self):
+        game, mock_cm = make_nonstop_game(num_players=2)
+        await game._initialize_players_impl(mock_cm.controllers)
+        serial = next(iter(game.players))
+        game.players[serial].alive = False
+
+        before = time.time()
+        await handle_revive_player(make_ctx("revive_player", "", game, payload=serial))
+
+        player = game.players[serial]
+        assert player.alive is True
+        # Native respawn applies spawn protection; revive ensures spawn grace too.
+        assert player.grace_until >= before
+
+    @pytest.mark.asyncio
+    async def test_generic_reentry_grants_spawn_grace(self):
+        # FFA has no _respawn_player -> generic re-entry path.
+        game = make_ffa_game(num_players=2)
+        assert not hasattr(game, "_respawn_player")
+        game.players["p1"].alive = False
+
+        before = time.time()
+        revived = await game.revive_player("p1")
+        assert revived is True
+        player = game.players["p1"]
+        assert player.alive is True
+        assert player.grace_until >= before + 1.5  # REVIVE_SPAWN_GRACE ~2.0
+        # LED restored to base color + respawn effect emitted.
+        effects = game.gameplay_stream.effects()
+        assert controller_manager_pb2.GAME_EFFECT_PLAYER_RESPAWN in effects
+        assert any(m.HasField("base_color") for m in game.gameplay_stream.writes)
+
+    @pytest.mark.asyncio
+    async def test_defensive_unknown_and_already_alive(self):
+        game = make_ffa_game(num_players=1)
+        # Unknown serial.
+        assert await game.revive_player("ghost") is False
+        # Already alive.
+        assert game.players["p1"].alive is True
+        assert await game.revive_player("p1") is False
+        # Handler no-ops with no game.
+        await handle_revive_player(make_ctx("revive_player", "", None, payload="p1"))  # no raise
+        # Handler no-ops with empty serial.
+        await handle_revive_player(make_ctx("revive_player", "", game, payload=""))  # no raise
+
+
+# --------------------------------------------------------------------------- #
+# registration wiring
+# --------------------------------------------------------------------------- #
+class TestRegistration:
+    def test_register_lifecycle_handlers_wires_all_three(self):
+        mgr, _ = make_manager()
+        register_lifecycle_handlers(mgr)
+        for flag in ("shield_seconds", "eliminate_player", "revive_player"):
+            handler = mgr._handlers[flag]
+            assert handler is not mgr._noop_handler
