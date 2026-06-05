@@ -118,13 +118,25 @@ func rolloutActuator(logger *slog.Logger) decision.RolloutActuator {
 // rolloutDwell reads the per-stage dwell from AGENT_ROLLOUT_DWELL_SECONDS,
 // falling back to decision.DefaultRolloutDwell.
 func rolloutDwell() time.Duration {
-	s := strings.TrimSpace(os.Getenv("AGENT_ROLLOUT_DWELL_SECONDS"))
+	return secondsEnv("AGENT_ROLLOUT_DWELL_SECONDS", decision.DefaultRolloutDwell)
+}
+
+// rolloutCooldown reads the post-rollback cooldown from
+// AGENT_ROLLOUT_COOLDOWN_SECONDS, falling back to decision.DefaultRolloutCooldown.
+func rolloutCooldown() time.Duration {
+	return secondsEnv("AGENT_ROLLOUT_COOLDOWN_SECONDS", decision.DefaultRolloutCooldown)
+}
+
+// secondsEnv parses a positive integer "seconds" env var into a Duration,
+// returning fallback on an empty/invalid/non-positive value.
+func secondsEnv(key string, fallback time.Duration) time.Duration {
+	s := strings.TrimSpace(os.Getenv(key))
 	if s == "" {
-		return decision.DefaultRolloutDwell
+		return fallback
 	}
 	n, err := strconv.Atoi(s)
 	if err != nil || n <= 0 {
-		return decision.DefaultRolloutDwell
+		return fallback
 	}
 	return time.Duration(n) * time.Second
 }
@@ -221,6 +233,16 @@ func main() {
 	// Rollout actuator (#734): real RolloutWriter when AGENT_ROLLOUT_ENABLED=true,
 	// else a dry-run actuator (decides+spans but does not write rollout.json).
 	infraLoop := decision.NewInfraLoop(logger, rolloutDwell(), bluetoothFitness, rolloutActuator(logger))
+	// Auto-remediation gate (#736): remediation_allowed lives in the ROLLOUT flagd
+	// domain (rollout.json), so the loop reads it directly from that file (the agent
+	// already owns the path). When false, fitness failures are RECOMMENDED only (span,
+	// no write). Default on any read error is false (fail-closed). The dry-run
+	// actuator above also applies to rollback, so a disabled rollout records the
+	// rollback decision without writing.
+	infraLoop.SetRemediationSource(actions.NewRemediationReaderFromEnv(logger))
+	// Post-rollback cooldown (#736): suppress re-expansion for this long after a
+	// rollback so fitness can recover before the loop climbs again.
+	infraLoop.SetCooldown(rolloutCooldown())
 	// Freshness gate (#734): evaluate the rollout only when ≥1 controller is
 	// reporting fresh Bluetooth health. Game-state-independent (lobby connects).
 	infraLoop.SetGate(func(snap infracontext.InfraContext, now time.Time) bool {

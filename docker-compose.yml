@@ -709,6 +709,11 @@ services:
       # decides and spans expansions but does not apply them (dry-run).
       - AGENT_ROLLOUT_ENABLED=${AGENT_ROLLOUT_ENABLED:-false}
       - ROLLOUT_FLAG_PATH=/etc/flagd/rollout.json
+      # Auto-remediation / rollback (#736): on fitness failure during an active
+      # rollout the agent rolls current_controller_count back to "none", gated on
+      # the remediation_allowed flag (rollout flagd domain, read from rollout.json).
+      # After a rollback, re-expansion is suppressed for the cooldown below.
+      - AGENT_ROLLOUT_COOLDOWN_SECONDS=${AGENT_ROLLOUT_COOLDOWN_SECONDS:-30}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - OTEL_SERVICE_NAME=agent
       - OTEL_SERVICE_NAMESPACE=infrastructure
