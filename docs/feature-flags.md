@@ -171,6 +171,21 @@ hz = client.get_integer_value("game_loop.update_frequency_hz", 60)
 | `pairing.poll_interval` | number | seconds | Controller pairing poll interval |
 | `pairing.bt_monitor_interval` | number | seconds | Bluetooth monitor interval |
 
+**Sentinel animation (calibration, #766 F7).** The idle sentinel breathing/hue
+animation constants (`menu/idle_monitor.py`), consumed by the **menu** service.
+Snapshotted **once at sentinel-loop start** (init-frozen — a 10 Hz animation loop
+must not call flagd per frame). Malformed values fall back to the hardcoded
+defaults: periods must be positive, brightness in `[0, 1]`, and
+`min_brightness < max_brightness` (an inverted pair resets both).
+
+| Flag | Type | Variants | Default | Read | Consumer | Description |
+|------|------|----------|---------|------|----------|-------------|
+| `sentinel.update_hz` | integer | slow 5, default 10, fast 20 | 10 | startup (init-frozen) | menu | Sentinel animation update rate (Hz) |
+| `sentinel.min_brightness` | number | dim 0.05, default 0.09, bright 0.15 | 0.09 | startup (init-frozen) | menu | Minimum sentinel LED brightness |
+| `sentinel.max_brightness` | number | dim 0.2, default 0.3, bright 0.5 | 0.30 | startup (init-frozen) | menu | Maximum sentinel LED brightness |
+| `sentinel.breath_period_seconds` | number | fast 2.0, default 4.0, slow 8.0 | 4.0 | startup (init-frozen) | menu | Breathing (brightness) cycle period |
+| `sentinel.hue_period_seconds` | number | fast 15.0, default 30.0, slow 60.0 | 30.0 | startup (init-frozen) | menu | Hue rotation cycle period |
+
 ### Controller (`services/flagd/controller.json`, `flagSetId: "controller"`)
 
 | Flag | Type | Values | Description |
@@ -179,6 +194,20 @@ hz = client.get_integer_value("game_loop.update_frequency_hz", 60)
 | `poll_drop_threshold` | integer | count | Poll-drop tolerance before action |
 | `bluetooth_backend` | string | `python`, `rust`, `unstable` (default `python`) | Per-serial Bluetooth adapter routing (renamed from `controller_adapter_routing`; Act 2 agent rollout target) |
 | `chaos_fault_type` | string | `none`, `poll_drop`, `accel_spike`, `led_failure`, `disconnect` | Chaos fault injection for controllers (see [ChaosAdapter](architecture/controller-backends.md#chaosadapter-fault-injection)) |
+
+**Effect timings (calibration, #766 F7).** Warning/death feedback timings
+(`feedback_manager.py` inline magic numbers), consumed by the **controller-manager**
+service. Read **once at init** via `init_effect_timings()` (called from the
+`init_game_settings_listener()` startup hook); malformed values fall back to the
+hardcoded defaults (each must be a positive integer).
+
+| Flag | Type | Variants (ms) | Default (ms) | Read | Consumer | Description |
+|------|------|---------------|--------------|------|----------|-------------|
+| `effect.warning_flash_ms` | integer | short 100, default 200, long 400 | 200 | startup (init-frozen) | controller-manager | Warning LED flash duration |
+| `effect.warning_vibration_ms` | integer | short 100, default 200, long 400 | 200 | startup (init-frozen) | controller-manager | Warning rumble duration |
+| `effect.death_rumble_ms` | integer | short 100, default 150, long 250 | 150 | startup (init-frozen) | controller-manager | Death rumble duration |
+| `effect.death_red_hold_ms` | integer | short 150, default 300, long 500 | 300 | startup (init-frozen) | controller-manager | Death red-LED hold duration |
+| `effect.death_fade_ms` | integer | short 400, default 700, long 1200 | 700 | startup (init-frozen) | controller-manager | Death LED fade-out duration |
 
 ### Observability (`services/flagd/observability.json`, `flagSetId: "observability"`)
 
@@ -203,6 +232,55 @@ hz = client.get_integer_value("game_loop.update_frequency_hz", 60)
 | `fight_club.min_rounds` | integer | 5-20 | Minimum rounds for Fight Club |
 | `werewolf.reveal_time_seconds` | float | 20.0-60.0 | Werewolf reveal time |
 
+#### Game calibration surface (#766 F1–F3)
+
+These flags promote previously hardcoded game-mode constants (the #722 §2b
+**calibration surface**) into `game.json`. They are read **once per game at
+`BaseGameMode.__init__`** (init-frozen — a mid-game flag change has no effect, by
+design) and consumed by the **game-coordinator**. Every default equals the prior
+hardcoded constant, so promotion is **behavior-neutral**; malformed/missing values
+fall back to the module constants (which remain the source of truth).
+
+**Death/warning thresholds (F1).** Object flags: the four 5-element sensitivity
+arrays plus per-mode overrides. Validation requires exactly 5 numeric entries per
+row with `warning < max` per sensitivity, else the whole set falls back.
+
+| Flag | Type | Default | Read | Consumer | Description |
+|------|------|---------|------|----------|-------------|
+| `thresholds` | object | `slow_warning [1.2,1.3,1.6,2.0,2.5]`, `slow_max [1.3,1.5,1.8,2.5,3.2]`, `fast_warning [1.4,1.6,1.9,2.7,2.8]`, `fast_max [1.6,1.8,2.8,3.2,3.5]` | init-frozen | game-coordinator | Base death/warning threshold tables (per sensitivity 0-4) |
+| `zombie.thresholds` | object | `warning [1.4,1.7,2.1,2.9,3.5]`, `max [1.6,1.9,2.6,3.9,4.5]` | init-frozen | game-coordinator | Zombies per-mode threshold override |
+| `werewolf.thresholds` | object | `warning [1.4,1.7,2.1,2.9,3.5]`, `max [1.6,1.9,2.6,3.9,4.5]` | init-frozen | game-coordinator | Werewolf per-mode threshold override |
+
+**Durations, roles, scoring (F2).** Each mode reads its flags at init; no proto
+changes (calibration flags bypass `StartGameConfig`). Per-flag validation falls
+back to the class/module constant on malformed values.
+
+| Flag | Type | Variants | Default | Read | Consumer | Description |
+|------|------|----------|---------|------|----------|-------------|
+| `death_grace_period_seconds` | float | none 0.0, short 0.25, default 0.5, long 1.0 | 0.5 | init-frozen | game-coordinator | Grace period after a death before re-arming |
+| `nonstop.respawn_seconds` | float | fast 1.5, default 3.0, slow 5.0 | 3.0 | init-frozen | game-coordinator | Nonstop Joust respawn delay |
+| `nonstop.spawn_protection_seconds` | float | none 0.0, default 2.0, long 4.0 | 2.0 | init-frozen | game-coordinator | Nonstop Joust post-respawn protection |
+| `nonstop.scoring` | object | `{base: 100, death_penalty: 10}` | base 100 / death_penalty 10 | init-frozen | game-coordinator | Nonstop scoring weights (`base - deaths*death_penalty`) |
+| `fight_club.round_seconds` | float | short 15.0, default 22.0, long 30.0 | 22.0 | init-frozen | game-coordinator | Fight Club round duration |
+| `tournament.match_seconds` | float | short 15.0, default 22.0, long 30.0 | 22.0 | init-frozen | game-coordinator | Tournament match duration |
+| `tournament.time_between_matches_seconds` | float | short 3.0, default 5.0, long 8.0 | 5.0 | init-frozen | game-coordinator | Tournament inter-match delay |
+| `werewolf.werewolf_fraction` | float | third 0.33, default 0.44, half 0.5 | 0.44 | init-frozen | game-coordinator | Fraction of players assigned werewolf (validated in (0,1)) |
+| `traitor.count_tiers` | object | `tiers` 5/8/11 → 1/2/3, `fallback_divisor` 3 | tiers + divisor 3 | init-frozen | game-coordinator | Traitor count by player-count tier (ascending) |
+| `zombie.initial_count` | integer | one 1, default 2, three 3 | 2 | init-frozen | game-coordinator | Initial zombie count |
+| `zombie.respawn_min_seconds` | float | fast 1.0, default 2.0, slow 4.0 | 2.0 | init-frozen | game-coordinator | Zombie respawn minimum delay |
+| `zombie.respawn_max_seconds` | float | fast 6.0, default 10.0, slow 15.0 | 10.0 | init-frozen | game-coordinator | Zombie respawn maximum delay (`min <= max`) |
+
+**Music schedule windows (F3).** Object flag covering the eight tempo-change
+scheduling windows. Read once at `__init__` into `self.music_windows`; all eight
+values must be finite and strictly positive and each `(min, max)` pair must satisfy
+`min <= max`, else the whole set reverts to the module-constant defaults. The named
+variants `calm` / `default` / `frantic` are the `pacing_profile` presets that the
+F6 `pacing_profile` intervention will swap between (live, via atomic reassignment).
+
+| Flag | Type | Variants | Default | Read | Consumer | Description |
+|------|------|----------|---------|------|----------|-------------|
+| `windows` | object | `calm`, `default`, `frantic` (pacing presets) | `default`: fast 4-8 s, slow 10-23 s, end fast 6-10 s, end slow 8-12 s | init-frozen (F6-swappable) | game-coordinator | Music fast/slow tempo-change scheduling windows |
+
 ### User (`services/flagd/user.json`, `flagSetId: "user"`)
 
 | Flag | Type | Values | Description |
@@ -212,6 +290,22 @@ hz = client.get_integer_value("game_loop.update_frequency_hz", 60)
 | `current_game` | string | game mode names | Currently selected game mode |
 | `game_instructions` | boolean | true, false | Show game instructions |
 | `menu_auto_start` | boolean | true, false | Auto-start menu on boot |
+
+**Per-channel audio volumes (calibration, #766 F7).** Mix levels promoted to the
+`user` domain in the domain of their consumer. `audio_volume.game` and
+`audio_volume.countdown_music` are read at `BaseGameMode.__init__`
+(**game-coordinator**); the menu/lobby channels are read at `AudioHelper.__init__`
+(**menu**). All are init-frozen for their consumer; the module constants are retained
+as the revert target for the `volume_override` intervention. Validation: number in
+`[0.0, 1.0]` (bool rejected), else fall back to default.
+
+| Flag | Type | Variants | Default | Read | Consumer | Description |
+|------|------|----------|---------|------|----------|-------------|
+| `audio_volume.game` | number | quiet 0.5, default 0.7, loud 0.9 | 0.7 | init-frozen | game-coordinator | In-game effects/music volume |
+| `audio_volume.countdown_music` | number | silent 0.0, default 0.15, loud 0.3 | 0.15 | init-frozen | game-coordinator | Countdown music volume |
+| `audio_volume.lobby_music` | number | quiet 0.2, default 0.4, loud 0.6 | 0.4 | startup (init-frozen) | menu | Lobby music volume |
+| `audio_volume.menu_sound` | number | quiet 0.6, default 0.8, loud 1.0 | 0.8 | startup (init-frozen) | menu | Menu sound-effect volume |
+| `audio_volume.menu_voice` | number | quiet 0.7, default 0.9, loud 1.0 | 0.9 | startup (init-frozen) | menu | Menu voice-announcement volume |
 
 ### Agent (`services/flagd/agent.json`, `flagSetId: "agent"`)
 
@@ -274,6 +368,50 @@ Thresholds the agent uses to evaluate whether its objective is being met.
 | `fitness.bluetooth.max_event_gap_ms` | integer | 50 | Max acceptable Bluetooth event gap |
 | `fitness.bluetooth.max_dropped_events_pct` | float | 0.02 | Max acceptable dropped-event fraction |
 | `fitness.bluetooth.min_movement_update_hz` | integer | 10 | Min acceptable movement update rate |
+
+#### Perception calibration (#766 F4)
+
+Perception-layer calibration constants promoted to the `agent` domain. The `agent`
+domain is initialized in `RuntimeConfigManager` (**game-coordinator**). Promotion is
+behavior-neutral (each default equals the prior hardcoded value); malformed values
+fall back to the hardcoded defaults.
+
+**Read semantics differ within this group:**
+
+- **Zone boundaries + playstyle thresholds** are refreshed on
+  `PROVIDER_CONFIGURATION_CHANGED` (change-event) — games read `config.analytics`
+  fresh at game start, consistent with the manager's other domains.
+- **`perception.ema_weight`** is read **once at game init**
+  (`BaseGameMode.__init__`) and frozen for the life of the game — never
+  re-evaluated mid-game, because changing it on a running game would invalidate the
+  per-player movement-variance baseline the perception layer relies on (#722 §5).
+
+| Flag | Type | Variants | Default | Read | Consumer | Description |
+|------|------|----------|---------|------|----------|-------------|
+| `perception.zone_still_max` | number | twitchy 0.9, default 1.1, relaxed 1.3 | 1.1 | change-event | game-coordinator | Upper bound of the "still" movement zone |
+| `perception.zone_active_max` | number | twitchy 1.3, default 1.5, relaxed 1.7 | 1.5 | change-event | game-coordinator | Upper bound of the "active" movement zone |
+| `perception.zone_warning_max` | number | twitchy 1.8, default 2.0, relaxed 2.2 | 2.0 | change-event | game-coordinator | Upper bound of the "warning" movement zone (zones must be strictly increasing) |
+| `perception.playstyle.aggressive_warning_danger_min` | integer | lenient 20, default 30, strict 40 | 30 | change-event | game-coordinator | Aggressive-playstyle warning+danger % floor |
+| `perception.playstyle.calm_still_min` | integer | lenient 60, default 70, strict 80 | 70 | change-event | game-coordinator | Calm-playstyle still % floor |
+| `perception.playstyle.calm_warning_danger_max` | integer | strict 5, default 10, lenient 15 | 10 | change-event | game-coordinator | Calm-playstyle warning+danger % ceiling |
+| `perception.playstyle.balanced_still_min` | integer | lenient 30, default 40, strict 50 | 40 | change-event | game-coordinator | Balanced-playstyle still % floor |
+| `perception.playstyle.balanced_warning_danger_max` | integer | strict 15, default 20, lenient 25 | 20 | change-event | game-coordinator | Balanced-playstyle warning+danger % ceiling (playstyle thresholds validated in [0,100]) |
+| `perception.ema_weight` | number | responsive 2.0, default 4.0, smooth 6.0 | 4.0 | init-frozen | game-coordinator | EMA smoothing weight (positive; frozen per game) |
+
+#### Agent lifecycle & decision throttle (#766 F5)
+
+Go-agent lifecycle/throttle constants promoted to the `agent` domain, evaluated by
+the **agent** service (`flags/flags.go` → `main.go`). Read **once at startup** (after
+the flagd provider registers; defaults if flagd isn't ready) — deliberately **not
+hot-reload**, so a restart is required to pick up changes. Non-positive values fall
+back to the default.
+
+| Flag | Type | Variants | Default | Read | Consumer | Description |
+|------|------|----------|---------|------|----------|-------------|
+| `lifecycle.player_ttl_seconds` | integer | short 3, default 5, long 10 | 5 | read-at-startup | agent | Per-player gamecontext-store TTL |
+| `lifecycle.session_grace_seconds` | integer | short 5, default 15, long 30 | 15 | read-at-startup | agent | Session grace before eviction |
+| `lifecycle.evict_interval_seconds` | number | fast 0.5, default 1, slow 2 | 1 | read-at-startup | agent | Eviction-ticker interval |
+| `decision.throttle_seconds` | number | chatty 0.5, default 1, quiet 5 | 1 | read-at-startup | agent | Decision-loop log/act throttle interval |
 
 ### Interventions (`services/flagd/interventions.json`, `flagSetId: "interventions"`)
 
