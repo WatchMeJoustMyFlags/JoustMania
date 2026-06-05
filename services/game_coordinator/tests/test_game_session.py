@@ -189,7 +189,7 @@ class TestGameSessionLoop:
         await session._run_game_loop_async()
 
         # active_game/active_players reset to 0 for this session's kind.
-        mock_metrics.active_game.labels.assert_any_call(game_kind=GAME_KIND_PRIMARY)
+        mock_metrics.active_game.labels.assert_any_call(game_kind=GAME_KIND_PRIMARY, game_id="game_abc123")
         mock_metrics.active_game.labels.return_value.set.assert_any_call(0)
         mock_metrics.active_players.labels.return_value.set.assert_any_call(0)
         # players_alive (still a single global gauge) reset only by primary.
