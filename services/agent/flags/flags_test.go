@@ -16,6 +16,7 @@ type stubEvaluator struct {
 	booleans map[string]bool
 	strings  map[string]string
 	ints     map[string]int64
+	floats   map[string]float64
 	objects  map[string]any
 	errs     map[string]error
 }
@@ -50,6 +51,16 @@ func (s stubEvaluator) IntValue(_ context.Context, flag string, def int64, _ ope
 	return def, nil
 }
 
+func (s stubEvaluator) FloatValue(_ context.Context, flag string, def float64, _ openfeature.EvaluationContext, _ ...openfeature.Option) (float64, error) {
+	if err := s.errs[flag]; err != nil {
+		return def, err
+	}
+	if v, ok := s.floats[flag]; ok {
+		return v, nil
+	}
+	return def, nil
+}
+
 func (s stubEvaluator) ObjectValue(_ context.Context, flag string, def any, _ openfeature.EvaluationContext, _ ...openfeature.Option) (any, error) {
 	if err := s.errs[flag]; err != nil {
 		return def, err
@@ -69,9 +80,15 @@ func TestEvaluate_FlagdShape(t *testing.T) {
 			keyPromptVariant: "aggressive",
 		},
 		ints: map[string]int64{
-			keyBatteryThreshold:          30,
-			keyMovementVarianceWindow:    20,
-			keyMaxInterventionsPerMinute: 4,
+			keyBatteryThreshold:            30,
+			keyMovementVarianceWindow:      20,
+			keyMaxInterventionsPerMinute:   4,
+			keyEnduranceMinSessionSeconds:  300,
+			keyAccelerateTargetSessionSecs: 30,
+		},
+		floats: map[string]float64{
+			keyBalancedMaxSkillGap:   0.2,
+			keyBalancedSpikeSurvival: 0.9,
 		},
 		objects: map[string]any{
 			// flagd surfaces object flags as map[string]any / []any.
@@ -103,6 +120,15 @@ func TestEvaluate_FlagdShape(t *testing.T) {
 	wantPolicy := Policy{BatteryThreshold: 30, MovementVarianceWindow: 20, MaxInterventionsPerMinute: 4}
 	if got.Policy != wantPolicy {
 		t.Errorf("Policy = %+v, want %+v", got.Policy, wantPolicy)
+	}
+	wantFitness := Fitness{
+		EnduranceMinSessionSeconds:     300,
+		BalancedMaxSkillGap:            0.2,
+		BalancedSpikeSurvivalThreshold: 0.9,
+		AccelerateTargetSessionSeconds: 30,
+	}
+	if got.Fitness != wantFitness {
+		t.Errorf("Fitness = %+v, want %+v", got.Fitness, wantFitness)
 	}
 }
 
@@ -136,6 +162,19 @@ func TestEvaluate_DefaultsWhenMissing(t *testing.T) {
 	if got.Policy != wantPolicy {
 		t.Errorf("Policy = %+v, want defaults %+v", got.Policy, wantPolicy)
 	}
+	if got.Fitness != defaultFitness() {
+		t.Errorf("Fitness = %+v, want defaults %+v", got.Fitness, defaultFitness())
+	}
+}
+
+// defaultFitness is the expected fitness snapshot when every flag falls back.
+func defaultFitness() Fitness {
+	return Fitness{
+		EnduranceMinSessionSeconds:     DefaultEnduranceMinSessionSeconds,
+		BalancedMaxSkillGap:            DefaultBalancedMaxSkillGap,
+		BalancedSpikeSurvivalThreshold: DefaultBalancedSpikeSurvivalThreshold,
+		AccelerateTargetSessionSeconds: DefaultAccelerateTargetSessionSeconds,
+	}
 }
 
 func TestEvaluate_DefaultsOnError(t *testing.T) {
@@ -143,15 +182,19 @@ func TestEvaluate_DefaultsOnError(t *testing.T) {
 	// the agent must come up disabled with no permitted interventions.
 	boom := errors.New("flagd unreachable")
 	stub := stubEvaluator{errs: map[string]error{
-		keyEnabled:                   boom,
-		keyMode:                      boom,
-		keyObjectives:                boom,
-		keyModel:                     boom,
-		keyPromptVariant:             boom,
-		keyInterventionsAllowed:      boom,
-		keyBatteryThreshold:          boom,
-		keyMovementVarianceWindow:    boom,
-		keyMaxInterventionsPerMinute: boom,
+		keyEnabled:                     boom,
+		keyMode:                        boom,
+		keyObjectives:                  boom,
+		keyModel:                       boom,
+		keyPromptVariant:               boom,
+		keyInterventionsAllowed:        boom,
+		keyBatteryThreshold:            boom,
+		keyMovementVarianceWindow:      boom,
+		keyMaxInterventionsPerMinute:   boom,
+		keyEnduranceMinSessionSeconds:  boom,
+		keyBalancedMaxSkillGap:         boom,
+		keyBalancedSpikeSurvival:       boom,
+		keyAccelerateTargetSessionSecs: boom,
 	}}
 	f := New(stub, nil)
 	got := f.Evaluate(context.Background())
@@ -179,6 +222,9 @@ func TestEvaluate_DefaultsOnError(t *testing.T) {
 	}
 	if got.Policy != wantPolicy {
 		t.Errorf("Policy = %+v on error, want defaults %+v", got.Policy, wantPolicy)
+	}
+	if got.Fitness != defaultFitness() {
+		t.Errorf("Fitness = %+v on error, want defaults %+v", got.Fitness, defaultFitness())
 	}
 }
 
