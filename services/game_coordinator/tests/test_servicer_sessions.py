@@ -385,6 +385,203 @@ class TestMultiSession:
             mock_death.set.assert_called_once_with(0)
 
 
+class TestGameIdRouting:
+    """game_id routing in the proto + coordinator wiring (#776)."""
+
+    @pytest.fixture
+    def servicer(self):
+        return GameCoordinatorServicer()
+
+    @pytest.fixture
+    def cap_two(self):
+        with patch.dict(os.environ, {"GAME_MAX_CONCURRENT_GAMES": "2"}):
+            yield
+
+    @pytest.mark.asyncio
+    async def test_events_stamped_with_session_game_id(self, servicer, cap_two):
+        """Each session's published events carry that session's game_id (#776).
+
+        The headless starter learns its game_id from the stamped event, and a
+        second concurrent session's events carry the OTHER id.
+        """
+        with _NO_THREAD:
+            _, gid1 = await servicer._start_game_from_config(_config(serials=("a1", "a2")), _MockSpan())
+            _, gid2 = await servicer._start_game_from_config(_config(serials=("b1", "b2")), _MockSpan())
+
+        bus1 = servicer.sessions[gid1].event_bus
+        bus2 = servicer.sessions[gid2].event_bus
+
+        q1 = await bus1.subscribe("sub1")
+        q2 = await bus2.subscribe("sub2")
+        await bus1.publish("player_death", {"serial": "a1"})
+        await bus2.publish("player_death", {"serial": "b1"})
+
+        e1 = q1.get_nowait()
+        e2 = q2.get_nowait()
+        # The GameEvent.game_id FIELD (not data map) is stamped per session.
+        assert e1.game_id == gid1
+        assert e2.game_id == gid2
+        assert gid1 != gid2
+
+    @pytest.mark.asyncio
+    async def test_primary_bus_game_id_cleared_on_retire(self, servicer):
+        """The persistent primary bus stamps the live game_id, then clears it.
+
+        Because the primary bus outlives sessions, a game_id fixed at
+        construction would be wrong — it must be set on bind and cleared on
+        retire so post-retire idle events carry empty game_id.
+        """
+        _, _session = await _start_running(servicer, _config())
+        gid = servicer.game_id
+        assert servicer.primary_event_bus.current_game_id == gid
+
+        q = await servicer.primary_event_bus.subscribe("sub")
+        await servicer.primary_event_bus.publish("player_death", {"serial": "p1"})
+        assert q.get_nowait().game_id == gid
+
+        await servicer.ForceEndGame(game_coordinator_pb2.ForceEndGameRequest(reason="done"), MockGrpcContext())
+        # Primary slot freed and bus stamp cleared.
+        assert servicer.primary_event_bus.current_game_id == ""
+        # Drain any events queued during force-end (e.g. game_force_ended, still
+        # stamped with gid because the stamp is cleared only after they publish).
+        while not q.empty():
+            q.get_nowait()
+        # A NEW event published after retire carries empty game_id.
+        await servicer.primary_event_bus.publish("ambient", {})
+        assert q.get_nowait().game_id == ""
+
+    @pytest.mark.asyncio
+    async def test_subscribe_by_game_id_receives_only_that_game(self, servicer, cap_two):
+        """StreamGameEvents(game_id=...) subscribes to exactly that game's bus."""
+        with _NO_THREAD:
+            _, gid1 = await servicer._start_game_from_config(_config(serials=("a1", "a2")), _MockSpan())
+            _, gid2 = await servicer._start_game_from_config(_config(serials=("b1", "b2")), _MockSpan())
+
+        request = game_coordinator_pb2.StreamEventsRequest(game_id=gid2)
+        context = MockGrpcContext()
+
+        async def _publish():
+            # Publish on both buses; only gid2's event should reach the stream.
+            await servicer.sessions[gid1].event_bus.publish("player_death", {"serial": "a1"})
+            await servicer.sessions[gid2].event_bus.publish("player_death", {"serial": "b1"})
+
+        collected = await _stream_until_event(servicer, request, context, after=_publish)
+        assert collected
+        assert all(e.game_id == gid2 for e in collected)
+        assert any(e.data.get("serial") == "b1" for e in collected)
+
+    @pytest.mark.asyncio
+    async def test_subscribe_unknown_game_id_yields_error_and_closes(self, servicer):
+        """StreamGameEvents with an unknown game_id yields a game_error and closes."""
+        request = game_coordinator_pb2.StreamEventsRequest(game_id="game_doesnotexist")
+        context = MockGrpcContext()
+
+        collected = [event async for event in servicer.StreamGameEvents(request, context)]
+
+        assert len(collected) == 1
+        assert collected[0].event_type == "game_error"
+        assert "game_doesnotexist" in collected[0].data["error"]
+        assert collected[0].game_id == "game_doesnotexist"
+
+    @pytest.mark.asyncio
+    async def test_force_end_by_game_id_targets_only_that_session(self, servicer, cap_two):
+        """ForceEndGame(game_id=shadow) ends only the shadow, leaving the primary."""
+        with _NO_THREAD:
+            _, gid1 = await servicer._start_game_from_config(_config(serials=("a1", "a2")), _MockSpan())
+            _, gid2 = await servicer._start_game_from_config(_config(serials=("b1", "b2")), _MockSpan())
+
+            resp = await servicer.ForceEndGame(
+                game_coordinator_pb2.ForceEndGameRequest(reason="test", game_id=gid2), MockGrpcContext()
+            )
+
+        assert resp.success is True
+        # Shadow retired; primary untouched and still owns the primary slot.
+        assert gid2 not in servicer.sessions
+        assert gid1 in servicer.sessions
+        assert servicer._primary_game_id == gid1
+
+    @pytest.mark.asyncio
+    async def test_force_end_unknown_game_id_returns_failure(self, servicer):
+        """ForceEndGame with an unknown game_id returns success=False."""
+        resp = await servicer.ForceEndGame(
+            game_coordinator_pb2.ForceEndGameRequest(reason="x", game_id="game_nope"), MockGrpcContext()
+        )
+        assert resp.success is False
+        assert "game_nope" in resp.error
+
+    @pytest.mark.asyncio
+    async def test_get_game_state_by_game_id(self, servicer, cap_two):
+        """GetGameState(game_id=...) returns that specific session's state."""
+        gid1, _ = await _start_running(servicer, _config(game_name="FFA", serials=("a1", "a2")))
+        gid2, _ = await _start_running(servicer, _config(game_name="Teams", serials=("b1", "b2")))
+
+        resp1 = await servicer.GetGameState(game_coordinator_pb2.GetGameStateRequest(game_id=gid1), MockGrpcContext())
+        resp2 = await servicer.GetGameState(game_coordinator_pb2.GetGameStateRequest(game_id=gid2), MockGrpcContext())
+        assert resp1.game_info.game_id == gid1
+        assert resp1.game_info.game_mode == "FFA"
+        assert resp2.game_info.game_id == gid2
+        assert resp2.game_info.game_mode == "Teams"
+
+    @pytest.mark.asyncio
+    async def test_get_game_state_unknown_game_id_returns_failure(self, servicer):
+        """GetGameState with an unknown game_id returns success=False."""
+        resp = await servicer.GetGameState(
+            game_coordinator_pb2.GetGameStateRequest(game_id="game_nope"), MockGrpcContext()
+        )
+        assert resp.success is False
+        assert "game_nope" in resp.error
+
+    @pytest.mark.asyncio
+    async def test_list_games_shows_running_then_empties(self, servicer, cap_two):
+        """ListGames enumerates all live sessions, then empties as they end."""
+        gid1, _ = await _start_running(servicer, _config(game_name="FFA", serials=("a1", "a2")))
+        gid2, _ = await _start_running(servicer, _config(game_name="Teams", serials=("b1", "b2")))
+
+        resp = await servicer.ListGames(game_coordinator_pb2.ListGamesRequest(), MockGrpcContext())
+        assert resp.success is True
+        ids = {g.game_id for g in resp.games}
+        assert ids == {gid1, gid2}
+
+        # End both; ListGames empties out.
+        await servicer.ForceEndGame(
+            game_coordinator_pb2.ForceEndGameRequest(reason="x", game_id=gid2), MockGrpcContext()
+        )
+        await servicer.ForceEndGame(game_coordinator_pb2.ForceEndGameRequest(reason="x"), MockGrpcContext())
+
+        resp_empty = await servicer.ListGames(game_coordinator_pb2.ListGamesRequest(), MockGrpcContext())
+        assert resp_empty.success is True
+        assert list(resp_empty.games) == []
+
+    @pytest.mark.asyncio
+    async def test_legacy_empty_game_id_requests_unchanged(self, servicer):
+        """Zero-field requests behave exactly as before (#776 backward compat).
+
+        Empty game_id on ForceEndGame/GetGameState resolves to the primary, and
+        a zero-arg StreamGameEvents still subscribes to the primary bus.
+        """
+        gid, _ = await _start_running(servicer, _config(game_name="FFA"))
+
+        # Empty-game_id GetGameState -> primary.
+        state = await servicer.GetGameState(game_coordinator_pb2.GetGameStateRequest(), MockGrpcContext())
+        assert state.game_info.game_id == gid
+
+        # Zero-arg stream still receives the primary game's events.
+        context = MockGrpcContext()
+
+        async def _publish():
+            await servicer.event_bus.publish("player_death", {"serial": "p1"})
+
+        collected = await _stream_until_event(
+            servicer, game_coordinator_pb2.StreamEventsRequest(), context, after=_publish
+        )
+        assert any(e.event_type == "player_death" for e in collected)
+
+        # Empty-game_id ForceEndGame -> ends the primary.
+        resp = await servicer.ForceEndGame(game_coordinator_pb2.ForceEndGameRequest(reason="done"), MockGrpcContext())
+        assert resp.success is True
+        assert servicer.game_state == game_coordinator_pb2.GameState.IDLE
+
+
 class _MockSpan:
     """Minimal span supporting set_attribute + context-manager protocol."""
 
