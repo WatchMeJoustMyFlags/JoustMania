@@ -264,9 +264,59 @@ All configuration is via environment variables:
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | set in compose | Self-telemetry export (decision audit traces → collector → Jaeger); no-op when unset |
 | `OTEL_SERVICE_NAME` | `agent` | Service identity; also drives the self-ingestion skip |
 | `AGENT_PROBE_DECISIONS` | _unset_ | `true` enables the demo/verification probe: a synthetic `noop` decision (and thus a full audit trace) at most every 5 s. Never for production sessions |
+| `AGENT_INTERVENTIONS_ENABLED` | `false` | `true` swaps the no-op action sink for the real intervention **Writer** (#730). Default off keeps the scaffold inert |
+| `INTERVENTIONS_FLAG_PATH` | `/etc/flagd/interventions.json` | Path of the flagd interventions file the Writer rewrites (must be the bind-mounted file flagd watches) |
 
 > The Go agent uses the flagd **RPC** resolver (gRPC evaluation port `8013`),
 > not the in-process sync port `8015` that the Python services use.
+
+## Action sink (#730) — applying decisions as flag writes
+
+The agent **never calls the game services over gRPC**. It applies a decision by
+**rewriting the flagd `interventions` flag file**
+(`services/flagd/interventions.json`); flagd's file-watch fires
+`PROVIDER_CONFIGURATION_CHANGED` in <100 ms, the game coordinator re-evaluates
+the intervention flags and converges on their contents
+(see `docs/research/722-intervention-surface.md` §8). The agent is the **sole
+writer** of this file; the `Writer` serializes its own dispatches with a mutex.
+
+### Transport / write semantics
+
+- **Read-modify-write IN PLACE.** The file is truncated and rewritten at the same
+  fd — **no temp+rename**, because `rename(2)` over a docker bind mount that flagd
+  is inotify-watching fails with `EBUSY`. This mirrors the proven admin-mode
+  pattern in `lib/flag_config_writer.py`.
+- **Byte-stable.** Only the flags being mutated change; every untouched flag
+  round-trips byte-for-byte (order-preserving document model). Output is
+  `indent=2` + trailing newline — identical formatting to admin-mode writes.
+
+### Flag shapes (game-side reader contract)
+
+- **Edge-triggered one-shots** (`audio_cue`, `controller_effect`,
+  `eliminate_player`, `revive_player`, `end_game`): the dedicated `active`
+  variant is overwritten with `"<nonce>:<payload>"` (`end_game` is nonce-only)
+  and `defaultVariant` flips to it. A **fresh unique nonce per dispatch**
+  (monotonic counter + random suffix) makes the reader apply exactly once on
+  nonce change. Payloads: eliminate/revive = `<serial>`; `audio_cue` =
+  `<sound_id>`; `controller_effect` = `<serial>:<effect>` (empty serial =
+  broadcast).
+- **Session state-shaped** (`music_tempo_override`, `volume_override`,
+  `global_sensitivity_override`): the `active` variant is set to the typed value
+  and `defaultVariant` flips to it; reverting flips `defaultVariant` back to the
+  neutral variant (`none`).
+- **Per-player state-shaped** (`player_sensitivity_factor`, `shield_seconds`):
+  written via a flagd **targeting** JsonLogic if-ladder keyed on
+  `targetingKey == serial`. Each driven serial gets an `agent_<serial>` variant;
+  unmatched serials fall through to `defaultVariant`. Removing a player drops its
+  branch and variant; the last removal drops the targeting block entirely.
+
+### Decision value contract
+
+The rules engine (#726) leaves `Decision.Value` empty, so the Writer supplies
+per-type defaults: audio cue `agent_cue`, controller effect `rumble`, music tempo
+`1.15`, volume `0.7`, global sensitivity `2`, player sensitivity `1.5`, shield
+`5`. An explicit `Decision.Value` (sound id / effect name / numeric target as a
+decimal string) overrides the default.
 
 | Property | Value |
 |----------|-------|
@@ -285,7 +335,8 @@ services/agent/
 ├── gamecontext/    # GameContext accumulation, session identity, eviction
 ├── gate/           # should_evaluate gating logic
 ├── flags/          # OpenFeature/flagd four-layer control flags (existence, objective, capability, permission)
-├── decision/       # Decision loop + LayerState + rate limiter + stub hooks (rules engine #726, action sink #730)
+├── actions/        # Action sink (#730): rewrites the flagd interventions file in place
+├── decision/       # Decision loop + LayerState + rate limiter + rules engine (#726) + ActionSink interface
 ├── go.mod
 └── go.sum
 ```

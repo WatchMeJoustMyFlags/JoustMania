@@ -3,6 +3,7 @@ module github.com/joustmania/agent
 go 1.25.0
 
 require (
+	github.com/diegoholiveira/jsonlogic/v3 v3.9.1
 	github.com/open-feature/go-sdk v1.17.2
 	github.com/open-feature/go-sdk-contrib/providers/flagd v0.6.0
 	go.opentelemetry.io/collector/pdata v1.53.0
@@ -24,7 +25,6 @@ require (
 	connectrpc.com/otelconnect v0.7.2 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/diegoholiveira/jsonlogic/v3 v3.9.1 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect

@@ -56,6 +56,16 @@ type Decision struct {
 	Intervention string
 	// TargetSerial scopes the intervention to one player; empty = session-scoped.
 	TargetSerial string
+	// Value is the optional per-intervention payload the action sink (#730) needs
+	// to render a flag value: the sound id for play_audio_cue, the effect name for
+	// send_controller_effect, or the numeric target for the state-shaped
+	// interventions (music tempo, volume, sensitivity factor, global sensitivity,
+	// shield seconds) as a decimal string. Empty means "use the action sink's
+	// per-type default" — the rules engine (#726) leaves it empty today, so the
+	// Writer (services/agent/actions) supplies sane defaults documented there. The
+	// eliminate/revive/end_game edge interventions ignore Value (the target comes
+	// from TargetSerial).
+	Value string
 	// Reason is a human-readable explanation, recorded as decision.reason.
 	Reason string
 	// ObjectiveServed names the session objective this decision serves

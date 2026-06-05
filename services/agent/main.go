@@ -28,6 +28,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 	"google.golang.org/grpc"
 
+	"github.com/joustmania/agent/actions"
 	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
@@ -83,6 +84,19 @@ func parseLevel(s string) slog.Level {
 	}
 }
 
+// actionSink returns the intervention Writer when AGENT_INTERVENTIONS_ENABLED is
+// true, or nil to leave the loop's default NoopActions in place (scaffold stays
+// inert). Returning decision.ActionSink keeps main()'s wiring to one line and
+// makes the gate unit-testable.
+func actionSink(logger *slog.Logger) decision.ActionSink {
+	if !strings.EqualFold(getEnv("AGENT_INTERVENTIONS_ENABLED", ""), "true") {
+		return nil
+	}
+	logger.Warn("Agent intervention writes enabled (#730)",
+		"path", getEnv("INTERVENTIONS_FLAG_PATH", actions.DefaultPath))
+	return actions.NewWriterFromEnv(logger)
+}
+
 func main() {
 	listenAddr := getEnv("AGENT_LISTEN_ADDR", ":4317")
 	healthAddr := getEnv("AGENT_HEALTH_ADDR", ":13134")
@@ -129,6 +143,12 @@ func main() {
 	// policy/fitness run on flagd-schema defaults. The action sink is still a
 	// no-op until the intervention API (#730), so nothing is applied to the game.
 	loop.Rules = decision.NewObjectiveRulesLive(nil)
+	// Action sink (#730): when AGENT_INTERVENTIONS_ENABLED=true, decisions are
+	// applied by rewriting the flagd interventions file (INTERVENTIONS_FLAG_PATH).
+	// Default false keeps the scaffold inert (NoopActions discards decisions).
+	if sink := actionSink(logger); sink != nil {
+		loop.Actions = sink
+	}
 	if strings.EqualFold(getEnv("AGENT_PROBE_DECISIONS", ""), "true") {
 		// Demo/verification mode: emit a synthetic noop decision (and thus the
 		// full audit trace, #724) at most once per probe interval. Overrides
