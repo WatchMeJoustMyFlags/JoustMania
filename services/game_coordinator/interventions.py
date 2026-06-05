@@ -785,10 +785,78 @@ class InterventionManager:
         return client.get_string_value(spec.flag_key, "", ctx)
 
     def _state_target_serial(self, _spec: InterventionSpec) -> str | None:
-        """Per-player state flags target via flagd targeting (serial), which is
-        not resolvable from a global read in PR A. Returns None (no battery gate)
-        until per-serial evaluation lands in PR D."""
+        """Player-targeted state flags fan out across all active serials via
+        flagd targeting (keyed on ``targeting_key = serial``); there is no single
+        chain-level target. The battery guard is therefore applied per serial
+        inside :meth:`resolve_player_targets`, not here, so this returns None
+        (the chain's single-target battery check is a no-op for fan-out flags).
+        """
         return None
+
+    # ------------------------------------------------------------------ #
+    # Per-player targeting resolution (reusable; PR D shield_seconds uses it)
+    # ------------------------------------------------------------------ #
+    def resolve_player_targets(
+        self,
+        flag_key: str,
+        default: float,
+        game: object,
+        *,
+        value_kind: str = "float",
+        battery_gate: bool = True,
+    ) -> dict[str, float]:
+        """Evaluate a per-player targeted flag for every active player serial.
+
+        For each active serial in ``game.players`` the flag is evaluated with an
+        ``EvaluationContext(targeting_key=serial)`` so flagd's per-serial
+        targeting rules resolve. Serials with no targeting match receive
+        ``default``. When ``battery_gate`` is True, any serial whose battery pct
+        is below ``policy.battery_threshold`` is dropped from the result (the
+        per-serial equivalent of the chain's battery guard — closes the
+        player-targeted-state-flag battery-guard gap documented in PR A's
+        ``_state_target_serial``).
+
+        Reusable across player-targeted state interventions: PR C uses it for
+        ``player_sensitivity_factor``; PR D uses it for ``shield_seconds``.
+
+        Args:
+            flag_key: Flag to evaluate in the ``interventions`` domain.
+            default: Neutral value returned for serials with no targeting match
+                (e.g. 1.0 for sensitivity factor, 0 for shield seconds).
+            game: Live game whose ``players`` dict supplies the active serials.
+            value_kind: ``"float"`` or ``"int"`` (flag value type).
+            battery_gate: If True, drop serials below the battery threshold.
+
+        Returns:
+            ``{serial: value}`` for every active serial that should be acted on.
+            Battery-gated serials are omitted entirely.
+        """
+        result: dict[str, float] = {}
+        client = self._interventions_client
+        serials = _active_player_serials(game)
+        threshold = self._battery_threshold() if battery_gate else None
+
+        for serial in serials:
+            if threshold is not None:
+                pct = self._battery_pct(serial)
+                if pct is not None and pct < threshold:
+                    continue  # battery guard: skip low-battery controllers
+
+            if client is None:
+                value: float = default
+            else:
+                ctx = EvaluationContext(targeting_key=serial)
+                try:
+                    if value_kind == "int":
+                        value = float(client.get_integer_value(flag_key, int(default), ctx))
+                    else:
+                        value = float(client.get_float_value(flag_key, float(default), ctx))
+                except Exception as e:  # one bad serial must not drop the rest
+                    logger.debug(f"InterventionManager: per-serial read failed for {serial}: {e}")
+                    value = default
+            result[serial] = value
+
+        return result
 
     def _allowed_types(self) -> set[str]:
         if self._agent_client is None:
@@ -889,6 +957,25 @@ def _spec_default(spec: InterventionSpec) -> object:
     if spec.value_kind in ("int", "float"):
         return spec.none_value
     return ""
+
+
+def _active_player_serials(game: object) -> list[str]:
+    """Best-effort list of active (alive) player serials from a live game.
+
+    Returns serials of players that are still alive; falls back to all serials
+    if aliveness can't be read. Empty list when there is no game / no players.
+    """
+    if game is None:
+        return []
+    players = getattr(game, "players", None)
+    if not isinstance(players, dict):
+        return []
+    serials: list[str] = []
+    for serial, player in players.items():
+        alive = getattr(player, "alive", True)
+        if alive:
+            serials.append(serial)
+    return serials
 
 
 def _game_mode_name(game: object) -> str:
