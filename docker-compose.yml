@@ -769,7 +769,7 @@ services:
   # Envoy - Main entry point (reverse proxy)
   # No dependencies - envoy uses STRICT_DNS and handles unavailable backends with 503
   envoy:
-    image: envoyproxy/envoy:v1.31.10
+    image: envoyproxy/envoy:v1.38.1
     container_name: joustmania-envoy
     ports:
       - "80:80"  # Main entry point (all services proxied through envoy)
