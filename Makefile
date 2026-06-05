@@ -160,8 +160,28 @@ protos-go:
 	@echo "Generating Go protobuf files..."
 	cd proto && buf generate --template buf.gen.go.yaml
 
+.PHONY: protos-agent
+protos-agent:
+	@echo "Generating agent-local Go stubs (committed under services/agent/gen)..."
+	# The agent service needs grpc-go clients to drive shadow games (#778). Unlike
+	# the connect-proxy gen (build-time, never committed), these stubs are
+	# committed INTO the agent module so `go test`/the agent Dockerfile build with
+	# no buf step. Uses Docker buf (no local buf required), then relocates the
+	# go_package-pathed output into services/agent/gen and fixes ownership.
+	rm -rf /tmp/joust-agent-gen && mkdir -p /tmp/joust-agent-gen
+	docker run --rm \
+		-v "$(CURDIR)/proto:/workspace/proto" \
+		-v "/tmp/joust-agent-gen:/out" \
+		-w /workspace/proto \
+		bufbuild/buf:1.47.2 generate --template buf.gen.agent.yaml \
+		--path controller_manager_mock.proto --path game_coordinator.proto
+	rm -rf services/agent/gen && mkdir -p services/agent/gen
+	docker run --rm -v /tmp/joust-agent-gen:/in -v "$(CURDIR)/services/agent/gen:/dest" alpine:3.19 \
+		sh -c 'cp -r /in/github.com/joustmania/agent/gen/* /dest/ && chown -R $(shell id -u):$(shell id -g) /dest'
+	@echo "✓ Agent Go stubs generated"
+
 .PHONY: protos-all
-protos-all: protos protos-ts protos-go
+protos-all: protos protos-ts protos-go protos-agent
 	@echo "✓ All protobuf files generated"
 
 .PHONY: clean-protos

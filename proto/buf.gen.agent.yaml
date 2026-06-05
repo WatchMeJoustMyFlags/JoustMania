@@ -1,0 +1,41 @@
+version: v2
+# Agent-local Go stub generation (#778).
+#
+# The agent service needs grpc-go clients for two services to drive shadow
+# games: GameCoordinatorService and MockControllerService. Unlike the
+# connect-proxy gen (build-time, never committed, its own go.mod per package),
+# these stubs are generated INTO the agent module and committed, so:
+#   - `go test ./...` / `go vet ./...` in services/agent work with no sibling
+#     module and no buf step (matching the Agent Tests CI job, which only runs
+#     Go tooling inside services/agent),
+#   - the agent Dockerfile (which COPYs only services/agent/) builds them in.
+#
+# Managed mode rewrites each proto's go_package
+# (github.com/joustmania/connect-proxy/gen/<pkg>) onto the agent module
+# (github.com/joustmania/agent/gen/<pkg>) so the generated import paths match
+# the files' on-disk location under services/agent/gen/<pkg>/. Without
+# paths=source_relative, buf lays files out by go_package, giving each proto its
+# own subdirectory and avoiding a same-directory package collision.
+#
+# Plain gRPC stubs only (no Connect-Go): the Python services serve plain gRPC.
+#
+# Regenerate from the repo root with `make protos-agent`.
+managed:
+  enabled: true
+  override:
+    # Per-proto go_package so each service lands in its own subdirectory under
+    # services/agent/gen/ (mirrors the connect-proxy gen/<pkg> convention) and
+    # the two protos do not collapse into one merged package.
+    - file_option: go_package
+      value: github.com/joustmania/agent/gen/game_coordinator
+      path: game_coordinator.proto
+    - file_option: go_package
+      value: github.com/joustmania/agent/gen/controller_manager_mock
+      path: controller_manager_mock.proto
+plugins:
+  # Go message types
+  - remote: buf.build/protocolbuffers/go:v1.35.1
+    out: /out
+  # Go gRPC client/server stubs (plain gRPC)
+  - remote: buf.build/grpc/go:v1.5.1
+    out: /out

@@ -28,10 +28,13 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 	"google.golang.org/grpc"
 
+	"github.com/google/uuid"
+
 	"github.com/joustmania/agent/actions"
 	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
+	"github.com/joustmania/agent/gamerunner"
 	"github.com/joustmania/agent/gate"
 	"github.com/joustmania/agent/infracontext"
 )
@@ -139,6 +142,41 @@ func secondsEnv(key string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return time.Duration(n) * time.Second
+}
+
+// runShadowGame executes the env-triggered shadow game (#778): it sweeps
+// orphaned reserved controllers (the "agent:" tag prefix) left by a prior
+// crashed run, then runs one mock-only game to completion. Errors are logged,
+// not fatal — the shadow game is an auxiliary capability and must never take the
+// agent's observation path down.
+func runShadowGame(ctx context.Context, logger *slog.Logger) {
+	runID := uuid.NewString()
+	cfg := gamerunner.ConfigFromEnv()
+	spec := gamerunner.SpecFromEnv(runID)
+	runner := gamerunner.New(cfg, logger)
+
+	logger.Info("Shadow-game runner enabled (#778)",
+		"coordinator", cfg.CoordinatorAddr, "mock", cfg.MockAddr, "spec", spec.String())
+
+	if sweep, err := runner.SweepOrphans(ctx, "agent:"); err != nil {
+		logger.Warn("Shadow-game orphan sweep failed (continuing)", "error", err)
+	} else if len(sweep.Removed) > 0 {
+		logger.Info("Shadow-game orphan sweep removed controllers", "count", len(sweep.Removed))
+	}
+
+	result, err := runner.RunShadowGame(ctx, spec)
+	if err != nil {
+		logger.Error("Shadow game failed", "run_id", runID, "game_id", result.GameID, "error", err)
+		return
+	}
+	logger.Info("Shadow game finished",
+		"run_id", runID,
+		"game_id", result.GameID,
+		"outcome", result.Outcome,
+		"terminal_event", result.TerminalEvent,
+		"events_seen", result.EventsSeen,
+		"duration", result.Duration,
+	)
 }
 
 func main() {
@@ -292,6 +330,14 @@ func main() {
 			}
 		}
 	}()
+
+	// Shadow-game runner (#778): when AGENT_SHADOW_GAME=true, sweep any orphaned
+	// reserved controllers from a prior crashed run, then run ONE mock-only game
+	// to completion in the background. The OTLP receiver below keeps serving; the
+	// run does not block startup. The default (unset) leaves the agent inert.
+	if gamerunner.Enabled() {
+		go runShadowGame(ctx, logger)
+	}
 
 	// Graceful shutdown on signal.
 	go func() {
