@@ -59,7 +59,7 @@ RUN go mod tidy && go mod download
 RUN CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}" go build -ldflags="-s -w" -o /connect-proxy .
 
 # Stage 3: Runtime image (alpine for wget healthcheck support)
-FROM alpine:3.19
+FROM alpine:3.23
 
 # Install wget for health checks
 RUN apk add --no-cache wget ca-certificates

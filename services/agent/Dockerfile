@@ -25,7 +25,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}" \
     go build -ldflags="-s -w" -o /agent .
 
 # Stage 2: Runtime image (alpine for wget healthcheck support)
-FROM alpine:3.19
+FROM alpine:3.23
 
 # wget powers the compose healthcheck; ca-certificates for outbound TLS
 RUN apk add --no-cache wget=1.21.4-r0 ca-certificates=20250911-r0
