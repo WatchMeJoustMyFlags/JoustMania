@@ -170,6 +170,27 @@ class DiscoveryLoop:
         self._poll_drops: dict[str, int] = {}
         self._poll_errors: dict[str, int] = {}
 
+        # Bluetooth-health window accumulation (#732 M3). The window is the
+        # ~1s span-emission interval, decoupled from the 100Hz discovery cadence.
+        # The 100Hz path only increments cheap counters; gap/ratio/hz are derived
+        # once per window at emission time.
+        self._health_interval = 1.0  # seconds between health spans/metrics
+        # Emit gate uses monotonic (immune to wall-clock jumps); window/gap math
+        # uses wall-clock time.time() to match the poll loop's current_time.
+        self._last_health_emit = time.monotonic()
+        self._window_start = time.time()
+        # Per-serial counters reset every window.
+        self._hw_polls: dict[str, int] = {}  # polls attempted
+        self._hw_fresh: dict[str, int] = {}  # polls returning a genuinely-new frame
+        self._hw_drops: dict[str, int] = {}  # polls returning None
+        self._hw_max_gap_ms: dict[str, float] = {}  # max gap between fresh frames
+        self._hw_last_fresh_ts: dict[str, float] = {}  # monotonic ts of last fresh frame
+        # Identity of the last poll object per serial — distinguishes a stale
+        # replay (same object, e.g. UnstableAdapter throttle window) from a fresh
+        # frame. The poll dict carries no sequence/timestamp, so identity is the
+        # cheapest reliable freshness signal.
+        self._hw_last_obj_id: dict[str, int] = {}
+
         # Gameplay disconnect events: accumulated between stream frames, drained by servicer (#580)
         self._gameplay_disconnects: list[str] = []
 
@@ -270,6 +291,13 @@ class DiscoveryLoop:
                 # Update controller states from backend
                 await self._update_controller_states()
 
+                # Bluetooth health: emit a ~1Hz span + metrics from accumulated
+                # window counters. Decoupled from discovery cadence (#732 M3).
+                now_mono = time.monotonic()
+                if now_mono - self._last_health_emit >= self._health_interval:
+                    self._emit_bluetooth_health(time.time())
+                    self._last_health_emit = now_mono
+
                 # Check battery levels every 30 seconds (Phase 39 - Task 4, Phase 70)
                 # Note: Battery display/warnings moved to menu service (Phase 70)
                 if current_time - self.monitoring.last_battery_check >= 30.0:
@@ -365,6 +393,17 @@ class DiscoveryLoop:
                 self._accel_gauges.pop(serial, None)
                 self._poll_drops.pop(serial, None)
                 self._poll_errors.pop(serial, None)
+                # Bluetooth-health window counters
+                self._hw_polls.pop(serial, None)
+                self._hw_fresh.pop(serial, None)
+                self._hw_drops.pop(serial, None)
+                self._hw_max_gap_ms.pop(serial, None)
+                self._hw_last_fresh_ts.pop(serial, None)
+                self._hw_last_obj_id.pop(serial, None)
+                # Clear per-serial health metric labels so disconnected
+                # controllers don't linger in dashboards.
+                metrics.controller_bluetooth_dropped_events_ratio.remove(serial)
+                metrics.controller_bluetooth_movement_update_hz.remove(serial)
                 # Publish disconnect event to button event stream subscribers —
                 # but never announce reserved controllers to the menu (#777).
                 if not reserved:
@@ -498,17 +537,36 @@ class DiscoveryLoop:
                 if serial not in self.tracked_controllers:
                     continue
 
+                # Bluetooth-health: every processed serial counts as one attempt.
+                self._hw_polls[serial] = self._hw_polls.get(serial, 0) + 1
+
                 # Handle exceptions from individual controller reads
                 if isinstance(state, Exception):
                     logger.debug(f"Error updating state for {serial}: {state}")
                     self._poll_errors[serial] = self._poll_errors.get(serial, 0) + 1
                     metrics.controller_poll_errors_total.labels(serial=serial).inc()
+                    # An exception yields no fresh frame — count as a drop for health.
+                    self._hw_drops[serial] = self._hw_drops.get(serial, 0) + 1
                     continue
 
                 if not state:
                     self._poll_drops[serial] = self._poll_drops.get(serial, 0) + 1
                     metrics.controller_poll_drops_total.labels(serial=serial).inc()
+                    self._hw_drops[serial] = self._hw_drops.get(serial, 0) + 1
                     continue
+
+                # Truthy dict: fresh frame only if the poll returned a *different*
+                # object than last time. A stale replay (same object, e.g. an
+                # UnstableAdapter throttle window) is NOT a new movement update.
+                obj_id = id(state)
+                if self._hw_last_obj_id.get(serial) != obj_id:
+                    self._hw_last_obj_id[serial] = obj_id
+                    self._record_fresh_frame(serial, current_time)
+                else:
+                    # Stale replay: no new frame, but not a hardware drop either.
+                    # Counts against the update rate via _hw_polls without bumping
+                    # _hw_fresh, so movement_update_hz reflects the degradation.
+                    pass
 
                 # Update stored state
                 self.controller_states[serial] = state
@@ -582,6 +640,151 @@ class DiscoveryLoop:
         # Update last activity time if activity detected
         if activity_detected:
             self._last_activity_time[serial] = current_time
+
+    def _record_fresh_frame(self, serial: str, now: float) -> None:
+        """Record a genuinely-new frame for the bluetooth-health window.
+
+        Tracks the fresh-frame count and the max inter-event gap (ms) between
+        consecutive fresh frames. Cheap — runs on the 100Hz path. ``now`` is a
+        wall-clock timestamp (seconds); only deltas are used so the clock source
+        just needs to be monotone within a window.
+        """
+        self._hw_fresh[serial] = self._hw_fresh.get(serial, 0) + 1
+        last_ts = self._hw_last_fresh_ts.get(serial)
+        if last_ts is not None:
+            gap_ms = (now - last_ts) * 1000.0
+            if gap_ms > self._hw_max_gap_ms.get(serial, 0.0):
+                self._hw_max_gap_ms[serial] = gap_ms
+        self._hw_last_fresh_ts[serial] = now
+
+    def _compute_health_window(self, window_seconds: float) -> dict:
+        """Derive per-serial and window-aggregate health signals.
+
+        Called once per window at emission time. Returns a dict with:
+          * ``per_serial``: {serial: {update_hz, dropped_pct, max_gap_ms}}
+          * window aggregates: ``event_gap_ms`` (max), ``dropped_events_pct``
+            (total drops / total polls), ``movement_update_hz`` (min across
+            serials), ``active_controllers`` (count of serials polled).
+
+        ``window_seconds`` guards against a zero/negative interval (clamped to a
+        small positive value) so rate math never divides by zero.
+        """
+        duration = max(window_seconds, 1e-6)
+        per_serial: dict[str, dict] = {}
+        serials = list(self._hw_polls.keys())
+
+        total_events = 0  # event-bearing cycles: fresh + dropped
+        total_drops = 0
+        max_gap_ms = 0.0
+        min_hz: float | None = None
+
+        for serial in serials:
+            fresh = self._hw_fresh.get(serial, 0)
+            drops = self._hw_drops.get(serial, 0)
+            gap_ms = self._hw_max_gap_ms.get(serial, 0.0)
+
+            update_hz = fresh / duration
+            # Dropped-event ratio: drops as a fraction of event-bearing poll
+            # cycles (fresh frames + drops). Stale replays are excluded — they
+            # are the *absence* of an event, not a dropped event, so they must
+            # not dilute the denominator. This matches the UnstableAdapter
+            # design (every Nth *fresh* frame dropped) so the ratio reflects the
+            # genuine event-loss rate rather than washing out across 100Hz polls.
+            events = fresh + drops
+            dropped_pct = (drops / events) if events else 0.0
+
+            per_serial[serial] = {
+                "update_hz": update_hz,
+                "dropped_pct": dropped_pct,
+                "max_gap_ms": gap_ms,
+            }
+
+            total_events += events
+            total_drops += drops
+            if gap_ms > max_gap_ms:
+                max_gap_ms = gap_ms
+            if min_hz is None or update_hz < min_hz:
+                min_hz = update_hz
+
+        return {
+            "per_serial": per_serial,
+            "event_gap_ms": max_gap_ms,
+            "dropped_events_pct": (total_drops / total_events) if total_events else 0.0,
+            "movement_update_hz": min_hz if min_hz is not None else 0.0,
+            "active_controllers": len(serials),
+        }
+
+    def _reset_health_window(self, now: float) -> None:
+        """Clear per-serial window counters and start a new window at ``now``."""
+        self._hw_polls.clear()
+        self._hw_fresh.clear()
+        self._hw_drops.clear()
+        self._hw_max_gap_ms.clear()
+        # Keep _hw_last_fresh_ts / _hw_last_obj_id across windows so the first
+        # fresh frame of the next window measures its gap from the real previous
+        # frame, and stale replays spanning the boundary are still detected.
+        self._window_start = now
+
+    def _emit_bluetooth_health(self, now: float) -> None:
+        """Emit the ~1Hz controller.bluetooth_health span + health metrics.
+
+        Decoupled from discovery cadence via ``_last_health_emit``. Skips
+        emission entirely when no controllers were polled this window — an idle
+        lobby with no controllers produces no health heartbeat (the agent's
+        OBSERVE step treats absence-of-span as "nothing to perceive").
+        """
+        window_seconds = now - self._window_start
+        signals = self._compute_health_window(window_seconds)
+
+        # Skip-when-empty: no point spamming empty health spans with no controllers.
+        if signals["active_controllers"] == 0:
+            self._reset_health_window(now)
+            return
+
+        # Window-level rollout summary (target backend + cohort size).
+        target_backend = ""
+        rollout_count = 0
+        if hasattr(self.backend, "_rollout_router"):
+            try:
+                target_backend, rollout_count = self.backend._rollout_router.current_target()
+            except Exception:
+                logger.debug("Failed to read rollout summary for health span", exc_info=True)
+
+        # --- Span: periodic root span, like controller.discover ---------------
+        with tracer.start_as_current_span("controller.bluetooth_health") as span:
+            span.set_attribute("bluetooth.event_gap_ms", float(signals["event_gap_ms"]))
+            span.set_attribute("bluetooth.dropped_events_pct", float(signals["dropped_events_pct"]))
+            span.set_attribute("bluetooth.movement_update_hz", float(signals["movement_update_hz"]))
+            span.set_attribute("bluetooth.active_controllers", int(signals["active_controllers"]))
+            span.set_attribute("bluetooth.target_backend", target_backend)
+            span.set_attribute("bluetooth.rollout_count", int(rollout_count))
+
+            # One event per active serial with per-serial signals.
+            for serial, s in signals["per_serial"].items():
+                adapter_type = ""
+                if hasattr(self.backend, "get_adapter_type"):
+                    adapter_type = self.backend.get_adapter_type(serial)
+                span.add_event(
+                    "bluetooth_controller_sample",
+                    {
+                        "controller.serial": serial,
+                        "bluetooth.movement_update_hz": float(s["update_hz"]),
+                        "bluetooth.dropped_events_pct": float(s["dropped_pct"]),
+                        "controller.adapter": adapter_type,
+                    },
+                )
+
+        # --- Metrics ----------------------------------------------------------
+        # Window-max gap in SECONDS (repo convention for *_seconds histograms).
+        metrics.controller_bluetooth_event_gap_seconds.observe(signals["event_gap_ms"] / 1000.0)
+        metrics.controller_bluetooth_dropped_events_ratio_window.set(signals["dropped_events_pct"])
+        for serial, s in signals["per_serial"].items():
+            metrics.controller_bluetooth_dropped_events_ratio.labels(serial=serial).set(s["dropped_pct"])
+            metrics.controller_bluetooth_movement_update_hz.labels(serial=serial).set(s["update_hz"])
+            # Populate the previously-unset generic update-rate gauge too.
+            metrics.controller_state_update_hz.labels(serial=serial).set(s["update_hz"])
+
+        self._reset_health_window(now)
 
     def drain_health_counters(self, serial: str) -> tuple[int, int, int]:
         """Drain and reset health counters for a controller.
