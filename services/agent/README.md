@@ -62,6 +62,58 @@ Sessions are not carried in every signal, so the Agent synthesizes them:
 | Player | Evicted after a **5 s** TTL with no fresh signal |
 | Session | Kept for a **15 s** grace period after it goes inactive, then evicted |
 
+## Infrastructure observe path (#733)
+
+Alongside the game `GameContext`, the Agent runs a **parallel infrastructure
+observe path** over the same OTLP trace receiver. It recognizes the periodic
+`controller.bluetooth_health` span emitted by controller-manager (PR #785),
+extracts the Bluetooth transport signals into a thread-safe `InfraContext`
+(`infracontext/`), and triggers an infrastructure evaluation loop.
+
+This PR is **OBSERVE only**: the loop is a logging stub
+(`decision.InfraLoop`, debug level, throttled to ~1/sec). Fitness, decisions, and
+remediation land in later stacked PRs behind the `decision.InfraEvaluator` seam.
+The telemetry constants those PRs converge on — span `agent.infrastructure.decision`
+and its attribute keys — are already declared in `decision/infra_telemetry.go`
+(no span is emitted yet).
+
+### Input span contract (`controller.bluetooth_health`)
+
+A ~1Hz root span; **absent when no controllers are connected**.
+
+| Span attribute | Type | Meaning |
+|----------------|------|---------|
+| `bluetooth.event_gap_ms` | float | window max inter-fresh-frame gap (ms) |
+| `bluetooth.dropped_events_pct` | float 0–1 | window drop ratio |
+| `bluetooth.movement_update_hz` | float | window min per-serial fresh rate |
+| `bluetooth.active_controllers` | int | active controller count |
+| `bluetooth.target_backend` | string | rollout target adapter_type (`""` when off) |
+| `bluetooth.rollout_count` | int | current rollout controller count (`0` when off) |
+
+One `bluetooth_controller_sample` **span event per active serial** carries the
+per-controller view: `controller.serial`, `bluetooth.movement_update_hz`,
+`bluetooth.dropped_events_pct`, `controller.adapter` (winning adapter_type, e.g.
+`python`/`rust`/`unstable`). Numeric attributes are read tolerant of both Int and
+Double encodings; any missing window attribute simply stays `nil` (the extractor
+sets a pointer only for present attributes).
+
+### InfraContext lifecycle
+
+- **Window signals** are replaced **wholesale** on each health span — an absent
+  attribute next window drops back to `nil`, never a stale carry-over.
+- **Per-controller** records accumulate keyed on serial; each appearance stamps
+  `LastUpdate`.
+- **Eviction**: a controller absent from health spans past a **5 s** TTL (≈ five
+  missed 1Hz windows) is dropped, on the same eviction ticker as the game store.
+- `Snapshot()` deep-copies the controllers map, so the stub loop reads an
+  isolated view (the per-span pointer-replacement invariant means later spans
+  never mutate an already-handed-out snapshot).
+
+The same **self-ingestion skip** as the game path applies: any resource whose
+`service.name` equals the agent's own `OTEL_SERVICE_NAME` is ignored on the infra
+path too. A mixed batch (game spans + health spans) feeds both stores
+independently with no cross-contamination.
+
 ## Gating & decisions
 
 After each context update the Agent evaluates `should_evaluate`. When the gate
@@ -477,6 +529,7 @@ services/agent/
 ├── otel.go         # OTLP/self-telemetry setup
 ├── receiver.go     # OTLP span/metric ingestion + extraction into GameContext
 ├── gamecontext/    # GameContext accumulation, session identity, eviction
+├── infracontext/   # InfraContext: controller.bluetooth_health observe path (#733)
 ├── gate/           # should_evaluate gating logic
 ├── flags/          # OpenFeature/flagd four-layer control flags (existence, objective, capability, permission)
 ├── actions/        # Action sink (#730): rewrites the flagd interventions file in place
