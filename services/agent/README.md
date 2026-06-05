@@ -180,7 +180,10 @@ The two decision hooks:
 - **Rules engine** (#726) — `ObjectiveRules`, the objective-weighted decision
   logic below. Active by default; its objectives are driven live by the flag.
 - **Action sink** (#730) — applies permitted intents via OpenFeature/flagd.
-  **Still a no-op**: decisions are traced, nothing is applied yet.
+  **No-op by default**: with `AGENT_INTERVENTIONS_ENABLED=true` the real
+  `actions.Writer` is wired in and dispatched decisions are written to the
+  flagd `interventions` domain (see **Action sink** below); otherwise decisions
+  are traced and discarded.
 
 The flags wrapper lives in [`flags/`](flags/) and uses the OpenFeature Go SDK
 with the flagd **RPC** resolver against flagd's gRPC evaluation port. Flag keys
