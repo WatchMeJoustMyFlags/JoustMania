@@ -104,9 +104,19 @@ message ResetResponse {
 
 message ListRequest {}
 
+// Per-controller info for ListMockControllers. Lets tests/agents enumerate
+// their reserved controllers and sweep orphans by tag.
+message MockControllerInfo {
+    string serial = 1;
+    bool reserved = 2;
+    string tag = 3;
+}
+
 message ListResponse {
     repeated string serials = 1;
     int32 count = 2;
+    // Detailed per-controller info including reserved/tag.
+    repeated MockControllerInfo controllers = 3;
 }
 
 message AutoGameEndRequest {
@@ -172,6 +182,13 @@ message ConnectionEvent {
 // AddController - add a single mock controller dynamically
 message AddControllerRequest {
     string serial = 1;  // Optional: auto-generated if empty
+    // When true, the controller is hidden from button-stream consumers (the
+    // menu): no connect/disconnect announcements, excluded from the
+    // connected_serials roster. It stays fully usable via gameplay-data
+    // streams and explicit-serial LED/feedback commands.
+    bool reserved = 2;
+    // Identifies the owning agent/game — aids orphan cleanup and debugging.
+    string tag = 3;
 }
 
 message AddControllerResponse {
@@ -193,6 +210,11 @@ message RemoveControllerResponse {
 // AddControllers - add multiple mock controllers at once
 message AddControllersRequest {
     int32 count = 1;
+    // When true, all added controllers are reserved (hidden from the menu).
+    // See AddControllerRequest.reserved.
+    bool reserved = 2;
+    // Identifies the owning agent/game — applied to all added controllers.
+    string tag = 3;
 }
 
 message AddControllersResponse {
