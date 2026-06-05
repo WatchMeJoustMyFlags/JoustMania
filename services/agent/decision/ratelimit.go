@@ -43,6 +43,13 @@ const (
 	InterventionEliminatePlayer         = "eliminate_player"
 	InterventionRevivePlayer            = "revive_player"
 	InterventionEndGame                 = "end_game"
+
+	// InterventionNoop is the probe-mode synthetic intervention (ProbeRules). It
+	// carries no game effect: when dispatched through the action sink it is a
+	// no-op success, so probe mode exercises the full OBSERVE→DECIDE→ACT path
+	// (including the action span) harmlessly. It is allow-listed only via the
+	// `probe` variant of interventions_allowed (services/flagd/agent.json).
+	InterventionNoop = "noop"
 )
 
 // interventionWeights is the cost of each intervention against the per-minute

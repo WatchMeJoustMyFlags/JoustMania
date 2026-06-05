@@ -440,12 +440,44 @@ All configuration is via environment variables:
 | `LOG_LEVEL` | `info` | Log verbosity |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | set in compose | Self-telemetry export (decision audit traces → collector → Jaeger); no-op when unset |
 | `OTEL_SERVICE_NAME` | `agent` | Service identity; also drives the self-ingestion skip |
-| `AGENT_PROBE_DECISIONS` | _unset_ | `true` enables the demo/verification probe: a synthetic `noop` decision (and thus a full audit trace) at most every 5 s. Never for production sessions |
+| `AGENT_PROBE_DECISIONS` | _unset_ | `true` enables the demo/verification probe: a synthetic `noop` decision (and thus a full audit trace) at most every 5 s. Never for production sessions. See [Probe mode](#probe-mode-agent_probe_decisions) |
 | `AGENT_INTERVENTIONS_ENABLED` | `false` | `true` swaps the no-op action sink for the real intervention **Writer** (#730). Default off keeps the scaffold inert |
 | `INTERVENTIONS_FLAG_PATH` | `/etc/flagd/interventions.json` | Path of the flagd interventions file the Writer rewrites (must be the bind-mounted file flagd watches) |
 
 > The Go agent uses the flagd **RPC** resolver (gRPC evaluation port `8013`),
 > not the in-process sync port `8015` that the Python services use.
+
+### Probe mode (`AGENT_PROBE_DECISIONS`)
+
+`AGENT_PROBE_DECISIONS=true` swaps the rules engine for `ProbeRules`, which emits
+one synthetic `noop` decision at most every 5 s. Its only purpose is to drive a
+**full audit trace** (`agent.span_received → agent.decision → agent.action`)
+without waiting for a live game to trigger the real rules — invaluable for
+verifying the trace pipeline end to end.
+
+**With the default `interventions_allowed` variant, probe decisions are blocked
+by design.** `noop` is not in the `ambient`/`standard`/`full` allow-lists, so the
+permission layer blocks every probe decision with `decision.blocked=true`,
+`decision.block_reason=not_allowed`. This is still useful: the
+`agent.span_received → agent.decision` spans are emitted (a blocked decision is
+traced, not dropped), so the OBSERVE→DECIDE path and the span schema are fully
+exercised — only the `agent.action` dispatch is withheld.
+
+**To make probe decisions dispatch** (exercise the *whole* path including
+`agent.action`), flip `interventions_allowed` to the dedicated **`probe`**
+variant (`["noop"]`) in [`services/flagd/agent.json`](../flagd/agent.json):
+
+```json
+"interventions_allowed": { "defaultVariant": "probe" }
+```
+
+`noop` is a **harmless no-op in the action sink**: the `Writer` recognizes it and
+returns success **without writing any flag** (`actions/writer.go`,
+`InterventionNoop`). So with the `probe` variant + `AGENT_INTERVENTIONS_ENABLED=true`
++ `enabled=on`, a probe decision flows through allow-list, battery, and rate-limit
+gates, reaches the real `Writer`, and completes the `agent.action` span — all
+without touching the game. Revert by flipping `interventions_allowed` back to
+`ambient` (or `none`).
 
 ### Lifecycle flags — read at startup (#766 F5)
 

@@ -78,6 +78,9 @@
       "state": "ENABLED",
       "variants": {
         "none": [],
+        "probe": [
+          "noop"
+        ],
         "ambient": [
           "play_audio_cue",
           "send_controller_effect",

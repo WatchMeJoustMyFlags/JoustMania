@@ -697,6 +697,12 @@ services:
       # the scaffold stays inert.
       - AGENT_INTERVENTIONS_ENABLED=${AGENT_INTERVENTIONS_ENABLED:-false}
       - INTERVENTIONS_FLAG_PATH=/etc/flagd/interventions.json
+      # Demo/verification only: emit a synthetic `noop` decision (full audit
+      # trace) every ~5s. Off by default; never for production sessions. With the
+      # default interventions_allowed variant probe decisions are blocked
+      # (not_allowed) — flip that flag to the `probe` variant to dispatch. See
+      # docs/agent-act-runbook.md.
+      - AGENT_PROBE_DECISIONS=${AGENT_PROBE_DECISIONS:-}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - OTEL_SERVICE_NAME=agent
       - OTEL_SERVICE_NAMESPACE=infrastructure
