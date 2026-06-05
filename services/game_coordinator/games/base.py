@@ -217,6 +217,116 @@ def resolve_non_negative_duration(value, default: float) -> float:
     return float(value) if value >= 0 else default
 
 
+@dataclass
+class MusicWindows:
+    """Tempo-change scheduling windows (seconds) for the music loop.
+
+    Each field is the min/max delay before the next tempo change in a given
+    phase. The loop draws a uniform delay in ``[min, max]`` (lerping between the
+    early-game and end-game pairs as players are eliminated). #766 F3 promoted
+    these from the module constants to the ``game.windows`` object flag.
+
+    #766 F6 seam (LIVE ``pacing_profile`` intervention): the resolved windows
+    live on ``self.music_windows`` (one ``MusicWindows`` instance). F6's live
+    handler must build a new ``MusicWindows`` from the chosen preset and assign
+    it atomically — ``self.music_windows = new_windows`` — so the music loop,
+    which reads ``self.music_windows`` fresh on each ``_get_music_change_time``
+    call, picks up the swap on the next tempo change without tearing (the field
+    reference flips in a single bytecode store; never mutate the fields in
+    place). Init reads it once (init-frozen calibration); F6 owns the live path.
+    """
+
+    fast_min: float
+    fast_max: float
+    slow_min: float
+    slow_max: float
+    end_fast_min: float
+    end_fast_max: float
+    end_slow_min: float
+    end_slow_max: float
+
+    @classmethod
+    def defaults(cls) -> "MusicWindows":
+        """Build a MusicWindows from the hardcoded module constants."""
+        return cls(
+            fast_min=MIN_MUSIC_FAST_TIME,
+            fast_max=MAX_MUSIC_FAST_TIME,
+            slow_min=MIN_MUSIC_SLOW_TIME,
+            slow_max=MAX_MUSIC_SLOW_TIME,
+            end_fast_min=END_MIN_MUSIC_FAST_TIME,
+            end_fast_max=END_MAX_MUSIC_FAST_TIME,
+            end_slow_min=END_MIN_MUSIC_SLOW_TIME,
+            end_slow_max=END_MAX_MUSIC_SLOW_TIME,
+        )
+
+
+# Maps each MusicWindows field to its game.windows flag key (snake_case after
+# the module constants) and the constant used as the per-field fallback.
+_MUSIC_WINDOW_FIELDS = (
+    ("fast_min", "min_music_fast_time", MIN_MUSIC_FAST_TIME),
+    ("fast_max", "max_music_fast_time", MAX_MUSIC_FAST_TIME),
+    ("slow_min", "min_music_slow_time", MIN_MUSIC_SLOW_TIME),
+    ("slow_max", "max_music_slow_time", MAX_MUSIC_SLOW_TIME),
+    ("end_fast_min", "end_min_music_fast_time", END_MIN_MUSIC_FAST_TIME),
+    ("end_fast_max", "end_max_music_fast_time", END_MAX_MUSIC_FAST_TIME),
+    ("end_slow_min", "end_min_music_slow_time", END_MIN_MUSIC_SLOW_TIME),
+    ("end_slow_max", "end_max_music_slow_time", END_MAX_MUSIC_SLOW_TIME),
+)
+
+# (min_field, max_field) pairs that must satisfy min <= max for the windows to
+# be usable. If any pair is violated after resolution we discard the whole flag
+# value and fall back to the defaults (keeping promotion behavior-neutral).
+_MUSIC_WINDOW_PAIRS = (
+    ("fast_min", "fast_max"),
+    ("slow_min", "slow_max"),
+    ("end_fast_min", "end_fast_max"),
+    ("end_slow_min", "end_slow_max"),
+)
+
+
+def _positive_number(value) -> bool:
+    """A music window must be a finite, strictly-positive (>0) number, not bool."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    if value != value or value in (float("inf"), float("-inf")):  # NaN / inf
+        return False
+    return value > 0
+
+
+def resolve_music_windows(flag_value: dict) -> MusicWindows:
+    """
+    Validate the ``game.windows`` object flag and resolve a :class:`MusicWindows`.
+
+    Each of the eight window values must be a finite, strictly-positive number,
+    and every (min, max) pair must satisfy ``min <= max``. On ANY malformed
+    value or violated ordering the ENTIRE flag value is rejected in favour of
+    the module-constant defaults, keeping the promotion behavior-neutral (a
+    half-applied window set could distort the fast/slow rhythm unexpectedly).
+
+    Args:
+        flag_value: Object value from the ``windows`` flag (may be partial/invalid)
+
+    Returns:
+        A validated :class:`MusicWindows` (defaults on any failure).
+    """
+    defaults = MusicWindows.defaults()
+    if not isinstance(flag_value, dict):
+        return defaults
+
+    resolved: dict[str, float] = {}
+    for field, key, _fallback in _MUSIC_WINDOW_FIELDS:
+        candidate = flag_value.get(key)
+        if not _positive_number(candidate):
+            return defaults  # any malformed value -> whole-set fallback
+        resolved[field] = float(candidate)
+
+    for min_field, max_field in _MUSIC_WINDOW_PAIRS:
+        if resolved[min_field] > resolved[max_field]:
+            return defaults  # any inverted window -> whole-set fallback
+
+    return MusicWindows(**resolved)
+
+
 # Warning feedback duration (seconds) - flash + rumble time
 # This is purely visual feedback, NOT protection (player can still die during warning)
 WARNING_DURATION = 0.5
@@ -387,6 +497,14 @@ class BaseGameMode(ABC):
             read_float_flag("game", "death_grace_period_seconds", DEATH_GRACE_PERIOD),
             DEATH_GRACE_PERIOD,
         )
+
+        # #766 F3: music tempo-change scheduling windows promoted to the
+        # ``game.windows`` object flag (the ``pacing_profile`` presets live as
+        # named variants). Read ONCE here (init-frozen calibration); malformed
+        # values fall back to the module constants. F6 will add a LIVE
+        # ``pacing_profile`` intervention that atomically swaps
+        # ``self.music_windows`` mid-game — see MusicWindows for the seam.
+        self.music_windows = resolve_music_windows(read_object_flag("game", "windows", {}))
 
         # Phase 70: Music tempo control state
         self.music_track_id = None
@@ -2099,15 +2217,18 @@ class BaseGameMode(ABC):
             min_moves = 1
         game_percent = min(1.0, self.dead_count / min_moves)
 
-        # Interpolate between normal and end-game timing
+        # Interpolate between normal and end-game timing using the (init-frozen,
+        # F6-swappable) per-instance windows. Read once into a local so a
+        # concurrent F6 pacing_profile swap can't tear within a single change.
+        windows = self.music_windows
         if self.speed_up:
             # Currently slow, will speed up - use slow timing
-            min_t = self._lerp(MIN_MUSIC_SLOW_TIME, END_MIN_MUSIC_SLOW_TIME, game_percent)
-            max_t = self._lerp(MAX_MUSIC_SLOW_TIME, END_MAX_MUSIC_SLOW_TIME, game_percent)
+            min_t = self._lerp(windows.slow_min, windows.end_slow_min, game_percent)
+            max_t = self._lerp(windows.slow_max, windows.end_slow_max, game_percent)
         else:
             # Currently fast, will slow down - use fast timing
-            min_t = self._lerp(MIN_MUSIC_FAST_TIME, END_MIN_MUSIC_FAST_TIME, game_percent)
-            max_t = self._lerp(MAX_MUSIC_FAST_TIME, END_MAX_MUSIC_FAST_TIME, game_percent)
+            min_t = self._lerp(windows.fast_min, windows.end_fast_min, game_percent)
+            max_t = self._lerp(windows.fast_max, windows.end_fast_max, game_percent)
 
         delay = random.uniform(min_t, max_t)
         return time.time() + delay

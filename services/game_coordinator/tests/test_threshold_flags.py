@@ -211,11 +211,16 @@ def test_base_init_stores_instance_tables_from_defaults():
 
 
 def test_base_init_reads_flag_once():
-    """The threshold flag is read exactly once at init (init-frozen)."""
+    """The threshold flag is read exactly once at init (init-frozen).
+
+    Base init reads several game-domain object flags (thresholds, F3 windows,
+    ...); assert specifically that ``thresholds`` is read exactly once.
+    """
     with patch("services.game_coordinator.games.base.read_object_flag", return_value={}) as mock_read:
         _make_ffa()
-    assert mock_read.call_count == 1
-    assert mock_read.call_args.args == ("game", "thresholds", {})
+    threshold_calls = [c for c in mock_read.call_args_list if c.args[1] == "thresholds"]
+    assert len(threshold_calls) == 1
+    assert threshold_calls[0].args == ("game", "thresholds", {})
 
 
 def test_base_init_applies_flag_override():
