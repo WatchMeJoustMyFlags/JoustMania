@@ -36,6 +36,13 @@ const (
 	// AttrRemediationAction is the remediation the decision selected (e.g. roll
 	// back the rollout); the infra-domain parallel to AttrDecisionAction.
 	AttrRemediationAction = "remediation.action"
+	// AttrRolloutDryRun is whether the actuator only REHEARSED the decision (true)
+	// rather than applying it to rollout.json (false). True for the dry-run
+	// actuator (AGENT_ROLLOUT_ENABLED=false, the compose default) and for a nil
+	// actuator (the loop never writes); false for the real RolloutWriter. Present
+	// on EVERY decision span so a Jaeger consumer can tell a rehearsed
+	// expand/rollback apart from an applied one — they were otherwise identical.
+	AttrRolloutDryRun = "rollout.dry_run"
 
 	// Bluetooth signal attribute keys (controller.bluetooth_health contract).
 	// Re-declared here, decoupled from the infracontext extractor constants, so
@@ -67,6 +74,9 @@ type infraDecisionAttrs struct {
 	// expandedTo is the rollout stage VALUE the loop expanded to; only meaningful
 	// (and only recorded) when action == RemediationExpand.
 	expandedTo int
+	// dryRun is whether the actuator only rehearsed this decision (no write to
+	// rollout.json) rather than applying it. Recorded on every span.
+	dryRun bool
 }
 
 // infraDecisionAttributes is the SOLE builder of the agent.infrastructure.decision
@@ -74,7 +84,7 @@ type infraDecisionAttrs struct {
 // through it, so the schema is guaranteed complete and consistent.
 //
 // The contract — enforced by the schema-completeness test — is that EVERY emitted
-// decision span carries ALL FOUR core attributes, present (not absent) on every
+// decision span carries ALL FIVE core attributes, present (not absent) on every
 // outcome:
 //
 //   - rollout.target        — the rollout target adapter (always)
@@ -83,6 +93,9 @@ type infraDecisionAttrs struct {
 //     (present-but-empty, never absent, so a query can distinguish "passing" from
 //     "attribute missing")
 //   - remediation.action    — the selected action (always)
+//   - rollout.dry_run       — bool, always: whether the actuator only rehearsed
+//     this decision (no write) rather than applying it, so a Jaeger consumer can
+//     tell a rehearsed expand/rollback apart from a real one
 //
 // Plus the observed bluetooth.* window signals (target_backend + rollout_count
 // always; the four optional float/int signals only when present in the window so
@@ -90,11 +103,12 @@ type infraDecisionAttrs struct {
 // expand (the stage the loop advanced to).
 func infraDecisionAttributes(in infraDecisionAttrs) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
-		// The four core attributes — unconditional on every path.
+		// The five core attributes — unconditional on every path.
 		attribute.String(AttrRolloutTarget, in.target),
 		attribute.Bool(AttrFitnessPassing, in.fit.Evaluated && in.fit.Passing),
 		attribute.String(AttrFitnessViolations, in.fit.ViolationsString()),
 		attribute.String(AttrRemediationAction, in.action),
+		attribute.Bool(AttrRolloutDryRun, in.dryRun),
 		// Window context that always exists on an active-rollout cycle.
 		attribute.String(AttrBluetoothTargetBackend, in.snap.Window.TargetBackend),
 		attribute.Int(AttrBluetoothRolloutCount, in.snap.Window.RolloutCount),

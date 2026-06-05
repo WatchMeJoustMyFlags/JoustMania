@@ -43,6 +43,12 @@ type RolloutActuator interface {
 	// StageVariantForValue maps a controller-count value to its ladder variant
 	// name; ok is false for any value not on the ladder.
 	StageVariantForValue(value int) (string, bool)
+	// DryRun reports whether SetControllerCount is a no-op (the rehearsal
+	// actuator) rather than an applied write. The loop lifts it onto every
+	// decision span as rollout.dry_run so a Jaeger consumer can tell a rehearsed
+	// "expand"/"rollback" apart from one that actually flipped rollout.json.
+	// RolloutWriter → false (real); DryRunRolloutWriter → true.
+	DryRun() bool
 }
 
 // RemediationSource resolves the `remediation_allowed` gate that decides
@@ -382,12 +388,17 @@ func (l *InfraLoop) emitDecisionSpan(
 	writeErr error,
 ) {
 	// Single builder: EVERY emission path lands the full attribute schema (#737).
+	// dry-run is true when the actuator never applies writes (the rehearsal
+	// actuator) or is absent entirely — either way no flip reached rollout.json,
+	// so the span must say so (M3 audit: rehearsed decisions were indistinguishable
+	// from real ones).
 	attrs := infraDecisionAttributes(infraDecisionAttrs{
 		snap:       snap,
 		fit:        fit,
 		target:     target,
 		action:     action,
 		expandedTo: expandedTo,
+		dryRun:     l.rollout == nil || l.rollout.DryRun(),
 	})
 
 	_, span := l.tracer.Start(ctx, SpanInfraDecision,

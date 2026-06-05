@@ -213,7 +213,8 @@ the lobby, and the rollout is driven by transport health alone.
 
 **Span** — `agent.infrastructure.decision`, emitted on **every active-rollout
 cycle**, carries `rollout.target`, `fitness.passing`, `fitness.violations`
-(empty when passing), `remediation.action`, the observed `bluetooth.*` signals,
+(empty when passing), `remediation.action`, `rollout.dry_run` (whether the
+decision was only rehearsed, not applied), the observed `bluetooth.*` signals,
 and `rollout.controller_count` (the new stage value) when expanding. A write
 failure sets the span status to error and records the error.
 
@@ -221,7 +222,7 @@ failure sets the span status to error and records the error.
 
 | Env | Default | Effect |
 |-----|---------|--------|
-| `AGENT_ROLLOUT_ENABLED` | `false` | `true` → real `RolloutWriter` applies flips. `false` → **dry-run**: the loop still decides and spans expansions (`remediation.action="expand"`, `rollout.controller_count` set) but does **not** write `rollout.json` (decided-but-not-applied; logged `agent.rollout_dry_run`). |
+| `AGENT_ROLLOUT_ENABLED` | `false` | `true` → real `RolloutWriter` applies flips (`rollout.dry_run=false`). `false` → **dry-run**: the loop still decides and spans expansions (`remediation.action="expand"`, `rollout.controller_count` set, **`rollout.dry_run=true`**) but does **not** write `rollout.json` (decided-but-not-applied; logged `agent.rollout_dry_run`). |
 | `ROLLOUT_FLAG_PATH` | `/etc/flagd/rollout.json` | rollout flag file path (read for `remediation_allowed`, written on expand/rollback) |
 | `AGENT_ROLLOUT_DWELL_SECONDS` | `15` | per-stage dwell before re-expansion |
 | `AGENT_ROLLOUT_COOLDOWN_SECONDS` | `30` | post-rollback cooldown: re-expansion is suppressed this long after a rollback |
@@ -283,9 +284,11 @@ observed count returns to 0; a later failure can then trigger a fresh rollback.
 | at stable default      | `0` | — | none (nothing to roll back) | `none` |
 
 **Dry-run** (`AGENT_ROLLOUT_ENABLED=false`): the rollback is **decided and
-spanned** (`remediation.action="rollback"`) but the `DryRunRolloutWriter`'s
-`SetControllerCount("none")` is a no-op — decided-but-not-applied, consistent
-with dry-run expansion. A rollback **write error** sets the span status to error,
+spanned** (`remediation.action="rollback"`, **`rollout.dry_run=true`**) but the
+`DryRunRolloutWriter`'s `SetControllerCount("none")` is a no-op —
+decided-but-not-applied, consistent with dry-run expansion. The `rollout.dry_run`
+attribute is what lets a Jaeger consumer tell this rehearsal apart from a real
+rollback (the spans are otherwise identical). A rollback **write error** sets the span status to error,
 records the error, and does **not** mark the episode in flight, so the next
 failing cycle retries (mirrors the expansion error path).
 
@@ -300,7 +303,7 @@ Every active-rollout cycle emits one `agent.infrastructure.decision` span, and t
 expanded → transport degraded → fitness violated → rollback executed → fitness
 recovered → re-expanded — with no extra logging. The spans are built by a **single
 attribute builder** (`infraDecisionAttributes`), so **every** decision span — on
-**every** outcome — carries the same four core attributes:
+**every** outcome — carries the same five core attributes:
 
 | Attribute | Type | On every span | Meaning |
 |-----------|------|---------------|---------|
@@ -308,6 +311,7 @@ attribute builder** (`infraDecisionAttributes`), so **every** decision span — 
 | `fitness.passing` | bool | yes | did the Bluetooth fitness check pass this cycle |
 | `fitness.violations` | string | yes (**empty when passing**, never absent) | the failing checks, e.g. `movement_update_hz[AA:BB] 8.3<10` |
 | `remediation.action` | string | yes | `none \| expand \| rollback \| recommended_only` |
+| `rollout.dry_run` | bool | yes | did the actuator only **rehearse** this decision (no write to `rollout.json`) rather than apply it — `true` for the dry-run actuator (`AGENT_ROLLOUT_ENABLED=false`, the compose default) and when there is no actuator; `false` for the real `RolloutWriter`. Lets a trace tell a rehearsed `expand`/`rollback` apart from a real one. |
 
 plus the observed `bluetooth.*` window signals (`target_backend` + `rollout_count`
 always; `event_gap_ms` / `dropped_events_pct` / `movement_update_hz` /
@@ -346,7 +350,7 @@ with Jaeger under the `/jaeger` base path:
 The Go narrative test (`decision/infra_narrative_test.go`,
 `TestInfraNarrative_FullIncident`) drives this exact sequence with a fake
 clock/actuator/remediation and asserts the timeline; the schema-completeness test
-(`TestInfraSchemaCompleteness_AllOutcomes`) asserts the four core attributes are
+(`TestInfraSchemaCompleteness_AllOutcomes`) asserts the five core attributes are
 present on **every** outcome, catching any future emission path that forgets the
 builder.
 
