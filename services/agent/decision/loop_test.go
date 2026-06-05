@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
 )
 
@@ -33,19 +34,32 @@ func (f *fakeSink) Apply(context.Context, Decision) error {
 	return f.err
 }
 
-type fakePerms struct{ list []string }
+// settableFlags is a mutable flag source for the loop telemetry tests. Defaults
+// to enabled with a permissive allow-list covering the interventions the audit
+// tests exercise, so a decision reaching the loop dispatches unless a test
+// deliberately narrows snap.InterventionsAllowed to exercise the block path.
+type settableFlags struct{ snap flags.Snapshot }
 
-func (f fakePerms) Allowed() []string { return f.list }
+func (f *settableFlags) Evaluate(context.Context) flags.Snapshot { return f.snap }
 
-// newTestLoop builds a Loop with a recording tracer and silent logger.
-func newTestLoop(t *testing.T) (*Loop, *tracetest.SpanRecorder) {
+// newTestLoop builds a Loop with a recording tracer, silent logger, and an
+// enabled, permissive flag source.
+func newTestLoop(t *testing.T) (*Loop, *tracetest.SpanRecorder, *settableFlags) {
 	t.Helper()
 	sr := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
-	l := NewLoop(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	fl := &settableFlags{snap: flags.Snapshot{
+		Enabled: true,
+		Mode:    "rules",
+		InterventionsAllowed: []string{
+			"noop", "grant_shield", "play_audio_cue",
+			"eliminate_player", "adjust_music_tempo",
+		},
+	}}
+	l := NewLoop(fl, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	l.Tracer = tp.Tracer("test")
-	return l, sr
+	return l, sr, fl
 }
 
 func testTrigger() EvalTrigger {
@@ -76,7 +90,7 @@ func attrValue(span sdktrace.ReadOnlySpan, key string) (attribute.Value, bool) {
 }
 
 func TestOnEvaluate_NoDecisionsNoSpans(t *testing.T) {
-	l, sr := newTestLoop(t)
+	l, sr, _ := newTestLoop(t)
 	l.OnEvaluate(context.Background(), gamecontext.GameContext{}, testTrigger())
 	if n := len(sr.Ended()); n != 0 {
 		t.Fatalf("spans = %d, want 0 (no decision, no trace)", n)
@@ -84,7 +98,8 @@ func TestOnEvaluate_NoDecisionsNoSpans(t *testing.T) {
 }
 
 func TestOnEvaluate_EmitsFullHierarchy(t *testing.T) {
-	l, sr := newTestLoop(t)
+	l, sr, fl := newTestLoop(t)
+	fl.snap.InterventionsAllowed = []string{"noop"}
 	sink := &fakeSink{}
 	l.Rules = fakeRules{out: []Decision{{Intervention: "noop", Reason: "test"}}}
 	l.Actions = sink
@@ -129,7 +144,7 @@ func TestOnEvaluate_EmitsFullHierarchy(t *testing.T) {
 	want := map[string]string{
 		AttrMode:                 DefaultMode,
 		AttrObjectives:           DefaultObjectives,
-		AttrInterventionsAllowed: UnrestrictedAllowed,
+		AttrInterventionsAllowed: "noop",
 		AttrInferenceConfigured:  DefaultInference,
 		AttrInferenceUsed:        DefaultInference,
 		AttrInferenceFallback:    "",
@@ -176,7 +191,7 @@ func TestOnEvaluate_EmitsFullHierarchy(t *testing.T) {
 }
 
 func TestOnEvaluate_MultipleDecisions(t *testing.T) {
-	l, sr := newTestLoop(t)
+	l, sr, _ := newTestLoop(t)
 	sink := &fakeSink{}
 	l.Rules = fakeRules{out: []Decision{
 		{Intervention: "grant_shield", TargetSerial: "A", Reason: "balance"},
@@ -198,11 +213,12 @@ func TestOnEvaluate_MultipleDecisions(t *testing.T) {
 }
 
 func TestOnEvaluate_BlockedDecisionRecordedNotApplied(t *testing.T) {
-	l, sr := newTestLoop(t)
+	l, sr, fl := newTestLoop(t)
+	// Narrow the allow-list so eliminate_player is blocked by the permission gate.
+	fl.snap.InterventionsAllowed = []string{"grant_shield", "play_audio_cue"}
 	sink := &fakeSink{}
 	l.Rules = fakeRules{out: []Decision{{Intervention: "eliminate_player", Reason: "test"}}}
 	l.Actions = sink
-	l.Perms = fakePerms{list: []string{"grant_shield", "play_audio_cue"}}
 
 	l.OnEvaluate(context.Background(), gamecontext.GameContext{}, testTrigger())
 
@@ -227,7 +243,7 @@ func TestOnEvaluate_BlockedDecisionRecordedNotApplied(t *testing.T) {
 }
 
 func TestOnEvaluate_ApplyErrorRecorded(t *testing.T) {
-	l, sr := newTestLoop(t)
+	l, sr, _ := newTestLoop(t)
 	sink := &fakeSink{err: errors.New("flagd unreachable")}
 	l.Rules = fakeRules{out: []Decision{{Intervention: "noop", Reason: "test"}}}
 	l.Actions = sink
@@ -263,7 +279,7 @@ func TestProbeRules_RateLimited(t *testing.T) {
 // the trace and metrics gRPC Export handlers invoke OnEvaluate from separate
 // goroutines. Run under -race this guards the loop's shared throttle state.
 func TestOnEvaluate_ConcurrentExportHandlers(t *testing.T) {
-	l, sr := newTestLoop(t)
+	l, sr, _ := newTestLoop(t)
 	sink := &fakeSink{}
 	l.Rules = fakeRules{out: []Decision{{Intervention: "noop", Reason: "race"}}}
 	l.Actions = sink
@@ -284,7 +300,7 @@ func TestOnEvaluate_ConcurrentExportHandlers(t *testing.T) {
 }
 
 func TestOnEvaluate_RendersFitnessAndObjectives(t *testing.T) {
-	l, sr := newTestLoop(t)
+	l, sr, _ := newTestLoop(t)
 	l.Rules = fakeRules{out: []Decision{{
 		Intervention:    "adjust_music_tempo",
 		Reason:          "test",

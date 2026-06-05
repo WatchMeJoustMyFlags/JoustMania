@@ -688,6 +688,10 @@ services:
     environment:
       - AGENT_LISTEN_ADDR=:4317
       - AGENT_HEALTH_ADDR=:13134
+      # OpenFeature control layer. The Go agent uses the flagd RPC resolver
+      # (gRPC evaluation port 8013), not the in-process sync port 8015.
+      - FLAGD_HOST=flagd
+      - FLAGD_PORT=8013
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - OTEL_SERVICE_NAME=agent
       - OTEL_SERVICE_NAMESPACE=infrastructure
@@ -695,6 +699,9 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
+    depends_on:
+      flagd:
+        condition: service_started
     networks:
       - joustmania
     restart: unless-stopped

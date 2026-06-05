@@ -65,14 +65,38 @@ Sessions are not carried in every signal, so the Agent synthesizes them:
 ## Gating & decisions
 
 After each context update the Agent evaluates `should_evaluate`. When the gate
-opens it invokes the decision hooks:
+opens it runs the decision loop, which evaluates the **OpenFeature** control
+flags from flagd on **every cycle** (never cached) and applies them in order:
+
+1. **Kill switch** — `enabled` (bool). When `false` the loop short-circuits
+   immediately, before any rules evaluation or span emission. This is also the
+   safe default when flagd is unreachable, so the agent comes up inert.
+2. **Mode** — `mode` (string) selects the decision path. `rules` runs the
+   deterministic rules engine; `llm` is reserved for M4 and currently logs a
+   note and falls back to rules.
+3. **Objectives** — `objectives` (object → `map[string]float64`) weights the
+   session goals. The loop publishes the per-cycle value into the rules engine
+   through a `LiveObjectives` source (`decision/objectives.go`); the engine
+   reads it inside `Evaluate`, falling back to `{endurance: 1.0}` when the flag
+   resolves nothing. This replaces the engine's static objective source.
+4. **Permission gate** — `interventions_allowed` (object → `[]string`) is the
+   allow-list. For each decision the rules engine returns, an intervention not
+   on the list is **blocked** (`decision.blocked = true` on the decision and
+   action spans, logged with `blocked=true` for #729) and never reaches the
+   action sink. An empty allow-list dispatches nothing.
+
+The two decision hooks:
 
 - **Rules engine** (#726) — `ObjectiveRules`, the objective-weighted decision
-  logic below. Active by default.
-- **Action sink** (#730) — applies intents via OpenFeature/flagd. **Still a
-  no-op**: decisions are traced, nothing is applied yet.
+  logic below. Active by default; its objectives are driven live by the flag.
+- **Action sink** (#730) — applies permitted intents via OpenFeature/flagd.
+  **Still a no-op**: decisions are traced, nothing is applied yet.
 
-See [`docs/research/722-intervention-surface.md`](../../docs/research/722-intervention-surface.md)
+The flags wrapper lives in [`flags/`](flags/) and uses the OpenFeature Go SDK
+with the flagd **RPC** resolver against flagd's gRPC evaluation port. Flag keys
+are flat (`enabled`, `mode`, `objectives`, `interventions_allowed`) and match
+[`services/flagd/agent.json`](../flagd/agent.json) (flagSetId `agent`). See
+[`docs/research/722-intervention-surface.md`](../../docs/research/722-intervention-surface.md)
 for the intervention-surface design.
 
 ## Rules engine (#726)
@@ -116,11 +140,14 @@ and the rule set runs at most once per second.
   and the game coordinator's flag-application layer (#730) is the
   authoritative backstop.
 
-**Configuration seam (#727):** objectives, policy, and fitness thresholds come
-from the `ObjectivesSource` / `PolicySource` / `FitnessSource` interfaces
-(`decision/config.go`). Until #727 wires OpenFeature, `DefaultStaticConfig()`
-supplies the flagd-schema defaults with objectives `{endurance: 1.0}` (the
-flag's own `balanced_focused` default surfaces once the flag is actually read).
+**Configuration seam (#726/#727):** objectives, policy, and fitness thresholds
+come from the `ObjectivesSource` / `PolicySource` / `FitnessSource` interfaces
+(`decision/config.go`). #727 wires the **objectives** source to OpenFeature: the
+loop publishes the per-cycle `objectives` flag into a `LiveObjectives` source
+(`decision/objectives.go`) that the engine reads each evaluation, so objective
+changes take effect with no restart. Policy and fitness still run on
+`DefaultStaticConfig()` (the flagd-schema defaults) and fall back to objectives
+`{endurance: 1.0}` whenever the flag resolves nothing.
 
 ## Span schema (#724) — the trace is the audit log
 
@@ -194,10 +221,15 @@ All configuration is via environment variables:
 |----------|---------|-------------|
 | `AGENT_LISTEN_ADDR` | `:4317` | OTLP gRPC receiver listen address |
 | `AGENT_HEALTH_ADDR` | `:13134` | HTTP health endpoint listen address (`GET /healthz`) |
+| `FLAGD_HOST` | `flagd` | flagd host for OpenFeature flag evaluation |
+| `FLAGD_PORT` | `8013` | flagd gRPC **evaluation** port (RPC resolver) |
 | `LOG_LEVEL` | `info` | Log verbosity |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | set in compose | Self-telemetry export (decision audit traces → collector → Jaeger); no-op when unset |
 | `OTEL_SERVICE_NAME` | `agent` | Service identity; also drives the self-ingestion skip |
 | `AGENT_PROBE_DECISIONS` | _unset_ | `true` enables the demo/verification probe: a synthetic `noop` decision (and thus a full audit trace) at most every 5 s. Never for production sessions |
+
+> The Go agent uses the flagd **RPC** resolver (gRPC evaluation port `8013`),
+> not the in-process sync port `8015` that the Python services use.
 
 | Property | Value |
 |----------|-------|
@@ -215,7 +247,8 @@ services/agent/
 ├── receiver.go     # OTLP span/metric ingestion + extraction into GameContext
 ├── gamecontext/    # GameContext accumulation, session identity, eviction
 ├── gate/           # should_evaluate gating logic
-├── decision/       # Stub decision hooks (rules engine #726, action sink #730)
+├── flags/          # OpenFeature/flagd control-flag wrapper (kill switch, mode, objectives, permissions)
+├── decision/       # Decision loop + stub hooks (rules engine #726, action sink #730)
 ├── go.mod
 └── go.sum
 ```

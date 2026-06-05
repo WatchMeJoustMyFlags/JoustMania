@@ -4,6 +4,22 @@
 // agent.action audit trace for every evaluation that produces decisions
 // (issue #724). ObjectiveRules (#726) is the objective-weighted rules engine;
 // the action sink stays a no-op until the intervention API (#730).
+//
+// On every gated cycle the loop also evaluates the agent's OpenFeature control
+// flags (issue #727) — never cached at startup — and applies them in order:
+//
+//	enabled               kill switch; false short-circuits the whole loop
+//	mode                  selects the "rules" vs "llm" decision path
+//	objectives            session-goal weights fed into the rules engine
+//	interventions_allowed permission gate; decisions not on the allow-list are
+//	                      blocked (decision.blocked=true on the span) before they
+//	                      reach the action sink
+//
+// The objectives flag drives the engine through a LiveObjectives source: the
+// loop publishes the per-cycle weights before running the rules, and the engine
+// reads them inside Evaluate. When the flag yields no objectives the engine
+// falls back to its DefaultObjectiveWeights (#726 config), so flagd being
+// unreachable degrades to the deterministic {endurance: 1.0} baseline.
 package decision
 
 import (
@@ -21,6 +37,7 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
 )
 
@@ -49,7 +66,9 @@ type Decision struct {
 
 // RulesEngine turns a context snapshot into zero or more Decisions. The
 // context carries the active trace; an LLM-backed engine records its inference
-// call as a gen_ai.* span (GenAI semantic conventions).
+// call as a gen_ai.* span (GenAI semantic conventions). The objective weights
+// are supplied out-of-band through the engine's ObjectivesSource (the loop
+// publishes the per-cycle flag value via LiveObjectives before calling here).
 type RulesEngine interface {
 	Evaluate(context.Context, gamecontext.GameContext) []Decision
 }
@@ -60,19 +79,19 @@ type ActionSink interface {
 	Apply(context.Context, Decision) error
 }
 
-// Permissions reports the interventions the agent is allowed to apply.
-// nil means "no restriction information" (unrestricted). The real
-// implementation evaluates the interventions.allowed flag from flagd (#725);
-// the scaffold uses UnrestrictedPermissions.
-type Permissions interface {
-	Allowed() []string
+// FlagSource resolves the agent control flags for a single decision cycle.
+// *flags.Flags satisfies it; tests supply a fake.
+type FlagSource interface {
+	Evaluate(ctx context.Context) flags.Snapshot
 }
 
-// UnrestrictedPermissions is the scaffold permission source: no restrictions.
-type UnrestrictedPermissions struct{}
-
-// Allowed reports no restriction information.
-func (UnrestrictedPermissions) Allowed() []string { return nil }
+// objectivePublisher is the optional seam the loop uses to push the per-cycle
+// objectives flag into the rules engine. *ObjectiveRules (via its LiveObjectives
+// source) satisfies it; engines that ignore objectives (Noop/Probe) do not, and
+// the loop simply skips publication for them.
+type objectivePublisher interface {
+	SetObjectives(map[string]float64)
+}
 
 // EvalTrigger describes the OTLP Export that triggered an evaluation, used to
 // annotate the agent.span_received root span with rpc.* semconv attributes and
@@ -90,13 +109,14 @@ type EvalTrigger struct {
 // throttleInterval bounds how often the evaluate log line is emitted.
 const throttleInterval = time.Second
 
-// Loop wires the rules engine to the action sink and is invoked once per gated
-// signal update. It is safe for concurrent use: the gRPC trace and metrics
-// Export handlers each invoke OnEvaluate from their own goroutines.
+// Loop wires the flag source, rules engine, and action sink together and is
+// invoked once per gated signal update. It is safe for concurrent use: the gRPC
+// trace and metrics Export handlers each invoke OnEvaluate from their own
+// goroutines.
 type Loop struct {
+	Flags   FlagSource
 	Rules   RulesEngine
 	Actions ActionSink
-	Perms   Permissions
 	Log     *slog.Logger
 	// Tracer produces the audit spans; tests inject a recording tracer.
 	Tracer trace.Tracer
@@ -107,39 +127,64 @@ type Loop struct {
 	now     func() time.Time
 }
 
-// NewLoop builds a Loop with the no-op rules/actions stubs, unrestricted
-// permissions, and the global tracer. log may be nil, in which case
-// slog.Default() is used.
-func NewLoop(log *slog.Logger) *Loop {
+// NewLoop builds a Loop with the no-op rules/actions stubs, the global tracer,
+// and the given flag source. flagSource may be nil, in which case a disabled
+// source is used so the kill switch defaults closed. log may be nil, in which
+// case slog.Default() is used.
+func NewLoop(flagSource FlagSource, log *slog.Logger) *Loop {
 	if log == nil {
 		log = slog.Default()
 	}
+	if flagSource == nil {
+		flagSource = disabledFlags{}
+	}
 	return &Loop{
+		Flags:   flagSource,
 		Rules:   NoopRules{},
 		Actions: NoopActions{},
-		Perms:   UnrestrictedPermissions{},
 		Log:     log,
 		Tracer:  otel.Tracer(instrumentationName),
 		now:     time.Now,
 	}
 }
 
-// OnEvaluate runs one evaluation pass: emit a throttled (max 1/second) info
-// log, run the rules, and apply any resulting decisions. When the rules return
-// at least one decision, the full audit trace is emitted — lazily, so idle
-// evaluations cost no spans; the root span is backdated to trig.T0 so its
-// duration covers the whole Export processing.
+// OnEvaluate runs one evaluation pass:
+//  1. evaluate the control flags (never cached);
+//  2. kill switch — if enabled is false, return before any rules or spans;
+//  3. publish the objectives flag into the rules engine;
+//  4. emit a throttled (max 1/second) info log and run the rules;
+//  5. when the rules return at least one decision, emit the full audit trace —
+//     lazily, so idle evaluations cost no spans; the root span is backdated to
+//     trig.T0 so its duration covers the whole Export processing;
+//  6. per decision: gate on interventions_allowed (blocked decisions are
+//     recorded with decision.blocked=true, never silently dropped) and apply the
+//     permitted ones through the action sink.
 func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig EvalTrigger) {
+	snapshot := l.Flags.Evaluate(ctx)
+
+	// Kill switch: enabled=false short-circuits before any rules evaluation or
+	// span emission. This is the safe default when flagd is unreachable.
+	if !snapshot.Enabled {
+		return
+	}
+
+	// Publish the per-cycle objectives flag into the rules engine. The engine
+	// reads them inside Evaluate; engines that ignore objectives skip this.
+	if pub, ok := l.Rules.(objectivePublisher); ok {
+		pub.SetObjectives(snapshot.Objectives)
+	}
+
 	if l.shouldLog() {
 		l.Log.Info("agent.evaluate",
 			"session_id", c.SessionID,
 			"player_count", len(c.Players),
 			"game_mode", derefStr(c.Session.GameMode),
 			"duration", derefFloat(c.Session.DurationSeconds),
+			"mode", snapshot.Mode,
 		)
 	}
 
-	decisions := l.Rules.Evaluate(ctx, c)
+	decisions := l.decide(ctx, snapshot, c)
 	if len(decisions) == 0 {
 		return // no decision, no trace
 	}
@@ -163,32 +208,47 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 	)
 	defer root.End()
 
-	allowed := l.permissions().Allowed()
+	allowed := snapshot.InterventionsAllowed
 	for _, d := range decisions {
-		l.runDecision(rootCtx, d, allowed)
+		l.runDecision(rootCtx, snapshot, d, allowed)
+	}
+}
+
+// decide selects the decision path from snapshot.Mode and runs it. The "llm"
+// path (M4) does not exist yet, so it logs a note and falls back to rules.
+func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext) []Decision {
+	switch snapshot.Mode {
+	case "llm":
+		l.Log.Info("agent.mode_llm_fallback",
+			"note", "llm decision path not implemented (M4); falling back to rules")
+		return l.Rules.Evaluate(ctx, c)
+	default:
+		// "rules" and any unrecognized mode use the deterministic rules path.
+		return l.Rules.Evaluate(ctx, c)
 	}
 }
 
 // runDecision emits one agent.decision span (full #724 schema) and its
-// agent.action child, applying the decision unless it is blocked by the
-// permission list. Blocked actions are recorded, never silently dropped.
-func (l *Loop) runDecision(ctx context.Context, d Decision, allowed []string) {
-	blocked := !permits(allowed, d.Intervention)
+// agent.action child, applying the decision unless its intervention is blocked
+// by the interventions_allowed permission gate. Blocked actions are recorded,
+// never silently dropped.
+func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, d Decision, allowed []string) {
+	blocked := !snapshot.Permits(d.Intervention)
 
 	dCtx, dSpan := l.Tracer.Start(ctx, SpanDecision,
-		trace.WithAttributes(decisionAttributes(d, blocked, allowed)...))
+		trace.WithAttributes(decisionAttributes(snapshot, d, blocked, allowed)...))
 	defer dSpan.End()
 
 	// The interventions.allowed evaluation as a feature_flag.* span event
 	// (semconv) — same shape the openfeature OTel hooks emit in the Python
-	// services. The stub provider is replaced by flagd in #725.
+	// services. With #727 wired, the provider is the real flagd provider.
 	// NOTE: the bare event name "feature_flag" is intentional — it matches the
 	// openfeature contrib TracingHook used by the Python services (current
 	// semconv drafts call the log event "feature_flag.evaluation"); do not
 	// "fix" this without also migrating the Python side, or the traces diverge.
 	dSpan.AddEvent("feature_flag", trace.WithAttributes(
 		semconv.FeatureFlagKey(interventionsAllowedFlagKey),
-		semconv.FeatureFlagProviderName(flagProviderStub),
+		semconv.FeatureFlagProviderName(flagProviderName),
 		semconv.FeatureFlagResultVariant(allowedSummary(allowed)),
 	))
 
@@ -199,8 +259,13 @@ func (l *Loop) runDecision(ctx context.Context, d Decision, allowed []string) {
 	defer aSpan.End()
 
 	if blocked {
-		l.Log.Warn("agent.action_blocked",
-			"intervention", d.Intervention, "allowed", allowed)
+		// Blocked: not in the allow-list. Structured for span annotation (#729).
+		l.Log.Warn("agent.decision_blocked",
+			"blocked", true,
+			"intervention", d.Intervention,
+			"target_serial", d.TargetSerial,
+			"reason", d.Reason,
+			"allowed", allowed)
 		return
 	}
 	if err := l.Actions.Apply(dCtx, d); err != nil {
@@ -232,26 +297,22 @@ func (l *Loop) shouldLog() bool {
 	return true
 }
 
-// permissions returns the configured permission source, defaulting to
-// unrestricted when nil.
-func (l *Loop) permissions() Permissions {
-	if l.Perms == nil {
-		return UnrestrictedPermissions{}
-	}
-	return l.Perms
-}
-
 // decisionAttributes builds the complete #724 decision-span schema. Every span
 // carries every attribute; subsystems that do not exist yet contribute
-// explicit placeholder values (see telemetry.go).
-func decisionAttributes(d Decision, blocked bool, allowed []string) []attribute.KeyValue {
+// explicit placeholder values (see telemetry.go). The mode, objectives, and
+// interventions.allowed values now come from the evaluated flag snapshot (#727).
+func decisionAttributes(snapshot flags.Snapshot, d Decision, blocked bool, allowed []string) []attribute.KeyValue {
 	objective := d.ObjectiveServed
 	if objective == "" {
 		objective = DefaultObjectives
 	}
+	mode := snapshot.Mode
+	if mode == "" {
+		mode = DefaultMode
+	}
 	return []attribute.KeyValue{
 		semconv.GenAIAgentName(AgentName),
-		attribute.String(AttrMode, DefaultMode),
+		attribute.String(AttrMode, mode),
 		attribute.String(AttrObjectives, summarizeObjectives(d.Objectives)),
 		attribute.String(AttrInterventionsAllowed, allowedSummary(allowed)),
 		attribute.String(AttrInferenceConfigured, DefaultInference),
@@ -292,27 +353,24 @@ func renderFitness(fitness map[string]float64) []string {
 	return out
 }
 
-// permits reports whether the intervention is allowed. A nil list means no
-// restriction information (everything permitted).
-func permits(allowed []string, intervention string) bool {
-	if allowed == nil {
-		return true
-	}
-	for _, a := range allowed {
-		if a == intervention {
-			return true
-		}
-	}
-	return false
-}
-
 // allowedSummary renders the permission list for the interventions.allowed
-// attribute and the feature_flag.result.variant event attribute.
+// attribute and the feature_flag.result.variant event attribute. An empty
+// allow-list (the fail-closed default) renders the explicit "none" marker —
+// distinct from the "unrestricted" placeholder the #724 stub carried before
+// flagd was wired.
 func allowedSummary(allowed []string) string {
-	if allowed == nil {
-		return UnrestrictedAllowed
+	if len(allowed) == 0 {
+		return AllowedNone
 	}
 	return strings.Join(allowed, ",")
+}
+
+// disabledFlags is the fallback FlagSource: it always reports the agent disabled
+// with empty permissions, so a nil flag source can never dispatch interventions.
+type disabledFlags struct{}
+
+func (disabledFlags) Evaluate(context.Context) flags.Snapshot {
+	return flags.Snapshot{Enabled: flags.DefaultEnabled, Mode: flags.DefaultMode}
 }
 
 func derefStr(p *string) string {
