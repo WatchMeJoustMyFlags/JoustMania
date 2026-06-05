@@ -755,17 +755,35 @@ async def start_game_via_menu(
     await mark_controllers_ready(mock_client, serials)
     print("Controllers marked as ready, waiting for game start...")
 
-    # Wait for game_started event via collector
+    # Wait for game_started event via collector.
+    #
+    # The first start after `compose up` races service warmup (menu controller
+    # registration, coordinator/flagd cold start). The session-scoped
+    # `warmup_game_path` fixture absorbs that, but we also retry the
+    # ready-marking once on an initial timeout as defense-in-depth: a single
+    # dropped "ready" or an unwarmed path then no longer hard-fails the call.
     try:
         await event_collector.wait_for_event("game_started", timeout=timeout)
     except TimeoutError:
-        # Debug: print collected events before re-raising
         print(
-            f"DEBUG: Game start timeout. Collected {len(event_collector.events)} events:"
+            f"DEBUG: Game start timeout after {timeout}s. "
+            f"Collected {len(event_collector.events)} events:"
         )
         for event in event_collector.events:
             print(f"  - {event.event_type}: {dict(event.data)}")
-        raise
+
+        print("Retrying ready-marking once before failing...")
+        await mark_controllers_ready(mock_client, serials)
+        try:
+            await event_collector.wait_for_event("game_started", timeout=timeout)
+        except TimeoutError:
+            print(
+                f"DEBUG: Game start timeout on retry. "
+                f"Collected {len(event_collector.events)} events:"
+            )
+            for event in event_collector.events:
+                print(f"  - {event.event_type}: {dict(event.data)}")
+            raise
 
     # Close menu channel (not needed anymore)
     await menu_channel.close()

@@ -197,17 +197,43 @@ def set_policy_budget(per_minute: int) -> None:
 # =============================================================================
 
 
+# Generous rate-limit budget the intervention-flow suite runs under. The
+# weighted sliding-window limiter is process-GLOBAL and lives on the
+# game-coordinator's InterventionManager for the whole compose session — it is
+# NOT reset between tests. A test that applies several interventions can leave
+# residual weight in the shared 60s window, and budget-flag propagation to flagd
+# lags the first write by a reload cycle; either can rate-limit a later test's
+# final write regardless of suite size/order (the #824 flake: the last test's
+# final write of [1.5,0.7,1.5,0.5,2.0] never reached 2.0). Pinning a high budget
+# for the WHOLE suite, applied by the snapshot/restore fixture before any test
+# body runs, removes that cross-test bleed systemically. Rate-limit SEMANTICS are
+# unit-tested in services/game_coordinator/tests; the integration suite's job is
+# propagation/effect, so a high budget here is the correct posture — a test that
+# explicitly exercises rate limiting would pin its own (lower) budget after this.
+SUITE_RATE_LIMIT_BUDGET = 50
+
+
 @pytest.fixture
 def flag_files(docker_compose):
     """Snapshot interventions.json + agent.json; restore byte-for-byte on exit.
 
-    Restored at teardown via the same in-place write so flagd reloads the
-    committed baseline and no mutation leaks into the repo or later tests.
+    Also raises ``policy.max_interventions_per_minute`` to a generous suite-wide
+    budget for the duration of the test (see ``SUITE_RATE_LIMIT_BUDGET``) and
+    waits a reload cycle so flagd serves it before the test body issues any
+    intervention write — this makes the process-global rate limiter
+    headroom-independent of test ordering / suite size. Restored at teardown via
+    the same in-place write so flagd reloads the committed baseline and no
+    mutation (budget included) leaks into the repo or later tests.
     """
     with open(INTERVENTIONS_PATH) as fh:
         interventions_backup = fh.read()
     with open(AGENT_PATH) as fh:
         agent_backup = fh.read()
+
+    # Pin the generous budget up front and let flagd reload it before the test
+    # body runs, so the very first intervention write already sees the headroom.
+    set_policy_budget(SUITE_RATE_LIMIT_BUDGET)
+    time.sleep(RELOAD_SETTLE_SECONDS)
 
     yield
 
@@ -304,6 +330,8 @@ async def test_player_sensitivity_factor_targets_one_player(flag_files, docker_c
     GetGameState.sensitivity_factor and an unblocked agent_intervention event.
     """
     set_interventions_allowed("full")  # adjust_player_sensitivity must be allowed
+    # Rate-limit budget headroom is provided suite-wide by the flag_files fixture
+    # (SUITE_RATE_LIMIT_BUDGET), so this test needs no per-test budget bump.
     await setup_mock_controllers(docker_compose, count=4)
     serials = await get_mock_controller_serials(docker_compose)
     target, other = serials[0], serials[1]
@@ -407,7 +435,8 @@ async def test_eliminate_player_edge_trigger_and_exactly_once(flag_files, docker
     a FRESH nonce applies again to a different player.
     """
     set_interventions_allowed("full")  # eliminate_player must be allowed
-    set_policy_budget(50)  # two HARD eliminations (2.0 each) in one window
+    # Two HARD eliminations (2.0 each) fit easily under the suite-wide budget the
+    # flag_files fixture pins (SUITE_RATE_LIMIT_BUDGET); no per-test bump needed.
     await setup_mock_controllers(docker_compose, count=4)
     serials = await get_mock_controller_serials(docker_compose)
     victim, second_victim = serials[0], serials[1]
@@ -615,7 +644,8 @@ async def test_repeated_in_place_writes_all_propagate(flag_files, docker_compose
     value was observed at least once, proving multiple reloads landed).
     """
     set_interventions_allowed("full")
-    set_policy_budget(50)  # five MEDIUM writes (1.0 each) in one window
+    # Five MEDIUM writes (1.0 each) fit under the suite-wide budget pinned by the
+    # flag_files fixture (SUITE_RATE_LIMIT_BUDGET); no per-test bump needed.
     await setup_mock_controllers(docker_compose, count=4)
     serials = await get_mock_controller_serials(docker_compose)
     target = serials[0]
