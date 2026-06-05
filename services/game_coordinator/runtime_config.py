@@ -140,7 +140,7 @@ class RuntimeConfigManager:
 
             # Agent domain (perception.* — #766 F4): zone boundaries + playstyle
             # classification thresholds (change-event refreshed) and ema_weight
-            # (read once at startup; see _read_ema_weight_at_init).
+            # (read once per game at init; see read_ema_weight).
             init_flag_domain("agent")
             self.agent_client = get_flag_client("agent")
 
