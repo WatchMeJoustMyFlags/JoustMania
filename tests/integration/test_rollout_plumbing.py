@@ -182,6 +182,13 @@ def _poll_until(predicate, timeout: float = RESOLVE_TIMEOUT_SECONDS, rewrite=Non
 
 
 @pytest.mark.asyncio
+# Known upstream bug in openfeature-provider-flagd 0.2.7 (test-only RPC
+# resolver): the event-listener thread dies with KeyError 'data' when a
+# data-less stream message arrives during teardown (flagd reload racing
+# provider.shutdown()). Fixed upstream in 0.3.0, but providers >= 0.3.0 break
+# our flagSetId selector architecture — see #843 for the coordinated upgrade
+# that removes this filter. Benign here: resolution already succeeded.
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
 async def test_rollout_write_shape_resolves_via_live_flagd(rollout_file, docker_compose):
     """The agent's rollout write shape (strategy=progressive, target_backend flip,
     current_controller_count variant flip along the ladder) is schema-valid and

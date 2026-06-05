@@ -59,9 +59,9 @@
       "groupName": "github actions"
     },
     {
-      "description": "flagd provider 0.5.0 changed selector semantics (flagd-selector header) incompatibly with the flagd image pinned in docker-compose (v0.13.2): all flag-set-scoped resolution fell back to defaults in integration tests (PR #840). Lift this cap together with a flagd image upgrade + full integration validation.",
+      "description": "Every flagd provider release >= 0.3.0 breaks the flagSetId-per-domain selector architecture against the compose-pinned flagd v0.13.2 (silent fallback to defaults — verified 0.4.1 and 0.5.0 on PR #840 CI; 0.3.0 drops RPC-resolver selector support entirely). Lift only via the coordinated provider+flagd-image upgrade in issue #843.",
       "matchPackageNames": ["openfeature-provider-flagd"],
-      "allowedVersions": "<0.5.0"
+      "allowedVersions": "<0.3.0"
     },
     {
       "description": "Majors need explicit approval via the dependency dashboard",
