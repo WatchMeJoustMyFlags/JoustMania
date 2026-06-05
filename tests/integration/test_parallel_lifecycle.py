@@ -154,7 +154,9 @@ _SPECS = {
     # random_teams.py) before the game proper — kills during it are swallowed,
     # so wait it out before driving the win condition (caught in CI).
     "JoustRandomTeams": ModeSpec("JoustRandomTeams", 4, end_team, 20, pre_end_delay=6.5),
-    "Swapper": ModeSpec("Swapper", 4, end_swapper, 15),
+    # Swapper's death-swap end sequence (delay=0.3/swap) can exceed 15s under
+    # 4-way parallel load on a loaded CI runner (one timeout observed).
+    "Swapper": ModeSpec("Swapper", 4, end_swapper, 25),
     "Zombies": ModeSpec("Zombies", 4, end_zombies, 15),
     "NonStop": ModeSpec("NonStop", 2, end_force, 15),
     "Traitor": ModeSpec("Traitor", 4, end_force, 15),

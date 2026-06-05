@@ -955,6 +955,14 @@ class TestBuildGameConfig:
         assert len(config.players) == 2
         assert config.HasField("ffa_config")
 
+    def test_build_config_marks_menu_origin(self, servicer, players):
+        """The menu is the REAL game (#837): its config carries GAME_ORIGIN_MENU
+        so the coordinator reserves the primary slot for it."""
+        from proto import game_coordinator_pb2
+
+        config = self._build_config(servicer, Games.JoustFFA, players)
+        assert config.origin == game_coordinator_pb2.GAME_ORIGIN_MENU
+
     def test_build_config_teams(self, servicer, players):
         """JoustTeams should produce teams_config with num_teams and random_assignment."""
         config = self._build_config(servicer, Games.JoustTeams, players)

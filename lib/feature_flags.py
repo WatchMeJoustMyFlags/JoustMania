@@ -272,6 +272,35 @@ def read_float_flag(domain: str, flag_key: str, default: float) -> float:
         return default
 
 
+def read_string_flag(domain: str, flag_key: str, default: str) -> str:
+    """
+    Read a string-typed flag live, with a hardcoded fallback.
+
+    Unlike the init-frozen ``read_*`` helpers, this is a per-call read suitable
+    for policy gates that must honor live flag changes (#837 ``shadow_policy``).
+    flagd's in-process resolver evaluates against the current flag set on every
+    call, so each invocation reflects the latest value. On ANY failure (provider
+    not ready, missing flag, evaluation error, non-string value) the supplied
+    ``default`` is returned so the gate stays behavior-neutral.
+
+    Args:
+        domain: OpenFeature domain / flagSetId (e.g. "game")
+        flag_key: String flag key (e.g. "shadow_policy")
+        default: Fallback value returned on any error or missing flag
+
+    Returns:
+        The flag's string value, or ``default`` on failure.
+    """
+    try:
+        init_flag_domain(domain)
+        client = get_flag_client(domain)
+        value = client.get_string_value(flag_key, default, EvaluationContext())
+        return value if isinstance(value, str) else default
+    except Exception as e:
+        logger.warning(f"read_string_flag({domain!r}, {flag_key!r}) failed, using default: {e}")
+        return default
+
+
 def read_int_flag(domain: str, flag_key: str, default: int) -> int:
     """
     Read an integer-typed flag once at init time, with a hardcoded fallback.

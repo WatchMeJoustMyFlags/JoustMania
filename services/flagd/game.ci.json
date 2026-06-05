@@ -3,6 +3,14 @@
     "flagSetId": "game"
   },
   "flags": {
+    "shadow_policy": {
+      "state": "ENABLED",
+      "variants": {
+        "block": "block",
+        "allow": "allow"
+      },
+      "defaultVariant": "allow"
+    },
     "sensitivity": {
       "state": "ENABLED",
       "variants": {
