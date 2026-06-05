@@ -202,24 +202,70 @@ including decisions that end up *blocked*. Idle evaluations cost no spans.
 Blocked actions are recorded (`decision.blocked = true` on both the decision
 and action spans, ActionSink **not** called), never silently dropped.
 
-### Decision-span attributes
+### Decision-span attributes (#724 + #729)
 
-Every `agent.decision` span always carries the **full** schema; subsystems that
-do not exist yet contribute explicit placeholders so the trace shows its
-complete shape from day one:
+Every `agent.decision` span always carries the **full** schema. Issue #729 lifts
+the cycle's entire `LayerState` (every flag evaluated this cycle) onto the span
+verbatim, so a single Jaeger trace answers: **which flags were in effect, which
+backend decided, which objective was served, why this action, and was it
+permitted.** Subsystems that do not exist yet contribute explicit placeholders so
+the trace shows its complete shape from day one.
+
+**Cycle-level flag attribution** (lifted from `LayerState`, same on every
+decision in the cycle):
+
+| Attribute | Source | Today | Real value arrives with |
+|-----------|--------|-------|-------------------------|
+| `agent.enabled` | existence flag `enabled` | live bool | — |
+| `agent.mode` | existence flag `mode` | `"rules"` | LLM backend (M4) |
+| `agent.objectives` | objective flag `objectives` | sorted `k=v` weights / `"unset"` | — |
+| `agent.model` | capability flag `model` | live (e.g. `"phi4-mini"`) | consumed by M4 |
+| `agent.prompt_variant` | capability flag `prompt_variant` | live | consumed by M4 |
+| `interventions.allowed` | permission flag `interventions_allowed` | `"none"` / `a,b,c` | — |
+| `policy.battery_threshold` | policy flag | live int | — |
+| `policy.movement_variance_window` | policy flag | live int | — |
+| `policy.max_interventions_per_minute` | policy flag | live int | — |
+| `inference.configured` | the `model` flag value | live (e.g. `"phi4-mini"`) | — |
+| `inference.used` | the engine that ran | `"rules"` | `"llm"` once M4 lands |
+| `inference.fallback_reason` | why `llm` fell back | `"llm_path_not_implemented"` when `mode=llm`, else `""` | empties once M4 lands |
+| `fitness.evaluated` (cycle) | `LayerState.FitnessEvaluated` | **absent** | #731 (see below) |
+| `gen_ai.agent.name` | agent identity | `"joustmania-agent"` | — |
+
+**Per-decision attribution** (one decision per `agent.decision` span):
 
 | Attribute | Today | Real value arrives with |
 |-----------|-------|-------------------------|
-| `agent.mode` | `"rules"` | LLM backend issue |
-| `agent.objectives` | `"unset"` | #725 / #731 |
-| `interventions.allowed` | `"unrestricted"` | #725 (flagd) |
-| `inference.configured` / `inference.used` | `"none"` | LLM backend |
-| `inference.fallback_reason` | `""` | LLM backend |
 | `decision.action` / `decision.reason` | real (rules/probe) | — |
-| `decision.objective_served` | `"unset"` | #731 |
-| `decision.blocked` | from `Permissions.Allowed()` | #725 |
-| `fitness.evaluated` | `[]` | #731 |
-| `gen_ai.agent.name` | `"joustmania-agent"` | — |
+| `decision.objective_served` | the objective the rule served / `"unset"` | — |
+| `decision.blocked` | from the permission chain | — |
+| `decision.block_reason` | `not_allowed` / `battery_threshold` / `rate_limit` (only when blocked) | — |
+| `fitness.evaluated` (per-decision) | the rule's evaluated fitness values (`[]` until rules populate them) | #731 |
+
+The attribution attaches where **both** the rules and (future M4) LLM paths
+converge (`decisionAttributes`, fed by the shared `LayerState`), so it is
+path-agnostic — it works for the LLM path automatically once M4 lands.
+
+#### Kill-switch trace (`agent.disabled`)
+
+When the existence layer reports the agent **off** (`enabled=false`) the loop
+short-circuits before any rules run, but still emits a **throttled** kill-switch
+trace so "agent off" is visible in Jaeger: a root `agent.span_received` with a
+single `agent.disabled` child (no `agent.action` child — nothing was decided)
+carrying the same cycle-level flag attribution above (`agent.enabled=false`, the
+capability and permission flags that were in effect). Throttled to one per second
+so a disabled agent under heavy signal load does not flood the trace backend.
+
+#### `fitness.evaluated` hook for #731
+
+`LayerState.FitnessEvaluated` (`map[string]float64`) is the cycle-level hook
+#731 populates with fitness-function results (e.g. `session_duration`,
+`target_session_seconds`). It is **empty/absent until #731**: when non-empty it
+is lifted onto the decision (and disabled) span as the `fitness.evaluated`
+attribute, rendered as a sorted `k=v` string slice. #731 only needs to fill the
+map on the returned `LayerState` (or have the rules engine stamp it) — the
+span-attribute wiring is already in place. Per-decision fitness already rides on
+`Decision.Fitness` and the per-decision `fitness.evaluated` attribute; this is
+the cycle-wide companion.
 
 ### Semantic conventions
 
