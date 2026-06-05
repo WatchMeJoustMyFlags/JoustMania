@@ -135,6 +135,25 @@ def normalize_serial(serial: str) -> str:
     return serial
 
 
+def battery_to_pct(battery: float) -> float:
+    """Normalize a controller battery reading to a 0-100 percentage (#730, #798).
+
+    Two sources feed battery values:
+    - The psmoveapi path reports a coarse 0-5 charge level -> multiply by 20.
+    - The Rust HID path (proto/psmove_hid.proto) already reports 0-100 -> pass
+      through unchanged.
+
+    Heuristic: values in the 0-5 range are treated as the coarse scale; anything
+    above 5 is assumed to already be a percentage. Result is clamped to [0, 100].
+
+    Shared so both the controller manager (``controller_battery_pct`` metric)
+    and the game coordinator (intervention battery guard) derive the percentage
+    identically.
+    """
+    pct = battery * 20.0 if battery <= 5 else float(battery)
+    return max(0.0, min(100.0, pct))
+
+
 # Default values
 DEFAULT_BATTERY = 5
 DEFAULT_ACCEL = {"x": 0.0, "y": 0.0, "z": 1.0}  # At rest (1g gravity)
