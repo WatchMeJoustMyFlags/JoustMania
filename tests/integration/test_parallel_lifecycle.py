@@ -41,6 +41,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
+from proto import game_coordinator_pb2
 from tests.integration.helpers import (
     build_start_config,
     end_fight_club_game,
@@ -53,6 +54,7 @@ from tests.integration.helpers import (
     get_mock_client,
     kill_players_for_team_win,
     kill_players_until_one_remains,
+    list_games,
     setup_mock_controllers,
     start_game_headless,
     verify_controllers_have_color,
@@ -176,6 +178,76 @@ _BATCHES = [
 
 _TERMINAL_EVENTS = ["game_ended", "game_force_ended", "game_error"]
 
+_LIVE_STATES = (
+    game_coordinator_pb2.GameState.STARTING,
+    game_coordinator_pb2.GameState.RUNNING,
+)
+
+
+async def _quiesce_coordinator(game_client, timeout: float = 15.0) -> None:
+    """Wait until the coordinator has no live sessions, force-ending leftovers.
+
+    A previous test's game can linger in STARTING/RUNNING (the lazy natural-end
+    sweep only retires ENDED sessions), eating one of the cap's 4 slots so a
+    batch start gets rejected with "Game already in progress" (seen in CI on
+    the first run of this file).
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        live = [g for g in await list_games(game_client) if g.state in _LIVE_STATES]
+        if not live:
+            return
+        for game in live:
+            await force_end_game_by_id(game_client, game.game_id, reason="parallel_quiesce")
+        if loop.time() > deadline:
+            raise AssertionError(
+                f"Coordinator did not quiesce within {timeout}s: "
+                f"{[(g.game_id, g.state) for g in live]}"
+            )
+        await asyncio.sleep(0.5)
+
+
+async def _start_headless_with_retry(
+    game_client, start_config, attempts: int = 4, backoff: float = 2.0
+):
+    """Start headless, retrying brief "Game already in progress" windows.
+
+    Within a batch, a sibling's force-ended game may still be in its ENDING
+    window when this start hits the cap check; the lazy sweep frees the slot
+    moments later, so a short retry is correct (and a persistent rejection
+    still fails after ``attempts``).
+    """
+    last_exc: Exception | None = None
+    for _ in range(attempts):
+        try:
+            return await start_game_headless(game_client, start_config, timeout=25.0)
+        except Exception as exc:
+            if "Game already in progress" not in str(exc):
+                raise
+            last_exc = exc
+            await asyncio.sleep(backoff)
+    raise last_exc
+
+
+async def _wait_for_game_colors(mock_client, serials: list[str], timeout: float = 10.0) -> None:
+    """Poll until every controller shows a non-zero LED.
+
+    Under 4-way parallel load the feedback stream can lag (and modes with a
+    team-formation phase set colors late); the previous one-shot check after a
+    fixed 0.5s sleep was flaky in CI.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        try:
+            await verify_controllers_have_color(mock_client, serials)
+            return
+        except AssertionError:
+            if loop.time() > deadline:
+                raise
+            await asyncio.sleep(0.5)
+
 
 async def _run_mode_headless(docker_compose, spec: ModeSpec, tag: str) -> None:
     """Run one mode end-to-end as a headless shadow game.
@@ -198,14 +270,15 @@ async def _run_mode_headless(docker_compose, spec: ModeSpec, tag: str) -> None:
         )
 
         # Start headless: bypasses the lobby; returns the coordinator-assigned
-        # game_id plus a collector already filtered to that session.
-        game_id, collector = await start_game_headless(
-            game_client, build_start_config(spec.mode, serials), timeout=25.0
+        # game_id plus a collector already filtered to that session. Retries
+        # transient cap rejections (sibling games in their ENDING window).
+        game_id, collector = await _start_headless_with_retry(
+            game_client, build_start_config(spec.mode, serials)
         )
 
-        # Controllers must get game colors (non-zero LED, per serial via GetColor).
-        await asyncio.sleep(0.5)
-        await verify_controllers_have_color(mock_client, serials)
+        # Controllers must get game colors (non-zero LED, per serial via
+        # GetColor); polled, since parallel load can delay the feedback stream.
+        await _wait_for_game_colors(mock_client, serials)
 
         # Drive the mode's win condition on THIS game only.
         await spec.end(mock_client, serials, game_client, game_id)
@@ -242,6 +315,14 @@ async def test_parallel_mode_lifecycle(docker_compose, headless_cleanup, modes):
     together, each tagged with its mode name.
     """
     specs = [_SPECS[m] for m in modes]
+
+    # A leftover live session from a previous test would eat one of the cap's
+    # slots and reject a batch start; quiesce the coordinator first.
+    game_client, game_channel = await get_game_client(docker_compose)
+    try:
+        await _quiesce_coordinator(game_client)
+    finally:
+        await game_channel.close()
 
     # Register tags up front so the fixture sweeps reserved controllers even if a
     # coroutine dies before its own finally-block cleanup runs.
