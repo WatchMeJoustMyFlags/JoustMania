@@ -655,6 +655,39 @@ class TestShadowGameGovernance:
         assert session.event_bus is servicer.primary_event_bus
 
     @pytest.mark.asyncio
+    async def test_real_game_wins_admission_race_against_late_shadow(self, servicer, policy_allow):
+        """#837 hardening: preemption runs outside the sessions lock, so a shadow
+        can register between a real game's preemption pass and its admission.
+        The real game must NOT be cap-rejected — it preempts again and retries.
+
+        Simulated by making the first preemption pass a no-op (as if the shadow
+        slipped in just after it ran): attempt 0 hits the full cap, attempt 1
+        preempts for real and admits.
+        """
+        # cap defaults to 1; a live shadow occupies the only slot.
+        with _NO_THREAD:
+            ok, _ = await servicer._start_game_from_config(_shadow_config(serials=("s1", "s2")), _MockSpan())
+        assert ok is True
+
+        real_preempt = servicer._preempt_shadow_sessions
+        calls = {"n": 0}
+
+        async def flaky_preempt():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return 0  # simulate the shadow registering after this pass
+            return await real_preempt()
+
+        servicer._preempt_shadow_sessions = flaky_preempt
+        with _NO_THREAD:
+            ok, gid = await servicer._start_game_from_config(_config(serials=("r1", "r2")), _MockSpan())
+
+        assert ok is True, f"real game lost the admission race: {gid}"
+        assert calls["n"] == 2, "expected a second preemption pass after the cap rejection"
+        assert servicer.sessions[gid].game_kind == "primary"
+        assert servicer._primary_game_id == gid
+
+    @pytest.mark.asyncio
     async def test_agent_origin_start_is_shadow_even_when_idle(self, servicer):
         """An AGENT start is ALWAYS shadow, even with NO primary live (idle)."""
         with _NO_THREAD:
