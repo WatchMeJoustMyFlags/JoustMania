@@ -19,6 +19,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# How long SimulateDeath holds death-level acceleration. Long enough for the
+# game loop to reliably detect it (>= 60 frames at 60Hz), but well below the
+# 2.0s post-swap/respawn grace period — a hold that outlives grace re-kills
+# the player the moment grace expires (#757).
+DEATH_HOLD_SECONDS = 1.0
+
 
 class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServiceServicer):
     """Service for controlling mock controllers during integration tests."""
@@ -60,7 +66,7 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
             return controller_manager_mock_pb2.MovementResponse(success=False, error=str(e))
 
     def SimulateDeath(self, request, _context):
-        """Simulate death by setting high acceleration and holding it for 2 seconds."""
+        """Simulate death by setting high acceleration and holding it briefly."""
         try:
             serial = request.serial
             if serial not in self.backend.controllers:
@@ -70,11 +76,17 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
             death_accel = {AxisKey.X: 5.0, AxisKey.Y: 3.0, AxisKey.Z: 4.0}
             accel_mag = (5.0**2 + 3.0**2 + 4.0**2) ** 0.5  # ~7.07g
 
-            # Hold death acceleration for 2 seconds to ensure game loop catches it
+            # Hold death acceleration for 1 second so the game loop reliably
+            # sees it (>= 60 frames at 60Hz). Must stay well below the 2.0s
+            # post-swap/respawn grace period: a hold that outlives grace
+            # re-kills the player the moment grace expires (#757).
             self.backend.controllers[serial]["death_accel"] = death_accel
-            self.backend.controllers[serial]["death_hold_until"] = time.time() + 2.0
+            self.backend.controllers[serial]["death_hold_until"] = time.time() + DEATH_HOLD_SECONDS
 
-            logger.info(f"Mock: Simulated death for {serial} with {accel_mag:.2f}g acceleration, holding for 2.0s")
+            logger.info(
+                f"Mock: Simulated death for {serial} with {accel_mag:.2f}g acceleration, "
+                f"holding for {DEATH_HOLD_SECONDS}s"
+            )
             return controller_manager_mock_pb2.DeathResponse(success=True, accel_magnitude=accel_mag)
 
         except Exception as e:
@@ -220,7 +232,7 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
                         # Set death-level acceleration (same as SimulateDeath)
                         # Use AxisKey enum for consistency with mock_backend.py
                         controller["death_accel"] = {AxisKey.X: 5.0, AxisKey.Y: 3.0, AxisKey.Z: 4.0}
-                        controller["death_hold_until"] = time.time() + 2.0
+                        controller["death_hold_until"] = time.time() + DEATH_HOLD_SECONDS
                         logger.info(f"Mock: Auto-killed player {serial}")
                     await asyncio.sleep(0.3)  # Stagger deaths for better trace visualization
 
