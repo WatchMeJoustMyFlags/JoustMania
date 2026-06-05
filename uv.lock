@@ -953,7 +953,7 @@ wheels = [
 
 [[package]]
 name = "openfeature-provider-flagd"
-version = "0.5.0"
+version = "0.4.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cachebox" },
@@ -963,9 +963,9 @@ dependencies = [
     { name = "protobuf" },
     { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3b/0a/13077d0725d5fae30930724a228da20f3dbf2390ba1b477cc2f2647e885e/openfeature_provider_flagd-0.5.0.tar.gz", hash = "sha256:d5cac8fb9194ccd454f67fa48da195b0e9d629c77493160b93fa2cf5400ec288", size = 70307, upload-time = "2026-06-03T00:13:55.976Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/cd/22/dd7b20ef214d9576de58922a33cfe84c08eda6f746bd53a9815aba4cf088/openfeature_provider_flagd-0.4.1.tar.gz", hash = "sha256:47cf139c192cfb8c612346975354f6648bd735beff1eac9649434ffc18f1e305", size = 69598, upload-time = "2026-04-30T21:33:23.193Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9c/02/cdaa0930aa88ca20a19be824fd01d40dc8730a3ce95e75db786bb3cd1ea5/openfeature_provider_flagd-0.5.0-py3-none-any.whl", hash = "sha256:667f536b92601ab4f2a473142989a55f6044a153b90627f6860fb367a4062724", size = 63969, upload-time = "2026-06-03T00:13:54.524Z" },
+    { url = "https://files.pythonhosted.org/packages/66/ee/789c18e0d62b4fbdc7ed439523a2f08c0b9751c9fe5cfc9f3dc4e357da04/openfeature_provider_flagd-0.4.1-py3-none-any.whl", hash = "sha256:385dd478017785b5ae34f85ad4e487bdeab783d8dd7acb2d4da142c05fc256af", size = 63765, upload-time = "2026-04-30T21:33:21.912Z" },
 ]
 
 [[package]]

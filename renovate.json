@@ -59,6 +59,11 @@
       "groupName": "github actions"
     },
     {
+      "description": "flagd provider 0.5.0 changed selector semantics (flagd-selector header) incompatibly with the flagd image pinned in docker-compose (v0.13.2): all flag-set-scoped resolution fell back to defaults in integration tests (PR #840). Lift this cap together with a flagd image upgrade + full integration validation.",
+      "matchPackageNames": ["openfeature-provider-flagd"],
+      "allowedVersions": "<0.5.0"
+    },
+    {
       "description": "Majors need explicit approval via the dependency dashboard",
       "matchUpdateTypes": ["major"],
       "dependencyDashboardApproval": true
