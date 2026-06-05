@@ -2,7 +2,7 @@
 # Multi-stage build for efficient image
 
 # Stage 1: Generate proto files
-FROM bufbuild/buf:1.47.2 AS proto-gen
+FROM bufbuild/buf:1.70.0 AS proto-gen
 
 WORKDIR /workspace
 COPY proto/ ./proto/
