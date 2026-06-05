@@ -143,8 +143,11 @@ type EvalTrigger struct {
 	T0 time.Time
 }
 
-// throttleInterval bounds how often the evaluate log line is emitted.
-const throttleInterval = time.Second
+// DefaultThrottleInterval bounds how often the evaluate log line and the
+// agent.disabled span are emitted, when no explicit throttle is configured. It
+// is the behavior-neutral default for the decision.throttle_seconds flag (#766
+// F5); callers override it at startup via SetThrottle.
+const DefaultThrottleInterval = time.Second
 
 // Loop wires the flag source, rules engine, and action sink together and is
 // invoked once per gated signal update. It is safe for concurrent use: the gRPC
@@ -162,6 +165,10 @@ type Loop struct {
 	mu      sync.Mutex
 	lastLog time.Time
 	now     func() time.Time
+	// throttle bounds how often the evaluate log line and agent.disabled span are
+	// emitted. Read once at startup from decision.throttle_seconds (#766 F5); a
+	// zero value means DefaultThrottleInterval.
+	throttle time.Duration
 
 	// limiter is the unified weighted per-minute rate limiter spanning all
 	// dispatched interventions across cycles (#726 + #728, see ratelimit.go). It
@@ -184,13 +191,25 @@ func NewLoop(flagSource FlagSource, log *slog.Logger) *Loop {
 		flagSource = disabledFlags{}
 	}
 	return &Loop{
-		Flags:   flagSource,
-		Rules:   NoopRules{},
-		Actions: NoopActions{},
-		Log:     log,
-		Tracer:  otel.Tracer(instrumentationName),
-		now:     time.Now,
+		Flags:    flagSource,
+		Rules:    NoopRules{},
+		Actions:  NoopActions{},
+		Log:      log,
+		Tracer:   otel.Tracer(instrumentationName),
+		now:      time.Now,
+		throttle: DefaultThrottleInterval,
 	}
+}
+
+// SetThrottle overrides the log/span throttle interval. It is read once at
+// startup from decision.throttle_seconds (#766 F5); a non-positive value leaves
+// the default in place. Not safe to call concurrently with OnEvaluate — set it
+// during construction, before the loop starts serving.
+func (l *Loop) SetThrottle(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	l.throttle = d
 }
 
 // OnEvaluate runs one evaluation pass and returns the cycle's LayerState (also
@@ -397,8 +416,8 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 // a single agent.decision child (no action child — nothing was decided) carrying
 // the existence + capability + permission attribution lifted from the disabled
 // LayerState. This makes "agent off, here are the flags that were in effect"
-// visible in a Jaeger trace (#729). It is throttled to one per throttleInterval
-// (shared with the evaluate log) so a disabled agent under heavy signal load
+// visible in a Jaeger trace (#729). It is throttled to one per the configured
+// throttle interval (shared with the evaluate log) so a disabled agent under heavy signal load
 // does not flood the trace backend — the steady-state disabled agent is silent.
 func (l *Loop) emitDisabledSpan(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext, trig EvalTrigger, state LayerState) {
 	if !l.shouldLog() {
@@ -476,18 +495,23 @@ func (l *Loop) batteryBlocks(snapshot flags.Snapshot, c gamecontext.GameContext,
 	return *player.BatteryPct < float64(snapshot.Policy.BatteryThreshold)
 }
 
-// shouldLog rate-limits the evaluate log line to once per throttleInterval.
-// Mutex-guarded: OnEvaluate runs concurrently from the trace and metrics
-// Export handler goroutines.
+// shouldLog rate-limits the evaluate log line to once per the configured
+// throttle interval (decision.throttle_seconds, default 1s). Mutex-guarded:
+// OnEvaluate runs concurrently from the trace and metrics Export handler
+// goroutines.
 func (l *Loop) shouldLog() bool {
 	now := l.now
 	if now == nil {
 		now = time.Now
 	}
+	throttle := l.throttle
+	if throttle <= 0 {
+		throttle = DefaultThrottleInterval
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	t := now()
-	if t.Sub(l.lastLog) < throttleInterval {
+	if t.Sub(l.lastLog) < throttle {
 		return false
 	}
 	l.lastLog = t

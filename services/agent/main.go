@@ -34,14 +34,8 @@ import (
 	"github.com/joustmania/agent/gamecontext"
 )
 
-// Tunable lifecycle constants.
-const (
-	playerTTL    = 5 * time.Second
-	sessionGrace = 15 * time.Second
-	evictEvery   = 1 * time.Second
-	// probeInterval rate-limits the AGENT_PROBE_DECISIONS demo probe.
-	probeInterval = 5 * time.Second
-)
+// probeInterval rate-limits the AGENT_PROBE_DECISIONS demo probe.
+const probeInterval = 5 * time.Second
 
 // defaultServiceName is the agent's OTEL service name default. It MUST stay
 // identical everywhere it is used: the exported resource (otel.go) and the
@@ -128,7 +122,21 @@ func main() {
 	defer shutdownFlags()
 	slog.Info("OpenFeature flagd provider registered", "host", flagCfg.Host, "port", flagCfg.Port)
 
-	store := gamecontext.NewStore(playerTTL, sessionGrace, nil)
+	// Lifecycle + throttle calibration flags (#766 F5) are READ ONCE here, after
+	// the provider is registered. They configure the store TTLs, eviction ticker,
+	// and decision-loop throttle, all fixed at construction — so changing them
+	// requires an agent restart (deliberately NOT hot-reload). If flagd is not yet
+	// ready every value falls back to its safe default (the former hardcoded
+	// constants), so the agent still starts behavior-neutrally.
+	lifecycle := agentFlags.Lifecycle(ctx)
+	slog.Info("Agent lifecycle flags evaluated (read-at-startup; restart to change)",
+		"player_ttl", lifecycle.PlayerTTL,
+		"session_grace", lifecycle.SessionGrace,
+		"evict_interval", lifecycle.EvictInterval,
+		"decision_throttle", lifecycle.DecisionThrottle,
+	)
+
+	store := gamecontext.NewStore(lifecycle.PlayerTTL, lifecycle.SessionGrace, nil)
 	// Skip the agent's own telemetry when the collector fans it back to us
 	// (otlp/agent exporter) — breaks the self-ingestion feedback loop.
 	store.SetOwnService(resolveServiceName())
@@ -137,6 +145,9 @@ func main() {
 	// flags are evaluated every cycle, the kill switch / objectives / permission
 	// gate are applied, and decisions flow through the #724 audit spans.
 	loop := decision.NewLoop(agentFlags, logger)
+	// Throttle for the evaluate log line / agent.disabled span is read-at-startup
+	// from decision.throttle_seconds (#766 F5).
+	loop.SetThrottle(lifecycle.DecisionThrottle)
 	// The objective-weighted rules engine (#726) is the active default. Its
 	// objective weights are driven live from the `objectives` flag each cycle
 	// (NewObjectiveRulesLive publishes a LiveObjectives source the loop updates);
@@ -157,7 +168,7 @@ func main() {
 		slog.Warn("Probe decisions enabled (demo/verification mode)",
 			"interval", probeInterval)
 	}
-	pipe := newPipeline(store, loop, playerTTL)
+	pipe := newPipeline(store, loop, lifecycle.PlayerTTL)
 
 	grpcServer := grpc.NewServer()
 	ptraceotlp.RegisterGRPCServer(grpcServer, &traceReceiver{pipe: pipe})
@@ -188,7 +199,7 @@ func main() {
 	}()
 
 	// Eviction ticker.
-	ticker := time.NewTicker(evictEvery)
+	ticker := time.NewTicker(lifecycle.EvictInterval)
 	defer ticker.Stop()
 	go func() {
 		for {

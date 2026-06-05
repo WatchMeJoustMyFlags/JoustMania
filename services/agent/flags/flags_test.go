@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/open-feature/go-sdk/openfeature"
 )
@@ -265,5 +266,90 @@ func TestSnapshotPermits(t *testing.T) {
 	empty := Snapshot{}
 	if empty.Permits("play_audio_cue") {
 		t.Errorf("empty allow-list permitted an intervention")
+	}
+}
+
+// defaultLifecycle is the expected lifecycle snapshot when every flag falls back
+// to its safe default (the former hardcoded constants; #766 F5).
+func defaultLifecycle() Lifecycle {
+	return Lifecycle{
+		PlayerTTL:        time.Duration(DefaultPlayerTTLSeconds * float64(time.Second)),
+		SessionGrace:     time.Duration(DefaultSessionGraceSeconds * float64(time.Second)),
+		EvictInterval:    time.Duration(DefaultEvictIntervalSeconds * float64(time.Second)),
+		DecisionThrottle: time.Duration(DefaultDecisionThrottleSeconds * float64(time.Second)),
+	}
+}
+
+func TestLifecycle_FlagdShape(t *testing.T) {
+	stub := stubEvaluator{floats: map[string]float64{
+		keyPlayerTTLSeconds:     3,
+		keySessionGraceSeconds:  30,
+		keyEvictIntervalSeconds: 0.5,
+		keyDecisionThrottleSecs: 5,
+	}}
+	got := New(stub, nil).Lifecycle(context.Background())
+
+	want := Lifecycle{
+		PlayerTTL:        3 * time.Second,
+		SessionGrace:     30 * time.Second,
+		EvictInterval:    500 * time.Millisecond,
+		DecisionThrottle: 5 * time.Second,
+	}
+	if got != want {
+		t.Errorf("Lifecycle = %+v, want %+v", got, want)
+	}
+}
+
+func TestLifecycle_DefaultsWhenMissing(t *testing.T) {
+	// Empty stub: every flag undefined. The former hardcoded constants must apply
+	// (promotion is behavior-neutral).
+	got := New(stubEvaluator{}, nil).Lifecycle(context.Background())
+	if got != defaultLifecycle() {
+		t.Errorf("Lifecycle = %+v, want defaults %+v", got, defaultLifecycle())
+	}
+	// Characterize the actual prior values: 5s / 15s / 1s / 1s.
+	want := Lifecycle{
+		PlayerTTL:        5 * time.Second,
+		SessionGrace:     15 * time.Second,
+		EvictInterval:    1 * time.Second,
+		DecisionThrottle: 1 * time.Second,
+	}
+	if got != want {
+		t.Errorf("Lifecycle defaults = %+v, want former constants %+v", got, want)
+	}
+}
+
+func TestLifecycle_DefaultsOnError(t *testing.T) {
+	boom := errors.New("flagd unreachable")
+	stub := stubEvaluator{errs: map[string]error{
+		keyPlayerTTLSeconds:     boom,
+		keySessionGraceSeconds:  boom,
+		keyEvictIntervalSeconds: boom,
+		keyDecisionThrottleSecs: boom,
+	}}
+	got := New(stub, nil).Lifecycle(context.Background())
+	if got != defaultLifecycle() {
+		t.Errorf("Lifecycle on error = %+v, want defaults %+v", got, defaultLifecycle())
+	}
+}
+
+func TestLifecycle_NonPositiveFallsBack(t *testing.T) {
+	// A zero or negative duration would break the store TTL / ticker, so the
+	// wrapper must fall back to the default for non-positive values.
+	stub := stubEvaluator{floats: map[string]float64{
+		keyPlayerTTLSeconds:     0,
+		keySessionGraceSeconds:  -5,
+		keyEvictIntervalSeconds: 2,
+		keyDecisionThrottleSecs: 0,
+	}}
+	got := New(stub, nil).Lifecycle(context.Background())
+	want := Lifecycle{
+		PlayerTTL:        time.Duration(DefaultPlayerTTLSeconds * float64(time.Second)),
+		SessionGrace:     time.Duration(DefaultSessionGraceSeconds * float64(time.Second)),
+		EvictInterval:    2 * time.Second,
+		DecisionThrottle: time.Duration(DefaultDecisionThrottleSeconds * float64(time.Second)),
+	}
+	if got != want {
+		t.Errorf("Lifecycle = %+v, want %+v", got, want)
 	}
 }
