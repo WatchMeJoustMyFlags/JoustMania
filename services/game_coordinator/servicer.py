@@ -19,6 +19,7 @@ from lib.telemetry import get_tracer
 from lib.types import GameEvent, get_game_display_name
 from proto import game_coordinator_pb2, game_coordinator_pb2_grpc
 from services.game_coordinator import metrics
+from services.game_coordinator.difficulty_handlers import register_difficulty_handlers
 from services.game_coordinator.event_bus import EventBus
 from services.game_coordinator.game_factory import GameFactory
 from services.game_coordinator.grpc_clients import GrpcClientManager
@@ -79,8 +80,11 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             end_game_fn=self._force_end_current_game,
         )
         # PR E: register the ambient/session handlers (audio cue, volume,
-        # controller effect, end game). PR C registers difficulty handlers.
+        # controller effect, end game).
         self.intervention_manager.register_ambient_handlers()
+        # Register difficulty intervention handlers (#730 PR C): music tempo
+        # override, global sensitivity override, per-player sensitivity factor.
+        register_difficulty_handlers(self.intervention_manager)
         self.intervention_manager.start()
 
         logger.info("GameCoordinator initialized")

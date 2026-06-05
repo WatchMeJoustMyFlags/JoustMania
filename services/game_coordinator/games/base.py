@@ -248,6 +248,15 @@ class BaseGameMode(ABC):
         self.speed_up = True  # True = next change will speed up, False = slow down
         self.change_time = 0.0  # Time of next tempo change
         self.music_loop_task = None
+        # Agent tempo override (#730 PR C). When set to a float (1.0-1.3), the
+        # music loop adopts this tempo and SUSPENDS its own speed-up/slow-down
+        # schedule (resolves the E1 race in 722-intervention-surface §3.1).
+        # None = no override; the natural schedule runs. Set/cleared by the
+        # music_tempo_override intervention handler; consumed in _check_music_speed.
+        self.tempo_override: float | None = None
+        # Configured sensitivity captured at game start so a reverted
+        # global_sensitivity_override (#730 PR C) restores the original level.
+        self.configured_sensitivity = self.sensitivity
         self.dead_count = 0  # Track deaths for tempo timing
         # Elimination ordering for game_player_elimination_order metric (#730).
         # Incremented on each kill; the value at kill time is the player's order
@@ -1819,6 +1828,19 @@ class BaseGameMode(ABC):
         between slow and fast tempos.
         """
         if not self.audio_client or not self.music_track_id:
+            return
+
+        # Agent tempo override (#730 PR C): while an override is active the music
+        # loop adopts that tempo and suspends its own schedule. Apply once when
+        # the override differs from the current speed, then hold — no scheduled
+        # transitions fire (self.change_time is left untouched so the natural
+        # schedule resumes from the current state when the override clears).
+        if self.tempo_override is not None:
+            if abs(self.music_speed - self.tempo_override) > 1e-9:
+                try:
+                    await self._apply_tempo_change(self.tempo_override)
+                except Exception as e:
+                    logger.warning(f"Failed to apply tempo override: {e}")
             return
 
         if time.time() >= self.change_time:
