@@ -21,8 +21,21 @@ import time
 from services.controller_manager import metrics
 from services.controller_manager.backend import ControllerBackend
 from services.controller_manager.multiplexer.adapter import ControllerIOAdapter
+from services.controller_manager.multiplexer.rollout_router import RolloutRouter
 
 logger = logging.getLogger(__name__)
+
+
+def _adapter_owner(adapter: ControllerIOAdapter) -> ControllerIOAdapter:
+    """Return the underlying device-owning adapter.
+
+    Decorators that share a single inner adapter (e.g. UnstableAdapter) expose
+    it via ``.inner``. Routing uses owner identity to avoid closing the shared
+    device when a serial switches between a plain adapter and a decorator that
+    wraps the same inner.
+    """
+    inner = getattr(adapter, "inner", None)
+    return inner if inner is not None else adapter
 
 
 class MultiplexerBackend(ControllerBackend):
@@ -36,11 +49,18 @@ class MultiplexerBackend(ControllerBackend):
     def __init__(
         self,
         adapters: list[ControllerIOAdapter],
+        routing_only_adapters: list[ControllerIOAdapter] | None = None,
     ):
         if not adapters:
             raise ValueError("MultiplexerBackend requires at least one adapter")
 
         self._adapters = adapters
+
+        # Routing-only adapters (e.g. UnstableAdapter) are valid targeting/rollout
+        # destinations but do NOT discover independently — they share an inner
+        # adapter that is already a discoverer. They are reachable only when
+        # explicit targeting or rollout selects their adapter_type.
+        self._routing_only_adapters = routing_only_adapters or []
 
         # Adapter-based routing
         self._serial_to_adapter: dict[str, ControllerIOAdapter] = {}
@@ -53,10 +73,15 @@ class MultiplexerBackend(ControllerBackend):
         self._effect_active: set[str] = set()
         self._led_lock = threading.Lock()
 
-        # Build adapter_type -> adapter lookup for targeting resolution
+        # Build adapter_type -> adapter lookup for targeting resolution.
+        # Routing-only adapters are registered too, but added last so they never
+        # shadow a discoverer of the same type.
         self._adapter_by_type: dict[str, ControllerIOAdapter] = {}
-        for adapter in self._adapters:
+        for adapter in (*self._routing_only_adapters, *self._adapters):
             self._adapter_by_type[adapter.adapter_type] = adapter
+
+        # Rollout routing (rollout flagd domain). Evaluated per cycle.
+        self._rollout_router = RolloutRouter()
 
         # Discovery throttle: only run full enumeration every N seconds
         self._last_full_discovery: float = 0.0
@@ -144,6 +169,7 @@ class MultiplexerBackend(ControllerBackend):
                 candidates.setdefault(serial, []).append(adapter)
 
         # Phase 2: route — pick winner for each serial
+        candidate_serials = list(candidates.keys())
         seen: dict[str, ControllerIOAdapter] = {}
         for serial, adapters in candidates.items():
             # Mock-only → skip targeting
@@ -156,33 +182,40 @@ class MultiplexerBackend(ControllerBackend):
                 ).inc()
                 continue
 
-            preferred = self._resolve_adapter_for_serial(serial)
+            preferred, preferred_method = self._resolve_adapter_for_serial(serial, candidate_serials)
             winner = None
             method = "default"
 
             if preferred and preferred in adapters:
                 winner = preferred
-                method = "targeted"
+                method = preferred_method
             elif preferred:
-                # Preferred adapter didn't discover it — try open on demand
+                # Preferred adapter didn't discover it — try open on demand.
+                # Routing-only adapters (e.g. unstable) share an inner that IS a
+                # discoverer, so their open() reaches the already-open device.
                 if preferred.open(serial):
                     winner = preferred
-                    method = "targeted"
+                    method = preferred_method
                 else:
                     method = "fallback"
 
             if winner is None:
-                # Pick first non-mock, or first overall
+                # Pick first non-mock (excluding routing-only types like
+                # "unstable", which must never be a default/fallback winner),
+                # or first overall.
                 winner = next(
-                    (a for a in adapters if a.adapter_type != "mock"),
+                    (a for a in adapters if a.adapter_type not in ("mock", "unstable")),
                     adapters[0],
                 )
 
             seen[serial] = winner
+            winner_owner = _adapter_owner(winner)
 
-            # Close handles on non-winning adapters
+            # Close handles on non-winning adapters. Skip any loser that shares
+            # the winner's underlying device owner (shared-inner case), else we
+            # would tear down the device the winner is using.
             for adapter in adapters:
-                if adapter is not winner:
+                if adapter is not winner and _adapter_owner(adapter) is not winner_owner:
                     adapter.close(serial)
 
             metrics.controller_routing_decisions_total.labels(
@@ -193,34 +226,69 @@ class MultiplexerBackend(ControllerBackend):
 
             # Detect dynamic switch from previous cycle
             old = self._serial_to_adapter.get(serial)
-            if old and old is not winner and old not in adapters:
+            if old and old is not winner and old not in adapters and _adapter_owner(old) is not winner_owner:
                 old.close(serial)
                 logger.info(f"Switched {serial}: {old.adapter_type} -> {winner.adapter_type}")
 
         return seen
 
-    def _resolve_adapter_for_serial(self, serial: str) -> ControllerIOAdapter | None:
-        """Evaluate the bluetooth_backend flag for a serial.
+    def _resolve_adapter_for_serial(
+        self,
+        serial: str,
+        candidate_serials: list[str] | None = None,
+    ) -> tuple[ControllerIOAdapter | None, str]:
+        """Resolve the preferred adapter for a serial via three-way precedence.
 
-        Returns the matching adapter instance, or None if targeting is
-        unavailable, errors, or the result doesn't match any adapter.
+        Precedence (highest to lowest):
+          1. Explicit per-serial ``bluetooth_backend`` targeting — honored only
+             when the evaluation reason is ``TARGETING_MATCH`` (an actual rule
+             match, not the flag's default variant).
+          2. Rollout-driven — :meth:`RolloutRouter.target_for` over the full
+             candidate serial set.
+          3. Default — the flag's resolved value (default variant / fallback).
+
+        Returns ``(adapter, method)`` where ``method`` is one of
+        ``"targeted"`` / ``"rollout"`` / ``"default"``. ``adapter`` is ``None``
+        when nothing resolves (targeting unavailable, error, or no matching
+        adapter), in which case ``method`` is ``"default"``.
         """
         try:
             from openfeature.evaluation_context import EvaluationContext
+            from openfeature.flag_evaluation import Reason
 
             from lib.feature_flags import get_flag_client
 
             client = get_flag_client("controller")
-            adapter_type = client.get_string_value(
+
+            # 1. Explicit per-serial targeting wins outright.
+            details = client.get_string_details(
                 "bluetooth_backend",
                 "",
                 EvaluationContext(targeting_key=serial),
             )
-            if adapter_type:
-                return self._adapter_by_type.get(adapter_type)
+            if details.value and str(details.reason) == Reason.TARGETING_MATCH.value:
+                adapter = self._adapter_by_type.get(details.value)
+                if adapter is not None:
+                    return adapter, "targeted"
+
+            # 2. Rollout-driven selection.
+            rollout_target = self._rollout_router.target_for(
+                serial,
+                candidate_serials or [serial],
+            )
+            if rollout_target:
+                adapter = self._adapter_by_type.get(rollout_target)
+                if adapter is not None:
+                    return adapter, "rollout"
+
+            # 3. Default: the flag's resolved value (e.g. default variant).
+            if details.value:
+                adapter = self._adapter_by_type.get(details.value)
+                if adapter is not None:
+                    return adapter, "default"
         except Exception:
-            logger.debug(f"Failed to evaluate bluetooth_backend for {serial}", exc_info=True)
-        return None
+            logger.debug(f"Failed to resolve adapter for {serial}", exc_info=True)
+        return None, "default"
 
     def get_adapter_type(self, serial: str) -> str:
         """Return the adapter_type string for a tracked serial."""
@@ -367,7 +435,7 @@ class MultiplexerBackend(ControllerBackend):
 
     async def connect_controller(self, address: str) -> bool:
         # Try targeted adapter first
-        preferred = self._resolve_adapter_for_serial(address)
+        preferred, _method = self._resolve_adapter_for_serial(address, [address])
         if preferred:
             try:
                 if preferred.open(address):
