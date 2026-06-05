@@ -347,7 +347,7 @@ class TestMenuServicerStartMenu:
             for serial in list(servicer.state_manager.controller_states.keys()):
                 if servicer.state_manager.controller_states[serial] == ControllerState.READY:
                     servicer.state_manager.controller_states[serial] = ControllerState.CONNECTED
-            # Load settings from flagd (user_preferences domain)
+            # Load settings from flagd (user domain)
             servicer.voice_actor = servicer.user_prefs_client.get_string_value("menu_voice", "ivy")
             servicer.user_prefs_client.get_string_value("current_game", "JoustFFA")
             await servicer.audio.start_lobby_music()
@@ -985,7 +985,7 @@ class TestBuildGameConfig:
         assert config.sensitivity == 2
         assert len(config.players) == 2
         assert config.HasField("nonstop_config")
-        servicer.game_settings_client.get_integer_value.assert_any_call("nonstop_time_limit", 0)
+        servicer.game_settings_client.get_integer_value.assert_any_call("nonstop.time_limit_seconds", 0)
 
     def test_build_config_tournament(self, servicer, players):
         """Tournament should produce tournament_config with invincibility_seconds."""
@@ -995,7 +995,7 @@ class TestBuildGameConfig:
         assert config.sensitivity == 2
         assert len(config.players) == 2
         assert config.HasField("tournament_config")
-        servicer.game_settings_client.get_float_value.assert_any_call("invincibility", 4.0)
+        servicer.game_settings_client.get_float_value.assert_any_call("invincibility_seconds", 4.0)
 
     def test_build_config_fight_club(self, servicer, players):
         """FightClub should produce fight_club_config with invincibility and min_rounds."""
@@ -1005,8 +1005,8 @@ class TestBuildGameConfig:
         assert config.sensitivity == 2
         assert len(config.players) == 2
         assert config.HasField("fight_club_config")
-        servicer.game_settings_client.get_float_value.assert_any_call("invincibility", 4.0)
-        servicer.game_settings_client.get_integer_value.assert_any_call("fight_club_min_rounds", 10)
+        servicer.game_settings_client.get_float_value.assert_any_call("invincibility_seconds", 4.0)
+        servicer.game_settings_client.get_integer_value.assert_any_call("fight_club.min_rounds", 10)
 
     def test_build_config_werewolf(self, servicer, players):
         """Werewolf should produce werewolf_config with reveal_time_seconds."""
@@ -1016,7 +1016,7 @@ class TestBuildGameConfig:
         assert config.sensitivity == 2
         assert len(config.players) == 2
         assert config.HasField("werewolf_config")
-        servicer.game_settings_client.get_float_value.assert_any_call("werewolf_reveal_time", 35.0)
+        servicer.game_settings_client.get_float_value.assert_any_call("werewolf.reveal_time_seconds", 35.0)
 
     def test_build_config_zombie(self, servicer, players):
         """Zombies should produce zombie_config."""
@@ -1273,7 +1273,7 @@ class TestBuildGameConfigCustomValues:
         servicer.game_settings_client.get_integer_value = MagicMock(
             side_effect=lambda key, default: {
                 "sensitivity": 2,
-                "nonstop_time_limit": 120,
+                "nonstop.time_limit_seconds": 120,
             }.get(key, default)
         )
         config = self._build_config(servicer, Games.NonStop, players)
@@ -1284,12 +1284,12 @@ class TestBuildGameConfigCustomValues:
         servicer.game_settings_client.get_integer_value = MagicMock(
             side_effect=lambda key, default: {
                 "sensitivity": 3,
-                "fight_club_min_rounds": 5,
+                "fight_club.min_rounds": 5,
             }.get(key, default)
         )
         servicer.game_settings_client.get_float_value = MagicMock(
             side_effect=lambda key, default: {
-                "invincibility": 2.5,
+                "invincibility_seconds": 2.5,
             }.get(key, default)
         )
         config = self._build_config(servicer, Games.FightClub, players)
@@ -1301,7 +1301,7 @@ class TestBuildGameConfigCustomValues:
         """Werewolf should use reveal_time_seconds from flagd."""
         servicer.game_settings_client.get_float_value = MagicMock(
             side_effect=lambda key, default: {
-                "werewolf_reveal_time": 60.0,
+                "werewolf.reveal_time_seconds": 60.0,
             }.get(key, default)
         )
         config = self._build_config(servicer, Games.Werewolf, players)

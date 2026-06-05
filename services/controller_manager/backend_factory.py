@@ -4,7 +4,7 @@ Backend Factory for Controller Manager
 Detects platform and creates appropriate backend instance.
 
 Backend selection priority:
-  1. OpenFeature "controller_backend" flag (runtime-switchable via flagd)
+  1. OpenFeature "backend" flag from the controller domain (runtime-switchable via flagd)
   2. Platform auto-detection (Linux -> python)
 
 Flag values are read once at startup.
@@ -36,21 +36,21 @@ def _resolve_backend_name() -> str | None:
     try:
         from lib.feature_flags import get_flag_client
 
-        client = get_flag_client("performance")
+        client = get_flag_client("controller")
         from openfeature.evaluation_context import EvaluationContext
 
-        details = client.get_string_details("controller_backend", "", EvaluationContext())
+        details = client.get_string_details("backend", "", EvaluationContext())
         backend_flag = details.value
         if backend_flag:
             logger.info(f"Using backend from OpenFeature flag: {backend_flag} (reason={details.reason})")
             return backend_flag.lower()
         logger.warning(
-            f"controller_backend flag returned empty string: "
+            f"backend flag returned empty string: "
             f"reason={details.reason}, error_code={details.error_code}, "
             f"error_message={details.error_message}"
         )
     except Exception as e:
-        logger.warning(f"controller_backend flag evaluation failed: {e}")
+        logger.warning(f"backend flag evaluation failed: {e}")
 
     return None
 
@@ -93,7 +93,7 @@ def _is_chaos_enabled() -> bool:
 
         from lib.feature_flags import get_flag_client
 
-        client = get_flag_client("performance")
+        client = get_flag_client("controller")
         client.get_string_value("chaos_fault_type", "none", EvaluationContext())
         return True
     except Exception:
@@ -122,7 +122,7 @@ def create_backend() -> ControllerBackend:
     Create appropriate backend based on flags or platform.
 
     Selection priority:
-        1. OpenFeature "controller_backend" flag from performance domain
+        1. OpenFeature "backend" flag from controller domain
         2. Platform auto-detection (Linux -> python)
 
     Creates ControllerIOAdapter instances wrapped in MultiplexerBackend.

@@ -92,7 +92,7 @@ async def serve(port=50054):
     await menu_servicer.start_game_event_monitor()
 
     # Auto-start menu (so controllers light up immediately)
-    # Read from flagd user_preferences domain (initialized by MenuServicer.__init__)
+    # Read from flagd user domain (initialized by MenuServicer.__init__)
     auto_start = menu_servicer.user_prefs_client.get_boolean_value("menu_auto_start", True)
     if auto_start:
         menu_servicer.state = menu_pb2.MenuState.RUNNING

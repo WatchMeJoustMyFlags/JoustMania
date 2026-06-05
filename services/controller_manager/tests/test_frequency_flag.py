@@ -17,8 +17,8 @@ sys.path.insert(0, str(test_dir))
 import services.controller_manager.servicer as servicer_mod
 
 
-class TestOnPerformanceFlagsChanged:
-    """Tests for _on_performance_flags_changed handler."""
+class TestOnSystemFlagsChanged:
+    """Tests for _on_system_flags_changed handler."""
 
     def _reset(self):
         self._original = servicer_mod._frequency_override
@@ -36,7 +36,7 @@ class TestOnPerformanceFlagsChanged:
             mock_client.get_integer_value.return_value = 30
             mock_get_client.return_value = mock_client
 
-            servicer_mod._on_performance_flags_changed(None)
+            servicer_mod._on_system_flags_changed(None)
             assert servicer_mod._frequency_override == 30
             mock_metrics.stream_frequency_changes_total.inc.assert_called_once()
             mock_metrics.stream_current_frequency_hz.set.assert_called_once_with(30)
@@ -52,7 +52,7 @@ class TestOnPerformanceFlagsChanged:
             mock_client.get_integer_value.return_value = 0
             mock_get_client.return_value = mock_client
 
-            servicer_mod._on_performance_flags_changed(None)
+            servicer_mod._on_system_flags_changed(None)
             assert servicer_mod._frequency_override is None
         finally:
             self._restore()
@@ -66,7 +66,7 @@ class TestOnPerformanceFlagsChanged:
             mock_client.get_integer_value.return_value = -5
             mock_get_client.return_value = mock_client
 
-            servicer_mod._on_performance_flags_changed(None)
+            servicer_mod._on_system_flags_changed(None)
             assert servicer_mod._frequency_override is None
         finally:
             self._restore()
@@ -80,7 +80,7 @@ class TestOnPerformanceFlagsChanged:
             mock_client.get_integer_value.return_value = 500
             mock_get_client.return_value = mock_client
 
-            servicer_mod._on_performance_flags_changed(None)
+            servicer_mod._on_system_flags_changed(None)
             assert servicer_mod._frequency_override == 100
         finally:
             self._restore()
@@ -94,7 +94,7 @@ class TestOnPerformanceFlagsChanged:
             mock_client.get_integer_value.return_value = -1
             mock_get_client.return_value = mock_client
 
-            servicer_mod._on_performance_flags_changed(None)
+            servicer_mod._on_system_flags_changed(None)
             # Negative values are <= 0, so skipped entirely
             assert servicer_mod._frequency_override is None
         finally:
@@ -110,7 +110,7 @@ class TestOnPerformanceFlagsChanged:
             mock_client.get_integer_value.return_value = 60
             mock_get_client.return_value = mock_client
 
-            servicer_mod._on_performance_flags_changed(None)
+            servicer_mod._on_system_flags_changed(None)
             assert servicer_mod._frequency_override == 60
             mock_metrics.stream_frequency_changes_total.inc.assert_not_called()
         finally:
@@ -124,7 +124,7 @@ class TestOnPerformanceFlagsChanged:
         try:
             mock_get_client.side_effect = RuntimeError("flagd down")
 
-            servicer_mod._on_performance_flags_changed(None)
+            servicer_mod._on_system_flags_changed(None)
             assert servicer_mod._frequency_override == 60  # unchanged
             mock_logger.warning.assert_called_once()
         finally:
@@ -136,9 +136,9 @@ class TestOnPerformanceFlagsChanged:
         self._reset()
         try:
             event = MagicMock()
-            event.flags_changed = ["sensitivity_mode"]
+            event.flags_changed = ["poll_drop_threshold"]
 
-            servicer_mod._on_performance_flags_changed(event)
+            servicer_mod._on_system_flags_changed(event)
             assert servicer_mod._frequency_override is None
             mock_get_client.assert_not_called()
         finally:
@@ -147,7 +147,7 @@ class TestOnPerformanceFlagsChanged:
     @patch("services.controller_manager.servicer.metrics")
     @patch("lib.feature_flags.get_flag_client")
     def test_evaluates_when_our_flag_changed(self, mock_get_client, mock_metrics):
-        """Handler evaluates when update_frequency_hz is in changed flags."""
+        """Handler evaluates when game_loop.update_frequency_hz is in changed flags."""
         self._reset()
         try:
             mock_client = MagicMock()
@@ -155,9 +155,9 @@ class TestOnPerformanceFlagsChanged:
             mock_get_client.return_value = mock_client
 
             event = MagicMock()
-            event.flags_changed = ["sensitivity_mode", "update_frequency_hz"]
+            event.flags_changed = ["poll_drop_threshold", "game_loop.update_frequency_hz"]
 
-            servicer_mod._on_performance_flags_changed(event)
+            servicer_mod._on_system_flags_changed(event)
             assert servicer_mod._frequency_override == 45
         finally:
             self._restore()

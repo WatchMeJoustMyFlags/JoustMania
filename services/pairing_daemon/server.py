@@ -21,9 +21,9 @@ Environment:
   FLAGD_HOST    - flagd host for feature flags (default: flagd)
   FLAGD_PORT    - flagd sync port (default: 8015)
 
-Feature Flags (performance domain):
-  pairing_poll_interval - seconds between USB polls (default: 10)
-  bt_monitor_interval   - seconds between Bluetooth monitoring (default: 5)
+Feature Flags (system domain):
+  pairing.poll_interval        - seconds between USB polls (default: 10)
+  pairing.bt_monitor_interval  - seconds between Bluetooth monitoring (default: 5)
 
 Endpoints:
   GET /healthz  - Health check (200 if healthy, 503 if unhealthy)

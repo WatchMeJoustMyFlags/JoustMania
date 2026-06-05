@@ -1,0 +1,43 @@
+{
+  "metadata": {
+    "flagSetId": "rollout"
+  },
+  "flags": {
+    "target_backend": {
+      "state": "ENABLED",
+      "variants": {
+        "python": "python",
+        "rust": "rust"
+      },
+      "defaultVariant": "python"
+    },
+    "strategy": {
+      "state": "ENABLED",
+      "variants": {
+        "progressive": "progressive",
+        "immediate": "immediate",
+        "off": "off"
+      },
+      "defaultVariant": "off"
+    },
+    "current_controller_count": {
+      "state": "ENABLED",
+      "variants": {
+        "none": 0,
+        "one": 1,
+        "three": 3,
+        "six": 6,
+        "all": 99
+      },
+      "defaultVariant": "none"
+    },
+    "remediation_allowed": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "off"
+    }
+  }
+}

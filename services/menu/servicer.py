@@ -70,20 +70,20 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         self.game_coordinator_channel = create_channel(f"{game_coordinator_host}:{game_coordinator_port}")
         self.audio_channel = create_channel(f"{audio_host}:{audio_port}")
 
-        # Initialize flagd domains for game_settings, user_preferences, and performance
-        init_flag_domain("game_settings")
-        init_flag_domain("user_preferences")
-        init_flag_domain("performance")
+        # Initialize flagd domains for game, user, and system settings
+        init_flag_domain("game")
+        init_flag_domain("user")
+        init_flag_domain("system")
 
         # FlagConfigWriter instances for persisting settings changes
         flagd_dir = os.getenv("FLAGD_DIR", "/etc/flagd")
-        self.game_settings_writer = FlagConfigWriter(os.path.join(flagd_dir, "game_settings.json"))
-        self.user_prefs_writer = FlagConfigWriter(os.path.join(flagd_dir, "user_preferences.json"))
+        self.game_settings_writer = FlagConfigWriter(os.path.join(flagd_dir, "game.json"))
+        self.user_prefs_writer = FlagConfigWriter(os.path.join(flagd_dir, "user.json"))
 
         # OpenFeature clients for reading settings
-        self.game_settings_client = get_flag_client("game_settings")
-        self.user_prefs_client = get_flag_client("user_preferences")
-        self.performance_client = get_flag_client("performance")
+        self.game_settings_client = get_flag_client("game")
+        self.user_prefs_client = get_flag_client("user")
+        self.system_client = get_flag_client("system")
 
         # Utility classes
         self.led = LedController(self.controller_channel)
@@ -125,10 +125,10 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
 
         self.idle_monitor = IdleMonitor(
             state_manager=self.state_manager,
-            get_idle_enabled=lambda: self.performance_client.get_boolean_value("idle_mode_enabled", True),
-            get_idle_timeout=lambda: self.performance_client.get_integer_value("idle_timeout_minutes", 15),
-            get_sentinel_count=lambda: self.performance_client.get_integer_value("sentinel_count", 2),
-            get_rotation_minutes=lambda: self.performance_client.get_integer_value("sentinel_rotation_minutes", 5),
+            get_idle_enabled=lambda: self.system_client.get_boolean_value("idle.enabled", True),
+            get_idle_timeout=lambda: self.system_client.get_integer_value("idle.timeout_minutes", 15),
+            get_sentinel_count=lambda: self.system_client.get_integer_value("sentinel.count", 2),
+            get_rotation_minutes=lambda: self.system_client.get_integer_value("sentinel.rotation_minutes", 5),
         )
 
         # Wire idle handler's wake callback to idle monitor
@@ -253,7 +253,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             self.state = menu_pb2.MenuState.RUNNING
             self._clear_ready_state()
 
-            # Load settings from flagd (user_preferences domain)
+            # Load settings from flagd (user domain)
             self.voice_actor = self.user_prefs_client.get_string_value("menu_voice", DEFAULT_VOICE_ACTOR)
             current_game_name = self.user_prefs_client.get_string_value("current_game", DEFAULT_GAME_MODE.name)
             game = Games.from_name(current_game_name)
@@ -794,7 +794,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             controller_count=len(players),
         )
 
-        # Read game settings from flagd (game_settings domain)
+        # Read game settings from flagd (game domain)
         sensitivity = self.game_settings_client.get_integer_value("sensitivity", 2)
 
         # Build base config with the game mode's name
@@ -827,29 +827,30 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             case Games.NonStop:
                 config.nonstop_config.CopyFrom(
                     game_coordinator_pb2.NonstopConfig(
-                        time_limit_seconds=self.game_settings_client.get_integer_value("nonstop_time_limit", 0),
+                        time_limit_seconds=self.game_settings_client.get_integer_value("nonstop.time_limit_seconds", 0),
                     )
                 )
 
             case Games.Tournament:
                 config.tournament_config.CopyFrom(
                     game_coordinator_pb2.TournamentConfig(
-                        invincibility_seconds=self.game_settings_client.get_float_value("invincibility", 4.0),
+                        invincibility_seconds=self.game_settings_client.get_float_value("invincibility_seconds", 4.0),
                     )
                 )
 
             case Games.FightClub:
                 config.fight_club_config.CopyFrom(
                     game_coordinator_pb2.FightClubConfig(
-                        invincibility_seconds=self.game_settings_client.get_float_value("invincibility", 4.0),
-                        min_rounds=self.game_settings_client.get_integer_value("fight_club_min_rounds", 10),
+                        invincibility_seconds=self.game_settings_client.get_float_value("invincibility_seconds", 4.0),
+                        min_rounds=self.game_settings_client.get_integer_value("fight_club.min_rounds", 10),
                     )
                 )
 
             case Games.Werewolf:
+                reveal_time = self.game_settings_client.get_float_value("werewolf.reveal_time_seconds", 35.0)
                 config.werewolf_config.CopyFrom(
                     game_coordinator_pb2.WerewolfConfig(
-                        reveal_time_seconds=self.game_settings_client.get_float_value("werewolf_reveal_time", 35.0),
+                        reveal_time_seconds=reveal_time,
                     )
                 )
 

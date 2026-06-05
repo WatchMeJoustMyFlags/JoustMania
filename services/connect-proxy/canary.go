@@ -70,7 +70,7 @@ func canaryRollbackHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// canaryStatusHandler returns the current controller_adapter_routing flag config.
+// canaryStatusHandler returns the current bluetooth_backend flag config.
 func canaryStatusHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -86,9 +86,9 @@ func canaryStatusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	flag, ok := cfg.Flags["controller_adapter_routing"]
+	flag, ok := cfg.Flags["bluetooth_backend"]
 	if !ok {
-		http.Error(w, "controller_adapter_routing flag not found", http.StatusNotFound)
+		http.Error(w, "bluetooth_backend flag not found", http.StatusNotFound)
 		return
 	}
 
@@ -96,7 +96,7 @@ func canaryStatusHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(flag)
 }
 
-// setCanaryRouting updates the controller_adapter_routing flag in the flagd config.
+// setCanaryRouting updates the bluetooth_backend flag in the flagd config.
 // fraction=100 routes all controllers to the backend (defaultVariant only).
 // fraction<100 uses flagd fractional targeting for gradual rollout.
 func setCanaryRouting(backend string, fraction int) error {
@@ -108,9 +108,9 @@ func setCanaryRouting(backend string, fraction int) error {
 		return fmt.Errorf("read config: %w", err)
 	}
 
-	flag, ok := cfg.Flags["controller_adapter_routing"]
+	flag, ok := cfg.Flags["bluetooth_backend"]
 	if !ok {
-		return fmt.Errorf("controller_adapter_routing flag not found in %s", flagdConfigPath)
+		return fmt.Errorf("bluetooth_backend flag not found in %s", flagdConfigPath)
 	}
 
 	// Find the variant key for this backend value
@@ -122,16 +122,7 @@ func setCanaryRouting(backend string, fraction int) error {
 		}
 	}
 	if variantKey == "" {
-		return fmt.Errorf("no variant with value %q in controller_adapter_routing", backend)
-	}
-
-	// Find the "other" backend for fractional targeting
-	otherKey := ""
-	for k := range flag.Variants {
-		if k != variantKey {
-			otherKey = k
-			break
-		}
+		return fmt.Errorf("no variant with value %q in bluetooth_backend", backend)
 	}
 
 	if fraction >= 100 {
@@ -139,7 +130,22 @@ func setCanaryRouting(backend string, fraction int) error {
 		flag.DefaultVariant = variantKey
 		flag.Targeting = nil
 	} else {
-		// Fractional rollout: default stays as other, targeting routes fraction% to backend
+		// Fractional rollout: the non-canary share must deterministically stay
+		// on the stable counterpart (python<->rust). bluetooth_backend has more
+		// than two variants ("unstable" exists for the agent rollout work), so
+		// picking "any other variant" via map iteration would be both random
+		// and could route the majority share to "unstable".
+		counterpart := map[string]string{"python": "rust", "rust": "python"}[backend]
+		otherKey := ""
+		for k, v := range flag.Variants {
+			if str, ok := v.(string); ok && str == counterpart {
+				otherKey = k
+				break
+			}
+		}
+		if otherKey == "" {
+			return fmt.Errorf("fractional rollout of %q unsupported: no stable counterpart variant in bluetooth_backend", backend)
+		}
 		flag.DefaultVariant = otherKey
 		flag.Targeting = buildFractionalTargeting(variantKey, fraction)
 	}

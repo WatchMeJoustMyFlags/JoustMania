@@ -121,7 +121,7 @@ class ChaosAdapter(ControllerIOAdapter):
 
             from lib.feature_flags import get_flag_client
 
-            client = get_flag_client("performance")
+            client = get_flag_client("controller")
             return client.get_string_value(
                 "chaos_fault_type",
                 "none",
@@ -139,7 +139,7 @@ class ChaosAdapter(ControllerIOAdapter):
 
             from lib.feature_flags import get_flag_client
 
-            client = get_flag_client("performance")
+            client = get_flag_client("controller")
             client.add_handler(
                 ProviderEvent.PROVIDER_CONFIGURATION_CHANGED,
                 self._on_flag_changed,

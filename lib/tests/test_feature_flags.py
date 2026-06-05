@@ -88,9 +88,9 @@ def test_get_flag_client(mock_api):
     mock_client = MagicMock()
     mock_api.get_client.return_value = mock_client
 
-    client = get_flag_client("game_settings")
+    client = get_flag_client("game")
 
-    mock_api.get_client.assert_called_with(domain="game_settings")
+    mock_api.get_client.assert_called_with(domain="game")
     assert client is mock_client
 
 

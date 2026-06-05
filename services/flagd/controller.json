@@ -1,0 +1,52 @@
+{
+  "metadata": {
+    "flagSetId": "controller"
+  },
+  "flags": {
+    "backend": {
+      "state": "ENABLED",
+      "variants": {
+        "python": "python",
+        "mock": "mock",
+        "mock_python": "mock,python",
+        "rust": "rust",
+        "mock_rust": "mock,rust",
+        "python_rust": "python,rust",
+        "mock_python_rust": "mock,python,rust"
+      },
+      "defaultVariant": "python_rust"
+    },
+    "poll_drop_threshold": {
+      "state": "ENABLED",
+      "variants": {
+        "off": 0,
+        "low": 5,
+        "default": 10,
+        "high": 20
+      },
+      "defaultVariant": "default"
+    },
+    "bluetooth_backend": {
+      "state": "ENABLED",
+      "variants": {
+        "python": "python",
+        "rust": "rust",
+        "unstable": "unstable"
+      },
+      "defaultVariant": "python",
+      "targeting": {}
+    },
+    "chaos_fault_type": {
+      "state": "ENABLED",
+      "variants": {
+        "poll_drop": "poll_drop",
+        "accel_spike": "accel_spike",
+        "led_failure": "led_failure",
+        "disconnect": "disconnect",
+        "none": "none"
+      },
+      "defaultVariant": "none",
+      "targeting": {}
+    }
+  }
+}

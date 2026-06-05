@@ -36,8 +36,8 @@ class StateManager:
         Args:
             led: LED controller utility
             audio: Audio helper utility
-            game_settings_writer: FlagConfigWriter for game_settings.json
-            user_prefs_writer: FlagConfigWriter for user_preferences.json
+            game_settings_writer: FlagConfigWriter for game.json
+            user_prefs_writer: FlagConfigWriter for user.json
             publish_event: Async function to publish events
         """
         self.led = led

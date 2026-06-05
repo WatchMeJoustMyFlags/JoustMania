@@ -107,10 +107,10 @@ class TestAdminOptionNavigation:
             "sensitivity",
             "num_teams",
             "random_assignment",
-            "nonstop_time_limit",
-            "invincibility",
-            "fight_club_min_rounds",
-            "werewolf_reveal_time",
+            "nonstop.time_limit_seconds",
+            "invincibility_seconds",
+            "fight_club.min_rounds",
+            "werewolf.reveal_time_seconds",
             "force_all_start",
         ]
         assert handler.option_names == expected
@@ -208,7 +208,7 @@ class TestIncreaseValueNonstopTimeLimit:
         await handler.handle_increase_value("test_serial")
 
         mock_state_manager.game_settings_writer.cycle_variant.assert_called_once_with(
-            "nonstop_time_limit", forward=True
+            "nonstop.time_limit_seconds", forward=True
         )
 
 
@@ -222,7 +222,9 @@ class TestIncreaseValueInvincibility:
 
         await handler.handle_increase_value("test_serial")
 
-        mock_state_manager.game_settings_writer.cycle_variant.assert_called_once_with("invincibility", forward=True)
+        mock_state_manager.game_settings_writer.cycle_variant.assert_called_once_with(
+            "invincibility_seconds", forward=True
+        )
 
 
 class TestIncreaseValueFightClubMinRounds:
@@ -236,7 +238,7 @@ class TestIncreaseValueFightClubMinRounds:
         await handler.handle_increase_value("test_serial")
 
         mock_state_manager.game_settings_writer.cycle_variant.assert_called_once_with(
-            "fight_club_min_rounds", forward=True
+            "fight_club.min_rounds", forward=True
         )
 
 
@@ -251,7 +253,7 @@ class TestIncreaseValueWerewolfRevealTime:
         await handler.handle_increase_value("test_serial")
 
         mock_state_manager.game_settings_writer.cycle_variant.assert_called_once_with(
-            "werewolf_reveal_time", forward=True
+            "werewolf.reveal_time_seconds", forward=True
         )
 
 
@@ -291,7 +293,9 @@ class TestDecreaseValueInvincibility:
 
         await handler.handle_decrease_value("test_serial")
 
-        mock_state_manager.game_settings_writer.cycle_variant.assert_called_once_with("invincibility", forward=False)
+        mock_state_manager.game_settings_writer.cycle_variant.assert_called_once_with(
+            "invincibility_seconds", forward=False
+        )
 
 
 class TestShowValueFeedback:
@@ -715,28 +719,28 @@ class TestVariantToValue:
         assert AdminModeHandler._variant_to_value("random_assignment", "off") is False
 
     def test_nonstop_time_limit_unlimited(self):
-        assert AdminModeHandler._variant_to_value("nonstop_time_limit", "unlimited") == 0
+        assert AdminModeHandler._variant_to_value("nonstop.time_limit_seconds", "unlimited") == 0
 
     def test_nonstop_time_limit_five_min(self):
-        assert AdminModeHandler._variant_to_value("nonstop_time_limit", "five_min") == 300
+        assert AdminModeHandler._variant_to_value("nonstop.time_limit_seconds", "five_min") == 300
 
     def test_invincibility_2s(self):
-        assert AdminModeHandler._variant_to_value("invincibility", "2s") == 2.0
+        assert AdminModeHandler._variant_to_value("invincibility_seconds", "2s") == 2.0
 
     def test_invincibility_8s(self):
-        assert AdminModeHandler._variant_to_value("invincibility", "8s") == 8.0
+        assert AdminModeHandler._variant_to_value("invincibility_seconds", "8s") == 8.0
 
     def test_fight_club_min_rounds_five(self):
-        assert AdminModeHandler._variant_to_value("fight_club_min_rounds", "five") == 5
+        assert AdminModeHandler._variant_to_value("fight_club.min_rounds", "five") == 5
 
     def test_fight_club_min_rounds_twenty(self):
-        assert AdminModeHandler._variant_to_value("fight_club_min_rounds", "twenty") == 20
+        assert AdminModeHandler._variant_to_value("fight_club.min_rounds", "twenty") == 20
 
     def test_werewolf_reveal_time_20s(self):
-        assert AdminModeHandler._variant_to_value("werewolf_reveal_time", "20s") == 20.0
+        assert AdminModeHandler._variant_to_value("werewolf.reveal_time_seconds", "20s") == 20.0
 
     def test_werewolf_reveal_time_60s(self):
-        assert AdminModeHandler._variant_to_value("werewolf_reveal_time", "60s") == 60.0
+        assert AdminModeHandler._variant_to_value("werewolf.reveal_time_seconds", "60s") == 60.0
 
     def test_force_all_start_on(self):
         assert AdminModeHandler._variant_to_value("force_all_start", "on") is True
@@ -1066,14 +1070,14 @@ class TestShowValueFeedbackDetails:
     @pytest.mark.asyncio
     async def test_nonstop_unlimited_dim_purple(self, handler, mock_state_manager):
         """nonstop_time_limit=0 (unlimited) should produce dim purple (50, 0, 50)."""
-        await handler._show_value_feedback("test_serial", "nonstop_time_limit", 0)
+        await handler._show_value_feedback("test_serial", "nonstop.time_limit_seconds", 0)
         call_kwargs = mock_state_manager.led.send_game_effect.call_args[1]
         assert call_kwargs["color"] == (50, 0, 50)
 
     @pytest.mark.asyncio
     async def test_nonstop_300_bright_purple(self, handler, mock_state_manager):
         """nonstop_time_limit=300 should produce bright purple (255, 0, 255)."""
-        await handler._show_value_feedback("test_serial", "nonstop_time_limit", 300)
+        await handler._show_value_feedback("test_serial", "nonstop.time_limit_seconds", 300)
         call_kwargs = mock_state_manager.led.send_game_effect.call_args[1]
         assert call_kwargs["color"] == (255, 0, 255)
 

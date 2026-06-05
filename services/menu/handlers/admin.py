@@ -102,20 +102,20 @@ class AdminModeHandler:
             "sensitivity",  # 0-4 (Ultra Slow to Ultra Fast)
             "num_teams",  # 2-6 teams (for Teams, RandomTeams, Traitor)
             "random_assignment",  # True/False for Teams mode
-            "nonstop_time_limit",  # 0=unlimited, 60-300 seconds
-            "invincibility",  # 2.0-8.0 seconds (Tournament, FightClub)
-            "fight_club_min_rounds",  # 5-20 rounds
-            "werewolf_reveal_time",  # 20.0-60.0 seconds
+            "nonstop.time_limit_seconds",  # 0=unlimited, 60-300 seconds
+            "invincibility_seconds",  # 2.0-8.0 seconds (Tournament, FightClub)
+            "fight_club.min_rounds",  # 5-20 rounds
+            "werewolf.reveal_time_seconds",  # 20.0-60.0 seconds
             "force_all_start",  # True/False
         ]
         self.option_colors = [
             Colors.Blue,  # sensitivity
             Colors.Turquoise,  # num_teams
             Colors.Magenta,  # random_assignment
-            Colors.Yellow,  # nonstop_time_limit
-            Colors.Green,  # invincibility
-            Colors.Orange,  # fight_club_min_rounds
-            Colors.Purple,  # werewolf_reveal_time
+            Colors.Yellow,  # nonstop.time_limit_seconds
+            Colors.Green,  # invincibility_seconds
+            Colors.Orange,  # fight_club.min_rounds
+            Colors.Purple,  # werewolf.reveal_time_seconds
             Colors.Orange,  # force_all_start
         ]
 
@@ -653,7 +653,7 @@ class AdminModeHandler:
                 # Check force_all_start from flagd via OpenFeature
                 from lib.feature_flags import get_flag_client
 
-                gs_client = get_flag_client("game_settings")
+                gs_client = get_flag_client("game")
                 force_all = gs_client.get_boolean_value("force_all_start", False)
                 span.set_attribute("force_all_start", force_all)
 
@@ -1068,7 +1068,7 @@ class AdminModeHandler:
             "sensitivity": {"ultra_slow": 0, "slow": 1, "medium": 2, "fast": 3, "ultra_fast": 4},
             "num_teams": {"two": 2, "three": 3, "four": 4, "five": 5, "six": 6},
             "random_assignment": {"on": True, "off": False},
-            "nonstop_time_limit": {
+            "nonstop.time_limit_seconds": {
                 "unlimited": 0,
                 "one_min": 60,
                 "two_min": 120,
@@ -1076,7 +1076,7 @@ class AdminModeHandler:
                 "four_min": 240,
                 "five_min": 300,
             },
-            "invincibility": {
+            "invincibility_seconds": {
                 "2s": 2.0,
                 "3s": 3.0,
                 "4s": 4.0,
@@ -1085,8 +1085,8 @@ class AdminModeHandler:
                 "7s": 7.0,
                 "8s": 8.0,
             },
-            "fight_club_min_rounds": {"five": 5, "ten": 10, "fifteen": 15, "twenty": 20},
-            "werewolf_reveal_time": {
+            "fight_club.min_rounds": {"five": 5, "ten": 10, "fifteen": 15, "twenty": 20},
+            "werewolf.reveal_time_seconds": {
                 "20s": 20.0,
                 "25s": 25.0,
                 "30s": 30.0,
@@ -1138,22 +1138,22 @@ class AdminModeHandler:
                     # Green for True, red for False
                     pulse_color = Colors.Green.value if value else Colors.Red.value
 
-                case "nonstop_time_limit":
+                case "nonstop.time_limit_seconds":
                     # Purple intensity based on time (0=dim, 300=bright)
                     intensity = int(255 * int(value) / 300) if int(value) > 0 else 50
                     pulse_color = (intensity, 0, intensity)
 
-                case "invincibility":
+                case "invincibility_seconds":
                     # Green intensity based on duration (2s=dim, 8s=bright)
                     intensity = int(255 * (float(value) - 2.0) / 6.0)
                     pulse_color = (0, intensity + 50, 0)
 
-                case "fight_club_min_rounds":
+                case "fight_club.min_rounds":
                     # Orange intensity based on rounds (5=dim, 20=bright)
                     intensity = int(255 * (int(value) - 5) / 15)
                     pulse_color = (255, intensity + 50, 0)
 
-                case "werewolf_reveal_time":
+                case "werewolf.reveal_time_seconds":
                     # Purple intensity based on time (20s=dim, 60s=bright)
                     intensity = int(255 * (float(value) - 20.0) / 40.0)
                     pulse_color = (intensity + 50, 0, 255)

@@ -458,8 +458,8 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         try:
             from lib.feature_flags import get_flag_client, init_flag_domain
 
-            init_flag_domain("user_preferences")
-            client = get_flag_client("user_preferences")
+            init_flag_domain("user")
+            client = get_flag_client("user")
             value = client.get_boolean_value("play_audio", True)
             logger.info("play_audio flag loaded at startup: %s", value)
             return value
@@ -476,8 +476,8 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         try:
             from lib.feature_flags import get_flag_client, init_flag_domain
 
-            init_flag_domain("user_preferences")
-            client = get_flag_client("user_preferences")
+            init_flag_domain("user")
+            client = get_flag_client("user")
             voice = client.get_string_value("menu_voice", "ivy")
             if voice in ("aaron", "ivy"):
                 logger.info("menu_voice flag loaded at startup: %s", voice)
@@ -508,7 +508,7 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         try:
             from lib.feature_flags import get_flag_client
 
-            client = get_flag_client("user_preferences")
+            client = get_flag_client("user")
 
             # Check play_audio
             new_audio_enabled = client.get_boolean_value("play_audio", True)
