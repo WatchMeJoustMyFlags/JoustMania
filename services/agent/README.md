@@ -385,6 +385,16 @@ per second. The weighted per-minute budget is enforced downstream by the loop
 | R8 | chaos | movement variance ≈ 0 ("statue") — dormant until producers ship the variance metric | `send_controller_effect` |
 | R9 | chaos | periodic random nudge (injectable rng) | `send_controller_effect` |
 
+**LLM-only interventions (#800).** Five intervention types are fully plumbed
+(flag schema, action-sink mapping, game-side handlers, weight table) but are
+**deliberately not emitted by any rule**: `adjust_volume`, `revive_player`,
+`adjust_global_sensitivity`, `adjust_global_difficulty`, and
+`set_pacing_profile`. They require judgment the deterministic ruleset cannot
+encode (who deserves a revive; when reshaping the whole session's difficulty
+or pacing is socially right) and are reserved for the M4 LLM path. They remain
+reachable today via the permission layer for manual/operator dispatch — they
+are intentionally unreached by `rules_decide`, not dead code.
+
 **Policy constraints** (`policy.*` flags):
 
 - `battery_threshold` (20): players below it lose controller effects and

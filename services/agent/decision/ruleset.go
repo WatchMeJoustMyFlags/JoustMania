@@ -7,6 +7,14 @@ import (
 	"github.com/joustmania/agent/gamecontext"
 )
 
+// LLM-only interventions (#800): adjust_volume, revive_player,
+// adjust_global_sensitivity, adjust_global_difficulty, and set_pacing_profile
+// are deliberately NOT emitted by any rule in this set. They need judgment a
+// deterministic ruleset cannot encode (who deserves a revive; when reshaping
+// session-wide difficulty/pacing is socially right) and are reserved for the
+// M4 LLM path. Adding a rule for one of them is a product decision, not an
+// oversight fix — see services/agent/README.md "LLM-only interventions".
+//
 // candidate is a potential decision produced by a rule, before objective
 // weighting, policy filtering, and budget admission.
 type candidate struct {
