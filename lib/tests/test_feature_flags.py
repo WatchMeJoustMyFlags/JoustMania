@@ -6,7 +6,66 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import lib.feature_flags as ff_module
-from lib.feature_flags import get_flag_client, init_flag_domain
+from lib.feature_flags import (
+    get_flag_client,
+    init_flag_domain,
+    read_float_flag,
+    read_int_flag,
+)
+
+
+def _mock_flag_value(value):
+    """Patch init/get_flag_client so the domain client returns ``value``."""
+    client = MagicMock()
+    client.get_object_value.return_value = value
+    return (
+        patch("lib.feature_flags.init_flag_domain"),
+        patch("lib.feature_flags.get_flag_client", return_value=client),
+    )
+
+
+def test_read_float_flag_returns_numeric():
+    init_p, get_p = _mock_flag_value(3.5)
+    with init_p, get_p:
+        assert read_float_flag("game", "k", 1.0) == 3.5
+    # ints are coerced to float
+    init_p, get_p = _mock_flag_value(7)
+    with init_p, get_p:
+        assert read_float_flag("game", "k", 1.0) == 7.0
+
+
+def test_read_float_flag_rejects_bool_and_nonnumeric():
+    for bad in (True, "x", None, [1.0]):
+        init_p, get_p = _mock_flag_value(bad)
+        with init_p, get_p:
+            assert read_float_flag("game", "k", 1.0) == 1.0
+
+
+def test_read_float_flag_fails_safe_on_exception():
+    with patch("lib.feature_flags.init_flag_domain", side_effect=RuntimeError("boom")):
+        assert read_float_flag("game", "k", 2.5) == 2.5
+
+
+def test_read_int_flag_accepts_int_and_integral_float():
+    init_p, get_p = _mock_flag_value(4)
+    with init_p, get_p:
+        assert read_int_flag("game", "k", 1) == 4
+    # integral float coerced; bool subclass rejected
+    init_p, get_p = _mock_flag_value(6.0)
+    with init_p, get_p:
+        assert read_int_flag("game", "k", 1) == 6
+
+
+def test_read_int_flag_rejects_nonintegral_bool_nonnumeric():
+    for bad in (2.5, True, "x", None):
+        init_p, get_p = _mock_flag_value(bad)
+        with init_p, get_p:
+            assert read_int_flag("game", "k", 9) == 9
+
+
+def test_read_int_flag_fails_safe_on_exception():
+    with patch("lib.feature_flags.init_flag_domain", side_effect=RuntimeError("boom")):
+        assert read_int_flag("game", "k", 3) == 3
 
 
 @patch("lib.feature_flags.FlagdProvider")

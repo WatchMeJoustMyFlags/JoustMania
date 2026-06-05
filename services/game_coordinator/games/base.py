@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any
 from opentelemetry import context as otel_context
 from opentelemetry import trace
 
-from lib.feature_flags import read_object_flag, set_game_transaction_context
+from lib.feature_flags import read_float_flag, read_object_flag, set_game_transaction_context
 from lib.telemetry import inject_trace_context
 from lib.types import GameEvent, Sensitivity, Sound
 from services.game_coordinator import metrics
@@ -202,6 +202,21 @@ def resolve_mode_thresholds(flag_value: dict, default_table: dict) -> dict:
     return {Sensitivity(i): (warning[i], death[i]) for i in range(SENSITIVITY_LEVELS)}
 
 
+def resolve_non_negative_duration(value, default: float) -> float:
+    """
+    Validate a promoted duration flag (#766 F2): finite, numeric, ``>= 0``.
+
+    Durations of exactly ``0`` are allowed (e.g. "no grace", "no spawn
+    protection"); negatives, non-numbers and NaN/inf fall back to ``default``
+    so the promotion stays behavior-neutral.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return default
+    if value != value or value in (float("inf"), float("-inf")):  # NaN / inf
+        return default
+    return float(value) if value >= 0 else default
+
+
 # Warning feedback duration (seconds) - flash + rumble time
 # This is purely visual feedback, NOT protection (player can still die during warning)
 WARNING_DURATION = 0.5
@@ -364,6 +379,14 @@ class BaseGameMode(ABC):
         # difficulty/filter changes "invalidate the variance baseline"). Falls
         # back to the hardcoded default (4.0) when flagd is unavailable.
         self._ema_weight = get_config_manager().read_ema_weight()
+
+        # #766 F2: post-death grace period promoted to ``game.death_grace_period_seconds``.
+        # Read ONCE here (init-frozen); malformed/negative values fall back to the
+        # DEATH_GRACE_PERIOD module constant (the source of truth).
+        self.death_grace_period = resolve_non_negative_duration(
+            read_float_flag("game", "death_grace_period_seconds", DEATH_GRACE_PERIOD),
+            DEATH_GRACE_PERIOD,
+        )
 
         # Phase 70: Music tempo control state
         self.music_track_id = None

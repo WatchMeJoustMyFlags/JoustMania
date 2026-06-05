@@ -19,9 +19,15 @@ from enum import Enum
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
+from lib.feature_flags import read_float_flag
 from lib.types import Sound
 from proto import controller_manager_pb2
-from services.game_coordinator.games.base import BaseGameMode, Phase, Player
+from services.game_coordinator.games.base import (
+    BaseGameMode,
+    Phase,
+    Player,
+    resolve_non_negative_duration,
+)
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -126,6 +132,20 @@ class TournamentGame(BaseGameMode):
         self.match_span: trace.Span | None = None
         # Configurable timing - now passed via config
         self._invincibility_duration: float = invincibility_seconds
+
+        # #766 F2: match duration and inter-match pause promoted to game flags.
+        # Read ONCE here (init-frozen); malformed values fall back to module
+        # constants. A 0s match would break play, so it must be strictly positive;
+        # a 0s inter-match pause is acceptable.
+        match_seconds = resolve_non_negative_duration(
+            read_float_flag("game", "tournament.match_seconds", MATCH_DURATION),
+            MATCH_DURATION,
+        )
+        self._match_duration: float = match_seconds if match_seconds > 0 else MATCH_DURATION
+        self._time_between_matches: float = resolve_non_negative_duration(
+            read_float_flag("game", "tournament.time_between_matches_seconds", TIME_BETWEEN_MATCHES),
+            TIME_BETWEEN_MATCHES,
+        )
 
     def get_game_name(self) -> str:
         """Return game mode identifier."""
@@ -433,7 +453,7 @@ class TournamentGame(BaseGameMode):
         while self.running and not match.is_complete:
             elapsed = time.time() - match_start
 
-            if elapsed >= MATCH_DURATION:
+            if elapsed >= self._match_duration:
                 # Time's up - both survive, random winner
                 match.winner_serial = random.choice([match.player1_serial, match.player2_serial])
                 logger.info(f"Match {match.match_id} timeout - random winner: {match.winner_serial}")
@@ -564,7 +584,7 @@ class TournamentGame(BaseGameMode):
             self.current_match = None
 
             # Pause between matches
-            for _ in range(int(TIME_BETWEEN_MATCHES * 10)):
+            for _ in range(int(self._time_between_matches * 10)):
                 if not self.running:
                     break
                 await asyncio.sleep(0.1)

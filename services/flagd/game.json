@@ -124,6 +124,121 @@
       },
       "defaultVariant": "normal"
     },
+    "death_grace_period_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 0.5,
+        "none": 0.0,
+        "short": 0.25,
+        "long": 1.0
+      },
+      "defaultVariant": "default"
+    },
+    "nonstop.respawn_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 3.0,
+        "fast": 1.5,
+        "slow": 5.0
+      },
+      "defaultVariant": "default"
+    },
+    "nonstop.spawn_protection_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 2.0,
+        "none": 0.0,
+        "long": 4.0
+      },
+      "defaultVariant": "default"
+    },
+    "nonstop.scoring": {
+      "state": "ENABLED",
+      "variants": {
+        "default": {
+          "base": 100,
+          "death_penalty": 10
+        }
+      },
+      "defaultVariant": "default"
+    },
+    "fight_club.round_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 22.0,
+        "short": 15.0,
+        "long": 30.0
+      },
+      "defaultVariant": "default"
+    },
+    "tournament.match_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 22.0,
+        "short": 15.0,
+        "long": 30.0
+      },
+      "defaultVariant": "default"
+    },
+    "tournament.time_between_matches_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 5.0,
+        "short": 3.0,
+        "long": 8.0
+      },
+      "defaultVariant": "default"
+    },
+    "werewolf.werewolf_fraction": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 0.44,
+        "third": 0.33,
+        "half": 0.5
+      },
+      "defaultVariant": "default"
+    },
+    "traitor.count_tiers": {
+      "state": "ENABLED",
+      "variants": {
+        "default": {
+          "tiers": [
+            {"max_players": 5, "count": 1},
+            {"max_players": 8, "count": 2},
+            {"max_players": 11, "count": 3}
+          ],
+          "fallback_divisor": 3
+        }
+      },
+      "defaultVariant": "default"
+    },
+    "zombie.initial_count": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 2,
+        "one": 1,
+        "three": 3
+      },
+      "defaultVariant": "default"
+    },
+    "zombie.respawn_min_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 2.0,
+        "fast": 1.0,
+        "slow": 4.0
+      },
+      "defaultVariant": "default"
+    },
+    "zombie.respawn_max_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 10.0,
+        "fast": 6.0,
+        "slow": 15.0
+      },
+      "defaultVariant": "default"
+    },
     "thresholds": {
       "state": "ENABLED",
       "variants": {
