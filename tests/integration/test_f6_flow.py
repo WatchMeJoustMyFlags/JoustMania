@@ -51,7 +51,6 @@ from tests.integration.test_intervention_flow import (  # noqa: E402
     flag_files,  # re-exported fixture (snapshot/restore interventions.json + agent.json)
     game_client,  # re-exported fixture (game-coordinator client)
     set_interventions_allowed,
-    set_policy_budget,
     write_state,
 )
 
@@ -76,7 +75,8 @@ async def test_global_difficulty_factor_applies_and_reverts(flag_files, docker_c
     of a further applied event (revert).
     """
     set_interventions_allowed("full")  # adjust_global_difficulty is full-only
-    set_policy_budget(50)  # ordering-independent headroom in the shared limiter
+    # Rate-limit headroom is provided suite-wide by the flag_files fixture
+    # (SUITE_RATE_LIMIT_BUDGET in test_intervention_flow); no per-test bump needed.
     await setup_mock_controllers(docker_compose, count=4)
 
     game_client_obj, channel = await get_game_client(docker_compose)
@@ -174,10 +174,8 @@ async def test_pacing_profile_applies_and_reverts(flag_files, docker_compose, ga
     ``test_windows_preset_ladder_resolves_against_live_flagd``.
     """
     set_interventions_allowed("standard")  # set_pacing_profile is in standard+
-    # Two MEDIUM pacing writes plus any residual weight from a preceding test in
-    # the shared 60s rate-limit window: raise the budget for ordering-independent
-    # headroom (the shared limiter is process-global, see set_policy_budget).
-    set_policy_budget(50)
+    # Two MEDIUM pacing writes fit under the suite-wide budget pinned by the
+    # flag_files fixture (SUITE_RATE_LIMIT_BUDGET); no per-test bump needed.
     await setup_mock_controllers(docker_compose, count=4)
 
     game_client_obj, channel = await get_game_client(docker_compose)
