@@ -124,6 +124,17 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 return None
             return self.sessions.get(self._primary_game_id)
 
+    def _resolve_session(self, game_id: str) -> GameSession | None:
+        """Resolve a request game_id to a session (#776).
+
+        Empty game_id => the active primary session (exact legacy semantics).
+        A non-empty game_id => that specific session, or None if unknown.
+        """
+        if not game_id:
+            return self._get_primary_session()
+        with self._sessions_lock:
+            return self.sessions.get(game_id)
+
     @property
     def current_game(self):
         """Primary session's running game instance (back-compat for tests)."""
@@ -212,6 +223,11 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 if game_kind == GAME_KIND_SHADOW:
                     event_bus._state_sync_callback = session.on_event_state_sync
 
+                # Stamp every event published on this bus with this game's id
+                # (#776). The primary bus is persistent, so this mutable field is
+                # set on bind and cleared on retire (see _retire_session).
+                event_bus.current_game_id = game_id
+
                 self.sessions[game_id] = session
                 if game_kind == GAME_KIND_PRIMARY:
                     self._primary_game_id = game_id
@@ -270,11 +286,33 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             self.sessions.pop(game_id, None)
             if self._primary_game_id == game_id:
                 self._primary_game_id = None
+                # The primary bus is persistent and outlives the session; clear
+                # its game_id stamp so post-retire idle events carry empty
+                # game_id (#776). Shadow buses are discarded, no cleanup needed.
+                self.primary_event_bus.current_game_id = ""
 
     async def ForceEndGame(self, request, _context):
-        """Force end the current (primary) game."""
+        """Force end a game (#776).
+
+        ``request.game_id`` selects the target session; empty resolves to the
+        primary session (exact legacy semantics). An unknown game_id returns
+        success=False with a clear error.
+        """
         try:
-            success, error = await self._force_end_current_game(request.reason)
+            game_id = request.game_id or ""
+
+            if not game_id:
+                # Legacy path: end the primary game.
+                success, error = await self._force_end_current_game(request.reason)
+                return game_coordinator_pb2.ForceEndGameResponse(success=success, error=error)
+
+            session = self._resolve_session(game_id)
+            if session is None:
+                return game_coordinator_pb2.ForceEndGameResponse(success=False, error=f"Unknown game_id: {game_id}")
+
+            success, error = await session.force_end(request.reason)
+            if success:
+                self._retire_session(session.game_id)
             return game_coordinator_pb2.ForceEndGameResponse(success=success, error=error)
         except Exception as e:
             logger.error(f"ForceEndGame error: {e}", exc_info=True)
@@ -288,10 +326,14 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         """
         Stream game events in real-time.
 
-        If start_config is provided, starts a new game and subscribes to THAT
-        session's bus (so a headless starter receives its own game's events).
-        Otherwise, subscribes to the persistent primary bus (legacy zero-arg
-        behavior — the menu's subscribe-before-start path).
+        Subscription target (#776):
+        - start_config provided: start a new game and subscribe to THAT session's
+          bus (so a headless starter receives its own game's events). Any
+          request.game_id is ignored in this case.
+        - start_config empty, request.game_id set: subscribe to that game's bus;
+          an unknown game_id yields a ``game_error`` event and closes the stream.
+        - start_config empty, game_id empty: subscribe to the persistent primary
+          bus (legacy zero-arg behavior — the menu's subscribe-before-start path).
         """
         subscriber_id = f"events_{time.time()}"
 
@@ -327,11 +369,26 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             logger.info(f"Game {result} started via stream")
 
             # Subscribe to the bus of the session we just created so a headless
-            # starter receives its own game's events (works without proto
-            # changes; #776 adds explicit game_id routing).
+            # starter receives its own game's events.
             started = self.sessions.get(result)
             if started is not None:
                 event_bus = started.event_bus
+
+        elif request.game_id:
+            # Subscribe-by-game_id (#776): route to that session's bus.
+            span.set_attribute("game.id", request.game_id)
+            session = self._resolve_session(request.game_id)
+            if session is None:
+                logger.warning(f"StreamGameEvents: unknown game_id {request.game_id}")
+                span.set_attribute("error", "unknown_game_id")
+                yield game_coordinator_pb2.GameEvent(
+                    event_type="game_error",
+                    data={"error": f"Unknown game_id: {request.game_id}"},
+                    timestamp=int(time.time() * 1000),
+                    game_id=request.game_id,
+                )
+                return
+            event_bus = session.event_bus
 
         # Subscribe to event bus
         event_queue = await event_bus.subscribe(subscriber_id)
@@ -358,16 +415,67 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
     # State query
     # ------------------------------------------------------------------
 
-    async def GetGameState(self, _request, _context):
-        """
-        Get current (primary) game state for testing and observability.
+    @staticmethod
+    def _build_game_info(session: "GameSession") -> game_coordinator_pb2.GameInfo:
+        """Snapshot a session into a GameInfo proto (#776).
 
-        Returns detailed player information including team assignments,
-        colors, and alive status. Operates on the primary session until game_id
-        routing lands (#776).
+        Shared by GetGameState and ListGames. Acquires the session's state lock
+        so the game_state/players snapshot is consistent.
+        """
+        with session._state_lock:
+            game_info = game_coordinator_pb2.GameInfo(
+                game_mode=session.game_name or "",
+                state=session.game_state,
+                game_id=session.game_id or "",
+                start_time_ms=int((session.game_start_time or 0) * 1000),
+            )
+
+            current_game = session.current_game
+            if current_game and hasattr(current_game, "players"):
+                teams = getattr(current_game, "teams", {})
+
+                for serial, player in current_game.players.items():
+                    team_name = ""
+                    if player.team >= 0 and player.team in teams:
+                        team_name = teams[player.team].name
+
+                    color = player.color if player.color else (0, 0, 0)
+                    r, g, b = color[0], color[1], color[2]
+
+                    player_info = game_coordinator_pb2.PlayerInfo(
+                        serial=serial,
+                        team=player.team,
+                        team_name=team_name,
+                        color=game_coordinator_pb2.RGB(r=r, g=g, b=b),
+                        alive=player.alive,
+                        sensitivity_factor=player.sensitivity_factor,
+                        score=0,  # Score tracking not yet implemented in base Player
+                    )
+                    game_info.players.append(player_info)
+
+        return game_info
+
+    async def GetGameState(self, request, _context):
+        """
+        Get a game's state for testing and observability.
+
+        ``request.game_id`` selects the target session; empty resolves to the
+        primary session (exact legacy semantics). An unknown game_id returns
+        success=False. Returns detailed player information including team
+        assignments, colors, and alive status.
         """
         try:
-            session = self._get_primary_session()
+            game_id = request.game_id or ""
+
+            # Unknown explicit game_id is an error (legacy empty-id idle stays a
+            # success with an IDLE GameInfo).
+            if game_id and self._resolve_session(game_id) is None:
+                return game_coordinator_pb2.GetGameStateResponse(
+                    success=False,
+                    error=f"Unknown game_id: {game_id}",
+                )
+
+            session = self._resolve_session(game_id)
 
             if session is None:
                 game_info = game_coordinator_pb2.GameInfo(
@@ -378,36 +486,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 )
                 return game_coordinator_pb2.GetGameStateResponse(success=True, error="", game_info=game_info)
 
-            with session._state_lock:
-                game_info = game_coordinator_pb2.GameInfo(
-                    game_mode=session.game_name or "",
-                    state=session.game_state,
-                    game_id=session.game_id or "",
-                    start_time_ms=int((session.game_start_time or 0) * 1000),
-                )
-
-                current_game = session.current_game
-                if current_game and hasattr(current_game, "players"):
-                    teams = getattr(current_game, "teams", {})
-
-                    for serial, player in current_game.players.items():
-                        team_name = ""
-                        if player.team >= 0 and player.team in teams:
-                            team_name = teams[player.team].name
-
-                        color = player.color if player.color else (0, 0, 0)
-                        r, g, b = color[0], color[1], color[2]
-
-                        player_info = game_coordinator_pb2.PlayerInfo(
-                            serial=serial,
-                            team=player.team,
-                            team_name=team_name,
-                            color=game_coordinator_pb2.RGB(r=r, g=g, b=b),
-                            alive=player.alive,
-                            sensitivity_factor=player.sensitivity_factor,
-                            score=0,  # Score tracking not yet implemented in base Player
-                        )
-                        game_info.players.append(player_info)
+            game_info = self._build_game_info(session)
 
             logger.debug(
                 f"GetGameState: mode={game_info.game_mode}, state={game_info.state}, players={len(game_info.players)}"
@@ -424,6 +503,25 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 success=False,
                 error=str(e),
             )
+
+    async def ListGames(self, _request, _context):
+        """List all live game sessions (primary + shadow) (#776).
+
+        Returns a GameInfo per registered session so agents and tests can
+        enumerate concurrent games and learn their game_ids.
+        """
+        try:
+            with self._sessions_lock:
+                sessions = list(self.sessions.values())
+
+            response = game_coordinator_pb2.ListGamesResponse(success=True, error="")
+            for session in sessions:
+                response.games.append(self._build_game_info(session))
+            logger.debug(f"ListGames: {len(response.games)} live game(s)")
+            return response
+        except Exception as e:
+            logger.error(f"ListGames error: {e}", exc_info=True)
+            return game_coordinator_pb2.ListGamesResponse(success=False, error=str(e))
 
     # ------------------------------------------------------------------
     # Shutdown
