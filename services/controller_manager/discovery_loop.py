@@ -675,6 +675,7 @@ class DiscoveryLoop:
             metrics.active_controllers.inc()
             metrics.controller_connected.labels(serial=serial).set(1)
             metrics.controller_battery_level.labels(serial=serial).set(battery)
+            metrics.controller_battery_pct.labels(serial=serial).set(metrics.battery_to_pct(battery))
             # Controller info metric with human-readable name (Issue #74)
             # Use actual name from name_manager, fallback to serial suffix
             if name:

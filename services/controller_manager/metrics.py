@@ -12,6 +12,32 @@ from lib.otel_metrics import Counter, Gauge, Histogram
 # Controller health metrics
 controller_battery_level = Gauge("controller_battery_level", "Controller battery level (0-5)", ["serial"])
 
+# Normalized battery percentage (#730, #722 §7). The 0-5 scale above is kept for
+# compatibility; this exposes 0-100 so policy.battery_threshold (expressed in
+# percent) is enforceable and the agent reads one consistent unit.
+controller_battery_pct = Gauge("controller_battery_pct", "Controller battery level (0-100)", ["serial"])
+
+
+def battery_to_pct(battery: float) -> float:
+    """
+    Normalize a controller battery reading to a 0-100 percentage (#730).
+
+    Two sources feed battery values:
+    - The psmoveapi path reports a 0-5 charge level -> multiply by 20.
+    - The Rust HID path (proto/psmove_hid.proto) already reports 0-100 -> pass
+      through unchanged.
+
+    Heuristic: values in the 0-5 range are treated as the coarse scale; anything
+    above 5 is assumed to already be a percentage. Result is clamped to [0, 100].
+
+    Note: charging/unknown sentinel values from psmoveapi (e.g. 0xEE/0xEF, well
+    above 100) clamp to 100, matching the "full if unknown" default used by
+    callers.
+    """
+    pct = battery * 20.0 if battery <= 5 else float(battery)
+    return max(0.0, min(100.0, pct))
+
+
 controller_connected = Gauge(
     "controller_connected", "Controller connection status (0=disconnected, 1=connected)", ["serial"]
 )

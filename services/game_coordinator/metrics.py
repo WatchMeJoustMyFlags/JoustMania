@@ -192,6 +192,30 @@ player_alive = Gauge(
     ["serial"],
 )
 
+# Intervention observability metrics (#730, closes gaps from #722 §7).
+# Continuous per-player signals the intervention rules engine (#726) and the
+# agent fitness functions (#731) read as PromQL instant queries.
+player_movement_variance = Gauge(
+    "game_player_movement_variance",
+    "Rolling-window variance of acceleration magnitude (g^2). "
+    "Near zero indicates a player gaming the EMA by holding still.",
+    ["serial"],
+)
+
+player_skill_level = Gauge(
+    "game_player_skill_level",
+    "Derived player skill level in [0.0, 1.0] (blend of playstyle control and "
+    "motion smoothness). Complements game_player_playstyle.",
+    ["serial"],
+)
+
+player_elimination_order = Gauge(
+    "game_player_elimination_order",
+    "Order in which a player was eliminated (1=first out). Set on elimination; "
+    "makes session.elimination_sequence queryable per game.",
+    ["serial", "game_id"],
+)
+
 # Counters (incremented on events)
 near_death_events_total = Counter(
     "game_near_death_events_total",
@@ -247,12 +271,21 @@ def clear_player_analytics(serial: str, game_id: str = "") -> None:
         player_playstyle.remove(serial)
 
     with suppress(KeyError, ValueError):
+        player_movement_variance.remove(serial)
+
+    with suppress(KeyError, ValueError):
+        player_skill_level.remove(serial)
+
+    with suppress(KeyError, ValueError):
         player_alive.remove(serial)
 
-    # peak_accel has both serial and game_id labels
+    # peak_accel and elimination_order have both serial and game_id labels
     if game_id:
         with suppress(KeyError, ValueError):
             player_peak_accel.remove(serial, game_id)
+
+        with suppress(KeyError, ValueError):
+            player_elimination_order.remove(serial, game_id)
 
 
 def clear_all_player_analytics() -> None:
@@ -270,8 +303,14 @@ def clear_all_player_analytics() -> None:
     player_movement_zone._values.clear()
     player_playstyle._metrics.clear()
     player_playstyle._values.clear()
+    player_movement_variance._metrics.clear()
+    player_movement_variance._values.clear()
+    player_skill_level._metrics.clear()
+    player_skill_level._values.clear()
     player_peak_accel._metrics.clear()
     player_peak_accel._values.clear()
+    player_elimination_order._metrics.clear()
+    player_elimination_order._values.clear()
     player_alive._metrics.clear()
     player_alive._values.clear()
     # Reset game state gauges to 0 to indicate no game running
@@ -280,6 +319,20 @@ def clear_all_player_analytics() -> None:
     effective_warning_threshold.set(0)
     effective_death_threshold.set(0)
 
+
+# Agent intervention audit metric (#730, #722 §7).
+# Incremented by the flag-application layer in a later PR (PR C) for every agent
+# intervention attempt — applied or blocked. Also feeds the weighted rate limiter
+# (#722 §5) and the #731 fitness functions. Defined here now so the metric name
+# exists in the registry; zero usages in this PR is intentional.
+#   type:      intervention identifier (e.g. 'adjust_player_sensitivity', 'grant_shield')
+#   objective: active session objective ('endurance'/'balanced'/'accelerate'/'chaos')
+#   blocked:   'true' if rejected by policy/permission enforcement, else 'false'
+interventions_total = Counter(
+    "game_interventions_total",
+    "Total agent intervention attempts (applied or blocked by policy)",
+    ["type", "objective", "blocked"],
+)
 
 # EventBus stream health metrics (Issue #337)
 event_bus_publish_drops_total = Counter(

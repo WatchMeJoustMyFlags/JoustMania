@@ -249,6 +249,10 @@ class BaseGameMode(ABC):
         self.change_time = 0.0  # Time of next tempo change
         self.music_loop_task = None
         self.dead_count = 0  # Track deaths for tempo timing
+        # Elimination ordering for game_player_elimination_order metric (#730).
+        # Incremented on each kill; the value at kill time is the player's order
+        # index (1 = first eliminated). In respawn modes this counts each death.
+        self._elimination_count = 0
         self.gameplay_span: trace.Span | None = None  # Reference for span events
         self.gameplay_span_context = None  # Context for child spans in background tasks
         self._players_span: trace.Span | None = None  # Parent span grouping all player lifecycles
@@ -933,6 +937,9 @@ class BaseGameMode(ABC):
             metrics.player_movement_zone.labels(serial=serial).set(zone.value)
             metrics.player_peak_accel.labels(serial=serial, game_id=self.game_id).set(player.analytics.peak_accel)
             metrics.player_playstyle.labels(serial=serial).set(player.analytics.get_playstyle().value)
+            # Intervention observability signals (#730 / #722 §7)
+            metrics.player_movement_variance.labels(serial=serial).set(player.analytics.windowed_variance)
+            metrics.player_skill_level.labels(serial=serial).set(player.analytics.get_skill_level())
 
         # Record to histogram for distribution analysis
         metrics.accel_distribution.labels(game_mode=self.get_game_name()).observe(accel_mag)
@@ -1161,6 +1168,11 @@ class BaseGameMode(ABC):
         metrics.player_alive.labels(serial=serial).set(0)
         alive_count = len([p for p in self.players.values() if p.alive])
         metrics.players_alive.set(alive_count)
+
+        # Record elimination order (1 = first out) for #730 / #722 §7.
+        # Makes session.elimination_sequence queryable per game.
+        self._elimination_count += 1
+        metrics.player_elimination_order.labels(serial=serial, game_id=self.game_id).set(self._elimination_count)
 
         # Extract trace context BEFORE _kill_player_impl() which may close the span.
         # This ensures the death effect and sound are parented to the player_lifecycle

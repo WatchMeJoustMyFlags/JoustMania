@@ -20,9 +20,16 @@ import json
 import logging
 import math
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import TYPE_CHECKING
+
+# Rolling-window size for windowed movement variance (#730 / #722 §7).
+# Fixed for now; a policy flag (policy.movement_variance_window) will configure
+# this later. At ~60Hz this is roughly the last ~1s of motion, enough to
+# distinguish steady jostling from someone gaming the EMA by holding still.
+MOVEMENT_VARIANCE_WINDOW = 64
 
 if TYPE_CHECKING:
     from services.game_coordinator.runtime_config import AnalyticsConfig
@@ -111,6 +118,11 @@ class PlayerAnalytics:
     _mean: float = 0.0
     _m2: float = 0.0  # Sum of squared differences from mean
 
+    # Rolling window of recent accel magnitudes for windowed variance (#730).
+    # Kept separate from the cumulative Welford stats above: the cumulative
+    # variance is a whole-game summary, while this reflects only recent motion.
+    _accel_window: deque[float] = field(default_factory=lambda: deque(maxlen=MOVEMENT_VARIANCE_WINDOW))
+
     # Replay buffer (if enabled)
     replay_samples: list[ReplaySample] = field(default_factory=list)
 
@@ -159,6 +171,9 @@ class PlayerAnalytics:
         self._mean += delta / self.sample_count
         delta2 = raw_accel_mag - self._mean
         self._m2 += delta * delta2
+
+        # Rolling window for windowed variance (deque auto-evicts oldest sample)
+        self._accel_window.append(raw_accel_mag)
 
         # Gyro tracking (optional)
         if config.track_gyro:
@@ -233,6 +248,24 @@ class PlayerAnalytics:
         return math.sqrt(self._m2 / (self.sample_count - 1))
 
     @property
+    def windowed_variance(self) -> float:
+        """
+        Sample variance of accel magnitude over the rolling window (#730).
+
+        Unlike ``std_deviation`` (cumulative over the whole game via Welford),
+        this reflects only the most recent ``MOVEMENT_VARIANCE_WINDOW`` samples,
+        so it tracks current behavior — e.g. it drops toward zero when a player
+        games the EMA by holding the controller perfectly still.
+
+        Returns 0.0 until at least two samples are present.
+        """
+        n = len(self._accel_window)
+        if n < 2:
+            return 0.0
+        mean = sum(self._accel_window) / n
+        return sum((x - mean) ** 2 for x in self._accel_window) / (n - 1)
+
+    @property
     def total_time_ms(self) -> int:
         """Total tracked time in milliseconds."""
         return self.time_still_ms + self.time_active_ms + self.time_warning_ms + self.time_danger_ms
@@ -271,6 +304,46 @@ class PlayerAnalytics:
             return Playstyle.BALANCED
         return Playstyle.ACTIVE
 
+    def get_skill_level(self) -> float:
+        """
+        Derive a normalized skill level in [0.0, 1.0] from existing signals (#730).
+
+        The game has no virtual health or kills, so "skill" is the ability to
+        survive — i.e. to move enough to stay engaged while keeping motion under
+        the death threshold. We blend two existing, cheap signals:
+
+        - **playstyle control** (60%): the existing ``get_playstyle`` proxy. A
+          balanced/active player who avoids the danger zone is more skilled than
+          one who is either frozen (CALM) or reckless (AGGRESSIVE). Mapped so the
+          middle styles score highest:
+          CALM=0.4, BALANCED=1.0, ACTIVE=0.7, AGGRESSIVE=0.2.
+        - **motion smoothness** (40%): low rolling-window variance means steady,
+          deliberate control rather than erratic jerks. Mapped from
+          ``windowed_variance`` through a soft falloff so 0 variance → 1.0 and
+          high variance → 0.0.
+
+        Returns 0.0 before any samples are recorded (no signal yet). The blend
+        is intentionally simple and fully bounded; a richer model (survival
+        percentile across players, warnings-survived ratio) can replace it later
+        without changing the metric contract.
+        """
+        if self.sample_count == 0:
+            return 0.0
+
+        playstyle_skill = {
+            Playstyle.CALM: 0.4,
+            Playstyle.BALANCED: 1.0,
+            Playstyle.ACTIVE: 0.7,
+            Playstyle.AGGRESSIVE: 0.2,
+        }[self.get_playstyle()]
+
+        # Soft falloff: variance of ~0.25 g² (a fairly jerky player) halves the
+        # smoothness score; clamps keep the result in [0, 1].
+        smoothness = 1.0 / (1.0 + self.windowed_variance * 4.0)
+
+        skill = 0.6 * playstyle_skill + 0.4 * smoothness
+        return max(0.0, min(1.0, skill))
+
     def get_summary(self) -> dict:
         """
         Get complete analytics summary for this player.
@@ -304,6 +377,7 @@ class PlayerAnalytics:
             # Classification
             "playstyle": playstyle.name.lower(),
             "playstyle_value": playstyle.value,
+            "skill_level": round(self.get_skill_level(), 3),
         }
 
     def export_replay_json(self) -> str:

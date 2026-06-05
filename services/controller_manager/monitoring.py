@@ -48,6 +48,8 @@ class ControllerMonitoring:
 
                 # Update battery metric (Phase 38)
                 metrics.controller_battery_level.labels(serial=serial).set(battery)
+                # Normalized 0-100 percentage (#730)
+                metrics.controller_battery_pct.labels(serial=serial).set(metrics.battery_to_pct(battery))
 
             except Exception as e:
                 logger.error(f"Error checking battery for {serial}: {e}")
