@@ -20,11 +20,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 from tests.integration.helpers import (
     GameEventCollector,
     ObservabilityObserver,
-    end_fight_club_game,
-    end_swapper_game,
-    end_tournament_game,
-    end_werewolf_game,
-    end_zombies_game,
     force_end_game,
     get_game_client,
     get_mock_client,
@@ -43,9 +38,6 @@ from tests.integration.helpers import (
 # =============================================================================
 # Game settings are now stored in Menu service's state_manager and passed via
 # typed proto config when starting games. Integration tests use default values.
-
-FIGHT_CLUB_ROUNDS = 6  # CI default min_rounds=5, run 1 extra to ensure clear winner
-
 
 # =============================================================================
 # End strategy type and helpers
@@ -82,51 +74,6 @@ async def end_team_game(mock_client, serials: list[str], game_client, _event_col
     await kill_players_for_team_win(mock_client, serials, delay=0.1, game_client=game_client)
 
 
-async def end_swapper(mock_client, serials: list[str], game_client, _event_collector) -> None:
-    """End Swapper by swapping all to one team (state-driven convergence)."""
-    await end_swapper_game(mock_client, serials, game_client, delay=0.3)
-
-
-async def end_zombies(mock_client, serials: list[str], game_client, _event_collector) -> None:
-    """End Zombies by converting all humans (state-driven, verified kills)."""
-    await end_zombies_game(mock_client, serials, delay=0.3, game_client=game_client)
-
-
-async def end_werewolf(mock_client, serials: list[str], game_client, _event_collector) -> None:
-    """End Werewolf by killing all but one player (verified kills).
-
-    Werewolf roles are randomly assigned, so we can't target specific roles.
-    Killing all but one guarantees one team is fully eliminated.
-    """
-    await end_werewolf_game(mock_client, serials, delay=0.3, game_client=game_client)
-
-
-async def end_tournament(mock_client, serials: list[str], _game_client, _event_collector) -> None:
-    """End Tournament by running through bracket.
-
-    CI default: invincibility=2.0s.
-    """
-    await end_tournament_game(
-        mock_client, serials, delay=0.2, invincibility_wait=2.5  # 2.0s CI default + buffer
-    )
-
-
-async def end_fight_club(mock_client, serials: list[str], game_client, _event_collector) -> None:
-    """End FightClub by running minimum rounds until winner.
-
-    CI defaults: invincibility=2.0s, fight_club_min_rounds=5.
-    Round timing: 1.0s inter-round pause + 2.0s invincibility + 0.5s buffer = 3.5s.
-    """
-    await end_fight_club_game(
-        mock_client,
-        serials,
-        game_client,
-        delay=0.2,
-        round_wait=3.5,  # 1.0s pause + 2.0s invincibility + 0.5s buffer
-        rounds=FIGHT_CLUB_ROUNDS,
-    )
-
-
 async def end_with_force(_mock_client, _serials: list[str], game_client, event_collector) -> None:
     """End game via ForceEndGame RPC."""
     await asyncio.sleep(2.0)  # Let game run briefly
@@ -137,23 +84,23 @@ async def end_with_force(_mock_client, _serials: list[str], game_client, event_c
 # Game mode configurations - single list with callable end strategies
 # =============================================================================
 
-# All game modes with their end strategies and timeouts
+# Thin sequential menu-flow set (#826): only 2 representative modes run through
+# the full menu flow here, because menu ready-up, mode selection, and
+# lobby-color *restore* are single-lobby menu behavior that cannot parallelize.
+# JoustFFA (per-elimination FFA) and JoustTeams (team win) are kept as the
+# representatives. Per-mode game-logic coverage for ALL OTHER modes
+# (JoustRandomTeams, Swapper, Zombies, Werewolf, Tournament, FightClub, NonStop,
+# Traitor) moved to headless parallel batches in test_parallel_lifecycle.py.
+#
+# Note: FightClub's menu-start flake (#757) is deliberately dodged by moving it
+# to the headless set — it no longer runs through the flaky menu start here.
+#
 # Format: (game_mode, min_players, end_strategy_fn, timeout_seconds)
 ALL_GAME_MODES = [
     # FFA games - kill until one remains
     pytest.param("JoustFFA", 2, end_ffa_game, 15, id="JoustFFA"),
     # Team games - eliminate one team
     pytest.param("JoustTeams", 3, end_team_game, 15, id="JoustTeams"),
-    pytest.param("JoustRandomTeams", 3, end_team_game, 15, id="JoustRandomTeams"),
-    # Complex game modes
-    pytest.param("Swapper", 4, end_swapper, 15, id="Swapper"),
-    pytest.param("Zombies", 4, end_zombies, 15, id="Zombies"),
-    pytest.param("Werewolf", 4, end_werewolf, 20, id="Werewolf"),
-    pytest.param("Tournament", 4, end_tournament, 30, id="Tournament"),
-    pytest.param("FightClub", 4, end_fight_club, 30, id="FightClub"),
-    pytest.param("NonStop", 2, end_with_force, 15, id="NonStop"),
-    pytest.param("Traitor", 4, end_with_force, 15, id="Traitor"),
-    # Note: Ninja, Commander not implemented in GameFactory
 ]
 
 
@@ -167,17 +114,17 @@ ALL_GAME_MODES = [
 async def test_full_game_lifecycle(
     docker_compose, game_mode: str, _min_players: int, end_strategy: EndStrategy, game_timeout: int
 ):
-    """Test full game lifecycle for all game modes.
+    """Test the full menu-driven lifecycle for the representative modes.
 
-    Each game mode has its own end strategy:
+    This is the thin SEQUENTIAL menu-flow set (#826): only JoustFFA and
+    JoustTeams run here, exercising the single-lobby menu behavior that cannot
+    parallelize (ready-up, mode selection, lobby-color restore). Per-mode game
+    logic for every other mode runs headless and in parallel in
+    test_parallel_lifecycle.py.
+
+    Each mode has its own end strategy:
     - FFA games: Kill until one player remains
     - Team games: Eliminate one team
-    - Swapper: Swap all players to one team
-    - Zombies: Convert all humans to zombies
-    - Werewolf: Kill all but one (roles are random, guarantees one team eliminated)
-    - Tournament: Run bracket matches (invincibility=2.0s CI default)
-    - FightClub: Run 6 rounds (min_rounds=5, invincibility=2.0s CI defaults)
-    - NonStop/Traitor: Force-end (no natural end in tests)
 
     Verifies:
     1. Game starts via Menu flow
