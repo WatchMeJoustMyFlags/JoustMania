@@ -31,6 +31,11 @@ import (
 	"strconv"
 	"sync"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	otelmetric "go.opentelemetry.io/otel/metric"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
+
 	"github.com/joustmania/agent/decision"
 )
 
@@ -65,6 +70,17 @@ const (
 // INTERVENTIONS_FLAG_PATH.
 const DefaultPath = "/etc/flagd/interventions.json"
 
+// meterName scopes the Writer's OTel instruments.
+const meterName = "github.com/joustmania/agent/actions"
+
+// Result label values for agent_intervention_writes_total. Cardinality is
+// bounded to these two values (no error strings) to keep label cardinality low
+// per .claude/rules/development.md.
+const (
+	resultOK    = "ok"
+	resultError = "error"
+)
+
 // Per-intervention defaults used when a Decision carries no explicit Value. The
 // rules engine (#726) leaves Value empty today, so these are the contract.
 const (
@@ -86,6 +102,11 @@ type Writer struct {
 	log   *slog.Logger
 	nonce *nonceGen
 
+	// writes counts flag-write outcomes (agent_intervention_writes_total),
+	// labeled result=ok|error. Sourced from the global meter provider so it is a
+	// no-op recorder until initMetrics wires the OTLP exporter.
+	writes otelmetric.Int64Counter
+
 	mu sync.Mutex
 }
 
@@ -98,7 +119,28 @@ func NewWriter(path string, log *slog.Logger) *Writer {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Writer{path: path, log: log, nonce: newNonceGen()}
+	return &Writer{
+		path:   path,
+		log:    log,
+		nonce:  newNonceGen(),
+		writes: newWritesCounter(otel.GetMeterProvider()),
+	}
+}
+
+// newWritesCounter builds the agent_intervention_writes_total counter from the
+// given meter provider. An instrument-creation error yields a no-op counter so
+// the Writer always has a usable instrument.
+func newWritesCounter(mp otelmetric.MeterProvider) otelmetric.Int64Counter {
+	c, err := mp.Meter(meterName).Int64Counter(
+		"agent_intervention_writes_total",
+		otelmetric.WithDescription("Total intervention flag-file writes by the agent ActionSink, labeled by outcome"),
+	)
+	if err != nil {
+		// Int64Counter only errors on bad config; fall back to a no-op so callers
+		// never have to nil-check.
+		c, _ = metricnoop.NewMeterProvider().Meter(meterName).Int64Counter("agent_intervention_writes_total")
+	}
+	return c
 }
 
 // NewWriterFromEnv builds a Writer using INTERVENTIONS_FLAG_PATH (default
@@ -109,15 +151,27 @@ func NewWriterFromEnv(log *slog.Logger) *Writer {
 
 // Apply implements decision.ActionSink: it maps the decision's intervention type
 // to a flag mutation and rewrites the interventions file in place.
-func (w *Writer) Apply(_ context.Context, d decision.Decision) error {
+func (w *Writer) Apply(ctx context.Context, d decision.Decision) error {
 	if err := w.edit(func(doc *orderedDoc) error { return w.mutate(doc, d) }); err != nil {
+		w.recordWrite(ctx, resultError)
+		w.log.Error("agent.action_write_failed",
+			"intervention", d.Intervention,
+			"target_serial", d.TargetSerial,
+			"path", w.path,
+			"error", err)
 		return err
 	}
+	w.recordWrite(ctx, resultOK)
 	w.log.Debug("agent.action_written",
 		"intervention", d.Intervention,
 		"target_serial", d.TargetSerial,
 		"path", w.path)
 	return nil
+}
+
+// recordWrite increments agent_intervention_writes_total for one Apply outcome.
+func (w *Writer) recordWrite(ctx context.Context, result string) {
+	w.writes.Add(ctx, 1, otelmetric.WithAttributes(attribute.String("result", result)))
 }
 
 // edit runs one read-modify-write cycle under the process mutex: read the file,
