@@ -21,7 +21,7 @@ from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
 from lib.colors import Colors
-from lib.feature_flags import read_object_flag
+from lib.feature_flags import read_float_flag, read_int_flag, read_object_flag
 from lib.types import Sound
 from proto import controller_manager_pb2
 from services.game_coordinator.games.base import (
@@ -31,6 +31,7 @@ from services.game_coordinator.games.base import (
     Player,
     Sensitivity,
     resolve_mode_thresholds,
+    resolve_non_negative_duration,
 )
 
 logger = logging.getLogger(__name__)
@@ -129,6 +130,27 @@ class ZombieGame(BaseGameMode):
             read_object_flag("game", "zombie.thresholds", {}), ZOMBIE_THRESHOLDS
         )
 
+        # #766 F2: initial zombie count and respawn delay window promoted to game
+        # flags. Read ONCE here (init-frozen); malformed values fall back to the
+        # module constants. ``initial_count`` must be a positive int; respawn
+        # bounds are non-negative and the min must not exceed the max (else both
+        # fall back together to preserve a sane window).
+        initial = read_int_flag("game", "zombie.initial_count", INITIAL_ZOMBIES)
+        self.initial_zombies = initial if isinstance(initial, int) and initial >= 1 else INITIAL_ZOMBIES
+
+        respawn_min = resolve_non_negative_duration(
+            read_float_flag("game", "zombie.respawn_min_seconds", ZOMBIE_RESPAWN_MIN),
+            ZOMBIE_RESPAWN_MIN,
+        )
+        respawn_max = resolve_non_negative_duration(
+            read_float_flag("game", "zombie.respawn_max_seconds", ZOMBIE_RESPAWN_MAX),
+            ZOMBIE_RESPAWN_MAX,
+        )
+        if respawn_min > respawn_max:
+            respawn_min, respawn_max = ZOMBIE_RESPAWN_MIN, ZOMBIE_RESPAWN_MAX
+        self.zombie_respawn_min = respawn_min
+        self.zombie_respawn_max = respawn_max
+
         self.zombie_serials: list[str] = []
         self.human_serials: list[str] = []
         self.game_duration: float = 180.0  # Will be calculated based on player count
@@ -153,7 +175,7 @@ class ZombieGame(BaseGameMode):
 
         # Randomly select initial zombies
         serials = [c.serial for c in controllers]
-        num_zombies = min(INITIAL_ZOMBIES, num_players - 1)  # At least 1 human
+        num_zombies = min(self.initial_zombies, num_players - 1)  # At least 1 human
         zombie_serials = set(random.sample(serials, num_zombies))
 
         for controller in controllers:
@@ -365,7 +387,7 @@ class ZombieGame(BaseGameMode):
         if zombie_player.is_zombie:
             # Zombie killed - set respawn timer
             zombie_player.alive = False
-            respawn_delay = random.uniform(ZOMBIE_RESPAWN_MIN, ZOMBIE_RESPAWN_MAX)
+            respawn_delay = random.uniform(self.zombie_respawn_min, self.zombie_respawn_max)
             zombie_player.respawn_until = time.time() + respawn_delay
 
             logger.info(f"Zombie {serial} killed, respawning in {respawn_delay:.1f}s")

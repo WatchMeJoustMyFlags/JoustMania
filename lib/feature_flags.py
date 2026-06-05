@@ -208,6 +208,73 @@ def read_object_flag(domain: str, flag_key: str, default: dict) -> dict:
         return default
 
 
+def read_float_flag(domain: str, flag_key: str, default: float) -> float:
+    """
+    Read a number-typed flag once at init time, with a hardcoded fallback.
+
+    Init-frozen scalar sibling of :func:`read_object_flag` (#766 F2): the value
+    is fetched once (e.g. in a game mode ``__init__``) and never re-evaluated
+    mid-game. The domain is initialized lazily on first use. On ANY failure
+    (provider not ready, missing flag, evaluation error, non-numeric value) the
+    supplied ``default`` is returned so the promotion stays behavior-neutral.
+
+    Note: range/sanity validation is the caller's responsibility (it owns the
+    semantics, e.g. "positive duration" or "fraction in (0,1)").
+
+    Args:
+        domain: OpenFeature domain / flagSetId (e.g. "game")
+        flag_key: Number flag key (e.g. "death_grace_period_seconds")
+        default: Fallback value returned on any error or missing flag
+
+    Returns:
+        The flag's float value, or ``default`` on failure.
+    """
+    try:
+        init_flag_domain(domain)
+        client = get_flag_client(domain)
+        value = client.get_object_value(flag_key, default, EvaluationContext())
+        # bool is a subclass of int/float; reject it as a numeric flag value.
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return default
+        return float(value)
+    except Exception as e:
+        logger.warning(f"read_float_flag({domain!r}, {flag_key!r}) failed, using default: {e}")
+        return default
+
+
+def read_int_flag(domain: str, flag_key: str, default: int) -> int:
+    """
+    Read an integer-typed flag once at init time, with a hardcoded fallback.
+
+    Init-frozen scalar sibling of :func:`read_object_flag` (#766 F2). Same
+    semantics as :func:`read_float_flag` but coerces to ``int``; non-integral
+    numeric values (e.g. 2.5) are rejected in favour of the default to avoid
+    surprising truncation. Range/sanity validation is the caller's job.
+
+    Args:
+        domain: OpenFeature domain / flagSetId (e.g. "game")
+        flag_key: Integer flag key (e.g. "zombie.initial_count")
+        default: Fallback value returned on any error or missing flag
+
+    Returns:
+        The flag's int value, or ``default`` on failure.
+    """
+    try:
+        init_flag_domain(domain)
+        client = get_flag_client(domain)
+        value = client.get_object_value(flag_key, default, EvaluationContext())
+        if isinstance(value, bool):
+            return default
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float) and value.is_integer():
+            return int(value)
+        return default
+    except Exception as e:
+        logger.warning(f"read_int_flag({domain!r}, {flag_key!r}) failed, using default: {e}")
+        return default
+
+
 def set_game_transaction_context(
     game_mode: str,
     controller_count: int,

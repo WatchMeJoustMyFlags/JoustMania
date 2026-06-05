@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
+from lib.feature_flags import read_object_flag
 from lib.types import Sound
 from proto import controller_manager_pb2
 from services.game_coordinator.games.base import Player
@@ -24,6 +25,55 @@ from services.game_coordinator.games.teams_base import TeamsGameBase
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
+
+# Traitor count tiers (source-of-truth defaults, #766 F2).
+# Ordered ascending by ``max_players``: the first tier whose ``max_players`` is
+# >= the player count decides the traitor count; beyond the last tier the count
+# is ``num_players // fallback_divisor``.
+DEFAULT_TRAITOR_COUNT_TIERS = [
+    {"max_players": 5, "count": 1},
+    {"max_players": 8, "count": 2},
+    {"max_players": 11, "count": 3},
+]
+DEFAULT_TRAITOR_FALLBACK_DIVISOR = 3
+
+
+def resolve_count_tiers(flag_value, default_tiers: list, default_divisor: int) -> tuple[list, int]:
+    """
+    Validate the ``traitor.count_tiers`` object flag -> ``(tiers, fallback_divisor)``.
+
+    A well-formed flag carries a ``tiers`` list of ``{max_players, count}`` dicts
+    (positive ints, strictly ascending ``max_players``) and a positive integer
+    ``fallback_divisor``. On ANY malformed component the hardcoded defaults are
+    returned, keeping role assignment behavior-neutral (#766 F2).
+    """
+    if not isinstance(flag_value, dict):
+        return default_tiers, default_divisor
+
+    raw_tiers = flag_value.get("tiers")
+    divisor = flag_value.get("fallback_divisor")
+
+    if isinstance(divisor, bool) or not isinstance(divisor, int) or divisor <= 0:
+        return default_tiers, default_divisor
+
+    if not isinstance(raw_tiers, list) or not raw_tiers:
+        return default_tiers, default_divisor
+
+    tiers: list[dict] = []
+    prev_max = 0
+    for entry in raw_tiers:
+        if not isinstance(entry, dict):
+            return default_tiers, default_divisor
+        max_players = entry.get("max_players")
+        count = entry.get("count")
+        if isinstance(max_players, bool) or not isinstance(max_players, int) or max_players <= prev_max:
+            return default_tiers, default_divisor
+        if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+            return default_tiers, default_divisor
+        tiers.append({"max_players": max_players, "count": count})
+        prev_max = max_players
+
+    return tiers, divisor
 
 
 @dataclass
@@ -93,6 +143,15 @@ class TraitorGame(TeamsGameBase):
 
         self.traitor_serials: list[str] = []
 
+        # #766 F2: traitor count tiers promoted to ``game.traitor.count_tiers``.
+        # Read ONCE here (init-frozen); malformed values fall back to the module
+        # defaults (the source of truth).
+        self._count_tiers, self._count_fallback_divisor = resolve_count_tiers(
+            read_object_flag("game", "traitor.count_tiers", {}),
+            DEFAULT_TRAITOR_COUNT_TIERS,
+            DEFAULT_TRAITOR_FALLBACK_DIVISOR,
+        )
+
     def get_game_name(self) -> str:
         """Return game mode identifier."""
         return "Traitor"
@@ -101,19 +160,21 @@ class TraitorGame(TeamsGameBase):
         """
         Determine number of traitors based on player count.
 
+        Walks the resolved count tiers ascending: the first tier whose
+        ``max_players`` covers ``num_players`` wins; beyond the last tier the
+        count is ``num_players // fallback_divisor`` (#766 F2). With the default
+        tiers this reproduces the original 1/2/3/``//3`` behavior.
+
         Args:
             num_players: Total number of players
 
         Returns:
             Number of traitors to assign
         """
-        if num_players <= 5:
-            return 1
-        if num_players <= 8:
-            return 2
-        if num_players <= 11:
-            return 3
-        return num_players // 3
+        for tier in self._count_tiers:
+            if num_players <= tier["max_players"]:
+                return tier["count"]
+        return num_players // self._count_fallback_divisor
 
     async def _initialize_players_impl(self, controllers: list):
         """

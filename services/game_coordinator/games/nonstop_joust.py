@@ -19,9 +19,15 @@ from dataclasses import dataclass
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
+from lib.feature_flags import read_float_flag, read_object_flag
 from lib.types import GameEvent, Sound
 from services.game_coordinator.games.analytics import PlayerAnalytics
-from services.game_coordinator.games.base import BaseGameMode, Phase, Player
+from services.game_coordinator.games.base import (
+    BaseGameMode,
+    Phase,
+    Player,
+    resolve_non_negative_duration,
+)
 from services.game_coordinator.runtime_config import get_config_manager
 
 tracer = trace.get_tracer(__name__)
@@ -31,6 +37,31 @@ logger = logging.getLogger(__name__)
 # UPDATE_FREQUENCY is now read from runtime_config (Phase 43)
 RESPAWN_DURATION = 3.0  # seconds to respawn
 SPAWN_PROTECTION_DURATION = 2.0  # seconds of invulnerability after spawn
+
+# Final-score formula: score = max(0, SCORE_BASE - deaths * SCORE_DEATH_PENALTY)
+SCORE_BASE = 100  # starting score with zero deaths
+SCORE_DEATH_PENALTY = 10  # points lost per death
+
+
+def resolve_scoring(flag_value, default_base: int, default_penalty: int) -> tuple[int, int]:
+    """
+    Validate the ``nonstop.scoring`` object flag -> ``(base, death_penalty)``.
+
+    Both entries must be non-negative integers; on any malformed value the
+    hardcoded module constants are used, keeping the promotion behavior-neutral
+    (#766 F2).
+    """
+    if not isinstance(flag_value, dict):
+        return default_base, default_penalty
+
+    def _non_neg_int(value, default: int) -> int:
+        if isinstance(value, bool) or not isinstance(value, int):
+            return default
+        return value if value >= 0 else default
+
+    base = _non_neg_int(flag_value.get("base"), default_base)
+    penalty = _non_neg_int(flag_value.get("death_penalty"), default_penalty)
+    return base, penalty
 
 
 @dataclass
@@ -104,6 +135,23 @@ class NonstopJoustGame(BaseGameMode):
         # Nonstop-specific settings - now passed via config
         self.time_limit = time_limit_seconds  # 0 = unlimited, otherwise seconds
         self.players: dict[str, NonstopPlayer] = {}  # Override type hint
+
+        # #766 F2: respawn/spawn-protection durations and scoring weights promoted
+        # to game flags. Read ONCE here (init-frozen); malformed values fall back
+        # to the module constants (the source of truth).
+        self.respawn_duration = resolve_non_negative_duration(
+            read_float_flag("game", "nonstop.respawn_seconds", RESPAWN_DURATION),
+            RESPAWN_DURATION,
+        )
+        self.spawn_protection_duration = resolve_non_negative_duration(
+            read_float_flag("game", "nonstop.spawn_protection_seconds", SPAWN_PROTECTION_DURATION),
+            SPAWN_PROTECTION_DURATION,
+        )
+        self.score_base, self.score_death_penalty = resolve_scoring(
+            read_object_flag("game", "nonstop.scoring", {}),
+            SCORE_BASE,
+            SCORE_DEATH_PENALTY,
+        )
 
     def get_game_name(self) -> str:
         """Return game mode identifier."""
@@ -212,7 +260,7 @@ class NonstopJoustGame(BaseGameMode):
         player.alive = False
         player.deaths += 1
         player.current_streak = 0
-        player.respawn_timer = RESPAWN_DURATION
+        player.respawn_timer = self.respawn_duration
 
         logger.info(f"Player died: {serial} (kills: {player.kills}, deaths: {player.deaths}, score: {player.score})")
 
@@ -409,7 +457,7 @@ class NonstopJoustGame(BaseGameMode):
         player = self.players[serial]
         player.alive = True
         player.spawn_protected = True
-        player.spawn_protection_end = time.time() + SPAWN_PROTECTION_DURATION
+        player.spawn_protection_end = time.time() + self.spawn_protection_duration
         # Reset warning state for clean respawn
         player.warning_until = 0.0
         player.smoothed_accel = 0.0
@@ -490,9 +538,9 @@ class NonstopJoustGame(BaseGameMode):
         self.state = GameState.ENDING
 
         # Calculate final scores (inverse of deaths - fewer deaths = higher score)
-        # Score = 100 - (deaths * 10), minimum 0
+        # Score = score_base - (deaths * score_death_penalty), minimum 0 (#766 F2)
         for player in self.players.values():
-            player.score = max(0, 100 - (player.deaths * 10))
+            player.score = max(0, self.score_base - (player.deaths * self.score_death_penalty))
 
         # Determine winner (highest score, tie-break by fewest deaths)
         winner = max(self.players.values(), key=lambda p: (p.score, -p.deaths), default=None)

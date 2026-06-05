@@ -17,7 +17,7 @@ from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
 from lib.colors import Colors
-from lib.feature_flags import read_object_flag
+from lib.feature_flags import read_float_flag, read_object_flag
 from lib.types import Sound
 from proto import controller_manager_pb2
 from services.game_coordinator.games.base import (
@@ -34,6 +34,23 @@ tracer = trace.get_tracer(__name__)
 
 # Game constants (defaults, can be overridden via settings)
 DEFAULT_REVEAL_TIME = 35.0  # Seconds until werewolves are revealed
+WEREWOLF_FRACTION = 0.44  # ~44% of players become werewolves (minimum 1)
+
+
+def resolve_fraction(value, default: float) -> float:
+    """
+    Validate a fraction flag (#766 F2): numeric and strictly in ``(0, 1)``.
+
+    Values at or outside the open interval (and non-numbers / NaN) fall back to
+    ``default`` so role assignment stays behavior-neutral.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return default
+    if value != value:  # NaN
+        return default
+    return float(value) if 0.0 < value < 1.0 else default
+
+
 HUMAN_COLOR = Colors.Yellow.value  # Yellow for humans (and all players before reveal)
 WEREWOLF_COLOR = Colors.LightBlue.value  # Blue for werewolves after reveal
 
@@ -107,6 +124,13 @@ class WerewolfGame(BaseGameMode):
             read_object_flag("game", "werewolf.thresholds", {}), WEREWOLF_THRESHOLDS
         )
 
+        # #766 F2: werewolf population fraction promoted to ``game.werewolf.werewolf_fraction``.
+        # Read once at init (init-frozen); out-of-range values fall back to WEREWOLF_FRACTION.
+        self.werewolf_fraction = resolve_fraction(
+            read_float_flag("game", "werewolf.werewolf_fraction", WEREWOLF_FRACTION),
+            WEREWOLF_FRACTION,
+        )
+
         self.werewolf_serials: list[str] = []
         self.human_serials: list[str] = []
         self.revealed = False
@@ -128,7 +152,7 @@ class WerewolfGame(BaseGameMode):
             controllers: List of controller protobuf messages
         """
         num_players = len(controllers)
-        num_werewolves = max(1, int(num_players * 0.44))  # ~44% are werewolves, minimum 1
+        num_werewolves = max(1, int(num_players * self.werewolf_fraction))  # minimum 1
 
         # Randomly select werewolves
         serials = [c.serial for c in controllers]

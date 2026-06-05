@@ -18,9 +18,16 @@ from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
 from lib.colors import Colors
+from lib.feature_flags import read_float_flag
 from lib.types import Sound
 from proto import controller_manager_pb2
-from services.game_coordinator.games.base import GAME_MODE_ATTR, BaseGameMode, Phase, Player
+from services.game_coordinator.games.base import (
+    GAME_MODE_ATTR,
+    BaseGameMode,
+    Phase,
+    Player,
+    resolve_non_negative_duration,
+)
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -115,6 +122,15 @@ class FightClubGame(BaseGameMode):
         # Configurable timing - now passed via config
         self._invincibility_duration: float = invincibility_seconds
         self._min_rounds: int = min_rounds
+
+        # #766 F2: round duration promoted to ``game.fight_club.round_seconds``.
+        # Read ONCE here (init-frozen); a non-positive/malformed value falls back
+        # to the ROUND_DURATION module constant (a 0s round would break play).
+        round_seconds = resolve_non_negative_duration(
+            read_float_flag("game", "fight_club.round_seconds", ROUND_DURATION),
+            ROUND_DURATION,
+        )
+        self._round_duration: float = round_seconds if round_seconds > 0 else ROUND_DURATION
 
     def get_game_name(self) -> str:
         """Return game mode identifier."""
@@ -246,7 +262,7 @@ class FightClubGame(BaseGameMode):
 
         # Set round end time
         if not self.face_off_mode:
-            self.round_end_time = time.time() + ROUND_DURATION
+            self.round_end_time = time.time() + self._round_duration
         else:
             self.round_end_time = float("inf")  # No time limit in face-off
 
