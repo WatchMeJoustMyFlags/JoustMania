@@ -36,6 +36,30 @@ const (
 // the trace backend.
 const SpanDisabled = "agent.disabled"
 
+// SpanLLMPrompt is the M4 prompt-capture span (#739): on every llm-mode cycle
+// the loop builds the prompt it WOULD send to a backend and records it on this
+// dedicated span — even on cycles where the rules engine returns zero decisions,
+// because the agent.decision audit spans are lazy (no span on an idle cycle). A
+// dedicated span makes "what would the agent have asked the LLM" greppable in
+// Jaeger by name, independent of whether a decision was produced. Throttled to
+// one per throttleInterval (shared with the evaluate log / agent.disabled span).
+const SpanLLMPrompt = "agent.llm.prompt"
+
+// Custom attribute keys of the agent.llm.prompt span (#739). The gen_ai.*
+// attributes use semconv constants where they exist; these three carry the
+// captured prompt text and size, which have no semantic convention.
+const (
+	// AttrLLMPromptSystem / AttrLLMPromptUser carry the full, uncapped System and
+	// User prompt text the agent would have sent this cycle. The Go SDK applies no
+	// attribute length limit and the collector does not truncate, so the entire
+	// prompt is preserved for offline replay (scripts/replay-prompt.sh).
+	AttrLLMPromptSystem = "llm.prompt.system"
+	AttrLLMPromptUser   = "llm.prompt.user"
+	// AttrLLMPromptBytes is len(system)+len(user), the prompt size in bytes (int),
+	// for at-a-glance sizing without copying the full text out of the span.
+	AttrLLMPromptBytes = "llm.prompt.bytes"
+)
+
 // Custom attribute keys of the decision-span schema (issue #724). Attributes
 // covered by a semantic convention (gen_ai.agent.name, rpc.*, error.type,
 // feature_flag.*) use the semconv constants directly and are not listed here.
@@ -95,15 +119,17 @@ const (
 	// DefaultInference is the #724 placeholder, retained for reference. #729
 	// supersedes inference.configured/used/fallback_reason with honest values:
 	// configured = the capability model flag, used = InferenceRules (what ran),
-	// fallback_reason = FallbackLLMNotImplemented when mode=llm fell back.
+	// fallback_reason = FallbackNoBackend when mode=llm fell back.
 	DefaultInference = "none"
 	// InferenceRules is inference.used on every cycle until the M4 LLM path
 	// runs: the deterministic rules engine is what actually decided.
 	InferenceRules = "rules"
-	// FallbackLLMNotImplemented is inference.fallback_reason when mode=llm is
-	// selected but the M4 LLM path does not exist and the loop falls back to the
-	// rules engine. Empty when not applicable (mode=rules).
-	FallbackLLMNotImplemented = "llm_path_not_implemented"
+	// FallbackNoBackend is inference.fallback_reason when mode=llm is selected and
+	// the loop captures the prompt (#739) but no inference backend is wired yet, so
+	// it falls back to the rules engine. Empty when not applicable (mode=rules).
+	// #741's resolve_backend() will supply the real reason (and used="llm") once a
+	// backend answers; until then every llm cycle reports this single reason.
+	FallbackNoBackend = "no_backend_available"
 	// DefaultObjectives until the objectives flag schema exists (#725).
 	DefaultObjectives = "unset"
 	// UnrestrictedAllowed is the interventions.allowed summary while the

@@ -176,7 +176,7 @@ func TestInferenceAttribution_LLMFallback(t *testing.T) {
 		wantFallback string
 	}{
 		{name: "rules mode", mode: "rules", wantUsed: InferenceRules, wantFallback: ""},
-		{name: "llm mode falls back", mode: "llm", wantUsed: InferenceRules, wantFallback: FallbackLLMNotImplemented},
+		{name: "llm mode falls back", mode: "llm", wantUsed: InferenceRules, wantFallback: FallbackNoBackend},
 		{name: "unknown mode runs rules", mode: "weird", wantUsed: InferenceRules, wantFallback: ""},
 	}
 	for _, tc := range tests {
