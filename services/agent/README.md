@@ -84,6 +84,12 @@ model**, applied in order:
      `LiveObjectives` source (`decision/objectives.go`); the engine reads it
      inside `Evaluate`, falling back to `{endurance: 1.0}` when the flag resolves
      nothing. This replaces the engine's static objective source (#726).
+   - `fitness.*` (numbers): the per-objective fitness thresholds (#731). The loop
+     publishes the per-cycle values into the engine through a `LiveFitness`
+     source (`decision/fitnesssource.go`); the engine evaluates the fitness
+     functions against the live game context each cycle and amplifies the
+     candidates serving a *failing* objective. See **[Fitness functions
+     (#731)](#fitness-functions-731)** below.
 3. **Capability** (selects the model/prompt for the M4 LLM path) —
    - `model` (string, default `phi4-mini`) and `prompt_variant` (string, default
      `conservative`). Evaluated and **recorded** every cycle; not consumed until
@@ -177,14 +183,71 @@ per second. The weighted per-minute budget is enforced downstream by the loop
   2 decisions per evaluation; `cd.cost` survives as a deterministic
   cheaper-first tie-break.
 
-**Configuration seam (#726/#727):** objectives, policy, and fitness thresholds
-come from the `ObjectivesSource` / `PolicySource` / `FitnessSource` interfaces
-(`decision/config.go`). #727 wires the **objectives** source to OpenFeature: the
-loop publishes the per-cycle `objectives` flag into a `LiveObjectives` source
-(`decision/objectives.go`) that the engine reads each evaluation, so objective
-changes take effect with no restart. Policy and fitness still run on
-`DefaultStaticConfig()` (the flagd-schema defaults) and fall back to objectives
-`{endurance: 1.0}` whenever the flag resolves nothing.
+**Configuration seam (#726/#727/#731):** objectives, policy, and fitness
+thresholds come from the `ObjectivesSource` / `PolicySource` / `FitnessSource`
+interfaces (`decision/config.go`). #727 wires the **objectives** source to
+OpenFeature: the loop publishes the per-cycle `objectives` flag into a
+`LiveObjectives` source (`decision/objectives.go`) that the engine reads each
+evaluation. #731 wires the **fitness** source the same way: the loop publishes
+the per-cycle `fitness.*` flags into a `LiveFitness` source
+(`decision/fitnesssource.go`), so threshold changes take effect on the next
+cycle with no restart. Only **policy** still runs on `DefaultStaticConfig()`
+(the flagd-schema defaults); objectives fall back to `{endurance: 1.0}` whenever
+the flag resolves nothing.
+
+## Fitness functions (#731)
+
+Fitness functions turn "is this session *succeeding* for objective X?" into
+observable, runtime-tunable numbers. The thresholds come entirely from the
+`fitness.*` flags (never code), are evaluated **every cycle** against the live
+`GameContext`, and both (a) **steer action selection** and (b) ride onto the
+decision span as `fitness.evaluated`.
+
+Three objectives have a fitness function; **chaos has none** — chaos is
+*unpredictability* by definition ([#722 research
+§4](../../docs/research/722-intervention-surface.md)), so there is no
+success/degradation target to measure. It contributes no fitness value and no
+selection pressure.
+
+Each function produces a normalized `progress` in `0..1` (1 = satisfied, 0 =
+maximally failing) and a `pressure = 1 − progress`. Functions whose required
+signals are missing are **skipped** — they emit no value rather than fabricating
+one.
+
+| Objective | Flag (threshold) | Signal | Progress |
+|-----------|------------------|--------|----------|
+| `endurance` | `fitness.endurance.min_session_seconds` (120) | `session.duration_seconds` | `duration / min`, clamped to 1 — long sessions win |
+| `balanced` | `fitness.balanced.max_skill_gap` (0.4) | spread (max−min) of per-player `skill_level` (≥ 2 known) | `1 − gap/(2·max)` — the 0.5 point is exactly at the threshold |
+| `balanced` | `fitness.balanced.spike_survival_threshold` (0.8) | derived (see below) | `survival_ratio / threshold`, clamped to 1 |
+| `accelerate` | `fitness.accelerate.target_session_seconds` (60) | `session.duration_seconds` | 1 up to the target, then `1 − overshoot/target` — overshoot = failing |
+
+**Balanced is two sub-checks** (skill gap AND spike survival). The result's
+`progress` is the *worse* of the two computable sub-checks and it is satisfied
+only when every computed sub-check passes; the result is emitted when at least
+one sub-check is computable.
+
+**Spike-survival derivation.** There is no direct "survived a spike" signal, so
+it is derived from the available per-player signals: a player **survives** when
+their `movement_variance ≤ movement_intensity` — erratic swings (variance) that
+exceed sustained effort (intensity) indicate a player thrown by spikes. The
+`survival_ratio` is `survivors / active players with both signals`; the session
+passes when `ratio ≥ spike_survival_threshold`. When no active player has both
+signals the sub-check is skipped (the gap is honest, not fabricated).
+
+**How results steer decisions.** In `scoreAndSort`, each candidate's score is
+`urgency × weight[objective] × (1 + pressure[objective])`. A satisfied,
+unevaluated, or fitness-less (chaos) objective contributes `pressure = 0` (no
+change); a maximally failing one contributes `pressure = 1` (up to double the
+effective urgency). So a failing endurance fitness amplifies the
+endurance-serving candidates and can **flip the selected winner between
+objectives** — without ever blocking a candidate outright. The cycle's full
+evaluation is retained on the engine (`LastFitness()`) and read back by the loop
+into `LayerState.FitnessEvaluated`.
+
+**Runtime tunability.** Because the thresholds are evaluated and published every
+cycle, changing a `fitness.*` flag mid-session changes the **next** cycle's
+evaluation and the resulting action selection, with no restart (covered by
+`TestLoop_MidSessionFlagChangeChangesOutcome`).
 
 ## Span schema (#724) — the trace is the audit log
 
@@ -228,7 +291,7 @@ decision in the cycle):
 | `inference.configured` | the `model` flag value | live (e.g. `"phi4-mini"`) | — |
 | `inference.used` | the engine that ran | `"rules"` | `"llm"` once M4 lands |
 | `inference.fallback_reason` | why `llm` fell back | `"llm_path_not_implemented"` when `mode=llm`, else `""` | empties once M4 lands |
-| `fitness.evaluated` (cycle) | `LayerState.FitnessEvaluated` | **absent** | #731 (see below) |
+| `fitness.evaluated` (cycle) | `LayerState.FitnessEvaluated` — dotted per-objective thresholds + results (#731) | live (e.g. `endurance.session_progress=0.5`) | — |
 | `gen_ai.agent.name` | agent identity | `"joustmania-agent"` | — |
 
 **Per-decision attribution** (one decision per `agent.decision` span):
@@ -239,7 +302,7 @@ decision in the cycle):
 | `decision.objective_served` | the objective the rule served / `"unset"` | — |
 | `decision.blocked` | from the permission chain | — |
 | `decision.block_reason` | `not_allowed` / `battery_threshold` / `rate_limit` (only when blocked) | — |
-| `fitness.evaluated` (per-decision) | the rule's evaluated fitness values (`[]` until rules populate them) | #731 |
+| `fitness.evaluated` (per-decision fallback) | the cycle-level evaluation (above) is authoritative; only Probe/Noop engines fall back to the rule's own `Decision.Fitness` | — |
 
 The attribution attaches where **both** the rules and (future M4) LLM paths
 converge (`decisionAttributes`, fed by the shared `LayerState`), so it is
@@ -255,17 +318,30 @@ carrying the same cycle-level flag attribution above (`agent.enabled=false`, the
 capability and permission flags that were in effect). Throttled to one per second
 so a disabled agent under heavy signal load does not flood the trace backend.
 
-#### `fitness.evaluated` hook for #731
+#### `fitness.evaluated` (#731)
 
-`LayerState.FitnessEvaluated` (`map[string]float64`) is the cycle-level hook
-#731 populates with fitness-function results (e.g. `session_duration`,
-`target_session_seconds`). It is **empty/absent until #731**: when non-empty it
-is lifted onto the decision (and disabled) span as the `fitness.evaluated`
-attribute, rendered as a sorted `k=v` string slice. #731 only needs to fill the
-map on the returned `LayerState` (or have the rules engine stamp it) — the
-span-attribute wiring is already in place. Per-decision fitness already rides on
-`Decision.Fitness` and the per-decision `fitness.evaluated` attribute; this is
-the cycle-wide companion.
+`LayerState.FitnessEvaluated` (`map[string]float64`) holds the cycle-level
+fitness evaluation — every threshold **and** every computed result, under dotted
+`objective.signal` keys. The loop fills it each cycle by reading the engine's
+`LastFitness().Evaluated()` and the existing span wiring lifts it onto the
+decision (and disabled) span as the `fitness.evaluated` attribute, rendered as a
+sorted `k=v` string slice. When the cycle-level evaluation is present it is
+**authoritative** for the attribute; only engines without a fitness function
+(Probe/Noop) fall back to the per-decision `Decision.Fitness` view, so the
+attribute is always present on the span.
+
+The full key vocabulary recorded on the span:
+
+```
+endurance.min_session_seconds   endurance.session_seconds   endurance.session_progress
+balanced.max_skill_gap          balanced.skill_gap          balanced.skill_gap_progress
+balanced.spike_survival_threshold  balanced.spike_survival_ratio  balanced.spike_survival_progress
+accelerate.target_session_seconds  accelerate.session_seconds  accelerate.session_progress
+```
+
+Keys for an objective whose signals were missing that cycle are simply absent
+(the function was skipped, not fabricated). chaos has no fitness function and so
+no keys.
 
 ### Semantic conventions
 
