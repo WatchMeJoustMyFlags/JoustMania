@@ -156,6 +156,8 @@ func TestStateInterventions(t *testing.T) {
 		{"music tempo value", decision.Decision{Intervention: decision.InterventionAdjustMusicTempo, Value: "1.3"}, flagMusicTempoOverride, 1.3},
 		{"volume default", decision.Decision{Intervention: decision.InterventionAdjustVolume}, flagVolumeOverride, defaultVolume},
 		{"global sensitivity", decision.Decision{Intervention: decision.InterventionAdjustGlobalSensitivity, Value: "3"}, flagGlobalSensitivityOverride, 3},
+		{"global difficulty default", decision.Decision{Intervention: decision.InterventionAdjustGlobalDifficulty}, flagGlobalDifficultyFactor, defaultGlobalDifficulty},
+		{"global difficulty value", decision.Decision{Intervention: decision.InterventionAdjustGlobalDifficulty, Value: "0.5"}, flagGlobalDifficultyFactor, 0.5},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -173,6 +175,54 @@ func TestStateInterventions(t *testing.T) {
 			}
 			assertStructurallyValid(t, path)
 		})
+	}
+}
+
+// #766 F6: pacing_profile is a STRING state-shaped flag.
+func TestPacingProfileStateAndRevert(t *testing.T) {
+	w, path := newTestWriter(t)
+
+	// Default value.
+	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionSetPacingProfile}); err != nil {
+		t.Fatalf("apply default: %v", err)
+	}
+	flag := readFlag(t, path, flagPacingProfile)
+	if dv := flag["defaultVariant"]; dv != activeVariant {
+		t.Fatalf("defaultVariant = %v, want %q", dv, activeVariant)
+	}
+	if got := flag["variants"].(map[string]any)[activeVariant].(string); got != defaultPacingProfile {
+		t.Fatalf("active value = %q, want %q", got, defaultPacingProfile)
+	}
+
+	// Explicit value.
+	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionSetPacingProfile, Value: "calm"}); err != nil {
+		t.Fatalf("apply value: %v", err)
+	}
+	if got := readFlag(t, path, flagPacingProfile)["variants"].(map[string]any)[activeVariant].(string); got != "calm" {
+		t.Fatalf("active value = %q, want %q", got, "calm")
+	}
+
+	// Revert flips defaultVariant back to neutral "none".
+	if err := w.RevertState(flagPacingProfile); err != nil {
+		t.Fatalf("revert: %v", err)
+	}
+	if dv := readFlag(t, path, flagPacingProfile)["defaultVariant"]; dv != neutralNone {
+		t.Fatalf("post-revert defaultVariant = %v, want %q", dv, neutralNone)
+	}
+	assertStructurallyValid(t, path)
+}
+
+// #766 F6: global_difficulty_factor reverts to "default" (1.0), not "none".
+func TestGlobalDifficultyRevertNeutral(t *testing.T) {
+	w, path := newTestWriter(t)
+	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionAdjustGlobalDifficulty, Value: "1.5"}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if err := w.RevertState(flagGlobalDifficultyFactor); err != nil {
+		t.Fatalf("revert: %v", err)
+	}
+	if dv := readFlag(t, path, flagGlobalDifficultyFactor)["defaultVariant"]; dv != neutralDefault {
+		t.Fatalf("post-revert defaultVariant = %v, want %q", dv, neutralDefault)
 	}
 }
 

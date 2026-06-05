@@ -29,8 +29,10 @@ not conflict structurally.
 
 import logging
 
+from lib.feature_flags import read_object_flag_variant
 from lib.types import Sensitivity
 
+from .games.base import resolve_music_windows
 from .interventions import InterventionContext, InterventionManager
 
 logger = logging.getLogger(__name__)
@@ -39,6 +41,15 @@ logger = logging.getLogger(__name__)
 SENSITIVITY_FACTOR_MIN = 0.5
 SENSITIVITY_FACTOR_MAX = 2.0
 SENSITIVITY_FACTOR_DEFAULT = 1.0
+
+# Global difficulty factor clamp + neutral (#766 F6). Mirrors the combined-factor
+# clamp in base.py _compute_effective_thresholds.
+GLOBAL_DIFFICULTY_FACTOR_MIN = 0.5
+GLOBAL_DIFFICULTY_FACTOR_MAX = 2.0
+GLOBAL_DIFFICULTY_FACTOR_DEFAULT = 1.0
+
+# Profile names that mean "neutral / restore the game's init-resolved windows".
+_NEUTRAL_PACING_PROFILES = frozenset({"none", "default", ""})
 
 
 async def handle_music_tempo_override(ctx: InterventionContext) -> None:
@@ -125,6 +136,96 @@ async def handle_player_sensitivity_factor(ctx: InterventionContext, manager: In
         logger.info(f"player_sensitivity_factor: {serial} -> {clamped:.2f}")
 
 
+async def handle_global_difficulty_factor(ctx: InterventionContext) -> None:
+    """Apply / clear the live global difficulty factor on the running game (#766 F6).
+
+    State-shaped: ``ctx.value`` is the float factor (range 0.5-2.0). It is stored
+    on ``game.global_difficulty_factor`` and live-read every frame by
+    ``_compute_effective_thresholds``, where it is multiplied with each player's
+    own ``sensitivity_factor`` before the combined factor is clamped and divides
+    the thresholds. A value of 1.0 (the none-value) never reaches here (the
+    manager skips reverts-to-neutral) — the neutral revert restores 1.0 via
+    ``handle_global_difficulty_factor_revert``. Values are clamped to [0.5, 2.0].
+    """
+    game = ctx.game
+    if game is None:
+        logger.debug("global_difficulty_factor: no live game, ignoring")
+        return
+
+    factor = float(ctx.value)
+    clamped = max(GLOBAL_DIFFICULTY_FACTOR_MIN, min(GLOBAL_DIFFICULTY_FACTOR_MAX, factor))
+    game.global_difficulty_factor = clamped
+    logger.info(f"global_difficulty_factor: live factor -> {clamped:.2f}")
+
+
+async def handle_global_difficulty_factor_revert(ctx: InterventionContext) -> None:
+    """Restore the neutral global difficulty factor (1.0) on revert (#766 F6)."""
+    game = ctx.game
+    if game is None:
+        logger.debug("global_difficulty_factor: no live game on revert, ignoring")
+        return
+    game.global_difficulty_factor = GLOBAL_DIFFICULTY_FACTOR_DEFAULT
+    logger.info("global_difficulty_factor: reverted to neutral 1.0")
+
+
+async def handle_pacing_profile(ctx: InterventionContext) -> None:
+    """Swap the live music schedule windows to a named preset (#766 F6).
+
+    State-shaped: ``ctx.value`` is the profile name (``calm`` / ``frantic`` /
+    ``default``). The named preset is resolved from the ``game.windows`` flag's
+    variants (reusing F3's ``resolve_music_windows`` over the targeting-selected
+    variant) and assigned ATOMICALLY to ``game.music_windows`` (single store,
+    never mutated in place) so the music loop picks it up on its next tempo
+    change without tearing. The neutral profile (``none``/``default``) never
+    reaches here; reverting restores the init-resolved windows via
+    ``handle_pacing_profile_revert``. An unknown/malformed preset falls back to
+    the game's init windows (``resolve_music_windows`` validates; the flag's
+    targeting ``else`` resolves unknown names to ``default``).
+    """
+    game = ctx.game
+    if game is None:
+        logger.debug("pacing_profile: no live game, ignoring")
+        return
+
+    profile = str(ctx.value).strip().lower()
+    if profile in _NEUTRAL_PACING_PROFILES:
+        _restore_init_windows(game)
+        return
+
+    init_windows = getattr(game, "init_music_windows", game.music_windows)
+    variant = read_object_flag_variant("game", "windows", profile, {})
+    new_windows = resolve_music_windows(variant)
+    # resolve_music_windows falls back to module defaults (not the game's init
+    # windows) on malformed values; an unknown profile resolves to the flag's
+    # "default" variant. Either way the windows are well-formed; assign atomically.
+    game.music_windows = new_windows
+    logger.info(f"pacing_profile: swapped music windows to preset '{profile}'")
+    if new_windows == resolve_music_windows({}) and init_windows is not None:
+        # Unknown/malformed preset resolved to bare module defaults; if the game
+        # was started with custom windows, prefer its init windows over defaults.
+        game.music_windows = init_windows
+        logger.info("pacing_profile: unknown preset, restored init windows")
+
+
+async def handle_pacing_profile_revert(ctx: InterventionContext) -> None:
+    """Restore the game's init-resolved music windows on revert (#766 F6)."""
+    game = ctx.game
+    if game is None:
+        logger.debug("pacing_profile: no live game on revert, ignoring")
+        return
+    _restore_init_windows(game)
+
+
+def _restore_init_windows(game: object) -> None:
+    """Atomically restore the game's init-resolved music windows."""
+    init_windows = getattr(game, "init_music_windows", None)
+    if init_windows is None:
+        logger.debug("pacing_profile: no init windows recorded, leaving current windows")
+        return
+    game.music_windows = init_windows
+    logger.info("pacing_profile: restored init-resolved music windows")
+
+
 def register_difficulty_handlers(manager: InterventionManager) -> None:
     """Wire the difficulty handlers onto the manager (one line per flag).
 
@@ -139,3 +240,8 @@ def register_difficulty_handlers(manager: InterventionManager) -> None:
         "player_sensitivity_factor",
         lambda ctx: handle_player_sensitivity_factor(ctx, manager),
     )
+    # #766 F6: two new state-shaped levers. Both restore their baseline on revert.
+    manager.register_handler("global_difficulty_factor", handle_global_difficulty_factor)
+    manager._revert_handlers["global_difficulty_factor"] = handle_global_difficulty_factor_revert
+    manager.register_handler("pacing_profile", handle_pacing_profile)
+    manager._revert_handlers["pacing_profile"] = handle_pacing_profile_revert

@@ -38,6 +38,8 @@ const (
 	InterventionAdjustPlayerSensitivity = "adjust_player_sensitivity"
 	InterventionGrantShield             = "grant_shield"
 	InterventionAdjustGlobalSensitivity = "adjust_global_sensitivity"
+	InterventionAdjustGlobalDifficulty  = "adjust_global_difficulty"
+	InterventionSetPacingProfile        = "set_pacing_profile"
 	InterventionEliminatePlayer         = "eliminate_player"
 	InterventionRevivePlayer            = "revive_player"
 	InterventionEndGame                 = "end_game"
@@ -62,6 +64,8 @@ var interventionWeights = map[string]float64{
 	InterventionAdjustMusicTempo:        1,
 	InterventionAdjustPlayerSensitivity: 1,
 	InterventionGrantShield:             1,
+	InterventionAdjustGlobalDifficulty:  1, // #766 F6
+	InterventionSetPacingProfile:        1, // #766 F6
 	// Hard (2)
 	InterventionAdjustGlobalSensitivity: 2,
 	InterventionEliminatePlayer:         2,

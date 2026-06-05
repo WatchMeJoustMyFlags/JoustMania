@@ -152,6 +152,27 @@ INTERVENTION_SPECS: tuple[InterventionSpec, ...] = (
         value_kind="float",
         none_value=-1,
     ),
+    # #766 F6 — two new state-shaped difficulty/pacing levers (weight Medium).
+    InterventionSpec(
+        flag_key="global_difficulty_factor",
+        type_id="adjust_global_difficulty",
+        weight=WEIGHT_MEDIUM,
+        edge_triggered=False,
+        player_targeted=False,
+        value_kind="float",
+        # 1.0 is the neutral default; a value != 1.0 is an intervention.
+        none_value=1.0,
+    ),
+    InterventionSpec(
+        flag_key="pacing_profile",
+        type_id="set_pacing_profile",
+        weight=WEIGHT_MEDIUM,
+        edge_triggered=False,
+        player_targeted=False,
+        value_kind="string",
+        # "none" (and "default") mean the neutral init-resolved windows.
+        none_value="none",
+    ),
     # --- Edge-triggered (one-shot) flags ---
     InterventionSpec(
         flag_key="eliminate_player",
@@ -198,11 +219,18 @@ INTERVENTION_SPECS: tuple[InterventionSpec, ...] = (
 # Only modes with a restriction appear. ``send_controller_effect`` is restricted
 # in hidden-role modes because LED effects can leak roles; ``revive_player`` is
 # gated where reviving breaks the mode; ``adjust_global_sensitivity`` is gated
-# where it interacts with per-role threshold overrides.
+# where it interacts with per-role threshold overrides. ``adjust_global_difficulty``
+# (#766 F6) inherits the ``adjust_global_sensitivity`` row (same role-threshold
+# interaction); ``set_pacing_profile`` inherits ``adjust_music_tempo`` (allowed
+# everywhere — no deny rows).
 MODE_CAPABILITY_DENY: dict[str, frozenset[str]] = {
     # Hidden-role modes: LED effects leak roles; revive breaks hidden roles.
-    "Werewolf": frozenset({"send_controller_effect", "revive_player", "adjust_global_sensitivity"}),
-    "Traitor": frozenset({"send_controller_effect", "revive_player", "adjust_global_sensitivity"}),
+    "Werewolf": frozenset(
+        {"send_controller_effect", "revive_player", "adjust_global_sensitivity", "adjust_global_difficulty"}
+    ),
+    "Traitor": frozenset(
+        {"send_controller_effect", "revive_player", "adjust_global_sensitivity", "adjust_global_difficulty"}
+    ),
     # Bracket / queue modes: revive breaks the bracket/queue.
     "Tournament": frozenset({"revive_player"}),
     "Fight Club": frozenset({"revive_player"}),
@@ -210,8 +238,8 @@ MODE_CAPABILITY_DENY: dict[str, frozenset[str]] = {
     "FFA": frozenset({"revive_player"}),
     "Teams": frozenset({"revive_player"}),
     "Random Teams": frozenset({"revive_player"}),
-    # Zombie role thresholds are asymmetric; global override interacts.
-    "Zombie": frozenset({"adjust_global_sensitivity"}),
+    # Zombie role thresholds are asymmetric; global override/difficulty interacts.
+    "Zombie": frozenset({"adjust_global_sensitivity", "adjust_global_difficulty"}),
     # Swapper: revive leaves team state ambiguous.
     "Swapper": frozenset({"revive_player"}),
 }
@@ -871,7 +899,10 @@ class InterventionManager:
             return client.get_integer_value(spec.flag_key, spec.none_value, ctx)
         if spec.value_kind == "float":
             return client.get_float_value(spec.flag_key, float(spec.none_value), ctx)
-        return client.get_string_value(spec.flag_key, "", ctx)
+        # State-shaped string flags carry a string none_value (e.g. pacing_profile
+        # "none"); edge-triggered flags leave none_value None and default to "".
+        string_default = spec.none_value if isinstance(spec.none_value, str) else ""
+        return client.get_string_value(spec.flag_key, string_default, ctx)
 
     def _state_target_serial(self, _spec: InterventionSpec) -> str | None:
         """Player-targeted state flags fan out across all active serials via
@@ -1045,7 +1076,8 @@ def _spec_default(spec: InterventionSpec) -> object:
         return ""
     if spec.value_kind in ("int", "float"):
         return spec.none_value
-    return ""
+    # State-shaped string flag: fall back to its string none_value (e.g. "none").
+    return spec.none_value if isinstance(spec.none_value, str) else ""
 
 
 def _active_player_serials(game: object) -> list[str]:

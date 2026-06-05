@@ -208,6 +208,36 @@ def read_object_flag(domain: str, flag_key: str, default: dict) -> dict:
         return default
 
 
+def read_object_flag_variant(domain: str, flag_key: str, targeting_key: str, default: dict) -> dict:
+    """
+    Read an object-typed flag selecting a named variant via flagd targeting.
+
+    Live sibling of :func:`read_object_flag` for selecting a *named* preset
+    (#766 F6 ``pacing_profile``): the flag's targeting rule maps
+    ``targetingKey == <name>`` to the matching variant, so passing
+    ``targeting_key`` resolves that preset's value. Unknown names fall through
+    to the flag's default variant (the flag's own targeting ``else``). On ANY
+    failure the supplied ``default`` is returned.
+
+    Args:
+        domain: OpenFeature domain / flagSetId (e.g. "game")
+        flag_key: Object flag key (e.g. "windows")
+        targeting_key: Preset/variant selector (e.g. "calm" / "frantic")
+        default: Fallback value returned on any error or missing flag
+
+    Returns:
+        The selected variant's object value, or ``default`` on failure.
+    """
+    try:
+        init_flag_domain(domain)
+        client = get_flag_client(domain)
+        value = client.get_object_value(flag_key, default, EvaluationContext(targeting_key=targeting_key))
+        return value if isinstance(value, dict) else default
+    except Exception as e:
+        logger.warning(f"read_object_flag_variant({domain!r}, {flag_key!r}, {targeting_key!r}) failed: {e}")
+        return default
+
+
 def read_float_flag(domain: str, flag_key: str, default: float) -> float:
     """
     Read a number-typed flag once at init time, with a hardcoded fallback.
