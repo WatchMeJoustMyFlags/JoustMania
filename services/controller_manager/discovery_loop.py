@@ -744,9 +744,10 @@ class DiscoveryLoop:
         # Window-level rollout summary (target backend + cohort size).
         target_backend = ""
         rollout_count = 0
-        if hasattr(self.backend, "_rollout_router"):
+        rollout_summary = getattr(self.backend, "rollout_summary", None)
+        if rollout_summary is not None:
             try:
-                target_backend, rollout_count = self.backend._rollout_router.current_target()
+                target_backend, rollout_count = rollout_summary()
             except Exception:
                 logger.debug("Failed to read rollout summary for health span", exc_info=True)
 

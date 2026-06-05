@@ -306,6 +306,14 @@ class MultiplexerBackend(ControllerBackend):
             return adapter.get_metadata(serial)
         return None
 
+    def rollout_summary(self) -> tuple[str, int]:
+        """Window-level rollout summary ``(target_backend, cohort_count)``.
+
+        Public seam for telemetry (the bluetooth-health span); delegates to the
+        RolloutRouter, which degrades to ``("", 0)`` on any flag error.
+        """
+        return self._rollout_router.current_target()
+
     def _cleanup_stale_state(self, seen: dict[str, ControllerIOAdapter]) -> None:
         """Remove centralized state for controllers no longer present."""
         stale = set(self._led_colors.keys()) - set(seen.keys())

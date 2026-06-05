@@ -185,7 +185,7 @@ class TestSpanEmission:
     def test_span_attributes_and_events(self, _hz, _gap, _ratio_w, _ratio, _mhz):
         backend = MagicMock()
         backend.get_adapter_type.return_value = "unstable"
-        backend._rollout_router.current_target.return_value = ("unstable", 3)
+        backend.rollout_summary.return_value = ("unstable", 3)
         loop = _make_loop(backend)
         loop._window_start = 0.0
         _feed(loop, "AA", [{"n": i} if i % 5 != 0 else None for i in range(10)], dt=0.01)
