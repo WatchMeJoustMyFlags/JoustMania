@@ -85,7 +85,7 @@ WORKDIR /app
 
 # Copy grpc-health-probe binary
 # Copy grpc-health-probe from official multi-arch image
-COPY --from=ghcr.io/grpc-ecosystem/grpc-health-probe:v0.4.38 /ko-app/grpc-health-probe /bin/grpc_health_probe
+COPY --from=ghcr.io/grpc-ecosystem/grpc-health-probe:v0.4.52 /ko-app/grpc-health-probe /bin/grpc_health_probe
 
 # Copy system shared libraries (ALSA + ffmpeg deps for miniaudio/pyalsaaudio/pydub)
 COPY --from=system-libs /extra-libs/ /usr/lib/
