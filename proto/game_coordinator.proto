@@ -38,11 +38,26 @@ message Player {
   int32 score = 4;
 }
 
+// Who requested a game start. Governs primary/shadow classification (#837):
+// only GAME_ORIGIN_MENU games may claim the primary slot (the "real" game that
+// players see); everything else (UNSPECIFIED, AGENT) is ALWAYS a shadow game,
+// even when no primary is live. This removes the first-come-first-served hazard
+// where an idle-time agent game could claim primary and block real players.
+enum GameOrigin {
+  GAME_ORIGIN_UNSPECIFIED = 0;  // Caller did not mark origin -> treated as shadow
+  GAME_ORIGIN_MENU = 1;         // The menu/lobby (the real game) -> may be primary
+  GAME_ORIGIN_AGENT = 2;        // Agent experiment / headless -> always shadow
+}
+
 // Configuration for starting a game via stream
 message StartGameConfig {
   string game_name = 1;  // e.g., "JoustFFA", "Werewolf"
   repeated Player players = 2;
   int32 sensitivity = 3;  // 0-4, common to all modes (0=ULTRA_SLOW, 2=MEDIUM, 4=ULTRA_FAST)
+
+  // Start origin (#837). Defaults to UNSPECIFIED (=> shadow). The menu sets
+  // GAME_ORIGIN_MENU to request the primary (real-game) slot.
+  GameOrigin origin = 4;
 
   // Mode-specific configuration
   oneof game_config {
