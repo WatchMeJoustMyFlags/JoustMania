@@ -254,7 +254,7 @@ services:
 
   # Envoy (Gateway)
   envoy:
-    image: envoyproxy/envoy:v1.31-latest
+    image: envoyproxy/envoy:v1.38-latest
     container_name: joustmania-envoy
     ports:
       - "80:80"
