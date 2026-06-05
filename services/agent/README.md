@@ -62,6 +62,90 @@ Sessions are not carried in every signal, so the Agent synthesizes them:
 | Player | Evicted after a **5 s** TTL with no fresh signal |
 | Session | Kept for a **15 s** grace period after it goes inactive, then evicted |
 
+## Per-game partitioning (#845)
+
+With `GAME_MAX_CONCURRENT_GAMES` allowing several games at once, the Agent
+partitions everything stateful **by `game_id`** so two concurrent games never
+share player state, a session, or a decision budget.
+
+### Context: the Multiplexer (PR B)
+
+The `gamecontext.Multiplexer` holds **one `Store` partition per `game_id`**. Each
+received datapoint/span is routed to its partition on the resolved `game_id`
+**before** it is applied, so players, sessions, and elimination order stay
+disjoint. Signals that carry no `game_id` land on the **fallback partition**
+(`FallbackGameID = ""`) — the zero-regression linchpin: in single-game mode (or
+against a coordinator without the `game_id` labels) every signal lands there and
+the Multiplexer behaves byte-for-byte like the old single `Store`.
+
+Partitions are created **lazily** on first touch and removed by `EvictStale` once
+a game's session has ended past grace and retains no fresh players. The fallback
+partition is **never** wholesale-removed (its session still resets on grace).
+
+### Decisions: the LoopSet (PR C)
+
+The `decision.LoopSet` is the per-game counterpart to the Multiplexer: **one
+`decision.Loop` per partition**, lazily created on first evaluation. Each Loop
+owns its:
+
+- **weighted rate-limit budget** (`policy.max_interventions_per_minute`) — one
+  game exhausting its per-minute budget does **not** block another game;
+- **log/span throttle slot** (`decision.throttle_seconds`) — one game's throttle
+  never silences another's `agent.evaluate` log or `agent.disabled` span;
+- **per-cycle `LayerState`** (the `#729` span-attribution source of truth).
+
+**Shared vs per-game wiring.** The factory (`main.go`) builds, per Loop:
+
+| Component | Per-loop? | Why |
+|-----------|-----------|-----|
+| Rules engine (`ObjectiveRules`) | **Fresh per loop** | Carries per-cycle mutable state the loop drives every cycle — `SetObjectives`/`SetFitness` published before `Evaluate`, `LastFitness` read after. A shared engine would let two games **race** each other's objective weights and fitness reads, stamping the wrong game's `agent.objectives`/`fitness.evaluated` onto a span. |
+| Action sink (`actions.Writer`) | **Shared** | Holds no per-game state — it serializes a read-modify-write of the flagd interventions file under its own mutex, keyed by the decision's target. Safe to close over one instance. |
+| Flag source, tracer | **Shared** | Stateless / concurrency-safe. |
+
+### Loop lifecycle / eviction
+
+The eviction ticker runs `mux.EvictStale()` and then
+`loops.Retain(mux.Partitions())`: a removed partition's Loop — and its budget +
+throttle state — is dropped **in lockstep** with its Store. The **fallback loop
+is permanent** (`Retain` skips it), mirroring the fallback Store. A dropped
+game's Loop is **recreated lazily with a fresh budget** if the game resumes —
+acceptable because a partition is only dropped after its game fully ended past
+grace.
+
+### Span attribution
+
+Decision spans are independently attributable per game. The root
+`agent.span_received` span carries both `session.id` and the `game.id` alias
+(`session.id` **is** the real `game_id` since PR A's early adoption); the
+decision / `agent.disabled` / `agent.llm.prompt` spans carry `game.kind` (and the
+prompt-capture span carries `game.id` too). So a Jaeger query by `game.id` is
+symmetrical with the coordinator's own `game.id`-tagged spans, and two concurrent
+games' traces never blur together.
+
+### Multi-game decision flow
+
+```
+OTLP Export (metrics/traces batch)
+        │  per datapoint/span: resolve game_id
+        ▼
+  Multiplexer ── route ──► Store[game-A]      Store[game-B]      Store[""]   (fallback)
+        │                      │                  │                 │
+        │  touched game_ids    │ Snapshot         │ Snapshot        │ Snapshot
+        ▼                      ▼                  ▼                 ▼
+  signalUpdated ──► gate.ShouldEvaluate(snap) per partition
+                            │ (if eligible)
+                            ▼
+                 LoopSet.For(game_id) ──► Loop[game-A]   Loop[game-B]   Loop[""]
+                                              │  own budget   │ own budget   │ own budget
+                                              │  own throttle │ own throttle │ own throttle
+                                              ▼               ▼              ▼
+                                        agent.decision spans (game.id / game.kind)
+```
+
+> **#847 hook:** the per-game LLM gating (per-game cadence / eligibility) will
+> attach to this per-game Loop state; the **global** LLM budget stays shared
+> across loops (one inference-cost ceiling for the whole agent).
+
 ## Infrastructure observe path (#733)
 
 Alongside the game `GameContext`, the Agent runs a **parallel infrastructure
