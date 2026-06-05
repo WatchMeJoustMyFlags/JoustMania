@@ -103,6 +103,7 @@ func TestOnEvaluate_NoDecisionsNoSpans(t *testing.T) {
 func TestOnEvaluate_EmitsFullHierarchy(t *testing.T) {
 	l, sr, fl := newTestLoop(t)
 	fl.snap.InterventionsAllowed = []string{"noop"}
+	fl.snap.Capability = flags.Capability{Model: "phi4-mini", PromptVariant: "conservative"}
 	sink := &fakeSink{}
 	l.Rules = fakeRules{out: []Decision{{Intervention: "noop", Reason: "test"}}}
 	l.Actions = sink
@@ -143,13 +144,18 @@ func TestOnEvaluate_EmitsFullHierarchy(t *testing.T) {
 		t.Errorf("rpc.service = %v, want %s", v.AsString(), trig.RPCService)
 	}
 
-	// Full #724 schema with placeholders on the decision span.
+	// Full #724 + #729 schema on the decision span: cycle-level flags lifted from
+	// the LayerState plus the per-decision outcome. inference.configured is the
+	// capability model flag; inference.used is the rules engine that actually ran.
 	want := map[string]string{
+		AttrEnabled:              "true",
 		AttrMode:                 DefaultMode,
 		AttrObjectives:           DefaultObjectives,
+		AttrModel:                "phi4-mini",
+		AttrPromptVariant:        "conservative",
 		AttrInterventionsAllowed: "noop",
-		AttrInferenceConfigured:  DefaultInference,
-		AttrInferenceUsed:        DefaultInference,
+		AttrInferenceConfigured:  "phi4-mini",
+		AttrInferenceUsed:        InferenceRules,
 		AttrInferenceFallback:    "",
 		AttrDecisionAction:       "noop",
 		AttrDecisionReason:       "test",
@@ -157,8 +163,25 @@ func TestOnEvaluate_EmitsFullHierarchy(t *testing.T) {
 		"gen_ai.agent.name":      AgentName,
 	}
 	for key, expected := range want {
-		if v, ok := attrValue(dec, key); !ok || v.AsString() != expected {
-			t.Errorf("decision attr %s = %q (present=%v), want %q", key, v.AsString(), ok, expected)
+		v, ok := attrValue(dec, key)
+		if !ok {
+			t.Errorf("decision attr %s missing", key)
+			continue
+		}
+		// AttrEnabled is a bool; compare via the rendered string for table reuse.
+		got := v.Emit()
+		if got != expected {
+			t.Errorf("decision attr %s = %q, want %q", key, got, expected)
+		}
+	}
+	// Policy values lift as ints.
+	for key, expected := range map[string]int64{
+		AttrPolicyBatteryThreshold:       0,
+		AttrPolicyMovementVarianceWindow: 0,
+		AttrPolicyMaxPerMinute:           100,
+	} {
+		if v, ok := attrValue(dec, key); !ok || v.AsInt64() != expected {
+			t.Errorf("decision attr %s = %d (present=%v), want %d", key, v.AsInt64(), ok, expected)
 		}
 	}
 	if v, ok := attrValue(dec, AttrDecisionBlocked); !ok || v.AsBool() {
@@ -303,7 +326,11 @@ func TestOnEvaluate_ConcurrentExportHandlers(t *testing.T) {
 }
 
 func TestOnEvaluate_RendersFitnessAndObjectives(t *testing.T) {
-	l, sr, _ := newTestLoop(t)
+	l, sr, fl := newTestLoop(t)
+	// agent.objectives is the cycle-level evaluated flag, lifted from the
+	// LayerState (#729); set it on the snapshot. The rules engine stamps the same
+	// normalized weights onto each Decision in production.
+	fl.snap.Objectives = map[string]float64{"endurance": 0.7, "balanced": 0.3}
 	l.Rules = fakeRules{out: []Decision{{
 		Intervention:    "adjust_music_tempo",
 		Reason:          "test",
