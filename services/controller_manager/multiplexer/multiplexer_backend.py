@@ -227,6 +227,17 @@ class MultiplexerBackend(ControllerBackend):
         adapter = self._serial_to_adapter.get(serial)
         return adapter.adapter_type if adapter else "unknown"
 
+    def get_controller_metadata(self, serial: str) -> dict | None:
+        """Return adapter-supplied metadata (e.g. reserved/tag) for a serial.
+
+        Delegates to the owning adapter's get_metadata() if it provides one
+        (the MockAdapter does). Returns None when unavailable.
+        """
+        adapter = self._serial_to_adapter.get(serial)
+        if adapter is not None and hasattr(adapter, "get_metadata"):
+            return adapter.get_metadata(serial)
+        return None
+
     def _cleanup_stale_state(self, seen: dict[str, ControllerIOAdapter]) -> None:
         """Remove centralized state for controllers no longer present."""
         stale = set(self._led_colors.keys()) - set(seen.keys())

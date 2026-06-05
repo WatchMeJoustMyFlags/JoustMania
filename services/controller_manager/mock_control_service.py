@@ -172,10 +172,23 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
             return controller_manager_mock_pb2.ResetResponse(success=False, error=str(e))
 
     def ListMockControllers(self, _request, _context):
-        """List all mock controller serials."""
+        """List all mock controllers with reserved/tag metadata.
+
+        The repeated ``controllers`` field lets tests/agents enumerate their
+        reserved controllers and sweep orphans by tag. The legacy ``serials``
+        field is kept for backward compatibility.
+        """
         try:
             serials = list(self.backend.controllers.keys())
-            return controller_manager_mock_pb2.ListResponse(serials=serials, count=len(serials))
+            infos = [
+                controller_manager_mock_pb2.MockControllerInfo(
+                    serial=serial,
+                    reserved=state.get("reserved", False),
+                    tag=state.get("tag", ""),
+                )
+                for serial, state in self.backend.controllers.items()
+            ]
+            return controller_manager_mock_pb2.ListResponse(serials=serials, count=len(serials), controllers=infos)
 
         except Exception as e:
             logger.error(f"ListMockControllers error: {e}")
@@ -263,11 +276,15 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
             return controller_manager_mock_pb2.GetColorResponse(success=False, error=str(e))
 
     def AddController(self, request, _context):
-        """Add a single mock controller dynamically."""
+        """Add a single mock controller dynamically.
+
+        When request.reserved is set, the controller is hidden from
+        button-stream consumers (the menu); request.tag identifies the owner.
+        """
         try:
             serial = request.serial if request.serial else None
-            added_serial = self.backend.add_controller(serial)
-            logger.info(f"Mock: Added controller {added_serial}")
+            added_serial = self.backend.add_controller(serial, reserved=request.reserved, tag=request.tag)
+            logger.info(f"Mock: Added controller {added_serial} (reserved={request.reserved}, tag={request.tag!r})")
             return controller_manager_mock_pb2.AddControllerResponse(success=True, serial=added_serial)
         except Exception as e:
             logger.error(f"AddController error: {e}")
@@ -289,13 +306,18 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
             return controller_manager_mock_pb2.RemoveControllerResponse(success=False, error=str(e))
 
     def AddControllers(self, request, _context):
-        """Add multiple mock controllers at once."""
+        """Add multiple mock controllers at once.
+
+        request.reserved/request.tag apply to every added controller.
+        """
         try:
             serials = []
             for _ in range(request.count):
-                serial = self.backend.add_controller()
+                serial = self.backend.add_controller(reserved=request.reserved, tag=request.tag)
                 serials.append(serial)
-            logger.info(f"Mock: Added {request.count} controllers: {serials}")
+            logger.info(
+                f"Mock: Added {request.count} controllers: {serials} (reserved={request.reserved}, tag={request.tag!r})"
+            )
             return controller_manager_mock_pb2.AddControllersResponse(success=True, serials=serials)
         except Exception as e:
             logger.error(f"AddControllers error: {e}")

@@ -20,10 +20,20 @@ from services.controller_manager.multiplexer.adapter import ControllerIOAdapter
 logger = logging.getLogger(__name__)
 
 
-def _create_controller_state(serial: str) -> dict:
-    """Create a new controller state dict with default values."""
+def _create_controller_state(serial: str, reserved: bool = False, tag: str = "") -> dict:
+    """Create a new controller state dict with default values.
+
+    Args:
+        serial: Controller serial number.
+        reserved: When True, the controller is hidden from button-stream
+            consumers (the menu). It stays fully usable via gameplay-data
+            streams and explicit-serial LED/feedback commands.
+        tag: Identifies the owning agent/game (orphan cleanup, debugging).
+    """
     return {
         StateKey.SERIAL: serial,
+        "reserved": reserved,
+        "tag": tag,
         StateKey.BATTERY: 100,
         StateKey.TRIGGER: 0,
         ButtonKey.MOVE: False,
@@ -194,16 +204,33 @@ class MockAdapter(ControllerIOAdapter):
 
     # -- Extra methods for MockControllerService --
 
-    def add_controller(self, serial: str | None = None) -> str:
-        """Add a new mock controller dynamically."""
+    def add_controller(self, serial: str | None = None, reserved: bool = False, tag: str = "") -> str:
+        """Add a new mock controller dynamically.
+
+        Args:
+            serial: Controller serial; auto-generated if None.
+            reserved: When True, hide the controller from button-stream
+                consumers (the menu). See _create_controller_state.
+            tag: Identifies the owning agent/game (orphan cleanup, debugging).
+        """
         if serial is None:
             serial = f"MOCK{len(self.controllers):04d}"
         if serial in self.controllers:
             logger.warning(f"Mock: Controller {serial} already exists")
             return serial
-        self.controllers[serial] = _create_controller_state(serial)
-        logger.info(f"Mock: Added controller {serial}")
+        self.controllers[serial] = _create_controller_state(serial, reserved=reserved, tag=tag)
+        logger.info(f"Mock: Added controller {serial} (reserved={reserved}, tag={tag!r})")
         return serial
+
+    def get_metadata(self, serial: str) -> dict | None:
+        """Return reserved/tag metadata for a controller, or None if unknown."""
+        controller = self.controllers.get(serial)
+        if not controller:
+            return None
+        return {
+            "reserved": controller.get("reserved", False),
+            "tag": controller.get("tag", ""),
+        }
 
     def remove_controller(self, serial: str) -> bool:
         """Remove a mock controller."""
