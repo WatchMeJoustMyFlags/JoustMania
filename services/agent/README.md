@@ -67,12 +67,60 @@ Sessions are not carried in every signal, so the Agent synthesizes them:
 After each context update the Agent evaluates `should_evaluate`. When the gate
 opens it invokes the decision hooks:
 
-- **Rules engine** (#726) — evaluates the `GameContext` into intervention intents.
-- **Action sink** (#730) — applies intents via OpenFeature/flagd.
+- **Rules engine** (#726) — `ObjectiveRules`, the objective-weighted decision
+  logic below. Active by default.
+- **Action sink** (#730) — applies intents via OpenFeature/flagd. **Still a
+  no-op**: decisions are traced, nothing is applied yet.
 
-Both are stubs today. See
-[`docs/research/722-intervention-surface.md`](../../docs/research/722-intervention-surface.md)
+See [`docs/research/722-intervention-surface.md`](../../docs/research/722-intervention-surface.md)
 for the intervention-surface design.
+
+## Rules engine (#726)
+
+`ObjectiveRules` is the `rules_decide(context, objectives)` path — the non-LLM
+intelligence and the final link of the inference fallback chain. Each rule
+yields candidates with an urgency (0–1) and the objective they serve; the
+final score is `urgency × weight[objective]`. Candidates below a minimum score
+(0.10) are dropped, the rest are admitted best-first (ties: cheaper first, then
+name) while the weighted budget allows — at most 2 decisions per evaluation,
+and the rule set runs at most once per second.
+
+| Rule | Objective | Trigger | Intervention |
+|------|-----------|---------|--------------|
+| R1/R2 | endurance | session younger than `fitness.endurance.min_session_seconds` while players are eliminated | `adjust_music_tempo` (slow) / `play_audio_cue` |
+| R3 | balanced | skill spread > `fitness.balanced.max_skill_gap` | `adjust_player_sensitivity` → highest-skill outlier |
+| R4 | balanced | weakest player while the field shrinks (needs ≥ 2 players with known skill — "weakest" is only meaningful relative to others) | `grant_shield` → weakest |
+| R5 | accelerate | duration > `fitness.accelerate.target_session_seconds` | `adjust_music_tempo` (fast) |
+| R6 | accelerate | duration > 1.5× target, > 2 players | `eliminate_player` → least active |
+| R7 | accelerate | duration > 2× target **and accelerate strictly dominant** (a tie never ends a game) | `end_game` |
+| R8 | chaos | movement variance ≈ 0 ("statue") — dormant until producers ship the variance metric | `send_controller_effect` |
+| R9 | chaos | periodic random nudge (injectable rng) | `send_controller_effect` |
+
+**Policy constraints** (`policy.*` flags):
+
+- `battery_threshold` (20): players below it lose controller effects and
+  difficulty raises; session-wide demand raises are blocked while *anyone* is
+  low; `eliminate_player` of a low-battery player stays available only as the
+  accelerate-dominant graceful exit.
+- `movement_variance_window` (10s): ALL chaos candidates (variance-triggered
+  statue nudges and the random R9 nudge alike) are suppressed for one window
+  after any difficulty intervention — the variance baseline is invalid, and a
+  random rumble right after a tempo change would muddy attribution of the
+  difficulty intervention's effect.
+- `max_interventions_per_minute` (2): a **weighted** sliding-window budget per
+  the [#722 research §5](../../docs/research/722-intervention-surface.md):
+  soft 0.5 (audio cue, controller effect, volume), medium 1 (tempo, player
+  sensitivity, shield), hard 2 (global sensitivity, eliminate, revive,
+  end_game). The engine charges every decision it **emits**, including ones
+  the permission layer later blocks — it cannot see permissions (layering),
+  and the game coordinator's flag-application layer (#730) is the
+  authoritative backstop.
+
+**Configuration seam (#727):** objectives, policy, and fitness thresholds come
+from the `ObjectivesSource` / `PolicySource` / `FitnessSource` interfaces
+(`decision/config.go`). Until #727 wires OpenFeature, `DefaultStaticConfig()`
+supplies the flagd-schema defaults with objectives `{endurance: 1.0}` (the
+flag's own `balanced_focused` default surfaces once the flag is actually read).
 
 ## Span schema (#724) — the trace is the audit log
 

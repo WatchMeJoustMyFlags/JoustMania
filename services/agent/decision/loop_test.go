@@ -282,3 +282,34 @@ func TestOnEvaluate_ConcurrentExportHandlers(t *testing.T) {
 		t.Fatalf("root spans = %d, want 50", got)
 	}
 }
+
+func TestOnEvaluate_RendersFitnessAndObjectives(t *testing.T) {
+	l, sr := newTestLoop(t)
+	l.Rules = fakeRules{out: []Decision{{
+		Intervention:    "adjust_music_tempo",
+		Reason:          "test",
+		ObjectiveServed: "accelerate",
+		Fitness:         map[string]float64{"session_duration": 95, "target_session_seconds": 60},
+		Objectives:      map[string]float64{"endurance": 0.7, "balanced": 0.3},
+	}}}
+	l.Actions = &fakeSink{}
+
+	l.OnEvaluate(context.Background(), gamecontext.GameContext{}, testTrigger())
+
+	dec := spansByName(sr.Ended(), SpanDecision)[0]
+	if v, ok := attrValue(dec, AttrObjectives); !ok || v.AsString() != "balanced=0.3,endurance=0.7" {
+		t.Errorf("agent.objectives = %q, want sorted weight summary", v.AsString())
+	}
+	if v, ok := attrValue(dec, AttrDecisionObjective); !ok || v.AsString() != "accelerate" {
+		t.Errorf("decision.objective_served = %q, want accelerate", v.AsString())
+	}
+	v, ok := attrValue(dec, AttrFitnessEvaluated)
+	if !ok {
+		t.Fatal("fitness.evaluated missing")
+	}
+	got := v.AsStringSlice()
+	want := []string{"session_duration=95", "target_session_seconds=60"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("fitness.evaluated = %v, want %v", got, want)
+	}
+}
