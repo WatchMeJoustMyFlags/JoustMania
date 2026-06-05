@@ -138,12 +138,14 @@ class TournamentGame(BaseGameMode):
         # constants. A 0s match would break play, so it must be strictly positive;
         # a 0s inter-match pause is acceptable.
         match_seconds = resolve_non_negative_duration(
-            read_float_flag("game", "tournament.match_seconds", MATCH_DURATION),
+            read_float_flag("game", "tournament.match_seconds", MATCH_DURATION, game_id=self.game_id),
             MATCH_DURATION,
         )
         self._match_duration: float = match_seconds if match_seconds > 0 else MATCH_DURATION
         self._time_between_matches: float = resolve_non_negative_duration(
-            read_float_flag("game", "tournament.time_between_matches_seconds", TIME_BETWEEN_MATCHES),
+            read_float_flag(
+                "game", "tournament.time_between_matches_seconds", TIME_BETWEEN_MATCHES, game_id=self.game_id
+            ),
             TIME_BETWEEN_MATCHES,
         )
 

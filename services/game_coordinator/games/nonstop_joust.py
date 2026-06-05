@@ -140,15 +140,17 @@ class NonstopJoustGame(BaseGameMode):
         # to game flags. Read ONCE here (init-frozen); malformed values fall back
         # to the module constants (the source of truth).
         self.respawn_duration = resolve_non_negative_duration(
-            read_float_flag("game", "nonstop.respawn_seconds", RESPAWN_DURATION),
+            read_float_flag("game", "nonstop.respawn_seconds", RESPAWN_DURATION, game_id=self.game_id),
             RESPAWN_DURATION,
         )
         self.spawn_protection_duration = resolve_non_negative_duration(
-            read_float_flag("game", "nonstop.spawn_protection_seconds", SPAWN_PROTECTION_DURATION),
+            read_float_flag(
+                "game", "nonstop.spawn_protection_seconds", SPAWN_PROTECTION_DURATION, game_id=self.game_id
+            ),
             SPAWN_PROTECTION_DURATION,
         )
         self.score_base, self.score_death_penalty = resolve_scoring(
-            read_object_flag("game", "nonstop.scoring", {}),
+            read_object_flag("game", "nonstop.scoring", {}, game_id=self.game_id),
             SCORE_BASE,
             SCORE_DEATH_PENALTY,
         )

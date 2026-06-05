@@ -205,7 +205,7 @@ def test_windows_read_once_and_frozen():
     }
     with patch(
         "services.game_coordinator.games.base.read_object_flag",
-        side_effect=lambda _domain, key, default: custom if key == "windows" else default,
+        side_effect=lambda _domain, key, default, _game_id=None: custom if key == "windows" else default,
     ) as mock_read:
         game = _make_ffa()
     assert game.music_windows.fast_min == 2.0
@@ -217,7 +217,7 @@ def test_windows_read_once_and_frozen():
 def test_malformed_flag_instance_falls_back():
     with patch(
         "services.game_coordinator.games.base.read_object_flag",
-        side_effect=lambda _domain, key, default: "garbage" if key == "windows" else default,
+        side_effect=lambda _domain, key, default, _game_id=None: "garbage" if key == "windows" else default,
     ):
         game = _make_ffa()
     assert game.music_windows == MusicWindows.defaults()
