@@ -338,6 +338,17 @@ func (p *GameCoordinatorProxy) GetGameState(
 	return connect.NewResponse(resp), nil
 }
 
+func (p *GameCoordinatorProxy) ListGames(
+	ctx context.Context,
+	req *connect.Request[gamepb.ListGamesRequest],
+) (*connect.Response[gamepb.ListGamesResponse], error) {
+	resp, err := p.client.ListGames(ctx, req.Msg)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
 // MenuProxy implements the Connect handler by proxying to gRPC
 type MenuProxy struct {
 	client menupb.MenuServiceClient

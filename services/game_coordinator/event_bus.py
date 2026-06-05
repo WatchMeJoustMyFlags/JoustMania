@@ -59,6 +59,12 @@ class EventBus:
         # Single asyncio.Lock for all _subscribers access (subscribe, unsubscribe, publish)
         self._event_lock = asyncio.Lock()
         self._state_sync_callback = state_sync_callback
+        # game_id stamped onto every published GameEvent (#776). MUTABLE because
+        # the persistent primary bus outlives sessions: the primary session sets
+        # this when it binds and the servicer clears it on retire, so a game_id
+        # fixed at construction would be wrong for the long-lived primary bus.
+        # Empty string => no game bound (events published while idle).
+        self.current_game_id: str = ""
 
     @property
     def subscriber_count(self) -> int:
@@ -140,11 +146,13 @@ class EventBus:
         if "tracestate" in carrier:
             string_data["_tracestate"] = carrier["tracestate"]
 
-        # Create protobuf event
+        # Create protobuf event, stamped with the game_id this bus is bound to
+        # (#776). Empty when no game is bound (e.g. primary bus while idle).
         event = game_coordinator_pb2.GameEvent(
             event_type=event_type,
             data=string_data,
             timestamp=int(time.time() * 1000),
+            game_id=self.current_game_id,
         )
 
         # Publish to all subscribers (put_nowait is thread-safe for asyncio.Queue)

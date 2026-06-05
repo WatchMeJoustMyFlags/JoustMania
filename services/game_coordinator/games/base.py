@@ -455,6 +455,16 @@ class BaseGameMode(ABC):
             game_id = f"{mode_prefix}_{int(time.time())}"
         self.game_id = game_id
 
+        # Multi-session bookkeeping (#775). The servicer overrides these on the
+        # game instance after construction based on the owning GameSession. They
+        # default to the single-game/primary values so a standalone game (and
+        # every existing test) behaves exactly as before:
+        #   game_kind: "primary" or "shadow" — labels lifecycle metrics.
+        #   _reset_global_gauges_on_end: only the primary session resets the
+        #     single-game state gauges (music_tempo, sensitivity, thresholds).
+        self.game_kind = "primary"
+        self._reset_global_gauges_on_end = True
+
         # Game state
         self.state = GameState.IDLE
         self.players: dict[str, Player] = {}
@@ -1954,8 +1964,14 @@ class BaseGameMode(ABC):
                 # Cleanup stream reference after winner effects are sent
                 self.gameplay_stream = None
 
-                # Clear all analytics metrics so dashboards show no data when game is over
-                metrics.clear_all_player_analytics()
+                # Clear THIS session's analytics so dashboards show no data when
+                # the game is over, without clobbering other concurrent sessions
+                # (#775). Only the primary session resets the single-game gauges.
+                metrics.clear_session_player_analytics(
+                    list(self.players.keys()),
+                    self.game_id,
+                    reset_global_gauges=self._reset_global_gauges_on_end,
+                )
 
         except Exception as e:
             logger.error(f"{self.get_game_name()} game error: {e}", exc_info=True)
@@ -1980,8 +1996,13 @@ class BaseGameMode(ABC):
                 await self.on_force_end()
             # Always call cleanup to cancel tracked tasks
             await self.cleanup()
-            # Ensure analytics are always cleared, even on error
-            metrics.clear_all_player_analytics()
+            # Ensure this session's analytics are always cleared, even on error
+            # (#775) — per-session targeted cleanup, never a global wipe.
+            metrics.clear_session_player_analytics(
+                list(self.players.keys()),
+                self.game_id,
+                reset_global_gauges=self._reset_global_gauges_on_end,
+            )
             logger.info(f"{self.get_game_name()} game finished: {self.game_id}")
 
     # ========================================================================

@@ -9,12 +9,16 @@ Tests the game lifecycle management:
 - Error handling
 
 Issue #209: Improve test coverage for critical game flow
+Issue #775: multi-session refactor — the game loop lifecycle moved to
+GameSession (see test_game_session.py); these tests now drive the servicer's
+session registry. State is advanced via the session's EventBus (publish
+GAME_STARTED) rather than poking servicer globals, since the servicer exposes
+primary-session state through read-only properties.
 """
 
 import sys
-import time
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -25,8 +29,13 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
+from lib.types import GameEvent
 from proto import game_coordinator_pb2
+from services.game_coordinator import game_session as game_session_mod
 from services.game_coordinator.servicer import GameCoordinatorServicer
+
+# Stops the real game thread from spinning while still registering the session.
+_NO_THREAD = patch.object(game_session_mod.GameSession, "start_thread", lambda _self: None)
 
 
 class MockGrpcContext:
@@ -63,11 +72,26 @@ class MockSpan:
         pass
 
 
+def _config(game_name="FFA", serials=("p1", "p2"), sensitivity=2, **kwargs):
+    return game_coordinator_pb2.StartGameConfig(
+        game_name=game_name,
+        players=[game_coordinator_pb2.Player(serial=s) for s in serials],
+        sensitivity=sensitivity,
+        **kwargs,
+    )
+
+
+async def _advance_to_running(servicer, game_id):
+    """Publish GAME_STARTED on the session bus to transition it to RUNNING."""
+    session = servicer.sessions[game_id]
+    await session.event_bus.publish(GameEvent.GAME_STARTED, {"game_id": game_id})
+
+
 class TestGameCoordinatorInit:
     """Tests for GameCoordinatorServicer initialization."""
 
     def test_initial_state_is_idle(self):
-        """Servicer should start in IDLE state."""
+        """Servicer should start in IDLE state (no primary session)."""
         servicer = GameCoordinatorServicer()
         assert servicer.game_state == game_coordinator_pb2.GameState.IDLE
 
@@ -75,12 +99,12 @@ class TestGameCoordinatorInit:
         """No game should be running on init."""
         servicer = GameCoordinatorServicer()
         assert servicer.current_game is None
-        assert servicer.game_running is False
+        assert servicer.game_id is None
 
-    def test_empty_players_on_init(self):
-        """Players list should be empty on init."""
+    def test_empty_sessions_on_init(self):
+        """Session registry should be empty on init."""
         servicer = GameCoordinatorServicer()
-        assert len(servicer.players) == 0
+        assert len(servicer.sessions) == 0
 
 
 class TestStartGameValidation:
@@ -88,175 +112,94 @@ class TestStartGameValidation:
 
     @pytest.fixture
     def servicer(self):
-        """Create servicer for testing."""
         return GameCoordinatorServicer()
 
     @pytest.mark.asyncio
     async def test_rejects_less_than_two_players(self, servicer):
         """Should reject game start with less than 2 players."""
-        config = game_coordinator_pb2.StartGameConfig(
-            game_name="FFA",
-            players=[game_coordinator_pb2.Player(serial="p1")],  # Only 1 player
-            sensitivity=2,
-        )
-        mock_span = MockSpan()
-
-        success, error = await servicer._start_game_from_config(config, mock_span)
-
+        config = _config(serials=("p1",))
+        success, error = await servicer._start_game_from_config(config, MockSpan())
         assert success is False
         assert "at least 2 players" in error.lower()
 
     @pytest.mark.asyncio
     async def test_rejects_zero_players(self, servicer):
         """Should reject game start with zero players."""
-        config = game_coordinator_pb2.StartGameConfig(
-            game_name="FFA",
-            players=[],  # No players
-            sensitivity=2,
-        )
-        mock_span = MockSpan()
-
-        success, error = await servicer._start_game_from_config(config, mock_span)
-
+        config = game_coordinator_pb2.StartGameConfig(game_name="FFA", players=[], sensitivity=2)
+        success, error = await servicer._start_game_from_config(config, MockSpan())
         assert success is False
         assert "at least 2 players" in error.lower()
 
     @pytest.mark.asyncio
     async def test_accepts_two_players(self, servicer):
         """Should accept game start with exactly 2 players."""
-        config = game_coordinator_pb2.StartGameConfig(
-            game_name="FFA",
-            players=[
-                game_coordinator_pb2.Player(serial="p1"),
-                game_coordinator_pb2.Player(serial="p2"),
-            ],
-            sensitivity=2,
-        )
-        mock_span = MockSpan()
-
-        # Patch the background thread to not actually start
-        with patch.object(servicer, "_run_game_loop_threaded"):
-            success, game_id = await servicer._start_game_from_config(config, mock_span)
-
+        with _NO_THREAD:
+            success, game_id = await servicer._start_game_from_config(_config(), MockSpan())
         assert success is True
         assert game_id.startswith("game_")
 
     @pytest.mark.asyncio
     async def test_accepts_many_players(self, servicer):
         """Should accept game start with many players."""
-        config = game_coordinator_pb2.StartGameConfig(
-            game_name="FFA",
-            players=[game_coordinator_pb2.Player(serial=f"p{i}") for i in range(8)],
-            sensitivity=2,
-        )
-        mock_span = MockSpan()
-
-        with patch.object(servicer, "_run_game_loop_threaded"):
-            success, game_id = await servicer._start_game_from_config(config, mock_span)
-
+        config = _config(serials=tuple(f"p{i}" for i in range(8)))
+        with _NO_THREAD:
+            success, game_id = await servicer._start_game_from_config(config, MockSpan())
         assert success is True
-        assert len(servicer.players) == 8
+        assert len(servicer.sessions[game_id].players) == 8
 
     @pytest.mark.asyncio
     async def test_rejects_start_when_already_running(self, servicer):
-        """Should reject second game start when game already running."""
-        # First game start
-        config1 = game_coordinator_pb2.StartGameConfig(
-            game_name="FFA",
-            players=[
-                game_coordinator_pb2.Player(serial="p1"),
-                game_coordinator_pb2.Player(serial="p2"),
-            ],
-            sensitivity=2,
-        )
-        mock_span = MockSpan()
-
-        with patch.object(servicer, "_run_game_loop_threaded"):
-            success1, _ = await servicer._start_game_from_config(config1, mock_span)
+        """Should reject second game start when game already running (cap=1)."""
+        with _NO_THREAD:
+            success1, gid1 = await servicer._start_game_from_config(_config(), MockSpan())
             assert success1 is True
+            await _advance_to_running(servicer, gid1)
 
-        # Simulate game is running
-        servicer.game_state = game_coordinator_pb2.GameState.RUNNING
-
-        # Second game start should fail
-        config2 = game_coordinator_pb2.StartGameConfig(
-            game_name="Teams",
-            players=[
-                game_coordinator_pb2.Player(serial="p3"),
-                game_coordinator_pb2.Player(serial="p4"),
-            ],
-            sensitivity=2,
-        )
-
-        success2, error = await servicer._start_game_from_config(config2, mock_span)
-
+            success2, error = await servicer._start_game_from_config(
+                _config(game_name="Teams", serials=("p3", "p4")), MockSpan()
+            )
         assert success2 is False
         assert "already in progress" in error.lower()
 
     @pytest.mark.asyncio
     async def test_rejects_start_when_starting(self, servicer):
-        """Should reject game start when another game is starting."""
-        servicer.game_state = game_coordinator_pb2.GameState.STARTING
-
-        config = game_coordinator_pb2.StartGameConfig(
-            game_name="FFA",
-            players=[
-                game_coordinator_pb2.Player(serial="p1"),
-                game_coordinator_pb2.Player(serial="p2"),
-            ],
-            sensitivity=2,
-        )
-        mock_span = MockSpan()
-
-        success, error = await servicer._start_game_from_config(config, mock_span)
-
-        assert success is False
+        """Should reject game start when another game occupies the only slot."""
+        with _NO_THREAD:
+            success1, _ = await servicer._start_game_from_config(_config(), MockSpan())
+            assert success1 is True
+            # Session sits in STARTING (no GAME_STARTED published yet).
+            success2, error = await servicer._start_game_from_config(_config(serials=("p3", "p4")), MockSpan())
+        assert success2 is False
         assert "already in progress" in error.lower()
 
     @pytest.mark.asyncio
-    async def test_generates_unique_game_id(self, servicer):
-        """Should generate unique game IDs."""
-        config = game_coordinator_pb2.StartGameConfig(
-            game_name="FFA",
-            players=[
-                game_coordinator_pb2.Player(serial="p1"),
-                game_coordinator_pb2.Player(serial="p2"),
-            ],
-            sensitivity=2,
-        )
-        mock_span = MockSpan()
-
-        with patch.object(servicer, "_run_game_loop_threaded"):
-            success, game_id = await servicer._start_game_from_config(config, mock_span)
-
+    async def test_generates_uuid_game_id(self, servicer):
+        """Should generate a uuid-based game ID (collision-safe)."""
+        with _NO_THREAD:
+            success, game_id = await servicer._start_game_from_config(_config(), MockSpan())
         assert success is True
-        assert game_id is not None
         assert game_id.startswith("game_")
-        # Game ID should contain timestamp
+        # uuid hex[:12] -> 12 hex chars after the prefix.
+        suffix = game_id[len("game_") :]
+        assert len(suffix) == 12
         assert servicer.game_id == game_id
 
     @pytest.mark.asyncio
     async def test_stores_game_config(self, servicer):
         """Should store game configuration on start."""
-        config = game_coordinator_pb2.StartGameConfig(
+        config = _config(
             game_name="JoustTeams",
-            players=[
-                game_coordinator_pb2.Player(serial="p1"),
-                game_coordinator_pb2.Player(serial="p2"),
-            ],
-            sensitivity=3,  # FAST
+            sensitivity=3,
             teams_config=game_coordinator_pb2.TeamsConfig(num_teams=2, random_assignment=True),
         )
-        mock_span = MockSpan()
+        with _NO_THREAD:
+            _, game_id = await servicer._start_game_from_config(config, MockSpan())
 
-        with patch.object(servicer, "_run_game_loop_threaded"):
-            await servicer._start_game_from_config(config, mock_span)
-
-        assert servicer.game_name == "JoustTeams"
-        assert len(servicer.players) == 2
-        # game_config is now stored instead of settings dict
-        assert servicer.game_config.sensitivity == 3
-        assert servicer.game_config.teams_config.num_teams == 2
+        session = servicer.sessions[game_id]
+        assert session.game_name == "JoustTeams"
+        assert len(session.players) == 2
+        assert session.game_config.sensitivity == 3
+        assert session.game_config.teams_config.num_teams == 2
 
 
 class TestForceEndGame:
@@ -264,49 +207,39 @@ class TestForceEndGame:
 
     @pytest.fixture
     def servicer(self):
-        """Create servicer for testing."""
         return GameCoordinatorServicer()
 
     @pytest.mark.asyncio
     async def test_force_end_no_game_running(self, servicer):
         """ForceEndGame should fail gracefully when no game running."""
         request = game_coordinator_pb2.ForceEndGameRequest(reason="test")
-        context = MockGrpcContext()
-
-        response = await servicer.ForceEndGame(request, context)
-
+        response = await servicer.ForceEndGame(request, MockGrpcContext())
         assert response.success is False
         assert "no game in progress" in response.error.lower()
 
     @pytest.mark.asyncio
     async def test_force_end_idle_state(self, servicer):
-        """ForceEndGame should fail when state is IDLE."""
+        """ForceEndGame should fail when no primary session exists."""
         assert servicer.game_state == game_coordinator_pb2.GameState.IDLE
-
-        request = game_coordinator_pb2.ForceEndGameRequest(reason="test")
-        context = MockGrpcContext()
-
-        response = await servicer.ForceEndGame(request, context)
-
+        response = await servicer.ForceEndGame(
+            game_coordinator_pb2.ForceEndGameRequest(reason="test"), MockGrpcContext()
+        )
         assert response.success is False
 
     @pytest.mark.asyncio
     async def test_force_end_running_game(self, servicer):
         """ForceEndGame should succeed when game is running."""
-        # Set up running state
-        servicer.game_state = game_coordinator_pb2.GameState.RUNNING
-        servicer.game_running = True
-        servicer.game_id = "test_game_123"
+        with _NO_THREAD:
+            _, gid = await servicer._start_game_from_config(_config(), MockSpan())
+            await _advance_to_running(servicer, gid)
 
-        # Mock current game with force_end method
+        # Attach a mock live game so force_end() is invoked on it.
         mock_game = MagicMock()
-        servicer.current_game = mock_game
+        servicer.sessions[gid].current_game = mock_game
 
-        request = game_coordinator_pb2.ForceEndGameRequest(reason="user requested")
-        context = MockGrpcContext()
-
-        response = await servicer.ForceEndGame(request, context)
-
+        response = await servicer.ForceEndGame(
+            game_coordinator_pb2.ForceEndGameRequest(reason="user requested"), MockGrpcContext()
+        )
         assert response.success is True
         assert response.error == ""
         mock_game.force_end.assert_called_once()
@@ -314,31 +247,25 @@ class TestForceEndGame:
     @pytest.mark.asyncio
     async def test_force_end_starting_game(self, servicer):
         """ForceEndGame should succeed when game is starting."""
-        servicer.game_state = game_coordinator_pb2.GameState.STARTING
-        servicer.game_running = True
-        servicer.game_id = "test_game_456"
+        with _NO_THREAD:
+            await servicer._start_game_from_config(_config(), MockSpan())
 
-        request = game_coordinator_pb2.ForceEndGameRequest(reason="cancelled")
-        context = MockGrpcContext()
-
-        response = await servicer.ForceEndGame(request, context)
-
+        response = await servicer.ForceEndGame(
+            game_coordinator_pb2.ForceEndGameRequest(reason="cancelled"), MockGrpcContext()
+        )
         assert response.success is True
-        assert servicer.game_state == game_coordinator_pb2.GameState.ENDED
+        # Primary slot freed after end -> IDLE.
+        assert servicer.game_state == game_coordinator_pb2.GameState.IDLE
 
     @pytest.mark.asyncio
-    async def test_force_end_transitions_to_ended(self, servicer):
-        """ForceEndGame should transition state to ENDED."""
-        servicer.game_state = game_coordinator_pb2.GameState.RUNNING
-        servicer.game_running = True
-        servicer.game_id = "test_game"
-
-        request = game_coordinator_pb2.ForceEndGameRequest(reason="test")
-        context = MockGrpcContext()
-
-        await servicer.ForceEndGame(request, context)
-
-        assert servicer.game_state == game_coordinator_pb2.GameState.ENDED
+    async def test_force_end_frees_primary_slot(self, servicer):
+        """After force-end, a new primary game can start."""
+        with _NO_THREAD:
+            await servicer._start_game_from_config(_config(), MockSpan())
+            await servicer.ForceEndGame(game_coordinator_pb2.ForceEndGameRequest(reason="test"), MockGrpcContext())
+            # A new game can now claim the primary slot.
+            success, _ = await servicer._start_game_from_config(_config(serials=("p3", "p4")), MockSpan())
+        assert success is True
 
 
 class TestGetGameState:
@@ -346,17 +273,12 @@ class TestGetGameState:
 
     @pytest.fixture
     def servicer(self):
-        """Create servicer for testing."""
         return GameCoordinatorServicer()
 
     @pytest.mark.asyncio
     async def test_get_state_idle(self, servicer):
         """GetGameState should return IDLE state when no game."""
-        request = game_coordinator_pb2.GetGameStateRequest()
-        context = MockGrpcContext()
-
-        response = await servicer.GetGameState(request, context)
-
+        response = await servicer.GetGameState(game_coordinator_pb2.GetGameStateRequest(), MockGrpcContext())
         assert response.success is True
         assert response.game_info.state == game_coordinator_pb2.GameState.IDLE
         assert response.game_info.game_mode == ""
@@ -364,29 +286,23 @@ class TestGetGameState:
     @pytest.mark.asyncio
     async def test_get_state_running(self, servicer):
         """GetGameState should return game info when running."""
-        servicer.game_state = game_coordinator_pb2.GameState.RUNNING
-        servicer.game_name = "FFA"
-        servicer.game_id = "game_123"
-        servicer.game_start_time = time.time()
+        with _NO_THREAD:
+            _, gid = await servicer._start_game_from_config(_config(game_name="FFA"), MockSpan())
+            await _advance_to_running(servicer, gid)
 
-        request = game_coordinator_pb2.GetGameStateRequest()
-        context = MockGrpcContext()
-
-        response = await servicer.GetGameState(request, context)
-
+        response = await servicer.GetGameState(game_coordinator_pb2.GetGameStateRequest(), MockGrpcContext())
         assert response.success is True
         assert response.game_info.state == game_coordinator_pb2.GameState.RUNNING
         assert response.game_info.game_mode == "FFA"
-        assert response.game_info.game_id == "game_123"
+        assert response.game_info.game_id == gid
 
     @pytest.mark.asyncio
     async def test_get_state_with_players(self, servicer):
         """GetGameState should return player info when game has players."""
-        servicer.game_state = game_coordinator_pb2.GameState.RUNNING
-        servicer.game_name = "Teams"
-        servicer.game_id = "game_456"
+        with _NO_THREAD:
+            _, gid = await servicer._start_game_from_config(_config(game_name="Teams"), MockSpan())
+            await _advance_to_running(servicer, gid)
 
-        # Mock current game with players
         mock_game = MagicMock()
         mock_player1 = MagicMock()
         mock_player1.team = 0
@@ -400,74 +316,58 @@ class TestGetGameState:
         mock_player2.alive = False
         mock_player2.sensitivity_factor = 1.5
 
-        mock_game.players = {
-            "serial_1": mock_player1,
-            "serial_2": mock_player2,
-        }
+        mock_game.players = {"serial_1": mock_player1, "serial_2": mock_player2}
+        servicer.sessions[gid].current_game = mock_game
 
-        servicer.current_game = mock_game
-
-        request = game_coordinator_pb2.GetGameStateRequest()
-        context = MockGrpcContext()
-
-        response = await servicer.GetGameState(request, context)
-
+        response = await servicer.GetGameState(game_coordinator_pb2.GetGameStateRequest(), MockGrpcContext())
         assert response.success is True
         assert len(response.game_info.players) == 2
-
-        # Check player info
         player_serials = {p.serial for p in response.game_info.players}
-        assert "serial_1" in player_serials
-        assert "serial_2" in player_serials
+        assert player_serials == {"serial_1", "serial_2"}
 
 
 class TestEventStateSync:
-    """Tests for event-driven state synchronization."""
+    """Tests for event-driven state synchronization (primary session)."""
 
     @pytest.fixture
     def servicer(self):
-        """Create servicer for testing."""
         return GameCoordinatorServicer()
 
-    def test_game_started_transitions_to_running(self, servicer):
-        """GAME_STARTED event should transition state to RUNNING."""
-        from lib.types import GameEvent
-
-        servicer.game_state = game_coordinator_pb2.GameState.STARTING
-
-        servicer._on_event_state_sync(GameEvent.GAME_STARTED)
-
+    @pytest.mark.asyncio
+    async def test_game_started_transitions_to_running(self, servicer):
+        """GAME_STARTED on the primary bus transitions the primary to RUNNING."""
+        with _NO_THREAD:
+            _, gid = await servicer._start_game_from_config(_config(), MockSpan())
+        servicer._on_primary_event_state_sync(GameEvent.GAME_STARTED)
         assert servicer.game_state == game_coordinator_pb2.GameState.RUNNING
 
-    def test_game_ended_transitions_to_ended(self, servicer):
-        """Game ending events should transition state to ENDED."""
-        from lib.types import GameEvent
-
-        servicer.game_state = game_coordinator_pb2.GameState.RUNNING
-
-        servicer._on_event_state_sync(GameEvent.GAME_ENDED)
-
+    @pytest.mark.asyncio
+    async def test_game_ended_transitions_to_ended(self, servicer):
+        """Game ending events transition the primary to ENDED."""
+        with _NO_THREAD:
+            await servicer._start_game_from_config(_config(), MockSpan())
+        servicer._on_primary_event_state_sync(GameEvent.GAME_ENDED)
         assert servicer.game_state == game_coordinator_pb2.GameState.ENDED
 
-    def test_game_force_ended_transitions_to_ended(self, servicer):
-        """GAME_FORCE_ENDED event should transition state to ENDED."""
-        from lib.types import GameEvent
-
-        servicer.game_state = game_coordinator_pb2.GameState.RUNNING
-
-        servicer._on_event_state_sync(GameEvent.GAME_FORCE_ENDED)
-
+    @pytest.mark.asyncio
+    async def test_game_force_ended_transitions_to_ended(self, servicer):
+        with _NO_THREAD:
+            await servicer._start_game_from_config(_config(), MockSpan())
+        servicer._on_primary_event_state_sync(GameEvent.GAME_FORCE_ENDED)
         assert servicer.game_state == game_coordinator_pb2.GameState.ENDED
 
-    def test_game_error_transitions_to_ended(self, servicer):
-        """GAME_ERROR event should transition state to ENDED."""
-        from lib.types import GameEvent
-
-        servicer.game_state = game_coordinator_pb2.GameState.RUNNING
-
-        servicer._on_event_state_sync(GameEvent.GAME_ERROR)
-
+    @pytest.mark.asyncio
+    async def test_game_error_transitions_to_ended(self, servicer):
+        with _NO_THREAD:
+            await servicer._start_game_from_config(_config(), MockSpan())
+        servicer._on_primary_event_state_sync(GameEvent.GAME_ERROR)
         assert servicer.game_state == game_coordinator_pb2.GameState.ENDED
+
+    def test_state_sync_noop_without_primary(self, servicer):
+        """State-sync callback no-ops when no primary session is live."""
+        # Should not raise.
+        servicer._on_primary_event_state_sync(GameEvent.GAME_STARTED)
+        assert servicer.game_state == game_coordinator_pb2.GameState.IDLE
 
 
 class TestShutdown:
@@ -475,27 +375,28 @@ class TestShutdown:
 
     @pytest.fixture
     def servicer(self):
-        """Create servicer for testing."""
         return GameCoordinatorServicer()
 
     @pytest.mark.asyncio
-    async def test_shutdown_sets_game_running_false(self, servicer):
-        """Shutdown should set game_running to False."""
-        servicer.game_running = True
-
+    async def test_shutdown_no_sessions(self, servicer):
+        """Shutdown with no sessions should complete cleanly."""
         await servicer.shutdown()
-
-        assert servicer.game_running is False
+        assert len(servicer.sessions) == 0
 
     @pytest.mark.asyncio
-    async def test_shutdown_closes_clients(self, servicer):
-        """Shutdown should close gRPC clients."""
-        # Mock clients.close()
-        servicer.clients.close = AsyncMock()
+    async def test_shutdown_joins_sessions(self, servicer):
+        """Shutdown should join each registered session's thread."""
+        with _NO_THREAD:
+            _, gid = await servicer._start_game_from_config(_config(), MockSpan())
+
+        # Replace join_thread with an awaitable spy.
+        from unittest.mock import AsyncMock
+
+        servicer.sessions[gid].join_thread = AsyncMock()
 
         await servicer.shutdown()
 
-        servicer.clients.close.assert_called_once()
+        servicer.sessions[gid].join_thread.assert_awaited_once()
 
 
 class TestGameNameHandling:
@@ -503,52 +404,25 @@ class TestGameNameHandling:
 
     @pytest.fixture
     def servicer(self):
-        """Create servicer for testing."""
         return GameCoordinatorServicer()
 
     @pytest.mark.asyncio
     async def test_valid_game_names_accepted(self, servicer):
-        """Known game types should be accepted."""
+        """Known game types should pass initial validation."""
         valid_names = ["FFA", "Teams", "Zombie", "Werewolf", "Tournament"]
-
         for name in valid_names:
-            config = game_coordinator_pb2.StartGameConfig(
-                game_name=name,
-                players=[
-                    game_coordinator_pb2.Player(serial="p1"),
-                    game_coordinator_pb2.Player(serial="p2"),
-                ],
-                sensitivity=2,
-            )
-            mock_span = MockSpan()
-
-            # Reset state for each test
-            servicer.game_state = game_coordinator_pb2.GameState.IDLE
-            servicer.game_running = False
-
-            with patch.object(servicer, "_run_game_loop_threaded"):
-                success, result = await servicer._start_game_from_config(config, mock_span)
-
-            # Valid game names should succeed initial validation
+            with _NO_THREAD:
+                success, gid = await servicer._start_game_from_config(_config(game_name=name), MockSpan())
             assert success is True, f"Game type {name} should be accepted"
+            # Free the slot for the next iteration.
+            await servicer.ForceEndGame(game_coordinator_pb2.ForceEndGameRequest(reason="next"), MockGrpcContext())
 
     @pytest.mark.asyncio
     async def test_game_name_stored_correctly(self, servicer):
-        """Game name should be stored in servicer."""
-        config = game_coordinator_pb2.StartGameConfig(
-            game_name="FFA",
-            players=[
-                game_coordinator_pb2.Player(serial="p1"),
-                game_coordinator_pb2.Player(serial="p2"),
-            ],
-            sensitivity=2,
-        )
-        mock_span = MockSpan()
-
-        with patch.object(servicer, "_run_game_loop_threaded"):
-            await servicer._start_game_from_config(config, mock_span)
-
-        assert servicer.game_name == "FFA"
+        """Game name should be stored on the session."""
+        with _NO_THREAD:
+            _, gid = await servicer._start_game_from_config(_config(game_name="FFA"), MockSpan())
+        assert servicer.sessions[gid].game_name == "FFA"
 
 
 class TestStateTransitionRobustness:
@@ -556,60 +430,25 @@ class TestStateTransitionRobustness:
 
     @pytest.fixture
     def servicer(self):
-        """Create servicer for testing."""
         return GameCoordinatorServicer()
 
     @pytest.mark.asyncio
     async def test_transition_from_idle_to_starting(self, servicer):
         """Servicer should transition from IDLE to STARTING on game start."""
         assert servicer.game_state == game_coordinator_pb2.GameState.IDLE
-
-        config = game_coordinator_pb2.StartGameConfig(
-            game_name="FFA",
-            players=[
-                game_coordinator_pb2.Player(serial="p1"),
-                game_coordinator_pb2.Player(serial="p2"),
-            ],
-            sensitivity=2,
-        )
-        mock_span = MockSpan()
-
-        with patch.object(servicer, "_run_game_loop_threaded"):
-            await servicer._start_game_from_config(config, mock_span)
-
-        # State should be STARTING (or transitioning)
+        with _NO_THREAD:
+            await servicer._start_game_from_config(_config(), MockSpan())
         assert servicer.game_state in [
             game_coordinator_pb2.GameState.STARTING,
             game_coordinator_pb2.GameState.RUNNING,
         ]
 
     @pytest.mark.asyncio
-    async def test_force_end_from_multiple_states(self, servicer):
-        """ForceEndGame should work from STARTING or RUNNING state."""
-        context = MockGrpcContext()
-        request = game_coordinator_pb2.ForceEndGameRequest(reason="test")
-
-        # Test from STARTING
-        servicer.game_state = game_coordinator_pb2.GameState.STARTING
-        servicer.game_running = True
-        servicer.game_id = "test_game"
-
-        response = await servicer.ForceEndGame(request, context)
-        assert response.success is True
-
-    @pytest.mark.asyncio
     async def test_get_state_during_transition(self, servicer):
         """GetGameState should return valid state during transitions."""
-        context = MockGrpcContext()
-        request = game_coordinator_pb2.GetGameStateRequest()
-
-        # Simulate mid-transition
-        servicer.game_state = game_coordinator_pb2.GameState.STARTING
-        servicer.game_name = "FFA"
-        servicer.game_id = "transition_test"
-
-        response = await servicer.GetGameState(request, context)
-
+        with _NO_THREAD:
+            _, gid = await servicer._start_game_from_config(_config(game_name="FFA"), MockSpan())
+        response = await servicer.GetGameState(game_coordinator_pb2.GetGameStateRequest(), MockGrpcContext())
         assert response.success is True
         assert response.game_info.state == game_coordinator_pb2.GameState.STARTING
 
@@ -619,28 +458,14 @@ class TestDuplicatePlayerHandling:
 
     @pytest.fixture
     def servicer(self):
-        """Create servicer for testing."""
         return GameCoordinatorServicer()
 
     @pytest.mark.asyncio
     async def test_duplicate_serial_in_players(self, servicer):
-        """StartGame with duplicate serials should be handled."""
-        config = game_coordinator_pb2.StartGameConfig(
-            game_name="FFA",
-            players=[
-                game_coordinator_pb2.Player(serial="same_serial"),
-                game_coordinator_pb2.Player(serial="same_serial"),
-                game_coordinator_pb2.Player(serial="different_serial"),
-            ],
-            sensitivity=2,
-        )
-        mock_span = MockSpan()
-
-        with patch.object(servicer, "_run_game_loop_threaded"):
-            success, result = await servicer._start_game_from_config(config, mock_span)
-
-        # Implementation may dedupe or fail - either is acceptable
-        # Just verify it doesn't crash
+        """StartGame with duplicate serials should be handled (no crash)."""
+        config = _config(serials=("same", "same", "different"))
+        with _NO_THREAD:
+            success, _ = await servicer._start_game_from_config(config, MockSpan())
         assert isinstance(success, bool)
 
 
@@ -649,230 +474,18 @@ class TestConcurrentOperations:
 
     @pytest.fixture
     def servicer(self):
-        """Create servicer for testing."""
         return GameCoordinatorServicer()
 
     @pytest.mark.asyncio
     async def test_get_state_concurrent_safe(self, servicer):
         """GetGameState should be safe under concurrent access."""
-        context = MockGrpcContext()
-        request = game_coordinator_pb2.GetGameStateRequest()
+        with _NO_THREAD:
+            _, gid = await servicer._start_game_from_config(_config(game_name="FFA"), MockSpan())
+            await _advance_to_running(servicer, gid)
 
-        servicer.game_state = game_coordinator_pb2.GameState.RUNNING
-        servicer.game_name = "FFA"
-        servicer.game_id = "concurrent_test"
-
-        # Simulate multiple concurrent calls
         responses = []
         for _ in range(10):
-            response = await servicer.GetGameState(request, context)
-            responses.append(response)
-
-        # All should succeed with consistent state
+            responses.append(await servicer.GetGameState(game_coordinator_pb2.GetGameStateRequest(), MockGrpcContext()))
         for response in responses:
             assert response.success is True
             assert response.game_info.state == game_coordinator_pb2.GameState.RUNNING
-
-
-class TestRunGameLoopAsync:
-    """Tests for _run_game_loop_async game loop lifecycle."""
-
-    def _make_servicer(self):
-        """Create a servicer with mocked dependencies for game loop testing."""
-        servicer = GameCoordinatorServicer()
-
-        # Mock clients
-        mock_clients = MagicMock()
-        mock_clients.connect = AsyncMock()
-        mock_clients.close = AsyncMock()
-        mock_clients.is_connected = True
-        mock_clients.controller_manager = MagicMock()
-        mock_clients.audio = MagicMock()
-        servicer.clients = mock_clients
-
-        # Mock event bus publish
-        servicer.event_bus.publish = AsyncMock()
-
-        # Set required servicer attributes
-        servicer.game_name = "FFA"
-        servicer.game_id = "game_12345"
-        servicer.players = [
-            game_coordinator_pb2.Player(serial="p1"),
-            game_coordinator_pb2.Player(serial="p2"),
-        ]
-        servicer.game_config = game_coordinator_pb2.StartGameConfig(sensitivity=2)
-        servicer.game_parent_context = None
-        servicer.game_start_time = time.time()
-
-        return servicer
-
-    def _make_tracer_mock(self):
-        """Create a mock tracer whose start_as_current_span works as a context manager."""
-        mock_span = MockSpan()
-        mock_tracer = MagicMock()
-        mock_tracer.start_as_current_span.return_value.__enter__ = MagicMock(return_value=mock_span)
-        mock_tracer.start_as_current_span.return_value.__exit__ = MagicMock(return_value=False)
-        return mock_tracer, mock_span
-
-    @pytest.mark.asyncio
-    @patch("services.game_coordinator.servicer.GameFactory")
-    @patch("services.game_coordinator.servicer.tracer")
-    async def test_game_loop_connects_clients(self, mock_tracer_mod, mock_factory):
-        """Should call clients.connect() before creating game."""
-        servicer = self._make_servicer()
-        tracer_mock, _ = self._make_tracer_mock()
-        mock_tracer_mod.start_as_current_span = tracer_mock.start_as_current_span
-
-        mock_game = MagicMock()
-        mock_game.run = AsyncMock()
-        mock_factory.create_game.return_value = mock_game
-
-        await servicer._run_game_loop_async()
-
-        servicer.clients.connect.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    @patch("services.game_coordinator.servicer.GameFactory")
-    @patch("services.game_coordinator.servicer.tracer")
-    async def test_game_loop_clients_not_connected_publishes_error(self, mock_tracer_mod, mock_factory):
-        """When clients.is_connected is False, should publish game_error and set ENDED."""
-        servicer = self._make_servicer()
-        servicer.clients.is_connected = False
-
-        tracer_mock, _ = self._make_tracer_mock()
-        mock_tracer_mod.start_as_current_span = tracer_mock.start_as_current_span
-
-        await servicer._run_game_loop_async()
-
-        # Should publish game_error
-        publish_calls = servicer.event_bus.publish.call_args_list
-        error_calls = [c for c in publish_calls if c[0][0] == "game_error"]
-        assert len(error_calls) >= 1
-        assert "not initialized" in error_calls[0][0][1]["error"]
-
-        # GameFactory.create_game should NOT have been called
-        mock_factory.create_game.assert_not_called()
-
-    @pytest.mark.asyncio
-    @patch("services.game_coordinator.servicer.GameFactory")
-    @patch("services.game_coordinator.servicer.tracer")
-    async def test_game_loop_unknown_mode_publishes_error(self, mock_tracer_mod, mock_factory):
-        """When GameFactory raises ValueError, should publish game_error and set ENDED."""
-        servicer = self._make_servicer()
-        tracer_mock, _ = self._make_tracer_mock()
-        mock_tracer_mod.start_as_current_span = tracer_mock.start_as_current_span
-
-        mock_factory.create_game.side_effect = ValueError("Unknown game mode: 'BadGame'")
-
-        await servicer._run_game_loop_async()
-
-        # Should publish game_error with the ValueError message
-        publish_calls = servicer.event_bus.publish.call_args_list
-        error_calls = [c for c in publish_calls if c[0][0] == "game_error"]
-        assert len(error_calls) >= 1
-        assert "Unknown game mode" in error_calls[0][0][1]["error"]
-
-    @pytest.mark.asyncio
-    @patch("services.game_coordinator.servicer.GameFactory")
-    @patch("services.game_coordinator.servicer.tracer")
-    async def test_game_loop_runs_game_to_completion(self, mock_tracer_mod, mock_factory):
-        """Happy path: connect, create game, run, cleanup."""
-        servicer = self._make_servicer()
-        tracer_mock, _ = self._make_tracer_mock()
-        mock_tracer_mod.start_as_current_span = tracer_mock.start_as_current_span
-
-        mock_game = MagicMock()
-        mock_game.run = AsyncMock()
-        mock_factory.create_game.return_value = mock_game
-
-        await servicer._run_game_loop_async()
-
-        # Verify full lifecycle
-        servicer.clients.connect.assert_awaited_once()
-        mock_factory.create_game.assert_called_once()
-        mock_game.run.assert_awaited_once()
-        servicer.clients.close.assert_awaited()
-
-        # Verify cleanup state
-        assert servicer.game_running is False
-        assert servicer.current_game is None
-
-    @pytest.mark.asyncio
-    @patch("services.game_coordinator.servicer.GameFactory")
-    @patch("services.game_coordinator.servicer.tracer")
-    async def test_game_loop_exception_publishes_error(self, mock_tracer_mod, mock_factory):
-        """When game.run() raises, should publish game_error and set ENDED."""
-        servicer = self._make_servicer()
-        tracer_mock, _ = self._make_tracer_mock()
-        mock_tracer_mod.start_as_current_span = tracer_mock.start_as_current_span
-
-        mock_game = MagicMock()
-        mock_game.run = AsyncMock(side_effect=RuntimeError("stream disconnected"))
-        mock_factory.create_game.return_value = mock_game
-
-        await servicer._run_game_loop_async()
-
-        # Should publish game_error with the exception message
-        publish_calls = servicer.event_bus.publish.call_args_list
-        error_calls = [c for c in publish_calls if c[0][0] == "game_error"]
-        assert len(error_calls) >= 1
-        assert "stream disconnected" in error_calls[0][0][1]["error"]
-
-    @pytest.mark.asyncio
-    @patch("services.game_coordinator.servicer.GameFactory")
-    @patch("services.game_coordinator.servicer.tracer")
-    async def test_game_loop_always_closes_clients(self, mock_tracer_mod, mock_factory):
-        """clients.close() should be called even when game.run() raises."""
-        servicer = self._make_servicer()
-        tracer_mock, _ = self._make_tracer_mock()
-        mock_tracer_mod.start_as_current_span = tracer_mock.start_as_current_span
-
-        mock_game = MagicMock()
-        mock_game.run = AsyncMock(side_effect=RuntimeError("crash"))
-        mock_factory.create_game.return_value = mock_game
-
-        await servicer._run_game_loop_async()
-
-        # close() must be called in the finally block regardless of error
-        servicer.clients.close.assert_awaited()
-
-    @pytest.mark.asyncio
-    @patch("services.game_coordinator.servicer.metrics")
-    @patch("services.game_coordinator.servicer.GameFactory")
-    @patch("services.game_coordinator.servicer.tracer")
-    async def test_game_loop_resets_metrics_on_completion(self, mock_tracer_mod, mock_factory, mock_metrics):
-        """Finally block should reset active_game, active_players, and players_alive to 0."""
-        servicer = self._make_servicer()
-        tracer_mock, _ = self._make_tracer_mock()
-        mock_tracer_mod.start_as_current_span = tracer_mock.start_as_current_span
-
-        mock_game = MagicMock()
-        mock_game.run = AsyncMock()
-        mock_factory.create_game.return_value = mock_game
-
-        await servicer._run_game_loop_async()
-
-        # Verify metrics reset in finally block
-        mock_metrics.active_game.set.assert_any_call(0)
-        mock_metrics.active_players.set.assert_any_call(0)
-        mock_metrics.players_alive.set.assert_any_call(0)
-
-    @pytest.mark.asyncio
-    @patch("services.game_coordinator.servicer.metrics")
-    @patch("services.game_coordinator.servicer.GameFactory")
-    @patch("services.game_coordinator.servicer.tracer")
-    async def test_game_loop_increments_completed_total(self, mock_tracer_mod, mock_factory, mock_metrics):
-        """Finally block should increment games_completed_total with the game mode label."""
-        servicer = self._make_servicer()
-        tracer_mock, _ = self._make_tracer_mock()
-        mock_tracer_mod.start_as_current_span = tracer_mock.start_as_current_span
-
-        mock_game = MagicMock()
-        mock_game.run = AsyncMock()
-        mock_factory.create_game.return_value = mock_game
-
-        await servicer._run_game_loop_async()
-
-        # Verify games_completed_total.labels(mode="FFA").inc() called
-        mock_metrics.games_completed_total.labels.assert_called_with(mode="FFA")
-        mock_metrics.games_completed_total.labels.return_value.inc.assert_called_once()

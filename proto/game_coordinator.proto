@@ -16,6 +16,10 @@ service GameCoordinatorService {
 
   // Get current game state (for testing/observability)
   rpc GetGameState(GetGameStateRequest) returns (GetGameStateResponse);
+
+  // List all live game sessions (primary + shadow). Lets agents and tests
+  // enumerate concurrent games and learn their game_ids.
+  rpc ListGames(ListGamesRequest) returns (ListGamesResponse);
 }
 
 // Game status
@@ -105,6 +109,7 @@ message TraitorConfig {
 
 message ForceEndGameRequest {
   string reason = 1;  // Reason for force ending
+  optional string game_id = 2;  // Target a specific game; empty = primary (legacy)
 }
 
 message ForceEndGameResponse {
@@ -116,21 +121,36 @@ message StreamEventsRequest {
   // If provided, starts a new game before streaming events.
   // If empty, subscribes to current/upcoming game events.
   optional StartGameConfig start_config = 1;
+  // Subscribe to a specific game's event bus. Empty = primary (legacy).
+  // Ignored when start_config is set (the new session's bus is used).
+  optional string game_id = 2;
 }
 
 message GameEvent {
   string event_type = 1;  // "player_death", "game_start", "game_end", "score_update"
   map<string, string> data = 2;  // Event-specific data
   int64 timestamp = 3;  // Unix timestamp in milliseconds
+  string game_id = 4;  // Game this event belongs to (empty if no game bound)
 }
 
 // GetGameState - Query current game state (for testing/observability)
-message GetGameStateRequest {}
+message GetGameStateRequest {
+  optional string game_id = 1;  // Target a specific game; empty = primary (legacy)
+}
 
 message GetGameStateResponse {
   bool success = 1;
   string error = 2;
   GameInfo game_info = 3;
+}
+
+// ListGames - enumerate all live game sessions (primary + shadow)
+message ListGamesRequest {}
+
+message ListGamesResponse {
+  bool success = 1;
+  string error = 2;
+  repeated GameInfo games = 3;
 }
 
 message GameInfo {

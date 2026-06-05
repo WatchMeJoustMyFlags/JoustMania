@@ -37,6 +37,7 @@ export interface StartGameResponse {
 // Force end game request
 export interface ForceEndGameRequest {
   reason: string;
+  gameId?: string;  // empty = primary (legacy)
 }
 
 // Force end game response
@@ -46,13 +47,16 @@ export interface ForceEndGameResponse {
 }
 
 // Stream events request
-export interface StreamEventsRequest {}
+export interface StreamEventsRequest {
+  gameId?: string;  // subscribe to a specific game; empty = primary (legacy)
+}
 
 // Game event
 export interface GameEvent {
   eventType: string;
   data: { [key: string]: string };
   timestamp: bigint;
+  gameId: string;  // game this event belongs to (empty if no game bound)
 }
 
 // Service definition for Connect-Web

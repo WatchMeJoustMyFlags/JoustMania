@@ -50,6 +50,11 @@ class GameCoordinatorServiceStub(object):
                 request_serializer=game__coordinator__pb2.GetGameStateRequest.SerializeToString,
                 response_deserializer=game__coordinator__pb2.GetGameStateResponse.FromString,
                 _registered_method=True)
+        self.ListGames = channel.unary_unary(
+                '/joustmania.game_coordinator.GameCoordinatorService/ListGames',
+                request_serializer=game__coordinator__pb2.ListGamesRequest.SerializeToString,
+                response_deserializer=game__coordinator__pb2.ListGamesResponse.FromString,
+                _registered_method=True)
 
 
 class GameCoordinatorServiceServicer(object):
@@ -79,6 +84,14 @@ class GameCoordinatorServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListGames(self, request, context):
+        """List all live game sessions (primary + shadow). Lets agents and tests
+        enumerate concurrent games and learn their game_ids.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_GameCoordinatorServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -96,6 +109,11 @@ def add_GameCoordinatorServiceServicer_to_server(servicer, server):
                     servicer.GetGameState,
                     request_deserializer=game__coordinator__pb2.GetGameStateRequest.FromString,
                     response_serializer=game__coordinator__pb2.GetGameStateResponse.SerializeToString,
+            ),
+            'ListGames': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListGames,
+                    request_deserializer=game__coordinator__pb2.ListGamesRequest.FromString,
+                    response_serializer=game__coordinator__pb2.ListGamesResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -180,6 +198,33 @@ class GameCoordinatorService(object):
             '/joustmania.game_coordinator.GameCoordinatorService/GetGameState',
             game__coordinator__pb2.GetGameStateRequest.SerializeToString,
             game__coordinator__pb2.GetGameStateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListGames(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/joustmania.game_coordinator.GameCoordinatorService/ListGames',
+            game__coordinator__pb2.ListGamesRequest.SerializeToString,
+            game__coordinator__pb2.ListGamesResponse.FromString,
             options,
             channel_credentials,
             insecure,
