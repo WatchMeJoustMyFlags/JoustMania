@@ -703,6 +703,12 @@ services:
       # (not_allowed) — flip that flag to the `probe` variant to dispatch. See
       # docs/agent-act-runbook.md.
       - AGENT_PROBE_DECISIONS=${AGENT_PROBE_DECISIONS:-}
+      # Progressive rollout expansion (#734): when enabled the agent advances the
+      # Bluetooth backend rollout controller-by-controller by rewriting the flagd
+      # rollout file in place (current_controller_count). Default off → the loop
+      # decides and spans expansions but does not apply them (dry-run).
+      - AGENT_ROLLOUT_ENABLED=${AGENT_ROLLOUT_ENABLED:-false}
+      - ROLLOUT_FLAG_PATH=/etc/flagd/rollout.json
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - OTEL_SERVICE_NAME=agent
       - OTEL_SERVICE_NAMESPACE=infrastructure
