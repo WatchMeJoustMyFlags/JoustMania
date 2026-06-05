@@ -224,10 +224,7 @@ func main() {
 		"decision_throttle", lifecycle.DecisionThrottle,
 	)
 
-	store := gamecontext.NewStore(lifecycle.PlayerTTL, lifecycle.SessionGrace, nil)
-	// Skip the agent's own telemetry when the collector fans it back to us
-	// (otlp/agent exporter) — breaks the self-ingestion feedback loop.
-	store.SetOwnService(resolveServiceName())
+	ownService := resolveServiceName()
 
 	// The decision loop is driven by the OpenFeature/flagd control layer (#727):
 	// flags are evaluated every cycle, the kill switch / objectives / permission
@@ -290,16 +287,32 @@ func main() {
 	infraLoop.SetGate(func(snap infracontext.InfraContext, now time.Time) bool {
 		return gate.ShouldEvaluateInfra(snap, now, infraControllerTTL)
 	})
-	// Post-game retrospective (#844): on the GameActive true->false transition the
-	// store fires OnGameEnd with a pre-reset snapshot, and the RetroCoordinator
-	// captures the prompt the agent would send to an offline analyst on a dedicated
-	// agent.llm.retro span (capture-first, exactly once per session). It is wired
-	// AFTER the loop and deliberately does NOT touch the loop, the gate, or the rate
-	// limiter — a retrospective never consumes the in-game intervention budget.
+	// Post-game retrospective (#844): on the GameActive true->false transition each
+	// partition's store fires OnGameEnd with a pre-reset snapshot, and the
+	// RetroCoordinator captures the prompt the agent would send to an offline
+	// analyst on a dedicated agent.llm.retro span (capture-first, exactly once per
+	// session). It deliberately does NOT touch the loop, the gate, or the rate
+	// limiter — a retrospective never consumes the in-game intervention budget. With
+	// per-game partitions (#845 PR B) every partition's Store shares this one
+	// coordinator; it dedupes by SessionID across all partitions, so interleaved
+	// game-ends each capture exactly once (see retro_capture.go's bounded dedupe).
 	retro := decision.NewRetroCoordinator(agentFlags, logger)
-	store.OnGameEnd = retro.OnGameEnd
 
-	pipe := newPipeline(store, loop, lifecycle.PlayerTTL).withInfra(infraStore, infraLoop)
+	// GameContext multiplexer (#845 PR B): one Store partition per game_id, plus the
+	// fallback partition "" for unlabeled signals (zero-regression — single-game
+	// mode collapses to exactly today's single-store behavior). The factory applies
+	// the lifecycle TTLs/clock, skips the agent's own telemetry (otlp/agent
+	// self-ingestion loop), and wires OnGameEnd per partition so the retrospective
+	// fires per game on the right partition's state.
+	mux := gamecontext.NewMultiplexer(func(gameID string) *gamecontext.Store {
+		s := gamecontext.NewStore(lifecycle.PlayerTTL, lifecycle.SessionGrace, nil)
+		s.SetOwnService(ownService)
+		s.OnGameEnd = retro.OnGameEnd
+		return s
+	})
+	mux.SetOwnService(ownService)
+
+	pipe := newPipeline(mux, loop, lifecycle.PlayerTTL).withInfra(infraStore, infraLoop)
 
 	grpcServer := grpc.NewServer()
 	ptraceotlp.RegisterGRPCServer(grpcServer, &traceReceiver{pipe: pipe})
@@ -338,7 +351,7 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				store.EvictStale()
+				mux.EvictStale()
 				infraStore.EvictStale()
 			}
 		}
