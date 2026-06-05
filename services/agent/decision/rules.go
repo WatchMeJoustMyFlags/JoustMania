@@ -42,6 +42,10 @@ type ObjectiveRules struct {
 	rng              *rand.Rand
 	lastEval         time.Time
 	lastDifficultyAt time.Time
+	// lastFitness is the most recent per-cycle fitness evaluation, retained so
+	// the decision loop can lift its cycle-level values onto the span as
+	// fitness.evaluated (#731).
+	lastFitness FitnessEvaluation
 }
 
 // NewObjectiveRules builds the engine. cfg may be nil, in which case
@@ -74,6 +78,15 @@ func newObjectiveRules(obj ObjectivesSource, pol PolicySource, fit FitnessSource
 	}
 }
 
+// LastFitness returns the most recent per-cycle fitness evaluation. The decision
+// loop reads it after Evaluate to lift the cycle-level fitness.evaluated values
+// onto the decision span (#731). Safe for concurrent use.
+func (r *ObjectiveRules) LastFitness() FitnessEvaluation {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lastFitness
+}
+
 // Evaluate implements RulesEngine: run the rule set (at most once per
 // evalInterval), score candidates by the objective weights, apply policy
 // filters, and emit the best decisions the weighted budget allows.
@@ -91,6 +104,13 @@ func (r *ObjectiveRules) Evaluate(_ context.Context, c gamecontext.GameContext) 
 	pol := r.policy.Policy()
 	fit := r.fitness.Fitness()
 
+	// Evaluate the per-objective fitness functions against the live context and
+	// the flag-resolved thresholds (#731). The evaluation both steers selection
+	// (failing fitness amplifies the candidates serving that objective) and is
+	// retained for the span's cycle-level fitness.evaluated attribute.
+	fitEval := EvaluateFitness(c, fit)
+	r.lastFitness = fitEval
+
 	// R9's randomness is drawn here so the rule functions stay pure.
 	roll, rollTarget := r.chaosRoll(c)
 
@@ -101,7 +121,7 @@ func (r *ObjectiveRules) Evaluate(_ context.Context, c gamecontext.GameContext) 
 
 	cands = applyBatteryPolicy(cands, c, pol, weights)
 	cands = r.applyVarianceCooldown(cands, now, pol)
-	cands = scoreAndSort(cands, weights)
+	cands = scoreAndSort(cands, weights, fitEval)
 
 	// Emission is bounded to maxDecisionsPerEval per evaluation. The weighted
 	// per-minute budget (policy.max_interventions_per_minute) is NOT enforced
@@ -219,17 +239,27 @@ func (r *ObjectiveRules) applyVarianceCooldown(cands []candidate, now time.Time,
 	return kept
 }
 
-// scoreAndSort scores candidates (urgency x weight[objective]), drops those
-// below minScore, and orders them deterministically: higher score first, then
-// cheaper/safer, then lexicographic intervention and target.
-func scoreAndSort(cands []candidate, weights map[string]float64) []candidate {
+// scoreAndSort scores candidates (urgency x weight[objective] x fitness
+// amplification), drops those below minScore, and orders them deterministically:
+// higher score first, then cheaper/safer, then lexicographic intervention and
+// target.
+//
+// Fitness amplification (#731): a failing fitness function makes the candidates
+// serving its objective more urgent. The multiplier is 1 + pressure, where
+// pressure is 0 for a satisfied (or unevaluated, or fitness-less like chaos)
+// objective and up to 1 for a maximally failing one — so a failing endurance
+// fitness up to doubles the effective urgency of endurance candidates, which can
+// flip the selected winner between objectives without ever blocking a candidate
+// outright.
+func scoreAndSort(cands []candidate, weights map[string]float64, fit FitnessEvaluation) []candidate {
 	type scored struct {
 		candidate
 		score float64
 	}
 	kept := make([]scored, 0, len(cands))
 	for _, cd := range cands {
-		s := clamp01(cd.urgency) * weights[cd.objective]
+		amp := 1 + fit.Pressure(cd.objective)
+		s := clamp01(cd.urgency) * weights[cd.objective] * amp
 		if s < minScore {
 			continue
 		}

@@ -59,13 +59,16 @@ func (r *ObjectiveRules) SetObjectives(weights map[string]float64) {
 }
 
 // NewObjectiveRulesLive builds the rules engine with a *LiveObjectives source
-// so the decision loop can drive the objective weights from the `objectives`
-// flag each cycle (#727). policy and fitness come from cfg (nil -> flagd-schema
-// defaults). The returned engine satisfies objectivePublisher.
+// AND a *LiveFitness source so the decision loop can drive both the objective
+// weights (`objectives` flag, #727) and the fitness thresholds (`fitness.*`
+// flags, #731) each cycle. policy comes from cfg (nil -> flagd-schema defaults);
+// fitness starts at the flagd-schema defaults until the loop publishes the first
+// flag value. The returned engine satisfies objectivePublisher and
+// fitnessPublisher.
 func NewObjectiveRulesLive(cfg *StaticConfig) *ObjectiveRules {
 	c := DefaultStaticConfig()
 	if cfg != nil {
 		c = *cfg
 	}
-	return newObjectiveRules(NewLiveObjectives(), c, c, nil, nil)
+	return newObjectiveRules(NewLiveObjectives(), c, NewLiveFitness(), nil, nil)
 }

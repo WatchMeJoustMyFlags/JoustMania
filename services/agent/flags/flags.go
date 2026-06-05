@@ -34,6 +34,13 @@ const (
 	keyBatteryThreshold          = "policy.battery_threshold"
 	keyMovementVarianceWindow    = "policy.movement_variance_window"
 	keyMaxInterventionsPerMinute = "policy.max_interventions_per_minute"
+
+	// Fitness thresholds (#731). The game-objective fitness flags; the
+	// fitness.bluetooth.* flags are system-level and out of scope here.
+	keyEnduranceMinSessionSeconds  = "fitness.endurance.min_session_seconds"
+	keyBalancedMaxSkillGap         = "fitness.balanced.max_skill_gap"
+	keyBalancedSpikeSurvival       = "fitness.balanced.spike_survival_threshold"
+	keyAccelerateTargetSessionSecs = "fitness.accelerate.target_session_seconds"
 )
 
 // Safe defaults applied when flagd is unreachable or a flag is undefined.
@@ -55,6 +62,23 @@ const (
 	DefaultMovementVarianceWindow = 10
 	// DefaultMaxInterventionsPerMinute is the weighted per-minute budget.
 	DefaultMaxInterventionsPerMinute = 2
+
+	// Fitness threshold defaults (#731), mirroring the services/flagd/agent.json
+	// defaultVariants. Applied when flagd is unreachable or a flag is undefined.
+
+	// DefaultEnduranceMinSessionSeconds: sessions ending earlier fail endurance
+	// (fitness.endurance.min_session_seconds).
+	DefaultEnduranceMinSessionSeconds = 120
+	// DefaultBalancedMaxSkillGap: larger skill spreads fail balance
+	// (fitness.balanced.max_skill_gap).
+	DefaultBalancedMaxSkillGap = 0.4
+	// DefaultBalancedSpikeSurvivalThreshold: the survival ratio a player must
+	// hold through movement spikes to pass balance
+	// (fitness.balanced.spike_survival_threshold).
+	DefaultBalancedSpikeSurvivalThreshold = 0.8
+	// DefaultAccelerateTargetSessionSeconds: sessions running past this overshoot
+	// the accelerate target (fitness.accelerate.target_session_seconds).
+	DefaultAccelerateTargetSessionSeconds = 60
 )
 
 // defaultObjectives is the fallback objectives weighting. Returned as a fresh
@@ -70,6 +94,7 @@ type Evaluator interface {
 	BooleanValue(ctx context.Context, flag string, defaultValue bool, evalCtx openfeature.EvaluationContext, options ...openfeature.Option) (bool, error)
 	StringValue(ctx context.Context, flag string, defaultValue string, evalCtx openfeature.EvaluationContext, options ...openfeature.Option) (string, error)
 	IntValue(ctx context.Context, flag string, defaultValue int64, evalCtx openfeature.EvaluationContext, options ...openfeature.Option) (int64, error)
+	FloatValue(ctx context.Context, flag string, defaultValue float64, evalCtx openfeature.EvaluationContext, options ...openfeature.Option) (float64, error)
 	ObjectValue(ctx context.Context, flag string, defaultValue any, evalCtx openfeature.EvaluationContext, options ...openfeature.Option) (any, error)
 }
 
@@ -96,6 +121,28 @@ type Policy struct {
 	MaxInterventionsPerMinute int
 }
 
+// Fitness is the fitness-threshold half of the objective layer (#731): the
+// per-objective success/degradation thresholds the fitness evaluator scores the
+// live game context against. Evaluated every cycle (never cached) so flipping a
+// threshold mid-session changes the next cycle's evaluation. chaos has no
+// fitness function (it is unpredictability by definition; see README), so it has
+// no threshold here.
+type Fitness struct {
+	// EnduranceMinSessionSeconds: sessions shorter than this fail endurance
+	// (fitness.endurance.min_session_seconds, default 120).
+	EnduranceMinSessionSeconds int
+	// BalancedMaxSkillGap: a skill spread above this fails balance
+	// (fitness.balanced.max_skill_gap, default 0.4).
+	BalancedMaxSkillGap float64
+	// BalancedSpikeSurvivalThreshold: the survival ratio a player must hold
+	// through movement spikes to pass balance
+	// (fitness.balanced.spike_survival_threshold, default 0.8).
+	BalancedSpikeSurvivalThreshold float64
+	// AccelerateTargetSessionSeconds: sessions past this overshoot the accelerate
+	// target (fitness.accelerate.target_session_seconds, default 60).
+	AccelerateTargetSessionSeconds int
+}
+
 // Snapshot is the set of agent control flags captured for a single decision
 // cycle. It is a plain value so the decision loop reasons over a consistent view.
 type Snapshot struct {
@@ -112,6 +159,8 @@ type Snapshot struct {
 	InterventionsAllowed []string
 	// Policy holds the numeric permission-layer constraints.
 	Policy Policy
+	// Fitness holds the per-objective fitness thresholds (#731).
+	Fitness Fitness
 }
 
 // Permits reports whether the named intervention is in the allow-list.
@@ -157,6 +206,12 @@ func (f *Flags) Evaluate(ctx context.Context) Snapshot {
 			MovementVarianceWindow:    f.intFlag(ctx, keyMovementVarianceWindow, DefaultMovementVarianceWindow),
 			MaxInterventionsPerMinute: f.intFlag(ctx, keyMaxInterventionsPerMinute, DefaultMaxInterventionsPerMinute),
 		},
+		Fitness: Fitness{
+			EnduranceMinSessionSeconds:     f.intFlag(ctx, keyEnduranceMinSessionSeconds, DefaultEnduranceMinSessionSeconds),
+			BalancedMaxSkillGap:            f.floatFlag(ctx, keyBalancedMaxSkillGap, DefaultBalancedMaxSkillGap),
+			BalancedSpikeSurvivalThreshold: f.floatFlag(ctx, keyBalancedSpikeSurvival, DefaultBalancedSpikeSurvivalThreshold),
+			AccelerateTargetSessionSeconds: f.intFlag(ctx, keyAccelerateTargetSessionSecs, DefaultAccelerateTargetSessionSeconds),
+		},
 	}
 }
 
@@ -178,6 +233,16 @@ func (f *Flags) intFlag(ctx context.Context, key string, def int) int {
 		return def
 	}
 	return int(v)
+}
+
+// floatFlag resolves a float fitness flag, falling back to def on any error.
+func (f *Flags) floatFlag(ctx context.Context, key string, def float64) float64 {
+	v, err := f.client.FloatValue(ctx, key, def, openfeature.EvaluationContext{})
+	if err != nil {
+		f.log.Debug("flags float fell back to default", "key", key, "error", err, "default", def)
+		return def
+	}
+	return v
 }
 
 func (f *Flags) enabled(ctx context.Context) bool {
