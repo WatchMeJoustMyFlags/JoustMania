@@ -19,6 +19,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 from proto import (
     controller_manager_mock_pb2,
     controller_manager_mock_pb2_grpc,
+    controller_manager_pb2,
+    controller_manager_pb2_grpc,
     game_coordinator_pb2,
     game_coordinator_pb2_grpc,
     menu_pb2,
@@ -55,6 +57,14 @@ async def get_game_client(docker_compose):
     return game_coordinator_pb2_grpc.GameCoordinatorServiceStub(channel), channel
 
 
+async def get_controller_client(docker_compose):
+    """Get ControllerManager gRPC client (port 50052)."""
+    host = docker_compose.get_service_host("controller-manager", 50052)
+    port = docker_compose.get_service_port("controller-manager", 50052)
+    channel = grpc.aio.insecure_channel(f"{host}:{port}")
+    return controller_manager_pb2_grpc.ControllerManagerServiceStub(channel), channel
+
+
 # =============================================================================
 # Controller helpers
 # =============================================================================
@@ -67,13 +77,17 @@ async def get_mock_controller_serials(docker_compose) -> list[str]:
     channel = grpc.aio.insecure_channel(f"{host}:{port}")
     client = controller_manager_mock_pb2_grpc.MockControllerServiceStub(channel)
 
-    response = await client.ListMockControllers(controller_manager_mock_pb2.ListRequest())
+    response = await client.ListMockControllers(
+        controller_manager_mock_pb2.ListRequest()
+    )
     await channel.close()
 
     return list(response.serials)
 
 
-async def setup_mock_controllers(docker_compose, count: int = 4) -> list[str]:
+async def setup_mock_controllers(
+    docker_compose, count: int = 4, reserved: bool = False, tag: str = ""
+) -> list[str]:
     """Add mock controllers via RPC and return their serials.
 
     Uses AddControllers RPC to dynamically create controllers.
@@ -83,31 +97,96 @@ async def setup_mock_controllers(docker_compose, count: int = 4) -> list[str]:
     Args:
         docker_compose: Docker compose fixture
         count: Number of controllers to add
+        reserved: When True, the added controllers are reserved (hidden from
+            the menu / button-stream consumers). Used by headless shadow games.
+        tag: Owning game/agent identifier, applied to all added controllers.
+            Enables ``remove_reserved_controllers(tag)`` cleanup.
 
     Returns:
         List of serial strings for the added controllers
+
+    Note:
+        Reuse of existing controllers (the fast path) only applies to the
+        default unreserved/untagged case. Reserved or tagged requests always
+        add fresh controllers so the reservation/tag is honored.
     """
     mock_client, channel = await get_mock_client(docker_compose)
 
-    # First check if controllers already exist (e.g., from a previous test)
-    existing = await mock_client.ListMockControllers(
-        controller_manager_mock_pb2.ListRequest()
-    )
-    if existing.count >= count:
-        await channel.close()
-        return list(existing.serials[:count])
+    # Reserved/tagged requests must create fresh controllers so the reservation
+    # actually applies; only the plain unreserved case reuses existing ones.
+    if not reserved and not tag:
+        existing = await mock_client.ListMockControllers(
+            controller_manager_mock_pb2.ListRequest()
+        )
+        if existing.count >= count:
+            await channel.close()
+            return list(existing.serials[:count])
 
-    # Add the needed controllers
-    needed = count - existing.count
+        # Add the needed controllers
+        needed = count - existing.count
+        response = await mock_client.AddControllers(
+            controller_manager_mock_pb2.AddControllersRequest(count=needed)
+        )
+        assert response.success, f"Failed to add controllers: {response.error}"
+        await channel.close()
+
+        # Return all serials (existing + newly added)
+        all_serials = list(existing.serials) + list(response.serials)
+        return all_serials[:count]
+
     response = await mock_client.AddControllers(
-        controller_manager_mock_pb2.AddControllersRequest(count=needed)
+        controller_manager_mock_pb2.AddControllersRequest(
+            count=count, reserved=reserved, tag=tag
+        )
     )
     assert response.success, f"Failed to add controllers: {response.error}"
     await channel.close()
+    return list(response.serials)
 
-    # Return all serials (existing + newly added)
-    all_serials = list(existing.serials) + list(response.serials)
-    return all_serials[:count]
+
+async def remove_reserved_controllers(docker_compose, tag: str) -> list[str]:
+    """Remove all mock controllers whose tag matches ``tag``.
+
+    Lists controllers via ListMockControllers, filters by the reservation tag,
+    and removes each. Used as per-test cleanup for headless shadow games so a
+    crashed/failed test does not leak reserved controllers into the next one.
+
+    Args:
+        docker_compose: Docker compose fixture
+        tag: Reservation tag to sweep (empty tag is a no-op to avoid removing
+            untagged lobby controllers).
+
+    Returns:
+        List of serials that were removed.
+    """
+    if not tag:
+        return []
+
+    mock_client, channel = await get_mock_client(docker_compose)
+    try:
+        listing = await mock_client.ListMockControllers(
+            controller_manager_mock_pb2.ListRequest()
+        )
+        to_remove = [c.serial for c in listing.controllers if c.tag == tag]
+        for serial in to_remove:
+            await mock_client.RemoveController(
+                controller_manager_mock_pb2.RemoveControllerRequest(serial=serial)
+            )
+        return to_remove
+    finally:
+        await channel.close()
+
+
+async def list_mock_controllers_detailed(docker_compose) -> list:
+    """Return the detailed MockControllerInfo list (serial, reserved, tag)."""
+    mock_client, channel = await get_mock_client(docker_compose)
+    try:
+        listing = await mock_client.ListMockControllers(
+            controller_manager_mock_pb2.ListRequest()
+        )
+        return list(listing.controllers)
+    finally:
+        await channel.close()
 
 
 async def get_controller_serials(docker_compose) -> list[str]:
@@ -153,11 +232,39 @@ class GameEventCollector:
         await collector.stop()
     """
 
-    def __init__(self, game_client):
+    def __init__(self, game_client, game_id: str | None = None, start_config=None):
+        """Create a collector.
+
+        Args:
+            game_client: GameCoordinator gRPC client.
+            game_id: When set, the collector subscribes to that specific
+                session's stream (``StreamEventsRequest(game_id=...)``) AND
+                filters collected events to that game_id. When None, it
+                subscribes to the primary stream and collects every event
+                (legacy behavior).
+            start_config: When set, the underlying StreamGameEvents call carries
+                this ``start_config`` so it both STARTS a game and subscribes to
+                that new session's bus. The assigned game_id is captured from the
+                event stream into ``self.game_id`` (see ``wait_for_game_id``).
+        """
         self.game_client = game_client
+        # Filter applied to collected events. Captured/assigned game_id when a
+        # headless start is used (start_config set).
+        self.game_id = game_id
+        self._start_config = start_config
+        # game_id filtering is enabled ONLY when this collector is bound to a
+        # specific session: an explicit game_id, or a headless start_config (the
+        # assigned id is learned from the stream). A plain zero-arg collector on
+        # the primary stream must NOT filter — it would otherwise lock onto a
+        # stale/late event's game_id and drop the new game's events (the exact
+        # zero-arg menu-collector semantics the intervention tests rely on).
+        self._filter_enabled = bool(game_id) or start_config is not None
         self.events: list = []
         self._task: asyncio.Task | None = None
         self._event_conditions: dict[str, asyncio.Event] = {}
+        self._game_id_known = asyncio.Event()
+        if game_id:
+            self._game_id_known.set()
 
     async def __aenter__(self):
         """Start collecting on context entry."""
@@ -173,12 +280,44 @@ class GameEventCollector:
         """Start collecting game events in background."""
         self._task = asyncio.create_task(self._collect())
 
+    def _build_request(self):
+        """Build the StreamEventsRequest for this collector's mode."""
+        if self._start_config is not None:
+            return game_coordinator_pb2.StreamEventsRequest(
+                start_config=self._start_config
+            )
+        if self.game_id:
+            return game_coordinator_pb2.StreamEventsRequest(game_id=self.game_id)
+        return game_coordinator_pb2.StreamEventsRequest()
+
+    def _accepts(self, event) -> bool:
+        """Whether an event passes this collector's game_id filter."""
+        # Unfiltered (plain zero-arg primary collector): accept every event.
+        if not self._filter_enabled:
+            return True
+        # Filter target not yet captured (headless start, first event pending):
+        # accept until the assigned game_id is learned below.
+        if not self.game_id:
+            return True
+        # Lifecycle/idle events with no game_id bound are still relevant.
+        if not event.game_id:
+            return True
+        return event.game_id == self.game_id
+
     async def _collect(self):
         """Background task to collect events from stream."""
         try:
-            async for event in self.game_client.StreamGameEvents(
-                game_coordinator_pb2.StreamEventsRequest()
-            ):
+            async for event in self.game_client.StreamGameEvents(self._build_request()):
+                # Headless start only: learn the assigned game_id from the first
+                # event that carries one and adopt it as the filter. Never do
+                # this for an unfiltered primary collector.
+                if self._filter_enabled and self.game_id is None and event.game_id:
+                    self.game_id = event.game_id
+                    self._game_id_known.set()
+
+                if not self._accepts(event):
+                    continue
+
                 self.events.append(event)
                 # Signal any waiters for this event type
                 event_type = event.event_type
@@ -186,6 +325,15 @@ class GameEventCollector:
                     self._event_conditions[event_type].set()
         except asyncio.CancelledError:
             pass
+
+    async def wait_for_game_id(self, timeout: float = 15.0) -> str:
+        """Wait until the assigned/observed game_id is known and return it.
+
+        Used by headless starts (start_config) where the game_id is assigned by
+        the coordinator and learned from the event stream.
+        """
+        await asyncio.wait_for(self._game_id_known.wait(), timeout=timeout)
+        return self.game_id
 
     async def stop(self):
         """Stop collecting events and cancel the background task."""
@@ -219,15 +367,16 @@ class GameEventCollector:
         # Wait for the event
         try:
             await asyncio.wait_for(
-                self._event_conditions[event_type].wait(),
-                timeout=timeout
+                self._event_conditions[event_type].wait(), timeout=timeout
             )
             # Find and return the event
             for event in reversed(self.events):
                 if event.event_type == event_type:
                     return event
         except asyncio.TimeoutError:
-            raise TimeoutError(f"Game did not emit '{event_type}' within {timeout} seconds")
+            raise TimeoutError(
+                f"Game did not emit '{event_type}' within {timeout} seconds"
+            )
 
     async def wait_for_any_event(self, event_types: list[str], timeout: float = 10.0):
         """Wait for any of the specified event types.
@@ -249,7 +398,9 @@ class GameEventCollector:
                     return event
             await asyncio.sleep(0.1)
 
-        raise TimeoutError(f"Game did not emit any of {event_types} within {timeout} seconds")
+        raise TimeoutError(
+            f"Game did not emit any of {event_types} within {timeout} seconds"
+        )
 
     def get_events(self, event_type: str | None = None) -> list:
         """Get collected events, optionally filtered by type."""
@@ -287,9 +438,142 @@ async def force_end_game(
 
     # Wait for end event via collector
     await event_collector.wait_for_any_event(
-        ["game_ended", "game_force_ended", "game_error"],
-        timeout=timeout
+        ["game_ended", "game_force_ended", "game_error"], timeout=timeout
     )
+
+
+async def force_end_game_by_id(
+    game_client, game_id: str, reason: str = "test_cleanup"
+) -> bool:
+    """Force-end a specific game session by game_id.
+
+    Best-effort cleanup helper for headless tests: targets one session via
+    ``ForceEndGameRequest(game_id=...)`` and never raises (an already-ended or
+    unknown game_id is fine during teardown).
+
+    Returns:
+        True if the coordinator reported success, False otherwise.
+    """
+    if not game_id:
+        return False
+    try:
+        response = await game_client.ForceEndGame(
+            game_coordinator_pb2.ForceEndGameRequest(reason=reason, game_id=game_id)
+        )
+        return response.success
+    except Exception:
+        return False
+
+
+async def list_games(game_client) -> list:
+    """Return the list of live GameInfo sessions via the ListGames RPC."""
+    response = await game_client.ListGames(game_coordinator_pb2.ListGamesRequest())
+    assert response.success, f"ListGames failed: {response.error}"
+    return list(response.games)
+
+
+async def start_game_headless(
+    game_client,
+    start_config,
+    timeout: float = 20.0,
+) -> tuple[str, "GameEventCollector"]:
+    """Start a game directly via StreamGameEvents (no menu) and return its id.
+
+    Bypasses the lobby entirely: opens a ``StreamGameEvents`` stream carrying
+    ``start_config``, which both starts a new session and subscribes to that
+    session's event bus. The collector captures the coordinator-assigned
+    game_id from the event stream and filters to only that game's events.
+
+    Args:
+        game_client: GameCoordinator gRPC client.
+        start_config: A ``StartGameConfig`` (see ``build_start_config``).
+        timeout: Max time to wait for the game to start (game_started event).
+
+    Returns:
+        Tuple of (game_id, collector). The collector is already running and
+        keeps consuming events; callers wait on it for lifecycle events and
+        must ``stop()`` it (or use it as a context manager) when done.
+
+    Raises:
+        TimeoutError: If the game does not start within ``timeout``.
+        RuntimeError: If the coordinator rejects the start.
+    """
+    collector = GameEventCollector(game_client, start_config=start_config)
+    await collector.start()
+
+    # A rejected start yields a single game_start_error event then closes the
+    # stream — surface it instead of hanging until timeout.
+    try:
+        await collector.wait_for_any_event(
+            ["game_starting", "game_started", "game_start_error"],
+            timeout=timeout,
+        )
+    except TimeoutError:
+        await collector.stop()
+        raise
+
+    errors = collector.get_events("game_start_error")
+    if errors:
+        await collector.stop()
+        raise RuntimeError(f"Headless game start rejected: {dict(errors[0].data)}")
+
+    game_id = await collector.wait_for_game_id(timeout=timeout)
+    return game_id, collector
+
+
+def build_start_config(
+    game_name: str,
+    serials: list[str],
+    sensitivity: int = 2,
+):
+    """Build a minimal StartGameConfig for a headless game start.
+
+    Assigns players alternating teams (so team modes have both teams populated)
+    and attaches the matching mode-specific config sub-message where one is
+    required. Mirrors the menu's ``_build_game_config`` for the modes used by
+    the concurrent/isolation tests; uses CI-friendly defaults.
+
+    Args:
+        game_name: Game mode name (e.g. "JoustFFA", "JoustTeams", "Swapper").
+        serials: Controller serials to use as players.
+        sensitivity: Common sensitivity 0-4 (default 2 = MEDIUM).
+    """
+    players = [
+        game_coordinator_pb2.Player(serial=serial, team=i % 2, alive=True, score=0)
+        for i, serial in enumerate(serials)
+    ]
+    config = game_coordinator_pb2.StartGameConfig(
+        game_name=game_name,
+        players=players,
+        sensitivity=sensitivity,
+    )
+
+    # Attach the mode-specific oneof where the factory expects one. Modes whose
+    # config is empty/optional (FFA, Werewolf, Zombies) work without it.
+    if game_name == "JoustFFA":
+        config.ffa_config.CopyFrom(game_coordinator_pb2.FFAConfig())
+    elif game_name == "JoustTeams":
+        config.teams_config.CopyFrom(
+            game_coordinator_pb2.TeamsConfig(num_teams=2, random_assignment=False)
+        )
+    elif game_name == "JoustRandomTeams":
+        config.random_teams_config.CopyFrom(
+            game_coordinator_pb2.RandomTeamsConfig(num_teams=2)
+        )
+    elif game_name == "Swapper":
+        config.swapper_config.CopyFrom(game_coordinator_pb2.SwapperConfig())
+    elif game_name == "Werewolf":
+        config.werewolf_config.CopyFrom(
+            game_coordinator_pb2.WerewolfConfig(reveal_time_seconds=35.0)
+        )
+    elif game_name == "Zombies":
+        config.zombie_config.CopyFrom(game_coordinator_pb2.ZombieConfig())
+    elif game_name == "NonStop":
+        config.nonstop_config.CopyFrom(
+            game_coordinator_pb2.NonstopConfig(time_limit_seconds=0)
+        )
+
+    return config
 
 
 # =============================================================================
@@ -429,7 +713,9 @@ async def start_game_via_menu(
         TimeoutError: If game does not start within timeout
     """
     if event_collector is None:
-        raise ValueError("event_collector is required - start a GameEventCollector before calling")
+        raise ValueError(
+            "event_collector is required - start a GameEventCollector before calling"
+        )
 
     # Get clients
     menu_client, menu_channel = await get_menu_client(docker_compose)
@@ -439,7 +725,9 @@ async def start_game_via_menu(
     game_client, _ = await get_game_client(docker_compose)
 
     # Force-end any previous game to ensure clean state
-    await game_client.ForceEndGame(game_coordinator_pb2.ForceEndGameRequest(reason="test_cleanup"))
+    await game_client.ForceEndGame(
+        game_coordinator_pb2.ForceEndGameRequest(reason="test_cleanup")
+    )
     await asyncio.sleep(0.2)  # Allow game cleanup to complete
 
     # Stop Menu first to clear any stale controller state, then restart fresh
@@ -467,15 +755,35 @@ async def start_game_via_menu(
     await mark_controllers_ready(mock_client, serials)
     print("Controllers marked as ready, waiting for game start...")
 
-    # Wait for game_started event via collector
+    # Wait for game_started event via collector.
+    #
+    # The first start after `compose up` races service warmup (menu controller
+    # registration, coordinator/flagd cold start). The session-scoped
+    # `warmup_game_path` fixture absorbs that, but we also retry the
+    # ready-marking once on an initial timeout as defense-in-depth: a single
+    # dropped "ready" or an unwarmed path then no longer hard-fails the call.
     try:
         await event_collector.wait_for_event("game_started", timeout=timeout)
     except TimeoutError:
-        # Debug: print collected events before re-raising
-        print(f"DEBUG: Game start timeout. Collected {len(event_collector.events)} events:")
+        print(
+            f"DEBUG: Game start timeout after {timeout}s. "
+            f"Collected {len(event_collector.events)} events:"
+        )
         for event in event_collector.events:
             print(f"  - {event.event_type}: {dict(event.data)}")
-        raise
+
+        print("Retrying ready-marking once before failing...")
+        await mark_controllers_ready(mock_client, serials)
+        try:
+            await event_collector.wait_for_event("game_started", timeout=timeout)
+        except TimeoutError:
+            print(
+                f"DEBUG: Game start timeout on retry. "
+                f"Collected {len(event_collector.events)} events:"
+            )
+            for event in event_collector.events:
+                print(f"  - {event.event_type}: {dict(event.data)}")
+            raise
 
     # Close menu channel (not needed anymore)
     await menu_channel.close()
@@ -533,7 +841,9 @@ async def verify_controllers_have_color(mock_client, serials: list[str]):
         assert total > 0, f"{serial} LED is off (color: {color})"
 
 
-def _color_matches(actual: tuple[int, int, int], expected: tuple[int, int, int], tolerance: int) -> bool:
+def _color_matches(
+    actual: tuple[int, int, int], expected: tuple[int, int, int], tolerance: int
+) -> bool:
     """Check if actual color matches expected within tolerance."""
     for a, e in zip(actual, expected):
         if abs(a - e) > tolerance:
@@ -596,7 +906,9 @@ async def wait_for_lobby_colors(
         color = last_colors.get(serial, (0, 0, 0))
         if sum(color) == 0:
             mismatches.append(f"{serial}: LED is off (color: {color})")
-        elif expected_color is not None and not _color_matches(color, expected_color, tolerance):
+        elif expected_color is not None and not _color_matches(
+            color, expected_color, tolerance
+        ):
             mismatches.append(f"{serial}: got {color}, expected {expected_color}")
 
     raise AssertionError(
@@ -605,7 +917,10 @@ async def wait_for_lobby_colors(
 
 
 async def verify_lobby_colors(
-    mock_client, serials: list[str], expected_color: tuple[int, int, int] | None = None, tolerance: int = 30
+    mock_client,
+    serials: list[str],
+    expected_color: tuple[int, int, int] | None = None,
+    tolerance: int = 30,
 ):
     """Verify all controllers show the expected lobby color.
 
@@ -702,6 +1017,84 @@ class ObservabilityObserver:
         return last_colors
 
 
+class ButtonStreamObserver:
+    """Subscribes to ControllerManager.StreamButtonEvents and records the roster.
+
+    This is exactly the view the menu has of the controller fleet. Reserved
+    controllers must never appear here: no CONNECT event, never in any
+    ``connected_serials`` roster. Used by the shadow-vs-menu isolation test to
+    prove reserved controllers stay invisible to lobby logic.
+
+    Usage:
+        observer = ButtonStreamObserver(controller_client)
+        await observer.start()
+        # ... add reserved controllers, run shadow game ...
+        assert "MOCK0005" not in observer.all_seen_serials()
+        await observer.stop()
+    """
+
+    def __init__(self, controller_client):
+        self.controller_client = controller_client
+        self.events: list = []
+        self._task: asyncio.Task | None = None
+
+    async def start(self):
+        """Open the button-event stream and collect in background."""
+        self._task = asyncio.create_task(self._collect())
+        # Let the initial connection snapshot arrive before callers assert.
+        await asyncio.sleep(0.5)
+
+    async def _collect(self):
+        """Send an initial (empty) config then collect button events."""
+
+        async def request_iter():
+            # Empty config opens the stream and triggers the initial roster
+            # snapshot (the menu's subscribe path).
+            yield controller_manager_pb2.ButtonEventStreamControl(
+                config=controller_manager_pb2.ButtonEventStreamConfig()
+            )
+            # Keep the request stream open for the stream's lifetime.
+            while True:
+                await asyncio.sleep(3600)
+
+        try:
+            async for event in self.controller_client.StreamButtonEvents(
+                request_iter()
+            ):
+                self.events.append(event)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            # Stream closed/cancelled during teardown — fine.
+            pass
+
+    async def stop(self):
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+
+    def all_seen_serials(self) -> set[str]:
+        """Every serial this observer has seen, across event serials + rosters."""
+        seen: set[str] = set()
+        for event in self.events:
+            if event.serial:
+                seen.add(event.serial)
+            for serial in event.connected_serials:
+                seen.add(serial)
+        return seen
+
+    def latest_roster(self) -> list[str]:
+        """The most recent non-empty ``connected_serials`` roster seen."""
+        for event in reversed(self.events):
+            if event.connected_serials:
+                return list(event.connected_serials)
+        return []
+
+
 def verify_death_effects(events: list, killed_serials: list[str]):
     """Verify death effects occurred for killed players.
 
@@ -775,13 +1168,20 @@ KILL_VERIFY_TIMEOUT = 12.0
 _VERIFY_POLL_INTERVAL = 0.2
 
 
-async def get_player_states(game_client) -> dict | None:
-    """Query current game state and return {serial: PlayerInfo}.
+async def get_player_states(game_client, game_id: str = "") -> dict | None:
+    """Query a game's state and return {serial: PlayerInfo}.
 
     Returns None if the game is no longer running (ended or not started),
     so callers can distinguish "game over" from "kill not registered yet".
+
+    Args:
+        game_client: GameCoordinator gRPC client.
+        game_id: Target a specific session; empty = primary (legacy).
     """
-    response = await game_client.GetGameState(game_coordinator_pb2.GetGameStateRequest())
+    request = game_coordinator_pb2.GetGameStateRequest()
+    if game_id:
+        request.game_id = game_id
+    response = await game_client.GetGameState(request)
     if not response.success:
         return None
     if response.game_info.state != game_coordinator_pb2.RUNNING:
@@ -795,6 +1195,7 @@ async def kill_player_verified(
     serial: str,
     registered,
     timeout: float = KILL_VERIFY_TIMEOUT,
+    game_id: str = "",
 ) -> bool:
     """SimulateDeath and verify it registered in the game, retrying if dropped.
 
@@ -830,7 +1231,7 @@ async def kill_player_verified(
             assert response.success, f"SimulateDeath RPC failed for {serial}"
             next_kill_at = now + KILL_RETRY_INTERVAL
 
-        players = await get_player_states(game_client)
+        players = await get_player_states(game_client, game_id=game_id)
         if players is None:
             # Game ended (possibly because this kill landed) — nothing left to verify
             return False
@@ -847,7 +1248,11 @@ async def kill_player_verified(
 
 
 async def kill_players_until_one_remains(
-    mock_client, serials: list[str], delay: float = 0.5, game_client=None
+    mock_client,
+    serials: list[str],
+    delay: float = 0.5,
+    game_client=None,
+    game_id: str = "",
 ) -> list[str]:
     """Kill players one by one until only one remains.
 
@@ -868,7 +1273,7 @@ async def kill_players_until_one_remains(
     for serial in serials[:-1]:
         await asyncio.sleep(delay)
         if not await kill_player_verified(
-            mock_client, game_client, serial, lambda p: not p.alive
+            mock_client, game_client, serial, lambda p: not p.alive, game_id=game_id
         ):
             break  # Game already ended
         killed.append(serial)
@@ -911,7 +1316,11 @@ async def kill_players_for_team_win(
 
 
 async def end_swapper_game(
-    mock_client, serials: list[str], game_client, delay: float = 0.3, timeout: float = 30.0
+    mock_client,
+    serials: list[str],
+    game_client,
+    delay: float = 0.3,
+    timeout: float = 30.0,
 ) -> list[str]:
     """End a Swapper game by swapping all players to one team.
 
@@ -997,7 +1406,11 @@ async def end_werewolf_game(
 
 
 async def end_zombies_game(
-    mock_client, serials: list[str], delay: float = 0.3, game_client=None, timeout: float = 30.0
+    mock_client,
+    serials: list[str],
+    delay: float = 0.3,
+    game_client=None,
+    timeout: float = 30.0,
 ) -> list[str]:
     """End a Zombies game by converting all humans to zombies.
 

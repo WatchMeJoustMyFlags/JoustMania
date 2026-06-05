@@ -55,6 +55,11 @@ services:
     environment: !override
       OTEL_SERVICE_NAME: game-coordinator-service
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      # Raise the concurrent-games cap for the integration suite only (#779).
+      # The coordinator defaults to 1 (production default, unchanged); the
+      # concurrent/shadow-isolation tests need multiple live sessions on one
+      # stack. This override stays in CI compose; production keeps cap=1.
+      GAME_MAX_CONCURRENT_GAMES: "4"
 
   # Pairing Daemon - Requires hardware, excluded from CI
   pairing-daemon:
