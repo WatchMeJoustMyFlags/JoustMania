@@ -2,8 +2,12 @@
 Unit tests for music_player module extracted helper functions.
 """
 
+import array
+import io
+import wave
 from unittest.mock import MagicMock, patch
 
+import miniaudio
 import numpy as np
 import pytest
 
@@ -290,6 +294,13 @@ class TestWriteSamples:
         assert device.write.call_count == 1
 
 
+def _mock_decoded_sound(num_frames: int = 64):
+    """Build a mock miniaudio.DecodedSoundFile with silent stereo int16 samples."""
+    decoded = MagicMock()
+    decoded.samples = array.array("h", [0] * (num_frames * 2))
+    return decoded
+
+
 class TestLoadSongFromPattern:
     """Tests for _load_song_from_pattern."""
 
@@ -299,40 +310,46 @@ class TestLoadSongFromPattern:
         assert result is None
 
     def test_loads_matching_file(self):
-        mock_segment = MagicMock()
-        mock_segment.set_channels.return_value = mock_segment
-        mock_segment.set_frame_rate.return_value = mock_segment
-        mock_segment.set_sample_width.return_value = mock_segment
-
-        # Mock export to write fake WAV bytes
-        def fake_export(buf, **_kwargs):
-            buf.write(b"RIFF_fake_wav_data")
-
-        mock_segment.export.side_effect = fake_export
-
         with (
             patch("services.audio.music_player.glob.glob", return_value=["/music/song1.ogg"]),
-            patch("services.audio.music_player.AudioSegment.from_file", return_value=mock_segment),
+            patch("services.audio.music_player.miniaudio.decode_file", return_value=_mock_decoded_sound()),
         ):
             result = _load_song_from_pattern("/music/*.ogg")
 
         assert result is not None
         assert isinstance(result, bytes)
         assert len(result) > 0
+        # Output is a valid WAV: stereo, 16-bit, 44100 Hz
+        with wave.open(io.BytesIO(result), "rb") as wf:
+            assert wf.getnchannels() == 2
+            assert wf.getsampwidth() == 2
+            assert wf.getframerate() == 44100
+            assert wf.getnframes() == 64
+
+    def test_decodes_to_target_format(self):
+        """decode_file is asked for stereo 16-bit 44100 Hz output."""
+        with (
+            patch("services.audio.music_player.glob.glob", return_value=["/music/song1.ogg"]),
+            patch(
+                "services.audio.music_player.miniaudio.decode_file", return_value=_mock_decoded_sound()
+            ) as mock_decode,
+        ):
+            _load_song_from_pattern("/music/*.ogg")
+
+        mock_decode.assert_called_once_with(
+            "/music/song1.ogg",
+            output_format=miniaudio.SampleFormat.SIGNED16,
+            nchannels=2,
+            sample_rate=44100,
+        )
 
     def test_shuffles_files_before_loading(self):
-        mock_segment = MagicMock()
-        mock_segment.set_channels.return_value = mock_segment
-        mock_segment.set_frame_rate.return_value = mock_segment
-        mock_segment.set_sample_width.return_value = mock_segment
-        mock_segment.export.side_effect = lambda buf, **_kwargs: buf.write(b"wav")
-
         files = ["/music/a.ogg", "/music/b.ogg", "/music/c.ogg"]
 
         with (
             patch("services.audio.music_player.glob.glob", return_value=files),
             patch("services.audio.music_player.random.shuffle") as mock_shuffle,
-            patch("services.audio.music_player.AudioSegment.from_file", return_value=mock_segment),
+            patch("services.audio.music_player.miniaudio.decode_file", return_value=_mock_decoded_sound()),
         ):
             _load_song_from_pattern("/music/*.ogg")
 
@@ -340,17 +357,11 @@ class TestLoadSongFromPattern:
 
     def test_skips_broken_file_and_loads_next(self):
         """If first file fails to decode, tries the next one."""
-        mock_segment = MagicMock()
-        mock_segment.set_channels.return_value = mock_segment
-        mock_segment.set_frame_rate.return_value = mock_segment
-        mock_segment.set_sample_width.return_value = mock_segment
-        mock_segment.export.side_effect = lambda buf, **_kwargs: buf.write(b"wav")
-
         with (
             patch("services.audio.music_player.glob.glob", return_value=["/music/bad.ogg", "/music/good.ogg"]),
             patch(
-                "services.audio.music_player.AudioSegment.from_file",
-                side_effect=[Exception("decode error"), mock_segment],
+                "services.audio.music_player.miniaudio.decode_file",
+                side_effect=[miniaudio.DecodeError("decode error"), _mock_decoded_sound()],
             ),
         ):
             result = _load_song_from_pattern("/music/*.ogg")
@@ -361,7 +372,10 @@ class TestLoadSongFromPattern:
         """Returns None if every file in the glob fails to decode."""
         with (
             patch("services.audio.music_player.glob.glob", return_value=["/music/a.ogg", "/music/b.ogg"]),
-            patch("services.audio.music_player.AudioSegment.from_file", side_effect=Exception("decode error")),
+            patch(
+                "services.audio.music_player.miniaudio.decode_file",
+                side_effect=miniaudio.DecodeError("decode error"),
+            ),
         ):
             result = _load_song_from_pattern("/music/*.ogg")
 
