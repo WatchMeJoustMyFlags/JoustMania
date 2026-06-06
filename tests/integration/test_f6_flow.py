@@ -38,14 +38,12 @@ import pytest
 from tests.integration.helpers import (  # noqa: E402
     GameEventCollector,
     get_game_client,
-    get_mock_controller_serials,
     setup_mock_controllers,
     start_game_via_menu,
 )
 from tests.integration.test_intervention_flow import (  # noqa: E402
     APPLY_TIMEOUT_SECONDS,
     RELOAD_SETTLE_SECONDS,
-    _get_state,
     _intervention_events,
     _wait_for_intervention_event,
     flag_files,  # re-exported fixture (snapshot/restore interventions.json + agent.json)
@@ -59,65 +57,14 @@ __all__ = ["flag_files", "game_client"]
 
 
 # =============================================================================
-# Scenario 1: global_difficulty_factor apply + permission-block + revert
+# Scenario 1: global_difficulty_factor permission-block (sequential)
+#
+# The apply+revert happy path was moved to the gameId-scoped parallel batch
+# (test_parallel_intervention_flow.py::_scenario_global_difficulty). This
+# permission-BLOCK negative stays sequential: it sets the GLOBAL
+# ``interventions_allowed=standard`` (not gameId-scopeable) which would clobber
+# a concurrent ``full`` batch.
 # =============================================================================
-
-
-@pytest.mark.asyncio
-async def test_global_difficulty_factor_applies_and_reverts(flag_files, docker_compose, game_client):
-    """global_difficulty_factor e2e: writing a non-neutral factor fires an
-    unblocked ``adjust_global_difficulty`` event (the lever reaches the live game
-    where it shifts every player's effective thresholds); reverting to the
-    neutral 1.0 runs the revert handler WITHOUT firing a new applied event.
-
-    The factor itself is not on the GetGameState proto, so the observable signal
-    is the applied event on the StreamGameEvents stream (apply) and the absence
-    of a further applied event (revert).
-    """
-    set_interventions_allowed("full")  # adjust_global_difficulty is full-only
-    # Rate-limit headroom is provided suite-wide by the flag_files fixture
-    # (SUITE_RATE_LIMIT_BUDGET in test_intervention_flow); no per-test bump needed.
-    await setup_mock_controllers(docker_compose, count=4)
-
-    game_client_obj, channel = await get_game_client(docker_compose)
-    try:
-        collector = GameEventCollector(game_client_obj)
-        async with collector:
-            await start_game_via_menu(
-                docker_compose, game_mode="JoustFFA", event_collector=collector
-            )
-
-            # Baseline: players present at the neutral per-player factor.
-            info = await _get_state(game_client)
-            assert info.players, "no players in game state"
-
-            # Agent writes a harder global difficulty (1.5).
-            write_state("global_difficulty_factor", 1.5)
-
-            # Observable: the lever applied (reached the live game), not blocked.
-            evt = await _wait_for_intervention_event(
-                collector, "adjust_global_difficulty", blocked="false"
-            )
-            assert evt.data.get("blocked") == "false"
-
-            applied_after_apply = len(
-                [e for e in _intervention_events(collector, "adjust_global_difficulty")
-                 if e.data.get("blocked") == "false"]
-            )
-
-            # Revert to the neutral 1.0: runs the revert handler, no new applied
-            # event (reverting to neutral is not an enforced intervention).
-            write_state("global_difficulty_factor", 1.0)
-            await asyncio.sleep(RELOAD_SETTLE_SECONDS + 1.0)
-            applied_after_revert = len(
-                [e for e in _intervention_events(collector, "adjust_global_difficulty")
-                 if e.data.get("blocked") == "false"]
-            )
-            assert applied_after_revert == applied_after_apply, (
-                "revert to neutral 1.0 spuriously fired a new applied event"
-            )
-    finally:
-        await channel.close()
 
 
 @pytest.mark.asyncio

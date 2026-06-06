@@ -59,9 +59,9 @@
       "groupName": "github actions"
     },
     {
-      "description": "Every flagd provider release >= 0.3.0 breaks the flagSetId-per-domain selector architecture against the compose-pinned flagd v0.13.2 (silent fallback to defaults — verified 0.4.1 and 0.5.0 on PR #840 CI; 0.3.0 drops RPC-resolver selector support entirely). Lift only via the coordinated provider+flagd-image upgrade in issue #843.",
-      "matchPackageNames": ["openfeature-provider-flagd"],
-      "allowedVersions": "<0.3.0"
+      "description": "flagd image + flagd providers must move TOGETHER (flag-set selector coupling, #843: providers >= 0.3.0 silently default against flagd < flagd-selector-header support). Group them so Renovate proposes coordinated bumps; the integration suite is the gate (silent-defaults failure mode).",
+      "matchPackageNames": ["openfeature-provider-flagd", "/^ghcr\\.io\\/open-feature\\/flagd$/", "/go-sdk-contrib\\/providers\\/flagd/"],
+      "groupName": "flagd + providers (coordinated)"
     },
     {
       "description": "Majors need explicit approval via the dependency dashboard",

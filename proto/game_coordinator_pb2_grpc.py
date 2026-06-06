@@ -5,7 +5,7 @@ import warnings
 
 from proto import game_coordinator_pb2 as game__coordinator__pb2
 
-GRPC_GENERATED_VERSION = '1.76.0'
+GRPC_GENERATED_VERSION = '1.81.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -25,7 +25,7 @@ if _version_not_supported:
     )
 
 
-class GameCoordinatorServiceStub(object):
+class GameCoordinatorServiceStub:
     """GameCoordinator Service - Manages game lifecycle and coordination
     """
 
@@ -57,7 +57,7 @@ class GameCoordinatorServiceStub(object):
                 _registered_method=True)
 
 
-class GameCoordinatorServiceServicer(object):
+class GameCoordinatorServiceServicer:
     """GameCoordinator Service - Manages game lifecycle and coordination
     """
 
@@ -123,7 +123,7 @@ def add_GameCoordinatorServiceServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class GameCoordinatorService(object):
+class GameCoordinatorService:
     """GameCoordinator Service - Manages game lifecycle and coordination
     """
 

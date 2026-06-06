@@ -16,7 +16,6 @@ from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 
 from lib.otel_logging import init_logging
 from lib.otel_metrics import init_metrics
-from lib.profiling import init_profiling
 from lib.system_metrics import start_system_metrics_collector
 from proto import controller_manager_pb2_grpc
 from services.controller_manager import metrics
@@ -67,7 +66,6 @@ async def serve(port=50052):
     # Controller-manager gets 100ms (realtime), other services get 1000ms (normal)
     init_metrics()
     init_logging()
-    init_profiling()
 
     from services.controller_manager.servicer import init_frequency_listener
 

@@ -5,7 +5,7 @@ import warnings
 
 from proto import audio_pb2 as audio__pb2
 
-GRPC_GENERATED_VERSION = '1.76.0'
+GRPC_GENERATED_VERSION = '1.81.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -25,7 +25,7 @@ if _version_not_supported:
     )
 
 
-class AudioServiceStub(object):
+class AudioServiceStub:
     """Audio Service - Manages audio playback and mixing
     """
 
@@ -62,7 +62,7 @@ class AudioServiceStub(object):
                 _registered_method=True)
 
 
-class AudioServiceServicer(object):
+class AudioServiceServicer:
     """Audio Service - Manages audio playback and mixing
     """
 
@@ -132,7 +132,7 @@ def add_AudioServiceServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class AudioService(object):
+class AudioService:
     """Audio Service - Manages audio playback and mixing
     """
 

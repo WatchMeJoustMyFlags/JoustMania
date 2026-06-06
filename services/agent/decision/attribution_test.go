@@ -53,12 +53,13 @@ func TestDecisionSpan_FullFlagSetLifted(t *testing.T) {
 		Objectives:      map[string]float64{"endurance": 0.6, "chaos": 0.4},
 	}})
 
-	l.OnEvaluate(context.Background(), gamecontext.GameContext{SessionID: "s1"}, testTrigger())
+	l.OnEvaluate(context.Background(), gamecontext.GameContext{SessionID: "s1", GameKind: "real"}, testTrigger())
 
 	dec := spansByName(sr.Ended(), SpanDecision)[0]
 
 	wantStr := map[string]string{
 		AttrEnabled:              "true",
+		AttrGameKind:             "real",
 		AttrMode:                 "rules",
 		AttrObjectives:           "chaos=0.4,endurance=0.6",
 		AttrModel:                "gemma3:4b",
@@ -110,6 +111,10 @@ func TestDecisionSpan_BlockedAttribution(t *testing.T) {
 	}
 	if v, ok := attrValue(dec, AttrDecisionBlockReason); !ok || v.AsString() != string(ReasonNotAllowed) {
 		t.Errorf("decision.block_reason = %q, want %q", v.AsString(), ReasonNotAllowed)
+	}
+	// game.kind is schema-complete: present as the empty string when unknown (#845).
+	if v, ok := attrValue(dec, AttrGameKind); !ok || v.AsString() != "" {
+		t.Errorf("game.kind = %q (present=%v), want empty string for unknown", v.AsString(), ok)
 	}
 }
 
@@ -176,7 +181,7 @@ func TestInferenceAttribution_LLMFallback(t *testing.T) {
 		wantFallback string
 	}{
 		{name: "rules mode", mode: "rules", wantUsed: InferenceRules, wantFallback: ""},
-		{name: "llm mode falls back", mode: "llm", wantUsed: InferenceRules, wantFallback: FallbackLLMNotImplemented},
+		{name: "llm mode falls back", mode: "llm", wantUsed: InferenceRules, wantFallback: FallbackNoBackend},
 		{name: "unknown mode runs rules", mode: "weird", wantUsed: InferenceRules, wantFallback: ""},
 	}
 	for _, tc := range tests {

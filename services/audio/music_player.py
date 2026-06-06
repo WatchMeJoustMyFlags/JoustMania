@@ -20,9 +20,9 @@ import wave
 from multiprocessing import Array, Process, Value
 from sys import platform
 
+import miniaudio
 import numpy as np
 import resampy
-from pydub import AudioSegment
 
 logger = logging.getLogger(__name__)
 
@@ -72,11 +72,19 @@ def _load_song_from_pattern(pattern: str) -> bytes | None:
     for song_path in files:
         try:
             logger.info(f"Loading music: {song_path}")
-            segment = AudioSegment.from_file(song_path)
-            segment = segment.set_channels(2).set_frame_rate(44100).set_sample_width(2)
+            decoded = miniaudio.decode_file(
+                song_path,
+                output_format=miniaudio.SampleFormat.SIGNED16,
+                nchannels=2,
+                sample_rate=44100,
+            )
 
             buf = io.BytesIO()
-            segment.export(buf, format="wav")
+            with wave.open(buf, "wb") as wf:
+                wf.setnchannels(2)
+                wf.setsampwidth(2)
+                wf.setframerate(44100)
+                wf.writeframes(decoded.samples.tobytes())
             wav_bytes = buf.getvalue()
             logger.info(f"Music loaded: {song_path} ({len(wav_bytes)} bytes)")
             return wav_bytes

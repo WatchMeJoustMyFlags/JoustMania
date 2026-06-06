@@ -109,6 +109,69 @@ func TestStore_SnapshotIsolation(t *testing.T) {
 	}
 }
 
+// TestStore_OnGameEnd_FiresOnceWithPreResetState: the hook fires exactly once on
+// the GameActive true->false transition, with the elimination sequence and
+// SessionID still intact (the snapshot is taken before any session reset).
+func TestStore_OnGameEnd_FiresOnceWithPreResetState(t *testing.T) {
+	s := NewStore(time.Hour, time.Hour, nil)
+	var got []GameContext
+	s.OnGameEnd = func(c GameContext) { got = append(got, c) }
+
+	s.SetGameActive(true) // false->true: no fire
+	s.SetEliminationOrder("BB:22", 0)
+	s.SetEliminationOrder("CC:33", 1)
+	sessionID := s.Snapshot().SessionID
+
+	s.SetGameActive(false) // true->false: fire once
+
+	if len(got) != 1 {
+		t.Fatalf("OnGameEnd fired %d times, want 1", len(got))
+	}
+	end := got[0]
+	if end.SessionID != sessionID || end.SessionID == "" {
+		t.Errorf("snapshot SessionID = %q, want pre-reset %q", end.SessionID, sessionID)
+	}
+	wantSeq := []string{"BB:22", "CC:33"}
+	if len(end.Session.EliminationSequence) != len(wantSeq) {
+		t.Fatalf("elimination sequence = %v, want %v", end.Session.EliminationSequence, wantSeq)
+	}
+	for i, s := range wantSeq {
+		if end.Session.EliminationSequence[i] != s {
+			t.Errorf("elimination[%d] = %q, want %q", i, end.Session.EliminationSequence[i], s)
+		}
+	}
+	// The transition is also visible in the snapshot: GameActive is already false.
+	if end.Session.GameActive == nil || *end.Session.GameActive {
+		t.Error("snapshot GameActive should be false (post-transition, pre-reset)")
+	}
+}
+
+// TestStore_OnGameEnd_NotOnStartOrRepeatedFalse: the hook does not fire on
+// false->true (game start) nor on a repeated false->false call.
+func TestStore_OnGameEnd_NotOnStartOrRepeatedFalse(t *testing.T) {
+	s := NewStore(time.Hour, time.Hour, nil)
+	fires := 0
+	s.OnGameEnd = func(GameContext) { fires++ }
+
+	s.SetGameActive(true) // false->true
+	if fires != 0 {
+		t.Fatalf("fired on game start, want 0 (got %d)", fires)
+	}
+	s.SetGameActive(false) // true->false: 1
+	s.SetGameActive(false) // false->false: no additional fire
+	if fires != 1 {
+		t.Fatalf("OnGameEnd fired %d times, want 1 (no repeated-false fire)", fires)
+	}
+}
+
+// TestStore_OnGameEnd_NilHookSafe: a nil hook is the disabled default and must
+// not panic on a true->false transition.
+func TestStore_OnGameEnd_NilHookSafe(t *testing.T) {
+	s := NewStore(time.Hour, time.Hour, nil)
+	s.SetGameActive(true)
+	s.SetGameActive(false) // must not panic with OnGameEnd == nil
+}
+
 func TestStore_ConcurrencySmoke(t *testing.T) {
 	s := NewStore(time.Hour, time.Hour, nil)
 	var wg sync.WaitGroup

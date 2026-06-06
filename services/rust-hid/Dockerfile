@@ -7,7 +7,7 @@
 # =============================================================================
 # Stage 1: Build Rust binary
 # =============================================================================
-FROM rust:1.88-slim AS builder
+FROM rust:1.96-slim AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     protobuf-compiler \
@@ -55,7 +55,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy grpc-health-probe for Docker health checks
-COPY --from=ghcr.io/grpc-ecosystem/grpc-health-probe:v0.4.38 /ko-app/grpc-health-probe /bin/grpc_health_probe
+COPY --from=ghcr.io/grpc-ecosystem/grpc-health-probe:v0.4.52 /ko-app/grpc-health-probe /bin/grpc_health_probe
 
 # Copy Rust binary
 COPY --from=builder /app/services/rust-hid/target/release/rust-hid /usr/local/bin/rust-hid

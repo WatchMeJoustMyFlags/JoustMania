@@ -40,7 +40,7 @@ from services.game_coordinator import metrics
 from services.game_coordinator.difficulty_handlers import register_difficulty_handlers
 from services.game_coordinator.event_bus import EventBus
 from services.game_coordinator.game_session import GAME_KIND_PRIMARY, GAME_KIND_SHADOW, GameSession
-from services.game_coordinator.interventions import InterventionManager
+from services.game_coordinator.interventions import InterventionManager, SessionView
 from services.game_coordinator.lifecycle_handlers import register_lifecycle_handlers
 
 logger = logging.getLogger(__name__)
@@ -111,11 +111,17 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
 
         # Agent intervention manager (#730): subscribes to the flagd
         # `interventions` domain and applies agent interventions to the live
-        # (primary) game via the enforcement chain. get_live_game() returns the
-        # primary session's running BaseGameMode so handlers act on it.
+        # games via the enforcement chain. Per-session evaluation (#838):
+        # get_intervention_sessions() returns one SessionView per LIVE game
+        # (primary + every shadow), each carrying its game_id (-> gameId context),
+        # its running BaseGameMode, and its own EventBus publish, so a
+        # gameId-targeted intervention applies only to the matching session and
+        # publishes on that session's stream. Un-targeted interventions resolve
+        # to the default (no-op) for shadow games and the configured value for
+        # the primary, so they still touch only the primary (today's semantics).
         self.intervention_manager = InterventionManager(
             event_publisher=self.primary_event_bus.publish,
-            get_game=self.get_live_game,
+            get_sessions=self.get_intervention_sessions,
             battery_provider=self._battery_pct_for_serial,
             end_game_fn=self._force_end_current_game,
         )
@@ -180,10 +186,44 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
     def get_live_game(self):
         """Return the currently running PRIMARY game instance, or None.
 
-        Used by the InterventionManager so intervention handlers act on the
-        live (menu-driven) game.
+        Used by tests and the battery-guard fallback. The InterventionManager now
+        evaluates per session via :meth:`get_intervention_sessions` (#838).
         """
         return self.current_game
+
+    def get_intervention_sessions(self) -> list["SessionView"]:
+        """Snapshot the live sessions for the InterventionManager (#838).
+
+        Returns one ``SessionView`` per session whose game is constructed and
+        running, carrying:
+          * ``game_id`` — stamped into the ``gameId`` EvaluationContext so flagd
+            targeting rules can scope an intervention to one game;
+          * ``game`` — the live BaseGameMode handlers mutate;
+          * ``publish`` — THAT session's EventBus publish, so effects/blocked
+            events land on the owning game's stream (and reach its subscribers /
+            the agent runner).
+
+        Sessions with no constructed game yet (STARTING before the game thread
+        built the instance) are skipped — there is nothing to apply to. This
+        includes the primary and every shadow session uniformly, so a
+        gameId-targeted intervention reaches the matching shadow and an
+        un-targeted one resolves to the default (no-op) for shadows.
+        """
+        views: list[SessionView] = []
+        with self._sessions_lock:
+            sessions = list(self.sessions.values())
+        for session in sessions:
+            game = session.current_game
+            if game is None:
+                continue
+            views.append(
+                SessionView(
+                    game_id=session.game_id,
+                    game=game,
+                    publish=session.event_bus.publish,
+                )
+            )
+        return views
 
     def _battery_pct_for_serial(self, serial: str) -> float | None:
         """Return the live battery percentage (0-100) for a controller serial.
@@ -193,25 +233,27 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         the game updates from each ``GameplayData.battery`` frame (the same signal
         that feeds the controller manager's ``controller_battery_pct`` metric).
 
-        Multi-session note (#775/#793): interventions target the PRIMARY session
-        only (``get_live_game`` returns the primary game), so this reads the
-        primary game's players. If/when interventions become game-id scoped or
-        shadow sessions can hold targeted players, this should search the owning
-        session instead. For the current single-active-game reality the primary
-        lookup is correct.
+        Multi-session note (#775/#793/#838): interventions are now evaluated per
+        live session, so a serial may belong to any live game (primary OR a
+        shadow). This searches every live session's players for the serial and
+        returns the first match's battery, so a gameId-targeted player
+        intervention is battery-gated against the controller's actual game.
 
-        Returns None when no game is running, the serial is unknown, or no battery
-        frame has been seen yet — None means "unknown", so the guard does not
-        block (missing data must never block, per #798).
+        Returns None when no game holds the serial, or no battery frame has been
+        seen yet — None means "unknown", so the guard does not block (missing
+        data must never block, per #798).
         """
-        game = self.get_live_game()
-        players = getattr(game, "players", None) if game is not None else None
-        if not isinstance(players, dict):
-            return None
-        player = players.get(serial)
-        if player is None:
-            return None
-        return getattr(player, "battery_pct", None)
+        with self._sessions_lock:
+            sessions = list(self.sessions.values())
+        for session in sessions:
+            game = session.current_game
+            players = getattr(game, "players", None) if game is not None else None
+            if not isinstance(players, dict):
+                continue
+            player = players.get(serial)
+            if player is not None:
+                return getattr(player, "battery_pct", None)
+        return None
 
     def _on_primary_event_state_sync(self, event_type: str):
         """State-sync callback for the persistent primary bus.
@@ -420,9 +462,9 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                     return False, "Game already in progress"
                 logger.warning("Real game lost the admission race to a late shadow; preempting again (#837)")
             # Update lifecycle metrics for this session's kind.
-            metrics.active_game.labels(game_kind=game_kind).set(1)
+            metrics.active_game.labels(game_kind=game_kind, game_id=game_id).set(1)
             metrics.games_started_total.labels(mode=session.game_name, game_kind=game_kind).inc()
-            metrics.active_players.labels(game_kind=game_kind).set(len(session.players))
+            metrics.active_players.labels(game_kind=game_kind, game_id=game_id).set(len(session.players))
 
             # Publish game_start on this session's bus.
             await session.event_bus.publish(

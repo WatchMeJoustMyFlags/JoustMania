@@ -62,6 +62,90 @@ Sessions are not carried in every signal, so the Agent synthesizes them:
 | Player | Evicted after a **5 s** TTL with no fresh signal |
 | Session | Kept for a **15 s** grace period after it goes inactive, then evicted |
 
+## Per-game partitioning (#845)
+
+With `GAME_MAX_CONCURRENT_GAMES` allowing several games at once, the Agent
+partitions everything stateful **by `game_id`** so two concurrent games never
+share player state, a session, or a decision budget.
+
+### Context: the Multiplexer (PR B)
+
+The `gamecontext.Multiplexer` holds **one `Store` partition per `game_id`**. Each
+received datapoint/span is routed to its partition on the resolved `game_id`
+**before** it is applied, so players, sessions, and elimination order stay
+disjoint. Signals that carry no `game_id` land on the **fallback partition**
+(`FallbackGameID = ""`) — the zero-regression linchpin: in single-game mode (or
+against a coordinator without the `game_id` labels) every signal lands there and
+the Multiplexer behaves byte-for-byte like the old single `Store`.
+
+Partitions are created **lazily** on first touch and removed by `EvictStale` once
+a game's session has ended past grace and retains no fresh players. The fallback
+partition is **never** wholesale-removed (its session still resets on grace).
+
+### Decisions: the LoopSet (PR C)
+
+The `decision.LoopSet` is the per-game counterpart to the Multiplexer: **one
+`decision.Loop` per partition**, lazily created on first evaluation. Each Loop
+owns its:
+
+- **weighted rate-limit budget** (`policy.max_interventions_per_minute`) — one
+  game exhausting its per-minute budget does **not** block another game;
+- **log/span throttle slot** (`decision.throttle_seconds`) — one game's throttle
+  never silences another's `agent.evaluate` log or `agent.disabled` span;
+- **per-cycle `LayerState`** (the `#729` span-attribution source of truth).
+
+**Shared vs per-game wiring.** The factory (`main.go`) builds, per Loop:
+
+| Component | Per-loop? | Why |
+|-----------|-----------|-----|
+| Rules engine (`ObjectiveRules`) | **Fresh per loop** | Carries per-cycle mutable state the loop drives every cycle — `SetObjectives`/`SetFitness` published before `Evaluate`, `LastFitness` read after. A shared engine would let two games **race** each other's objective weights and fitness reads, stamping the wrong game's `agent.objectives`/`fitness.evaluated` onto a span. |
+| Action sink (`actions.Writer`) | **Shared** | Holds no per-game state — it serializes a read-modify-write of the flagd interventions file under its own mutex, keyed by the decision's target. Safe to close over one instance. |
+| Flag source, tracer | **Shared** | Stateless / concurrency-safe. |
+
+### Loop lifecycle / eviction
+
+The eviction ticker runs `mux.EvictStale()` and then
+`loops.Retain(mux.Partitions())`: a removed partition's Loop — and its budget +
+throttle state — is dropped **in lockstep** with its Store. The **fallback loop
+is permanent** (`Retain` skips it), mirroring the fallback Store. A dropped
+game's Loop is **recreated lazily with a fresh budget** if the game resumes —
+acceptable because a partition is only dropped after its game fully ended past
+grace.
+
+### Span attribution
+
+Decision spans are independently attributable per game. The root
+`agent.span_received` span carries both `session.id` and the `game.id` alias
+(`session.id` **is** the real `game_id` since PR A's early adoption); the
+decision / `agent.disabled` / `agent.llm.prompt` spans carry `game.kind` (and the
+prompt-capture span carries `game.id` too). So a Jaeger query by `game.id` is
+symmetrical with the coordinator's own `game.id`-tagged spans, and two concurrent
+games' traces never blur together.
+
+### Multi-game decision flow
+
+```
+OTLP Export (metrics/traces batch)
+        │  per datapoint/span: resolve game_id
+        ▼
+  Multiplexer ── route ──► Store[game-A]      Store[game-B]      Store[""]   (fallback)
+        │                      │                  │                 │
+        │  touched game_ids    │ Snapshot         │ Snapshot        │ Snapshot
+        ▼                      ▼                  ▼                 ▼
+  signalUpdated ──► gate.ShouldEvaluate(snap) per partition
+                            │ (if eligible)
+                            ▼
+                 LoopSet.For(game_id) ──► Loop[game-A]   Loop[game-B]   Loop[""]
+                                              │  own budget   │ own budget   │ own budget
+                                              │  own throttle │ own throttle │ own throttle
+                                              ▼               ▼              ▼
+                                        agent.decision spans (game.id / game.kind)
+```
+
+> **#847 hook:** the per-game LLM gating (per-game cadence / eligibility) will
+> attach to this per-game Loop state; the **global** LLM budget stays shared
+> across loops (one inference-cost ceiling for the whole agent).
+
 ## Infrastructure observe path (#733)
 
 Alongside the game `GameContext`, the Agent runs a **parallel infrastructure
@@ -595,7 +679,7 @@ decision in the cycle):
 | `policy.max_interventions_per_minute` | policy flag | live int | — |
 | `inference.configured` | the `model` flag value | live (e.g. `"phi4-mini"`) | — |
 | `inference.used` | the engine that ran | `"rules"` | `"llm"` once M4 lands |
-| `inference.fallback_reason` | why `llm` fell back | `"llm_path_not_implemented"` when `mode=llm`, else `""` | empties once M4 lands |
+| `inference.fallback_reason` | why `llm` fell back | `"no_backend_available"` when `mode=llm`, else `""` | #741 `resolve_backend()` supplies the real reason / empties |
 | `fitness.evaluated` (cycle) | `LayerState.FitnessEvaluated` — dotted per-objective thresholds + results (#731) | live (e.g. `endurance.session_progress=0.5`) | — |
 | `gen_ai.agent.name` | agent identity | `"joustmania-agent"` | — |
 
@@ -622,6 +706,86 @@ single `agent.disabled` child (no `agent.action` child — nothing was decided)
 carrying the same cycle-level flag attribution above (`agent.enabled=false`, the
 capability and permission flags that were in effect). Throttled to one per second
 so a disabled agent under heavy signal load does not flood the trace backend.
+
+#### LLM prompt capture (M4 spike, #739)
+
+When `agent.mode = "llm"` the loop has no inference backend yet, so it **captures
+the prompt it would send** and falls back to the rules engine. Because the
+`agent.decision` spans are lazy (emitted only when a decision is produced), the
+prompt is recorded on a **dedicated** span, `agent.llm.prompt`, that emits on
+every llm cycle regardless of whether a decision was made — greppable in Jaeger
+by name. It is **throttled** on the same `decision.throttle_seconds` slot as the
+evaluate log and `agent.disabled` (default 1s), so a steady-state llm agent emits
+at most one capture per interval.
+
+The span carries the full prompt plus its attribution (single builder
+`llmPromptAttributes`, schema-complete every emission):
+
+| Attribute | Value |
+|-----------|-------|
+| `gen_ai.operation.name` | `"chat"` |
+| `gen_ai.request.model` | the `model` capability flag |
+| `gen_ai.output.type` | `"json"` |
+| `agent.mode` | `"llm"` |
+| `agent.prompt_variant` | resolved prompt variant |
+| `agent.objectives` | sorted `k=v` weights |
+| `interventions.allowed` | the allow-list summary |
+| `llm.prompt.system` / `llm.prompt.user` | the **full** prompt text (uncapped) |
+| `llm.prompt.bytes` | `len(system)+len(user)` |
+| `inference.configured` | the `model` flag |
+| `inference.used` | `"rules"` (the rules engine decided) |
+| `inference.fallback_reason` | `"no_backend_available"` |
+
+The companion log line `agent.llm.prompt_captured` carries only metadata
+(`session_id`, `variant`, `model`, `bytes`, `fallback_reason`) — the prompt text
+lives on the span alone. **View in Jaeger:** open `http://localhost:8080/jaeger/`,
+service `agent`, operation `agent.llm.prompt`. To replay a captured prompt against
+a real model, copy `llm.prompt.system` / `llm.prompt.user` into two files and run
+`scripts/replay-prompt.sh`. See
+[docs/research/739-prompt-capture.md](../../docs/research/739-prompt-capture.md)
+for the response contract and the forward path (#741 backend, #742 auth).
+
+#### Post-game retrospective capture (M4, #844)
+
+When a game **ends** (the `GameActive` true→false transition fires the store's
+`OnGameEnd` hook with a pre-reset snapshot), the `decision.RetroCoordinator`
+builds the prompt the agent would send to an **offline analyst** asking for
+calibration tweaks for the next game, and records it on a dedicated
+**`agent.llm.retro`** span — **capture-first**, exactly like #739, no backend
+called yet. It emits **exactly once per session** (dedup on `SessionID`) and is
+structurally isolated from the decision loop: it never touches the gate, the loop,
+or the rate limiter, so a retrospective **cannot consume the in-game intervention
+budget**.
+
+The span carries the full retro prompt plus attribution (single builder
+`retroPromptAttributes`, schema-complete every emission):
+
+| Attribute | Value |
+|-----------|-------|
+| `gen_ai.operation.name` | `"chat"` |
+| `gen_ai.request.model` | the `model` capability flag |
+| `gen_ai.output.type` | `"json"` |
+| `agent.mode` | `"retro"` |
+| `agent.objectives` | sorted `k=v` weights |
+| `interventions.allowed` | the allow-list summary |
+| `session.id` | the finished session's id |
+| `llm.retro.system` / `llm.retro.user` | the **full** retro prompt text (uncapped) |
+| `llm.retro.bytes` | `len(system)+len(user)` |
+| `inference.configured` | the `model` flag |
+| `inference.used` | **`"none"`** (divergence — see below) |
+| `inference.fallback_reason` | `"no_backend_available"` |
+
+**Divergence from the in-game capture:** `inference.used` is `"none"`, **not**
+`"rules"`. The in-game path falls back to the rules engine, so `"rules"` is the
+honest "what decided this cycle". A retrospective has **no** rules fallback —
+nothing runs in place of the analyst at game end — so `"none"` is the honest
+value. The companion log line `agent.llm.retro_captured` carries only metadata
+(`session_id`, `model`, `bytes`, `fallback_reason`). The suggestion contract maps
+to the **calibration surface** (#766: `global_difficulty_factor`,
+`pacing_profile`, `threshold_table`, `objective_variant`), and `replay-prompt.sh`
+replays an `agent.llm.retro` span identically (copy `llm.retro.system` /
+`llm.retro.user`). See
+[docs/research/844-post-game-retro.md](../../docs/research/844-post-game-retro.md).
 
 #### `fitness.evaluated` (#731)
 

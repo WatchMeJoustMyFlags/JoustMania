@@ -40,6 +40,7 @@ from tests.integration.helpers import (
     start_game_headless,
     start_game_via_menu,
     wait_for_lobby_colors,
+    wait_until_running,
 )
 
 
@@ -94,13 +95,7 @@ async def test_two_concurrent_headless_games(docker_compose, headless_cleanup):
         # when its loop publishes game_started — poll instead of a fixed sleep
         # (a one-shot at 1.0s flaked on CI once the start path grew the #837
         # shadow_policy flag read).
-        deadline = asyncio.get_running_loop().time() + 10.0
-        running: set = set()
-        while True:
-            running = _running_ids(await list_games(game_client))
-            if {game_id_a, game_id_b} <= running or asyncio.get_running_loop().time() > deadline:
-                break
-            await asyncio.sleep(0.3)
+        running = await wait_until_running(game_client, {game_id_a, game_id_b})
         assert game_id_a in running, f"{game_id_a} not RUNNING in {running}"
         assert game_id_b in running, f"{game_id_b} not RUNNING in {running}"
 
@@ -345,8 +340,11 @@ async def test_headless_natural_end_then_restart(docker_compose, headless_cleanu
 
         assert game_id_2 != game_id_1, "restart must get a fresh game_id"
 
-        games = await list_games(game_client)
-        assert game_id_2 in _running_ids(games), "restarted game should be RUNNING"
+        # Poll: start_game_headless returns on game_starting, so the session
+        # may still be STARTING (countdown) here — a one-shot assert raced on
+        # CI under parallel load (#897).
+        running = await wait_until_running(game_client, {game_id_2})
+        assert game_id_2 in running, f"restarted game should be RUNNING, got {running}"
 
         await force_end_game_by_id(game_client, game_id_2)
         await second_collector.wait_for_any_event(

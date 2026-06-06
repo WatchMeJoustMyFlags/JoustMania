@@ -12,21 +12,6 @@
 # Use IMAGE_TAG environment variable to specify version (default: latest)
 
 services:
-  # Redis for pub/sub messaging (lightweight)
-  redis:
-    image: redis:7.4-alpine
-    container_name: joustmania-redis
-    expose:
-      - "6379"
-    networks:
-      - joustmania
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 3
-      start_period: 2s
-
   # flagd for feature flag evaluation
   flagd:
     image: ghcr.io/open-feature/flagd:v0.16.0
@@ -90,8 +75,6 @@ services:
       - /dev:/dev:rslave
       - controller-names:/app/data
     depends_on:
-      redis:
-        condition: service_healthy
       flagd:
         condition: service_started
     restart: unless-stopped
@@ -139,8 +122,6 @@ services:
     environment:
       - OTEL_SDK_DISABLED=true
     depends_on:
-      redis:
-        condition: service_healthy
       flagd:
         condition: service_started
     networks:
@@ -170,8 +151,6 @@ services:
       - ./services/flagd/game.json:/etc/flagd/game.json
       - ./services/flagd/user.json:/etc/flagd/user.json
     depends_on:
-      redis:
-        condition: service_healthy
       flagd:
         condition: service_started
     networks:
@@ -254,7 +233,7 @@ services:
 
   # Envoy (Gateway)
   envoy:
-    image: envoyproxy/envoy:v1.31-latest
+    image: envoyproxy/envoy:v1.38-latest
     container_name: joustmania-envoy
     ports:
       - "80:80"
@@ -270,5 +249,4 @@ networks:
     name: joustmania-network
 
 volumes:
-  redis-data:
   controller-names:

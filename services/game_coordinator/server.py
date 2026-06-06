@@ -48,7 +48,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from lib.otel_logging import init_logging
 from lib.otel_metrics import init_metrics
-from lib.profiling import init_profiling
 from lib.system_metrics import start_system_metrics_collector
 from proto import game_coordinator_pb2_grpc
 from services.game_coordinator import metrics
@@ -70,7 +69,6 @@ async def serve(port=50053):
     # Export interval read from flagd with per-service targeting (Issue #479)
     init_metrics()
     init_logging()
-    init_profiling()
 
     # Start system metrics collection
     start_system_metrics_collector(

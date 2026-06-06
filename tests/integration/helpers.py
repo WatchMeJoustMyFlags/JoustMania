@@ -472,6 +472,68 @@ async def list_games(game_client) -> list:
     return list(response.games)
 
 
+async def wait_until_running(
+    game_client,
+    game_ids: set[str],
+    timeout: float = 10.0,
+    poll_interval: float = 0.3,
+) -> set[str]:
+    """Poll ListGames until every id in ``game_ids`` is RUNNING.
+
+    ``start_game_headless`` returns on the first start event — which can be
+    ``game_starting``, i.e. while the session is still STARTING (countdown).
+    A one-shot RUNNING assert right after it is therefore a race; under
+    parallel CI load the STARTING window stretches well past it (#897).
+
+    Args:
+        game_client: GameCoordinator gRPC client.
+        game_ids: The game ids that must all reach RUNNING.
+        timeout: Max seconds to poll before giving up.
+        poll_interval: Delay between ListGames polls.
+
+    Returns:
+        The set of RUNNING game ids from the final poll (callers assert on it
+        for a failure message that shows what WAS running).
+    """
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        running = {
+            g.game_id
+            for g in await list_games(game_client)
+            if g.state == game_coordinator_pb2.GameState.RUNNING
+        }
+        if game_ids <= running or asyncio.get_running_loop().time() > deadline:
+            return running
+        await asyncio.sleep(poll_interval)
+
+
+async def describe_game_state(game_client, game_id: str) -> str:
+    """Best-effort one-line description of a session's live state for failures.
+
+    Reports the ListGames state plus per-player team/alive from GetGameState,
+    e.g. ``RUNNING players={'MOCK1': 'team=0 alive', ...}`` — or ``not listed
+    (session retired)`` when the id is gone. Never raises: diagnostics must not
+    mask the assertion they decorate (#897).
+    """
+    try:
+        states = {g.game_id: g.state for g in await list_games(game_client)}
+        if game_id not in states:
+            return "not listed (session retired)"
+        desc = game_coordinator_pb2.GameState.Name(states[game_id])
+        response = await game_client.GetGameState(
+            game_coordinator_pb2.GetGameStateRequest(game_id=game_id)
+        )
+        if response.success:
+            players = {
+                p.serial: f"team={p.team} {'alive' if p.alive else 'dead'}"
+                for p in response.game_info.players
+            }
+            desc += f" players={players}"
+        return desc
+    except Exception as exc:  # noqa: BLE001 - diagnostics are best-effort
+        return f"unavailable ({exc})"
+
+
 _LIVE_GAME_STATES = (
     game_coordinator_pb2.GameState.STARTING,
     game_coordinator_pb2.GameState.RUNNING,
@@ -1435,8 +1497,21 @@ async def end_swapper_game(
         team_1 = [s for s, p in players.items() if p.team == 1]
         if not team_1:
             if killed:
-                # All players on team 0 after at least one swap — end imminent.
-                return killed
+                # All players on team 0 after at least one swap. Do NOT return
+                # yet: the mock's held death acceleration (~2s, #757) can
+                # re-kill a freshly swapped player and bounce them BACK to
+                # team 1 after this query — the game then keeps running 2v2
+                # with no terminal event (seen on CI: state RUNNING, 2v2,
+                # strategy long returned). Wait out the death-hold window and
+                # re-verify convergence is stable before declaring victory.
+                await asyncio.sleep(2.5)
+                players = await get_player_states(game_client, game_id=game_id)
+                if players is None:
+                    return killed  # game ended — converged for real
+                if not any(p.team == 1 for p in players.values()):
+                    return killed  # stable: still all on team 0
+                # Bounce-back happened — keep converging.
+                continue
             # Startup race (caught on #837 CI): proto3 PlayerInfo.team defaults
             # to 0, so a query landing before Swapper assigns teams looks
             # exactly like "everyone converged on team 0". A real Swapper start
@@ -1458,7 +1533,17 @@ async def end_swapper_game(
         if not await kill_player_verified(
             mock_client, game_client, serial, lambda p: p.team == 0, game_id=game_id
         ):
-            return killed  # Game ended during the kill
+            # Verification fails when the game ended mid-kill OR when the kill
+            # simply did not register (grace window / EMA warm-up, the #757
+            # family). Only the former ends the strategy — treating both as
+            # "ended" silently abandoned a still-running 2v2 game with no
+            # terminal event (~50% CI flake). Re-query to distinguish; retry
+            # the kill within the overall deadline otherwise.
+            players = await get_player_states(game_client, game_id=game_id)
+            if players is None:
+                return killed  # game genuinely ended during the kill
+            print(f"Swapper: kill of {serial} did not register, retrying")
+            continue
         killed.append(serial)
 
 

@@ -66,6 +66,16 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
+// partitionSet turns the Multiplexer's partition id slice into a set for
+// LoopSet.Retain (#845 PR C).
+func partitionSet(ids []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		set[id] = struct{}{}
+	}
+	return set
+}
+
 // parsePort parses a uint16 TCP port, returning fallback on any parse error.
 func parsePort(s string, fallback uint16) uint16 {
 	n, err := strconv.ParseUint(strings.TrimSpace(s), 10, 16)
@@ -224,38 +234,59 @@ func main() {
 		"decision_throttle", lifecycle.DecisionThrottle,
 	)
 
-	store := gamecontext.NewStore(lifecycle.PlayerTTL, lifecycle.SessionGrace, nil)
-	// Skip the agent's own telemetry when the collector fans it back to us
-	// (otlp/agent exporter) — breaks the self-ingestion feedback loop.
-	store.SetOwnService(resolveServiceName())
+	ownService := resolveServiceName()
 
-	// The decision loop is driven by the OpenFeature/flagd control layer (#727):
-	// flags are evaluated every cycle, the kill switch / objectives / permission
-	// gate are applied, and decisions flow through the #724 audit spans.
-	loop := decision.NewLoop(agentFlags, logger)
-	// Throttle for the evaluate log line / agent.disabled span is read-at-startup
-	// from decision.throttle_seconds (#766 F5).
-	loop.SetThrottle(lifecycle.DecisionThrottle)
-	// The objective-weighted rules engine (#726) is the active default. Its
-	// objective weights are driven live from the `objectives` flag each cycle
-	// (NewObjectiveRulesLive publishes a LiveObjectives source the loop updates);
-	// policy/fitness run on flagd-schema defaults. The action sink is still a
-	// no-op until the intervention API (#730), so nothing is applied to the game.
-	loop.Rules = decision.NewObjectiveRulesLive(nil)
-	// Action sink (#730): when AGENT_INTERVENTIONS_ENABLED=true, decisions are
-	// applied by rewriting the flagd interventions file (INTERVENTIONS_FLAG_PATH).
-	// Default false keeps the scaffold inert (NoopActions discards decisions).
-	if sink := actionSink(logger); sink != nil {
-		loop.Actions = sink
-	}
-	if strings.EqualFold(getEnv("AGENT_PROBE_DECISIONS", ""), "true") {
-		// Demo/verification mode: emit a synthetic noop decision (and thus the
-		// full audit trace, #724) at most once per probe interval. Overrides
-		// the rules engine.
-		loop.Rules = decision.NewProbeRules(probeInterval, nil)
+	// Per-game decision Loop factory (#845 PR C). Each game partition gets its OWN
+	// Loop — own weighted rate-limit budget, own log/span throttle, own per-cycle
+	// LayerState — so concurrent games never share a budget or contend on throttle.
+	// The LoopSet below invokes this once per game_id, lazily on first evaluation.
+	//
+	// Shared vs per-game wiring:
+	//   - FRESH rules engine PER LOOP: NewObjectiveRulesLive builds a new engine with
+	//     its own LiveObjectives / LiveFitness sources. The loop drives these every
+	//     cycle (SetObjectives/SetFitness before Evaluate, LastFitness after), so a
+	//     shared engine would let two games race each other's objective weights and
+	//     fitness reads — the spans would carry the wrong game's agent.objectives.
+	//     A fresh engine removes the shared mutable state entirely.
+	//   - SHARED action sink: actions.Writer holds no per-game state (it serializes a
+	//     read-modify-write of the flagd interventions file under its own mutex,
+	//     keyed by the decision's target), so one Writer is closed over by every loop.
+	//   - SHARED flag source (agentFlags) and tracer: stateless / concurrency-safe.
+	sharedSink := actionSink(logger) // nil leaves the loop's default NoopActions in place
+	probeDecisions := strings.EqualFold(getEnv("AGENT_PROBE_DECISIONS", ""), "true")
+	if probeDecisions {
 		slog.Warn("Probe decisions enabled (demo/verification mode)",
 			"interval", probeInterval)
 	}
+	loopFactory := func(gameID string) *decision.Loop {
+		// The decision loop is driven by the OpenFeature/flagd control layer (#727):
+		// flags are evaluated every cycle, the kill switch / objectives / permission
+		// gate are applied, and decisions flow through the #724 audit spans.
+		loop := decision.NewLoop(agentFlags, logger)
+		// Throttle for the evaluate log line / agent.disabled span is read-at-startup
+		// from decision.throttle_seconds (#766 F5).
+		loop.SetThrottle(lifecycle.DecisionThrottle)
+		// The objective-weighted rules engine (#726) is the active default, built
+		// FRESH per loop (see the factory doc above). Its objective weights are driven
+		// live from the `objectives` flag each cycle; policy/fitness run on
+		// flagd-schema defaults.
+		loop.Rules = decision.NewObjectiveRulesLive(nil)
+		if probeDecisions {
+			// Demo/verification mode: emit a synthetic noop decision (and thus the
+			// full audit trace, #724) at most once per probe interval. Overrides
+			// the rules engine. Each loop gets its own probe clock.
+			loop.Rules = decision.NewProbeRules(probeInterval, nil)
+		}
+		// Action sink (#730): when AGENT_INTERVENTIONS_ENABLED=true, decisions are
+		// applied by rewriting the flagd interventions file (INTERVENTIONS_FLAG_PATH).
+		// Default (nil sink) keeps the scaffold inert (NoopActions discards decisions).
+		// The one Writer is safe to share across loops (no per-game state).
+		if sharedSink != nil {
+			loop.Actions = sharedSink
+		}
+		return loop
+	}
+	loops := decision.NewLoopSet(loopFactory)
 	// Infrastructure observe + rollout path (#733/#734, M3): a parallel store fed
 	// by the controller.bluetooth_health span on the same OTLP trace receiver. It
 	// honors the same self-ingestion skip as the game store. The InfraLoop runs the
@@ -290,7 +321,32 @@ func main() {
 	infraLoop.SetGate(func(snap infracontext.InfraContext, now time.Time) bool {
 		return gate.ShouldEvaluateInfra(snap, now, infraControllerTTL)
 	})
-	pipe := newPipeline(store, loop, lifecycle.PlayerTTL).withInfra(infraStore, infraLoop)
+	// Post-game retrospective (#844): on the GameActive true->false transition each
+	// partition's store fires OnGameEnd with a pre-reset snapshot, and the
+	// RetroCoordinator captures the prompt the agent would send to an offline
+	// analyst on a dedicated agent.llm.retro span (capture-first, exactly once per
+	// session). It deliberately does NOT touch the loop, the gate, or the rate
+	// limiter — a retrospective never consumes the in-game intervention budget. With
+	// per-game partitions (#845 PR B) every partition's Store shares this one
+	// coordinator; it dedupes by SessionID across all partitions, so interleaved
+	// game-ends each capture exactly once (see retro_capture.go's bounded dedupe).
+	retro := decision.NewRetroCoordinator(agentFlags, logger)
+
+	// GameContext multiplexer (#845 PR B): one Store partition per game_id, plus the
+	// fallback partition "" for unlabeled signals (zero-regression — single-game
+	// mode collapses to exactly today's single-store behavior). The factory applies
+	// the lifecycle TTLs/clock, skips the agent's own telemetry (otlp/agent
+	// self-ingestion loop), and wires OnGameEnd per partition so the retrospective
+	// fires per game on the right partition's state.
+	mux := gamecontext.NewMultiplexer(func(gameID string) *gamecontext.Store {
+		s := gamecontext.NewStore(lifecycle.PlayerTTL, lifecycle.SessionGrace, nil)
+		s.SetOwnService(ownService)
+		s.OnGameEnd = retro.OnGameEnd
+		return s
+	})
+	mux.SetOwnService(ownService)
+
+	pipe := newPipeline(mux, loops, lifecycle.PlayerTTL).withInfra(infraStore, infraLoop)
 
 	grpcServer := grpc.NewServer()
 	ptraceotlp.RegisterGRPCServer(grpcServer, &traceReceiver{pipe: pipe})
@@ -329,7 +385,13 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				store.EvictStale()
+				mux.EvictStale()
+				// Drop the Loop (budget + throttle state) of any partition the
+				// Multiplexer just removed, in lockstep with its Store (#845 PR C).
+				// The fallback partition's loop is never dropped (Retain skips it).
+				// Partitions() is read AFTER EvictStale so a removed game's loop is
+				// not retained; it is recreated lazily (fresh budget) if it resumes.
+				loops.Retain(partitionSet(mux.Partitions()))
 				infraStore.EvictStale()
 			}
 		}

@@ -127,7 +127,7 @@ class FightClubGame(BaseGameMode):
         # Read ONCE here (init-frozen); a non-positive/malformed value falls back
         # to the ROUND_DURATION module constant (a 0s round would break play).
         round_seconds = resolve_non_negative_duration(
-            read_float_flag("game", "fight_club.round_seconds", ROUND_DURATION),
+            read_float_flag("game", "fight_club.round_seconds", ROUND_DURATION, game_id=self.game_id),
             ROUND_DURATION,
         )
         self._round_duration: float = round_seconds if round_seconds > 0 else ROUND_DURATION

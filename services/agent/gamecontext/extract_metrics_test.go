@@ -159,7 +159,7 @@ func TestApplyMetrics_SessionScalars(t *testing.T) {
 	// mode with value 0 must be ignored.
 	s2 := newTestStore()
 	if s2.ApplyMetrics(metricsWith(metricGameMode, 0, map[string]string{"mode": "off"})) {
-		t.Fatal("current_game_mode with value 0 should be ignored")
+		t.Fatal("game_current_mode with value 0 should be ignored")
 	}
 }
 
@@ -212,6 +212,81 @@ func TestApplyMetrics_MissingSerialSkipped(t *testing.T) {
 	s := newTestStore()
 	if s.ApplyMetrics(metricsWith(metricAccelMagnitude, 1.2, nil)) {
 		t.Fatal("data point without serial should be skipped")
+	}
+}
+
+// TestApplyMetrics_AdoptsGameLabels verifies that a live session signal carrying
+// game_id + game_kind labels adopts both into the context (the early-adoption
+// path #845 adds, much earlier than the pre-#845 end-of-game peak_accel path).
+func TestApplyMetrics_AdoptsGameLabels(t *testing.T) {
+	s := newTestStore()
+	s.ApplyMetrics(metricsWith(metricGameActive, 1, map[string]string{
+		attrGameID:   "game-42",
+		attrGameKind: "shadow",
+	}))
+	snap := s.Snapshot()
+	if snap.SessionID != "game-42" {
+		t.Fatalf("SessionID = %q, want game-42 (adopted from game_id)", snap.SessionID)
+	}
+	if snap.GameKind != "shadow" {
+		t.Fatalf("GameKind = %q, want shadow (adopted from game_kind)", snap.GameKind)
+	}
+}
+
+// TestApplyMetrics_PerPlayerAdoptsGameID verifies a per-player signal with a
+// game_id label adopts the session id (no game_kind on these signals).
+func TestApplyMetrics_PerPlayerAdoptsGameID(t *testing.T) {
+	s := newTestStore()
+	s.ApplyMetrics(metricsWith(metricGameAlive, 1, map[string]string{
+		attrSerial: "A",
+		attrGameID: "game-7",
+	}))
+	snap := s.Snapshot()
+	if snap.SessionID != "game-7" {
+		t.Fatalf("SessionID = %q, want game-7", snap.SessionID)
+	}
+	if snap.GameKind != "" {
+		t.Fatalf("GameKind = %q, want empty (per-player signals carry no game_kind)", snap.GameKind)
+	}
+}
+
+// TestApplyMetrics_NoGameLabelsLeavesIdentityUnchanged verifies that an
+// unlabeled session signal does not clobber a synthetic SessionID or an
+// already-observed GameKind — single-game behavior is preserved (no dropping).
+func TestApplyMetrics_NoGameLabelsLeavesIdentityUnchanged(t *testing.T) {
+	s := newTestStore()
+	// First a labeled signal establishes identity.
+	s.ApplyMetrics(metricsWith(metricGameActive, 1, map[string]string{
+		attrGameID:   "game-1",
+		attrGameKind: "real",
+	}))
+	// Then an unlabeled live signal arrives (the legacy/primary-context path).
+	if !s.ApplyMetrics(metricsWith(metricDuration, 30, nil)) {
+		t.Fatal("duration without labels should still apply its value")
+	}
+	snap := s.Snapshot()
+	if snap.SessionID != "game-1" {
+		t.Fatalf("SessionID = %q, want game-1 (unlabeled signal must not clear it)", snap.SessionID)
+	}
+	if snap.GameKind != "real" {
+		t.Fatalf("GameKind = %q, want real (unlabeled signal must not clear it)", snap.GameKind)
+	}
+	if snap.Session.DurationSeconds == nil || *snap.Session.DurationSeconds != 30 {
+		t.Fatalf("duration not applied: %v", snap.Session.DurationSeconds)
+	}
+}
+
+// TestApplyMetrics_GameModeNeverCarriesGameID documents the contract: the
+// primary/legacy game_current_mode signal never carries game_id, so it must not
+// adopt a session id even if one is somehow present.
+func TestApplyMetrics_GameModeNeverAdopts(t *testing.T) {
+	s := newTestStore()
+	s.ApplyMetrics(metricsWith(metricGameMode, 1, map[string]string{
+		"mode":     "joust",
+		attrGameID: "should-be-ignored",
+	}))
+	if id := s.Snapshot().SessionID; id != "" {
+		t.Fatalf("SessionID = %q, want empty (game_current_mode must not adopt game_id)", id)
 	}
 }
 

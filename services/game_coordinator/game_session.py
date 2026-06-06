@@ -217,8 +217,8 @@ class GameSession:
                     self.game_state = game_coordinator_pb2.GameState.ENDED
 
                 # Update lifecycle metrics for THIS session's kind (#775).
-                metrics.active_game.labels(game_kind=self.game_kind).set(0)
-                metrics.active_players.labels(game_kind=self.game_kind).set(0)
+                metrics.active_game.labels(game_kind=self.game_kind, game_id=self.game_id).set(0)
+                metrics.active_players.labels(game_kind=self.game_kind, game_id=self.game_id).set(0)
                 if self.is_primary:
                     # players_alive is a single global gauge (not yet per-kind);
                     # only the primary session resets it.
@@ -227,7 +227,7 @@ class GameSession:
                     metrics.games_completed_total.labels(mode=self.game_name, game_kind=self.game_kind).inc()
                 if self.game_start_time:
                     duration = time.time() - self.game_start_time
-                    metrics.game_duration_seconds.labels(game_kind=self.game_kind).set(duration)
+                    metrics.game_duration_seconds.labels(game_kind=self.game_kind, game_id=self.game_id).set(duration)
 
                 # Cleanup channels
                 await self.clients.close()

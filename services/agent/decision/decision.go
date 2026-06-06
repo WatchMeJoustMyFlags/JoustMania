@@ -49,6 +49,7 @@ import (
 
 	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
+	"github.com/joustmania/agent/llm"
 )
 
 // Decision is a single intervention the rules engine wants applied.
@@ -260,7 +261,13 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 		pub.SetFitness(fitnessThresholds(snapshot.Fitness))
 	}
 
-	if l.shouldLog() {
+	// A single throttle decision per cycle drives BOTH the evaluate log and the
+	// llm-mode prompt-capture span/log, so they share one throttle slot rather
+	// than racing for it (an evaluate-log shouldLog() would otherwise consume the
+	// slot before decide() could capture). emit==true at most once per throttle
+	// interval.
+	emit := l.shouldLog()
+	if emit {
 		l.Log.Info("agent.evaluate",
 			"session_id", c.SessionID,
 			"player_count", len(c.Players),
@@ -275,7 +282,7 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 		)
 	}
 
-	decisions := l.decide(ctx, snapshot, c)
+	decisions := l.decide(ctx, snapshot, c, emit)
 
 	// Lift the cycle-level fitness evaluation the engine just computed onto the
 	// LayerState so it rides the decision span as fitness.evaluated (#731). Read
@@ -307,7 +314,11 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 			semconv.RPCService(trig.RPCService),
 			semconv.RPCMethod("Export"),
 			attribute.String("otlp.signal", trig.Signal),
-			attribute.String("session.id", c.SessionID),
+			attribute.String(AttrSessionID, c.SessionID),
+			// game.id alias (#845): session.id IS the game_id since PR A; the alias
+			// keeps Jaeger queries by game.id symmetrical with the coordinator spans
+			// and makes two concurrent games' traces independently attributable.
+			attribute.String(AttrGameID, c.SessionID),
 		),
 	)
 	defer root.End()
@@ -337,21 +348,54 @@ func (l *Loop) setLastLayer(state LayerState) {
 }
 
 // decide selects the decision path from snapshot.Mode and runs it. The "llm"
-// path (M4) does not exist yet, so it logs a note (with the capability-layer
-// model/prompt selection) and falls back to the rules engine.
-func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext) []Decision {
-	switch snapshot.Mode {
-	case "llm":
-		l.Log.Info("agent.mode_llm_fallback",
-			"note", "llm decision path not implemented (M4); falling back to rules",
-			"model", snapshot.Capability.Model,
-			"prompt_variant", snapshot.Capability.PromptVariant,
-		)
-		return l.Rules.Evaluate(ctx, c)
-	default:
-		// "rules" and any unrecognized mode use the deterministic rules path.
-		return l.Rules.Evaluate(ctx, c)
+// path (M4 prompt-capture spike, #739) builds the prompt the agent WOULD send,
+// records it on a dedicated, throttled agent.llm.prompt span (so it is visible
+// in Jaeger even on idle cycles, where the lazy agent.decision spans never
+// emit), then falls back to the deterministic rules engine — no backend exists
+// yet (#741). The "rules" path and any unrecognized mode go straight to rules.
+// emit is this cycle's shared throttle decision (from OnEvaluate); the capture
+// span/log only fire when it is true.
+func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext, emit bool) []Decision {
+	if snapshot.Mode == "llm" && emit {
+		l.captureLLMPrompt(ctx, snapshot, c)
 	}
+	return l.Rules.Evaluate(ctx, c)
+}
+
+// captureLLMPrompt builds the prompt the agent would send this cycle and records
+// it on the agent.llm.prompt span, then logs an agent.llm.prompt_captured line
+// (metadata only — the full prompt text lives on the span, never in the log).
+// The caller gates this on the cycle's shared throttle decision, so a
+// steady-state llm agent emits at most one capture per throttle interval and the
+// prompt is built ONLY when it will actually be emitted (no serialization cost
+// on throttled-out cycles).
+func (l *Loop) captureLLMPrompt(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext) {
+	now := l.now
+	if now == nil {
+		now = time.Now
+	}
+	prompt := llm.Build(llm.BuildInput{
+		Snapshot: snapshot,
+		Context:  c,
+		Now:      now(),
+	})
+	_, span := l.Tracer.Start(ctx, SpanLLMPrompt,
+		trace.WithAttributes(llmPromptAttributes(llmPromptAttrs{
+			prompt:     prompt,
+			objectives: snapshot.Objectives,
+			allowed:    snapshot.InterventionsAllowed,
+			gameKind:   c.GameKind,
+			gameID:     c.SessionID,
+		})...))
+	span.End()
+
+	l.Log.Info("agent.llm.prompt_captured",
+		"session_id", c.SessionID,
+		"variant", prompt.Variant,
+		"model", prompt.Model,
+		"bytes", len(prompt.System)+len(prompt.User),
+		"fallback_reason", FallbackNoBackend,
+	)
 }
 
 // runDecision emits one agent.decision span (full #724 schema) and its
@@ -365,7 +409,7 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	reason, blocked := l.evaluatePermission(snapshot, c, d, now, cost)
 
 	dCtx, dSpan := l.Tracer.Start(ctx, SpanDecision,
-		trace.WithAttributes(decisionAttributes(state, d, blocked, reason)...))
+		trace.WithAttributes(decisionAttributes(state, d, blocked, reason, c.GameKind)...))
 	defer dSpan.End()
 
 	// The interventions.allowed evaluation as a feature_flag.* span event
@@ -431,7 +475,11 @@ func (l *Loop) emitDisabledSpan(ctx context.Context, snapshot flags.Snapshot, c 
 			semconv.RPCService(trig.RPCService),
 			semconv.RPCMethod("Export"),
 			attribute.String("otlp.signal", trig.Signal),
-			attribute.String("session.id", c.SessionID),
+			attribute.String(AttrSessionID, c.SessionID),
+			// game.id alias (#845): session.id IS the game_id since PR A; the alias
+			// keeps Jaeger queries by game.id symmetrical with the coordinator spans
+			// and makes two concurrent games' traces independently attributable.
+			attribute.String(AttrGameID, c.SessionID),
 		),
 	)
 	defer root.End()
@@ -442,7 +490,7 @@ func (l *Loop) emitDisabledSpan(ctx context.Context, snapshot flags.Snapshot, c 
 	// nothing. AttrDecisionAction is empty (no action) and AttrDecisionBlocked is
 	// false (no decision was blocked by a permission gate — the loop never ran).
 	_, dSpan := l.Tracer.Start(rootCtx, SpanDisabled,
-		trace.WithAttributes(decisionAttributes(&state, Decision{}, false, "")...))
+		trace.WithAttributes(decisionAttributes(&state, Decision{}, false, "", c.GameKind)...))
 	dSpan.End()
 }
 
@@ -526,12 +574,16 @@ func (l *Loop) shouldLog() bool {
 // attribute; subsystems that do not exist yet contribute explicit placeholder
 // values (see telemetry.go). The block reason (#728) is carried only when a
 // decision is blocked.
-func decisionAttributes(state *LayerState, d Decision, blocked bool, reason BlockReason) []attribute.KeyValue {
+func decisionAttributes(state *LayerState, d Decision, blocked bool, reason BlockReason, gameKind string) []attribute.KeyValue {
 	objective := d.ObjectiveServed
 	if objective == "" {
 		objective = DefaultObjectives
 	}
-	attrs := []attribute.KeyValue{semconv.GenAIAgentName(AgentName)}
+	attrs := []attribute.KeyValue{
+		semconv.GenAIAgentName(AgentName),
+		// game.kind (#845): schema-complete — empty string when unknown.
+		attribute.String(AttrGameKind, gameKind),
+	}
 	// Cycle-level flag attribution: lift the whole LayerState onto the span so a
 	// single trace answers "which flags were in effect" (#729). agent.objectives
 	// is recorded there from the cycle's evaluated weights; the rules engine
@@ -603,13 +655,15 @@ func layerStateAttributes(state *LayerState) []attribute.KeyValue {
 }
 
 // inferenceAttribution maps the decision mode to the inference.used /
-// inference.fallback_reason pair. mode=llm falls back to the rules engine until
-// the M4 LLM path exists, recording why; mode=rules (and any unknown mode) runs
-// rules with no fallback. inference.configured is the model flag, set by the
-// caller. Path-agnostic: once M4 lands, the llm branch returns ("llm", "").
+// inference.fallback_reason pair. In the #739 spike, mode=llm captures the
+// prompt (see captureLLMPrompt) but no inference backend is wired, so it falls
+// back to the rules engine recording FallbackNoBackend; mode=rules (and any
+// unknown mode) runs rules with no fallback. inference.configured is the model
+// flag, set by the caller. Path-agnostic: #741's resolve_backend() will supply
+// the real reason and return ("llm", "") once a backend answers.
 func inferenceAttribution(mode string) (used, fallbackReason string) {
 	if mode == "llm" {
-		return InferenceRules, FallbackLLMNotImplemented
+		return InferenceRules, FallbackNoBackend
 	}
 	return InferenceRules, ""
 }

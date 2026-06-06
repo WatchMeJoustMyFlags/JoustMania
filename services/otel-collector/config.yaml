@@ -53,7 +53,7 @@ receivers:
             - targets: ['envoy:9901']
 
   # Filelog receiver — tail Docker container JSON logs for non-OTLP services
-  # (connect-proxy, rust-hid, envoy, flagd, redis, etc.)
+  # (connect-proxy, rust-hid, envoy, flagd, etc.)
   filelog/docker:
     include:
       - /var/lib/docker/containers/*/*-json.log

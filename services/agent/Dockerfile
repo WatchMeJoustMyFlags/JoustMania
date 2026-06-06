@@ -5,7 +5,7 @@
 # paths are relative to the repository root (services/agent/...).
 
 # Stage 1: Build the Go binary
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
 
 # Build argument for cross-compilation (repo deploys to ARM64 Raspberry Pi 5)
 ARG TARGETARCH
@@ -25,10 +25,10 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}" \
     go build -ldflags="-s -w" -o /agent .
 
 # Stage 2: Runtime image (alpine for wget healthcheck support)
-FROM alpine:3.19
+FROM alpine:3.23
 
 # wget powers the compose healthcheck; ca-certificates for outbound TLS
-RUN apk add --no-cache wget=1.21.4-r0 ca-certificates=20250911-r0
+RUN apk add --no-cache wget=1.25.0-r2 ca-certificates=20260413-r0
 
 COPY --from=builder /agent /agent
 

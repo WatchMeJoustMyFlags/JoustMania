@@ -490,7 +490,7 @@ class BaseGameMode(ABC):
         # #766 F1: death/warning threshold tables promoted to the ``game.thresholds``
         # object flag. Read ONCE here (init-frozen by design — no live re-evaluation);
         # malformed/missing values fall back to the module constants.
-        flag_thresholds = read_object_flag("game", "thresholds", {})
+        flag_thresholds = read_object_flag("game", "thresholds", {}, game_id=self.game_id)
         tables = resolve_base_thresholds(flag_thresholds)
         self.slow_warning = tables["slow_warning"]
         self.slow_max = tables["slow_max"]
@@ -510,7 +510,7 @@ class BaseGameMode(ABC):
         # Read ONCE here (init-frozen); malformed/negative values fall back to the
         # DEATH_GRACE_PERIOD module constant (the source of truth).
         self.death_grace_period = resolve_non_negative_duration(
-            read_float_flag("game", "death_grace_period_seconds", DEATH_GRACE_PERIOD),
+            read_float_flag("game", "death_grace_period_seconds", DEATH_GRACE_PERIOD, game_id=self.game_id),
             DEATH_GRACE_PERIOD,
         )
 
@@ -520,7 +520,7 @@ class BaseGameMode(ABC):
         # values fall back to the module constants. F6 will add a LIVE
         # ``pacing_profile`` intervention that atomically swaps
         # ``self.music_windows`` mid-game — see MusicWindows for the seam.
-        self.music_windows = resolve_music_windows(read_object_flag("game", "windows", {}))
+        self.music_windows = resolve_music_windows(read_object_flag("game", "windows", {}, game_id=self.game_id))
         # #766 F6: the init-resolved windows are retained so the LIVE
         # ``pacing_profile`` intervention can restore them when it reverts to the
         # neutral profile. Never reassigned after init (the live handler swaps
@@ -689,7 +689,7 @@ class BaseGameMode(ABC):
 
             # Set alive metric for all initialized players (Phase 75: filter dead from dashboard)
             for serial in self.players:
-                metrics.player_alive.labels(serial=serial).set(1)
+                metrics.player_alive.labels(serial=serial, game_id=self.game_id).set(1)
             metrics.players_alive.set(len(self.players))
 
             logger.info(f"Initialized {len(self.players)} players from StartGame RPC")
@@ -1250,13 +1250,19 @@ class BaseGameMode(ABC):
 
         # Emit Prometheus metrics periodically (every ~1 second)
         if player.analytics.sample_count % config.analytics.metrics_emit_interval_frames == 0:
-            metrics.player_accel_magnitude.labels(serial=serial).set(accel_mag)
-            metrics.player_movement_zone.labels(serial=serial).set(zone.value)
+            metrics.player_accel_magnitude.labels(serial=serial, game_id=self.game_id).set(accel_mag)
+            metrics.player_movement_zone.labels(serial=serial, game_id=self.game_id).set(zone.value)
             metrics.player_peak_accel.labels(serial=serial, game_id=self.game_id).set(player.analytics.peak_accel)
-            metrics.player_playstyle.labels(serial=serial).set(player.analytics.get_playstyle().value)
+            metrics.player_playstyle.labels(serial=serial, game_id=self.game_id).set(
+                player.analytics.get_playstyle().value
+            )
             # Intervention observability signals (#730 / #722 §7)
-            metrics.player_movement_variance.labels(serial=serial).set(player.analytics.windowed_variance)
-            metrics.player_skill_level.labels(serial=serial).set(player.analytics.get_skill_level())
+            metrics.player_movement_variance.labels(serial=serial, game_id=self.game_id).set(
+                player.analytics.windowed_variance
+            )
+            metrics.player_skill_level.labels(serial=serial, game_id=self.game_id).set(
+                player.analytics.get_skill_level()
+            )
 
         # Record to histogram for distribution analysis
         metrics.accel_distribution.labels(game_mode=self.get_game_name()).observe(accel_mag)
@@ -1608,7 +1614,7 @@ class BaseGameMode(ABC):
         player.smoothed_accel = 0.0
         player.grace_until = time.time() + grace
 
-        metrics.player_alive.labels(serial=serial).set(1)
+        metrics.player_alive.labels(serial=serial, game_id=self.game_id).set(1)
         alive_count = len([p for p in self.players.values() if p.alive])
         metrics.players_alive.set(alive_count)
 
@@ -1668,7 +1674,7 @@ class BaseGameMode(ABC):
         # Mark player as dead in metrics - dashboard template variables filter
         # on game_player_alive==1 so dead players naturally disappear from panels.
         # Metric removal happens at game end via clear_all_player_analytics().
-        metrics.player_alive.labels(serial=serial).set(0)
+        metrics.player_alive.labels(serial=serial, game_id=self.game_id).set(0)
         alive_count = len([p for p in self.players.values() if p.alive])
         metrics.players_alive.set(alive_count)
 
@@ -2048,6 +2054,11 @@ class BaseGameMode(ABC):
                 "player.team": player.team,
                 "player.color": str(player.color),
                 GAME_MODE_ATTR: self.get_game_name(),
+                # #845: stamp game identity so the agent can attribute a
+                # player_lifecycle span to its game (mirrors game.id/game.kind on
+                # the parent game-session span in game_session.py).
+                "game.id": self.game_id,
+                "game.kind": self.game_kind,
             },
         )
 

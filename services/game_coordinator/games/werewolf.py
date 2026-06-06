@@ -121,13 +121,13 @@ class WerewolfGame(BaseGameMode):
         # #766 F1: werewolf threshold overrides promoted to ``game.werewolf.thresholds``.
         # Read once at init (init-frozen); malformed values fall back to WEREWOLF_THRESHOLDS.
         self.werewolf_thresholds = resolve_mode_thresholds(
-            read_object_flag("game", "werewolf.thresholds", {}), WEREWOLF_THRESHOLDS
+            read_object_flag("game", "werewolf.thresholds", {}, game_id=self.game_id), WEREWOLF_THRESHOLDS
         )
 
         # #766 F2: werewolf population fraction promoted to ``game.werewolf.werewolf_fraction``.
         # Read once at init (init-frozen); out-of-range values fall back to WEREWOLF_FRACTION.
         self.werewolf_fraction = resolve_fraction(
-            read_float_flag("game", "werewolf.werewolf_fraction", WEREWOLF_FRACTION),
+            read_float_flag("game", "werewolf.werewolf_fraction", WEREWOLF_FRACTION, game_id=self.game_id),
             WEREWOLF_FRACTION,
         )
 

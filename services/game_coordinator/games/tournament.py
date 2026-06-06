@@ -16,6 +16,7 @@ import time
 from dataclasses import dataclass
 from enum import Enum
 
+import grpc
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
@@ -138,12 +139,14 @@ class TournamentGame(BaseGameMode):
         # constants. A 0s match would break play, so it must be strictly positive;
         # a 0s inter-match pause is acceptable.
         match_seconds = resolve_non_negative_duration(
-            read_float_flag("game", "tournament.match_seconds", MATCH_DURATION),
+            read_float_flag("game", "tournament.match_seconds", MATCH_DURATION, game_id=self.game_id),
             MATCH_DURATION,
         )
         self._match_duration: float = match_seconds if match_seconds > 0 else MATCH_DURATION
         self._time_between_matches: float = resolve_non_negative_duration(
-            read_float_flag("game", "tournament.time_between_matches_seconds", TIME_BETWEEN_MATCHES),
+            read_float_flag(
+                "game", "tournament.time_between_matches_seconds", TIME_BETWEEN_MATCHES, game_id=self.game_id
+            ),
             TIME_BETWEEN_MATCHES,
         )
 
@@ -459,22 +462,29 @@ class TournamentGame(BaseGameMode):
                 logger.info(f"Match {match.match_id} timeout - random winner: {match.winner_serial}")
                 break
 
-            # Process controller states from gameplay stream (with timeout)
+            # Process controller states from gameplay stream (with timeout).
+            # Uses the StreamStreamCall.read() API, NOT __anext__() on the call
+            # object: with tracing interceptors active the channel returns an
+            # InterceptedStreamStreamCall, which exposes read()/__aiter__ but
+            # no direct __anext__ — every Tournament match crashed with
+            # "'InterceptedStreamStreamCall' object has no attribute
+            # '__anext__'" (surfaced by the grpcio 1.76->1.81 bump in #846;
+            # previously masked by game_error counting as a valid terminal).
             try:
                 gameplay_update = await asyncio.wait_for(
-                    self.gameplay_stream.__anext__(),
+                    self.gameplay_stream.read(),
                     timeout=0.1,  # Check for match completion every 100ms
                 )
+                if gameplay_update is grpc.aio.EOF:
+                    # Stream ended
+                    logger.warning("Gameplay stream ended during match")
+                    break
                 # Process each controller's state
                 for gameplay_data in gameplay_update.controllers:
                     await self._process_controller_state(gameplay_data)
             except TimeoutError:
                 # No data received, continue loop (check time/completion)
                 pass
-            except StopAsyncIteration:
-                # Stream ended
-                logger.warning("Gameplay stream ended during match")
-                break
 
         # Finalize match
         if not match.is_complete and match.winner_serial:
@@ -491,12 +501,17 @@ class TournamentGame(BaseGameMode):
             loser.tournament_state = TournamentState.ELIMINATED
             loser.alive = False
 
-            # Show winner effect
+            # Show winner effect. GAME_EFFECT_WIN_FLASH never existed in the
+            # current GameEffect enum (third proto-drift crash in this mode's
+            # match path, after the serials field and the __anext__ call) —
+            # use WINNER_RAINBOW, the celebration effect the champion path
+            # (#699) already uses; the runtime AttributeError killed the game
+            # at first match completion.
             if self.gameplay_stream:
                 effect_cmd = controller_manager_pb2.GameplayStreamControl(
                     game_effect=controller_manager_pb2.GameEffectCommand(
                         serial=match.winner_serial,
-                        effect=controller_manager_pb2.GAME_EFFECT_WIN_FLASH,
+                        effect=controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW,
                     )
                 )
                 await self.gameplay_stream.write(effect_cmd)
