@@ -11,7 +11,7 @@
 # ── Stage 1: Build with OCB ──────────────────────────────────────────
 FROM golang:1.26-bookworm AS builder
 
-ARG OCB_VERSION=0.147.0
+ARG OCB_VERSION=0.153.0
 ARG TARGETOS=linux
 ARG TARGETARCH
 

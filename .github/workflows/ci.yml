@@ -1,8 +1,24 @@
 name: CI
 
+# Path-filtered, change-aware pipeline (#902).
+#
+# A single `changes` job runs dorny/paths-filter once; every downstream job is
+# gated at the JOB level (skipped jobs consume zero runners). Docker image
+# builds use dynamic matrices so only changed images build.
+#
+# Escape hatches:
+#   - push to main / workflow_dispatch: all checks run (full SonarCloud coverage)
+#   - `ci-full` PR label or workflow_dispatch: additionally forces ALL image builds
+#
+# Release contract: release.yml tag-images retags IMAGE:<sha> -> IMAGE:<version>
+# for all 10 release images, so every main push must produce a :<sha> tag for
+# every image. Images skipped by the path filter get a seconds-long manifest
+# retag from :main instead (retag-skipped job).
+
 on:
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, labeled]
   push:
     branches: [main]
   workflow_dispatch:
@@ -12,15 +28,206 @@ env:
   # Main branch - used for :latest Docker tag
   MAIN_BRANCH: main
 
+concurrency:
+  # PRs group by number (new pushes cancel stale runs); pushes group by SHA so
+  # main runs never cancel each other mid-image-push.
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  # Single source of truth for "what changed" — all other jobs gate on these
+  # outputs at the job level so skipped jobs consume zero runners.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      lib: ${{ steps.f.outputs.lib }}
+      rust: ${{ steps.f.outputs.rust }}
+      agent: ${{ steps.f.outputs.agent }}
+      exporter: ${{ steps.f.outputs.exporter }}
+      dockerfiles: ${{ steps.f.outputs.dockerfiles }}
+      proto_pkg: ${{ steps.f.outputs.proto_pkg }}
+      builder: ${{ steps.f.outputs.builder }}
+      integration_deps: ${{ steps.f.outputs.integration_deps }}
+      # force_full: ALL image builds + checks (workflow_dispatch / ci-full label)
+      # run_all_checks: all test/lint jobs, but builds stay path-filtered (main push)
+      force_full: ${{ steps.force.outputs.full }}
+      run_all_checks: ${{ steps.force.outputs.checks }}
+      python_services_matrix: ${{ steps.matrices.outputs.python_services }}
+      docker_build_matrix: ${{ steps.matrices.outputs.docker_build }}
+      docker_extra_matrix: ${{ steps.matrices.outputs.docker_extra }}
+      retag_matrix: ${{ steps.matrices.outputs.retag }}
+    steps:
+      - uses: actions/checkout@v6
+
+      # The shared_python anchor is the single source of truth for inputs that
+      # every Python service image COPYs (see services/*/Dockerfile). If a
+      # Dockerfile starts copying a new shared directory, add it HERE.
+      # Pinned to a full commit SHA (SonarCloud security hotspot remediation)
+      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+        id: f
+        with:
+          filters: |
+            shared_python: &shared_python
+              - 'pyproject.toml'
+              - 'proto/**'
+              - 'lib/**'
+              - 'images/builder/**'
+            lib:
+              - 'lib/**'
+              - 'proto/**'
+            rust:
+              - 'services/rust-hid/**'
+              - 'proto/psmove_hid.proto'
+            agent:
+              - 'services/agent/**'
+            exporter:
+              - 'images/otel-collector/dtbizeventsexporter/**'
+            dockerfiles:
+              - '**/Dockerfile'
+              - '.hadolint.yaml'
+            proto_pkg:
+              - 'proto/**'
+              - '**/pyproject.toml'
+              - 'tools/ci-proto/**'
+              - 'scripts/ci/**'
+            builder:
+              - 'images/builder/**'
+            controller_manager:
+              - *shared_python
+              - 'services/controller_manager/**'
+            game_coordinator:
+              - *shared_python
+              - 'services/game_coordinator/**'
+            menu:
+              - *shared_python
+              - 'services/menu/**'
+            audio:
+              - *shared_python
+              - 'services/audio/**'
+            pairing_daemon:
+              - *shared_python
+              - 'services/pairing_daemon/**'
+            python_hid:
+              - *shared_python
+              - 'services/python_hid/**'
+            connect_proxy:
+              # Dockerfile buf-generates Go stubs from proto/ at build time
+              - 'services/connect-proxy/**'
+              - 'proto/**'
+            dashboard:
+              - 'services/dashboard/**'
+            otel_collector:
+              - 'images/otel-collector/**'
+            integration_deps:
+              - 'services/*/Dockerfile'
+              - 'services/*/pyproject.toml'
+              - 'lib/pyproject.toml'
+              - 'proto/pyproject.toml'
+              - 'images/**'
+              - 'docker-compose.yml'
+              - 'docker-compose.ci.yml'
+
+      - name: Determine force-full / run-all-checks
+        id: force
+        run: |
+          full="${{ github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'ci-full') }}"
+          checks="${{ github.event_name == 'workflow_dispatch' || github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'ci-full') }}"
+          echo "full=$full" >> "$GITHUB_OUTPUT"
+          echo "checks=$checks" >> "$GITHUB_OUTPUT"
+
+      - name: Build dynamic matrices
+        id: matrices
+        env:
+          FORCE_FULL: ${{ steps.force.outputs.full }}
+          RUN_ALL_CHECKS: ${{ steps.force.outputs.checks }}
+          CH_CONTROLLER_MANAGER: ${{ steps.f.outputs.controller_manager }}
+          CH_GAME_COORDINATOR: ${{ steps.f.outputs.game_coordinator }}
+          CH_MENU: ${{ steps.f.outputs.menu }}
+          CH_AUDIO: ${{ steps.f.outputs.audio }}
+          CH_PAIRING_DAEMON: ${{ steps.f.outputs.pairing_daemon }}
+          CH_PYTHON_HID: ${{ steps.f.outputs.python_hid }}
+          CH_CONNECT_PROXY: ${{ steps.f.outputs.connect_proxy }}
+          CH_AGENT: ${{ steps.f.outputs.agent }}
+          CH_DASHBOARD: ${{ steps.f.outputs.dashboard }}
+          CH_RUST: ${{ steps.f.outputs.rust }}
+          CH_OTEL_COLLECTOR: ${{ steps.f.outputs.otel_collector }}
+        run: |
+          set -euo pipefail
+
+          json_array() {
+            if [ "$#" -eq 0 ]; then echo -n '[]'; else printf '%s\n' "$@" | jq -R . | jq -sc .; fi
+          }
+
+          # service-checks matrix: changed Python services; all 6 on main push /
+          # force (keeps full SonarCloud coverage on main)
+          checks=()
+          for s in controller_manager game_coordinator menu audio pairing_daemon python_hid; do
+            key="CH_${s^^}"
+            if [ "$RUN_ALL_CHECKS" = "true" ] || [ "${!key}" = "true" ]; then checks+=("$s"); fi
+          done
+          echo "python_services=$(json_array "${checks[@]}")" >> "$GITHUB_OUTPUT"
+
+          # docker-build matrix: 5 Python service images, path-filtered (force_full
+          # only via workflow_dispatch / ci-full label — NOT plain main pushes;
+          # unchanged images are retagged instead, see retag-skipped)
+          build=()
+          for s in controller_manager game_coordinator menu audio pairing_daemon; do
+            key="CH_${s^^}"
+            if [ "$FORCE_FULL" = "true" ] || [ "${!key}" = "true" ]; then build+=("$s"); fi
+          done
+          echo "docker_build=$(json_array "${build[@]}")" >> "$GITHUB_OUTPUT"
+
+          # docker-build-extra matrix: non-shared-Python images as include objects
+          extra=()
+          maybe_extra() {
+            if [ "$1" = "true" ] || [ "$FORCE_FULL" = "true" ]; then
+              extra+=("$(jq -nc --arg s "$2" --arg d "$3" --arg c "$4" --arg i "$5" \
+                '{service:$s, dockerfile:$d, context:$c, image_name:$i}')")
+            fi
+          }
+          maybe_extra "$CH_CONNECT_PROXY"  connect-proxy  services/connect-proxy/Dockerfile . connect-proxy
+          maybe_extra "$CH_AGENT"          agent          services/agent/Dockerfile         . agent
+          maybe_extra "$CH_DASHBOARD"      dashboard      services/dashboard/Dockerfile     . dashboard
+          maybe_extra "$CH_RUST"           rust-hid       services/rust-hid/Dockerfile      . rust-hid
+          maybe_extra "$CH_PYTHON_HID"     python-hid     services/python_hid/Dockerfile    . python-hid
+          maybe_extra "$CH_OTEL_COLLECTOR" otel-collector images/otel-collector/Dockerfile  images/otel-collector otel-collector
+          if [ "${#extra[@]}" -eq 0 ]; then
+            echo "docker_extra=[]" >> "$GITHUB_OUTPUT"
+          else
+            echo "docker_extra=$(printf '%s\n' "${extra[@]}" | jq -sc .)" >> "$GITHUB_OUTPUT"
+          fi
+
+          # retag matrix: the 10 release.yml images NOT built this run — on main
+          # pushes they still need a :<sha> tag for release tagging
+          retag=()
+          maybe_retag() {
+            if [ "$FORCE_FULL" != "true" ] && [ "$1" != "true" ]; then retag+=("$2"); fi
+          }
+          maybe_retag "$CH_CONTROLLER_MANAGER" controller-manager-service
+          maybe_retag "$CH_GAME_COORDINATOR"   game-coordinator-service
+          maybe_retag "$CH_MENU"               menu-service
+          maybe_retag "$CH_AUDIO"              audio-service
+          maybe_retag "$CH_PAIRING_DAEMON"     pairing-daemon-service
+          maybe_retag "$CH_CONNECT_PROXY"      connect-proxy
+          maybe_retag "$CH_DASHBOARD"          dashboard
+          maybe_retag "$CH_RUST"               rust-hid
+          maybe_retag "$CH_PYTHON_HID"         python-hid
+          maybe_retag "$CH_OTEL_COLLECTOR"     otel-collector
+          echo "retag=$(json_array "${retag[@]}")" >> "$GITHUB_OUTPUT"
+
   # Build and test shared packages (proto, lib)
   lib-tests:
     name: Lib Unit Tests
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.lib == 'true' || needs.changes.outputs.run_all_checks == 'true'
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@v6
 
-      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      - uses: astral-sh/setup-uv@v8.2.0
 
       - name: Build proto package
         run: |
@@ -56,46 +263,32 @@ jobs:
           sed -i 's|filename="|filename="lib/|g' coverage.xml
 
       - name: Upload coverage report
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-lib
           path: lib/coverage.xml
           retention-days: 1
 
-  # Per-service matrix checks with path filtering
-  # Runs lint/typecheck for all services, unit tests only for services with tests
+  # Per-service checks: lint/typecheck/unit tests for CHANGED services only
+  # (all 6 on main pushes so SonarCloud gets full coverage there)
   service-checks:
     name: ${{ matrix.service }} checks
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.python_services_matrix != '[]'
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        service:
-          - controller_manager
-          - game_coordinator
-          - menu
-          - audio
-          - pairing_daemon
-          - python_hid
+        service: ${{ fromJSON(needs.changes.outputs.python_services_matrix) }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@v6
 
-      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4
-        id: changes
-        with:
-          filters: |
-            service:
-              - 'services/${{ matrix.service }}/**'
-              - 'proto/**'
-              - 'lib/**'
-
-      - name: Install uv
-        if: steps.changes.outputs.service == 'true'
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      - uses: astral-sh/setup-uv@v8.2.0
 
       # Install system dependencies for services with native Python packages
       - name: Install system dependencies
-        if: steps.changes.outputs.service == 'true' && (matrix.service == 'controller_manager' || matrix.service == 'audio' || matrix.service == 'pairing_daemon')
+        if: matrix.service == 'controller_manager' || matrix.service == 'audio' || matrix.service == 'pairing_daemon'
         run: |
           sudo apt-get update
           # controller_manager/pairing_daemon: dbus-python needs libdbus-1-dev and libglib2.0-dev
@@ -103,30 +296,18 @@ jobs:
           sudo apt-get install -y libdbus-1-dev libglib2.0-dev libasound2-dev pkg-config
 
       - name: Lint
-        if: steps.changes.outputs.service == 'true'
         run: |
           uv tool install ruff
           cd services/${{ matrix.service }}
           ruff check .
 
       - name: Typecheck
-        if: steps.changes.outputs.service == 'true'
         continue-on-error: true  # ty is immature, don't block CI
         run: |
           uv tool install ty
           cd services/${{ matrix.service }}
           uv sync
           ty check .
-
-      # Always run tests with coverage for SonarCloud (no path filter)
-      - name: Install uv for tests
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
-
-      - name: Install system dependencies for tests
-        if: matrix.service == 'controller_manager' || matrix.service == 'audio' || matrix.service == 'pairing_daemon'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libdbus-1-dev libglib2.0-dev libasound2-dev pkg-config
 
       - name: Unit tests with coverage
         run: |
@@ -144,7 +325,7 @@ jobs:
           sed -i 's|filename="|filename="services/${{ matrix.service }}/|g' coverage.xml
 
       - name: Upload coverage report
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-${{ matrix.service }}
           path: services/${{ matrix.service }}/coverage.xml
@@ -154,32 +335,24 @@ jobs:
   rust-checks:
     name: Rust Checks
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.run_all_checks == 'true'
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-
-      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4
-        id: changes
-        with:
-          filters: |
-            rust:
-              - 'services/rust-hid/**'
-              - 'proto/psmove_hid.proto'
+      - uses: actions/checkout@v6
 
       - name: Install system dependencies
-        if: steps.changes.outputs.rust == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler libhidapi-dev libudev-dev pkg-config
 
       - name: Install Rust toolchain
-        if: steps.changes.outputs.rust == 'true'
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
 
       - name: Cache cargo
-        if: steps.changes.outputs.rust == 'true'
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -189,12 +362,10 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Cargo test
-        if: steps.changes.outputs.rust == 'true'
         working-directory: services/rust-hid
         run: cargo test --verbose
 
       - name: Cargo clippy
-        if: steps.changes.outputs.rust == 'true'
         working-directory: services/rust-hid
         run: cargo clippy -- -D warnings
 
@@ -202,26 +373,20 @@ jobs:
   exporter-tests:
     name: Exporter Tests
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.exporter == 'true' || needs.changes.outputs.run_all_checks == 'true'
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-
-      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4
-        id: changes
-        with:
-          filters: |
-            exporter:
-              - 'images/otel-collector/dtbizeventsexporter/**'
+      - uses: actions/checkout@v6
 
       - name: Set up Go
-        if: steps.changes.outputs.exporter == 'true'
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@v6
         with:
-          go-version: '1.26'
+          go-version: '1.25'
           # No go.sum committed (go mod tidy runs at test time), so module caching can't key off it
           cache: false
 
       - name: Run tests
-        if: steps.changes.outputs.exporter == 'true'
         working-directory: images/otel-collector/dtbizeventsexporter
         run: |
           go mod tidy
@@ -231,26 +396,19 @@ jobs:
   agent-tests:
     name: Agent Tests
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.agent == 'true' || needs.changes.outputs.run_all_checks == 'true'
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-
-      # Pinned to a full commit SHA (SonarCloud security hotspot remediation)
-      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
-        id: changes
-        with:
-          filters: |
-            agent:
-              - 'services/agent/**'
+      - uses: actions/checkout@v6
 
       - name: Set up Go
-        if: steps.changes.outputs.agent == 'true'
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@v6
         with:
-          go-version: '1.26'
+          go-version: '1.25'
           cache-dependency-path: services/agent/go.sum
 
       - name: Run tests
-        if: steps.changes.outputs.agent == 'true'
         working-directory: services/agent
         run: |
           go mod tidy
@@ -260,26 +418,34 @@ jobs:
   lint-dockerfiles:
     name: Lint Dockerfiles
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.dockerfiles == 'true' || needs.changes.outputs.run_all_checks == 'true'
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@v6
 
       - name: Lint Dockerfiles
         run: make ci-lint-dockerfiles
 
-  # SonarCloud analysis with coverage
+  # SonarCloud analysis with coverage.
+  # !cancelled() lets it run even when upstream jobs were skipped by the path
+  # filter; the coverage download degrades gracefully when artifacts are missing.
   sonarcloud:
     name: SonarCloud Analysis
     runs-on: ubuntu-latest
-    needs: [service-checks, lib-tests]
+    needs: [changes, service-checks, lib-tests]
     # Skip on forks that don't have SONAR_TOKEN configured
-    if: ${{ github.repository == 'WatchMeJoustMyFlags/JoustMania' || vars.ENABLE_SONARCLOUD == 'true' }}
+    if: >-
+      !cancelled() && !contains(needs.*.result, 'failure') &&
+      (github.repository == 'WatchMeJoustMyFlags/JoustMania' || vars.ENABLE_SONARCLOUD == 'true')
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0  # Full history for better analysis
 
       - name: Download coverage reports
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@v8
         with:
           pattern: coverage-*
           path: coverage-reports
@@ -297,14 +463,14 @@ jobs:
           if [ -n "$COVERAGE_FILES" ]; then
             echo "Found coverage files: $COVERAGE_FILES"
             # SonarCloud can accept multiple coverage files via comma-separated list
-            echo "SONAR_COVERAGE_PATHS=$COVERAGE_FILES" >> $GITHUB_ENV
+            echo "SONAR_COVERAGE_PATHS=$COVERAGE_FILES" >> "$GITHUB_ENV"
           else
             echo "No coverage files found"
-            echo "SONAR_COVERAGE_PATHS=" >> $GITHUB_ENV
+            echo "SONAR_COVERAGE_PATHS=" >> "$GITHUB_ENV"
           fi
 
       - name: SonarCloud Scan
-        uses: SonarSource/sonarqube-scan-action@7006c4492b2e0ee0f816d36501671557c97f5995 # v8
+        uses: SonarSource/sonarqube-scan-action@v8
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -312,39 +478,19 @@ jobs:
           args: >
             -Dsonar.python.coverage.reportPaths=${{ env.SONAR_COVERAGE_PATHS }}
 
-  validate-protos:
-    name: Validate Proto Files
+  # Validate proto files and Python package dependencies (merged jobs — both
+  # use the same ci-proto image; one Make invocation builds it once)
+  validate:
+    name: Validate Protos & Packages
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.proto_pkg == 'true' || needs.changes.outputs.run_all_checks == 'true'
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@v6
 
-      - name: Validate protos
-        run: make ci-validate-protos
-
-  validate-packages:
-    name: Validate Python Packages
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-
-      - name: Validate packages
-        run: make ci-validate-packages
-
-  # Detect which builder images need rebuilding based on file changes
-  detect-builder-changes:
-    name: Detect Builder Changes
-    runs-on: ubuntu-latest
-    outputs:
-      builder: ${{ steps.filter.outputs.builder }}
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-
-      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4
-        id: filter
-        with:
-          filters: |
-            builder:
-              - 'images/builder/**'
+      - name: Validate protos and packages
+        run: make ci-validate-protos ci-validate-packages
 
   # Build and push builder images to GHCR (Phase 75)
   # Multi-platform builds for amd64 (CI/dev) and arm64 (Raspberry Pi)
@@ -353,25 +499,26 @@ jobs:
   build-builder:
     name: Build builder
     runs-on: ubuntu-latest
-    needs: [detect-builder-changes]
+    needs: [changes]
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@v6
 
       - name: Set image prefix
-        run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
+        run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
 
       - name: Set up QEMU
-        if: needs.detect-builder-changes.outputs.builder == 'true'
-        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4
+        if: needs.changes.outputs.builder == 'true'
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4
+        uses: docker/setup-buildx-action@v4
 
       - name: Login to GHCR
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -379,8 +526,8 @@ jobs:
 
       # Full build when files changed
       - name: Build and push builder
-        if: needs.detect-builder-changes.outputs.builder == 'true'
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
+        if: needs.changes.outputs.builder == 'true'
+        uses: docker/build-push-action@v7
         with:
           context: images/builder
           # Only build amd64 on PRs (arm64 via QEMU is very slow, not needed for validation)
@@ -395,7 +542,7 @@ jobs:
 
       # Re-tag stable image when unchanged (much faster)
       - name: Reuse stable image (unchanged)
-        if: needs.detect-builder-changes.outputs.builder != 'true'
+        if: needs.changes.outputs.builder != 'true'
         id: reuse
         continue-on-error: true
         run: |
@@ -405,8 +552,8 @@ jobs:
 
       # Fallback: full build if reuse failed (e.g., first run on a fork)
       - name: Build builder (fallback)
-        if: needs.detect-builder-changes.outputs.builder != 'true' && steps.reuse.outcome != 'success'
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
+        if: needs.changes.outputs.builder != 'true' && steps.reuse.outcome != 'success'
+        uses: docker/build-push-action@v7
         with:
           context: images/builder
           platforms: linux/amd64
@@ -415,36 +562,68 @@ jobs:
           cache-from: type=gha,scope=builder
           cache-to: type=gha,mode=max,scope=builder
 
+  integration-test:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [changes, build-builder]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set image prefix
+        run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: astral-sh/setup-uv@v8.2.0
+
+      # Fast path: pull latest images, overlay current source
+      - name: Run integration tests (fast - source only)
+        if: needs.changes.outputs.integration_deps != 'true' && needs.changes.outputs.force_full != 'true'
+        run: USE_PREBUILT_IMAGES=true USE_DEV_MOUNTS=true make test-integration
+
+      # Slow path: full build (Dockerfiles or deps changed)
+      - name: Run integration tests (full build)
+        if: needs.changes.outputs.integration_deps == 'true' || needs.changes.outputs.force_full == 'true'
+        env:
+          BUILDER_IMAGE: ${{ env.IMAGE_PREFIX }}/builder:${{ github.sha }}
+        run: make test-integration
+
   docker-build:
     name: Build ${{ matrix.service }}
     runs-on: ubuntu-latest
-    needs: [build-builder, integration-test]
+    needs: [changes, build-builder, integration-test]
+    if: needs.changes.outputs.docker_build_matrix != '[]'
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write
     strategy:
       fail-fast: false
       matrix:
-        service:
-          - controller_manager
-          - game_coordinator
-          - menu
-          - audio
-          - pairing_daemon
+        service: ${{ fromJSON(needs.changes.outputs.docker_build_matrix) }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@v6
 
       - name: Set image prefix
-        run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
+        run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4
+        uses: docker/setup-buildx-action@v4
 
       - name: Login to GHCR
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -456,10 +635,10 @@ jobs:
           # Convert underscore to hyphen for docker image name
           SERVICE="${{ matrix.service }}"
           IMAGE_NAME="${SERVICE//_/-}-service"
-          echo "name=${IMAGE_NAME}" >> $GITHUB_OUTPUT
+          echo "name=${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push service
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: services/${{ matrix.service }}/Dockerfile
@@ -475,60 +654,43 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
 
-  # Build non-Python services (Go/Node.js)
+  # Build non-Python services (Go/Node.js/Rust)
   docker-build-extra:
     name: Build ${{ matrix.service }}
     runs-on: ubuntu-latest
-    needs: [integration-test]
+    needs: [changes, integration-test]
+    if: needs.changes.outputs.docker_extra_matrix != '[]'
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - service: connect-proxy
-            dockerfile: services/connect-proxy/Dockerfile
-            image_name: connect-proxy
-          - service: agent
-            dockerfile: services/agent/Dockerfile
-            image_name: agent
-          - service: dashboard
-            dockerfile: services/dashboard/Dockerfile
-            image_name: dashboard
-          - service: rust-hid
-            dockerfile: services/rust-hid/Dockerfile
-            image_name: rust-hid
-          - service: python-hid
-            dockerfile: services/python_hid/Dockerfile
-            image_name: python-hid
-          - service: otel-collector
-            dockerfile: images/otel-collector/Dockerfile
-            context: images/otel-collector
-            image_name: otel-collector
+        include: ${{ fromJSON(needs.changes.outputs.docker_extra_matrix) }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@v6
 
       - name: Set image prefix
-        run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
+        run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4
+        uses: docker/setup-buildx-action@v4
 
       - name: Login to GHCR
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push service
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
+        uses: docker/build-push-action@v7
         with:
-          context: ${{ matrix.context || '.' }}
+          context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           # Only build amd64 on PRs (arm64 via QEMU is very slow, not needed for validation)
           platforms: ${{ github.event_name != 'pull_request' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
@@ -540,60 +702,67 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
 
-  integration-test:
-    name: Integration Tests
+  # Release contract: release.yml tag-images expects IMAGE:<sha> for all 10
+  # release images. Images skipped by the path filter get a manifest-only retag
+  # from :main (seconds each). Explicit if-condition because the build jobs may
+  # legitimately be 'skipped' (plain `needs` semantics would skip this job too).
+  retag-skipped:
+    name: Retag ${{ matrix.image }}
     runs-on: ubuntu-latest
-    needs: [build-builder]
+    needs: [changes, integration-test, docker-build, docker-build-extra]
+    if: >-
+      !cancelled() && github.event_name == 'push' &&
+      needs.changes.outputs.retag_matrix != '[]' &&
+      needs.integration-test.result == 'success' &&
+      needs.docker-build.result != 'failure' &&
+      needs.docker-build-extra.result != 'failure'
+    timeout-minutes: 10
+    permissions:
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.changes.outputs.retag_matrix) }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-
       - name: Set image prefix
-        run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
-
-      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4
-        id: changes
-        with:
-          filters: |
-            deps:
-              - 'services/*/Dockerfile'
-              - 'services/*/pyproject.toml'
-              - 'lib/pyproject.toml'
-              - 'proto/pyproject.toml'
-              - 'images/**'
-              - 'docker-compose.yml'
-              - 'docker-compose.ci.yml'
+        run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4
+        uses: docker/setup-buildx-action@v4
 
       - name: Login to GHCR
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      - name: Retag :main -> :sha
+        id: retag
+        continue-on-error: true
+        run: |
+          docker buildx imagetools create \
+            --tag "${IMAGE_PREFIX}/${{ matrix.image }}:${{ github.sha }}" \
+            "${IMAGE_PREFIX}/${{ matrix.image }}:main"
 
-      # Fast path: pull latest images, overlay current source
-      - name: Run integration tests (fast - source only)
-        if: steps.changes.outputs.deps != 'true'
-        run: USE_PREBUILT_IMAGES=true USE_DEV_MOUNTS=true make test-integration
-
-      # Slow path: full build (Dockerfiles or deps changed)
-      - name: Run integration tests (full build)
-        if: steps.changes.outputs.deps == 'true'
-        env:
-          BUILDER_IMAGE: ${{ env.IMAGE_PREFIX }}/builder:${{ github.sha }}
-        run: make test-integration
+      # First run / fork: :main doesn't exist yet. Don't fail CI, but surface it —
+      # the next release would miss this image's :<sha>. Remedy: one full run via
+      # workflow_dispatch (or merge a change touching the image).
+      - name: Warn on missing :main tag
+        if: steps.retag.outcome != 'success'
+        run: |
+          echo "::warning::No :main tag for ${{ matrix.image }}; its :${{ github.sha }} tag is missing. Trigger a full build (workflow_dispatch) before the next release."
 
   # Final status check job for branch protection
   # This job depends on all other jobs and provides a single status check
-  # that represents the entire CI pipeline's health
+  # that represents the entire CI pipeline's health.
+  # Skipped jobs (path filter) keep this green; failures/cancellations fail it.
   ci-complete:
     name: CI Complete
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs:
+      - changes
       - lib-tests
       - service-checks
       - rust-checks
@@ -601,38 +770,23 @@ jobs:
       - agent-tests
       - lint-dockerfiles
       - sonarcloud
-      - validate-protos
-      - validate-packages
+      - validate
       - build-builder
+      - integration-test
       - docker-build
       - docker-build-extra
-      - integration-test
+      - retag-skipped
     if: always()
     steps:
       - name: Check all jobs passed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
-          # Check if any job failed or was cancelled
           FAILED="${{ contains(needs.*.result, 'failure') }}"
           CANCELLED="${{ contains(needs.*.result, 'cancelled') }}"
           if [[ "$FAILED" == "true" || "$CANCELLED" == "true" ]]; then
             echo "❌ One or more CI jobs failed or were cancelled"
-            echo "Job results:"
-            echo "  lib-tests: ${{ needs.lib-tests.result }}"
-            echo "  service-checks: ${{ needs.service-checks.result }}"
-            echo "  rust-checks: ${{ needs.rust-checks.result }}"
-            echo "  exporter-tests: ${{ needs.exporter-tests.result }}"
-            echo "  agent-tests: ${{ needs.agent-tests.result }}"
-            echo "  lint-dockerfiles: ${{ needs.lint-dockerfiles.result }}"
-            echo "  sonarcloud: ${{ needs.sonarcloud.result }}"
-            echo "  validate-protos: ${{ needs.validate-protos.result }}"
-            echo "  validate-packages: \
-          ${{ needs.validate-packages.result }}"
-            echo "  build-builder: ${{ needs.build-builder.result }}"
-            echo "  docker-build: ${{ needs.docker-build.result }}"
-            echo "  docker-build-extra: \
-          ${{ needs.docker-build-extra.result }}"
-            echo "  integration-test: \
-          ${{ needs.integration-test.result }}"
+            echo "$NEEDS_JSON" | jq -r 'to_entries[] | "  \(.key): \(.value.result)"' || true
             exit 1
           fi
-          echo "✅ All CI checks passed successfully!"
+          echo "✅ All CI checks passed (skipped jobs are OK)"

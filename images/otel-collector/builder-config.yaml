@@ -1,6 +1,6 @@
 # Custom OpenTelemetry Collector build.
 #
-# Based on contrib v0.147.0, trimmed to only the components used by
+# Based on contrib v0.153.0, trimmed to only the components used by
 # config.yaml and config.dynatrace.yaml.  Includes a custom
 # dtbizevents exporter that converts metric data points directly to
 # Dynatrace business events (bypassing 1-min metric resolution).
@@ -14,41 +14,41 @@ dist:
   module: github.com/watchmejoustmyflags/joustmania/otel-collector
   name: otelcol-joustmania
   description: JoustMania OpenTelemetry Collector (contrib + dtbizevents)
-  version: 0.147.0
+  version: 0.153.0
   output_path: /build/_output
 
 extensions:
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/healthcheckextension v0.147.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/healthcheckextension v0.153.0
 
 receivers:
   # OTLP (gRPC + HTTP) — all services push here
-  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.147.0
+  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.153.0
   # Prometheus scrape — flagd, victoria-metrics, self-telemetry
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver v0.147.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver v0.153.0
   # Filelog — tail Docker container JSON logs for non-OTLP services
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/filelogreceiver v0.147.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/filelogreceiver v0.153.0
   # Host metrics — CPU, memory, disk, filesystem, load, network (replaces node-exporter)
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/hostmetricsreceiver v0.147.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/hostmetricsreceiver v0.153.0
   # Docker stats — per-container CPU, memory, network, block I/O
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/dockerstatsreceiver v0.147.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/dockerstatsreceiver v0.153.0
 
 processors:
-  - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.147.0
-  - gomod: go.opentelemetry.io/collector/processor/memorylimiterprocessor v0.147.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourceprocessor v0.147.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/filterprocessor v0.147.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/cumulativetodeltaprocessor v0.147.0
+  - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.153.0
+  - gomod: go.opentelemetry.io/collector/processor/memorylimiterprocessor v0.153.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourceprocessor v0.153.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/filterprocessor v0.153.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/cumulativetodeltaprocessor v0.153.0
   # Transform — OTTL-based attribute manipulation (promote Docker labels to resource attributes)
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/transformprocessor v0.147.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/transformprocessor v0.153.0
   # Resource detection — auto-enrich signals with host, OS, and container metadata
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourcedetectionprocessor v0.147.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourcedetectionprocessor v0.153.0
 
 exporters:
-  - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.147.0
-  - gomod: go.opentelemetry.io/collector/exporter/otlpexporter v0.147.0
-  - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.147.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/prometheusexporter v0.147.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/prometheusremotewriteexporter v0.147.0
+  - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.153.0
+  - gomod: go.opentelemetry.io/collector/exporter/otlpexporter v0.153.0
+  - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.153.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/prometheusexporter v0.153.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/prometheusremotewriteexporter v0.153.0
   # dtbizevents: converts metric data points directly to Dynatrace
   # business events. High-frequency accel data (100Hz) is invisible in
   # Dynatrace's 1-min metric resolution — this exporter bypasses that
@@ -59,6 +59,6 @@ replaces:
   - github.com/watchmejoustmyflags/joustmania/otel-collector/dtbizeventsexporter v0.0.0 => /build/dtbizeventsexporter
 
 providers:
-  - gomod: go.opentelemetry.io/collector/confmap/provider/envprovider v1.53.0
-  - gomod: go.opentelemetry.io/collector/confmap/provider/fileprovider v1.53.0
-  - gomod: go.opentelemetry.io/collector/confmap/provider/yamlprovider v1.53.0
+  - gomod: go.opentelemetry.io/collector/confmap/provider/envprovider v1.59.0
+  - gomod: go.opentelemetry.io/collector/confmap/provider/fileprovider v1.59.0
+  - gomod: go.opentelemetry.io/collector/confmap/provider/yamlprovider v1.59.0
