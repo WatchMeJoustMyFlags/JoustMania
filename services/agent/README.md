@@ -661,6 +661,48 @@ a real model, copy `llm.prompt.system` / `llm.prompt.user` into two files and ru
 [docs/research/739-prompt-capture.md](../../docs/research/739-prompt-capture.md)
 for the response contract and the forward path (#741 backend, #742 auth).
 
+#### Post-game retrospective capture (M4, #844)
+
+When a game **ends** (the `GameActive` true→false transition fires the store's
+`OnGameEnd` hook with a pre-reset snapshot), the `decision.RetroCoordinator`
+builds the prompt the agent would send to an **offline analyst** asking for
+calibration tweaks for the next game, and records it on a dedicated
+**`agent.llm.retro`** span — **capture-first**, exactly like #739, no backend
+called yet. It emits **exactly once per session** (dedup on `SessionID`) and is
+structurally isolated from the decision loop: it never touches the gate, the loop,
+or the rate limiter, so a retrospective **cannot consume the in-game intervention
+budget**.
+
+The span carries the full retro prompt plus attribution (single builder
+`retroPromptAttributes`, schema-complete every emission):
+
+| Attribute | Value |
+|-----------|-------|
+| `gen_ai.operation.name` | `"chat"` |
+| `gen_ai.request.model` | the `model` capability flag |
+| `gen_ai.output.type` | `"json"` |
+| `agent.mode` | `"retro"` |
+| `agent.objectives` | sorted `k=v` weights |
+| `interventions.allowed` | the allow-list summary |
+| `session.id` | the finished session's id |
+| `llm.retro.system` / `llm.retro.user` | the **full** retro prompt text (uncapped) |
+| `llm.retro.bytes` | `len(system)+len(user)` |
+| `inference.configured` | the `model` flag |
+| `inference.used` | **`"none"`** (divergence — see below) |
+| `inference.fallback_reason` | `"no_backend_available"` |
+
+**Divergence from the in-game capture:** `inference.used` is `"none"`, **not**
+`"rules"`. The in-game path falls back to the rules engine, so `"rules"` is the
+honest "what decided this cycle". A retrospective has **no** rules fallback —
+nothing runs in place of the analyst at game end — so `"none"` is the honest
+value. The companion log line `agent.llm.retro_captured` carries only metadata
+(`session_id`, `model`, `bytes`, `fallback_reason`). The suggestion contract maps
+to the **calibration surface** (#766: `global_difficulty_factor`,
+`pacing_profile`, `threshold_table`, `objective_variant`), and `replay-prompt.sh`
+replays an `agent.llm.retro` span identically (copy `llm.retro.system` /
+`llm.retro.user`). See
+[docs/research/844-post-game-retro.md](../../docs/research/844-post-game-retro.md).
+
 #### `fitness.evaluated` (#731)
 
 `LayerState.FitnessEvaluated` (`map[string]float64`) holds the cycle-level

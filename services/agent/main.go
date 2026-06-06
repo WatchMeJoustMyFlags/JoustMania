@@ -290,6 +290,15 @@ func main() {
 	infraLoop.SetGate(func(snap infracontext.InfraContext, now time.Time) bool {
 		return gate.ShouldEvaluateInfra(snap, now, infraControllerTTL)
 	})
+	// Post-game retrospective (#844): on the GameActive true->false transition the
+	// store fires OnGameEnd with a pre-reset snapshot, and the RetroCoordinator
+	// captures the prompt the agent would send to an offline analyst on a dedicated
+	// agent.llm.retro span (capture-first, exactly once per session). It is wired
+	// AFTER the loop and deliberately does NOT touch the loop, the gate, or the rate
+	// limiter — a retrospective never consumes the in-game intervention budget.
+	retro := decision.NewRetroCoordinator(agentFlags, logger)
+	store.OnGameEnd = retro.OnGameEnd
+
 	pipe := newPipeline(store, loop, lifecycle.PlayerTTL).withInfra(infraStore, infraLoop)
 
 	grpcServer := grpc.NewServer()

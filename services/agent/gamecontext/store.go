@@ -40,6 +40,17 @@ type Store struct {
 	// recognized signals anyway, the skip is cheap defense-in-depth against a
 	// self-ingestion feedback loop. Set once before serving; not mutex-guarded.
 	ownService string
+
+	// OnGameEnd, when non-nil, is fired EXACTLY ONCE on the GameActive true->false
+	// transition (#844 post-game retrospective), with a pre-reset GameContext
+	// snapshot — the EliminationSequence and SessionID are still intact. Set once
+	// before serving; nil disables the hook (behavior-neutral). It is invoked
+	// AFTER the store mutex is released (never under s.mu) so the callback may read
+	// the store / build telemetry without a re-entrancy deadlock.
+	//
+	// NOTE (#845): this is the minimal additive hook the retrospective needs.
+	// Issue #845 rewrites this file's lifecycle handling; keep this diff tiny.
+	OnGameEnd func(GameContext)
 }
 
 // SetOwnService records the agent's own OTEL service name so the extractors
@@ -224,8 +235,12 @@ func (s *Store) SetGameMode(mode string) {
 // synthetic SessionID, clears per-game state). A true->false transition opens
 // the grace window by recording endedAt.
 func (s *Store) SetGameActive(active bool) {
+	// endSnapshot is captured under the lock on a true->false transition and the
+	// OnGameEnd callback is fired with it AFTER the mutex is released (never under
+	// s.mu — the callback must be free to read the store without re-entrancy).
+	var endSnapshot *GameContext
+
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	prev := false
 	if s.ctx.Session.GameActive != nil {
 		prev = *s.ctx.Session.GameActive
@@ -242,8 +257,17 @@ func (s *Store) SetGameActive(active bool) {
 		s.endedAt = time.Time{}
 	case prev && !active:
 		s.endedAt = s.now()
+		if s.OnGameEnd != nil {
+			snap := s.snapshotLocked() // pre-reset state: SessionID + sequence intact
+			endSnapshot = &snap
+		}
 	}
 	s.touchSession()
+	s.mu.Unlock()
+
+	if endSnapshot != nil {
+		s.OnGameEnd(*endSnapshot)
+	}
 }
 
 // AdoptSessionID overrides the synthetic SessionID with a real game_id label.
@@ -323,7 +347,13 @@ func (s *Store) appendElimination(serial string) {
 func (s *Store) Snapshot() GameContext {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.snapshotLocked()
+}
 
+// snapshotLocked is the body of Snapshot; the caller must hold s.mu. It is shared
+// by Snapshot() and by SetGameActive's game-end hook so both produce an identical
+// deep-enough copy without re-acquiring the mutex.
+func (s *Store) snapshotLocked() GameContext {
 	out := s.ctx
 	out.Players = make(map[string]*PlayerSignals, len(s.ctx.Players))
 	for serial, p := range s.ctx.Players {
