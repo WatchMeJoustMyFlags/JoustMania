@@ -1282,7 +1282,7 @@ class TestRunMatchActive:
 
     @pytest.mark.asyncio
     async def test_run_match_winner_effect_and_loser_off(self, tournament_game):
-        """After match finalization, winner gets WIN_FLASH and loser LED turns off."""
+        """After match finalization, winner gets WINNER_RAINBOW and loser LED turns off."""
         from unittest.mock import AsyncMock, patch
 
         from proto import controller_manager_pb2 as cm_pb2
@@ -1319,7 +1319,8 @@ class TestRunMatchActive:
         # Winner effect
         effect_msgs = [m for m in stream.messages if m.HasField("game_effect")]
         assert any(
-            m.game_effect.serial == p2 and m.game_effect.effect == cm_pb2.GAME_EFFECT_WIN_FLASH for m in effect_msgs
+            m.game_effect.serial == p2 and m.game_effect.effect == cm_pb2.GAME_EFFECT_WINNER_RAINBOW
+            for m in effect_msgs
         )
 
         # Loser LED off (0,0,0)
