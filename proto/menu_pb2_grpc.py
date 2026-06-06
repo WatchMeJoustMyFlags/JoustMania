@@ -5,7 +5,7 @@ import warnings
 
 from proto import menu_pb2 as menu__pb2
 
-GRPC_GENERATED_VERSION = '1.76.0'
+GRPC_GENERATED_VERSION = '1.81.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -25,7 +25,7 @@ if _version_not_supported:
     )
 
 
-class MenuServiceStub(object):
+class MenuServiceStub:
     """Menu Service - Manages menu UI and user interactions
     """
 
@@ -57,7 +57,7 @@ class MenuServiceStub(object):
                 _registered_method=True)
 
 
-class MenuServiceServicer(object):
+class MenuServiceServicer:
     """Menu Service - Manages menu UI and user interactions
     """
 
@@ -120,7 +120,7 @@ def add_MenuServiceServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class MenuService(object):
+class MenuService:
     """Menu Service - Manages menu UI and user interactions
     """
 

@@ -472,6 +472,68 @@ async def list_games(game_client) -> list:
     return list(response.games)
 
 
+async def wait_until_running(
+    game_client,
+    game_ids: set[str],
+    timeout: float = 10.0,
+    poll_interval: float = 0.3,
+) -> set[str]:
+    """Poll ListGames until every id in ``game_ids`` is RUNNING.
+
+    ``start_game_headless`` returns on the first start event — which can be
+    ``game_starting``, i.e. while the session is still STARTING (countdown).
+    A one-shot RUNNING assert right after it is therefore a race; under
+    parallel CI load the STARTING window stretches well past it (#897).
+
+    Args:
+        game_client: GameCoordinator gRPC client.
+        game_ids: The game ids that must all reach RUNNING.
+        timeout: Max seconds to poll before giving up.
+        poll_interval: Delay between ListGames polls.
+
+    Returns:
+        The set of RUNNING game ids from the final poll (callers assert on it
+        for a failure message that shows what WAS running).
+    """
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        running = {
+            g.game_id
+            for g in await list_games(game_client)
+            if g.state == game_coordinator_pb2.GameState.RUNNING
+        }
+        if game_ids <= running or asyncio.get_running_loop().time() > deadline:
+            return running
+        await asyncio.sleep(poll_interval)
+
+
+async def describe_game_state(game_client, game_id: str) -> str:
+    """Best-effort one-line description of a session's live state for failures.
+
+    Reports the ListGames state plus per-player team/alive from GetGameState,
+    e.g. ``RUNNING players={'MOCK1': 'team=0 alive', ...}`` — or ``not listed
+    (session retired)`` when the id is gone. Never raises: diagnostics must not
+    mask the assertion they decorate (#897).
+    """
+    try:
+        states = {g.game_id: g.state for g in await list_games(game_client)}
+        if game_id not in states:
+            return "not listed (session retired)"
+        desc = game_coordinator_pb2.GameState.Name(states[game_id])
+        response = await game_client.GetGameState(
+            game_coordinator_pb2.GetGameStateRequest(game_id=game_id)
+        )
+        if response.success:
+            players = {
+                p.serial: f"team={p.team} {'alive' if p.alive else 'dead'}"
+                for p in response.game_info.players
+            }
+            desc += f" players={players}"
+        return desc
+    except Exception as exc:  # noqa: BLE001 - diagnostics are best-effort
+        return f"unavailable ({exc})"
+
+
 _LIVE_GAME_STATES = (
     game_coordinator_pb2.GameState.STARTING,
     game_coordinator_pb2.GameState.RUNNING,

@@ -111,7 +111,7 @@ services:
 
   # Jaeger for distributed tracing UI
   jaeger:
-    image: jaegertracing/jaeger:2.14.1
+    image: jaegertracing/jaeger:2.19.0
     container_name: joustmania-jaeger
     user: "0"  # Run as root to avoid permission issues with badger volume (default UID 10001 can't write)
     # All ports exposed only within Docker network (envoy proxies to it)
@@ -126,7 +126,7 @@ services:
     networks:
       - joustmania
     healthcheck:
-      test: [ "CMD", "wget", "--spider", "-q", "http://localhost:16686" ]
+      test: [ "CMD", "wget", "--spider", "-q", "http://localhost:16686/jaeger/" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -583,7 +583,7 @@ services:
 
   # Loki for log aggregation with 24h retention
   loki:
-    image: grafana/loki:3.4.3
+    image: grafana/loki:3.7.2
     container_name: joustmania-loki
     user: "0"  # Run as root to avoid permission issues with volume
     # Port exposed only within Docker network (envoy proxies to it)
@@ -597,7 +597,8 @@ services:
       - joustmania
     restart: unless-stopped
     healthcheck:
-      test:  ["CMD", "wget", "--spider", "-q", "http://localhost:3100/ready"]
+      # Loki 3.6+ images are distroless (no wget/shell); use the built-in health subcommand
+      test: ["CMD", "/usr/bin/loki", "-health"]
       interval: 10s
       timeout: 5s
       retries: 5

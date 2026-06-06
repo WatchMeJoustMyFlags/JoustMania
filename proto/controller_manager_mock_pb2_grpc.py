@@ -5,7 +5,7 @@ import warnings
 
 from proto import controller_manager_mock_pb2 as controller__manager__mock__pb2
 
-GRPC_GENERATED_VERSION = '1.76.0'
+GRPC_GENERATED_VERSION = '1.81.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -25,7 +25,7 @@ if _version_not_supported:
     )
 
 
-class MockControllerServiceStub(object):
+class MockControllerServiceStub:
     """Additional RPCs for mock controller control
     """
 
@@ -97,7 +97,7 @@ class MockControllerServiceStub(object):
                 _registered_method=True)
 
 
-class MockControllerServiceServicer(object):
+class MockControllerServiceServicer:
     """Additional RPCs for mock controller control
     """
 
@@ -256,7 +256,7 @@ def add_MockControllerServiceServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class MockControllerService(object):
+class MockControllerService:
     """Additional RPCs for mock controller control
     """
 
