@@ -1533,7 +1533,17 @@ async def end_swapper_game(
         if not await kill_player_verified(
             mock_client, game_client, serial, lambda p: p.team == 0, game_id=game_id
         ):
-            return killed  # Game ended during the kill
+            # Verification fails when the game ended mid-kill OR when the kill
+            # simply did not register (grace window / EMA warm-up, the #757
+            # family). Only the former ends the strategy — treating both as
+            # "ended" silently abandoned a still-running 2v2 game with no
+            # terminal event (~50% CI flake). Re-query to distinguish; retry
+            # the kill within the overall deadline otherwise.
+            players = await get_player_states(game_client, game_id=game_id)
+            if players is None:
+                return killed  # game genuinely ended during the kill
+            print(f"Swapper: kill of {serial} did not register, retrying")
+            continue
         killed.append(serial)
 
 
