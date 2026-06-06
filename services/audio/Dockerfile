@@ -94,7 +94,7 @@ COPY services/audio/asound.conf /etc/asound.conf
 COPY --from=system-libs /extra-etc/group /etc/group
 
 # Copy installed packages from builder to distroless stdlib location
-COPY --from=builder /usr/local/lib/python3.11/site-packages/ /usr/lib/python3.11/
+COPY --from=builder /usr/local/lib/python3.14/site-packages/ /usr/lib/python3.14/
 
 # Copy application code (assets mounted as volume in docker-compose)
 COPY --from=builder /app/pyproject.toml /app/

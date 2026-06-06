@@ -45,7 +45,7 @@ WORKDIR /app
 COPY --from=ghcr.io/grpc-ecosystem/grpc-health-probe:v0.4.52 /ko-app/grpc-health-probe /bin/grpc_health_probe
 
 # Copy installed packages from builder to distroless stdlib location
-COPY --from=builder /usr/local/lib/python3.11/site-packages/ /usr/lib/python3.11/
+COPY --from=builder /usr/local/lib/python3.14/site-packages/ /usr/lib/python3.14/
 COPY --from=builder /usr/local/bin /usr/local/bin
 
 # Copy application code

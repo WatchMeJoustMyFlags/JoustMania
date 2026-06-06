@@ -1,7 +1,7 @@
 # JoustMania Shared Builder Image
 #
 # Pre-installs common build dependencies and Python packages to speed up
-# service builds. Services extend from this image instead of python:3.11-slim.
+# service builds. Services extend from this image instead of python:3.14-slim.
 #
 # NOTE: Uses Python 3.11 to match distroless runtime images (gcr.io/distroless/python3-debian12)
 #
