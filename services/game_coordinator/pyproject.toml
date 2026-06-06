@@ -8,9 +8,6 @@ dependencies = [
     "joustmania-proto",
     "joustmania-lib",
 
-    # Core dependencies
-    "pyyaml>=6.0",
-
     # gRPC
     "grpcio>=1.70.0",
     "grpcio-health-checking>=1.70.0",

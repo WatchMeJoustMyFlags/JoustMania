@@ -8,9 +8,6 @@ dependencies = [
     "joustmania-proto",
     "joustmania-lib",
 
-    # Core dependencies
-    "pyyaml>=6.0",
-
     # Platform-specific dependencies
     "dbus-fast>=2.0.0; sys_platform == 'linux'",  # Async D-Bus for BlueZ
     "hidapi>=0.14.0",  # Required by bt_discovery for HID device enumeration
