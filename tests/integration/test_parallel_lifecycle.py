@@ -271,10 +271,16 @@ async def _run_mode_headless(docker_compose, spec: ModeSpec, tag: str) -> None:
         # game finished but the event never reached the collector; absent =
         # session retired without the collector seeing the event (#897).
         try:
-            await collector.wait_for_any_event(_TERMINAL_EVENTS, timeout=spec.timeout)
+            terminal = await collector.wait_for_any_event(_TERMINAL_EVENTS, timeout=spec.timeout)
         except TimeoutError as exc:
             state = await describe_game_state(game_client, game_id)
             raise TimeoutError(f"{exc} (session state: {state})") from exc
+        # ``game_error`` stays in the awaited set so a crash fails FAST, but it
+        # is never a success: NonStop's startup crash (GameplayStreamConfig
+        # ``serials`` regression) hid behind game_error counting as terminal.
+        assert terminal.event_type != "game_error", (
+            f"game errored instead of ending: {dict(terminal.data)}"
+        )
     except Exception as exc:  # noqa: BLE001 - re-raise tagged with the mode name
         raise AssertionError(f"[{spec.mode}] headless lifecycle failed: {exc}") from exc
     finally:
