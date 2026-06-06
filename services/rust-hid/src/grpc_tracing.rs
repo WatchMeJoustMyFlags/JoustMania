@@ -10,7 +10,7 @@ use std::task::{Context, Poll};
 
 use http::{Request, Response};
 use opentelemetry::propagation::Extractor;
-use tonic::body::BoxBody;
+use tonic::body::Body;
 use tower::{Layer, Service};
 use tracing::{info_span, Instrument};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
@@ -63,7 +63,7 @@ pub struct GrpcTracingService<S> {
 
 impl<S, ReqBody> Service<Request<ReqBody>> for GrpcTracingService<S>
 where
-    S: Service<Request<ReqBody>, Response = Response<BoxBody>> + Clone + Send + 'static,
+    S: Service<Request<ReqBody>, Response = Response<Body>> + Clone + Send + 'static,
     S::Future: Send + 'static,
     ReqBody: Send + 'static,
 {
@@ -113,7 +113,11 @@ where
                     rpc.method = %method,
                     rpc.grpc.status_code = tracing::field::Empty,
                 );
-                span.set_parent(parent_cx);
+                // set_parent returns a Result in tracing-opentelemetry 0.33;
+                // a failure to attach the parent context is non-fatal for the RPC.
+                if let Err(err) = span.set_parent(parent_cx) {
+                    tracing::debug!(%err, "failed to set parent trace context");
+                }
 
                 let response = svc.call(req).instrument(span.clone()).await;
 

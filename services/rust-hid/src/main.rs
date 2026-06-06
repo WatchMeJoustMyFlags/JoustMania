@@ -42,7 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(%addr, "Starting rust-hid gRPC server");
 
     // Health checking
-    let (mut health_reporter, health_service) = health_reporter();
+    let (health_reporter, health_service) = health_reporter();
     health_reporter
         .set_serving::<PairingServiceServer<PairingServiceImpl>>()
         .await;
@@ -109,20 +109,22 @@ fn build_otel_resource() -> opentelemetry_sdk::Resource {
     let environment =
         std::env::var("DEPLOYMENT_ENVIRONMENT").unwrap_or_else(|_| "development".into());
 
-    opentelemetry_sdk::Resource::new(vec![
-        KeyValue::new("container.name", service_name.clone()),
-        KeyValue::new("service.name", service_name),
-        KeyValue::new("service.namespace", namespace),
-        KeyValue::new("service.version", version),
-        KeyValue::new("service.instance.id", instance_id),
-        KeyValue::new("deployment.environment", environment),
-        KeyValue::new("host.name", hostname),
-        KeyValue::new("process.pid", std::process::id() as i64),
-        KeyValue::new("process.executable.name", "rust-hid"),
-        KeyValue::new("process.runtime.name", "rustc"),
-        KeyValue::new("telemetry.sdk.name", "opentelemetry"),
-        KeyValue::new("telemetry.sdk.language", "rust"),
-    ])
+    opentelemetry_sdk::Resource::builder()
+        .with_attributes(vec![
+            KeyValue::new("container.name", service_name.clone()),
+            KeyValue::new("service.name", service_name),
+            KeyValue::new("service.namespace", namespace),
+            KeyValue::new("service.version", version),
+            KeyValue::new("service.instance.id", instance_id),
+            KeyValue::new("deployment.environment", environment),
+            KeyValue::new("host.name", hostname),
+            KeyValue::new("process.pid", std::process::id() as i64),
+            KeyValue::new("process.executable.name", "rust-hid"),
+            KeyValue::new("process.runtime.name", "rustc"),
+            KeyValue::new("telemetry.sdk.name", "opentelemetry"),
+            KeyValue::new("telemetry.sdk.language", "rust"),
+        ])
+        .build()
 }
 
 /// Initialize OTLP log export.
@@ -131,7 +133,7 @@ fn build_otel_resource() -> opentelemetry_sdk::Resource {
 /// exports logs via OTLP. The provider is wired into tracing via the
 /// OpenTelemetryTracingBridge layer in `init_tracing()`.
 /// The provider must outlive the tracing subscriber to flush on shutdown.
-fn init_logs() -> Option<opentelemetry_sdk::logs::LoggerProvider> {
+fn init_logs() -> Option<opentelemetry_sdk::logs::SdkLoggerProvider> {
     use opentelemetry_otlp::WithExportConfig;
 
     let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok()?;
@@ -144,8 +146,8 @@ fn init_logs() -> Option<opentelemetry_sdk::logs::LoggerProvider> {
 
     let resource = build_otel_resource();
 
-    let provider = opentelemetry_sdk::logs::LoggerProvider::builder()
-        .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
+    let provider = opentelemetry_sdk::logs::SdkLoggerProvider::builder()
+        .with_batch_exporter(exporter)
         .with_resource(resource)
         .build();
 
@@ -160,8 +162,8 @@ fn init_logs() -> Option<opentelemetry_sdk::logs::LoggerProvider> {
 /// the OpenTelemetryTracingBridge layer.
 /// Returns a guard that shuts down the tracer provider on drop.
 fn init_tracing(
-    log_provider: &Option<opentelemetry_sdk::logs::LoggerProvider>,
-) -> Option<opentelemetry_sdk::trace::TracerProvider> {
+    log_provider: &Option<opentelemetry_sdk::logs::SdkLoggerProvider>,
+) -> Option<opentelemetry_sdk::trace::SdkTracerProvider> {
     use opentelemetry::trace::TracerProvider as _;
     use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
     use opentelemetry_otlp::WithExportConfig;
@@ -188,8 +190,8 @@ fn init_tracing(
 
         let resource = build_otel_resource();
 
-        let provider = opentelemetry_sdk::trace::TracerProvider::builder()
-            .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
+        let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+            .with_batch_exporter(exporter)
             .with_resource(resource)
             .build();
 
@@ -237,12 +239,9 @@ fn init_metrics() -> Option<opentelemetry_sdk::metrics::SdkMeterProvider> {
 
     let resource = build_otel_resource();
 
-    let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(
-        exporter,
-        opentelemetry_sdk::runtime::Tokio,
-    )
-    .with_interval(std::time::Duration::from_secs(1))
-    .build();
+    let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(exporter)
+        .with_interval(std::time::Duration::from_secs(1))
+        .build();
 
     let provider = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
         .with_reader(reader)
