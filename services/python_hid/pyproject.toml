@@ -2,7 +2,7 @@
 name = "joustmania-python-hid"
 version = "1.0.0"
 description = "Python HID gRPC service for PS Move controllers"
-requires-python = ">=3.9,<3.13"
+requires-python = ">=3.14,<3.15"
 dependencies = [
     # Workspace packages
     "joustmania-proto",

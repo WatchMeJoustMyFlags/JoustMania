@@ -48,7 +48,7 @@ RUN uv pip install --system -e proto/ -e lib/ -e services/controller_manager/
 # =============================================================================
 # Stage 2: Runtime image
 # =============================================================================
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 # Install runtime dependencies (bluetooth for PS Move controllers)
 # libhidapi-hidraw0: Required by bt_discovery for HID device enumeration
@@ -63,7 +63,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Copy installed packages from python-builder
-COPY --from=python-builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=python-builder /usr/local/lib/python3.14/site-packages /usr/local/lib/python3.14/site-packages
 COPY --from=python-builder /usr/local/bin /usr/local/bin
 
 # Copy grpc-health-probe binary

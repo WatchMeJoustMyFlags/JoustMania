@@ -4,7 +4,7 @@ version = "0.7.0"
 description = "Microservices-based motion gaming platform for PlayStation Move controllers"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.11,<3.13"
+requires-python = ">=3.14,<3.15"
 keywords = ["gaming", "motion-control", "grpc", "opentelemetry", "microservices", "ps-move"]
 classifiers = [
     "Development Status :: 4 - Beta",

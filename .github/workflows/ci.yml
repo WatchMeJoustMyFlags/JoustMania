@@ -699,6 +699,12 @@ jobs:
             ${{ env.IMAGE_PREFIX }}/${{ matrix.image_name }}:${{ github.sha }}
             ${{ github.event_name != 'pull_request' && format('{0}/{1}:{2}', env.IMAGE_PREFIX, matrix.image_name, github.ref_name) || '' }}
             ${{ github.ref_name == env.MAIN_BRANCH && format('{0}/{1}:latest', env.IMAGE_PREFIX, matrix.image_name) || '' }}
+          # BUILDER_IMAGE: consumed by python-hid (only matrix entry that builds on
+          # the shared builder); pinning :sha instead of the Dockerfile's :latest
+          # default keeps the build in sync with this run's builder (e.g. Python
+          # version bumps). Unconsumed by the Go/Node/Rust images (harmless warning).
+          build-args: |
+            BUILDER_IMAGE=${{ env.IMAGE_PREFIX }}/builder:${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
 

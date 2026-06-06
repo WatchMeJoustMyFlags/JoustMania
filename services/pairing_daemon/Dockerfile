@@ -52,7 +52,7 @@ RUN uv pip install --system --no-cache-dir -e lib/ -e proto/ -e services/pairing
 # =============================================================================
 # Stage 2: Runtime image
 # =============================================================================
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -65,7 +65,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Copy installed packages from python-builder
-COPY --from=python-builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=python-builder /usr/local/lib/python3.14/site-packages /usr/local/lib/python3.14/site-packages
 COPY --from=python-builder /usr/local/bin /usr/local/bin
 
 # Copy application code
