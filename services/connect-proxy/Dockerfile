@@ -22,7 +22,7 @@ RUN mv gen/github.com/joustmania/connect-proxy/gen/* gen/ && \
       pkg=$(basename "$dir"); \
       echo "module github.com/joustmania/connect-proxy/gen/$pkg" > "$dir/go.mod"; \
       echo "" >> "$dir/go.mod"; \
-      echo "go 1.22" >> "$dir/go.mod"; \
+      echo "go 1.25" >> "$dir/go.mod"; \
       echo "" >> "$dir/go.mod"; \
       echo "require (" >> "$dir/go.mod"; \
       echo "  connectrpc.com/connect v1.17.0" >> "$dir/go.mod"; \
