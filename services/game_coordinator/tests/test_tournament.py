@@ -11,6 +11,7 @@ Tests the core Tournament mechanics:
 import sys
 from pathlib import Path
 
+import grpc
 import pytest
 
 # Setup paths for imports
@@ -1051,17 +1052,21 @@ _patch_win_flash()
 class AsyncGameplayStreamMock:
     """Mock gameplay stream that yields controller data and records writes.
 
-    Supports producing a configurable sequence of updates via ``__anext__``,
-    then raising ``StopAsyncIteration`` when exhausted.
+    Mirrors the StreamStreamCall ``read()`` API the match loop uses (the
+    production call object is an InterceptedStreamStreamCall, which exposes
+    ``read()`` but no direct ``__anext__`` — the bug this models): yields a
+    configurable sequence of updates, then ``grpc.aio.EOF`` when exhausted.
+    ``__aiter__``/``__anext__`` are kept for iterator-based consumers.
     """
 
     def __init__(self, updates=None, *, timeout_forever=False):
         """
         Args:
             updates: List of GameplayDataUpdate protos to yield. When
-                exhausted the stream raises StopAsyncIteration.
-            timeout_forever: If True, every ``__anext__`` raises
-                ``TimeoutError`` so the match loop only checks elapsed time.
+                exhausted, ``read()`` returns ``grpc.aio.EOF`` (and
+                ``__anext__`` raises ``StopAsyncIteration``).
+            timeout_forever: If True, every read raises ``TimeoutError`` so
+                the match loop only checks elapsed time.
         """
         self._updates = list(updates or [])
         self._idx = 0
@@ -1071,17 +1076,27 @@ class AsyncGameplayStreamMock:
     async def write(self, message):
         self.messages.append(message)
 
-    def __aiter__(self):
-        return self
-
-    async def __anext__(self):
+    def _next_update(self):
         if self._timeout_forever:
             raise TimeoutError
         if self._idx < len(self._updates):
             update = self._updates[self._idx]
             self._idx += 1
             return update
-        raise StopAsyncIteration
+        return None
+
+    async def read(self):
+        update = self._next_update()
+        return grpc.aio.EOF if update is None else update
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        update = self._next_update()
+        if update is None:
+            raise StopAsyncIteration
+        return update
 
 
 # ---------------------------------------------------------------------------
@@ -1222,7 +1237,7 @@ class TestRunMatchActive:
 
         match = Match(match_id=0, round_number=1, player1_serial=p1, player2_serial=p2)
 
-        # Empty stream -- __anext__ raises StopAsyncIteration immediately
+        # Empty stream -- read() returns grpc.aio.EOF immediately
         stream = AsyncGameplayStreamMock(updates=[])
         game.gameplay_stream = stream
 
@@ -1249,7 +1264,7 @@ class TestRunMatchActive:
 
         call_count = 0
 
-        async def stop_on_second_anext():
+        async def stop_on_second_read():
             nonlocal call_count
             call_count += 1
             if call_count >= 2:
@@ -1257,7 +1272,7 @@ class TestRunMatchActive:
             raise TimeoutError
 
         stream = AsyncGameplayStreamMock(timeout_forever=True)
-        stream.__anext__ = stop_on_second_anext
+        stream.read = stop_on_second_read
         game.gameplay_stream = stream
 
         await game._run_match(match)
