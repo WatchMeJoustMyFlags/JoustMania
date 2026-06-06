@@ -12,6 +12,16 @@ When resuming from a previous session, ask the user to confirm the current task 
 
 Always create a feature branch before making changes. Never commit directly to main. Verify current branch with `git branch --show-current` before starting work.
 
+## Issue Tracking
+
+When work on a GitHub issue starts (implementation begun or a background agent launched), assign the issue to the repository owner so in-flight work is visible at a glance:
+
+```bash
+gh issue edit <NUMBER> --add-assignee aepfli
+```
+
+When the implementing PR merges, close the issue manually with a comment referencing the PR and what was delivered — PR bodies in this repo use "Part of #N" phrasing without `closes` keywords, so issues never auto-close.
+
 ## Quick Reference
 
 ```bash
