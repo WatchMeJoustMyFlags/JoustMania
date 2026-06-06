@@ -43,6 +43,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
 from tests.integration.helpers import (
     build_start_config,
+    describe_game_state,
     end_fight_club_game,
     end_swapper_game,
     end_tournament_game,
@@ -155,8 +156,9 @@ _SPECS = {
     # so wait it out before driving the win condition (caught in CI).
     "JoustRandomTeams": ModeSpec("JoustRandomTeams", 4, end_team, 20, pre_end_delay=6.5),
     # Swapper's death-swap end sequence (delay=0.3/swap) can exceed 15s under
-    # 4-way parallel load on a loaded CI runner (one timeout observed).
-    "Swapper": ModeSpec("Swapper", 4, end_swapper, 25),
+    # 4-way parallel load on a loaded CI runner; 25s also timed out on CI
+    # (#897), so give the post-convergence end path generous headroom.
+    "Swapper": ModeSpec("Swapper", 4, end_swapper, 40),
     "Zombies": ModeSpec("Zombies", 4, end_zombies, 15),
     "NonStop": ModeSpec("NonStop", 2, end_force, 15),
     "Traitor": ModeSpec("Traitor", 4, end_force, 15),
@@ -263,7 +265,16 @@ async def _run_mode_headless(docker_compose, spec: ModeSpec, tag: str) -> None:
 
         # The mode's terminal event must arrive for this game_id. (Force-end
         # strategies already triggered it; awaiting it is still correct.)
-        await collector.wait_for_any_event(_TERMINAL_EVENTS, timeout=spec.timeout)
+        # On timeout, attach the session's live state so the failure says
+        # WHICH way it broke: still RUNNING = the game never reached its win
+        # condition (frame starvation / end strategy bug); ENDED/ENDING = the
+        # game finished but the event never reached the collector; absent =
+        # session retired without the collector seeing the event (#897).
+        try:
+            await collector.wait_for_any_event(_TERMINAL_EVENTS, timeout=spec.timeout)
+        except TimeoutError as exc:
+            state = await describe_game_state(game_client, game_id)
+            raise TimeoutError(f"{exc} (session state: {state})") from exc
     except Exception as exc:  # noqa: BLE001 - re-raise tagged with the mode name
         raise AssertionError(f"[{spec.mode}] headless lifecycle failed: {exc}") from exc
     finally:
