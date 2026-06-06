@@ -16,6 +16,7 @@ import time
 from dataclasses import dataclass
 from enum import Enum
 
+import grpc
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
@@ -459,22 +460,29 @@ class TournamentGame(BaseGameMode):
                 logger.info(f"Match {match.match_id} timeout - random winner: {match.winner_serial}")
                 break
 
-            # Process controller states from gameplay stream (with timeout)
+            # Process controller states from gameplay stream (with timeout).
+            # Uses the StreamStreamCall.read() API, NOT __anext__() on the call
+            # object: with tracing interceptors active the channel returns an
+            # InterceptedStreamStreamCall, which exposes read()/__aiter__ but
+            # no direct __anext__ — every Tournament match crashed with
+            # "'InterceptedStreamStreamCall' object has no attribute
+            # '__anext__'" (surfaced by the grpcio 1.76->1.81 bump in #846;
+            # previously masked by game_error counting as a valid terminal).
             try:
                 gameplay_update = await asyncio.wait_for(
-                    self.gameplay_stream.__anext__(),
+                    self.gameplay_stream.read(),
                     timeout=0.1,  # Check for match completion every 100ms
                 )
+                if gameplay_update is grpc.aio.EOF:
+                    # Stream ended
+                    logger.warning("Gameplay stream ended during match")
+                    break
                 # Process each controller's state
                 for gameplay_data in gameplay_update.controllers:
                     await self._process_controller_state(gameplay_data)
             except TimeoutError:
                 # No data received, continue loop (check time/completion)
                 pass
-            except StopAsyncIteration:
-                # Stream ended
-                logger.warning("Gameplay stream ended during match")
-                break
 
         # Finalize match
         if not match.is_complete and match.winner_serial:
