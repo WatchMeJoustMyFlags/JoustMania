@@ -964,3 +964,35 @@ class TestNonstopGameLoopFilterUpdate:
 
         # Should not crash
         await game._process_controller_state(state)
+
+
+class TestInitialStreamConfig:
+    """Regression: the loop's initial GameplayStreamConfig construction.
+
+    The construction used the removed-and-reserved proto field ``serials`` and
+    crashed every NonStop game at loop startup ('Protocol message
+    GameplayStreamConfig has no "serials" field'). Unit tests never caught it
+    because they inject a mock gameplay_stream PAST the init block — this test
+    exercises the real proto message construction.
+    """
+
+    @pytest.mark.asyncio
+    async def test_initial_stream_control_builds_with_player_colors(self):
+        mock_cm = MockControllerManagerService(num_controllers=4)
+        game = NonstopJoustGame(
+            controller_manager_client=mock_cm,
+            event_publisher=async_noop,
+            audio_client=None,
+            game_id="test_stream_config",
+        )
+        await game._initialize_players_impl(mock_cm.controllers)
+        await game._set_unique_colors()
+
+        control = game._build_initial_stream_control(update_frequency_hz=60)
+
+        assert control.config.update_frequency_hz == 60
+        colors = list(control.config.colors)
+        assert len(colors) == 4, "initial colors must carry the full player set"
+        assert {c.serial for c in colors} == set(game.players.keys())
+        # The removed field must never come back.
+        assert not hasattr(control.config, "serials")

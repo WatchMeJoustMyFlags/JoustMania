@@ -8,7 +8,7 @@
 #   docker compose -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.dev.yml up -d
 #
 # Note: Only Python application services are mounted. Infrastructure
-# services (redis, prometheus, grafana, etc.) and non-Python services
+# services (prometheus, grafana, etc.) and non-Python services
 # (connect-proxy, dashboard) are unchanged.
 #
 # After changing code, restart the affected service to pick up changes:

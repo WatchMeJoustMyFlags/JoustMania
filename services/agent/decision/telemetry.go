@@ -69,6 +69,13 @@ const (
 	// decision / agent.llm.prompt / agent.llm.retro spans so a trace can be
 	// filtered by game kind — schema-complete (empty string when unknown).
 	AttrGameKind = "game.kind"
+	// AttrSessionID and AttrGameID both carry GameContext.SessionID — which, since
+	// PR A's early game_id adoption, IS the real game_id. session.id is the original
+	// audit key; game.id is an explicit alias (#845 PR C) so Jaeger queries by
+	// game.id are symmetrical with the coordinator's own game.id-tagged spans, and
+	// two concurrent games' decision traces are independently attributable.
+	AttrSessionID = "session.id"
+	AttrGameID    = "game.id"
 	// AttrEnabled is the existence-layer kill switch (agent.enabled). Lifted from
 	// the cycle's LayerState onto every decision span (including the disabled
 	// kill-switch span) so a trace shows whether the agent was live (#729).

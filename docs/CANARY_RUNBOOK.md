@@ -412,8 +412,6 @@ controller-manager:
   depends_on:
     rust-hid:
       condition: service_healthy
-    redis:
-      condition: service_healthy
     flagd:
       condition: service_started
 ```

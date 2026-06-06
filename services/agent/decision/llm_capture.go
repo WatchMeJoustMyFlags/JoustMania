@@ -35,6 +35,10 @@ type llmPromptAttrs struct {
 	// gameKind is the GameContext.GameKind for this cycle (#845): "real"/"shadow"
 	// or "" when unknown. Rendered schema-complete (empty string when unknown).
 	gameKind string
+	// gameID is the GameContext.SessionID for this cycle (= the real game_id since
+	// PR A). Recorded as both session.id and the game.id alias (#845 PR C) so the
+	// prompt-capture span is attributable to its game like the decision span.
+	gameID string
 }
 
 // llmPromptAttributes is the SOLE builder of the agent.llm.prompt span attribute
@@ -65,6 +69,9 @@ func llmPromptAttributes(in llmPromptAttrs) []attribute.KeyValue {
 		// Agent attribution (same vocabulary as the decision span).
 		attribute.String(AttrMode, llmModeValue),
 		attribute.String(AttrGameKind, in.gameKind),
+		// session.id + game.id alias (#845 PR C): attributable to the game.
+		attribute.String(AttrSessionID, in.gameID),
+		attribute.String(AttrGameID, in.gameID),
 		attribute.String(AttrPromptVariant, in.prompt.Variant),
 		attribute.String(AttrObjectives, summarizeObjectives(in.objectives)),
 		attribute.String(AttrInterventionsAllowed, allowedSummary(in.allowed)),

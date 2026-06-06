@@ -314,7 +314,11 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 			semconv.RPCService(trig.RPCService),
 			semconv.RPCMethod("Export"),
 			attribute.String("otlp.signal", trig.Signal),
-			attribute.String("session.id", c.SessionID),
+			attribute.String(AttrSessionID, c.SessionID),
+			// game.id alias (#845): session.id IS the game_id since PR A; the alias
+			// keeps Jaeger queries by game.id symmetrical with the coordinator spans
+			// and makes two concurrent games' traces independently attributable.
+			attribute.String(AttrGameID, c.SessionID),
 		),
 	)
 	defer root.End()
@@ -381,6 +385,7 @@ func (l *Loop) captureLLMPrompt(ctx context.Context, snapshot flags.Snapshot, c 
 			objectives: snapshot.Objectives,
 			allowed:    snapshot.InterventionsAllowed,
 			gameKind:   c.GameKind,
+			gameID:     c.SessionID,
 		})...))
 	span.End()
 
@@ -470,7 +475,11 @@ func (l *Loop) emitDisabledSpan(ctx context.Context, snapshot flags.Snapshot, c 
 			semconv.RPCService(trig.RPCService),
 			semconv.RPCMethod("Export"),
 			attribute.String("otlp.signal", trig.Signal),
-			attribute.String("session.id", c.SessionID),
+			attribute.String(AttrSessionID, c.SessionID),
+			// game.id alias (#845): session.id IS the game_id since PR A; the alias
+			// keeps Jaeger queries by game.id symmetrical with the coordinator spans
+			// and makes two concurrent games' traces independently attributable.
+			attribute.String(AttrGameID, c.SessionID),
 		),
 	)
 	defer root.End()

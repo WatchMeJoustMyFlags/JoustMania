@@ -369,9 +369,9 @@ defines what "fresh data" means for `ShouldEvaluate`.
 
 Persistence: the `game_id` label (pattern already established by
 `game_player_peak_accel`) keeps per-game history in the TSDB; `PlayerAnalytics`
-already persists end-of-game summaries (incl. `std_accel`) to Redis
-(`analytics.py:319`), so per-game analytics persistence needs no new mechanism —
-only the windowed/derived values above need to be added to the live gauges.
+already computes end-of-game summaries (incl. `std_accel`) (`analytics.py:319`),
+so per-game analytics needs no new mechanism — only the windowed/derived values
+above need to be added to the live gauges.
 
 Cardinality note: `serial` and `game_id` labels are bounded (≤ ~16 controllers,
 games are short); this matches the existing exposure and is safe for
@@ -538,7 +538,7 @@ the `adjust_music_tempo` row (✅ everywhere).
    (`none`/`ambient`/`standard`/`full`) with `ambient` as the rollout default (§6).
 6. **The OBSERVE layer can largely read existing metrics**; five additive
    metrics close the gap to the schema's signal list, and the `game_id` label +
-   existing Redis analytics persistence cover per-game history (§7).
+   existing analytics summaries cover per-game history (§7).
 7. All interventions are assessed against the three policy constraints in §5;
    enforcement must live in the game coordinator's flag-application layer, with
    weighted rate-limit costs rather than a flat count.

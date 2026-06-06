@@ -36,29 +36,6 @@ x-logging: &default-logging
     labels: "com.docker.compose.service,com.docker.compose.image"
 
 services:
-  # Redis for pub/sub messaging
-  redis:
-    image: redis:8.8-alpine
-    container_name: joustmania-redis
-    # Port 6379 exposed only within Docker network (no host binding)
-    expose:
-      - "6379"
-    networks:
-      - joustmania
-    restart: unless-stopped
-    healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
-      interval: 2s
-      timeout: 2s
-      retries: 3
-      start_period: 1s
-    deploy:
-      resources:
-        limits:
-          memory: 128m
-          cpus: '0.25'
-    logging: *default-logging
-
   # flagd for feature flag evaluation
   flagd:
     image: ghcr.io/open-feature/flagd:v0.16.0
@@ -227,8 +204,6 @@ services:
       - PYTHON_HID_HOST=python-hid
       - PYTHON_HID_PORT=50059
     depends_on:
-      redis:
-        condition: service_healthy
       flagd:
         condition: service_started
       rust-hid:
@@ -371,8 +346,6 @@ services:
       - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
     depends_on:
-      redis:
-        condition: service_healthy
       flagd:
         condition: service_started
     networks:
@@ -414,8 +387,6 @@ services:
     volumes:
       - ./services/flagd:/etc/flagd
     depends_on:
-      redis:
-        condition: service_healthy
       flagd:
         condition: service_started
     networks:
@@ -458,8 +429,6 @@ services:
       - FLAGD_PORT=8015
       - ALSA_CARD=auto  # Auto-detect sound card; set to card number (e.g. "1") to override
     depends_on:
-      redis:
-        condition: service_healthy
       flagd:
         condition: service_started
     networks:
@@ -769,7 +738,6 @@ networks:
     name: joustmania-network
 
 volumes:
-  redis-data:
   prometheus-data:
   victoria-metrics-data:
   grafana-data:

@@ -49,6 +49,7 @@ from services.game_coordinator.games.ffa import FFAGame
 from services.game_coordinator.interventions import (
     InterventionContext,
     InterventionManager,
+    SessionView,
 )
 
 
@@ -391,7 +392,9 @@ class TestRegistration:
 
         # Now the agent sets the override; evaluate the single flag.
         mgr._interventions_client.values["music_tempo_override"] = 1.15
-        await mgr._evaluate_one(_spec("music_tempo_override"))
+        # #838: _evaluate_one is now per-session; pass the synthesized primary view.
+        primary = SessionView(game_id="", game=game, publish=publisher)
+        await mgr._evaluate_one(_spec("music_tempo_override"), primary)
 
         assert game.tempo_override == pytest.approx(1.15)
         assert any(e[0] == GameEvent.AGENT_INTERVENTION and e[1]["blocked"] == "false" for e in events)
