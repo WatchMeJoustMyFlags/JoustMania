@@ -42,12 +42,12 @@ const (
 // signal does not carry that label (legacy / primary-context signals such as
 // game_current_mode never carry game_id).
 //
-// PR-B NOTE (#845 multiplexer): this struct is the routing key. In THIS PR there
-// is one store, so the labels are only used to enrich it (SetGameKind +
-// AdoptSessionID). Every dispatch site already receives the resolved gameLabels
-// (threaded through applyDataPoint / applySpan), so PR B can switch the receiver
-// from `s *Store` to a multiplexer that selects `map[game_id]*Store` keyed on
-// labels.GameID without re-plumbing the call sites.
+// This struct is the routing key. The Multiplexer (multiplexer.go, #845 PR B)
+// selects the per-game Store partition on the resolved GameID (gameIDOf /
+// spanGameIDOf) BEFORE dispatching the datapoint/span to that store's
+// applyDataPoint / applySpan; within the selected partition the labels are then
+// used to enrich it (SetGameKind + AdoptSessionID via adoptGame). Signals with an
+// empty GameID route to the fallback partition (FallbackGameID).
 type gameLabels struct {
 	GameID   string
 	GameKind string
@@ -247,13 +247,14 @@ func (s *Store) applyDataPoint(name string, dp pmetric.NumberDataPoint) bool {
 	return false
 }
 
-// adoptGame enriches the (single, this-PR) store from a signal's resolved game
+// adoptGame enriches the selected partition's store from a signal's resolved game
 // identity labels: it adopts the game_id as the SessionID (much earlier than the
 // pre-#845 end-of-game peak_accel path) and records the game_kind. Both setters
 // no-op on an empty value, so an unlabeled signal leaves the store unchanged.
 //
-// PR-B NOTE (#845): once a multiplexer exists, label-based store selection
-// happens BEFORE this call; adoptGame stays the per-store enrichment step.
+// With the Multiplexer (#845 PR B), label-based partition selection happens BEFORE
+// this call (the Multiplexer routes on GameID); adoptGame stays the per-store
+// enrichment step within the already-selected partition.
 func (s *Store) adoptGame(labels gameLabels) {
 	s.AdoptSessionID(labels.GameID)
 	s.SetGameKind(labels.GameKind)

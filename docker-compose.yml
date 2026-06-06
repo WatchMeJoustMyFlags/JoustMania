@@ -38,7 +38,7 @@ x-logging: &default-logging
 services:
   # Redis for pub/sub messaging
   redis:
-    image: redis:7.4-alpine
+    image: redis:8.8-alpine
     container_name: joustmania-redis
     # Port 6379 exposed only within Docker network (no host binding)
     expose:
@@ -479,7 +479,7 @@ services:
   # VictoriaMetrics for high-frequency metrics storage (replaces Prometheus for storage)
   # Receives metrics via Prometheus remote write protocol from OTEL Collector
   victoria-metrics:
-    image: victoriametrics/victoria-metrics:v1.96.0
+    image: victoriametrics/victoria-metrics:v1.144.0
     container_name: joustmania-victoria-metrics
     command:
       - "-storageDataPath=/victoria-metrics-data"
@@ -583,7 +583,7 @@ services:
 
   # Loki for log aggregation with 24h retention
   loki:
-    image: grafana/loki:3.4.3
+    image: grafana/loki:3.7.2
     container_name: joustmania-loki
     user: "0"  # Run as root to avoid permission issues with volume
     # Port exposed only within Docker network (envoy proxies to it)
@@ -597,7 +597,8 @@ services:
       - joustmania
     restart: unless-stopped
     healthcheck:
-      test:  ["CMD", "wget", "--spider", "-q", "http://localhost:3100/ready"]
+      # Loki 3.6+ images are distroless (no wget/shell); use the built-in health subcommand
+      test: ["CMD", "/usr/bin/loki", "-health"]
       interval: 10s
       timeout: 5s
       retries: 5

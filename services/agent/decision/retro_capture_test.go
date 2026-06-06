@@ -132,6 +132,55 @@ func TestRetroCapture_ExactlyOncePerSession(t *testing.T) {
 	}
 }
 
+// TestRetroCapture_InterleavedGameEndDedupe: with concurrent games (#845 PR B),
+// game-ends interleave (A ends, B ends, A's id AGAIN). The bounded LRU dedupe must
+// suppress the repeated A while still having captured both A and B exactly once —
+// the old single last-session string would have re-captured A here.
+func TestRetroCapture_InterleavedGameEndDedupe(t *testing.T) {
+	rc, sr := recordingRetro(t, retroFlagSnapshot())
+
+	end := func(id string) {
+		c := endedSession()
+		c.SessionID = id
+		rc.OnGameEnd(c)
+	}
+
+	end("game-A")
+	end("game-B")
+	end("game-A") // repeat of an already-captured session: must be suppressed
+
+	if n := len(spansByName(sr.Ended(), SpanLLMRetro)); n != 2 {
+		t.Fatalf("agent.llm.retro spans = %d, want 2 (A,B once each; repeated A deduped)", n)
+	}
+}
+
+// TestRetroCapture_DedupeWindowBounded: once more than retroDedupeWindow distinct
+// sessions have been captured, the oldest falls out of the LRU and a repeat of it
+// captures again — this bounds dedupe memory and is acceptable (a session id is
+// never legitimately re-ended after that many newer games).
+func TestRetroCapture_DedupeWindowBounded(t *testing.T) {
+	rc, sr := recordingRetro(t, retroFlagSnapshot())
+
+	end := func(id string) {
+		c := endedSession()
+		c.SessionID = id
+		rc.OnGameEnd(c)
+	}
+
+	end("game-old")
+	// Fill the window with retroDedupeWindow fresh sessions, evicting "game-old".
+	for i := 0; i < retroDedupeWindow; i++ {
+		end("fill-" + string(rune('a'+i)))
+	}
+	// "game-old" has aged out of the window, so it captures a second time.
+	end("game-old")
+
+	want := retroDedupeWindow + 2 // game-old (x2) + the window-fill sessions
+	if n := len(spansByName(sr.Ended(), SpanLLMRetro)); n != want {
+		t.Fatalf("agent.llm.retro spans = %d, want %d", n, want)
+	}
+}
+
 // TestRetroCapture_SkipsActiveGame: a snapshot still reporting GameActive=true
 // emits nothing (defensive — only end-of-game captures).
 func TestRetroCapture_SkipsActiveGame(t *testing.T) {

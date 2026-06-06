@@ -5,7 +5,7 @@
 # paths are relative to the repository root (services/agent/...).
 
 # Stage 1: Build the Go binary
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
 
 # Build argument for cross-compilation (repo deploys to ARM64 Raspberry Pi 5)
 ARG TARGETARCH
