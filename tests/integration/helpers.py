@@ -1694,49 +1694,117 @@ async def end_fight_club_game(
 
 
 async def end_tournament_game(
-    mock_client, serials: list[str], delay: float = 0.2, invincibility_wait: float = 4.2
+    mock_client,
+    game_client,
+    serials: list[str],
+    game_id: str = "",
+    timeout: float = 45.0,
 ) -> list[str]:
-    """End a Tournament game by running through bracket matches.
+    """Drive a Tournament bracket to completion via state-aware kills.
 
-    Tournament is single-elimination bracket with 1v1 matches.
-    Each match is 22s max with 4s invincibility.
+    Tournament is a single-elimination bracket of 1v1 matches. Only the two
+    FIGHTING players in the *current* match can be eliminated; kills of anyone
+    else are ignored by design, and ``PlayerInfo`` does not expose which two are
+    fighting (no FIGHTING flag). So this loops on the live ``alive`` set instead
+    of guessing match boundaries: each pass kills exactly ONE still-alive player
+    and verifies it registered, then repeats until the game emits its terminal
+    event (i.e. ``GetGameState`` no longer reports RUNNING).
 
-    Strategy: For each round, kill one of the fighters.
-    Continue until only one player remains.
+    Why ONE player per pass (not blind kill-everyone): killing BOTH fighters in
+    the same match within the mock's ~2s held death window corrupts the match —
+    the second death can flip the winner back to the player who just lost — and
+    the bracket never produces a champion. Killing one fighter, waiting for it to
+    register dead, then moving on keeps each match clean.
+
+    Pacing: CI sets match invincibility to 2.0s (start config) and the mock holds
+    death-level acceleration ~1s (#757), so ``kill_player_verified`` re-fires
+    every 1.5s until the kill lands — which naturally clears both windows. The
+    kill registering as ``not alive`` is the signal that match advanced.
 
     Args:
-        mock_client: Mock controller service gRPC client
-        serials: List of all controller serials
-        delay: Delay between kills in seconds
-        invincibility_wait: Time to wait for invincibility to end (default 4.2s)
+        mock_client: Mock controller service gRPC client.
+        game_client: GameCoordinator client (for GetGameState).
+        serials: This game's controller serials (used only as the candidate set).
+        game_id: Target session (empty = primary/legacy).
+        timeout: Max total time to keep driving the bracket.
 
     Returns:
-        List of serials that were killed
+        List of serials that were eliminated (in the order they died).
     """
-    killed = []
-    active_players = list(serials)
-
-    # Run bracket rounds until 1 player left
+    killed: list[str] = []
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
     round_num = 0
-    while len(active_players) > 1:
+
+    while True:
+        players = await get_player_states(game_client, game_id=game_id)
+        if players is None:
+            # Game no longer RUNNING -> terminal event fired; bracket finished.
+            return killed
+
+        alive = [s for s, p in players.items() if p.alive]
+        if len(alive) <= 1:
+            # Champion decided (or finalize pending) — let the terminal event land.
+            await asyncio.sleep(0.5)
+            continue
+
+        if loop.time() >= deadline:
+            raise TimeoutError(
+                f"Tournament bracket did not finish within {timeout}s "
+                f"(still alive: {alive})"
+            )
+
         round_num += 1
-        print(f"Tournament round {round_num}, {len(active_players)} players remaining")
-
-        # Wait for invincibility to end
-        await asyncio.sleep(invincibility_wait)
-
-        # Kill first active player (eliminates them)
-        loser = active_players[0]
-        response = await mock_client.SimulateDeath(
-            controller_manager_mock_pb2.DeathRequest(serial=loser)
+        # Eliminate ONE fighter from the current match. We can't see which two
+        # are FIGHTING (PlayerInfo has no such flag), so probe the alive set:
+        # fire at each candidate and watch for a death. Only a FIGHTING player
+        # past its invincibility actually dies; WAITING players ignore the kill,
+        # so we move to the next candidate. Crucially we stop after the FIRST
+        # death so we never kill BOTH fighters in one match (which corrupts it).
+        a_death = await _eliminate_one_fighter(
+            mock_client, game_client, alive, game_id=game_id, deadline=deadline
         )
-        if response.success:
-            killed.append(loser)
-            active_players.remove(loser)
-            print(f"  Eliminated: {loser}")
-        else:
-            print(f"  Failed to eliminate {loser}: {response.error}")
-
-        await asyncio.sleep(delay)
+        if a_death is None:
+            # No candidate died within the probe window. Either the game just
+            # ended, or all alive players are mid-invincibility/between matches;
+            # re-poll and try again until the overall deadline.
+            if await get_player_states(game_client, game_id=game_id) is None:
+                return killed
+            continue
+        killed.append(a_death)
+        print(f"Tournament round {round_num}: eliminated {a_death} ({len(alive)} were alive)")
 
     return killed
+
+
+async def _eliminate_one_fighter(
+    mock_client, game_client, candidates: list[str], game_id: str, deadline: float
+) -> str | None:
+    """Kill exactly one FIGHTING player from ``candidates`` and return its serial.
+
+    Probes candidates round-robin: fires SimulateDeath at one, waits briefly for
+    it to register dead, and on success returns immediately (so the other fighter
+    in that match is never touched). A candidate that won't die in the probe
+    window is WAITING/invincible — skip to the next. Returns None if nobody died
+    before the probe budget or overall deadline expired (caller re-polls/retries).
+    """
+    loop = asyncio.get_event_loop()
+    # One full pass over candidates, re-firing each at >1s spacing (clears the
+    # mock's ~1s death-hold) and giving the kill a moment to register.
+    probe_deadline = min(deadline, loop.time() + 8.0)
+    while loop.time() < probe_deadline:
+        for serial in candidates:
+            await mock_client.SimulateDeath(
+                controller_manager_mock_pb2.DeathRequest(serial=serial)
+            )
+            # Give this kill a beat to register before trying the next candidate.
+            await asyncio.sleep(0.4)
+            players = await get_player_states(game_client, game_id=game_id)
+            if players is None:
+                return None  # game ended
+            dead = [s for s in candidates if s in players and not players[s].alive]
+            if dead:
+                return dead[0]
+        # No death this pass; wait out invincibility/death-hold and re-probe.
+        await asyncio.sleep(1.2)
+    return None

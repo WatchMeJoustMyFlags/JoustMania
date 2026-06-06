@@ -105,10 +105,14 @@ async def end_werewolf(mock_client, serials, game_client, game_id) -> None:
 
 
 async def end_tournament(mock_client, serials, game_client, game_id) -> None:
-    """Tournament: run the bracket. CI invincibility=2.0s (set in start config)."""
-    # Pure SimulateDeath-driven (no per-game state query needed): game_id-agnostic.
+    """Tournament: drive the single-elimination bracket to a champion.
+
+    State-aware (game_id-scoped): kills one FIGHTING player per match, verified
+    against GetGameState, until the terminal event. CI uses 6s match / 1s pause
+    flags (game.ci.json) and invincibility=2.0s (start config).
+    """
     await end_tournament_game(
-        mock_client, serials, delay=0.2, invincibility_wait=2.5
+        mock_client, game_client, serials, game_id=game_id, timeout=45.0
     )
 
 
@@ -163,13 +167,14 @@ _SPECS = {
     "NonStop": ModeSpec("NonStop", 2, end_force, 15),
     "Traitor": ModeSpec("Traitor", 4, end_force, 15),
     "Werewolf": ModeSpec("Werewolf", 4, end_werewolf, 20),
-    # Tournament: #899 fixed three stacked crashes (stream init, match
-    # iteration, win effect) — matches now complete, but the full bracket
-    # still does not finish within the batch budget (suspected: ci-variant
-    # match/pause flags not resolving + fixed-rounds kill strategy). DEMOTED
-    # to force-end coverage (start/colors/session routing) until the
-    # end-to-end repair in #903 restores the real bracket strategy.
-    "Tournament": ModeSpec("Tournament", 4, end_force, 15),
+    # Tournament: full single-elimination bracket to a champion (#903). Two
+    # root causes fixed there: (1) numeric calibration flags were read with the
+    # wrong typed getter so the CI match/pause variants silently fell back to
+    # defaults (lib/feature_flags); (2) kill-decided matches skipped finalize so
+    # the winner never advanced and the bracket stalled (tournament.py). The
+    # state-aware end strategy then drives it to completion. Measured ~18-26s of
+    # bracket play locally; 45s terminal-event budget covers parallel CI load.
+    "Tournament": ModeSpec("Tournament", 4, end_tournament, 45),
     "FightClub": ModeSpec("FightClub", 4, end_fight_club, 30),
 }
 
