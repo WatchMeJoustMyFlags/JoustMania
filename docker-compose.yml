@@ -622,7 +622,8 @@ services:
       - joustmania
     restart: unless-stopped
     healthcheck:
-      test:  ["CMD", "wget", "--spider", "-q", "http://localhost:3100/ready"]
+      # Loki 3.6+ images are distroless (no wget/shell); use the built-in health subcommand
+      test: ["CMD", "/usr/bin/loki", "-health"]
       interval: 10s
       timeout: 5s
       retries: 5
