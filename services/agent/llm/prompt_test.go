@@ -52,6 +52,7 @@ func baseSnapshot(variant string) flags.Snapshot {
 func threePlayerContext() gamecontext.GameContext {
 	return gamecontext.GameContext{
 		SessionID: "session-7",
+		GameKind:  "real",
 		Session: gamecontext.SessionSignals{
 			DurationSeconds:     fptr(95.5),
 			ActivePlayerCount:   iptr(2),
@@ -112,6 +113,7 @@ func goldenCases() []goldenCase {
 			snapshot: baseSnapshot(conservativeVariant),
 			context: gamecontext.GameContext{
 				SessionID: "session-1",
+				GameKind:  "shadow",
 				Session: gamecontext.SessionSignals{
 					DurationSeconds:   fptr(3.0),
 					ActivePlayerCount: iptr(0),
@@ -217,6 +219,14 @@ func TestNilVsZero(t *testing.T) {
 			t.Errorf("*ffa string = %q, want ffa", got)
 		}
 	})
+	t.Run("game kind empty vs value", func(t *testing.T) {
+		if got := gameKindOrUnknown(""); got != "unknown" {
+			t.Errorf("empty kind = %q, want unknown", got)
+		}
+		if got := gameKindOrUnknown("real"); got != "real" {
+			t.Errorf("real kind = %q, want real", got)
+		}
+	})
 
 	// End-to-end: a player with all-zero (non-nil) signals renders 0.00/false,
 	// never "unknown".
@@ -261,6 +271,7 @@ func TestNilSessionFields(t *testing.T) {
 		"duration_seconds: unknown",
 		"active_players: unknown",
 		"game_active: unknown",
+		"kind=unknown",
 		"mode=unknown",
 		"elimination_sequence: []",
 		"(none)",

@@ -117,8 +117,8 @@ If no tweak is warranted, return "suggestions": [].`
 // timestamp in UTC RFC3339.
 func buildRetroUser(ctx gamecontext.GameContext, now time.Time) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "SESSION RETROSPECTIVE (session=%s, mode=%s, captured_at=%s)\n",
-		ctx.SessionID, stringOrUnknown(ctx.Session.GameMode), now.UTC().Format(time.RFC3339))
+	fmt.Fprintf(&b, "SESSION RETROSPECTIVE (session=%s, kind=%s, mode=%s, captured_at=%s)\n",
+		ctx.SessionID, gameKindOrUnknown(ctx.GameKind), stringOrUnknown(ctx.Session.GameMode), now.UTC().Format(time.RFC3339))
 
 	serials := sortedSerials(ctx.Players)
 	winner := winnerSerial(serials, ctx.Session.EliminationSequence)

@@ -30,7 +30,7 @@ RESPONSE CONTRACT — reply with EXACTLY ONE JSON object, no prose, matching:
 }
 If no intervention is warranted, return intervention="noop" with a reason.
 === USER ===
-GAME SNAPSHOT (session=session-0, mode=unknown, captured_at=2026-06-05T12:30:00Z)
+GAME SNAPSHOT (session=session-0, kind=unknown, mode=unknown, captured_at=2026-06-05T12:30:00Z)
 Session:
   duration_seconds: unknown
   active_players: unknown

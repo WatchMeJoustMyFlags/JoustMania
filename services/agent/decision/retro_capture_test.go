@@ -43,6 +43,7 @@ func endedSession() gamecontext.GameContext {
 	dur := 90.0
 	return gamecontext.GameContext{
 		SessionID: "session-7",
+		GameKind:  "real",
 		Session: gamecontext.SessionSignals{
 			GameActive:          &active,
 			DurationSeconds:     &dur,
@@ -86,6 +87,7 @@ func TestRetroCapture_SchemaComplete(t *testing.T) {
 		"gen_ai.request.model":   "phi4-mini",
 		"gen_ai.output.type":     "json",
 		AttrMode:                 "retro",
+		AttrGameKind:             "real",
 		AttrObjectives:           "chaos=0.3,endurance=0.7",
 		AttrInterventionsAllowed: "noop,grant_shield",
 		"session.id":             "session-7",

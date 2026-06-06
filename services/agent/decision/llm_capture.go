@@ -32,6 +32,9 @@ type llmPromptAttrs struct {
 	// allowed is the cycle's interventions allow-list, rendered with the same
 	// allowedSummary helper as the decision span.
 	allowed []string
+	// gameKind is the GameContext.GameKind for this cycle (#845): "real"/"shadow"
+	// or "" when unknown. Rendered schema-complete (empty string when unknown).
+	gameKind string
 }
 
 // llmPromptAttributes is the SOLE builder of the agent.llm.prompt span attribute
@@ -61,6 +64,7 @@ func llmPromptAttributes(in llmPromptAttrs) []attribute.KeyValue {
 		genAIOutputTypeJSON,
 		// Agent attribution (same vocabulary as the decision span).
 		attribute.String(AttrMode, llmModeValue),
+		attribute.String(AttrGameKind, in.gameKind),
 		attribute.String(AttrPromptVariant, in.prompt.Variant),
 		attribute.String(AttrObjectives, summarizeObjectives(in.objectives)),
 		attribute.String(AttrInterventionsAllowed, allowedSummary(in.allowed)),

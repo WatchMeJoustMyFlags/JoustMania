@@ -64,6 +64,11 @@ const (
 // covered by a semantic convention (gen_ai.agent.name, rpc.*, error.type,
 // feature_flag.*) use the semconv constants directly and are not listed here.
 const (
+	// AttrGameKind is the kind of game the decision was made for: "real",
+	// "shadow", or "" (unknown). Lifted from GameContext.GameKind (#845) onto the
+	// decision / agent.llm.prompt / agent.llm.retro spans so a trace can be
+	// filtered by game kind — schema-complete (empty string when unknown).
+	AttrGameKind = "game.kind"
 	// AttrEnabled is the existence-layer kill switch (agent.enabled). Lifted from
 	// the cycle's LayerState onto every decision span (including the disabled
 	// kill-switch span) so a trace shows whether the agent was live (#729).

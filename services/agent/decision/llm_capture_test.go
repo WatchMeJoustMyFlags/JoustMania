@@ -60,7 +60,7 @@ func TestLLMCapture_OnIdle(t *testing.T) {
 // is present on the span, with the values derived from the snapshot/prompt.
 func TestLLMCapture_SchemaComplete(t *testing.T) {
 	l, sr := recordingLoop(t, llmSnapshot(), nil)
-	l.OnEvaluate(context.Background(), gamecontext.GameContext{SessionID: "s1"}, testTrigger())
+	l.OnEvaluate(context.Background(), gamecontext.GameContext{SessionID: "s1", GameKind: "real"}, testTrigger())
 
 	capt := spansByName(sr.Ended(), SpanLLMPrompt)[0]
 	wantStr := map[string]string{
@@ -68,6 +68,7 @@ func TestLLMCapture_SchemaComplete(t *testing.T) {
 		"gen_ai.request.model":   "phi4-mini",
 		"gen_ai.output.type":     "json",
 		AttrMode:                 "llm",
+		AttrGameKind:             "real",
 		AttrPromptVariant:        "balanced",
 		AttrObjectives:           "chaos=0.3,endurance=0.7",
 		AttrInterventionsAllowed: "noop,grant_shield,play_audio_cue",
@@ -86,6 +87,22 @@ func TestLLMCapture_SchemaComplete(t *testing.T) {
 	wantBytes := int64(len(sys.AsString()) + len(usr.AsString()))
 	if v, ok := attrValue(capt, AttrLLMPromptBytes); !ok || v.AsInt64() != wantBytes {
 		t.Errorf("llm.prompt.bytes = %d, want %d", v.AsInt64(), wantBytes)
+	}
+}
+
+// TestLLMCapture_GameKindUnknown: with no GameKind observed, game.kind is present
+// on the span as the empty string (schema-complete unknown, #845).
+func TestLLMCapture_GameKindUnknown(t *testing.T) {
+	l, sr := recordingLoop(t, llmSnapshot(), nil)
+	l.OnEvaluate(context.Background(), gamecontext.GameContext{SessionID: "s1"}, testTrigger())
+
+	capt := spansByName(sr.Ended(), SpanLLMPrompt)[0]
+	v, ok := attrValue(capt, AttrGameKind)
+	if !ok {
+		t.Fatal("game.kind must be present even when unknown")
+	}
+	if v.AsString() != "" {
+		t.Errorf("game.kind = %q, want empty string for unknown", v.AsString())
 	}
 }
 
