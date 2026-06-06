@@ -22,24 +22,25 @@ const (
 
 // pipeline ties the context stores and decision loops together. On each signal
 // update it snapshots the relevant partition(s) and, if the gate allows, runs the
-// loop.
+// per-game loop for that partition.
 //
 // There are two parallel observe paths sharing the one OTLP trace receiver:
-//   - the game path (mux + loop): the GameContext multiplexer (#845 PR B) — one
+//   - the game path (mux + loops): the GameContext multiplexer (#845 PR B) — one
 //     Store partition per game_id, fallback partition "" for unlabeled signals —
-//     plus the decision loop.
+//     plus the per-game LoopSet (#845 PR C) — one decision.Loop per partition.
 //   - the infrastructure path (infraStore + infraLoop): the #733 Bluetooth-health
 //     observe path. infraLoop may be nil, in which case the infra path is inert.
 //
-// INTERIM (PR B): there is ONE shared decision.Loop across all partitions. The
-// loop's weighted rate limiter / budget is therefore still GLOBAL — interventions
-// from every concurrent game draw from one per-minute budget. PR C (#845) gives
-// each partition its own decision.Loop (own limiter / throttle / LayerState) via a
-// LoopSet so budgets are per-game. Until then, multiple concurrent games share the
-// budget exactly as the single-store agent did.
+// PER-GAME BUDGET (#845 PR C): each partition gets its OWN decision.Loop via the
+// LoopSet, lazily created on first evaluation. Each Loop owns its weighted rate
+// limiter (per-minute budget), its log/span throttle slot, and its per-cycle
+// LayerState — so interventions from one game no longer draw down another game's
+// budget, and one game's throttle no longer suppresses another's spans/logs. In
+// single-game mode every signal lands on the fallback partition's single loop, so
+// behavior collapses to exactly the single-store agent's.
 type pipeline struct {
 	mux       *gamecontext.Multiplexer
-	loop      *decision.Loop
+	loops     *decision.LoopSet
 	playerTTL time.Duration
 
 	infraStore *infracontext.Store
@@ -48,10 +49,10 @@ type pipeline struct {
 	now func() time.Time
 }
 
-func newPipeline(mux *gamecontext.Multiplexer, loop *decision.Loop, playerTTL time.Duration) *pipeline {
+func newPipeline(mux *gamecontext.Multiplexer, loops *decision.LoopSet, playerTTL time.Duration) *pipeline {
 	return &pipeline{
 		mux:       mux,
-		loop:      loop,
+		loops:     loops,
 		playerTTL: playerTTL,
 		now:       time.Now,
 	}
@@ -77,12 +78,10 @@ func (p *pipeline) infraUpdated(ctx context.Context) {
 
 // signalUpdated is called after a received signal mutates one or more partitions.
 // gameIDs is the deduped set of partitions an Apply pass touched. For each, the
-// partition is snapshotted and, if the gate allows, evaluated. The caller's gRPC
-// context and EvalTrigger flow through so the decision loop can emit its audit
-// trace (issue #724) with accurate timing and rpc.* attributes.
-//
-// INTERIM (PR B): every partition shares the one p.loop, so the budget is global;
-// PR C splits this into a per-game LoopSet (see the pipeline doc comment).
+// partition is snapshotted and, if the gate allows, evaluated through THAT game's
+// own Loop (per-game budget/throttle, #845 PR C). The caller's gRPC context and
+// EvalTrigger flow through so the decision loop can emit its audit trace (issue
+// #724) with accurate timing and rpc.* attributes.
 func (p *pipeline) signalUpdated(ctx context.Context, gameIDs []string, trig decision.EvalTrigger) {
 	now := p.now
 	if now == nil {
@@ -97,7 +96,9 @@ func (p *pipeline) signalUpdated(ctx context.Context, gameIDs []string, trig dec
 			continue
 		}
 		if gate.ShouldEvaluate(snap, t, p.playerTTL) {
-			p.loop.OnEvaluate(ctx, snap, trig)
+			// loops.For lazily creates this game's Loop on first touch, so its budget
+			// and throttle state are isolated from every other game's.
+			p.loops.For(gameID).OnEvaluate(ctx, snap, trig)
 		}
 	}
 }
