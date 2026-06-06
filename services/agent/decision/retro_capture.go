@@ -52,10 +52,21 @@ const (
 // constant — distinct from the in-game llmModeValue.
 const retroModeValue = "retro"
 
+// retroDedupeWindow bounds the per-session dedupe memory: the SessionIDs of the
+// most recently captured retros are retained so a repeated game-end for any of
+// them is suppressed. With multiple concurrent games ending (#845 PR B), ends
+// interleave (game A ends, game B ends, game A' ends), so a single last-session
+// string is insufficient — it would only remember B and re-capture A. An LRU of
+// the last few session ids handles arbitrary interleaving; 8 comfortably exceeds
+// GAME_MAX_CONCURRENT_GAMES=4 even with one stale id lingering per game.
+const retroDedupeWindow = 8
+
 // RetroCoordinator builds and captures the post-game retrospective prompt. It is
-// wired to gamecontext.Store.OnGameEnd in main(). It is safe for concurrent use:
-// game-end transitions are serialized by the store, but the dedupe state is
-// mutex-guarded defensively.
+// wired to every gamecontext.Store partition's OnGameEnd in main() (#845 PR B), so
+// one coordinator dedupes across all partitions. It is safe for concurrent use:
+// per-partition game-end transitions are each serialized by their store, but
+// concurrent partitions may fire simultaneously, so the dedupe state is
+// mutex-guarded.
 type RetroCoordinator struct {
 	// Tracer produces the agent.llm.retro span; tests inject a recording tracer.
 	Tracer trace.Tracer
@@ -67,11 +78,14 @@ type RetroCoordinator struct {
 	// now is injectable for tests; nil uses time.Now.
 	now func() time.Time
 
-	// mu guards lastSession.
+	// mu guards the captured-session dedupe state.
 	mu sync.Mutex
-	// lastSession is the SessionID of the most recently captured retro, for the
-	// exactly-once-per-session guarantee.
-	lastSession string
+	// captured is the set of recently captured SessionIDs (membership = already
+	// captured); capturedOrder is the LRU eviction order (oldest first). Bounded by
+	// retroDedupeWindow so interleaved concurrent game-ends each capture exactly
+	// once without unbounded growth.
+	captured      map[string]struct{}
+	capturedOrder []string
 }
 
 // NewRetroCoordinator builds a RetroCoordinator over the given flag source. log
@@ -85,10 +99,11 @@ func NewRetroCoordinator(flagSource FlagSource, log *slog.Logger) *RetroCoordina
 		flagSource = disabledFlags{}
 	}
 	return &RetroCoordinator{
-		Tracer: otel.Tracer(instrumentationName),
-		Log:    log,
-		Flags:  flagSource,
-		now:    time.Now,
+		Tracer:   otel.Tracer(instrumentationName),
+		Log:      log,
+		Flags:    flagSource,
+		now:      time.Now,
+		captured: make(map[string]struct{}),
 	}
 }
 
@@ -145,14 +160,22 @@ func (rc *RetroCoordinator) OnGameEnd(c gamecontext.GameContext) {
 
 // claimSession records sessionID as captured and reports whether THIS call won
 // the claim (i.e. the session had not been captured yet). Mutex-guarded for the
-// exactly-once guarantee.
+// exactly-once guarantee. It remembers the last retroDedupeWindow sessions (LRU),
+// so interleaved concurrent game-ends (#845 PR B) each capture exactly once: a
+// repeated end for ANY remembered session is suppressed, not just the most recent.
 func (rc *RetroCoordinator) claimSession(sessionID string) bool {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
-	if rc.lastSession == sessionID {
+	if _, ok := rc.captured[sessionID]; ok {
 		return false
 	}
-	rc.lastSession = sessionID
+	rc.captured[sessionID] = struct{}{}
+	rc.capturedOrder = append(rc.capturedOrder, sessionID)
+	if len(rc.capturedOrder) > retroDedupeWindow {
+		oldest := rc.capturedOrder[0]
+		rc.capturedOrder = rc.capturedOrder[1:]
+		delete(rc.captured, oldest)
+	}
 	return true
 }
 

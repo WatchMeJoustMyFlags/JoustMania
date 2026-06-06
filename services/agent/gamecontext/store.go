@@ -381,6 +381,27 @@ func (s *Store) snapshotLocked() GameContext {
 	return out
 }
 
+// isDrained reports whether the store holds no live state worth keeping: it has
+// no players and its session is neither active nor inside a grace window. The
+// Multiplexer (#845 PR B) uses this — AFTER calling EvictStale, which TTL-evicts
+// stale players and resets an expired session — to decide a non-fallback
+// partition can be dropped entirely. A partition that still has fresh players, an
+// active game, or an unexpired grace window is NOT drained and is retained.
+func (s *Store) isDrained() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.ctx.Players) > 0 {
+		return false
+	}
+	if !s.endedAt.IsZero() {
+		return false // grace window still open
+	}
+	if s.ctx.Session.GameActive != nil && *s.ctx.Session.GameActive {
+		return false // game still active
+	}
+	return true
+}
+
 // EvictStale removes players that are disconnected-marked or silent past the TTL
 // (also clearing their death baseline so a later re-observation cannot fake an
 // elimination), and resets the session once its grace window has elapsed. Players

@@ -18,6 +18,16 @@ const (
 	resourceAttrServiceName = "service.name"
 )
 
+// spanGameIDOf reads the game.id span attribute; empty when absent. It is the
+// span-path routing key the Multiplexer (#845 PR B) partitions on, mirroring
+// gameIDOf for metric datapoints.
+func spanGameIDOf(attrs pcommon.Map) string {
+	if v, ok := attrs.Get(spanAttrGameID); ok {
+		return v.AsString()
+	}
+	return ""
+}
+
 // spanGameLabels resolves the game identity from a span's attributes: the
 // game.id / game.kind attributes carried by the game-session span (always) and
 // the player_lifecycle span (since #845's producer change). Mirrors
