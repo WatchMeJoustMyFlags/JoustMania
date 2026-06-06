@@ -423,7 +423,6 @@ dependencies = [
     { name = "opentelemetry-instrumentation-grpc" },
     { name = "prometheus-client" },
     { name = "psutil" },
-    { name = "pyyaml" },
     { name = "uvloop", marker = "sys_platform == 'linux'" },
 ]
 
@@ -451,7 +450,6 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.23.0" },
     { name = "pytest-cov", marker = "extra == 'test'", specifier = ">=4.1.0" },
-    { name = "pyyaml", specifier = ">=6.0" },
     { name = "uvloop", marker = "sys_platform == 'linux'", specifier = ">=0.19.0" },
 ]
 provides-extras = ["test"]
@@ -471,7 +469,6 @@ dependencies = [
     { name = "opentelemetry-instrumentation-grpc" },
     { name = "prometheus-client" },
     { name = "psutil" },
-    { name = "pyyaml" },
 ]
 
 [package.optional-dependencies]
@@ -496,7 +493,6 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.23.0" },
     { name = "pytest-cov", marker = "extra == 'test'", specifier = ">=4.1.0" },
-    { name = "pyyaml", specifier = ">=6.0" },
 ]
 provides-extras = ["test"]
 
@@ -585,7 +581,6 @@ dependencies = [
     { name = "opentelemetry-exporter-otlp" },
     { name = "opentelemetry-instrumentation-grpc" },
     { name = "psutil" },
-    { name = "pyyaml" },
 ]
 
 [package.optional-dependencies]
@@ -609,7 +604,6 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.23.0" },
     { name = "pytest-cov", marker = "extra == 'test'", specifier = ">=4.1.0" },
-    { name = "pyyaml", specifier = ">=6.0" },
 ]
 provides-extras = ["test"]
 
