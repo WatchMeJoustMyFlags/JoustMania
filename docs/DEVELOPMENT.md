@@ -244,7 +244,7 @@ docker compose up -d
 
 ```bash
 # Only infrastructure
-docker compose up -d redis jaeger otel-collector
+docker compose up -d jaeger otel-collector
 
 # Only application services
 docker compose up -d controller-manager game-coordinator menu

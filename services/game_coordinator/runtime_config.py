@@ -34,7 +34,6 @@ class AnalyticsConfig:
     # Feature toggles
     track_gyro: bool = False  # Track rotation data (increases memory/cpu slightly)
     enable_replay: bool = False  # Store 60Hz samples for replay/testing
-    replay_ttl_seconds: int = 3600  # Redis TTL for replay data (1 hour)
 
     # Zone thresholds (in g-force units, ~4096 raw = 1g). Defaults promoted to
     # the agent domain `perception.zone_*` flags (#766 F4); the values here are
