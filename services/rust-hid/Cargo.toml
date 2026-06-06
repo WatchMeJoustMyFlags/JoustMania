@@ -10,9 +10,10 @@ path = "src/main.rs"
 
 [dependencies]
 # gRPC
-tonic = "0.12"
-prost = "0.13"
-tonic-health = "0.12"
+tonic = "0.14"
+tonic-prost = "0.14"
+prost = "0.14"
+tonic-health = "0.14"
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
@@ -21,12 +22,12 @@ hidapi = { version = "2.6", features = ["linux-static-hidraw"] }
 # Logging/tracing
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
-tracing-opentelemetry = "0.28"
+tracing-opentelemetry = "0.33"
 # OpenTelemetry
-opentelemetry = { version = "0.27", features = ["metrics"] }
-opentelemetry_sdk = { version = "0.27", features = ["rt-tokio", "metrics", "logs"] }
-opentelemetry-otlp = { version = "0.27", features = ["tonic", "metrics", "logs"] }
-opentelemetry-appender-tracing = "0.27"
+opentelemetry = { version = "0.32", features = ["metrics"] }
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio", "metrics", "logs"] }
+opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic", "metrics", "logs"] }
+opentelemetry-appender-tracing = "0.32"
 # Process metrics via /proc/self
 procfs = "0.18"
 # Hostname for resource attributes
@@ -43,4 +44,4 @@ http = "1"
 strip = true
 
 [build-dependencies]
-tonic-build = "0.12"
+tonic-prost-build = "0.14"
