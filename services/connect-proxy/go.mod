@@ -7,7 +7,7 @@ require (
 	github.com/joustmania/connect-proxy/gen/controller_manager v0.0.0-00010101000000-000000000000
 	github.com/joustmania/connect-proxy/gen/game_coordinator v0.0.0-00010101000000-000000000000
 	github.com/joustmania/connect-proxy/gen/menu v0.0.0-00010101000000-000000000000
-	github.com/rs/cors v1.11.0
+	github.com/rs/cors v1.11.1
 	go.opentelemetry.io/contrib/bridges/otelslog v0.19.0
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.69.0
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0
