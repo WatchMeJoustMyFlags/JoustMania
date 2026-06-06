@@ -499,12 +499,17 @@ class TournamentGame(BaseGameMode):
             loser.tournament_state = TournamentState.ELIMINATED
             loser.alive = False
 
-            # Show winner effect
+            # Show winner effect. GAME_EFFECT_WIN_FLASH never existed in the
+            # current GameEffect enum (third proto-drift crash in this mode's
+            # match path, after the serials field and the __anext__ call) —
+            # use WINNER_RAINBOW, the celebration effect the champion path
+            # (#699) already uses; the runtime AttributeError killed the game
+            # at first match completion.
             if self.gameplay_stream:
                 effect_cmd = controller_manager_pb2.GameplayStreamControl(
                     game_effect=controller_manager_pb2.GameEffectCommand(
                         serial=match.winner_serial,
-                        effect=controller_manager_pb2.GAME_EFFECT_WIN_FLASH,
+                        effect=controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW,
                     )
                 )
                 await self.gameplay_stream.write(effect_cmd)
