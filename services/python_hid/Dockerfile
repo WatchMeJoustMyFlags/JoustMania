@@ -36,7 +36,7 @@ RUN uv pip install --system -e proto/ -e lib/ -e services/python_hid/
 # =============================================================================
 # Stage 2: Runtime image
 # =============================================================================
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 # Install runtime dependencies
 # libhidapi-hidraw0: Required for hidapi backend (HID over hidraw)

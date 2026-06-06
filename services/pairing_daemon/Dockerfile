@@ -52,7 +52,7 @@ RUN uv pip install --system --no-cache-dir -e lib/ -e proto/ -e services/pairing
 # =============================================================================
 # Stage 2: Runtime image
 # =============================================================================
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \

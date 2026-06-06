@@ -14,7 +14,7 @@
 #
 # Build time savings: ~30-60 seconds per service (more on slow hardware like Pi)
 
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 LABEL org.opencontainers.image.source="https://github.com/adangert/JoustMania"
 LABEL org.opencontainers.image.description="JoustMania shared builder base image"

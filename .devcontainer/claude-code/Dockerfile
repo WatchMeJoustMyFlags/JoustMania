@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 ARG GO_VERSION=1.25.1
 ARG RUST_VERSION=1.88.0

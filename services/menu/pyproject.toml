@@ -2,7 +2,7 @@
 name = "joustmania-menu"
 version = "1.0.0"
 description = "Menu microservice for JoustMania"
-requires-python = ">=3.9,<3.13"
+requires-python = ">=3.14,<3.15"
 dependencies = [
     # Workspace packages
     "joustmania-proto",
