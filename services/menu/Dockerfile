@@ -35,8 +35,13 @@ COPY services/menu/pyproject.toml /app/services/menu/
 WORKDIR /app
 RUN uv pip install --system -e proto/ -e lib/ -e services/menu/
 
-# Runtime stage - distroless image for minimal size and attack surface
-FROM gcr.io/distroless/python3-debian12
+# Runtime stage - Chainguard distroless-style image, minimal size and attack surface
+#
+# Python 3.14: the gcr.io/distroless/python3-debian12 image ships Python 3.11,
+# which is ABI-incompatible with packages built against the 3.14 builder.
+# Chainguard's python image tracks 3.14 (Wolfi/glibc). Digest-pinned because the
+# free tier only publishes the moving `latest` tag (no version-specific tags).
+FROM cgr.dev/chainguard/python:latest@sha256:678e879909418cd070927d0ba1ed018be98d43929db2457c37b9b9764703678c
 
 WORKDIR /app
 
@@ -44,9 +49,9 @@ WORKDIR /app
 # Copy grpc-health-probe from official multi-arch image
 COPY --from=ghcr.io/grpc-ecosystem/grpc-health-probe:v0.4.52 /ko-app/grpc-health-probe /bin/grpc_health_probe
 
-# Copy installed packages from builder to distroless stdlib location
+# Copy installed packages from builder onto a Chainguard sys.path entry
+# (chainguard python: sys.path includes /usr/lib/python3.14)
 COPY --from=builder /usr/local/lib/python3.14/site-packages/ /usr/lib/python3.14/
-COPY --from=builder /usr/local/bin /usr/local/bin
 
 # Copy application code
 COPY --from=builder /app/pyproject.toml /app/
@@ -73,5 +78,5 @@ EXPOSE 50054
 HEALTHCHECK --interval=2s --timeout=2s --start-period=1s --retries=3 \
     CMD ["/bin/grpc_health_probe", "-addr=:50054"]
 
-# Run the server (distroless has python as entrypoint)
+# Run the server (chainguard python image has python as ENTRYPOINT)
 CMD ["services/menu/server.py"]

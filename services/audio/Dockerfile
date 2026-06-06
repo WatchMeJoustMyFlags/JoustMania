@@ -31,9 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        else \
          LIB_DIR=/usr/lib/x86_64-linux-gnu; \
        fi \
-    && cp "$LIB_DIR"/libasound.so* /extra-libs/ \
-    && mkdir -p /extra-etc \
-    && grep -E "^(root|audio):" /etc/group > /extra-etc/group
+    && cp "$LIB_DIR"/libasound.so* /extra-libs/
 
 # =============================================================================
 # Stage 2: Build Python dependencies
@@ -70,9 +68,13 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
     uv pip install --system -e proto/ -e lib/ --no-binary miniaudio -e services/audio/
 
 # =============================================================================
-# Stage 3: Runtime image - distroless for minimal size
+# Stage 3: Runtime image - Chainguard distroless-style for minimal size
 # =============================================================================
-FROM gcr.io/distroless/python3-debian12
+# Python 3.14: gcr.io/distroless/python3-debian12 ships Python 3.11, which is
+# ABI-incompatible with packages built against the 3.14 builder. Chainguard's
+# python image tracks 3.14 (Wolfi/glibc). Digest-pinned because the free tier
+# only publishes the moving `latest` tag (no version-specific tags).
+FROM cgr.dev/chainguard/python:latest@sha256:678e879909418cd070927d0ba1ed018be98d43929db2457c37b9b9764703678c
 
 WORKDIR /app
 
@@ -88,12 +90,17 @@ COPY --from=system-libs /usr/share/alsa/ /usr/share/alsa/
 
 # Copy simple ALSA config that uses hw:0,0 directly (bypasses dmix)
 # Can be overridden by mounting: -v /path/to/asound.conf:/etc/asound.conf:ro
-COPY services/audio/asound.conf /etc/asound.conf
+# --chown to the Chainguard nonroot uid (65532): unlike the old distroless image
+# (which ran as root), this image runs as nonroot, so the file must be writable
+# for alsa_config._write_asound_conf to rewrite it with the detected card number.
+COPY --chown=65532:65532 services/audio/asound.conf /etc/asound.conf
 
-# Copy group file with audio group (for ALSA IPC if dmix is used via override)
-COPY --from=system-libs /extra-etc/group /etc/group
+# Note: the Chainguard runtime image already provides root/audio/nonroot groups
+# in /etc/group, so no group file is copied here (overwriting it would drop the
+# nonroot:65532 group the image runs as).
 
-# Copy installed packages from builder to distroless stdlib location
+# Copy installed packages from builder onto a Chainguard sys.path entry
+# (chainguard python: sys.path includes /usr/lib/python3.14)
 COPY --from=builder /usr/local/lib/python3.14/site-packages/ /usr/lib/python3.14/
 
 # Copy application code (assets mounted as volume in docker-compose)
@@ -122,5 +129,5 @@ EXPOSE 50056
 HEALTHCHECK --interval=2s --timeout=2s --start-period=1s --retries=3 \
     CMD ["/bin/grpc_health_probe", "-addr=:50056"]
 
-# Run the server
+# Run the server (chainguard python image has python as ENTRYPOINT)
 CMD ["services/audio/server.py"]
