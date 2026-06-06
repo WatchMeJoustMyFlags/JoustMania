@@ -416,33 +416,3 @@ class PlayerAnalytics:
                 "samples": [s.to_dict() for s in self.replay_samples],
             }
         )
-
-    async def store_replay_to_redis(
-        self,
-        redis_client,
-        game_id: str,
-        ttl_seconds: int = 3600,
-    ) -> bool:
-        """
-        Store replay data to Redis for later retrieval.
-
-        Args:
-            redis_client: Async Redis client
-            game_id: Unique game identifier
-            ttl_seconds: Time-to-live for the key
-
-        Returns:
-            True if stored successfully, False otherwise
-        """
-        if not self.replay_samples:
-            return False
-
-        try:
-            key = f"replay:{game_id}:{self.serial}"
-            data = self.export_replay_json()
-            await redis_client.setex(key, ttl_seconds, data)
-            logger.debug(f"Stored {len(self.replay_samples)} replay samples to {key}")
-            return True
-        except Exception as e:
-            logger.warning(f"Failed to store replay data: {e}")
-            return False

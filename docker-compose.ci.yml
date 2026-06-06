@@ -41,8 +41,6 @@ services:
     privileged: false
     # Override depends_on to remove rust-hid and python-hid (hardware profile, not available in CI)
     depends_on: !override
-      redis:
-        condition: service_healthy
       flagd:
         condition: service_started
     environment: !override
