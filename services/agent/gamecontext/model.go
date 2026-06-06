@@ -69,7 +69,7 @@ type SessionSignals struct {
 	GameActive *bool
 
 	// GameMode is the current game mode.
-	// Source: current_game_mode{mode} label (value != 0) (live), or span
+	// Source: game_current_mode{mode} label (value != 0) (live), or span
 	// attribute game.mode.
 	GameMode *string
 
@@ -81,6 +81,12 @@ type SessionSignals struct {
 type GameContext struct {
 	// SessionID is a synthetic id ("session-<n>") or the adopted game_id label.
 	SessionID string
+	// GameKind is the kind of game this session is: "real" (a live, player-facing
+	// game), "shadow" (a parallel evaluation game), or "" (unknown — not yet
+	// observed on any labeled signal). Source: the game_kind datapoint label on
+	// game_active / game_active_players / game_duration_seconds, or the game.kind
+	// attribute on the game-session / player_lifecycle spans (#845).
+	GameKind  string
 	Session   SessionSignals
 	Players   map[string]*PlayerSignals
 	UpdatedAt time.Time

@@ -5,7 +5,7 @@ import warnings
 
 from proto import controller_manager_pb2 as controller__manager__pb2
 
-GRPC_GENERATED_VERSION = '1.76.0'
+GRPC_GENERATED_VERSION = '1.81.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -25,7 +25,7 @@ if _version_not_supported:
     )
 
 
-class ControllerManagerServiceStub(object):
+class ControllerManagerServiceStub:
     """ControllerManager Service - Manages PS Move controllers
     """
 
@@ -52,7 +52,7 @@ class ControllerManagerServiceStub(object):
                 _registered_method=True)
 
 
-class ControllerManagerServiceServicer(object):
+class ControllerManagerServiceServicer:
     """ControllerManager Service - Manages PS Move controllers
     """
 
@@ -105,7 +105,7 @@ def add_ControllerManagerServiceServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class ControllerManagerService(object):
+class ControllerManagerService:
     """ControllerManager Service - Manages PS Move controllers
     """
 

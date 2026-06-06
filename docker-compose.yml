@@ -38,7 +38,7 @@ x-logging: &default-logging
 services:
   # Redis for pub/sub messaging
   redis:
-    image: redis:7.4-alpine
+    image: redis:8.8-alpine
     container_name: joustmania-redis
     # Port 6379 exposed only within Docker network (no host binding)
     expose:
@@ -111,7 +111,7 @@ services:
 
   # Jaeger for distributed tracing UI
   jaeger:
-    image: jaegertracing/jaeger:2.14.1
+    image: jaegertracing/jaeger:2.19.0
     container_name: joustmania-jaeger
     user: "0"  # Run as root to avoid permission issues with badger volume (default UID 10001 can't write)
     # All ports exposed only within Docker network (envoy proxies to it)
@@ -126,7 +126,7 @@ services:
     networks:
       - joustmania
     healthcheck:
-      test: [ "CMD", "wget", "--spider", "-q", "http://localhost:16686" ]
+      test: [ "CMD", "wget", "--spider", "-q", "http://localhost:16686/jaeger/" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -184,26 +184,6 @@ services:
           memory: 256m
           cpus: '0.5'
     logging: *default-logging
-  # Pyroscope for continuous profiling (CPU flame graphs)
-  # Only starts with: docker compose --profile profiling up
-  pyroscope:
-    image: grafana/pyroscope:latest
-    container_name: joustmania-pyroscope
-    profiles:
-      - profiling
-    expose:
-      - "4040"
-    networks:
-      - joustmania
-    volumes:
-      - pyroscope-data:/data
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 256m
-          cpus: '0.5'
-    logging: *default-logging
 
   # Controller Manager Service
   controller-manager:
@@ -240,7 +220,6 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
-      - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
       # Rust HID service for canary controller I/O backend
       - RUST_HID_HOST=rust-hid
       - RUST_HID_PORT=50058
@@ -362,7 +341,6 @@ services:
       - OTEL_SERVICE_NAMESPACE=infrastructure
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
-      - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
     restart: unless-stopped
     # Healthcheck defined in Dockerfile (uses grpc_health_probe)
@@ -392,7 +370,6 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
       - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
-      - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
     depends_on:
       redis:
         condition: service_healthy
@@ -428,7 +405,6 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
-      - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
       # Phase 60: Audio service connection
       - AUDIO_HOST=audio
       - AUDIO_PORT=50056
@@ -478,7 +454,6 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
-      - PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040
       - FLAGD_HOST=flagd
       - FLAGD_PORT=8015
       - ALSA_CARD=auto  # Auto-detect sound card; set to card number (e.g. "1") to override
@@ -504,7 +479,7 @@ services:
   # VictoriaMetrics for high-frequency metrics storage (replaces Prometheus for storage)
   # Receives metrics via Prometheus remote write protocol from OTEL Collector
   victoria-metrics:
-    image: victoriametrics/victoria-metrics:v1.96.0
+    image: victoriametrics/victoria-metrics:v1.144.0
     container_name: joustmania-victoria-metrics
     command:
       - "-storageDataPath=/victoria-metrics-data"
@@ -535,7 +510,7 @@ services:
 
   # Prometheus for metrics collection (Phase 38) - kept for alerting rules
   prometheus:
-    image: prom/prometheus:v2.48.1
+    image: prom/prometheus:v3.12.0
     container_name: joustmania-prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
@@ -570,7 +545,7 @@ services:
 
   # Grafana for metrics visualization (Phase 38)
   grafana:
-    image: grafana/grafana:10.2.3
+    image: grafana/grafana:13.0.2
     container_name: joustmania-grafana
     # Port exposed only within Docker network (envoy proxies to it)
     expose:
@@ -608,7 +583,7 @@ services:
 
   # Loki for log aggregation with 24h retention
   loki:
-    image: grafana/loki:3.4.3
+    image: grafana/loki:3.7.2
     container_name: joustmania-loki
     user: "0"  # Run as root to avoid permission issues with volume
     # Port exposed only within Docker network (envoy proxies to it)
@@ -622,7 +597,8 @@ services:
       - joustmania
     restart: unless-stopped
     healthcheck:
-      test:  ["CMD", "wget", "--spider", "-q", "http://localhost:3100/ready"]
+      # Loki 3.6+ images are distroless (no wget/shell); use the built-in health subcommand
+      test: ["CMD", "/usr/bin/loki", "-health"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -769,7 +745,7 @@ services:
   # Envoy - Main entry point (reverse proxy)
   # No dependencies - envoy uses STRICT_DNS and handles unavailable backends with 503
   envoy:
-    image: envoyproxy/envoy:v1.31.10
+    image: envoyproxy/envoy:v1.38.1
     container_name: joustmania-envoy
     ports:
       - "80:80"  # Main entry point (all services proxied through envoy)
@@ -800,4 +776,3 @@ volumes:
   loki-data:
   jaeger-data:
   controller-names:
-  pyroscope-data:

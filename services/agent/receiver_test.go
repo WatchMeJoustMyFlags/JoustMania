@@ -50,19 +50,29 @@ func healthSpanInto(td ptrace.Traces, gapMs float64, serial, adapter string) {
 	ev.Attributes().PutStr(infracontext.AttrControllerAdapter, adapter)
 }
 
-func newTestReceiver(t *testing.T) (*traceReceiver, *gamecontext.Store, *infracontext.Store, *recordingInfraLoop) {
+// testGameContext snapshots the fallback partition (game_id ""), the partition the
+// label-free spans/metrics in these tests route to (zero-regression path). It
+// reports !ok before any signal has created the partition.
+func testGameContext(t *testing.T, mux *gamecontext.Multiplexer) (gamecontext.GameContext, bool) {
+	t.Helper()
+	return mux.Snapshot(gamecontext.FallbackGameID)
+}
+
+func newTestReceiver(t *testing.T) (*traceReceiver, *gamecontext.Multiplexer, *infracontext.Store, *recordingInfraLoop) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	store := gamecontext.NewStore(time.Hour, time.Hour, fixedClock())
+	mux := gamecontext.NewMultiplexer(func(string) *gamecontext.Store {
+		return gamecontext.NewStore(time.Hour, time.Hour, fixedClock())
+	})
 	loop := decision.NewLoop(nil, logger) // nil flags => disabled, no decisions
 	infraStore := infracontext.NewStore(time.Hour, fixedClock())
 	infraLoop := &recordingInfraLoop{}
-	pipe := newPipeline(store, loop, time.Hour).withInfra(infraStore, infraLoop)
-	return &traceReceiver{pipe: pipe}, store, infraStore, infraLoop
+	pipe := newPipeline(mux, loop, time.Hour).withInfra(infraStore, infraLoop)
+	return &traceReceiver{pipe: pipe}, mux, infraStore, infraLoop
 }
 
 func TestReceiver_RoutesMixedBatchToBothStores(t *testing.T) {
-	r, store, infraStore, infraLoop := newTestReceiver(t)
+	r, mux, infraStore, infraLoop := newTestReceiver(t)
 
 	td := ptrace.NewTraces()
 	gameSpan(td, "A")
@@ -73,8 +83,8 @@ func TestReceiver_RoutesMixedBatchToBothStores(t *testing.T) {
 	}
 
 	// Game path: player identity enriched.
-	if store.Snapshot().Players["A"] == nil {
-		t.Fatal("game span must enrich the game store")
+	if gc, ok := testGameContext(t, mux); !ok || gc.Players["A"] == nil {
+		t.Fatal("game span must enrich the fallback game partition")
 	}
 	// Infra path: window + controller populated.
 	infra := infraStore.Snapshot()
@@ -90,7 +100,7 @@ func TestReceiver_RoutesMixedBatchToBothStores(t *testing.T) {
 }
 
 func TestReceiver_GameOnlyBatchDoesNotTriggerInfra(t *testing.T) {
-	r, store, infraStore, infraLoop := newTestReceiver(t)
+	r, mux, infraStore, infraLoop := newTestReceiver(t)
 
 	td := ptrace.NewTraces()
 	gameSpan(td, "A")
@@ -98,8 +108,8 @@ func TestReceiver_GameOnlyBatchDoesNotTriggerInfra(t *testing.T) {
 	if _, err := r.Export(context.Background(), ptraceotlp.NewExportRequestFromTraces(td)); err != nil {
 		t.Fatalf("Export error: %v", err)
 	}
-	if store.Snapshot().Players["A"] == nil {
-		t.Fatal("game span must enrich the game store")
+	if gc, ok := testGameContext(t, mux); !ok || gc.Players["A"] == nil {
+		t.Fatal("game span must enrich the fallback game partition")
 	}
 	if got := infraLoop.calls.Load(); got != 0 {
 		t.Fatalf("infra loop calls = %d, want 0 (no health span, no cross-contamination)", got)
@@ -110,7 +120,7 @@ func TestReceiver_GameOnlyBatchDoesNotTriggerInfra(t *testing.T) {
 }
 
 func TestReceiver_HealthOnlyBatchDoesNotCreatePlayers(t *testing.T) {
-	r, store, infraStore, infraLoop := newTestReceiver(t)
+	r, mux, infraStore, infraLoop := newTestReceiver(t)
 
 	td := ptrace.NewTraces()
 	healthSpanInto(td, 7, "A", "rust")
@@ -118,7 +128,7 @@ func TestReceiver_HealthOnlyBatchDoesNotCreatePlayers(t *testing.T) {
 	if _, err := r.Export(context.Background(), ptraceotlp.NewExportRequestFromTraces(td)); err != nil {
 		t.Fatalf("Export error: %v", err)
 	}
-	if len(store.Snapshot().Players) != 0 {
+	if gc, ok := testGameContext(t, mux); ok && len(gc.Players) != 0 {
 		t.Fatal("health span must not create game players (no cross-contamination)")
 	}
 	if got := infraLoop.calls.Load(); got != 1 {
@@ -130,8 +140,8 @@ func TestReceiver_HealthOnlyBatchDoesNotCreatePlayers(t *testing.T) {
 }
 
 func TestReceiver_SkipsOwnServiceForBothPaths(t *testing.T) {
-	r, store, infraStore, infraLoop := newTestReceiver(t)
-	store.SetOwnService("agent")
+	r, mux, infraStore, infraLoop := newTestReceiver(t)
+	mux.SetOwnService("agent")
 	infraStore.SetOwnService("agent")
 
 	td := ptrace.NewTraces()
@@ -146,7 +156,7 @@ func TestReceiver_SkipsOwnServiceForBothPaths(t *testing.T) {
 	if _, err := r.Export(context.Background(), ptraceotlp.NewExportRequestFromTraces(td)); err != nil {
 		t.Fatalf("Export error: %v", err)
 	}
-	if len(store.Snapshot().Players) != 0 {
+	if gc, ok := testGameContext(t, mux); ok && len(gc.Players) != 0 {
 		t.Fatal("own-service spans must not enrich the game store")
 	}
 	if infraStore.Snapshot().Window.EventGapMs != nil {
@@ -154,5 +164,44 @@ func TestReceiver_SkipsOwnServiceForBothPaths(t *testing.T) {
 	}
 	if got := infraLoop.calls.Load(); got != 0 {
 		t.Fatalf("infra loop calls = %d, want 0 (own-service skipped)", got)
+	}
+}
+
+// gameIDSpan appends a player_lifecycle span carrying a serial + game.id so the
+// multiplexer routes it to that game's partition.
+func gameIDSpan(td ptrace.Traces, serial, gameID string) {
+	span := td.ResourceSpans().AppendEmpty().ScopeSpans().AppendEmpty().Spans().AppendEmpty()
+	span.SetName("player_lifecycle")
+	span.Attributes().PutStr("player.serial", serial)
+	span.Attributes().PutStr("game.id", gameID)
+}
+
+// TestReceiver_PartitionsByGameID: a single trace batch carrying spans for two
+// distinct game_ids lands in two disjoint partitions through the receiver path
+// (#845 PR B) — no cross-game player bleed.
+func TestReceiver_PartitionsByGameID(t *testing.T) {
+	r, mux, _, _ := newTestReceiver(t)
+
+	td := ptrace.NewTraces()
+	gameIDSpan(td, "P1", "game-A")
+	gameIDSpan(td, "P2", "game-B")
+
+	if _, err := r.Export(context.Background(), ptraceotlp.NewExportRequestFromTraces(td)); err != nil {
+		t.Fatalf("Export error: %v", err)
+	}
+
+	a, okA := mux.Snapshot("game-A")
+	b, okB := mux.Snapshot("game-B")
+	if !okA || !okB {
+		t.Fatalf("both partitions must exist: okA=%v okB=%v", okA, okB)
+	}
+	if _, ok := a.Players["P1"]; !ok {
+		t.Error("P1 should be in game-A")
+	}
+	if _, ok := a.Players["P2"]; ok {
+		t.Error("P2 bled into game-A")
+	}
+	if _, ok := b.Players["P2"]; !ok {
+		t.Error("P2 should be in game-B")
 	}
 }

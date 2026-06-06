@@ -420,9 +420,9 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                     return False, "Game already in progress"
                 logger.warning("Real game lost the admission race to a late shadow; preempting again (#837)")
             # Update lifecycle metrics for this session's kind.
-            metrics.active_game.labels(game_kind=game_kind).set(1)
+            metrics.active_game.labels(game_kind=game_kind, game_id=game_id).set(1)
             metrics.games_started_total.labels(mode=session.game_name, game_kind=game_kind).inc()
-            metrics.active_players.labels(game_kind=game_kind).set(len(session.players))
+            metrics.active_players.labels(game_kind=game_kind, game_id=game_id).set(len(session.players))
 
             # Publish game_start on this session's bus.
             await session.event_bus.publish(

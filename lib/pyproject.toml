@@ -21,9 +21,6 @@ dependencies = [
 
     # DBus for BlueZ Bluetooth helpers (async, pure Python)
     "dbus-fast>=2.0.0; sys_platform == 'linux'",
-    
-    # Continuous profiling
-    "pyroscope-io>=0.8.16",
 
     # Feature Flags
     "openfeature-sdk>=0.8.4",

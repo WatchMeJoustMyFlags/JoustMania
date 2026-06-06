@@ -2,7 +2,7 @@
 # Multi-stage build for efficient image
 
 # Stage 1: Generate proto files
-FROM bufbuild/buf:1.47.2 AS proto-gen
+FROM bufbuild/buf:1.70.0 AS proto-gen
 
 WORKDIR /workspace
 COPY proto/ ./proto/
@@ -32,7 +32,7 @@ RUN mv gen/github.com/joustmania/connect-proxy/gen/* gen/ && \
     done
 
 # Stage 2: Build the Go binary
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
 
 # Build arguments for cross-compilation
 ARG TARGETARCH

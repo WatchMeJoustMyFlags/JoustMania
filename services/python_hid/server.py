@@ -16,7 +16,6 @@ from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 
 from lib.otel_logging import init_logging
 from lib.otel_metrics import init_metrics
-from lib.profiling import init_profiling
 from lib.system_metrics import start_system_metrics_collector
 from lib.telemetry import get_tracer
 from proto import psmove_hid_pb2_grpc
@@ -38,7 +37,6 @@ async def serve(port=50059):
     # Initialize OTEL (get_tracer triggers TracerProvider setup for trace export)
     init_metrics()
     init_logging()
-    init_profiling()
     get_tracer("python-hid")
 
     # Start system metrics collection
