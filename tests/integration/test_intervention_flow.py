@@ -41,7 +41,6 @@ import sys
 import time
 import uuid
 
-import grpc
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
@@ -51,7 +50,6 @@ from proto import game_coordinator_pb2  # noqa: E402
 from tests.integration.helpers import (  # noqa: E402
     GameEventCollector,
     get_game_client,
-    get_mock_client,
     get_mock_controller_serials,
     setup_mock_controllers,
     start_game_via_menu,
@@ -319,56 +317,13 @@ async def _wait_for_sensitivity_factor(
 
 
 # =============================================================================
-# Scenario 1 + 2: per-player sensitivity factor (state e2e + live flagd RPC)
+# Per-player targeting resolution against LIVE flagd (sequential)
+#
+# Kept sequential: it writes the UN-TARGETED (no gameId) player-targeting
+# if-ladder and asserts file-level flagd resolution for distinct serials, so it
+# is order-dependent on global flag state. The per-GAME, batched variant of the
+# player-sensitivity *game effect* lives in test_parallel_intervention_flow.py.
 # =============================================================================
-
-
-@pytest.mark.asyncio
-async def test_player_sensitivity_factor_targets_one_player(flag_files, docker_compose, game_client):
-    """State-shaped e2e: a per-serial player_sensitivity_factor targeting rule
-    applies the factor to the targeted player ONLY, observable via
-    GetGameState.sensitivity_factor and an unblocked agent_intervention event.
-    """
-    set_interventions_allowed("full")  # adjust_player_sensitivity must be allowed
-    # Rate-limit budget headroom is provided suite-wide by the flag_files fixture
-    # (SUITE_RATE_LIMIT_BUDGET), so this test needs no per-test budget bump.
-    await setup_mock_controllers(docker_compose, count=4)
-    serials = await get_mock_controller_serials(docker_compose)
-    target, other = serials[0], serials[1]
-
-    game_client_obj, channel = await get_game_client(docker_compose)
-    try:
-        collector = GameEventCollector(game_client_obj)
-        async with collector:
-            await start_game_via_menu(
-                docker_compose, game_mode="JoustFFA", event_collector=collector
-            )
-
-            # Baseline: every player at the neutral 1.0 factor.
-            info = await _get_state(game_client)
-            for p in info.players:
-                assert abs(p.sensitivity_factor - 1.0) <= 0.01, (
-                    f"{p.serial} not at neutral baseline: {p.sensitivity_factor}"
-                )
-
-            # Agent writes a targeting rule for the target serial only.
-            write_targeted("player_sensitivity_factor", "default", target, 1.5)
-
-            # Observable signal A: the unblocked intervention event fires.
-            evt = await _wait_for_intervention_event(
-                collector, "adjust_player_sensitivity", blocked="false"
-            )
-            assert evt.data.get("blocked") == "false"
-
-            # Observable signal B: only the targeted player's factor changed.
-            await _wait_for_sensitivity_factor(game_client, target, 1.5)
-            other_player = await _player(game_client, other)
-            assert other_player is not None
-            assert abs(other_player.sensitivity_factor - 1.0) <= 0.01, (
-                f"non-targeted {other} changed: {other_player.sensitivity_factor}"
-            )
-    finally:
-        await channel.close()
 
 
 @pytest.mark.asyncio
@@ -423,77 +378,6 @@ async def test_per_player_targeting_resolves_against_live_flagd(flag_files, dock
 
 
 # =============================================================================
-# Scenario 3: edge-triggered elimination + exactly-once nonce
-# =============================================================================
-
-
-@pytest.mark.asyncio
-async def test_eliminate_player_edge_trigger_and_exactly_once(flag_files, docker_compose, game_client):
-    """Edge-triggered e2e: an eliminate_player nonce write kills the targeted
-    player through the real _kill_player path (observable as alive=False +
-    unblocked intervention event). Re-reading the SAME nonce does NOT re-apply;
-    a FRESH nonce applies again to a different player.
-    """
-    set_interventions_allowed("full")  # eliminate_player must be allowed
-    # Two HARD eliminations (2.0 each) fit easily under the suite-wide budget the
-    # flag_files fixture pins (SUITE_RATE_LIMIT_BUDGET); no per-test bump needed.
-    await setup_mock_controllers(docker_compose, count=4)
-    serials = await get_mock_controller_serials(docker_compose)
-    victim, second_victim = serials[0], serials[1]
-
-    game_client_obj, channel = await get_game_client(docker_compose)
-    try:
-        collector = GameEventCollector(game_client_obj)
-        async with collector:
-            await start_game_via_menu(
-                docker_compose, game_mode="JoustFFA", event_collector=collector
-            )
-
-            assert (await _player(game_client, victim)).alive, "victim should start alive"
-
-            # Edge trigger 1: eliminate the victim.
-            nonce1 = write_edge("eliminate_player", victim)
-            await _wait_for_intervention_event(
-                collector, "eliminate_player", blocked="false"
-            )
-
-            # Observable: the player died through the natural kill path.
-            deadline = time.time() + APPLY_TIMEOUT_SECONDS
-            while time.time() < deadline and (await _player(game_client, victim)).alive:
-                await asyncio.sleep(0.3)
-            assert not (await _player(game_client, victim)).alive, "victim was not eliminated"
-
-            applied_after_first = len(
-                [e for e in _intervention_events(collector, "eliminate_player")
-                 if e.data.get("blocked") == "false"]
-            )
-
-            # Re-read the SAME nonce (force flagd reload, value unchanged): the
-            # exactly-once guard must NOT re-apply.
-            rewrite_edge_value("eliminate_player", f"{nonce1}:{victim}")
-            time.sleep(RELOAD_SETTLE_SECONDS + 1.0)
-            applied_after_reread = len(
-                [e for e in _intervention_events(collector, "eliminate_player")
-                 if e.data.get("blocked") == "false"]
-            )
-            assert applied_after_reread == applied_after_first, (
-                "same nonce re-applied the elimination (exactly-once broken)"
-            )
-
-            # FRESH nonce -> applies again, to a different player.
-            assert (await _player(game_client, second_victim)).alive
-            write_edge("eliminate_player", second_victim)
-            deadline = time.time() + APPLY_TIMEOUT_SECONDS
-            while time.time() < deadline and (await _player(game_client, second_victim)).alive:
-                await asyncio.sleep(0.3)
-            assert not (await _player(game_client, second_victim)).alive, (
-                "fresh nonce did not re-apply elimination"
-            )
-    finally:
-        await channel.close()
-
-
-# =============================================================================
 # Scenario 4: permission-block negative
 # =============================================================================
 
@@ -539,64 +423,6 @@ async def test_permission_layer_blocks_disallowed_intervention(flag_files, docke
 
 
 # =============================================================================
-# Scenario 5: mode-capability matrix (revive blocked in FFA, allowed in NonStop)
-# =============================================================================
-
-
-@pytest.mark.asyncio
-async def test_revive_blocked_in_permanent_elimination_mode(flag_files, docker_compose, game_client):
-    """Mode-matrix negative: revive_player is blocked in FFA (permanent
-    elimination); block_reason=mode_unsupported."""
-    set_interventions_allowed("full")  # revive_player allowed at policy level
-    await setup_mock_controllers(docker_compose, count=4)
-    serials = await get_mock_controller_serials(docker_compose)
-    victim = serials[0]
-
-    game_client_obj, channel = await get_game_client(docker_compose)
-    try:
-        collector = GameEventCollector(game_client_obj)
-        async with collector:
-            await start_game_via_menu(
-                docker_compose, game_mode="JoustFFA", event_collector=collector
-            )
-            write_edge("revive_player", victim)
-            evt = await _wait_for_intervention_event(
-                collector, "revive_player", blocked="true"
-            )
-            assert evt.data.get("block_reason") == "mode_unsupported", (
-                f"expected mode_unsupported, got {evt.data.get('block_reason')}"
-            )
-    finally:
-        await channel.close()
-
-
-@pytest.mark.asyncio
-async def test_revive_allowed_in_respawn_mode(flag_files, docker_compose, game_client):
-    """Mode-matrix positive: revive_player is allowed in NonStop (respawn mode);
-    the intervention is NOT blocked by the capability matrix."""
-    set_interventions_allowed("full")
-    await setup_mock_controllers(docker_compose, count=4)
-    serials = await get_mock_controller_serials(docker_compose)
-    victim = serials[0]
-
-    game_client_obj, channel = await get_game_client(docker_compose)
-    try:
-        collector = GameEventCollector(game_client_obj)
-        async with collector:
-            await start_game_via_menu(
-                docker_compose, game_mode="NonStop", event_collector=collector
-            )
-            write_edge("revive_player", victim)
-            evt = await _wait_for_intervention_event(collector, "revive_player")
-            # In a respawn mode the capability matrix must NOT block it.
-            assert evt.data.get("block_reason") != "mode_unsupported", (
-                "revive wrongly blocked as mode_unsupported in a respawn mode"
-            )
-    finally:
-        await channel.close()
-
-
-# =============================================================================
 # Scenario 6: writer gate (agent never writes when disabled by default)
 # =============================================================================
 
@@ -627,59 +453,3 @@ def test_agent_interventions_disabled_by_default():
         "AGENT_INTERVENTIONS_ENABLED:-false" in compose_text
         or "AGENT_INTERVENTIONS_ENABLED=false" in compose_text
     ), "AGENT_INTERVENTIONS_ENABLED must default to false in docker-compose.yml"
-
-
-# =============================================================================
-# Scenario 7: repeated in-place writes keep flagd's file watch healthy
-# =============================================================================
-
-
-@pytest.mark.asyncio
-async def test_repeated_in_place_writes_all_propagate(flag_files, docker_compose, game_client):
-    """Several consecutive in-place mutations must all propagate through flagd's
-    file watch — no missed reload / stuck inotify after repeated writes.
-
-    Drives player_sensitivity_factor through a sequence of distinct values and
-    asserts the game converges on the FINAL value (and that an intermediate
-    value was observed at least once, proving multiple reloads landed).
-    """
-    set_interventions_allowed("full")
-    # Five MEDIUM writes (1.0 each) fit under the suite-wide budget pinned by the
-    # flag_files fixture (SUITE_RATE_LIMIT_BUDGET); no per-test bump needed.
-    await setup_mock_controllers(docker_compose, count=4)
-    serials = await get_mock_controller_serials(docker_compose)
-    target = serials[0]
-
-    game_client_obj, channel = await get_game_client(docker_compose)
-    try:
-        collector = GameEventCollector(game_client_obj)
-        async with collector:
-            await start_game_via_menu(
-                docker_compose, game_mode="JoustFFA", event_collector=collector
-            )
-
-            sequence = [1.5, 0.7, 1.5, 0.5, 2.0]
-            observed_intermediate = False
-            for value in sequence:
-                write_targeted("player_sensitivity_factor", "default", target, value)
-                time.sleep(RELOAD_SETTLE_SECONDS)
-                p = await _player(game_client, target)
-                if p is not None and abs(p.sensitivity_factor - value) <= 0.01:
-                    observed_intermediate = True
-
-            # Final value must converge (clamped range is 0.5..2.0, all in-range).
-            await _wait_for_sensitivity_factor(game_client, target, sequence[-1])
-            assert observed_intermediate, (
-                "no intermediate write was ever observed — file watch may be stuck"
-            )
-
-            # And the intervention event stream kept firing across all writes.
-            applied = [
-                e for e in _intervention_events(collector, "adjust_player_sensitivity")
-                if e.data.get("blocked") == "false"
-            ]
-            assert len(applied) >= 2, (
-                f"expected multiple applied events across writes, got {len(applied)}"
-            )
-    finally:
-        await channel.close()
