@@ -16,9 +16,15 @@ from lib.feature_flags import (
 
 
 def _mock_flag_value(value):
-    """Patch init/get_flag_client so the domain client returns ``value``."""
+    """Patch init/get_flag_client so the domain client returns ``value``.
+
+    Numeric flags are read via the typed ``get_float_value`` getter (#903:
+    ``get_object_value`` is TYPE_MISMATCH for numbers under the flagd RPC
+    resolver); the post-read type checks remain as defense-in-depth, so the
+    mock still feeds arbitrary values through the float getter.
+    """
     client = MagicMock()
-    client.get_object_value.return_value = value
+    client.get_float_value.return_value = value
     return (
         patch("lib.feature_flags.init_flag_domain"),
         patch("lib.feature_flags.get_flag_client", return_value=client),
@@ -371,19 +377,19 @@ def test_read_object_flag_targeted_variant_for_matching_game():
 
 def test_read_float_flag_threads_gameid_context():
     client = MagicMock()
-    client.get_object_value.return_value = 4.0
+    client.get_float_value.return_value = 4.0
     init_p, get_p = _mock_client(client)
     with init_p, get_p:
         assert read_float_flag("game", "death_grace_period_seconds", 1.0, game_id="game_x") == 4.0
-    ctx = client.get_object_value.call_args[0][2]
+    ctx = client.get_float_value.call_args[0][2]
     assert ctx.attributes["gameId"] == "game_x"
 
 
 def test_read_int_flag_threads_gameid_context():
     client = MagicMock()
-    client.get_object_value.return_value = 3
+    client.get_float_value.return_value = 3
     init_p, get_p = _mock_client(client)
     with init_p, get_p:
         assert read_int_flag("game", "zombie.initial_count", 1, game_id="game_y") == 3
-    ctx = client.get_object_value.call_args[0][2]
+    ctx = client.get_float_value.call_args[0][2]
     assert ctx.attributes["gameId"] == "game_y"
