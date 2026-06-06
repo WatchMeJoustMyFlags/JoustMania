@@ -479,7 +479,7 @@ services:
   # VictoriaMetrics for high-frequency metrics storage (replaces Prometheus for storage)
   # Receives metrics via Prometheus remote write protocol from OTEL Collector
   victoria-metrics:
-    image: victoriametrics/victoria-metrics:v1.96.0
+    image: victoriametrics/victoria-metrics:v1.144.0
     container_name: joustmania-victoria-metrics
     command:
       - "-storageDataPath=/victoria-metrics-data"
