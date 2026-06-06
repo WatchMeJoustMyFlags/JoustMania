@@ -3,8 +3,9 @@ Music Player with Real-Time Tempo Control
 
 Phase 70: Dynamic Music System
 Phase 80: Migrated from scipy to resampy for distroless compatibility
+Issue #911: Migrated from resampy to soxr (drops the numba/JIT dependency chain)
 
-Uses resampy for real-time tempo changes without pitch shifting.
+Uses soxr (libsoxr bindings) for real-time tempo changes without pitch shifting.
 Runs audio playback in a separate process to avoid blocking the gRPC server.
 """
 
@@ -22,7 +23,7 @@ from sys import platform
 
 import miniaudio
 import numpy as np
-import resampy
+import soxr
 
 logger = logging.getLogger(__name__)
 
@@ -132,30 +133,20 @@ def _resample_chunk(data: bytes, ratio: float, volume: float) -> bytes:
     if num_output_frames < 32:
         return data
 
-    # Split stereo channels and convert to float for resampy
-    left_in = array[0::2].astype(np.float64)
-    right_in = array[1::2].astype(np.float64)
+    # Reshape interleaved samples to (frames, channels) and convert to float
+    frames = array.reshape(-1, 2).astype(np.float64)
 
-    # Resample using resampy (audio-quality resampling)
+    # Resample using soxr (audio-quality resampling, no JIT warmup needed)
     sr_in = 44100
     sr_out = int(44100 / ratio)
-    left = resampy.resample(left_in, sr_in, sr_out, filter="kaiser_fast")
-    right = resampy.resample(right_in, sr_in, sr_out, filter="kaiser_fast")
+    resampled = soxr.resample(frames, sr_in, sr_out, quality="HQ")
 
-    # Apply volume and convert back to int16
-    left = (left * volume).astype(np.int16)
-    right = (right * volume).astype(np.int16)
-
-    # Interleave channels
-    final = np.empty(len(left) * 2, dtype=np.int16)
-    final[0::2] = left
-    final[1::2] = right
-
-    return final.tobytes()
+    # Apply volume and convert back to interleaved int16
+    return (resampled * volume).astype(np.int16).tobytes()
 
 
 def _resample_audio(samples, ratio_val, vol_val):
-    """Generator that resamples audio chunks for tempo change with volume using resampy."""
+    """Generator that resamples audio chunks for tempo change with volume using soxr."""
     for data in samples:
         try:
             ratio = _clamp_ratio(ratio_val.value)
@@ -163,22 +154,6 @@ def _resample_audio(samples, ratio_val, vol_val):
         except Exception as e:
             logger.warning(f"Resample error: {e}")
             yield data
-
-
-def _warmup_resampler():
-    """Pre-initialize resampy's filter cache to avoid audio dropout on first tempo change.
-
-    On Raspberry Pi, resampy's first resample at a new ratio triggers filter
-    coefficient computation and numpy allocations that can stall the pipeline
-    long enough to drain the ALSA buffer. Running dummy resamples at common
-    tempo ratios before playback starts eliminates this cold-start cost.
-    """
-    warmup_start = time.monotonic()
-    dummy_chunk = np.zeros(4096 * 2, dtype=np.int16).tobytes()  # 4096 stereo frames of silence
-    for ratio in [1.0, 1.3, 1.5, 2.0]:
-        _resample_chunk(dummy_chunk, ratio, 1.0)
-    elapsed_ms = (time.monotonic() - warmup_start) * 1000
-    logger.info("Resampler warmup completed in %.1f ms", elapsed_ms)
 
 
 def _write_samples(device, write_size, samples, stop_proc, generation, play_gen):
@@ -346,7 +321,6 @@ def _linux_audio_loop(song_array: Array, ratio: Value, volume: Value, stop_proc:
                     continue
                 song_loaded = True
                 loaded_pattern = current_pattern
-                _warmup_resampler()
                 continue
 
             play_gen = generation.value
@@ -363,7 +337,7 @@ class MusicPlayer:
     """
     Music player with real-time tempo control.
 
-    Uses a separate process for audio playback with resampy resampling.
+    Uses a separate process for audio playback with soxr resampling.
     """
 
     def __init__(self, name: str = "music"):

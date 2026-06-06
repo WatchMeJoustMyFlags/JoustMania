@@ -11,9 +11,8 @@ dependencies = [
     # Audio libraries - miniaudio for distroless compatibility (Phase 80)
     "miniaudio>=1.61",
 
-    # Audio processing for tempo control (Phase 70, resampy for distroless)
-    "resampy>=0.4.0",
-    "numba>=0.59.0",  # Required for Python 3.11+ compatibility
+    # Audio processing for tempo control (#911, soxr replaces resampy/numba)
+    "soxr>=1.1.0",
     "numpy>=1.24.0",
     "pyalsaaudio>=0.11.0; sys_platform == 'linux'",
 
