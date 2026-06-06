@@ -10,9 +10,9 @@ path = "src/main.rs"
 
 [dependencies]
 # gRPC
-tonic = "0.12"
+tonic = "0.14"
 prost = "0.13"
-tonic-health = "0.12"
+tonic-health = "0.14"
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
@@ -43,4 +43,4 @@ http = "1"
 strip = true
 
 [build-dependencies]
-tonic-build = "0.12"
+tonic-build = "0.14"
