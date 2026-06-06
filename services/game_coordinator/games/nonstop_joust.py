@@ -289,6 +289,38 @@ class NonstopJoustGame(BaseGameMode):
             },
         )
 
+    def _build_initial_stream_control(self, update_frequency_hz: int):
+        """Build the initial GameplayStreamControl for the dynamic-filter stream.
+
+        Mirrors the base class: the initial colors list carries the player set
+        (serials are derived from it server-side); the alive-set filter is sent
+        separately via FilterUpdate (Phase 45 dynamic filtering).
+
+        Regression guard: this construction used the proto field ``serials``,
+        which controller_manager.proto removed and reserved ("use colors
+        instead") — every NonStop game crashed at loop startup with 'Protocol
+        message GameplayStreamConfig has no "serials" field'. The crash hid for
+        a long time because unit tests injected a mock stream past this block,
+        the parallel lifecycle batch accepted ``game_error`` as a terminal
+        event, and the intervention manager evaluated against the dead game.
+        Extracted as a method so the real message construction is unit-tested.
+        """
+        from proto import controller_manager_pb2
+
+        player_colors = [
+            controller_manager_pb2.ControllerColorConfig(
+                serial=serial,
+                color=controller_manager_pb2.RGB(r=player.color[0], g=player.color[1], b=player.color[2]),
+            )
+            for serial, player in self.players.items()
+        ]
+        return controller_manager_pb2.GameplayStreamControl(
+            config=controller_manager_pb2.GameplayStreamConfig(
+                update_frequency_hz=update_frequency_hz,
+                colors=player_colors,
+            )
+        )
+
     async def _game_loop(self):
         """Override game loop to add respawn timer updates and dynamic filtering."""
         logger.info("Starting Nonstop game loop with respawn mechanics and dynamic filtering...")
@@ -310,14 +342,10 @@ class NonstopJoustGame(BaseGameMode):
             # Create bidirectional stream (Phase 45 - dynamic filtering, Phase 46 - feedback commands)
             self.gameplay_stream = self.controller_client.StreamGameplayData()
 
-            # Send initial configuration
-            initial_config = controller_manager_pb2.GameplayStreamControl(
-                config=controller_manager_pb2.GameplayStreamConfig(
-                    update_frequency_hz=update_frequency_hz,
-                    serials=[],  # Start with all controllers
-                )
-            )
-            await self.gameplay_stream.write(initial_config)
+            # Send initial configuration (see _build_initial_stream_control —
+            # extracted so the message construction is unit-testable after the
+            # ``serials`` proto-field regression crashed every NonStop game).
+            await self.gameplay_stream.write(self._build_initial_stream_control(update_frequency_hz))
 
             # Track current alive set for detecting changes (Phase 45)
             last_alive_serials = {p.serial for p in self.players.values() if p.alive}
