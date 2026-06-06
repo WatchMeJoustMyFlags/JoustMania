@@ -163,7 +163,11 @@ _SPECS = {
     "NonStop": ModeSpec("NonStop", 2, end_force, 15),
     "Traitor": ModeSpec("Traitor", 4, end_force, 15),
     "Werewolf": ModeSpec("Werewolf", 4, end_werewolf, 20),
-    "Tournament": ModeSpec("Tournament", 4, end_tournament, 30),
+    # Tournament now actually PLAYS in CI (its match loop crashed instantly
+    # before #899): real brackets need headroom even with the ci-variant
+    # match/pause flags (game.ci.json: 6s matches, 1s pauses — worst case
+    # ~3 matches timing out to random winners ≈ 21s + kill rounds).
+    "Tournament": ModeSpec("Tournament", 4, end_tournament, 45),
     "FightClub": ModeSpec("FightClub", 4, end_fight_club, 30),
 }
 

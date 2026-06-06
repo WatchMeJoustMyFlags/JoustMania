@@ -184,18 +184,20 @@
       "variants": {
         "default": 22.0,
         "short": 15.0,
-        "long": 30.0
+        "long": 30.0,
+        "ci": 6.0
       },
-      "defaultVariant": "default"
+      "defaultVariant": "ci"
     },
     "tournament.time_between_matches_seconds": {
       "state": "ENABLED",
       "variants": {
         "default": 5.0,
         "short": 3.0,
-        "long": 8.0
+        "long": 8.0,
+        "ci": 1.0
       },
-      "defaultVariant": "default"
+      "defaultVariant": "ci"
     },
     "werewolf.werewolf_fraction": {
       "state": "ENABLED",
