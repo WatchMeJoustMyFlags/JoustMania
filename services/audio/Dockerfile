@@ -129,5 +129,8 @@ EXPOSE 50056
 HEALTHCHECK --interval=2s --timeout=2s --start-period=1s --retries=3 \
     CMD ["/bin/grpc_health_probe", "-addr=:50056"]
 
+# Chainguard's default user is already nonroot (65532); make it explicit
+USER nonroot
+
 # Run the server (chainguard python image has python as ENTRYPOINT)
 CMD ["services/audio/server.py"]
