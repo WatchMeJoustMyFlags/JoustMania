@@ -5,7 +5,7 @@ import warnings
 
 from proto import psmove_hid_pb2 as psmove__hid__pb2
 
-GRPC_GENERATED_VERSION = '1.76.0'
+GRPC_GENERATED_VERSION = '1.81.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -25,7 +25,7 @@ if _version_not_supported:
     )
 
 
-class PairingServiceStub(object):
+class PairingServiceStub:
     """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
@@ -46,7 +46,7 @@ class PairingServiceStub(object):
                 _registered_method=True)
 
 
-class PairingServiceServicer(object):
+class PairingServiceServicer:
     """Missing associated documentation comment in .proto file."""
 
     def GetUSBControllers(self, request, context):
@@ -82,7 +82,7 @@ def add_PairingServiceServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class PairingService(object):
+class PairingService:
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod
@@ -140,7 +140,7 @@ class PairingService(object):
             _registered_method=True)
 
 
-class ControllerIOServiceStub(object):
+class ControllerIOServiceStub:
     """--- Controller I/O Service ---
     Manages HID device handles and provides real-time controller I/O.
     All state (LED colors, effects) lives in the Python MultiplexerBackend;
@@ -186,7 +186,7 @@ class ControllerIOServiceStub(object):
                 _registered_method=True)
 
 
-class ControllerIOServiceServicer(object):
+class ControllerIOServiceServicer:
     """--- Controller I/O Service ---
     Manages HID device handles and provides real-time controller I/O.
     All state (LED colors, effects) lives in the Python MultiplexerBackend;
@@ -267,7 +267,7 @@ def add_ControllerIOServiceServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class ControllerIOService(object):
+class ControllerIOService:
     """--- Controller I/O Service ---
     Manages HID device handles and provides real-time controller I/O.
     All state (LED colors, effects) lives in the Python MultiplexerBackend;
