@@ -147,7 +147,7 @@ class TraitorGame(TeamsGameBase):
         # Read ONCE here (init-frozen); malformed values fall back to the module
         # defaults (the source of truth).
         self._count_tiers, self._count_fallback_divisor = resolve_count_tiers(
-            read_object_flag("game", "traitor.count_tiers", {}),
+            read_object_flag("game", "traitor.count_tiers", {}, game_id=self.game_id),
             DEFAULT_TRAITOR_COUNT_TIERS,
             DEFAULT_TRAITOR_FALLBACK_DIVISOR,
         )

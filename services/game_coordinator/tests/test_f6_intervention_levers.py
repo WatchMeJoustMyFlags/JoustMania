@@ -45,7 +45,15 @@ from services.game_coordinator.interventions import (
     WEIGHT_MEDIUM,
     InterventionContext,
     InterventionManager,
+    SessionView,
 )
+
+
+def _primary_view(game, mgr):
+    """Synthesize the primary SessionView for white-box _enforce_and_dispatch
+    calls (#838: the method is now per-session)."""
+    return SessionView(game_id="", game=game, publish=mgr._publish)
+
 
 # Preset window dicts mirroring services/flagd/game.json variants.
 _CALM = {
@@ -314,7 +322,7 @@ class TestEnforcement:
         mgr, _ = make_manager(game=game, allowed=["adjust_global_difficulty"], budget=10)
         register_difficulty_handlers(mgr)
         before = mgr._rate_limiter.current_weight()
-        await mgr._enforce_and_dispatch(_spec("global_difficulty_factor"), 1.5, "", None)
+        await mgr._enforce_and_dispatch(_spec("global_difficulty_factor"), 1.5, "", None, _primary_view(game, mgr))
         after = mgr._rate_limiter.current_weight()
         assert after - before == pytest.approx(WEIGHT_MEDIUM)
         assert game.global_difficulty_factor == pytest.approx(1.5)
@@ -325,7 +333,7 @@ class TestEnforcement:
         game.get_game_name = lambda: "Werewolf"
         mgr, events = make_manager(game=game, allowed=["adjust_global_difficulty"], budget=10)
         register_difficulty_handlers(mgr)
-        await mgr._enforce_and_dispatch(_spec("global_difficulty_factor"), 1.5, "", None)
+        await mgr._enforce_and_dispatch(_spec("global_difficulty_factor"), 1.5, "", None, _primary_view(game, mgr))
         # Blocked: factor never applied; a blocked event was published.
         assert game.global_difficulty_factor == pytest.approx(1.0)
         assert any(d["blocked"] == "true" and d["block_reason"] == "mode_unsupported" for _, d in events)
@@ -338,7 +346,7 @@ class TestEnforcement:
         register_difficulty_handlers(mgr)
         init = game.init_music_windows
         with _patch_windows_resolution():
-            await mgr._enforce_and_dispatch(_spec("pacing_profile"), "frantic", "", None)
+            await mgr._enforce_and_dispatch(_spec("pacing_profile"), "frantic", "", None, _primary_view(game, mgr))
         # Not mode-gated; swap applied.
         assert game.music_windows != init
         assert isinstance(game.music_windows, MusicWindows)

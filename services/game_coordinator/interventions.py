@@ -271,6 +271,10 @@ class InterventionContext:
         game: The live game instance (BaseGameMode) or ``None`` if no game is
             running.
         objective: Dominant session objective label for metrics/events.
+        game_id: The owning session's game id (#838). Handlers that re-resolve
+            per-player targets (e.g. player_sensitivity_factor) MUST pass this
+            into ``resolve_player_targets(game_id=...)`` so per-game targeting
+            composes. ``""`` for the synthesized primary session (no gameId).
     """
 
     spec: InterventionSpec
@@ -279,6 +283,7 @@ class InterventionContext:
     target_serial: str | None
     game: object
     objective: str
+    game_id: str = ""
 
 
 class _RateLimiter:
@@ -329,6 +334,39 @@ BLOCK_LOW_BATTERY = "low_battery"
 BLOCK_MODE_UNSUPPORTED = "mode_unsupported"
 BLOCK_NO_GAME = "no_game"
 
+# Sentinel game_id for the synthesized primary-only session when the manager is
+# wired with the legacy ``get_game`` callback (no session registry). An empty
+# game_id adds NO ``gameId`` attribute to the EvaluationContext, so un-targeted
+# flags resolve exactly as before (today's primary-only semantics, #838).
+_PRIMARY_SENTINEL_GAME_ID = ""
+
+
+@dataclass(frozen=True)
+class SessionView:
+    """A live session the manager evaluates interventions against (#838).
+
+    The servicer supplies one of these per live game (primary + every shadow)
+    via ``get_sessions``. Each carries the game instance, its ``game_id`` (used
+    as the ``gameId`` EvaluationContext attribute so flagd targeting rules can
+    scope an intervention to one game), and the publish callable for THAT
+    session's EventBus (so effects/blocked events land on the right stream).
+
+    Backward compatibility (#838): a manager wired with the legacy ``get_game``
+    callback synthesizes a single primary view with ``game_id=""`` (no ``gameId``
+    in context) and the primary publisher — so un-targeted interventions behave
+    exactly as today and only touch the primary game.
+
+    Attributes:
+        game_id: The session's game id. ``""`` means the synthesized primary
+            session (legacy path); no ``gameId`` is added to the context.
+        game: The live BaseGameMode instance (or ``None``).
+        publish: Async ``publish(event_type, data)`` for this session's bus.
+    """
+
+    game_id: str
+    game: object
+    publish: "Callable[[str, dict], Awaitable[None]]"
+
 
 class InterventionManager:
     """Owns the intervention flag clients and the enforcement/dispatch loop.
@@ -342,15 +380,23 @@ class InterventionManager:
     def __init__(
         self,
         event_publisher: Callable[[str, dict], Awaitable[None]],
-        get_game: Callable[[], object | None],
+        get_game: Callable[[], object | None] | None = None,
         battery_provider: Callable[[str], float | None] | None = None,
         time_fn: Callable[[], float] = time.monotonic,
         end_game_fn: Callable[[str], Awaitable[tuple[bool, str]]] | None = None,
+        get_sessions: Callable[[], list["SessionView"]] | None = None,
     ):
         """
         Args:
-            event_publisher: Async ``publish(event_type, data)`` (EventBus).
-            get_game: Returns the live BaseGameMode instance or None.
+            event_publisher: Async ``publish(event_type, data)`` (EventBus) for
+                the PRIMARY session — used as the publisher for the synthesized
+                primary view in the legacy ``get_game`` path.
+            get_game: Legacy seam. Returns the live PRIMARY BaseGameMode instance
+                or None. When supplied without ``get_sessions``, the manager
+                evaluates against a single primary-only session (today's
+                semantics) — un-targeted interventions touch only the primary
+                game. Mutually exclusive with ``get_sessions`` in practice
+                (``get_sessions`` wins when both are given).
             battery_provider: ``(serial) -> battery_pct | None``. None means the
                 battery is unknown and the guard does not block. Injected for
                 testability (the real source is the controller manager's
@@ -359,9 +405,17 @@ class InterventionManager:
             end_game_fn: Async ``end_game(reason) -> (success, error)`` used by
                 the ``end_game`` intervention handler to share the servicer's
                 force-end path (#730, PR E). None disables the handler's effect.
+            get_sessions: Per-session seam (#838). Returns one ``SessionView``
+                per LIVE session (primary + every shadow). The manager evaluates
+                every intervention flag against each session with a per-session
+                ``{gameId, targetingKey=serial}`` context and applies/publishes
+                on THAT session. Flags with no ``gameId`` targeting rule resolve
+                to their default for shadow games (no-op) and the configured
+                value for the primary, preserving today's behavior.
         """
         self._publish = event_publisher
         self._get_game = get_game
+        self._get_sessions = get_sessions
         self._battery_provider = battery_provider
         self._time_fn = time_fn
         self._end_game_fn = end_game_fn
@@ -369,10 +423,13 @@ class InterventionManager:
         self._interventions_client = None  # interventions domain
         self._agent_client = None  # agent domain (backstop reads)
 
-        # Per-flag last-applied nonce (edge-triggered exactly-once).
-        self._last_nonce: dict[str, str] = {}
-        # Per-flag last-applied state value (state-shaped change detection).
-        self._last_state_value: dict[str, object] = {}
+        # Per-session, per-flag last-applied nonce (edge-triggered exactly-once)
+        # and last-applied state value (state-shaped change detection). Keyed
+        # ``game_id -> flag_key -> value`` so each live session tracks its own
+        # baseline independently (#838). The legacy single-primary path uses the
+        # ``_PRIMARY_SENTINEL_GAME_ID`` ("") bucket.
+        self._last_nonce: dict[str, dict[str, str]] = {}
+        self._last_state_value: dict[str, dict[str, object]] = {}
 
         self._rate_limiter = _RateLimiter(budget=2.0, time_fn=time_fn)
 
@@ -617,19 +674,62 @@ class InterventionManager:
 
         Prevents flags that were already non-default before the game coordinator
         started (or after a flagd reconnect on first connect) from being treated
-        as brand-new triggers.
+        as brand-new triggers. Primes every live session's baseline (#838) so a
+        flag already set for a specific gameId is not re-fired on first connect.
         """
-        for spec in INTERVENTION_SPECS:
+        for session in self._live_sessions():
+            for spec in INTERVENTION_SPECS:
+                try:
+                    raw = self._read_flag(spec, session)
+                except Exception:
+                    continue
+                with self._lock:
+                    if spec.edge_triggered:
+                        nonce, _ = _split_nonce(str(raw))
+                        self._nonce_bucket(session.game_id)[spec.flag_key] = nonce
+                    else:
+                        self._state_bucket(session.game_id)[spec.flag_key] = raw
+
+    # ------------------------------------------------------------------ #
+    # Session resolution + per-session change-detection buckets (#838)
+    # ------------------------------------------------------------------ #
+    def _live_sessions(self) -> list["SessionView"]:
+        """Resolve the live sessions to evaluate (#838).
+
+        Prefers ``get_sessions`` (the per-session seam). Falls back to the legacy
+        ``get_game`` callback, synthesizing a single primary-only view with an
+        empty game_id (no ``gameId`` context) and the primary publisher — exactly
+        today's behavior. Returns an empty list when neither yields a session.
+        """
+        if self._get_sessions is not None:
             try:
-                raw = self._read_flag(spec)
-            except Exception:
-                continue
-            with self._lock:
-                if spec.edge_triggered:
-                    nonce, _ = _split_nonce(str(raw))
-                    self._last_nonce[spec.flag_key] = nonce
-                else:
-                    self._last_state_value[spec.flag_key] = raw
+                return list(self._get_sessions() or [])
+            except Exception as e:
+                logger.error(f"InterventionManager: get_sessions failed: {e}")
+                return []
+        # Legacy path: a single synthesized primary session.
+        game = self._get_game() if self._get_game is not None else None
+        return [SessionView(game_id=_PRIMARY_SENTINEL_GAME_ID, game=game, publish=self._publish)]
+
+    def _nonce_bucket(self, game_id: str) -> dict[str, str]:
+        return self._last_nonce.setdefault(game_id, {})
+
+    def _state_bucket(self, game_id: str) -> dict[str, object]:
+        return self._last_state_value.setdefault(game_id, {})
+
+    def _prune_stale_buckets(self, live_ids: set[str]) -> None:
+        """Drop change-detection state for sessions that are no longer live.
+
+        Prevents unbounded growth as shadow games come and go, and ensures a new
+        game reusing a (vanishingly unlikely) recycled id starts from a clean
+        baseline. The sentinel primary bucket is always retained.
+        """
+        with self._lock:
+            keep = live_ids | {_PRIMARY_SENTINEL_GAME_ID}
+            for stale in [gid for gid in self._last_nonce if gid not in keep]:
+                self._last_nonce.pop(stale, None)
+            for stale in [gid for gid in self._last_state_value if gid not in keep]:
+                self._last_state_value.pop(stale, None)
 
     # ------------------------------------------------------------------ #
     # Flag change handling
@@ -663,19 +763,32 @@ class InterventionManager:
             asyncio.run(self.evaluate_all())
 
     async def evaluate_all(self) -> None:
-        """Re-evaluate every intervention flag and apply survivors.
+        """Re-evaluate every intervention flag for every live session (#838).
 
         Public for tests and the change handler. Refreshes the rate-limit budget
-        first (policy flag may have changed), then walks the registry in order.
+        first (policy flag may have changed), then evaluates each live session
+        independently: per session it walks the registry in order, evaluating
+        every flag with that session's ``{gameId, targetingKey}`` context and
+        applying/publishing on that session.
+
+        Un-targeted flags resolve to their default for shadow games (no-op) and
+        to the configured value for the primary, so a flag with no ``gameId``
+        targeting rule behaves exactly as before — touching only the primary.
         """
         self._refresh_budget()
-        for spec in INTERVENTION_SPECS:
-            try:
-                await self._evaluate_one(spec)
-            except Exception as e:  # one bad flag must not stop the rest
-                logger.error(f"InterventionManager: error evaluating {spec.flag_key}: {e}")
+        sessions = self._live_sessions()
+        self._prune_stale_buckets({s.game_id for s in sessions})
+        for session in sessions:
+            for spec in INTERVENTION_SPECS:
+                try:
+                    await self._evaluate_one(spec, session)
+                except Exception as e:  # one bad flag must not stop the rest
+                    logger.error(
+                        f"InterventionManager: error evaluating {spec.flag_key} "
+                        f"for game {session.game_id or '<primary>'}: {e}"
+                    )
 
-    async def _evaluate_one(self, spec: InterventionSpec) -> None:
+    async def _evaluate_one(self, spec: InterventionSpec, session: "SessionView") -> None:
         # Player-targeted state flags (player_sensitivity_factor, shield_seconds)
         # are driven entirely through flagd's per-serial targeting if-ladder; the
         # agent writer leaves the flag's global defaultVariant on its neutral
@@ -683,10 +796,10 @@ class InterventionManager:
         # change detection. Resolve the per-serial values instead and key change
         # detection on them (handled separately below).
         if spec.player_targeted and not spec.edge_triggered:
-            await self._evaluate_targeted_state(spec)
+            await self._evaluate_targeted_state(spec, session)
             return
 
-        raw = self._read_flag(spec)
+        raw = self._read_flag(spec, session)
 
         if spec.edge_triggered:
             nonce, payload = _split_nonce(str(raw))
@@ -698,9 +811,10 @@ class InterventionManager:
             empty_payload = payload.strip().lower() in _EDGE_EMPTY_VALUES
             is_noop = no_nonce or (spec.payload_required and empty_payload)
             with self._lock:
-                last = self._last_nonce.get(spec.flag_key)
+                bucket = self._nonce_bucket(session.game_id)
+                last = bucket.get(spec.flag_key)
                 changed = nonce != last
-                self._last_nonce[spec.flag_key] = nonce
+                bucket[spec.flag_key] = nonce
             if not changed or is_noop:
                 return
             target = _edge_target_serial(spec, payload)
@@ -708,9 +822,10 @@ class InterventionManager:
         else:
             # State-shaped: only act on value change away from the none-value.
             with self._lock:
-                last = self._last_state_value.get(spec.flag_key)
+                bucket = self._state_bucket(session.game_id)
+                last = bucket.get(spec.flag_key)
                 changed = raw != last
-                self._last_state_value[spec.flag_key] = raw
+                bucket[spec.flag_key] = raw
             if not changed:
                 return
             if _is_none_value(spec, raw):
@@ -730,8 +845,9 @@ class InterventionManager:
                         value=raw,
                         payload="",
                         target_serial=None,
-                        game=self._get_game(),
+                        game=session.game,
                         objective=self._dominant_objective(),
+                        game_id=session.game_id,
                     )
                     try:
                         await revert(ctx)
@@ -742,9 +858,9 @@ class InterventionManager:
             target = self._state_target_serial(spec)
             value = raw
 
-        await self._enforce_and_dispatch(spec, value, payload, target)
+        await self._enforce_and_dispatch(spec, value, payload, target, session)
 
-    async def _evaluate_targeted_state(self, spec: InterventionSpec) -> None:
+    async def _evaluate_targeted_state(self, spec: InterventionSpec, session: "SessionView") -> None:
         """Change-detect and dispatch a player-targeted state flag.
 
         The agent writer drives these flags via a per-serial targeting if-ladder
@@ -758,10 +874,10 @@ class InterventionManager:
         With no live game there are no serials to target, so this is a no-op
         (and the baseline is reset to empty so a later game picks up the flag).
         """
-        game = self._get_game()
+        game = session.game
         if game is None:
             with self._lock:
-                self._last_state_value[spec.flag_key] = None
+                self._state_bucket(session.game_id)[spec.flag_key] = None
             return
 
         default = float(spec.none_value) if isinstance(spec.none_value, (int, float)) else 1.0
@@ -771,6 +887,7 @@ class InterventionManager:
             game,
             value_kind=spec.value_kind if spec.value_kind in ("int", "float") else "float",
             battery_gate=True,
+            game_id=session.game_id,
         )
 
         # Change key: the set of (serial, value) pairs that differ from neutral.
@@ -780,9 +897,10 @@ class InterventionManager:
         change_key = tuple(sorted(active.items()))
 
         with self._lock:
-            last = self._last_state_value.get(spec.flag_key)
+            bucket = self._state_bucket(session.game_id)
+            last = bucket.get(spec.flag_key)
             changed = change_key != last
-            self._last_state_value[spec.flag_key] = change_key
+            bucket[spec.flag_key] = change_key
         if not changed:
             return
         if not active:
@@ -793,20 +911,20 @@ class InterventionManager:
         # Per-serial battery gating already happened in resolve_player_targets;
         # the chain-level target is None (fan-out), so the chain's single-target
         # battery check is a no-op here.
-        await self._enforce_and_dispatch(spec, default, "", None)
+        await self._enforce_and_dispatch(spec, default, "", None, session)
 
     # ------------------------------------------------------------------ #
     # Enforcement chain
     # ------------------------------------------------------------------ #
     async def _enforce_and_dispatch(
-        self, spec: InterventionSpec, value: object, payload: str, target: str | None
+        self, spec: InterventionSpec, value: object, payload: str, target: str | None, session: "SessionView"
     ) -> None:
         objective = self._dominant_objective()
-        game = self._get_game()
+        game = session.game
 
         block_reason = self._check_chain(spec, target, game)
         if block_reason is not None:
-            await self._record(spec, target, objective, blocked=True, block_reason=block_reason)
+            await self._record(spec, target, objective, session, blocked=True, block_reason=block_reason)
             return
 
         ctx = InterventionContext(
@@ -816,16 +934,17 @@ class InterventionManager:
             target_serial=target,
             game=game,
             objective=objective,
+            game_id=session.game_id,
         )
         handler = self._handlers.get(spec.flag_key, self._noop_handler)
         try:
             await handler(ctx)
         except Exception as e:
             logger.error(f"InterventionManager: handler for {spec.flag_key} raised: {e}")
-            await self._record(spec, target, objective, blocked=True, block_reason="handler_error")
+            await self._record(spec, target, objective, session, blocked=True, block_reason="handler_error")
             return
 
-        await self._record(spec, target, objective, blocked=False, block_reason="")
+        await self._record(spec, target, objective, session, blocked=False, block_reason="")
 
     def _check_chain(self, spec: InterventionSpec, target: str | None, game: object) -> str | None:
         """Run the enforcement chain. Returns a block reason or None if allowed.
@@ -862,7 +981,14 @@ class InterventionManager:
     # Metric + event emission
     # ------------------------------------------------------------------ #
     async def _record(
-        self, spec: InterventionSpec, target: str | None, objective: str, *, blocked: bool, block_reason: str
+        self,
+        spec: InterventionSpec,
+        target: str | None,
+        objective: str,
+        session: "SessionView",
+        *,
+        blocked: bool,
+        block_reason: str,
     ) -> None:
         try:
             from services.game_coordinator import metrics
@@ -878,7 +1004,10 @@ class InterventionManager:
 
         from lib.types import GameEvent
 
-        await self._publish(
+        # Publish on THIS session's bus so the effect/blocked event lands on the
+        # stream the owning game's subscribers (and the agent runner) are reading
+        # (#838). The session's game_id is stamped onto the event by the bus.
+        await session.publish(
             GameEvent.AGENT_INTERVENTION,
             {
                 "type": spec.type_id,
@@ -891,11 +1020,23 @@ class InterventionManager:
     # ------------------------------------------------------------------ #
     # Flag reads / policy values
     # ------------------------------------------------------------------ #
-    def _read_flag(self, spec: InterventionSpec) -> object:
+    def _session_context(self, game_id: str, *, targeting_key: str | None = None) -> EvaluationContext:
+        """Build the per-session EvaluationContext (#838).
+
+        Adds ``gameId`` so flagd targeting rules can scope an intervention to one
+        game. An empty ``game_id`` (the synthesized primary session in the legacy
+        ``get_game`` path) adds NO ``gameId`` attribute, so un-targeted flags
+        resolve exactly as before. ``targeting_key`` (the player serial) is set
+        for per-player resolution so per-player and per-game rules compose.
+        """
+        attributes = {"gameId": game_id} if game_id else {}
+        return EvaluationContext(targeting_key=targeting_key, attributes=attributes)
+
+    def _read_flag(self, spec: InterventionSpec, session: "SessionView") -> object:
         client = self._interventions_client
         if client is None:
             return _spec_default(spec)
-        ctx = EvaluationContext()
+        ctx = self._session_context(session.game_id)
         if spec.value_kind == "int":
             return client.get_integer_value(spec.flag_key, spec.none_value, ctx)
         if spec.value_kind == "float":
@@ -925,15 +1066,18 @@ class InterventionManager:
         *,
         value_kind: str = "float",
         battery_gate: bool = True,
+        game_id: str = "",
     ) -> dict[str, float]:
         """Evaluate a per-player targeted flag for every active player serial.
 
         For each active serial in ``game.players`` the flag is evaluated with an
-        ``EvaluationContext(targeting_key=serial)`` so flagd's per-serial
-        targeting rules resolve. Serials with no targeting match receive
-        ``default``. When ``battery_gate`` is True, any serial whose battery pct
-        is below ``policy.battery_threshold`` is dropped from the result (the
-        per-serial equivalent of the chain's battery guard — closes the
+        ``EvaluationContext(targeting_key=serial, attributes={gameId})`` so
+        flagd's per-serial AND per-game targeting rules resolve and compose in a
+        single rule (#838: a rule may match both ``targetingKey == serial`` and
+        ``gameId == <id>``). Serials with no targeting match receive ``default``.
+        When ``battery_gate`` is True, any serial whose battery pct is below
+        ``policy.battery_threshold`` is dropped from the result (the per-serial
+        equivalent of the chain's battery guard — closes the
         player-targeted-state-flag battery-guard gap documented in PR A's
         ``_state_target_serial``).
 
@@ -947,6 +1091,8 @@ class InterventionManager:
             game: Live game whose ``players`` dict supplies the active serials.
             value_kind: ``"float"`` or ``"int"`` (flag value type).
             battery_gate: If True, drop serials below the battery threshold.
+            game_id: Owning session's game id, added as ``gameId`` to the context
+                (#838). Empty string adds no ``gameId`` (legacy primary path).
 
         Returns:
             ``{serial: value}`` for every active serial that should be acted on.
@@ -966,7 +1112,7 @@ class InterventionManager:
             if client is None:
                 value: float = default
             else:
-                ctx = EvaluationContext(targeting_key=serial)
+                ctx = self._session_context(game_id, targeting_key=serial)
                 try:
                     if value_kind == "int":
                         value = float(client.get_integer_value(flag_key, int(default), ctx))

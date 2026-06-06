@@ -490,7 +490,7 @@ class BaseGameMode(ABC):
         # #766 F1: death/warning threshold tables promoted to the ``game.thresholds``
         # object flag. Read ONCE here (init-frozen by design — no live re-evaluation);
         # malformed/missing values fall back to the module constants.
-        flag_thresholds = read_object_flag("game", "thresholds", {})
+        flag_thresholds = read_object_flag("game", "thresholds", {}, game_id=self.game_id)
         tables = resolve_base_thresholds(flag_thresholds)
         self.slow_warning = tables["slow_warning"]
         self.slow_max = tables["slow_max"]
@@ -510,7 +510,7 @@ class BaseGameMode(ABC):
         # Read ONCE here (init-frozen); malformed/negative values fall back to the
         # DEATH_GRACE_PERIOD module constant (the source of truth).
         self.death_grace_period = resolve_non_negative_duration(
-            read_float_flag("game", "death_grace_period_seconds", DEATH_GRACE_PERIOD),
+            read_float_flag("game", "death_grace_period_seconds", DEATH_GRACE_PERIOD, game_id=self.game_id),
             DEATH_GRACE_PERIOD,
         )
 
@@ -520,7 +520,7 @@ class BaseGameMode(ABC):
         # values fall back to the module constants. F6 will add a LIVE
         # ``pacing_profile`` intervention that atomically swaps
         # ``self.music_windows`` mid-game — see MusicWindows for the seam.
-        self.music_windows = resolve_music_windows(read_object_flag("game", "windows", {}))
+        self.music_windows = resolve_music_windows(read_object_flag("game", "windows", {}, game_id=self.game_id))
         # #766 F6: the init-resolved windows are retained so the LIVE
         # ``pacing_profile`` intervention can restore them when it reverts to the
         # neutral profile. Never reassigned after init (the live handler swaps

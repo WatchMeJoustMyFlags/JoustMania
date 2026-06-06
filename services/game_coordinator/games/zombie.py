@@ -127,7 +127,7 @@ class ZombieGame(BaseGameMode):
         # #766 F1: zombie threshold overrides promoted to ``game.zombie.thresholds``.
         # Read once at init (init-frozen); malformed values fall back to ZOMBIE_THRESHOLDS.
         self.zombie_thresholds = resolve_mode_thresholds(
-            read_object_flag("game", "zombie.thresholds", {}), ZOMBIE_THRESHOLDS
+            read_object_flag("game", "zombie.thresholds", {}, game_id=self.game_id), ZOMBIE_THRESHOLDS
         )
 
         # #766 F2: initial zombie count and respawn delay window promoted to game
@@ -135,15 +135,15 @@ class ZombieGame(BaseGameMode):
         # module constants. ``initial_count`` must be a positive int; respawn
         # bounds are non-negative and the min must not exceed the max (else both
         # fall back together to preserve a sane window).
-        initial = read_int_flag("game", "zombie.initial_count", INITIAL_ZOMBIES)
+        initial = read_int_flag("game", "zombie.initial_count", INITIAL_ZOMBIES, game_id=self.game_id)
         self.initial_zombies = initial if isinstance(initial, int) and initial >= 1 else INITIAL_ZOMBIES
 
         respawn_min = resolve_non_negative_duration(
-            read_float_flag("game", "zombie.respawn_min_seconds", ZOMBIE_RESPAWN_MIN),
+            read_float_flag("game", "zombie.respawn_min_seconds", ZOMBIE_RESPAWN_MIN, game_id=self.game_id),
             ZOMBIE_RESPAWN_MIN,
         )
         respawn_max = resolve_non_negative_duration(
-            read_float_flag("game", "zombie.respawn_max_seconds", ZOMBIE_RESPAWN_MAX),
+            read_float_flag("game", "zombie.respawn_max_seconds", ZOMBIE_RESPAWN_MAX, game_id=self.game_id),
             ZOMBIE_RESPAWN_MAX,
         )
         if respawn_min > respawn_max:

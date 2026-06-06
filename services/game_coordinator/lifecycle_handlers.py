@@ -66,6 +66,7 @@ async def handle_shield_seconds(ctx: InterventionContext, manager: InterventionM
         game=game,
         value_kind="float",
         battery_gate=True,
+        game_id=ctx.game_id,
     )
 
     grant = getattr(game, "grant_shield", None)

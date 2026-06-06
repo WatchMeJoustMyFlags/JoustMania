@@ -1497,8 +1497,21 @@ async def end_swapper_game(
         team_1 = [s for s, p in players.items() if p.team == 1]
         if not team_1:
             if killed:
-                # All players on team 0 after at least one swap — end imminent.
-                return killed
+                # All players on team 0 after at least one swap. Do NOT return
+                # yet: the mock's held death acceleration (~2s, #757) can
+                # re-kill a freshly swapped player and bounce them BACK to
+                # team 1 after this query — the game then keeps running 2v2
+                # with no terminal event (seen on CI: state RUNNING, 2v2,
+                # strategy long returned). Wait out the death-hold window and
+                # re-verify convergence is stable before declaring victory.
+                await asyncio.sleep(2.5)
+                players = await get_player_states(game_client, game_id=game_id)
+                if players is None:
+                    return killed  # game ended — converged for real
+                if not any(p.team == 1 for p in players.values()):
+                    return killed  # stable: still all on team 0
+                # Bounce-back happened — keep converging.
+                continue
             # Startup race (caught on #837 CI): proto3 PlayerInfo.team defaults
             # to 0, so a query landing before Swapper assigns teams looks
             # exactly like "everyone converged on team 0". A real Swapper start

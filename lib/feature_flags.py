@@ -178,7 +178,21 @@ def get_flag_client(domain: str):
     return api.get_client(domain=domain)
 
 
-def read_object_flag(domain: str, flag_key: str, default: dict) -> dict:
+def _calibration_context(game_id: str | None) -> EvaluationContext:
+    """Build the EvaluationContext for an init-time calibration read (#838).
+
+    A non-empty ``game_id`` is added as the ``gameId`` attribute so flagd
+    targeting rules can vary calibration per game (A/B shadow experiments via
+    flag config alone). ``None``/empty adds nothing, so an un-targeted
+    calibration flag resolves IDENTICALLY to today — a pure context addition
+    with no behavior change unless a targeting rule references ``gameId``.
+    """
+    if game_id:
+        return EvaluationContext(attributes={"gameId": game_id})
+    return EvaluationContext()
+
+
+def read_object_flag(domain: str, flag_key: str, default: dict, game_id: str | None = None) -> dict:
     """
     Read an object-typed flag once at init time, with a hardcoded fallback.
 
@@ -193,6 +207,10 @@ def read_object_flag(domain: str, flag_key: str, default: dict) -> dict:
         domain: OpenFeature domain / flagSetId (e.g. "game")
         flag_key: Object flag key (e.g. "thresholds")
         default: Fallback value returned on any error or missing flag
+        game_id: Optional owning game id (#838); added as the ``gameId`` context
+            attribute so flagd targeting can vary calibration per game. Omitted
+            from the context when ``None``/empty — un-targeted reads are
+            unchanged.
 
     Returns:
         The flag's object value, or ``default`` on failure.
@@ -200,7 +218,7 @@ def read_object_flag(domain: str, flag_key: str, default: dict) -> dict:
     try:
         init_flag_domain(domain)
         client = get_flag_client(domain)
-        value = client.get_object_value(flag_key, default, EvaluationContext())
+        value = client.get_object_value(flag_key, default, _calibration_context(game_id))
         # get_object_value may return the default sentinel itself; either is fine.
         return value if isinstance(value, dict) else default
     except Exception as e:
@@ -238,7 +256,7 @@ def read_object_flag_variant(domain: str, flag_key: str, targeting_key: str, def
         return default
 
 
-def read_float_flag(domain: str, flag_key: str, default: float) -> float:
+def read_float_flag(domain: str, flag_key: str, default: float, game_id: str | None = None) -> float:
     """
     Read a number-typed flag once at init time, with a hardcoded fallback.
 
@@ -255,6 +273,7 @@ def read_float_flag(domain: str, flag_key: str, default: float) -> float:
         domain: OpenFeature domain / flagSetId (e.g. "game")
         flag_key: Number flag key (e.g. "death_grace_period_seconds")
         default: Fallback value returned on any error or missing flag
+        game_id: Optional owning game id (#838); added as ``gameId`` context.
 
     Returns:
         The flag's float value, or ``default`` on failure.
@@ -262,7 +281,7 @@ def read_float_flag(domain: str, flag_key: str, default: float) -> float:
     try:
         init_flag_domain(domain)
         client = get_flag_client(domain)
-        value = client.get_object_value(flag_key, default, EvaluationContext())
+        value = client.get_object_value(flag_key, default, _calibration_context(game_id))
         # bool is a subclass of int/float; reject it as a numeric flag value.
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return default
@@ -301,7 +320,7 @@ def read_string_flag(domain: str, flag_key: str, default: str) -> str:
         return default
 
 
-def read_int_flag(domain: str, flag_key: str, default: int) -> int:
+def read_int_flag(domain: str, flag_key: str, default: int, game_id: str | None = None) -> int:
     """
     Read an integer-typed flag once at init time, with a hardcoded fallback.
 
@@ -314,6 +333,7 @@ def read_int_flag(domain: str, flag_key: str, default: int) -> int:
         domain: OpenFeature domain / flagSetId (e.g. "game")
         flag_key: Integer flag key (e.g. "zombie.initial_count")
         default: Fallback value returned on any error or missing flag
+        game_id: Optional owning game id (#838); added as ``gameId`` context.
 
     Returns:
         The flag's int value, or ``default`` on failure.
@@ -321,7 +341,7 @@ def read_int_flag(domain: str, flag_key: str, default: int) -> int:
     try:
         init_flag_domain(domain)
         client = get_flag_client(domain)
-        value = client.get_object_value(flag_key, default, EvaluationContext())
+        value = client.get_object_value(flag_key, default, _calibration_context(game_id))
         if isinstance(value, bool):
             return default
         if isinstance(value, int):
