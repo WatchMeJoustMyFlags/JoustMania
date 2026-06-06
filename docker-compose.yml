@@ -38,7 +38,7 @@ x-logging: &default-logging
 services:
   # Redis for pub/sub messaging
   redis:
-    image: redis:7.4-alpine
+    image: redis:8.8-alpine
     container_name: joustmania-redis
     # Port 6379 exposed only within Docker network (no host binding)
     expose:
