@@ -68,6 +68,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 from proto import game_coordinator_pb2  # noqa: E402
 
 from tests.integration.helpers import (  # noqa: E402
+    async_poll_until,
+    flagd_probe_client,
     GameEventCollector,
     build_start_config,
     force_end_game_by_id,
@@ -80,6 +82,7 @@ from tests.integration.helpers import (  # noqa: E402
     verify_controllers_have_color,
 )
 from tests.integration.test_intervention_flow import (  # noqa: E402
+    AGENT_PATH,
     APPLY_TIMEOUT_SECONDS,
     INTERVENTIONS_PATH,
     RELOAD_SETTLE_SECONDS,
@@ -465,6 +468,8 @@ async def _scenario_eliminate_exactly_once(docker_compose, tag: str) -> None:
         applied_after_first = len(_intervention_events(collector, "eliminate_player", blocked="false"))
 
         # Re-read SAME nonce (force reload, value unchanged): no re-apply.
+        # Absence assertion — bounded wait by design (#894): there is no event
+        # to wait for when the correct behavior is "no re-apply".
         rewrite_edge_value_for_game("eliminate_player", game_id, f"{nonce1}:{victim}")
         await asyncio.sleep(RELOAD_SETTLE_SECONDS + 1.0)
         applied_after_reread = len(_intervention_events(collector, "eliminate_player", blocked="false"))
@@ -581,6 +586,8 @@ async def _scenario_global_difficulty(docker_compose, tag: str) -> None:
         applied_after_apply = len(_intervention_events(collector, "adjust_global_difficulty", blocked="false"))
 
         # Revert to neutral 1.0: revert handler runs, no new applied event.
+        # Absence assertion — bounded wait by design (#894): there is no event
+        # to wait for when the correct behavior is "no new event".
         write_state_for_game("global_difficulty_factor", game_id, 1.0, neutral="default")
         await asyncio.sleep(RELOAD_SETTLE_SECONDS + 1.0)
         applied_after_revert = len(_intervention_events(collector, "adjust_global_difficulty", blocked="false"))
@@ -621,9 +628,17 @@ async def _scenario_repeated_writes(docker_compose, tag: str) -> None:
         observed_intermediate = False
         for value in sequence:
             write_targeted_for_game("player_sensitivity_factor", game_id, target, value)
-            await asyncio.sleep(RELOAD_SETTLE_SECONDS)
-            p = await _player(game_client, game_id, target)
-            if p is not None and abs(p.sensitivity_factor - value) <= 0.01:
+
+            # Poll (bounded by the old fixed settle, #894) for THIS value to be
+            # applied; on success move on immediately instead of paying the full
+            # constant. A miss is tolerated by design — under load a write may
+            # be superseded before the coordinator observes it; the asserts
+            # below only require the FINAL value plus >=1 observed intermediate.
+            async def _applied(v=value) -> bool:
+                p = await _player(game_client, game_id, target)
+                return p is not None and abs(p.sensitivity_factor - v) <= 0.01
+
+            if await async_poll_until(_applied, RELOAD_SETTLE_SECONDS):
                 observed_intermediate = True
 
         await _wait_for_sensitivity_factor(game_client, game_id, target, sequence[-1])
@@ -689,8 +704,20 @@ async def test_parallel_interventions(flag_files, docker_compose, headless_clean
     # All batch scenarios share the single global ``interventions_allowed`` flag
     # (not gameId-scopeable); they are all selected to run under ``full``.
     set_interventions_allowed("full")
-    # Let flagd serve the permission flip before any scenario writes.
-    await asyncio.sleep(RELOAD_SETTLE_SECONDS)
+    # Wait until flagd actually SERVES the permission flip before any scenario
+    # writes (#894: condition poll, not a fixed settle).
+    with open(AGENT_PATH) as fh:
+        expected_full = json.load(fh)["flags"]["interventions_allowed"]["variants"]["full"]
+    from openfeature.evaluation_context import EvaluationContext
+
+    with flagd_probe_client(docker_compose, "agent") as flag_client:
+        assert await async_poll_until(
+            lambda: flag_client.get_object_value(
+                "interventions_allowed", None, EvaluationContext()
+            )
+            == expected_full,
+            rewrite=lambda: set_interventions_allowed("full"),
+        ), "flagd did not serve interventions_allowed=full"
 
     # Register tags up front so the fixture sweeps reserved controllers even if a
     # coroutine dies before its own finally-block cleanup runs.

@@ -155,13 +155,17 @@ async def test_pacing_profile_applies_and_reverts(flag_files, docker_compose, ga
             await _wait_applied_count(1)
 
             # frantic preset (distinct value change) -> a second applied event.
-            await asyncio.sleep(RELOAD_SETTLE_SECONDS)
+            # No settle needed (#894): the applied event above proves the calm
+            # write completed the whole flagd-reload -> coordinator-apply chain,
+            # so the frantic write cannot coalesce with it.
             write_state("pacing_profile", "frantic")
             await _wait_applied_count(2)
 
             applied_after_apply = _applied_count()
 
             # Revert to neutral: revert handler restores init windows, no new event.
+            # Absence assertion — bounded wait by design (#894): there is no
+            # event to wait for when the correct behavior is "no new event".
             write_state("pacing_profile", "none")
             await asyncio.sleep(RELOAD_SETTLE_SECONDS + 1.0)
             applied_after_revert = len(

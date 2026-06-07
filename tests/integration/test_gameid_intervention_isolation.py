@@ -38,14 +38,17 @@ from proto import game_coordinator_pb2  # noqa: E402
 from tests.integration.helpers import (  # noqa: E402
     GameEventCollector,
     build_start_config,
+    flagd_probe_client,
     force_end_game_by_id,
     get_game_client,
     get_mock_client,
     kill_players_until_one_remains,
     list_games,
+    poll_until,
     setup_mock_controllers,
     start_game_via_menu,
     start_game_headless,
+    wait_flag_file_restored,
     wait_for_lobby_colors,
 )
 
@@ -55,7 +58,6 @@ _FLAGD_DIR = os.path.abspath(
 INTERVENTIONS_PATH = os.path.join(_FLAGD_DIR, "interventions.json")
 AGENT_PATH = os.path.join(_FLAGD_DIR, "agent.json")
 
-RELOAD_SETTLE_SECONDS = 2.0
 APPLY_TIMEOUT_SECONDS = 15.0
 SUITE_RATE_LIMIT_BUDGET = 50
 
@@ -154,16 +156,38 @@ def flag_files(docker_compose):
     with open(AGENT_PATH) as fh:
         agent_backup = fh.read()
 
+    # Pin the budget and wait until flagd actually SERVES it (#894: condition
+    # poll, not a fixed settle).
     set_policy_budget(SUITE_RATE_LIMIT_BUDGET)
-    time.sleep(RELOAD_SETTLE_SECONDS)
+    from openfeature.evaluation_context import EvaluationContext
+
+    with flagd_probe_client(docker_compose, "agent") as client:
+        assert poll_until(
+            lambda: client.get_integer_value(
+                "policy.max_interventions_per_minute", -1, EvaluationContext()
+            )
+            == SUITE_RATE_LIMIT_BUDGET,
+            rewrite=lambda: set_policy_budget(SUITE_RATE_LIMIT_BUDGET),
+        ), "flagd did not serve the pinned suite rate-limit budget"
 
     yield
 
-    with open(INTERVENTIONS_PATH, "w") as fh:
-        fh.write(interventions_backup)
-    with open(AGENT_PATH, "w") as fh:
-        fh.write(agent_backup)
-    time.sleep(RELOAD_SETTLE_SECONDS)
+    def _restore():
+        with open(INTERVENTIONS_PATH, "w") as fh:
+            fh.write(interventions_backup)
+        with open(AGENT_PATH, "w") as fh:
+            fh.write(agent_backup)
+
+    with open(INTERVENTIONS_PATH) as fh:
+        interventions_mutated = fh.read()
+    with open(AGENT_PATH) as fh:
+        agent_mutated = fh.read()
+    _restore()
+    # Wait until flagd serves the restored baselines before the next test (#894).
+    wait_flag_file_restored(
+        docker_compose, "interventions", interventions_backup, interventions_mutated, _restore
+    )
+    wait_flag_file_restored(docker_compose, "agent", agent_backup, agent_mutated, _restore)
 
 
 # =============================================================================

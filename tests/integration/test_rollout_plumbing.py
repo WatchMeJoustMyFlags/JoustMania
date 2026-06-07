@@ -39,29 +39,26 @@ fixture in test_intervention_flow.py).
 import json
 import os
 import sys
-import time
 
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
+# All flagd-write waits here are condition polls via helpers.poll_until (#894:
+# the old fixed settles became deadlines). Its generous default deadline and
+# `rewrite` self-heal exist because one CI run (27028642150) showed a
+# defaultVariant flip never resolving within 15s while EARLIER flips on the
+# same file did — a missed/coalesced file-watch reload under load; re-writing
+# the file mid-poll produces a fresh inotify event and self-heals that case.
+from tests.integration.helpers import (  # noqa: E402
+    poll_until,
+    wait_flag_file_restored,
+)
+
 # Repo-root-relative path to the bind-mounted flagd config dir (same dir the
 # intervention-flow tests mutate).
 _FLAGD_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../services/flagd"))
 ROLLOUT_PATH = os.path.join(_FLAGD_DIR, "rollout.json")
-
-# flagd debounces file-watch reloads; the RPC provider also needs a moment to
-# reconnect and re-pull after a reload. Generous so this never flakes under CI
-# load (#805 is a known timing flake on the game path; the rollout path is
-# simpler but we stay conservative).
-RELOAD_SETTLE_SECONDS = 2.0
-# Generous: one CI run (27028642150) showed a defaultVariant flip never resolving
-# within 15s while EARLIER flips on the same file did — a missed/coalesced
-# file-watch reload under load. _poll_until therefore also supports re-writing
-# the file mid-poll (see its `rewrite` param), which produces a fresh inotify
-# event and self-heals that case.
-RESOLVE_TIMEOUT_SECONDS = 30.0
-REWRITE_INTERVAL_SECONDS = 2.0
 
 
 # =============================================================================
@@ -124,10 +121,17 @@ def rollout_file(docker_compose):
 
     yield
 
-    with open(ROLLOUT_PATH, "w") as fh:
-        fh.write(backup)
-    # Let flagd reload the restored baseline before the next test mutates it.
-    time.sleep(RELOAD_SETTLE_SECONDS)
+    with open(ROLLOUT_PATH) as fh:
+        mutated = fh.read()
+
+    def _restore():
+        with open(ROLLOUT_PATH, "w") as fh:
+            fh.write(backup)
+
+    _restore()
+    # Wait until flagd actually SERVES the restored baseline before the next
+    # test mutates it (#894: condition poll instead of a fixed settle).
+    wait_flag_file_restored(docker_compose, "rollout", backup, mutated, _restore)
 
 
 # =============================================================================
@@ -161,26 +165,6 @@ def _rollout_client(docker_compose):
     return api.get_client("it_rollout"), provider
 
 
-def _poll_until(predicate, timeout: float = RESOLVE_TIMEOUT_SECONDS, rewrite=None) -> bool:
-    """Poll predicate() until true or timeout (provider connect + flagd reload may
-    lag the file write). Returns the final predicate value.
-
-    ``rewrite``, when given, is an IDEMPOTENT re-application of the file write
-    being waited on, re-invoked every REWRITE_INTERVAL_SECONDS. Each re-write
-    touches the file → fresh inotify event → flagd reloads, self-healing a
-    missed or coalesced file-watch event (observed under CI load)."""
-    deadline = time.time() + timeout
-    last_rewrite = time.time()
-    while time.time() < deadline:
-        if predicate():
-            return True
-        if rewrite is not None and time.time() - last_rewrite >= REWRITE_INTERVAL_SECONDS:
-            rewrite()
-            last_rewrite = time.time()
-        time.sleep(0.3)
-    return predicate()
-
-
 @pytest.mark.asyncio
 async def test_rollout_write_shape_resolves_via_live_flagd(rollout_file, docker_compose):
     """The agent's rollout write shape (strategy=progressive, target_backend flip,
@@ -198,26 +182,30 @@ async def test_rollout_write_shape_resolves_via_live_flagd(rollout_file, docker_
     # operator-intent + loop would have the file look at the start of an episode.
     set_default_variant("strategy", "progressive")
     set_default_variant("target_backend", "rust")
-    time.sleep(RELOAD_SETTLE_SECONDS)
+    # No settle here: the first poll_until below IS the wait for these writes
+    # to be served (with rewrite self-heal), so a fixed sleep is pure cost.
 
     client, provider = _rollout_client(docker_compose)
     try:
         empty = EvaluationContext()
 
-        # strategy + target_backend resolve as written.
-        assert _poll_until(
+        # strategy + target_backend resolve as written. Both polled: the two
+        # writes are separate file versions, so flagd serving the strategy flip
+        # does NOT prove it loaded the later target_backend write too.
+        assert poll_until(
             lambda: client.get_string_value("strategy", "off", empty) == "progressive",
             rewrite=lambda: set_default_variant("strategy", "progressive"),
         ), f"strategy resolved to {client.get_string_value('strategy', 'off', empty)!r}"
-        assert client.get_string_value("target_backend", "python", empty) == "rust", (
-            "target_backend did not resolve to the written rust"
-        )
+        assert poll_until(
+            lambda: client.get_string_value("target_backend", "python", empty) == "rust",
+            rewrite=lambda: set_default_variant("target_backend", "rust"),
+        ), "target_backend did not resolve to the written rust"
 
         # Walk the expansion ladder: each variant flip resolves to its integer.
         ladder = [("none", 0), ("one", 1), ("three", 3), ("six", 6), ("all", 99)]
         for variant, expected in ladder:
             set_controller_count_variant(variant)
-            assert _poll_until(
+            assert poll_until(
                 lambda e=expected: client.get_integer_value("current_controller_count", -1, empty) == e,
                 rewrite=lambda v=variant: set_controller_count_variant(v),
             ), (
@@ -230,7 +218,7 @@ async def test_rollout_write_shape_resolves_via_live_flagd(rollout_file, docker_
         # Rollback shape: the loop resets current_controller_count to "none" (0) on
         # an allowed rollback — assert that exact flip lands too.
         set_controller_count_variant("none")
-        assert _poll_until(
+        assert poll_until(
             lambda: client.get_integer_value("current_controller_count", -1, empty) == 0,
             rewrite=lambda: set_controller_count_variant("none"),
         ), "rollback-to-none did not resolve to 0"

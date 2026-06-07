@@ -49,10 +49,13 @@ from proto import game_coordinator_pb2  # noqa: E402
 
 from tests.integration.helpers import (  # noqa: E402
     GameEventCollector,
+    flagd_probe_client,
     get_game_client,
     get_mock_controller_serials,
+    poll_until,
     setup_mock_controllers,
     start_game_via_menu,
+    wait_flag_file_restored,
 )
 
 # Repo-root-relative path to the bind-mounted flagd config dir. The compose
@@ -62,8 +65,11 @@ _FLAGD_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../serv
 INTERVENTIONS_PATH = os.path.join(_FLAGD_DIR, "interventions.json")
 AGENT_PATH = os.path.join(_FLAGD_DIR, "agent.json")
 
-# flagd debounces file-watch reloads + the game coordinator re-evaluates on the
-# PROVIDER_CONFIGURATION_CHANGED event; give the chain time to converge.
+# Absence window: how long the flagd reload + coordinator re-evaluate chain is
+# given to (not) act before asserting that NOTHING happened. Positive waits are
+# condition polls (#894, see helpers.poll_until); this constant remains ONLY for
+# negative assertions — "the blocked/reverted/re-read write produced no effect"
+# cannot be event-driven, the bounded wait IS the test.
 RELOAD_SETTLE_SECONDS = 2.0
 
 # Mutating a per-player state flag and observing the applied sensitivity_factor
@@ -228,19 +234,40 @@ def flag_files(docker_compose):
     with open(AGENT_PATH) as fh:
         agent_backup = fh.read()
 
-    # Pin the generous budget up front and let flagd reload it before the test
-    # body runs, so the very first intervention write already sees the headroom.
+    # Pin the generous budget up front and wait until flagd actually SERVES it
+    # before the test body runs, so the very first intervention write already
+    # sees the headroom (#894: condition poll, not a fixed settle).
     set_policy_budget(SUITE_RATE_LIMIT_BUDGET)
-    time.sleep(RELOAD_SETTLE_SECONDS)
+    from openfeature.evaluation_context import EvaluationContext
+
+    with flagd_probe_client(docker_compose, "agent") as client:
+        assert poll_until(
+            lambda: client.get_integer_value(
+                "policy.max_interventions_per_minute", -1, EvaluationContext()
+            )
+            == SUITE_RATE_LIMIT_BUDGET,
+            rewrite=lambda: set_policy_budget(SUITE_RATE_LIMIT_BUDGET),
+        ), "flagd did not serve the pinned suite rate-limit budget"
 
     yield
 
-    with open(INTERVENTIONS_PATH, "w") as fh:
-        fh.write(interventions_backup)
-    with open(AGENT_PATH, "w") as fh:
-        fh.write(agent_backup)
-    # Let flagd reload the restored baseline before the next test mutates it.
-    time.sleep(RELOAD_SETTLE_SECONDS)
+    def _restore():
+        with open(INTERVENTIONS_PATH, "w") as fh:
+            fh.write(interventions_backup)
+        with open(AGENT_PATH, "w") as fh:
+            fh.write(agent_backup)
+
+    with open(INTERVENTIONS_PATH) as fh:
+        interventions_mutated = fh.read()
+    with open(AGENT_PATH) as fh:
+        agent_mutated = fh.read()
+    _restore()
+    # Wait until flagd serves the restored baselines (every flag this test
+    # observably mutated) before the next test mutates them (#894).
+    wait_flag_file_restored(
+        docker_compose, "interventions", interventions_backup, interventions_mutated, _restore
+    )
+    wait_flag_file_restored(docker_compose, "agent", agent_backup, agent_mutated, _restore)
 
 
 @pytest.fixture
@@ -332,49 +359,40 @@ async def test_per_player_targeting_resolves_against_live_flagd(flag_files, dock
     resolve correctly via OpenFeature for distinct serials + unknown->default.
     Catches schema/targeting-rule rejections the Go unit tests cannot.
     """
-    from openfeature.contrib.provider.flagd import FlagdProvider
-    from openfeature.contrib.provider.flagd.config import ResolverType
     from openfeature.evaluation_context import EvaluationContext
 
     serial_a, serial_b, unknown = "SER_A", "SER_B", "SER_UNKNOWN"
 
-    # Write two distinct per-serial branches (merged into one if-ladder).
-    write_targeted("player_sensitivity_factor", "default", serial_a, 1.5)
-    write_targeted("player_sensitivity_factor", "default", serial_b, 0.7)
-    time.sleep(RELOAD_SETTLE_SECONDS)
+    def _write_branches():
+        # Write two distinct per-serial branches (merged into one if-ladder).
+        # Idempotent, so it doubles as poll_until's rewrite self-heal.
+        write_targeted("player_sensitivity_factor", "default", serial_a, 1.5)
+        write_targeted("player_sensitivity_factor", "default", serial_b, 0.7)
 
-    host = docker_compose.get_service_host("flagd", 8013)
-    port = int(docker_compose.get_service_port("flagd", 8013))
+    _write_branches()
 
-    provider = FlagdProvider(
-        host=host,
-        port=port,
-        resolver_type=ResolverType.RPC,
-        selector="flagSetId=interventions",
-    )
-    from openfeature import api
+    # resolver="rpc" deliberately: this test's PURPOSE is flagd's server-side
+    # evaluation of the written targeting ladder (in-process would evaluate the
+    # jsonlogic client-side and mask server-side rule rejections).
+    with flagd_probe_client(docker_compose, "interventions", resolver="rpc") as client:
 
-    api.set_provider(provider, domain="it_interventions")
-    client = api.get_client("it_interventions")
+        def _eval(serial: str) -> float:
+            return client.get_float_value(
+                "player_sensitivity_factor", 1.0, EvaluationContext(targeting_key=serial)
+            )
 
-    # Poll: provider connect + flagd reload may lag the file write.
-    def _eval(serial: str) -> float:
-        return client.get_float_value(
-            "player_sensitivity_factor", 1.0, EvaluationContext(targeting_key=serial)
+        # No fixed settle: poll until flagd serves the written ladder (provider
+        # connect + file-watch reload may lag the write), then assert.
+        assert poll_until(
+            lambda: abs(_eval(serial_a) - 1.5) <= 0.01 and abs(_eval(serial_b) - 0.7) <= 0.01,
+            APPLY_TIMEOUT_SECONDS,
+            rewrite=_write_branches,
+        ), (
+            f"ladder did not resolve: serial_a={_eval(serial_a)} (want 1.5), "
+            f"serial_b={_eval(serial_b)} (want 0.7)"
         )
-
-    deadline = time.time() + APPLY_TIMEOUT_SECONDS
-    while time.time() < deadline:
-        if abs(_eval(serial_a) - 1.5) <= 0.01 and abs(_eval(serial_b) - 0.7) <= 0.01:
-            break
-        time.sleep(0.3)
-
-    assert abs(_eval(serial_a) - 1.5) <= 0.01, f"serial_a resolved to {_eval(serial_a)}"
-    assert abs(_eval(serial_b) - 0.7) <= 0.01, f"serial_b resolved to {_eval(serial_b)}"
-    # Unknown serial falls through the if-ladder to the neutral default (1.0).
-    assert abs(_eval(unknown) - 1.0) <= 0.01, f"unknown resolved to {_eval(unknown)}"
-
-    provider.shutdown()
+        # Unknown serial falls through the if-ladder to the neutral default (1.0).
+        assert abs(_eval(unknown) - 1.0) <= 0.01, f"unknown resolved to {_eval(unknown)}"
 
 
 # =============================================================================
@@ -414,6 +432,8 @@ async def test_permission_layer_blocks_disallowed_intervention(flag_files, docke
             )
 
             # Game state unchanged: the blocked intervention never killed anyone.
+            # Absence assertion — kept as a bounded wait by design (#894): there
+            # is no event to wait for when the correct behavior is "nothing".
             await asyncio.sleep(RELOAD_SETTLE_SECONDS)
             assert (await _player(game_client, victim)).alive, (
                 "blocked intervention still killed the player"
