@@ -1444,6 +1444,140 @@ class TestGameplayLoop:
 
 
 # ---------------------------------------------------------------------------
+# Full kill-driven bracket (#903 regression coverage)
+# ---------------------------------------------------------------------------
+
+
+class TestFullBracketKillDriven:
+    """End-to-end bracket completion driven by real kills (not timeouts).
+
+    The pre-existing _gameplay_loop tests resolve every match by TIMEOUT
+    (timeout_forever streams + jumped clock), which exercised a different code
+    path than a real match: a kill sets ``match.is_complete`` inside
+    ``_kill_player_impl``, and the old finalize guard ``if not match.is_complete``
+    then SKIPPED winner-advancement, stalling the bracket so no champion ever
+    emerged (the #903 production bug). These tests kill the current match's
+    player every match, so the whole bracket runs through the kill path and must
+    still crown a champion.
+    """
+
+    def _make_game(self, num_controllers: int, game_id: str):
+        mock_cm = MockControllerManagerService(num_controllers=num_controllers, death_schedule={}, max_duration=10.0)
+        event_collector = EventCollector()
+        game = TournamentGame(
+            controller_manager_client=mock_cm,
+            event_publisher=event_collector.publish,
+            audio_client=None,
+            game_id=game_id,
+            invincibility_seconds=0.0,
+        )
+        return game, mock_cm, event_collector
+
+    @pytest.mark.asyncio
+    async def test_kill_driven_bracket_crowns_champion(self):
+        """A 4-player bracket resolved entirely by kills produces one champion."""
+        from unittest.mock import AsyncMock, patch
+
+        game, mock_cm, event_collector = self._make_game(4, "test_kill_bracket")
+        await game._initialize_players_impl(mock_cm.controllers)
+        game._play_sound = AsyncMock()
+        game.running = True
+        game.gameplay_stream = AsyncGameplayStreamMock(timeout_forever=True)
+
+        # Every match: "kill" player1 of the current match the first time the
+        # stream is read, exactly as a real death would (sets winner + complete
+        # via _kill_player_impl). This drives the kill-decided finalize path.
+        async def kill_p1_of_current(_gameplay_data):
+            match = game.current_match
+            if match and not match.is_complete:
+                await game._kill_player_impl(match.player1_serial, accel_mag=5.0)
+
+        game._process_controller_state = kill_p1_of_current
+
+        # read() must return an update carrying at least one controller entry so
+        # the match loop's ``for gameplay_data in update.controllers`` actually
+        # invokes _process_controller_state (an empty update would never kill,
+        # and the match would run to its full timeout).
+        async def read_with_data():
+            from proto import controller_manager_pb2 as cm
+
+            update = cm.GameplayDataUpdate()
+            update.controllers.add(serial="tick")
+            return update
+
+        game.gameplay_stream.read = read_with_data
+
+        with patch(
+            "services.game_coordinator.games.tournament.asyncio.sleep",
+            new_callable=AsyncMock,
+        ):
+            await game._gameplay_loop()
+
+        # Exactly one non-eliminated player remains: the champion-to-be.
+        survivors = [s for s, p in game.players.items() if p.tournament_state != TournamentState.ELIMINATED]
+        assert len(survivors) == 1, f"expected one survivor, got {survivors}"
+
+        # The champion must have won every round (2 rounds for 4 players).
+        champion = game.players[survivors[0]]
+        assert champion.wins == game.total_rounds == 2
+
+        # Every match in the bracket completed (none left dangling) and all
+        # match_end events fired through the kill path (the bug emitted none).
+        assert all(m.is_complete for m in game.bracket)
+        match_ends = event_collector.get_events_of_type("match_end")
+        assert len(match_ends) == 3  # 2 first-round + 1 final
+
+        # The final win condition recognizes the champion.
+        assert await game._check_win_condition() is True
+        assert champion.tournament_state == TournamentState.CHAMPION
+
+    @pytest.mark.asyncio
+    async def test_kill_driven_match_advances_winner(self):
+        """A single kill-decided match advances its winner to round 2.
+
+        Direct regression for the stalled-bracket bug: before the fix, a
+        kill set is_complete=True and the finalize block (which calls
+        _advance_winner) was skipped, so the winner sat in round 1 forever.
+        """
+        from unittest.mock import AsyncMock
+
+        game, mock_cm, _ = self._make_game(4, "test_kill_advance")
+        await game._initialize_players_impl(mock_cm.controllers)
+        game._play_sound = AsyncMock()
+        game.running = True
+        game.gameplay_stream = AsyncGameplayStreamMock(timeout_forever=True)
+
+        first_match = [m for m in game.bracket if m.round_number == 1 and not m.is_bye][0]
+        game.current_match = first_match
+        winner_serial = first_match.player2_serial
+
+        async def kill_p1(_gameplay_data):
+            await game._kill_player_impl(first_match.player1_serial, accel_mag=5.0)
+
+        game._process_controller_state = kill_p1
+
+        async def read_once():
+            from proto import controller_manager_pb2 as cm
+
+            update = cm.GameplayDataUpdate()
+            update.controllers.add(serial="tick")
+            return update
+
+        game.gameplay_stream.read = read_once
+
+        await game._run_match(first_match)
+
+        # Winner advanced to a round-2 match (the finalize ran).
+        round2 = [m for m in game.bracket if m.round_number == 2]
+        assert any(m.player1_serial == winner_serial or m.player2_serial == winner_serial for m in round2), (
+            "kill-decided winner was not advanced to round 2"
+        )
+        assert game.players[winner_serial].round_number == 2
+        assert game.players[winner_serial].tournament_state == TournamentState.WAITING
+        assert game.players[first_match.player1_serial].tournament_state == TournamentState.ELIMINATED
+
+
+# ---------------------------------------------------------------------------
 # _check_win_condition edge cases
 # ---------------------------------------------------------------------------
 

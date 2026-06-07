@@ -281,7 +281,11 @@ def read_float_flag(domain: str, flag_key: str, default: float, game_id: str | N
     try:
         init_flag_domain(domain)
         client = get_flag_client(domain)
-        value = client.get_object_value(flag_key, default, _calibration_context(game_id))
+        # Number flags must be read with the float getter: the flagd RPC
+        # resolver returns TYPE_MISMATCH for get_object_value() on a numeric
+        # flag, silently dropping every calibration override to its default
+        # (e.g. the tournament/fight_club CI variants never took effect, #903).
+        value = client.get_float_value(flag_key, default, _calibration_context(game_id))
         # bool is a subclass of int/float; reject it as a numeric flag value.
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return default
@@ -341,7 +345,12 @@ def read_int_flag(domain: str, flag_key: str, default: int, game_id: str | None 
     try:
         init_flag_domain(domain)
         client = get_flag_client(domain)
-        value = client.get_object_value(flag_key, default, _calibration_context(game_id))
+        # Number flags must be read with the integer getter: get_object_value()
+        # returns TYPE_MISMATCH for a numeric flag under the flagd RPC resolver,
+        # silently falling back to the default (#903). Read as a float first so
+        # whole-number variants stored as floats (e.g. 2.0) still resolve, then
+        # apply the integral-only coercion below.
+        value = client.get_float_value(flag_key, float(default), _calibration_context(game_id))
         if isinstance(value, bool):
             return default
         if isinstance(value, int):

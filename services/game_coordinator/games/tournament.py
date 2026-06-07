@@ -486,8 +486,19 @@ class TournamentGame(BaseGameMode):
                 # No data received, continue loop (check time/completion)
                 pass
 
-        # Finalize match
-        if not match.is_complete and match.winner_serial:
+        # Finalize match. Runs for BOTH ways a match can end:
+        #  - timeout: the loop set winner_serial and broke (is_complete False);
+        #  - kill: _kill_player_impl set winner_serial AND is_complete True.
+        # The previous `not match.is_complete` guard skipped finalization for
+        # kill-decided matches, so their winner was never advanced and the
+        # bracket stalled (no champion, game never ended) — the core #903 bug.
+        # Idempotency: the winner is still FIGHTING until finalize moves it to
+        # WAITING, so this block runs exactly once even if re-entered.
+        winner_still_fighting = (
+            match.winner_serial is not None
+            and self.players[match.winner_serial].tournament_state == TournamentState.FIGHTING
+        )
+        if match.winner_serial and winner_still_fighting:
             match.is_complete = True
 
             # Determine loser
@@ -669,6 +680,18 @@ class TournamentGame(BaseGameMode):
         else:
             self.current_match.winner_serial = self.current_match.player1_serial
 
+        # Mark the loser ELIMINATED immediately so a SECOND near-simultaneous
+        # kill (e.g. a test killing both fighters, or the #757 mock death-hold
+        # firing on both controllers) is rejected by the FIGHTING guard above
+        # and cannot flip the winner back to the player who just lost. Without
+        # this, blind double-kills corrupted the bracket and it never finished.
+        player.tournament_state = TournamentState.ELIMINATED
+        player.alive = False
+
+        # Signal the match loop to stop; finalization (advance winner, emit
+        # match_end, eliminate loser) happens in _run_match, which now runs its
+        # finalize block for kill-decided matches too (it previously only ran on
+        # the timeout path, so kill wins never advanced and the bracket stalled).
         self.current_match.is_complete = True
 
         winner = self.current_match.winner_serial
