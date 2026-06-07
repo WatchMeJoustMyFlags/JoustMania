@@ -57,6 +57,7 @@ from tests.integration.helpers import (
     setup_mock_controllers,
     start_game_headless,
     verify_controllers_have_color,
+    wait_until_running,
 )
 
 # =============================================================================
@@ -262,6 +263,20 @@ async def _run_mode_headless(docker_compose, spec: ModeSpec, tag: str) -> None:
         # transient cap rejections (sibling games in their ENDING window).
         game_id, collector = await _start_headless_with_retry(
             game_client, build_start_config(spec.mode, serials)
+        )
+
+        # The session must actually be RUNNING before the end strategy may
+        # query it: start_game_headless returns on the first start event (can
+        # be game_starting, #897), and the state-driven end strategies treat
+        # "not RUNNING" from GetGameState as "game already ended" and silently
+        # return — leaving a live game with no kills and no terminal event.
+        # That was the recurring [Swapper] fast-batch failure: under load the
+        # strategy's first query landed inside the stretched STARTING window,
+        # zero SimulateDeath calls ever fired, and the batch timed out on a
+        # healthy 2v2 RUNNING game (#894).
+        running = await wait_until_running(game_client, {game_id}, timeout=20.0)
+        assert game_id in running, (
+            f"{spec.mode} game {game_id} never reached RUNNING (running: {sorted(running)})"
         )
 
         # Controllers must get game colors (non-zero LED, per serial via
