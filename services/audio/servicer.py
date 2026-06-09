@@ -3,7 +3,7 @@ Audio gRPC Servicer for JoustMania
 
 Handles audio playback with priority-based mixing and real-time tempo control.
 - Sound effects: miniaudio for distroless compatibility (Phase 80)
-- Background music: MusicPlayer with resampy for real-time tempo control
+- Background music: MusicPlayer with soxr for real-time tempo control
 """
 
 import asyncio
@@ -170,7 +170,7 @@ class AudioManager:
     Manages audio playback with priority-based mixing and tempo control.
 
     - Sound effects: miniaudio with multi-channel support (Phase 80)
-    - Background music: MusicPlayer with resampy for real-time tempo control
+    - Background music: MusicPlayer with soxr for real-time tempo control
     """
 
     MAX_CHANNELS = 8  # Maximum concurrent sound effects
@@ -380,7 +380,7 @@ class AudioManager:
         """
         Change music tempo with smooth transition.
 
-        Uses resampy for real-time tempo changes (Phase 80).
+        Uses soxr for real-time tempo changes (#911).
 
         Args:
             track_id: ID of track to modify

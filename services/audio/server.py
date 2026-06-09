@@ -3,7 +3,7 @@ JoustMania Audio Microservice
 
 Handles audio playback with priority-based mixing and real-time tempo control.
 - Sound effects: miniaudio for distroless compatibility
-- Background music: MusicPlayer with resampy for real-time tempo control
+- Background music: MusicPlayer with soxr for real-time tempo control
 
 See services/audio/servicer.py for the AudioServiceServicer implementation.
 """

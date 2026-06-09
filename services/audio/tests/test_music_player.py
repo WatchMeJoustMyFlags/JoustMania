@@ -164,6 +164,39 @@ class TestResampleChunk:
         result_array = np.frombuffer(result, dtype=np.int16)
         assert len(result_array) % 2 == 0
 
+    def test_stereo_channels_stay_separated(self):
+        # A signal on the left channel only must not bleed into the right channel
+        num_frames = 4096
+        t = np.arange(num_frames)
+        left = (10000 * np.sin(2 * np.pi * 440 * t / 44100)).astype(np.int16)
+        array = np.zeros(num_frames * 2, dtype=np.int16)
+        array[0::2] = left  # right channel stays silent
+        result = _resample_chunk(array.tobytes(), 1.3, 1.0)
+        result_array = np.frombuffer(result, dtype=np.int16)
+        left_out = result_array[0::2].astype(np.float64)
+        right_out = result_array[1::2].astype(np.float64)
+        assert np.mean(np.abs(left_out)) > 1000  # signal survives on the left
+        assert np.mean(np.abs(right_out)) < 100  # silence stays on the right
+
+    def test_output_length_scales_inversely_with_ratio(self):
+        # Frame count should scale ~1/ratio: ratio 2.0 halves it, 0.6 grows it ~1.67x
+        num_frames = 4096
+        data = self._make_stereo_data(num_frames)
+        for ratio in (0.6, 1.5, 2.0):
+            result = _resample_chunk(data, ratio, 1.0)
+            out_frames = len(np.frombuffer(result, dtype=np.int16)) // 2
+            expected = num_frames / ratio
+            assert abs(out_frames - expected) < expected * 0.05, f"ratio {ratio}: {out_frames} vs ~{expected:.0f}"
+
+    def test_volume_scales_amplitude_proportionally(self):
+        # Half volume should roughly halve the mean amplitude
+        data = self._make_stereo_data(4096, value=10000)
+        full = np.frombuffer(_resample_chunk(data, 1.0, 1.0), dtype=np.int16)
+        half = np.frombuffer(_resample_chunk(data, 1.0, 0.5), dtype=np.int16)
+        full_mean = np.mean(np.abs(full.astype(np.float64)))
+        half_mean = np.mean(np.abs(half.astype(np.float64)))
+        assert abs(half_mean - full_mean / 2) < full_mean * 0.05
+
 
 class TestResampleAudio:
     """Tests for _resample_audio generator."""

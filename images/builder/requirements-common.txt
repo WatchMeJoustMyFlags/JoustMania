@@ -19,10 +19,10 @@ psutil>=5.9.0
 # Common utilities
 pyyaml>=6.0
 
-# Audio processing - pre-compiled to speed up audio service builds
-numpy>=1.24.0
-numba>=0.59.0
-resampy>=0.4.0
+# Audio processing deps (numpy/numba/resampy) were removed in #911: the audio
+# service now uses soxr (wheels, no compilation) and installs numpy+soxr from
+# its own pyproject. Pre-installing them here leaked ~300 MB of numba into
+# EVERY service runtime image via the site-packages COPY in service Dockerfiles.
 
 # Build tools needed for some dependencies
 setuptools>=45

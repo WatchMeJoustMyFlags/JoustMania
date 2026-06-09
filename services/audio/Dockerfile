@@ -56,8 +56,8 @@ RUN python -m compileall -q lib/
 # Copy service dependencies
 COPY services/audio/pyproject.toml /app/services/audio/
 
-# Install workspace packages and service dependencies (miniaudio + resampy instead of pygame + scipy)
-# Heavy deps (numpy, numba, resampy) are pre-compiled in the builder image;
+# Install workspace packages and service dependencies (miniaudio + soxr instead of pygame + scipy)
+# numpy and soxr install from prebuilt wheels (#911 dropped resampy/numba);
 # only miniaudio and pyalsaaudio need compilation here.
 # ARM64: disable auto-vectorization to prevent libmvec.so dependency (x86-only in glibc)
 WORKDIR /app
