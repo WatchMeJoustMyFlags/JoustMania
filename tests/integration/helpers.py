@@ -9,8 +9,11 @@ These helpers provide:
 """
 
 import asyncio
+import contextlib
+import json
 import os
 import sys
+import time
 
 import grpc
 
@@ -26,6 +29,234 @@ from proto import (
     menu_pb2,
     menu_pb2_grpc,
 )
+
+
+# =============================================================================
+# Condition-wait helpers (#894)
+#
+# Replace fixed "write then sleep a constant" settles with condition polls:
+# the old constant becomes the DEADLINE, so the fast path costs ~one poll
+# interval instead of the full constant on every run, and the slow path keeps
+# (or extends) the same upper bound. Generalized from
+# test_rollout_plumbing._poll_until, which proved the shape (incl. the
+# rewrite self-heal) against flagd file-watch reloads under CI load.
+# =============================================================================
+
+# Deadline for a flagd file write to be served via RPC reads. Generous on
+# purpose — it is a worst-case bound, not a paid wait.
+FLAGD_RESOLVE_TIMEOUT_SECONDS = 30.0
+# Cadence for re-applying an idempotent file write while waiting: each
+# re-write touches the file -> fresh inotify event -> flagd reloads,
+# self-healing a missed or coalesced file-watch event (observed under CI load).
+FLAGD_REWRITE_INTERVAL_SECONDS = 2.0
+
+
+def poll_until(
+    predicate,
+    timeout: float = FLAGD_RESOLVE_TIMEOUT_SECONDS,
+    *,
+    interval: float = 0.3,
+    rewrite=None,
+    rewrite_interval: float = FLAGD_REWRITE_INTERVAL_SECONDS,
+) -> bool:
+    """Poll ``predicate()`` until true or ``timeout``; return the final value.
+
+    ``rewrite``, when given, is an IDEMPOTENT re-application of the file write
+    being waited on, re-invoked every ``rewrite_interval`` seconds (see
+    FLAGD_REWRITE_INTERVAL_SECONDS for why).
+    """
+    deadline = time.time() + timeout
+    last_rewrite = time.time()
+    while time.time() < deadline:
+        if predicate():
+            return True
+        if rewrite is not None and time.time() - last_rewrite >= rewrite_interval:
+            rewrite()
+            last_rewrite = time.time()
+        time.sleep(interval)
+    return predicate()
+
+
+async def async_poll_until(
+    predicate,
+    timeout: float = FLAGD_RESOLVE_TIMEOUT_SECONDS,
+    *,
+    interval: float = 0.25,
+    rewrite=None,
+    rewrite_interval: float = FLAGD_REWRITE_INTERVAL_SECONDS,
+) -> bool:
+    """Async twin of :func:`poll_until`. ``predicate`` may be sync (a quick
+    RPC/in-memory check) or a coroutine function; same for ``rewrite``."""
+
+    async def _eval(fn):
+        result = fn()
+        if asyncio.iscoroutine(result):
+            result = await result
+        return result
+
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
+    last_rewrite = loop.time()
+    while loop.time() < deadline:
+        if await _eval(predicate):
+            return True
+        if rewrite is not None and loop.time() - last_rewrite >= rewrite_interval:
+            await _eval(rewrite)
+            last_rewrite = loop.time()
+        await asyncio.sleep(interval)
+    return await _eval(predicate)
+
+
+@contextlib.contextmanager
+def flagd_probe_client(docker_compose, flag_set: str, *, resolver: str = "in_process"):
+    """Short-lived OpenFeature client bound to ``flagSetId=<flag_set>`` on the
+    live flagd, for polling that a file write is actually being SERVED — the
+    condition every former RELOAD_SETTLE sleep was waiting on.
+
+    ``resolver``:
+    - ``"in_process"`` (default): the sync-stream engine on port 8015 — the
+      SAME path every service reads flags through (lib/feature_flags), so the
+      probe observes exactly what the services observe. Also the only resolver
+      that can read top-level LIST flags (e.g. ``interventions_allowed``): the
+      RPC resolver's object channel is a protobuf Struct (a map), so a list is
+      TYPE_MISMATCH there — the object-flag sibling of the #903 numeric trap.
+    - ``"rpc"``: the evaluation API on port 8013, for tests whose PURPOSE is
+      probing flagd's server-side rule evaluation. Cache disabled: the RPC
+      LRU can serve the first resolution forever if change-event invalidation
+      doesn't arrive for a selector'd flag set (CI run 27029212634), and
+      settle-polling exists precisely to observe live re-resolution.
+    """
+    from openfeature import api
+    from openfeature.contrib.provider.flagd import FlagdProvider
+    from openfeature.contrib.provider.flagd.config import CacheType, ResolverType
+
+    if resolver == "in_process":
+        provider = FlagdProvider(
+            host=docker_compose.get_service_host("flagd", 8015),
+            port=int(docker_compose.get_service_port("flagd", 8015)),
+            resolver_type=ResolverType.IN_PROCESS,
+            selector=f"flagSetId={flag_set}",
+        )
+    else:
+        provider = FlagdProvider(
+            host=docker_compose.get_service_host("flagd", 8013),
+            port=int(docker_compose.get_service_port("flagd", 8013)),
+            resolver_type=ResolverType.RPC,
+            selector=f"flagSetId={flag_set}",
+            cache=CacheType.DISABLED,
+        )
+    domain = f"it_probe_{flag_set}_{resolver}"
+    api.set_provider(provider, domain=domain)
+    try:
+        yield api.get_client(domain)
+    finally:
+        provider.shutdown()
+
+
+def flag_default_value(doc: dict, flag_key: str):
+    """The value a flag resolves to with an empty context: its defaultVariant's
+    value. Used to derive the expected post-restore canary value from a
+    snapshotted flag-file document."""
+    flag = doc["flags"][flag_key]
+    return flag["variants"][flag["defaultVariant"]]
+
+
+def _resolve_flag_typed(client, flag_key: str, expected, context):
+    """Resolve ``flag_key`` with the getter matching ``expected``'s type.
+
+    Numeric flags MUST use the typed getters — get_object_value() is
+    TYPE_MISMATCH for numbers under the flagd RPC resolver and silently
+    returns the default (#903)."""
+    if isinstance(expected, bool):
+        return client.get_boolean_value(flag_key, not expected, context)
+    if isinstance(expected, str):
+        return client.get_string_value(flag_key, "__unset__", context)
+    if isinstance(expected, (int, float)):
+        return client.get_float_value(flag_key, float("nan"), context)
+    return client.get_object_value(flag_key, None, context)
+
+
+def _flag_values_match(got, expected) -> bool:
+    if isinstance(expected, (int, float)) and not isinstance(expected, bool):
+        try:
+            return abs(float(got) - float(expected)) <= 1e-9
+        except (TypeError, ValueError):
+            return False
+    return got == expected
+
+
+def wait_flag_file_restored(
+    docker_compose,
+    flag_set: str,
+    backup_text: str,
+    mutated_text: str,
+    restore,
+    timeout: float = FLAGD_RESOLVE_TIMEOUT_SECONDS,
+) -> None:
+    """Wait until flagd actually SERVES a restored flag file's baseline (#894).
+
+    Replaces the fixed post-restore settle in snapshot/restore fixtures with a
+    condition poll on exactly the flags the test observably mutated, derived by
+    diffing ``mutated_text`` (the file content just before restore) against
+    ``backup_text`` (the snapshot that was written back):
+
+    - a flag whose empty-context value (defaultVariant's value) differs must
+      serve the baseline value again;
+    - a flag that grew ``agent_<serial>`` targeting variants must resolve to
+      the baseline value FOR THOSE SERIALS again (the ladder is gone);
+    - a flag that grew gameId-scoped branches (recorded in the ``_branches``
+      side-registry by the *_for_game writers) must resolve to the baseline
+      value FOR THOSE (gameId, serial) scopes again.
+
+    ``restore`` re-writes the backup and is used as the poll's rewrite
+    self-heal (fresh inotify event for a missed/coalesced file-watch reload).
+    If the test made no observable mutation there is nothing flagd could serve
+    stale, and this returns immediately.
+
+    Deliberately unchecked: gameId-scoped edge writes that do NOT register in
+    ``_branches`` (e.g. ``write_edge_for_game``). Their targeting only matches
+    the writing test's (now-ended) game_id, so a stale serve resolves to the
+    neutral default for every later game — harmless by the #838 design.
+    """
+    from openfeature.evaluation_context import EvaluationContext
+
+    backup_doc = json.loads(backup_text)
+    mutated_doc = json.loads(mutated_text)
+
+    checks = []  # (flag_key, EvaluationContext, expected_baseline_value)
+    for key, mflag in mutated_doc.get("flags", {}).items():
+        bflag = backup_doc.get("flags", {}).get(key)
+        if bflag is None:
+            continue  # flag added by the test; gone after restore, nothing to read
+        baseline = bflag["variants"][bflag["defaultVariant"]]
+        if not _flag_values_match(mflag["variants"].get(mflag["defaultVariant"]), baseline):
+            checks.append((key, EvaluationContext(), baseline))
+        for vname in mflag["variants"]:
+            if vname.startswith("agent_") and vname not in bflag["variants"]:
+                ctx = EvaluationContext(targeting_key=vname[len("agent_"):])
+                checks.append((key, ctx, baseline))
+        for scope in mflag.get("_branches", {}).values():
+            ctx = EvaluationContext(
+                targeting_key=scope.get("serial"),
+                attributes={"gameId": scope.get("gameId")},
+            )
+            checks.append((key, ctx, baseline))
+
+    if not checks:
+        return
+
+    with flagd_probe_client(docker_compose, flag_set) as client:
+
+        def _served() -> bool:
+            for key, ctx, baseline in checks:
+                if not _flag_values_match(_resolve_flag_typed(client, key, baseline, ctx), baseline):
+                    return False
+            return True
+
+        assert poll_until(_served, timeout, rewrite=restore), (
+            f"flagd did not serve the restored {flag_set} baseline for "
+            f"{[k for k, _, _ in checks]}"
+        )
 
 
 # =============================================================================
