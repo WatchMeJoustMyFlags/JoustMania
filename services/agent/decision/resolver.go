@@ -116,8 +116,8 @@ type Resolver struct {
 	chain []Backend
 
 	// mu guards available. The decision hot path takes it for a cheap read; the
-	// background refresh takes it for the write. Held only around the slice copy /
-	// map write, never across a probe (probes run before the lock is taken).
+	// background refresh takes it for the write. Held only around the map read and
+	// write, never across a probe (probes run before the lock is taken).
 	mu sync.Mutex
 	// available is the cached reachability per tier name, refreshed by the
 	// background ticker (refresh) or an explicit Refresh. A tier absent from the map
@@ -246,15 +246,20 @@ func (r *Resolver) Refresh(ctx context.Context) {
 	r.mu.Unlock()
 }
 
-// Start launches the background re-probe loop and returns immediately (#741). It
-// probes ONCE synchronously first so the cache is populated before the agent
-// serves its first decision (otherwise the first interval would resolve to rules
-// even with a reachable tier), then re-probes every interval until ctx is
-// cancelled. main.go calls this once on the shared Resolver during startup; it
+// Start launches the background re-probe loop and returns immediately (#741). The
+// FIRST probe runs INSIDE the goroutine, not synchronously, so agent startup is
+// never blocked waiting on optional inference endpoints: a black-holed Jetson or
+// cloud endpoint would otherwise stall the server's readiness by up to the dial
+// timeout per tier. Until that first probe completes the cache is empty and
+// resolve() serves from rules — the fail-safe floor — which is harmless here:
+// nothing consults the resolver before then (the #847 cadence floor delays the
+// first LLM attempt, and #739, the actual call, is not wired yet), so the brief
+// rules window costs nothing. After priming it re-probes every interval until ctx
+// is cancelled. main.go calls this once on the shared Resolver during startup; it
 // must not be called twice on the same Resolver.
 func (r *Resolver) Start(ctx context.Context) {
-	r.Refresh(ctx) // prime the cache before the first decision
 	go func() {
+		r.Refresh(ctx) // prime the cache in the background, off the startup path
 		ticker := time.NewTicker(r.interval)
 		defer ticker.Stop()
 		for {
