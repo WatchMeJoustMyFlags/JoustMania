@@ -167,6 +167,15 @@
       },
       "defaultVariant": "default"
     },
+    "policy.coordinator_backstop_per_minute": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 60,
+        "strict": 20,
+        "generous": 120
+      },
+      "defaultVariant": "default"
+    },
     "fitness.endurance.min_session_seconds": {
       "state": "ENABLED",
       "variants": {

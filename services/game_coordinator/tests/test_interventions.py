@@ -85,12 +85,21 @@ def make_manager(
     allowed=None,
     battery=None,
     game=None,
-    budget=2,
+    backstop=60,
     threshold=20,
     objectives=None,
     time_fn=None,
 ):
-    """Build a manager wired with fake clients, bypassing start()."""
+    """Build a manager wired with fake clients, bypassing start().
+
+    ``backstop`` is the coordinator's GLOBAL BACKSTOP budget (#919) — the
+    ``policy.coordinator_backstop_per_minute`` flag that ``_refresh_budget``
+    reads. It is deliberately generous by default (60) so normal multi-session
+    traffic never trips it; tests that exercise the backstop set it low. NOTE the
+    coordinator no longer reads ``policy.max_interventions_per_minute`` — that is
+    the agent's authoritative per-game budget and is set here only so the value
+    is present for any code/tests that still inspect it.
+    """
     events = []
 
     async def publisher(event_type, data):
@@ -98,7 +107,10 @@ def make_manager(
 
     agent_values = {
         "interventions_allowed": list(ALL_TYPES) if allowed is None else allowed,
-        "policy.max_interventions_per_minute": budget,
+        # Agent-owned per-game budget (NOT read by the coordinator backstop).
+        "policy.max_interventions_per_minute": 2,
+        # Coordinator-owned generous global backstop (what _refresh_budget reads).
+        "policy.coordinator_backstop_per_minute": backstop,
         "policy.battery_threshold": threshold,
     }
     if objectives is not None:
@@ -112,7 +124,7 @@ def make_manager(
     )
     mgr._interventions_client = FakeFlagClient(interventions or {})
     mgr._agent_client = FakeFlagClient(agent_values)
-    mgr._rate_limiter.set_budget(float(budget))
+    mgr._rate_limiter.set_budget(float(backstop))
     return mgr, events
 
 
@@ -305,20 +317,25 @@ async def test_empty_allowed_blocks_everything():
 
 
 # --------------------------------------------------------------------------- #
-# Enforcement: weighted rate limit
+# Enforcement: weighted rate limit — the GLOBAL BACKSTOP (#919)
+#
+# The coordinator limiter is the generous process-global backstop, not the
+# per-game governor (that is the agent's). These tests pin a LOW backstop to
+# prove the safety net still trips on a flood; the "normal traffic never trips"
+# and "per-game independence" properties are covered further below.
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
-async def test_rate_limit_blocks_after_budget_exhausted():
+async def test_backstop_blocks_after_global_budget_exhausted():
     clock = Clock()
     mgr, events = make_manager(
         interventions={"eliminate_player": "1:ctrl_a"},  # hard = 2.0
-        budget=2,
+        backstop=2,  # tiny backstop so the flood trips it immediately
         time_fn=clock,
     )
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()  # consumes 2.0 (applied)
         mgr._interventions_client.set("eliminate_player", "2:ctrl_b")  # new trigger
-        await mgr.evaluate_all()  # budget exhausted -> blocked
+        await mgr.evaluate_all()  # backstop exhausted -> blocked
     elim = [d for et, d in events if et == GameEvent.AGENT_INTERVENTION and d["type"] == "eliminate_player"]
     assert elim[0]["blocked"] == "false"
     assert elim[1]["blocked"] == "true"
@@ -326,9 +343,9 @@ async def test_rate_limit_blocks_after_budget_exhausted():
 
 
 @pytest.mark.asyncio
-async def test_rate_limit_window_slide_allows_again():
+async def test_backstop_window_slide_allows_again():
     clock = Clock()
-    mgr, events = make_manager(interventions={"eliminate_player": "1:ctrl_a"}, budget=2, time_fn=clock)
+    mgr, events = make_manager(interventions={"eliminate_player": "1:ctrl_a"}, backstop=2, time_fn=clock)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
         clock.advance(61.0)
@@ -339,13 +356,13 @@ async def test_rate_limit_window_slide_allows_again():
 
 
 @pytest.mark.asyncio
-async def test_blocked_intervention_does_not_consume_budget():
-    """A type blocked by membership must not eat rate-limit budget."""
+async def test_blocked_intervention_does_not_consume_backstop_budget():
+    """A type blocked by membership must not eat backstop budget."""
     clock = Clock()
     mgr, _ = make_manager(
         interventions={"eliminate_player": "1:ctrl_a"},
         allowed=["eliminate_player"],
-        budget=2,
+        backstop=2,
         time_fn=clock,
     )
     # block eliminate via membership by removing it AFTER constructing? Instead
@@ -354,6 +371,84 @@ async def test_blocked_intervention_does_not_consume_budget():
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()  # blocked (not allowed) -> no reservation
     assert mgr._rate_limiter.current_weight() == pytest.approx(0.0)
+
+
+# --------------------------------------------------------------------------- #
+# Defense-in-depth budget contract (#919): the coordinator limiter is a GENEROUS
+# GLOBAL BACKSTOP, not the per-game governor. These tests pin the contract:
+#   - the default backstop is generous and is read from the dedicated
+#     coordinator flag (NOT the agent's per-game budget flag — drift guard);
+#   - normal multi-session traffic stays well under the backstop and is never
+#     throttled by the coordinator (per-game pacing is the agent's job).
+# --------------------------------------------------------------------------- #
+def test_default_backstop_is_generous():
+    """A freshly-constructed manager starts with the generous global backstop,
+    far above the agent's per-game budget — so it never governs normal pacing."""
+    from services.game_coordinator.interventions import (
+        DEFAULT_COORDINATOR_BACKSTOP_BUDGET,
+    )
+
+    mgr, _ = make_manager()
+    # Constructed budget is the generous default, not the agent per-game value.
+    assert mgr._rate_limiter._budget == pytest.approx(DEFAULT_COORDINATOR_BACKSTOP_BUDGET)
+    assert DEFAULT_COORDINATOR_BACKSTOP_BUDGET >= 60.0
+
+
+def test_refresh_budget_reads_coordinator_flag_not_per_game_flag():
+    """Drift guard (#919): _refresh_budget must read
+    policy.coordinator_backstop_per_minute and IGNORE the agent's
+    policy.max_interventions_per_minute, so the two layers can never silently
+    converge on one shared per-game value."""
+    mgr, _ = make_manager(backstop=42)
+    # Agent's per-game budget set to a small, different value.
+    mgr._agent_client.set("policy.max_interventions_per_minute", 1)
+    mgr._refresh_budget()
+    # Coordinator backstop tracks ONLY its own flag, never the per-game one.
+    assert mgr._rate_limiter._budget == pytest.approx(42.0)
+
+    mgr._agent_client.set("policy.coordinator_backstop_per_minute", 99)
+    mgr._refresh_budget()
+    assert mgr._rate_limiter._budget == pytest.approx(99.0)
+
+
+def test_refresh_budget_falls_back_to_generous_default_when_flag_absent():
+    """When the coordinator flag is unreachable, the backstop falls back to the
+    generous default — it must NOT collapse to the small per-game budget."""
+    from services.game_coordinator.interventions import (
+        DEFAULT_COORDINATOR_BACKSTOP_BUDGET,
+    )
+
+    mgr, _ = make_manager()
+    # Remove the coordinator flag entirely; leave a small per-game value present.
+    mgr._agent_client.values.pop("policy.coordinator_backstop_per_minute", None)
+    mgr._agent_client.set("policy.max_interventions_per_minute", 1)
+    mgr._refresh_budget()
+    assert mgr._rate_limiter._budget == pytest.approx(DEFAULT_COORDINATOR_BACKSTOP_BUDGET)
+
+
+@pytest.mark.asyncio
+async def test_normal_multi_session_traffic_does_not_trip_backstop():
+    """Normal traffic across several concurrent games — each well within its own
+    authoritative per-game budget — stays far under the generous global backstop,
+    so the coordinator never throttles it. Here we simulate many distinct
+    interventions (one per game's worth of activity) inside one window and assert
+    none are blocked.
+
+    Each game at the default agent budget (2.0/min) emitting a single hard (2.0)
+    intervention => 8 concurrent games = 16.0 weight, still < 60 default backstop.
+    """
+    clock = Clock()
+    # Default generous backstop (60). Fire 8 distinct hard interventions (16.0).
+    mgr, events = make_manager(time_fn=clock)  # backstop defaults to 60
+    with patch("services.game_coordinator.metrics.interventions_total"):
+        for i in range(8):
+            mgr._interventions_client.set("eliminate_player", f"{i}:ctrl_{i}")
+            await mgr.evaluate_all()
+    elim = [d for et, d in events if et == GameEvent.AGENT_INTERVENTION and d["type"] == "eliminate_player"]
+    assert len(elim) == 8
+    assert all(d["blocked"] == "false" for d in elim)
+    # 8 hard interventions = 16.0 weight, comfortably under the 60 backstop.
+    assert mgr._rate_limiter.current_weight() == pytest.approx(16.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -522,7 +617,7 @@ async def test_multiple_flags_evaluated_in_one_pass():
         # shield_seconds is player-targeted: it resolves per active serial, so a
         # live game with at least one player is required for it to apply.
         game=FakeGame("Nonstop Joust", players={"p1": FakePlayer("p1")}),
-        budget=10,
+        backstop=10,
     )
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
@@ -550,7 +645,7 @@ async def test_player_targeted_state_dispatches_on_resolved_change():
     """A player-targeted state flag dispatches when its per-serial resolved value
     moves off neutral, even though the global defaultVariant never changes."""
     game = FakeGame("Nonstop Joust", players={"p1": FakePlayer("p1")})
-    mgr, events = make_manager(interventions={"player_sensitivity_factor": 1.0}, game=game, budget=10)
+    mgr, events = make_manager(interventions={"player_sensitivity_factor": 1.0}, game=game, backstop=10)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()  # neutral 1.0 -> no dispatch
     assert _applied(events, "adjust_player_sensitivity") == []
@@ -566,7 +661,7 @@ async def test_player_targeted_state_no_redispatch_when_unchanged():
     """Re-evaluating an unchanged resolved map does not re-fire (no spurious
     metric/event or rate-limit consumption)."""
     game = FakeGame("Nonstop Joust", players={"p1": FakePlayer("p1")})
-    mgr, events = make_manager(interventions={"player_sensitivity_factor": 1.5}, game=game, budget=10)
+    mgr, events = make_manager(interventions={"player_sensitivity_factor": 1.5}, game=game, backstop=10)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
         await mgr.evaluate_all()  # same resolved map -> no second dispatch
@@ -576,7 +671,7 @@ async def test_player_targeted_state_no_redispatch_when_unchanged():
 @pytest.mark.asyncio
 async def test_player_targeted_state_no_game_is_noop():
     """No live game means no serials to target: no dispatch, no crash."""
-    mgr, events = make_manager(interventions={"shield_seconds": 5}, game=None, budget=10)
+    mgr, events = make_manager(interventions={"shield_seconds": 5}, game=None, backstop=10)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
     assert _applied(events, "grant_shield") == []
@@ -587,7 +682,7 @@ async def test_player_targeted_state_revert_to_neutral_does_not_fire():
     """Reverting all serials back to neutral collapses the change key to empty
     and dispatches nothing (shields/factors simply expire/reset)."""
     game = FakeGame("Nonstop Joust", players={"p1": FakePlayer("p1")})
-    mgr, events = make_manager(interventions={"shield_seconds": 5}, game=game, budget=10)
+    mgr, events = make_manager(interventions={"shield_seconds": 5}, game=game, backstop=10)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()  # 5 -> applied
         mgr._interventions_client.set("shield_seconds", 0)
