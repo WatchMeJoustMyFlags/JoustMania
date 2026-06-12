@@ -39,8 +39,9 @@ import (
 //   - applies it through the SAME runDecision permission chain a sync decision uses.
 //
 // On timeout / infer-error / unparseable it falls back to the deterministic rules
-// engine FOR THE CURRENT CONTEXT, so the game always gets a decision — the #741
-// timeout->rules chain, honoring "the system always decides".
+// engine FOR THE CURRENT CONTEXT — the #741 timeout->rules chain, so the rules
+// engine is always CONSULTED (subject to its own evalInterval cadence; see
+// fallbackToRules) rather than the loop silently dropping the cycle.
 func (l *Loop) applyAsyncResult(root context.Context, snapshot flags.Snapshot, trig EvalTrigger, out asyncOutcome) {
 	// Build the apply audit root. It is backdated to the trigger T0 (the fire cycle's
 	// Export arrival) so the trace duration covers the whole fire->infer->apply span,
@@ -206,8 +207,12 @@ func (l *Loop) applyOneAsync(ctx context.Context, applyRoot trace.Span, snapshot
 // fallbackToRules runs the deterministic rules engine for the CURRENT context and
 // applies its decisions when the async LLM result could not be used (#917): a
 // timeout, or an infer-error / unparseable response. This is the #741
-// timeout->rules chain executed in the async completion path, so the game always
-// gets a decision even though the loop never blocked.
+// timeout->rules chain executed in the async completion path, so the rules engine
+// is CONSULTED for the current context even though the loop never blocked. Note it
+// is "consulted", not "always emits": ObjectiveRules carries its own ~1s
+// evalInterval throttle, so if the synchronous loop ran rules <1s before this
+// timeout lands, Evaluate returns no decision this round — the engine's intended
+// cadence, not a dropped decision.
 //
 // cause is what made the LLM result unusable: DiscardTimeout (budget elapsed,
 // recorded as the discard reason) or FallbackUnparseable (the tier answered, but
