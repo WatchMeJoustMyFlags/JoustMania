@@ -90,4 +90,13 @@ type GameContext struct {
 	Session   SessionSignals
 	Players   map[string]*PlayerSignals
 	UpdatedAt time.Time
+
+	// Timeline is a bounded, oldest-first slice of the partition's recent rolling
+	// narrative (#916): periodic state deltas, eliminations, and session phase
+	// transitions, each timestamped. It is a SNAPSHOT copy of the Store's ring
+	// buffer taken in Snapshot(), so it shares no backing array with the live ring
+	// and is safe to render after later Store mutations. nil when nothing has been
+	// recorded yet. The llm package renders it into a compact timeline section in
+	// both the in-game prompt (#739) and the retro (#844) via RenderTimeline.
+	Timeline []TimelineEvent
 }

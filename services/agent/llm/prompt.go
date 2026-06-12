@@ -166,6 +166,8 @@ func buildUser(ctx gamecontext.GameContext, now time.Time) string {
 	fmt.Fprintf(&b, "  game_active: %s\n", boolPtrOrUnknown(ctx.Session.GameActive))
 	fmt.Fprintf(&b, "  elimination_sequence: [%s]\n", strings.Join(ctx.Session.EliminationSequence, ", "))
 
+	writeTimeline(&b, ctx, now)
+
 	b.WriteString("\nPlayers (sorted by serial; \"unknown\" = signal never observed):\n")
 	if len(ctx.Players) == 0 {
 		b.WriteString("  (none)")
@@ -193,6 +195,26 @@ func buildUser(ctx gamecontext.GameContext, now time.Time) string {
 	}
 	b.WriteString(strings.Join(lines, "\n"))
 	return b.String()
+}
+
+// writeTimeline renders the compact RECENT EVENTS section shared by the in-game
+// prompt and the retro (#916): the bounded rolling narrative the GameContext now
+// carries (state deltas, eliminations, phase transitions), one line per event in
+// oldest-first order with a relative age. An empty timeline renders "(none)" so
+// the section is always present and deterministic — the prompt never reads the
+// wall clock; `now` (RenderTimeline's reference) is the injected BuildInput.Now.
+func writeTimeline(b *strings.Builder, ctx gamecontext.GameContext, now time.Time) {
+	b.WriteString("\nRecent events (oldest first; age relative to captured_at):\n")
+	lines := gamecontext.RenderTimeline(ctx.Timeline, now)
+	if len(lines) == 0 {
+		b.WriteString("  (none)\n")
+		return
+	}
+	for _, line := range lines {
+		b.WriteString("  ")
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
 }
 
 // floatPtrOrUnknown renders a *float64 as a 2-decimal fixed string, or the

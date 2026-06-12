@@ -350,3 +350,55 @@ func TestMux_SpanRouting(t *testing.T) {
 		t.Error("P2 bled into game-A")
 	}
 }
+
+// TestMux_TimelineIsolation verifies the #916 rolling narrative is per-partition:
+// two concurrent games accumulate independent timelines, and one game's
+// eliminations/state deltas never appear in the other's. This is the per-game
+// isolation acceptance criterion — the timeline lives on the per-game Store, so
+// it inherits the multiplexer's partition isolation for free.
+func TestMux_TimelineIsolation(t *testing.T) {
+	clk := &muxClock{t: time.Unix(1000, 0)}
+	mux := newTestMux(clk, time.Hour, time.Hour, nil, nil)
+
+	// Game A: start + two distinct intensities (state deltas) + an elimination.
+	mux.ApplyMetrics(gameActiveFor("game-A", 1))
+	mux.ApplyMetrics(playerIntensityFor("PA", "game-A", 1.0))
+	mux.ApplyMetrics(playerIntensityFor("PA", "game-A", 2.0))
+
+	// Game B: start only.
+	mux.ApplyMetrics(gameActiveFor("game-B", 1))
+
+	a, _ := mux.Snapshot("game-A")
+	b, _ := mux.Snapshot("game-B")
+
+	if len(a.Timeline) <= len(b.Timeline) {
+		t.Fatalf("game-A timeline (%d) should be richer than game-B's (%d)", len(a.Timeline), len(b.Timeline))
+	}
+	// Game B saw only its start phase.
+	if len(b.Timeline) != 1 || b.Timeline[0].Kind != EventPhase {
+		t.Errorf("game-B timeline = %v, want a single phase:start", b.Timeline)
+	}
+	// Game A's narrative must carry a phase and at least one state delta and NOT
+	// have leaked into B (already asserted by B having exactly its own one entry).
+	var sawState bool
+	for _, e := range a.Timeline {
+		if e.Kind == EventStateDelta {
+			sawState = true
+		}
+	}
+	if !sawState {
+		t.Error("game-A timeline missing its state deltas")
+	}
+
+	// Evicting game-A (after its end + grace) must not touch game-B's narrative.
+	mux.ApplyMetrics(gameActiveFor("game-A", 0)) // end A
+	clk.advance(2 * time.Hour)
+	mux.EvictStale() // A drained + removed; B still active
+	if _, ok := mux.Snapshot("game-A"); ok {
+		t.Fatal("game-A partition should be evicted")
+	}
+	b2, okB := mux.Snapshot("game-B")
+	if !okB || len(b2.Timeline) != 1 {
+		t.Errorf("game-B timeline disturbed by game-A eviction: ok=%v timeline=%v", okB, b2.Timeline)
+	}
+}

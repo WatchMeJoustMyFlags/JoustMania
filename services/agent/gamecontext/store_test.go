@@ -191,3 +191,148 @@ func TestStore_ConcurrencySmoke(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// --- #916 rolling-narrative Store integration ---
+
+// timelineKinds extracts the kinds of a snapshot's timeline, in order.
+func timelineKinds(snap GameContext) []TimelineEventKind {
+	out := make([]TimelineEventKind, len(snap.Timeline))
+	for i, e := range snap.Timeline {
+		out[i] = e.Kind
+	}
+	return out
+}
+
+func hasKind(snap GameContext, k TimelineEventKind) bool {
+	for _, e := range snap.Timeline {
+		if e.Kind == k {
+			return true
+		}
+	}
+	return false
+}
+
+// TestStore_TimelineAccumulates checks that the Store records a phase-start, a
+// state delta, and an elimination into the rolling narrative, in observation
+// order, on the partition's snapshot (#916).
+func TestStore_TimelineAccumulates(t *testing.T) {
+	clk := &clock{t: time.Unix(0, 0)}
+	s := NewStore(time.Hour, time.Hour, clk.now)
+
+	s.SetGameActive(true) // phase: start
+	clk.advance(time.Second)
+	s.SetActivePlayerCount(3) // state delta
+	clk.advance(time.Second)
+	s.SetActivePlayerCount(2) // changed -> another state delta
+	clk.advance(time.Second)
+	s.RecordElimination("A") // elimination
+
+	got := timelineKinds(s.Snapshot())
+	want := []TimelineEventKind{EventPhase, EventStateDelta, EventStateDelta, EventElimination}
+	if len(got) != len(want) {
+		t.Fatalf("timeline kinds = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("event[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestStore_TimelineStateDeltaDeduped verifies a repeated identical aggregate
+// does NOT churn the ring: only CHANGES are recorded (#916).
+func TestStore_TimelineStateDeltaDeduped(t *testing.T) {
+	clk := &clock{t: time.Unix(0, 0)}
+	s := NewStore(time.Hour, time.Hour, clk.now)
+
+	s.SetActivePlayerCount(3)
+	s.SetActivePlayerCount(3) // identical -> no new entry
+	s.SetActivePlayerCount(3)
+	if n := len(s.Snapshot().Timeline); n != 1 {
+		t.Fatalf("timeline len = %d, want 1 (identical deltas deduped)", n)
+	}
+	s.SetActivePlayerCount(2) // change -> one more
+	if n := len(s.Snapshot().Timeline); n != 2 {
+		t.Fatalf("timeline len = %d, want 2 after a real change", n)
+	}
+}
+
+// TestStore_TimelinePhaseStartEnd checks both phase transitions are recorded,
+// and that a restart clears the prior game's narrative (#916).
+func TestStore_TimelinePhaseStartEnd(t *testing.T) {
+	clk := &clock{t: time.Unix(0, 0)}
+	s := NewStore(time.Hour, time.Hour, clk.now)
+
+	s.SetGameActive(true)
+	s.RecordElimination("A")
+	s.SetGameActive(false) // phase: end
+
+	end := s.Snapshot().Timeline
+	if len(end) == 0 || end[len(end)-1].Kind != EventPhase || end[len(end)-1].Detail != "end" {
+		t.Fatalf("last event = %+v, want a phase:end", end[len(end)-1])
+	}
+
+	// A restart resets the narrative: the prior elimination must be gone.
+	s.SetGameActive(true)
+	restarted := s.Snapshot()
+	if hasKind(restarted, EventElimination) {
+		t.Error("restart did not clear the prior game's elimination from the timeline")
+	}
+	if k := timelineKinds(restarted); len(k) != 1 || k[0] != EventPhase {
+		t.Errorf("after restart timeline = %v, want a single phase:start", k)
+	}
+}
+
+// TestStore_TimelineEvictedOnGrace verifies the narrative is cleared with the
+// rest of the session-scoped state on grace exit (#916 eviction).
+func TestStore_TimelineEvictedOnGrace(t *testing.T) {
+	clk := &clock{t: time.Unix(0, 0)}
+	s := NewStore(time.Hour, 15*time.Second, clk.now)
+
+	s.SetGameActive(true)
+	s.SetActivePlayerCount(3)
+	s.SetGameActive(false)
+
+	clk.advance(16 * time.Second)
+	s.EvictStale()
+
+	if got := s.Snapshot().Timeline; got != nil {
+		t.Fatalf("timeline = %v, want nil after grace eviction", got)
+	}
+}
+
+// TestStore_TimelineCapBounded drives more than capacity of distinct state
+// deltas and confirms the snapshot's timeline never exceeds timelineCap (#916).
+func TestStore_TimelineCapBounded(t *testing.T) {
+	clk := &clock{t: time.Unix(0, 0)}
+	s := NewStore(time.Hour, time.Hour, clk.now)
+
+	s.SetGameActive(true) // 1 phase event
+	for i := 0; i < timelineCap*2; i++ {
+		s.SetActivePlayerCount(i) // each distinct -> a state delta
+	}
+	if n := len(s.Snapshot().Timeline); n != timelineCap {
+		t.Fatalf("timeline len = %d, want capped at %d", n, timelineCap)
+	}
+}
+
+// TestStore_AppendInterventionEvent covers the deferred-seam method: a
+// dispatched and a blocked intervention land in the narrative (#916).
+func TestStore_AppendInterventionEvent(t *testing.T) {
+	clk := &clock{t: time.Unix(0, 0)}
+	s := NewStore(time.Hour, time.Hour, clk.now)
+
+	s.AppendInterventionEvent("set_music_tempo", "", false)
+	s.AppendInterventionEvent("grant_shield", "BB:22", true)
+
+	tl := s.Snapshot().Timeline
+	if len(tl) != 2 {
+		t.Fatalf("timeline len = %d, want 2", len(tl))
+	}
+	if tl[0].Kind != EventIntervention || tl[0].Detail != "set_music_tempo" || tl[0].Blocked {
+		t.Errorf("event[0] = %+v, want dispatched set_music_tempo", tl[0])
+	}
+	if tl[1].Serial != "BB:22" || !tl[1].Blocked {
+		t.Errorf("event[1] = %+v, want blocked grant_shield -> BB:22", tl[1])
+	}
+}

@@ -37,6 +37,9 @@ Session:
   game_active: true
   elimination_sequence: [CC:33]
 
+Recent events (oldest first; age relative to captured_at):
+  (none)
+
 Players (sorted by serial; "unknown" = signal never observed):
   AA:11: active=true movement_intensity=1.25 movement_variance=0.40 battery_pct=85.00 skill=0.60
   BB:22: active=true movement_intensity=0.00 movement_variance=0.05 battery_pct=15.00 skill=0.30
