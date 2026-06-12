@@ -24,9 +24,35 @@ from openfeature.contrib.hook.opentelemetry import TracingHook
 from openfeature.contrib.provider.flagd import FlagdProvider
 from openfeature.contrib.provider.flagd.config import ResolverType
 from openfeature.evaluation_context import EvaluationContext
+from openfeature.flag_evaluation import FlagEvaluationDetails, Reason
 from openfeature.transaction_context import ContextVarsTransactionContextPropagator
 
+from lib.flag_eval_visibility import record_flag_fallback
+
 logger = logging.getLogger(__name__)
+
+
+def _report_details_error(flag_key: str, details: FlagEvaluationDetails) -> bool:
+    """Surface a non-raising error resolution and report it if present.
+
+    OpenFeature's ``get_*_details`` never raises for a resolution error
+    (TYPE_MISMATCH, FLAG_NOT_FOUND, PROVIDER_NOT_READY, ...): it returns the
+    default value with ``reason == Reason.ERROR`` and a populated
+    ``error_code``. The old value-only getters could not see these, so they
+    surfaced as silent defaults (#921). Returns True when an error reason was
+    found (and reported via :func:`record_flag_fallback`).
+    """
+    if details.reason == Reason.ERROR:
+        error_code = getattr(details.error_code, "value", None) or str(details.error_code or "ERROR")
+        record_flag_fallback(flag_key, error_code, details.error_message or "")
+        return True
+    return False
+
+
+def _report_exception(flag_key: str, exc: Exception) -> None:
+    """Report a raised evaluation exception as a fallback, classified by type."""
+    record_flag_fallback(flag_key, type(exc).__name__, str(exc))
+
 
 # Track initialized domains to avoid re-initialization
 _initialized_domains: set[str] = set()
@@ -218,11 +244,14 @@ def read_object_flag(domain: str, flag_key: str, default: dict, game_id: str | N
     try:
         init_flag_domain(domain)
         client = get_flag_client(domain)
-        value = client.get_object_value(flag_key, default, _calibration_context(game_id))
-        # get_object_value may return the default sentinel itself; either is fine.
+        details = client.get_object_details(flag_key, default, _calibration_context(game_id))
+        if _report_details_error(flag_key, details):
+            return default
+        value = details.value
+        # The resolved value may still be the default sentinel; either is fine.
         return value if isinstance(value, dict) else default
     except Exception as e:
-        logger.warning(f"read_object_flag({domain!r}, {flag_key!r}) failed, using default: {e}")
+        _report_exception(flag_key, e)
         return default
 
 
@@ -249,10 +278,13 @@ def read_object_flag_variant(domain: str, flag_key: str, targeting_key: str, def
     try:
         init_flag_domain(domain)
         client = get_flag_client(domain)
-        value = client.get_object_value(flag_key, default, EvaluationContext(targeting_key=targeting_key))
+        details = client.get_object_details(flag_key, default, EvaluationContext(targeting_key=targeting_key))
+        if _report_details_error(flag_key, details):
+            return default
+        value = details.value
         return value if isinstance(value, dict) else default
     except Exception as e:
-        logger.warning(f"read_object_flag_variant({domain!r}, {flag_key!r}, {targeting_key!r}) failed: {e}")
+        _report_exception(flag_key, e)
         return default
 
 
@@ -285,13 +317,16 @@ def read_float_flag(domain: str, flag_key: str, default: float, game_id: str | N
         # resolver returns TYPE_MISMATCH for get_object_value() on a numeric
         # flag, silently dropping every calibration override to its default
         # (e.g. the tournament/fight_club CI variants never took effect, #903).
-        value = client.get_float_value(flag_key, default, _calibration_context(game_id))
+        details = client.get_float_details(flag_key, default, _calibration_context(game_id))
+        if _report_details_error(flag_key, details):
+            return default
+        value = details.value
         # bool is a subclass of int/float; reject it as a numeric flag value.
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return default
         return float(value)
     except Exception as e:
-        logger.warning(f"read_float_flag({domain!r}, {flag_key!r}) failed, using default: {e}")
+        _report_exception(flag_key, e)
         return default
 
 
@@ -317,10 +352,13 @@ def read_string_flag(domain: str, flag_key: str, default: str) -> str:
     try:
         init_flag_domain(domain)
         client = get_flag_client(domain)
-        value = client.get_string_value(flag_key, default, EvaluationContext())
+        details = client.get_string_details(flag_key, default, EvaluationContext())
+        if _report_details_error(flag_key, details):
+            return default
+        value = details.value
         return value if isinstance(value, str) else default
     except Exception as e:
-        logger.warning(f"read_string_flag({domain!r}, {flag_key!r}) failed, using default: {e}")
+        _report_exception(flag_key, e)
         return default
 
 
@@ -350,7 +388,10 @@ def read_int_flag(domain: str, flag_key: str, default: int, game_id: str | None 
         # silently falling back to the default (#903). Read as a float first so
         # whole-number variants stored as floats (e.g. 2.0) still resolve, then
         # apply the integral-only coercion below.
-        value = client.get_float_value(flag_key, float(default), _calibration_context(game_id))
+        details = client.get_float_details(flag_key, float(default), _calibration_context(game_id))
+        if _report_details_error(flag_key, details):
+            return default
+        value = details.value
         if isinstance(value, bool):
             return default
         if isinstance(value, int):
@@ -359,7 +400,7 @@ def read_int_flag(domain: str, flag_key: str, default: int, game_id: str | None 
             return int(value)
         return default
     except Exception as e:
-        logger.warning(f"read_int_flag({domain!r}, {flag_key!r}) failed, using default: {e}")
+        _report_exception(flag_key, e)
         return default
 
 
