@@ -204,6 +204,37 @@ can verify the trace pipeline without a live game. See the agent README →
 
 ---
 
+## Rate-limit ownership — defense-in-depth contract (#919)
+
+Intervention rate limiting runs in **two layers, in two languages**, with
+**distinct, non-overlapping roles**. They are deliberately *not* two copies of
+the same governor, and they read **different flags** so they cannot silently
+drift (closes bug classes #800/#848):
+
+| Layer | Where | Scope | Reads flag | Role |
+|-------|-------|-------|-----------|------|
+| **Agent (authoritative)** | `services/agent/decision/` — per-game `Loop` in `loopset.go`, limiter in `ratelimit.go` | **Per game** (`game_id`) | `policy.max_interventions_per_minute` | The real governor. Each game gets its **own** weighted per-minute budget; one game exhausting it never starves another. The agent only emits an intervention once its per-game limiter admits it. |
+| **Coordinator (backstop)** | `services/game_coordinator/interventions.py` — `_RateLimiter` | **Process-global** (all games share one) | `policy.coordinator_backstop_per_minute` | A generous global safety net. Caps a *runaway/buggy* agent that floods flag writes far beyond any sane per-game rate. Tuned high enough that normal multi-session traffic never reaches it. |
+
+**The single-owner rule (drift prevention).** Per-game pacing lives in exactly
+**one** place — the agent. The coordinator does **not** re-derive or mirror the
+per-game budget; it owns only the generous global flood ceiling.
+
+- To change how aggressively a single game may be nudged → change
+  `policy.max_interventions_per_minute` (agent, per-game).
+- To move the global flood ceiling → change
+  `policy.coordinator_backstop_per_minute` (coordinator backstop). The default
+  variant (`60`/min) is intentionally far above any legitimate combined traffic;
+  it only trips on an order-of-magnitude-higher, clearly-runaway write rate.
+
+A `decision.block_reason=rate_limit` on an **agent** span means the game's own
+per-game budget is spent (normal pacing). A `block_reason=rate_limited` on a
+**coordinator** `game_interventions_total{blocked="true"}` increment means the
+*global backstop* tripped — that is abnormal and points at a misbehaving agent,
+not at normal play.
+
+---
+
 ## Where to look
 
 | Tool | Path | Use |

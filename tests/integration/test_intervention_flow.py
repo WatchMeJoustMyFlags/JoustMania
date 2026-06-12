@@ -182,17 +182,24 @@ def set_interventions_allowed(variant: str) -> None:
 
 
 def set_policy_budget(per_minute: int) -> None:
-    """Raise the weighted rate-limit budget (policy.max_interventions_per_minute).
+    """Raise BOTH weighted rate-limit budgets for headroom (#919).
 
-    The shipped variants cap at ``aggressive`` (4); tests that drive several
-    interventions in a tight window need more headroom, so we inject a custom
-    ``active`` variant and flip defaultVariant to it. The manager reads this via
-    ``get_integer_value`` and feeds it to the weighted sliding-window limiter.
+    Rate limiting is enforced in two layers that read DIFFERENT flags (the
+    defense-in-depth contract): the agent's authoritative per-game budget
+    (``policy.max_interventions_per_minute``) and the coordinator's generous
+    process-global backstop (``policy.coordinator_backstop_per_minute``). Tests
+    that drive several interventions in a tight window need headroom in BOTH, so
+    we inject a custom ``active`` variant into each and flip its defaultVariant.
+    The shipped variants cap below this (agent ``aggressive`` = 4, coordinator
+    ``generous`` = 120), so the injected variant gives the suite the headroom it
+    needs. Each manager reads its own flag via ``get_integer_value`` and feeds it
+    to its weighted sliding-window limiter.
     """
     doc = _load(AGENT_PATH)
-    flag = doc["flags"]["policy.max_interventions_per_minute"]
-    flag["variants"]["active"] = int(per_minute)
-    flag["defaultVariant"] = "active"
+    for flag_key in ("policy.max_interventions_per_minute", "policy.coordinator_backstop_per_minute"):
+        flag = doc["flags"][flag_key]
+        flag["variants"]["active"] = int(per_minute)
+        flag["defaultVariant"] = "active"
     _dump_in_place(AGENT_PATH, doc)
 
 

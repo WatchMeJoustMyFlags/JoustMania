@@ -131,10 +131,16 @@ def set_interventions_allowed(variant: str) -> None:
 
 
 def set_policy_budget(per_minute: int) -> None:
+    """Pin BOTH rate-limit budgets generously (#919): the agent's per-game
+    ``policy.max_interventions_per_minute`` and the coordinator's process-global
+    backstop ``policy.coordinator_backstop_per_minute``. This suite asserts
+    per-game-id isolation, so neither limiter must spuriously throttle the
+    gameId-scoped writes."""
     doc = _load(AGENT_PATH)
-    flag = doc["flags"]["policy.max_interventions_per_minute"]
-    flag["variants"]["active"] = int(per_minute)
-    flag["defaultVariant"] = "active"
+    for flag_key in ("policy.max_interventions_per_minute", "policy.coordinator_backstop_per_minute"):
+        flag = doc["flags"][flag_key]
+        flag["variants"]["active"] = int(per_minute)
+        flag["defaultVariant"] = "active"
     _dump_in_place(AGENT_PATH, doc)
 
 
