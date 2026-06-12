@@ -74,7 +74,7 @@ type Summary struct {
 	InterventionCount int `json:"intervention_count"`
 
 	// PlayerArcs is the per-player trajectory list, sorted by serial for a stable
-	// file. Each carries join/elimination/survival (#928 "player arcs").
+	// file. Each carries elimination/survival/final-state (#928 "player arcs").
 	PlayerArcs []PlayerArc `json:"player_arcs"`
 	// EliminationSpread is the ordered (time, serial) elimination distribution,
 	// first-eliminated first (#928 "elimination spread").
@@ -91,9 +91,16 @@ type Summary struct {
 }
 
 // PlayerArc is one player's trajectory through the game (#928 player arcs). All
-// times are relative offsets from the game's first observed timeline event
-// (GameStartOffset == 0 marks that anchor) so the arc reads as "joined at +0s,
-// eliminated at +47s" independent of wall-clock — and stays deterministic.
+// times are relative offsets from the game's first observed timeline event (that
+// anchor is +0s) so the arc reads as "eliminated at +47s" independent of
+// wall-clock — and stays deterministic.
+//
+// There is intentionally no join offset: per-player join time is not derivable
+// from the data available here. State-delta timeline events are session-scoped
+// (no serial), so a surviving player who is never the subject of a serial-scoped
+// event (elimination / targeted intervention) has no join anchor at all. Adding a
+// truthful join offset needs per-player join timestamps recorded at the Store
+// level — a separate change, not faked from session-level deltas.
 type PlayerArc struct {
 	Serial string `json:"serial"`
 	// Eliminated is true when the player appears in the elimination timeline.
@@ -101,10 +108,6 @@ type PlayerArc struct {
 	// EliminationOrder is the 1-based order the player was eliminated, or 0 if the
 	// player survived (never eliminated) — the survivor(s).
 	EliminationOrder int `json:"elimination_order"`
-	// JoinOffsetSeconds is when the player first appeared in the narrative relative
-	// to game start, or nil if the player was present before the first timeline
-	// event (no join event to anchor to).
-	JoinOffsetSeconds *float64 `json:"join_offset_seconds,omitempty"`
 	// EliminationOffsetSeconds is when the player was eliminated relative to game
 	// start; nil for a survivor.
 	EliminationOffsetSeconds *float64 `json:"elimination_offset_seconds,omitempty"`
@@ -367,10 +370,10 @@ func effectDelta(events []gamecontext.TimelineEvent, at time.Time) *Intervention
 }
 
 // buildPlayerArcs folds the live PlayerSignals together with the elimination
-// spread and the timeline into one arc per player (#928). Join offset is derived
-// from the player's first appearance in the narrative (its earliest state-delta or
-// elimination); survival is the elimination offset for an eliminated player, or
-// the full game span (anchor..lastAt) for a survivor.
+// spread and the timeline into one arc per player (#928). Survival is the
+// elimination offset for an eliminated player, or the full game span
+// (anchor..lastAt) for a survivor. (No join offset — see PlayerArc: per-player
+// join time is not derivable from session-scoped state deltas.)
 func buildPlayerArcs(c gamecontext.GameContext, elims []EliminationEvent, anchor, lastAt time.Time) []PlayerArc {
 	// Index the elimination spread by serial for O(1) arc lookup.
 	elimBySerial := make(map[string]EliminationEvent, len(elims))

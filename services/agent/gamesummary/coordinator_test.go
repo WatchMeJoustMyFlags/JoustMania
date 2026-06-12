@@ -52,14 +52,13 @@ func spanAttr(s sdktrace.ReadOnlySpan, key string) (attribute.Value, bool) {
 // TestCoordinator_WritesFileAndSpan: a real game end writes a summary file AND
 // emits exactly one agent.game.summary span carrying the key counts.
 func TestCoordinator_WritesFileAndSpan(t *testing.T) {
-	c, sr, dir := recordingCoordinator(t)
+	c, sr, _ := recordingCoordinator(t)
 	snap := representativeGame(t)
 	c.OnGameEnd(snap)
 
 	if _, err := os.Stat(c.writer.Path(snap.SessionID)); err != nil {
 		t.Errorf("summary file not written: %v", err)
 	}
-	_ = dir
 
 	spans := spansByName(sr.Ended(), SpanGameSummary)
 	if len(spans) != 1 {
