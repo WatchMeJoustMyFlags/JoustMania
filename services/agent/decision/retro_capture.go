@@ -8,6 +8,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	otelmetric "go.opentelemetry.io/otel/metric"
 	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
 	"go.opentelemetry.io/otel/trace"
 
@@ -23,9 +24,19 @@ import (
 // capture, no backend is called yet — this is capture-first.
 //
 // STRUCTURAL GUARANTEE: the coordinator never touches gate.ShouldEvaluate, the
-// decision Loop, or the rate limiter. A retrospective therefore cannot consume
-// the in-game intervention budget — there is simply no code path from here to the
-// limiter. This is a deliberate isolation, not just a convention.
+// decision Loop, or the per-game intervention rate limiter. A retrospective
+// therefore cannot consume the in-game INTERVENTION budget (decision/ratelimit.go)
+// — there is simply no code path from here to it.
+//
+// LLM BUDGET (#847): a retrospective IS one LLM request, so it MUST draw from the
+// same GLOBAL llm.max_requests_per_minute budget the in-game gate uses (#844 +
+// #847 acceptance #7). The coordinator therefore takes the one shared *llmBudget
+// (injected via SetLLMBudget from main.go, the same instance every per-game Loop
+// holds). When the budget is exhausted at game end the retro is GATED: it records
+// agent_llm_gated_total{reason=llm_budget_exhausted} and captures nothing — a
+// retrospective cannot blow the global LLM cap. NOTE the retro is intentionally
+// NOT subject to the eligibility or cadence layers: it is a once-per-session,
+// game-kind-agnostic offline analysis, so only the global budget bounds it.
 
 // SpanLLMRetro is the post-game retrospective capture span (#844): emitted once
 // per session at game end, carrying the prompt the agent would send to an offline
@@ -78,6 +89,15 @@ type RetroCoordinator struct {
 	// now is injectable for tests; nil uses time.Now.
 	now func() time.Time
 
+	// budget is the GLOBAL per-minute LLM request budget (#847), shared with every
+	// per-game Loop. A retro draws one slot from it; a nil budget means the retro is
+	// ungated by the global cap (used by tests / single-purpose wiring that does not
+	// share a budget — capture proceeds as before #847). Injected via SetLLMBudget.
+	budget *llmBudget
+	// llmGated counts gated retro captures (agent_llm_gated_total{reason=...}),
+	// sharing the in-game counter name. Defaults to a no-op so tests need not wire it.
+	llmGated otelmetric.Int64Counter
+
 	// mu guards the captured-session dedupe state.
 	mu sync.Mutex
 	// captured is the set of recently captured SessionIDs (membership = already
@@ -104,8 +124,15 @@ func NewRetroCoordinator(flagSource FlagSource, log *slog.Logger) *RetroCoordina
 		Flags:    flagSource,
 		now:      time.Now,
 		captured: make(map[string]struct{}),
+		llmGated: defaultLLMGatedCounter(),
 	}
 }
+
+// SetLLMBudget injects the shared GLOBAL LLM request budget (#847 acceptance #7)
+// so a retrospective draws one slot from the SAME per-minute cap the in-game gate
+// uses. main.go passes the one instance every per-game Loop also holds. Not safe
+// to call concurrently with OnGameEnd — set it during construction.
+func (rc *RetroCoordinator) SetLLMBudget(b *llmBudget) { rc.budget = b }
 
 // OnGameEnd is the gamecontext.Store.OnGameEnd callback. It captures the
 // retrospective prompt for a finished session exactly once. It is defensive:
@@ -131,8 +158,24 @@ func (rc *RetroCoordinator) OnGameEnd(c gamecontext.GameContext) {
 	// Evaluate flags with a background context: there is no inbound RPC context at
 	// game end, so the retro span is a standalone root (intentional — it is not a
 	// child of any Export). The flag source falls back to safe defaults if flagd is
-	// unreachable, identical to the in-game path.
+	// unreachable, identical to the in-game path. Evaluated up front so the budget
+	// gate below reads the same live llm.max_requests_per_minute the capture would.
 	snapshot := rc.Flags.Evaluate(context.Background())
+
+	// Global LLM budget gate (#847 acceptance #7): a retrospective is one LLM
+	// request, so it must fit the shared per-minute cap the in-game gate honors.
+	// When a budget is wired and exhausted, the retro is GATED — record the gated
+	// metric and capture nothing (no prompt build, no span). A nil budget (tests /
+	// unshared wiring) skips this check, preserving pre-#847 behavior.
+	if rc.budget != nil && !rc.budget.allow(now(), snapshot.LLMGate.MaxRequestsPerMinute) {
+		rc.llmGated.Add(context.Background(), 1,
+			otelmetric.WithAttributes(attribute.String("reason", FallbackBudgetExhausted)))
+		rc.Log.Info("agent.llm.retro_gated",
+			"session_id", c.SessionID,
+			"fallback_reason", FallbackBudgetExhausted,
+		)
+		return
+	}
 
 	prompt := llm.BuildRetro(llm.RetroInput{
 		Snapshot: snapshot,

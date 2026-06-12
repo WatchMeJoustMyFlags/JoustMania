@@ -140,6 +140,33 @@
       },
       "defaultVariant": "default"
     },
+    "llm.eligible_game_kinds": {
+      "state": "ENABLED",
+      "variants": {
+        "none": [],
+        "real_only": ["real"],
+        "real_and_shadow": ["real", "shadow"]
+      },
+      "defaultVariant": "real_only"
+    },
+    "llm.min_decision_interval_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "fast": 5,
+        "default": 10,
+        "slow": 30
+      },
+      "defaultVariant": "default"
+    },
+    "llm.max_requests_per_minute": {
+      "state": "ENABLED",
+      "variants": {
+        "conservative": 3,
+        "default": 6,
+        "aggressive": 12
+      },
+      "defaultVariant": "default"
+    },
     "fitness.endurance.min_session_seconds": {
       "state": "ENABLED",
       "variants": {

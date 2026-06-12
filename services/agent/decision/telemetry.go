@@ -142,6 +142,23 @@ const (
 	// #741's resolve_backend() will supply the real reason (and used="llm") once a
 	// backend answers; until then every llm cycle reports this single reason.
 	FallbackNoBackend = "no_backend_available"
+	// LLM call-gate fallback reasons (#847). When the three-layer gate denies an
+	// llm cycle, the cycle falls back to the rules engine WITHOUT building or
+	// capturing the prompt, and the decision span's inference.fallback_reason
+	// carries the specific gate reason instead of FallbackNoBackend — every
+	// skipped LLM call is attributable in Jaeger. They are evaluated in order:
+	// eligibility, then cadence, then budget.
+	//
+	// FallbackNotEligible: the game's kind is not in llm.eligible_game_kinds (e.g.
+	// a shadow game under the default ["real"] list) — the cycle never even
+	// considers the cadence/budget layers.
+	FallbackNotEligible = "llm_not_eligible"
+	// FallbackInterval: the per-game cadence floor (llm.min_decision_interval_seconds)
+	// has not elapsed since this game's last admitted llm attempt.
+	FallbackInterval = "llm_interval"
+	// FallbackBudgetExhausted: the global per-minute request budget
+	// (llm.max_requests_per_minute, shared across all games) is full this window.
+	FallbackBudgetExhausted = "llm_budget_exhausted"
 	// DefaultObjectives until the objectives flag schema exists (#725).
 	DefaultObjectives = "unset"
 	// UnrestrictedAllowed is the interventions.allowed summary while the

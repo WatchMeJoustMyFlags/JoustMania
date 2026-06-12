@@ -25,6 +25,10 @@ func recordingLoop(t *testing.T, snap flags.Snapshot, out []Decision) (*Loop, *t
 	l.Tracer = tp.Tracer("test")
 	l.Rules = fakeRules{out: out}
 	l.Actions = &fakeSink{}
+	// Inject a fresh global LLM budget (#847) so the gate's budget layer can admit
+	// an llm-mode cycle; without it a nil budget would gate every llm attempt and
+	// the capture-path tests (which assert the ALLOWED behavior) would never fire.
+	l.SetLLMBudget(NewLLMBudget())
 	return l, sr
 }
 
@@ -192,6 +196,14 @@ func TestInferenceAttribution_LLMFallback(t *testing.T) {
 				Capability:           flags.Capability{Model: "phi4-mini"},
 				InterventionsAllowed: []string{"play_audio_cue"},
 				Policy:               flags.Policy{MaxInterventionsPerMinute: 10},
+				// Gate-ALLOWED config (#847): the llm case asserts the unchanged
+				// no_backend_available fallback, which only holds when the gate admits —
+				// so this game kind ("") is eligible, no cadence floor, ample budget.
+				LLMGate: flags.LLMGate{
+					EligibleGameKinds:    []string{""},
+					MinDecisionInterval:  0,
+					MaxRequestsPerMinute: 100,
+				},
 			}
 			l, sr := recordingLoop(t, snap, []Decision{{Intervention: "play_audio_cue"}})
 

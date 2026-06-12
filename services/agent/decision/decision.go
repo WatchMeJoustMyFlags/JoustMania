@@ -44,6 +44,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	otelmetric "go.opentelemetry.io/otel/metric"
 	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
 	"go.opentelemetry.io/otel/trace"
 
@@ -178,6 +179,28 @@ type Loop struct {
 	// lastLayer is the most recent fully-evaluated LayerState, retained so #729
 	// (span attribution) and tests can read the per-cycle layer snapshot.
 	lastLayer LayerState
+
+	// --- LLM call gate (#847) ---
+	// llmGate guards the per-game cadence state of the gate. It is separate from mu
+	// because the cadence read-modify-write happens inside decide(), which mu does
+	// not span; the lighter lock avoids holding the loop's main mutex across the
+	// budget check and rules evaluation.
+	llmGate sync.Mutex
+	// lastLLMAttempt is the time this game's most recent LLM attempt was ADMITTED
+	// by the gate (passed eligibility + cadence + budget). The per-game cadence
+	// layer compares the next cycle against it. Per-Loop = per-game (#845): each
+	// game has its own cadence clock. Zero value = no attempt yet (first eligible
+	// cycle always passes cadence).
+	lastLLMAttempt time.Time
+	// budget is the GLOBAL per-minute LLM request cap shared across ALL loops
+	// (#847). It is injected via SetLLMBudget from the one instance main.go
+	// constructs and closes over in the Loop factory, so concurrent games draw down
+	// a single budget. Nil until injected; a nil budget gates every llm attempt
+	// with llm_budget_exhausted (fail-closed: no shared cap means no llm).
+	budget *llmBudget
+	// llmGated counts gated llm cycles (agent_llm_gated_total{reason=...}). Defaults
+	// to a no-op so a Loop built without metrics wiring still works.
+	llmGated otelmetric.Int64Counter
 }
 
 // NewLoop builds a Loop with the no-op rules/actions stubs, the global tracer,
@@ -199,8 +222,16 @@ func NewLoop(flagSource FlagSource, log *slog.Logger) *Loop {
 		Tracer:   otel.Tracer(instrumentationName),
 		now:      time.Now,
 		throttle: DefaultThrottleInterval,
+		llmGated: defaultLLMGatedCounter(),
 	}
 }
+
+// SetLLMBudget injects the GLOBAL per-minute LLM request budget (#847). main.go
+// constructs ONE budget and calls this on every Loop the factory builds, so all
+// per-game loops share a single budget instance and 4 concurrent games can never
+// collectively exceed llm.max_requests_per_minute. Not safe to call concurrently
+// with OnEvaluate — set it during construction, before the loop serves.
+func (l *Loop) SetLLMBudget(b *llmBudget) { l.budget = b }
 
 // SetThrottle overrides the log/span throttle interval. It is read once at
 // startup from decision.throttle_seconds (#766 F5); a non-positive value leaves
@@ -282,7 +313,7 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 		)
 	}
 
-	decisions := l.decide(ctx, snapshot, c, emit)
+	decisions := l.decide(ctx, snapshot, c, emit, &state)
 
 	// Lift the cycle-level fitness evaluation the engine just computed onto the
 	// LayerState so it rides the decision span as fitness.evaluated (#731). Read
@@ -355,11 +386,96 @@ func (l *Loop) setLastLayer(state LayerState) {
 // yet (#741). The "rules" path and any unrecognized mode go straight to rules.
 // emit is this cycle's shared throttle decision (from OnEvaluate); the capture
 // span/log only fire when it is true.
-func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext, emit bool) []Decision {
-	if snapshot.Mode == "llm" && emit {
-		l.captureLLMPrompt(ctx, snapshot, c)
+//
+// The LLM call gate (#847) sits in FRONT of the prompt build/capture: an llm-mode
+// cycle first passes the three-layer gate (eligibility -> cadence -> budget). When
+// the gate DENIES, the cycle records the specific gate fallback_reason on the
+// LayerState, increments agent_llm_gated_total, and does NOT build or capture the
+// prompt (no token burn, even the prompt serialization is skipped). When the gate
+// ALLOWS, current behavior is unchanged: the prompt is captured and the cycle
+// falls back to rules with no_backend_available. Either way the rules engine still
+// runs (the gate only guards the LLM ATTEMPT, never the deterministic fallback).
+func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext, emit bool, state *LayerState) []Decision {
+	if snapshot.Mode == "llm" {
+		// Resolve the gate BEFORE any prompt work so a gated cycle never serializes
+		// a prompt it will not send. The reason rides the decision span (#729) via
+		// state.LLMFallbackReason regardless of whether emit fired this cycle, so a
+		// gated cycle is attributable even when the throttled capture span is silent.
+		reason := l.gateLLM(ctx, snapshot, c)
+		state.LLMFallbackReason = reason
+		// Only an ALLOWED attempt (empty reason) captures the prompt; the capture is
+		// still throttle-gated by emit so steady-state load emits at most one span
+		// per interval, exactly as before #847.
+		if reason == "" && emit {
+			l.captureLLMPrompt(ctx, snapshot, c)
+		}
 	}
 	return l.Rules.Evaluate(ctx, c)
+}
+
+// gateLLM runs the three-layer LLM call gate (#847) for this cycle and returns the
+// fallback_reason: "" when the gate ADMITS the attempt (the cycle may capture the
+// prompt and, until a backend exists, falls back to rules with
+// no_backend_available), or the specific gate reason when DENIED. Layers are
+// checked in this exact order — eligibility, then cadence, then budget — so the
+// cheapest, most-decisive check short-circuits first and a denied attempt never
+// charges a later layer (e.g. an ineligible shadow game never touches the global
+// budget). Every denial increments agent_llm_gated_total{reason=...}.
+//
+// Cadence and budget are charged ONLY on admission: lastLLMAttempt advances and a
+// budget slot is consumed exactly when the attempt passes all three layers, so a
+// cycle blocked by a later layer does not perturb an earlier layer's state.
+func (l *Loop) gateLLM(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext) string {
+	now := l.now
+	if now == nil {
+		now = time.Now
+	}
+
+	// Layer 1 — Eligibility: which game kinds may use llm at all. A kind not in
+	// llm.eligible_game_kinds (default ["real"], so shadow games are rules-only,
+	// #838) is gated here and never considers cadence or budget.
+	if !snapshot.LLMGate.EligibleFor(c.GameKind) {
+		l.recordGated(ctx, FallbackNotEligible)
+		return FallbackNotEligible
+	}
+
+	// Layers 2 & 3 are charged together under llmGate so the cadence read and the
+	// lastLLMAttempt write are atomic with respect to concurrent Export handlers
+	// for THIS game (per-game state), and so an admitted attempt advances cadence
+	// and consumes a budget slot as one unit.
+	l.llmGate.Lock()
+	defer l.llmGate.Unlock()
+
+	// Layer 2 — Cadence (per game): at most one attempt per game per
+	// llm.min_decision_interval_seconds. A zero lastLLMAttempt (no prior attempt)
+	// always passes. A non-positive interval disables the cadence floor.
+	t := now()
+	interval := snapshot.LLMGate.MinDecisionInterval
+	if interval > 0 && !l.lastLLMAttempt.IsZero() && t.Sub(l.lastLLMAttempt) < interval {
+		l.recordGated(ctx, FallbackInterval)
+		return FallbackInterval
+	}
+
+	// Layer 3 — Global budget: one shared cap across ALL games. A nil budget
+	// (never injected) fails closed — no shared cap means no llm. The budget is
+	// charged here, last, so an attempt blocked by cadence above never draws it
+	// down.
+	if l.budget == nil || !l.budget.allow(t, snapshot.LLMGate.MaxRequestsPerMinute) {
+		l.recordGated(ctx, FallbackBudgetExhausted)
+		return FallbackBudgetExhausted
+	}
+
+	// Admitted: advance this game's cadence clock. The budget slot was consumed by
+	// the allow() call above. This is the ONLY path that does not return a reason.
+	l.lastLLMAttempt = t
+	return ""
+}
+
+// recordGated increments the agent_llm_gated_total counter for one gated llm cycle,
+// labeled by the fallback reason (#847 acceptance #6). The counter is never nil
+// (NewLoop seeds a no-op), so this is always safe to call.
+func (l *Loop) recordGated(ctx context.Context, reason string) {
+	l.llmGated.Add(ctx, 1, otelmetric.WithAttributes(attribute.String("reason", reason)))
 }
 
 // captureLLMPrompt builds the prompt the agent would send this cycle and records
@@ -625,7 +741,25 @@ func layerStateAttributes(state *LayerState) []attribute.KeyValue {
 	if mode == "" {
 		mode = DefaultMode
 	}
-	inferenceUsed, fallback := inferenceAttribution(mode)
+	// Inference attribution. For the llm path the fallback_reason is the PER-CYCLE
+	// gate outcome the loop resolved this cycle (#847): llm_not_eligible /
+	// llm_interval / llm_budget_exhausted when gated, or no_backend_available when
+	// the gate ADMITTED the attempt but no backend exists yet. The static
+	// inferenceAttribution is kept only as the fallback for the historical case
+	// where the cycle did not run the gate (state.LLMFallbackReason empty on an llm
+	// cycle would be an admitted-but-unrecorded path; we default it to
+	// no_backend_available to preserve the pre-#847 contract). mode=rules has no
+	// fallback reason, unchanged.
+	var inferenceUsed, fallback string
+	if mode == "llm" {
+		inferenceUsed = InferenceRules
+		fallback = state.LLMFallbackReason
+		if fallback == "" {
+			fallback = FallbackNoBackend
+		}
+	} else {
+		inferenceUsed, fallback = inferenceAttribution(mode)
+	}
 	attrs := []attribute.KeyValue{
 		// Existence layer.
 		attribute.Bool(AttrEnabled, state.Enabled),

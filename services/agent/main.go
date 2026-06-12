@@ -253,6 +253,13 @@ func main() {
 	//     keyed by the decision's target), so one Writer is closed over by every loop.
 	//   - SHARED flag source (agentFlags) and tracer: stateless / concurrency-safe.
 	sharedSink := actionSink(logger) // nil leaves the loop's default NoopActions in place
+	// Shared GLOBAL LLM request budget (#847, the gate's third layer). Constructed
+	// ONCE here and injected into every per-game Loop below, so all concurrent
+	// games draw down a SINGLE per-minute request cap (llm.max_requests_per_minute)
+	// — 4 idle shadow games plus a real game can never collectively exceed it. The
+	// per-game cadence + eligibility layers live on each Loop; only the budget is
+	// shared across loops.
+	sharedLLMBudget := decision.NewLLMBudget()
 	probeDecisions := strings.EqualFold(getEnv("AGENT_PROBE_DECISIONS", ""), "true")
 	if probeDecisions {
 		slog.Warn("Probe decisions enabled (demo/verification mode)",
@@ -266,6 +273,10 @@ func main() {
 		// Throttle for the evaluate log line / agent.disabled span is read-at-startup
 		// from decision.throttle_seconds (#766 F5).
 		loop.SetThrottle(lifecycle.DecisionThrottle)
+		// Inject the SHARED global LLM request budget (#847) so every per-game loop
+		// references the same instance: the gate's eligibility + cadence layers are
+		// per-loop, but the budget layer is one global cap across all games.
+		loop.SetLLMBudget(sharedLLMBudget)
 		// The objective-weighted rules engine (#726) is the active default, built
 		// FRESH per loop (see the factory doc above). Its objective weights are driven
 		// live from the `objectives` flag each cycle; policy/fitness run on
@@ -331,6 +342,10 @@ func main() {
 	// coordinator; it dedupes by SessionID across all partitions, so interleaved
 	// game-ends each capture exactly once (see retro_capture.go's bounded dedupe).
 	retro := decision.NewRetroCoordinator(agentFlags, logger)
+	// A retrospective is one LLM request, so it draws from the SAME shared global
+	// budget the in-game gate uses (#847 acceptance #7): inject the one instance the
+	// per-game loops also hold, so a retro at game end cannot blow the per-minute cap.
+	retro.SetLLMBudget(sharedLLMBudget)
 
 	// GameContext multiplexer (#845 PR B): one Store partition per game_id, plus the
 	// fallback partition "" for unlabeled signals (zero-regression — single-game

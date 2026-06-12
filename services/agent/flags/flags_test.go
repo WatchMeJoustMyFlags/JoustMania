@@ -302,6 +302,83 @@ func TestEvaluate_UnexpectedObjectShapeFallsBack(t *testing.T) {
 	}
 }
 
+// TestEvaluate_LLMGate_FlagdShape: the three #847 gate flags resolve through the
+// typed getters into the LLMGate struct. eligible_game_kinds is an array object,
+// min_decision_interval_seconds is float seconds -> Duration, max_requests_per_minute
+// is an int.
+func TestEvaluate_LLMGate_FlagdShape(t *testing.T) {
+	stub := stubEvaluator{
+		objects: map[string]any{
+			keyLLMEligibleGameKinds: []any{"real", "shadow"},
+		},
+		floats: map[string]float64{keyLLMMinDecisionInterval: 30},
+		ints:   map[string]int64{keyLLMMaxRequestsPerMin: 12},
+	}
+	got := New(stub, nil).Evaluate(context.Background()).LLMGate
+	if !reflect.DeepEqual(got.EligibleGameKinds, []string{"real", "shadow"}) {
+		t.Errorf("EligibleGameKinds = %v, want [real shadow]", got.EligibleGameKinds)
+	}
+	if got.MinDecisionInterval != 30*time.Second {
+		t.Errorf("MinDecisionInterval = %v, want 30s", got.MinDecisionInterval)
+	}
+	if got.MaxRequestsPerMinute != 12 {
+		t.Errorf("MaxRequestsPerMinute = %d, want 12", got.MaxRequestsPerMinute)
+	}
+}
+
+// TestEvaluate_LLMGate_Defaults: with no flags defined, the gate falls back to the
+// fail-closed schema defaults — eligible only for ["real"], 10s cadence, 6/min.
+func TestEvaluate_LLMGate_Defaults(t *testing.T) {
+	got := New(stubEvaluator{}, nil).Evaluate(context.Background()).LLMGate
+	if !reflect.DeepEqual(got.EligibleGameKinds, []string{"real"}) {
+		t.Errorf("EligibleGameKinds = %v, want default [real]", got.EligibleGameKinds)
+	}
+	if got.MinDecisionInterval != time.Duration(DefaultLLMMinDecisionIntervalSeconds*float64(time.Second)) {
+		t.Errorf("MinDecisionInterval = %v, want %ds", got.MinDecisionInterval, int(DefaultLLMMinDecisionIntervalSeconds))
+	}
+	if got.MaxRequestsPerMinute != DefaultLLMMaxRequestsPerMinute {
+		t.Errorf("MaxRequestsPerMinute = %d, want %d", got.MaxRequestsPerMinute, DefaultLLMMaxRequestsPerMinute)
+	}
+}
+
+// TestEvaluate_LLMGate_BadEligibilityShapeFallsBack: an unparseable
+// eligible_game_kinds value falls back to ["real"], NOT empty (fail-closed to
+// shadow-rules-only, not to llm-disabled).
+func TestEvaluate_LLMGate_BadEligibilityShapeFallsBack(t *testing.T) {
+	stub := stubEvaluator{objects: map[string]any{
+		keyLLMEligibleGameKinds: map[string]any{"unexpected": true},
+	}}
+	got := New(stub, nil).Evaluate(context.Background()).LLMGate
+	if !reflect.DeepEqual(got.EligibleGameKinds, []string{"real"}) {
+		t.Errorf("EligibleGameKinds = %v, want default [real] on bad shape", got.EligibleGameKinds)
+	}
+}
+
+// TestLLMGate_EligibleFor: membership test, including the empty-list-admits-nothing
+// reading.
+func TestLLMGate_EligibleFor(t *testing.T) {
+	g := LLMGate{EligibleGameKinds: []string{"real"}}
+	if !g.EligibleFor("real") {
+		t.Error("EligibleFor(real) = false, want true")
+	}
+	if g.EligibleFor("shadow") {
+		t.Error("EligibleFor(shadow) = true, want false")
+	}
+	empty := LLMGate{}
+	if empty.EligibleFor("real") {
+		t.Error("empty eligibility list admitted a kind, want none admitted")
+	}
+}
+
+func TestDefaultLLMEligibleGameKindsIsCopied(t *testing.T) {
+	a := defaultLLMEligibleGameKinds()
+	a[0] = "mutated"
+	b := defaultLLMEligibleGameKinds()
+	if b[0] != "real" {
+		t.Errorf("defaultLLMEligibleGameKinds shared state: got %v", b[0])
+	}
+}
+
 func TestDefaultObjectivesIsCopied(t *testing.T) {
 	// Mutating one default must not leak into the next call's default.
 	a := defaultObjectives()

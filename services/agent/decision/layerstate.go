@@ -56,6 +56,15 @@ type LayerState struct {
 	Model         string
 	PromptVariant string
 
+	// LLMFallbackReason is the inference.fallback_reason this cycle's llm path
+	// resolved to (#847). It is the PER-CYCLE replacement for the static
+	// inferenceAttribution: when mode=="llm" the loop sets it to the gate outcome
+	// (FallbackNotEligible / FallbackInterval / FallbackBudgetExhausted when gated,
+	// FallbackNoBackend when the gate ALLOWED and the cycle fell back for lack of a
+	// backend), and layerStateAttributes lifts it onto the decision span. Empty on
+	// the rules path (mode!="llm"), where there is no fallback reason at all.
+	LLMFallbackReason string
+
 	// --- Permission layer ---
 	InterventionsAllowed      []string
 	PolicyBatteryThreshold    int
