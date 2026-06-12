@@ -44,6 +44,9 @@ Outcome:
   elimination_order: [AA:11, BB:22]
   winner: unknown
 
+Recent events (oldest first; age relative to captured_at):
+  (none)
+
 Players (sorted by serial; "unknown" = signal never observed):
   AA:11: outcome=eliminated #1 battery_pct=30.00 skill=0.50 movement_intensity=unknown movement_variance=unknown
   BB:22: outcome=eliminated #2 battery_pct=25.00 skill=0.40 movement_intensity=unknown movement_variance=unknown

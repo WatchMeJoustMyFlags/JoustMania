@@ -21,6 +21,14 @@ type Store struct {
 	sessionSeq int
 	endedAt    time.Time // when GameActive went true->false; starts the grace window
 
+	// history is the bounded per-partition rolling narrative (#916): a fixed-
+	// capacity ring buffer of timestamped state deltas, eliminations, and phase
+	// transitions. It is guarded by s.mu (no second lock) and lives ON the Store,
+	// so it is automatically per-partition (#845) and evicted with the partition.
+	// Reset on session-grace exit so a finished game's narrative never bleeds into
+	// the next session on the same partition.
+	history timeline
+
 	// deathCounts tracks the last game_player_deaths_total per serial, so the
 	// fallback elimination source can detect increases.
 	deathCounts map[string]float64
@@ -71,6 +79,7 @@ func NewStore(playerTTL, sessionGrace time.Duration, now func() time.Time) *Stor
 		ctx: GameContext{
 			Players: make(map[string]*PlayerSignals),
 		},
+		history:      newTimeline(),
 		deathCounts:  make(map[string]float64),
 		elimOrder:    make(map[string]int),
 		disconnected: make(map[string]bool),
@@ -107,6 +116,67 @@ func (s *Store) touchSession() {
 
 func ptr[T any](v T) *T { return &v }
 
+// recordStateDelta appends a periodic state-delta entry to the rolling narrative
+// (#916), but ONLY when a tracked session aggregate (active player count or mean
+// movement intensity) CHANGED versus the last recorded delta. Dedupe is the
+// linchpin of the bound: live signals arrive at up to 60Hz, so appending one per
+// signal would churn the 64-entry ring in a second and bury eliminations/phase
+// changes. Recording only on change keeps the narrative a TREND log. Caller holds
+// s.mu.
+func (s *Store) recordStateDelta() {
+	active := s.ctx.Session.ActivePlayerCount
+	mean := s.meanIntensityLocked()
+
+	if intPtrEqual(active, s.history.lastActivePlayers) && floatPtrEqual(mean, s.history.lastMeanIntensity) {
+		return // nothing the narrative tracks changed; don't churn the ring
+	}
+	s.history.lastActivePlayers = active
+	s.history.lastMeanIntensity = mean
+	s.history.append(TimelineEvent{
+		At:            s.now(),
+		Kind:          EventStateDelta,
+		ActivePlayers: active,
+		MeanIntensity: mean,
+	})
+}
+
+// meanIntensityLocked returns the mean of all observed player MovementIntensity
+// values as the session's aggregate "energy", or nil when no player has reported
+// intensity yet. It is the one fitness-style aggregate the Store can compute from
+// what it already holds; richer fitness evaluations (skill gap, variance) are the
+// decision engine's, and are layered in via AppendInterventionEvent's sibling
+// seam if/when needed (#916). Caller holds s.mu.
+func (s *Store) meanIntensityLocked() *float64 {
+	var sum float64
+	var n int
+	for _, p := range s.ctx.Players {
+		if p.MovementIntensity != nil {
+			sum += *p.MovementIntensity
+			n++
+		}
+	}
+	if n == 0 {
+		return nil
+	}
+	return ptr(sum / float64(n))
+}
+
+// intPtrEqual / floatPtrEqual compare two pointers by VALUE, treating two nils as
+// equal and a nil-vs-set pair as unequal — the change test recordStateDelta needs.
+func intPtrEqual(a, b *int) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+func floatPtrEqual(a, b *float64) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
 // SetPlayerIntensity records movement intensity, creating the player on demand.
 func (s *Store) SetPlayerIntensity(serial string, v float64) {
 	s.mu.Lock()
@@ -114,6 +184,9 @@ func (s *Store) SetPlayerIntensity(serial string, v float64) {
 	p := s.player(serial)
 	p.MovementIntensity = ptr(v)
 	s.touch(p)
+	// A movement-intensity change can move the session mean — record a state delta
+	// (deduped) so the narrative captures the energy trend (#916).
+	s.recordStateDelta()
 }
 
 // SetPlayerVariance records movement variance, creating the player on demand.
@@ -220,6 +293,7 @@ func (s *Store) SetActivePlayerCount(n int) {
 	defer s.mu.Unlock()
 	s.ctx.Session.ActivePlayerCount = ptr(n)
 	s.touchSession()
+	s.recordStateDelta() // active-count change is a first-class narrative trend (#916)
 }
 
 // SetGameMode records the current game mode.
@@ -255,8 +329,16 @@ func (s *Store) SetGameActive(active bool) {
 		s.ctx.Session.DurationSeconds = nil
 		s.elimOrder = make(map[string]int)
 		s.endedAt = time.Time{}
+		// New session: clear the prior game's narrative and open the new one with a
+		// "start" phase event (#916). Reset here (not only on grace exit) so a
+		// back-to-back restart cannot carry the previous game's trend.
+		s.history.reset()
+		s.history.append(TimelineEvent{At: s.now(), Kind: EventPhase, Detail: "start"})
 	case prev && !active:
 		s.endedAt = s.now()
+		// Game end is the final phase transition; record it BEFORE the snapshot so
+		// the OnGameEnd retro (#844) sees a narrative ending in "end" (#916).
+		s.history.append(TimelineEvent{At: s.now(), Kind: EventPhase, Detail: "end"})
 		if s.OnGameEnd != nil {
 			snap := s.snapshotLocked() // pre-reset state: SessionID + sequence intact
 			endSnapshot = &snap
@@ -322,7 +404,19 @@ func (s *Store) RecordDeathTotal(serial string, total float64) {
 func (s *Store) SetEliminationOrder(serial string, order int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	_, alreadyKnown := s.elimOrder[serial]
 	s.elimOrder[serial] = order
+	// Narrate each serial's elimination exactly once, the first time this preferred
+	// source reports it (a repeat report only re-sorts) (#916). Record with the
+	// reported 1-based order so the narrative matches the rebuilt sequence below.
+	if !alreadyKnown {
+		s.history.append(TimelineEvent{
+			At:     s.now(),
+			Kind:   EventElimination,
+			Serial: serial,
+			Order:  order,
+		})
+	}
 	serials := make([]string, 0, len(s.elimOrder))
 	for k := range s.elimOrder {
 		serials = append(serials, k)
@@ -332,6 +426,32 @@ func (s *Store) SetEliminationOrder(serial string, order int) {
 	})
 	s.ctx.Session.EliminationSequence = serials
 	s.touchSession()
+}
+
+// AppendInterventionEvent records a dispatched OR blocked intervention in the
+// rolling narrative (#916). It is the CLEAN SEAM the decision Loop can call after
+// it decides an intervention's outcome (runDecision knows dispatched vs blocked),
+// since the Loop and the Store are separate objects: the receiver pipeline holds
+// both (mux.Snapshot's Store and loops.For's Loop), so a follow-up can thread the
+// per-game Store's AppendInterventionEvent into the action path without a second
+// global structure.
+//
+// DEFERRED (#916): the first cut wires only what the Store itself observes (state
+// deltas, eliminations, phase). Intervention-event capture needs the receiver to
+// hand the partition's Store to the Loop (or the action sink) so this method is
+// reached on each decision; that plumbing is left for a follow-up so this PR stays
+// a tight, well-tested first cut. The seam is intentionally present and unit-tested
+// so the follow-up is a wiring change, not a redesign.
+func (s *Store) AppendInterventionEvent(intervention, serial string, blocked bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.history.append(TimelineEvent{
+		At:      s.now(),
+		Kind:    EventIntervention,
+		Detail:  intervention,
+		Serial:  serial,
+		Blocked: blocked,
+	})
 }
 
 // RecordElimination is the span-event confirmation path; it appends the serial
@@ -352,6 +472,14 @@ func (s *Store) appendElimination(serial string) {
 	}
 	s.ctx.Session.EliminationSequence = append(s.ctx.Session.EliminationSequence, serial)
 	s.touchSession()
+	// Record the elimination in the rolling narrative with its 1-based order (#916),
+	// so the timeline carries WHEN each player dropped out, not just the final order.
+	s.history.append(TimelineEvent{
+		At:     s.now(),
+		Kind:   EventElimination,
+		Serial: serial,
+		Order:  len(s.ctx.Session.EliminationSequence),
+	})
 }
 
 // Snapshot returns a deep-enough copy of the context: a fresh Players map with
@@ -378,6 +506,11 @@ func (s *Store) snapshotLocked() GameContext {
 		copy(seq, s.ctx.Session.EliminationSequence)
 		out.Session.EliminationSequence = seq
 	}
+	// Carry a fresh, oldest-first copy of the rolling narrative on the snapshot
+	// (#916). events() allocates a new slice sharing no backing array with the
+	// ring, so a later append never mutates a handed-out snapshot — the same
+	// shared-nothing guarantee the Players/EliminationSequence copies give.
+	out.Timeline = s.history.events()
 	return out
 }
 
@@ -426,5 +559,9 @@ func (s *Store) EvictStale() {
 		s.elimOrder = make(map[string]int)
 		s.endedAt = time.Time{}
 		s.ctx.UpdatedAt = now
+		// Drop the finished game's narrative along with the rest of its
+		// session-scoped state (#916): the ring buffer is evicted with the session
+		// so a new game on this partition starts with an empty timeline.
+		s.history.reset()
 	}
 }

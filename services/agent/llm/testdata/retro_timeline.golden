@@ -36,17 +36,22 @@ RESPONSE CONTRACT — reply with EXACTLY ONE JSON object, no prose, matching:
 }
 If no tweak is warranted, return "suggestions": [].
 === USER ===
-SESSION RETROSPECTIVE (session=session-0, kind=unknown, mode=unknown, captured_at=2026-06-05T12:30:00Z)
+SESSION RETROSPECTIVE (session=session-7, kind=real, mode=ffa, captured_at=2026-06-05T12:30:00Z)
 
 Outcome:
-  duration_seconds: unknown
-  final_active_players: unknown
-  elimination_order: [ZZ:99]
-  winner: YY:88
+  duration_seconds: 132.00
+  final_active_players: 1
+  elimination_order: [BB:22, CC:33]
+  winner: AA:11
 
 Recent events (oldest first; age relative to captured_at):
-  (none)
+  -150s phase: start
+  -140s state: active_players=3 mean_intensity=0.80
+  -90s elimination: CC:33 (#1)
+  -40s state: active_players=2 mean_intensity=0.45
+  +0s phase: end
 
 Players (sorted by serial; "unknown" = signal never observed):
-  YY:88: outcome=survivor battery_pct=unknown skill=unknown movement_intensity=unknown movement_variance=unknown
-  ZZ:99: outcome=eliminated #1 battery_pct=unknown skill=unknown movement_intensity=unknown movement_variance=unknown
+  AA:11: outcome=survivor battery_pct=72.00 skill=0.80 movement_intensity=1.25 movement_variance=0.40
+  BB:22: outcome=eliminated #1 battery_pct=40.00 skill=0.30 movement_intensity=0.10 movement_variance=0.05
+  CC:33: outcome=eliminated #2 battery_pct=unknown skill=unknown movement_intensity=unknown movement_variance=unknown

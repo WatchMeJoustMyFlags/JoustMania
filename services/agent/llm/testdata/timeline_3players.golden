@@ -38,7 +38,13 @@ Session:
   elimination_sequence: [CC:33]
 
 Recent events (oldest first; age relative to captured_at):
-  (none)
+  -120s phase: start
+  -110s state: active_players=3 mean_intensity=0.90
+  -60s state: active_players=3 mean_intensity=1.40
+  -45s elimination: CC:33 (#1)
+  -40s state: active_players=2
+  -20s intervention: set_music_tempo dispatched
+  -5s intervention: grant_shield blocked -> BB:22
 
 Players (sorted by serial; "unknown" = signal never observed):
   AA:11: active=true movement_intensity=1.25 movement_variance=0.40 battery_pct=85.00 skill=0.60

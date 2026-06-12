@@ -37,5 +37,8 @@ Session:
   game_active: unknown
   elimination_sequence: []
 
+Recent events (oldest first; age relative to captured_at):
+  (none)
+
 Players (sorted by serial; "unknown" = signal never observed):
   ZZ:99: active=unknown movement_intensity=unknown movement_variance=unknown battery_pct=unknown skill=unknown

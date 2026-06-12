@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
@@ -61,6 +62,23 @@ func retroThreePlayers() gamecontext.GameContext {
 	}
 }
 
+// retroTimelineContext is retroThreePlayers plus a full-session #916 narrative
+// ending in the "end" phase, as the OnGameEnd snapshot would carry.
+func retroTimelineContext() gamecontext.GameContext {
+	ctx := retroThreePlayers()
+	at := func(secsBefore int) time.Time {
+		return fixedNow.Add(time.Duration(-secsBefore) * time.Second)
+	}
+	ctx.Timeline = []gamecontext.TimelineEvent{
+		{At: at(150), Kind: gamecontext.EventPhase, Detail: "start"},
+		{At: at(140), Kind: gamecontext.EventStateDelta, ActivePlayers: iptr(3), MeanIntensity: fptr(0.80)},
+		{At: at(90), Kind: gamecontext.EventElimination, Serial: "CC:33", Order: 1},
+		{At: at(40), Kind: gamecontext.EventStateDelta, ActivePlayers: iptr(2), MeanIntensity: fptr(0.45)},
+		{At: at(0), Kind: gamecontext.EventPhase, Detail: "end"},
+	}
+	return ctx
+}
+
 type retroCase struct {
 	name     string
 	snapshot flags.Snapshot
@@ -93,6 +111,13 @@ func retroCases() []retroCase {
 					"BB:22": {Serial: "BB:22", BatteryPct: fptr(25), SkillLevel: fptr(0.4)},
 				},
 			},
+		},
+		{
+			// #916: the retro carries the same rolling-narrative section, ending in
+			// the "end" phase transition (the OnGameEnd snapshot includes it).
+			name:     "retro_timeline",
+			snapshot: retroSnapshot(),
+			context:  retroTimelineContext(),
 		},
 		{
 			// No players, nil session signals: every field renders "unknown"/[].

@@ -129,6 +129,11 @@ func buildRetroUser(ctx gamecontext.GameContext, now time.Time) string {
 	fmt.Fprintf(&b, "  elimination_order: [%s]\n", strings.Join(ctx.Session.EliminationSequence, ", "))
 	fmt.Fprintf(&b, "  winner: %s\n", winner)
 
+	// The same rolling-narrative section as the in-game prompt (#916): the retro
+	// analyst sees the trend over the whole session (when players faded, when the
+	// game ended), not just the terminal snapshot.
+	writeTimeline(&b, ctx, now)
+
 	b.WriteString("\nPlayers (sorted by serial; \"unknown\" = signal never observed):\n")
 	if len(ctx.Players) == 0 {
 		b.WriteString("  (none)")

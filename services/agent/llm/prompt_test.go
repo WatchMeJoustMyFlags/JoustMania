@@ -85,6 +85,26 @@ func threePlayerContext() gamecontext.GameContext {
 	}
 }
 
+// timelineContext is threePlayerContext plus a populated #916 rolling narrative:
+// a start phase, two state deltas, an elimination, and a dispatched + a blocked
+// intervention, all at instants before fixedNow so ages render negative.
+func timelineContext() gamecontext.GameContext {
+	ctx := threePlayerContext()
+	at := func(secsBefore int) time.Time {
+		return fixedNow.Add(time.Duration(-secsBefore) * time.Second)
+	}
+	ctx.Timeline = []gamecontext.TimelineEvent{
+		{At: at(120), Kind: gamecontext.EventPhase, Detail: "start"},
+		{At: at(110), Kind: gamecontext.EventStateDelta, ActivePlayers: iptr(3), MeanIntensity: fptr(0.90)},
+		{At: at(60), Kind: gamecontext.EventStateDelta, ActivePlayers: iptr(3), MeanIntensity: fptr(1.40)},
+		{At: at(45), Kind: gamecontext.EventElimination, Serial: "CC:33", Order: 1},
+		{At: at(40), Kind: gamecontext.EventStateDelta, ActivePlayers: iptr(2)},
+		{At: at(20), Kind: gamecontext.EventIntervention, Detail: "set_music_tempo"},
+		{At: at(5), Kind: gamecontext.EventIntervention, Detail: "grant_shield", Serial: "BB:22", Blocked: true},
+	}
+	return ctx
+}
+
 type goldenCase struct {
 	name     string
 	snapshot flags.Snapshot
@@ -122,6 +142,15 @@ func goldenCases() []goldenCase {
 				},
 				Players: map[string]*gamecontext.PlayerSignals{},
 			},
+		},
+		{
+			// #916: a populated rolling-narrative section. Events are placed at
+			// earlier instants than fixedNow so ages render as negative seconds, in
+			// oldest-first order, mixing every kind including a player-targeted and a
+			// blocked intervention (via the AppendInterventionEvent seam).
+			name:     "timeline_3players",
+			snapshot: baseSnapshot(balancedVariant),
+			context:  timelineContext(),
 		},
 		{
 			name: "all_unknown",
