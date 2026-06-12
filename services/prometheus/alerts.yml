@@ -124,6 +124,21 @@ groups:
           summary: "Intervention handlers are failing"
           description: "Dispatched intervention handlers raised at {{ $value }}/s for 2+ minutes (block_reason=handler_error)."
 
+      # Feature-flag evaluation visibility (#921)
+      - alert: FlagEvaluationFallbacks
+        expr: sum by (flag_key, reason) (rate(flag_eval_errors_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Feature flag '{{ $labels.flag_key }}' falling back to default ({{ $labels.reason }})"
+          description: >-
+            Flag '{{ $labels.flag_key }}' has been resolving to its hardcoded default at
+            {{ $value }}/s for 5+ minutes (reason={{ $labels.reason }}). A TYPE_MISMATCH or
+            PARSE_ERROR means a flag/getter type mismatch; a sustained PROVIDER_NOT_READY past
+            the startup grace window means the flagd provider is unreachable. Overrides are
+            being silently ignored.
+
       - alert: AgentInterventionWriteFailures
         expr: sum(rate(agent_intervention_writes_total{result="error"}[5m])) > 0
         for: 2m
