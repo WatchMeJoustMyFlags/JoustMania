@@ -22,8 +22,11 @@ Design (from docs/research/722-intervention-surface.md §5/§6/§8/§9):
   agent also self-checks in #726):
     1. allowed-membership   — type must be in ``interventions_allowed`` (agent
        domain, default ``[]``)
-    2. weighted rate limit  — sliding 60s window, weighted cost per class,
-       budget from ``policy.max_interventions_per_minute``
+    2. weighted rate limit  — sliding 60s window, weighted cost per class. This
+       is the GENEROUS GLOBAL BACKSTOP (#919), budget from
+       ``policy.coordinator_backstop_per_minute``; the per-game budget is owned
+       authoritatively by the agent (see the defense-in-depth contract block
+       below).
     3. battery guard        — player-targeted interventions blocked when the
        target's battery pct < ``policy.battery_threshold``
     4. mode-capability matrix — declarative per-mode gating (§9)
@@ -56,6 +59,52 @@ WEIGHT_HARD = 2.0  # state-changing, player-visible as unfair if wrong
 
 # Sliding rate-limit window in seconds (§5: "max_interventions_per_minute").
 RATE_LIMIT_WINDOW_SECONDS = 60.0
+
+# ---------------------------------------------------------------------------- #
+# Defense-in-depth budget contract (#919)
+# ---------------------------------------------------------------------------- #
+# Intervention rate limiting is enforced in TWO layers, in two languages. They
+# have DISTINCT, non-overlapping roles — they are NOT two copies of the same
+# governor, and they intentionally read DIFFERENT flags so they cannot drift:
+#
+#   1. Go agent (AUTHORITATIVE, per-game). services/agent/decision/loopset.go
+#      gives every game_id its OWN decision Loop, each with its OWN weighted
+#      sliding-window budget read from ``policy.max_interventions_per_minute``
+#      (services/agent/decision/ratelimit.go). This is the real per-game
+#      governor: it decides how many interventions a single game may receive per
+#      minute, and one game exhausting its budget never starves another. The
+#      agent only emits an intervention (writes the flag) once its per-game
+#      limiter admits it.
+#
+#   2. Coordinator ``_RateLimiter`` (BACKSTOP, process-global). The limiter in
+#      this module is a single GLOBAL safety net shared across every concurrent
+#      game in this coordinator process. Its job is NOT to govern normal
+#      per-game pacing — that is the agent's. Its job is to cap a *runaway or
+#      buggy* agent that floods flag writes far beyond any sane per-game rate
+#      (e.g. a crash-loop rewriting nonces, or a misconfigured agent ignoring
+#      its own limiter). It is therefore deliberately set to a GENEROUS budget
+#      that normal multi-session traffic — several concurrent games each at
+#      their own authoritative per-game budget — will never reach. It reads its
+#      budget from a SEPARATE flag, ``policy.coordinator_backstop_per_minute``,
+#      so it can be tuned independently and so the two layers never share a
+#      value that could silently drift.
+#
+# The drift-prevention rule (closes bug classes #800/#848): the per-game pacing
+# decision lives in exactly ONE place — the agent. The coordinator does not
+# re-derive or mirror the per-game budget; it only owns the generous global cap.
+# To change how aggressively a single game may be nudged, change
+# ``policy.max_interventions_per_minute`` (agent). Touch the coordinator backstop
+# (``policy.coordinator_backstop_per_minute``) only to move the global flood
+# ceiling.
+
+# Generous default global-backstop budget (weighted interventions / minute)
+# applied across ALL concurrent games in this coordinator process. Picked so it
+# never fires for legitimate traffic: even a busy fleet of several concurrent
+# games each spending its full authoritative per-game budget (default 2/min,
+# aggressive 4/min) stays well under this; the backstop only trips on an agent
+# emitting flag writes at an order-of-magnitude-higher, clearly-runaway rate.
+# Overridable via the ``policy.coordinator_backstop_per_minute`` flag.
+DEFAULT_COORDINATOR_BACKSTOP_BUDGET = 60.0
 
 # Sentinel "no payload / no-op" values for edge-triggered flags.
 _EDGE_EMPTY_VALUES = {"", "none"}
@@ -287,7 +336,16 @@ class InterventionContext:
 
 
 class _RateLimiter:
-    """Weighted sliding-window rate limiter (§5).
+    """Weighted sliding-window rate limiter — the GLOBAL BACKSTOP (#919).
+
+    This is the process-global defense-in-depth backstop described in the
+    "Defense-in-depth budget contract" block at the top of this module. It is
+    NOT the per-game governor — the Go agent owns that
+    (``policy.max_interventions_per_minute``, per-game Loop). This limiter is one
+    generous global cap shared across all concurrent games, instantiated with
+    ``DEFAULT_COORDINATOR_BACKSTOP_BUDGET`` and tuned via the separate
+    ``policy.coordinator_backstop_per_minute`` flag. It only trips when a runaway
+    agent floods flag writes well beyond all sane per-game traffic combined.
 
     Tracks (timestamp, cost) of applied interventions over the last
     ``RATE_LIMIT_WINDOW_SECONDS``. ``check(cost)`` returns True (and reserves the
@@ -431,7 +489,10 @@ class InterventionManager:
         self._last_nonce: dict[str, dict[str, str]] = {}
         self._last_state_value: dict[str, dict[str, object]] = {}
 
-        self._rate_limiter = _RateLimiter(budget=2.0, time_fn=time_fn)
+        # Global BACKSTOP limiter (#919): generous, process-global, NOT the
+        # per-game governor (that is the agent's). See the defense-in-depth
+        # contract block at the top of this module.
+        self._rate_limiter = _RateLimiter(budget=DEFAULT_COORDINATOR_BACKSTOP_BUDGET, time_fn=time_fn)
 
         # Handler registry: flag_key -> Handler. Defaults to the no-op stub for
         # every spec. PRs C/D/E replace entries via register_handler().
@@ -980,8 +1041,11 @@ class InterventionManager:
             if pct is not None and pct < self._battery_threshold():
                 return BLOCK_LOW_BATTERY
 
-        # (b) weighted rate limit — reserves budget; do last so the reservation
-        # only happens for otherwise-allowed interventions.
+        # (b) weighted rate limit — the GENEROUS GLOBAL BACKSTOP (#919), NOT the
+        # per-game governor (that is the agent's). Reserves budget; do last so
+        # the reservation only happens for otherwise-allowed interventions. A
+        # block here means a process-wide flood across ALL games, not a single
+        # game pacing itself out.
         if not self._rate_limiter.check(spec.weight):
             return BLOCK_RATE_LIMITED
 
@@ -1155,14 +1219,27 @@ class InterventionManager:
             return 20.0
 
     def _refresh_budget(self) -> None:
-        budget = 2.0
+        """Refresh the GLOBAL BACKSTOP budget (#919).
+
+        Reads ``policy.coordinator_backstop_per_minute`` — NOT
+        ``policy.max_interventions_per_minute``. The latter is the agent's
+        authoritative per-game budget; the coordinator must not mirror it (that
+        is exactly the drift the contract forbids). This limiter owns only the
+        generous global flood ceiling, which falls back to
+        ``DEFAULT_COORDINATOR_BACKSTOP_BUDGET`` when the flag is unreachable.
+        """
+        budget = DEFAULT_COORDINATOR_BACKSTOP_BUDGET
         if self._agent_client is not None:
             try:
                 budget = float(
-                    self._agent_client.get_integer_value("policy.max_interventions_per_minute", 2, EvaluationContext())
+                    self._agent_client.get_integer_value(
+                        "policy.coordinator_backstop_per_minute",
+                        int(DEFAULT_COORDINATOR_BACKSTOP_BUDGET),
+                        EvaluationContext(),
+                    )
                 )
             except Exception:
-                budget = 2.0
+                budget = DEFAULT_COORDINATOR_BACKSTOP_BUDGET
         self._rate_limiter.set_budget(budget)
 
     def _dominant_objective(self) -> str:
