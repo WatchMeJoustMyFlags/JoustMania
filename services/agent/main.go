@@ -212,7 +212,7 @@ func main() {
 		Host: getEnv("FLAGD_HOST", "flagd"),
 		Port: parsePort(getEnv("FLAGD_PORT", "8013"), 8013),
 	}
-	agentFlags, shutdownFlags, err := flags.SetupFlagd(flagCfg, logger)
+	agentFlags, lifecycleHolder, shutdownFlags, err := flags.SetupFlagd(ctx, flagCfg, logger)
 	if err != nil {
 		slog.Error("Failed to set up flagd provider", "error", err)
 		os.Exit(1)
@@ -220,14 +220,17 @@ func main() {
 	defer shutdownFlags()
 	slog.Info("OpenFeature flagd provider registered", "host", flagCfg.Host, "port", flagCfg.Port)
 
-	// Lifecycle + throttle calibration flags (#766 F5) are READ ONCE here, after
-	// the provider is registered. They configure the store TTLs, eviction ticker,
-	// and decision-loop throttle, all fixed at construction — so changing them
-	// requires an agent restart (deliberately NOT hot-reload). If flagd is not yet
-	// ready every value falls back to its safe default (the former hardcoded
-	// constants), so the agent still starts behavior-neutrally.
-	lifecycle := agentFlags.Lifecycle(ctx)
-	slog.Info("Agent lifecycle flags evaluated (read-at-startup; restart to change)",
+	// Lifecycle + throttle calibration flags (#766 F5) are HOT-RELOADED live since
+	// #927: SetupFlagd primed the holder with the four flags and wired the
+	// OpenFeature configuration-change listener (the maintainer's requested
+	// mechanism), so the store TTLs, eviction ticker, and decision-loop throttle
+	// read the CURRENT values from the holder on their hot path and a flag change
+	// takes effect with no restart. The initial snapshot below is only for the
+	// startup log; the consumers wired further down read the holder's live source
+	// funcs, never this captured value. If flagd is not yet ready every value falls
+	// back to its safe default (the former hardcoded constants).
+	lifecycle := lifecycleHolder.Load()
+	slog.Info("Agent lifecycle flags primed (hot-reloaded live via OpenFeature config-change, #927)",
 		"player_ttl", lifecycle.PlayerTTL,
 		"session_grace", lifecycle.SessionGrace,
 		"evict_interval", lifecycle.EvictInterval,
@@ -297,9 +300,12 @@ func main() {
 		// flags are evaluated every cycle, the kill switch / objectives / permission
 		// gate are applied, and decisions flow through the #724 audit spans.
 		loop := decision.NewLoop(agentFlags, logger)
-		// Throttle for the evaluate log line / agent.disabled span is read-at-startup
-		// from decision.throttle_seconds (#766 F5).
-		loop.SetThrottle(lifecycle.DecisionThrottle)
+		// Throttle for the evaluate log line / agent.disabled span reads
+		// decision.throttle_seconds LIVE from the shared LifecycleHolder (#927): a
+		// config-change to the throttle flag is honored on the next cycle with no
+		// restart (the holder is a lock-free atomic load, so the hot path never
+		// evaluates flagd). Every per-game loop shares the one holder source.
+		loop.SetThrottleSource(lifecycleHolder.DecisionThrottle)
 		// Inject the SHARED global LLM request budget (#847) so every per-game loop
 		// references the same instance: the gate's eligibility + cadence layers are
 		// per-loop, but the budget layer is one global cap across all games.
@@ -385,14 +391,24 @@ func main() {
 	// self-ingestion loop), and wires OnGameEnd per partition so the retrospective
 	// fires per game on the right partition's state.
 	mux := gamecontext.NewMultiplexer(func(gameID string) *gamecontext.Store {
+		// Prime with the holder's current values as the static fallback, then wire the
+		// LIVE TTL sources (#927): EvictStale reads lifecycle.player_ttl_seconds /
+		// lifecycle.session_grace_seconds from the shared holder at eviction time, so a
+		// config-change is honored on the next tick with no restart. Every partition
+		// created later shares the same holder source funcs.
 		s := gamecontext.NewStore(lifecycle.PlayerTTL, lifecycle.SessionGrace, nil)
+		s.SetTTLSources(lifecycleHolder.PlayerTTL, lifecycleHolder.SessionGrace)
 		s.SetOwnService(ownService)
 		s.OnGameEnd = retro.OnGameEnd
 		return s
 	})
 	mux.SetOwnService(ownService)
 
-	pipe := newPipeline(mux, loops, lifecycle.PlayerTTL).withInfra(infraStore, infraLoop)
+	pipe := newPipeline(mux, loops, lifecycle.PlayerTTL).
+		// Hot-reload the evaluate gate's freshness window in lockstep with the store
+		// eviction TTL (#927): both read lifecycle.player_ttl_seconds from the holder.
+		withPlayerTTLSource(lifecycleHolder.PlayerTTL).
+		withInfra(infraStore, infraLoop)
 
 	grpcServer := grpc.NewServer()
 	ptraceotlp.RegisterGRPCServer(grpcServer, &traceReceiver{pipe: pipe})
@@ -422,10 +438,15 @@ func main() {
 		}
 	}()
 
-	// Eviction ticker.
-	ticker := time.NewTicker(lifecycle.EvictInterval)
-	defer ticker.Stop()
+	// Eviction ticker. The interval is HOT-RELOADED from the holder (#927): after
+	// each fire we re-read lifecycle.evict_interval_seconds and, if it changed,
+	// Reset the ticker so a config-change to the eviction cadence takes effect with
+	// no restart. The holder read is a lock-free atomic load, so this costs nothing
+	// on the steady-state path; we only call Reset when the value actually moved.
 	go func() {
+		interval := lifecycleHolder.EvictInterval()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
@@ -439,6 +460,11 @@ func main() {
 				// not retained; it is recreated lazily (fresh budget) if it resumes.
 				loops.Retain(partitionSet(mux.Partitions()))
 				infraStore.EvictStale()
+				// Re-arm at the current configured interval if it changed (#927).
+				if next := lifecycleHolder.EvictInterval(); next > 0 && next != interval {
+					interval = next
+					ticker.Reset(interval)
+				}
 			}
 		}
 	}()

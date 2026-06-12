@@ -39,9 +39,17 @@ const (
 // single-game mode every signal lands on the fallback partition's single loop, so
 // behavior collapses to exactly the single-store agent's.
 type pipeline struct {
-	mux       *gamecontext.Multiplexer
-	loops     *decision.LoopSet
+	mux   *gamecontext.Multiplexer
+	loops *decision.LoopSet
+	// playerTTL is the static fallback freshness window for the evaluate gate; used
+	// only when playerTTLSource is nil (tests).
 	playerTTL time.Duration
+	// playerTTLSource, when non-nil, is the LIVE lifecycle.player_ttl_seconds source
+	// (#927): signalUpdated reads it each gate check so the freshness window tracks
+	// the same hot-reloaded TTL the store eviction uses. main.go passes the shared
+	// flags.LifecycleHolder.PlayerTTL (a lock-free atomic load). Nil keeps the static
+	// playerTTL, preserving the read-at-startup behavior in tests.
+	playerTTLSource func() time.Duration
 
 	infraStore *infracontext.Store
 	infraLoop  decision.InfraEvaluator
@@ -56,6 +64,25 @@ func newPipeline(mux *gamecontext.Multiplexer, loops *decision.LoopSet, playerTT
 		playerTTL: playerTTL,
 		now:       time.Now,
 	}
+}
+
+// withPlayerTTLSource installs the LIVE player-TTL source for the evaluate gate
+// (#927) so the freshness window hot-reloads in lockstep with the store eviction
+// TTL. Returns the pipeline for chaining at construction.
+func (p *pipeline) withPlayerTTLSource(src func() time.Duration) *pipeline {
+	p.playerTTLSource = src
+	return p
+}
+
+// effectivePlayerTTL returns the live player-TTL when a source is wired and
+// reports a positive duration, else the static construction value.
+func (p *pipeline) effectivePlayerTTL() time.Duration {
+	if p.playerTTLSource != nil {
+		if d := p.playerTTLSource(); d > 0 {
+			return d
+		}
+	}
+	return p.playerTTL
 }
 
 // withInfra attaches the infrastructure observe path. Returns the pipeline for
@@ -95,7 +122,7 @@ func (p *pipeline) signalUpdated(ctx context.Context, gameIDs []string, trig dec
 		if !ok {
 			continue
 		}
-		if gate.ShouldEvaluate(snap, t, p.playerTTL) {
+		if gate.ShouldEvaluate(snap, t, p.effectivePlayerTTL()) {
 			// loops.For lazily creates this game's Loop on first touch, so its budget
 			// and throttle state are isolated from every other game's.
 			p.loops.For(gameID).OnEvaluate(ctx, snap, trig)

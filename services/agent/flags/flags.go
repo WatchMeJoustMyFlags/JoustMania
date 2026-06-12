@@ -56,10 +56,12 @@ const (
 	keyBluetoothMaxDroppedEventsPct = "fitness.bluetooth.max_dropped_events_pct"
 	keyBluetoothMinMovementUpdateHz = "fitness.bluetooth.min_movement_update_hz"
 
-	// Lifecycle + throttle calibration flags (#766 F5). Unlike the layers above
-	// these are READ ONCE AT STARTUP (main.go), not per cycle: they configure the
-	// gamecontext store TTLs / eviction ticker and the decision loop's throttle,
-	// which are fixed at construction. Changing them requires an agent restart.
+	// Lifecycle + throttle calibration flags (#766 F5, hot-reloaded since #927).
+	// Unlike the per-cycle layers above, these are NOT re-read on the decision hot
+	// path; they are primed once at startup and then refreshed by the OpenFeature
+	// configuration-change LISTENER into a shared LifecycleHolder (holder.go), which
+	// the gamecontext store TTLs / eviction ticker / decision-loop throttle read
+	// live. Changing a flag takes effect with no restart and no per-cycle polling.
 	keyPlayerTTLSeconds     = "lifecycle.player_ttl_seconds"
 	keySessionGraceSeconds  = "lifecycle.session_grace_seconds"
 	keyEvictIntervalSeconds = "lifecycle.evict_interval_seconds"
@@ -279,13 +281,20 @@ type BluetoothFitness struct {
 	MinMovementUpdateHz float64
 }
 
-// Lifecycle holds the agent's lifecycle + throttle calibration values (#766 F5).
+// Lifecycle holds the agent's lifecycle + throttle calibration values (#766 F5),
+// HOT-RELOADED live since #927.
 //
-// These are READ ONCE AT STARTUP, not per decision cycle: they configure the
-// gamecontext store TTLs, the eviction ticker, and the decision loop's log/span
-// throttle, all of which are fixed at construction. A flag change here requires
-// an agent restart to take effect (deliberately NOT hot-reload — the issue's
-// read-at-startup decision for the store TTLs). All values are durations.
+// These configure the gamecontext store TTLs, the eviction ticker, and the
+// decision loop's log/span throttle. #766 F5 read them ONCE at startup and baked
+// them into those consumers, so retuning the agent's perception/cadence needed a
+// restart. #927 makes them live without a restart VIA the OpenFeature provider's
+// configuration-change event listener (the mechanism the maintainer requested):
+// flagd emits a config-change when its source changes, the Go SDK surfaces it as
+// openfeature.ProviderConfigChange, and the handler re-evaluates these four flags
+// into a shared LifecycleHolder (holder.go) that the consumers read on their hot
+// path. So a flag change here takes effect on the next eviction tick / decision
+// cycle with NO restart and NO per-cycle polling of the flag client. All values
+// are durations.
 type Lifecycle struct {
 	// PlayerTTL bounds how long a silent player is retained before eviction
 	// (lifecycle.player_ttl_seconds, default 5s).

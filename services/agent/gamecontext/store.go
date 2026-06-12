@@ -40,7 +40,19 @@ type Store struct {
 
 	playerTTL    time.Duration
 	sessionGrace time.Duration
-	now          func() time.Time
+	// playerTTLSource / sessionGraceSource, when non-nil, are the LIVE eviction-TTL
+	// sources (#927): EvictStale reads them AT EVICTION TIME instead of the fixed
+	// playerTTL/sessionGrace baked at construction, so a config-change to
+	// lifecycle.player_ttl_seconds / lifecycle.session_grace_seconds takes effect on
+	// the next eviction tick with no restart. They point at the shared
+	// flags.LifecycleHolder (wired in main.go via SetTTLSources), so each read is a
+	// lock-free atomic load — NOT a per-tick flagd evaluation. Nil (the construction
+	// default, and all existing tests) keeps the fixed durations, preserving the
+	// #766 F5 read-at-startup behavior. Eviction SEMANTICS are unchanged; only the
+	// SOURCE of the two durations moves.
+	playerTTLSource    func() time.Duration
+	sessionGraceSource func() time.Duration
+	now                func() time.Time
 
 	// ownService is this agent's own OTEL service name. Telemetry from this
 	// service is skipped by the extractors: the collector fans the agent's own
@@ -66,6 +78,43 @@ type Store struct {
 // receiving Apply* calls.
 func (s *Store) SetOwnService(name string) {
 	s.ownService = name
+}
+
+// SetTTLSources installs the LIVE eviction-TTL sources (#927): EvictStale reads
+// playerTTL from playerSrc and sessionGrace from graceSrc at eviction time instead
+// of the durations baked at construction, so a config-change to
+// lifecycle.player_ttl_seconds / lifecycle.session_grace_seconds takes effect on
+// the next eviction tick with no restart. main.go passes the shared
+// flags.LifecycleHolder's PlayerTTL / SessionGrace (lock-free atomic loads), so the
+// eviction path never evaluates flagd. A nil source falls back to that field's
+// fixed construction value, so this is purely additive over the #766 F5 behavior.
+// Set before serving; not safe to call concurrently with EvictStale.
+func (s *Store) SetTTLSources(playerSrc, graceSrc func() time.Duration) {
+	s.playerTTLSource = playerSrc
+	s.sessionGraceSource = graceSrc
+}
+
+// effectivePlayerTTL / effectiveSessionGrace return the LIVE TTL when a source is
+// wired and reports a positive duration, else the construction-time fixed value.
+// A non-positive live value is ignored (treated as "unset") so a transient bad
+// flag read can never collapse the TTL to zero and evict everything. Caller holds
+// s.mu (EvictStale does).
+func (s *Store) effectivePlayerTTL() time.Duration {
+	if s.playerTTLSource != nil {
+		if d := s.playerTTLSource(); d > 0 {
+			return d
+		}
+	}
+	return s.playerTTL
+}
+
+func (s *Store) effectiveSessionGrace() time.Duration {
+	if s.sessionGraceSource != nil {
+		if d := s.sessionGraceSource(); d > 0 {
+			return d
+		}
+	}
+	return s.sessionGrace
 }
 
 // NewStore constructs a Store. playerTTL bounds how long a silent player is
@@ -562,15 +611,21 @@ func (s *Store) EvictStale() {
 	defer s.mu.Unlock()
 	now := s.now()
 
+	// Read the TTLs LIVE (#927): a config-change to lifecycle.player_ttl_seconds /
+	// lifecycle.session_grace_seconds is honored on this very tick. Read once per
+	// EvictStale so all players this tick are judged against one consistent TTL.
+	playerTTL := s.effectivePlayerTTL()
+	sessionGrace := s.effectiveSessionGrace()
+
 	for serial, p := range s.ctx.Players {
-		if s.disconnected[serial] || now.Sub(p.LastUpdate) > s.playerTTL {
+		if s.disconnected[serial] || now.Sub(p.LastUpdate) > playerTTL {
 			delete(s.ctx.Players, serial)
 			delete(s.disconnected, serial)
 			delete(s.deathCounts, serial)
 		}
 	}
 
-	if !s.endedAt.IsZero() && now.Sub(s.endedAt) > s.sessionGrace {
+	if !s.endedAt.IsZero() && now.Sub(s.endedAt) > sessionGrace {
 		s.ctx.Session = SessionSignals{GameActive: ptr(false)}
 		s.ctx.SessionID = ""
 		s.ctx.GameKind = ""

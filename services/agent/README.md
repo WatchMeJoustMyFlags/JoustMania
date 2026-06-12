@@ -893,17 +893,27 @@ gates, reaches the real `Writer`, and completes the `agent.action` span — all
 without touching the game. Revert by flipping `interventions_allowed` back to
 `ambient` (or `none`).
 
-### Lifecycle flags — read at startup (#766 F5)
+### Lifecycle flags — hot-reloaded via OpenFeature config-change (#766 F5, #927)
 
 The agent's lifecycle and throttle calibration values live in the flagd `agent`
-domain ([`services/flagd/agent.json`](../flagd/agent.json)). Unlike the four
-decision-cycle flag layers above (evaluated **every cycle**, hot-reloadable),
-these are **read once at startup**: they configure the GameContext store TTLs,
-the eviction ticker, and the decision-loop log/span throttle, all of which are
-fixed at construction. **Changing one requires an agent restart** — it is *not*
-hot-reload by design (per #766 F5). If flagd is not yet reachable at startup each
-value falls back to its safe default, which reproduces the former hardcoded
-constant exactly (promotion is behavior-neutral).
+domain ([`services/flagd/agent.json`](../flagd/agent.json)). Like the four
+decision-cycle flag layers above they are **hot-reloadable** — but via a
+different mechanism. #766 F5 originally read them once at startup, so retuning
+the store TTLs / eviction cadence / throttle needed a restart. **#927 makes them
+live** by wiring the **OpenFeature provider's configuration-change event
+listener** (`openfeature.ProviderConfigChange`, the mechanism the maintainer
+requested): flagd emits a config-change when its source changes, the Go SDK
+surfaces the event, and a domain-scoped handler re-evaluates these four flags
+into a shared, concurrency-safe `flags.LifecycleHolder`
+([`flags/holder.go`](flags/holder.go)). The consumers read the holder on their
+hot path — the GameContext store reads the TTLs at eviction time, `main.go`'s
+eviction ticker re-reads (and `Reset`s to) the interval each loop, and the
+decision loop reads the throttle in `shouldLog()` — so **changing one takes
+effect with no restart**, and **without** polling the flag client per decision
+cycle (a holder read is a lock-free atomic load; only the rare config-change
+event re-reads flagd). The holder is **primed once at startup**, so values are
+correct before any event arrives; if flagd is not yet reachable each value falls
+back to its safe default, which reproduces the former hardcoded constant exactly.
 
 | Flag | Default | Configures |
 |------|---------|------------|
@@ -913,7 +923,8 @@ constant exactly (promotion is behavior-neutral).
 | `decision.throttle_seconds` | `1` | How often the `agent.evaluate` log line and the `agent.disabled` span are emitted |
 
 A non-positive value for any of these falls back to its default (a zero TTL or
-ticker interval would be unsafe).
+ticker interval would be unsafe), both at startup and on every hot-reload, so a
+transient bad flag read during a config-change can never collapse a TTL.
 
 ## Action sink (#730) — applying decisions as flag writes
 

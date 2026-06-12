@@ -89,6 +89,93 @@ func TestStore_SessionGraceClearsSessionKeepsPlayers(t *testing.T) {
 	}
 }
 
+// TestStore_LiveTTLSourceHotReloads verifies the live player-TTL source (#927):
+// EvictStale reads lifecycle.player_ttl_seconds from the source AT EVICTION TIME,
+// so shortening it mid-session evicts a player that the construction-time TTL
+// would have retained — no restart. Driven with the fake clock and a settable
+// source (the shared LifecycleHolder.PlayerTTL in production), no flagd.
+func TestStore_LiveTTLSourceHotReloads(t *testing.T) {
+	clk := &clock{t: time.Unix(0, 0)}
+	// Construct with a LONG static TTL (1h) so only the live source can evict.
+	s := NewStore(time.Hour, time.Hour, clk.now)
+	playerTTL := time.Hour
+	s.SetTTLSources(func() time.Duration { return playerTTL }, nil)
+
+	s.SetPlayerIntensity("A", 1.0)
+	clk.advance(10 * time.Second)
+
+	// Under the live 1h TTL the player is retained (matches the static value).
+	s.EvictStale()
+	if _, ok := s.Snapshot().Players["A"]; !ok {
+		t.Fatal("player evicted under 1h live TTL; should be retained")
+	}
+
+	// Config-change: shorten the live TTL to 5s. The same 10s-silent player now
+	// exceeds it, so the NEXT EvictStale removes it — proving the new value took
+	// effect with no restart and the static 1h field was overridden.
+	playerTTL = 5 * time.Second
+	s.EvictStale()
+	if _, ok := s.Snapshot().Players["A"]; ok {
+		t.Fatal("player should be evicted after live TTL shortened to 5s (#927)")
+	}
+}
+
+// TestStore_LiveSessionGraceSourceHotReloads verifies the live session-grace
+// source (#927): EvictStale reads lifecycle.session_grace_seconds live, so
+// shortening it mid-session resets the session sooner than the construction value.
+func TestStore_LiveSessionGraceSourceHotReloads(t *testing.T) {
+	clk := &clock{t: time.Unix(0, 0)}
+	s := NewStore(time.Hour, time.Hour, clk.now) // long static grace
+	grace := time.Hour
+	s.SetTTLSources(nil, func() time.Duration { return grace })
+
+	s.SetGameActive(true)
+	s.SetGameActive(false) // opens grace window
+	clk.advance(20 * time.Second)
+
+	// Under the 1h live grace, the session is still inside its window.
+	s.EvictStale()
+	if s.Snapshot().SessionID == "" {
+		t.Fatal("session reset under 1h live grace; should still be in grace window")
+	}
+
+	// Shorten live grace to 5s: the 20s-ended session now exceeds it and resets.
+	grace = 5 * time.Second
+	s.EvictStale()
+	if id := s.Snapshot().SessionID; id != "" {
+		t.Fatalf("SessionID = %q, want empty after live grace shortened to 5s (#927)", id)
+	}
+}
+
+// TestStore_NilTTLSourceUsesStaticValue verifies that with no live source wired
+// (all existing call sites / tests) EvictStale falls back to the construction-time
+// TTL exactly as before #927 — the change is purely additive.
+func TestStore_NilTTLSourceUsesStaticValue(t *testing.T) {
+	clk := &clock{t: time.Unix(0, 0)}
+	s := NewStore(5*time.Second, time.Hour, clk.now) // no SetTTLSources call
+	s.SetPlayerIntensity("A", 1.0)
+	clk.advance(6 * time.Second)
+	s.EvictStale()
+	if _, ok := s.Snapshot().Players["A"]; ok {
+		t.Fatal("player should be evicted past the static 5s TTL with no live source")
+	}
+}
+
+// TestStore_NonPositiveTTLSourceFallsBackToStatic verifies a source returning a
+// non-positive duration is ignored in favor of the static TTL, so a transient bad
+// flag read can never collapse the TTL to zero and evict everyone (#927).
+func TestStore_NonPositiveTTLSourceFallsBackToStatic(t *testing.T) {
+	clk := &clock{t: time.Unix(0, 0)}
+	s := NewStore(time.Hour, time.Hour, clk.now) // long static TTL
+	s.SetTTLSources(func() time.Duration { return 0 }, nil)
+	s.SetPlayerIntensity("A", 1.0)
+	clk.advance(10 * time.Second)
+	s.EvictStale()
+	if _, ok := s.Snapshot().Players["A"]; !ok {
+		t.Fatal("non-positive live TTL must fall back to the static 1h TTL; player wrongly evicted")
+	}
+}
+
 func TestStore_SnapshotIsolation(t *testing.T) {
 	clk := &clock{t: time.Unix(0, 0)}
 	s := NewStore(time.Hour, time.Hour, clk.now)
