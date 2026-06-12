@@ -90,6 +90,13 @@ func (ls *LoopSet) Retain(active map[string]struct{}) {
 			continue // fallback loop is permanent (single-game zero-regression)
 		}
 		if _, ok := active[id]; !ok {
+			// Dropping a loop with an async inference still in flight (#917) is safe
+			// and self-healing: the goroutine remains bounded by rootCtx+budget and
+			// terminates on its own, and its apply path re-fetches the context, finds
+			// the partition gone (Current()->ok=false), and discards as stale_context
+			// — no decision is applied to an ended game. AwaitInflight only joins
+			// loops still in the map, so a dropped loop's goroutine simply isn't waited
+			// on; it cannot outlive the budget regardless.
 			delete(ls.loops, id)
 		}
 	}
@@ -101,4 +108,23 @@ func (ls *LoopSet) Len() int {
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
 	return len(ls.loops)
+}
+
+// AwaitInflight blocks until every live Loop's in-flight async inference has
+// completed (#917). main.go calls it during graceful shutdown so no fired
+// inference goroutine outlives the process. The Loops' fired goroutines are already
+// bounded by the agent root context (cancelled on signal) so a well-behaved Infer
+// returns promptly; this join makes the wait explicit and leak-free. It snapshots
+// the loop pointers under the lock, then waits OUTSIDE it so a concurrent For/Retain
+// is never blocked behind a slow inference.
+func (ls *LoopSet) AwaitInflight() {
+	ls.mu.Lock()
+	loops := make([]*Loop, 0, len(ls.loops))
+	for _, l := range ls.loops {
+		loops = append(loops, l)
+	}
+	ls.mu.Unlock()
+	for _, l := range loops {
+		l.AwaitInflight()
+	}
 }

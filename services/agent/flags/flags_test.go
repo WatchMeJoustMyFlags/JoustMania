@@ -311,7 +311,7 @@ func TestEvaluate_LLMGate_FlagdShape(t *testing.T) {
 		objects: map[string]any{
 			keyLLMEligibleGameKinds: []any{"real", "shadow"},
 		},
-		floats: map[string]float64{keyLLMMinDecisionInterval: 30},
+		floats: map[string]float64{keyLLMMinDecisionInterval: 30, keyLLMLatencyBudget: 4},
 		ints:   map[string]int64{keyLLMMaxRequestsPerMin: 12},
 	}
 	got := New(stub, nil).Evaluate(context.Background()).LLMGate
@@ -323,6 +323,10 @@ func TestEvaluate_LLMGate_FlagdShape(t *testing.T) {
 	}
 	if got.MaxRequestsPerMinute != 12 {
 		t.Errorf("MaxRequestsPerMinute = %d, want 12", got.MaxRequestsPerMinute)
+	}
+	// #917: latency budget is float seconds -> Duration, like the cadence interval.
+	if got.LatencyBudget != 4*time.Second {
+		t.Errorf("LatencyBudget = %v, want 4s", got.LatencyBudget)
 	}
 }
 
@@ -338,6 +342,21 @@ func TestEvaluate_LLMGate_Defaults(t *testing.T) {
 	}
 	if got.MaxRequestsPerMinute != DefaultLLMMaxRequestsPerMinute {
 		t.Errorf("MaxRequestsPerMinute = %d, want %d", got.MaxRequestsPerMinute, DefaultLLMMaxRequestsPerMinute)
+	}
+	// #917: latency budget defaults to the fail-safe 8s when undefined.
+	if got.LatencyBudget != time.Duration(DefaultLLMLatencyBudgetSeconds*float64(time.Second)) {
+		t.Errorf("LatencyBudget = %v, want %vs", got.LatencyBudget, DefaultLLMLatencyBudgetSeconds)
+	}
+}
+
+// TestEvaluate_LLMGate_NonPositiveLatencyBudgetFallsBack: a zero/negative latency
+// budget must NEVER disable the timeout (which would leak an inference goroutine);
+// durationFlag floors it at the safe default (#917).
+func TestEvaluate_LLMGate_NonPositiveLatencyBudgetFallsBack(t *testing.T) {
+	stub := stubEvaluator{floats: map[string]float64{keyLLMLatencyBudget: 0}}
+	got := New(stub, nil).Evaluate(context.Background()).LLMGate
+	if got.LatencyBudget != time.Duration(DefaultLLMLatencyBudgetSeconds*float64(time.Second)) {
+		t.Errorf("LatencyBudget = %v, want default %vs (non-positive floored)", got.LatencyBudget, DefaultLLMLatencyBudgetSeconds)
 	}
 }
 

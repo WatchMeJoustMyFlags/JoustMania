@@ -312,6 +312,11 @@ func main() {
 		slog.Warn("Probe decisions enabled (demo/verification mode)",
 			"interval", probeInterval)
 	}
+	// Forward-declared so the per-game loop factory can close over it to wire the
+	// async-inference re-validation source (#917): each loop re-fetches its game's
+	// CURRENT context from this Multiplexer when an async inference result lands. It is
+	// assigned below (mux = ...) before any signal arrives, so the closure never sees nil.
+	var mux *gamecontext.Multiplexer
 	loopFactory := func(gameID string) *decision.Loop {
 		// The decision loop is driven by the OpenFeature/flagd control layer (#727):
 		// flags are evaluated every cycle, the kill switch / objectives / permission
@@ -331,6 +336,16 @@ func main() {
 		// fallback chain against the same availability cache, so a gate-admitted llm
 		// cycle reports the honest inference.used tier and any degradation reason.
 		loop.SetResolver(sharedResolver)
+		// Async inference wiring (#917): make the LLM call non-blocking. On a
+		// gate-admitted, reachable-tier cycle the loop FIRES Infer in its own goroutine
+		// and returns promptly; when the result lands it re-validates against this
+		// game's CURRENT context (fetched from the Multiplexer by game_id) and applies
+		// or discards it. SetGameID tells the apply path which partition to re-read;
+		// SetContextProvider is the re-validation source; SetRootContext bounds every
+		// fired goroutine to the agent's lifetime so shutdown cancels in-flight calls.
+		loop.SetGameID(gameID)
+		loop.SetContextProvider(decision.MuxContextProvider{Mux: mux})
+		loop.SetRootContext(ctx)
 		// The objective-weighted rules engine (#726) is the active default, built
 		// FRESH per loop (see the factory doc above). Its objective weights are driven
 		// live from the `objectives` flag each cycle; policy/fitness run on
@@ -420,7 +435,10 @@ func main() {
 	// the lifecycle TTLs/clock, skips the agent's own telemetry (otlp/agent
 	// self-ingestion loop), and wires OnGameEnd per partition so the retrospective
 	// fires per game on the right partition's state.
-	mux := gamecontext.NewMultiplexer(func(gameID string) *gamecontext.Store {
+	// #917 declares `var mux` earlier so the per-game loop factory's ContextProvider
+	// can close over it (the async apply path re-fetches the current context via the
+	// multiplexer); assign it here.
+	mux = gamecontext.NewMultiplexer(func(gameID string) *gamecontext.Store {
 		// Prime with the holder's current values as the static fallback, then wire the
 		// LIVE TTL sources (#927): EvictStale reads lifecycle.player_ttl_seconds /
 		// lifecycle.session_grace_seconds from the shared holder at eviction time, so a
@@ -517,6 +535,11 @@ func main() {
 		<-ctx.Done()
 		slog.Info("Shutdown requested, stopping servers...")
 		grpcServer.GracefulStop()
+		// Join any in-flight async inference goroutines (#917) so none outlives the
+		// process. ctx is already cancelled (signal), so each fired call's timeout
+		// context is cancelled too and a well-behaved Infer returns promptly; this
+		// wait makes the no-leak guarantee explicit.
+		loops.AwaitInflight()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = healthServer.Shutdown(shutdownCtx)

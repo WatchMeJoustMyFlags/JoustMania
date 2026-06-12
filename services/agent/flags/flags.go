@@ -43,6 +43,9 @@ const (
 	keyLLMEligibleGameKinds   = "llm.eligible_game_kinds"
 	keyLLMMinDecisionInterval = "llm.min_decision_interval_seconds"
 	keyLLMMaxRequestsPerMin   = "llm.max_requests_per_minute"
+	// keyLLMLatencyBudget bounds a single async inference call (#917). Read every
+	// cycle like the other gate flags so the budget can be tuned live on stage.
+	keyLLMLatencyBudget = "llm.latency_budget_seconds"
 
 	// Fitness thresholds (#731). The game-objective fitness flags.
 	keyEnduranceMinSessionSeconds  = "fitness.endurance.min_session_seconds"
@@ -100,6 +103,14 @@ const (
 	// ALL games combined (llm.max_requests_per_minute). Each admitted LLM attempt
 	// is one request; defaults to 6/min total regardless of game count.
 	DefaultLLMMaxRequestsPerMinute = 6
+	// DefaultLLMLatencyBudgetSeconds bounds a single async inference call (#917):
+	// an in-flight result not produced within this many seconds is dropped outright
+	// (context deadline) and the cycle's deterministic rules fallback decides
+	// instead, so "the system always decides" holds without the loop ever blocking.
+	// 8s sits inside the 2-10s inference envelope from the issue — long enough for a
+	// healthy backend to answer, short enough that a hung tier degrades to rules
+	// within one decision interval.
+	DefaultLLMLatencyBudgetSeconds = 8.0
 
 	// Fitness threshold defaults (#731), mirroring the services/flagd/agent.json
 	// defaultVariants. Applied when flagd is unreachable or a flag is undefined.
@@ -228,6 +239,13 @@ type LLMGate struct {
 	// Each admitted attempt is one request; an attempt that would exceed the cap
 	// gates with llm_budget_exhausted. Default 6/min.
 	MaxRequestsPerMinute int
+	// LatencyBudget bounds a single async inference call (#917): the maximum wall
+	// time an in-flight Infer may take before its result is dropped outright and the
+	// cycle's deterministic rules fallback decides instead. Captured at FIRE time and
+	// applied via context.WithTimeout, so a slow/hung tier never holds an apply open
+	// past this. Default 8s. A non-positive value falls back to the default (never
+	// "no budget", which would let a hung call leak the inference goroutine forever).
+	LatencyBudget time.Duration
 }
 
 // EligibleFor reports whether the given game kind may use the llm path. An empty
@@ -526,6 +544,9 @@ func (f *Flags) llmGate(ctx context.Context) LLMGate {
 		EligibleGameKinds:    f.eligibleGameKinds(ctx),
 		MinDecisionInterval:  f.durationFlag(ctx, keyLLMMinDecisionInterval, DefaultLLMMinDecisionIntervalSeconds),
 		MaxRequestsPerMinute: f.intFlag(ctx, keyLLMMaxRequestsPerMin, DefaultLLMMaxRequestsPerMinute),
+		// durationFlag floors a non-positive value at the default, so a misconfigured
+		// budget can never disable the timeout and leak an inference goroutine (#917).
+		LatencyBudget: f.durationFlag(ctx, keyLLMLatencyBudget, DefaultLLMLatencyBudgetSeconds),
 	}
 }
 

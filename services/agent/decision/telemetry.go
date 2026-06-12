@@ -54,6 +54,67 @@ const SpanLLMPrompt = "agent.llm.prompt"
 // to rules; the gen_ai.* shape lets Jaeger treat it as a model call.
 const SpanLLMInfer = "agent.llm.infer"
 
+// SpanLLMApply is the ASYNC-application audit root (#917): emitted when an
+// async inference RESULT lands, seconds after the cycle that fired it, carrying
+// the whole re-validation outcome. Because the firing cycle's agent.span_received
+// has long since ended (the loop never blocks on Infer), the async result cannot
+// hang off it — so the apply path opens its OWN root span backdated to the moment
+// inference completed. It parents the agent.llm.infer call span and, when the
+// result is APPLIED, the resulting agent.decision -> agent.action children, so a
+// Jaeger trace shows the full "fired at T0, answered at T0+latency, applied/
+// discarded" story. It always carries inference.latency_ms and, on a drop, the
+// inference.discarded_reason; an applied result carries the normal decision schema.
+const SpanLLMApply = "agent.llm.apply"
+
+// AttrLLMLatencyMs is the wall time a single async inference took, fire to
+// completion, in integer milliseconds (#917). Recorded on the agent.llm.apply
+// root and the agent.llm.infer span for EVERY async result — applied, discarded,
+// or timed-out — so inference latency is always queryable in Jaeger (acceptance:
+// "audit span records inference latency").
+const AttrLLMLatencyMs = "inference.latency_ms"
+
+// AttrLLMDiscardedReason records WHY an async inference result was dropped at
+// apply time instead of being dispatched (#917). Present ONLY on a discarded
+// result; its absence means the result was applied (or fell back to rules and the
+// rules decision was applied). The value is one of the DiscardReason* constants.
+const AttrLLMDiscardedReason = "inference.discarded_reason"
+
+// Async-inference discard reasons (#917). When an async result lands it is
+// re-validated against the CURRENT game context (fetched fresh at apply time, NOT
+// the fire-time snapshot — the 2-10s in flight may have moved the game on). A
+// result that fails any check is dropped and the reason rides agent.llm.apply as
+// inference.discarded_reason. The deterministic rules fallback then decides for the
+// current context where appropriate (timeout), so the system always decides.
+const (
+	// DiscardStaleContext: the partition that fired the inference no longer exists
+	// at apply time (the game ended past grace and was evicted, or never reappeared)
+	// — there is no current context to re-validate against, so the result is stale.
+	DiscardStaleContext = "stale_context"
+	// DiscardGameEnded: the partition still exists but the game is no longer active
+	// (GameActive flipped false while inference was in flight). An intervention into
+	// an ended game is meaningless; drop it.
+	DiscardGameEnded = "game_ended"
+	// DiscardTargetGone: the decision targeted a specific player who is no longer
+	// alive/connected at apply time (eliminated or disconnected during inference).
+	// A session-scoped decision (empty target) never hits this.
+	DiscardTargetGone = "target_gone"
+	// DiscardPermissionRevoked: interventions.allowed no longer permits the chosen
+	// action at apply time (the allow-list was tightened, or the battery gate now
+	// blocks the target). The SAME permission chain a sync decision runs is re-run
+	// at apply time; an allow-list/battery block surfaces as this reason.
+	DiscardPermissionRevoked = "permission_revoked"
+	// DiscardRateLimited: the per-game weighted rate limiter no longer affords the
+	// action at apply time (the budget filled with other interventions while the
+	// call was in flight). Distinct from permission_revoked so a budget drop is
+	// attributable separately from an allow-list/battery change.
+	DiscardRateLimited = "rate_limited"
+	// DiscardTimeout: the inference exceeded the latency budget (context deadline)
+	// and was dropped outright. The deterministic rules engine then decides for the
+	// CURRENT context so the game still gets a decision (#741's timeout -> rules
+	// chain), recorded honestly on the same agent.llm.apply trace.
+	DiscardTimeout = "timeout"
+)
+
 // AttrLLMInferError records why an llm.infer span did not yield a usable Decision
 // (#739): the Infer transport error, or the llm.Decode rejection reason
 // (empty / not-JSON / missing-field / out-of-vocab-objective). Present only on the
@@ -200,6 +261,14 @@ const (
 	// with this reason. Distinct from FallbackNoBackend (no tier was reachable at all,
 	// Infer was never called).
 	FallbackUnparseable = "llm_unparseable"
+	// FallbackInflight is the inference.fallback_reason when the #847 gate ADMITTED an
+	// llm cycle and a tier was reachable, but the per-game pile-up guard found an Infer
+	// ALREADY in flight for this game (#917): the previous cycle's async call outran
+	// the cadence interval. The loop does NOT launch a second concurrent Infer — it
+	// falls back to the rules engine for this cycle so the game still gets a decision,
+	// and records this reason so a skipped fire is attributable in Jaeger. The earlier
+	// in-flight call still applies its own result on its own agent.llm.apply trace.
+	FallbackInflight = "llm_inflight"
 	// DefaultObjectives until the objectives flag schema exists (#725).
 	DefaultObjectives = "unset"
 	// UnrestrictedAllowed is the interventions.allowed summary while the
