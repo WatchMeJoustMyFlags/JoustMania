@@ -22,6 +22,15 @@ func llmSnapshot() flags.Snapshot {
 			"noop", "grant_shield", "play_audio_cue",
 		},
 		Policy: flags.Policy{MaxInterventionsPerMinute: 100},
+		// The capture tests exercise the gate-ALLOWED path, so the LLM gate (#847)
+		// must admit: eligible for the kinds these tests use ("" and "real"), no
+		// cadence floor, and a generous global budget. recordingLoop injects the
+		// shared budget instance (the field below only sets the per-cycle cap).
+		LLMGate: flags.LLMGate{
+			EligibleGameKinds:    []string{"", "real", "shadow"},
+			MinDecisionInterval:  0,
+			MaxRequestsPerMinute: 1000,
+		},
 	}
 }
 

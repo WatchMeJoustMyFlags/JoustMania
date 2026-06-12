@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"testing"
+	"time"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -71,6 +72,55 @@ func TestRetroCapture_EmitsSpan(t *testing.T) {
 	}
 	if v, ok := attrValue(spans[0], AttrLLMRetroUser); !ok || v.AsString() == "" {
 		t.Error("llm.retro.user must be present and non-empty")
+	}
+}
+
+// TestRetroCapture_DrawsFromGlobalBudget: a retro is one LLM request and draws
+// from the SAME shared budget the in-game gate uses (#847 acceptance #7). When the
+// budget is exhausted, the retro is GATED: no agent.llm.retro span is emitted.
+func TestRetroCapture_DrawsFromGlobalBudget(t *testing.T) {
+	snap := retroFlagSnapshot()
+	snap.LLMGate = flags.LLMGate{MaxRequestsPerMinute: 1}
+
+	rc, sr := recordingRetro(t, snap)
+	budget := NewLLMBudget()
+	rc.SetLLMBudget(budget)
+	now := time.Unix(1000, 0)
+	rc.now = func() time.Time { return now }
+
+	// Pre-spend the single budget slot, mimicking an in-game LLM attempt this minute.
+	if !budget.allow(now, 1) {
+		t.Fatal("pre-spend of the single budget slot should succeed")
+	}
+
+	rc.OnGameEnd(endedSession())
+	if n := len(spansByName(sr.Ended(), SpanLLMRetro)); n != 0 {
+		t.Errorf("agent.llm.retro spans = %d, want 0 (budget exhausted, retro gated)", n)
+	}
+}
+
+// TestRetroCapture_CapturesWhenBudgetAvailable: with a budget wired and a free
+// slot, the retro captures normally AND consumes one budget slot.
+func TestRetroCapture_CapturesWhenBudgetAvailable(t *testing.T) {
+	snap := retroFlagSnapshot()
+	snap.LLMGate = flags.LLMGate{MaxRequestsPerMinute: 2}
+
+	rc, sr := recordingRetro(t, snap)
+	budget := NewLLMBudget()
+	rc.SetLLMBudget(budget)
+	now := time.Unix(1000, 0)
+	rc.now = func() time.Time { return now }
+
+	rc.OnGameEnd(endedSession())
+	if n := len(spansByName(sr.Ended(), SpanLLMRetro)); n != 1 {
+		t.Errorf("agent.llm.retro spans = %d, want 1 (budget available)", n)
+	}
+	// The retro consumed one of the two slots; only one remains.
+	if !budget.allow(now, 2) {
+		t.Error("one budget slot should remain after the retro")
+	}
+	if budget.allow(now, 2) {
+		t.Error("budget should be exhausted after retro + one more (cap 2)")
 	}
 }
 

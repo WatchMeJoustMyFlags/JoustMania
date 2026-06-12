@@ -36,6 +36,14 @@ const (
 	keyMovementVarianceWindow    = "policy.movement_variance_window"
 	keyMaxInterventionsPerMinute = "policy.max_interventions_per_minute"
 
+	// LLM call gate (#847). The three-layer, flag-controlled gate in FRONT of
+	// every LLM decision attempt (#739), so the llm path can never burn tokens
+	// uncontrolled. All three are read EVERY cycle (never cached) so tightening
+	// the budget mid-session takes effect on the very next decision.
+	keyLLMEligibleGameKinds   = "llm.eligible_game_kinds"
+	keyLLMMinDecisionInterval = "llm.min_decision_interval_seconds"
+	keyLLMMaxRequestsPerMin   = "llm.max_requests_per_minute"
+
 	// Fitness thresholds (#731). The game-objective fitness flags.
 	keyEnduranceMinSessionSeconds  = "fitness.endurance.min_session_seconds"
 	keyBalancedMaxSkillGap         = "fitness.balanced.max_skill_gap"
@@ -77,6 +85,19 @@ const (
 	DefaultMovementVarianceWindow = 10
 	// DefaultMaxInterventionsPerMinute is the weighted per-minute budget.
 	DefaultMaxInterventionsPerMinute = 2
+
+	// LLM call-gate defaults (#847), mirroring the services/flagd/agent.json
+	// defaultVariants. These are the fail-closed safe values when flagd is
+	// unreachable: a missing control plane gates the llm path conservatively
+	// rather than letting it fire uncontrolled.
+
+	// DefaultLLMMinDecisionIntervalSeconds is the per-game cadence floor: at most
+	// one LLM attempt per game per this interval (llm.min_decision_interval_seconds).
+	DefaultLLMMinDecisionIntervalSeconds = 10.0
+	// DefaultLLMMaxRequestsPerMinute is the GLOBAL per-minute request cap across
+	// ALL games combined (llm.max_requests_per_minute). Each admitted LLM attempt
+	// is one request; defaults to 6/min total regardless of game count.
+	DefaultLLMMaxRequestsPerMinute = 6
 
 	// Fitness threshold defaults (#731), mirroring the services/flagd/agent.json
 	// defaultVariants. Applied when flagd is unreachable or a flag is undefined.
@@ -135,6 +156,16 @@ func defaultObjectives() map[string]float64 {
 	return map[string]float64{"endurance": 1.0}
 }
 
+// defaultLLMEligibleGameKinds is the fallback eligibility list for the LLM gate
+// (#847). Returned as a fresh slice each call so callers can never mutate the
+// shared default. Fail-closed here means defaulting to ["real"] — shadow games
+// stay rules-only (#838) — NOT empty: an empty list would also be safe (it
+// disables llm entirely), but ["real"] matches the agent.json schema default and
+// keeps real games eligible when flagd is unreachable.
+func defaultLLMEligibleGameKinds() []string {
+	return []string{"real"}
+}
+
 // Evaluator is the subset of the OpenFeature client the wrapper needs. The real
 // flagd-backed *openfeature.Client satisfies it, as does a client built over the
 // in-memory provider in tests.
@@ -167,6 +198,46 @@ type Policy struct {
 	MovementVarianceWindow int
 	// MaxInterventionsPerMinute is the weighted per-minute dispatch budget.
 	MaxInterventionsPerMinute int
+}
+
+// LLMGate is the three-layer call gate in FRONT of every LLM decision attempt
+// (#847), evaluated EVERY cycle (never cached) so a mid-session tightening takes
+// effect on the next decision. The gate sits before the #739 prompt build/capture:
+// when it denies, the cycle records the layer's fallback_reason and does NOT burn
+// the (future) backend or even build the prompt. Layers are checked in order:
+//
+//	Eligibility — which game kinds may use llm at all (EligibleGameKinds)
+//	Cadence     — per-game floor between llm attempts (MinDecisionInterval)
+//	Budget      — global per-minute request cap across all games (MaxRequestsPerMinute)
+//
+// Eligibility lives in the snapshot but is enforced against GameContext.GameKind;
+// cadence is per-game state on the Loop; the budget is one shared limiter across
+// all loops (see decision/loopset.go + main.go wiring).
+type LLMGate struct {
+	// EligibleGameKinds is the set of GameContext.GameKind values that may use the
+	// llm path. A kind not in this list gates with llm_not_eligible. Default
+	// ["real"] keeps shadow games rules-only (#838).
+	EligibleGameKinds []string
+	// MinDecisionInterval is the per-game cadence floor: at most one LLM attempt
+	// per game per interval. A cycle within the interval of the game's last
+	// attempt gates with llm_interval. Default 10s.
+	MinDecisionInterval time.Duration
+	// MaxRequestsPerMinute is the GLOBAL request budget across all games combined.
+	// Each admitted attempt is one request; an attempt that would exceed the cap
+	// gates with llm_budget_exhausted. Default 6/min.
+	MaxRequestsPerMinute int
+}
+
+// EligibleFor reports whether the given game kind may use the llm path. An empty
+// eligibility list admits nothing (every kind gated) — the safe reading of an
+// explicitly-empty allow-list, symmetrical with InterventionsAllowed.
+func (g LLMGate) EligibleFor(gameKind string) bool {
+	for _, k := range g.EligibleGameKinds {
+		if k == gameKind {
+			return true
+		}
+	}
+	return false
 }
 
 // Fitness is the fitness-threshold half of the objective layer (#731): the
@@ -272,6 +343,9 @@ type Snapshot struct {
 	InterventionsAllowed []string
 	// Policy holds the numeric permission-layer constraints.
 	Policy Policy
+	// LLMGate holds the three-layer LLM call gate (#847): eligibility, per-game
+	// cadence, and the global per-minute request budget.
+	LLMGate LLMGate
 	// Fitness holds the per-objective fitness thresholds (#731).
 	Fitness Fitness
 	// BluetoothFitness holds the infrastructure fitness thresholds (#735).
@@ -321,6 +395,7 @@ func (f *Flags) Evaluate(ctx context.Context) Snapshot {
 			MovementVarianceWindow:    f.intFlag(ctx, keyMovementVarianceWindow, DefaultMovementVarianceWindow),
 			MaxInterventionsPerMinute: f.intFlag(ctx, keyMaxInterventionsPerMinute, DefaultMaxInterventionsPerMinute),
 		},
+		LLMGate: f.llmGate(ctx),
 		Fitness: Fitness{
 			EnduranceMinSessionSeconds:     f.intFlag(ctx, keyEnduranceMinSessionSeconds, DefaultEnduranceMinSessionSeconds),
 			BalancedMaxSkillGap:            f.floatFlag(ctx, keyBalancedMaxSkillGap, DefaultBalancedMaxSkillGap),
@@ -424,6 +499,42 @@ func (f *Flags) interventionsAllowed(ctx context.Context) []string {
 	if !ok {
 		f.log.Warn("flags.interventions_allowed had unexpected shape, blocking all", "value", raw)
 		return nil
+	}
+	return list
+}
+
+// llmGate resolves the three LLM-call-gate flags (#847) for one cycle. Each falls
+// back to its safe default on any error, so a down control plane gates the llm
+// path conservatively rather than firing uncontrolled.
+//
+// flagd gotcha: the numeric flags must use the TYPED getters. A numeric flag read
+// through ObjectValue resolves as a silent TYPE_MISMATCH default (the in-process
+// resolver returns the flag's typed value only via the matching getter), so the
+// interval goes through floatFlag (float seconds -> time.Duration, reusing the
+// durationFlag helper) and the budget through intFlag.
+func (f *Flags) llmGate(ctx context.Context) LLMGate {
+	return LLMGate{
+		EligibleGameKinds:    f.eligibleGameKinds(ctx),
+		MinDecisionInterval:  f.durationFlag(ctx, keyLLMMinDecisionInterval, DefaultLLMMinDecisionIntervalSeconds),
+		MaxRequestsPerMinute: f.intFlag(ctx, keyLLMMaxRequestsPerMin, DefaultLLMMaxRequestsPerMinute),
+	}
+}
+
+// eligibleGameKinds resolves the llm.eligible_game_kinds array into []string. The
+// flag's variants are JSON arrays, surfaced as []any of strings (same shape as
+// interventions_allowed). On any error or unparseable shape it falls back to the
+// default ["real"] — fail-closed to shadow-games-rules-only, NOT to empty, which
+// would disable llm entirely.
+func (f *Flags) eligibleGameKinds(ctx context.Context) []string {
+	raw, err := f.client.ObjectValue(ctx, keyLLMEligibleGameKinds, defaultLLMEligibleGameKinds(), openfeature.EvaluationContext{})
+	if err != nil {
+		f.log.Debug("flags.llm.eligible_game_kinds fell back to default", "error", err)
+		return defaultLLMEligibleGameKinds()
+	}
+	list, ok := toStringSlice(raw)
+	if !ok {
+		f.log.Warn("flags.llm.eligible_game_kinds had unexpected shape, using default", "value", raw)
+		return defaultLLMEligibleGameKinds()
 	}
 	return list
 }
