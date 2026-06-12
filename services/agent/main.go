@@ -35,6 +35,7 @@ import (
 	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
 	"github.com/joustmania/agent/gamerunner"
+	"github.com/joustmania/agent/gamesummary"
 	"github.com/joustmania/agent/gate"
 	"github.com/joustmania/agent/infracontext"
 )
@@ -74,6 +75,22 @@ func partitionSet(ids []string) map[string]struct{} {
 		set[id] = struct{}{}
 	}
 	return set
+}
+
+// chainGameEnd composes several gamecontext.Store.OnGameEnd callbacks into one,
+// invoking each in order with the same snapshot (#928). The store exposes a single
+// OnGameEnd hook, but multiple independent once-per-game consumers (the #844 retro
+// and the M7-1 summary builder) need it; chaining keeps both on the one hook
+// without either knowing about the other. nil callbacks are skipped so a disabled
+// consumer is a no-op.
+func chainGameEnd(fns ...func(gamecontext.GameContext)) func(gamecontext.GameContext) {
+	return func(c gamecontext.GameContext) {
+		for _, fn := range fns {
+			if fn != nil {
+				fn(c)
+			}
+		}
+	}
 }
 
 // parsePort parses a uint16 TCP port, returning fallback on any parse error.
@@ -384,6 +401,19 @@ func main() {
 	// per-game loops also hold, so a retro at game end cannot blow the per-minute cap.
 	retro.SetLLMBudget(sharedLLMBudget)
 
+	// Game narrative builder (#928, M7-1): on the SAME GameActive true->false
+	// transition, aggregate the partition's pre-reset snapshot (live signals + the
+	// #916 rolling timeline) into a compact JSON game summary written to disk
+	// (AGENT_GAME_SUMMARY_DIR, default gamesummary.DefaultDir), one file per game,
+	// for BOTH real and shadow games. It is a SEPARATE once-per-game component from
+	// the retro — the summary must run unconditionally (no LLM budget/eligibility),
+	// so it owns its own dedupe and is chained alongside retro.OnGameEnd below
+	// (chainGameEnd) on the single store hook. The aggregation is itself an
+	// agent.game.summary span.
+	summaryDir := gamesummary.DirFromEnv()
+	summaries := gamesummary.NewCoordinator(gamesummary.NewWriter(summaryDir), logger)
+	slog.Info("Game narrative builder enabled (#928, M7-1)", "summary_dir", summaryDir)
+
 	// GameContext multiplexer (#845 PR B): one Store partition per game_id, plus the
 	// fallback partition "" for unlabeled signals (zero-regression — single-game
 	// mode collapses to exactly today's single-store behavior). The factory applies
@@ -399,7 +429,12 @@ func main() {
 		s := gamecontext.NewStore(lifecycle.PlayerTTL, lifecycle.SessionGrace, nil)
 		s.SetTTLSources(lifecycleHolder.PlayerTTL, lifecycleHolder.SessionGrace)
 		s.SetOwnService(ownService)
-		s.OnGameEnd = retro.OnGameEnd
+		// Chain BOTH game-end consumers onto the single store hook (#928): the #844
+		// retrospective AND the M7-1 summary builder both fire on game end with the
+		// pre-reset snapshot. Each has its OWN once-per-game dedupe, so chaining cannot
+		// make either double-fire. Order is retro-then-summary, but they are independent
+		// (neither reads the other's state).
+		s.OnGameEnd = chainGameEnd(retro.OnGameEnd, summaries.OnGameEnd)
 		return s
 	})
 	mux.SetOwnService(ownService)
