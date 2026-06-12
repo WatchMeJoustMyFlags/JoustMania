@@ -5,6 +5,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/joustmania/agent/llm"
 )
 
 // fakeBackend is the test Backend (#741): a named tier whose availability is a
@@ -28,6 +30,24 @@ func (b *fakeBackend) Name() string { return b.name }
 func (b *fakeBackend) Available(context.Context) bool {
 	b.probes.Add(1)
 	return b.up.Load()
+}
+
+// fakeBackendResponse is the canned valid response fakeBackend.Infer returns. The
+// #741 resolver/attribution tests assert WHICH tier resolves (inference.used +
+// fallback_reason); since #739 a resolved tier is now actually CALLED, so Infer
+// must return a contract-valid response for those tests to keep seeing a clean
+// llm decision (used=<tier>, fallback="") rather than an unparseable fallback. The
+// intervention (grant_shield) matches the allow-list the resolverLoop snapshot and
+// rules engine use, so the decision dispatches just like the rules one did.
+const fakeBackendResponse = `{"intervention":"grant_shield","target_serial":"","value":"","reason":"x","objective_served":"endurance"}`
+
+// Infer satisfies the #739 Backend interface. For the resolver/attribution tests
+// (which exercise availability RESOLUTION, not parse paths) it returns the canned
+// valid response above so a resolved tier produces a clean llm decision. The
+// dedicated parse-path coverage (valid/invalid/out-of-vocab/empty/error) lives in
+// llm_decide_test.go with a purpose-built inferBackend.
+func (b *fakeBackend) Infer(context.Context, llm.Prompt) (string, error) {
+	return fakeBackendResponse, nil
 }
 
 func (b *fakeBackend) set(up bool)       { b.up.Store(up) }

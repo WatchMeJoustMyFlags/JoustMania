@@ -45,6 +45,22 @@ const SpanDisabled = "agent.disabled"
 // one per throttleInterval (shared with the evaluate log / agent.disabled span).
 const SpanLLMPrompt = "agent.llm.prompt"
 
+// SpanLLMInfer is the actual-inference span (#739): emitted when the llm path
+// calls a resolved backend's Infer (NOT the capture path, which only renders the
+// prompt). It is a child of agent.span_received and a SIBLING of the resulting
+// agent.decision span, carrying the GenAI request attribution and — on a parsed
+// response — the model's reasoning + chosen objective + action. On an Infer error
+// or an unparseable response it carries AttrLLMInferError and the cycle falls back
+// to rules; the gen_ai.* shape lets Jaeger treat it as a model call.
+const SpanLLMInfer = "agent.llm.infer"
+
+// AttrLLMInferError records why an llm.infer span did not yield a usable Decision
+// (#739): the Infer transport error, or the llm.Decode rejection reason
+// (empty / not-JSON / missing-field / out-of-vocab-objective). Present only on the
+// failure path; its presence on the span is the marker that the cycle fell back to
+// rules with FallbackUnparseable.
+const AttrLLMInferError = "llm.infer.error"
+
 // Custom attribute keys of the agent.llm.prompt span (#739). The gen_ai.*
 // attributes use semconv constants where they exist; these three carry the
 // captured prompt text and size, which have no semantic convention.
@@ -171,6 +187,19 @@ const (
 	// FallbackNoBackend means the WHOLE chain was unreachable and rules decided.
 	// Recorded together with inference.used=<the lower tier> on the decision span.
 	FallbackEndpointUnreachable = "endpoint_unreachable"
+	// FallbackUnparseable is the inference.fallback_reason when the #847 gate ADMITTED
+	// an llm attempt AND resolve_backend (#741) resolved a REACHABLE tier whose Infer
+	// was actually called (#739), but the model's response could NOT be turned into a
+	// valid Decision — the call errored, the body was not the contracted JSON, a
+	// required field was missing, or the chosen intervention was out-of-vocabulary
+	// (not in the agent's known intervention set). The cycle falls back to the rules
+	// engine, and inference.used is recorded as the TIER THAT WAS CALLED (not "rules")
+	// so the span honestly shows "this tier answered, but unusably". This is the
+	// safety floor of the LLM path: an unparseable/invalid/out-of-vocab response NEVER
+	// dispatches an arbitrary action — it always degrades to the deterministic engine
+	// with this reason. Distinct from FallbackNoBackend (no tier was reachable at all,
+	// Infer was never called).
+	FallbackUnparseable = "llm_unparseable"
 	// DefaultObjectives until the objectives flag schema exists (#725).
 	DefaultObjectives = "unset"
 	// UnrestrictedAllowed is the interventions.allowed summary while the
