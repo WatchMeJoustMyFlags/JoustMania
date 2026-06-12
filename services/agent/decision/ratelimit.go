@@ -24,8 +24,18 @@ import (
 //     unified loop *can* see permissions. The engine no longer rate-limits.
 //   - Unknown-intervention cost is #728's medium (1.0). #726 used the hard cost
 //     (2.0) as a fail-safe; the medium default is kept for parity with #728 and
-//     because the game-coordinator flag-application layer (#730) remains the
-//     authoritative backstop for anything mis-weighted here.
+//     because the game-coordinator flag-application layer (#730) remains a
+//     generous GLOBAL backstop that catches anything mis-weighted here.
+//
+// Budget-ownership contract (#919): THIS limiter is the AUTHORITATIVE PER-GAME
+// governor. Each game_id gets its own *Loop with its own rateLimiter (see
+// loopset.go), so one game exhausting policy.max_interventions_per_minute never
+// starves another. The game-coordinator's _RateLimiter
+// (services/game_coordinator/interventions.py) is NOT a second per-game governor:
+// it is a single, deliberately generous, process-global BACKSTOP keyed off a
+// SEPARATE flag (policy.coordinator_backstop_per_minute) that only trips on a
+// runaway agent. The two layers read different flags on purpose so they cannot
+// silently drift (bug classes #800/#848).
 
 // Intervention identifiers — exactly the interventions_allowed vocabulary from
 // the flagd agent schema (services/flagd/agent.json) and the #722 research §6.

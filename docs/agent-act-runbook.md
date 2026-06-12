@@ -204,6 +204,37 @@ can verify the trace pipeline without a live game. See the agent README →
 
 ---
 
+## Rate-limit ownership — defense-in-depth contract (#919)
+
+Intervention rate limiting runs in **two layers, in two languages**, with
+**distinct, non-overlapping roles**. They are deliberately *not* two copies of
+the same governor, and they read **different flags** so they cannot silently
+drift (closes bug classes #800/#848):
+
+| Layer | Where | Scope | Reads flag | Role |
+|-------|-------|-------|-----------|------|
+| **Agent (authoritative)** | `services/agent/decision/` — per-game `Loop` in `loopset.go`, limiter in `ratelimit.go` | **Per game** (`game_id`) | `policy.max_interventions_per_minute` | The real governor. Each game gets its **own** weighted per-minute budget; one game exhausting it never starves another. The agent only emits an intervention once its per-game limiter admits it. |
+| **Coordinator (backstop)** | `services/game_coordinator/interventions.py` — `_RateLimiter` | **Process-global** (all games share one) | `policy.coordinator_backstop_per_minute` | A generous global safety net. Caps a *runaway/buggy* agent that floods flag writes far beyond any sane per-game rate. Tuned high enough that normal multi-session traffic never reaches it. |
+
+**The single-owner rule (drift prevention).** Per-game pacing lives in exactly
+**one** place — the agent. The coordinator does **not** re-derive or mirror the
+per-game budget; it owns only the generous global flood ceiling.
+
+- To change how aggressively a single game may be nudged → change
+  `policy.max_interventions_per_minute` (agent, per-game).
+- To move the global flood ceiling → change
+  `policy.coordinator_backstop_per_minute` (coordinator backstop). The default
+  variant (`60`/min) is intentionally far above any legitimate combined traffic;
+  it only trips on an order-of-magnitude-higher, clearly-runaway write rate.
+
+A `decision.block_reason=rate_limit` on an **agent** span means the game's own
+per-game budget is spent (normal pacing). A `block_reason=rate_limited` on a
+**coordinator** `game_interventions_total{blocked="true"}` increment means the
+*global backstop* tripped — that is abnormal and points at a misbehaving agent,
+not at normal play.
+
+---
+
 ## Where to look
 
 | Tool | Path | Use |
@@ -268,6 +299,74 @@ budget is too low for the demo. Raise `policy.max_interventions_per_minute` to
 `aggressive` (4), or recall that **hard** interventions cost 2, **medium** 1, and
 **soft** 0.5 against the trailing-minute budget (see the agent README →
 *Rules engine* weight table). Blocked decisions do **not** draw down the budget.
+
+---
+
+## Recovery — interventions file corruption (#924)
+
+The agent applies decisions by an **in-place** read-modify-write of
+`/etc/flagd/interventions.json` (no temp+rename — rename triggers EBUSY on the
+docker bind mount flagd watches). A crash, an out-of-disk, or a concurrent
+truncation mid-write can leave **invalid JSON**. flagd then rejects the *whole*
+flag set and every intervention **silently falls back to its default** — no
+write error is raised, so the legacy `agent_intervention_writes_total{result="error"}`
+alert does **not** catch a previously-poisoned file.
+
+### Built-in self-heal (automatic, no operator action)
+
+The agent repairs corruption on its own:
+
+1. **Validate-after-write** — after each write, the agent re-reads and re-parses
+   the file. If it no longer parses, the agent **restores the last-known-good
+   snapshot** (the bytes it read at the top of that write cycle, which parsed)
+   in place, and the `Apply` records `result=error`.
+2. **Startup self-heal** — on agent start (when `AGENT_INTERVENTIONS_ENABLED=true`),
+   the agent validates the file and, if it is missing or unparseable, writes a
+   **neutral document** (every flag at its neutral `defaultVariant`, empty
+   targeting, no agent-driven variants — embedded in the agent binary, so it is
+   always a complete, valid schema with no game effect).
+
+Both paths increment **`agent_intervention_file_corruption_total{phase=write|startup}`**
+and log `agent.intervention_file_corrupt` (with `phase`, `path`, the parse
+`error`, and the `action` taken).
+
+### Signal & alert
+
+> **Why an agent-side counter, not a flagd metric?** flagd (scraped on
+> `flagd:8014`) surfaces config-source **parse failures via logs only** — it
+> exposes no scrapable sync/parse-failure counter. The agent, by contrast,
+> *detects and heals* the corruption directly, so an agent-side counter is the
+> fast, reliable, test-coverable signal.
+
+Alert: **`AgentInterventionFileCorruption`** (`services/prometheus/alerts.yml`,
+severity `critical`) fires immediately on any increase of
+`agent_intervention_file_corruption_total`. A single corruption already defaults
+every intervention until healed, so it pages without a `for:` delay.
+
+### When the alert fires
+
+1. **Confirm it self-healed.** The agent log shows `agent.intervention_file_corrupt`
+   followed by the restore. Check the file parses:
+   ```bash
+   docker compose exec flagd sh -c 'cat /etc/flagd/interventions.json' | python3 -m json.tool >/dev/null && echo OK
+   ```
+   flagd hot-reloads the repaired file within ~100 ms–1 s; interventions resume.
+2. **If it keeps firing** the underlying cause persists (agent crash-looping
+   mid-write, disk full, or an external writer racing the agent — the agent must
+   be the *sole* writer). Check `df -h` on the host, `docker compose logs agent`
+   for restart loops, and confirm nothing else writes the bind-mounted file.
+3. **Manual restore (last resort).** Re-seed the file from the canonical schema
+   in the repo and restart the agent (which re-validates on startup):
+   ```bash
+   cp services/flagd/interventions.json /path/to/bind-mount/interventions.json
+   docker compose up -d --no-deps agent
+   ```
+   The neutral document the agent writes is byte-identical to
+   `services/flagd/interventions.json`, so this just makes the heal explicit.
+
+The corruption is recovered automatically; the alert exists so an operator
+**investigates the root cause** (why did a write get poisoned?), not so they have
+to hand-repair the file.
 
 ---
 

@@ -260,6 +260,18 @@ func main() {
 	// per-game cadence + eligibility layers live on each Loop; only the budget is
 	// shared across loops.
 	sharedLLMBudget := decision.NewLLMBudget()
+	// Startup self-heal (#924): when the real action sink is enabled, validate the
+	// interventions file and repair a poisoned (unparseable) one to the neutral
+	// document before the first decision cycle. A corrupt file would otherwise make
+	// flagd reject the whole flag set, silently defaulting every intervention. The
+	// heal is best-effort: a failure logs and the agent still starts.
+	if writer, ok := sharedSink.(*actions.Writer); ok {
+		if healed, err := writer.HealIfCorrupt(ctx); err != nil {
+			slog.Error("Interventions file startup self-heal failed (continuing)", "error", err)
+		} else if healed {
+			slog.Warn("Interventions file was corrupt at startup; restored neutral document (#924)")
+		}
+	}
 	// Shared inference fallback-chain resolver (#741). Constructed ONCE here with the
 	// real network probes for the three llm tiers (cloud #742, gemma3:4b on Jetson
 	// #738, phi4-mini on localhost #739) and ONE availability cache for the whole
@@ -267,7 +279,7 @@ func main() {
 	// In dev every endpoint is unreachable, so resolve_backend honestly degrades the
 	// whole chain to the rules engine; with a tier reachable it reports that tier as
 	// inference.used (who #739 WILL call). Start() launches the background re-probe
-	// ticker (DefaultProbeInterval) and primes the cache before the first decision; it
+	// ticker (DefaultProbeInterval) and primes the cache in the background; it
 	// stops when ctx is cancelled at shutdown.
 	sharedResolver := decision.NewResolver(decision.DefaultChain(decision.Endpoints{
 		Cloud:     getEnv("AGENT_CLOUD_ENDPOINT", ""),                    // #742 credential-blocked: empty = permanently unreachable

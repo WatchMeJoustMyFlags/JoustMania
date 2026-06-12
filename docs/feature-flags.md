@@ -352,7 +352,8 @@ variants are populated from the #722 research — see
 | `interventions_allowed` | string | `none`, `ambient`, `standard`, `full` | `ambient` | Permitted intervention surface (from #722 §6) |
 | `policy.battery_threshold` | integer | percent | 20 | Battery floor before agent acts |
 | `policy.movement_variance_window` | integer | samples | 10 | Window for movement-variance checks |
-| `policy.max_interventions_per_minute` | integer | count | 2 | Rate cap on interventions |
+| `policy.max_interventions_per_minute` | integer | count | 2 | **Authoritative per-game** rate cap, enforced by the agent (one budget per `game_id`, see [agent runbook → rate-limit ownership](agent-act-runbook.md#rate-limit-ownership--defense-in-depth-contract-919)) |
+| `policy.coordinator_backstop_per_minute` | integer | count | 60 | **Generous global backstop** (#919) for the coordinator `_RateLimiter` — a process-wide flood ceiling across all games, *not* a per-game cap; only trips on a runaway agent |
 
 #### Fitness configuration
 

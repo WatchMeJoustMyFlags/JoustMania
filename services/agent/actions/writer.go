@@ -81,6 +81,15 @@ const (
 	resultError = "error"
 )
 
+// Phase label values for agent_intervention_file_corruption_total. A poisoned
+// interventions file is detected either after a write (validate-after-write) or
+// at agent startup (self-heal). Cardinality is bounded to these two values per
+// .claude/rules/development.md.
+const (
+	phaseWrite   = "write"
+	phaseStartup = "startup"
+)
+
 // Per-intervention defaults used when a Decision carries no explicit Value. The
 // rules engine (#726) leaves Value empty today, so these are the contract.
 const (
@@ -107,6 +116,13 @@ type Writer struct {
 	// no-op recorder until initMetrics wires the OTLP exporter.
 	writes otelmetric.Int64Counter
 
+	// corruption counts detected-and-healed interventions-file corruptions
+	// (agent_intervention_file_corruption_total), labeled phase=write|startup.
+	// Incremented when a post-write re-parse fails (last-known-good restored) or
+	// when startup validation finds an unparseable file (neutral document
+	// written). Same no-op-until-wired semantics as writes.
+	corruption otelmetric.Int64Counter
+
 	mu sync.Mutex
 }
 
@@ -119,11 +135,13 @@ func NewWriter(path string, log *slog.Logger) *Writer {
 	if log == nil {
 		log = slog.Default()
 	}
+	mp := otel.GetMeterProvider()
 	return &Writer{
-		path:   path,
-		log:    log,
-		nonce:  newNonceGen(),
-		writes: newWritesCounter(otel.GetMeterProvider()),
+		path:       path,
+		log:        log,
+		nonce:      newNonceGen(),
+		writes:     newWritesCounter(mp),
+		corruption: newCorruptionCounter(mp),
 	}
 }
 
@@ -139,6 +157,20 @@ func newWritesCounter(mp otelmetric.MeterProvider) otelmetric.Int64Counter {
 		// Int64Counter only errors on bad config; fall back to a no-op so callers
 		// never have to nil-check.
 		c, _ = metricnoop.NewMeterProvider().Meter(meterName).Int64Counter("agent_intervention_writes_total")
+	}
+	return c
+}
+
+// newCorruptionCounter builds the agent_intervention_file_corruption_total
+// counter from the given meter provider. An instrument-creation error yields a
+// no-op counter so the Writer always has a usable instrument.
+func newCorruptionCounter(mp otelmetric.MeterProvider) otelmetric.Int64Counter {
+	c, err := mp.Meter(meterName).Int64Counter(
+		"agent_intervention_file_corruption_total",
+		otelmetric.WithDescription("Total interventions-file corruptions detected and self-healed by the agent, labeled by phase (write|startup)"),
+	)
+	if err != nil {
+		c, _ = metricnoop.NewMeterProvider().Meter(meterName).Int64Counter("agent_intervention_file_corruption_total")
 	}
 	return c
 }
@@ -174,8 +206,26 @@ func (w *Writer) recordWrite(ctx context.Context, result string) {
 	w.writes.Add(ctx, 1, otelmetric.WithAttributes(attribute.String("result", result)))
 }
 
+// recordCorruption increments agent_intervention_file_corruption_total for one
+// detected-and-healed corruption in the given phase (write|startup). The counter
+// is nil only in hand-built test Writers that never reach a corruption path; the
+// nil guard keeps those panic-free.
+func (w *Writer) recordCorruption(ctx context.Context, phase string) {
+	if w.corruption == nil {
+		return
+	}
+	w.corruption.Add(ctx, 1, otelmetric.WithAttributes(attribute.String("phase", phase)))
+}
+
 // edit runs one read-modify-write cycle under the process mutex: read the file,
-// apply fn to the order-preserving document, and write it back in place.
+// apply fn to the order-preserving document, write it back in place, then
+// VALIDATE the write by re-parsing the on-disk bytes. If the file no longer
+// parses (a crash or concurrent truncation poisoned it between write and
+// re-read, or our own marshal somehow produced invalid JSON), the last-known-good
+// snapshot — the `raw` bytes we read at the top of this cycle, which parsed
+// successfully — is restored in place, the corruption counter is incremented,
+// and the original parse error is returned. This keeps flagd from ingesting a
+// poisoned file and falling all interventions back to defaults silently (#924).
 func (w *Writer) edit(fn func(*orderedDoc) error) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -195,7 +245,35 @@ func (w *Writer) edit(fn func(*orderedDoc) error) error {
 	if err != nil {
 		return err
 	}
-	return w.writeInPlace(out)
+	if err := w.writeInPlace(out); err != nil {
+		return err
+	}
+	return w.validateAfterWrite(raw)
+}
+
+// validateAfterWrite re-reads and re-parses the file just written. On success it
+// returns nil. On failure it restores lastGood (the pre-edit bytes, known to
+// parse), increments agent_intervention_file_corruption_total{phase="write"},
+// logs, and returns the parse error so Apply records result=error. A failure to
+// restore is itself returned (the caller already holds w.mu).
+func (w *Writer) validateAfterWrite(lastGood []byte) error {
+	back, err := os.ReadFile(w.path)
+	if err == nil {
+		_, err = parseDoc(back)
+		if err == nil {
+			return nil // write produced valid JSON
+		}
+	}
+	w.recordCorruption(context.Background(), phaseWrite)
+	w.log.Error("agent.intervention_file_corrupt",
+		"phase", phaseWrite,
+		"path", w.path,
+		"error", err,
+		"action", "restoring last-known-good")
+	if rerr := w.writeInPlace(lastGood); rerr != nil {
+		return fmt.Errorf("interventions file corrupt after write and restore failed: %w (original: %v)", rerr, err)
+	}
+	return fmt.Errorf("interventions file corrupt after write, restored last-known-good: %w", err)
 }
 
 // RevertState flips a session-scoped state flag back to its neutral variant
