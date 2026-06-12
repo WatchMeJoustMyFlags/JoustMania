@@ -439,6 +439,16 @@ class InterventionManager:
         # Optional per-flag handlers run when a state-shaped flag reverts to its
         # neutral value (e.g. volume_override -> default game volume). Additive;
         # absence means "do nothing on revert" (the default for all flags).
+        #
+        # IMPORTANT (#922): a revert-to-neutral is routed HERE, not back to the
+        # flag's apply-handler. So a state flag that mutates live game state on
+        # apply MUST register a revert handler to undo it — the apply-handler's
+        # own "neutral value" branch is never reached on revert. music_tempo_override
+        # is a concrete example: its apply-handler clears game.tempo_override for a
+        # 0 value, but that branch only runs when the value CHANGES TO a non-neutral
+        # value and back via a separate apply; on a genuine revert the dedicated
+        # handle_music_tempo_override_revert (registered in difficulty_handlers.py)
+        # is what actually resets the override.
         self._revert_handlers: dict[str, Handler] = {}
 
         self._lock = threading.RLock()

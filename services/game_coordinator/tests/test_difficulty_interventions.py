@@ -37,6 +37,7 @@ from lib.types import GameEvent, Sensitivity
 from services.game_coordinator.difficulty_handlers import (
     handle_global_sensitivity_override,
     handle_music_tempo_override,
+    handle_music_tempo_override_revert,
     handle_player_sensitivity_factor,
     register_difficulty_handlers,
 )
@@ -191,6 +192,18 @@ class TestMusicTempoOverride:
         game.change_time = 0.0
         await game._check_music_speed()
         game.audio_client.ChangeTempo.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_revert_handler_clears_override(self):
+        """The dedicated revert handler (#922) clears a stuck override."""
+        game = make_game()
+        game.tempo_override = 1.3
+        await handle_music_tempo_override_revert(make_ctx("music_tempo_override", 0, game))
+        assert game.tempo_override is None
+
+    @pytest.mark.asyncio
+    async def test_revert_handler_no_live_game_is_noop(self):
+        await handle_music_tempo_override_revert(make_ctx("music_tempo_override", 0, None))  # no raise
 
     @pytest.mark.asyncio
     async def test_no_live_game_is_noop(self):
@@ -371,6 +384,9 @@ class TestRegistration:
         assert mgr._handlers["global_sensitivity_override"] is handle_global_sensitivity_override
         # player_sensitivity_factor is bound via closure (not identity-equal).
         assert callable(mgr._handlers["player_sensitivity_factor"])
+        # #922: music_tempo_override needs an explicit revert handler (the manager
+        # routes reverts to _revert_handlers, not back to the apply-handler).
+        assert mgr._revert_handlers["music_tempo_override"] is handle_music_tempo_override_revert
 
     @pytest.mark.asyncio
     @patch("services.game_coordinator.metrics.interventions_total")
@@ -398,6 +414,50 @@ class TestRegistration:
 
         assert game.tempo_override == pytest.approx(1.15)
         assert any(e[0] == GameEvent.AGENT_INTERVENTION and e[1]["blocked"] == "false" for e in events)
+
+    @pytest.mark.asyncio
+    @patch("services.game_coordinator.metrics.interventions_total")
+    async def test_revert_to_neutral_restores_natural_tempo_via_chain(self, _metric):
+        """Acceptance (#922): apply music_tempo_override, then revert the flag to
+        neutral (0) through the manager, and assert the override is cleared so the
+        natural music schedule resumes.
+
+        This exercises the real revert path: the manager routes a revert-to-neutral
+        to ``_revert_handlers``, NOT back to the apply-handler, so without the
+        registered revert handler ``game.tempo_override`` would stay pinned at the
+        override and the music loop would be stuck at that tempo.
+        """
+        game = make_game()
+        events = []
+
+        async def publisher(event_type, data):
+            events.append((event_type, data))
+
+        mgr = InterventionManager(event_publisher=publisher, get_game=lambda: game)
+        mgr._interventions_client = _ScalarFlagClient({"music_tempo_override": 0})
+        mgr._agent_client = _AllowAllAgent()
+        register_difficulty_handlers(mgr)
+        mgr._prime_baseline()
+
+        primary = SessionView(game_id="", game=game, publish=publisher)
+
+        # Apply the override.
+        mgr._interventions_client.values["music_tempo_override"] = 1.15
+        await mgr._evaluate_one(_spec("music_tempo_override"), primary)
+        assert game.tempo_override == pytest.approx(1.15)
+
+        # Revert the flag to its neutral value (0).
+        mgr._interventions_client.values["music_tempo_override"] = 0
+        await mgr._evaluate_one(_spec("music_tempo_override"), primary)
+
+        # Override cleared: the music loop resumes its natural schedule next tick.
+        assert game.tempo_override is None
+
+        # Confirm the schedule actually runs again: force a scheduled change due.
+        game.audio_client.ChangeTempo.reset_mock()
+        game.change_time = 0.0
+        await game._check_music_speed()
+        game.audio_client.ChangeTempo.assert_called_once()
 
 
 class _ScalarFlagClient:
