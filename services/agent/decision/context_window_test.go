@@ -4,13 +4,16 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/joustmania/agent/gamecontext"
 	"github.com/joustmania/agent/gamesummary"
 	"github.com/joustmania/agent/gamewindow"
+	"github.com/joustmania/agent/llm"
 )
 
 // context_window_test.go drives the M7-2 rolling-context-window injection (#929)
@@ -198,6 +201,140 @@ func TestContextWindow_CaptureSpanAlsoCarriesCount(t *testing.T) {
 	}
 	if v, ok := attrValue(caps[0], AttrLLMPromptSystem); !ok || !strings.Contains(v.AsString(), "PRIOR GAMES") {
 		t.Errorf("capture span System prompt missing the cross-game block")
+	}
+}
+
+// recordingBlockingBackend is the async-path fake for #929: like blockingBackend
+// (its Infer blocks on a release channel so the test can assert the loop returned
+// while inference is still running) but it also CAPTURES the System prompt it
+// received, so the test can prove the cross-game block reached the PRODUCTION
+// (async, #917) prompt — runInfer assembles the prompt, not the sync llmDecide path.
+type recordingBlockingBackend struct {
+	name             string
+	response         string
+	release          chan struct{}
+	started          chan struct{}
+	mu               sync.Mutex
+	lastPromptSystem string
+	calls            int
+}
+
+func newRecordingBlockingBackend(name, response string) *recordingBlockingBackend {
+	return &recordingBlockingBackend{
+		name:     name,
+		response: response,
+		release:  make(chan struct{}),
+		started:  make(chan struct{}),
+	}
+}
+
+func (b *recordingBlockingBackend) Name() string                   { return b.name }
+func (b *recordingBlockingBackend) Available(context.Context) bool { return true }
+
+func (b *recordingBlockingBackend) Infer(ctx context.Context, p llm.Prompt) (string, error) {
+	b.mu.Lock()
+	b.calls++
+	first := b.calls == 1
+	b.lastPromptSystem = p.System
+	b.mu.Unlock()
+	if first {
+		close(b.started)
+	}
+	select {
+	case <-b.release:
+		return b.response, nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+func (b *recordingBlockingBackend) systemPrompt() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.lastPromptSystem
+}
+
+// TestContextWindow_AsyncPathInjectsBlock is the #929 re-integration coverage onto
+// the #917 ASYNC inference path — the path PRODUCTION takes. A loop wired WITH a
+// context provider (async enabled) + a populated context window must, when it fires
+// an async Infer, carry the rendered "PRIOR GAMES" block in the System prompt the
+// backend receives AND stamp agent.llm.context_games = the injected count on the
+// agent.llm.infer span (emitted at apply time). Without runInfer's renderContextBlock
+// call this whole feature would be bypassed in production — this test proves it isn't.
+func TestContextWindow_AsyncPathInjectsBlock(t *testing.T) {
+	be := newRecordingBlockingBackend("phi4-mini", validShieldResponse)
+	snap := asyncSnapshot()
+	snap.ContextGames = 2
+
+	provider := newFakeContextProvider()
+	provider.set("g1", activeContext("g1", "AAAA"))
+	l, sr, _ := asyncLoop(t, snap, resolverWith(be), provider, "g1", nil)
+
+	store := gamewindow.NewStore()
+	recordDistinctGames(store, 2, 4, 6) // oldest players=2, newest players=6; N=2 -> 4 & 6
+	l.SetContextWindow(store)
+
+	// Fire the async inference (the loop returns promptly; Infer is blocked).
+	l.OnEvaluate(context.Background(), activeContext("g1", "AAAA"), testTrigger())
+	select {
+	case <-be.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("async Infer never started — the loop did not fire on the async path")
+	}
+	close(be.release) // let the call complete
+	l.AwaitInflight() // join the apply goroutine so the infer span is recorded
+
+	if be.calls != 1 {
+		t.Fatalf("backend Infer calls = %d, want 1", be.calls)
+	}
+
+	// 1) The PRODUCTION prompt carries the rendered cross-game block for the last 2.
+	got := be.systemPrompt()
+	want := gamewindow.Render(store.Recent(2))
+	if !strings.Contains(got, want) {
+		t.Errorf("async prompt System missing the cross-game block:\n--- want block ---\n%s\n--- got system ---\n%s", want, got)
+	}
+	// N=2: the 2 newest (players=4,6) appear; the oldest (players=2) does NOT.
+	if !strings.Contains(got, playersLine(4)) || !strings.Contains(got, playersLine(6)) {
+		t.Errorf("async prompt missing the 2 newest games:\n%s", got)
+	}
+	if strings.Contains(got, playersLine(2)) {
+		t.Errorf("async prompt includes the oldest game (players=2), but N=2 excludes it:\n%s", got)
+	}
+
+	// 2) The agent.llm.infer span (emitted at APPLY time) carries the injected count.
+	if c := lastInjectedCount(t, sr); c != 2 {
+		t.Errorf("async infer span %s = %d, want 2", AttrLLMContextGames, c)
+	}
+}
+
+// TestContextWindow_AsyncNilWindowNoBlock confirms an async loop WITHOUT a context
+// window injects no cross-game block and reports context_games = 0 — the async path
+// is purely additive, exactly like the sync path's nil-window case.
+func TestContextWindow_AsyncNilWindowNoBlock(t *testing.T) {
+	be := newRecordingBlockingBackend("phi4-mini", validShieldResponse)
+	snap := asyncSnapshot()
+	snap.ContextGames = 3 // flag set, but no window wired
+
+	provider := newFakeContextProvider()
+	provider.set("g1", activeContext("g1", "AAAA"))
+	l, sr, _ := asyncLoop(t, snap, resolverWith(be), provider, "g1", nil)
+	// NOTE: no l.SetContextWindow — window is nil.
+
+	l.OnEvaluate(context.Background(), activeContext("g1", "AAAA"), testTrigger())
+	select {
+	case <-be.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("async Infer never started")
+	}
+	close(be.release)
+	l.AwaitInflight()
+
+	if strings.Contains(be.systemPrompt(), "PRIOR GAMES") {
+		t.Errorf("nil window must inject no cross-game block on the async path:\n%s", be.systemPrompt())
+	}
+	if c := lastInjectedCount(t, sr); c != 0 {
+		t.Errorf("async nil-window injected count = %d, want 0", c)
 	}
 }
 
