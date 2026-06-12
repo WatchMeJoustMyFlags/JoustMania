@@ -680,11 +680,16 @@ func (l *Loop) captureLLMPrompt(ctx context.Context, snapshot flags.Snapshot, c 
 	// send, and record the injected count on this capture span too (cheap — the block
 	// was already rendered for the prompt). Nil window -> empty block, count 0.
 	contextBlock, contextCount := l.renderContextBlock(snapshot)
+	// M7-3 (#930): inject the SAME validated operator note the real inference path would,
+	// so a captured prompt matches what the agent would actually send, and record the
+	// present+len view on this capture span too. Rejected/unset note -> "" / false / 0.
+	contextNote, notePresent, noteLen := resolveContextNote(snapshot)
 	prompt := llm.Build(llm.BuildInput{
 		Snapshot:     snapshot,
 		Context:      c,
 		Now:          now(),
 		ContextBlock: contextBlock,
+		ContextNote:  contextNote,
 	})
 	attrs := llmPromptAttributes(llmPromptAttrs{
 		prompt:     prompt,
@@ -693,7 +698,11 @@ func (l *Loop) captureLLMPrompt(ctx context.Context, snapshot flags.Snapshot, c 
 		gameKind:   c.GameKind,
 		gameID:     c.SessionID,
 	})
-	attrs = append(attrs, attribute.Int(AttrLLMContextGames, contextCount))
+	attrs = append(attrs,
+		attribute.Int(AttrLLMContextGames, contextCount),
+		attribute.Bool(AttrLLMContextNotePresent, notePresent),
+		attribute.Int(AttrLLMContextNoteLen, noteLen),
+	)
 	_, span := l.Tracer.Start(ctx, SpanLLMPrompt, trace.WithAttributes(attrs...))
 	span.End()
 

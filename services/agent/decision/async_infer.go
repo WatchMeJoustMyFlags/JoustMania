@@ -212,11 +212,19 @@ func (l *Loop) runInfer(root context.Context, snapshot flags.Snapshot, backend B
 	// carried on the outcome and stamped on the agent.llm.infer span at apply time
 	// (emitAsyncInferSpan), mirroring how the sync path records AttrLLMContextGames.
 	contextBlock, contextCount := l.renderContextBlock(snapshot)
+	// M7-3 operator note (#930): inject the SAME validated operator context note the sync
+	// llmDecide path would, so the PRODUCTION (async) path actually carries it — #917
+	// moved prompt assembly here, so without this the feature would be bypassed in
+	// production (the same trap M7-2 hit). present/len are carried on the outcome and
+	// stamped on agent.llm.infer at apply time (emitAsyncInferSpan), mirroring the sync
+	// path. A rejected note → "" → no operator section.
+	contextNote, notePresent, noteLen := resolveContextNote(snapshot)
 	prompt := llm.Build(llm.BuildInput{
 		Snapshot:     snapshot,
 		Context:      c,
 		Now:          start,
 		ContextBlock: contextBlock,
+		ContextNote:  contextNote,
 	})
 
 	// The raw inference call (#739). Spans are NOT created here — they are emitted by
@@ -226,13 +234,15 @@ func (l *Loop) runInfer(root context.Context, snapshot flags.Snapshot, backend B
 	end := now()
 
 	l.applyAsyncResult(root, snapshot, trig, asyncOutcome{
-		raw:          raw,
-		inferErr:     inferErr,
-		timedOut:     inferCtx.Err() == context.DeadlineExceeded,
-		start:        start,
-		end:          end,
-		backend:      backend,
-		contextGames: contextCount,
+		raw:                raw,
+		inferErr:           inferErr,
+		timedOut:           inferCtx.Err() == context.DeadlineExceeded,
+		start:              start,
+		end:                end,
+		backend:            backend,
+		contextGames:       contextCount,
+		contextNotePresent: notePresent,
+		contextNoteLen:     noteLen,
 	})
 }
 
@@ -260,4 +270,12 @@ type asyncOutcome struct {
 	// agent.llm.infer span (emitted at apply time) records AttrLLMContextGames, exactly
 	// as the synchronous llmDecide path does. 0 when no window is wired (un-wired loops).
 	contextGames int
+	// contextNotePresent / contextNoteLen are the M7-3 operator-note view (#930) for the
+	// prompt this call actually used: whether a validated operator note was injected and
+	// its rune length. Carried from runInfer (validation happens at fire time, on the
+	// fire-time snapshot) to the apply path so emitAsyncInferSpan stamps the same
+	// bounded present+len view on agent.llm.infer that the sync llmDecide path records.
+	// present=false/len=0 when the note was unset, flagd-unreachable, or rejected.
+	contextNotePresent bool
+	contextNoteLen     int
 }

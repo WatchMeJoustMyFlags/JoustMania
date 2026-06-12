@@ -422,6 +422,35 @@ func TestSnapshotPermits(t *testing.T) {
 	}
 }
 
+// TestEvaluate_PromptContextNote pins the M7-3 (#930) operator-note read: the raw
+// prompt.context_note string flag is surfaced verbatim on the snapshot (validation is
+// the decision side's job, not the flag layer's), and falls back to the empty default
+// when undefined or on a flagd error — so an unset or unreachable flag injects no note.
+func TestEvaluate_PromptContextNote(t *testing.T) {
+	t.Run("live value surfaced verbatim", func(t *testing.T) {
+		stub := stubEvaluator{strings: map[string]string{
+			keyPromptContextNote: "keep it gentle tonight",
+		}}
+		got := New(stub, nil).Evaluate(context.Background())
+		if got.PromptContextNote != "keep it gentle tonight" {
+			t.Errorf("PromptContextNote = %q, want raw flag value", got.PromptContextNote)
+		}
+	})
+	t.Run("default when undefined", func(t *testing.T) {
+		got := New(stubEvaluator{}, nil).Evaluate(context.Background())
+		if got.PromptContextNote != DefaultPromptContextNote {
+			t.Errorf("PromptContextNote = %q, want empty default", got.PromptContextNote)
+		}
+	})
+	t.Run("default on flagd error", func(t *testing.T) {
+		stub := stubEvaluator{errs: map[string]error{keyPromptContextNote: errors.New("flagd down")}}
+		got := New(stub, nil).Evaluate(context.Background())
+		if got.PromptContextNote != DefaultPromptContextNote {
+			t.Errorf("PromptContextNote on error = %q, want empty default", got.PromptContextNote)
+		}
+	})
+}
+
 // defaultLifecycle is the expected lifecycle snapshot when every flag falls back
 // to its safe default (the former hardcoded constants; #766 F5).
 func defaultLifecycle() Lifecycle {

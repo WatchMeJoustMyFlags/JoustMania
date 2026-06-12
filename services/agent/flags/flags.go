@@ -55,6 +55,16 @@ const (
 	// [0, gamewindow.RetentionCap].
 	keyLLMContextGames = "llm.context_games"
 
+	// M7-3 operator prompt context note (#930). A FREE-TEXT note an operator appends
+	// to the agent's system prompt at runtime via flagd, with no redeploy. Flat key
+	// matching the repo convention (mode, llm.context_games, policy.battery_threshold);
+	// the "agent." in the issue title is the flagd DOMAIN, not part of the key. Read
+	// EVERY cycle like context_games above (never cached) so changing the note on stage
+	// takes effect on the very next llm call. The decision path VALIDATES + length-bounds
+	// the value (llm.ValidateContextNote) before it reaches the model; an invalid/empty/
+	// oversized value injects nothing. Default empty = no operator section.
+	keyPromptContextNote = "prompt.context_note"
+
 	// Fitness thresholds (#731). The game-objective fitness flags.
 	keyEnduranceMinSessionSeconds  = "fitness.endurance.min_session_seconds"
 	keyBalancedMaxSkillGap         = "fitness.balanced.max_skill_gap"
@@ -124,6 +134,11 @@ const (
 	// unreachable or the flag is undefined. 3 mirrors the agent.json defaultVariant
 	// — a few games of memory, well under gamewindow.RetentionCap.
 	DefaultLLMContextGames = 3
+	// DefaultPromptContextNote is the M7-3 operator note default (#930): EMPTY, so a
+	// fresh deployment or an unreachable flagd injects NO operator-context section and
+	// the prompt is exactly the hardcoded base. The operator opts in by setting the
+	// flag; absence is the safe no-op (fail-closed to "no note").
+	DefaultPromptContextNote = ""
 
 	// Fitness threshold defaults (#731), mirroring the services/flagd/agent.json
 	// defaultVariants. Applied when flagd is unreachable or a flag is undefined.
@@ -393,6 +408,13 @@ type Snapshot struct {
 	// block. A non-positive value injects no prior games (the block renders the
 	// explicit "(no prior games)" marker).
 	ContextGames int
+	// PromptContextNote is the M7-3 RAW operator note (#930, prompt.context_note): the
+	// free-text value an operator set live to append to the system prompt. Read every
+	// cycle so a runtime change is honored on the next llm call. It is the UNVALIDATED
+	// raw flag value — the decision path runs llm.ValidateContextNote on it (length
+	// bound + control-char/empty rejection) before injecting, so an invalid/oversized
+	// note never reaches the model. Empty when unset or flagd-unreachable.
+	PromptContextNote string
 	// Fitness holds the per-objective fitness thresholds (#731).
 	Fitness Fitness
 	// BluetoothFitness holds the infrastructure fitness thresholds (#735).
@@ -448,6 +470,12 @@ func (f *Flags) Evaluate(ctx context.Context) Snapshot {
 		// typed intFlag getter (the flagd numeric-flag gotcha: a numeric flag read via
 		// ObjectValue resolves as a silent TYPE_MISMATCH default — see llmGate).
 		ContextGames: f.intFlag(ctx, keyLLMContextGames, DefaultLLMContextGames),
+		// M7-3 (#930): the raw operator note, read every cycle (live) via the string
+		// getter so a runtime change to prompt.context_note is honored on the next llm
+		// call. Validation/length-bounding happens on the decision side
+		// (llm.ValidateContextNote), not here — this snapshot carries the raw value and
+		// fails safe to "" (no note) on any flagd error.
+		PromptContextNote: f.stringFlag(ctx, keyPromptContextNote, DefaultPromptContextNote),
 		Fitness: Fitness{
 			EnduranceMinSessionSeconds:     f.intFlag(ctx, keyEnduranceMinSessionSeconds, DefaultEnduranceMinSessionSeconds),
 			BalancedMaxSkillGap:            f.floatFlag(ctx, keyBalancedMaxSkillGap, DefaultBalancedMaxSkillGap),

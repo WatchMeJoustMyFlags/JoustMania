@@ -186,6 +186,14 @@
       },
       "defaultVariant": "default"
     },
+    "prompt.context_note": {
+      "state": "ENABLED",
+      "variants": {
+        "empty": "",
+        "example": "Tonight's crowd skews younger and very energetic; lean toward higher-energy pacing."
+      },
+      "defaultVariant": "empty"
+    },
     "policy.coordinator_backstop_per_minute": {
       "state": "ENABLED",
       "variants": {

@@ -138,6 +138,13 @@ func (l *Loop) emitAsyncInferSpan(ctx context.Context, out asyncOutcome) ([]Deci
 	// the prompt on the REAL inference span, mirroring the synchronous llmDecide path
 	// (AttrLLMContextGames). out.contextGames is what runInfer rendered (0 = un-wired).
 	span.SetAttributes(attribute.Int(AttrLLMContextGames, out.contextGames))
+	// M7-3 (#930): the operator-note view (present + rune length) on the REAL inference
+	// span, mirroring the synchronous llmDecide path. out.contextNote* is what runInfer
+	// validated + injected at fire time (present=false/len=0 = no/rejected note).
+	span.SetAttributes(
+		attribute.Bool(AttrLLMContextNotePresent, out.contextNotePresent),
+		attribute.Int(AttrLLMContextNoteLen, out.contextNoteLen),
+	)
 	defer span.End(trace.WithTimestamp(out.end))
 
 	if out.timedOut {
