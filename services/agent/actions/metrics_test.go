@@ -32,12 +32,41 @@ func newMeteredWriter(t *testing.T) (*Writer, string, *metric.ManualReader) {
 	mp := metric.NewMeterProvider(metric.WithReader(reader))
 
 	w := &Writer{
-		path:   path,
-		log:    slog.New(slog.NewTextHandler(os.Stderr, nil)),
-		nonce:  newNonceGen(),
-		writes: newWritesCounter(mp),
+		path:       path,
+		log:        slog.New(slog.NewTextHandler(os.Stderr, nil)),
+		nonce:      newNonceGen(),
+		writes:     newWritesCounter(mp),
+		corruption: newCorruptionCounter(mp),
 	}
 	return w, path, reader
+}
+
+// corruptionByPhase collects the manual reader and returns a phase->value map for
+// the agent_intervention_file_corruption_total counter (empty when not yet
+// recorded).
+func corruptionByPhase(t *testing.T, reader *metric.ManualReader) map[string]int64 {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("collect metrics: %v", err)
+	}
+	out := map[string]int64{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "agent_intervention_file_corruption_total" {
+				continue
+			}
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			if !ok {
+				t.Fatalf("expected Sum[int64], got %T", m.Data)
+			}
+			for _, dp := range sum.DataPoints {
+				phase, _ := dp.Attributes.Value("phase")
+				out[phase.AsString()] = dp.Value
+			}
+		}
+	}
+	return out
 }
 
 // writesByResult collects the manual reader and returns a result->value map for

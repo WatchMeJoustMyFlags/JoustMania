@@ -260,6 +260,18 @@ func main() {
 	// per-game cadence + eligibility layers live on each Loop; only the budget is
 	// shared across loops.
 	sharedLLMBudget := decision.NewLLMBudget()
+	// Startup self-heal (#924): when the real action sink is enabled, validate the
+	// interventions file and repair a poisoned (unparseable) one to the neutral
+	// document before the first decision cycle. A corrupt file would otherwise make
+	// flagd reject the whole flag set, silently defaulting every intervention. The
+	// heal is best-effort: a failure logs and the agent still starts.
+	if writer, ok := sharedSink.(*actions.Writer); ok {
+		if healed, err := writer.HealIfCorrupt(ctx); err != nil {
+			slog.Error("Interventions file startup self-heal failed (continuing)", "error", err)
+		} else if healed {
+			slog.Warn("Interventions file was corrupt at startup; restored neutral document (#924)")
+		}
+	}
 	probeDecisions := strings.EqualFold(getEnv("AGENT_PROBE_DECISIONS", ""), "true")
 	if probeDecisions {
 		slog.Warn("Probe decisions enabled (demo/verification mode)",

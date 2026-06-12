@@ -132,3 +132,21 @@ groups:
         annotations:
           summary: "Agent cannot write intervention flags"
           description: "The agent ActionSink failed flag-file writes at {{ $value }}/s for 2+ minutes (flagd file unreachable?). The ACT path is degraded."
+
+      # Interventions-file corruption / self-heal (#924). The agent detects a
+      # poisoned (unparseable) interventions.json after a write or at startup and
+      # repairs it (restore last-known-good / write neutral document), emitting
+      # agent_intervention_file_corruption_total{phase=write|startup}. flagd
+      # surfaces config parse failures via logs only (no scrapable counter on
+      # :8014), so this agent-side counter is the fast, reliable signal — a
+      # poisoned file is visible within seconds instead of silently defaulting
+      # every intervention. ANY increase fires immediately (for: 0m) because a
+      # single corruption already kills all interventions until healed.
+      - alert: AgentInterventionFileCorruption
+        expr: sum(increase(agent_intervention_file_corruption_total[5m])) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Agent interventions file was corrupt and self-healed"
+          description: "The agent detected a poisoned interventions.json and self-healed it ({{ $value }} event(s) in 5m). flagd would otherwise reject the whole flag set and silently default every intervention. See docs/agent-act-runbook.md → Recovery."
