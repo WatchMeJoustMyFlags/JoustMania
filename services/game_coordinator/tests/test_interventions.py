@@ -426,6 +426,22 @@ def test_refresh_budget_falls_back_to_generous_default_when_flag_absent():
     assert mgr._rate_limiter._budget == pytest.approx(DEFAULT_COORDINATOR_BACKSTOP_BUDGET)
 
 
+def test_refresh_budget_falls_back_to_default_when_flag_read_raises():
+    """If reading the coordinator flag raises (e.g. flagd serves an
+    unparseable value), the backstop falls back to the generous default rather
+    than collapsing or crashing — the except path in _refresh_budget (#919)."""
+    from services.game_coordinator.interventions import (
+        DEFAULT_COORDINATOR_BACKSTOP_BUDGET,
+    )
+
+    mgr, _ = make_manager(backstop=42)
+    # A non-numeric value makes the fake's int() conversion raise, exercising
+    # the except branch (agent client present but the read fails).
+    mgr._agent_client.set("policy.coordinator_backstop_per_minute", "not-a-number")
+    mgr._refresh_budget()
+    assert mgr._rate_limiter._budget == pytest.approx(DEFAULT_COORDINATOR_BACKSTOP_BUDGET)
+
+
 @pytest.mark.asyncio
 async def test_normal_multi_session_traffic_does_not_trip_backstop():
     """Normal traffic across several concurrent games — each well within its own
