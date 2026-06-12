@@ -857,6 +857,7 @@ All configuration is via environment variables:
 | `AGENT_PROBE_DECISIONS` | _unset_ | `true` enables the demo/verification probe: a synthetic `noop` decision (and thus a full audit trace) at most every 5 s. Never for production sessions. See [Probe mode](#probe-mode-agent_probe_decisions) |
 | `AGENT_INTERVENTIONS_ENABLED` | `false` | `true` swaps the no-op action sink for the real intervention **Writer** (#730). Default off keeps the scaffold inert |
 | `INTERVENTIONS_FLAG_PATH` | `/etc/flagd/interventions.json` | Path of the flagd interventions file the Writer rewrites (must be the bind-mounted file flagd watches) |
+| `AGENT_GAME_SUMMARY_DIR` | `/var/lib/joustmania/agent/summaries` | Directory the M7-1 game narrative builder (#928) writes one JSON game summary per game into (real **and** shadow), created if missing; atomic temp+rename so a reader never sees a partial file |
 
 > The Go agent uses the flagd **RPC** resolver (gRPC evaluation port `8013`),
 > not the in-process sync port `8015` that the Python services use.
