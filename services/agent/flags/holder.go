@@ -81,6 +81,11 @@ func (h *LifecycleHolder) Load() Lifecycle {
 // its schema default rather than to zero. The ctx is the evaluation context for
 // the four flag reads.
 func (h *LifecycleHolder) Reload(ctx context.Context) {
+	// The OpenFeature SDK dispatches each handler invocation on its OWN goroutine,
+	// so rapid config-changes can run Reload concurrently. That is safe: the publish
+	// is a single atomic.Pointer.Store (correct for any number of writers), and the
+	// prev/next delta-log below is best-effort — under a concurrent reload the worst
+	// case is a duplicated/elided log line, never a torn value.
 	next := h.flags.Lifecycle(ctx)
 	prev := *h.val.Load()
 	h.val.Store(&next)
@@ -132,11 +137,18 @@ func (h *LifecycleHolder) DecisionThrottle() time.Duration { return h.Load().Dec
 // eventClient is the narrow interface the agent client satisfies (*openfeature.Client);
 // taking the interface keeps this unit-testable with a fake that records the
 // callback and lets a test invoke it with a synthetic EventDetails.
-func (h *LifecycleHolder) RegisterConfigChangeHandler(ctx context.Context, eventClient EventClient) openfeature.EventCallback {
+func (h *LifecycleHolder) RegisterConfigChangeHandler(eventClient EventClient) openfeature.EventCallback {
 	cb := func(_ openfeature.EventDetails) {
 		// Re-evaluate on the event goroutine. Cheap (four flag reads, all with
 		// safe-default guards) so it never wedges the SDK's event dispatch.
-		h.Reload(ctx)
+		//
+		// context.Background(), NOT the startup ctx: that ctx is the SIGTERM
+		// signal.NotifyContext, so a config-change arriving DURING shutdown would
+		// reload with a cancelled context, fail every flag eval, and briefly revert
+		// the live values to defaults. The reload eval is local + instant, so it
+		// needs no cancellation; after openfeature.Shutdown() clears handlers this
+		// callback no longer fires at all.
+		h.Reload(context.Background())
 	}
 	// EventCallback is *func(EventDetails); take the address of the local so the
 	// SDK stores a stable pointer (RemoveHandler matches on pointer identity).

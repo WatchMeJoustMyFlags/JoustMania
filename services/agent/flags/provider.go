@@ -64,7 +64,7 @@ func SetupFlagd(ctx context.Context, cfg ProviderConfig, log *slog.Logger) (*Fla
 	// listener (#927). Prime the holder before wiring the handler so consumers see
 	// correct values from the first cycle even if no event ever fires.
 	holder := NewLifecycleHolder(ctx, f, log)
-	holder.RegisterConfigChangeHandler(ctx, client)
+	holder.RegisterConfigChangeHandler(client)
 
 	shutdown := func() { openfeature.Shutdown() }
 	return f, holder, shutdown, nil

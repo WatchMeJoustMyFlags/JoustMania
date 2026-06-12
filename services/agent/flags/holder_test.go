@@ -146,7 +146,7 @@ func TestLifecycleHolder_ConfigChangeEventReloads(t *testing.T) {
 	h := NewLifecycleHolder(context.Background(), New(ev, nil), nil)
 
 	fc := &fakeEventClient{}
-	h.RegisterConfigChangeHandler(context.Background(), fc)
+	h.RegisterConfigChangeHandler(fc)
 
 	if fc.eventType != openfeature.ProviderConfigChange {
 		t.Fatalf("registered for %q, want ProviderConfigChange", fc.eventType)
