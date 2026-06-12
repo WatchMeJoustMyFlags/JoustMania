@@ -198,6 +198,16 @@ type Loop struct {
 	// a single budget. Nil until injected; a nil budget gates every llm attempt
 	// with llm_budget_exhausted (fail-closed: no shared cap means no llm).
 	budget *llmBudget
+
+	// resolver is the SHARED inference fallback-chain resolver (#741), injected via
+	// SetResolver from the one instance main.go constructs (one availability cache
+	// for the whole agent, like budget). On a gate-ADMITTED llm cycle the loop calls
+	// resolver.resolve(model) to determine WHICH tier would serve, recording it as
+	// inference.used and any degradation as inference.fallback_reason. Nil until
+	// injected; a nil resolver means the cycle reports inference.used="rules" with
+	// FallbackNoBackend (no resolver = no llm tier known = rules decides), preserving
+	// the pre-#741 admitted-but-no-backend contract.
+	resolver *Resolver
 	// llmGated counts gated llm cycles (agent_llm_gated_total{reason=...}). Defaults
 	// to a no-op so a Loop built without metrics wiring still works.
 	llmGated otelmetric.Int64Counter
@@ -232,6 +242,14 @@ func NewLoop(flagSource FlagSource, log *slog.Logger) *Loop {
 // collectively exceed llm.max_requests_per_minute. Not safe to call concurrently
 // with OnEvaluate — set it during construction, before the loop serves.
 func (l *Loop) SetLLMBudget(b *llmBudget) { l.budget = b }
+
+// SetResolver injects the SHARED inference fallback-chain resolver (#741). main.go
+// constructs ONE Resolver (one availability cache + one background probe ticker for
+// the whole agent) and calls this on every Loop the factory builds, so all per-game
+// loops resolve against the same availability picture — mirroring SetLLMBudget. Not
+// safe to call concurrently with OnEvaluate — set it during construction, before
+// the loop serves.
+func (l *Loop) SetResolver(r *Resolver) { l.resolver = r }
 
 // SetThrottle overrides the log/span throttle interval. It is read once at
 // startup from decision.throttle_seconds (#766 F5); a non-positive value leaves
@@ -402,12 +420,33 @@ func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, c gamecontex
 		// state.LLMFallbackReason regardless of whether emit fired this cycle, so a
 		// gated cycle is attributable even when the throttled capture span is silent.
 		reason := l.gateLLM(ctx, snapshot, c)
-		state.LLMFallbackReason = reason
-		// Only an ALLOWED attempt (empty reason) captures the prompt; the capture is
-		// still throttle-gated by emit so steady-state load emits at most one span
-		// per interval, exactly as before #847.
-		if reason == "" && emit {
-			l.captureLLMPrompt(ctx, snapshot, c)
+		if reason != "" {
+			// Gate DENIED (#847): keep the gate's behavior EXACTLY — inference.used
+			// stays "rules" (the newLayerState default) and inference.fallback_reason
+			// carries the gate reason. resolve_backend (#741) does NOT run: there is no
+			// point resolving a tier for an attempt that will not be made, and we must
+			// not override the gate's attribution. No prompt capture, no tier consumed.
+			state.LLMFallbackReason = reason
+		} else {
+			// Gate ADMITTED: now (and only now) resolve WHICH inference tier would serve
+			// this decision (#741). The resolver reads its cached availability — cheap,
+			// no network on the hot path. The resolved tier becomes inference.used and
+			// any degradation becomes inference.fallback_reason:
+			//   - configured tier reachable -> used=<tier>,        fallback=""
+			//   - a lower tier serves        -> used=<lower tier>,  fallback=endpoint_unreachable
+			//   - whole chain unreachable    -> used="rules",       fallback=no_backend_available
+			// Until #739 a "reachable" tier does not actually decide — the rules engine
+			// below still produces the Decision — so inference.used honestly reflects WHO
+			// #739 WILL call, with fallback="" meaning "this is the tier #739 would use".
+			res := l.resolveBackend(snapshot.Capability.Model)
+			state.InferenceUsed = res.Used
+			state.LLMFallbackReason = res.FallbackReason
+			// Only an ADMITTED attempt captures the prompt; the capture is still
+			// throttle-gated by emit so steady-state load emits at most one span per
+			// interval, exactly as before #847.
+			if emit {
+				l.captureLLMPrompt(ctx, snapshot, c)
+			}
 		}
 	}
 	return l.Rules.Evaluate(ctx, c)
@@ -469,6 +508,20 @@ func (l *Loop) gateLLM(ctx context.Context, snapshot flags.Snapshot, c gameconte
 	// the allow() call above. This is the ONLY path that does not return a reason.
 	l.lastLLMAttempt = t
 	return ""
+}
+
+// resolveBackend walks the inference fallback chain (#741) for an ADMITTED llm
+// cycle and returns the resolved tier plus any degradation reason. A nil resolver
+// (never injected) fails to the honest default: inference.used="rules" with
+// no_backend_available — no resolver means no llm tier is known, so the rules
+// engine decides, exactly the admitted-but-no-backend contract that held before
+// #741. With a resolver it delegates to resolver.resolve, which reads the cached
+// availability (no probe on the hot path).
+func (l *Loop) resolveBackend(configuredModel string) Resolution {
+	if l.resolver == nil {
+		return Resolution{Used: InferenceRules, FallbackReason: FallbackNoBackend}
+	}
+	return l.resolver.resolve(configuredModel)
 }
 
 // recordGated increments the agent_llm_gated_total counter for one gated llm cycle,
@@ -733,30 +786,36 @@ func decisionAttributes(state *LayerState, d Decision, blocked bool, reason Bloc
 // onto a span verbatim — the heart of #729. It is path-agnostic (rules and the
 // M4 llm path converge on the same LayerState) and used by both the live
 // decision span and the disabled kill-switch span. Inference attribution is
-// derived from the mode: configured = the capability model flag, used = the
-// engine that actually ran (rules until M4), fallback_reason set only when
-// mode=llm fell back.
+// derived from the mode: configured = the capability model flag, used = the tier
+// resolve_backend resolved (#741, rules on the rules path), fallback_reason set
+// only when mode=llm degraded.
 func layerStateAttributes(state *LayerState) []attribute.KeyValue {
 	mode := state.Mode
 	if mode == "" {
 		mode = DefaultMode
 	}
-	// Inference attribution. For the llm path the fallback_reason is the PER-CYCLE
-	// gate outcome the loop resolved this cycle (#847): llm_not_eligible /
-	// llm_interval / llm_budget_exhausted when gated, or no_backend_available when
-	// the gate ADMITTED the attempt but no backend exists yet. The static
-	// inferenceAttribution is kept only as the fallback for the historical case
-	// where the cycle did not run the gate (state.LLMFallbackReason empty on an llm
-	// cycle would be an admitted-but-unrecorded path; we default it to
-	// no_backend_available to preserve the pre-#847 contract). mode=rules has no
-	// fallback reason, unchanged.
+	// Inference attribution (#741 makes used/fallback HONEST). On the llm path:
+	//   - inference.used is the tier resolve_backend resolved this cycle
+	//     (state.InferenceUsed): a real tier when the gate admitted and a tier was
+	//     reachable, or "rules" when the gate denied / the whole chain was unreachable.
+	//     The newLayerState default is already "rules", so a gate-denied cycle (where
+	//     the loop never overwrote it) correctly reports rules — matching #847's "used
+	//     stays rules when gated" contract WITHOUT a special case here.
+	//   - inference.fallback_reason is the PER-CYCLE reason: a #847 gate reason
+	//     (llm_not_eligible / llm_interval / llm_budget_exhausted) when gated, the #741
+	//     resolve reason (endpoint_unreachable when a lower tier serves) when admitted-
+	//     and-degraded, or no_backend_available when admitted but nothing was reachable.
+	//     An empty reason on an admitted, configured-tier-reachable cycle is correct and
+	//     left empty (configured == used, no degradation) — we no longer force
+	//     no_backend_available, because a reachable tier has no fallback.
+	// mode=rules has no fallback reason and reports used=rules, unchanged.
 	var inferenceUsed, fallback string
 	if mode == "llm" {
-		inferenceUsed = InferenceRules
-		fallback = state.LLMFallbackReason
-		if fallback == "" {
-			fallback = FallbackNoBackend
+		inferenceUsed = state.InferenceUsed
+		if inferenceUsed == "" {
+			inferenceUsed = InferenceRules
 		}
+		fallback = state.LLMFallbackReason
 	} else {
 		inferenceUsed, fallback = inferenceAttribution(mode)
 	}
@@ -788,13 +847,14 @@ func layerStateAttributes(state *LayerState) []attribute.KeyValue {
 	return attrs
 }
 
-// inferenceAttribution maps the decision mode to the inference.used /
-// inference.fallback_reason pair. In the #739 spike, mode=llm captures the
-// prompt (see captureLLMPrompt) but no inference backend is wired, so it falls
-// back to the rules engine recording FallbackNoBackend; mode=rules (and any
-// unknown mode) runs rules with no fallback. inference.configured is the model
-// flag, set by the caller. Path-agnostic: #741's resolve_backend() will supply
-// the real reason and return ("llm", "") once a backend answers.
+// inferenceAttribution maps a NON-llm decision mode to the inference.used /
+// inference.fallback_reason pair: rules (and any unknown mode) run the rules
+// engine with no fallback reason. Since #741 wired resolve_backend, the llm path
+// no longer flows through here — layerStateAttributes reads the per-cycle resolved
+// tier (state.InferenceUsed) and reason (state.LLMFallbackReason) directly — so
+// this helper handles only the rules/unknown branch. It is retained (rather than
+// inlined) so the rules-path attribution has a single named source, and the
+// mode=="llm" guard stays defensive in case a caller routes an llm mode here.
 func inferenceAttribution(mode string) (used, fallbackReason string) {
 	if mode == "llm" {
 		return InferenceRules, FallbackNoBackend
