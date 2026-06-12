@@ -54,6 +54,15 @@ def _report_exception(flag_key: str, exc: Exception) -> None:
     record_flag_fallback(flag_key, type(exc).__name__, str(exc))
 
 
+# Shadow/real split for the agent's game-flag experiments (#931/#932). These
+# MUST stay byte-identical to services/agent/experiment/targeting.go's
+# GameKindReal ("real") — the experiment writer scopes targeting on
+# {"!=": [{"var":"game_kind"}, "real"]}, so anything that is NOT "real" resolves
+# the experimental variant. "real" is therefore the protected, fail-safe value.
+GAME_KIND_VAR = "game_kind"
+GAME_KIND_REAL = "real"
+GAME_KIND_SHADOW = "shadow"
+
 # Track initialized domains to avoid re-initialization
 _initialized_domains: set[str] = set()
 _hooks_registered: bool = False
@@ -92,6 +101,14 @@ def _init_global_context() -> None:
                 "language": "python",
                 "environment": environment,
                 "hostname": hostname,
+                # Fail-safe baseline for the shadow/real split (#932). The agent's
+                # experiment writer scopes on "game_kind != real" (targeting.go),
+                # so a context MISSING game_kind would resolve the experimental
+                # variant — a real game could silently run an experiment. Defaulting
+                # the always-available API-level context to "real" means any game
+                # that does not explicitly opt into shadow is protected by
+                # construction; only a shadow session overrides this per-session.
+                GAME_KIND_VAR: GAME_KIND_REAL,
             }
         )
     )
@@ -404,10 +421,31 @@ def read_int_flag(domain: str, flag_key: str, default: int, game_id: str | None 
         return default
 
 
+def set_game_session_kind_context(game_kind: str = GAME_KIND_REAL) -> None:
+    """Set ONLY the game_kind on the current async context's transaction context.
+
+    The shadow/real split (#932) must be in place BEFORE a game mode's __init__
+    runs its init-frozen calibration reads (thresholds, grace period, per-mode
+    config) — those reads evaluate in this same contextvars context, so if
+    game_kind weren't set yet they would fall back to the API-level "real"
+    default and a shadow session would miss its experiments. This minimal setter
+    establishes the split at the session boundary; :func:`set_game_transaction_context`
+    later overwrites the transaction context with the full game session attributes
+    (carrying the same game_kind).
+
+    Args:
+        game_kind: ``"shadow"`` for a shadow session, ``"real"`` (default) for a
+            protected real/primary game. MUST match targeting.go's GameKindReal.
+    """
+    api.set_transaction_context(EvaluationContext(attributes={GAME_KIND_VAR: game_kind}))
+    logger.debug(f"Session-kind transaction context set: game_kind={game_kind}")
+
+
 def set_game_transaction_context(
     game_mode: str,
     controller_count: int,
     sensitivity: int | None = None,
+    game_kind: str = GAME_KIND_REAL,
 ) -> None:
     """
     Set transaction-level evaluation context for the current game session.
@@ -420,10 +458,18 @@ def set_game_transaction_context(
         game_mode: Game mode name (e.g., "FFA", "Werewolf")
         controller_count: Number of controllers/players in the session
         sensitivity: Optional sensitivity level (0-4)
+        game_kind: Shadow/real marker for the agent experiment split (#932).
+            Defaults to ``"real"`` (the protected baseline) so an unlabeled game
+            never resolves an experiment; ONLY a shadow session passes
+            ``"shadow"``. The transaction context overrides the API-level default
+            for this async context alone, so a shadow session's experiments stay
+            scoped to that session. The value MUST match targeting.go's
+            GameKindReal/"shadow" (see GAME_KIND_* constants).
     """
     attributes: dict = {
         "game_mode": game_mode,
         "controller_count": controller_count,
+        GAME_KIND_VAR: game_kind,
     }
     if sensitivity is not None:
         attributes["sensitivity"] = sensitivity
@@ -436,5 +482,6 @@ def set_game_transaction_context(
     )
     logger.debug(
         f"Transaction context set: game_mode={game_mode}, "
-        f"controller_count={controller_count}, sensitivity={sensitivity}"
+        f"controller_count={controller_count}, sensitivity={sensitivity}, "
+        f"game_kind={game_kind}"
     )

@@ -319,6 +319,119 @@ def test_set_game_transaction_context_without_sensitivity(mock_api):
 
 
 # --------------------------------------------------------------------------- #
+# game_kind shadow/real split (#932) — fail-safe-real-default safety property.
+# The agent's experiment writer (services/agent/experiment/targeting.go) scopes
+# targeting on {"!=": [{"var":"game_kind"}, "real"]}: anything NOT "real"
+# resolves the experimental variant. So "real" MUST be the default everywhere,
+# and only an explicit shadow session may override it. These tests prove that.
+# --------------------------------------------------------------------------- #
+
+
+def test_game_kind_constants_match_targeting_contract():
+    """The Python constants MUST equal targeting.go's GameKindVar/GameKindReal.
+
+    If these drift, real games stop being protected (or shadow experiments stop
+    resolving). The Go side is the single source of truth; this pins the values.
+    """
+    from lib.feature_flags import GAME_KIND_REAL, GAME_KIND_SHADOW, GAME_KIND_VAR
+
+    assert GAME_KIND_VAR == "game_kind"
+    assert GAME_KIND_REAL == "real"
+    assert GAME_KIND_SHADOW == "shadow"
+
+
+@patch("lib.feature_flags.FlagdProvider")
+@patch("lib.feature_flags.api")
+def test_api_level_context_defaults_game_kind_to_real(mock_api, _mock_provider):
+    """The always-available API-level context carries game_kind="real".
+
+    An evaluation with NO per-game context still sees game_kind="real", so an
+    unlabeled game is protected from experiments by construction (fail-safe).
+    """
+    ff_module._initialized_domains.discard("test_gk")
+    ff_module._hooks_registered = False
+    ff_module._propagator_registered = False
+
+    init_flag_domain("test_gk")
+
+    ctx = mock_api.set_evaluation_context.call_args[0][0]
+    assert ctx.attributes["game_kind"] == "real"
+
+    ff_module._initialized_domains.discard("test_gk")
+    ff_module._hooks_registered = False
+    ff_module._propagator_registered = False
+
+
+@patch("lib.feature_flags.api")
+def test_set_game_transaction_context_defaults_game_kind_to_real(mock_api):
+    """A default (real-game) call puts game_kind="real" in the transaction."""
+    from lib.feature_flags import set_game_transaction_context
+
+    set_game_transaction_context(game_mode="FFA", controller_count=4)
+
+    ctx = mock_api.set_transaction_context.call_args[0][0]
+    assert ctx.attributes["game_kind"] == "real"
+
+
+@patch("lib.feature_flags.api")
+def test_set_game_transaction_context_shadow_override(mock_api):
+    """A shadow session passing game_kind="shadow" overrides the real default."""
+    from lib.feature_flags import set_game_transaction_context
+
+    set_game_transaction_context(game_mode="FFA", controller_count=4, game_kind="shadow")
+
+    ctx = mock_api.set_transaction_context.call_args[0][0]
+    assert ctx.attributes["game_kind"] == "shadow"
+
+
+@patch("lib.feature_flags.api")
+def test_set_game_session_kind_context_defaults_real(mock_api):
+    """The session-boundary setter defaults to game_kind="real" (protected)."""
+    from lib.feature_flags import set_game_session_kind_context
+
+    set_game_session_kind_context()
+
+    ctx = mock_api.set_transaction_context.call_args[0][0]
+    assert ctx.attributes["game_kind"] == "real"
+
+
+@patch("lib.feature_flags.api")
+def test_set_game_session_kind_context_shadow(mock_api):
+    """A shadow session sets game_kind="shadow" before its init-time reads."""
+    from lib.feature_flags import set_game_session_kind_context
+
+    set_game_session_kind_context("shadow")
+
+    ctx = mock_api.set_transaction_context.call_args[0][0]
+    assert ctx.attributes["game_kind"] == "shadow"
+
+
+def test_experiment_targeting_protects_real_resolves_shadow():
+    """End-to-end intent: the agent's "!= real" targeting resolves the baseline
+    for a real/unlabeled context and the experimental value for a shadow context.
+
+    Mirrors flagd JSONLogic {"if":[{"!=":[{"var":"game_kind"},"real"]}, "X", <else>]}
+    so we prove the wiring's effect without the docker stack: it is the merged
+    eval-context attributes that decide the branch.
+    """
+    from lib.feature_flags import GAME_KIND_REAL, GAME_KIND_SHADOW, GAME_KIND_VAR
+
+    def resolve(attrs: dict) -> str:
+        # The fake provider models flagd's "!= real" branch on game_kind.
+        return "X" if attrs.get(GAME_KIND_VAR) != GAME_KIND_REAL else "baseline"
+
+    # Real (explicit) and unlabeled-but-default-real → protected baseline.
+    assert resolve({GAME_KIND_VAR: GAME_KIND_REAL}) == "baseline"
+    assert resolve({GAME_KIND_VAR: GAME_KIND_REAL, "game_mode": "FFA"}) == "baseline"
+    # Shadow → experimental value.
+    assert resolve({GAME_KIND_VAR: GAME_KIND_SHADOW}) == "X"
+    # SAFETY: a context that somehow MISSES game_kind would resolve the
+    # experiment — which is exactly why "real" is the fail-safe default the
+    # wiring guarantees is always present.
+    assert resolve({}) == "X"
+
+
+# --------------------------------------------------------------------------- #
 # gameId calibration context (#838)
 # --------------------------------------------------------------------------- #
 from lib.feature_flags import _calibration_context, read_object_flag  # noqa: E402

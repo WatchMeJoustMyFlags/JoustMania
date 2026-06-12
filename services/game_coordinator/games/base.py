@@ -29,7 +29,13 @@ from opentelemetry import context as otel_context
 from opentelemetry import trace
 
 from lib.controller_constants import battery_to_pct
-from lib.feature_flags import read_float_flag, read_object_flag, set_game_transaction_context
+from lib.feature_flags import (
+    GAME_KIND_REAL,
+    GAME_KIND_SHADOW,
+    read_float_flag,
+    read_object_flag,
+    set_game_transaction_context,
+)
 from lib.telemetry import inject_trace_context
 from lib.types import GameEvent, Sensitivity, Sound
 from services.game_coordinator import metrics
@@ -1855,11 +1861,19 @@ class BaseGameMode(ABC):
 
                 init_span.set_attribute("player_count", len(self.players))
 
-                # Set transaction context for flag evaluations during this game
+                # Set transaction context for flag evaluations during this game.
+                # Map the session kind ("primary"/"shadow", #775) to the eval-context
+                # game_kind the agent's experiment writer scopes on ("real"/"shadow",
+                # targeting.go #932): only a SHADOW session resolves experiments;
+                # every primary (menu-driven, player-facing) game is protected as
+                # "real". This runs inside the per-session game loop, so the override
+                # is scoped to this session's async context (contextvars).
+                eval_game_kind = GAME_KIND_SHADOW if self.game_kind == GAME_KIND_SHADOW else GAME_KIND_REAL
                 set_game_transaction_context(
                     game_mode=self.get_game_name(),
                     controller_count=len(self.players),
                     sensitivity=self.sensitivity.value,
+                    game_kind=eval_game_kind,
                 )
 
                 # Additional phases (e.g., color_assignment, team_formation)
