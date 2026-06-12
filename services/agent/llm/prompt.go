@@ -150,12 +150,13 @@ func ResolveVariant(raw string) string {
 //   - Trim surrounding whitespace first, so a flag set to "   " is treated as empty.
 //   - EMPTY after trim -> reject. An empty note adds nothing; injecting an empty
 //     "operator context" section would only be noise.
-//   - CONTROL CHARACTERS (anything < 0x20 except a plain '\n', plus 0x7f DEL) ->
-//     reject the WHOLE note. Newlines are allowed (operators write multi-line notes),
-//     but other control bytes (NUL, ESC, carriage returns, etc.) are the signature of
-//     malformed or hostile input — e.g. an attempt to smuggle terminal escapes or to
-//     fabricate a fake delimiter — so we reject rather than strip, refusing to guess
-//     what a corrupted note "meant".
+//   - LINE ENDINGS are normalized to '\n' first (CRLF and lone CR -> LF), so a note
+//     pasted from a Windows/Mac editor is accepted as the multi-line note it is.
+//   - CONTROL CHARACTERS (anything < 0x20 except '\n', plus 0x7f DEL) -> reject the
+//     WHOLE note. Newlines are allowed (operators write multi-line notes), but other
+//     control bytes (NUL, ESC, etc.) are the signature of malformed or hostile input —
+//     e.g. an attempt to smuggle terminal escapes or to fabricate a fake delimiter —
+//     so we reject rather than strip, refusing to guess what a corrupted note "meant".
 //   - LENGTH (post-trim, by rune count) > MaxContextNoteLen -> reject. NOT truncated:
 //     a cut could sever an instruction mid-sentence and change its meaning, and a giant
 //     note must not be allowed to crowd out the base facts in the prompt budget.
@@ -168,6 +169,13 @@ func ValidateContextNote(raw string) (sanitized string, ok bool) {
 	if note == "" {
 		return "", false
 	}
+	// Normalize line endings to '\n' FIRST: an operator pasting a multi-line note from
+	// a Windows ("\r\n") or classic-Mac ("\r") editor would otherwise have every line
+	// break trip the control-char reject below and silently produce no note. '\n' is
+	// already the allowed line break, so collapsing CRLF/CR to LF is purely a usability
+	// fix with no safety cost — every OTHER control byte is still rejected wholesale.
+	note = strings.ReplaceAll(note, "\r\n", "\n")
+	note = strings.ReplaceAll(note, "\r", "\n")
 	// Reject any control character other than '\n' (multi-line notes are fine). Using
 	// rune range over the string both catches embedded NUL/ESC/CR and lets the rune
 	// count below measure characters, not bytes, so a note of multibyte runes is not

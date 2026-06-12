@@ -514,12 +514,13 @@ func TestValidateContextNote(t *testing.T) {
 		{"normal", "keep it gentle tonight", "keep it gentle tonight", true},
 		{"trimmed", "  padded note  ", "padded note", true},
 		{"multiline allowed", "line one\nline two", "line one\nline two", true},
+		{"crlf normalized to lf", "line one\r\nline two", "line one\nline two", true},
+		{"lone cr normalized to lf", "bad\rnote", "bad\nnote", true},
 		{"exactly max", atMax, atMax, true},
 		{"exactly max runes", atMaxRunes, atMaxRunes, true},
 		{"over max", overMax, "", false},
 		{"nul byte", "bad\x00note", "", false},
 		{"escape byte", "bad\x1bnote", "", false},
-		{"carriage return", "bad\rnote", "", false},
 		{"del byte", "bad\x7fnote", "", false},
 	}
 	for _, tc := range cases {
