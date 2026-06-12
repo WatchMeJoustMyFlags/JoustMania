@@ -15,16 +15,24 @@ from lib.feature_flags import (
 )
 
 
+def _ok_details(value):
+    """Build a successful FlagEvaluationDetails carrying ``value``."""
+    from openfeature.flag_evaluation import FlagEvaluationDetails, Reason
+
+    return FlagEvaluationDetails(flag_key="k", value=value, reason=Reason.STATIC)
+
+
 def _mock_flag_value(value):
     """Patch init/get_flag_client so the domain client returns ``value``.
 
-    Numeric flags are read via the typed ``get_float_value`` getter (#903:
+    Numeric flags are read via the typed ``get_float_details`` getter (#903:
     ``get_object_value`` is TYPE_MISMATCH for numbers under the flagd RPC
-    resolver); the post-read type checks remain as defense-in-depth, so the
-    mock still feeds arbitrary values through the float getter.
+    resolver; #921 switched to the ``_details`` API to surface those reasons);
+    the post-read type checks remain as defense-in-depth, so the mock still
+    feeds arbitrary values through the float getter.
     """
     client = MagicMock()
-    client.get_float_value.return_value = value
+    client.get_float_details.return_value = _ok_details(value)
     return (
         patch("lib.feature_flags.init_flag_domain"),
         patch("lib.feature_flags.get_flag_client", return_value=client),
@@ -76,9 +84,9 @@ def test_read_int_flag_fails_safe_on_exception():
 
 
 def _mock_string_flag_value(value):
-    """Patch init/get_flag_client so the client's get_string_value returns ``value``."""
+    """Patch init/get_flag_client so the client's get_string_details returns ``value``."""
     client = MagicMock()
-    client.get_string_value.return_value = value
+    client.get_string_details.return_value = _ok_details(value)
     return (
         patch("lib.feature_flags.init_flag_domain"),
         patch("lib.feature_flags.get_flag_client", return_value=client),
@@ -329,12 +337,13 @@ class _GameIdAwareClient:
         self.experiment_value = experiment_value
         self.seen_contexts = []
 
-    def get_object_value(self, _key, default, ctx):
+    def get_object_details(self, _key, default, ctx):
+        from openfeature.flag_evaluation import FlagEvaluationDetails, Reason
+
         self.seen_contexts.append(ctx)
         attrs = getattr(ctx, "attributes", None) or {}
-        if attrs.get("gameId") == self.experiment_id:
-            return self.experiment_value
-        return self.baseline
+        value = self.experiment_value if attrs.get("gameId") == self.experiment_id else self.baseline
+        return FlagEvaluationDetails(flag_key=_key, value=value, reason=Reason.STATIC)
 
 
 def _mock_client(client):
@@ -377,19 +386,162 @@ def test_read_object_flag_targeted_variant_for_matching_game():
 
 def test_read_float_flag_threads_gameid_context():
     client = MagicMock()
-    client.get_float_value.return_value = 4.0
+    client.get_float_details.return_value = _ok_details(4.0)
     init_p, get_p = _mock_client(client)
     with init_p, get_p:
         assert read_float_flag("game", "death_grace_period_seconds", 1.0, game_id="game_x") == 4.0
-    ctx = client.get_float_value.call_args[0][2]
+    ctx = client.get_float_details.call_args[0][2]
     assert ctx.attributes["gameId"] == "game_x"
 
 
 def test_read_int_flag_threads_gameid_context():
     client = MagicMock()
-    client.get_float_value.return_value = 3
+    client.get_float_details.return_value = _ok_details(3)
     init_p, get_p = _mock_client(client)
     with init_p, get_p:
         assert read_int_flag("game", "zombie.initial_count", 1, game_id="game_y") == 3
-    ctx = client.get_float_value.call_args[0][2]
+    ctx = client.get_float_details.call_args[0][2]
     assert ctx.attributes["gameId"] == "game_y"
+
+
+# --------------------------------------------------------------------------- #
+# Flag-evaluation fallback visibility (#921): WARN + flag_eval_errors_total
+# --------------------------------------------------------------------------- #
+import pytest  # noqa: E402
+
+import lib.flag_eval_visibility as vis  # noqa: E402
+
+
+@pytest.fixture
+def fresh_visibility():
+    """Reset the once-per-key warn memory and force us out of startup grace."""
+    vis.reset_for_tests()
+    # Push process-start far enough back that the grace window has elapsed, so
+    # provider-not-ready style reasons are NOT suppressed by default.
+    original = vis._PROCESS_START
+    vis._PROCESS_START = original - (vis._STARTUP_GRACE_SECONDS + 100)
+    yield
+    vis._PROCESS_START = original
+    vis.reset_for_tests()
+
+
+def _error_details(error_code, value):
+    """Build a FlagEvaluationDetails carrying a non-raising error resolution."""
+    from openfeature.flag_evaluation import FlagEvaluationDetails, Reason
+
+    return FlagEvaluationDetails(
+        flag_key="k",
+        value=value,
+        reason=Reason.ERROR,
+        error_code=error_code,
+        error_message="boom",
+    )
+
+
+def _mock_float_details(details):
+    client = MagicMock()
+    client.get_float_details.return_value = details
+    return (
+        patch("lib.feature_flags.init_flag_domain"),
+        patch("lib.feature_flags.get_flag_client", return_value=client),
+    )
+
+
+def test_type_mismatch_is_visible_and_counted(fresh_visibility):  # noqa: ARG001 - fixture dependency
+    """A non-raising TYPE_MISMATCH resolution -> default, WARN, counter bump."""
+    from openfeature.exception import ErrorCode
+
+    init_p, get_p = _mock_float_details(_error_details(ErrorCode.TYPE_MISMATCH, 1.0))
+    with patch("lib.feature_flags.record_flag_fallback") as rec, init_p, get_p:
+        assert read_float_flag("game", "death_grace_period_seconds", 1.0) == 1.0
+    rec.assert_called_once()
+    assert rec.call_args[0][0] == "death_grace_period_seconds"
+    assert rec.call_args[0][1] == "TYPE_MISMATCH"
+
+
+def test_exception_is_reported_with_type_name(fresh_visibility):  # noqa: ARG001 - fixture dependency
+    with (
+        patch("lib.feature_flags.init_flag_domain", side_effect=RuntimeError("nope")),
+        patch("lib.feature_flags.record_flag_fallback") as rec,
+    ):
+        assert read_float_flag("game", "k", 2.5) == 2.5
+    rec.assert_called_once()
+    assert rec.call_args[0][0] == "k"
+    assert rec.call_args[0][1] == "RuntimeError"
+
+
+def test_record_warns_once_per_key_but_counts_every_time(fresh_visibility):  # noqa: ARG001 - fixture dependency
+    with (
+        patch("lib.flag_eval_visibility.flag_eval_errors_total") as counter,
+        patch.object(vis.logger, "warning") as warn,
+    ):
+        vis.record_flag_fallback("flagA", "TYPE_MISMATCH")
+        vis.record_flag_fallback("flagA", "TYPE_MISMATCH")
+        vis.record_flag_fallback("flagA", "TYPE_MISMATCH")
+    # WARN exactly once for the repeated (flag, reason) pair...
+    assert warn.call_count == 1
+    # ...but the counter increments on every call.
+    assert counter.labels.call_count == 3
+    counter.labels.assert_called_with(flag_key="flagA", reason="TYPE_MISMATCH")
+
+
+def test_record_warns_again_for_different_reason(fresh_visibility):  # noqa: ARG001 - fixture dependency
+    with (
+        patch("lib.flag_eval_visibility.flag_eval_errors_total"),
+        patch.object(vis.logger, "warning") as warn,
+    ):
+        vis.record_flag_fallback("flagA", "TYPE_MISMATCH")
+        vis.record_flag_fallback("flagA", "FLAG_NOT_FOUND")
+    assert warn.call_count == 2
+
+
+def test_startup_grace_suppresses_provider_not_ready():
+    """Within the grace window, PROVIDER_NOT_READY must not warn or count."""
+    vis.reset_for_tests()
+    # Force "just started": process start = now.
+    original = vis._PROCESS_START
+    import time as _time
+
+    vis._PROCESS_START = _time.monotonic()
+    try:
+        with (
+            patch("lib.flag_eval_visibility.flag_eval_errors_total") as counter,
+            patch.object(vis.logger, "warning") as warn,
+        ):
+            vis.record_flag_fallback("flagX", "PROVIDER_NOT_READY")
+        warn.assert_not_called()
+        counter.labels.assert_not_called()
+    finally:
+        vis._PROCESS_START = original
+        vis.reset_for_tests()
+
+
+def test_startup_grace_does_not_suppress_after_window(fresh_visibility):  # noqa: ARG001 - fixture dependency
+    """After the grace window, PROVIDER_NOT_READY becomes a real, visible error."""
+    with (
+        patch("lib.flag_eval_visibility.flag_eval_errors_total") as counter,
+        patch.object(vis.logger, "warning") as warn,
+    ):
+        vis.record_flag_fallback("flagX", "PROVIDER_NOT_READY")
+    warn.assert_called_once()
+    counter.labels.assert_called_once_with(flag_key="flagX", reason="PROVIDER_NOT_READY")
+
+
+def test_grace_window_never_suppresses_type_mismatch():
+    """TYPE_MISMATCH is a real bug even during startup; never suppressed."""
+    vis.reset_for_tests()
+    original = vis._PROCESS_START
+    import time as _time
+
+    vis._PROCESS_START = _time.monotonic()  # just started
+    try:
+        with (
+            patch("lib.flag_eval_visibility.flag_eval_errors_total") as counter,
+            patch.object(vis.logger, "warning") as warn,
+        ):
+            vis.record_flag_fallback("flagY", "TYPE_MISMATCH")
+        warn.assert_called_once()
+        counter.labels.assert_called_once()
+    finally:
+        vis._PROCESS_START = original
+        vis.reset_for_tests()

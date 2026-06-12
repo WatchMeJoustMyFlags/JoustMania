@@ -26,7 +26,7 @@ import os
 import time
 from collections.abc import Sequence
 from contextlib import contextmanager
-from threading import Lock
+from threading import Lock, RLock
 from typing import Any
 
 from opentelemetry import metrics
@@ -42,7 +42,16 @@ logger = logging.getLogger(__name__)
 _meter: metrics.Meter | None = None
 _initialized = False
 _pending_metrics: list[LabeledMetric] = []
-_init_lock = Lock()
+# Reentrant: init_metrics() holds this lock while it lazily reads the export
+# interval from flagd, and that import chain (lib.feature_flags ->
+# lib.flag_eval_visibility) can construct a module-level Counter, which calls
+# _register_pending() and re-acquires this same lock on the same thread (#921).
+# A plain Lock would self-deadlock — observed as audio hanging before its gRPC
+# server bound :50056 and failing its healthcheck. RLock makes that nested
+# acquire safe; the re-entered _register_pending sees _initialized is still
+# False (set only after the interval read returns) and queues the Counter into
+# _pending_metrics, which init_metrics then initializes once the meter exists.
+_init_lock = RLock()
 _test_mode = False
 
 
