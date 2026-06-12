@@ -127,6 +127,25 @@ const (
 // agent.llm.infer (#739); the attribute lands there, not on an invented span.
 const AttrLLMContextGames = "agent.llm.context_games"
 
+// AttrLLMContextNotePresent / AttrLLMContextNoteLen are the M7-3 operator-note view
+// recorded on EVERY llm call (#930): whether a validated operator context note was
+// injected into this call's prompt, and its rune length. We deliberately record a
+// BOUNDED, LOW-CARDINALITY view — a bool + an int — rather than the note text itself:
+// the note is operator-set (not user PII), but it is free-text and can be long/varied,
+// so stamping the raw value on every span would balloon span cardinality and storage.
+// present+len is enough to answer the operational questions ("is a note live?", "how
+// big?") and to satisfy the acceptance criterion that the injected context is visible
+// as a span attribute on every LLM call. Both are recorded on agent.llm.infer (the REAL
+// inference span, SpanLLMInfer — the issue's "every LLM call") and, cheaply, on
+// agent.llm.prompt (the capture span). present=false / len=0 means no note was injected
+// (unset, flagd-unreachable, or rejected by ValidateContextNote as empty/oversized/
+// control-char) — indistinguishable on the span from "no note", which is correct: a
+// rejected note leaves the prompt exactly as if none were set.
+const (
+	AttrLLMContextNotePresent = "agent.llm.context_note_present"
+	AttrLLMContextNoteLen     = "agent.llm.context_note_len"
+)
+
 // AttrLLMInferError records why an llm.infer span did not yield a usable Decision
 // (#739): the Infer transport error, or the llm.Decode rejection reason
 // (empty / not-JSON / missing-field / out-of-vocab-objective). Present only on the

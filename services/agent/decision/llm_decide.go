@@ -91,6 +91,12 @@ func (l *Loop) llmDecide(ctx context.Context, backend Backend, snapshot flags.Sn
 	// unwired / tests) yields an empty block and a 0 count — purely additive.
 	contextBlock, contextCount := l.renderContextBlock(snapshot)
 
+	// M7-3 operator context note (#930): validate the live prompt.context_note and, if
+	// it passes, inject it as a delimited operator-context section APPENDED after the
+	// base facts. A rejected/empty note yields "" → no section, prompt identical to the
+	// no-note case. present/noteLen ride the inference span below.
+	contextNote, notePresent, noteLen := resolveContextNote(snapshot)
+
 	// Reuse the objective-aware prompt builder (the same one the capture span uses).
 	// The System prompt already encodes the objective weights and the allow-list, so
 	// the model is asked to optimize for THIS session's objectives.
@@ -99,6 +105,7 @@ func (l *Loop) llmDecide(ctx context.Context, backend Backend, snapshot flags.Sn
 		Context:      c,
 		Now:          now(),
 		ContextBlock: contextBlock,
+		ContextNote:  contextNote,
 	})
 
 	// Record the inference as a gen_ai.* child span so the audit trace shows the
@@ -116,7 +123,11 @@ func (l *Loop) llmDecide(ctx context.Context, backend Backend, snapshot flags.Sn
 	// the COUNT actually injected — what the model truly saw, not the raw flag.
 	infCtx, span := l.Tracer.Start(ctx, SpanLLMInfer, trace.WithAttributes(
 		append(semconvGenAIChat(backend.Name()),
-			attribute.Int(AttrLLMContextGames, contextCount))...,
+			attribute.Int(AttrLLMContextGames, contextCount),
+			// M7-3 (#930): the operator-note view on the REAL inference span — present +
+			// rune length, the bounded low-cardinality record of what the model saw.
+			attribute.Bool(AttrLLMContextNotePresent, notePresent),
+			attribute.Int(AttrLLMContextNoteLen, noteLen))...,
 	))
 	defer span.End()
 
@@ -210,4 +221,21 @@ func (l *Loop) renderContextBlock(snapshot flags.Snapshot) (block string, count 
 	}
 	recent := l.contextWindow.Recent(n)
 	return gamewindow.Render(recent), len(recent)
+}
+
+// resolveContextNote is the M7-3 single seam (#930) every prompt-build site shares:
+// it takes the LIVE raw operator note from the snapshot (prompt.context_note) and runs
+// llm.ValidateContextNote, returning the note READY TO INJECT (empty if rejected) plus
+// the bounded span view (present + rune length). Keeping this one helper — exactly like
+// renderContextBlock for #929 — guarantees the sync path (llmDecide), the async
+// production path (runInfer), and the capture path (captureLLMPrompt) validate
+// IDENTICALLY, so an invalid/oversized note is rejected the same way wherever a prompt
+// is built and the span attributes always reflect what the model actually saw. A
+// rejected note yields ("", false, 0) → no operator section, prompt identical to no-note.
+func resolveContextNote(snapshot flags.Snapshot) (note string, present bool, length int) {
+	note, ok := llm.ValidateContextNote(snapshot.PromptContextNote)
+	if !ok {
+		return "", false, 0
+	}
+	return note, true, len([]rune(note))
 }
