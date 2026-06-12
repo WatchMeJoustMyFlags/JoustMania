@@ -334,6 +334,45 @@ class TestInitMetricsWithMock:
         assert gauge._instrument_initialized is True
         assert counter._instrument_initialized is True
 
+    @patch("lib.otel_metrics.OTLPMetricExporter")
+    @patch("lib.otel_metrics.PeriodicExportingMetricReader")
+    @patch("lib.otel_metrics.MeterProvider")
+    @patch("lib.otel_metrics.metrics")
+    def test_init_metrics_metric_created_during_init_does_not_deadlock(
+        self, mock_metrics, mock_provider, mock_reader, mock_exporter
+    ):
+        """A metric constructed *while* init_metrics holds the init lock must not deadlock.
+
+        Regression for #921: when ``export_interval_ms`` is None, init_metrics()
+        reads the interval from flagd while holding ``_init_lock``. That read
+        imports ``lib.feature_flags`` -> ``lib.flag_eval_visibility``, whose
+        module-level ``flag_eval_errors_total = Counter(...)`` calls
+        ``_register_pending()`` and re-acquires the same lock on the same
+        thread. With a plain Lock this self-deadlocked and audio hung before
+        binding its gRPC port; ``_init_lock`` must be reentrant.
+        """
+        mock_meter = MagicMock()
+        mock_metrics.get_meter.return_value = mock_meter
+
+        created: list[otel_metrics.Counter] = []
+
+        def make_metric_during_init(_service_name):
+            # Mirror the real side effect: a module-level Counter is constructed
+            # during the in-lock interval read, re-entering _register_pending.
+            created.append(otel_metrics.Counter("created_during_init_total", "Test", ["reason"]))
+            return 1000
+
+        with patch.object(otel_metrics, "_get_export_interval_ms", side_effect=make_metric_during_init):
+            # export_interval_ms=None forces the flagd read path that re-enters the lock.
+            # If the lock were non-reentrant this call would hang forever.
+            otel_metrics.init_metrics(export_interval_ms=None)
+
+        assert otel_metrics._initialized is True
+        # The metric created mid-init must have been picked up and initialized.
+        assert len(created) == 1
+        assert created[0]._instrument_initialized is True
+        assert len(otel_metrics._pending_metrics) == 0
+
 
 class TestMetricNoLabels:
     """Tests for metrics without labels."""
