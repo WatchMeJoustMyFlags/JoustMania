@@ -1,6 +1,9 @@
 package decision
 
-import "github.com/joustmania/agent/flags"
+import (
+	"github.com/joustmania/agent/flags"
+	"github.com/joustmania/agent/llm"
+)
 
 // BlockReason identifies which layer/policy blocked a decision. It is the
 // structured attribution issue #729 lifts onto the decision span.
@@ -109,11 +112,17 @@ type LayerState struct {
 // are filled in as decisions are processed.
 func newLayerState(s flags.Snapshot) LayerState {
 	return LayerState{
-		Enabled:       s.Enabled,
-		Mode:          s.Mode,
-		Objectives:    s.Objectives,
-		Model:         s.Capability.Model,
-		PromptVariant: s.Capability.PromptVariant,
+		Enabled:    s.Enabled,
+		Mode:       s.Mode,
+		Objectives: s.Objectives,
+		Model:      s.Capability.Model,
+		// Record the EFFECTIVE prompt variant (#740), not the raw flag value: the
+		// llm path resolves an unknown/garbage prompt_variant to "conservative"
+		// before building the prompt, so the decision span's agent.prompt_variant
+		// must report the variant that ACTUALLY ran — otherwise a misconfiguration
+		// would be invisible in the audit trail. ResolveVariant is the SINGLE
+		// fallback point shared with llm.Build, so span and prompt never disagree.
+		PromptVariant: llm.ResolveVariant(s.Capability.PromptVariant),
 		// inference.used defaults to rules (#741): a cycle that never resolves a
 		// backend (rules mode, or a gate-denied llm cycle) honestly reports rules. The
 		// loop overwrites this only on a gate-admitted llm cycle with the resolved tier.
