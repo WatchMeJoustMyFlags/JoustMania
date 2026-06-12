@@ -48,25 +48,59 @@ type BuildInput struct {
 // unknown is the literal rendered for any never-observed (nil) signal.
 const unknown = "unknown"
 
-// variantGuidance maps a resolved prompt_variant to its System-prompt guidance
-// line. This is the single producer of variant text so #740 can expand it in
-// one place. conservativeVariant is the default and the fallback for any
-// unrecognized variant value.
+// The three capability-layer prompt_variant values (#740). The flag selects HOW
+// the model is prompted on the #739 llm decision path: each variant lays a
+// distinct RISK POSTURE on top of the (already objective-aware) System prompt —
+// it shifts the action threshold and the bias between ambient cues and
+// state-changing interventions, WITHOUT replacing objective-awareness.
+// conservativeVariant is the default and the fail-safe fallback for any
+// unrecognized value (#740: a misconfiguration must be safe + visible, never an
+// empty/undefined prompt).
 const (
 	conservativeVariant = "conservative"
 	aggressiveVariant   = "aggressive"
 	balancedVariant     = "balanced"
 )
 
+// variantGuidance maps a resolved prompt_variant to its full System-prompt
+// guidance BLOCK (#740). The blocks differ MATERIALLY — not just a label — so
+// the model is asked to do something different per variant: conservative biases
+// toward soft/no intervention with a high bar to act; aggressive is readier to
+// intervene with stronger, state-changing actions; balanced sits between. The
+// wording is fixed and reviewed (golden-tested) so the prompt stays
+// deterministic — no time/random input. This map is the SINGLE producer of
+// variant text; ResolveVariant is the single place the unknown->conservative
+// fallback lives, so the effective variant is consistent everywhere it is read
+// (the prompt, the capture span, and the decision span's agent.prompt_variant).
 var variantGuidance = map[string]string{
-	conservativeVariant: `Intervene only when a signal is clearly actionable; when in doubt, choose "noop". Favor ambient cues over state changes.`,
-	aggressiveVariant:   "Intervene proactively to maximize excitement; prefer state-changing interventions when the objective calls for it.",
-	balancedVariant:     "Intervene when a signal is moderately actionable; balance ambient cues and state changes.",
+	conservativeVariant: `Adopt a CONSERVATIVE risk posture: the bar to act is HIGH. Intervene ONLY
+when a signal is clearly and strongly actionable; whenever you are in any
+doubt, choose "noop". Strongly prefer the least disruptive option — favor
+ambient cues (audio cues, music tempo) over player-targeted, state-changing
+interventions, and avoid changing a player's state unless nothing softer
+will serve the objective. When two options serve the objective equally,
+pick the gentler one or do nothing.`,
+	aggressiveVariant: `Adopt an AGGRESSIVE risk posture: the bar to act is LOW. Intervene readily
+and proactively to drive excitement toward the objective — you should act on
+even moderately actionable signals rather than wait. Prefer STRONGER,
+state-changing interventions (grant_shield, set_music_tempo) over passive
+ambient cues when the objective calls for it. Reserve "noop" for cycles where
+no allowed intervention would plausibly serve the objective at all.`,
+	balancedVariant: `Adopt a BALANCED risk posture: act on MODERATELY actionable signals. Weigh
+the disruption of each option against the benefit to the objective, choosing
+ambient cues and state-changing interventions on their merits rather than
+biasing toward either. Choose "noop" when no option clearly serves the
+objective, but do not hold back when one plainly does.`,
 }
 
-// resolveVariant maps a raw prompt_variant flag value to a known variant,
-// falling back to conservative for anything unrecognized.
-func resolveVariant(raw string) string {
+// ResolveVariant maps a raw prompt_variant flag value to its EFFECTIVE variant,
+// falling back to conservative for anything unrecognized (#740). It is exported
+// because the decision layer records the EFFECTIVE variant on the decision span
+// (agent.prompt_variant): a garbage flag value must report "conservative" — the
+// variant actually in force — not the misconfigured raw string. Keeping this the
+// ONE resolution point means the span, the capture log, and the prompt can never
+// disagree about which variant ran.
+func ResolveVariant(raw string) string {
 	if _, ok := variantGuidance[raw]; ok {
 		return raw
 	}
@@ -76,7 +110,7 @@ func resolveVariant(raw string) string {
 // Build renders the deterministic prompt for one decision cycle. The same
 // BuildInput (with a fixed Now) always yields a byte-identical Prompt.
 func Build(in BuildInput) Prompt {
-	variant := resolveVariant(in.Snapshot.Capability.PromptVariant)
+	variant := ResolveVariant(in.Snapshot.Capability.PromptVariant)
 	return Prompt{
 		System:  buildSystem(in.Snapshot, variant),
 		User:    buildUser(in.Context, in.Now),
@@ -112,9 +146,11 @@ POLICY CONSTRAINTS:
 	b.WriteString(` weighted interventions per minute across the session.
   - Prefer the least disruptive intervention that serves the objective.
 
-VARIANT: `)
+VARIANT (`)
 	b.WriteString(variant)
-	b.WriteString(". ")
+	// variant is already the EFFECTIVE variant (Build resolved it), so this lookup
+	// is always present — an unknown flag value rendered the conservative block.
+	b.WriteString("):\n")
 	b.WriteString(variantGuidance[variant])
 	b.WriteString(`
 

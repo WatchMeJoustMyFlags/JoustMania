@@ -337,21 +337,100 @@ func TestDeterminism(t *testing.T) {
 }
 
 // TestUnknownVariant: an unrecognized prompt_variant falls back to conservative
-// text and the resolved Variant is "conservative".
+// text and the resolved Variant is "conservative" (#740 fail-safe — a garbage
+// flag must never produce an empty/undefined prompt, and the EFFECTIVE variant
+// is what is recorded). Also covers the empty-string flag value.
 func TestUnknownVariant(t *testing.T) {
-	p := Build(BuildInput{
-		Snapshot: baseSnapshot("totally-made-up"),
-		Context:  threePlayerContext(),
-		Now:      fixedNow,
-	})
-	if p.Variant != conservativeVariant {
-		t.Errorf("variant = %q, want conservative", p.Variant)
+	for _, raw := range []string{"totally-made-up", "", "CONSERVATIVE", "Aggressive"} {
+		raw := raw
+		t.Run("raw="+raw, func(t *testing.T) {
+			p := Build(BuildInput{
+				Snapshot: baseSnapshot(raw),
+				Context:  threePlayerContext(),
+				Now:      fixedNow,
+			})
+			if p.Variant != conservativeVariant {
+				t.Errorf("variant = %q, want conservative", p.Variant)
+			}
+			if !strings.Contains(p.System, variantGuidance[conservativeVariant]) {
+				t.Errorf("system missing conservative guidance:\n%s", p.System)
+			}
+			if !strings.Contains(p.System, "VARIANT (conservative):") {
+				t.Errorf("system missing 'VARIANT (conservative):' header:\n%s", p.System)
+			}
+		})
 	}
-	if !strings.Contains(p.System, variantGuidance[conservativeVariant]) {
-		t.Errorf("system missing conservative guidance:\n%s", p.System)
+}
+
+// TestResolveVariant covers the exported single-fallback-point directly: the
+// three known variants resolve to themselves; everything else (#740 fail-safe)
+// resolves to conservative. This is the function both llm.Build AND the decision
+// span (layerstate.go) call, so it is the contract that the prompt and the
+// audit-trail agent.prompt_variant can never disagree.
+func TestResolveVariant(t *testing.T) {
+	cases := map[string]string{
+		conservativeVariant: conservativeVariant,
+		aggressiveVariant:   aggressiveVariant,
+		balancedVariant:     balancedVariant,
+		"":                  conservativeVariant,
+		"garbage":           conservativeVariant,
+		"Balanced":          conservativeVariant, // case-sensitive: not a known value
 	}
-	if !strings.Contains(p.System, "VARIANT: conservative.") {
-		t.Errorf("system missing 'VARIANT: conservative.' line:\n%s", p.System)
+	for raw, want := range cases {
+		if got := ResolveVariant(raw); got != want {
+			t.Errorf("ResolveVariant(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
+// TestVariantsAreMateriallyDifferent: #740's core acceptance — each variant
+// produces a DIFFERENT System prompt that meaningfully shapes what the model is
+// asked to do, and the difference is in the prompt TEXT (assertable), not merely
+// a recorded label. Conservative biases toward not acting (HIGH bar), aggressive
+// toward acting (LOW bar), balanced toward the middle (MODERATELY actionable).
+func TestVariantsAreMateriallyDifferent(t *testing.T) {
+	build := func(v string) string {
+		return Build(BuildInput{Snapshot: baseSnapshot(v), Context: threePlayerContext(), Now: fixedNow}).System
+	}
+	cons := build(conservativeVariant)
+	aggr := build(aggressiveVariant)
+	bal := build(balancedVariant)
+
+	// All three System prompts must differ pairwise.
+	if cons == aggr || cons == bal || aggr == bal {
+		t.Fatalf("variant System prompts are not all distinct:\ncons==aggr=%v cons==bal=%v aggr==bal=%v",
+			cons == aggr, cons == bal, aggr == bal)
+	}
+
+	// Each variant carries its distinguishing instruction (the risk-posture text a
+	// reviewer would key on), and NOT another variant's.
+	checks := []struct {
+		name    string
+		system  string
+		must    string
+		mustNot []string
+	}{
+		{"conservative", cons, "the bar to act is HIGH", []string{"the bar to act is LOW", "MODERATELY actionable"}},
+		{"aggressive", aggr, "the bar to act is LOW", []string{"the bar to act is HIGH", "MODERATELY actionable"}},
+		{"balanced", bal, "MODERATELY actionable", []string{"the bar to act is HIGH", "the bar to act is LOW"}},
+	}
+	for _, ch := range checks {
+		if !strings.Contains(ch.system, ch.must) {
+			t.Errorf("%s System missing distinguishing instruction %q:\n%s", ch.name, ch.must, ch.system)
+		}
+		for _, bad := range ch.mustNot {
+			if strings.Contains(ch.system, bad) {
+				t.Errorf("%s System leaked another variant's instruction %q", ch.name, bad)
+			}
+		}
+	}
+
+	// Variants layer risk posture ON TOP of objective-awareness (#739/#740): the
+	// objective weights and allow-list survive in EVERY variant.
+	for _, sys := range []string{cons, aggr, bal} {
+		if !strings.Contains(sys, "balanced=0.7") || !strings.Contains(sys, "grant_shield") {
+			t.Errorf("variant dropped objective/allow-list awareness:\n%s", sys)
+		}
 	}
 }
 

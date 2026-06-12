@@ -410,3 +410,102 @@ func TestLLMDecide_UnreachableChainKeepsRules(t *testing.T) {
 		t.Errorf("action sink calls = %d, want 1 (rules decision dispatched)", sink.calls.Load())
 	}
 }
+
+// --- #740: prompt variant selection on the LLM decision path ---
+
+// variantSnapshot is an llm-mode snapshot identical to llmDecideSnapshot but with
+// the prompt_variant flag set to raw, so a test can flip ONLY the variant and
+// observe the prompt the backend receives change on the next decision.
+func variantSnapshot(raw string) flags.Snapshot {
+	snap := llmDecideSnapshot()
+	snap.Capability.PromptVariant = raw
+	return snap
+}
+
+// TestLLMDecide_VariantReachesInferencePrompt is the #740 decision-level proof
+// that the capability-layer prompt_variant flag actually shapes the prompt the
+// resolved backend is asked to infer over: building the loop with variant A vs B
+// and reading the fake backend's lastPromptSystem shows DIFFERENT System prompts,
+// each carrying its own risk-posture instruction. Because flags are read
+// per-cycle (the snapshot is rebuilt every OnEvaluate), flipping the flag on
+// stage changes behavior on the NEXT decision with no restart.
+func TestLLMDecide_VariantReachesInferencePrompt(t *testing.T) {
+	systemFor := func(raw string) string {
+		be := &inferBackend{name: "phi4-mini", response: validShieldResponse}
+		l, _, _ := llmDecideLoop(t, variantSnapshot(raw), resolverWith(be), []Decision{{Intervention: "play_audio_cue", Reason: "from rules"}})
+		l.OnEvaluate(context.Background(), gamecontext.GameContext{SessionID: "s1", GameKind: "real"}, testTrigger())
+		if be.calls != 1 {
+			t.Fatalf("backend Infer calls = %d, want 1 (llm path taken for variant %q)", be.calls, raw)
+		}
+		return be.lastPromptSystem
+	}
+
+	cons := systemFor("conservative")
+	aggr := systemFor("aggressive")
+	bal := systemFor("balanced")
+
+	// The flag selected three materially different prompts at the REAL inference call
+	// site (not just on the capture span): all pairwise distinct.
+	if cons == aggr || cons == bal || aggr == bal {
+		t.Fatalf("flipping prompt_variant did not change the inference prompt (cons==aggr=%v cons==bal=%v aggr==bal=%v)",
+			cons == aggr, cons == bal, aggr == bal)
+	}
+	if !strings.Contains(cons, "the bar to act is HIGH") {
+		t.Errorf("conservative inference prompt missing its instruction:\n%s", cons)
+	}
+	if !strings.Contains(aggr, "the bar to act is LOW") {
+		t.Errorf("aggressive inference prompt missing its instruction:\n%s", aggr)
+	}
+	if !strings.Contains(bal, "MODERATELY actionable") {
+		t.Errorf("balanced inference prompt missing its instruction:\n%s", bal)
+	}
+}
+
+// TestLLMDecide_UnknownVariantFallsBackSafely is the #740 fail-safe at the
+// decision level: a garbage prompt_variant value must NOT produce an empty or
+// undefined prompt — the inference call receives the conservative prompt — AND
+// the decision span's agent.prompt_variant records the EFFECTIVE variant
+// (conservative), so the misconfiguration is safe and visible in the audit trail.
+func TestLLMDecide_UnknownVariantFallsBackSafely(t *testing.T) {
+	be := &inferBackend{name: "phi4-mini", response: validShieldResponse}
+	l, sr, _ := llmDecideLoop(t, variantSnapshot("totally-bogus"), resolverWith(be), []Decision{{Intervention: "play_audio_cue", Reason: "from rules"}})
+	l.OnEvaluate(context.Background(), gamecontext.GameContext{SessionID: "s1", GameKind: "real"}, testTrigger())
+
+	if be.calls != 1 {
+		t.Fatalf("backend Infer calls = %d, want 1 (a bogus variant must still infer, never an undefined prompt)", be.calls)
+	}
+	// The dispatched inference prompt is the conservative one (the safe default),
+	// never empty.
+	if be.lastPromptSystem == "" {
+		t.Fatal("inference prompt is empty for an unknown variant — must fall back to a defined prompt")
+	}
+	if !strings.Contains(be.lastPromptSystem, "the bar to act is HIGH") {
+		t.Errorf("unknown variant did not fall back to the conservative prompt:\n%s", be.lastPromptSystem)
+	}
+
+	// The decision span records the EFFECTIVE variant, not the raw garbage.
+	decs := spansByName(sr.Ended(), SpanDecision)
+	if len(decs) != 1 {
+		t.Fatalf("agent.decision spans = %d, want 1", len(decs))
+	}
+	if v, ok := attrValue(decs[0], AttrPromptVariant); !ok || v.AsString() != "conservative" {
+		t.Errorf("decision span agent.prompt_variant = %q, want conservative (the effective variant)", v.AsString())
+	}
+}
+
+// TestLLMDecide_KnownVariantRecordedOnSpan: a recognized prompt_variant rides the
+// decision span verbatim (the effective variant equals the configured one when it
+// is valid), completing the #740 audit-trail requirement.
+func TestLLMDecide_KnownVariantRecordedOnSpan(t *testing.T) {
+	be := &inferBackend{name: "phi4-mini", response: validShieldResponse}
+	l, sr, _ := llmDecideLoop(t, variantSnapshot("aggressive"), resolverWith(be), []Decision{{Intervention: "play_audio_cue", Reason: "from rules"}})
+	l.OnEvaluate(context.Background(), gamecontext.GameContext{SessionID: "s1", GameKind: "real"}, testTrigger())
+
+	decs := spansByName(sr.Ended(), SpanDecision)
+	if len(decs) != 1 {
+		t.Fatalf("agent.decision spans = %d, want 1", len(decs))
+	}
+	if v, ok := attrValue(decs[0], AttrPromptVariant); !ok || v.AsString() != "aggressive" {
+		t.Errorf("decision span agent.prompt_variant = %q, want aggressive", v.AsString())
+	}
+}

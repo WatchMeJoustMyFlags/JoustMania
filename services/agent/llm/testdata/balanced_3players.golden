@@ -18,7 +18,12 @@ POLICY CONSTRAINTS:
   - At most 2 weighted interventions per minute across the session.
   - Prefer the least disruptive intervention that serves the objective.
 
-VARIANT: balanced. Intervene when a signal is moderately actionable; balance ambient cues and state changes.
+VARIANT (balanced):
+Adopt a BALANCED risk posture: act on MODERATELY actionable signals. Weigh
+the disruption of each option against the benefit to the objective, choosing
+ambient cues and state-changing interventions on their merits rather than
+biasing toward either. Choose "noop" when no option clearly serves the
+objective, but do not hold back when one plainly does.
 
 RESPONSE CONTRACT — reply with EXACTLY ONE JSON object, no prose, matching:
 {
