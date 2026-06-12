@@ -168,9 +168,18 @@ type Loop struct {
 	lastLog time.Time
 	now     func() time.Time
 	// throttle bounds how often the evaluate log line and agent.disabled span are
-	// emitted. Read once at startup from decision.throttle_seconds (#766 F5); a
-	// zero value means DefaultThrottleInterval.
+	// emitted. The STATIC fallback value, set via SetThrottle; a zero value means
+	// DefaultThrottleInterval. Used only when throttleSource is nil.
 	throttle time.Duration
+	// throttleSource, when non-nil, is the LIVE decision.throttle_seconds source
+	// (#927): shouldLog() reads it every cycle so a mid-session config-change to the
+	// throttle flag takes effect with no restart. It points at the shared
+	// flags.LifecycleHolder.DecisionThrottle (wired in main.go), which is itself
+	// refreshed only by the OpenFeature configuration-change event — so this is a
+	// lock-free atomic load on the hot path, NOT a per-cycle flagd evaluation. When
+	// nil (the construction default, and all existing tests) shouldLog falls back to
+	// the static throttle, preserving the #766 F5 read-at-startup behavior.
+	throttleSource func() time.Duration
 
 	// limiter is the unified weighted per-minute rate limiter spanning all
 	// dispatched interventions across cycles (#726 + #728, see ratelimit.go). It
@@ -260,6 +269,19 @@ func (l *Loop) SetThrottle(d time.Duration) {
 		return
 	}
 	l.throttle = d
+}
+
+// SetThrottleSource installs the LIVE decision.throttle_seconds source (#927):
+// shouldLog() reads it every cycle instead of the static SetThrottle value, so a
+// mid-session config-change to the throttle flag takes effect with no restart.
+// main.go passes the shared flags.LifecycleHolder.DecisionThrottle, which is a
+// lock-free atomic load refreshed only by the OpenFeature config-change event —
+// the hot path never evaluates flagd. A nil source (or a source returning a
+// non-positive duration) leaves the static throttle / default in place, so this
+// is purely additive over the #766 F5 behavior. Not safe to call concurrently
+// with OnEvaluate — set it during construction, before the loop serves.
+func (l *Loop) SetThrottleSource(src func() time.Duration) {
+	l.throttleSource = src
 }
 
 // OnEvaluate runs one evaluation pass and returns the cycle's LayerState (also
@@ -754,7 +776,16 @@ func (l *Loop) shouldLog() bool {
 	if now == nil {
 		now = time.Now
 	}
+	// Prefer the LIVE throttle source (#927) so a config-change to
+	// decision.throttle_seconds is honored on the very next cycle; fall back to the
+	// static read-at-startup value (and then the default) when no source is wired or
+	// it reports a non-positive duration.
 	throttle := l.throttle
+	if l.throttleSource != nil {
+		if d := l.throttleSource(); d > 0 {
+			throttle = d
+		}
+	}
 	if throttle <= 0 {
 		throttle = DefaultThrottleInterval
 	}

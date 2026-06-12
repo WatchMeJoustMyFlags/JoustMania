@@ -396,6 +396,74 @@ func TestSetThrottle_HonorsConfiguredInterval(t *testing.T) {
 	}
 }
 
+// TestThrottleSource_HotReloadsMidSession is the #927 ACCEPTANCE test: a live
+// decision.throttle_seconds source (the shared LifecycleHolder.DecisionThrottle in
+// production) is read by shouldLog() EVERY cycle, so changing the source's value
+// mid-session changes the agent.disabled span cadence with NO restart. Driven
+// deterministically with the injected clock and a settable source — no live flagd,
+// no real time, no network: the throttle value is flipped between evaluations
+// exactly as the OpenFeature config-change handler would after a flag change.
+func TestThrottleSource_HotReloadsMidSession(t *testing.T) {
+	l, sr, fl := newTestLoop(t)
+	fl.snap.Enabled = false // disabled path goes through the throttled span
+
+	// The live source the holder would expose. Start at 10s.
+	throttle := 10 * time.Second
+	l.SetThrottleSource(func() time.Duration { return throttle })
+
+	clock := time.Now()
+	l.now = func() time.Time { return clock }
+	disabledSpans := func() int { return len(spansByName(sr.Ended(), SpanDisabled)) }
+
+	// First eval fires (throttle "fires" on first call).
+	l.OnEvaluate(context.Background(), gamecontext.GameContext{}, testTrigger())
+	if got := disabledSpans(); got != 1 {
+		t.Fatalf("first eval: disabled spans = %d, want 1", got)
+	}
+
+	// At +5s, under the 10s window, throttled — no new span.
+	clock = clock.Add(5 * time.Second)
+	l.OnEvaluate(context.Background(), gamecontext.GameContext{}, testTrigger())
+	if got := disabledSpans(); got != 1 {
+		t.Fatalf("within 10s window: disabled spans = %d, want 1", got)
+	}
+
+	// Config-change: shorten the throttle to 2s mid-session (the source now returns
+	// the new value, exactly as a config-change Reload would). The SAME +5s elapsed
+	// since the last emit now EXCEEDS the live 2s window, so the next eval fires —
+	// proving the new value took effect with no restart.
+	throttle = 2 * time.Second
+	l.OnEvaluate(context.Background(), gamecontext.GameContext{}, testTrigger())
+	if got := disabledSpans(); got != 2 {
+		t.Fatalf("after throttle shortened to 2s: disabled spans = %d, want 2 (mid-session change took effect)", got)
+	}
+}
+
+// TestThrottleSource_NonPositiveFallsBackToStatic verifies a source returning a
+// non-positive duration is ignored in favor of the static SetThrottle value, so a
+// transient bad read can never collapse the throttle (#927).
+func TestThrottleSource_NonPositiveFallsBackToStatic(t *testing.T) {
+	l, sr, fl := newTestLoop(t)
+	fl.snap.Enabled = false
+	l.SetThrottle(10 * time.Second)
+	l.SetThrottleSource(func() time.Duration { return 0 }) // bad/unset read
+
+	clock := time.Now()
+	l.now = func() time.Time { return clock }
+	disabledSpans := func() int { return len(spansByName(sr.Ended(), SpanDisabled)) }
+
+	l.OnEvaluate(context.Background(), gamecontext.GameContext{}, testTrigger())
+	if got := disabledSpans(); got != 1 {
+		t.Fatalf("first eval: disabled spans = %d, want 1", got)
+	}
+	// +9s: under the 10s STATIC fallback (source returned 0, so it is ignored).
+	clock = clock.Add(9 * time.Second)
+	l.OnEvaluate(context.Background(), gamecontext.GameContext{}, testTrigger())
+	if got := disabledSpans(); got != 1 {
+		t.Fatalf("within static window: disabled spans = %d, want 1 (non-positive source ignored)", got)
+	}
+}
+
 // TestSetThrottle_NonPositiveKeepsDefault verifies a non-positive throttle leaves
 // the default in place (does not disable throttling).
 func TestSetThrottle_NonPositiveKeepsDefault(t *testing.T) {
