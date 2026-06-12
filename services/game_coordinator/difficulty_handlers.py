@@ -7,7 +7,9 @@ intervention flags against the InterventionManager registry built in PR A:
 - ``music_tempo_override``        — N6: the music loop adopts the override tempo
   and suspends its own speed-up/slow-down schedule (resolves the E1 tempo race
   in docs/research/722-intervention-surface.md §3.1); reverting to none (0)
-  resumes the natural schedule from the current state.
+  resumes the natural schedule from the current state via an explicit revert
+  handler (#922 — the manager routes reverts to ``_revert_handlers``, not back to
+  the apply-handler, so the override must be cleared there).
 - ``global_sensitivity_override`` — N2: live update of ``game.sensitivity``,
   consumed next frame by ``_compute_effective_thresholds``; reverting to none
   (-1) restores the sensitivity the game started with.
@@ -73,6 +75,25 @@ async def handle_music_tempo_override(ctx: InterventionContext) -> None:
     else:
         game.tempo_override = None
         logger.info("music_tempo_override: override cleared, natural schedule resumes")
+
+
+async def handle_music_tempo_override_revert(ctx: InterventionContext) -> None:
+    """Clear the music-tempo override when the flag reverts to neutral (0).
+
+    The apply-handler already clears ``game.tempo_override`` for a 0 value, but
+    the manager routes none-value transitions to ``_revert_handlers`` rather than
+    re-invoking the apply-handler, so without this entry a revert would leave
+    ``game.tempo_override`` pinned at the last override and the music loop stuck
+    at that tempo until the game restarts. This restores ``None`` so
+    ``_check_music_speed`` resumes the natural speed-up/slow-down schedule on its
+    next tick.
+    """
+    game = ctx.game
+    if game is None:
+        logger.debug("music_tempo_override: no live game on revert, ignoring")
+        return
+    game.tempo_override = None
+    logger.info("music_tempo_override: reverted, natural schedule resumes")
 
 
 async def handle_global_sensitivity_override(ctx: InterventionContext) -> None:
@@ -234,6 +255,13 @@ def register_difficulty_handlers(manager: InterventionManager) -> None:
     per-flag so the parallel ambience PR (E) appends rather than conflicts.
     """
     manager.register_handler("music_tempo_override", handle_music_tempo_override)
+    # music_tempo_override needs an explicit revert handler (#922): the manager
+    # routes a flag's revert-to-neutral (value 0) to _revert_handlers, NOT back
+    # to the apply-handler, so the apply-handler's "value 0 -> clear" branch never
+    # runs on revert. Without this entry game.tempo_override stays pinned at the
+    # last override and the music loop (_check_music_speed re-reads it every tick)
+    # is stuck at that tempo until the game restarts.
+    manager._revert_handlers["music_tempo_override"] = handle_music_tempo_override_revert
     manager.register_handler("global_sensitivity_override", handle_global_sensitivity_override)
     # player_sensitivity_factor needs the manager (for the reusable targeting
     # helper), so bind it via a small closure.
