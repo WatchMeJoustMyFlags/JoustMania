@@ -57,13 +57,31 @@ type LayerState struct {
 	PromptVariant string
 
 	// LLMFallbackReason is the inference.fallback_reason this cycle's llm path
-	// resolved to (#847). It is the PER-CYCLE replacement for the static
-	// inferenceAttribution: when mode=="llm" the loop sets it to the gate outcome
-	// (FallbackNotEligible / FallbackInterval / FallbackBudgetExhausted when gated,
-	// FallbackNoBackend when the gate ALLOWED and the cycle fell back for lack of a
-	// backend), and layerStateAttributes lifts it onto the decision span. Empty on
-	// the rules path (mode!="llm"), where there is no fallback reason at all.
+	// resolved to (#847 + #741). It is the PER-CYCLE replacement for the static
+	// inferenceAttribution. On an llm cycle the loop sets it to, in order of
+	// precedence:
+	//   - the #847 gate reason (FallbackNotEligible / FallbackInterval /
+	//     FallbackBudgetExhausted) when the gate DENIED — resolve_backend never runs;
+	//   - the #741 resolve_backend reason when the gate ADMITTED: "" when the
+	//     configured tier is reachable, FallbackEndpointUnreachable when a LOWER tier
+	//     serves, or FallbackNoBackend when the whole chain is unreachable and rules
+	//     decided.
+	// layerStateAttributes lifts it onto the decision span. Empty on the rules path
+	// (mode!="llm"), where there is no fallback reason at all.
 	LLMFallbackReason string
+
+	// InferenceUsed is inference.used this cycle: the tier resolve_backend (#741)
+	// determined WOULD serve the decision — claude/copilot via "cloud", "gemma3:4b",
+	// "phi4-mini", or InferenceRules ("rules") when the gate denied, the chain was
+	// unreachable, or the mode is rules. Defaulted to InferenceRules by newLayerState
+	// so a cycle that never resolves a backend (rules mode, gate-denied llm) honestly
+	// reports rules. The loop overwrites it with the resolved tier ONLY on a
+	// gate-admitted llm cycle. layerStateAttributes emits it verbatim as
+	// inference.used, replacing the static inferenceAttribution(mode) value (#847's
+	// inference.used was always InferenceRules; #741 makes it honest). Until #739 a
+	// "reachable" tier does NOT actually decide — the rules engine still produces the
+	// Decision — so this reflects WHO #739 WILL call, not who decided this cycle.
+	InferenceUsed string
 
 	// --- Permission layer ---
 	InterventionsAllowed      []string
@@ -91,11 +109,15 @@ type LayerState struct {
 // are filled in as decisions are processed.
 func newLayerState(s flags.Snapshot) LayerState {
 	return LayerState{
-		Enabled:                   s.Enabled,
-		Mode:                      s.Mode,
-		Objectives:                s.Objectives,
-		Model:                     s.Capability.Model,
-		PromptVariant:             s.Capability.PromptVariant,
+		Enabled:       s.Enabled,
+		Mode:          s.Mode,
+		Objectives:    s.Objectives,
+		Model:         s.Capability.Model,
+		PromptVariant: s.Capability.PromptVariant,
+		// inference.used defaults to rules (#741): a cycle that never resolves a
+		// backend (rules mode, or a gate-denied llm cycle) honestly reports rules. The
+		// loop overwrites this only on a gate-admitted llm cycle with the resolved tier.
+		InferenceUsed:             InferenceRules,
 		InterventionsAllowed:      s.InterventionsAllowed,
 		PolicyBatteryThreshold:    s.Policy.BatteryThreshold,
 		PolicyMovementVarianceWin: s.Policy.MovementVarianceWindow,

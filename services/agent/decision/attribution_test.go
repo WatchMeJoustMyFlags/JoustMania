@@ -175,6 +175,43 @@ func TestDisabledSpan_Throttled(t *testing.T) {
 	}
 }
 
+// TestDisabledSpan_LLMModeNoFallbackReason: when the kill switch is off
+// (enabled=false) in llm mode, the disabled span reports inference.used=rules and
+// inference.fallback_reason="" — NOT a fallback reason. The disabled path
+// short-circuits before decide()/resolve_backend run, so no inference was
+// attempted and there is nothing to fall back FROM (#741). This locks the #741
+// attribution change: pre-#741 the static inferenceAttribution(mode) stamped
+// no_backend_available here even though the agent was off; now the resolved
+// LayerState (decide never ran) honestly carries an empty fallback reason.
+func TestDisabledSpan_LLMModeNoFallbackReason(t *testing.T) {
+	snap := flags.Snapshot{
+		Enabled:    false,
+		Mode:       "llm",
+		Capability: flags.Capability{Model: "claude", PromptVariant: "balanced"},
+	}
+	l, sr := recordingLoop(t, snap, []Decision{{Intervention: "play_audio_cue"}})
+
+	l.OnEvaluate(context.Background(), gamecontext.GameContext{SessionID: "s1"}, testTrigger())
+
+	disabled := spansByName(sr.Ended(), SpanDisabled)
+	if len(disabled) != 1 {
+		t.Fatalf("disabled spans = %d, want 1", len(disabled))
+	}
+	d := disabled[0]
+	if v, ok := attrValue(d, AttrMode); !ok || v.AsString() != "llm" {
+		t.Errorf("agent.mode = %q, want llm", v.AsString())
+	}
+	if v, ok := attrValue(d, AttrInferenceUsed); !ok || v.AsString() != InferenceRules {
+		t.Errorf("inference.used = %q, want %q (nothing decided; rules floor)", v.AsString(), InferenceRules)
+	}
+	if v, ok := attrValue(d, AttrInferenceFallback); !ok || v.AsString() != "" {
+		t.Errorf("inference.fallback_reason = %q, want \"\" (agent off, no inference attempted)", v.AsString())
+	}
+	if v, ok := attrValue(d, AttrInferenceConfigured); !ok || v.AsString() != "claude" {
+		t.Errorf("inference.configured = %q, want claude (capability still recorded)", v.AsString())
+	}
+}
+
 // TestInferenceAttribution_LLMFallback: mode=llm records the fallback to rules
 // with a reason; mode=rules records no fallback. Path-agnostic per #729 §5.
 func TestInferenceAttribution_LLMFallback(t *testing.T) {

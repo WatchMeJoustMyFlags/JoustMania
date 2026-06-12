@@ -272,6 +272,21 @@ func main() {
 			slog.Warn("Interventions file was corrupt at startup; restored neutral document (#924)")
 		}
 	}
+	// Shared inference fallback-chain resolver (#741). Constructed ONCE here with the
+	// real network probes for the three llm tiers (cloud #742, gemma3:4b on Jetson
+	// #738, phi4-mini on localhost #739) and ONE availability cache for the whole
+	// agent, then injected into every per-game Loop below — like the global budget.
+	// In dev every endpoint is unreachable, so resolve_backend honestly degrades the
+	// whole chain to the rules engine; with a tier reachable it reports that tier as
+	// inference.used (who #739 WILL call). Start() launches the background re-probe
+	// ticker (DefaultProbeInterval) and primes the cache in the background; it
+	// stops when ctx is cancelled at shutdown.
+	sharedResolver := decision.NewResolver(decision.DefaultChain(decision.Endpoints{
+		Cloud:     getEnv("AGENT_CLOUD_ENDPOINT", ""),                    // #742 credential-blocked: empty = permanently unreachable
+		Jetson:    getEnv("AGENT_JETSON_ENDPOINT", "jetson:11434"),       // #738 Ollama on the Jetson; unresolvable in dev
+		Localhost: getEnv("AGENT_LOCALHOST_ENDPOINT", "localhost:11434"), // #739 Ollama locally; unreachable unless running
+	}), decision.DefaultProbeInterval)
+	sharedResolver.Start(ctx)
 	probeDecisions := strings.EqualFold(getEnv("AGENT_PROBE_DECISIONS", ""), "true")
 	if probeDecisions {
 		slog.Warn("Probe decisions enabled (demo/verification mode)",
@@ -289,6 +304,10 @@ func main() {
 		// references the same instance: the gate's eligibility + cadence layers are
 		// per-loop, but the budget layer is one global cap across all games.
 		loop.SetLLMBudget(sharedLLMBudget)
+		// Inject the SHARED inference resolver (#741): every per-game loop resolves the
+		// fallback chain against the same availability cache, so a gate-admitted llm
+		// cycle reports the honest inference.used tier and any degradation reason.
+		loop.SetResolver(sharedResolver)
 		// The objective-weighted rules engine (#726) is the active default, built
 		// FRESH per loop (see the factory doc above). Its objective weights are driven
 		// live from the `objectives` flag each cycle; policy/fitness run on

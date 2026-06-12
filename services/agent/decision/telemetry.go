@@ -136,11 +136,14 @@ const (
 	// InferenceRules is inference.used on every cycle until the M4 LLM path
 	// runs: the deterministic rules engine is what actually decided.
 	InferenceRules = "rules"
-	// FallbackNoBackend is inference.fallback_reason when mode=llm is selected and
-	// the loop captures the prompt (#739) but no inference backend is wired yet, so
-	// it falls back to the rules engine. Empty when not applicable (mode=rules).
-	// #741's resolve_backend() will supply the real reason (and used="llm") once a
-	// backend answers; until then every llm cycle reports this single reason.
+	// FallbackNoBackend is inference.fallback_reason when the #847 gate ADMITTED an
+	// llm attempt but resolve_backend (#741) found the WHOLE chain unreachable, so it
+	// bottoms out at the always-available rules engine (inference.used="rules"). It is
+	// the honest "the llm path was wanted but nothing answered" reason — distinct from
+	// FallbackEndpointUnreachable, where a LOWER llm tier still serves. Empty when not
+	// applicable (mode=rules, or a configured-tier-reachable llm cycle). Until #739 a
+	// reachable tier does not actually decide either, but it carries no fallback_reason
+	// (configured == used); only a fully-unreachable chain reports this.
 	FallbackNoBackend = "no_backend_available"
 	// LLM call-gate fallback reasons (#847). When the three-layer gate denies an
 	// llm cycle, the cycle falls back to the rules engine WITHOUT building or
@@ -159,6 +162,15 @@ const (
 	// FallbackBudgetExhausted: the global per-minute request budget
 	// (llm.max_requests_per_minute, shared across all games) is full this window.
 	FallbackBudgetExhausted = "llm_budget_exhausted"
+	// FallbackEndpointUnreachable is the inference.fallback_reason when the #847 gate
+	// ADMITTED an llm attempt but resolve_backend (#741) had to degrade PAST the
+	// configured tier because a higher tier's endpoint was unreachable — a LOWER llm
+	// tier serves instead (e.g. configured=claude but the cloud endpoint is down, so
+	// gemma3:4b or phi4-mini resolves). It is distinct from FallbackNoBackend: this
+	// reason means a real llm tier WILL serve (#739), just not the configured one;
+	// FallbackNoBackend means the WHOLE chain was unreachable and rules decided.
+	// Recorded together with inference.used=<the lower tier> on the decision span.
+	FallbackEndpointUnreachable = "endpoint_unreachable"
 	// DefaultObjectives until the objectives flag schema exists (#725).
 	DefaultObjectives = "unset"
 	// UnrestrictedAllowed is the interventions.allowed summary while the
