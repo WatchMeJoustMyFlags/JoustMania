@@ -447,6 +447,27 @@ func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, c gamecontex
 			if emit {
 				l.captureLLMPrompt(ctx, snapshot, c)
 			}
+			// #739: a non-nil Backend means resolve_backend found a REACHABLE non-rules
+			// tier — so actually CALL it instead of falling back to rules (the #741
+			// behavior was "resolve but always run rules"; this is the milestone payoff).
+			// A nil Backend (whole chain unreachable, the dev default) keeps the #741
+			// fallback: drop through to the rules engine below with used="rules" /
+			// no_backend_available already set above.
+			if res.Backend != nil {
+				decisions, fallback := l.llmDecide(ctx, res.Backend, snapshot, c)
+				if fallback == "" {
+					// The model answered usably (a valid decision, or a contract-following
+					// noop that yields zero decisions). inference.used stays the called
+					// tier; return the LLM's decisions, which flow through the SAME
+					// runDecision/evaluatePermission chain as rules decisions (so the
+					// allow-list, battery, and rate-limit gates apply identically).
+					return decisions
+				}
+				// Unparseable/invalid/errored: NEVER dispatch untrusted output. Record the
+				// reason (inference.used stays the called tier — it answered, just unusably)
+				// and fall through to the deterministic rules engine below.
+				state.LLMFallbackReason = fallback
+			}
 		}
 	}
 	return l.Rules.Evaluate(ctx, c)

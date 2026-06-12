@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/joustmania/agent/llm"
 )
 
 // resolver.go is the inference availability checker and fallback chain (#741).
@@ -100,6 +102,18 @@ type Backend interface {
 	// (a short-timeout dial), but even a slow one cannot stall a decision because
 	// decisions read the cache.
 	Available(ctx context.Context) bool
+	// Infer is the actual inference call (#739): it sends the objective-aware
+	// prompt (llm.Build, already objective-weighted via the snapshot) to this tier
+	// and returns the model's RAW response text, which llm_decide parses
+	// DEFENSIVELY into a Decision (unparseable/out-of-vocab output never dispatches
+	// — see decode.go). It is called ONLY for a resolved, REACHABLE non-rules tier
+	// (the rules engine is the implicit terminal rung and is NOT a Backend), and
+	// ONLY after the #847 gate admits, so a tier that returns an error here simply
+	// falls back to rules with a recorded reason. Cohesive with Available: a tier
+	// reported reachable should be able to Infer; production endpointBackend.Infer
+	// is the seam #738 (Jetson) / #742 (cloud) fill in — until then it errors and
+	// the chain safely degrades to rules. ctx bounds the call (timeout/cancel).
+	Infer(ctx context.Context, prompt llm.Prompt) (string, error)
 }
 
 // Resolver holds the ordered inference chain and a periodically-refreshed
@@ -190,6 +204,13 @@ type Resolution struct {
 	// chain when one at/below the configured model is reachable, else InferenceRules
 	// when the whole chain is unreachable and it bottoms out at the rules engine.
 	Used string
+	// Backend is the resolved tier's Backend — the one llm_decide (#739) calls
+	// Infer on — or NIL when the chain bottomed out at the rules engine (Used ==
+	// InferenceRules). decide() branches on this: a non-nil Backend means a real
+	// llm tier is reachable, so the LLM path runs; nil means rules decide (the
+	// #741 fallback). Carrying the instance (not just the name) avoids a second
+	// chain walk to recover it. The rules engine is NOT a Backend, hence nil.
+	Backend Backend
 	// FallbackReason is inference.fallback_reason: "" when the configured tier
 	// itself is reachable (no degradation), FallbackEndpointUnreachable when a LOWER
 	// tier serves (a higher one was unreachable), or FallbackNoBackend when the whole
@@ -220,7 +241,9 @@ func (r *Resolver) resolve(configuredModel string) Resolution {
 			if i > start {
 				reason = FallbackEndpointUnreachable
 			}
-			return Resolution{Used: r.chain[i].Name(), FallbackReason: reason}
+			// Carry the resolved Backend so decide() can call Infer without a second
+			// chain walk; a non-nil Backend is the signal that a real llm tier serves.
+			return Resolution{Used: r.chain[i].Name(), Backend: r.chain[i], FallbackReason: reason}
 		}
 	}
 	// Whole chain unreachable: the rules engine is the always-available terminal

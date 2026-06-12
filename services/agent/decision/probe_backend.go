@@ -2,8 +2,11 @@ package decision
 
 import (
 	"context"
+	"errors"
 	"net"
 	"time"
+
+	"github.com/joustmania/agent/llm"
 )
 
 // probe_backend.go is the PRODUCTION inference probe (#741): a Backend whose
@@ -89,4 +92,30 @@ func (e *endpointBackend) Available(ctx context.Context) bool {
 	}
 	_ = conn.Close()
 	return true
+}
+
+// errInferNotImplemented is returned by endpointBackend.Infer until a real
+// backend client exists. llm_decide treats ANY Infer error as "this tier could
+// not produce a usable answer" and falls back to the rules engine with a
+// recorded reason — so a production agent that resolves a reachable endpoint
+// (its TCP port is open) but has no inference client yet degrades SAFELY to
+// rules rather than dispatching anything. It is a sentinel so callers/tests can
+// errors.Is it.
+var errInferNotImplemented = errors.New("decision: endpoint inference not implemented (blocked on #738 Jetson / #742 cloud)")
+
+// Infer is the PRODUCTION inference call seam (#739) — and is deliberately
+// NOT-YET-IMPLEMENTED. The real model call (Ollama /api/chat for the Jetson
+// gemma3:4b and localhost phi4-mini tiers, the cloud chat API for claude/copilot)
+// is OUT OF SCOPE here: the Jetson backend is hardware-blocked (#738) and the
+// cloud backend is credential-blocked (#742). Returning an error keeps the system
+// HONEST and SAFE: a tier whose endpoint TCP-dials open (so Available reports it
+// reachable, and inference.used names it) but has no client yet cannot fabricate
+// a Decision — llm_decide catches this error and falls back to rules with
+// FallbackUnparseable-class attribution. #738/#742 replace this body with: build
+// the provider request from `prompt` (System+User), POST to e.addr with a bounded
+// ctx, and return the model's raw response string for decode.go to parse. The
+// signature and the parse pipeline are already in place, so those issues only fill
+// in the transport.
+func (e *endpointBackend) Infer(_ context.Context, _ llm.Prompt) (string, error) {
+	return "", errInferNotImplemented
 }
