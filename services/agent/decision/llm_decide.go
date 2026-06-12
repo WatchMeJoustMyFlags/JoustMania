@@ -91,11 +91,21 @@ func (l *Loop) llmDecide(ctx context.Context, backend Backend, snapshot flags.Sn
 	// actual call (#739): the request model and, on success, the reasoning the model
 	// returned. The span is the SAME shape the capture path uses for attribution, but
 	// it represents a REAL call (Infer ran), not a captured-but-unsent prompt.
+	//
+	// gen_ai.request.model is the tier ACTUALLY called (backend.Name()), NOT the
+	// configured agent.model: on a degraded chain (configured "claude" unreachable ->
+	// served by "phi4-mini") the request really went to the lower tier, and the span
+	// must say so to match the sibling decision span's inference.used. The capture
+	// span legitimately keeps the configured model; this is a real request.
 	infCtx, span := l.Tracer.Start(ctx, SpanLLMInfer, trace.WithAttributes(
-		semconvGenAIChat(prompt.Model)...,
+		semconvGenAIChat(backend.Name())...,
 	))
 	defer span.End()
 
+	// TODO(#738/#742): bound this call with a per-call context.WithTimeout once a real
+	// transport lands — today the production endpointBackend.Infer returns immediately
+	// (sentinel error) and the fakes are instant, but a slow network Infer would block
+	// this Export-handler goroutine (async application is #917).
 	raw, err := backend.Infer(infCtx, prompt)
 	if err != nil {
 		// A reachable tier that cannot actually answer (the unwired production

@@ -150,6 +150,60 @@ func TestLLMDecide_ValidResponseTakesLLMPath(t *testing.T) {
 	}
 }
 
+// unavailableBackend is a chain tier whose probe never reports reachable, used to
+// force resolve() to degrade past it to a lower tier. Its Infer is never called
+// (Available()=false keeps it out of the resolution), so the body is irrelevant.
+type unavailableBackend struct{ name string }
+
+func (b unavailableBackend) Name() string                   { return b.name }
+func (b unavailableBackend) Available(context.Context) bool { return false }
+func (b unavailableBackend) Infer(context.Context, llm.Prompt) (string, error) {
+	return "", errUnavailableBackend
+}
+
+var errUnavailableBackend = errors.New("unavailable backend should never be called")
+
+// TestLLMDecide_InferSpanReportsCalledTierNotConfiguredModel locks the fix from the
+// #946 review: on a DEGRADED chain (configured "claude" unreachable, served by the
+// lower "phi4-mini" tier) the agent.llm.infer span's gen_ai.request.model must name
+// the tier ACTUALLY called (phi4-mini), not the configured model (claude) — otherwise
+// the request span misattributes the call versus the sibling decision span's
+// inference.used.
+func TestLLMDecide_InferSpanReportsCalledTierNotConfiguredModel(t *testing.T) {
+	cloud := unavailableBackend{name: TierCloud}                           // configured tier, unreachable
+	phi := &inferBackend{name: "phi4-mini", response: validShieldResponse} // reachable lower tier
+	r := NewResolver([]Backend{cloud, phi}, 0)
+	r.Refresh(context.Background())
+
+	snap := llmDecideSnapshot()
+	snap.Capability.Model = "claude" // cloud model -> top of the walk, which is down
+
+	l, sr, _ := llmDecideLoop(t, snap, r, []Decision{{Intervention: "play_audio_cue", Reason: "from rules"}})
+	l.OnEvaluate(context.Background(), gamecontext.GameContext{SessionID: "s1", GameKind: "real"}, testTrigger())
+
+	if phi.calls != 1 {
+		t.Fatalf("phi4-mini Infer calls = %d, want 1 (chain degraded to the reachable lower tier)", phi.calls)
+	}
+	inf := spansByName(sr.Ended(), SpanLLMInfer)
+	if len(inf) != 1 {
+		t.Fatalf("agent.llm.infer spans = %d, want 1", len(inf))
+	}
+	if v, ok := attrValue(inf[0], "gen_ai.request.model"); !ok || v.AsString() != "phi4-mini" {
+		t.Errorf("infer span gen_ai.request.model = %q, want phi4-mini (the tier called, not configured claude)", v.AsString())
+	}
+	// The sibling decision span records the degrade honestly.
+	dec := spansByName(sr.Ended(), SpanDecision)
+	if len(dec) != 1 {
+		t.Fatalf("agent.decision spans = %d, want 1", len(dec))
+	}
+	if v, ok := attrValue(dec[0], AttrInferenceUsed); !ok || v.AsString() != "phi4-mini" {
+		t.Errorf("inference.used = %q, want phi4-mini", v.AsString())
+	}
+	if v, ok := attrValue(dec[0], AttrInferenceFallback); !ok || v.AsString() != FallbackEndpointUnreachable {
+		t.Errorf("inference.fallback_reason = %q, want %q", v.AsString(), FallbackEndpointUnreachable)
+	}
+}
+
 // --- Acceptance: objectives reach the prompt ---
 
 func TestLLMDecide_ObjectivesShapePrompt(t *testing.T) {

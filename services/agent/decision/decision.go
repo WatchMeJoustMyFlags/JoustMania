@@ -338,6 +338,13 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 	// after decide so it reflects this cycle's thresholds and live context. This
 	// happens even on an empty-decision cycle so a future cycle-scoped consumer
 	// still sees the evaluation, but it only reaches a span when a decision emits.
+	//
+	// TODO(#739/real-backend): LastFitness is written only inside the rules engine's
+	// Evaluate. On an llm cycle that the backend decided (decide ran llmDecide, not
+	// rules), this reads the PRIOR rules cycle's stale evaluation. Harmless today
+	// (pure-llm sessions never populate it, and there is no real backend), but once a
+	// tier actually decides, a mixed llm/rules sequence would attach stale fitness to
+	// the llm decision span — guard it on "rules ran this cycle" when wiring #917.
 	if rd, ok := l.Rules.(fitnessReader); ok {
 		if vals := rd.LastFitness().Evaluated(); len(vals) > 0 {
 			state.FitnessEvaluated = vals
@@ -396,23 +403,28 @@ func (l *Loop) setLastLayer(state LayerState) {
 	l.mu.Unlock()
 }
 
-// decide selects the decision path from snapshot.Mode and runs it. The "llm"
-// path (M4 prompt-capture spike, #739) builds the prompt the agent WOULD send,
-// records it on a dedicated, throttled agent.llm.prompt span (so it is visible
-// in Jaeger even on idle cycles, where the lazy agent.decision spans never
-// emit), then falls back to the deterministic rules engine — no backend exists
-// yet (#741). The "rules" path and any unrecognized mode go straight to rules.
-// emit is this cycle's shared throttle decision (from OnEvaluate); the capture
-// span/log only fire when it is true.
+// decide selects the decision path from snapshot.Mode and runs it. The "rules"
+// path (and any unrecognized mode) goes straight to the deterministic engine. The
+// "llm" path is gated, resolved, and — when a tier is reachable — actually CALLED
+// (#847 + #741 + #739):
 //
-// The LLM call gate (#847) sits in FRONT of the prompt build/capture: an llm-mode
-// cycle first passes the three-layer gate (eligibility -> cadence -> budget). When
-// the gate DENIES, the cycle records the specific gate fallback_reason on the
-// LayerState, increments agent_llm_gated_total, and does NOT build or capture the
-// prompt (no token burn, even the prompt serialization is skipped). When the gate
-// ALLOWS, current behavior is unchanged: the prompt is captured and the cycle
-// falls back to rules with no_backend_available. Either way the rules engine still
-// runs (the gate only guards the LLM ATTEMPT, never the deterministic fallback).
+//  1. The LLM call gate (#847) runs FIRST: the cycle must pass the three-layer gate
+//     (eligibility -> cadence -> budget). On DENY it records the gate fallback_reason
+//     on the LayerState, increments agent_llm_gated_total, and does NOT build/capture
+//     a prompt or resolve a tier (no token burn) — inference.used stays "rules".
+//  2. On ADMIT, resolve_backend (#741) picks WHICH tier would serve and sets
+//     inference.used / fallback_reason (the configured tier, a degraded lower tier
+//     with endpoint_unreachable, or rules with no_backend_available when the whole
+//     chain is down). The prompt is captured on the throttled agent.llm.prompt span
+//     (emit gates it).
+//  3. When resolve_backend returns a REACHABLE non-rules tier, the cycle CALLS it via
+//     llmDecide (#739) and returns the model's decision — run through the SAME
+//     permission/rate-limit chain as a rules decision. Unparseable/invalid output, an
+//     Infer error, or an unreachable chain all fall back to the rules engine, which
+//     therefore ALWAYS provides a safe deterministic answer.
+//
+// emit is this cycle's shared throttle decision (from OnEvaluate); the prompt
+// capture span/log only fire when it is true.
 func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext, emit bool, state *LayerState) []Decision {
 	if snapshot.Mode == "llm" {
 		// Resolve the gate BEFORE any prompt work so a gated cycle never serializes
