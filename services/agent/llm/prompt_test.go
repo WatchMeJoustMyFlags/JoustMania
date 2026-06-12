@@ -458,3 +458,35 @@ func TestEmptyInterventionsMarker(t *testing.T) {
 		t.Errorf("allow-list join = %q, want 'a, b'", got)
 	}
 }
+
+// TestContextBlockInjection guards the M7-2 seam (#929): the System prompt carries
+// the cross-game ContextBlock verbatim only when it is non-empty; an empty
+// ContextBlock (rules mode / capture before the window is wired, and every existing
+// golden case) leaves the System prompt byte-identical, so the goldens are unchanged.
+func TestContextBlockInjection(t *testing.T) {
+	base := BuildInput{
+		Snapshot: baseSnapshot(balancedVariant),
+		Context:  threePlayerContext(),
+		Now:      fixedNow,
+	}
+
+	empty := Build(base).System
+
+	withBlock := base
+	block := "PRIOR GAMES (most recent last; cross-game memory):\n  1. real/joust duration=92.0s players=4 eliminations=3 interventions=2"
+	withBlock.ContextBlock = block
+	withSystem := Build(withBlock).System
+
+	// The block is present verbatim only in the with-block prompt.
+	if strings.Contains(empty, "PRIOR GAMES") {
+		t.Errorf("empty ContextBlock must add no cross-game section:\n%s", empty)
+	}
+	if !strings.Contains(withSystem, block) {
+		t.Errorf("non-empty ContextBlock must be injected verbatim:\n%s", withSystem)
+	}
+	// Adding the block must not disturb the rest of the prompt: removing the injected
+	// section recovers the empty-block prompt exactly (the block is a clean insert).
+	if recovered := strings.Replace(withSystem, "\n\n"+block, "", 1); recovered != empty {
+		t.Errorf("ContextBlock injection changed the surrounding prompt:\n--- recovered ---\n%s\n--- empty ---\n%s", recovered, empty)
+	}
+}

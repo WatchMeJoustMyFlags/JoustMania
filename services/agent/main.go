@@ -36,6 +36,7 @@ import (
 	"github.com/joustmania/agent/gamecontext"
 	"github.com/joustmania/agent/gamerunner"
 	"github.com/joustmania/agent/gamesummary"
+	"github.com/joustmania/agent/gamewindow"
 	"github.com/joustmania/agent/gate"
 	"github.com/joustmania/agent/infracontext"
 )
@@ -307,6 +308,13 @@ func main() {
 		Localhost: getEnv("AGENT_LOCALHOST_ENDPOINT", "localhost:11434"), // #739 Ollama locally; unreachable unless running
 	}), decision.DefaultProbeInterval)
 	sharedResolver.Start(ctx)
+	// Shared rolling cross-game context window (#929, M7-2). Constructed ONCE here as
+	// GLOBAL cross-session memory — one bounded ring of recent game summaries shared
+	// across every per-game loop, exactly like the budget/resolver above. The
+	// gamesummary coordinator (below) records each freshly-built Summary into it on
+	// game end, and every per-game Loop reads Recent(N) from it on the llm path to
+	// render the prompt's narrative context block (N = llm.context_games, live).
+	sharedContextWindow := gamewindow.NewStore()
 	probeDecisions := strings.EqualFold(getEnv("AGENT_PROBE_DECISIONS", ""), "true")
 	if probeDecisions {
 		slog.Warn("Probe decisions enabled (demo/verification mode)",
@@ -346,6 +354,12 @@ func main() {
 		loop.SetGameID(gameID)
 		loop.SetContextProvider(decision.MuxContextProvider{Mux: mux})
 		loop.SetRootContext(ctx)
+		// Inject the SHARED rolling cross-game context window (#929, M7-2): every
+		// per-game loop reads the SAME recent-games window, so the llm path renders the
+		// last N game summaries into the prompt's narrative context block — the agent's
+		// global cross-session memory, mirroring the shared budget/resolver. The async
+		// path (above) reads it in runInfer; the sync path (un-wired loops) in llmDecide.
+		loop.SetContextWindow(sharedContextWindow)
 		// The objective-weighted rules engine (#726) is the active default, built
 		// FRESH per loop (see the factory doc above). Its objective weights are driven
 		// live from the `objectives` flag each cycle; policy/fitness run on
@@ -427,7 +441,13 @@ func main() {
 	// agent.game.summary span.
 	summaryDir := gamesummary.DirFromEnv()
 	summaries := gamesummary.NewCoordinator(gamesummary.NewWriter(summaryDir), logger)
+	// Advance the M7-2 rolling window on every game end (#929): the coordinator
+	// Records each freshly-built Summary into the shared window BEFORE the disk write,
+	// so the cross-game context the llm path injects reflects a game the instant it
+	// ends, with no disk re-read. One observer, the same global window every loop reads.
+	summaries.SetObserver(sharedContextWindow)
 	slog.Info("Game narrative builder enabled (#928, M7-1)", "summary_dir", summaryDir)
+	slog.Info("Rolling game context window enabled (#929, M7-2)", "retention_cap", gamewindow.RetentionCap)
 
 	// GameContext multiplexer (#845 PR B): one Store partition per game_id, plus the
 	// fallback partition "" for unlabeled signals (zero-regression — single-game
