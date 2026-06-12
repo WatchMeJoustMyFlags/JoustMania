@@ -204,7 +204,20 @@ func (l *Loop) runInfer(root context.Context, snapshot flags.Snapshot, backend B
 	inferCtx, cancel := context.WithTimeout(root, budget)
 	defer cancel()
 
-	prompt := llm.Build(llm.BuildInput{Snapshot: snapshot, Context: c, Now: start})
+	// M7-2 cross-game context (#929): inject the SAME rolling-window block the sync
+	// llmDecide path would, so the PRODUCTION (async) path actually carries the last N
+	// game summaries — #917 moved prompt assembly here, so without this the feature
+	// would be bypassed in production. renderContextBlock is the shared #951 Loop
+	// helper (nil-window-safe -> "", 0), so an un-wired loop is unaffected. count is
+	// carried on the outcome and stamped on the agent.llm.infer span at apply time
+	// (emitAsyncInferSpan), mirroring how the sync path records AttrLLMContextGames.
+	contextBlock, contextCount := l.renderContextBlock(snapshot)
+	prompt := llm.Build(llm.BuildInput{
+		Snapshot:     snapshot,
+		Context:      c,
+		Now:          start,
+		ContextBlock: contextBlock,
+	})
 
 	// The raw inference call (#739). Spans are NOT created here — they are emitted by
 	// applyAsyncResult so the agent.llm.infer span hangs off the async apply root
@@ -213,12 +226,13 @@ func (l *Loop) runInfer(root context.Context, snapshot flags.Snapshot, backend B
 	end := now()
 
 	l.applyAsyncResult(root, snapshot, trig, asyncOutcome{
-		raw:      raw,
-		inferErr: inferErr,
-		timedOut: inferCtx.Err() == context.DeadlineExceeded,
-		start:    start,
-		end:      end,
-		backend:  backend,
+		raw:          raw,
+		inferErr:     inferErr,
+		timedOut:     inferCtx.Err() == context.DeadlineExceeded,
+		start:        start,
+		end:          end,
+		backend:      backend,
+		contextGames: contextCount,
 	})
 }
 
@@ -240,4 +254,10 @@ type asyncOutcome struct {
 	// backend is the tier that was called, for inference.used attribution and the
 	// gen_ai.request.model on the infer span.
 	backend Backend
+	// contextGames is the M7-2 rolling-context-window COUNT actually injected into
+	// this call's prompt (#929): the number of recent game summaries rendered into the
+	// cross-game narrative block. Carried from runInfer to the apply path so the
+	// agent.llm.infer span (emitted at apply time) records AttrLLMContextGames, exactly
+	// as the synchronous llmDecide path does. 0 when no window is wired (un-wired loops).
+	contextGames int
 }

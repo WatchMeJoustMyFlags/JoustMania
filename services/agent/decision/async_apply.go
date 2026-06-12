@@ -134,6 +134,10 @@ func (l *Loop) emitAsyncInferSpan(ctx context.Context, out asyncOutcome) ([]Deci
 		trace.WithAttributes(semconvGenAIChat(out.backend.Name())...),
 	)
 	span.SetAttributes(attribute.Int64(AttrLLMLatencyMs, out.latencyMs()))
+	// M7-2 (#929): record the cross-game context-window count actually injected into
+	// the prompt on the REAL inference span, mirroring the synchronous llmDecide path
+	// (AttrLLMContextGames). out.contextGames is what runInfer rendered (0 = un-wired).
+	span.SetAttributes(attribute.Int(AttrLLMContextGames, out.contextGames))
 	defer span.End(trace.WithTimestamp(out.end))
 
 	if out.timedOut {

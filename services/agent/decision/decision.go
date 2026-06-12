@@ -50,6 +50,7 @@ import (
 
 	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
+	"github.com/joustmania/agent/gamesummary"
 	"github.com/joustmania/agent/llm"
 )
 
@@ -105,6 +106,19 @@ type ActionSink interface {
 // *flags.Flags satisfies it; tests supply a fake.
 type FlagSource interface {
 	Evaluate(ctx context.Context) flags.Snapshot
+}
+
+// ContextWindow is the M7-2 rolling cross-game context source (#929): on the llm
+// decision path the loop pulls the last N recent game summaries from it and renders
+// them into the prompt's narrative context block. *gamewindow.Store satisfies it
+// (one shared instance across all loops — the window is GLOBAL cross-session
+// memory, like the LLM budget/resolver). It returns the last n summaries
+// oldest-first (Store.Recent's contract); the loop clamps n to the window's
+// retention cap. Nil (the construction default, rules-only deployments, and most
+// tests) means no cross-game block is injected and context_games is 0 — purely
+// additive over the #739 path.
+type ContextWindow interface {
+	Recent(n int) []gamesummary.Summary
 }
 
 // objectivePublisher is the optional seam the loop uses to push the per-cycle
@@ -227,6 +241,15 @@ type Loop struct {
 	// place (see async_infer.go). A nil ctxProvider keeps decide() on the synchronous
 	// #739 path, so a Loop not wired for async is behavior-unchanged.
 	asyncInferState
+
+	// contextWindow is the SHARED M7-2 rolling cross-game context source (#929),
+	// injected via SetContextWindow from the one gamewindow.Store main.go constructs
+	// (global cross-session memory, like budget/resolver). On a gate-admitted llm
+	// cycle llmDecide pulls Recent(N) from it, renders the narrative context block,
+	// and records context_games on the inference span. Nil = no cross-game block
+	// (rules-only / unwired / tests): the prompt carries no PRIOR GAMES section and
+	// context_games is 0.
+	contextWindow ContextWindow
 }
 
 // NewLoop builds a Loop with the no-op rules/actions stubs, the global tracer,
@@ -266,6 +289,16 @@ func (l *Loop) SetLLMBudget(b *llmBudget) { l.budget = b }
 // safe to call concurrently with OnEvaluate — set it during construction, before
 // the loop serves.
 func (l *Loop) SetResolver(r *Resolver) { l.resolver = r }
+
+// SetContextWindow injects the SHARED M7-2 rolling cross-game context source
+// (#929). main.go constructs ONE gamewindow.Store (global cross-session memory, one
+// window shared across every per-game loop — like the budget/resolver) and calls
+// this on every Loop the factory builds, so each loop's llm path renders the SAME
+// recent-games window. A nil window (the construction default, rules-only
+// deployments, and most tests) means no cross-game block is injected and
+// context_games is 0 — purely additive over the #739 path. Not safe to call
+// concurrently with OnEvaluate — set it during construction, before the loop serves.
+func (l *Loop) SetContextWindow(w ContextWindow) { l.contextWindow = w }
 
 // SetThrottle overrides the log/span throttle interval. It is read once at
 // startup from decision.throttle_seconds (#766 F5); a non-positive value leaves
@@ -642,19 +675,26 @@ func (l *Loop) captureLLMPrompt(ctx context.Context, snapshot flags.Snapshot, c 
 	if now == nil {
 		now = time.Now
 	}
+	// M7-2 (#929): inject the SAME cross-game context block the real inference path
+	// (llmDecide) would, so a captured prompt matches what the agent would actually
+	// send, and record the injected count on this capture span too (cheap — the block
+	// was already rendered for the prompt). Nil window -> empty block, count 0.
+	contextBlock, contextCount := l.renderContextBlock(snapshot)
 	prompt := llm.Build(llm.BuildInput{
-		Snapshot: snapshot,
-		Context:  c,
-		Now:      now(),
+		Snapshot:     snapshot,
+		Context:      c,
+		Now:          now(),
+		ContextBlock: contextBlock,
 	})
-	_, span := l.Tracer.Start(ctx, SpanLLMPrompt,
-		trace.WithAttributes(llmPromptAttributes(llmPromptAttrs{
-			prompt:     prompt,
-			objectives: snapshot.Objectives,
-			allowed:    snapshot.InterventionsAllowed,
-			gameKind:   c.GameKind,
-			gameID:     c.SessionID,
-		})...))
+	attrs := llmPromptAttributes(llmPromptAttrs{
+		prompt:     prompt,
+		objectives: snapshot.Objectives,
+		allowed:    snapshot.InterventionsAllowed,
+		gameKind:   c.GameKind,
+		gameID:     c.SessionID,
+	})
+	attrs = append(attrs, attribute.Int(AttrLLMContextGames, contextCount))
+	_, span := l.Tracer.Start(ctx, SpanLLMPrompt, trace.WithAttributes(attrs...))
 	span.End()
 
 	l.Log.Info("agent.llm.prompt_captured",

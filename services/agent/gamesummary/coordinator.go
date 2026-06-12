@@ -56,6 +56,19 @@ const (
 // remembered game. 8 comfortably exceeds GAME_MAX_CONCURRENT_GAMES=4.
 const dedupeWindow = 8
 
+// Observer is notified of each game Summary the moment it is built, BEFORE it is
+// written to disk — the M7-2 rolling-window seam (#929). The window store
+// (gamewindow.Store) satisfies it: chaining it here means the cross-game context
+// window advances on the SAME game-end path that writes the JSON file, with no
+// disk re-read and no staleness. It is OPTIONAL (nil = M7-1 behavior unchanged):
+// the summary file is still written whether or not an observer is wired. Called
+// once per game (inside the dedupe), for BOTH real and shadow games.
+type Observer interface {
+	// Record ingests one freshly-built game Summary. It must not block (the window
+	// store's Record is a mutex-guarded append) — it runs on the game-end path.
+	Record(Summary)
+}
+
 // Coordinator builds + persists one summary per game on the store's OnGameEnd
 // signal (#928). It is wired to EVERY gamecontext.Store partition's OnGameEnd in
 // main(), so one coordinator dedupes across all partitions. Safe for concurrent
@@ -65,6 +78,11 @@ type Coordinator struct {
 	writer *Writer
 	tracer trace.Tracer
 	log    *slog.Logger
+	// observer, when non-nil, is notified of each built Summary (#929 M7-2): the
+	// rolling context-window store hangs off here so the window advances on every
+	// game end. Set once at construction via SetObserver, before the coordinator
+	// serves, so no lock is needed around the read.
+	observer Observer
 	// now is injectable for tests; nil uses time.Now. It stamps Summary.GeneratedAt
 	// only — the aggregation itself is clock-free.
 	now func() time.Time
@@ -90,6 +108,14 @@ func NewCoordinator(w *Writer, log *slog.Logger) *Coordinator {
 		claimed: make(map[string]struct{}),
 	}
 }
+
+// SetObserver wires the M7-2 rolling-window observer (#929): main.go constructs
+// ONE gamewindow.Store (the global cross-game memory, shared across all per-game
+// loops like the LLM budget/resolver) and registers it here, so the window
+// advances on every game end. Optional and additive — a coordinator with no
+// observer is exactly the M7-1 behavior. Set during construction, before the
+// store fires OnGameEnd, so the field read in OnGameEnd needs no lock.
+func (c *Coordinator) SetObserver(o Observer) { c.observer = o }
 
 // instrumentationName scopes the coordinator's tracer, matching the agent module
 // convention used by the decision package.
@@ -127,6 +153,14 @@ func (c *Coordinator) OnGameEnd(gc gamecontext.GameContext) {
 	defer span.End()
 
 	summary := BuildSummary(gc, BuildOptions{Now: now()})
+
+	// Advance the M7-2 rolling context window (#929) FIRST — before the disk write —
+	// so the cross-game memory updates on every game end even if persistence fails:
+	// the window is the live LLM-path input, independent of the on-disk file. Skips
+	// cleanly when no observer is wired (M7-1 behavior).
+	if c.observer != nil {
+		c.observer.Record(summary)
+	}
 
 	span.SetAttributes(
 		attribute.String(attrGameID, summary.GameID),

@@ -10,6 +10,7 @@ import (
 
 	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
+	"github.com/joustmania/agent/gamewindow"
 	"github.com/joustmania/agent/llm"
 )
 
@@ -81,13 +82,23 @@ func (l *Loop) llmDecide(ctx context.Context, backend Backend, snapshot flags.Sn
 		now = time.Now
 	}
 
+	// M7-2 cross-game context (#929): pull the last N recent game summaries from the
+	// shared rolling window and render them into the prompt's narrative context block,
+	// so the model reasons across games/sessions — not just this game's live snapshot.
+	// N is the LIVE flag (snapshot.ContextGames), clamped to the window's retention
+	// cap; contextCount is how many summaries were ACTUALLY injected (bounded by how
+	// many games have ended), recorded on the spans below. A nil window (rules-only /
+	// unwired / tests) yields an empty block and a 0 count — purely additive.
+	contextBlock, contextCount := l.renderContextBlock(snapshot)
+
 	// Reuse the objective-aware prompt builder (the same one the capture span uses).
 	// The System prompt already encodes the objective weights and the allow-list, so
 	// the model is asked to optimize for THIS session's objectives.
 	prompt := llm.Build(llm.BuildInput{
-		Snapshot: snapshot,
-		Context:  c,
-		Now:      now(),
+		Snapshot:     snapshot,
+		Context:      c,
+		Now:          now(),
+		ContextBlock: contextBlock,
 	})
 
 	// Record the inference as a gen_ai.* child span so the audit trace shows the
@@ -100,8 +111,12 @@ func (l *Loop) llmDecide(ctx context.Context, backend Backend, snapshot flags.Sn
 	// served by "phi4-mini") the request really went to the lower tier, and the span
 	// must say so to match the sibling decision span's inference.used. The capture
 	// span legitimately keeps the configured model; this is a real request.
+	//
+	// agent.llm.context_games (#929) is recorded here on the REAL inference span with
+	// the COUNT actually injected — what the model truly saw, not the raw flag.
 	infCtx, span := l.Tracer.Start(ctx, SpanLLMInfer, trace.WithAttributes(
-		semconvGenAIChat(backend.Name())...,
+		append(semconvGenAIChat(backend.Name()),
+			attribute.Int(AttrLLMContextGames, contextCount))...,
 	))
 	defer span.End()
 
@@ -164,4 +179,35 @@ func (l *Loop) llmDecide(ctx context.Context, backend Backend, snapshot flags.Sn
 		ObjectiveServed: resp.ObjectiveServed,
 		Objectives:      snapshot.Objectives,
 	}}, ""
+}
+
+// renderContextBlock pulls the last N recent game summaries from the shared M7-2
+// rolling window and renders the cross-game NARRATIVE CONTEXT BLOCK (#929),
+// returning the block plus the COUNT actually injected. N is the LIVE flag
+// (snapshot.ContextGames), clamped to [0, gamewindow.RetentionCap] so a
+// mis-/over-configured flag can never ask for more than the window can ever hold;
+// the window itself further bounds the result by how many games have actually
+// ended (Store.Recent(N) returns all it holds when N exceeds its length). The
+// returned count is len(Recent), i.e. what the prompt + the span attribute report —
+// what the model truly saw, never the raw flag.
+//
+// A nil window (no SetContextWindow — rules-only deployments and most tests) renders
+// no block and reports 0, so the prompt carries no PRIOR GAMES section: M7-2 is
+// purely additive over the #739 path. When a window IS wired, gamewindow.Render
+// always returns a non-empty block (it renders "(no prior games)" for an empty
+// window), so the section is present on every llm call (acceptance: "each LLM call
+// includes the last N game summaries as a narrative context block").
+func (l *Loop) renderContextBlock(snapshot flags.Snapshot) (block string, count int) {
+	if l.contextWindow == nil {
+		return "", 0
+	}
+	n := snapshot.ContextGames
+	if n < 0 {
+		n = 0
+	}
+	if n > gamewindow.RetentionCap {
+		n = gamewindow.RetentionCap
+	}
+	recent := l.contextWindow.Recent(n)
+	return gamewindow.Render(recent), len(recent)
 }

@@ -47,6 +47,14 @@ const (
 	// cycle like the other gate flags so the budget can be tuned live on stage.
 	keyLLMLatencyBudget = "llm.latency_budget_seconds"
 
+	// M7-2 rolling game context window (#929). How many recent game summaries the
+	// agent injects into EVERY llm prompt as the cross-game narrative context block.
+	// Read EVERY cycle (never cached) on the decision hot path — exactly like the
+	// #847 gate flags above — so retuning N on stage takes effect on the very next
+	// llm call with no restart. The decision path clamps the value to
+	// [0, gamewindow.RetentionCap].
+	keyLLMContextGames = "llm.context_games"
+
 	// Fitness thresholds (#731). The game-objective fitness flags.
 	keyEnduranceMinSessionSeconds  = "fitness.endurance.min_session_seconds"
 	keyBalancedMaxSkillGap         = "fitness.balanced.max_skill_gap"
@@ -111,6 +119,11 @@ const (
 	// healthy backend to answer, short enough that a hung tier degrades to rules
 	// within one decision interval.
 	DefaultLLMLatencyBudgetSeconds = 8.0
+	// DefaultLLMContextGames is the M7-2 cross-game context window size (#929): how
+	// many recent game summaries to inject into every llm prompt when flagd is
+	// unreachable or the flag is undefined. 3 mirrors the agent.json defaultVariant
+	// — a few games of memory, well under gamewindow.RetentionCap.
+	DefaultLLMContextGames = 3
 
 	// Fitness threshold defaults (#731), mirroring the services/flagd/agent.json
 	// defaultVariants. Applied when flagd is unreachable or a flag is undefined.
@@ -373,6 +386,13 @@ type Snapshot struct {
 	// LLMGate holds the three-layer LLM call gate (#847): eligibility, per-game
 	// cadence, and the global per-minute request budget.
 	LLMGate LLMGate
+	// ContextGames is the M7-2 rolling context-window size (#929, llm.context_games):
+	// how many recent game summaries to inject into this cycle's llm prompt as the
+	// cross-game narrative context block. Read every cycle so retuning N is live; the
+	// decision path clamps it to [0, gamewindow.RetentionCap] before assembling the
+	// block. A non-positive value injects no prior games (the block renders the
+	// explicit "(no prior games)" marker).
+	ContextGames int
 	// Fitness holds the per-objective fitness thresholds (#731).
 	Fitness Fitness
 	// BluetoothFitness holds the infrastructure fitness thresholds (#735).
@@ -423,6 +443,11 @@ func (f *Flags) Evaluate(ctx context.Context) Snapshot {
 			MaxInterventionsPerMinute: f.intFlag(ctx, keyMaxInterventionsPerMinute, DefaultMaxInterventionsPerMinute),
 		},
 		LLMGate: f.llmGate(ctx),
+		// M7-2 (#929): the cross-game context-window size, read every cycle so a
+		// runtime change to llm.context_games is honored on the next llm call. Uses the
+		// typed intFlag getter (the flagd numeric-flag gotcha: a numeric flag read via
+		// ObjectValue resolves as a silent TYPE_MISMATCH default — see llmGate).
+		ContextGames: f.intFlag(ctx, keyLLMContextGames, DefaultLLMContextGames),
 		Fitness: Fitness{
 			EnduranceMinSessionSeconds:     f.intFlag(ctx, keyEnduranceMinSessionSeconds, DefaultEnduranceMinSessionSeconds),
 			BalancedMaxSkillGap:            f.floatFlag(ctx, keyBalancedMaxSkillGap, DefaultBalancedMaxSkillGap),
