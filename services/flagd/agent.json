@@ -176,6 +176,16 @@
       },
       "defaultVariant": "default"
     },
+    "llm.context_games": {
+      "state": "ENABLED",
+      "variants": {
+        "off": 0,
+        "default": 3,
+        "wide": 5,
+        "max": 10
+      },
+      "defaultVariant": "default"
+    },
     "policy.coordinator_backstop_per_minute": {
       "state": "ENABLED",
       "variants": {

@@ -115,6 +115,18 @@ const (
 	DiscardTimeout = "timeout"
 )
 
+// AttrLLMContextGames is the M7-2 rolling-context-window size recorded on the
+// inference span (#929): the COUNT of recent game summaries actually injected into
+// this call's prompt as the cross-game narrative context block. It is the live N
+// (flags.Snapshot.ContextGames, clamped to [0, gamewindow.RetentionCap] and bounded
+// by how many games have ended), NOT the configured flag value — so the span shows
+// what the model really saw. Recorded on agent.llm.infer (the REAL inference span,
+// SpanLLMInfer — the issue's "agent.inference") and, cheaply, on agent.llm.prompt
+// (the capture span) so the count is queryable on both. Naming note: the issue
+// prose says agent.inference, but the codebase's real inference span is
+// agent.llm.infer (#739); the attribute lands there, not on an invented span.
+const AttrLLMContextGames = "agent.llm.context_games"
+
 // AttrLLMInferError records why an llm.infer span did not yield a usable Decision
 // (#739): the Infer transport error, or the llm.Decode rejection reason
 // (empty / not-JSON / missing-field / out-of-vocab-objective). Present only on the

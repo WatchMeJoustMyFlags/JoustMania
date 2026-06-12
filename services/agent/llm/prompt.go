@@ -43,6 +43,17 @@ type BuildInput struct {
 	Snapshot flags.Snapshot
 	Context  gamecontext.GameContext
 	Now      time.Time // injected for determinism — Build must never read the wall clock
+	// ContextBlock is the M7-2 cross-game NARRATIVE CONTEXT BLOCK (#929): the last N
+	// recent game summaries rendered compactly (gamewindow.Render), giving the model
+	// memory across games/sessions. Passed in pre-assembled so Build stays PURE and
+	// the window store does not leak into the llm package — the decision path reads
+	// the live N (flags.Snapshot.ContextGames), pulls Store.Recent(N), renders, and
+	// passes the result here. Empty string = no cross-game section (e.g. the
+	// capture path before the window is wired, or rules mode); a non-empty block is
+	// injected verbatim as a System section. gamewindow.Render always returns a
+	// non-empty block (it renders "(no prior games)" for an empty window), so in the
+	// llm path this is populated on every call.
+	ContextBlock string
 }
 
 // unknown is the literal rendered for any never-observed (nil) signal.
@@ -112,7 +123,7 @@ func ResolveVariant(raw string) string {
 func Build(in BuildInput) Prompt {
 	variant := ResolveVariant(in.Snapshot.Capability.PromptVariant)
 	return Prompt{
-		System:  buildSystem(in.Snapshot, variant),
+		System:  buildSystem(in.Snapshot, variant, in.ContextBlock),
 		User:    buildUser(in.Context, in.Now),
 		Variant: variant,
 		Model:   in.Snapshot.Capability.Model,
@@ -120,8 +131,9 @@ func Build(in BuildInput) Prompt {
 }
 
 // buildSystem renders the System prompt: role, objectives, allow-list, policy
-// constraints, the resolved variant guidance, and the JSON response contract.
-func buildSystem(s flags.Snapshot, variant string) string {
+// constraints, the resolved variant guidance, the M7-2 cross-game context block
+// (#929), and the JSON response contract.
+func buildSystem(s flags.Snapshot, variant, contextBlock string) string {
 	var b strings.Builder
 	b.WriteString(`You are the JoustMania game director, an autonomous agent that tunes a live
 physical movement game to make it more fun. Each decision cycle you receive a
@@ -152,6 +164,19 @@ VARIANT (`)
 	// is always present — an unknown flag value rendered the conservative block.
 	b.WriteString("):\n")
 	b.WriteString(variantGuidance[variant])
+
+	// M7-2 cross-game context block (#929): the last N recent game summaries, injected
+	// as its own System section so the model has memory across games/sessions. The
+	// block is pre-assembled by the decision path (gamewindow.Render) and passed
+	// through verbatim; empty means no cross-game section (rules mode / capture before
+	// the window is wired). In the llm path Render always yields a non-empty block, so
+	// this section is present on every llm call (acceptance: "each LLM call includes
+	// the last N game summaries as a narrative context block").
+	if contextBlock != "" {
+		b.WriteString("\n\n")
+		b.WriteString(contextBlock)
+	}
+
 	b.WriteString(`
 
 RESPONSE CONTRACT — reply with EXACTLY ONE JSON object, no prose, matching:

@@ -50,6 +50,7 @@ import (
 
 	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
+	"github.com/joustmania/agent/gamesummary"
 	"github.com/joustmania/agent/llm"
 )
 
@@ -105,6 +106,19 @@ type ActionSink interface {
 // *flags.Flags satisfies it; tests supply a fake.
 type FlagSource interface {
 	Evaluate(ctx context.Context) flags.Snapshot
+}
+
+// ContextWindow is the M7-2 rolling cross-game context source (#929): on the llm
+// decision path the loop pulls the last N recent game summaries from it and renders
+// them into the prompt's narrative context block. *gamewindow.Store satisfies it
+// (one shared instance across all loops — the window is GLOBAL cross-session
+// memory, like the LLM budget/resolver). It returns the last n summaries
+// oldest-first (Store.Recent's contract); the loop clamps n to the window's
+// retention cap. Nil (the construction default, rules-only deployments, and most
+// tests) means no cross-game block is injected and context_games is 0 — purely
+// additive over the #739 path.
+type ContextWindow interface {
+	Recent(n int) []gamesummary.Summary
 }
 
 // objectivePublisher is the optional seam the loop uses to push the per-cycle
@@ -227,6 +241,15 @@ type Loop struct {
 	// place (see async_infer.go). A nil ctxProvider keeps decide() on the synchronous
 	// #739 path, so a Loop not wired for async is behavior-unchanged.
 	asyncInferState
+
+	// contextWindow is the SHARED M7-2 rolling cross-game context source (#929),
+	// injected via SetContextWindow from the one gamewindow.Store main.go constructs
+	// (global cross-session memory, like budget/resolver). On a gate-admitted llm
+	// cycle llmDecide pulls Recent(N) from it, renders the narrative context block,
+	// and records context_games on the inference span. Nil = no cross-game block
+	// (rules-only / unwired / tests): the prompt carries no PRIOR GAMES section and
+	// context_games is 0.
+	contextWindow ContextWindow
 }
 
 // NewLoop builds a Loop with the no-op rules/actions stubs, the global tracer,
