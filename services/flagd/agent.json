@@ -167,6 +167,15 @@
       },
       "defaultVariant": "default"
     },
+    "llm.latency_budget_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "tight": 4,
+        "default": 8,
+        "patient": 12
+      },
+      "defaultVariant": "default"
+    },
     "policy.coordinator_backstop_per_minute": {
       "state": "ENABLED",
       "variants": {

@@ -51,9 +51,12 @@ func semconvGenAIChat(model string) []attribute.KeyValue {
 //     interventions.allowed is blocked with decision.blocked=true — there is no
 //     LLM-specific dispatch path to bypass any gate.
 //
-// The call is SYNCHRONOUS against the resolved backend for now (#739). #917 will
-// wrap it for async inference; the call site in decide() is structured so that
-// wrapping is a local change (one method call), not a re-architecture.
+// This synchronous path is now the COMPATIBILITY fallback (#739): #917 made the
+// production call ASYNCHRONOUS (async_infer.go / async_apply.go fire Infer off the
+// loop and re-validate the result against the current context before applying).
+// decide() takes this synchronous path ONLY when async is not wired (no context
+// provider injected) — e.g. a Loop built by an older test — so llmDecide stays the
+// behavior-compatible synchronous reference implementation.
 
 // llmDecide runs one inference against the resolved backend and returns the parsed
 // decisions plus the fallback_reason to record. The contract decide() relies on:

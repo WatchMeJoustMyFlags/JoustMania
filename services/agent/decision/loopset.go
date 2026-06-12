@@ -102,3 +102,22 @@ func (ls *LoopSet) Len() int {
 	defer ls.mu.Unlock()
 	return len(ls.loops)
 }
+
+// AwaitInflight blocks until every live Loop's in-flight async inference has
+// completed (#917). main.go calls it during graceful shutdown so no fired
+// inference goroutine outlives the process. The Loops' fired goroutines are already
+// bounded by the agent root context (cancelled on signal) so a well-behaved Infer
+// returns promptly; this join makes the wait explicit and leak-free. It snapshots
+// the loop pointers under the lock, then waits OUTSIDE it so a concurrent For/Retain
+// is never blocked behind a slow inference.
+func (ls *LoopSet) AwaitInflight() {
+	ls.mu.Lock()
+	loops := make([]*Loop, 0, len(ls.loops))
+	for _, l := range ls.loops {
+		loops = append(loops, l)
+	}
+	ls.mu.Unlock()
+	for _, l := range loops {
+		l.AwaitInflight()
+	}
+}

@@ -220,6 +220,13 @@ type Loop struct {
 	// llmGated counts gated llm cycles (agent_llm_gated_total{reason=...}). Defaults
 	// to a no-op so a Loop built without metrics wiring still works.
 	llmGated otelmetric.Int64Counter
+
+	// asyncInferState is the per-Loop async-inference machinery (#917): the pile-up
+	// guard, the in-flight wait group, this loop's game id, the re-validation context
+	// provider, and the agent root context. Embedded so the async surface lives in one
+	// place (see async_infer.go). A nil ctxProvider keeps decide() on the synchronous
+	// #739 path, so a Loop not wired for async is behavior-unchanged.
+	asyncInferState
 }
 
 // NewLoop builds a Loop with the no-op rules/actions stubs, the global tracer,
@@ -353,7 +360,7 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 		)
 	}
 
-	decisions := l.decide(ctx, snapshot, c, emit, &state)
+	decisions := l.decide(ctx, snapshot, c, trig, emit, &state)
 
 	// Lift the cycle-level fitness evaluation the engine just computed onto the
 	// LayerState so it rides the decision span as fitness.evaluated (#731). Read
@@ -439,15 +446,20 @@ func (l *Loop) setLastLayer(state LayerState) {
 //     with endpoint_unreachable, or rules with no_backend_available when the whole
 //     chain is down). The prompt is captured on the throttled agent.llm.prompt span
 //     (emit gates it).
-//  3. When resolve_backend returns a REACHABLE non-rules tier, the cycle CALLS it via
-//     llmDecide (#739) and returns the model's decision — run through the SAME
-//     permission/rate-limit chain as a rules decision. Unparseable/invalid output, an
-//     Infer error, or an unreachable chain all fall back to the rules engine, which
-//     therefore ALWAYS provides a safe deterministic answer.
+//  3. When resolve_backend returns a REACHABLE non-rules tier, the cycle FIRES the
+//     inference ASYNCHRONOUSLY (#917, when async is wired): fireInferAsync launches
+//     Infer in its own goroutine and decide() returns nil immediately, so the loop
+//     never blocks on the 2-10s call. The model's decision is re-validated against the
+//     CURRENT context and applied (or discarded with a reason) on its own
+//     agent.llm.apply trace; on timeout/error/unparseable the rules engine decides in
+//     that async path, so the system ALWAYS provides a safe deterministic answer. The
+//     pile-up guard skips firing a second concurrent Infer per game (FallbackInflight,
+//     falls back to rules this cycle). When async is NOT wired (no context provider),
+//     it keeps the synchronous #739 call via llmDecide for behavior-compatibility.
 //
 // emit is this cycle's shared throttle decision (from OnEvaluate); the prompt
 // capture span/log only fire when it is true.
-func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext, emit bool, state *LayerState) []Decision {
+func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext, trig EvalTrigger, emit bool, state *LayerState) []Decision {
 	if snapshot.Mode == "llm" {
 		// Resolve the gate BEFORE any prompt work so a gated cycle never serializes
 		// a prompt it will not send. The reason rides the decision span (#729) via
@@ -488,6 +500,38 @@ func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, c gamecontex
 			// fallback: drop through to the rules engine below with used="rules" /
 			// no_backend_available already set above.
 			if res.Backend != nil {
+				// #917: the inference call is now ASYNCHRONOUS. A real Infer takes 2-10s,
+				// so calling it synchronously here would block this per-game Export-handler
+				// goroutine for seconds. Instead fire it in its own goroutine and return
+				// from decide() PROMPTLY; when the result lands it is re-validated against
+				// the CURRENT context and applied (or discarded with a reason) on its own
+				// agent.llm.apply trace — see async_infer.go / async_apply.go.
+				//
+				// THE DESIGN FORK (#917, resolved here — see async_infer.go's header):
+				// an admitted+reachable cycle decides NOTHING synchronously. The single
+				// decision for THIS context is produced by the async path: the model's
+				// (re-validated + applied) or, on timeout/error/unparseable, the rules
+				// engine IN THE ASYNC COMPLETION PATH for that same context. The loop never
+				// blocks; the system always decides (just a beat later). Returning nil here
+				// means this cycle emits no synchronous decision span — the async apply
+				// trace carries it.
+				if l.asyncEnabled() {
+					if l.fireInferAsync(snapshot, res.Backend, c, trig) {
+						// Fired: defer entirely to the async apply path. No sync decision.
+						return nil
+					}
+					// Pile-up guard tripped — a call is already in flight for this game
+					// (the previous cycle's Infer outran this interval). Do NOT launch a
+					// second Infer; fall through to the rules engine so this cycle still
+					// gets a deterministic decision. inference.used stays the resolved tier
+					// (an attempt IS in flight); record that a fire was skipped.
+					state.LLMFallbackReason = FallbackInflight
+					return l.Rules.Evaluate(ctx, c)
+				}
+
+				// Async not wired (no context provider injected): keep the synchronous
+				// #739 path so an un-wired Loop is behavior-unchanged. The call blocks the
+				// handler, but the fakes/sentinel backend return immediately in that case.
 				decisions, fallback := l.llmDecide(ctx, res.Backend, snapshot, c)
 				if fallback == "" {
 					// The model answered usably (a valid decision, or a contract-following
