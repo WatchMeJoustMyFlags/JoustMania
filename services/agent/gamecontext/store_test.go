@@ -283,6 +283,50 @@ func TestStore_TimelinePhaseStartEnd(t *testing.T) {
 	}
 }
 
+// TestStore_TimelineEliminationNoDoubleNarration verifies a serial is narrated as
+// eliminated exactly ONCE regardless of which order the death/span path
+// (RecordElimination) and the preferred order source (SetEliminationOrder) report
+// it. The two paths dedupe on different stores (EliminationSequence vs elimOrder),
+// so without the cross-store guard the order source emits a second elimination
+// line for a serial the death/span path already narrated (#916).
+func TestStore_TimelineEliminationNoDoubleNarration(t *testing.T) {
+	count := func(s *Store) int {
+		n := 0
+		for _, e := range s.Snapshot().Timeline {
+			if e.Kind == EventElimination && e.Serial == "A" {
+				n++
+			}
+		}
+		return n
+	}
+
+	// The buggy direction: death/span narrates + adds to EliminationSequence, then
+	// the order source reports the same serial (elimOrder did not yet know it).
+	t.Run("span_then_order", func(t *testing.T) {
+		clk := &clock{t: time.Unix(0, 0)}
+		s := NewStore(time.Hour, time.Hour, clk.now)
+		s.RecordElimination("A")
+		clk.advance(time.Second)
+		s.SetEliminationOrder("A", 1)
+		if n := count(s); n != 1 {
+			t.Fatalf("elimination lines for A = %d, want 1 (no double-narration)", n)
+		}
+	})
+
+	// The reverse direction was already safe (the rebuilt sequence dedupes the later
+	// append); assert it so the invariant is documented from both sides.
+	t.Run("order_then_span", func(t *testing.T) {
+		clk := &clock{t: time.Unix(0, 0)}
+		s := NewStore(time.Hour, time.Hour, clk.now)
+		s.SetEliminationOrder("A", 1)
+		clk.advance(time.Second)
+		s.RecordElimination("A")
+		if n := count(s); n != 1 {
+			t.Fatalf("elimination lines for A = %d, want 1 (no double-narration)", n)
+		}
+	})
+}
+
 // TestStore_TimelineEvictedOnGrace verifies the narrative is cleared with the
 // rest of the session-scoped state on grace exit (#916 eviction).
 func TestStore_TimelineEvictedOnGrace(t *testing.T) {

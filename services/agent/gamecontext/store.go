@@ -404,12 +404,30 @@ func (s *Store) RecordDeathTotal(serial string, total float64) {
 func (s *Store) SetEliminationOrder(serial string, order int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, alreadyKnown := s.elimOrder[serial]
+	_, inOrderMap := s.elimOrder[serial]
 	s.elimOrder[serial] = order
-	// Narrate each serial's elimination exactly once, the first time this preferred
-	// source reports it (a repeat report only re-sorts) (#916). Record with the
-	// reported 1-based order so the narrative matches the rebuilt sequence below.
-	if !alreadyKnown {
+	// Narrate each serial's elimination exactly ONCE — but across BOTH dedupe
+	// stores. This preferred source dedupes on the elimOrder map (inOrderMap); the
+	// death/span fallback path (appendElimination) narrates through
+	// EliminationSequence membership. The two never cross-check, so without the
+	// sequence guard below a serial the death/span path already narrated would get
+	// a SECOND elimination line here (#916). Latent today — the
+	// game_player_elimination_order producer is unshipped, so only the death/span
+	// path fires — but armed the moment that metric ships alongside the death/span
+	// signals, so we close it now. The reverse order is already safe: once this
+	// method rebuilds EliminationSequence below, a later appendElimination finds the
+	// serial present and returns early. Record with the reported 1-based order so
+	// the narrative matches the rebuilt sequence.
+	alreadyNarrated := inOrderMap
+	if !alreadyNarrated {
+		for _, existing := range s.ctx.Session.EliminationSequence {
+			if existing == serial {
+				alreadyNarrated = true // the death/span path already narrated it
+				break
+			}
+		}
+	}
+	if !alreadyNarrated {
 		s.history.append(TimelineEvent{
 			At:     s.now(),
 			Kind:   EventElimination,
