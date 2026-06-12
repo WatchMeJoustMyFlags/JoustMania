@@ -46,6 +46,15 @@ func resolveFlag(flagRaw json.RawMessage, evalCtx map[string]any) (resolved, err
 			return resolved{}, fmt.Errorf("marshal eval context: %w", err)
 		}
 		var out bytes.Buffer
+		// SAFETY-CRITICAL fail-closed: jsonlogic.Apply ERRORS on an operator it does
+		// not implement (flagd-specific ops like `fractional`/`sem_ver`/`starts_with`/
+		// `$flagd.*`). We propagate that error so the Gate REJECTS the proposal
+		// (write_simulation_error) rather than proceed on a mis-evaluated targeting.
+		// This is load-bearing: if this library is ever swapped/upgraded to one that
+		// returns false/null for an unknown operator instead of erroring, the gate
+		// would silently weaken (a real-affecting diff could pass). The
+		// TestResolveFlag_UnknownOperatorFailsClosed test guards this contract — do not
+		// "handle" the error by treating an unevaluable targeting as the default branch.
 		if err := jsonlogic.Apply(bytes.NewReader(flag.Targeting), bytes.NewReader(data), &out); err != nil {
 			return resolved{}, fmt.Errorf("apply targeting: %w", err)
 		}

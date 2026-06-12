@@ -327,10 +327,26 @@ func checkRealResolutionUnchanged(before, after *flagObj) *RejectError {
 	return nil
 }
 
-// isGameFlagPath reports whether path is the game flagset file (basename
-// game.json). The agent's write surface is hardcoded to this one file.
+// isGameFlagPath reports whether path is the game flagset file. The agent's write
+// surface is hardcoded to this one file, so this is a security boundary, not a
+// convenience check — a basename compare ALONE is not enough: a symlink named
+// game.json pointing at agent.json has basename "game.json" yet a write through it
+// lands in the agent's own governance file. So we ALSO reject a path whose final
+// component is a symlink (e.g. game.json -> agent.json). The Writer additionally
+// opens with O_NOFOLLOW (writeInPlace), so the kernel refuses to follow a symlink
+// even if one is swapped in after this check (TOCTOU) — this check is the
+// fail-fast with a clean ReasonNonGameTarget, O_NOFOLLOW is the hard backstop.
 func isGameFlagPath(path string) bool {
-	return filepath.Base(path) == gameFlagFileName
+	if filepath.Base(path) != gameFlagFileName {
+		return false
+	}
+	// Lstat (does NOT follow the final symlink): reject if the game flag path is
+	// itself a symlink. A not-yet-existing path is fine — the first write creates a
+	// regular file via O_CREATE|O_NOFOLLOW (which cannot create through a symlink).
+	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
+	return true
 }
 
 // AsReject extracts a *RejectError from an error returned by Review, if it is

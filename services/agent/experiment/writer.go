@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"syscall"
 )
 
 // DefaultGamePath is the in-container game flag file path. Override with
@@ -184,7 +185,12 @@ func isExperimentVariant(raw json.RawMessage) bool {
 // truncate+write is the proven admin-mode pattern (actions/writer.go,
 // lib/flag_config_writer.py).
 func (w *Writer) writeInPlace(data []byte) error {
-	f, err := os.OpenFile(w.path, os.O_WRONLY|os.O_TRUNC|os.O_CREATE, 0o644)
+	// O_NOFOLLOW: refuse to write THROUGH a symlink. The agent's write surface is
+	// pinned to the game flagset; without this, a symlink at w.path (e.g. game.json
+	// -> agent.json) would let a write escape into the agent's own governance file.
+	// The Gate's isGameFlagPath rejects symlinks up front; O_NOFOLLOW is the kernel
+	// backstop that holds even against a TOCTOU swap between the check and this open.
+	f, err := os.OpenFile(w.path, os.O_WRONLY|os.O_TRUNC|os.O_CREATE|syscall.O_NOFOLLOW, 0o644)
 	if err != nil {
 		return fmt.Errorf("open game flag file for write: %w", err)
 	}

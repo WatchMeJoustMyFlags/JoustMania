@@ -251,6 +251,52 @@ func TestReview_BlocksPathInFlagKey(t *testing.T) {
 	assertUnchanged(t, path, before)
 }
 
+// TestReview_BlocksGameJSONSymlink defends the exact attack the #953 adversarial
+// review found: a file NAMED game.json that is a SYMLINK to agent.json. A pure
+// basename check passes it, and an O_TRUNC write follows the symlink straight into
+// the agent's own governance file. The Gate must reject it (symlink-aware
+// isGameFlagPath), and O_NOFOLLOW is the kernel backstop — agent.json untouched.
+func TestReview_BlocksGameJSONSymlink(t *testing.T) {
+	dir := t.TempDir()
+	agentPath := filepath.Join(dir, "agent.json")
+	if err := os.WriteFile(agentPath, []byte(`{"flags":{"enabled":{"variants":{"on":true},"defaultVariant":"on"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := mustRead(t, agentPath)
+
+	// game.json -> agent.json (basename is game.json, identity is agent.json).
+	linkPath := filepath.Join(dir, "game.json")
+	if err := os.Symlink(agentPath, linkPath); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	rec := tracetest.NewSpanRecorder()
+	tp := trace.NewTracerProvider(trace.WithSpanProcessor(rec))
+	g := NewGate(NewWriter(linkPath, discardLogger()), tp.Tracer("test"), discardLogger())
+
+	err := g.Review(context.Background(), Proposal{FlagKey: "enabled", ExperimentalValue: false})
+	assertBlocked(t, err, ReasonNonGameTarget)
+	assertUnchanged(t, agentPath, before) // the symlink target must be untouched
+	assertSpan(t, rec, SpanProposed, true, ReasonNonGameTarget)
+}
+
+// TestResolveFlag_UnknownOperatorFailsClosed guards the load-bearing safety
+// contract in resolve.go: a targeting block using a flagd operator the jsonlogic
+// engine doesn't implement (here `fractional`) must ERROR — so the Gate rejects
+// the proposal rather than mis-evaluate the real branch. If a future library swap
+// makes unknown operators resolve to false/null instead of erroring, this test
+// fails, flagging that the gate's belt-and-suspenders eval has silently weakened.
+func TestResolveFlag_UnknownOperatorFailsClosed(t *testing.T) {
+	flagRaw := json.RawMessage(`{
+		"variants": {"a": 1, "b": 2},
+		"defaultVariant": "a",
+		"targeting": {"fractional": [{"var": "game_id"}, ["a", 50], ["b", 50]]}
+	}`)
+	if _, err := resolveFlag(flagRaw, map[string]any{"game_kind": "real", "game_id": "g1"}); err == nil {
+		t.Fatal("resolveFlag must ERROR on an unknown flagd operator (fail-closed), got nil — the gate would silently mis-evaluate the real branch")
+	}
+}
+
 // The Gate must reject any directly-constructed write that would change a real
 // resolution. We can't go through Review for these (the Writer can't produce
 // them), so we drive the structural/eval checks via validate-equivalent paths:
