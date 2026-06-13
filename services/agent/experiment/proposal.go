@@ -44,6 +44,16 @@ type Proposal struct {
 	// parameterized surface").
 	FlagKey string
 
+	// ExperimentID scopes this proposal to one experiment so K concurrent
+	// experiments coexist on the same flag without clobbering (#977). Empty = the
+	// LEGACY unscoped binary rule (game_kind != "real" selects the single reserved
+	// agent_experiment variant) — byte-identical to the pre-#977 writer. Non-empty
+	// = an experiment-scoped rule: experiment_id == ExperimentID AND arm ==
+	// "experimental" selects a per-experiment agent_experiment__<id> variant;
+	// control + real + every OTHER experiment fall through to the existing default.
+	// The id is opaque to the Writer/Gate; the spawn step (#978) owns allocation.
+	ExperimentID string
+
 	// ExperimentalValue is the value shadow games should resolve for FlagKey. It
 	// is added as a new variant; its JSON kind MUST match the flag's existing
 	// variants (the game-side reader expects a consistent type). The Gate enforces

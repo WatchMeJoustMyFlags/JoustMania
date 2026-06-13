@@ -147,7 +147,8 @@ func (g *Gate) Review(ctx context.Context, p Proposal) error {
 	span.SetAttributes(attribute.Bool(AttrBlocked, false))
 	g.log.Info("code_improvement.proposed",
 		"flag_key", p.FlagKey,
-		"variant", ExperimentVariant)
+		"experiment_id", p.ExperimentID,
+		"variant", experimentVariantName(p.ExperimentID))
 	return nil
 }
 
@@ -207,7 +208,7 @@ func (g *Gate) validate(p Proposal) *RejectError {
 		return &RejectError{Reason: ReasonWriteSimulationError, Detail: err.Error()}
 	}
 
-	if rej := checkVariantsAndDefault(beforeFlag, afterFlag); rej != nil {
+	if rej := checkVariantsAndDefault(beforeFlag, afterFlag, experimentVariantName(p.ExperimentID)); rej != nil {
 		return rej
 	}
 	if rej := checkTargetingShadowScoped(afterFlag); rej != nil {
@@ -220,9 +221,11 @@ func (g *Gate) validate(p Proposal) *RejectError {
 }
 
 // checkVariantsAndDefault enforces: defaultVariant byte-unchanged; every
-// pre-existing variant byte-unchanged; the ONLY added variant is the reserved
-// experimental one.
-func checkVariantsAndDefault(before, after *flagObj) *RejectError {
+// pre-existing variant byte-unchanged (including OTHER experiments' variants);
+// the ONLY added/overwritten variant is THIS proposal's reserved experiment
+// variant (writtenVariant). With K experiments on one flag, each carries its own
+// agent_experiment__<id> variant; a single write may replace only its own.
+func checkVariantsAndDefault(before, after *flagObj, writtenVariant string) *RejectError {
 	bDV, _ := before.raw("defaultVariant")
 	aDV, _ := after.raw("defaultVariant")
 	if !jsonEqual(bDV, aDV) {
@@ -237,13 +240,13 @@ func checkVariantsAndDefault(before, after *flagObj) *RejectError {
 	if _, err := after.get("variants", &aVars); err != nil {
 		return &RejectError{Reason: ReasonWriteSimulationError, Detail: err.Error()}
 	}
-	// Every pre-existing GAME-AUTHORED variant must survive byte-for-byte. The
-	// reserved experimental variant is exempt: it is never resolved by a real
-	// context (the shadow targeting guarantees that), so overwriting it on
-	// re-experimentation is safe and keeps re-runs idempotent (one variant, not
-	// an accumulating set).
+	// Every pre-existing variant must survive byte-for-byte — game-authored AND
+	// other experiments' agent_experiment__<id> variants. The ONLY exemption is
+	// the variant THIS proposal writes (writtenVariant): it is never resolved by a
+	// real context (its shadow branch guarantees that), so overwriting it on
+	// re-experimentation is safe and keeps re-runs idempotent (replace, not stack).
 	for name, bv := range bVars {
-		if name == ExperimentVariant {
+		if name == writtenVariant {
 			continue
 		}
 		av, ok := aVars[name]
@@ -254,12 +257,13 @@ func checkVariantsAndDefault(before, after *flagObj) *RejectError {
 			return &RejectError{Reason: ReasonExistingVariantChanged, Detail: "changed variant " + name}
 		}
 	}
-	// Any newly added variant must be exactly the reserved experimental one.
+	// Any newly added variant must be exactly THIS proposal's reserved experiment
+	// variant. (Other experiments' variants are pre-existing, handled above.)
 	for name := range aVars {
 		if _, existed := bVars[name]; existed {
 			continue
 		}
-		if name != ExperimentVariant {
+		if name != writtenVariant {
 			return &RejectError{Reason: ReasonTargetingNotShadowScoped, Detail: "unexpected new variant " + name}
 		}
 	}
@@ -335,10 +339,15 @@ func checkTypeCompatible(flag *flagObj, experimental any) *RejectError {
 	return nil
 }
 
-// checkTargetingShadowScoped enforces that the resulting targeting is exactly a
-// shadow-scoped wrapper: top-level {"if":[shadowCond, experimentVariant, else]}.
-// This is the structural proof that the experimental variant is unreachable for
-// a real context (the condition is game_kind != "real").
+// checkTargetingShadowScoped enforces that the resulting targeting is a CHAIN of
+// shadow-scoped wrappers: each link is {"if":[shadowCond, <its experiment
+// variant>, <next link>]} where shadowCond is either the legacy game_kind!=real
+// condition (selecting the unscoped agent_experiment variant) or an experiment-
+// scoped experiment_id==id AND arm==experimental condition (selecting
+// agent_experiment__id). The chain bottoms out in a TERMINAL else that mentions
+// NO experiment variant — that is the real / control / other-game path, and it
+// is what a real context resolves. This is the structural proof, now across ALL
+// branches, that no experiment variant is reachable for a real context.
 func checkTargetingShadowScoped(after *flagObj) *RejectError {
 	t, ok := after.raw("targeting")
 	if !ok {
@@ -346,38 +355,65 @@ func checkTargetingShadowScoped(after *flagObj) *RejectError {
 		// one — but applyProposal always writes one, so absence is a bug.
 		return &RejectError{Reason: ReasonTargetingNotShadowScoped, Detail: "missing targeting"}
 	}
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(t, &obj); err != nil || len(obj) != 1 {
-		return &RejectError{Reason: ReasonTargetingNotShadowScoped, Detail: "targeting not a single-key if"}
-	}
-	ifRaw, ok := obj["if"]
-	if !ok {
-		return &RejectError{Reason: ReasonTargetingNotShadowScoped, Detail: "targeting top-level op is not if"}
-	}
-	var arms []json.RawMessage
-	if err := json.Unmarshal(ifRaw, &arms); err != nil || len(arms) != 3 {
-		return &RejectError{Reason: ReasonTargetingNotShadowScoped, Detail: "if is not [cond, then, else]"}
-	}
-	if !isShadowCondition(arms[0]) {
-		return &RejectError{Reason: ReasonTargetingNotShadowScoped, Detail: "condition is not game_kind != real"}
-	}
-	if !isExperimentVariant(arms[1]) {
-		return &RejectError{Reason: ReasonTargetingNotShadowScoped, Detail: "then-branch is not the experimental variant"}
-	}
-	// The else branch (real path) may be anything that does NOT itself select the
-	// experimental variant — guard against an else that leaks the variant to real.
-	if elseSelectsExperiment(arms[2]) {
-		return &RejectError{Reason: ReasonTargetingNotShadowScoped, Detail: "else-branch can select the experimental variant"}
-	}
-	return nil
+	return walkShadowChain(t)
 }
 
-// elseSelectsExperiment reports whether the real-path else branch could resolve
-// to the experimental variant (a literal string, or any nested rule that
-// mentions it). A conservative substring check on the raw bytes: the reserved
-// variant name must never appear in the real branch.
-func elseSelectsExperiment(elseBranch json.RawMessage) bool {
-	return strings.Contains(string(elseBranch), `"`+ExperimentVariant+`"`)
+// walkShadowChain validates one link of the targeting chain and recurses into
+// its else. A node that is NOT a single-key if is the terminal else: it must not
+// mention any experiment variant (or it could leak one to the real/control
+// path). A node that IS an if must be a recognised shadow link (cond + matching
+// experiment variant) before we descend; an if we don't recognise as ours is
+// treated as a terminal else and held to the same no-experiment-variant rule.
+func walkShadowChain(node json.RawMessage) *RejectError {
+	arms, ok := decodeIfArms(node)
+	if !ok {
+		// Terminal else (real/control path): may be anything that does NOT itself
+		// select an experiment variant.
+		if mentionsExperimentVariant(node) {
+			return &RejectError{Reason: ReasonTargetingNotShadowScoped, Detail: "else-branch can select an experiment variant"}
+		}
+		return nil
+	}
+
+	cond, then, elseBranch := arms[0], arms[1], arms[2]
+
+	// Identify which experiment this link is scoped to and confirm its then-branch
+	// selects exactly that experiment's variant. Legacy (game_kind!=real) link
+	// selects the unscoped ExperimentVariant; an experiment-scoped link selects
+	// agent_experiment__<id>.
+	var wantVariant string
+	switch {
+	case isShadowCondition(cond):
+		wantVariant = ExperimentVariant
+	default:
+		id, ok := experimentIDFromCondition(cond)
+		if !ok {
+			// An if we don't recognise as a shadow link. It could be a game-authored
+			// targeting (e.g. game_mode==Werewolf). It is part of the real/control
+			// path, so it must not select any experiment variant — treat as terminal.
+			if mentionsExperimentVariant(node) {
+				return &RejectError{Reason: ReasonTargetingNotShadowScoped, Detail: "unrecognised if-condition reaches an experiment variant"}
+			}
+			return nil
+		}
+		wantVariant = experimentVariantName(id)
+	}
+
+	if !variantNameIs(then, wantVariant) {
+		return &RejectError{Reason: ReasonTargetingNotShadowScoped, Detail: "then-branch is not this link's experiment variant"}
+	}
+	// The then-branch is a bare variant string; descend the chain via the else.
+	return walkShadowChain(elseBranch)
+}
+
+// mentionsExperimentVariant reports whether raw references ANY reserved
+// experiment variant name as a JSON string — the legacy agent_experiment or any
+// scoped agent_experiment__<id>. A conservative substring check on the raw bytes:
+// no experiment variant may appear in a terminal (real/control) branch. Because
+// the scoped names are prefixed by the legacy name, a single substring test on
+// the prefix catches both.
+func mentionsExperimentVariant(raw json.RawMessage) bool {
+	return strings.Contains(string(raw), `"`+ExperimentVariant)
 }
 
 // checkRealResolutionUnchanged is the belt-and-suspenders EVAL: resolve the flag
