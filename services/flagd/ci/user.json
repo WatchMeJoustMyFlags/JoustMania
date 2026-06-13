@@ -1,0 +1,100 @@
+{
+  "metadata": {
+    "flagSetId": "user"
+  },
+  "flags": {
+    "menu_voice": {
+      "state": "ENABLED",
+      "variants": {
+        "aaron": "aaron",
+        "ivy": "ivy"
+      },
+      "defaultVariant": "ivy"
+    },
+    "play_audio": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "off"
+    },
+    "current_game": {
+      "state": "ENABLED",
+      "variants": {
+        "JoustFFA": "JoustFFA",
+        "JoustTeams": "JoustTeams",
+        "JoustRandomTeams": "JoustRandomTeams",
+        "Traitor": "Traitor",
+        "Werewolf": "Werewolf",
+        "Zombies": "Zombies",
+        "Tournament": "Tournament",
+        "FightClub": "FightClub",
+        "Swapper": "Swapper",
+        "NonStop": "NonStop"
+      },
+      "defaultVariant": "JoustFFA"
+    },
+    "game_instructions": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "on"
+    },
+    "menu_auto_start": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "on"
+    },
+    "audio_volume.game": {
+      "state": "ENABLED",
+      "variants": {
+        "quiet": 0.5,
+        "default": 0.7,
+        "loud": 0.9
+      },
+      "defaultVariant": "default"
+    },
+    "audio_volume.countdown_music": {
+      "state": "ENABLED",
+      "variants": {
+        "silent": 0.0,
+        "default": 0.15,
+        "loud": 0.3
+      },
+      "defaultVariant": "default"
+    },
+    "audio_volume.lobby_music": {
+      "state": "ENABLED",
+      "variants": {
+        "quiet": 0.2,
+        "default": 0.4,
+        "loud": 0.6
+      },
+      "defaultVariant": "default"
+    },
+    "audio_volume.menu_sound": {
+      "state": "ENABLED",
+      "variants": {
+        "quiet": 0.6,
+        "default": 0.8,
+        "loud": 1.0
+      },
+      "defaultVariant": "default"
+    },
+    "audio_volume.menu_voice": {
+      "state": "ENABLED",
+      "variants": {
+        "quiet": 0.7,
+        "default": 0.9,
+        "loud": 1.0
+      },
+      "defaultVariant": "default"
+    }
+  }
+}

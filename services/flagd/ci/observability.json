@@ -1,0 +1,24 @@
+{
+  "metadata": {
+    "flagSetId": "observability"
+  },
+  "flags": {
+    "metrics_export_interval_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "overkill": 10,
+        "realtime": 100,
+        "normal": 1000
+      },
+      "defaultVariant": "normal"
+    },
+    "grpc_rpc_spans": {
+      "state": "ENABLED",
+      "variants": {
+        "enabled": true,
+        "disabled": false
+      },
+      "defaultVariant": "enabled"
+    }
+  }
+}

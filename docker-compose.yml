@@ -637,6 +637,12 @@ services:
       # (gRPC evaluation port 8013), not the in-process sync port 8015.
       - FLAGD_HOST=flagd
       - FLAGD_PORT=8013
+      # Single source of truth for the active flag directory (#959). The agent
+      # resolves which host flag file to write as $FLAGD_FLAG_DIR/<domain>.json
+      # (services/agent/flagset) — the same plain join flagd and the integration
+      # tests use, so writers and the served files never desync. The per-domain
+      # *_FLAG_PATH overrides below still win when set (explicit escape hatch).
+      - FLAGD_FLAG_DIR=/etc/flagd
       # Action sink (#730): when enabled the agent applies decisions by rewriting
       # the flagd interventions file in place (bind-mounted below). Default off so
       # the scaffold stays inert.

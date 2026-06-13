@@ -7,6 +7,8 @@ import (
 	"os"
 	"sync"
 	"syscall"
+
+	"github.com/joustmania/agent/flagset"
 )
 
 // DefaultGamePath is the in-container game flag file path. Override with
@@ -47,10 +49,13 @@ func NewWriter(path string, log *slog.Logger) *Writer {
 	return &Writer{path: path, log: log}
 }
 
-// NewWriterFromEnv builds a Writer using GAME_FLAG_PATH (default DefaultGamePath),
-// mirroring actions.NewWriterFromEnv / INTERVENTIONS_FLAG_PATH.
+// NewWriterFromEnv builds a Writer for the active game flag file via the single
+// source of truth (flagset.ResolvePath, issue #959): the GAME_FLAG_PATH override
+// still wins, otherwise the active game flag file is the plain join
+// $FLAGD_FLAG_DIR/game.json. In production (flag dir /etc/flagd) this is
+// DefaultGamePath, unchanged.
 func NewWriterFromEnv(log *slog.Logger) *Writer {
-	return NewWriter(os.Getenv("GAME_FLAG_PATH"), log)
+	return NewWriter(flagset.ResolvePath("GAME_FLAG_PATH", "game"), log)
 }
 
 // Path returns the file the Writer operates on (the Gate reads the same file to

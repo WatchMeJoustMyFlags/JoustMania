@@ -38,6 +38,15 @@ _COMPOSE_FILES = [
     "docker-compose.ci.yml",
 ]
 
+# The suite always loads docker-compose.ci.yml, which mounts the complete CI flag
+# directory (services/flagd/ci) into flagd. Point FLAGD_FLAG_DIR at that same host
+# directory so helpers.active_flag_file() resolves to the exact file flagd serves
+# (issue #959). Honour an explicit override if the caller already set one.
+os.environ.setdefault(
+    "FLAGD_FLAG_DIR",
+    os.path.join(os.path.dirname(__file__), "..", "..", "services", "flagd", "ci"),
+)
+
 
 @pytest.fixture(scope="session")
 def docker_compose(request):

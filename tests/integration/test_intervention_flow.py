@@ -49,6 +49,7 @@ from proto import game_coordinator_pb2  # noqa: E402
 
 from tests.integration.helpers import (  # noqa: E402
     GameEventCollector,
+    active_flag_file,
     flagd_probe_client,
     get_game_client,
     get_mock_controller_serials,
@@ -58,12 +59,12 @@ from tests.integration.helpers import (  # noqa: E402
     wait_flag_file_restored,
 )
 
-# Repo-root-relative path to the bind-mounted flagd config dir. The compose
-# flagd service mounts ./services/flagd into the container, so writing here on
-# the host is exactly what the Go ActionSink does inside the container.
-_FLAGD_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../services/flagd"))
-INTERVENTIONS_PATH = os.path.join(_FLAGD_DIR, "interventions.json")
-AGENT_PATH = os.path.join(_FLAGD_DIR, "agent.json")
+# Active host flag-file paths resolved through the single source of truth
+# (helpers.active_flag_file -> lib.flagd_paths, issue #959): $FLAGD_FLAG_DIR/<domain>.json,
+# the exact file flagd serves. Writing here on the host is what the Go ActionSink
+# does inside the container.
+INTERVENTIONS_PATH = active_flag_file("interventions")
+AGENT_PATH = active_flag_file("agent")
 
 # Absence window: how long the flagd reload + coordinator re-evaluate chain is
 # given to (not) act before asserting that NOTHING happened. Positive waits are

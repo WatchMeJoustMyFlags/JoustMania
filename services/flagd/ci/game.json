@@ -1,0 +1,405 @@
+{
+  "metadata": {
+    "flagSetId": "game"
+  },
+  "flags": {
+    "shadow_policy": {
+      "state": "ENABLED",
+      "variants": {
+        "block": "block",
+        "allow": "allow"
+      },
+      "defaultVariant": "allow"
+    },
+    "sensitivity": {
+      "state": "ENABLED",
+      "variants": {
+        "ultra_slow": 0,
+        "slow": 1,
+        "medium": 2,
+        "fast": 3,
+        "ultra_fast": 4
+      },
+      "defaultVariant": "medium",
+      "targeting": {
+        "if": [
+          {
+            "==": [
+              {
+                "var": "game_mode"
+              },
+              "Werewolf"
+            ]
+          },
+          "fast",
+          null
+        ]
+      }
+    },
+    "num_teams": {
+      "state": "ENABLED",
+      "variants": {
+        "two": 2,
+        "three": 3,
+        "four": 4,
+        "five": 5,
+        "six": 6
+      },
+      "defaultVariant": "two"
+    },
+    "random_assignment": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "on"
+    },
+    "nonstop.time_limit_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "unlimited": 0,
+        "one_min": 60,
+        "two_min": 120,
+        "three_min": 180,
+        "four_min": 240,
+        "five_min": 300
+      },
+      "defaultVariant": "unlimited"
+    },
+    "invincibility_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "2s": 2.0,
+        "3s": 3.0,
+        "4s": 4.0,
+        "5s": 5.0,
+        "6s": 6.0,
+        "7s": 7.0,
+        "8s": 8.0
+      },
+      "defaultVariant": "2s"
+    },
+    "fight_club.min_rounds": {
+      "state": "ENABLED",
+      "variants": {
+        "five": 5,
+        "ten": 10,
+        "fifteen": 15,
+        "twenty": 20
+      },
+      "defaultVariant": "five"
+    },
+    "werewolf.reveal_time_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "20s": 20.0,
+        "25s": 25.0,
+        "30s": 30.0,
+        "35s": 35.0,
+        "40s": 40.0,
+        "45s": 45.0,
+        "50s": 50.0,
+        "55s": 55.0,
+        "60s": 60.0
+      },
+      "defaultVariant": "20s"
+    },
+    "force_all_start": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "off"
+    },
+    "countdown_phase_duration_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "skip": 0,
+        "fast": 500,
+        "normal": 750,
+        "slow": 1000
+      },
+      "defaultVariant": "skip"
+    },
+    "winner_rainbow_duration_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "short": 1000,
+        "normal": 3000,
+        "long": 5000
+      },
+      "defaultVariant": "short"
+    },
+    "death_grace_period_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 0.5,
+        "none": 0.0,
+        "short": 0.25,
+        "long": 1.0
+      },
+      "defaultVariant": "default"
+    },
+    "nonstop.respawn_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 3.0,
+        "fast": 1.5,
+        "slow": 5.0
+      },
+      "defaultVariant": "default"
+    },
+    "nonstop.spawn_protection_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 2.0,
+        "none": 0.0,
+        "long": 4.0
+      },
+      "defaultVariant": "default"
+    },
+    "nonstop.scoring": {
+      "state": "ENABLED",
+      "variants": {
+        "default": {
+          "base": 100,
+          "death_penalty": 10
+        }
+      },
+      "defaultVariant": "default"
+    },
+    "fight_club.round_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 22.0,
+        "short": 15.0,
+        "long": 30.0
+      },
+      "defaultVariant": "default"
+    },
+    "tournament.match_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 22.0,
+        "short": 15.0,
+        "long": 30.0,
+        "ci": 6.0
+      },
+      "defaultVariant": "ci"
+    },
+    "tournament.time_between_matches_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 5.0,
+        "short": 3.0,
+        "long": 8.0,
+        "ci": 1.0
+      },
+      "defaultVariant": "ci"
+    },
+    "werewolf.werewolf_fraction": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 0.44,
+        "third": 0.33,
+        "half": 0.5
+      },
+      "defaultVariant": "default"
+    },
+    "traitor.count_tiers": {
+      "state": "ENABLED",
+      "variants": {
+        "default": {
+          "tiers": [
+            {
+              "max_players": 5,
+              "count": 1
+            },
+            {
+              "max_players": 8,
+              "count": 2
+            },
+            {
+              "max_players": 11,
+              "count": 3
+            }
+          ],
+          "fallback_divisor": 3
+        }
+      },
+      "defaultVariant": "default"
+    },
+    "zombie.initial_count": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 2,
+        "one": 1,
+        "three": 3
+      },
+      "defaultVariant": "default"
+    },
+    "zombie.respawn_min_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 2.0,
+        "fast": 1.0,
+        "slow": 4.0
+      },
+      "defaultVariant": "default"
+    },
+    "zombie.respawn_max_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 10.0,
+        "fast": 6.0,
+        "slow": 15.0
+      },
+      "defaultVariant": "default"
+    },
+    "thresholds": {
+      "state": "ENABLED",
+      "variants": {
+        "default": {
+          "slow_warning": [
+            1.2,
+            1.3,
+            1.6,
+            2.0,
+            2.5
+          ],
+          "slow_max": [
+            1.3,
+            1.5,
+            1.8,
+            2.5,
+            3.2
+          ],
+          "fast_warning": [
+            1.4,
+            1.6,
+            1.9,
+            2.7,
+            2.8
+          ],
+          "fast_max": [
+            1.6,
+            1.8,
+            2.8,
+            3.2,
+            3.5
+          ]
+        }
+      },
+      "defaultVariant": "default"
+    },
+    "zombie.thresholds": {
+      "state": "ENABLED",
+      "variants": {
+        "default": {
+          "warning": [
+            1.4,
+            1.7,
+            2.1,
+            2.9,
+            3.5
+          ],
+          "max": [
+            1.6,
+            1.9,
+            2.6,
+            3.9,
+            4.5
+          ]
+        }
+      },
+      "defaultVariant": "default"
+    },
+    "werewolf.thresholds": {
+      "state": "ENABLED",
+      "variants": {
+        "default": {
+          "warning": [
+            1.4,
+            1.7,
+            2.1,
+            2.9,
+            3.5
+          ],
+          "max": [
+            1.6,
+            1.9,
+            2.6,
+            3.9,
+            4.5
+          ]
+        }
+      },
+      "defaultVariant": "default"
+    },
+    "windows": {
+      "state": "ENABLED",
+      "variants": {
+        "default": {
+          "min_music_fast_time": 4,
+          "max_music_fast_time": 8,
+          "min_music_slow_time": 10,
+          "max_music_slow_time": 23,
+          "end_min_music_fast_time": 6,
+          "end_max_music_fast_time": 10,
+          "end_min_music_slow_time": 8,
+          "end_max_music_slow_time": 12
+        },
+        "calm": {
+          "min_music_fast_time": 3,
+          "max_music_fast_time": 6,
+          "min_music_slow_time": 13,
+          "max_music_slow_time": 30,
+          "end_min_music_fast_time": 4,
+          "end_max_music_fast_time": 7,
+          "end_min_music_slow_time": 10,
+          "end_max_music_slow_time": 16
+        },
+        "frantic": {
+          "min_music_fast_time": 6,
+          "max_music_fast_time": 11,
+          "min_music_slow_time": 6,
+          "max_music_slow_time": 14,
+          "end_min_music_fast_time": 8,
+          "end_max_music_fast_time": 14,
+          "end_min_music_slow_time": 5,
+          "end_max_music_slow_time": 8
+        }
+      },
+      "defaultVariant": "default",
+      "targeting": {
+        "if": [
+          {
+            "===": [
+              {
+                "var": "targetingKey"
+              },
+              "calm"
+            ]
+          },
+          "calm",
+          {
+            "if": [
+              {
+                "===": [
+                  {
+                    "var": "targetingKey"
+                  },
+                  "frantic"
+                ]
+              },
+              "frantic",
+              "default"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

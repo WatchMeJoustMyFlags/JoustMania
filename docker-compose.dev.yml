@@ -32,8 +32,12 @@ services:
       - ./services/menu:/app/services/menu
       - ./lib:/app/lib
       - ./proto:/app/proto
-      - ./services/flagd/game.json:/etc/flagd/game.json
-      - ./services/flagd/user.json:/etc/flagd/user.json
+      # NOTE: the menu's flagd dir comes from the base compose mount
+      # (./services/flagd:/etc/flagd), or the CI flag dir under
+      # docker-compose.ci.yml (#959). No per-file game.json/user.json mounts here:
+      # they were redundant with the base dir mount and would shadow the CI flag
+      # dir when this overlay is combined with docker-compose.ci.yml (test-dev),
+      # re-introducing the #957 served-vs-written file mismatch for the menu.
 
   audio:
     volumes:

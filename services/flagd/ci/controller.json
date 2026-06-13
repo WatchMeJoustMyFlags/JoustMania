@@ -1,0 +1,97 @@
+{
+  "metadata": {
+    "flagSetId": "controller"
+  },
+  "flags": {
+    "backend": {
+      "state": "ENABLED",
+      "variants": {
+        "python": "python",
+        "mock": "mock",
+        "mock_python": "mock,python",
+        "rust": "rust",
+        "mock_rust": "mock,rust",
+        "python_rust": "python,rust",
+        "mock_python_rust": "mock,python,rust"
+      },
+      "defaultVariant": "mock"
+    },
+    "poll_drop_threshold": {
+      "state": "ENABLED",
+      "variants": {
+        "off": 0,
+        "low": 5,
+        "default": 10,
+        "high": 20
+      },
+      "defaultVariant": "default"
+    },
+    "bluetooth_backend": {
+      "state": "ENABLED",
+      "variants": {
+        "python": "python",
+        "rust": "rust",
+        "unstable": "unstable"
+      },
+      "defaultVariant": "python",
+      "targeting": {}
+    },
+    "chaos_fault_type": {
+      "state": "ENABLED",
+      "variants": {
+        "poll_drop": "poll_drop",
+        "accel_spike": "accel_spike",
+        "led_failure": "led_failure",
+        "disconnect": "disconnect",
+        "none": "none"
+      },
+      "defaultVariant": "none",
+      "targeting": {}
+    },
+    "effect.warning_flash_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "short": 100,
+        "default": 200,
+        "long": 400
+      },
+      "defaultVariant": "default"
+    },
+    "effect.warning_vibration_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "short": 100,
+        "default": 200,
+        "long": 400
+      },
+      "defaultVariant": "default"
+    },
+    "effect.death_rumble_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "short": 100,
+        "default": 150,
+        "long": 250
+      },
+      "defaultVariant": "default"
+    },
+    "effect.death_red_hold_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "short": 150,
+        "default": 300,
+        "long": 500
+      },
+      "defaultVariant": "default"
+    },
+    "effect.death_fade_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "short": 400,
+        "default": 700,
+        "long": 1200
+      },
+      "defaultVariant": "default"
+    }
+  }
+}

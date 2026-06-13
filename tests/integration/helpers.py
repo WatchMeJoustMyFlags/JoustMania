@@ -42,6 +42,29 @@ from proto import (
 # rewrite self-heal) against flagd file-watch reloads under CI load.
 # =============================================================================
 
+# Single source of truth for the active host flag-file path (issue #959).
+#
+# The integration suite ALWAYS loads docker-compose.ci.yml (see
+# conftest._COMPOSE_FILES), which mounts the complete CI flag directory
+# (services/flagd/ci) into flagd. conftest sets FLAGD_FLAG_DIR to that same host
+# directory, so this accessor's plain join ``$FLAGD_FLAG_DIR/<domain>.json``
+# resolves to the exact file flagd serves. Tests used to hardcode
+# ``services/flagd/<domain>.json`` and branch on ``os.getenv("CI")`` to find the
+# served file; that desynced from reality and bit #957. One dir env, one plain
+# join — the path a test mutates is exactly what flagd serves.
+from lib import flagd_paths  # noqa: E402  (after sys.path insert above)
+
+
+def active_flag_file(domain: str) -> str:
+    """Return the active host flag-file path for ``domain``: ``$FLAGD_FLAG_DIR/<domain>.json``.
+
+    The suite points ``FLAGD_FLAG_DIR`` at the CI flag directory flagd is mounted
+    on (see conftest), so this is the file flagd actually serves. No
+    ``os.getenv("CI")`` branching, no ``.ci.json`` convention — one dir, one join.
+    """
+    return str(flagd_paths.active_flag_file(domain))
+
+
 # Deadline for a flagd file write to be served via RPC reads. Generous on
 # purpose — it is a worst-case bound, not a paid wait.
 FLAGD_RESOLVE_TIMEOUT_SECONDS = 30.0
