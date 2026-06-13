@@ -1,0 +1,257 @@
+package experiment
+
+import (
+	"fmt"
+	"math"
+	"os"
+	"strconv"
+	"strings"
+
+	"github.com/joustmania/agent/experiment/journal"
+)
+
+// verdict.go implements the CohortVerdict seam (design §8.3, epic #982 decision
+// 1): the per-arm aggregation + arm-comparison that turns a journal.Summary's raw
+// Welford state into a promote / discard / inconclusive verdict. It is the
+// extension of the M7-7 single-run FitnessMeasurer (validate.go) from "one batch →
+// one number" to "a cohort → per-arm aggregates → a verdict".
+//
+// DEFAULT RULE (decision 1): a min-N + effect-size gate. Both arms must clear a
+// configured minimum count AND the standardized effect size between the
+// experimental and control arms must clear a configured threshold; otherwise the
+// verdict is INCONCLUSIVE (under-powered or within noise). This is the
+// conservative fallback the maintainer chose over a Welch t-test — it never
+// promotes on a thin sample, so an under-powered cohort yields inconclusive, never
+// a false positive (#979 acceptance).
+//
+// SWAPPABLE (design §8.3): the comparison itself is a CohortStat strategy. The
+// default is effectSizeGate (Cohen's d); a Welch t-test or a non-parametric test
+// can replace it later WITHOUT touching the CohortVerdict seam — the registry only
+// ever sees journal.Verdict.
+//
+// CONTROL ARM is the PRIMARY decision basis (decision 5): the within-experiment
+// shadow control arm is differenced against the experimental arm here. The
+// recent-real baseline (the M7-7 validate.Baseline seam) is a SECONDARY sanity
+// anchor; it is NOT wired through this seam because CohortVerdict.Evaluate is
+// handed only a Summary (no ctx / Proposal to call Baseline.Fitness against) — see
+// the wiring note at the bottom of this file. Shipping the within-experiment
+// comparison (the primary basis) and deferring the baseline cross-check is the
+// path the issue authorizes.
+
+// Default gate thresholds. Tuned conservative: a verdict needs a non-trivial
+// sample per arm and a medium standardized effect before it commits.
+const (
+	// DefaultMinNPerArm is the minimum Count each arm must reach before a
+	// conclusive verdict. Below this for either arm ⇒ INCONCLUSIVE regardless of
+	// the observed delta (under-powered). 8 is a deliberately small floor for
+	// cheap headless shadow games; tune via AGENT_VERDICT_MIN_N.
+	DefaultMinNPerArm = 8
+
+	// DefaultEffectThreshold is the minimum |Cohen's d| (standardized mean
+	// difference) for a promote/discard verdict. 0.5 ≈ Cohen's "medium" effect.
+	// Below this magnitude (with N met) the arms are within-noise ⇒ INCONCLUSIVE.
+	// Tune via AGENT_VERDICT_EFFECT_THRESHOLD.
+	DefaultEffectThreshold = 0.5
+)
+
+const (
+	minNEnv   = "AGENT_VERDICT_MIN_N"
+	effectEnv = "AGENT_VERDICT_EFFECT_THRESHOLD"
+)
+
+// CohortStat is the swappable arm-comparison strategy (design §8.3). Given the two
+// arms' raw running statistics it returns a standardized effect size (experimental
+// relative to control: positive = experimental better, negative = worse) and
+// whether that effect could be computed at all (false ⇒ variance undefined /
+// degenerate, treat as no signal). The default effectSizeGate implements Cohen's
+// d; a Welch / non-parametric statistic can satisfy the same interface later.
+type CohortStat interface {
+	// Effect returns the standardized effect of experimental vs control and a bool
+	// reporting whether it is defined. The caller (CohortVerdict) still applies the
+	// min-N gate; this strategy only quantifies the difference.
+	Effect(experimental, control journal.Welford) (effect float64, ok bool)
+}
+
+// effectSizeGate is the default CohortStat: Cohen's d, the difference of means in
+// units of the pooled standard deviation. It uses the UNBIASED sample variance
+// M2/(Count−1) per arm — this is exactly why the seam is handed the raw Summary
+// (with raw M2/Count) rather than the CompactView (which exposes only the derived
+// POPULATION variance M2/Count). Population variance would under-state spread at
+// small N and inflate the effect size toward a premature verdict; the sample
+// (n−1) form is the conservative, correct choice here.
+type effectSizeGate struct{}
+
+// Effect computes Cohen's d = (mean_exp − mean_control) / pooledSD, using the
+// pooled UNBIASED sample variance. It returns ok=false when either arm has fewer
+// than 2 samples (sample variance undefined) or the pooled SD is zero (no spread —
+// the standardized effect is undefined / infinite, which the min-N gate handles
+// separately so we never divide by zero).
+func (effectSizeGate) Effect(experimental, control journal.Welford) (float64, bool) {
+	if experimental.Count < 2 || control.Count < 2 {
+		return 0, false
+	}
+	// Unbiased sample variance M2/(n−1) per arm — NOT the population M2/n.
+	varExp := experimental.M2 / float64(experimental.Count-1)
+	varCtl := control.M2 / float64(control.Count-1)
+
+	// Pooled standard deviation (the standard two-sample pooled estimator).
+	dfExp := float64(experimental.Count - 1)
+	dfCtl := float64(control.Count - 1)
+	pooledVar := (dfExp*varExp + dfCtl*varCtl) / (dfExp + dfCtl)
+	pooledSD := math.Sqrt(pooledVar)
+	if pooledSD == 0 {
+		return 0, false
+	}
+	return (experimental.Mean - control.Mean) / pooledSD, true
+}
+
+// Verdict is the default CohortVerdict implementation (the min-N + effect-size
+// gate). It is constructed via NewVerdict / NewVerdictFromEnv and injected into the
+// registry as the CohortVerdict seam. Higher fitness is better (the convention the
+// FitnessMeasurer and decision loop already use), so a positive effect means the
+// experimental arm beat control.
+type Verdict struct {
+	// minN is the minimum Count both arms must reach for a conclusive verdict.
+	minN int
+	// effectThreshold is the minimum |effect| for a promote/discard verdict.
+	effectThreshold float64
+	// stat is the swappable comparison strategy (default effectSizeGate).
+	stat CohortStat
+}
+
+// NewVerdict builds a Verdict with explicit thresholds. A non-positive minN falls
+// back to DefaultMinNPerArm; a non-positive effectThreshold falls back to
+// DefaultEffectThreshold. A nil stat falls back to the default Cohen's d gate.
+func NewVerdict(minN int, effectThreshold float64, stat CohortStat) *Verdict {
+	if minN <= 0 {
+		minN = DefaultMinNPerArm
+	}
+	if effectThreshold <= 0 {
+		effectThreshold = DefaultEffectThreshold
+	}
+	if stat == nil {
+		stat = effectSizeGate{}
+	}
+	return &Verdict{minN: minN, effectThreshold: effectThreshold, stat: stat}
+}
+
+// NewVerdictFromEnv builds a Verdict from AGENT_VERDICT_MIN_N /
+// AGENT_VERDICT_EFFECT_THRESHOLD, falling back to the defaults on an unset, empty,
+// or invalid value. The default Cohen's d strategy is used.
+func NewVerdictFromEnv() *Verdict {
+	minN := DefaultMinNPerArm
+	if v := strings.TrimSpace(os.Getenv(minNEnv)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			minN = n
+		}
+	}
+	threshold := DefaultEffectThreshold
+	if v := strings.TrimSpace(os.Getenv(effectEnv)); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+			threshold = f
+		}
+	}
+	return NewVerdict(minN, threshold, effectSizeGate{})
+}
+
+// Evaluate computes the current verdict for an experiment from its rolling
+// Summary (the CohortVerdict seam contract, design §8.3).
+//
+// It reads the canonical experimental and control arms (ArmExperimental /
+// ArmControl) and applies the min-N + effect-size gate:
+//
+//   - Either arm Count < minN ⇒ INCONCLUSIVE (under-powered). Recorded so the
+//     registry keeps the experiment RUNNING; never a promote/discard on a thin
+//     sample.
+//   - Both arms ≥ minN AND effect ≥ +threshold ⇒ PROMOTE (experimental clearly
+//     better). Significant.
+//   - Both arms ≥ minN AND effect ≤ −threshold ⇒ DISCARD (experimental clearly
+//     worse). Significant.
+//   - Otherwise (N met but |effect| < threshold, or effect undefined) ⇒
+//     INCONCLUSIVE (within noise). Recorded, keeps running.
+//
+// The bool reports whether a verdict could be computed at all. It is true whenever
+// both canonical arms are present in the Summary (even when the verdict is
+// under-powered INCONCLUSIVE — that IS a meaningful interim verdict the registry
+// records). It is false only when the Summary lacks the canonical arms entirely,
+// so the registry leaves any prior verdict untouched rather than overwriting it
+// with a vacuous one.
+func (v *Verdict) Evaluate(s journal.Summary) (journal.Verdict, bool) {
+	expStat, expOK := s.Arms[ArmExperimental]
+	ctlStat, ctlOK := s.Arms[ArmControl]
+	if !expOK || !ctlOK || expStat == nil || ctlStat == nil {
+		// The canonical two-arm shape is absent — nothing to compare; do not
+		// clobber any prior verdict.
+		return journal.Verdict{}, false
+	}
+
+	exp := expStat.Welford
+	ctl := ctlStat.Welford
+	delta := exp.Mean - ctl.Mean
+
+	// Min-N gate FIRST: an under-powered cohort is inconclusive regardless of the
+	// observed delta or effect (the #979 acceptance: never a false positive).
+	if exp.Count < v.minN || ctl.Count < v.minN {
+		return journal.Verdict{
+			Outcome:     OutcomeInconclusive,
+			Delta:       delta,
+			Significant: false,
+			Reason: fmt.Sprintf("under-powered: n_experimental=%d n_control=%d < min_n=%d",
+				exp.Count, ctl.Count, v.minN),
+		}, true
+	}
+
+	// Effect-size gate: compute the standardized effect via the swappable strategy.
+	effect, ok := v.stat.Effect(exp, ctl)
+	if !ok {
+		// Variance undefined / degenerate (e.g. zero-spread arms) — N is met but we
+		// cannot standardize the difference, so treat it as no signal.
+		return journal.Verdict{
+			Outcome:     OutcomeInconclusive,
+			Delta:       delta,
+			Significant: false,
+			Reason:      "effect size undefined (degenerate variance)",
+		}, true
+	}
+
+	switch {
+	case effect >= v.effectThreshold:
+		return journal.Verdict{
+			Outcome:     CohortOutcomePromote,
+			Delta:       delta,
+			Significant: true,
+			Reason: fmt.Sprintf("experimental better: effect=%.3f >= threshold=%.2f (n=%d/%d)",
+				effect, v.effectThreshold, exp.Count, ctl.Count),
+		}, true
+	case effect <= -v.effectThreshold:
+		return journal.Verdict{
+			Outcome:     CohortOutcomeDiscard,
+			Delta:       delta,
+			Significant: true,
+			Reason: fmt.Sprintf("experimental worse: effect=%.3f <= -threshold=%.2f (n=%d/%d)",
+				effect, v.effectThreshold, exp.Count, ctl.Count),
+		}, true
+	default:
+		return journal.Verdict{
+			Outcome:     OutcomeInconclusive,
+			Delta:       delta,
+			Significant: false,
+			Reason: fmt.Sprintf("within noise: |effect|=%.3f < threshold=%.2f (n=%d/%d)",
+				math.Abs(effect), v.effectThreshold, exp.Count, ctl.Count),
+		}, true
+	}
+}
+
+// Wiring note (recent-real baseline, design §8.3 secondary anchor — DEFERRED):
+//
+// The within-experiment control arm is the PRIMARY decision basis and is fully
+// implemented above. The recent-real baseline (validate.Baseline.Fitness) is the
+// design's SECONDARY sanity cross-check. It is NOT wired here because the
+// CohortVerdict seam (registry_seams.go) deliberately passes only a
+// journal.Summary — there is no ctx / Proposal in Evaluate's signature to call
+// Baseline.Fitness(ctx, p) against, and the registry's ConcludeGame call site does
+// not thread one through. Plumbing it would mean widening the seam (and the
+// registry call sites), which is out of scope for this issue. Follow-up: either
+// fold a recent-real baseline sample into a third pseudo-arm on the Summary at
+// game-end, or annotate the Verdict.Reason with a baseline cross-check after the
+// registry gains access to Baseline. Tracked as a follow-up on epic #982.
