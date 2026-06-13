@@ -77,10 +77,15 @@ const (
 // non-parametric later). It returns OutcomeInconclusive until each arm clears the
 // target N AND the difference clears the effect bar.
 type CohortVerdict interface {
-	// Evaluate returns the current verdict for the experiment given its compact
-	// view (intent + per-arm aggregates + recent tail). The bool reports whether a
-	// verdict could be computed at all (false ⇒ leave the prior verdict untouched).
-	Evaluate(view journal.CompactView) (journal.Verdict, bool)
+	// Evaluate returns the current verdict for the experiment given its rolling
+	// Summary — the FULL per-arm Welford state (Count/Mean/raw M2), NOT the
+	// CompactView (which exposes only the derived POPULATION variance and drops the
+	// raw M2). The significance test (#979) needs the raw M2 + count to compute an
+	// unbiased / sample (n-1) variance or a Welch estimator, so the seam consumes
+	// Summary rather than CompactView (see journal.ArmView's downstream note). The
+	// bool reports whether a verdict could be computed at all (false ⇒ leave the
+	// prior verdict untouched).
+	Evaluate(s journal.Summary) (journal.Verdict, bool)
 }
 
 // Promoter routes a CONCLUDED experiment with a promote verdict to the existing

@@ -54,9 +54,9 @@ type fakeVerdict struct {
 	alwaysReport bool // if false, returns ok=false until concludeAtN reached
 }
 
-func (f fakeVerdict) Evaluate(view journal.CompactView) (journal.Verdict, bool) {
+func (f fakeVerdict) Evaluate(s journal.Summary) (journal.Verdict, bool) {
 	total := 0
-	for _, a := range view.Arms {
+	for _, a := range s.Arms {
 		total += a.Count
 	}
 	if f.concludeAtN > 0 && total < f.concludeAtN {
@@ -667,5 +667,182 @@ func TestMaxShadowGamesFromEnv(t *testing.T) {
 	t.Setenv(maxShadowGamesEnv, "garbage")
 	if got := MaxShadowGamesFromEnv(); got != DefaultMaxShadowGames {
 		t.Fatalf("MaxShadowGamesFromEnv(garbage) = %d, want default", got)
+	}
+}
+
+// Concurrency: many goroutines hammering AllocateAndSpawn (optionally racing
+// ConcludeGame) must NEVER exceed the cap, must invoke the spawner exactly cap
+// times when no slot is freed, and must leak no reservation. The cap is race-safe
+// by design (the slot is reserved under r.mu in nextAllocation before the
+// unlocked Spawn); this test locks that invariant in so a future change cannot
+// silently break it. Run under -race.
+func TestConcurrentAllocateNeverExceedsCap(t *testing.T) {
+	const cap = 8
+	spawner := &fakeSpawner{}
+	r := newTestRegistry(t, RegistryConfig{
+		MaxShadowGames: cap,
+		Spawner:        spawner,
+		Verdict:        fakeVerdict{concludeAtN: 1_000_000}, // never conclude
+	})
+	ctx := context.Background()
+
+	// A handful of live experiments to share the cap across.
+	const k = 4
+	for i := 0; i < k; i++ {
+		id, err := r.Declare(sampleIntent())
+		if err != nil {
+			t.Fatalf("Declare: %v", err)
+		}
+		if err := r.Start(ctx, id); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+	}
+
+	// N goroutines each call AllocateAndSpawn repeatedly. While they run, a
+	// watchdog goroutine continuously asserts the cap is never observed exceeded.
+	const goroutines = 16
+	const callsPer = 50
+	var maxObserved int64
+	stop := make(chan struct{})
+	var wgWatch sync.WaitGroup
+	wgWatch.Add(1)
+	go func() {
+		defer wgWatch.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				if n := int64(r.TotalInFlight()); n > maxObserved {
+					maxObserved = n
+				}
+			}
+		}
+	}()
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for g := 0; g < goroutines; g++ {
+		go func() {
+			defer wg.Done()
+			for c := 0; c < callsPer; c++ {
+				r.AllocateAndSpawn(ctx)
+			}
+		}()
+	}
+	wg.Wait()
+	close(stop)
+	wgWatch.Wait()
+
+	// Invariant 1: the cap was never exceeded (live observation by the watchdog).
+	if maxObserved > cap {
+		t.Fatalf("observed in-flight %d exceeded cap %d during concurrent allocate", maxObserved, cap)
+	}
+	// Invariant 2: settled exactly at the cap (no slot was freed, so it fills full).
+	if total := r.TotalInFlight(); total != cap {
+		t.Fatalf("settled total in-flight %d, want exactly cap %d", total, cap)
+	}
+	// Invariant 3: the spawner was invoked EXACTLY cap times — no over-spawn from a
+	// lost reservation, no under-spawn from a leaked one.
+	if got := spawner.count(); got != cap {
+		t.Fatalf("spawner invoked %d times, want exactly cap %d (no over/under-spawn)", got, cap)
+	}
+}
+
+// Concurrency: AllocateAndSpawn racing ConcludeGame frees and refills slots
+// without ever exceeding the cap and without leaking reservations. After the
+// dust settles, in-flight + concluded accounts for every spawn (no orphaned
+// reservation placeholder lingering against the cap). Run under -race.
+func TestConcurrentAllocateAndConcludeNoLeak(t *testing.T) {
+	const cap = 8
+	spawner := &fakeSpawner{}
+	r := newTestRegistry(t, RegistryConfig{
+		MaxShadowGames: cap,
+		Spawner:        spawner,
+		Verdict:        fakeVerdict{concludeAtN: 1_000_000}, // never conclude the experiment itself
+	})
+	ctx := context.Background()
+
+	const k = 4
+	for i := 0; i < k; i++ {
+		id, err := r.Declare(sampleIntent())
+		if err != nil {
+			t.Fatalf("Declare: %v", err)
+		}
+		if err := r.Start(ctx, id); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+	}
+
+	var maxObserved int64
+	stop := make(chan struct{})
+	var wgWatch sync.WaitGroup
+	wgWatch.Add(1)
+	go func() {
+		defer wgWatch.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				if n := int64(r.TotalInFlight()); n > maxObserved {
+					maxObserved = n
+				}
+			}
+		}
+	}()
+
+	// Allocators keep filling capacity.
+	const allocators = 12
+	var wg sync.WaitGroup
+	wg.Add(allocators)
+	for g := 0; g < allocators; g++ {
+		go func() {
+			defer wg.Done()
+			for c := 0; c < 100; c++ {
+				r.AllocateAndSpawn(ctx)
+			}
+		}()
+	}
+
+	// Concluders drain bound games as they appear, freeing slots to refill.
+	const concluders = 6
+	wg.Add(concluders)
+	for g := 0; g < concluders; g++ {
+		go func() {
+			defer wg.Done()
+			for c := 0; c < 100; c++ {
+				// Grab a snapshot of bound (real) game ids and conclude one.
+				spawner.mu.Lock()
+				var gid string
+				if len(spawner.calls) > 0 {
+					gid = spawner.calls[len(spawner.calls)-1].gameID
+				}
+				spawner.mu.Unlock()
+				if gid == "" {
+					continue
+				}
+				// A double-conclude of the same gid is a harmless no-op (unknown id).
+				if _, err := r.ConcludeGame(ctx, gid, 0.5, 60); err != nil {
+					t.Errorf("ConcludeGame: %v", err)
+					return
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(stop)
+	wgWatch.Wait()
+
+	// The cap was never exceeded despite the alloc/conclude race.
+	if maxObserved > cap {
+		t.Fatalf("observed in-flight %d exceeded cap %d under concurrent alloc/conclude", maxObserved, cap)
+	}
+	// No reservation leak: a final settling allocate refills to exactly the cap.
+	// (A leaked reservation would permanently shrink capacity below cap.)
+	r.AllocateAndSpawn(ctx)
+	if total := r.TotalInFlight(); total != cap {
+		t.Fatalf("after settling allocate, in-flight %d != cap %d (reservation leak?)", total, cap)
 	}
 }

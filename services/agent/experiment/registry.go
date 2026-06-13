@@ -184,11 +184,26 @@ type Registry struct {
 }
 
 // RegistryConfig configures a Registry. Every seam may be nil — a nil seam
-// degrades to a safe no-op (a nil spawner cannot start a game; a nil verdict
-// leaves the verdict untouched; a nil promoter/target make promotion/teardown
-// recorded no-ops) so a Registry is always safe to construct in a test or before
-// a follow-up wires the real implementation. (Named RegistryConfig to avoid
-// colliding with the M7-7 validation Config in validate.go.)
+// degrades to a safe but DEGRADED behavior (not merely an inert no-op), so a
+// Registry is always safe to construct in a test or before a follow-up wires the
+// real implementation. Production always injects all four seams. The degraded
+// behaviors are:
+//
+//   - nil Spawner   ⇒ no game is ever started (the no-op stub errors), so the
+//     experiment runs but never accrues shadow games.
+//   - nil Verdict   ⇒ the verdict is never recomputed, so the experiment NEVER
+//     reaches CONCLUDED on its own — it runs until explicitly aborted. (It does
+//     not silently conclude; it simply has no terminal trigger.)
+//   - nil Promoter  ⇒ a concluded+promote experiment is recorded as routed but the
+//     promotion is a no-op; teardown still proceeds (capacity is freed).
+//   - nil Targeting ⇒ Start still transitions the experiment to RUNNING, but with
+//     NO shadow-scoped flag rule written. Its games therefore resolve the flag
+//     DEFAULT (the non-experimental value): a silent, non-experimental no-op
+//     experiment that produces no arm differentiation. Production always injects
+//     #977's writer; a nil writer is a test/degraded shape only.
+//
+// (Named RegistryConfig to avoid colliding with the M7-7 validation Config in
+// validate.go.)
 type RegistryConfig struct {
 	// Root is the journal experiments root (journal.DirFromEnv() in production; a
 	// t.TempDir in tests). Empty ⇒ journal.DefaultDir.
@@ -286,6 +301,12 @@ func (r *Registry) Declare(in Intent) (string, error) {
 // be allocated shadow capacity. A no-op (already RUNNING) returns nil. If the
 // targeting write fails the experiment stays PROPOSED (it never accrues games it
 // cannot scope) and the error is returned.
+//
+// DEGRADED (nil TargetingWriter): Start still transitions the experiment to
+// RUNNING, but no shadow-scoped flag rule is written — its games resolve the flag
+// DEFAULT, making it a silent, non-experimental no-op experiment (no arm
+// differentiation). Production always injects #977's writer; a nil writer is a
+// test/degraded shape only (see RegistryConfig).
 func (r *Registry) Start(ctx context.Context, id string) error {
 	r.mu.Lock()
 	e := r.entries[id]
@@ -507,12 +528,14 @@ func (r *Registry) ConcludeGame(ctx context.Context, gameID string, fitness floa
 	r.mu.Unlock()
 
 	// Recompute the interim verdict from the seam (outside the registry lock — the
-	// journal has its own lock). Record it as an interim_verdict event.
-	view := jrnl.CompactView()
+	// journal has its own lock). The verdict seam consumes the full Summary (raw
+	// per-arm Welford: Count/Mean/M2) so #979 can compute an unbiased / Welch
+	// estimator — CompactView would drop the raw M2. Record it as an interim_verdict
+	// event.
 	var verdict journal.Verdict
 	haveVerdict := false
 	if r.verdict != nil {
-		verdict, haveVerdict = r.verdict.Evaluate(view)
+		verdict, haveVerdict = r.verdict.Evaluate(jrnl.Summary())
 		if haveVerdict {
 			r.appendEvent(jrnl, journal.Event{
 				Kind:    journal.KindInterimVerdict,
