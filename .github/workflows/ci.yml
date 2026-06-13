@@ -58,9 +58,6 @@ jobs:
       docker_build_matrix: ${{ steps.matrices.outputs.docker_build }}
       docker_extra_matrix: ${{ steps.matrices.outputs.docker_extra }}
       retag_matrix: ${{ steps.matrices.outputs.retag }}
-      # Deps fingerprint of this checkout (#925): baked into every service image
-      # at build time and read back by the fast-path freshness guard.
-      deps_fingerprint: ${{ steps.fingerprint.outputs.value }}
     steps:
       - uses: actions/checkout@v6
 
@@ -219,13 +216,6 @@ jobs:
           maybe_retag "$CH_PYTHON_HID"         python-hid
           maybe_retag "$CH_OTEL_COLLECTOR"     otel-collector
           echo "retag=$(json_array "${retag[@]}")" >> "$GITHUB_OUTPUT"
-
-      # #925: single deps fingerprint for this checkout. docker-build bakes it
-      # into each image as a label; the fast path reads it back and refuses to
-      # mount source into an image with a mismatching (stale) fingerprint.
-      - name: Compute deps fingerprint
-        id: fingerprint
-        run: echo "value=$(bash scripts/ci/deps-fingerprint.sh)" >> "$GITHUB_OUTPUT"
 
   # Build and test shared packages (proto, lib)
   lib-tests:
@@ -603,8 +593,8 @@ jobs:
       # image (fingerprint matches). Only runs on the fast path.
       - name: Guard against stale prebuilt images
         if: needs.changes.outputs.integration_deps != 'true' && needs.changes.outputs.force_full != 'true'
+        # IMAGE_PREFIX is already in env scope from the "Set image prefix" step.
         env:
-          IMAGE_PREFIX: ${{ env.IMAGE_PREFIX }}
           IMAGE_TAG: latest
         run: bash scripts/ci/check-image-freshness.sh
 
@@ -663,6 +653,15 @@ jobs:
           IMAGE_NAME="${SERVICE//_/-}-service"
           echo "name=${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
 
+      # #925: per-service deps fingerprint, scoped to exactly the deps inputs
+      # that rebuild THIS image (shared workspace/builder deps + this service's
+      # own pyproject/Dockerfile). Baked into the image as a label below; the
+      # fast path recomputes the same per-service value and refuses to mount
+      # source into an image whose fingerprint is stale.
+      - name: Compute deps fingerprint
+        id: fingerprint
+        run: echo "value=$(bash scripts/ci/deps-fingerprint.sh '${{ matrix.service }}')" >> "$GITHUB_OUTPUT"
+
       - name: Build and push service
         uses: docker/build-push-action@v7
         with:
@@ -677,7 +676,7 @@ jobs:
             ${{ github.ref_name == env.MAIN_BRANCH && format('{0}/{1}:latest', env.IMAGE_PREFIX, steps.image_name.outputs.name) || '' }}
           build-args: |
             BUILDER_IMAGE=${{ env.IMAGE_PREFIX }}/builder:${{ github.sha }}
-            DEPS_FINGERPRINT=${{ needs.changes.outputs.deps_fingerprint }}
+            DEPS_FINGERPRINT=${{ steps.fingerprint.outputs.value }}
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
 

@@ -217,6 +217,11 @@ test: clean-test-venv
 # pytest-rerunfailures so a single integration flake doesn't skip image publish
 # and stale :latest — the #925 cascade). Generic: reruns ANY failing test once,
 # does not target tests by name.
+# CAVEAT: the integration docker_compose fixture is session-scoped and some state
+# is process-global (the rate limiter, interventions_allowed), so a test-isolation
+# bug can fail first then pass on rerun — masked as a flake. The rerun is a safety
+# net, NOT the fix; the freshness guard (check-image-freshness.sh) is what actually
+# prevents the stale-image cascade.
 .PHONY: test-integration
 test-integration: clean-test-venv
 	$(TEST_ENV) uv run --package joustmania-integration-tests \
