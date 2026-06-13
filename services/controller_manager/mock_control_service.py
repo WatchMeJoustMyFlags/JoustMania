@@ -23,7 +23,25 @@ logger = logging.getLogger(__name__)
 # game loop to reliably detect it (>= 60 frames at 60Hz), but well below the
 # 2.0s post-swap/respawn grace period — a hold that outlives grace re-kills
 # the player the moment grace expires (#757).
+#
+# NOTE: This wall-clock value is now only a SAFETY CAP for controllers that are
+# not in a game (no gameplay stream draining the latch). The real death latch
+# is frame-budget based (DEATH_DELIVERY_FRAMES) and is decremented by the
+# gameplay send path — see SimulateDeath / mock_adapter.consume_death_frame and
+# #926.
 DEATH_HOLD_SECONDS = 1.0
+
+# Number of gameplay-stream frames the death-level acceleration is guaranteed
+# to be DELIVERED in (#926). The game's EMA filter (weight 4) crosses the death
+# threshold after a single ~7g frame, so a handful of delivered frames is
+# decisive while still draining well inside the 2.0s post-respawn grace window
+# (the send path decrements the budget every frame, including during grace, so
+# the latch is gone before grace expires and cannot trigger the #757 re-kill).
+# Counting DELIVERED frames — not wall-clock — is what makes detection
+# independent of host load: a send loop starved under parallel-game CPU
+# pressure still delivers exactly this many death frames, just spread over more
+# wall-clock, instead of skipping the death window entirely.
+DEATH_DELIVERY_FRAMES = 8
 
 
 class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServiceServicer):
@@ -76,16 +94,24 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
             death_accel = {AxisKey.X: 5.0, AxisKey.Y: 3.0, AxisKey.Z: 4.0}
             accel_mag = (5.0**2 + 3.0**2 + 4.0**2) ** 0.5  # ~7.07g
 
-            # Hold death acceleration for 1 second so the game loop reliably
-            # sees it (>= 60 frames at 60Hz). Must stay well below the 2.0s
-            # post-swap/respawn grace period: a hold that outlives grace
-            # re-kills the player the moment grace expires (#757).
-            self.backend.controllers[serial]["death_accel"] = death_accel
-            self.backend.controllers[serial]["death_hold_until"] = time.time() + DEATH_HOLD_SECONDS
+            # Latch the death by a DELIVERED-frame budget, not wall-clock (#926):
+            # the gameplay send path decrements it once per streamed frame, so
+            # the death-level acceleration is guaranteed to reach the game in
+            # DEATH_DELIVERY_FRAMES frames — enough to cross the EMA death
+            # threshold — regardless of how starved the send loop is under
+            # parallel-game CPU load. The wall-clock DEATH_HOLD_SECONDS now only
+            # caps a latch that no gameplay stream is draining (controller not
+            # in a game), so it still clears well below the 2.0s post-respawn
+            # grace window and cannot cause the #757 re-kill.
+            controller = self.backend.controllers[serial]
+            controller["death_accel"] = death_accel
+            controller["death_frames_remaining"] = DEATH_DELIVERY_FRAMES
+            controller["death_hold_until"] = time.time() + DEATH_HOLD_SECONDS
 
             logger.info(
                 f"Mock: Simulated death for {serial} with {accel_mag:.2f}g acceleration, "
-                f"holding for {DEATH_HOLD_SECONDS}s"
+                f"holding for {DEATH_DELIVERY_FRAMES} delivered frames "
+                f"(safety cap {DEATH_HOLD_SECONDS}s)"
             )
             return controller_manager_mock_pb2.DeathResponse(success=True, accel_magnitude=accel_mag)
 
@@ -162,6 +188,7 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
             controller[StateKey.GYRO] = {AxisKey.X: 0.0, AxisKey.Y: 0.0, AxisKey.Z: 0.0}
             # Clear death state
             controller["death_accel"] = None
+            controller["death_frames_remaining"] = 0
             controller["death_hold_until"] = 0.0
 
             logger.info(f"Mock: Reset {serial} to idle state")
@@ -242,9 +269,10 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
                     # Simulate death by directly setting controller state
                     controller = self.backend.controllers.get(serial)
                     if controller:
-                        # Set death-level acceleration (same as SimulateDeath)
-                        # Use AxisKey enum for consistency with mock_backend.py
+                        # Set death-level acceleration (same as SimulateDeath):
+                        # delivered-frame latch + wall-clock safety cap (#926).
                         controller["death_accel"] = {AxisKey.X: 5.0, AxisKey.Y: 3.0, AxisKey.Z: 4.0}
+                        controller["death_frames_remaining"] = DEATH_DELIVERY_FRAMES
                         controller["death_hold_until"] = time.time() + DEATH_HOLD_SECONDS
                         logger.info(f"Mock: Auto-killed player {serial}")
                     await asyncio.sleep(0.3)  # Stagger deaths for better trace visualization

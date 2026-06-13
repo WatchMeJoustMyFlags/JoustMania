@@ -399,6 +399,19 @@ class MultiplexerBackend(ControllerBackend):
             return None
         return adapter.poll(serial)
 
+    def consume_death_frame(self, serial: str) -> None:
+        """Route a delivered-frame death-latch tick to the owning adapter (#926).
+
+        Only the MockAdapter implements ``consume_death_frame``; real hardware
+        adapters do not (and do not need) it, so this is a no-op for them. The
+        gameplay send path calls this once per streamed controller to drain the
+        frame-budget death latch — see mock_adapter.consume_death_frame.
+        """
+        adapter = self._serial_to_adapter.get(serial)
+        consume = getattr(adapter, "consume_death_frame", None)
+        if consume is not None:
+            consume(serial)
+
     async def set_led_color(self, serial: str, r: int, g: int, b: int) -> bool:
         adapter = self._serial_to_adapter.get(serial)
         if adapter is None:

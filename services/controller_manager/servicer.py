@@ -372,6 +372,11 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             GameplayDataUpdate protobuf message.
         """
         gameplay_data = []
+        # Mock death latch is drained per DELIVERED frame, not by wall-clock
+        # (#926): hold a reference once (duck-typed — only MockAdapter has it,
+        # real hardware backends do not need it) and call it for each streamed
+        # controller below.
+        consume_death = getattr(self.backend, "consume_death_frame", None)
         # No dict copy needed — _build_gameplay_update is synchronous (no await
         # points), so no dict mutation can happen during iteration.
         for serial, info in self.tracked_controllers.items():
@@ -379,6 +384,13 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                 continue
 
             full_state = self.state_cache_manager.build_or_get_cached_state(serial, info)
+
+            # Account this delivered frame against any pending mock death latch:
+            # mock deaths are held until they have been STREAMED to the game
+            # enough times to cross the EMA threshold, rather than for a fixed
+            # wall-clock window a starved send loop could skip entirely (#926).
+            if consume_death is not None:
+                consume_death(serial)
 
             # Drain health counters accumulated since last frame
             drops, errors, led_fails = self.discovery_loop.drain_health_counters(serial)
