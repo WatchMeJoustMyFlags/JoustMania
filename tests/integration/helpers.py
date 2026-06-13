@@ -1574,9 +1574,11 @@ def verify_lobby_colors_restored(events: list, serials: list[str]):
 # Game kill helpers
 # =============================================================================
 
-# SimulateDeath holds death-level acceleration for 1.0s (DEATH_HOLD_SECONDS in
-# mock_control_service.py). Retry no sooner than that, so a retry only fires
-# once the previous attempt's hold has fully expired.
+# SimulateDeath latches a small DELIVERED-frame death budget (DEATH_DELIVERY_FRAMES
+# in mock_control_service.py, #926); under normal cadence it drains in tens of
+# milliseconds and is gone well before this interval. Retrying no sooner than
+# ~1.5s keeps each retry a clearly distinct attempt (and stays comfortably below
+# the 2.0s respawn grace so a retry never stacks on a still-latched death).
 KILL_RETRY_INTERVAL = 1.5
 KILL_VERIFY_TIMEOUT = 12.0
 _VERIFY_POLL_INTERVAL = 0.2

@@ -60,11 +60,16 @@ def _create_controller_state(serial: str, reserved: bool = False, tag: str = "")
         # under parallel-game CPU load, so the death never reached the game
         # and the session never converged. Counting delivered frames makes the
         # death cadence-independent: it is guaranteed to cross the EMA death
-        # threshold regardless of how slowly frames are streamed.
+        # threshold regardless of how slowly frames are streamed, and the small
+        # budget (2) leaves at most one trailing frame after the kill — which
+        # lands well inside the 2.0s respawn grace (EMA reset) — so no death
+        # frame survives grace to trigger a #757 re-kill.
         "death_frames_remaining": 0,
-        # Wall-clock safety cap: clears an unconsumed death latch for a
-        # controller that is NOT currently in a game (no gameplay stream is
-        # draining it), so a stray SimulateDeath never sticks forever.
+        # Generous wall-clock fallback: clears a death latch ONLY for a
+        # controller no gameplay stream is draining (a stray SimulateDeath on a
+        # controller not in a running game), so it never sticks forever. It is
+        # set far above any in-game delivery time, so in a real game the frame
+        # budget — not this timer — governs the latch (#926).
         "death_hold_until": 0.0,
     }
 
@@ -121,11 +126,15 @@ class MockAdapter(ControllerIOAdapter):
         current_time = time.time()
 
         # Death-level acceleration is held until it has been DELIVERED to the
-        # game enough times to cross the EMA death threshold (#926). The
-        # frame budget is decremented by the gameplay send path
-        # (consume_death_frame), not here — poll() only reports the current
-        # latch state. A wall-clock safety cap clears a latch that no gameplay
-        # stream is draining (controller not in a game).
+        # game enough times to cross the EMA death threshold (#926). The frame
+        # budget (death_frames_remaining) is decremented by the gameplay send
+        # path (consume_death_frame), not here — poll() only reports the current
+        # latch state. In a game the budget is the ONLY thing that clears the
+        # latch: there is no early wall-clock cut, so a starved send loop can
+        # never skip the death. The wall-clock value is a generous fallback that
+        # clears a latch nothing is draining (controller not in a game); it is
+        # set far above any in-game delivery time, so it never cuts a real death
+        # short.
         death_accel = None
         death_active = controller["death_accel"] and (
             controller["death_frames_remaining"] > 0
@@ -135,7 +144,7 @@ class MockAdapter(ControllerIOAdapter):
             death_accel = controller["death_accel"]
         else:
             if controller["death_accel"] is not None:
-                # Latch expired (budget drained or safety cap passed): revert.
+                # Latch cleared (budget drained, or idle fallback passed): revert.
                 controller["death_accel"] = None
                 controller["death_frames_remaining"] = 0
                 controller["death_hold_until"] = 0.0

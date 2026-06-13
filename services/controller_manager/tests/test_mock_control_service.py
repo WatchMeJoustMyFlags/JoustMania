@@ -2,6 +2,7 @@
 Unit tests for MockControllerService RPC handlers.
 """
 
+import math
 import sys
 from pathlib import Path
 
@@ -11,6 +12,7 @@ service_dir = test_dir.parent
 project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 
+from lib.controller_constants import AxisKey, StateKey
 from proto import controller_manager_mock_pb2
 from services.controller_manager.mock_control_service import MockControllerService
 from services.controller_manager.multiplexer.mock_adapter import MockAdapter
@@ -91,3 +93,183 @@ class TestAddControllers:
         assert response.success
         assert len(response.serials) == 3
         assert len(adapter.controllers) == 5
+
+
+# A faithful model of the game-coordinator side of death detection, so a pure
+# controller-manager unit test can prove the death actually converges (or that
+# the #757 grace re-kill does not happen) under a chosen send cadence WITHOUT
+# spinning up the game service. Mirrors services/game_coordinator/games/base.py:
+#   - EMA: smoothed = (smoothed*W + raw)/(W+1), weight 4, primed on first frame
+#   - death when smoothed > threshold
+#   - on kill: not-alive + a respawn grace window during which the EMA is reset
+#     to 0.0 every frame (#757 invincibility), then re-primes after grace
+# Sensitivity 2 (MEDIUM) slow-music threshold is 1.8g — the integration default.
+_EMA_WEIGHT = 4.0
+_DEATH_THRESHOLD = 1.8  # MEDIUM (sensitivity 2), slow music — build_start_config default
+_GRACE_SECONDS = 2.0  # Swapper post-swap respawn grace
+
+
+class _GameSideModel:
+    """Minimal game-side EMA + grace model fed by streamed accel frames."""
+
+    def __init__(self):
+        self.smoothed = 0.0
+        self.alive = True
+        self.grace_until = 0.0
+        self.kills = 0
+        self.rekills = 0
+
+    def feed(self, accel: dict, now: float) -> None:
+        """Process one streamed gameplay frame, exactly as base.py does."""
+        raw = math.sqrt(accel[AxisKey.X] ** 2 + accel[AxisKey.Y] ** 2 + accel[AxisKey.Z] ** 2)
+
+        if not self.alive:
+            return  # base.py: dead player ignored until respawn
+
+        if now < self.grace_until:
+            # base.py resets the EMA every grace frame so the death spike is
+            # forgotten before grace expires (#757).
+            self.smoothed = 0.0
+            return
+
+        # EMA update (prime on first real reading)
+        if self.smoothed < 1e-9:
+            self.smoothed = raw
+        else:
+            self.smoothed = (self.smoothed * _EMA_WEIGHT + raw) / (_EMA_WEIGHT + 1)
+
+        if self.smoothed > _DEATH_THRESHOLD:
+            self._kill(now)
+
+    def _kill(self, now: float) -> None:
+        if self.grace_until == 0.0:
+            self.kills += 1
+        else:
+            # A second kill while a grace window has already been opened is the
+            # #757 grace-expiry re-kill regression.
+            self.rekills += 1
+        self.alive = False  # Swapper marks not-alive, then respawns after grace
+        self.grace_until = now + _GRACE_SECONDS
+
+    def respawn_if_grace_started(self, now: float) -> None:
+        """Swapper respawns the player partway through the grace window."""
+        if self.grace_until > 0.0 and not self.alive:
+            self.alive = True
+
+
+class TestSimulateDeathConverges:
+    """Production-state #926 / #757 coverage driven through the real RPC path.
+
+    These tests exercise the ACTUAL production latch state — SimulateDeath sets
+    a delivered-frame budget plus the generous idle wall-clock fallback — and
+    drive the gameplay send loop at a chosen (possibly STRETCHED) cadence,
+    decrementing the latch once per streamed frame via consume_death_frame, just
+    like servicer._build_gameplay_update. A faithful game-side EMA+grace model
+    then decides life/death. This is what the previous fix never tested: it only
+    validated the death_hold_until == 0.0 branch that production never creates.
+    """
+
+    def _simulate_in_game_death(
+        self,
+        send_interval: float,
+        wall_seconds: float = 6.0,
+        poll_hz: float = 100.0,
+        first_send_offset: float = 0.0,
+    ) -> _GameSideModel:
+        """Fire SimulateDeath, then run the real TWO-loop data plane against a
+        controllable virtual clock and feed the streamed frames to a game-side
+        EMA+grace model. Returns the model.
+
+        Two independent loops, exactly as in production:
+          - the DISCOVERY poll loop (``poll_hz``, ~100Hz) calls ``poll()`` and
+            writes the result into a state cache, just like discovery_loop;
+          - the SEND loop (``send_interval`` apart — STRETCHED to simulate
+            starvation) reads the latest cached frame, streams it to the game,
+            and drains the latch once via ``consume_death_frame`` — exactly like
+            servicer._build_gameplay_update.
+
+        This is what reproduces the #926 failure on the OLD code: with a
+        wall-clock-only 1.0s hold, the poll loop reverts the cache to noise
+        after 1.0s, so a send loop whose interval exceeds 1.0s reads a stale
+        NOISE frame and the death is skipped entirely (zero death frames
+        streamed). The frame-budget latch keeps poll() reporting death until the
+        SEND loop has drained the budget, so the death always lands.
+        """
+        service, adapter = _make_service(num_controllers=1)
+        serial = "mock_controller_0"
+
+        # A controllable virtual clock so the test is fast and deterministic.
+        clock = {"t": 1000.0}
+
+        import services.controller_manager.mock_control_service as svc_mod
+        import services.controller_manager.multiplexer.mock_adapter as adapter_mod
+
+        orig_svc_time = svc_mod.time.time
+        orig_adapter_time = adapter_mod.time.time
+        svc_mod.time.time = lambda: clock["t"]
+        adapter_mod.time.time = lambda: clock["t"]
+        try:
+            # Real production RPC: sets death_frames_remaining + the idle fallback.
+            resp = service.SimulateDeath(controller_manager_mock_pb2.DeathRequest(serial=serial), None)
+            assert resp.success
+
+            model = _GameSideModel()
+            poll_interval = 1.0 / poll_hz
+            state_cache = adapter.poll(serial)  # discovery loop's first write
+            # The send loop has its own phase: the next send lands
+            # ``first_send_offset`` after the death was fired. A starved loop can
+            # easily have just sent right before SimulateDeath, so its next send
+            # is a full interval away — long enough that the OLD wall-clock-only
+            # 1.0s hold has already reverted the cache to noise, skipping the
+            # death entirely (#926).
+            next_send = clock["t"] + first_send_offset
+            steps = int(wall_seconds / poll_interval)
+            for _ in range(steps):
+                clock["t"] += poll_interval
+                # DISCOVERY loop: refresh the cache at poll_hz (no budget drain).
+                state_cache = adapter.poll(serial)
+                # SEND loop: only fires every send_interval; it reads the LATEST
+                # cached frame and drains exactly one budget frame.
+                if clock["t"] >= next_send:
+                    model.feed(state_cache[StateKey.ACCEL], clock["t"])
+                    model.respawn_if_grace_started(clock["t"])
+                    adapter.consume_death_frame(serial)
+                    next_send += send_interval
+            return model
+        finally:
+            svc_mod.time.time = orig_svc_time
+            adapter_mod.time.time = orig_adapter_time
+
+    def test_death_lands_under_stretched_send_cadence_926(self):
+        """#926: a starved send loop still delivers the death.
+
+        The send loop's next send lands ~1.25s after SimulateDeath (it had just
+        sent before the death fired — typical under starvation). On the OLD code
+        (wall-clock-only 1.0s hold) the discovery poll loop has already reverted
+        the cache to noise by the time that send reads it, so ZERO death frames
+        are streamed and the player NEVER dies — this assertion FAILS on the old
+        code. On the rework the frame budget keeps poll() reporting the death
+        until the send loop actually drains it, so the death is delivered no
+        matter how starved the cadence, the EMA crosses, and the player dies.
+        """
+        model = self._simulate_in_game_death(send_interval=1.25, first_send_offset=1.25)
+        assert model.kills == 1, "death must register even when the send loop is starved"
+
+    def test_no_rekill_after_grace_under_starvation_757(self):
+        """#757: after the kill, no death frame survives the 2.0s grace.
+
+        The small frame budget exhausts at the kill, so even at a heavily
+        starved send cadence no death-level frame is streamed after the grace
+        window expires — the respawned player is not re-killed. The old budget-8
+        fix streamed death frames for ~8 sends, outliving grace under starvation
+        and re-killing on grace expiry.
+        """
+        model = self._simulate_in_game_death(send_interval=1.25, wall_seconds=10.0)
+        assert model.kills == 1
+        assert model.rekills == 0, "no #757 grace-expiry re-kill"
+
+    def test_death_lands_at_normal_cadence(self):
+        """Sanity: at the normal 60Hz send cadence the death also lands once."""
+        model = self._simulate_in_game_death(send_interval=1.0 / 60.0, wall_seconds=4.0)
+        assert model.kills == 1
+        assert model.rekills == 0

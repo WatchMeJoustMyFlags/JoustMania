@@ -180,14 +180,21 @@ class TestMockAdapterPoll:
         adapter.consume_death_frame("NONEXISTENT")
         assert adapter.controllers["mock_controller_0"]["death_frames_remaining"] == 0
 
-    def test_poll_safety_cap_clears_unconsumed_death(self):
-        """Wall-clock safety cap clears a latch no gameplay stream is draining."""
+    def test_poll_idle_fallback_clears_unconsumed_death(self):
+        """Idle wall-clock fallback clears a latch no gameplay stream is draining.
+
+        This is the no-consumer case: a SimulateDeath on a controller not in a
+        running game has no send loop draining its budget, so the generous
+        wall-clock fallback is what eventually clears it (so it never latches
+        forever). In a real game the budget drains first; see the production-
+        state test below.
+        """
         adapter = MockAdapter(num_controllers=1)
         adapter.discover()
         ctrl = adapter.controllers["mock_controller_0"]
         ctrl["death_accel"] = {AxisKey.X: 5.0, AxisKey.Y: 3.0, AxisKey.Z: 4.0}
         ctrl["death_frames_remaining"] = 99  # plenty of budget left...
-        ctrl["death_hold_until"] = time.time() - 0.1  # ...but cap already passed
+        ctrl["death_hold_until"] = time.time() - 0.1  # ...but fallback already passed
 
         state = adapter.poll("mock_controller_0")
         assert abs(state[StateKey.ACCEL][AxisKey.X]) < 2.0  # reverted to noise
