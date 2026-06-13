@@ -18,6 +18,7 @@ from lib.feature_flags import (
     set_game_transaction_context,
 )
 from lib.flag_config_writer import FlagConfigWriter
+from lib.flagd_paths import active_flag_file
 from lib.telemetry import get_tracer
 from lib.types import Games
 from proto import menu_pb2, menu_pb2_grpc
@@ -80,10 +81,13 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         init_flag_domain("user")
         init_flag_domain("system")
 
-        # FlagConfigWriter instances for persisting settings changes
-        flagd_dir = os.getenv("FLAGD_DIR", "/etc/flagd")
-        self.game_settings_writer = FlagConfigWriter(os.path.join(flagd_dir, "game.json"))
-        self.user_prefs_writer = FlagConfigWriter(os.path.join(flagd_dir, "user.json"))
+        # FlagConfigWriter instances for persisting settings changes. Resolve the
+        # active flag directory through the single source of truth (#959/#966):
+        # $FLAGD_FLAG_DIR/<domain>.json — the same plain join flagd, the agent
+        # writers, and the integration tests use, so a menu-driven flag write
+        # lands in the file flagd actually serves.
+        self.game_settings_writer = FlagConfigWriter(str(active_flag_file("game")))
+        self.user_prefs_writer = FlagConfigWriter(str(active_flag_file("user")))
 
         # OpenFeature clients for reading settings
         self.game_settings_client = get_flag_client("game")
