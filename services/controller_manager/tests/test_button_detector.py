@@ -7,7 +7,7 @@ Tests button state transition detection and event publishing.
 import asyncio
 from unittest.mock import MagicMock, patch
 
-from lib.controller_constants import ButtonKey, ButtonTrackingKey
+from lib.controller_constants import ButtonKey, ButtonTrackingKey, ControllerInfoKey
 from proto import controller_manager_pb2
 from services.controller_manager.button_detector import ButtonDetector
 from services.controller_manager.event_publisher import EventPublisher
@@ -381,3 +381,74 @@ class TestMultipleControllers:
 
         assert "SERIAL1" not in detector.button_states
         assert "SERIAL2" in detector.button_states
+
+
+class TestReservedControllerSuppression:
+    """Regression tests for #805 / #784.
+
+    #784 hid reserved controllers from the menu on the connect/disconnect
+    event path and from the connected_serials roster, but left the regular
+    button-event path un-filtered. Because the menu auto-registers any
+    controller it receives a button for, a reserved controller's button press
+    leaked it into the menu's connected set, while the reconcile path (driven
+    by the reserved-free roster) could prune it — a nondeterministic
+    connected/ready mismatch that intermittently blocked game start (#805).
+
+    Reserved controllers must therefore be suppressed on EVERY button-stream
+    path, including ordinary button presses.
+    """
+
+    @staticmethod
+    def _tracked(serial: str, reserved: bool) -> dict:
+        return {serial: {ControllerInfoKey.SERIAL: serial, ControllerInfoKey.RESERVED: reserved}}
+
+    @patch("services.controller_manager.button_detector.metrics")
+    def test_reserved_controller_button_press_not_published(self, _mock_metrics):
+        """A reserved controller's button press is never sent to subscribers."""
+        publisher = MagicMock(spec=EventPublisher)
+        detector = ButtonDetector(publisher)
+        detector._subscribers = {"sub1": MagicMock()}
+
+        tracked = self._tracked("RESERVED1", reserved=True)
+
+        # First poll initializes state (no transition yet).
+        detector.detect_transitions_from_state("RESERVED1", {ButtonKey.TRIGGER: False}, tracked)
+        publisher.reset_mock()
+
+        # Trigger press transition — would normally publish, but must be
+        # suppressed for a reserved controller.
+        detector.detect_transitions_from_state("RESERVED1", {ButtonKey.TRIGGER: True}, tracked)
+
+        assert not publisher.publish_to_subscribers.called
+
+    @patch("services.controller_manager.button_detector.metrics")
+    def test_unreserved_controller_button_press_still_published(self, _mock_metrics):
+        """A normal (non-reserved) controller's button press is still published."""
+        publisher = MagicMock(spec=EventPublisher)
+        detector = ButtonDetector(publisher)
+        detector._subscribers = {"sub1": MagicMock()}
+
+        tracked = self._tracked("VISIBLE1", reserved=False)
+
+        detector.detect_transitions_from_state("VISIBLE1", {ButtonKey.TRIGGER: False}, tracked)
+        publisher.reset_mock()
+        detector.detect_transitions_from_state("VISIBLE1", {ButtonKey.TRIGGER: True}, tracked)
+
+        assert publisher.publish_to_subscribers.called
+        event = publisher.publish_to_subscribers.call_args[0][1]
+        assert event.serial == "VISIBLE1"
+        assert event.action == controller_manager_pb2.ACTION_PRESS
+
+    @patch("services.controller_manager.button_detector.metrics")
+    def test_missing_reserved_metadata_defaults_to_published(self, _mock_metrics):
+        """Absent reserved metadata is treated as visible (backward compatible)."""
+        publisher = MagicMock(spec=EventPublisher)
+        detector = ButtonDetector(publisher)
+        detector._subscribers = {"sub1": MagicMock()}
+
+        # No reservation info at all (e.g. older info dicts / empty tracking).
+        detector.detect_transitions_from_state("LEGACY1", {ButtonKey.TRIGGER: False}, {})
+        publisher.reset_mock()
+        detector.detect_transitions_from_state("LEGACY1", {ButtonKey.TRIGGER: True}, {})
+
+        assert publisher.publish_to_subscribers.called
