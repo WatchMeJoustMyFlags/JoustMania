@@ -812,6 +812,49 @@ Keys for an objective whose signals were missing that cycle are simply absent
 (the function was skipped, not fabricated). chaos has no fitness function and so
 no keys.
 
+### Intervention-effect feedback (#918) — the game-path measurement loop
+
+Outbound attribution (above) records the agent's *reasoning*; it does not measure
+whether an intervention **helped**. The infra path has a closed loop (Bluetooth
+fitness → rollback); the game path had nothing. #918 closes the **measurement** half
+(it is measurement only — it never reverts a bad intervention):
+
+1. **At dispatch** (the applied-decision path in `runDecision`) the loop stamps a
+   **baseline** of the game's fitness/objective signals — the same dotted-key
+   quantities `fitness.evaluated` carries — and tags it with a dispatch-unique
+   `decision.intervention_id` (also stamped on the `agent.decision` span, so a Jaeger
+   query joins *what the agent did* to *what happened next*).
+2. **After a follow-up window** (`DefaultEffectWindow` = 20 s, env-tunable via
+   `AGENT_EFFECT_WINDOW_SECONDS`) a per-game sampler re-reads the **same** game's
+   signals (through the same `ContextProvider` the #917 async path uses, so per-game
+   isolation holds) and recomputes the **same** fitness functions with the
+   dispatch-time thresholds.
+3. It emits an **effect record** attributed to the intervention id:
+
+   - **Span** `agent.intervention.effect`: one backdated root (to dispatch time) per
+     dispatched intervention, parenting one child span per evaluated fitness signal.
+     Attributes: `intervention.id`, `intervention.type`, `intervention.objective`,
+     `intervention.signal`, `intervention.fitness_baseline`,
+     `intervention.fitness_followup`, `intervention.fitness_delta`,
+     `intervention.window_seconds`, and `intervention.effect_aborted=true` when the
+     follow-up could not be measured (game ended/evicted before the window, or a
+     signal disappeared).
+   - **Metric** `agent_intervention_effect_delta` (`Float64Histogram`, unit `1`): the
+     `follow_up − baseline` change, labeled `intervention.type`,
+     `intervention.objective`, `intervention.signal`. No point is recorded for an
+     aborted follow-up.
+
+   The M5 intervention dashboard (#791/#792) plots the intervention → effect pairs, and
+   the #844 retro prompt reads per-intervention effect evidence; both consume this
+   span + metric.
+
+**Lifecycle safety (#923 goleak):** each follow-up runs in a goroutine tracked on a
+`WaitGroup` (joined by `AwaitInflight` at shutdown) and bounded by the agent root
+context. It selects on the follow-up timer **and** `rootCtx.Done()`: on shutdown it
+stops the timer and returns without emitting; the in-flight pending set is capped
+(`maxPendingEffects`) so a burst of dispatches cannot launch unbounded goroutines.
+Measurement is best-effort and never on the hot decision path.
+
 ### Semantic conventions
 
 OTel semantic conventions ([semconv v1.34.0](https://pkg.go.dev/go.opentelemetry.io/otel/semconv/v1.34.0))

@@ -313,5 +313,62 @@ const (
 	interventionsAllowedFlagKey = "interventions.allowed"
 )
 
+// SpanInterventionEffect is the intervention-effect feedback span (#918): emitted
+// after a follow-up window (default DefaultEffectWindow) once per APPLIED (dispatched)
+// intervention, carrying the BEFORE/AFTER fitness-objective signals for that game and
+// their delta, attributed to the intervention id. It closes the game-path MEASUREMENT
+// loop — the infra path already has fitness->rollback, the game path had nothing
+// (#918). It is MEASUREMENT ONLY: it never reverts the intervention.
+//
+// Because the dispatch cycle's agent.span_received root has long since ended (the
+// follow-up window is seconds later), the effect cannot hang off it — so the sampler
+// opens its OWN root span backdated to dispatch time, parenting an
+// agent.intervention.effect span per evaluated objective, so a Jaeger trace shows the
+// full "dispatched at T0, measured at T0+window, delta=..." story. The metric
+// agent_intervention_effect_delta (see metrics.go) carries the same delta for
+// dashboards/alerts; the M5 dashboard (#791/#792) and the #844 retro consume both.
+const SpanInterventionEffect = "agent.intervention.effect"
+
+// Custom attribute keys of the intervention-effect span (#918). The fitness signal
+// key (e.g. "endurance.session_progress") is the SAME dotted vocabulary the decision
+// span's fitness.evaluated carries, so baseline and follow-up sample identical
+// quantities. baseline/follow_up/delta are the three numeric stamps; aborted marks a
+// follow-up that could not complete (game ended/evicted before the window elapsed).
+const (
+	// AttrEffectInterventionID is the dispatch-unique id tying an effect record to the
+	// intervention that produced it. The decision span carries the same id as
+	// decision.intervention_id, so a Jaeger query joins "what the agent did" to "what
+	// happened next".
+	AttrEffectInterventionID = "intervention.id"
+	// AttrEffectIntervention is the intervention name (decision.action), e.g.
+	// "grant_shield" — a low-cardinality label for grouping effects by type.
+	AttrEffectIntervention = "intervention.type"
+	// AttrEffectObjective is the objective whose fitness this record measures
+	// (endurance/balanced/accelerate) — the objective the intervention served.
+	AttrEffectObjective = "intervention.objective"
+	// AttrEffectSignal is the dotted fitness signal key whose delta this span carries
+	// (e.g. "endurance.session_progress"), from the shared fitness.evaluated vocabulary.
+	AttrEffectSignal = "intervention.signal"
+	// AttrEffectBaseline / AttrEffectFollowUp / AttrEffectDelta are the three numeric
+	// stamps: the signal value at dispatch, at follow-up, and follow_up-baseline.
+	AttrEffectBaseline = "intervention.fitness_baseline"
+	AttrEffectFollowUp = "intervention.fitness_followup"
+	AttrEffectDelta    = "intervention.fitness_delta"
+	// AttrEffectWindowSeconds is the follow-up window length in seconds, so a consumer
+	// knows over what interval the delta was measured.
+	AttrEffectWindowSeconds = "intervention.window_seconds"
+	// AttrEffectAborted is true when the follow-up could NOT be measured because the
+	// game ended or was evicted before the window elapsed (#918 cancellation path): the
+	// record is emitted clearly marked, follow_up/delta are absent, and no metric is
+	// recorded for that objective.
+	AttrEffectAborted = "intervention.effect_aborted"
+)
+
+// AttrDecisionInterventionID stamps the dispatch-unique effect id on the decision
+// span too (#918), so the agent.decision span that dispatched an intervention and the
+// agent.intervention.effect span that measured it carry the SAME id and can be joined
+// in Jaeger. Present only on dispatched (applied) decisions that schedule a follow-up.
+const AttrDecisionInterventionID = "decision.intervention_id"
+
 // instrumentationName scopes the agent's tracer.
 const instrumentationName = "github.com/joustmania/agent"
