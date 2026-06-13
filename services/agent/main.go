@@ -17,18 +17,12 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
-
-	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
-	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
-	"google.golang.org/grpc"
 
 	"github.com/google/uuid"
 
@@ -401,7 +395,9 @@ func main() {
 		Jetson:    getEnv("AGENT_JETSON_ENDPOINT", "jetson:11434"),       // #738 Ollama on the Jetson; unresolvable in dev
 		Localhost: getEnv("AGENT_LOCALHOST_ENDPOINT", "localhost:11434"), // #739 Ollama locally; unreachable unless running
 	}), decision.DefaultProbeInterval)
-	sharedResolver.Start(ctx)
+	// The resolver's background probe ticker is started by run() (#923), which owns
+	// the agent's goroutine lifecycle, so it is stopped on ctx cancellation alongside
+	// every other runtime goroutine.
 	// Shared rolling cross-game context window (#929, M7-2). Constructed ONCE here as
 	// GLOBAL cross-session memory — one bounded ring of recent game summaries shared
 	// across every per-game loop, exactly like the budget/resolver above. The
@@ -652,90 +648,35 @@ func main() {
 		withPlayerTTLSource(lifecycleHolder.PlayerTTL).
 		withInfra(infraStore, infraLoop)
 
-	grpcServer := grpc.NewServer()
-	ptraceotlp.RegisterGRPCServer(grpcServer, &traceReceiver{pipe: pipe})
-	pmetricotlp.RegisterGRPCServer(grpcServer, &metricsReceiver{pipe: pipe})
-
-	lis, err := net.Listen("tcp", listenAddr)
-	if err != nil {
-		slog.Error("Failed to listen", "addr", listenAddr, "error", err)
-		os.Exit(1)
-	}
-
-	// Health server.
-	healthMux := http.NewServeMux()
-	healthMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("OK"))
-	})
-	healthServer := &http.Server{Addr: healthAddr, Handler: healthMux}
-	go func() {
-		slog.Info("Health server listening", "addr", healthAddr)
-		if err := healthServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("Health server failed", "error", err)
-		}
-	}()
-
-	// Eviction ticker. The interval is HOT-RELOADED from the holder (#927): after
-	// each fire we re-read lifecycle.evict_interval_seconds and, if it changed,
-	// Reset the ticker so a config-change to the eviction cadence takes effect with
-	// no restart. The holder read is a lock-free atomic load, so this costs nothing
-	// on the steady-state path; we only call Reset when the value actually moved.
-	go func() {
-		interval := lifecycleHolder.EvictInterval()
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				mux.EvictStale()
-				// Drop the Loop (budget + throttle state) of any partition the
-				// Multiplexer just removed, in lockstep with its Store (#845 PR C).
-				// The fallback partition's loop is never dropped (Retain skips it).
-				// Partitions() is read AFTER EvictStale so a removed game's loop is
-				// not retained; it is recreated lazily (fresh budget) if it resumes.
-				loops.Retain(partitionSet(mux.Partitions()))
-				infraStore.EvictStale()
-				// Re-arm at the current configured interval if it changed (#927).
-				if next := lifecycleHolder.EvictInterval(); next > 0 && next != interval {
-					interval = next
-					ticker.Reset(interval)
-				}
-			}
-		}
-	}()
-
 	// Shadow-game runner (#778): when AGENT_SHADOW_GAME=true, sweep any orphaned
 	// reserved controllers from a prior crashed run, then run ONE mock-only game
-	// to completion in the background. The OTLP receiver below keeps serving; the
-	// run does not block startup. The default (unset) leaves the agent inert.
+	// to completion in the background. The OTLP receiver keeps serving; the run does
+	// not block startup. The default (unset) leaves the agent inert.
+	var shadow func(context.Context)
 	if gamerunner.Enabled() {
-		go runShadowGame(ctx, logger)
+		shadow = func(ctx context.Context) { runShadowGame(ctx, logger) }
 	}
 
-	// Graceful shutdown on signal.
-	go func() {
-		<-ctx.Done()
-		slog.Info("Shutdown requested, stopping servers...")
-		grpcServer.GracefulStop()
-		// Join any in-flight async inference goroutines (#917) so none outlives the
-		// process. ctx is already cancelled (signal), so each fired call's timeout
-		// context is cancelled too and a well-behaved Infer returns promptly; this
-		// wait makes the no-leak guarantee explicit.
-		loops.AwaitInflight()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = healthServer.Shutdown(shutdownCtx)
-	}()
-
-	slog.Info("JoustMania Agent listening (OTLP gRPC)", "addr", listenAddr)
-	if err := grpcServer.Serve(lis); err != nil {
+	// Hand the goroutine-owning runtime core to run (#923): the OTLP gRPC receiver,
+	// health server, eviction ticker, the shared resolver's probe ticker, and the
+	// graceful-shutdown path all live there so the start -> cancel -> drain sequence
+	// is testable for goroutine leaks. The eviction cadence is HOT-RELOADED from the
+	// holder (#927) via evictIntervalSrc: after each tick run re-reads
+	// lifecycle.evict_interval_seconds and Resets the ticker only when it moved (a
+	// lock-free atomic load, so the steady-state path costs nothing).
+	components := &serverComponents{
+		listenAddr:       listenAddr,
+		healthAddr:       healthAddr,
+		logger:           logger,
+		pipe:             pipe,
+		mux:              mux,
+		loops:            loops,
+		resolver:         sharedResolver,
+		evictInterval:    lifecycleHolder.EvictInterval(),
+		evictIntervalSrc: lifecycleHolder.EvictInterval,
+		shadow:           shadow,
+	}
+	if err := components.run(ctx); err != nil {
 		slog.Error("gRPC server failed", "error", err)
 		os.Exit(1)
 	}
