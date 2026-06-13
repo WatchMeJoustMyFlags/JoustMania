@@ -36,6 +36,9 @@ import (
 //     flagd provider, leaving the executor running for the whole test binary.
 //   - gRPC's balancer watcher / connection-pool goroutines are likewise lazily
 //     created package singletons, not goroutines run() spawns.
+//   - go.opencensus.io's stats view worker is a package-level singleton started
+//     transitively when other tests in the binary construct the OTLP / gcp
+//     exporters; run() never starts it and cannot stop it.
 //
 // Everything run() DOES own (eviction loop, resolver probe ticker, shutdown
 // goroutine, health + gRPC servers) is NOT ignored, so the test still fails if any
