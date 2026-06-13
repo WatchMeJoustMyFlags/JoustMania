@@ -59,6 +59,20 @@ message StartGameConfig {
   // GAME_ORIGIN_MENU to request the primary (real-game) slot.
   GameOrigin origin = 4;
 
+  // Experiment/cohort binding (#976, epic #982). The caller (the agent's
+  // experiment registry #978 once it exists) provides which experiment a
+  // shadow game belongs to and which arm (treatment) it is in, bound AT SPAWN
+  // so the started session's eval-context (targeting #977) and telemetry
+  // (attribution #975) carry them from the start. Empty (the default) means
+  // "not in any experiment" — a real game or an unbound shadow game.
+  //
+  // HARD INVARIANT (#982): these only SUBDIVIDE a shadow game; they NEVER make
+  // a real game part of an experiment. A real (menu-origin/primary) start
+  // ignores them — see game_coordinator's spawn binding, which only applies
+  // experiment_id/arm to a shadow session.
+  string experiment_id = 5;  // e.g. "exp_<id>"; absent => not in any experiment
+  string arm = 6;            // "experimental" | "control"; absent => not in any experiment
+
   // Mode-specific configuration
   oneof game_config {
     FFAConfig ffa_config = 10;

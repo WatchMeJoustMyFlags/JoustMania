@@ -97,6 +97,31 @@ def _shadow_config(game_name="FFA", serials=("p1", "p2"), sensitivity=2):
     )
 
 
+def _experiment_config(
+    game_name="FFA",
+    serials=("p1", "p2"),
+    sensitivity=2,
+    *,
+    origin=game_coordinator_pb2.GAME_ORIGIN_AGENT,
+    experiment_id="exp_abc123",
+    arm="experimental",
+):
+    """A start bound to an experiment + arm at spawn (#976).
+
+    Defaults to an AGENT (shadow) origin — the only place experiment binding is
+    valid. Pass ``origin=GAME_ORIGIN_MENU`` to exercise the real-game invariant
+    (the experiment fields MUST be dropped).
+    """
+    return game_coordinator_pb2.StartGameConfig(
+        game_name=game_name,
+        players=[game_coordinator_pb2.Player(serial=s) for s in serials],
+        sensitivity=sensitivity,
+        origin=origin,
+        experiment_id=experiment_id,
+        arm=arm,
+    )
+
+
 async def _stream_until_event(servicer, request, context, *, after=None, deadline_s=2.0):
     """Subscribe via StreamGameEvents and collect the first event.
 
@@ -846,6 +871,175 @@ class TestShadowGameGovernance:
         assert gid_shadow not in servicer.sessions
         assert real.game_kind == "primary"
         assert servicer._primary_game_id == gid_real
+
+
+class TestExperimentSpawnBinding:
+    """Spawn binding of (experiment_id, arm) at game start (#976, epic #982).
+
+    A shadow start may carry an experiment + arm on its StartGameConfig; the
+    servicer binds them onto the started GameSession AT SPAWN so the session's
+    eval-context (targeting #977) and telemetry (attribution #975) carry them
+    from the start. A real game — or a shadow game with no experiment fields —
+    carries none. The HARD INVARIANT (#982): experiment fields only SUBDIVIDE a
+    shadow game; a real (primary) game can never carry an experiment.
+    """
+
+    @pytest.fixture(autouse=True)
+    def allow_shadows(self):
+        with patch("services.game_coordinator.servicer._shadow_policy", lambda: "allow"):
+            yield
+
+    @pytest.fixture
+    def servicer(self):
+        return GameCoordinatorServicer()
+
+    @pytest.mark.asyncio
+    async def test_shadow_start_binds_experiment_and_arm(self, servicer):
+        """A shadow start carrying (experiment_id, arm) binds them on the session
+        AND keeps game_kind="shadow" — experiment fields SUBDIVIDE shadow, never
+        replace the real/shadow safety bit (#982 hard invariant)."""
+        with _NO_THREAD:
+            ok, gid = await servicer._start_game_from_config(
+                _experiment_config(serials=("a1", "a2"), experiment_id="exp_abc123", arm="experimental"),
+                _MockSpan(),
+            )
+        assert ok is True
+        session = servicer.sessions[gid]
+        assert session.game_kind == "shadow"  # HARD INVARIANT: still a shadow game
+        assert session.experiment_id == "exp_abc123"
+        assert session.arm == "experimental"
+
+    @pytest.mark.asyncio
+    async def test_shadow_control_arm_binds(self, servicer):
+        """The control arm binds the same way and stays game_kind="shadow"
+        (control games are NOT a separate kind — #982 resolved decision)."""
+        with _NO_THREAD:
+            ok, gid = await servicer._start_game_from_config(
+                _experiment_config(serials=("a1", "a2"), experiment_id="exp_abc123", arm="control"),
+                _MockSpan(),
+            )
+        assert ok is True
+        session = servicer.sessions[gid]
+        assert session.game_kind == "shadow"
+        assert session.experiment_id == "exp_abc123"
+        assert session.arm == "control"
+
+    @pytest.mark.asyncio
+    async def test_shadow_without_experiment_carries_none(self, servicer):
+        """A shadow game NOT bound to an experiment carries empty experiment_id/arm
+        (real-by-default for the experiment dimension)."""
+        with _NO_THREAD:
+            ok, gid = await servicer._start_game_from_config(_shadow_config(serials=("a1", "a2")), _MockSpan())
+        assert ok is True
+        session = servicer.sessions[gid]
+        assert session.game_kind == "shadow"
+        assert session.experiment_id == ""
+        assert session.arm == ""
+
+    @pytest.mark.asyncio
+    async def test_real_start_carries_no_experiment(self, servicer):
+        """A real (menu-origin/primary) game carries no experiment fields even
+        when none were provided — the baseline real-by-default case."""
+        with _NO_THREAD:
+            ok, gid = await servicer._start_game_from_config(_config(serials=("a1", "a2")), _MockSpan())
+        assert ok is True
+        session = servicer.sessions[gid]
+        assert session.game_kind == "primary"
+        assert session.experiment_id == ""
+        assert session.arm == ""
+
+    @pytest.mark.asyncio
+    async def test_real_start_drops_experiment_fields_invariant(self, servicer):
+        """HARD INVARIANT (#982): a menu-origin (real/primary) start that
+        ERRONEOUSLY carries experiment fields must have them DROPPED — a real
+        game can never be constructed as part of an experiment, structurally."""
+        with _NO_THREAD:
+            ok, gid = await servicer._start_game_from_config(
+                _experiment_config(
+                    serials=("a1", "a2"),
+                    origin=game_coordinator_pb2.GAME_ORIGIN_MENU,
+                    experiment_id="exp_should_not_apply",
+                    arm="experimental",
+                ),
+                _MockSpan(),
+            )
+        assert ok is True
+        session = servicer.sessions[gid]
+        assert session.game_kind == "primary"
+        # The invariant: the real game dropped the experiment fields entirely.
+        assert session.experiment_id == ""
+        assert session.arm == ""
+
+    @pytest.mark.asyncio
+    @patch("services.game_coordinator.servicer.metrics")
+    async def test_bound_experiment_labels_live_gauges(self, mock_metrics, servicer):
+        """The spawn binding feeds the per-live-game GAUGE labels (#975) so an
+        experiment game's telemetry is attributed to its cohort from the start."""
+        with _NO_THREAD:
+            await servicer._start_game_from_config(
+                _experiment_config(serials=("a1", "a2"), experiment_id="exp_abc123", arm="control"),
+                _MockSpan(),
+            )
+        mock_metrics.active_game.labels.assert_any_call(
+            game_kind="shadow", game_id=ANY, experiment_id="exp_abc123", arm="control"
+        )
+        mock_metrics.active_players.labels.assert_any_call(
+            game_kind="shadow", game_id=ANY, experiment_id="exp_abc123", arm="control"
+        )
+
+    @pytest.mark.asyncio
+    @patch("services.game_coordinator.game_session.metrics")
+    @patch("services.game_coordinator.game_session.set_game_session_kind_context")
+    @patch("services.game_coordinator.game_session.GameFactory")
+    @patch("services.game_coordinator.game_session.tracer")
+    async def test_bound_experiment_set_on_eval_context_before_game_init(
+        self, mock_tracer_mod, mock_factory, mock_set_kind, mock_metrics, servicer
+    ):
+        """A spawned experiment session establishes experiment_id/arm on its
+        eval-context (via set_game_session_kind_context) BEFORE the game mode's
+        __init__ calibration reads — the same boundary as game_kind (#975/#977).
+        Asserted via the call ordering against GameFactory.create_game()."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        order = []
+        mock_set_kind.side_effect = lambda kind, **kw: order.append(("set_kind", kind, kw))
+
+        # Build a real shadow session through the servicer spawn path, then drive
+        # its loop directly (the servicer's start_thread is what spins the loop;
+        # we run the async loop body inline to observe the eval-context ordering).
+        with _NO_THREAD:
+            ok, gid = await servicer._start_game_from_config(
+                _experiment_config(serials=("a1", "a2"), experiment_id="exp_abc123", arm="experimental"),
+                _MockSpan(),
+            )
+        assert ok is True
+        session = servicer.sessions[gid]
+
+        # The session-internal tracer/factory are patched at the module level, so
+        # the loop body runs without a real game.
+        from services.game_coordinator.tests.test_game_session import _tracer_mock
+
+        mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
+        mock_game = MagicMock()
+        mock_game.run = AsyncMock()
+
+        def _record_create(*_a, **_k):
+            order.append(("create_game", None, None))
+            return mock_game
+
+        mock_factory.create_game.side_effect = _record_create
+
+        await session._run_game_loop_async()
+
+        # set_game_session_kind_context was called with the experiment identity ...
+        kind_calls = [c for c in order if c[0] == "set_kind"]
+        assert kind_calls, "set_game_session_kind_context was never called"
+        kind, kwargs = kind_calls[0][1], kind_calls[0][2]
+        assert kind == "shadow"
+        assert kwargs.get("experiment_id") == "exp_abc123"
+        assert kwargs.get("arm") == "experimental"
+        # ... and BEFORE the game mode was created (init-frozen reads).
+        assert order.index(kind_calls[0]) < order.index(("create_game", None, None))
 
 
 class _MockSpan:
