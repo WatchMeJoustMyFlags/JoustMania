@@ -387,6 +387,27 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             game_id = f"game_{uuid.uuid4().hex[:12]}"
             parent_context = trace.set_span_in_context(parent_span)
 
+            # Experiment/cohort spawn binding (#976, epic #982). The caller
+            # provides (experiment_id, arm) on StartGameConfig; the registry
+            # (#978) will decide+supply them later — #976 is only the plumbing
+            # that applies+propagates them. They bind AT SPAWN so the session's
+            # eval-context (targeting #977) and telemetry (attribution #975)
+            # carry them from the start.
+            #
+            # HARD INVARIANT (#982): experiment_id/arm only SUBDIVIDE a shadow
+            # game; they MUST NOT make a real (primary) game part of an
+            # experiment. We therefore apply them ONLY when this session is a
+            # shadow session, dropping any experiment fields a real-origin start
+            # might (erroneously) carry. This keeps the real-protection
+            # guarantee structurally intact: a primary GameSession can never be
+            # constructed with a non-empty experiment_id/arm.
+            if game_kind == GAME_KIND_SHADOW:
+                experiment_id = getattr(config, "experiment_id", "")
+                arm = getattr(config, "arm", "")
+            else:
+                experiment_id = ""
+                arm = ""
+
             session = GameSession(
                 game_id=game_id,
                 game_name=config.game_name,
@@ -395,6 +416,8 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 event_bus=event_bus,
                 game_kind=game_kind,
                 parent_context=parent_context,
+                experiment_id=experiment_id,
+                arm=arm,
             )
             # Shadow sessions own their bus; bind its state-sync to the
             # session so the bus updates that session's state directly.
