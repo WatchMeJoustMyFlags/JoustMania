@@ -213,10 +213,14 @@ test: clean-test-venv
 	uv run --all-packages pytest $(if $(TEST),-k "$(TEST)")
 
 # Integration tests only (used by CI - unit tests run separately in service-checks)
+# PYTEST_EXTRA: optional extra pytest args (e.g. CI passes "--reruns 1" via
+# pytest-rerunfailures so a single integration flake doesn't skip image publish
+# and stale :latest — the #925 cascade). Generic: reruns ANY failing test once,
+# does not target tests by name.
 .PHONY: test-integration
 test-integration: clean-test-venv
 	$(TEST_ENV) uv run --package joustmania-integration-tests \
-		pytest tests/integration/ -v $(if $(TEST),-k "$(TEST)")
+		pytest tests/integration/ -v $(PYTEST_EXTRA) $(if $(TEST),-k "$(TEST)")
 
 # Run with prebuilt images from GHCR instead of building
 .PHONY: test-pulled

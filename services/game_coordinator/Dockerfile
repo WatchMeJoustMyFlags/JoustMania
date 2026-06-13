@@ -43,6 +43,13 @@ RUN uv pip install --system -e proto/ -e lib/ -e services/game_coordinator/
 # free tier only publishes the moving `latest` tag (no version-specific tags).
 FROM cgr.dev/chainguard/python:latest@sha256:678e879909418cd070927d0ba1ed018be98d43929db2457c37b9b9764703678c
 
+# Dependency fingerprint baked at build time so the integration fast path can
+# detect a stale :latest before mounting current source into it (#925).
+# Computed by scripts/ci/deps-fingerprint.sh; read back by
+# scripts/ci/check-image-freshness.sh. "dev" when built outside CI.
+ARG DEPS_FINGERPRINT=dev
+LABEL org.joustmania.deps-fingerprint="${DEPS_FINGERPRINT}"
+
 WORKDIR /app
 
 # Copy grpc-health-probe for health checks

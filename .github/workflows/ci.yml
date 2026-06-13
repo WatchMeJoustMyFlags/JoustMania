@@ -58,6 +58,9 @@ jobs:
       docker_build_matrix: ${{ steps.matrices.outputs.docker_build }}
       docker_extra_matrix: ${{ steps.matrices.outputs.docker_extra }}
       retag_matrix: ${{ steps.matrices.outputs.retag }}
+      # Deps fingerprint of this checkout (#925): baked into every service image
+      # at build time and read back by the fast-path freshness guard.
+      deps_fingerprint: ${{ steps.fingerprint.outputs.value }}
     steps:
       - uses: actions/checkout@v6
 
@@ -216,6 +219,13 @@ jobs:
           maybe_retag "$CH_PYTHON_HID"         python-hid
           maybe_retag "$CH_OTEL_COLLECTOR"     otel-collector
           echo "retag=$(json_array "${retag[@]}")" >> "$GITHUB_OUTPUT"
+
+      # #925: single deps fingerprint for this checkout. docker-build bakes it
+      # into each image as a label; the fast path reads it back and refuses to
+      # mount source into an image with a mismatching (stale) fingerprint.
+      - name: Compute deps fingerprint
+        id: fingerprint
+        run: echo "value=$(bash scripts/ci/deps-fingerprint.sh)" >> "$GITHUB_OUTPUT"
 
   # Build and test shared packages (proto, lib)
   lib-tests:
@@ -585,17 +595,33 @@ jobs:
 
       - uses: astral-sh/setup-uv@v8.2.0
 
-      # Fast path: pull latest images, overlay current source
+      # #925 fast-path freshness guard: BEFORE mounting current source into the
+      # pulled :latest images, confirm each carries a deps-fingerprint label that
+      # matches this checkout. A stale :latest (e.g. a deps-changing commit whose
+      # publish was skipped by a flake) fails here with a one-line diagnosis
+      # instead of erroring all 18 tests with no obvious cause. No-op on a fresh
+      # image (fingerprint matches). Only runs on the fast path.
+      - name: Guard against stale prebuilt images
+        if: needs.changes.outputs.integration_deps != 'true' && needs.changes.outputs.force_full != 'true'
+        env:
+          IMAGE_PREFIX: ${{ env.IMAGE_PREFIX }}
+          IMAGE_TAG: latest
+        run: bash scripts/ci/check-image-freshness.sh
+
+      # Fast path: pull latest images, overlay current source.
+      # PYTEST_EXTRA="--reruns 1" (#925): tolerate a single integration flake so
+      # one flake no longer skips image publish. Generic — reruns ANY failure
+      # once, never quarantines a test by name.
       - name: Run integration tests (fast - source only)
         if: needs.changes.outputs.integration_deps != 'true' && needs.changes.outputs.force_full != 'true'
-        run: USE_PREBUILT_IMAGES=true USE_DEV_MOUNTS=true make test-integration
+        run: USE_PREBUILT_IMAGES=true USE_DEV_MOUNTS=true PYTEST_EXTRA="--reruns 1" make test-integration
 
       # Slow path: full build (Dockerfiles or deps changed)
       - name: Run integration tests (full build)
         if: needs.changes.outputs.integration_deps == 'true' || needs.changes.outputs.force_full == 'true'
         env:
           BUILDER_IMAGE: ${{ env.IMAGE_PREFIX }}/builder:${{ github.sha }}
-        run: make test-integration
+        run: PYTEST_EXTRA="--reruns 1" make test-integration
 
   docker-build:
     name: Build ${{ matrix.service }}
@@ -651,6 +677,7 @@ jobs:
             ${{ github.ref_name == env.MAIN_BRANCH && format('{0}/{1}:latest', env.IMAGE_PREFIX, steps.image_name.outputs.name) || '' }}
           build-args: |
             BUILDER_IMAGE=${{ env.IMAGE_PREFIX }}/builder:${{ github.sha }}
+            DEPS_FINGERPRINT=${{ needs.changes.outputs.deps_fingerprint }}
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
 

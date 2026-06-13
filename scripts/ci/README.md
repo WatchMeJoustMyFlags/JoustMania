@@ -40,6 +40,30 @@ make ci-validate-packages  # Recommended
 bash scripts/ci/validate-packages.sh
 ```
 
+### `deps-fingerprint.sh` (#925)
+
+Print a stable 16-char hash of the files that determine what each service image
+bakes (root/proto/lib/per-service `pyproject.toml` + every `services/*/Dockerfile`).
+CI bakes this value into each Python service image as the OCI label
+`org.joustmania.deps-fingerprint` (build-arg `DEPS_FINGERPRINT`).
+
+```bash
+bash scripts/ci/deps-fingerprint.sh
+```
+
+### `check-image-freshness.sh` (#925)
+
+Fast-path freshness guard. Before the integration fast path mounts current
+source into pulled `:latest` images, this compares each image's baked
+`org.joustmania.deps-fingerprint` label against the current checkout and fails
+loudly with a one-line diagnosis on mismatch (the stale-image cascade), instead
+of silently mounting incompatible source.
+
+```bash
+IMAGE_PREFIX=ghcr.io/watchmejoustmyflags/joustmania IMAGE_TAG=latest \
+  bash scripts/ci/check-image-freshness.sh
+```
+
 ## Makefile Targets
 
 All CI operations are available as Make targets:

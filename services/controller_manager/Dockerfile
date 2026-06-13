@@ -50,6 +50,13 @@ RUN uv pip install --system -e proto/ -e lib/ -e services/controller_manager/
 # =============================================================================
 FROM python:3.14-slim
 
+# Dependency fingerprint baked at build time so the integration fast path can
+# detect a stale :latest before mounting current source into it (#925).
+# Computed by scripts/ci/deps-fingerprint.sh; read back by
+# scripts/ci/check-image-freshness.sh. "dev" when built outside CI.
+ARG DEPS_FINGERPRINT=dev
+LABEL org.joustmania.deps-fingerprint="${DEPS_FINGERPRINT}"
+
 # Install runtime dependencies (bluetooth for PS Move controllers)
 # libhidapi-hidraw0: Required by bt_discovery for HID device enumeration
 RUN apt-get update && apt-get install -y --no-install-recommends \
