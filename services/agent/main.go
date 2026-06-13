@@ -43,6 +43,7 @@ import (
 	"github.com/joustmania/agent/gate"
 	"github.com/joustmania/agent/infracontext"
 	"github.com/joustmania/agent/llm"
+	"github.com/joustmania/agent/promote"
 )
 
 // probeInterval rate-limits the AGENT_PROBE_DECISIONS demo probe.
@@ -148,6 +149,95 @@ func rolloutActuator(logger *slog.Logger) decision.RolloutActuator {
 	}
 	logger.Info("Agent rollout expansion disabled (dry-run; decisions spanned, not applied)")
 	return actions.NewDryRunRolloutWriter(logger)
+}
+
+// buildPromoter constructs the M7-8 code-improvement Promoter (#936) with the
+// SAFETY RAIL applied at the one place it can be: this is the ONLY site where the
+// real, consequential clients (GitHub API, local git, real-default writer) are
+// ever built, each behind its explicit env gate. Everything else (tests, the
+// default path) gets the inert recording no-ops.
+//
+// The real clients are built ONLY when AGENT_CODE_IMPROVEMENT_ENABLED=true AND the
+// per-target conditions hold (GitHub: GITHUB_TOKEN + GITHUB_REPOSITORY + the live
+// target=github flag; local: AGENT_LOCAL_REPO_DIR; autonomous real-default:
+// AGENT_AUTONOMOUS_ENABLED + AGENT_REAL_DEFAULT_FLAG_PATH). Absent any condition,
+// the corresponding FromEnv constructor returns nil and NewPromoter substitutes the
+// inert no-op / leaves autonomous as a recorded no-op — fail-closed, never a silent
+// real action. The promotion mode/target are read LIVE per promotion (flags), so
+// flipping the mode flag takes effect on the next promotion with no restart.
+//
+// The default flag values are the SAFE ones (mode=issue, target=local; see
+// services/flagd/agent.json + flags.DefaultPromotion*), so even a fully-enabled
+// agent only opens an issue until an operator deliberately flips the flags.
+//
+// NOTE on the live trigger: the propose→validate→PROMOTE pipeline that CALLS
+// Promote on a validated experiment is the documented follow-up (the proposer is
+// #931, parallel; the SyntheticRunner/Watcher live wiring reuses M7-7's seams where
+// merged). buildPromoter wires the env-gated promotion SURFACE; the autonomous
+// watch+revert seams (Watcher/RealDefaultReverter) are nil until that live
+// measurement is wired, so autonomous applies-and-records without a watch for now.
+func buildPromoter(logger *slog.Logger) *promote.Promoter {
+	// Resolve the target for client construction from the ENV (AGENT_CODE_IMPROVEMENT_TARGET),
+	// distinct from the LIVE flag (code_improvement.target) that Promote dispatches on.
+	// This is a deliberate DOUBLE gate and is STRICTER than a single switch: opening a
+	// real GitHub PR needs BOTH the env target=github at construction (so the http
+	// client is even built) AND the live flag target=github at dispatch. If they
+	// diverge (env=local, flag=github) the dispatch hits the inert no-op and degrades
+	// to a RECORDED no-op — safe, but an operator who flips only the live flag will see
+	// recorded no-ops; flipping to real GitHub requires the env target too.
+	target := promote.Target(getEnv("AGENT_CODE_IMPROVEMENT_TARGET", string(promote.TargetLocal)))
+
+	github, err := promote.NewGitHubClientFromEnv(target, logger)
+	if err != nil {
+		logger.Error("code_improvement GitHub client misconfigured; using inert no-op", "error", err)
+		github = nil // NewPromoter substitutes the recording no-op
+	}
+	git, err := promote.NewGitClientFromEnv(target, logger)
+	if err != nil {
+		logger.Error("code_improvement local git client misconfigured; using inert no-op", "error", err)
+		git = nil
+	}
+	realDef, err := promote.NewRealDefaultWriterFromEnv(logger)
+	if err != nil {
+		logger.Error("code_improvement real-default writer misconfigured; autonomous stays a no-op", "error", err)
+		realDef = nil
+	}
+
+	// FromEnv returns a typed-nil *concrete pointer when ungated; pass nil interfaces
+	// to NewPromoter so its nil checks substitute the no-ops (a typed-nil in an
+	// interface is non-nil and would defeat them).
+	var ghIface promote.GitHubClient
+	if github != nil {
+		ghIface = github
+	}
+	var gitIface promote.GitClient
+	if git != nil {
+		gitIface = git
+	}
+	var realDefIface promote.RealDefaultWriter
+	if realDef != nil {
+		realDefIface = realDef
+	}
+
+	repo := promote.RepoRef{
+		Owner: firstField(getEnv("GITHUB_REPOSITORY", ""), 0),
+		Name:  firstField(getEnv("GITHUB_REPOSITORY", ""), 1),
+		Base:  getEnv("GITHUB_BASE_BRANCH", "main"),
+	}
+	// Watcher + RealDefaultReverter (autonomous live watch+revert) reuse M7-7's
+	// fitness measurement seams; they are nil until that live wiring lands, so
+	// autonomous applies+records without a watch (documented follow-up).
+	return promote.NewPromoter(ghIface, gitIface, realDefIface, nil, nil, repo, nil, logger)
+}
+
+// firstField splits an "owner/repo" string and returns the owner (i==0) or repo
+// (i==1), or "" when absent.
+func firstField(repo string, i int) string {
+	parts := strings.SplitN(repo, "/", 2)
+	if i < len(parts) {
+		return parts[i]
+	}
+	return ""
 }
 
 // rolloutDwell reads the per-stage dwell from AGENT_ROLLOUT_DWELL_SECONDS,
@@ -496,6 +586,23 @@ func main() {
 		}()
 	}
 	slog.Info("Shadow-experiment proposer enabled (#931, M7-4)", "game_flag_path", getEnv("GAME_FLAG_PATH", experiment.DefaultGamePath))
+
+	// M7-8 code-improvement promotion surface (#936): build the Promoter with the
+	// env-gated real clients (or the inert recording no-ops when not gated — the
+	// SAFETY RAIL). The promotion mode/target are read LIVE per promotion, so an
+	// operator can flip code_improvement.mode (issue→pr→autonomous) at runtime with
+	// no restart. The live propose→validate→PROMOTE trigger that calls
+	// promoter.Promote on a validated experiment is the documented follow-up (the
+	// proposer is #931; the autonomous watch+revert reuses M7-7's seams); here the
+	// gated promotion surface is constructed and held so the wiring + the env gate
+	// are in place and observable.
+	promoter := buildPromoter(logger)
+	_ = promoter // held for the live promotion trigger (follow-up); see buildPromoter.
+	slog.Info("Code-improvement promotion surface enabled (#936, M7-8)",
+		"code_improvement_enabled", getEnv("AGENT_CODE_IMPROVEMENT_ENABLED", "false"),
+		"target", getEnv("AGENT_CODE_IMPROVEMENT_TARGET", string(promote.TargetLocal)),
+		"autonomous_enabled", getEnv("AGENT_AUTONOMOUS_ENABLED", "false"),
+	)
 
 	// GameContext multiplexer (#845 PR B): one Store partition per game_id, plus the
 	// fallback partition "" for unlabeled signals (zero-regression — single-game

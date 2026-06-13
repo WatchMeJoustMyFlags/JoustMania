@@ -97,6 +97,15 @@ const (
 	keyCodeImprovementEngine      = "code_improvement.engine"
 	keyCodeImprovementMinInterval = "code_improvement.min_interval_seconds"
 
+	// M7-8 promotion flow flags (#936). Read LIVE (never cached) so flipping the
+	// mode flag takes effect on the NEXT promotion with no restart — the demo
+	// moment. mode selects issue|pr|autonomous; target selects local|github. Both
+	// are STRING flags read via the typed getter. The SAFE defaults (see
+	// DefaultPromotionMode/Target) are baked here: mode never defaults to autonomous,
+	// target never defaults to github — the safety rail.
+	keyPromotionMode   = "code_improvement.mode"
+	keyPromotionTarget = "code_improvement.target"
+
 	// Lifecycle + throttle calibration flags (#766 F5, hot-reloaded since #927).
 	// Unlike the per-cycle layers above, these are NOT re-read on the decision hot
 	// path; they are primed once at startup and then refreshed by the OpenFeature
@@ -228,6 +237,22 @@ const (
 	// this interval. Proposing is an LLM call, so it is far rarer than a decision
 	// cycle — 300s (5 min) keeps the agent from proposing every game. Tunable live.
 	DefaultCodeImprovementMinIntervalSeconds = 300.0
+
+	// M7-8 promotion-flow defaults (#936), the SAFETY RAIL's safe flag defaults —
+	// mirror the services/flagd/agent.json code_improvement.{mode,target}
+	// defaultVariants. Applied when flagd is unreachable or the flag is undefined.
+
+	// DefaultPromotionMode is "issue" — the SAFEST mode: a missing/unreachable
+	// control plane opens an issue (no code/flag change), NEVER autonomous (which
+	// would change the real default). The safety rail requires mode to never default
+	// to autonomous.
+	DefaultPromotionMode = "issue"
+	// DefaultPromotionTarget is "local" — NEVER "github". A missing/unreachable
+	// control plane keeps a promotion off github.com; the real GitHub path requires
+	// both this flag set to github AND the explicit env gate + token (see
+	// promote.NewGitHubClientFromEnv). The safety rail requires target to never
+	// default to github.
+	DefaultPromotionTarget = "local"
 
 	// Lifecycle + throttle defaults (#766 F5), mirroring the former hardcoded
 	// constants in main.go (playerTTL/sessionGrace/evictEvery) and decision.go
@@ -485,6 +510,32 @@ func (f *Flags) CodeImprovement(ctx context.Context) CodeImprovementConfig {
 	return CodeImprovementConfig{
 		Engine:      f.stringFlag(ctx, keyCodeImprovementEngine, DefaultCodeImprovementEngine),
 		MinInterval: f.durationFlag(ctx, keyCodeImprovementMinInterval, DefaultCodeImprovementMinIntervalSeconds),
+	}
+}
+
+// PromotionConfig is the M7-8 promotion-flow configuration (#936): the live mode
+// (issue|pr|autonomous) and target (local|github) the promoter acts under. It
+// mirrors the promote.Config shape (the promote package stays free of an
+// OpenFeature dependency — the caller resolves the flags here, adds the kill-switch
+// from the Snapshot, and passes the value in: the same "package owns logic, caller
+// owns flagd" split the Gate/Writer/Validator use). The SAFE defaults are applied
+// on any flagd error: mode→issue (never autonomous), target→local (never github).
+type PromotionConfig struct {
+	// Mode is code_improvement.mode (default issue).
+	Mode string
+	// Target is code_improvement.target (default local).
+	Target string
+}
+
+// Promotion evaluates the two M7-8 promotion-flow flags (#936) for one promotion.
+// Read LIVE (never cached) so flipping the mode flag mid-session takes effect on
+// the NEXT promotion with no restart — the demo moment. Each flag falls back to
+// its SAFE default on any evaluation error (flagd unreachable / undefined): the
+// safety rail's mode→issue / target→local defaults.
+func (f *Flags) Promotion(ctx context.Context) PromotionConfig {
+	return PromotionConfig{
+		Mode:   f.stringFlag(ctx, keyPromotionMode, DefaultPromotionMode),
+		Target: f.stringFlag(ctx, keyPromotionTarget, DefaultPromotionTarget),
 	}
 }
 
