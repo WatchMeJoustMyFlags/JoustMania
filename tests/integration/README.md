@@ -132,6 +132,40 @@ The integration tests cover:
 - ✅ Distributed tracing propagation across services
 - ✅ Multiple games in sequence
 
+## Experiment shadow-isolation (agent experiment safety boundary, #932)
+
+`test_experiment_shadow_isolation.py` covers the ONE agent-experiment safety link
+no other automated gate covered before it (the #954 review follow-up): that a
+*written* game-flag experiment reaches a SHADOW game and NEVER a REAL game,
+end-to-end through the REAL flagd — not an inline JSONLogic model.
+
+**Scope decision.** Like the intervention/rollout live-flagd tests, the agent
+service (`services/agent`, Go) does NOT run in the integration compose, so we do
+not run the Go experiment Writer here. We REPRODUCE its exact mutation
+(`services/agent/experiment/targeting.go` `buildShadowTargeting`: add the reserved
+`agent_experiment` variant + `{"if":[{"!=":[{"var":"game_kind"},"real"]},
+"agent_experiment", <pre-existing-else-or-null>]}`) into `game.json`, then resolve
+via the flagd RPC resolver (`flagSetId=game`, port 8013) under the EXACT
+`game_kind` eval-context values the #954 wiring sets (`"shadow"` for a shadow
+session, `"real"` for a real game / the fail-safe API-level default). The writer's
+own correctness is the Go unit tests' job (`services/agent/experiment/*_test.go`);
+the #954 context plumbing is covered by Python unit tests — NEITHER exercises the
+actual live-flagd resolution of the written rule under the real context values.
+
+**What this test DOES assert:** a SHADOW context resolves the EXPERIMENTAL value
+(`invincibility_seconds` 8.0, `sensitivity` 0) while a REAL context resolves the
+BASELINE (4.0 / medium), and a REAL game with pre-existing targeting
+(`game_mode=Werewolf`) keeps that targeted value verbatim (the experiment wraps it
+as the else-branch). It also documents WHERE the fail-safe lives: a context with
+no `game_kind` resolves EXPERIMENTAL at raw flagd (rule is `!= real`), so the
+real-by-default protection is enforced by the application context
+(`lib/feature_flags` defaults the API-level context to `game_kind="real"`), not by
+flagd — which would catch a writer that mistakenly used `== shadow`. A companion
+`test_game_kind_constants_match_source` pins the `game_kind` var/value strings to
+their single source of truth in both languages. Kept sequential (mutates the
+global `game` flagset); `game.json` is snapshotted and restored byte-for-byte by
+the `game_flags` fixture so the experiment never leaks.
+
 ## Rollout plumbing (agent remediation control plane, #737)
 
 `test_rollout_plumbing.py` covers the CONTROL-PLANE half of the agent's
