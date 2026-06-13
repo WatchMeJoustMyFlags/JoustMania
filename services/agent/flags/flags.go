@@ -89,6 +89,14 @@ const (
 	keyFitnessImprovementThreshold = "code_improvement.fitness_improvement_threshold"
 	keyRevertOnDegradation         = "code_improvement.revert_on_degradation"
 
+	// M7-4 propose-stage flags (#931). Read live (never cached) so a retune of the
+	// propose engine / cadence takes effect on the next propose cycle — same
+	// contract as the #847 llm.* gate flags and the #935 validation flags. They
+	// govern experiment.Proposer: which inference backend generates the proposal,
+	// and how often the (expensive) propose call may fire.
+	keyCodeImprovementEngine      = "code_improvement.engine"
+	keyCodeImprovementMinInterval = "code_improvement.min_interval_seconds"
+
 	// Lifecycle + throttle calibration flags (#766 F5, hot-reloaded since #927).
 	// Unlike the per-cycle layers above, these are NOT re-read on the decision hot
 	// path; they are primed once at startup and then refreshed by the OpenFeature
@@ -203,6 +211,23 @@ const (
 	// hygiene rather than safety, but defaulting it on keeps the shadow surface
 	// clean for the next proposal.
 	DefaultRevertOnDegradation = true
+
+	// M7-4 propose-stage defaults (#931), mirroring the services/flagd/agent.json
+	// code_improvement.* defaultVariants. Applied when flagd is unreachable or a
+	// flag is undefined.
+
+	// DefaultCodeImprovementEngine selects the propose-stage inference backend
+	// (code_improvement.engine). "stub" is the only meaningful value today — the
+	// production endpointBackend.Infer is a sentinel until a real Ollama/cloud
+	// transport lands (#738/#742), so a non-stub value still degrades to
+	// no-proposal. Fail-safe: a missing control plane keeps the agent on the
+	// inert stub rather than dialing a backend it cannot reach.
+	DefaultCodeImprovementEngine = "stub"
+	// DefaultCodeImprovementMinIntervalSeconds is the propose cadence floor
+	// (code_improvement.min_interval_seconds): at most one experiment proposal per
+	// this interval. Proposing is an LLM call, so it is far rarer than a decision
+	// cycle — 300s (5 min) keeps the agent from proposing every game. Tunable live.
+	DefaultCodeImprovementMinIntervalSeconds = 300.0
 
 	// Lifecycle + throttle defaults (#766 F5), mirroring the former hardcoded
 	// constants in main.go (playerTTL/sessionGrace/evictEvery) and decision.go
@@ -432,6 +457,34 @@ func (f *Flags) Validation(ctx context.Context) ValidationConfig {
 		ValidationGames:      f.intFlag(ctx, keyValidationGames, DefaultValidationGames),
 		ImprovementThreshold: f.floatFlag(ctx, keyFitnessImprovementThreshold, DefaultFitnessImprovementThreshold),
 		RevertOnDegradation:  f.boolFlag(ctx, keyRevertOnDegradation, DefaultRevertOnDegradation),
+	}
+}
+
+// CodeImprovementConfig is the M7-4 propose-stage configuration (#931): which
+// inference backend generates the experiment proposal, and the cadence floor
+// between proposals. It mirrors experiment.ProposerConfig (the experiment package
+// stays free of an OpenFeature dependency — the caller resolves the flags here
+// and maps them, the same "package owns logic, caller owns flagd" split the
+// Gate/Writer/Validator use).
+type CodeImprovementConfig struct {
+	// Engine is code_improvement.engine — the flag-selectable propose backend
+	// (default "stub"). main.go uses it to select the backend; today every value
+	// resolves to the inert stub until a real transport lands (#738/#742).
+	Engine string
+	// MinInterval is code_improvement.min_interval_seconds as a Duration (default
+	// 300s): the propose cadence floor. <= 0 in the flag falls back to the default
+	// (durationFlag guards a non-positive value).
+	MinInterval time.Duration
+}
+
+// CodeImprovement evaluates the M7-4 propose-stage flags (#931) for one propose
+// cycle. Read live (never cached) so a retune of the engine/cadence takes effect
+// on the next cycle. Each flag falls back to its safe default on any evaluation
+// error (flagd unreachable / undefined).
+func (f *Flags) CodeImprovement(ctx context.Context) CodeImprovementConfig {
+	return CodeImprovementConfig{
+		Engine:      f.stringFlag(ctx, keyCodeImprovementEngine, DefaultCodeImprovementEngine),
+		MinInterval: f.durationFlag(ctx, keyCodeImprovementMinInterval, DefaultCodeImprovementMinIntervalSeconds),
 	}
 }
 

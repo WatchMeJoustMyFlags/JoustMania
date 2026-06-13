@@ -14,6 +14,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -32,6 +34,7 @@ import (
 
 	"github.com/joustmania/agent/actions"
 	"github.com/joustmania/agent/decision"
+	"github.com/joustmania/agent/experiment"
 	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
 	"github.com/joustmania/agent/gamerunner"
@@ -39,6 +42,7 @@ import (
 	"github.com/joustmania/agent/gamewindow"
 	"github.com/joustmania/agent/gate"
 	"github.com/joustmania/agent/infracontext"
+	"github.com/joustmania/agent/llm"
 )
 
 // probeInterval rate-limits the AGENT_PROBE_DECISIONS demo probe.
@@ -449,6 +453,50 @@ func main() {
 	slog.Info("Game narrative builder enabled (#928, M7-1)", "summary_dir", summaryDir)
 	slog.Info("Rolling game context window enabled (#929, M7-2)", "retention_cap", gamewindow.RetentionCap)
 
+	// M7-4 shadow-experiment proposer (#931). The agent turns its rolling game
+	// narrative (#929 window) + fitness signals into a structured {flag, value}
+	// experiment and submits it through the experiment Gate — shadow-scoped, safe
+	// by construction (#932). The Gate writes the game flagset (GAME_FLAG_PATH /
+	// game.json); the Proposer NEVER writes it directly.
+	//
+	// The Backend is the inference seam (Backend.Infer): today proposeBackend is the
+	// sentinel stub (no real Ollama/cloud transport until #738/#742), so every
+	// propose cycle degrades to NO proposal, NO error — the agent does not propose.
+	// The engine flag (agent.code_improvement.engine) selects the backend; it is
+	// read live and recorded on the span even though it only selects the stub now.
+	// The vocab provider reads the LIVE game.json flag keys so the model is
+	// constrained to (and the decoder validates against) the actual flag surface.
+	experimentGate := experiment.NewGate(experiment.NewWriterFromEnv(logger), nil, logger)
+	proposer := experiment.NewProposer(
+		proposeBackend{},
+		experimentGate,
+		gameFlagVocab(getEnv("GAME_FLAG_PATH", experiment.DefaultGamePath)),
+		nil,
+		logger,
+	)
+	// Propose on each GAME END, behind the cadence floor (code_improvement.
+	// min_interval_seconds, read live): proposing is an expensive LLM call, so it
+	// fires far less often than a decision cycle. The hook renders the current
+	// cross-game window as the narrative and fires ProposeOnce in a ctx-bounded
+	// goroutine so a slow inference never blocks the game-end path. ProposeOnce
+	// never returns an error (a failed/gated cycle is a recorded no-op).
+	proposeOnGameEnd := func(c gamecontext.GameContext) {
+		go func() {
+			cfg := agentFlags.CodeImprovement(ctx)
+			n := experiment.Narrative{
+				ContextBlock: gamewindow.Render(sharedContextWindow.Recent(gamewindow.RetentionCap)),
+			}
+			if c.Session.GameMode != nil {
+				n.GameMode = *c.Session.GameMode
+			}
+			proposer.ProposeOnce(ctx, n, experiment.ProposerConfig{
+				Engine:      cfg.Engine,
+				MinInterval: cfg.MinInterval,
+			})
+		}()
+	}
+	slog.Info("Shadow-experiment proposer enabled (#931, M7-4)", "game_flag_path", getEnv("GAME_FLAG_PATH", experiment.DefaultGamePath))
+
 	// GameContext multiplexer (#845 PR B): one Store partition per game_id, plus the
 	// fallback partition "" for unlabeled signals (zero-regression — single-game
 	// mode collapses to exactly today's single-store behavior). The factory applies
@@ -472,7 +520,7 @@ func main() {
 		// pre-reset snapshot. Each has its OWN once-per-game dedupe, so chaining cannot
 		// make either double-fire. Order is retro-then-summary, but they are independent
 		// (neither reads the other's state).
-		s.OnGameEnd = chainGameEnd(retro.OnGameEnd, summaries.OnGameEnd)
+		s.OnGameEnd = chainGameEnd(retro.OnGameEnd, summaries.OnGameEnd, proposeOnGameEnd)
 		return s
 	})
 	mux.SetOwnService(ownService)
@@ -569,5 +617,52 @@ func main() {
 	if err := grpcServer.Serve(lis); err != nil {
 		slog.Error("gRPC server failed", "error", err)
 		os.Exit(1)
+	}
+}
+
+// errProposeBackendNotImplemented is the sentinel proposeBackend.Infer returns: no
+// real propose-stage inference transport exists yet (the Ollama/cloud backend is
+// hardware-/credential-blocked, #738/#742), exactly like decision.endpointBackend.
+// The Proposer treats this as "degrade to no proposal this cycle" (recorded, no
+// error), so the M7-4 propose path is fully wired and inert until a real backend
+// lands. Mirrors the #739 intervention path, which degrades to rules identically.
+var errProposeBackendNotImplemented = errors.New("code_improvement: propose backend not implemented (real Ollama/cloud transport blocked on #738/#742)")
+
+// proposeBackend is the production propose-stage inference backend selected by
+// agent.code_improvement.engine. It satisfies experiment.Backend structurally
+// (Infer(ctx, llm.Prompt) (string, error)). Today every engine value resolves to
+// this inert stub — Infer always returns the sentinel, so the agent proposes
+// nothing. When a real generative backend is wired (#738/#742) this is where the
+// engine flag would select it; until then the wiring degrades to nothing SAFELY.
+type proposeBackend struct{}
+
+func (proposeBackend) Infer(context.Context, llm.Prompt) (string, error) {
+	return "", errProposeBackendNotImplemented
+}
+
+// gameFlagVocab returns the live set of game.json flag keys at path — the
+// vocabulary the proposer constrains the model to and the decoder validates
+// against. It re-reads the file on every call so a hot-reloaded game.json (the
+// agent writes experiments into it) is reflected immediately. Any read/parse
+// error returns an empty set, which fail-closes the decoder (nothing is
+// proposable until the file is readable again) — the safe reading, since a model
+// reply naming a flag we cannot confirm exists must never reach the Gate.
+func gameFlagVocab(path string) func() map[string]struct{} {
+	return func() map[string]struct{} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		var doc struct {
+			Flags map[string]json.RawMessage `json:"flags"`
+		}
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			return nil
+		}
+		set := make(map[string]struct{}, len(doc.Flags))
+		for k := range doc.Flags {
+			set[k] = struct{}{}
+		}
+		return set
 	}
 }
