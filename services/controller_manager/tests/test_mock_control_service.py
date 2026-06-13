@@ -3,8 +3,11 @@ Unit tests for MockControllerService RPC handlers.
 """
 
 import math
+import random
 import sys
 from pathlib import Path
+
+import pytest
 
 # Setup paths for imports
 test_dir = Path(__file__).parent
@@ -103,21 +106,33 @@ class TestAddControllers:
 #   - death when smoothed > threshold
 #   - on kill: not-alive + a respawn grace window during which the EMA is reset
 #     to 0.0 every frame (#757 invincibility), then re-primes after grace
-# Sensitivity 2 (MEDIUM) slow-music threshold is 1.8g — the integration default.
+#
+# The death-detection threshold is per-sensitivity AND per-music-tempo (slow vs
+# fast), taken verbatim from base.py SLOW_MAX / FAST_MAX. The mock can be driven
+# at ANY of these in a real game (the integration flagd config targets Werewolf
+# to "fast" = sensitivity 3, and other modes reach sensitivity 4), so the model
+# is parameterized by the resolved threshold rather than pinned to one value.
 _EMA_WEIGHT = 4.0
-_DEATH_THRESHOLD = 1.8  # MEDIUM (sensitivity 2), slow music — build_start_config default
 _GRACE_SECONDS = 2.0  # Swapper post-swap respawn grace
+
+# Death thresholds from base.py (g-force), index = sensitivity 0..4.
+_SLOW_MAX = [1.3, 1.5, 1.8, 2.5, 3.2]
+_FAST_MAX = [1.6, 1.8, 2.8, 3.2, 3.5]
+# Sensitivity 2 (MEDIUM) slow-music threshold — the historical integration
+# default, used by the cadence/#757 regression tests.
+_DEATH_THRESHOLD = _SLOW_MAX[2]  # 1.8g
 
 
 class _GameSideModel:
     """Minimal game-side EMA + grace model fed by streamed accel frames."""
 
-    def __init__(self):
+    def __init__(self, death_threshold: float = _DEATH_THRESHOLD):
         self.smoothed = 0.0
         self.alive = True
         self.grace_until = 0.0
         self.kills = 0
         self.rekills = 0
+        self.death_threshold = death_threshold
 
     def feed(self, accel: dict, now: float) -> None:
         """Process one streamed gameplay frame, exactly as base.py does."""
@@ -138,7 +153,7 @@ class _GameSideModel:
         else:
             self.smoothed = (self.smoothed * _EMA_WEIGHT + raw) / (_EMA_WEIGHT + 1)
 
-        if self.smoothed > _DEATH_THRESHOLD:
+        if self.smoothed > self.death_threshold:
             self._kill(now)
 
     def _kill(self, now: float) -> None:
@@ -175,6 +190,8 @@ class TestSimulateDeathConverges:
         wall_seconds: float = 6.0,
         poll_hz: float = 100.0,
         first_send_offset: float = 0.0,
+        death_threshold: float = _DEATH_THRESHOLD,
+        rest_prime_frames: int = 12,
     ) -> _GameSideModel:
         """Fire SimulateDeath, then run the real TWO-loop data plane against a
         controllable virtual clock and feed the streamed frames to a game-side
@@ -188,6 +205,14 @@ class TestSimulateDeathConverges:
             and drains the latch once via ``consume_death_frame`` — exactly like
             servicer._build_gameplay_update.
 
+        Before the death is fired, the model is PRIMED with ``rest_prime_frames``
+        resting (~1.0g) frames so its EMA sits in the realistic resting regime
+        (~1.0g), exactly like a player who has been alive and still for a moment
+        before the kill. This is essential: an EMA primed from 0.0 jumps straight
+        to the full ~10g death input on its very first frame (modelling "the
+        first frame is the death"), which crosses ANY threshold and hides the
+        resting-primed ceiling that the #926 re-review exposed.
+
         This is what reproduces the #926 failure on the OLD code: with a
         wall-clock-only 1.0s hold, the poll loop reverts the cache to noise
         after 1.0s, so a send loop whose interval exceeds 1.0s reads a stale
@@ -197,6 +222,8 @@ class TestSimulateDeathConverges:
         """
         service, adapter = _make_service(num_controllers=1)
         serial = "mock_controller_0"
+        # Deterministic resting noise so priming is reproducible.
+        random.seed(926)
 
         # A controllable virtual clock so the test is fast and deterministic.
         clock = {"t": 1000.0}
@@ -209,11 +236,19 @@ class TestSimulateDeathConverges:
         svc_mod.time.time = lambda: clock["t"]
         adapter_mod.time.time = lambda: clock["t"]
         try:
+            model = _GameSideModel(death_threshold=death_threshold)
+
+            # Prime the EMA from rest BEFORE the death (resting-primed regime).
+            # Each frame is a fresh resting poll (~1.0g noise) fed to the model.
+            for _ in range(rest_prime_frames):
+                clock["t"] += send_interval
+                rest_frame = adapter.poll(serial)
+                model.feed(rest_frame[StateKey.ACCEL], clock["t"])
+
             # Real production RPC: sets death_frames_remaining + the idle fallback.
             resp = service.SimulateDeath(controller_manager_mock_pb2.DeathRequest(serial=serial), None)
             assert resp.success
 
-            model = _GameSideModel()
             poll_interval = 1.0 / poll_hz
             state_cache = adapter.poll(serial)  # discovery loop's first write
             # The send loop has its own phase: the next send lands
@@ -273,3 +308,45 @@ class TestSimulateDeathConverges:
         model = self._simulate_in_game_death(send_interval=1.0 / 60.0, wall_seconds=4.0)
         assert model.kills == 1
         assert model.rekills == 0
+
+    # Every (sensitivity, tempo) the mock can face, threshold straight from
+    # base.py SLOW_MAX / FAST_MAX. The death input (~9.95g) must cross EVERY one
+    # of these within the 2-frame delivery budget from a resting-primed EMA.
+    # The sensitivity-3-fast (3.2g) and sensitivity-4 (3.2g slow / 3.5g fast)
+    # cases are the gap the #926 re-review caught: the old 7.07g input only
+    # reached 3.19g on its second delivered frame, so it could NOT cross these
+    # and the death was silently dropped (the integration suite papered over it
+    # because kill_player_verified re-fires until a low-threshold slow window).
+    @pytest.mark.parametrize(
+        ("sensitivity", "tempo", "threshold"),
+        [
+            (0, "slow", _SLOW_MAX[0]),
+            (0, "fast", _FAST_MAX[0]),
+            (1, "slow", _SLOW_MAX[1]),
+            (1, "fast", _FAST_MAX[1]),
+            (2, "slow", _SLOW_MAX[2]),
+            (2, "fast", _FAST_MAX[2]),
+            (3, "slow", _SLOW_MAX[3]),
+            (3, "fast", _FAST_MAX[3]),  # 3.2g — FAILS on the old 7.07g/budget-2 code
+            (4, "slow", _SLOW_MAX[4]),  # 3.2g — FAILS on the old code
+            (4, "fast", _FAST_MAX[4]),  # 3.5g — highest threshold; FAILS on the old code
+        ],
+    )
+    def test_death_crosses_every_sensitivity_and_tempo(self, sensitivity, tempo, threshold):
+        """The death input crosses the death threshold at ALL sensitivities/tempos.
+
+        Resting-primed EMA + a stretched (starved) send cadence, driven through
+        the real SimulateDeath latch. With the ~9.95g death input every threshold
+        in the SLOW_MAX/FAST_MAX tables is crossed within the 2 delivered death
+        frames, so the player always dies and is never re-killed after grace.
+        """
+        model = self._simulate_in_game_death(
+            send_interval=1.25,
+            first_send_offset=1.25,
+            wall_seconds=10.0,
+            death_threshold=threshold,
+        )
+        assert model.kills == 1, (
+            f"sensitivity {sensitivity} {tempo} (threshold {threshold}g) must die within the {2}-frame delivery budget"
+        )
+        assert model.rekills == 0, "no #757 grace-expiry re-kill at any sensitivity"
