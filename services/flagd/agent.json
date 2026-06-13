@@ -382,6 +382,32 @@
         "quiet": 5
       },
       "defaultVariant": "default"
+    },
+    "code_improvement.validation_games": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 5,
+        "quick": 3,
+        "thorough": 10
+      },
+      "defaultVariant": "default"
+    },
+    "code_improvement.fitness_improvement_threshold": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 0.05,
+        "lenient": 0.01,
+        "strict": 0.1
+      },
+      "defaultVariant": "default"
+    },
+    "code_improvement.revert_on_degradation": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "on"
     }
   }
 }

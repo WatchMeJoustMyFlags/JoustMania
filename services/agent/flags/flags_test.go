@@ -535,3 +535,38 @@ func TestLifecycle_NonPositiveFallsBack(t *testing.T) {
 		t.Errorf("Lifecycle = %+v, want %+v", got, want)
 	}
 }
+
+// TestValidationFlags covers the M7-7 synthetic-validation gate flags (#935):
+// the typed getters resolve configured values, and each flag falls back to its
+// safe default on an evaluation error (flagd unreachable / undefined).
+func TestValidation(t *testing.T) {
+	t.Run("configured values resolve", func(t *testing.T) {
+		ev := stubEvaluator{
+			ints:     map[string]int64{keyValidationGames: 8},
+			floats:   map[string]float64{keyFitnessImprovementThreshold: 0.2},
+			booleans: map[string]bool{keyRevertOnDegradation: false},
+		}
+		got := New(ev, nil).Validation(context.Background())
+		want := ValidationConfig{ValidationGames: 8, ImprovementThreshold: 0.2, RevertOnDegradation: false}
+		if got != want {
+			t.Errorf("Validation = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("errors fall back to safe defaults", func(t *testing.T) {
+		ev := stubEvaluator{errs: map[string]error{
+			keyValidationGames:             errors.New("flagd down"),
+			keyFitnessImprovementThreshold: errors.New("flagd down"),
+			keyRevertOnDegradation:         errors.New("flagd down"),
+		}}
+		got := New(ev, nil).Validation(context.Background())
+		want := ValidationConfig{
+			ValidationGames:      DefaultValidationGames,
+			ImprovementThreshold: DefaultFitnessImprovementThreshold,
+			RevertOnDegradation:  DefaultRevertOnDegradation,
+		}
+		if got != want {
+			t.Errorf("Validation defaults = %+v, want %+v", got, want)
+		}
+	})
+}
