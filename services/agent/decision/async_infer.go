@@ -135,7 +135,13 @@ func (l *Loop) SetRootContext(ctx context.Context) { l.rootCtx = ctx }
 // goroutine outlives the process; tests call it to make the async result land
 // deterministically before asserting (no real sleeps). It is safe to call when
 // nothing is in flight (returns immediately).
-func (l *Loop) AwaitInflight() { l.inferWG.Wait() }
+func (l *Loop) AwaitInflight() {
+	l.inferWG.Wait()
+	// Also join the #918 intervention-effect follow-up samplers: they are the loop's
+	// other background goroutines and must not outlive the process (goleak, #923). Their
+	// timers are bounded by rootCtx, so a shutdown-cancelled sample returns promptly.
+	l.effectWG.Wait()
+}
 
 // asyncEnabled reports whether this loop is wired for async inference (#917): a
 // context provider must be present (the re-validation source). Without it the loop

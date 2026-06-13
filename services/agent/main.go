@@ -67,6 +67,24 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
+// effectWindowFromEnv resolves the intervention-effect follow-up window (#918) from
+// AGENT_EFFECT_WINDOW_SECONDS (a float of seconds). An unset, unparseable, or
+// non-positive value falls back to decision.DefaultEffectWindow so the agent always
+// has a sane window.
+func effectWindowFromEnv() time.Duration {
+	raw := getEnv("AGENT_EFFECT_WINDOW_SECONDS", "")
+	if raw == "" {
+		return decision.DefaultEffectWindow
+	}
+	secs, err := strconv.ParseFloat(raw, 64)
+	if err != nil || secs <= 0 {
+		slog.Warn("AGENT_EFFECT_WINDOW_SECONDS invalid; using default (#918)",
+			"value", raw, "default", decision.DefaultEffectWindow)
+		return decision.DefaultEffectWindow
+	}
+	return time.Duration(secs * float64(time.Second))
+}
+
 // partitionSet turns the Multiplexer's partition id slice into a set for
 // LoopSet.Retain (#845 PR C).
 func partitionSet(ids []string) map[string]struct{} {
@@ -405,6 +423,14 @@ func main() {
 	// game end, and every per-game Loop reads Recent(N) from it on the llm path to
 	// render the prompt's narrative context block (N = llm.context_games, live).
 	sharedContextWindow := gamewindow.NewStore()
+	// Intervention-effect follow-up window (#918): how long after a dispatched
+	// intervention the loop re-samples the game's fitness signals to measure the
+	// effect. Read ONCE at startup from AGENT_EFFECT_WINDOW_SECONDS (a float of
+	// seconds); a non-positive/unparseable/unset value keeps decision.DefaultEffectWindow.
+	effectWindow := effectWindowFromEnv()
+	if effectWindow != decision.DefaultEffectWindow {
+		slog.Info("Intervention-effect follow-up window overridden (#918)", "window", effectWindow)
+	}
 	probeDecisions := strings.EqualFold(getEnv("AGENT_PROBE_DECISIONS", ""), "true")
 	if probeDecisions {
 		slog.Warn("Probe decisions enabled (demo/verification mode)",
@@ -444,6 +470,14 @@ func main() {
 		loop.SetGameID(gameID)
 		loop.SetContextProvider(decision.MuxContextProvider{Mux: mux})
 		loop.SetRootContext(ctx)
+		// Intervention-effect MEASUREMENT window (#918): after a dispatched intervention,
+		// the loop samples THIS game's fitness/objective signals again after this window
+		// and emits the before/after delta (agent.intervention.effect span +
+		// agent_intervention_effect_delta metric), reusing the SetContextProvider source
+		// above to re-read the game's CURRENT signals. The follow-up goroutine is bounded
+		// by SetRootContext so shutdown cancels it cleanly (no leak). Tunable at startup
+		// via AGENT_EFFECT_WINDOW_SECONDS; a non-positive/unset value keeps the default.
+		loop.SetEffectWindow(effectWindow)
 		// Intervention timeline wiring (#945): feed each decision's dispatched/blocked
 		// outcome into the #916 rolling narrative of the SAME game this loop serves.
 		// The closure captures THIS partition's game_id and routes through the

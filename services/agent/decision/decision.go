@@ -242,6 +242,14 @@ type Loop struct {
 	// #739 path, so a Loop not wired for async is behavior-unchanged.
 	asyncInferState
 
+	// effectSampler is the per-Loop intervention-effect MEASUREMENT machinery (#918):
+	// the follow-up window, the in-flight wait group, the bounded pending set, the
+	// effect-delta metric, and the timer test seam. Embedded so the effect surface lives
+	// in one place (see effect.go). It reuses asyncInferState's ctxProvider/rootCtx/gameID
+	// to re-read the game's CURRENT signals at +window. Inert without a context provider,
+	// so a Loop not wired for effect measurement is behavior-unchanged.
+	effectSampler
+
 	// contextWindow is the SHARED M7-2 rolling cross-game context source (#929),
 	// injected via SetContextWindow from the one gamewindow.Store main.go constructs
 	// (global cross-session memory, like budget/resolver). On a gate-admitted llm
@@ -294,6 +302,9 @@ func NewLoop(flagSource FlagSource, log *slog.Logger) *Loop {
 		now:      time.Now,
 		throttle: DefaultThrottleInterval,
 		llmGated: defaultLLMGatedCounter(),
+		effectSampler: effectSampler{
+			effectDelta: defaultEffectDeltaHistogram(),
+		},
 	}
 }
 
@@ -816,6 +827,23 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	}
 
 	state.recordDispatched(d, cost)
+	// Intervention-effect MEASUREMENT (#918): stamp a baseline of this game's
+	// fitness/objective signals NOW (the same fitness.evaluated quantities the decision
+	// span carries) and schedule a follow-up sample after the window to measure the
+	// delta, attributed to a dispatch-unique intervention id. This closes the game-path
+	// measurement loop the infra path already has (fitness->rollback). It is MEASUREMENT
+	// ONLY — it never reverts the intervention. Scheduled only for DISPATCHED decisions
+	// (a blocked one never moved the game). The id is stamped on this decision span so a
+	// Jaeger query joins decision->effect; "" means no sample was scheduled (effect
+	// measurement un-wired, no baseline signals this cycle, or the pending cap reached) —
+	// then the decision span simply carries no effect id. Reuses state.FitnessEvaluated,
+	// which OnEvaluate lifted from this cycle's engine evaluation, and the live
+	// thresholds from this cycle's snapshot, so baseline and follow-up sample the SAME
+	// fitness functions against the SAME thresholds. Off the hot path: a cheap map copy
+	// plus a goroutine + timer (bounded, leak-safe via effectWG + rootCtx).
+	if id := l.scheduleEffectSample(d, state.FitnessEvaluated, fitnessThresholds(snapshot.Fitness)); id != "" {
+		dSpan.SetAttributes(attribute.String(AttrDecisionInterventionID, id))
+	}
 	// Feed the DISPATCHED outcome into this game's #916 rolling narrative timeline
 	// (#945): recorded BEFORE the action sink applies it (it passed every gate, so it
 	// IS dispatched regardless of a downstream apply error — the timeline tracks the
