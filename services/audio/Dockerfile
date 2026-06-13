@@ -10,11 +10,10 @@
 # - QEMU cross-compilation incorrectly links to it on ARM64
 # - Fix: disable GCC auto-vectorization for ARM64 builds
 #
-# Phase 75: Builder images can be overridden for CI/CD
-# --build-arg BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:main
-
-# Builder image - override with --build-arg for CI/CD
-ARG BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:latest
+# #914: audio is the ONLY Python service needing a build toolchain (pyalsaaudio
+# is sdist-only; miniaudio has no aarch64 wheel + is deliberately --no-binary).
+# It apt-installs build-essential + libasound2-dev in its OWN build stage instead
+# of relying on a shared builder image.
 
 # =============================================================================
 # Stage 0: Extract shared libraries and config for distroless
@@ -36,7 +35,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # =============================================================================
 # Stage 2: Build Python dependencies
 # =============================================================================
-FROM ${BUILDER_IMAGE} AS builder
+# Toolchain installed here (not via a shared builder): build-essential for the
+# C/C++ compiler, libasound2-dev for the ALSA headers pyalsaaudio compiles against.
+FROM python:3.14-slim AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libasound2-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# uv: fast Python package installer
+RUN pip install --no-cache-dir uv==0.5.11
 
 WORKDIR /app
 

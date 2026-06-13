@@ -1,27 +1,16 @@
 # Multi-stage build for JoustMania Controller Manager Service
 #
-# Build the builder image first:
-#   docker build -t ghcr.io/watchmejoustmyflags/joustmania/builder:latest images/builder/
-#
-# Builder image can be overridden for CI/CD:
-# --build-arg BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:main
-
-# Builder image - override with --build-arg for CI/CD
-ARG BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:latest
+# #914: builds on a generic python:3.14-slim base (no shared builder image).
+# All deps ship wheels (dbus-fast is pure Python, hidapi has cp314 aarch64
+# wheels), so no compiler/toolchain is needed in the build stage.
 
 # =============================================================================
 # Stage 1: Build Python dependencies
 # =============================================================================
-FROM ${BUILDER_IMAGE} AS python-builder
+FROM python:3.14-slim AS python-builder
 
-# Install additional bluetooth build dependencies (not in common builder)
-# libdbus-1-dev needed for dbus-python (legacy backend); dbus-fast is pure Python
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libbluetooth-dev \
-    libdbus-1-dev \
-    libglib2.0-dev \
-    pkg-config \
-    && rm -rf /var/lib/apt/lists/*
+# uv: fast Python package installer
+RUN pip install --no-cache-dir uv==0.5.11
 
 WORKDIR /app
 
