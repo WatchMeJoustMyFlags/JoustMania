@@ -414,6 +414,33 @@ func (s *Store) SetGameKind(kind string) {
 	s.touchSession()
 }
 
+// SetExperimentID records the experiment this game belongs to (#975) from the
+// experiment_id datapoint label or the experiment.id span attribute. An empty
+// id is ignored so an unlabeled signal never clobbers a previously observed
+// experiment id — exactly like SetGameKind.
+func (s *Store) SetExperimentID(id string) {
+	if id == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ctx.ExperimentID = id
+	s.touchSession()
+}
+
+// SetArm records the experiment arm ("experimental"/"control", #975) from the
+// arm datapoint label or the experiment.arm span attribute. An empty arm is
+// ignored so an unlabeled signal never clobbers a previously observed arm.
+func (s *Store) SetArm(arm string) {
+	if arm == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ctx.Arm = arm
+	s.touchSession()
+}
+
 // AdoptSessionID overrides the synthetic SessionID with a real game_id label.
 func (s *Store) AdoptSessionID(id string) {
 	if id == "" {
@@ -629,6 +656,8 @@ func (s *Store) EvictStale() {
 		s.ctx.Session = SessionSignals{GameActive: ptr(false)}
 		s.ctx.SessionID = ""
 		s.ctx.GameKind = ""
+		s.ctx.ExperimentID = ""
+		s.ctx.Arm = ""
 		s.elimOrder = make(map[string]int)
 		s.endedAt = time.Time{}
 		s.ctx.UpdatedAt = now

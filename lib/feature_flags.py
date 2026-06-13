@@ -63,6 +63,24 @@ GAME_KIND_VAR = "game_kind"
 GAME_KIND_REAL = "real"
 GAME_KIND_SHADOW = "shadow"
 
+# Experiment/cohort attribution (#975, epic #982). Two finer-grained labels
+# WITHIN the shadow game_kind: which experiment a shadow game belongs to and
+# which arm (treatment) it is in. These mirror the game_kind dual-path exactly
+# (eval-context var -> telemetry attrs/labels -> agent ingest), but they are
+# NEVER a replacement for the real/shadow safety bit — every experiment game is
+# still a shadow game in the game_kind sense.
+#
+# Real-by-default carries over for free: the API-level context has NO
+# experiment_id, so a non-experiment (real or unlabeled shadow) game's
+# experiment targeting condition is false by construction — an absent
+# experiment_id means "not in any experiment", exactly how an absent game_kind
+# defaults to the protected "real". These constants MUST stay byte-identical to
+# services/agent/experiment/targeting.go's experiment-scoped JSONLogic (#977).
+EXPERIMENT_ID_VAR = "experiment_id"  # absent => not in any experiment
+ARM_VAR = "arm"  # "experimental" | "control"
+ARM_EXPERIMENTAL = "experimental"
+ARM_CONTROL = "control"
+
 # Track initialized domains to avoid re-initialization
 _initialized_domains: set[str] = set()
 _hooks_registered: bool = False
@@ -421,8 +439,13 @@ def read_int_flag(domain: str, flag_key: str, default: int, game_id: str | None 
         return default
 
 
-def set_game_session_kind_context(game_kind: str = GAME_KIND_REAL) -> None:
-    """Set ONLY the game_kind on the current async context's transaction context.
+def set_game_session_kind_context(
+    game_kind: str = GAME_KIND_REAL,
+    experiment_id: str | None = None,
+    arm: str | None = None,
+) -> None:
+    """Set the game_kind (and optional experiment identity) on the current async
+    context's transaction context.
 
     The shadow/real split (#932) must be in place BEFORE a game mode's __init__
     runs its init-frozen calibration reads (thresholds, grace period, per-mode
@@ -431,14 +454,32 @@ def set_game_session_kind_context(game_kind: str = GAME_KIND_REAL) -> None:
     default and a shadow session would miss its experiments. This minimal setter
     establishes the split at the session boundary; :func:`set_game_transaction_context`
     later overwrites the transaction context with the full game session attributes
-    (carrying the same game_kind).
+    (carrying the same game_kind + experiment identity).
+
+    The experiment identity (#975) rides the SAME contextvars boundary for the
+    same reason: a flag whose override is keyed on ``experiment_id`` and read at
+    ``__init__`` would otherwise miss its experiment. ``experiment_id`` / ``arm``
+    are set ONLY when provided — a real game (or a shadow game not bound to an
+    experiment) leaves them absent, so its experiment targeting is false by
+    construction (real-by-default).
 
     Args:
         game_kind: ``"shadow"`` for a shadow session, ``"real"`` (default) for a
             protected real/primary game. MUST match targeting.go's GameKindReal.
+        experiment_id: Experiment this shadow game belongs to (#975), e.g.
+            ``"exp_<id>"``; omitted for a non-experiment game.
+        arm: ``"experimental"`` | ``"control"`` (#975); omitted for a
+            non-experiment game.
     """
-    api.set_transaction_context(EvaluationContext(attributes={GAME_KIND_VAR: game_kind}))
-    logger.debug(f"Session-kind transaction context set: game_kind={game_kind}")
+    attributes: dict = {GAME_KIND_VAR: game_kind}
+    if experiment_id is not None:
+        attributes[EXPERIMENT_ID_VAR] = experiment_id
+    if arm is not None:
+        attributes[ARM_VAR] = arm
+    api.set_transaction_context(EvaluationContext(attributes=attributes))
+    logger.debug(
+        f"Session-kind transaction context set: game_kind={game_kind}, experiment_id={experiment_id}, arm={arm}"
+    )
 
 
 def set_game_transaction_context(
@@ -446,6 +487,8 @@ def set_game_transaction_context(
     controller_count: int,
     sensitivity: int | None = None,
     game_kind: str = GAME_KIND_REAL,
+    experiment_id: str | None = None,
+    arm: str | None = None,
 ) -> None:
     """
     Set transaction-level evaluation context for the current game session.
@@ -465,6 +508,15 @@ def set_game_transaction_context(
             for this async context alone, so a shadow session's experiments stay
             scoped to that session. The value MUST match targeting.go's
             GameKindReal/"shadow" (see GAME_KIND_* constants).
+        experiment_id: Experiment this shadow game belongs to (#975), e.g.
+            ``"exp_<id>"``. Carried on the SAME transaction context as game_kind
+            so experiment-scoped flag overrides resolve for this session alone.
+            Omitted (absent) for a non-experiment game — an absent experiment_id
+            means "not in any experiment", so the experiment targeting condition
+            is false by construction (real-by-default, exactly like game_kind).
+        arm: ``"experimental"`` | ``"control"`` (#975); the treatment this game
+            is in within ``experiment_id``. Omitted for a non-experiment game.
+            MUST match targeting.go's ARM constants (see ARM_* above).
     """
     attributes: dict = {
         "game_mode": game_mode,
@@ -473,6 +525,10 @@ def set_game_transaction_context(
     }
     if sensitivity is not None:
         attributes["sensitivity"] = sensitivity
+    if experiment_id is not None:
+        attributes[EXPERIMENT_ID_VAR] = experiment_id
+    if arm is not None:
+        attributes[ARM_VAR] = arm
 
     api.set_transaction_context(
         EvaluationContext(
@@ -483,5 +539,5 @@ def set_game_transaction_context(
     logger.debug(
         f"Transaction context set: game_mode={game_mode}, "
         f"controller_count={controller_count}, sensitivity={sensitivity}, "
-        f"game_kind={game_kind}"
+        f"game_kind={game_kind}, experiment_id={experiment_id}, arm={arm}"
     )

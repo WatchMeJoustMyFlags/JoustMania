@@ -461,10 +461,27 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 if not is_real or attempt == 1:
                     return False, "Game already in progress"
                 logger.warning("Real game lost the admission race to a late shadow; preempting again (#837)")
-            # Update lifecycle metrics for this session's kind.
-            metrics.active_game.labels(game_kind=game_kind, game_id=game_id).set(1)
-            metrics.games_started_total.labels(mode=session.game_name, game_kind=game_kind).inc()
-            metrics.active_players.labels(game_kind=game_kind, game_id=game_id).set(len(session.players))
+            # Update lifecycle metrics for this session's kind (#775) + experiment
+            # attribution (#975). experiment_id/arm are "" for a non-experiment
+            # game; #976's spawn binding sets them on the session.
+            metrics.active_game.labels(
+                game_kind=game_kind,
+                game_id=game_id,
+                experiment_id=session.experiment_id,
+                arm=session.arm,
+            ).set(1)
+            metrics.games_started_total.labels(
+                mode=session.game_name,
+                game_kind=game_kind,
+                experiment_id=session.experiment_id,
+                arm=session.arm,
+            ).inc()
+            metrics.active_players.labels(
+                game_kind=game_kind,
+                game_id=game_id,
+                experiment_id=session.experiment_id,
+                arm=session.arm,
+            ).set(len(session.players))
 
             # Publish game_start on this session's bus.
             await session.event_bus.publish(

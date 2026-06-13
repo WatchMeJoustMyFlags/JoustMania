@@ -432,6 +432,118 @@ def test_experiment_targeting_protects_real_resolves_shadow():
 
 
 # --------------------------------------------------------------------------- #
+# experiment_id / arm attribution (#975, epic #982) — the foundation of the
+# experiment/cohort framework. These mirror the game_kind dual-path: the eval
+# context carries experiment_id + arm WHEN PROVIDED, and a call WITHOUT them
+# leaves a real (or non-experiment) game unaffected — absent experiment_id means
+# "not in any experiment", so a non-experiment game's experiment targeting is
+# false by construction (real-by-default carries over for free).
+# --------------------------------------------------------------------------- #
+
+
+def test_experiment_constants_match_targeting_contract():
+    """The experiment-identity constants pin the values targeting.go (#977) keys on."""
+    from lib.feature_flags import ARM_CONTROL, ARM_EXPERIMENTAL, ARM_VAR, EXPERIMENT_ID_VAR
+
+    assert EXPERIMENT_ID_VAR == "experiment_id"
+    assert ARM_VAR == "arm"
+    assert ARM_EXPERIMENTAL == "experimental"
+    assert ARM_CONTROL == "control"
+
+
+@patch("lib.feature_flags.api")
+def test_set_game_transaction_context_carries_experiment_identity(mock_api):
+    """A shadow game bound to an experiment lands experiment_id + arm in context."""
+    from lib.feature_flags import set_game_transaction_context
+
+    set_game_transaction_context(
+        game_mode="FFA",
+        controller_count=4,
+        game_kind="shadow",
+        experiment_id="exp_abc123",
+        arm="experimental",
+    )
+
+    ctx = mock_api.set_transaction_context.call_args[0][0]
+    assert ctx.attributes["game_kind"] == "shadow"
+    assert ctx.attributes["experiment_id"] == "exp_abc123"
+    assert ctx.attributes["arm"] == "experimental"
+
+
+@patch("lib.feature_flags.api")
+def test_set_game_transaction_context_omits_experiment_identity_when_absent(mock_api):
+    """A real/non-experiment game leaves experiment_id + arm ABSENT.
+
+    An absent experiment_id is the real-by-default fail-safe: the experiment
+    targeting condition (== exp_X) is false, so the game resolves the existing
+    default exactly as it did before any experiment framework existed.
+    """
+    from lib.feature_flags import set_game_transaction_context
+
+    set_game_transaction_context(game_mode="FFA", controller_count=4)
+
+    ctx = mock_api.set_transaction_context.call_args[0][0]
+    assert ctx.attributes["game_kind"] == "real"
+    assert "experiment_id" not in ctx.attributes
+    assert "arm" not in ctx.attributes
+
+
+@patch("lib.feature_flags.api")
+def test_set_game_session_kind_context_carries_experiment_identity(mock_api):
+    """The session-boundary setter carries experiment_id + arm before init reads."""
+    from lib.feature_flags import set_game_session_kind_context
+
+    set_game_session_kind_context("shadow", experiment_id="exp_abc123", arm="control")
+
+    ctx = mock_api.set_transaction_context.call_args[0][0]
+    assert ctx.attributes["game_kind"] == "shadow"
+    assert ctx.attributes["experiment_id"] == "exp_abc123"
+    assert ctx.attributes["arm"] == "control"
+
+
+@patch("lib.feature_flags.api")
+def test_set_game_session_kind_context_omits_experiment_identity_when_absent(mock_api):
+    """The default (real-game) session boundary leaves experiment_id + arm absent."""
+    from lib.feature_flags import set_game_session_kind_context
+
+    set_game_session_kind_context()
+
+    ctx = mock_api.set_transaction_context.call_args[0][0]
+    assert ctx.attributes["game_kind"] == "real"
+    assert "experiment_id" not in ctx.attributes
+    assert "arm" not in ctx.attributes
+
+
+def test_experiment_targeting_leaves_non_experiment_game_unaffected():
+    """End-to-end intent (#977): an experiment-scoped flag resolves the experimental
+    value ONLY for the matching (experiment_id, arm); a real/control/unlabeled game
+    falls through to the existing default.
+
+    Mirrors flagd JSONLogic
+      {"if":[{"and":[{"==":[{"var":"experiment_id"},"exp_X"]},
+                     {"==":[{"var":"arm"},"experimental"]}]}, "V", <else>]}
+    so we prove the wiring's effect (real-by-default for free) without the stack.
+    """
+    from lib.feature_flags import ARM_CONTROL, ARM_EXPERIMENTAL, ARM_VAR, EXPERIMENT_ID_VAR
+
+    def resolve(attrs: dict) -> str:
+        in_arm = attrs.get(EXPERIMENT_ID_VAR) == "exp_X" and attrs.get(ARM_VAR) == ARM_EXPERIMENTAL
+        return "V" if in_arm else "default"
+
+    # Experimental arm of exp_X → the experiment value.
+    assert resolve({EXPERIMENT_ID_VAR: "exp_X", ARM_VAR: ARM_EXPERIMENTAL}) == "V"
+    # Control arm of exp_X → falls through to the existing default (control IS
+    # the else-branch; no separate control variant).
+    assert resolve({EXPERIMENT_ID_VAR: "exp_X", ARM_VAR: ARM_CONTROL}) == "default"
+    # A DIFFERENT experiment's game → default (no cross-experiment interaction).
+    assert resolve({EXPERIMENT_ID_VAR: "exp_Y", ARM_VAR: ARM_EXPERIMENTAL}) == "default"
+    # A real / non-experiment game (no experiment_id at all) → default. This is
+    # the real-by-default fail-safe that comes for free from an absent label.
+    assert resolve({"game_kind": "real"}) == "default"
+    assert resolve({}) == "default"
+
+
+# --------------------------------------------------------------------------- #
 # gameId calibration context (#838)
 # --------------------------------------------------------------------------- #
 from lib.feature_flags import _calibration_context, read_object_flag  # noqa: E402

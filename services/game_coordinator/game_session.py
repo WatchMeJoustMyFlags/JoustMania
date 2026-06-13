@@ -69,6 +69,8 @@ class GameSession:
         event_bus: EventBus,
         game_kind: str,
         parent_context,
+        experiment_id: str = "",
+        arm: str = "",
     ):
         self.game_id = game_id
         self.game_name = game_name
@@ -77,6 +79,11 @@ class GameSession:
         self.event_bus = event_bus
         self.game_kind = game_kind
         self.game_parent_context = parent_context
+        # Experiment attribution within a shadow session (#975, epic #982). Empty
+        # for a non-experiment game; set by #976's spawn binding. These are finer-
+        # grained labels WITHIN game_kind=shadow, never a replacement for it.
+        self.experiment_id = experiment_id
+        self.arm = arm
 
         self.game_start_time = time.time()
         self.game_state = game_coordinator_pb2.GameState.STARTING
@@ -172,7 +179,15 @@ class GameSession:
         # later re-sets the full transaction context with game_mode/sensitivity,
         # carrying the same game_kind.) This is contextvars-scoped, so it never
         # leaks across sessions.
-        set_game_session_kind_context(self._eval_game_kind())
+        # Carry the experiment identity (#975) on the same session boundary as
+        # game_kind so an experiment-scoped flag override is in place before the
+        # game mode's init-frozen reads. Pass them only when set (absent ⇒ not in
+        # any experiment), preserving real-by-default.
+        set_game_session_kind_context(
+            self._eval_game_kind(),
+            experiment_id=self.experiment_id or None,
+            arm=self.arm or None,
+        )
 
         # Get the display name for the game span
         game_span_name = get_game_display_name(self.game_name)
@@ -185,6 +200,12 @@ class GameSession:
             game_span.set_attribute("game.name", self.game_name)
             game_span.set_attribute("game.id", self.game_id)
             game_span.set_attribute("game.kind", self.game_kind)
+            # Experiment attribution (#975). Spans are the PRIMARY attribution
+            # channel — unbounded-cardinality experiment ids are fine here (each
+            # is one trace). Emitted always (empty when not in an experiment),
+            # mirroring game.kind; the agent reads them off the span attributes.
+            game_span.set_attribute("experiment.id", self.experiment_id)
+            game_span.set_attribute("experiment.arm", self.arm)
             game_span.set_attribute("player.count", len(self.players))
 
             try:
@@ -224,6 +245,10 @@ class GameSession:
                 # the single-game state gauges (#775).
                 game.game_kind = self.game_kind
                 game._reset_global_gauges_on_end = self.is_primary
+                # Thread experiment attribution onto the game so its in-loop
+                # set_game_transaction_context carries it for flag evaluation (#975).
+                game.experiment_id = self.experiment_id
+                game.arm = self.arm
 
                 # Store reference and run game
                 self.current_game = game
@@ -247,18 +272,40 @@ class GameSession:
                     # forever (#775 natural-end retirement relies on this).
                     self.game_state = game_coordinator_pb2.GameState.ENDED
 
-                # Update lifecycle metrics for THIS session's kind (#775).
-                metrics.active_game.labels(game_kind=self.game_kind, game_id=self.game_id).set(0)
-                metrics.active_players.labels(game_kind=self.game_kind, game_id=self.game_id).set(0)
+                # Update lifecycle metrics for THIS session's kind (#775) +
+                # experiment attribution (#975). experiment_id/arm are "" for a
+                # non-experiment game.
+                metrics.active_game.labels(
+                    game_kind=self.game_kind,
+                    game_id=self.game_id,
+                    experiment_id=self.experiment_id,
+                    arm=self.arm,
+                ).set(0)
+                metrics.active_players.labels(
+                    game_kind=self.game_kind,
+                    game_id=self.game_id,
+                    experiment_id=self.experiment_id,
+                    arm=self.arm,
+                ).set(0)
                 if self.is_primary:
                     # players_alive is a single global gauge (not yet per-kind);
                     # only the primary session resets it.
                     metrics.players_alive.set(0)
                 if self.game_name:
-                    metrics.games_completed_total.labels(mode=self.game_name, game_kind=self.game_kind).inc()
+                    metrics.games_completed_total.labels(
+                        mode=self.game_name,
+                        game_kind=self.game_kind,
+                        experiment_id=self.experiment_id,
+                        arm=self.arm,
+                    ).inc()
                 if self.game_start_time:
                     duration = time.time() - self.game_start_time
-                    metrics.game_duration_seconds.labels(game_kind=self.game_kind, game_id=self.game_id).set(duration)
+                    metrics.game_duration_seconds.labels(
+                        game_kind=self.game_kind,
+                        game_id=self.game_id,
+                        experiment_id=self.experiment_id,
+                        arm=self.arm,
+                    ).set(duration)
 
                 # Cleanup channels
                 await self.clients.close()

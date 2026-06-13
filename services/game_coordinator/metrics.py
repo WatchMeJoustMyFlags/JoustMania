@@ -16,10 +16,18 @@ from lib.otel_metrics import Counter, Gauge, Histogram
 # instead of being invisible or clobbering the primary game's series. The
 # primary (menu-driven) session reports game_kind="primary"; concurrent
 # agent/shadow sessions report game_kind="shadow".
+#
+# Experiment attribution (#975, epic #982): these are LOW-RATE, per-game
+# lifecycle metrics (one update at start, one at end) — NOT the high-volume
+# per-frame firehose — so adding experiment_id/arm labels here is safe: a series
+# per (live experiment × arm), not per frame. experiment_id is high-cardinality
+# but bounded by the number of concurrent experiments; the per-frame metrics
+# (game_player_accel_magnitude, etc.) deliberately do NOT carry it. The labels
+# are "" for a non-experiment game. Per-arm fitness is #979's dedicated metric.
 active_game = Gauge(
     "game_active",
     "Whether a game is currently running (0=no, 1=yes)",
-    ["game_kind", "game_id"],
+    ["game_kind", "game_id", "experiment_id", "arm"],
 )
 
 current_game_mode = Gauge(
@@ -31,19 +39,19 @@ current_game_mode = Gauge(
 game_duration_seconds = Gauge(
     "game_duration_seconds",
     "Duration of current game in seconds",
-    ["game_kind", "game_id"],
+    ["game_kind", "game_id", "experiment_id", "arm"],
 )
 
 games_started_total = Counter(
     "games_started_total",
     "Total number of games started",
-    ["mode", "game_kind"],
+    ["mode", "game_kind", "experiment_id", "arm"],
 )
 
 games_completed_total = Counter(
     "games_completed_total",
     "Total number of games completed",
-    ["mode", "game_kind"],
+    ["mode", "game_kind", "experiment_id", "arm"],
 )
 
 # Shadow game governance (#837).
@@ -64,7 +72,7 @@ shadow_games_preempted_total = Counter(
 active_players = Gauge(
     "game_active_players",
     "Number of players currently in game",
-    ["game_kind", "game_id"],
+    ["game_kind", "game_id", "experiment_id", "arm"],
 )
 
 players_alive = Gauge("game_players_alive", "Number of players currently alive")

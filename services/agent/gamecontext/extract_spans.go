@@ -11,7 +11,12 @@ const (
 	spanAttrGameMode = "game.mode"
 	spanAttrGameID   = "game.id"
 	spanAttrGameKind = "game.kind"
-	spanEventDeath   = "player_death"
+	// Experiment attribution span attributes (#975). Spans are the PRIMARY
+	// attribution channel — the game span carries experiment.id / experiment.arm
+	// unconditionally (empty when not in an experiment).
+	spanAttrExperimentID = "experiment.id"
+	spanAttrArm          = "experiment.arm"
+	spanEventDeath       = "player_death"
 
 	// resourceAttrServiceName mirrors semconv service.name, used for the
 	// own-telemetry skip.
@@ -40,6 +45,12 @@ func spanGameLabels(attrs pcommon.Map) gameLabels {
 	}
 	if v, ok := attrs.Get(spanAttrGameKind); ok {
 		labels.GameKind = v.AsString()
+	}
+	if v, ok := attrs.Get(spanAttrExperimentID); ok {
+		labels.ExperimentID = v.AsString()
+	}
+	if v, ok := attrs.Get(spanAttrArm); ok {
+		labels.Arm = v.AsString()
 	}
 	return labels
 }
@@ -106,6 +117,14 @@ func (s *Store) applySpan(span ptrace.Span) bool {
 	}
 	if labels.GameKind != "" {
 		s.SetGameKind(labels.GameKind)
+		updated = true
+	}
+	if labels.ExperimentID != "" {
+		s.SetExperimentID(labels.ExperimentID)
+		updated = true
+	}
+	if labels.Arm != "" {
+		s.SetArm(labels.Arm)
 		updated = true
 	}
 
