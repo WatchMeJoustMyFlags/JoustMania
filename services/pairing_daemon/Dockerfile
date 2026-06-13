@@ -54,6 +54,13 @@ RUN uv pip install --system --no-cache-dir -e lib/ -e proto/ -e services/pairing
 # =============================================================================
 FROM python:3.14-slim
 
+# Dependency fingerprint baked at build time so the integration fast path can
+# detect a stale :latest before mounting current source into it (#925).
+# Computed by scripts/ci/deps-fingerprint.sh; read back by
+# scripts/ci/check-image-freshness.sh. "dev" when built outside CI.
+ARG DEPS_FINGERPRINT=dev
+LABEL org.joustmania.deps-fingerprint="${DEPS_FINGERPRINT}"
+
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bluez \
