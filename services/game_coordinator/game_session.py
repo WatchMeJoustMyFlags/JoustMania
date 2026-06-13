@@ -27,6 +27,15 @@ import logging
 import threading
 import time
 
+from lib.feature_flags import (
+    GAME_KIND_REAL as EVAL_GAME_KIND_REAL,
+)
+from lib.feature_flags import (
+    GAME_KIND_SHADOW as EVAL_GAME_KIND_SHADOW,
+)
+from lib.feature_flags import (
+    set_game_session_kind_context,
+)
 from lib.telemetry import get_tracer
 from lib.types import get_game_display_name
 from proto import game_coordinator_pb2
@@ -138,10 +147,32 @@ class GameSession:
             finally:
                 loop.close()
 
+    def _eval_game_kind(self) -> str:
+        """Map this session's kind to the eval-context game_kind (#932).
+
+        The session kind is "primary"/"shadow" (metric-label semantics, #775); the
+        agent's experiment writer scopes targeting on "game_kind != real"
+        (targeting.go). Only a SHADOW session resolves experiments; a primary
+        (menu-driven, player-facing) game is the protected "real" baseline.
+        """
+        return EVAL_GAME_KIND_SHADOW if self.game_kind == GAME_KIND_SHADOW else EVAL_GAME_KIND_REAL
+
     async def _run_game_loop_async(self) -> None:
         """Run the async game loop for this session."""
         # Initialize async gRPC clients in this event loop
         await self.clients.connect()
+
+        # Establish the shadow/real eval-context split for THIS session's async
+        # context BEFORE the game is constructed (#932). GameFactory.create_game()
+        # below runs the game mode's __init__, which reads init-frozen calibration
+        # flags (thresholds, grace period, per-mode config). Those reads happen in
+        # this contextvars context, so the game_kind must already be set here —
+        # otherwise a shadow session's init-time reads would fall back to the
+        # API-level "real" default and miss its experiments. (BaseGameMode._run
+        # later re-sets the full transaction context with game_mode/sensitivity,
+        # carrying the same game_kind.) This is contextvars-scoped, so it never
+        # leaks across sessions.
+        set_game_session_kind_context(self._eval_game_kind())
 
         # Get the display name for the game span
         game_span_name = get_game_display_name(self.game_name)

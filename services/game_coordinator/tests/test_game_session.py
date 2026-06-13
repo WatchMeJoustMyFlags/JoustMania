@@ -195,6 +195,61 @@ class TestGameSessionLoop:
         # players_alive (still a single global gauge) reset only by primary.
         mock_metrics.players_alive.set.assert_any_call(0)
 
+    def test_eval_game_kind_maps_session_kind_to_real_or_shadow(self):
+        """Session kind (primary/shadow, #775) maps to eval game_kind (real/shadow,
+        #932): only shadow resolves experiments, primary is the protected "real"."""
+        assert _make_session(game_kind=GAME_KIND_PRIMARY)._eval_game_kind() == "real"
+        assert _make_session(game_kind=GAME_KIND_SHADOW)._eval_game_kind() == "shadow"
+
+    @pytest.mark.asyncio
+    @patch("services.game_coordinator.game_session.metrics")
+    @patch("services.game_coordinator.game_session.set_game_session_kind_context")
+    @patch("services.game_coordinator.game_session.GameFactory")
+    @patch("services.game_coordinator.game_session.tracer")
+    async def test_loop_sets_shadow_eval_context_before_create_game(
+        self, mock_tracer_mod, mock_factory, mock_set_kind, mock_metrics
+    ):
+        """A shadow session establishes game_kind="shadow" in its async context
+        BEFORE GameFactory.create_game() runs __init__-time calibration reads, so
+        those reads see the shadow split (#932). Order is asserted via a sentinel."""
+        order = []
+        mock_set_kind.side_effect = lambda kind: order.append(("set_kind", kind))
+        session = _make_session(game_kind=GAME_KIND_SHADOW)
+        mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
+        mock_game = MagicMock()
+        mock_game.run = AsyncMock()
+
+        def _record_create(*_a, **_k):
+            order.append(("create_game", None))
+            return mock_game
+
+        mock_factory.create_game.side_effect = _record_create
+
+        await session._run_game_loop_async()
+
+        assert order[0] == ("set_kind", "shadow")
+        assert ("create_game", None) in order
+        assert order.index(("set_kind", "shadow")) < order.index(("create_game", None))
+
+    @pytest.mark.asyncio
+    @patch("services.game_coordinator.game_session.metrics")
+    @patch("services.game_coordinator.game_session.set_game_session_kind_context")
+    @patch("services.game_coordinator.game_session.GameFactory")
+    @patch("services.game_coordinator.game_session.tracer")
+    async def test_loop_sets_real_eval_context_for_primary(
+        self, mock_tracer_mod, mock_factory, mock_set_kind, mock_metrics
+    ):
+        """A primary (menu) session establishes the protected game_kind="real"."""
+        session = _make_session(game_kind=GAME_KIND_PRIMARY)
+        mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
+        mock_game = MagicMock()
+        mock_game.run = AsyncMock()
+        mock_factory.create_game.return_value = mock_game
+
+        await session._run_game_loop_async()
+
+        mock_set_kind.assert_called_once_with("real")
+
     @pytest.mark.asyncio
     @patch("services.game_coordinator.game_session.metrics")
     @patch("services.game_coordinator.game_session.GameFactory")
