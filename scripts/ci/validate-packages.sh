@@ -7,7 +7,13 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 echo "Validating Python packages..."
 
+# Run as the host user (#795): like validate-protos.sh, this `uv sync` would
+# otherwise create a root-owned .venv/ in the mounted tree, breaking later
+# `uv` runs and needing `sudo rm`. A passwd-less UID has no writable HOME, so
+# point HOME at /tmp for uv's cache.
 docker run --rm \
+    --user "$(id -u):$(id -g)" \
+    -e HOME=/tmp \
     -v "$PROJECT_ROOT:/workspace" \
     -w /workspace \
     joustmania/ci-proto:latest \
