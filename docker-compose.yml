@@ -383,7 +383,11 @@ services:
       - AUDIO_PORT=50056
       - FLAGD_HOST=flagd
       - FLAGD_PORT=8015
-      - FLAGD_DIR=/etc/flagd
+      # Single source of truth for the active flag directory (#959/#966). The
+      # menu resolves which host flag file to write as $FLAGD_FLAG_DIR/<domain>.json
+      # (lib/flagd_paths.py) — the same plain join flagd, the agent writers, and
+      # the integration tests use, so writers and the served files never desync.
+      - FLAGD_FLAG_DIR=/etc/flagd
     volumes:
       - ./services/flagd:/etc/flagd
     depends_on:

@@ -146,7 +146,9 @@ services:
       - AUDIO_PORT=50056
       - FLAGD_HOST=flagd
       - FLAGD_PORT=8015
-      - FLAGD_DIR=/etc/flagd
+      # Single source of truth for the active flag directory (#959/#966):
+      # the menu writes $FLAGD_FLAG_DIR/<domain>.json via lib/flagd_paths.py.
+      - FLAGD_FLAG_DIR=/etc/flagd
     volumes:
       - ./services/flagd/game.json:/etc/flagd/game.json
       - ./services/flagd/user.json:/etc/flagd/user.json
