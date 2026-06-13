@@ -42,13 +42,14 @@ bash scripts/ci/validate-packages.sh
 
 ### `deps-fingerprint.sh` (#925)
 
-Print a stable 16-char hash of the files that determine what each service image
-bakes (root/proto/lib/per-service `pyproject.toml` + every `services/*/Dockerfile`).
-CI bakes this value into each Python service image as the OCI label
-`org.joustmania.deps-fingerprint` (build-arg `DEPS_FINGERPRINT`).
+Print a stable 16-char hash of the files that determine what a given service
+image bakes — the shared baked-deps inputs (root/proto/lib `pyproject.toml` +
+`images/builder/**`) plus that service's own `pyproject.toml` + `Dockerfile`.
+CI computes this **per service** and bakes it into that Python service image as
+the OCI label `org.joustmania.deps-fingerprint` (build-arg `DEPS_FINGERPRINT`).
 
 ```bash
-bash scripts/ci/deps-fingerprint.sh
+bash scripts/ci/deps-fingerprint.sh <service>   # e.g. menu, game_coordinator
 ```
 
 ### `check-image-freshness.sh` (#925)
