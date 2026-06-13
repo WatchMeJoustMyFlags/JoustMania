@@ -76,6 +76,12 @@ func newJournal(root string, opts ...Option) *Journal {
 // exists for this experiment_id — the intent is immutable and write-once, so
 // re-creating would risk silently clobbering an in-flight experiment; the caller
 // should Load an existing one instead.
+//
+// Single-writer-per-experiment: a Journal serializes its own writes with a mutex,
+// but that does NOT coordinate across two handles to the SAME experiment dir.
+// Callers MUST hold at most one live Journal per experiment dir at a time (two
+// handles would interleave appends and racily rewrite summary.json). The registry
+// (#978) owns this single-handle invariant.
 func Create(root string, intent Intent, opts ...Option) (*Journal, error) {
 	if intent.ExperimentID == "" {
 		return nil, fmt.Errorf("journal: intent.ExperimentID is required")
@@ -207,7 +213,13 @@ func (j *Journal) writeSummary() error {
 // pre-restart one. This is the #831 in-memory-loss fix: the in-memory state is a
 // VIEW of the durable journal, reconstructed on startup. summary.json on disk is a
 // cache/telemetry view; the log is the source of truth, so Load does NOT trust it
-// and recomputes from events.
+// and recomputes from events. A torn final event line (a partial append left by a
+// crash) is dropped and truncated by the store so Load still reconverges — see
+// store.readEvents; an interior malformed line stays a hard error.
+//
+// Single-writer-per-experiment: like Create, the returned Journal does not
+// coordinate with other handles to the same experiment dir. Callers MUST keep at
+// most one live Journal per experiment dir; the registry (#978) owns this.
 func Load(root string, experimentID string, opts ...Option) (*Journal, error) {
 	j := newJournal(root, opts...)
 
@@ -281,6 +293,12 @@ func (j *Journal) CompactView() CompactView {
 // ArmView is the per-arm aggregate exposed in a CompactView: the derived
 // sufficient statistics (variance already computed from the Welford M2), without
 // the internal M2 the LLM does not need.
+//
+// NOTE for a downstream significance test (#979): Variance here is the POPULATION
+// variance (M2/count) and would BIAS small-N comparisons. An unbiased / Welch
+// estimator MUST instead consume the raw M2 (+ count) from Summary() — see
+// Journal.Summary(), which exposes the full Welford state including M2. CompactView
+// is the bounded LLM/registry view, not the statistics input.
 type ArmView struct {
 	Count    int     `json:"count"`
 	Mean     float64 `json:"mean_fitness"`

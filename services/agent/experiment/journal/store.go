@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -170,9 +171,22 @@ func (s *store) readIntent(experimentID string) (Intent, error) {
 }
 
 // readEvents loads events.jsonl in order. A missing file yields an empty slice
-// (an experiment created but with no events yet is valid). A malformed line is a
-// hard error — the log is the source of truth and silently skipping a line would
-// corrupt the rehydrated statistics.
+// (an experiment created but with no events yet is valid).
+//
+// Torn-tail recovery (design §9.3 durability): appendEventLine commits each event
+// with O_APPEND → single write → fsync, and POSIX gives an append NO cross-crash
+// atomicity. A crash mid-write of event N+1 — after event N was durably fsynced
+// AND acknowledged to the caller — can leave a partial final line. That last event
+// was never acknowledged, so dropping it is correct: the summary (rewritten only
+// AFTER the append returns) never counted it, and Load must still reconverge.
+// So a malformed LAST non-empty line is DROPPED with a warning, and the torn bytes
+// are TRUNCATED off the file so the next AppendEvent does not turn the partial line
+// into an interior line (which would then hard-error on the NEXT Load).
+//
+// A malformed INTERIOR (non-last) line stays a HARD error: an event followed by a
+// later durably-committed event cannot itself be a torn tail — it signals a genuine
+// lost/corrupted write, and silently skipping it would corrupt the rehydrated
+// statistics (consistent with the Seq-gap reasoning).
 func (s *store) readEvents(experimentID string) ([]Event, error) {
 	path := filepath.Join(s.dir(experimentID), eventsFile)
 	f, err := os.Open(path)
@@ -189,21 +203,60 @@ func (s *store) readEvents(experimentID string) ([]Event, error) {
 	// Allow long lines (a large experimental_value is not on events, but a Note
 	// could be sizable); 1 MiB ceiling is generous for a single event line.
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	// We must distinguish "malformed interior line" (hard error) from "malformed
+	// final line" (torn tail → drop). bufio.Scanner cannot look ahead, so when a
+	// line fails to unmarshal we DEFER the decision: stash it and keep scanning. If
+	// nothing more follows, it was the tail; if another non-empty line follows, the
+	// stashed one was interior and we hard-error.
 	lineNo := 0
+	// offset tracks the byte position of the END of the last successfully parsed
+	// line, so a torn tail can be truncated back to that point.
+	var validBytes int64
+	var pendingBad bool      // a malformed line is awaiting the tail/interior verdict
+	var pendingBadLineNo int // its 1-based line number, for the error/log message
 	for scanner.Scan() {
 		lineNo++
 		raw := scanner.Bytes()
+		// +1 for the newline bufio strips. The final line may have no trailing
+		// newline (exactly the torn-tail case), but that line is either dropped
+		// (no truncation past validBytes) or — if valid — the file already ends
+		// there, so validBytes is never used to truncate beyond EOF.
+		lineLen := int64(len(raw)) + 1
+
 		if len(strings.TrimSpace(string(raw))) == 0 {
+			validBytes += lineLen
 			continue
+		}
+		// A non-empty line follows a previously stashed bad line → that bad line was
+		// interior, not a torn tail. Hard error.
+		if pendingBad {
+			return nil, fmt.Errorf("decode event line %d for %q: malformed interior line (a later event follows it)", pendingBadLineNo, experimentID)
 		}
 		var e Event
 		if err := json.Unmarshal(raw, &e); err != nil {
-			return nil, fmt.Errorf("decode event line %d for %q: %w", lineNo, experimentID, err)
+			// Could be a torn final line — defer the verdict until we know whether
+			// another line follows.
+			pendingBad = true
+			pendingBadLineNo = lineNo
+			continue
 		}
 		events = append(events, e)
+		validBytes += lineLen
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("scan events log for %q: %w", experimentID, err)
+	}
+
+	// A still-pending bad line at EOF is the torn tail: drop it and truncate the
+	// partial bytes so the recovered journal stays loadable and the next append
+	// continues cleanly after the last VALID event.
+	if pendingBad {
+		log.Printf("journal: dropping torn final line %d of events log for %q (partial write from a crash); reconverging from %d prior event(s)", pendingBadLineNo, experimentID, len(events))
+		_ = f.Close() // release the read handle before truncating
+		if err := os.Truncate(path, validBytes); err != nil {
+			return nil, fmt.Errorf("truncate torn tail of events log for %q: %w", experimentID, err)
+		}
 	}
 	return events, nil
 }
