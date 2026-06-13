@@ -1,0 +1,831 @@
+package experiment
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/joustmania/agent/experiment/journal"
+)
+
+// registry.go is the agent-owned experiment COORDINATOR (design §7, #978). It is
+// the experiment-timescale counterpart to the per-game LoopSet/Multiplexer
+// (#845): where those manage one decision loop/store per live game, the Registry
+// manages one entry per live EXPERIMENT. It mints experiment ids, holds each
+// experiment's intent + status, allocates finite shadow capacity across the live
+// set, decides (experiment_id, arm) at spawn, folds concluded games into the
+// journal, drives the verdict + status machine, and tears the experiment down on
+// a terminal status.
+//
+// SOURCE OF TRUTH: the durable journal (#983). The in-memory Registry is a VIEW
+// rebuilt from disk on startup via Rehydrate (the #831 in-memory-loss fix) — the
+// journal's append-only event log + rolling summary are authoritative; the
+// Registry never holds state the journal does not.
+//
+// SEAMS (registry_seams.go): every consequential effect is injected —
+// ShadowSpawner (#976), CohortVerdict (#979), Promoter (#961/#980),
+// TargetingWriter (#977). The Registry owns ONLY the lifecycle logic, so it is
+// unit-testable with recording fakes.
+
+// Status is an experiment's lifecycle status (design §7.2). The set is closed so
+// the journal/dashboards can enumerate every state.
+//
+//	PROPOSED ─▶ RUNNING ─▶ CONCLUDED ─▶ {PROMOTING ─▶ DONE | DISCARDED}
+//	                 │
+//	                 └─▶ ABORTED   (kill-switch / capacity reclaim / error)
+type Status string
+
+const (
+	// StatusProposed — intent recorded; targeting not yet written; no games.
+	StatusProposed Status = "proposed"
+	// StatusRunning — targeting written; the experiment may accrue shadow games.
+	StatusRunning Status = "running"
+	// StatusConcluded — target N reached (or under-powered timeout); verdict computed.
+	StatusConcluded Status = "concluded"
+	// StatusPromoting — a concluded+promote experiment being routed to the Promoter.
+	StatusPromoting Status = "promoting"
+	// StatusDone — terminal: promotion finished; targeting torn down; capacity freed.
+	StatusDone Status = "done"
+	// StatusDiscarded — terminal: concluded without promotion; torn down.
+	StatusDiscarded Status = "discarded"
+	// StatusAborted — terminal: kill-switch / capacity reclaim / error; torn down.
+	StatusAborted Status = "aborted"
+)
+
+// IsTerminal reports whether a status is terminal (the experiment is finished and
+// its capacity + targeting have been released).
+func (s Status) IsTerminal() bool {
+	return s == StatusDone || s == StatusDiscarded || s == StatusAborted
+}
+
+// IsLive reports whether the experiment still occupies a registry slot and may be
+// allocated shadow capacity (PROPOSED/RUNNING — concluded experiments hold their
+// game map for the verdict but are not allocated new capacity).
+func (s Status) IsLive() bool {
+	return s == StatusProposed || s == StatusRunning
+}
+
+// DefaultMaxShadowGames is the fixed cap on concurrent shadow games across ALL
+// live experiments (epic #982 decision 2: a fixed configured cap, not dynamic
+// host-headroom). Override with AGENT_MAX_SHADOW_GAMES. 20 mirrors the issue's
+// suggested default. Real games still preempt shadow at the coordinator (the
+// registry does not fight that — this cap bounds only the registry's own
+// in-flight shadow spawns).
+const DefaultMaxShadowGames = 20
+
+// maxShadowGamesEnv overrides DefaultMaxShadowGames.
+const maxShadowGamesEnv = "AGENT_MAX_SHADOW_GAMES"
+
+// Arm names. The experimental arm resolves the candidate value; the control arm
+// falls through to the existing default (within-experiment baseline). Both are
+// game_kind="shadow" (the hard invariant). These mirror the targeting contract
+// (ArmExperimental in targeting.go) and #975's lib values.
+const (
+	ArmControl = "control"
+)
+
+// DefaultArms is the standard two-arm split (epic #982 decision 5: a
+// within-experiment shadow control arm IS the decision basis, with the recent-real
+// baseline as a sanity cross-check). Round-robin allocation interleaves them.
+func DefaultArms() []string { return []string{ArmExperimental, ArmControl} }
+
+// Intent is the agent's definition of an experiment — the structured hypothesis
+// the registry persists to the journal at PROPOSED. It is the registry-level
+// counterpart to a Proposal (which carries only the flag write): an Intent adds
+// the experiment framing (objective, arms, target N, stop criteria). Minting the
+// experiment_id is the registry's job (Declare), so it is NOT a field here.
+type Intent struct {
+	// Hypothesis is the agent's reasoning: what change + why it might help.
+	Hypothesis string
+	// FlagKey is the game flag under experiment. It is the Proposal's FlagKey.
+	FlagKey string
+	// ExperimentalValue is the candidate value the experimental arm resolves.
+	ExperimentalValue any
+	// Objective is the fitness objective being optimized (e.g. "engagement_balanced").
+	Objective string
+	// Arms are the arm names. Empty ⇒ DefaultArms() (experimental + control).
+	Arms []string
+	// TargetNPerArm is the minimum games per arm before a verdict can be conclusive.
+	// Non-positive ⇒ the verdict seam decides (it stays inconclusive until it does).
+	TargetNPerArm int
+}
+
+// MintExperimentID returns a fresh experiment id in the "exp_<uuid hex[:12]>"
+// shape, mirroring the game_<...> game-id shape (#845). Exported so a caller can
+// pre-mint an id (e.g. to correlate a span) before Declare.
+func MintExperimentID() string {
+	return "exp_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
+}
+
+// MaxShadowGamesFromEnv resolves the fixed shadow-capacity cap from
+// AGENT_MAX_SHADOW_GAMES, falling back to DefaultMaxShadowGames on an unset,
+// empty, or non-positive value (a zero/negative cap would starve every
+// experiment, so it is treated as misconfiguration).
+func MaxShadowGamesFromEnv() int {
+	if v := strings.TrimSpace(os.Getenv(maxShadowGamesEnv)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return DefaultMaxShadowGames
+}
+
+// entry is the registry's in-memory view of one experiment. It is a cache of the
+// journal: status + the (game_id → arm) map + the round-robin cursor. The journal
+// remains authoritative; on restart Rehydrate rebuilds every entry from disk.
+type entry struct {
+	id      string
+	journal *journal.Journal
+	status  Status
+	flagKey string
+	// arms is the experiment's arm list (from intent), used for round-robin.
+	arms []string
+	// games maps a live (in-flight) shadow game_id → its arm. A game is removed on
+	// conclusion. len(games) is the experiment's current in-flight shadow count.
+	games map[string]string
+	// armCursor indexes arms for round-robin arm assignment within the experiment,
+	// so an experiment fills its arms evenly (experimental, control, experimental…).
+	armCursor int
+}
+
+// inFlight returns the experiment's current count of live (unconcluded) shadow
+// games — the slots it occupies against the global cap.
+func (e *entry) inFlight() int { return len(e.games) }
+
+// Registry is the agent-owned experiment coordinator (design §7). Safe for
+// concurrent use: a single mutex serializes the lifecycle/capacity book-keeping,
+// matching the LoopSet/Multiplexer pattern. The journal handles their own
+// locking; the registry holds at most ONE journal handle per experiment (the
+// single-writer-per-experiment invariant the journal package requires).
+type Registry struct {
+	root    string
+	maxCap  int
+	spawner ShadowSpawner
+	verdict CohortVerdict
+	promo   Promoter
+	target  TargetingWriter
+	clock   func() time.Time
+	log     *slog.Logger
+
+	mu      sync.Mutex
+	entries map[string]*entry
+	// rrCursor is the cross-experiment round-robin cursor for fair capacity
+	// allocation: AllocateAndSpawn rotates the start of the live-experiment scan so
+	// no single experiment is always served first (equal-share, no starvation).
+	rrCursor int
+}
+
+// RegistryConfig configures a Registry. Every seam may be nil — a nil seam
+// degrades to a safe no-op (a nil spawner cannot start a game; a nil verdict
+// leaves the verdict untouched; a nil promoter/target make promotion/teardown
+// recorded no-ops) so a Registry is always safe to construct in a test or before
+// a follow-up wires the real implementation. (Named RegistryConfig to avoid
+// colliding with the M7-7 validation Config in validate.go.)
+type RegistryConfig struct {
+	// Root is the journal experiments root (journal.DirFromEnv() in production; a
+	// t.TempDir in tests). Empty ⇒ journal.DefaultDir.
+	Root string
+	// MaxShadowGames is the fixed concurrent-shadow-game cap. Non-positive ⇒
+	// MaxShadowGamesFromEnv().
+	MaxShadowGames int
+	// Spawner / Verdict / Promoter / Targeting are the injected seams.
+	Spawner   ShadowSpawner
+	Verdict   CohortVerdict
+	Promoter  Promoter
+	Targeting TargetingWriter
+	// Clock is injected so Declare/AppendEvent timestamps are deterministic in
+	// tests. nil ⇒ time.Now (UTC).
+	Clock func() time.Time
+	// Log nil ⇒ slog.Default().
+	Log *slog.Logger
+}
+
+// NewRegistry builds a Registry over the injected seams. It does NOT touch the
+// filesystem or rehydrate — call Rehydrate after construction to rebuild the live
+// set from the journal.
+func NewRegistry(cfg RegistryConfig) *Registry {
+	maxCap := cfg.MaxShadowGames
+	if maxCap <= 0 {
+		maxCap = MaxShadowGamesFromEnv()
+	}
+	clock := cfg.Clock
+	if clock == nil {
+		clock = func() time.Time { return time.Now().UTC() }
+	}
+	log := cfg.Log
+	if log == nil {
+		log = slog.Default()
+	}
+	return &Registry{
+		root:    cfg.Root,
+		maxCap:  maxCap,
+		spawner: cfg.Spawner,
+		verdict: cfg.Verdict,
+		promo:   cfg.Promoter,
+		target:  cfg.Targeting,
+		clock:   clock,
+		log:     log,
+		entries: make(map[string]*entry),
+	}
+}
+
+// Declare defines a new experiment: it mints an experiment_id, persists the
+// immutable intent to the journal (journal.Create), records it as PROPOSED in the
+// registry, and returns the id. It does NOT spawn games or write targeting yet —
+// Start moves the experiment to RUNNING and writes the shadow targeting. Declare
+// fails if the journal already has this id (re-mint collision is astronomically
+// unlikely; a real collision is surfaced, not silently clobbered).
+func (r *Registry) Declare(in Intent) (string, error) {
+	arms := in.Arms
+	if len(arms) == 0 {
+		arms = DefaultArms()
+	}
+	id := MintExperimentID()
+	now := r.clock()
+
+	jrnl, err := journal.Create(r.root, journal.Intent{
+		ExperimentID:      id,
+		CreatedAt:         now,
+		Hypothesis:        in.Hypothesis,
+		FlagKey:           in.FlagKey,
+		ExperimentalValue: in.ExperimentalValue,
+		Objective:         in.Objective,
+		TargetNPerArm:     in.TargetNPerArm,
+		Arms:              arms,
+	})
+	if err != nil {
+		return "", fmt.Errorf("registry: declare experiment: %w", err)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.entries[id] = &entry{
+		id:      id,
+		journal: jrnl,
+		status:  StatusProposed,
+		flagKey: in.FlagKey,
+		arms:    arms,
+		games:   make(map[string]string),
+	}
+	// Record the PROPOSED transition as a decision event for the audit trail.
+	r.recordDecision(jrnl, StatusProposed, "experiment declared")
+	r.log.Info("experiment.declared", "experiment_id", id, "flag_key", in.FlagKey, "objective", in.Objective)
+	return id, nil
+}
+
+// Start moves a PROPOSED experiment to RUNNING and writes its experiment-scoped
+// shadow targeting via the TargetingWriter (#977). After Start the experiment may
+// be allocated shadow capacity. A no-op (already RUNNING) returns nil. If the
+// targeting write fails the experiment stays PROPOSED (it never accrues games it
+// cannot scope) and the error is returned.
+func (r *Registry) Start(ctx context.Context, id string) error {
+	r.mu.Lock()
+	e := r.entries[id]
+	if e == nil {
+		r.mu.Unlock()
+		return fmt.Errorf("registry: start: unknown experiment %q", id)
+	}
+	if e.status == StatusRunning {
+		r.mu.Unlock()
+		return nil
+	}
+	if e.status != StatusProposed {
+		st := e.status
+		r.mu.Unlock()
+		return fmt.Errorf("registry: start: experiment %q is %s, not proposed", id, st)
+	}
+	intent := e.journal.Intent()
+	r.mu.Unlock()
+
+	if r.target != nil {
+		p := Proposal{
+			FlagKey:           intent.FlagKey,
+			ExperimentID:      id,
+			ExperimentalValue: intent.ExperimentalValue,
+			Rationale:         intent.Hypothesis,
+		}
+		if err := r.target.Apply(ctx, p); err != nil {
+			return fmt.Errorf("registry: start: write targeting for %q: %w", id, err)
+		}
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// Re-fetch: a concurrent Abort may have removed/terminated it while unlocked.
+	e = r.entries[id]
+	if e == nil || e.status != StatusProposed {
+		return nil
+	}
+	e.status = StatusRunning
+	r.recordDecision(e.journal, StatusRunning, "experiment started")
+	r.log.Info("experiment.started", "experiment_id", id)
+	return nil
+}
+
+// AllocateAndSpawn fills FREE shadow capacity across the live experiments by
+// equal-share / round-robin (epic #982 decision 3), spawning at most one game per
+// experiment per pass until the cap is reached or no live experiment wants
+// another game. It is the registry's capacity scheduler: call it whenever
+// capacity may have freed (a game concluded, an experiment started). It returns
+// the number of games spawned this call.
+//
+// Fairness: the live experiments are scanned starting from a rotating cursor and
+// each gets at most one new game per pass, so K experiments share the cap evenly
+// and none starves. The global cap is the sum of in-flight games across ALL
+// experiments; allocation never exceeds it. Real games preempting shadow at the
+// coordinator is out of scope — this bounds only the registry's own spawns.
+func (r *Registry) AllocateAndSpawn(ctx context.Context) int {
+	if r.spawner == nil {
+		return 0
+	}
+	spawned := 0
+	for {
+		// Each iteration is one round-robin PASS: pick the next live experiment
+		// (from the rotating cursor) that has capacity and spawn ONE game for it.
+		// Re-evaluate capacity each pick so the global cap is never exceeded.
+		id, arm, ok := r.nextAllocation()
+		if !ok {
+			return spawned
+		}
+		gameID, err := r.spawner.Spawn(ctx, id, arm)
+		if err != nil {
+			// The slot was reserved optimistically; release it on failure so a
+			// flaky spawn does not permanently shrink capacity.
+			r.releaseReservation(id, arm)
+			r.log.Warn("experiment.spawn_failed", "experiment_id", id, "arm", arm, "error", err)
+			// Stop this call rather than hot-loop on a failing spawner.
+			return spawned
+		}
+		r.bindGame(id, gameID, arm)
+		spawned++
+	}
+}
+
+// nextAllocation picks the next (experiment_id, arm) to spawn under the global
+// cap, reserving the slot, or reports ok=false when the cap is full or no live
+// experiment exists. It advances both the cross-experiment round-robin cursor
+// (fairness) and the chosen experiment's per-arm cursor (even arm fill). Assumes
+// nothing; takes the lock.
+func (r *Registry) nextAllocation() (id, arm string, ok bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.inFlightLocked() >= r.maxCap {
+		return "", "", false
+	}
+	live := r.liveIDsLocked()
+	if len(live) == 0 {
+		return "", "", false
+	}
+	// Scan starting from the rotating cursor so a different experiment leads each
+	// pass — equal-share over time even when the cap is the binding constraint.
+	start := r.rrCursor % len(live)
+	for i := 0; i < len(live); i++ {
+		cand := live[(start+i)%len(live)]
+		e := r.entries[cand]
+		// Equal-share guard: do not let one experiment hold more than its fair
+		// ceil(cap/K) share while others want games — bound its in-flight count to
+		// the per-experiment share so K experiments converge to an even split.
+		share := r.perExperimentShareLocked(len(live))
+		if e.inFlight() >= share {
+			continue
+		}
+		// Reserve the slot: pick the arm (round-robin within the experiment) and
+		// advance both cursors. The actual bind happens after a successful spawn;
+		// reserve by recording a placeholder so concurrent passes see the slot taken.
+		arm := e.arms[e.armCursor%len(e.arms)]
+		e.armCursor++
+		r.rrCursor = (start + i + 1) % len(live)
+		// Reserve against the cap by pre-incrementing via a placeholder game id; it
+		// is replaced by the real game id in bindGame, or released on spawn failure.
+		placeholder := reservationKey(cand, e.armCursor)
+		e.games[placeholder] = arm
+		return cand, arm, true
+	}
+	return "", "", false
+}
+
+// perExperimentShareLocked is the equal-share ceiling per live experiment:
+// ceil(cap / K). It bounds any one experiment to its fair slice so the cap splits
+// evenly across K live experiments (no starvation). Assumes r.mu is held.
+func (r *Registry) perExperimentShareLocked(k int) int {
+	if k <= 0 {
+		return r.maxCap
+	}
+	return (r.maxCap + k - 1) / k
+}
+
+// reservationKey builds the placeholder game id a reserved-but-not-yet-spawned
+// slot occupies in entry.games. It is distinct from any coordinator game_id
+// (which is "game_<hex>"), so bindGame/releaseReservation can find and replace it.
+func reservationKey(id string, seq int) string {
+	return "__reserved__" + id + "__" + strconv.Itoa(seq)
+}
+
+// bindGame replaces the most-recent reservation for the experiment with the real
+// coordinator game_id, records a game_assigned journal event, and (re)allocation
+// is the caller's concern. Assumes the reservation exists (nextAllocation made it).
+func (r *Registry) bindGame(id, gameID, arm string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e := r.entries[id]
+	if e == nil {
+		return
+	}
+	// Replace the matching reservation placeholder (an arbitrary one for this arm)
+	// with the real game id. We find ANY reservation for this arm to convert.
+	for k, a := range e.games {
+		if isReservation(k) && a == arm {
+			delete(e.games, k)
+			break
+		}
+	}
+	e.games[gameID] = arm
+	r.appendEvent(e.journal, journal.Event{
+		Kind:   journal.KindGameAssigned,
+		GameID: gameID,
+		Arm:    arm,
+	})
+	r.log.Info("experiment.game_assigned", "experiment_id", id, "game_id", gameID, "arm", arm)
+}
+
+// releaseReservation drops one reservation placeholder for the arm (used when a
+// spawn fails) so a flaky spawn does not permanently consume a capacity slot.
+func (r *Registry) releaseReservation(id, arm string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e := r.entries[id]
+	if e == nil {
+		return
+	}
+	for k, a := range e.games {
+		if isReservation(k) && a == arm {
+			delete(e.games, k)
+			return
+		}
+	}
+}
+
+// isReservation reports whether a game-map key is a reservation placeholder
+// rather than a real coordinator game_id.
+func isReservation(k string) bool { return strings.HasPrefix(k, "__reserved__") }
+
+// ConcludeGame records that a shadow game ended (design §7.1, §8.1): it appends a
+// game_concluded journal event with the game's fitness sample (folding it into
+// the matching arm's Welford accumulator), then calls the CohortVerdict seam to
+// recompute the interim verdict, records it, and transitions the experiment to
+// CONCLUDED when the verdict warrants (promote/discard, or an under-powered
+// timeout the verdict signals). It looks the game up in the (game_id →
+// experiment_id, arm) map the registry owns. An unknown game_id is ignored (it
+// was not one of ours). On CONCLUDED the experiment is routed to promotion (if the
+// verdict promotes) and torn down. Returns the resulting status.
+func (r *Registry) ConcludeGame(ctx context.Context, gameID string, fitness float64, durationS float64) (Status, error) {
+	r.mu.Lock()
+	id, arm, e := r.findGameLocked(gameID)
+	if e == nil {
+		r.mu.Unlock()
+		return "", nil // not one of ours; ignore.
+	}
+	delete(e.games, gameID)
+	f := fitness
+	r.appendEvent(e.journal, journal.Event{
+		Kind:      journal.KindGameConcluded,
+		GameID:    gameID,
+		Arm:       arm,
+		Fitness:   &f,
+		DurationS: durationS,
+	})
+	jrnl := e.journal
+	r.mu.Unlock()
+
+	// Recompute the interim verdict from the seam (outside the registry lock — the
+	// journal has its own lock). Record it as an interim_verdict event.
+	view := jrnl.CompactView()
+	var verdict journal.Verdict
+	haveVerdict := false
+	if r.verdict != nil {
+		verdict, haveVerdict = r.verdict.Evaluate(view)
+		if haveVerdict {
+			r.appendEvent(jrnl, journal.Event{
+				Kind:    journal.KindInterimVerdict,
+				Verdict: &verdict,
+			})
+		}
+	}
+
+	r.log.Info("experiment.game_concluded",
+		"experiment_id", id, "game_id", gameID, "arm", arm, "fitness", fitness)
+
+	// Decide whether to conclude the experiment. A promote/discard verdict
+	// concludes it; inconclusive keeps it running. (An under-powered timeout is the
+	// verdict seam's call — it returns promote/discard once it is willing to.)
+	if haveVerdict && verdict.Outcome != OutcomeInconclusive {
+		return r.conclude(ctx, id, verdict)
+	}
+	return StatusRunning, nil
+}
+
+// conclude transitions an experiment to CONCLUDED on a final verdict, routes a
+// promote verdict to the Promoter (PROMOTING → DONE), discards otherwise, and
+// tears down the targeting + frees capacity. It is the verdict→terminal path.
+func (r *Registry) conclude(ctx context.Context, id string, verdict journal.Verdict) (Status, error) {
+	r.mu.Lock()
+	e := r.entries[id]
+	if e == nil || e.status.IsTerminal() {
+		r.mu.Unlock()
+		if e != nil {
+			return e.status, nil
+		}
+		return "", nil
+	}
+	e.status = StatusConcluded
+	r.recordDecision(e.journal, StatusConcluded, "target N reached / verdict "+verdict.Outcome)
+	jrnl := e.journal
+	flagKey := e.flagKey
+	r.mu.Unlock()
+
+	r.log.Info("experiment.concluded", "experiment_id", id, "outcome", verdict.Outcome)
+
+	if verdict.Outcome == CohortOutcomePromote {
+		r.promote(ctx, id, jrnl)
+	}
+
+	// Terminal: discard if not promoted/done. Promotion sets DONE; otherwise discard.
+	r.mu.Lock()
+	e = r.entries[id]
+	final := StatusDiscarded
+	if e != nil && e.status == StatusDone {
+		final = StatusDone
+	}
+	r.mu.Unlock()
+
+	r.teardown(ctx, id, flagKey, final, "experiment concluded: "+verdict.Outcome)
+	return final, nil
+}
+
+// promote routes a concluded+promote experiment to the Promoter seam
+// (#961/#980), transitioning PROMOTING → DONE. A nil Promoter or a Promote error
+// is recorded but never blocks teardown — the experiment is concluded either way.
+func (r *Registry) promote(ctx context.Context, id string, jrnl *journal.Journal) {
+	r.mu.Lock()
+	e := r.entries[id]
+	if e == nil {
+		r.mu.Unlock()
+		return
+	}
+	e.status = StatusPromoting
+	r.recordDecision(e.journal, StatusPromoting, "routing to promoter")
+	r.mu.Unlock()
+
+	if r.promo != nil {
+		if err := r.promo.Promote(ctx, jrnl.CompactView()); err != nil {
+			r.log.Warn("experiment.promote_failed", "experiment_id", id, "error", err)
+		}
+	}
+
+	r.mu.Lock()
+	if e := r.entries[id]; e != nil {
+		e.status = StatusDone
+		r.recordDecision(e.journal, StatusDone, "promotion routed")
+	}
+	r.mu.Unlock()
+}
+
+// Abort terminates an experiment (kill-switch / capacity reclaim / error): it
+// records the ABORTED transition, tears down the targeting, and frees capacity.
+// A terminal experiment is a no-op. reason is recorded for the audit trail.
+func (r *Registry) Abort(ctx context.Context, id, reason string) error {
+	r.mu.Lock()
+	e := r.entries[id]
+	if e == nil {
+		r.mu.Unlock()
+		return fmt.Errorf("registry: abort: unknown experiment %q", id)
+	}
+	if e.status.IsTerminal() {
+		r.mu.Unlock()
+		return nil
+	}
+	flagKey := e.flagKey
+	r.mu.Unlock()
+
+	r.teardown(ctx, id, flagKey, StatusAborted, reason)
+	return nil
+}
+
+// AbortAll aborts every live (non-terminal) experiment — the kill-switch path
+// (design §7.2 / §10: auto-stop on agent.json `enabled` false). It is called when
+// the agent is disabled. Returns the ids aborted.
+func (r *Registry) AbortAll(ctx context.Context, reason string) []string {
+	r.mu.Lock()
+	ids := make([]string, 0, len(r.entries))
+	for id, e := range r.entries {
+		if !e.status.IsTerminal() {
+			ids = append(ids, id)
+		}
+	}
+	r.mu.Unlock()
+
+	sort.Strings(ids) // deterministic order (tests + stable logs)
+	for _, id := range ids {
+		_ = r.Abort(ctx, id, reason)
+	}
+	return ids
+}
+
+// teardown is the inverse of Start (design §10): it strips the experiment's
+// shadow targeting branch via the TargetingWriter (#977), records the terminal
+// decision, sets the terminal status, and frees capacity (clearing the in-flight
+// game map so the freed slots are available to other experiments on the next
+// AllocateAndSpawn). Idempotent on a terminal experiment.
+func (r *Registry) teardown(ctx context.Context, id, flagKey string, terminal Status, reason string) {
+	// Strip the targeting OUTSIDE the registry lock (it does file I/O). Stripping a
+	// shadow branch only ever affects shadow games, so it is invariant-safe.
+	if r.target != nil {
+		if err := r.target.Strip(ctx, flagKey, id); err != nil {
+			r.log.Warn("experiment.teardown_strip_failed", "experiment_id", id, "error", err)
+		}
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e := r.entries[id]
+	if e == nil {
+		return
+	}
+	if e.status.IsTerminal() && e.status == terminal {
+		return
+	}
+	e.status = terminal
+	// Free capacity: drop the in-flight games (reservations + bound games). Their
+	// slots return to the global cap for other experiments.
+	e.games = make(map[string]string)
+	r.appendEvent(e.journal, journal.Event{
+		Kind:   journal.KindOutcome,
+		Status: string(terminal),
+		Note:   reason,
+	})
+	r.log.Info("experiment.torn_down", "experiment_id", id, "status", string(terminal), "reason", reason)
+}
+
+// Rehydrate rebuilds the live registry from the durable journal on startup (the
+// #831 fix, design §7.2): it scans the journal root for experiment dirs, Loads
+// each, and reconstructs an entry from its compact view (status + arms). It does
+// NOT re-load the in-flight game map — a restart loses no DURABLE state (concluded
+// games are folded into the journal summary), and any game that was in-flight at
+// crash time is no longer running, so the registry starts each rehydrated
+// experiment with an empty in-flight set and refills capacity on the next
+// AllocateAndSpawn. Terminal experiments are skipped (their work is done).
+func (r *Registry) Rehydrate(ids []string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, id := range ids {
+		jrnl, err := journal.Load(r.root, id)
+		if err != nil {
+			return fmt.Errorf("registry: rehydrate %q: %w", id, err)
+		}
+		view := jrnl.CompactView()
+		st := Status(view.Status)
+		if st == "" {
+			st = StatusRunning
+		}
+		if st.IsTerminal() {
+			continue // done experiment — nothing to manage.
+		}
+		r.entries[id] = &entry{
+			id:      id,
+			journal: jrnl,
+			status:  st,
+			flagKey: view.Intent.FlagKey,
+			arms:    append([]string(nil), view.Intent.Arms...),
+			games:   make(map[string]string),
+		}
+	}
+	return nil
+}
+
+// --- read accessors (telemetry / tests) ---
+
+// Status returns the current status of an experiment, or ("", false) if unknown.
+func (r *Registry) Status(id string) (Status, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e := r.entries[id]
+	if e == nil {
+		return "", false
+	}
+	return e.status, true
+}
+
+// InFlight returns the experiment's current in-flight shadow-game count (bound
+// games + reservations), or 0 if unknown.
+func (r *Registry) InFlight(id string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if e := r.entries[id]; e != nil {
+		return e.inFlight()
+	}
+	return 0
+}
+
+// TotalInFlight returns the total in-flight shadow games across all experiments —
+// the registry's current draw against the cap.
+func (r *Registry) TotalInFlight() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.inFlightLocked()
+}
+
+// Capacity returns the configured fixed shadow-game cap.
+func (r *Registry) Capacity() int { return r.maxCap }
+
+// Live returns the ids of experiments that may be allocated shadow capacity —
+// i.e. those in RUNNING (targeting written, ready to accrue games), sorted. A
+// PROPOSED experiment occupies a registry slot but is not yet spawnable, so it is
+// not returned here.
+func (r *Registry) Live() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.liveIDsLocked()
+}
+
+// CompactView returns the bounded journal view for an experiment (intent +
+// per-arm aggregates + recent tail) — the read surface the dashboard / LLM
+// consume. ok=false if unknown.
+func (r *Registry) CompactView(id string) (journal.CompactView, bool) {
+	r.mu.Lock()
+	e := r.entries[id]
+	r.mu.Unlock()
+	if e == nil {
+		return journal.CompactView{}, false
+	}
+	return e.journal.CompactView(), true
+}
+
+// --- locked helpers ---
+
+// inFlightLocked sums in-flight games across all experiments. Assumes r.mu held.
+func (r *Registry) inFlightLocked() int {
+	total := 0
+	for _, e := range r.entries {
+		total += e.inFlight()
+	}
+	return total
+}
+
+// liveIDsLocked returns the sorted ids of PROPOSED/RUNNING experiments. Assumes
+// r.mu held. Only RUNNING experiments are spawnable, but PROPOSED ones still
+// occupy a registry slot; nextAllocation filters to RUNNING via the share check
+// implicitly — only RUNNING experiments are returned here for allocation fairness.
+func (r *Registry) liveIDsLocked() []string {
+	ids := make([]string, 0, len(r.entries))
+	for id, e := range r.entries {
+		if e.status == StatusRunning {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// findGameLocked looks up the experiment + arm owning a coordinator game_id.
+// Assumes r.mu held.
+func (r *Registry) findGameLocked(gameID string) (id, arm string, e *entry) {
+	for eid, ent := range r.entries {
+		if a, ok := ent.games[gameID]; ok {
+			return eid, a, ent
+		}
+	}
+	return "", "", nil
+}
+
+// recordDecision appends a KindDecision status-transition event. Assumes the
+// caller holds r.mu (the journal serializes its own write). Errors are logged,
+// never fatal — the in-memory transition already happened and Rehydrate would
+// re-derive from the prior durable state.
+func (r *Registry) recordDecision(jrnl *journal.Journal, status Status, note string) {
+	r.appendEvent(jrnl, journal.Event{
+		Kind:   journal.KindDecision,
+		Status: string(status),
+		Note:   note,
+	})
+}
+
+// appendEvent stamps the event time from the registry clock (if unset) and
+// appends it to the journal, logging any error. Centralizes the time injection so
+// every registry-emitted event carries a timestamp.
+func (r *Registry) appendEvent(jrnl *journal.Journal, e journal.Event) {
+	if e.At.IsZero() {
+		e.At = r.clock()
+	}
+	if err := jrnl.AppendEvent(e); err != nil {
+		r.log.Warn("experiment.journal_append_failed", "kind", string(e.Kind), "error", err)
+	}
+}
