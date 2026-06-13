@@ -86,10 +86,20 @@ type GameContext struct {
 	// observed on any labeled signal). Source: the game_kind datapoint label on
 	// game_active / game_active_players / game_duration_seconds, or the game.kind
 	// attribute on the game-session / player_lifecycle spans (#845).
-	GameKind  string
-	Session   SessionSignals
-	Players   map[string]*PlayerSignals
-	UpdatedAt time.Time
+	GameKind string
+	// ExperimentID / Arm are the experiment attribution within a shadow session
+	// (#975, epic #982): which experiment this game belongs to ("exp_<id>" or "" —
+	// not part of any experiment) and which arm ("experimental" / "control" / "").
+	// Source: the experiment_id / arm datapoint labels on the lifecycle metrics
+	// (game_active / game_active_players / game_duration_seconds), or the
+	// experiment.id / experiment.arm attributes on the game-session span. They are
+	// partition enrichment, not a routing key — the cohort aggregator (#979) groups
+	// partitions by ExperimentID; the Multiplexer still partitions on game_id.
+	ExperimentID string
+	Arm          string
+	Session      SessionSignals
+	Players      map[string]*PlayerSignals
+	UpdatedAt    time.Time
 
 	// Timeline is a bounded, oldest-first slice of the partition's recent rolling
 	// narrative (#916): periodic state deltas, eliminations, and session phase

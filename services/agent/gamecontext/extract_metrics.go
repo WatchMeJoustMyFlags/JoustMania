@@ -34,6 +34,13 @@ const (
 	attrMode     = "mode"
 	attrGameID   = "game_id"
 	attrGameKind = "game_kind"
+	// Experiment attribution (#975, epic #982): finer-grained labels WITHIN a
+	// shadow game. Carried on the LOW-RATE lifecycle metrics (game_active,
+	// game_active_players, game_duration_seconds) the same way game_kind is —
+	// NOT on the per-frame firehose. Empty when the signal predates / is not
+	// part of an experiment.
+	attrExperimentID = "experiment_id"
+	attrArm          = "arm"
 )
 
 // gameLabels carries the per-datapoint/per-span game identity resolved from the
@@ -51,6 +58,12 @@ const (
 type gameLabels struct {
 	GameID   string
 	GameKind string
+	// ExperimentID / Arm carry the experiment attribution (#975) when the signal
+	// is part of an agent experiment — empty otherwise. They are partition
+	// ENRICHMENT, not a routing key: the Multiplexer still partitions on GameID;
+	// a cohort is reconstructed by grouping partitions that share an ExperimentID.
+	ExperimentID string
+	Arm          string
 }
 
 // gameIDOf reads the game_id datapoint label; empty when absent.
@@ -69,9 +82,30 @@ func gameKindOf(attrs pcommon.Map) string {
 	return ""
 }
 
+// experimentIDOf reads the experiment_id datapoint label; empty when absent.
+func experimentIDOf(attrs pcommon.Map) string {
+	if v, ok := attrs.Get(attrExperimentID); ok {
+		return v.AsString()
+	}
+	return ""
+}
+
+// armOf reads the arm datapoint label; empty when absent.
+func armOf(attrs pcommon.Map) string {
+	if v, ok := attrs.Get(attrArm); ok {
+		return v.AsString()
+	}
+	return ""
+}
+
 // metricGameLabels resolves the game identity labels on a metric datapoint.
 func metricGameLabels(attrs pcommon.Map) gameLabels {
-	return gameLabels{GameID: gameIDOf(attrs), GameKind: gameKindOf(attrs)}
+	return gameLabels{
+		GameID:       gameIDOf(attrs),
+		GameKind:     gameKindOf(attrs),
+		ExperimentID: experimentIDOf(attrs),
+		Arm:          armOf(attrs),
+	}
 }
 
 // ApplyMetrics walks ResourceMetrics -> ScopeMetrics -> Metrics, decoding Gauge
@@ -258,4 +292,6 @@ func (s *Store) applyDataPoint(name string, dp pmetric.NumberDataPoint) bool {
 func (s *Store) adoptGame(labels gameLabels) {
 	s.AdoptSessionID(labels.GameID)
 	s.SetGameKind(labels.GameKind)
+	s.SetExperimentID(labels.ExperimentID)
+	s.SetArm(labels.Arm)
 }

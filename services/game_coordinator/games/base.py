@@ -474,8 +474,13 @@ class BaseGameMode(ABC):
         #   game_kind: "primary" or "shadow" — labels lifecycle metrics.
         #   _reset_global_gauges_on_end: only the primary session resets the
         #     single-game state gauges (music_tempo, sensitivity, thresholds).
+        #   experiment_id / arm: experiment attribution within a shadow session
+        #     (#975); empty for a non-experiment game. The servicer overrides
+        #     these from the owning GameSession (set by #976's spawn binding).
         self.game_kind = "primary"
         self._reset_global_gauges_on_end = True
+        self.experiment_id = ""
+        self.arm = ""
 
         # Game state
         self.state = GameState.IDLE
@@ -1868,12 +1873,19 @@ class BaseGameMode(ABC):
                 # every primary (menu-driven, player-facing) game is protected as
                 # "real". This runs inside the per-session game loop, so the override
                 # is scoped to this session's async context (contextvars).
+                # Experiment attribution (#975) rides the same transaction context
+                # as game_kind so an experiment-scoped flag override resolves for
+                # this session. Pass them only when set (a non-experiment game
+                # leaves them absent, so its experiment targeting is false by
+                # construction — real-by-default).
                 eval_game_kind = GAME_KIND_SHADOW if self.game_kind == GAME_KIND_SHADOW else GAME_KIND_REAL
                 set_game_transaction_context(
                     game_mode=self.get_game_name(),
                     controller_count=len(self.players),
                     sensitivity=self.sensitivity.value,
                     game_kind=eval_game_kind,
+                    experiment_id=self.experiment_id or None,
+                    arm=self.arm or None,
                 )
 
                 # Additional phases (e.g., color_assignment, team_formation)

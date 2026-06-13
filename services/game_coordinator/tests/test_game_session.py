@@ -45,7 +45,7 @@ class MockSpan:
         return False
 
 
-def _make_session(game_kind=GAME_KIND_PRIMARY):
+def _make_session(game_kind=GAME_KIND_PRIMARY, experiment_id="", arm=""):
     """Build a GameSession with mocked clients + event bus for loop testing."""
     event_bus = MagicMock()
     event_bus.publish = AsyncMock()
@@ -61,6 +61,8 @@ def _make_session(game_kind=GAME_KIND_PRIMARY):
         event_bus=event_bus,
         game_kind=game_kind,
         parent_context=None,
+        experiment_id=experiment_id,
+        arm=arm,
     )
 
     mock_clients = MagicMock()
@@ -189,7 +191,9 @@ class TestGameSessionLoop:
         await session._run_game_loop_async()
 
         # active_game/active_players reset to 0 for this session's kind.
-        mock_metrics.active_game.labels.assert_any_call(game_kind=GAME_KIND_PRIMARY, game_id="game_abc123")
+        mock_metrics.active_game.labels.assert_any_call(
+            game_kind=GAME_KIND_PRIMARY, game_id="game_abc123", experiment_id="", arm=""
+        )
         mock_metrics.active_game.labels.return_value.set.assert_any_call(0)
         mock_metrics.active_players.labels.return_value.set.assert_any_call(0)
         # players_alive (still a single global gauge) reset only by primary.
@@ -213,7 +217,7 @@ class TestGameSessionLoop:
         BEFORE GameFactory.create_game() runs __init__-time calibration reads, so
         those reads see the shadow split (#932). Order is asserted via a sentinel."""
         order = []
-        mock_set_kind.side_effect = lambda kind: order.append(("set_kind", kind))
+        mock_set_kind.side_effect = lambda kind, **_kw: order.append(("set_kind", kind))
         session = _make_session(game_kind=GAME_KIND_SHADOW)
         mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
         mock_game = MagicMock()
@@ -248,7 +252,7 @@ class TestGameSessionLoop:
 
         await session._run_game_loop_async()
 
-        mock_set_kind.assert_called_once_with("real")
+        mock_set_kind.assert_called_once_with("real", experiment_id=None, arm=None)
 
     @pytest.mark.asyncio
     @patch("services.game_coordinator.game_session.metrics")
@@ -265,6 +269,78 @@ class TestGameSessionLoop:
 
         mock_metrics.games_completed_total.labels.assert_called_with(mode="FFA", game_kind=GAME_KIND_SHADOW)
         mock_metrics.games_completed_total.labels.return_value.inc.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("services.game_coordinator.game_session.metrics")
+    @patch("services.game_coordinator.game_session.GameFactory")
+    @patch("services.game_coordinator.game_session.tracer")
+    async def test_loop_emits_experiment_span_attrs(self, mock_tracer_mod, mock_factory, mock_metrics):
+        """The game span carries experiment.id + experiment.arm (#975), the primary
+        attribution channel. A bound experiment game stamps both."""
+        session = _make_session(game_kind=GAME_KIND_SHADOW, experiment_id="exp_abc123", arm="experimental")
+        span = MockSpan()
+        mock_tracer_mod.start_as_current_span.return_value.__enter__ = MagicMock(return_value=span)
+        mock_tracer_mod.start_as_current_span.return_value.__exit__ = MagicMock(return_value=False)
+        mock_game = MagicMock()
+        mock_game.run = AsyncMock()
+        mock_factory.create_game.return_value = mock_game
+
+        await session._run_game_loop_async()
+
+        assert span.attributes["experiment.id"] == "exp_abc123"
+        assert span.attributes["experiment.arm"] == "experimental"
+        # The game object is threaded the attribution for its in-loop flag eval.
+        assert mock_game.experiment_id == "exp_abc123"
+        assert mock_game.arm == "experimental"
+
+    @pytest.mark.asyncio
+    @patch("services.game_coordinator.game_session.metrics")
+    @patch("services.game_coordinator.game_session.GameFactory")
+    @patch("services.game_coordinator.game_session.tracer")
+    async def test_loop_emits_empty_experiment_attrs_for_non_experiment(
+        self, mock_tracer_mod, mock_factory, mock_metrics
+    ):
+        """A non-experiment game stamps empty experiment.id/arm — present but blank,
+        mirroring game.kind, so the agent's no-op-on-empty setters leave it alone."""
+        session = _make_session(game_kind=GAME_KIND_PRIMARY)
+        span = MockSpan()
+        mock_tracer_mod.start_as_current_span.return_value.__enter__ = MagicMock(return_value=span)
+        mock_tracer_mod.start_as_current_span.return_value.__exit__ = MagicMock(return_value=False)
+        mock_game = MagicMock()
+        mock_game.run = AsyncMock()
+        mock_factory.create_game.return_value = mock_game
+
+        await session._run_game_loop_async()
+
+        assert span.attributes["experiment.id"] == ""
+        assert span.attributes["experiment.arm"] == ""
+
+    @pytest.mark.asyncio
+    @patch("services.game_coordinator.game_session.metrics")
+    @patch("services.game_coordinator.game_session.GameFactory")
+    @patch("services.game_coordinator.game_session.tracer")
+    async def test_loop_labels_lifecycle_metrics_with_experiment(self, mock_tracer_mod, mock_factory, mock_metrics):
+        """An experiment game labels its per-live-game GAUGES with experiment_id +
+        arm (#975 cardinality decision: gauges are keyed on the unbounded game_id
+        and set per live game, so they add no permanent series). The cumulative
+        COUNTERS deliberately do NOT carry experiment_id/arm — a label on a
+        cumulative counter is one permanent series per experiment, forever."""
+        session = _make_session(game_kind=GAME_KIND_SHADOW, experiment_id="exp_abc123", arm="control")
+        mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
+        mock_game = MagicMock()
+        mock_game.run = AsyncMock()
+        mock_factory.create_game.return_value = mock_game
+
+        await session._run_game_loop_async()
+
+        mock_metrics.active_game.labels.assert_any_call(
+            game_kind=GAME_KIND_SHADOW, game_id="game_abc123", experiment_id="exp_abc123", arm="control"
+        )
+        # Cumulative counter: mode x game_kind only, no experiment labels.
+        mock_metrics.games_completed_total.labels.assert_called_with(mode="FFA", game_kind=GAME_KIND_SHADOW)
+        mock_metrics.game_duration_seconds.labels.assert_any_call(
+            game_kind=GAME_KIND_SHADOW, game_id="game_abc123", experiment_id="exp_abc123", arm="control"
+        )
 
     @pytest.mark.asyncio
     @patch("services.game_coordinator.game_session.metrics")

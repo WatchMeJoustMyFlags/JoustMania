@@ -123,3 +123,45 @@ func TestApplySpans_SkipsOwnService(t *testing.T) {
 		t.Fatal("non-own service spans must still apply")
 	}
 }
+
+// TestApplySpans_AdoptsExperimentAttribution verifies the game span's
+// experiment.id / experiment.arm attributes (the PRIMARY attribution channel,
+// #975) enrich the GameContext snapshot.
+func TestApplySpans_AdoptsExperimentAttribution(t *testing.T) {
+	s := newTestStore()
+	td := spanWith(map[string]string{
+		"game.id":        "game-7",
+		"game.kind":      "shadow",
+		"experiment.id":  "exp_abc123",
+		"experiment.arm": "experimental",
+	}, nil)
+	if !s.ApplySpans(td) {
+		t.Fatal("expected span to be recognized")
+	}
+	snap := s.Snapshot()
+	if snap.ExperimentID != "exp_abc123" {
+		t.Fatalf("ExperimentID = %q, want exp_abc123 (from experiment.id span attr)", snap.ExperimentID)
+	}
+	if snap.Arm != "experimental" {
+		t.Fatalf("Arm = %q, want experimental (from experiment.arm span attr)", snap.Arm)
+	}
+}
+
+// TestApplySpans_NoExperimentAttrsLeavesAttributionEmpty verifies a span without
+// experiment attributes leaves attribution empty (an unlabeled signal is a
+// no-op for experiment id / arm, #975).
+func TestApplySpans_NoExperimentAttrsLeavesAttributionEmpty(t *testing.T) {
+	s := newTestStore()
+	td := spanWith(map[string]string{
+		"game.id":   "game-7",
+		"game.kind": "real",
+	}, nil)
+	s.ApplySpans(td)
+	snap := s.Snapshot()
+	if snap.ExperimentID != "" {
+		t.Fatalf("ExperimentID = %q, want empty", snap.ExperimentID)
+	}
+	if snap.Arm != "" {
+		t.Fatalf("Arm = %q, want empty", snap.Arm)
+	}
+}

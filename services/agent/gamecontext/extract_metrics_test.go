@@ -310,3 +310,73 @@ func TestApplyMetrics_SkipsOwnService(t *testing.T) {
 		t.Fatal("non-own service metrics must still apply")
 	}
 }
+
+// TestApplyMetrics_AdoptsExperimentLabels verifies that a low-rate lifecycle
+// signal carrying experiment_id + arm labels enriches the GameContext snapshot
+// (#975) alongside game_id / game_kind. Experiment attribution rides the same
+// adoptGame path as game_kind.
+func TestApplyMetrics_AdoptsExperimentLabels(t *testing.T) {
+	s := newTestStore()
+	s.ApplyMetrics(metricsWith(metricGameActive, 1, map[string]string{
+		attrGameID:       "game-42",
+		attrGameKind:     "shadow",
+		attrExperimentID: "exp_abc123",
+		attrArm:          "experimental",
+	}))
+	snap := s.Snapshot()
+	if snap.ExperimentID != "exp_abc123" {
+		t.Fatalf("ExperimentID = %q, want exp_abc123 (adopted from experiment_id)", snap.ExperimentID)
+	}
+	if snap.Arm != "experimental" {
+		t.Fatalf("Arm = %q, want experimental (adopted from arm)", snap.Arm)
+	}
+	// Routing/identity unchanged: still keyed on game_id.
+	if snap.SessionID != "game-42" {
+		t.Fatalf("SessionID = %q, want game-42 (routing unchanged by experiment labels)", snap.SessionID)
+	}
+}
+
+// TestApplyMetrics_NoExperimentLabelsLeavesAttributionUnchanged verifies that an
+// unlabeled signal is a no-op for experiment attribution — it never clobbers a
+// previously observed experiment id / arm, exactly like game_kind (#975).
+func TestApplyMetrics_NoExperimentLabelsLeavesAttributionUnchanged(t *testing.T) {
+	s := newTestStore()
+	// A labeled lifecycle signal establishes the experiment attribution.
+	s.ApplyMetrics(metricsWith(metricGameActive, 1, map[string]string{
+		attrGameID:       "game-1",
+		attrExperimentID: "exp_abc123",
+		attrArm:          "control",
+	}))
+	// A later unlabeled signal (per-player firehose carries no experiment labels).
+	if !s.ApplyMetrics(metricsWith(metricGameAlive, 1, map[string]string{
+		attrSerial: "A",
+		attrGameID: "game-1",
+	})) {
+		t.Fatal("per-player signal should still apply")
+	}
+	snap := s.Snapshot()
+	if snap.ExperimentID != "exp_abc123" {
+		t.Fatalf("ExperimentID = %q, want exp_abc123 (unlabeled signal must not clear it)", snap.ExperimentID)
+	}
+	if snap.Arm != "control" {
+		t.Fatalf("Arm = %q, want control (unlabeled signal must not clear it)", snap.Arm)
+	}
+}
+
+// TestApplyMetrics_NoExperimentLabelsLeavesAttributionEmpty verifies a real /
+// non-experiment game has empty experiment attribution by construction — an
+// absent label means "not in any experiment" (real-by-default).
+func TestApplyMetrics_NoExperimentLabelsLeavesAttributionEmpty(t *testing.T) {
+	s := newTestStore()
+	s.ApplyMetrics(metricsWith(metricGameActive, 1, map[string]string{
+		attrGameID:   "game-real",
+		attrGameKind: "real",
+	}))
+	snap := s.Snapshot()
+	if snap.ExperimentID != "" {
+		t.Fatalf("ExperimentID = %q, want empty (real game is in no experiment)", snap.ExperimentID)
+	}
+	if snap.Arm != "" {
+		t.Fatalf("Arm = %q, want empty (real game has no arm)", snap.Arm)
+	}
+}

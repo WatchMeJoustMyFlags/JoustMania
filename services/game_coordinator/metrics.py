@@ -16,10 +16,22 @@ from lib.otel_metrics import Counter, Gauge, Histogram
 # instead of being invisible or clobbering the primary game's series. The
 # primary (menu-driven) session reports game_kind="primary"; concurrent
 # agent/shadow sessions report game_kind="shadow".
+#
+# Experiment attribution (#975, epic #982): the per-live-game GAUGES below carry
+# experiment_id/arm. This is safe precisely because they are gauges keyed on the
+# already-unbounded game_id and SET per live game — the experiment labels add no
+# permanent series; they come and go with the game's game_id and are cleared at
+# game end. The cumulative COUNTERS (games_started_total, games_completed_total)
+# deliberately do NOT carry experiment_id/arm: a label on a cumulative counter
+# creates one permanent series per experiment value, forever (TSDB blow-up), which
+# violates the §4.2 cardinality discipline. Per-experiment counts come from the
+# span attributes (experiment.id/experiment.arm) plus #979's dedicated game-end
+# metric. The per-frame metrics (game_player_accel_magnitude, etc.) carry none of
+# this. The gauge labels are "" for a non-experiment game.
 active_game = Gauge(
     "game_active",
     "Whether a game is currently running (0=no, 1=yes)",
-    ["game_kind", "game_id"],
+    ["game_kind", "game_id", "experiment_id", "arm"],
 )
 
 current_game_mode = Gauge(
@@ -31,7 +43,7 @@ current_game_mode = Gauge(
 game_duration_seconds = Gauge(
     "game_duration_seconds",
     "Duration of current game in seconds",
-    ["game_kind", "game_id"],
+    ["game_kind", "game_id", "experiment_id", "arm"],
 )
 
 games_started_total = Counter(
@@ -64,7 +76,7 @@ shadow_games_preempted_total = Counter(
 active_players = Gauge(
     "game_active_players",
     "Number of players currently in game",
-    ["game_kind", "game_id"],
+    ["game_kind", "game_id", "experiment_id", "arm"],
 )
 
 players_alive = Gauge("game_players_alive", "Number of players currently alive")
