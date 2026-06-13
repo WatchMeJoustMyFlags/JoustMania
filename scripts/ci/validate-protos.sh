@@ -39,7 +39,14 @@ echo "Validating proto generation..."
 STUB_GLOBS=('proto/*_pb2.py' 'proto/*_pb2_grpc.py')
 
 # --- Regenerate inside the pinned CI container -------------------------------
+# Run as the host user (#795): the container previously ran as root, so files it
+# created in the mounted tree (notably the uv-managed .venv/ and proto/__pycache__)
+# ended up root-owned on the host, breaking later `uv` runs and needing `sudo rm`.
+# A passwd-less UID has no writable HOME, so uv can't create its cache; point HOME
+# at /tmp (and let uv default UV_CACHE_DIR under it) so generation still works.
 docker run --rm \
+    --user "$(id -u):$(id -g)" \
+    -e HOME=/tmp \
     -v "$PROJECT_ROOT:/workspace" \
     -w /workspace \
     joustmania/ci-proto:latest \
