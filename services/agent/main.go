@@ -641,12 +641,25 @@ func main() {
 	// gated promotion surface is constructed and held so the wiring + the env gate
 	// are in place and observable.
 	promoter := buildPromoter(logger)
-	_ = promoter // held for the live promotion trigger (follow-up); see buildPromoter.
 	slog.Info("Code-improvement promotion surface enabled (#936, M7-8)",
 		"code_improvement_enabled", getEnv("AGENT_CODE_IMPROVEMENT_ENABLED", "false"),
 		"target", getEnv("AGENT_CODE_IMPROVEMENT_TARGET", string(promote.TargetLocal)),
 		"autonomous_enabled", getEnv("AGENT_AUTONOMOUS_ENABLED", "false"),
 	)
+
+	// M7 / #991 experiment cohort loop — FINAL ASSEMBLY (epic #982). buildExperimentLoop
+	// constructs the experiment.Registry with the REAL seams (#976 spawner, #977
+	// targeting Gate/Writer, #979 verdict, #980/#961 promoter) ONLY when the opt-in
+	// AGENT_EXPERIMENTS_ENABLED=true. The DEFAULT (unset) returns nil: NO Registry,
+	// NO shadow spawns, NO targeting writes, NO promotions — the agent's behavior is
+	// byte-unchanged. The real-default promotion path stays behind ALL of #961's
+	// gates (the promoter built above + the kill-switch via the ConfigResolver).
+	expLoop := buildExperimentLoop(agentFlags, promoter, getEnv("GAME_FLAG_PATH", experiment.DefaultGamePath), logger)
+	if expLoop != nil {
+		// Bind the spawner's background game-drive goroutines to the agent's root
+		// context so shutdown cancels in-flight shadow games (no goroutine leak).
+		expLoop.spawner.SetRootContext(ctx)
+	}
 
 	// GameContext multiplexer (#845 PR B): one Store partition per game_id, plus the
 	// fallback partition "" for unlabeled signals (zero-regression — single-game
@@ -671,7 +684,17 @@ func main() {
 		// pre-reset snapshot. Each has its OWN once-per-game dedupe, so chaining cannot
 		// make either double-fire. Order is retro-then-summary, but they are independent
 		// (neither reads the other's state).
-		s.OnGameEnd = chainGameEnd(retro.OnGameEnd, summaries.OnGameEnd, proposeOnGameEnd)
+		// Chain the #991 experiment conclusion hook too (nil when the loop is
+		// disabled, so chainGameEnd skips it — zero overhead in the default path). For
+		// an experiment-bound shadow game it folds the game's fitness into the cohort
+		// journal via Registry.ConcludeGame; for every NON-experiment game it is a
+		// no-op (ConcludeGame ignores an unknown game_id), so the existing retro/
+		// summary behavior is untouched.
+		var experimentOnGameEnd func(gamecontext.GameContext)
+		if expLoop != nil {
+			experimentOnGameEnd = expLoop.onGameEnd
+		}
+		s.OnGameEnd = chainGameEnd(retro.OnGameEnd, summaries.OnGameEnd, proposeOnGameEnd, experimentOnGameEnd)
 		return s
 	})
 	mux.SetOwnService(ownService)
@@ -689,6 +712,13 @@ func main() {
 	var shadow func(context.Context)
 	if gamerunner.Enabled() {
 		shadow = func(ctx context.Context) { runShadowGame(ctx, logger) }
+	}
+
+	// The #991 experiment cohort loop's goroutine, owned by run() so it is torn down
+	// (AbortAll) and joined on shutdown. Nil when the opt-in is off (the default).
+	var experiments func(context.Context)
+	if expLoop != nil {
+		experiments = expLoop.run
 	}
 
 	// Hand the goroutine-owning runtime core to run (#923): the OTLP gRPC receiver,
@@ -709,6 +739,7 @@ func main() {
 		evictInterval:    lifecycleHolder.EvictInterval(),
 		evictIntervalSrc: lifecycleHolder.EvictInterval,
 		shadow:           shadow,
+		experiments:      experiments,
 	}
 	if err := components.run(ctx); err != nil {
 		slog.Error("gRPC server failed", "error", err)

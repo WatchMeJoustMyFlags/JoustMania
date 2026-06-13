@@ -60,6 +60,14 @@ type serverComponents struct {
 	// servers come up (the #778 shadow-game runner in production). Nil = no shadow
 	// game (tests, and the unset env default).
 	shadow func(context.Context)
+
+	// experiments, when non-nil, runs the #991 experiment cohort loop in its own
+	// ctx-bounded goroutine: declare → spawn shadow games into arms → conclude →
+	// (gated) promote. Nil = the experiment loop opt-in (AGENT_EXPERIMENTS_ENABLED)
+	// is OFF, the DEFAULT, in which case the agent has zero experiment surface and
+	// behaves exactly as before. run() joins this goroutine on shutdown so it is
+	// leak-safe (the loop's own AbortAll tears experiments down on ctx cancel).
+	experiments func(context.Context)
 }
 
 // effectiveEvictInterval returns the live eviction cadence when a source is wired
@@ -113,6 +121,20 @@ func (c *serverComponents) run(ctx context.Context) error {
 		go c.shadow(ctx)
 	}
 
+	// The #991 experiment cohort loop, when enabled (opt-in default-off). It runs
+	// until ctx is cancelled, then AbortAll's its live experiments and returns. We
+	// join it on shutdown (expDone) so no goroutine outlives run() — the same
+	// leak-safe ownership the eviction/shutdown goroutines have.
+	expDone := make(chan struct{})
+	if c.experiments != nil {
+		go func() {
+			defer close(expDone)
+			c.experiments(ctx)
+		}()
+	} else {
+		close(expDone) // nothing to wait on when the loop is disabled.
+	}
+
 	// Graceful shutdown on ctx cancellation. GracefulStop unblocks Serve below; the
 	// AwaitInflight join makes the #917 no-leak guarantee explicit (ctx is already
 	// cancelled, so each fired call's timeout context is cancelled and a well-behaved
@@ -137,6 +159,7 @@ func (c *serverComponents) run(ctx context.Context) error {
 	// return, so no goroutine this function spawned outlives it.
 	<-shutdownDone
 	<-stopEvict
+	<-expDone
 	return serveErr
 }
 

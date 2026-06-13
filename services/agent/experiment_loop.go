@@ -1,0 +1,382 @@
+package main
+
+import (
+	"context"
+	"log/slog"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/joustmania/agent/decision"
+	"github.com/joustmania/agent/experiment"
+	"github.com/joustmania/agent/experiment/journal"
+	"github.com/joustmania/agent/flags"
+	"github.com/joustmania/agent/gamecontext"
+	"github.com/joustmania/agent/gamerunner"
+	"github.com/joustmania/agent/promote"
+)
+
+// experiment_loop.go is the FINAL ASSEMBLY of the experiment / cohort framework
+// (#991, epic #982): it constructs the experiment.Registry with the REAL injected
+// seams and runs the cohort loop inside the agent — declare an experiment, spawn
+// shadow games into its arms, fold their conclusions into the journal, reach a
+// verdict, and (gated) route a promote verdict to the #961 Promoter.
+//
+// OVERRIDING SAFETY (#991): the ENTIRE loop is opt-in behind AGENT_EXPERIMENTS_ENABLED
+// (default false) AND the agent kill-switch (agent.json `enabled`). When disabled
+// — the default — NOTHING here runs: no Registry is constructed, no shadow game is
+// spawned, no targeting is written, no promotion is attempted. The agent behaves
+// EXACTLY as it does today. buildExperimentLoop returns nil in that case and run()
+// never starts the loop. The real-DEFAULT promotion path stays behind ALL of
+// #961's existing gates (AGENT_CODE_IMPROVEMENT_ENABLED + token + kill-switch) —
+// this file only ROUTES a concluded experiment to that already-gated Promoter; it
+// adds no new privilege.
+
+const (
+	// envExperimentsEnabled is the distinct opt-in for the experiment LOOP itself
+	// (separate from #961's AGENT_CODE_IMPROVEMENT_ENABLED, which gates the
+	// real-default promotion action). Default false ⇒ the loop never runs.
+	envExperimentsEnabled = "AGENT_EXPERIMENTS_ENABLED"
+
+	// envExperimentTick overrides the AllocateAndSpawn cadence (seconds). The
+	// registry refills free shadow capacity on each tick.
+	envExperimentTick = "AGENT_EXPERIMENT_TICK_SECONDS"
+
+	// Seed-experiment env vars (the simplest env-gated declaration trigger; see
+	// the declaration-trigger note below). When envSeedFlag is set the loop
+	// Declares ONE experiment at startup so the cohort loop has something to run.
+	envSeedFlag       = "AGENT_EXPERIMENT_SEED_FLAG"       // game.json flag key to experiment on
+	envSeedValue      = "AGENT_EXPERIMENT_SEED_VALUE"      // experimental value (parsed as number, else string)
+	envSeedObjective  = "AGENT_EXPERIMENT_SEED_OBJECTIVE"  // fitness objective (default balanced)
+	envSeedTargetN    = "AGENT_EXPERIMENT_SEED_TARGET_N"   // target games per arm
+	envSeedHypothesis = "AGENT_EXPERIMENT_SEED_HYPOTHESIS" // free-text hypothesis
+)
+
+// defaultExperimentTick is the AllocateAndSpawn cadence when unset. Shadow games
+// are minutes-long, so a 30s refill tick is ample headroom over game duration.
+const defaultExperimentTick = 30 * time.Second
+
+// experimentsEnabled reports whether the experiment LOOP opt-in is on. This is the
+// distinct, default-off gate (#991) — separate from the code-improvement gate.
+func experimentsEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv(envExperimentsEnabled)), "true")
+}
+
+// experimentLoop owns the agent's experiment cohort machinery: the Registry, the
+// shadow spawner, the per-game-end conclusion hook, and the allocate/abort loop
+// goroutines. It mirrors the serverComponents (#923) ownership model: run() starts
+// its loop and cancels it on ctx; nothing here outlives the agent.
+type experimentLoop struct {
+	registry *experiment.Registry
+	spawner  *shadowSpawner
+	flags    *flags.Flags
+	log      *slog.Logger
+	tick     time.Duration
+
+	// seed, when set, is the one experiment Declared+Started at startup (the
+	// env-gated declaration trigger). Nil ⇒ no seed (the registry rehydrates
+	// prior experiments and runs them, but declares nothing new).
+	seed *experiment.Intent
+
+	// fitness maps a game-end GameContext to a single fitness scalar fed to
+	// ConcludeGame. Injected so it is overridable / testable.
+	fitness gameFitnessFunc
+}
+
+// gameFitnessFunc scores a finished game (its pre-reset GameContext) into one
+// fitness scalar in [0,1] (higher = better), the per-game sample the cohort
+// aggregator folds. The default (defaultGameFitness) reuses the M7 fitness engine.
+type gameFitnessFunc func(gc gamecontext.GameContext, objective string) float64
+
+// buildExperimentLoop constructs the experiment loop with the REAL seams, or
+// returns nil when the opt-in (AGENT_EXPERIMENTS_ENABLED) is off — the default,
+// byte-unchanged behavior. It NEVER constructs the Registry or any seam when
+// disabled, so the disabled agent has zero experiment surface.
+//
+// Seams wired (the #991 assembly):
+//   - TargetingWriter → experiment.NewGateTargetingWriter(gate, writer): Apply via
+//     the #977 Gate (invariant-checked write), Strip via the Writer (#977 teardown).
+//   - CohortVerdict   → experiment.NewVerdictFromEnv() (#979 min-N + effect-size).
+//   - Promoter        → promote.NewExperimentPromoter(promoter, resolver) (#980 over
+//     the #961 Promoter), resolver reading LIVE flags.Promotion + the kill-switch.
+//   - ShadowSpawner   → the real outbound game-coordinator client (shadowSpawner).
+func buildExperimentLoop(
+	flagsClient *flags.Flags,
+	promoter *promote.Promoter,
+	gameFlagPath string,
+	logger *slog.Logger,
+) *experimentLoop {
+	if !experimentsEnabled() {
+		return nil // default-off: no Registry, no seams, no goroutines.
+	}
+
+	logger.Warn("Experiment cohort loop ENABLED (#991, epic #982) — opt-in is ON",
+		"tick", experimentTick(),
+		"max_shadow_games", experiment.MaxShadowGamesFromEnv(),
+		"seed_flag", os.Getenv(envSeedFlag))
+
+	// TargetingWriter (#977): a Gate over a Writer pinned to the game flagset. The
+	// Gate validates THE INVARIANT on every Apply; Strip un-nests a branch on
+	// teardown. The Writer is shared by Gate (Apply) and the adapter (Strip).
+	writer := experiment.NewWriter(gameFlagPath, logger)
+	gate := experiment.NewGate(writer, nil, logger)
+	targeting := experiment.NewGateTargetingWriter(gate, writer)
+
+	// Promoter (#980/#961): adapt the already-built, env-gated #961 Promoter. The
+	// ConfigResolver reads the LIVE promotion mode/target AND the agent kill-switch
+	// each promotion, so the real-default path stays behind every existing gate.
+	promo := promote.NewExperimentPromoter(promoter, promotionConfigResolver(flagsClient))
+
+	// ShadowSpawner (#976): the real outbound game-coordinator client.
+	spawner := newShadowSpawner(gamerunner.ConfigFromEnv(), logger)
+
+	registry := experiment.NewRegistry(experiment.RegistryConfig{
+		Root:      journal.DirFromEnv(),
+		Spawner:   spawner,
+		Verdict:   experiment.NewVerdictFromEnv(),
+		Promoter:  promo,
+		Targeting: targeting,
+		Log:       logger,
+	})
+
+	return &experimentLoop{
+		registry: registry,
+		spawner:  spawner,
+		flags:    flagsClient,
+		log:      logger,
+		tick:     experimentTick(),
+		seed:     seedIntentFromEnv(),
+		fitness:  defaultGameFitness,
+	}
+}
+
+// promotionConfigResolver builds the #980 ConfigResolver from the live agent
+// flags: the promotion mode/target come from flags.Promotion, and the kill-switch
+// (Config.Enabled) from the agent `enabled` snapshot. Reading them live per
+// promotion means flipping code_improvement.mode (or the kill-switch) takes effect
+// on the next promotion with no restart — and a disabled agent can never reach the
+// autonomous real-default path.
+func promotionConfigResolver(f *flags.Flags) promote.ConfigResolver {
+	return func(ctx context.Context) promote.Config {
+		p := f.Promotion(ctx)
+		return promote.Config{
+			Mode:    promote.Mode(p.Mode),
+			Target:  promote.Target(p.Target),
+			Enabled: f.Evaluate(ctx).Enabled, // kill-switch: false ⇒ autonomous blocked
+		}
+	}
+}
+
+// run starts the experiment loop and blocks until ctx is cancelled, then returns.
+// It is started in its own goroutine by serverComponents.run (#923) so its
+// lifecycle is owned alongside every other agent goroutine and torn down on
+// shutdown. The loop:
+//  1. Rehydrates the registry from the durable journal (the #831 in-memory-loss
+//     fix): any non-terminal experiment from a prior run is resumed.
+//  2. Declares + Starts the seed experiment (env-gated trigger) if configured.
+//  3. Ticks AllocateAndSpawn to refill free shadow capacity.
+//  4. On ctx cancellation, AbortAll (kill-switch / shutdown teardown) and returns.
+//
+// The kill-switch (agent.json `enabled` false) is also honored mid-run: each tick
+// re-reads it and AbortAll's every live experiment when the agent is disabled, so
+// flipping the kill-switch tears the experiment surface down with no restart.
+func (e *experimentLoop) run(ctx context.Context) {
+	if err := e.rehydrate(); err != nil {
+		e.log.Error("experiment: rehydrate from journal failed (continuing without prior experiments)", "error", err)
+	}
+
+	if e.seed != nil {
+		if err := e.declareAndStart(ctx, *e.seed); err != nil {
+			e.log.Error("experiment: seed declare/start failed", "error", err)
+		}
+	}
+
+	// One immediate allocation so the seed accrues games without waiting a full
+	// tick, then refill on the cadence.
+	e.allocateIfEnabled(ctx)
+
+	ticker := time.NewTicker(e.tick)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			// Shutdown / kill-switch teardown: abort every live experiment so its
+			// targeting branch is stripped and capacity released. Use a short
+			// background context so teardown's file I/O still runs after ctx cancel.
+			tctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ids := e.registry.AbortAll(tctx, "agent shutdown")
+			cancel()
+			if len(ids) > 0 {
+				e.log.Info("experiment: aborted live experiments on shutdown", "count", len(ids))
+			}
+			return
+		case <-ticker.C:
+			e.allocateIfEnabled(ctx)
+		}
+	}
+}
+
+// allocateIfEnabled refills shadow capacity ONLY while the agent kill-switch is
+// on (agent.json `enabled` true). When the agent is disabled it AbortAll's every
+// live experiment instead — the mid-run kill-switch honor (design §10). This keeps
+// the experiment loop subordinate to the SAME kill-switch the decision loop obeys.
+func (e *experimentLoop) allocateIfEnabled(ctx context.Context) {
+	// A nil flags client (test wiring only) is treated as enabled — production
+	// always injects one (buildExperimentLoop). This keeps the leak test free of a
+	// flagd dependency while the real path always consults the kill-switch.
+	if e.flags != nil && !e.flags.Evaluate(ctx).Enabled {
+		if ids := e.registry.AbortAll(ctx, "kill-switch: agent disabled"); len(ids) > 0 {
+			e.log.Warn("experiment: kill-switch active — aborted live experiments", "count", len(ids))
+		}
+		return
+	}
+	if n := e.registry.AllocateAndSpawn(ctx); n > 0 {
+		e.log.Info("experiment: spawned shadow games this tick", "count", n,
+			"in_flight", e.registry.TotalInFlight(), "capacity", e.registry.Capacity())
+	}
+}
+
+// rehydrate rebuilds the live registry from the durable journal on startup.
+func (e *experimentLoop) rehydrate() error {
+	ids, err := journal.List(journal.DirFromEnv())
+	if err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	if err := e.registry.Rehydrate(ids); err != nil {
+		return err
+	}
+	e.log.Info("experiment: rehydrated experiments from journal", "candidates", len(ids), "live", len(e.registry.Live()))
+	return nil
+}
+
+// declareAndStart declares one experiment and writes its shadow targeting,
+// transitioning it to RUNNING so it can accrue shadow games.
+func (e *experimentLoop) declareAndStart(ctx context.Context, in experiment.Intent) error {
+	id, err := e.registry.Declare(in)
+	if err != nil {
+		return err
+	}
+	return e.registry.Start(ctx, id)
+}
+
+// onGameEnd is the conclusion hook chained onto the Store's OnGameEnd (#928): when
+// a shadow game that belongs to an experiment ends, fold its fitness sample into
+// the matching arm via ConcludeGame. A game not bound to any experiment (no
+// ExperimentID, or an id the registry does not own) is ignored by ConcludeGame, so
+// this hook is a safe no-op for every NON-experiment game — it never changes the
+// existing per-game retro/summary path. After a conclusion it nudges
+// AllocateAndSpawn so the freed slot is refilled promptly (capacity churn).
+func (e *experimentLoop) onGameEnd(gc gamecontext.GameContext) {
+	if gc.ExperimentID == "" {
+		return // not an experiment game.
+	}
+	objective := ""
+	if cv, ok := e.registry.CompactView(gc.ExperimentID); ok {
+		objective = cv.Intent.Objective
+	}
+	fitness := e.fitness(gc, objective)
+	duration := 0.0
+	if gc.Session.DurationSeconds != nil {
+		duration = *gc.Session.DurationSeconds
+	}
+	status, err := e.registry.ConcludeGame(context.Background(), gc.SessionID, fitness, duration)
+	if err != nil {
+		e.log.Warn("experiment: conclude game failed", "game_id", gc.SessionID, "error", err)
+		return
+	}
+	if status == experiment.StatusRunning {
+		// A freed in-flight slot; refill it (respecting the kill-switch).
+		e.allocateIfEnabled(context.Background())
+	}
+}
+
+// defaultGameFitness scores a finished game into one fitness scalar in [0,1] using
+// the M7 fitness engine (#731): it evaluates the experiment's objective against the
+// game-end GameContext and returns that objective's Progress (1.0 = the objective
+// was fully satisfied, 0.0 = maximally failing). Higher = better, the convention
+// the CohortVerdict and Promoter already use. An unknown/empty objective falls back
+// to "balanced"; an objective whose signals were not observed returns 0 (a game
+// that produced no measurable signal contributes a worst-case sample rather than a
+// fabricated one). This is deliberately the SIMPLEST honest mapping — a richer
+// blended fitness is a follow-up (it does not change the assembly).
+func defaultGameFitness(gc gamecontext.GameContext, objective string) float64 {
+	if objective == "" {
+		objective = decision.ObjectiveBalanced
+	}
+	eval := decision.EvaluateFitness(gc, decision.DefaultStaticConfig().FitnessThresholds)
+	if r, ok := eval.Results[objective]; ok && r.Evaluated {
+		return r.Progress
+	}
+	return 0
+}
+
+// experimentTick resolves the AllocateAndSpawn cadence from
+// AGENT_EXPERIMENT_TICK_SECONDS, falling back to defaultExperimentTick on an
+// unset/invalid/non-positive value.
+func experimentTick() time.Duration {
+	if v := strings.TrimSpace(os.Getenv(envExperimentTick)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return defaultExperimentTick
+}
+
+// seedIntentFromEnv builds the single seed experiment Intent from the
+// AGENT_EXPERIMENT_SEED_* env vars, or returns nil when no seed flag is set. This
+// is the SIMPLEST env-gated declaration trigger (#991 investigation): rather than
+// wiring the LLM Proposer (#960) — which produces single-flag Proposals, not
+// experiment-shaped Intents with arms/target-N, and is itself inert until a real
+// inference backend lands — a config-seeded experiment lets the cohort loop run
+// end-to-end for the demo behind the same opt-in. Promoting the Proposer to emit
+// Intents is a documented follow-up.
+func seedIntentFromEnv() *experiment.Intent {
+	flagKey := strings.TrimSpace(os.Getenv(envSeedFlag))
+	if flagKey == "" {
+		return nil
+	}
+	objective := strings.TrimSpace(os.Getenv(envSeedObjective))
+	if objective == "" {
+		objective = decision.ObjectiveBalanced
+	}
+	targetN := 0
+	if v := strings.TrimSpace(os.Getenv(envSeedTargetN)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			targetN = n
+		}
+	}
+	hypothesis := strings.TrimSpace(os.Getenv(envSeedHypothesis))
+	if hypothesis == "" {
+		hypothesis = "env-seeded experiment (#991 demo trigger)"
+	}
+	return &experiment.Intent{
+		Hypothesis:        hypothesis,
+		FlagKey:           flagKey,
+		ExperimentalValue: parseSeedValue(os.Getenv(envSeedValue)),
+		Objective:         objective,
+		TargetNPerArm:     targetN,
+	}
+}
+
+// parseSeedValue parses the seed experimental value: a number when it parses as a
+// float, a bool for "true"/"false", else the raw string. The Gate's type guard
+// rejects a value whose JSON kind does not match the flag's existing variants, so
+// a mistyped seed fails closed at Start (the targeting write) — never reaching a
+// shadow game.
+func parseSeedValue(raw string) any {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if f, err := strconv.ParseFloat(raw, 64); err == nil {
+		return f
+	}
+	if b, err := strconv.ParseBool(raw); err == nil {
+		return b
+	}
+	return raw
+}

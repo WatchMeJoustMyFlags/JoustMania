@@ -71,6 +71,68 @@ func (w *Writer) Apply(p Proposal) error {
 	return w.edit(func(doc *document) error { return applyProposal(doc, p) })
 }
 
+// Strip removes one experiment's shadow-scoped targeting from the game flag file
+// — the teardown inverse of Apply (design §10). It drops the experiment's
+// chained-if branch via stripShadowBranch (un-nesting only THIS experiment's
+// experiment_id condition, leaving K-1 other experiments' branches and the
+// original pre-experiment targeting verbatim) AND removes its reserved
+// agent_experiment__<id> variant. A missing branch/variant is a no-op, so Strip
+// is idempotent — the registry calls it on every terminal status, possibly more
+// than once.
+//
+// Invariant-safe by construction: removing a shadow branch only ever affects
+// shadow games (the same argument as buildShadowTargeting's structural proof), so
+// the real-resolution invariant the Gate protects is untouched. Teardown does not
+// go through the Gate — the Gate validates ADDING an experiment; removing one can
+// only ever restore a strictly more-real-protective rule.
+//
+// An unknown flag (already removed from game.json, or never present) is a no-op,
+// not an error: teardown must not fail because the surface it scoped is gone.
+func (w *Writer) Strip(flagKey, experimentID string) error {
+	return w.edit(func(doc *document) error { return stripProposal(doc, flagKey, experimentID) })
+}
+
+// stripProposal mutates the in-memory document to remove experimentID's branch +
+// variant from flagKey. It is the pure core of Strip (no I/O). A missing flag or
+// a flag without this experiment's branch/variant leaves the document unchanged.
+func stripProposal(doc *document, flagKey, experimentID string) error {
+	if !doc.hasFlag(flagKey) {
+		return nil // already gone — idempotent teardown.
+	}
+	f, err := doc.flag(flagKey)
+	if err != nil {
+		return err
+	}
+
+	if existing, ok := f.raw("targeting"); ok {
+		stripped := stripShadowBranch(experimentID, existing)
+		if len(stripped) == 0 || string(stripped) == "null" {
+			// The experiment's branch was the only/outermost targeting; drop the key
+			// so the flag returns to "no targeting" (defaultVariant resolves), the
+			// pre-experiment state for a flag that had none.
+			f.del("targeting")
+		} else {
+			f.setRaw("targeting", stripped)
+		}
+	}
+
+	// Remove this experiment's reserved variant. del is a no-op if it is absent
+	// (idempotent). Other experiments' variants and game-authored variants are
+	// untouched (Strip only ever names experimentVariantName(experimentID)).
+	variants := map[string]json.RawMessage{}
+	if _, err := f.get("variants", &variants); err != nil {
+		return err
+	}
+	if _, ok := variants[experimentVariantName(experimentID)]; ok {
+		delete(variants, experimentVariantName(experimentID))
+		if err := f.set("variants", variants); err != nil {
+			return err
+		}
+	}
+
+	return doc.putFlag(flagKey, f)
+}
+
 // edit runs one read-modify-write cycle under the process mutex: read the file,
 // apply fn to the order-preserving document, and write it back in place.
 func (w *Writer) edit(fn func(*document) error) error {
