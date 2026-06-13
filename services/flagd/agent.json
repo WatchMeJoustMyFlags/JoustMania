@@ -426,6 +426,23 @@
         "slow": 900
       },
       "defaultVariant": "default"
+    },
+    "code_improvement.mode": {
+      "state": "ENABLED",
+      "variants": {
+        "issue": "issue",
+        "pr": "pr",
+        "autonomous": "autonomous"
+      },
+      "defaultVariant": "issue"
+    },
+    "code_improvement.target": {
+      "state": "ENABLED",
+      "variants": {
+        "local": "local",
+        "github": "github"
+      },
+      "defaultVariant": "local"
     }
   }
 }
