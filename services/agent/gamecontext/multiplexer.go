@@ -163,6 +163,29 @@ func (m *Multiplexer) Snapshot(gameID string) (GameContext, bool) {
 	return s.Snapshot(), true
 }
 
+// AppendInterventionEvent routes a dispatched/blocked intervention to the
+// game_id partition's Store and records it in that partition's #916 rolling
+// narrative timeline (#945). It is the receiver-side half of the decision-Loop
+// seam: main.go's loopFactory hands each per-game Loop a recorder closure over
+// (this Multiplexer, that loop's game_id), so when runDecision decides an
+// intervention's outcome the event lands in the timeline of the game it targeted
+// and nowhere else.
+//
+// PER-GAME ISOLATION (#845): the partition is selected by game_id with the SAME
+// lazy store() routing every signal uses — an unlabeled game_id (FallbackGameID)
+// lands in the fallback partition, exactly like an unlabeled signal — so two
+// concurrent games keep independent intervention histories. The partition is
+// created on demand if it does not yet exist (a decision could in principle reach
+// the seam before any signal created the partition; routing it the same way keeps
+// the event with its game rather than dropping it).
+//
+// Concurrency: store() is mutex-guarded for lazy create, and Store.
+// AppendInterventionEvent is guarded by the Store's own mutex (#916), so this is
+// race-safe under the concurrent Export-handler goroutines that drive runDecision.
+func (m *Multiplexer) AppendInterventionEvent(gameID, intervention, serial string, blocked bool) {
+	m.store(gameID).AppendInterventionEvent(intervention, serial, blocked)
+}
+
 // Partitions returns the current set of partition game_ids (including
 // FallbackGameID when present). Order is unspecified.
 func (m *Multiplexer) Partitions() []string {

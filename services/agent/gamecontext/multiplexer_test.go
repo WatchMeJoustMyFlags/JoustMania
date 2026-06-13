@@ -46,6 +46,76 @@ func newTestMux(clk *muxClock, playerTTL, grace time.Duration, ends *[]string, e
 	})
 }
 
+// TestMux_AppendInterventionEventRoutesPerGame covers the #945 receiver-side seam:
+// the decision Loop's per-game recorder closure routes each intervention outcome
+// through mux.AppendInterventionEvent(gameID, ...), and the event must land in the
+// timeline of the partition for that game_id — never a shared/global one — so two
+// concurrent games keep independent intervention histories (#845 isolation).
+func TestMux_AppendInterventionEventRoutesPerGame(t *testing.T) {
+	clk := &muxClock{t: time.Unix(2000, 0)}
+	mux := newTestMux(clk, time.Hour, time.Hour, nil, nil)
+
+	// Bring both partitions into existence with a game-start signal (as a real
+	// session would), then record interventions against each by game_id.
+	mux.ApplyMetrics(gameActiveFor("game-A", 1))
+	mux.ApplyMetrics(gameActiveFor("game-B", 1))
+
+	// game-A: one dispatched session-scoped intervention.
+	mux.AppendInterventionEvent("game-A", "adjust_music_tempo", "", false)
+	// game-B: one blocked player-targeted intervention.
+	mux.AppendInterventionEvent("game-B", "grant_shield", "BB:22", true)
+
+	a, okA := mux.Snapshot("game-A")
+	b, okB := mux.Snapshot("game-B")
+	if !okA || !okB {
+		t.Fatalf("partitions missing: A=%v B=%v", okA, okB)
+	}
+
+	// game-A's intervention must be in game-A's timeline (dispatched, no serial) and
+	// must NOT have leaked into game-B.
+	a0 := interventionEvents(a.Timeline)
+	if len(a0) != 1 || a0[0].Detail != "adjust_music_tempo" || a0[0].Blocked || a0[0].Serial != "" {
+		t.Errorf("game-A interventions = %+v, want one dispatched adjust_music_tempo", a0)
+	}
+	// game-B's intervention must be in game-B's timeline (blocked, BB:22) and not in A.
+	b0 := interventionEvents(b.Timeline)
+	if len(b0) != 1 || b0[0].Detail != "grant_shield" || !b0[0].Blocked || b0[0].Serial != "BB:22" {
+		t.Errorf("game-B interventions = %+v, want one blocked grant_shield -> BB:22", b0)
+	}
+}
+
+// TestMux_AppendInterventionEventLazyPartition: an intervention can reach the seam
+// before any signal created the partition; routing it the same lazy way every
+// signal uses keeps the event with its game rather than dropping it (#945).
+func TestMux_AppendInterventionEventLazyPartition(t *testing.T) {
+	clk := &muxClock{t: time.Unix(3000, 0)}
+	mux := newTestMux(clk, time.Hour, time.Hour, nil, nil)
+
+	mux.AppendInterventionEvent("game-Z", "play_audio_cue", "ZZ:01", false)
+
+	z, ok := mux.Snapshot("game-Z")
+	if !ok {
+		t.Fatal("game-Z partition should have been lazily created by the intervention")
+	}
+	zi := interventionEvents(z.Timeline)
+	if len(zi) != 1 || zi[0].Detail != "play_audio_cue" || zi[0].Serial != "ZZ:01" {
+		t.Errorf("game-Z interventions = %+v, want one dispatched play_audio_cue -> ZZ:01", zi)
+	}
+}
+
+// interventionEvents filters a timeline to its EventIntervention entries so a test
+// asserts only on interventions, ignoring the phase/state events a started game
+// also accumulates.
+func interventionEvents(tl []TimelineEvent) []TimelineEvent {
+	var out []TimelineEvent
+	for _, e := range tl {
+		if e.Kind == EventIntervention {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // addGauge appends a single-datapoint gauge metric to md with the given attrs.
 func addGauge(md pmetric.Metrics, name string, value float64, attrs map[string]string) {
 	m := md.ResourceMetrics().AppendEmpty().ScopeMetrics().AppendEmpty().Metrics().AppendEmpty()
