@@ -290,8 +290,8 @@ async def test_experiment_reaches_shadow_never_real(game_flags, docker_compose):
     BASELINE — via the REAL flagd, whichever game flagset file is mounted.
 
     Baselines are derived DYNAMICALLY from the live flagd BEFORE the mutation
-    (not hardcoded from game.json), because the CI compose overlay mounts
-    game.ci.json — which carries different defaultVariant values (e.g.
+    (not hardcoded from game.json), because CI serves the ci/ flag dir
+    (ci/game.json) — which carries different defaultVariant values (e.g.
     invincibility_seconds defaults to "2s" there, "4s" locally). Hardcoding the
     game.json numbers is exactly what made this test time out under CI. By
     snapshotting each context's live resolution first and asserting it is
@@ -409,7 +409,7 @@ async def test_experiment_reaches_shadow_never_real(game_flags, docker_compose):
         )
         # ...and a REAL Werewolf game resolves the SAME value before & after,
         # proving the experiment's else-branch preserved whatever real targeting
-        # the mounted file had verbatim — robust to game.json vs game.ci.json
+        # the mounted file had verbatim — robust to game.json vs ci/game.json
         # targeting differences (this is the structural half of the Gate's
         # invariant: pre-existing real targeting is untouched).
         assert _sens(real_werewolf_ctx) == sens_real_werewolf_baseline, (

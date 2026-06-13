@@ -2,7 +2,7 @@
 Integration regression test for gameId-scoped interventions (#838).
 
 The direct regression the issue requires: with ``shadow_policy=allow`` (the CI
-default — see services/flagd/game.ci.json), run a REAL menu game AND a shadow
+default — see services/flagd/ci/game.json), run a REAL menu game AND a shadow
 (headless) game concurrently, then write a gameId-scoped intervention flag that
 targets the SHADOW game's id. Assert:
 

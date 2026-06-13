@@ -17,7 +17,6 @@ services:
     devices: !reset []
     volumes:
       - ./services/audio/assets:/app/services/audio/assets:ro
-      - ./services/flagd/user.ci.json:/app/services/flagd/user.ci.json:ro
     environment: !override
       OTEL_SERVICE_NAME: audio-service
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
@@ -38,7 +37,7 @@ services:
     volumes: !override
       - ./services/flagd/ci:/etc/flagd
 
-  # Controller Manager - Mock mode via flagd (backend=mock in controller.ci.json)
+  # Controller Manager - Mock mode via flagd (backend=mock in ci/controller.json)
   controller-manager:
     # Clear devices and volumes from base compose (requires docker compose v2.24.0+)
     devices: !reset []
