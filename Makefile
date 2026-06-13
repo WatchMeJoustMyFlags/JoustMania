@@ -10,7 +10,6 @@
 #
 # Or use make targets for convenience:
 #   make up-mock                      # Start in mock mode (no hardware)
-#   make builders                     # Build base images (once)
 #   make test                         # Run integration tests
 
 .PHONY: help
@@ -22,7 +21,6 @@ help:
 	@echo "  make dev             - Start with hot-reload source mounting"
 	@echo "  make up-mock         - Start in mock mode (no hardware)"
 	@echo "  make up-dynatrace    - Start with Dynatrace telemetry export"
-	@echo "  make builders        - Build base images (run once)"
 	@echo ""
 	@echo "Code Quality:"
 	@echo "  make lint            - Run linting (ruff)"
@@ -95,31 +93,6 @@ up-mock:
 	@echo "  Jaeger:     http://localhost/jaeger/"
 	@echo "  Prometheus: http://localhost/prometheus/"
 	@echo "  Grafana:    http://localhost/grafana/"
-
-# ============================================================================
-# Builder Images
-# ============================================================================
-# Build once, then service builds are much faster.
-
-BUILDER_MARKER := .builder-built
-
-.PHONY: builders
-builders: $(BUILDER_MARKER)
-	@echo "✓ Builder image ready"
-
-$(BUILDER_MARKER): images/builder/Dockerfile images/builder/requirements-common.txt
-	@echo "Building shared Python builder image..."
-	docker build -t ghcr.io/watchmejoustmyflags/joustmania/builder:latest images/builder/
-	@touch $(BUILDER_MARKER)
-
-.PHONY: builders-force
-builders-force:
-	docker build --no-cache -t ghcr.io/watchmejoustmyflags/joustmania/builder:latest images/builder/
-	@touch $(BUILDER_MARKER)
-
-.PHONY: clean-builders
-clean-builders:
-	rm -f $(BUILDER_MARKER)
 
 # ============================================================================
 # Code Quality (using uv directly - fast, no Docker overhead)

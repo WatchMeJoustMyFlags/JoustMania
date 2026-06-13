@@ -48,7 +48,6 @@ jobs:
       exporter: ${{ steps.f.outputs.exporter }}
       dockerfiles: ${{ steps.f.outputs.dockerfiles }}
       proto_pkg: ${{ steps.f.outputs.proto_pkg }}
-      builder: ${{ steps.f.outputs.builder }}
       integration_deps: ${{ steps.f.outputs.integration_deps }}
       # force_full: ALL image builds + checks (workflow_dispatch / ci-full label)
       # run_all_checks: all test/lint jobs, but builds stay path-filtered (main push)
@@ -73,7 +72,6 @@ jobs:
               - 'pyproject.toml'
               - 'proto/**'
               - 'lib/**'
-              - 'images/builder/**'
             lib:
               - 'lib/**'
               - 'proto/**'
@@ -92,8 +90,6 @@ jobs:
               - '**/pyproject.toml'
               - 'tools/ci-proto/**'
               - 'scripts/ci/**'
-            builder:
-              - 'images/builder/**'
             controller_manager:
               - *shared_python
               - 'services/controller_manager/**'
@@ -492,80 +488,10 @@ jobs:
       - name: Validate protos and packages
         run: make ci-validate-protos ci-validate-packages
 
-  # Build and push builder images to GHCR (Phase 75)
-  # Multi-platform builds for amd64 (CI/dev) and arm64 (Raspberry Pi)
-  # Builder images are always pushed (needed for integration tests)
-  # Optimization: Skip rebuild if files unchanged, re-tag stable image instead
-  build-builder:
-    name: Build builder
-    runs-on: ubuntu-latest
-    needs: [changes]
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set image prefix
-        run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
-
-      - name: Set up QEMU
-        if: needs.changes.outputs.builder == 'true'
-        uses: docker/setup-qemu-action@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Login to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # Full build when files changed
-      - name: Build and push builder
-        if: needs.changes.outputs.builder == 'true'
-        uses: docker/build-push-action@v7
-        with:
-          context: images/builder
-          # Only build amd64 on PRs (arm64 via QEMU is very slow, not needed for validation)
-          platforms: ${{ github.event_name != 'pull_request' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
-          push: true
-          tags: |
-            ${{ env.IMAGE_PREFIX }}/builder:${{ github.sha }}
-            ${{ github.event_name != 'pull_request' && format('{0}/builder:{1}', env.IMAGE_PREFIX, github.ref_name) || '' }}
-            ${{ github.ref_name == env.MAIN_BRANCH && format('{0}/builder:latest', env.IMAGE_PREFIX) || '' }}
-          cache-from: type=gha,scope=builder
-          cache-to: type=gha,mode=max,scope=builder
-
-      # Re-tag stable image when unchanged (much faster)
-      - name: Reuse stable image (unchanged)
-        if: needs.changes.outputs.builder != 'true'
-        id: reuse
-        continue-on-error: true
-        run: |
-          docker buildx imagetools create \
-            --tag ${{ env.IMAGE_PREFIX }}/builder:${{ github.sha }} \
-            ${{ env.IMAGE_PREFIX }}/builder:main
-
-      # Fallback: full build if reuse failed (e.g., first run on a fork)
-      - name: Build builder (fallback)
-        if: needs.changes.outputs.builder != 'true' && steps.reuse.outcome != 'success'
-        uses: docker/build-push-action@v7
-        with:
-          context: images/builder
-          platforms: linux/amd64
-          push: true
-          tags: ${{ env.IMAGE_PREFIX }}/builder:${{ github.sha }}
-          cache-from: type=gha,scope=builder
-          cache-to: type=gha,mode=max,scope=builder
-
   integration-test:
     name: Integration Tests
     runs-on: ubuntu-latest
-    needs: [changes, build-builder]
+    needs: [changes]
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -609,14 +535,12 @@ jobs:
       # Slow path: full build (Dockerfiles or deps changed)
       - name: Run integration tests (full build)
         if: needs.changes.outputs.integration_deps == 'true' || needs.changes.outputs.force_full == 'true'
-        env:
-          BUILDER_IMAGE: ${{ env.IMAGE_PREFIX }}/builder:${{ github.sha }}
         run: PYTEST_EXTRA="--reruns 1" make test-integration
 
   docker-build:
     name: Build ${{ matrix.service }}
     runs-on: ubuntu-latest
-    needs: [changes, build-builder, integration-test]
+    needs: [changes, integration-test]
     if: needs.changes.outputs.docker_build_matrix != '[]'
     timeout-minutes: 30
     permissions:
@@ -654,7 +578,7 @@ jobs:
           echo "name=${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
 
       # #925: per-service deps fingerprint, scoped to exactly the deps inputs
-      # that rebuild THIS image (shared workspace/builder deps + this service's
+      # that rebuild THIS image (shared workspace deps + this service's
       # own pyproject/Dockerfile). Baked into the image as a label below; the
       # fast path recomputes the same per-service value and refuses to mount
       # source into an image whose fingerprint is stale.
@@ -675,7 +599,6 @@ jobs:
             ${{ github.event_name != 'pull_request' && format('{0}/{1}:{2}', env.IMAGE_PREFIX, steps.image_name.outputs.name, github.ref_name) || '' }}
             ${{ github.ref_name == env.MAIN_BRANCH && format('{0}/{1}:latest', env.IMAGE_PREFIX, steps.image_name.outputs.name) || '' }}
           build-args: |
-            BUILDER_IMAGE=${{ env.IMAGE_PREFIX }}/builder:${{ github.sha }}
             DEPS_FINGERPRINT=${{ steps.fingerprint.outputs.value }}
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
@@ -725,12 +648,6 @@ jobs:
             ${{ env.IMAGE_PREFIX }}/${{ matrix.image_name }}:${{ github.sha }}
             ${{ github.event_name != 'pull_request' && format('{0}/{1}:{2}', env.IMAGE_PREFIX, matrix.image_name, github.ref_name) || '' }}
             ${{ github.ref_name == env.MAIN_BRANCH && format('{0}/{1}:latest', env.IMAGE_PREFIX, matrix.image_name) || '' }}
-          # BUILDER_IMAGE: consumed by python-hid (only matrix entry that builds on
-          # the shared builder); pinning :sha instead of the Dockerfile's :latest
-          # default keeps the build in sync with this run's builder (e.g. Python
-          # version bumps). Unconsumed by the Go/Node/Rust images (harmless warning).
-          build-args: |
-            BUILDER_IMAGE=${{ env.IMAGE_PREFIX }}/builder:${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
 
@@ -803,7 +720,6 @@ jobs:
       - lint-dockerfiles
       - sonarcloud
       - validate
-      - build-builder
       - integration-test
       - docker-build
       - docker-build-extra

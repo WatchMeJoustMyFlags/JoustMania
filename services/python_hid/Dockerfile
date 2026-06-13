@@ -2,14 +2,17 @@
 #
 # Standalone gRPC service implementing ControllerIOService from psmove_hid.proto.
 # Same interface as rust-hid for apples-to-apples canary comparison.
-
-# Builder image - override with --build-arg for CI/CD
-ARG BUILDER_IMAGE=ghcr.io/watchmejoustmyflags/joustmania/builder:latest
+#
+# #914: builds on a generic python:3.14-slim base (no shared builder image).
+# hidapi ships cp314 aarch64 wheels, so no compiler/toolchain is needed.
 
 # =============================================================================
 # Stage 1: Build Python dependencies
 # =============================================================================
-FROM ${BUILDER_IMAGE} AS python-builder
+FROM python:3.14-slim AS python-builder
+
+# uv: fast Python package installer
+RUN pip install --no-cache-dir uv==0.5.11
 
 WORKDIR /app
 

@@ -16,7 +16,7 @@
 #
 # WHY PER-SERVICE (not one shared hash): the CI fast path rebuilds+republishes
 # each service's :latest only when ITS OWN path filter fires — the shared_python
-# anchor (root pyproject, proto/lib pyproject, images/builder/**) OR
+# anchor (root pyproject, proto/lib pyproject) OR
 # services/<svc>/**. A single shared fingerprint over every service's files would
 # change when ANY service's deps change, even ones that weren't rebuilt, so the
 # guard would FALSE-fail on the unchanged images and wedge the fast path on main —
@@ -26,12 +26,10 @@
 # This script hashes ONLY the files that determine what gets BAKED into the named
 # service image (NOT application .py source — the fast path mounts that fresh):
 #
-#   Shared deps inputs (baked into every service image via the builder + workspace):
+#   Shared deps inputs (baked into every service image via the workspace):
 #     - root pyproject.toml          (workspace deps)
 #     - proto/pyproject.toml         (shared proto package deps)
 #     - lib/pyproject.toml           (shared lib package deps)
-#     - images/builder/**            (builder Dockerfile + requirements-common.txt;
-#                                     everything the shared builder bakes)
 #   This service's OWN deps inputs:
 #     - services/<svc>/pyproject.toml  (service dependencies)
 #     - services/<svc>/Dockerfile      (how deps are installed / base image)
@@ -68,8 +66,6 @@ mapfile -d '' -t files < <(
     printf '%s\0' pyproject.toml
     printf '%s\0' proto/pyproject.toml
     printf '%s\0' lib/pyproject.toml
-    # Everything the shared builder bakes (Dockerfile + requirements-common.txt).
-    find images/builder -type f -print0
     printf '%s\0' "services/$SERVICE/pyproject.toml"
     printf '%s\0' "services/$SERVICE/Dockerfile"
   } | sort -z

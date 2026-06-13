@@ -36,9 +36,6 @@ docker compose ps
 # Start in mock mode (no hardware)
 make up-mock
 
-# Build base images (one-time)
-make builders
-
 # Run tests
 make test
 ```
@@ -50,10 +47,6 @@ All JoustMania images use the canonical GHCR registry path:
 ```
 ghcr.io/watchmejoustmyflags/joustmania/<service>:<tag>
 ```
-
-### Builder Images
-
-- `ghcr.io/watchmejoustmyflags/joustmania/builder:latest`
 
 ### Service Images
 
@@ -77,14 +70,6 @@ Controls which image tag to use. Defaults to `latest`.
 # Use main branch images
 IMAGE_TAG=main docker compose pull
 IMAGE_TAG=main docker compose up -d
-```
-
-### BUILDER_IMAGE
-
-Override builder image (used by CI):
-
-```bash
-BUILDER_IMAGE=ghcr.io/.../builder:sha123 docker compose build
 ```
 
 ## Workflows
@@ -143,15 +128,14 @@ IMAGE_TAG=main make test-pulled
 
 The CI workflow automatically:
 
-1. Builds builder images with commit SHA tag
-2. Builds each service separately for isolation
-3. Tags images with both commit SHA and branch name
-4. Pushes to GHCR for caching and deployment
+1. Builds each service separately for isolation (each service Dockerfile builds
+   on `python:3.14-slim`; only audio installs a compiler toolchain)
+2. Tags images with both commit SHA and branch name
+3. Pushes to GHCR for caching and deployment
 
 **Environment variables used in CI:**
 
 - `IMAGE_TAG`: Set to `${{ github.sha }}` for versioning
-- `BUILDER_IMAGE`: Points to builder image with same commit SHA
 
 ## GHCR Authentication
 
@@ -185,20 +169,6 @@ echo $GITHUB_TOKEN | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-std
 1. Check if images exist in GHCR: https://github.com/orgs/WatchMeJoustMyFlags/packages
 2. Authenticate if images are private (see above)
 3. Build locally instead: `docker compose up -d --build`
-
-### Builder images not found during build
-
-**Problem:** Service build fails with "builder image not found"
-
-**Solution:** Build or pull builder images:
-
-```bash
-# Build locally
-make builders
-
-# Or pull from GHCR
-docker pull ghcr.io/watchmejoustmyflags/joustmania/builder:latest
-```
 
 ### .venv permission issues
 

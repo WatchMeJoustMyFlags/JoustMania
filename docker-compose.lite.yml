@@ -55,8 +55,6 @@ services:
     build:
       context: .
       dockerfile: services/controller_manager/Dockerfile
-      args:
-        BUILDER_IMAGE: ${BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/builder:latest}
     container_name: joustmania-controller-manager
     privileged: true
     # Required for controller hot-plug
@@ -86,8 +84,6 @@ services:
     build:
       context: .
       dockerfile: services/pairing_daemon/Dockerfile
-      args:
-        BUILDER_IMAGE: ${BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/builder:latest}
     container_name: joustmania-pairing-daemon
     privileged: true
     pid: "host"
@@ -114,8 +110,6 @@ services:
     build:
       context: .
       dockerfile: services/game_coordinator/Dockerfile
-      args:
-        BUILDER_IMAGE: ${BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/builder:latest}
     container_name: joustmania-game-coordinator
     expose:
       - "50053"
@@ -135,8 +129,6 @@ services:
     build:
       context: .
       dockerfile: services/menu/Dockerfile
-      args:
-        BUILDER_IMAGE: ${BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/builder:latest}
     container_name: joustmania-menu
     expose:
       - "50054"
@@ -166,8 +158,6 @@ services:
     build:
       context: .
       dockerfile: services/audio/Dockerfile
-      args:
-        BUILDER_IMAGE: ${BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/builder:latest}
     container_name: joustmania-audio
     privileged: true
     volumes:

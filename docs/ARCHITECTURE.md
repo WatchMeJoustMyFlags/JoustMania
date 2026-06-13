@@ -443,7 +443,6 @@ See [Dynatrace Integration](DYNATRACE.md) for setup instructions.
 ### Build Commands
 
 ```bash
-make builders   # Build base images (~15min on Pi)
 make images     # Build all service images
 make up         # Start full stack
 make up-mock    # Start with mock controllers

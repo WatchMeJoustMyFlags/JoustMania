@@ -6,7 +6,6 @@
 #   # Or: make up-pull
 #
 # Quick Start (local build):
-#   make builders        # Build base images once (~15min on Pi)
 #   make up              # Build and start all services
 #
 # Base config defaults to bluetooth mode (real hardware).
@@ -168,8 +167,6 @@ services:
     build:
       context: .
       dockerfile: services/controller_manager/Dockerfile
-      args:
-        BUILDER_IMAGE: ${BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/builder:latest}
     container_name: joustmania-controller-manager
     privileged: true
     # Required for controller hot-plug: run in host PID namespace to see new devices
@@ -225,8 +222,6 @@ services:
     build:
       context: .
       dockerfile: services/pairing_daemon/Dockerfile
-      args:
-        BUILDER_IMAGE: ${BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/builder:latest}
     container_name: joustmania-pairing-daemon
     privileged: true
     pid: "host"
@@ -300,8 +295,6 @@ services:
     build:
       context: .
       dockerfile: services/python_hid/Dockerfile
-      args:
-        BUILDER_IMAGE: ${BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/builder:latest}
     container_name: joustmania-python-hid
     privileged: true
     pid: "host"
@@ -332,8 +325,6 @@ services:
     build:
       context: .
       dockerfile: services/game_coordinator/Dockerfile
-      args:
-        BUILDER_IMAGE: ${BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/builder:latest}
     container_name: joustmania-game-coordinator
     # Ports exposed only within Docker network (no host binding)
     expose:
@@ -366,8 +357,6 @@ services:
     build:
       context: .
       dockerfile: services/menu/Dockerfile
-      args:
-        BUILDER_IMAGE: ${BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/builder:latest}
     container_name: joustmania-menu
     # Ports exposed only within Docker network (no host binding)
     expose:
@@ -410,8 +399,6 @@ services:
     build:
       context: .
       dockerfile: services/audio/Dockerfile
-      args:
-        BUILDER_IMAGE: ${BUILDER_IMAGE:-ghcr.io/watchmejoustmyflags/joustmania/builder:latest}
     container_name: joustmania-audio
     # Sound device access for real audio output
     devices:
