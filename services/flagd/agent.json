@@ -408,6 +408,24 @@
         "off": false
       },
       "defaultVariant": "on"
+    },
+    "code_improvement.engine": {
+      "state": "ENABLED",
+      "variants": {
+        "stub": "stub",
+        "ollama": "ollama",
+        "cloud": "cloud"
+      },
+      "defaultVariant": "stub"
+    },
+    "code_improvement.min_interval_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 300,
+        "fast": 60,
+        "slow": 900
+      },
+      "defaultVariant": "default"
     }
   }
 }
