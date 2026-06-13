@@ -1,0 +1,448 @@
+{
+  "metadata": {
+    "flagSetId": "agent"
+  },
+  "flags": {
+    "enabled": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "off"
+    },
+    "mode": {
+      "state": "ENABLED",
+      "variants": {
+        "rules": "rules",
+        "llm": "llm"
+      },
+      "defaultVariant": "rules"
+    },
+    "objectives": {
+      "state": "ENABLED",
+      "variants": {
+        "endurance_focused": {
+          "endurance": 0.7,
+          "balanced": 0.1,
+          "accelerate": 0.1,
+          "chaos": 0.1
+        },
+        "balanced_focused": {
+          "endurance": 0.1,
+          "balanced": 0.7,
+          "accelerate": 0.1,
+          "chaos": 0.1
+        },
+        "accelerate_focused": {
+          "endurance": 0.1,
+          "balanced": 0.1,
+          "accelerate": 0.7,
+          "chaos": 0.1
+        },
+        "chaos_focused": {
+          "endurance": 0.1,
+          "balanced": 0.1,
+          "accelerate": 0.1,
+          "chaos": 0.7
+        },
+        "mixed": {
+          "endurance": 0.25,
+          "balanced": 0.25,
+          "accelerate": 0.25,
+          "chaos": 0.25
+        }
+      },
+      "defaultVariant": "balanced_focused"
+    },
+    "model": {
+      "state": "ENABLED",
+      "variants": {
+        "phi4-mini": "phi4-mini",
+        "gemma3_4b": "gemma3:4b",
+        "claude": "claude",
+        "copilot": "copilot"
+      },
+      "defaultVariant": "phi4-mini"
+    },
+    "prompt_variant": {
+      "state": "ENABLED",
+      "variants": {
+        "conservative": "conservative",
+        "aggressive": "aggressive",
+        "balanced": "balanced"
+      },
+      "defaultVariant": "conservative"
+    },
+    "interventions_allowed": {
+      "state": "ENABLED",
+      "variants": {
+        "none": [],
+        "probe": [
+          "noop"
+        ],
+        "ambient": [
+          "play_audio_cue",
+          "send_controller_effect",
+          "adjust_volume"
+        ],
+        "standard": [
+          "play_audio_cue",
+          "send_controller_effect",
+          "adjust_volume",
+          "adjust_music_tempo",
+          "set_pacing_profile",
+          "adjust_player_sensitivity",
+          "grant_shield"
+        ],
+        "full": [
+          "play_audio_cue",
+          "send_controller_effect",
+          "adjust_volume",
+          "adjust_music_tempo",
+          "set_pacing_profile",
+          "adjust_player_sensitivity",
+          "grant_shield",
+          "adjust_global_sensitivity",
+          "adjust_global_difficulty",
+          "eliminate_player",
+          "revive_player",
+          "end_game"
+        ]
+      },
+      "defaultVariant": "ambient"
+    },
+    "policy.battery_threshold": {
+      "state": "ENABLED",
+      "variants": {
+        "strict": 30,
+        "default": 20,
+        "lenient": 10,
+        "off": 0
+      },
+      "defaultVariant": "default"
+    },
+    "policy.movement_variance_window": {
+      "state": "ENABLED",
+      "variants": {
+        "short": 5,
+        "default": 10,
+        "long": 20
+      },
+      "defaultVariant": "default"
+    },
+    "policy.max_interventions_per_minute": {
+      "state": "ENABLED",
+      "variants": {
+        "conservative": 1,
+        "default": 2,
+        "aggressive": 4
+      },
+      "defaultVariant": "default"
+    },
+    "llm.eligible_game_kinds": {
+      "state": "ENABLED",
+      "variants": {
+        "none": [],
+        "real_only": ["real"],
+        "real_and_shadow": ["real", "shadow"]
+      },
+      "defaultVariant": "real_only"
+    },
+    "llm.min_decision_interval_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "fast": 5,
+        "default": 10,
+        "slow": 30
+      },
+      "defaultVariant": "default"
+    },
+    "llm.max_requests_per_minute": {
+      "state": "ENABLED",
+      "variants": {
+        "conservative": 3,
+        "default": 6,
+        "aggressive": 12
+      },
+      "defaultVariant": "default"
+    },
+    "llm.latency_budget_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "tight": 4,
+        "default": 8,
+        "patient": 12
+      },
+      "defaultVariant": "default"
+    },
+    "llm.context_games": {
+      "state": "ENABLED",
+      "variants": {
+        "off": 0,
+        "default": 3,
+        "wide": 5,
+        "max": 10
+      },
+      "defaultVariant": "default"
+    },
+    "prompt.context_note": {
+      "state": "ENABLED",
+      "variants": {
+        "empty": "",
+        "example": "Tonight's crowd skews younger and very energetic; lean toward higher-energy pacing."
+      },
+      "defaultVariant": "empty"
+    },
+    "policy.coordinator_backstop_per_minute": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 60,
+        "strict": 20,
+        "generous": 120
+      },
+      "defaultVariant": "default"
+    },
+    "fitness.endurance.min_session_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "short": 60,
+        "default": 120,
+        "long": 300
+      },
+      "defaultVariant": "default"
+    },
+    "fitness.balanced.max_skill_gap": {
+      "state": "ENABLED",
+      "variants": {
+        "tight": 0.2,
+        "default": 0.4,
+        "loose": 0.6
+      },
+      "defaultVariant": "default"
+    },
+    "fitness.balanced.spike_survival_threshold": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 0.8,
+        "strict": 0.9,
+        "lenient": 0.7
+      },
+      "defaultVariant": "default"
+    },
+    "fitness.accelerate.target_session_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 60,
+        "fast": 30,
+        "slow": 120
+      },
+      "defaultVariant": "default"
+    },
+    "fitness.bluetooth.max_event_gap_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 50,
+        "strict": 25,
+        "lenient": 100
+      },
+      "defaultVariant": "default"
+    },
+    "fitness.bluetooth.max_dropped_events_pct": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 0.02,
+        "strict": 0.01,
+        "lenient": 0.05
+      },
+      "defaultVariant": "default"
+    },
+    "fitness.bluetooth.min_movement_update_hz": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 10,
+        "strict": 20,
+        "lenient": 5
+      },
+      "defaultVariant": "default"
+    },
+    "perception.zone_still_max": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 1.1,
+        "twitchy": 0.9,
+        "relaxed": 1.3
+      },
+      "defaultVariant": "default"
+    },
+    "perception.zone_active_max": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 1.5,
+        "twitchy": 1.3,
+        "relaxed": 1.7
+      },
+      "defaultVariant": "default"
+    },
+    "perception.zone_warning_max": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 2.0,
+        "twitchy": 1.8,
+        "relaxed": 2.2
+      },
+      "defaultVariant": "default"
+    },
+    "perception.playstyle.aggressive_warning_danger_min": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 30,
+        "strict": 40,
+        "lenient": 20
+      },
+      "defaultVariant": "default"
+    },
+    "perception.playstyle.calm_still_min": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 70,
+        "strict": 80,
+        "lenient": 60
+      },
+      "defaultVariant": "default"
+    },
+    "perception.playstyle.calm_warning_danger_max": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 10,
+        "strict": 5,
+        "lenient": 15
+      },
+      "defaultVariant": "default"
+    },
+    "perception.playstyle.balanced_still_min": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 40,
+        "strict": 50,
+        "lenient": 30
+      },
+      "defaultVariant": "default"
+    },
+    "perception.playstyle.balanced_warning_danger_max": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 20,
+        "strict": 15,
+        "lenient": 25
+      },
+      "defaultVariant": "default"
+    },
+    "perception.ema_weight": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 4.0,
+        "smooth": 6.0,
+        "responsive": 2.0
+      },
+      "defaultVariant": "default"
+    },
+    "lifecycle.player_ttl_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 5,
+        "short": 3,
+        "long": 10
+      },
+      "defaultVariant": "default"
+    },
+    "lifecycle.session_grace_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 15,
+        "short": 5,
+        "long": 30
+      },
+      "defaultVariant": "default"
+    },
+    "lifecycle.evict_interval_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 1,
+        "fast": 0.5,
+        "slow": 2
+      },
+      "defaultVariant": "default"
+    },
+    "decision.throttle_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 1,
+        "chatty": 0.5,
+        "quiet": 5
+      },
+      "defaultVariant": "default"
+    },
+    "code_improvement.validation_games": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 5,
+        "quick": 3,
+        "thorough": 10
+      },
+      "defaultVariant": "default"
+    },
+    "code_improvement.fitness_improvement_threshold": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 0.05,
+        "lenient": 0.01,
+        "strict": 0.1
+      },
+      "defaultVariant": "default"
+    },
+    "code_improvement.revert_on_degradation": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "on"
+    },
+    "code_improvement.engine": {
+      "state": "ENABLED",
+      "variants": {
+        "stub": "stub",
+        "ollama": "ollama",
+        "cloud": "cloud"
+      },
+      "defaultVariant": "stub"
+    },
+    "code_improvement.min_interval_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 300,
+        "fast": 60,
+        "slow": 900
+      },
+      "defaultVariant": "default"
+    },
+    "code_improvement.mode": {
+      "state": "ENABLED",
+      "variants": {
+        "issue": "issue",
+        "pr": "pr",
+        "autonomous": "autonomous"
+      },
+      "defaultVariant": "issue"
+    },
+    "code_improvement.target": {
+      "state": "ENABLED",
+      "variants": {
+        "local": "local",
+        "github": "github"
+      },
+      "defaultVariant": "local"
+    }
+  }
+}

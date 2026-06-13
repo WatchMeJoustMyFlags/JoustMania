@@ -65,16 +65,15 @@ constraint that keeps test_per_player_targeting_resolves_against_live_flagd
 sequential. The autouse `coordinator_idle` quiesce + the `game_flags` snapshot
 fixture keep it from leaking into neighbours.
 
-The `game` flagset is a bind-mounted host file, but WHICH host file flagd
-serves depends on the compose stack: the dev stack mounts game.json, while the
-CI stack (docker-compose.ci.yml) mounts game.ci.json OVER /etc/flagd/game.json.
-The `game_flags` fixture therefore snapshots and restores EVERY game*.json file
-byte-for-byte, and the test mutates every one + derives its baselines from the
-LIVE flagd, so it is correct against either file with no env branch (the proper
-single-source-of-truth for the active flag-file path is tracked in #959).
+The `game` flagset is a bind-mounted host file. WHICH host file flagd serves is
+now resolved from one place (issue #959): helpers.active_flag_file("game") =
+$FLAGD_FLAG_DIR/game.json, and the integration harness points FLAGD_FLAG_DIR at
+the directory flagd is mounted on (the CI flag dir under docker-compose.ci.yml).
+So the file this test mutates IS the file flagd serves — no glob over game*.json,
+no env branch. The `game_flags` fixture snapshots/restores that single file
+byte-for-byte and the test derives its baselines from the LIVE flagd.
 """
 
-import glob
 import json
 import math
 import os
@@ -86,6 +85,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
 from tests.integration.helpers import (  # noqa: E402
     FLAGD_RESOLVE_TIMEOUT_SECONDS,
+    active_flag_file,
     flagd_probe_client,
     poll_until,
 )
@@ -103,25 +103,14 @@ GAME_KIND_VAR = "game_kind"
 GAME_KIND_REAL = "real"
 GAME_KIND_SHADOW = "shadow"
 
-# Repo-root-relative path to the bind-mounted flagd config dir. The compose
-# flagd service mounts ./services/flagd into the container, so writing here on
-# the host is exactly what the Go experiment Writer does inside the container.
-_FLAGD_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "../../services/flagd")
-)
-
-# The flagd container is fed the `game` flagset from a DIFFERENT host file
-# depending on the compose stack: the dev/local stack mounts game.json, but the
-# CI stack (docker-compose.ci.yml) mounts game.ci.json OVER /etc/flagd/game.json
-# (a shorter-timeout variant). So the host file flagd is actually serving is NOT
-# fixed. Rather than branch on an env var (the proper "which file is active"
-# config mechanism is tracked in #959), this test mutates EVERY game flagset
-# file (game.json AND game.ci.json) and restores each byte-for-byte. Whichever
-# one flagd happens to be serving therefore carries the experiment, and the
-# others are left identical to their committed state. STOPGAP: once #959 lands a
-# single source of truth for the active flag-file path, this glob collapses to
-# reading that one configured path.
-GAME_PATHS = sorted(glob.glob(os.path.join(_FLAGD_DIR, "game*.json")))
+# The single active host `game` flag file (#959): $FLAGD_FLAG_DIR/game.json,
+# resolved via the same accessor flagd, the agent writers, and the rest of the
+# integration suite use. Writing here on the host is exactly what the Go
+# experiment Writer does inside the container, and it is the exact file flagd
+# serves (the harness sets FLAGD_FLAG_DIR to the mounted dir). No glob over
+# game*.json, no compose-stack branch. Kept as a one-element list so the
+# apply/snapshot/restore loops below are unchanged.
+GAME_PATHS = [active_flag_file("game")]
 
 # The single reserved variant name the experiment Writer adds/overwrites. MUST
 # match services/agent/experiment/targeting.go ExperimentVariant.
@@ -183,9 +172,8 @@ def write_experiment(flag_key: str, experimental_value) -> None:
     pre-existing targeting in the shadow branch. Idempotent (overwrite, not
     accumulate), so it doubles as poll_until's rewrite self-heal.
 
-    Applied to EVERY game flagset file so the experiment is present whichever
-    file flagd is serving (game.json locally, game.ci.json under the CI compose
-    overlay) — see GAME_PATHS for the #959 stopgap rationale.
+    Applied to the single active game flag file (GAME_PATHS), which is exactly
+    the file flagd serves ($FLAGD_FLAG_DIR/game.json, #959).
     """
     for path in GAME_PATHS:
         doc = _load(path)
@@ -205,8 +193,8 @@ def write_experiment(flag_key: str, experimental_value) -> None:
 
 @pytest.fixture
 def game_flags(docker_compose):
-    # Snapshot EVERY game flagset file (game.json + game.ci.json) so whichever
-    # one flagd is serving is restored byte-for-byte — see GAME_PATHS.
+    # Snapshot the active game flag file (GAME_PATHS) so it is restored
+    # byte-for-byte after the test — it is the file flagd serves (#959).
     backups = {}
     for path in GAME_PATHS:
         with open(path) as fh:
@@ -302,8 +290,8 @@ async def test_experiment_reaches_shadow_never_real(game_flags, docker_compose):
     BASELINE — via the REAL flagd, whichever game flagset file is mounted.
 
     Baselines are derived DYNAMICALLY from the live flagd BEFORE the mutation
-    (not hardcoded from game.json), because the CI compose overlay mounts
-    game.ci.json — which carries different defaultVariant values (e.g.
+    (not hardcoded from game.json), because CI serves the ci/ flag dir
+    (ci/game.json) — which carries different defaultVariant values (e.g.
     invincibility_seconds defaults to "2s" there, "4s" locally). Hardcoding the
     game.json numbers is exactly what made this test time out under CI. By
     snapshotting each context's live resolution first and asserting it is
@@ -421,7 +409,7 @@ async def test_experiment_reaches_shadow_never_real(game_flags, docker_compose):
         )
         # ...and a REAL Werewolf game resolves the SAME value before & after,
         # proving the experiment's else-branch preserved whatever real targeting
-        # the mounted file had verbatim — robust to game.json vs game.ci.json
+        # the mounted file had verbatim — robust to game.json vs ci/game.json
         # targeting differences (this is the structural half of the Gate's
         # invariant: pre-existing real targeting is untouched).
         assert _sens(real_werewolf_ctx) == sens_real_werewolf_baseline, (

@@ -110,7 +110,7 @@ async def end_tournament(mock_client, serials, game_client, game_id) -> None:
 
     State-aware (game_id-scoped): kills one FIGHTING player per match, verified
     against GetGameState, until the terminal event. CI uses 6s match / 1s pause
-    flags (game.ci.json) and invincibility=2.0s (start config).
+    flags (ci/game.json) and invincibility=2.0s (start config).
     """
     await end_tournament_game(
         mock_client, game_client, serials, game_id=game_id, timeout=45.0

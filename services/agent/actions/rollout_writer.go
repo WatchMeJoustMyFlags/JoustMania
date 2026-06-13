@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+
+	"github.com/joustmania/agent/flagset"
 )
 
 // RolloutWriter is the agent's writer for the flagd `rollout` flag file
@@ -78,10 +80,13 @@ func NewRolloutWriter(path string, log *slog.Logger) *RolloutWriter {
 	return &RolloutWriter{path: path, log: log}
 }
 
-// NewRolloutWriterFromEnv builds a RolloutWriter using ROLLOUT_FLAG_PATH (default
-// DefaultRolloutPath), mirroring NewWriterFromEnv.
+// NewRolloutWriterFromEnv builds a RolloutWriter for the active rollout flag
+// file via the single source of truth (flagset.ResolvePath, issue #959): the
+// ROLLOUT_FLAG_PATH override still wins, otherwise the active rollout flag file
+// is the plain join $FLAGD_FLAG_DIR/rollout.json. In production this is
+// DefaultRolloutPath, unchanged.
 func NewRolloutWriterFromEnv(log *slog.Logger) *RolloutWriter {
-	return NewRolloutWriter(os.Getenv("ROLLOUT_FLAG_PATH"), log)
+	return NewRolloutWriter(flagset.ResolvePath("ROLLOUT_FLAG_PATH", "rollout"), log)
 }
 
 // SetControllerCount flips current_controller_count's defaultVariant to the

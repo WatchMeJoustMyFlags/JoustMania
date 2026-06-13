@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+
+	"github.com/joustmania/agent/flagset"
 )
 
 // flagRemediationAllowed is the rollout-domain flag whose resolved value gates
@@ -48,7 +50,7 @@ func NewRemediationReader(path string, log *slog.Logger) *RemediationReader {
 // DefaultRolloutPath), mirroring NewRolloutWriterFromEnv — both target the same
 // file, so the reader and writer always agree on the path.
 func NewRemediationReaderFromEnv(log *slog.Logger) *RemediationReader {
-	return NewRemediationReader(os.Getenv("ROLLOUT_FLAG_PATH"), log)
+	return NewRemediationReader(flagset.ResolvePath("ROLLOUT_FLAG_PATH", "rollout"), log)
 }
 
 // RemediationAllowed resolves the `remediation_allowed` flag's currently-served

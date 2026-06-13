@@ -2,7 +2,7 @@
 Integration regression test for gameId-scoped interventions (#838).
 
 The direct regression the issue requires: with ``shadow_policy=allow`` (the CI
-default — see services/flagd/game.ci.json), run a REAL menu game AND a shadow
+default — see services/flagd/ci/game.json), run a REAL menu game AND a shadow
 (headless) game concurrently, then write a gameId-scoped intervention flag that
 targets the SHADOW game's id. Assert:
 
@@ -37,6 +37,7 @@ from proto import game_coordinator_pb2  # noqa: E402
 
 from tests.integration.helpers import (  # noqa: E402
     GameEventCollector,
+    active_flag_file,
     build_start_config,
     flagd_probe_client,
     force_end_game_by_id,
@@ -52,11 +53,9 @@ from tests.integration.helpers import (  # noqa: E402
     wait_for_lobby_colors,
 )
 
-_FLAGD_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "../../services/flagd")
-)
-INTERVENTIONS_PATH = os.path.join(_FLAGD_DIR, "interventions.json")
-AGENT_PATH = os.path.join(_FLAGD_DIR, "agent.json")
+# Active host flag-file paths via the single source of truth (#959).
+INTERVENTIONS_PATH = active_flag_file("interventions")
+AGENT_PATH = active_flag_file("agent")
 
 APPLY_TIMEOUT_SECONDS = 15.0
 SUITE_RATE_LIMIT_BUDGET = 50

@@ -90,7 +90,7 @@ up-mock:
 	@echo "=========================================="
 	@echo "JoustMania is running (MOCK MODE)"
 	@echo "=========================================="
-	@echo "  Using flagd controller.ci.json (backend=mock)"
+	@echo "  Using flagd ci/ dir (backend=mock)"
 	@echo "  Dashboard:  http://localhost/"
 	@echo "  Jaeger:     http://localhost/jaeger/"
 	@echo "  Prometheus: http://localhost/prometheus/"

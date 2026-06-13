@@ -51,14 +51,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 # same file did — a missed/coalesced file-watch reload under load; re-writing
 # the file mid-poll produces a fresh inotify event and self-heals that case.
 from tests.integration.helpers import (  # noqa: E402
+    active_flag_file,
     poll_until,
     wait_flag_file_restored,
 )
 
-# Repo-root-relative path to the bind-mounted flagd config dir (same dir the
-# intervention-flow tests mutate).
-_FLAGD_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../services/flagd"))
-ROLLOUT_PATH = os.path.join(_FLAGD_DIR, "rollout.json")
+# Active host rollout flag-file path via the single source of truth (#959):
+# $FLAGD_FLAG_DIR/rollout.json — exactly the file flagd serves.
+ROLLOUT_PATH = active_flag_file("rollout")
 
 
 # =============================================================================

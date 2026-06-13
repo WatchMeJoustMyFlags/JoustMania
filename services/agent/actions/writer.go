@@ -37,6 +37,7 @@ import (
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
 
 	"github.com/joustmania/agent/decision"
+	"github.com/joustmania/agent/flagset"
 )
 
 // Flag keys in the interventions domain (services/flagd/interventions.json).
@@ -175,10 +176,13 @@ func newCorruptionCounter(mp otelmetric.MeterProvider) otelmetric.Int64Counter {
 	return c
 }
 
-// NewWriterFromEnv builds a Writer using INTERVENTIONS_FLAG_PATH (default
-// DefaultPath).
+// NewWriterFromEnv builds a Writer for the active interventions flag file via
+// the single source of truth (flagset.ResolvePath, issue #959): the
+// INTERVENTIONS_FLAG_PATH override still wins, otherwise the active interventions
+// flag file is the plain join $FLAGD_FLAG_DIR/interventions.json. In production
+// this is DefaultPath, unchanged.
 func NewWriterFromEnv(log *slog.Logger) *Writer {
-	return NewWriter(os.Getenv("INTERVENTIONS_FLAG_PATH"), log)
+	return NewWriter(flagset.ResolvePath("INTERVENTIONS_FLAG_PATH", "interventions"), log)
 }
 
 // Apply implements decision.ActionSink: it maps the decision's intervention type

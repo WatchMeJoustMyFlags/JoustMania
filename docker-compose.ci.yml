@@ -17,23 +17,27 @@ services:
     devices: !reset []
     volumes:
       - ./services/audio/assets:/app/services/audio/assets:ro
-      - ./services/flagd/user.ci.json:/app/services/flagd/user.ci.json:ro
     environment: !override
       OTEL_SERVICE_NAME: audio-service
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       FLAGD_HOST: flagd
       FLAGD_PORT: "8015"
 
-  # flagd - Use CI overrides (play_audio=off, backend=mock)
+  # flagd - Use the complete CI flag directory (play_audio=off, backend=mock).
+  # Single source of truth (#959): instead of overlaying per-file <domain>.ci.json
+  # onto the base path — which made flagd serve different content at the same
+  # in-container path, invisibly (the #957 trap) — mount the whole
+  # services/flagd/ci directory in place of base services/flagd. flagd's
+  # --uri file:/etc/flagd/<domain>.json list is unchanged; the directory CONTENT
+  # differs. The integration harness sets FLAGD_FLAG_DIR to this same host
+  # directory, so the file a test writes IS the file flagd serves. !override
+  # REPLACES the base [./services/flagd:/etc/flagd] mount (compose MERGES array
+  # values by default; !override replaces the whole list).
   flagd:
-    volumes:
-      - ./services/flagd/system.ci.json:/etc/flagd/system.json
-      - ./services/flagd/controller.ci.json:/etc/flagd/controller.json
-      - ./services/flagd/observability.ci.json:/etc/flagd/observability.json
-      - ./services/flagd/game.ci.json:/etc/flagd/game.json
-      - ./services/flagd/user.ci.json:/etc/flagd/user.json
+    volumes: !override
+      - ./services/flagd/ci:/etc/flagd
 
-  # Controller Manager - Mock mode via flagd (backend=mock in controller.ci.json)
+  # Controller Manager - Mock mode via flagd (backend=mock in ci/controller.json)
   controller-manager:
     # Clear devices and volumes from base compose (requires docker compose v2.24.0+)
     devices: !reset []
@@ -58,6 +62,14 @@ services:
       # concurrent/shadow-isolation tests need multiple live sessions on one
       # stack. This override stays in CI compose; production keeps cap=1.
       GAME_MAX_CONCURRENT_GAMES: "4"
+
+  # Menu - writes game.json/user.json via FlagConfigWriter (game selection, admin
+  # settings). Point it at the SAME CI flag directory flagd serves (#959) so a
+  # menu-driven flag write lands in the file flagd reads, not a stale base copy.
+  # !override replaces the base [./services/flagd:/etc/flagd] mount.
+  menu:
+    volumes: !override
+      - ./services/flagd/ci:/etc/flagd
 
   # Pairing Daemon - Requires hardware, excluded from CI
   pairing-daemon:
