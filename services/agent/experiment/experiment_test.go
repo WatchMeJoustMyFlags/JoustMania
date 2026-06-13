@@ -307,7 +307,7 @@ func TestResolveFlag_UnknownOperatorFailsClosed(t *testing.T) {
 func TestCheckVariantsAndDefault_DetectsDefaultChange(t *testing.T) {
 	before := mustFlag(t, `{"variants":{"a":1,"b":2},"defaultVariant":"a"}`)
 	after := mustFlag(t, `{"variants":{"a":1,"b":2,"agent_experiment":9},"defaultVariant":"b"}`)
-	if rej := checkVariantsAndDefault(before, after); rej == nil || rej.Reason != ReasonDefaultChanged {
+	if rej := checkVariantsAndDefault(before, after, ExperimentVariant); rej == nil || rej.Reason != ReasonDefaultChanged {
 		t.Fatalf("expected default_variant_changed, got %v", rej)
 	}
 }
@@ -315,7 +315,7 @@ func TestCheckVariantsAndDefault_DetectsDefaultChange(t *testing.T) {
 func TestCheckVariantsAndDefault_DetectsExistingVariantMutation(t *testing.T) {
 	before := mustFlag(t, `{"variants":{"a":1,"b":2},"defaultVariant":"a"}`)
 	after := mustFlag(t, `{"variants":{"a":1,"b":99,"agent_experiment":9},"defaultVariant":"a"}`)
-	if rej := checkVariantsAndDefault(before, after); rej == nil || rej.Reason != ReasonExistingVariantChanged {
+	if rej := checkVariantsAndDefault(before, after, ExperimentVariant); rej == nil || rej.Reason != ReasonExistingVariantChanged {
 		t.Fatalf("expected existing_variant_changed, got %v", rej)
 	}
 }

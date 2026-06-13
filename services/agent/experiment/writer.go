@@ -115,18 +115,21 @@ func applyProposal(doc *document, p Proposal) error {
 	if err != nil {
 		return fmt.Errorf("marshal experimental value for %q: %w", p.FlagKey, err)
 	}
-	variants[ExperimentVariant] = valRaw
+	variants[experimentVariantName(p.ExperimentID)] = valRaw
 	if err := f.set("variants", variants); err != nil {
 		return err
 	}
 
-	// Compose the shadow branch over any pre-existing targeting so real games
-	// keep their prior behaviour. We read the targeting that was present BEFORE
-	// we touched it; on re-experimentation the prior block already starts with
-	// our shadow branch, so we strip it first to avoid nesting it indefinitely.
+	// Compose THIS proposal's branch over the pre-existing targeting so real games
+	// (and OTHER experiments' games) keep their prior behaviour. We read the
+	// targeting present BEFORE we touched it and strip only the branch matching
+	// THIS proposal's experiment id — so re-experimenting the same id is idempotent
+	// (replace, don't stack) while DIFFERENT experiments accumulate as a chain of
+	// ifs (each keyed on its own experiment_id). The remaining chain becomes the
+	// else of the freshly-built outermost branch.
 	existing, _ := f.raw("targeting")
-	existing = stripShadowBranch(existing)
-	targeting, err := buildShadowTargeting(existing)
+	existing = stripShadowBranch(p.ExperimentID, existing)
+	targeting, err := buildShadowTargeting(p.ExperimentID, existing)
 	if err != nil {
 		return err
 	}
@@ -135,54 +138,99 @@ func applyProposal(doc *document, p Proposal) error {
 	return doc.putFlag(p.FlagKey, f)
 }
 
-// stripShadowBranch returns the ELSE branch of a targeting block previously
-// produced by buildShadowTargeting, or the block unchanged if it is not one of
-// ours. This makes re-experimenting on the same flag idempotent: we re-wrap the
-// original (pre-experiment) targeting instead of stacking shadow branches.
-func stripShadowBranch(targeting json.RawMessage) json.RawMessage {
+// stripShadowBranch removes the chained-if branch produced by a PRIOR write for
+// experimentID, returning the targeting with only that branch elided (its else
+// spliced in where it sat). Other experiments' branches and the original
+// (pre-experiment) targeting are preserved verbatim. A targeting that is not one
+// of ours, or carries no branch for experimentID, is returned unchanged. This
+// keeps re-experimenting one id idempotent (replace, not stack) without
+// disturbing the K-1 other experiments on the same flag.
+func stripShadowBranch(experimentID string, targeting json.RawMessage) json.RawMessage {
 	if len(targeting) == 0 {
 		return nil
 	}
+	arms, ok := decodeIfArms(targeting)
+	if !ok {
+		return targeting // not a {"if":[cond,then,else]} — not ours, leave it.
+	}
+	// Is THIS the branch for experimentID? cond must match the proposal's shadow
+	// condition AND then must select that proposal's variant.
+	if conditionMatchesExperiment(arms[0], experimentID) && variantNameIs(arms[1], experimentVariantName(experimentID)) {
+		// Drop this branch: its else becomes the result (recursing in case a stale
+		// duplicate of the same id was somehow chained deeper — defensive).
+		stripped := stripShadowBranch(experimentID, arms[2])
+		if len(stripped) == 0 || string(stripped) == "null" {
+			return nil
+		}
+		return stripped
+	}
+	// A different experiment's (or the legacy) branch: keep it, recurse into the
+	// else so a deeper branch for experimentID is still found and removed.
+	newElse := stripShadowBranch(experimentID, arms[2])
+	if jsonEqual(orNull(newElse), orNull(arms[2])) {
+		return targeting // nothing changed below — return original bytes verbatim.
+	}
+	return rebuildIf(arms[0], arms[1], orNull(newElse))
+}
+
+// decodeIfArms returns the three arms of a single-key {"if":[cond,then,else]}
+// block, or (nil,false) if raw is not exactly that shape.
+func decodeIfArms(raw json.RawMessage) ([]json.RawMessage, bool) {
 	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(targeting, &obj); err != nil {
-		return targeting
+	if err := json.Unmarshal(raw, &obj); err != nil || len(obj) != 1 {
+		return nil, false
 	}
 	ifRaw, ok := obj["if"]
-	if !ok || len(obj) != 1 {
-		return targeting
+	if !ok {
+		return nil, false
 	}
 	var arms []json.RawMessage
 	if err := json.Unmarshal(ifRaw, &arms); err != nil || len(arms) != 3 {
-		return targeting
+		return nil, false
 	}
-	// Confirm arm[0] is our shadow condition and arm[1] selects our variant.
-	if !isShadowCondition(arms[0]) || !isExperimentVariant(arms[1]) {
-		return targeting
-	}
-	if string(arms[2]) == "null" {
-		return nil
-	}
-	return arms[2]
+	return arms, true
 }
 
-// isShadowCondition reports whether raw is exactly {"!=":[{"var":"game_kind"},"real"]}.
-func isShadowCondition(raw json.RawMessage) bool {
-	want, err := json.Marshal(map[string]any{
-		"!=": []any{map[string]any{"var": GameKindVar}, GameKindReal},
-	})
-	if err != nil {
-		return false
+// conditionMatchesExperiment reports whether cond is the shadow condition for
+// experimentID — the legacy game_kind!=real condition when id is empty, or the
+// experiment_id==id AND arm==experimental condition otherwise.
+func conditionMatchesExperiment(cond json.RawMessage, experimentID string) bool {
+	if experimentID == "" {
+		return isShadowCondition(cond)
 	}
-	return jsonEqual(raw, want)
+	got, ok := experimentIDFromCondition(cond)
+	return ok && got == experimentID
 }
 
-// isExperimentVariant reports whether raw is the JSON string ExperimentVariant.
-func isExperimentVariant(raw json.RawMessage) bool {
+// variantNameIs reports whether raw is the JSON string equal to want.
+func variantNameIs(raw json.RawMessage, want string) bool {
 	var s string
 	if err := json.Unmarshal(raw, &s); err != nil {
 		return false
 	}
-	return s == ExperimentVariant
+	return s == want
+}
+
+// rebuildIf reassembles {"if":[cond,then,else]} from raw arms, preserving each
+// arm's bytes (so untouched sibling branches round-trip).
+func rebuildIf(cond, then, elseBranch json.RawMessage) json.RawMessage {
+	var buf []byte
+	buf = append(buf, []byte(`{"if":[`)...)
+	buf = append(buf, cond...)
+	buf = append(buf, ',')
+	buf = append(buf, then...)
+	buf = append(buf, ',')
+	buf = append(buf, elseBranch...)
+	buf = append(buf, []byte(`]}`)...)
+	return json.RawMessage(buf)
+}
+
+// orNull returns raw, or the JSON literal null when raw is empty.
+func orNull(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return json.RawMessage("null")
+	}
+	return raw
 }
 
 // writeInPlace overwrites the file at the same path WITHOUT temp+rename. Rename
