@@ -48,6 +48,13 @@ const (
 	// while validating (file unreadable, malformed flag). Fail closed.
 	ReasonReadError            Reason = "read_error"
 	ReasonWriteSimulationError Reason = "write_simulation_error"
+	// ReasonTypeMismatch — ExperimentalValue's JSON kind (number/string/bool/
+	// array/object) does not match the flag's EXISTING variant values. The
+	// invariant is structurally safe regardless (shadow-only), but a game-side
+	// reader of the flag expects a stable type, so a string on a numeric flag would
+	// crash/misbehave the reader in a SHADOW game once an LLM emits a mistyped
+	// value. Reject before the write so only well-typed experiments reach shadow.
+	ReasonTypeMismatch Reason = "type_mismatch"
 )
 
 // gameFlagFileName is the only basename the Gate will validate a write against.
@@ -177,6 +184,17 @@ func (g *Gate) validate(p Proposal) *RejectError {
 	if err != nil {
 		return &RejectError{Reason: ReasonReadError, Detail: err.Error()}
 	}
+
+	// Type-compatibility: the experimental value must be the same JSON kind as the
+	// flag's existing variants. The invariant is upheld either way (the experiment
+	// is shadow-scoped), but a mistyped value would surface to a SHADOW game's
+	// reader that expects a consistent type — reject before the write so only
+	// well-typed experiments reach shadow. Runs before the structural simulation:
+	// it's a property of the proposal vs the current variants, not of the write.
+	if rej := checkTypeCompatible(beforeFlag, p.ExperimentalValue); rej != nil {
+		return rej
+	}
+
 	after, err := parseDoc(raw)
 	if err != nil {
 		return &RejectError{Reason: ReasonReadError, Detail: err.Error()}
@@ -243,6 +261,75 @@ func checkVariantsAndDefault(before, after *flagObj) *RejectError {
 		}
 		if name != ExperimentVariant {
 			return &RejectError{Reason: ReasonTargetingNotShadowScoped, Detail: "unexpected new variant " + name}
+		}
+	}
+	return nil
+}
+
+// jsonKind classifies a raw JSON value into one of the five JSON kinds the type
+// guard distinguishes: "number", "string", "bool", "array", "object". JSON null
+// and unrecognised bytes return "" (no kind). Crucially ALL numerics share the
+// "number" kind — JSON has one number type, so int-vs-float (6 vs 4.0) are
+// compatible and never rejected; flagd/Go decode both to float64 anyway.
+func jsonKind(raw json.RawMessage) string {
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return ""
+	}
+	switch v.(type) {
+	case float64:
+		return "number"
+	case string:
+		return "string"
+	case bool:
+		return "bool"
+	case []any:
+		return "array"
+	case map[string]any:
+		return "object"
+	default: // nil (JSON null) — kindless; nothing to match against.
+		return ""
+	}
+}
+
+// checkTypeCompatible rejects an ExperimentalValue whose JSON kind differs from
+// the flag's EXISTING (non-experimental) variant values. The reader of a game
+// flag expects one stable type, so a string on a numeric flag would
+// crash/misbehave in a shadow game once an LLM emits a mistyped value. We compare
+// against the existing variants (not defaultVariant alone) so a flag whose
+// variants are uniformly numbers requires a number, etc. The reserved
+// experimental variant is skipped — it is the value we are (re)writing, not a
+// game-authored type witness. Empty/kindless existing variants (e.g. all-null)
+// impose no constraint; a kindless experimental value matches anything.
+func checkTypeCompatible(flag *flagObj, experimental any) *RejectError {
+	expRaw, err := json.Marshal(experimental)
+	if err != nil {
+		return &RejectError{Reason: ReasonTypeMismatch, Detail: "experimental value is not JSON-encodable"}
+	}
+	expKind := jsonKind(expRaw)
+	if expKind == "" {
+		// A null/kindless experimental value can sit alongside any-typed variants;
+		// the structural checks still guard the invariant.
+		return nil
+	}
+
+	var variants map[string]json.RawMessage
+	if _, err := flag.get("variants", &variants); err != nil {
+		return &RejectError{Reason: ReasonReadError, Detail: err.Error()}
+	}
+	for name, vRaw := range variants {
+		if name == ExperimentVariant {
+			continue
+		}
+		k := jsonKind(vRaw)
+		if k == "" {
+			continue // kindless existing variant imposes no type constraint.
+		}
+		if k != expKind {
+			return &RejectError{
+				Reason: ReasonTypeMismatch,
+				Detail: fmt.Sprintf("experimental value is %s but variant %q is %s", expKind, name, k),
+			}
 		}
 	}
 	return nil
