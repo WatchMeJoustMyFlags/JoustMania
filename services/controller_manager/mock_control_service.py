@@ -19,11 +19,80 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# How long SimulateDeath holds death-level acceleration. Long enough for the
-# game loop to reliably detect it (>= 60 frames at 60Hz), but well below the
-# 2.0s post-swap/respawn grace period — a hold that outlives grace re-kills
-# the player the moment grace expires (#757).
-DEATH_HOLD_SECONDS = 1.0
+# Number of gameplay-stream frames the death-level acceleration is guaranteed
+# to be DELIVERED to the game (#926). The death latch is counted in DELIVERED
+# frames, not wall-clock: the gameplay send path drains exactly one frame per
+# streamed frame (consume_death_frame), so a send loop starved under
+# parallel-game CPU load merely spreads these frames over more wall-clock — it
+# can no longer skip the death window entirely (the old wall-clock-only hold
+# could be skipped wholesale between two starved sends, so the death never
+# reached the game and the session stalled with all players alive).
+#
+# Why exactly 2 — minimum-with-margin for the EMA crossing AND #757-safe by
+# construction (this is the value the rework settled on after working both
+# failure modes through the real numbers; the original PR used 8, which broke
+# both — see the PR discussion / #926 review):
+#
+#   Crossing the death threshold. The game smooths streamed acceleration with an
+#   EMA, weight 4 (smoothed = (smoothed*4 + raw)/5), and kills when it crosses
+#   the per-sensitivity death threshold. The mock can face ANY sensitivity (0..4)
+#   at EITHER music tempo — the integration flagd config targets Werewolf to the
+#   "fast" profile (sensitivity 3, death threshold up to 3.2g) and other modes
+#   reach sensitivity 4 (3.2g slow / 3.5g fast). The highest threshold the mock
+#   can be asked to cross is therefore 3.5g.
+#
+#   The death input must be sized so that 2 DELIVERED death frames cross that
+#   3.5g ceiling from a resting-primed EMA (~1.0g). With budget 2 the EMA after
+#   the second delivered death frame is (16 + 9*raw)/25, so raw >= ~7.95g is
+#   required for frame 2 >= 3.5g. We use ~9.95g (axes 7,5,5) for comfortable
+#   margin. From rest (EMA ~1.0g) the EMA then climbs:
+#       frame 1 -> 2.79g     frame 2 -> 4.22g
+#   Per-sensitivity kill frame (the frame whose EMA first exceeds the threshold),
+#   verified against the full SLOW_MAX/FAST_MAX tables in
+#   services/game_coordinator/games/base.py:
+#       sens | slow_max kill | fast_max kill
+#         0  |  1.3g  frame 1 |  1.6g  frame 1
+#         1  |  1.5g  frame 1 |  1.8g  frame 1
+#         2  |  1.8g  frame 1 |  2.8g  frame 2
+#         3  |  2.5g  frame 1 |  3.2g  frame 2
+#         4  |  3.2g  frame 2 |  3.5g  frame 2
+#   Every sensitivity at both tempos crosses by frame 2 at the latest, so a
+#   budget of 2 reliably kills across the WHOLE table. (The earlier 7.07g input
+#   only reached 3.19g on frame 2 and silently FAILED to kill sensitivity 3-fast
+#   and sensitivity 4 — the gap this #926 re-review caught; the suite papered
+#   over it only because kill_player_verified re-fires until a slow-tempo window
+#   is caught.)
+#
+#   #757-safety by construction. The game-side kill fires on the death frame
+#   whose EMA first crosses the threshold (frame 1 or frame 2 per the table
+#   above); the killed player is immediately marked not-alive and given a 2.0s
+#   respawn grace during which the game RESETS its EMA every frame. At most
+#   (budget - kill_frame) death frames are streamed AFTER the killing frame, and
+#   the latch then EXHAUSTS. The worst case is a frame-1 kill (low sensitivity),
+#   leaving exactly ONE trailing death frame; the frame-2 kills (sensitivity
+#   3-fast / 4) leave ZERO trailing frames. That single trailing frame lands one
+#   send interval S after the kill, where S is the send interval. For it to re-prime
+#   the EMA past grace it would have to arrive after grace_until — i.e. need
+#   1 * S >= 2.0s. Even at a heavily starved ~1s send gap (the PR's own
+#   root-cause cadence) it lands at ~1.0s, comfortably inside the 2.0s grace
+#   where the EMA is reset, so it is harmless. The larger the budget, the more
+#   trailing frames and the sooner one escapes grace: budget 3 already re-kills
+#   at a ~1.05s gap, and budget 8 (the original PR) re-kills almost immediately
+#   under starvation (the #757 regression the review flagged). The SMALL budget,
+#   not a wall-clock cap, is what makes this safe — so there is NO early
+#   wall-clock cut on the in-game path (#926).
+DEATH_DELIVERY_FRAMES = 2
+
+# Generous wall-clock fallback that clears a death latch ONLY for a controller
+# with no gameplay consumer draining it (a stray SimulateDeath on a controller
+# that is not in a running game). It is deliberately set FAR above any in-game
+# delivery time — well above the 2.0s respawn grace and any realistic starved
+# send gap — so it can NEVER fire before the death frames are delivered to a
+# controller that IS in a game. In-game, the frame budget alone governs the
+# latch (no early wall-clock cut, so a starved send loop can never skip the
+# death — #926); the wall-clock fallback matters only when the budget is not
+# draining because nothing is streaming this controller.
+DEATH_IDLE_FALLBACK_SECONDS = 30.0
 
 
 class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServiceServicer):
@@ -72,20 +141,32 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
             if serial not in self.backend.controllers:
                 return controller_manager_mock_pb2.DeathResponse(success=False, accel_magnitude=0.0)
 
-            # Set death-level acceleration (matches mock_server.py)
-            death_accel = {AxisKey.X: 5.0, AxisKey.Y: 3.0, AxisKey.Z: 4.0}
-            accel_mag = (5.0**2 + 3.0**2 + 4.0**2) ** 0.5  # ~7.07g
+            # Set death-level acceleration. Sized (~9.95g) so that 2 DELIVERED
+            # death frames cross the HIGHEST per-sensitivity death threshold the
+            # mock can face (sensitivity 4 fast = 3.5g) from a resting-primed EMA
+            # — see DEATH_DELIVERY_FRAMES for the full per-sensitivity table.
+            death_accel = {AxisKey.X: 7.0, AxisKey.Y: 5.0, AxisKey.Z: 5.0}
+            accel_mag = (7.0**2 + 5.0**2 + 5.0**2) ** 0.5  # ~9.95g
 
-            # Hold death acceleration for 1 second so the game loop reliably
-            # sees it (>= 60 frames at 60Hz). Must stay well below the 2.0s
-            # post-swap/respawn grace period: a hold that outlives grace
-            # re-kills the player the moment grace expires (#757).
-            self.backend.controllers[serial]["death_accel"] = death_accel
-            self.backend.controllers[serial]["death_hold_until"] = time.time() + DEATH_HOLD_SECONDS
+            # Latch the death by a DELIVERED-frame budget, not wall-clock (#926):
+            # the gameplay send path decrements it once per streamed frame, so
+            # the death-level acceleration is guaranteed to reach the game in
+            # DEATH_DELIVERY_FRAMES frames — enough to cross the EMA death
+            # threshold — regardless of how starved the send loop is under
+            # parallel-game CPU load. In-game the budget is the ONLY thing that
+            # clears the latch; the wall-clock value is a generous fallback that
+            # fires only for a controller no gameplay stream is draining (see
+            # DEATH_IDLE_FALLBACK_SECONDS), so it can never cut the death short
+            # in a real game.
+            controller = self.backend.controllers[serial]
+            controller["death_accel"] = death_accel
+            controller["death_frames_remaining"] = DEATH_DELIVERY_FRAMES
+            controller["death_hold_until"] = time.time() + DEATH_IDLE_FALLBACK_SECONDS
 
             logger.info(
                 f"Mock: Simulated death for {serial} with {accel_mag:.2f}g acceleration, "
-                f"holding for {DEATH_HOLD_SECONDS}s"
+                f"holding for {DEATH_DELIVERY_FRAMES} delivered frames "
+                f"(idle fallback {DEATH_IDLE_FALLBACK_SECONDS}s)"
             )
             return controller_manager_mock_pb2.DeathResponse(success=True, accel_magnitude=accel_mag)
 
@@ -162,6 +243,7 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
             controller[StateKey.GYRO] = {AxisKey.X: 0.0, AxisKey.Y: 0.0, AxisKey.Z: 0.0}
             # Clear death state
             controller["death_accel"] = None
+            controller["death_frames_remaining"] = 0
             controller["death_hold_until"] = 0.0
 
             logger.info(f"Mock: Reset {serial} to idle state")
@@ -242,10 +324,13 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
                     # Simulate death by directly setting controller state
                     controller = self.backend.controllers.get(serial)
                     if controller:
-                        # Set death-level acceleration (same as SimulateDeath)
-                        # Use AxisKey enum for consistency with mock_backend.py
-                        controller["death_accel"] = {AxisKey.X: 5.0, AxisKey.Y: 3.0, AxisKey.Z: 4.0}
-                        controller["death_hold_until"] = time.time() + DEATH_HOLD_SECONDS
+                        # Set death-level acceleration (same as SimulateDeath):
+                        # ~9.95g delivered-frame latch + generous idle wall-clock
+                        # fallback (#926). Magnitude sized to cross every
+                        # sensitivity in 2 delivered frames (see SimulateDeath).
+                        controller["death_accel"] = {AxisKey.X: 7.0, AxisKey.Y: 5.0, AxisKey.Z: 5.0}
+                        controller["death_frames_remaining"] = DEATH_DELIVERY_FRAMES
+                        controller["death_hold_until"] = time.time() + DEATH_IDLE_FALLBACK_SECONDS
                         logger.info(f"Mock: Auto-killed player {serial}")
                     await asyncio.sleep(0.3)  # Stagger deaths for better trace visualization
 

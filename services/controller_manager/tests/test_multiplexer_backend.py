@@ -177,6 +177,32 @@ class TestMultiplexerRouting:
         a1.poll.assert_called_once_with("AA:AA")
         a2.poll.assert_not_called()
 
+    def test_routes_consume_death_frame_to_owning_adapter(self):
+        """consume_death_frame is routed to the serial's adapter (#926)."""
+        mux, a1, a2 = self._setup_two_adapters()
+
+        mux.consume_death_frame("AA:AA")
+
+        a1.consume_death_frame.assert_called_once_with("AA:AA")
+        a2.consume_death_frame.assert_not_called()
+
+    def test_consume_death_frame_unknown_serial_is_noop(self):
+        """Unknown serial -> no adapter -> safe no-op (no exception) (#926)."""
+        mux, a1, a2 = self._setup_two_adapters()
+
+        mux.consume_death_frame("ZZ:ZZ")  # must not raise
+
+        a1.consume_death_frame.assert_not_called()
+        a2.consume_death_frame.assert_not_called()
+
+    def test_consume_death_frame_skips_adapter_without_hook(self):
+        """Hardware adapters lacking the hook are skipped, not errored (#926)."""
+        mux, a1, a2 = self._setup_two_adapters()
+        # Real hardware adapters don't implement consume_death_frame.
+        del a1.consume_death_frame
+
+        mux.consume_death_frame("AA:AA")  # must not raise
+
     @pytest.mark.asyncio
     async def test_set_led_stores_color_centrally(self):
         mux, a1, a2 = self._setup_two_adapters()

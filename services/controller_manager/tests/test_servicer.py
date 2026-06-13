@@ -549,6 +549,50 @@ class TestExtractedHelpers:
 
         assert len(update.controllers) == 0
 
+    def test_build_gameplay_update_drains_death_latch_per_frame(self, servicer_components):
+        """Each streamed controller drains its mock death latch once (#926)."""
+        servicer, _ = servicer_components
+
+        servicer.state_cache_manager.build_or_get_cached_state = MagicMock(return_value=self._make_mock_state())
+        servicer.tracked_controllers["AA:BB"] = {}
+        servicer.tracked_controllers["CC:DD"] = {}
+        # Backend exposes the duck-typed hook (only MockAdapter does in prod).
+        servicer.backend.consume_death_frame = MagicMock()
+
+        servicer._build_gameplay_update(None)
+
+        # Exactly one death-frame tick per included controller, this frame.
+        servicer.backend.consume_death_frame.assert_any_call("AA:BB")
+        servicer.backend.consume_death_frame.assert_any_call("CC:DD")
+        assert servicer.backend.consume_death_frame.call_count == 2
+
+    def test_build_gameplay_update_respects_filter_for_death_latch(self, servicer_components):
+        """Filtered-out controllers don't get a death-frame tick (#926)."""
+        servicer, _ = servicer_components
+
+        servicer.state_cache_manager.build_or_get_cached_state = MagicMock(return_value=self._make_mock_state())
+        servicer.tracked_controllers["AA:BB"] = {}
+        servicer.tracked_controllers["CC:DD"] = {}
+        servicer.backend.consume_death_frame = MagicMock()
+
+        servicer._build_gameplay_update({"AA:BB"})
+
+        servicer.backend.consume_death_frame.assert_called_once_with("AA:BB")
+
+    def test_build_gameplay_update_without_death_hook(self, servicer_components):
+        """Backends without the hook (hardware) stream normally (#926)."""
+        servicer, _ = servicer_components
+
+        servicer.state_cache_manager.build_or_get_cached_state = MagicMock(return_value=self._make_mock_state())
+        servicer.tracked_controllers["AA:BB"] = {}
+        # MockBackend has no consume_death_frame — must not raise.
+        if hasattr(servicer.backend, "consume_death_frame"):
+            del servicer.backend.consume_death_frame
+
+        update = servicer._build_gameplay_update(None)
+
+        assert len(update.controllers) == 1
+
     @pytest.mark.asyncio
     async def test_process_gameplay_config_with_colors(self, servicer_components):
         """_process_gameplay_config should set base colors and build filter from color configs."""

@@ -112,6 +112,7 @@ class TestMockAdapterPoll:
         adapter.discover()
         ctrl = adapter.controllers["mock_controller_0"]
         ctrl["death_accel"] = {AxisKey.X: 5.0, AxisKey.Y: 3.0, AxisKey.Z: 4.0}
+        ctrl["death_frames_remaining"] = 5  # delivered-frame budget (#926)
         ctrl["death_hold_until"] = time.time() + 10.0
 
         state = adapter.poll("mock_controller_0")
@@ -124,11 +125,80 @@ class TestMockAdapterPoll:
         adapter.discover()
         ctrl = adapter.controllers["mock_controller_0"]
         ctrl["death_accel"] = {AxisKey.X: 5.0, AxisKey.Y: 3.0, AxisKey.Z: 4.0}
-        ctrl["death_hold_until"] = time.time() - 1.0  # Already expired
+        ctrl["death_frames_remaining"] = 5
+        ctrl["death_hold_until"] = time.time() - 1.0  # Safety cap already expired
 
         state = adapter.poll("mock_controller_0")
         # Should use normal accel (noise), not death accel
         assert abs(state[StateKey.ACCEL][AxisKey.X]) < 2.0  # Normal noise range
+
+    def test_poll_holds_death_until_frame_budget_drained(self):
+        """Death-accel persists across polls regardless of wall-clock (#926).
+
+        The latch is frame-budget based: as long as frames remain (and the
+        safety cap has not passed), every poll reports the death accel — so a
+        slow/starved gameplay send loop can never skip the death window.
+        """
+        adapter = MockAdapter(num_controllers=1)
+        adapter.discover()
+        ctrl = adapter.controllers["mock_controller_0"]
+        ctrl["death_accel"] = {AxisKey.X: 5.0, AxisKey.Y: 3.0, AxisKey.Z: 4.0}
+        ctrl["death_frames_remaining"] = 3
+        ctrl["death_hold_until"] = 0.0  # no wall-clock cap (controller in a game)
+
+        # Many polls, no frame consumption: death accel stays latched.
+        for _ in range(50):
+            state = adapter.poll("mock_controller_0")
+            assert state[StateKey.ACCEL][AxisKey.X] == 5.0
+
+    def test_consume_death_frame_drains_budget_then_reverts(self):
+        """consume_death_frame counts DELIVERED frames; latch clears at zero."""
+        adapter = MockAdapter(num_controllers=1)
+        adapter.discover()
+        ctrl = adapter.controllers["mock_controller_0"]
+        ctrl["death_accel"] = {AxisKey.X: 5.0, AxisKey.Y: 3.0, AxisKey.Z: 4.0}
+        ctrl["death_frames_remaining"] = 3
+        ctrl["death_hold_until"] = 0.0
+
+        # Three delivered frames drain the budget.
+        for _ in range(3):
+            assert adapter.poll("mock_controller_0")[StateKey.ACCEL][AxisKey.X] == 5.0
+            adapter.consume_death_frame("mock_controller_0")
+
+        assert ctrl["death_frames_remaining"] == 0
+        # Budget exhausted: next poll reverts to noise and clears the latch.
+        state = adapter.poll("mock_controller_0")
+        assert abs(state[StateKey.ACCEL][AxisKey.X]) < 2.0
+        assert ctrl["death_accel"] is None
+
+    def test_consume_death_frame_noop_without_latch(self):
+        """consume_death_frame is a safe no-op when no death is pending."""
+        adapter = MockAdapter(num_controllers=1)
+        adapter.discover()
+        # No death set — must not raise or go negative.
+        adapter.consume_death_frame("mock_controller_0")
+        adapter.consume_death_frame("NONEXISTENT")
+        assert adapter.controllers["mock_controller_0"]["death_frames_remaining"] == 0
+
+    def test_poll_idle_fallback_clears_unconsumed_death(self):
+        """Idle wall-clock fallback clears a latch no gameplay stream is draining.
+
+        This is the no-consumer case: a SimulateDeath on a controller not in a
+        running game has no send loop draining its budget, so the generous
+        wall-clock fallback is what eventually clears it (so it never latches
+        forever). In a real game the budget drains first; see the production-
+        state test below.
+        """
+        adapter = MockAdapter(num_controllers=1)
+        adapter.discover()
+        ctrl = adapter.controllers["mock_controller_0"]
+        ctrl["death_accel"] = {AxisKey.X: 5.0, AxisKey.Y: 3.0, AxisKey.Z: 4.0}
+        ctrl["death_frames_remaining"] = 99  # plenty of budget left...
+        ctrl["death_hold_until"] = time.time() - 0.1  # ...but fallback already passed
+
+        state = adapter.poll("mock_controller_0")
+        assert abs(state[StateKey.ACCEL][AxisKey.X]) < 2.0  # reverted to noise
+        assert ctrl["death_accel"] is None
 
 
 class TestMockAdapterSetOutput:
