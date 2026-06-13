@@ -120,6 +120,23 @@ func (w *fileRealDefaultWriter) SetRealDefault(_ context.Context, flagKey string
 	if err != nil {
 		return fmt.Errorf("marshal value: %w", err)
 	}
+	// Defense-in-depth (#936 review note 2): this is the LAST line before a write
+	// real players resolve, so refuse a value whose JSON kind differs from the flag's
+	// CURRENT defaultVariant value. A mistyped value (e.g. a string on a numeric flag)
+	// would make flagd TYPE_MISMATCH at resolution and fall back to ITS default —
+	// degrading the flag for everyone. The experiment value reaching here is already
+	// type-correct upstream (the #955 gate), but this guards independently, mirroring
+	// that gate for the real-default path.
+	if curDef, ok := flag["defaultVariant"]; ok {
+		var curName string
+		if json.Unmarshal(curDef, &curName) == nil {
+			if curRaw, present := variants[curName]; present {
+				if ck, nk := jsonKind(curRaw), jsonKind(valRaw); ck != "" && nk != "" && ck != nk {
+					return fmt.Errorf("refusing real-default write for %q: value kind %q != current default %q kind %q", flagKey, nk, curName, ck)
+				}
+			}
+		}
+	}
 	// Point at an existing variant if one already equals value (keeps the file tidy),
 	// else add a reserved "promoted" variant. Either way defaultVariant moves.
 	variantName := "promoted"
@@ -176,4 +193,28 @@ func jsonEqual(a, b json.RawMessage) bool {
 	am, _ := json.Marshal(av)
 	bm, _ := json.Marshal(bv)
 	return string(am) == string(bm)
+}
+
+// jsonKind classifies a raw JSON value as number/string/bool/array/object, or ""
+// for null/unparseable (kindless — imposes no type constraint). All JSON numerics
+// are one "number" kind, so an int promoted value never mismatches a float default.
+func jsonKind(raw json.RawMessage) string {
+	var v any
+	if json.Unmarshal(raw, &v) != nil {
+		return ""
+	}
+	switch v.(type) {
+	case float64:
+		return "number"
+	case string:
+		return "string"
+	case bool:
+		return "bool"
+	case []any:
+		return "array"
+	case map[string]any:
+		return "object"
+	default:
+		return "" // null
+	}
 }

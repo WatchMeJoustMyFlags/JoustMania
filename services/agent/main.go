@@ -177,10 +177,14 @@ func rolloutActuator(logger *slog.Logger) decision.RolloutActuator {
 // watch+revert seams (Watcher/RealDefaultReverter) are nil until that live
 // measurement is wired, so autonomous applies-and-records without a watch for now.
 func buildPromoter(logger *slog.Logger) *promote.Promoter {
-	// Resolve the live target ONCE for client construction. The GitHub real client is
-	// gated on target=github so it is never built for a local-target deployment even
-	// with the env gate + token present. The mode/target are STILL read live per
-	// promotion inside Promote — this only decides which real client to construct.
+	// Resolve the target for client construction from the ENV (AGENT_CODE_IMPROVEMENT_TARGET),
+	// distinct from the LIVE flag (code_improvement.target) that Promote dispatches on.
+	// This is a deliberate DOUBLE gate and is STRICTER than a single switch: opening a
+	// real GitHub PR needs BOTH the env target=github at construction (so the http
+	// client is even built) AND the live flag target=github at dispatch. If they
+	// diverge (env=local, flag=github) the dispatch hits the inert no-op and degrades
+	// to a RECORDED no-op — safe, but an operator who flips only the live flag will see
+	// recorded no-ops; flipping to real GitHub requires the env target too.
 	target := promote.Target(getEnv("AGENT_CODE_IMPROVEMENT_TARGET", string(promote.TargetLocal)))
 
 	github, err := promote.NewGitHubClientFromEnv(target, logger)

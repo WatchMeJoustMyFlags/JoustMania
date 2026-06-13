@@ -82,6 +82,38 @@ func TestRealDefaultWriterChangesDefaultVariant(t *testing.T) {
 	}
 }
 
+// TestRealDefaultWriterRejectsTypeMismatch: defense-in-depth (#936 review) — the
+// real-default write refuses a value whose JSON kind differs from the flag's
+// current default, so a mistyped promotion can't degrade the flag for live players
+// (flagd would TYPE_MISMATCH and fall back). The file must be left untouched.
+func TestRealDefaultWriterRejectsTypeMismatch(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFlagFile(t, dir) // death_grace_period_ms has NUMERIC variants (300/600)
+	before, _ := os.ReadFile(path)
+
+	t.Setenv("AGENT_CODE_IMPROVEMENT_ENABLED", "true")
+	t.Setenv("AGENT_AUTONOMOUS_ENABLED", "true")
+	t.Setenv("AGENT_REAL_DEFAULT_FLAG_PATH", path)
+	w, err := NewRealDefaultWriterFromEnv(discardLogger())
+	if err != nil || w == nil {
+		t.Fatalf("writer build: err=%v nil=%v", err, w == nil)
+	}
+
+	// A STRING value on the numeric flag must be refused.
+	if err := w.SetRealDefault(context.Background(), "death_grace_period_ms", "banana"); err == nil {
+		t.Fatal("SetRealDefault accepted a string value on a numeric flag — must reject (type mismatch)")
+	}
+	// File unchanged — no partial/corrupting write.
+	after, _ := os.ReadFile(path)
+	if string(before) != string(after) {
+		t.Error("flag file was modified despite the type-mismatch rejection")
+	}
+	// A numeric value (int or float) of the right kind is still accepted.
+	if err := w.SetRealDefault(context.Background(), "death_grace_period_ms", 450); err != nil {
+		t.Errorf("SetRealDefault rejected a same-kind numeric value: %v", err)
+	}
+}
+
 // TestRealDefaultWriterRequiresAutonomousOptIn: even with the shared
 // code-improvement gate on, the SECOND autonomous-specific opt-in is required.
 func TestRealDefaultWriterRequiresAutonomousOptIn(t *testing.T) {
