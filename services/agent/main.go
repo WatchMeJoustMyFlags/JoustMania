@@ -448,6 +448,20 @@ func main() {
 		loop.SetGameID(gameID)
 		loop.SetContextProvider(decision.MuxContextProvider{Mux: mux})
 		loop.SetRootContext(ctx)
+		// Intervention timeline wiring (#945): feed each decision's dispatched/blocked
+		// outcome into the #916 rolling narrative of the SAME game this loop serves.
+		// The closure captures THIS partition's game_id and routes through the
+		// Multiplexer (mux.AppendInterventionEvent), so the event lands in the timeline
+		// of the game it targeted and nowhere else — the per-game isolation (#845) the
+		// multiplexer already enforces for signals, extended to interventions. This
+		// mirrors SetContextProvider's #917 wiring (a per-game closure over the same
+		// mux+gameID). runDecision calls it for BOTH dispatched and blocked decisions,
+		// covering the sync path AND the async apply path (which also runs runDecision).
+		// The timeline (and thus the #916/#928/#929 narratives + the #960 proposer
+		// prompt) now includes the agent's own intervention history.
+		loop.SetInterventionRecorder(func(intervention, serial string, blocked bool) {
+			mux.AppendInterventionEvent(gameID, intervention, serial, blocked)
+		})
 		// Inject the SHARED rolling cross-game context window (#929, M7-2): every
 		// per-game loop reads the SAME recent-games window, so the llm path renders the
 		// last N game summaries into the prompt's narrative context block — the agent's

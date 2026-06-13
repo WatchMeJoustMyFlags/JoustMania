@@ -250,6 +250,28 @@ type Loop struct {
 	// (rules-only / unwired / tests): the prompt carries no PRIOR GAMES section and
 	// context_games is 0.
 	contextWindow ContextWindow
+
+	// interventionRecorder is the PER-GAME seam into the #916 rolling narrative
+	// timeline (#945): runDecision calls it with each decision's outcome (the
+	// intervention id, its target serial, and whether a permission gate BLOCKED it)
+	// so the timeline accumulates the agent's own intervention history alongside the
+	// state deltas / eliminations / phase transitions the Store observes itself.
+	//
+	// The Loop and the per-game Store are SEPARATE objects: the receiver pipeline
+	// holds both (the gamecontext.Multiplexer's Store per game_id, and this LoopSet's
+	// Loop). The factory in main.go closes this over the SAME game_id the Loop serves
+	// (mux.AppendInterventionEvent(gameID, ...)), exactly mirroring how #917 wired the
+	// per-game ContextProvider (SetContextProvider) into each Loop. That closure is
+	// what preserves per-game isolation (#845): an intervention lands in the timeline
+	// of the game it targeted, never a shared/global one, so two concurrent games keep
+	// independent intervention histories.
+	//
+	// Nil-safe: a Loop without a recorder (the construction default, rules-only
+	// deployments, and all existing tests) simply does not record — purely additive
+	// over the pre-#945 behavior. The Store's AppendInterventionEvent it ultimately
+	// reaches is mutex-guarded (#916), so this is race-safe under the concurrent
+	// trace + metrics Export-handler goroutines that drive runDecision.
+	interventionRecorder func(intervention, serial string, blocked bool)
 }
 
 // NewLoop builds a Loop with the no-op rules/actions stubs, the global tracer,
@@ -299,6 +321,33 @@ func (l *Loop) SetResolver(r *Resolver) { l.resolver = r }
 // context_games is 0 — purely additive over the #739 path. Not safe to call
 // concurrently with OnEvaluate — set it during construction, before the loop serves.
 func (l *Loop) SetContextWindow(w ContextWindow) { l.contextWindow = w }
+
+// SetInterventionRecorder installs the PER-GAME seam that feeds each decision's
+// dispatched/blocked outcome into the #916 rolling narrative timeline (#945).
+// main.go's loopFactory passes a closure over the Multiplexer and THIS loop's
+// game_id (mux.AppendInterventionEvent(gameID, ...)), so the outcome lands in the
+// timeline of the game the Loop serves and nowhere else — the per-game isolation
+// (#845) the multiplexer already enforces for signals, extended to interventions.
+// This mirrors SetContextProvider's #917 wiring (a per-game closure over the same
+// mux+gameID). A nil recorder (the construction default and all existing tests)
+// leaves the loop recording nothing, so this is purely additive. Set at
+// construction, before the loop serves; not safe to call concurrently with
+// OnEvaluate.
+func (l *Loop) SetInterventionRecorder(rec func(intervention, serial string, blocked bool)) {
+	l.interventionRecorder = rec
+}
+
+// recordIntervention feeds one decision's outcome into the per-game timeline via
+// the #945 recorder seam, if one is wired. Nil-safe so an un-wired Loop records
+// nothing. The recorder it calls ultimately reaches the per-game Store's
+// mutex-guarded AppendInterventionEvent (#916), so this is safe to call from the
+// concurrent Export-handler goroutines that drive runDecision.
+func (l *Loop) recordIntervention(intervention, serial string, blocked bool) {
+	if l.interventionRecorder == nil {
+		return
+	}
+	l.interventionRecorder(intervention, serial, blocked)
+}
 
 // SetThrottle overrides the log/span throttle interval. It is read once at
 // startup from decision.throttle_seconds (#766 F5); a non-positive value leaves
@@ -750,6 +799,12 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 
 	if blocked {
 		state.recordBlocked(d, reason, cost)
+		// Feed the BLOCKED outcome into this game's #916 rolling narrative timeline
+		// (#945): blocked interventions are recorded, never silently dropped, so the
+		// timeline (and the #916/#928/#929 narratives + the #960 proposer prompt)
+		// shows what the agent WANTED to do but a permission gate refused. The
+		// recorder closes over THIS loop's game_id (per-game isolation, #845/#917).
+		l.recordIntervention(d.Intervention, d.TargetSerial, true)
 		l.Log.Warn("agent.decision_blocked",
 			"blocked", true,
 			"reason", string(reason),
@@ -761,6 +816,15 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	}
 
 	state.recordDispatched(d, cost)
+	// Feed the DISPATCHED outcome into this game's #916 rolling narrative timeline
+	// (#945): recorded BEFORE the action sink applies it (it passed every gate, so it
+	// IS dispatched regardless of a downstream apply error — the timeline tracks the
+	// agent's INTENT, mirroring recordDispatched). The recorder is the per-game seam
+	// from SetInterventionRecorder, closing over this loop's game_id so the event
+	// lands in the timeline of the game it targeted (#845/#917 isolation). This single
+	// hook also covers the async apply path (#917), since applyOneAsync /
+	// fallbackToRules both dispatch through runDecision.
+	l.recordIntervention(d.Intervention, d.TargetSerial, false)
 	if err := l.Actions.Apply(dCtx, d); err != nil {
 		aSpan.RecordError(err)
 		// semconv.ErrorType derives the low-cardinality error class from the
