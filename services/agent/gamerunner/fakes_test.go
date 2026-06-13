@@ -126,9 +126,13 @@ type fakeCoord struct {
 	forceEndCalls  []string // game_ids passed to ForceEndGame
 	listGames      func() (*gcpb.ListGamesResponse, error)
 	forceEndSignal chan *gcpb.GameEvent
+	startConfig    *gcpb.StartGameConfig // captured from the last StreamGameEvents
 }
 
-func (c *fakeCoord) StreamGameEvents(_ *gcpb.StreamEventsRequest, stream grpc.ServerStreamingServer[gcpb.GameEvent]) error {
+func (c *fakeCoord) StreamGameEvents(req *gcpb.StreamEventsRequest, stream grpc.ServerStreamingServer[gcpb.GameEvent]) error {
+	c.mu.Lock()
+	c.startConfig = req.GetStartConfig()
+	c.mu.Unlock()
 	for _, ev := range c.events {
 		ev.GameId = c.gameID
 		if err := stream.Send(ev); err != nil {
@@ -181,6 +185,14 @@ func (c *fakeCoord) forceEndGameIDs() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]string(nil), c.forceEndCalls...)
+}
+
+// capturedStartConfig returns the StartGameConfig from the last StreamGameEvents
+// call (nil until one arrives).
+func (c *fakeCoord) capturedStartConfig() *gcpb.StartGameConfig {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.startConfig
 }
 
 // testHarness wires fake servers over bufconn and injects a dialer into a Runner.

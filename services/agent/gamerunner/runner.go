@@ -150,6 +150,17 @@ type Spec struct {
 	Players int
 	// Sensitivity is the common death sensitivity 0-4 (2 = MEDIUM).
 	Sensitivity int
+
+	// ExperimentID / Arm bind this shadow game to an experiment cohort AT SPAWN
+	// (#976, design §5). When set, they are threaded onto StartGameConfig so the
+	// started session's eval-context (targeting #977) and telemetry (attribution
+	// #975) carry them from the start. Empty (the default) means an unbound shadow
+	// game — the #778 one-shot runner sets neither, so its behavior is unchanged.
+	// The HARD INVARIANT (epic #982 decision 7) is enforced coordinator-side: these
+	// only ever subdivide a shadow game (origin AGENT), never make a real game part
+	// of an experiment.
+	ExperimentID string
+	Arm          string
 }
 
 // Tag returns the reservation tag for this run's controllers.
@@ -294,6 +305,79 @@ func (r *Runner) RunShadowGame(ctx context.Context, spec Spec) (Result, error) {
 		span.SetStatus(codes.Ok, "")
 	}
 	return res, err
+}
+
+// StartExperimentGame starts ONE experiment-bound shadow game and returns its
+// coordinator-assigned game_id PROMPTLY, then drives the game to completion in a
+// background goroutine bounded by driveCtx. It is the async spawn the experiment
+// registry (#978/#991) needs: Spawn must return the game_id under the registry's
+// allocate tick, but the game itself plays out over minutes — and its CONCLUSION
+// (fitness) flows back through the telemetry/OnGameEnd path, not this call.
+//
+// startCtx bounds only the reserve + start-handshake (the caller's tick context);
+// driveCtx (the agent root context) bounds the background drive + await + cleanup,
+// so the game is NOT killed when the tick returns — only at agent shutdown, which
+// cancels driveCtx and lets the background goroutine force-end the game and ALWAYS
+// remove its reserved controllers (the leak-safe contract). On a start error no
+// goroutine is spawned and no controllers are left reserved.
+func (r *Runner) StartExperimentGame(startCtx, driveCtx context.Context, spec Spec) (string, error) {
+	if spec.RunID == "" {
+		return "", errors.New("gamerunner: spec.RunID is required")
+	}
+	if spec.GameName == "" {
+		return "", errors.New("gamerunner: spec.GameName is required")
+	}
+	if spec.Players < 2 {
+		return "", fmt.Errorf("gamerunner: spec.Players must be >= 2, got %d", spec.Players)
+	}
+
+	cl, err := r.connect()
+	if err != nil {
+		return "", err
+	}
+
+	// Reserve controllers under the start context. On any failure before the
+	// background goroutine takes ownership, we must clean up here so nothing leaks.
+	serials, err := r.reserveControllers(startCtx, cl, spec)
+	if err != nil {
+		cl.close()
+		return "", err
+	}
+
+	stream, gameID, err := r.startAndCapture(startCtx, cl, spec, serials)
+	if err != nil {
+		// Start failed: remove the controllers we reserved and close the clients.
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), r.cfg.RPCTimeout)
+		r.removeControllers(cleanupCtx, cl, serials)
+		cancel()
+		cl.close()
+		return "", err
+	}
+
+	// The game is live with a known id. Hand ownership of the drive/await/cleanup to
+	// a background goroutine bounded by driveCtx. It ALWAYS removes the reserved
+	// controllers and closes the clients on the way out (success, timeout, or
+	// shutdown), so no controller or connection leaks.
+	go func() {
+		defer cl.close()
+		defer func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), r.cfg.RPCTimeout)
+			r.removeControllers(cleanupCtx, cl, serials)
+			cancel()
+		}()
+
+		runDrive, stopDrive := context.WithCancel(driveCtx)
+		defer stopDrive()
+		go r.driveGame(runDrive, cl, serials)
+
+		terminal, _, outcome := r.awaitTerminal(driveCtx, cl, stream, gameID)
+		stopDrive()
+		r.log.Info("experiment shadow game finished",
+			"game_id", gameID, "run_id", spec.RunID, "experiment_id", spec.ExperimentID,
+			"arm", spec.Arm, "outcome", outcome, "terminal_event", terminal)
+	}()
+
+	return gameID, nil
 }
 
 // run is the core flow, assuming clients are connected. Cleanup of reserved

@@ -901,6 +901,13 @@ All configuration is via environment variables:
 | `AGENT_INTERVENTIONS_ENABLED` | `false` | `true` swaps the no-op action sink for the real intervention **Writer** (#730). Default off keeps the scaffold inert |
 | `INTERVENTIONS_FLAG_PATH` | `/etc/flagd/interventions.json` | Path of the flagd interventions file the Writer rewrites (must be the bind-mounted file flagd watches) |
 | `AGENT_GAME_SUMMARY_DIR` | `/var/lib/joustmania/agent/summaries` | Directory the M7-1 game narrative builder (#928) writes one JSON game summary per game into (real **and** shadow), created if missing; atomic temp+rename so a reader never sees a partial file |
+| `AGENT_EXPERIMENTS_ENABLED` | `false` | **Opt-in for the #991 experiment cohort loop** (epic #982). `true` constructs the `experiment.Registry` with the real seams (spawner/targeting/verdict/promoter) and runs the declare→spawn→conclude→verdict→(gated)promote loop. **Default off ⇒ no Registry, no shadow spawns, no targeting writes, no promotions — the agent behaves exactly as before.** Promotion still routes through the existing `code_improvement` gates + kill-switch |
+| `AGENT_MAX_SHADOW_GAMES` | `20` | Fixed cap on concurrent shadow games across all live experiments (epic #982 decision 2); the registry round-robins this cap across experiments |
+| `AGENT_EXPERIMENT_TICK_SECONDS` | `30` | Cadence of the registry's `AllocateAndSpawn` (refills free shadow capacity) |
+| `AGENT_EXPERIMENT_DIR` | `/var/lib/joustmania/agent/experiments` | Durable experiment journal root (intent/events/summary per experiment); the registry rehydrates from it on startup |
+| `AGENT_VERDICT_MIN_N` | `8` | #979 min games per arm before a conclusive verdict (else inconclusive) |
+| `AGENT_VERDICT_EFFECT_THRESHOLD` | `0.5` | #979 minimum \|Cohen's d\| for a promote/discard verdict |
+| `AGENT_EXPERIMENT_SEED_FLAG` | _unset_ | When set (and the loop is enabled), declares ONE env-seeded experiment at startup on this game.json flag — the simplest declaration trigger for the demo. Paired with `AGENT_EXPERIMENT_SEED_VALUE` / `_OBJECTIVE` / `_TARGET_N` / `_HYPOTHESIS` |
 
 > The Go agent uses the flagd **RPC** resolver (gRPC evaluation port `8013`),
 > not the in-process sync port `8015` that the Python services use.

@@ -17,6 +17,87 @@ func ev(eventType string) *gcpb.GameEvent {
 	return &gcpb.GameEvent{EventType: eventType, Timestamp: time.Now().UnixMilli()}
 }
 
+// TestStartExperimentGame_BindsCohortAndReturnsID covers the #976/#991 async
+// experiment spawn: StartExperimentGame returns the game_id promptly, binds
+// (experiment_id, arm) and origin=AGENT onto the StartGameConfig, and the
+// background drive/cleanup runs to completion (controllers removed) when the game
+// ends — all bounded by driveCtx.
+func TestStartExperimentGame_BindsCohortAndReturnsID(t *testing.T) {
+	mock := &fakeMock{}
+	coord := &fakeCoord{
+		gameID: "game_exp_001",
+		events: []*gcpb.GameEvent{
+			ev("game_starting"),
+			ev("game_ended"),
+		},
+	}
+	h := newHarness(t, mock, coord)
+	defer h.stop()
+
+	spec := Spec{
+		RunID: "run-exp", GameName: "JoustFFA", Players: 2, Sensitivity: 2,
+		ExperimentID: "exp_abc123def456", Arm: "experimental",
+	}
+
+	driveCtx, cancelDrive := context.WithCancel(context.Background())
+	defer cancelDrive()
+
+	gameID, err := h.runner.StartExperimentGame(context.Background(), driveCtx, spec)
+	if err != nil {
+		t.Fatalf("StartExperimentGame error: %v", err)
+	}
+	if gameID != "game_exp_001" {
+		t.Fatalf("game_id = %q, want game_exp_001", gameID)
+	}
+
+	// The start config must carry the cohort binding + AGENT origin (the #976
+	// contract: an experiment game is always a shadow game).
+	cfg := coord.capturedStartConfig()
+	if cfg == nil {
+		t.Fatal("StartGameConfig was not sent")
+	}
+	if cfg.GetExperimentId() != "exp_abc123def456" {
+		t.Errorf("experiment_id = %q, want exp_abc123def456", cfg.GetExperimentId())
+	}
+	if cfg.GetArm() != "experimental" {
+		t.Errorf("arm = %q, want experimental", cfg.GetArm())
+	}
+	if cfg.GetOrigin() != gcpb.GameOrigin_GAME_ORIGIN_AGENT {
+		t.Errorf("origin = %v, want GAME_ORIGIN_AGENT", cfg.GetOrigin())
+	}
+
+	// The background drive should reach the terminal event and remove the reserved
+	// controllers. Poll for cleanup (the goroutine runs after Start returns).
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		_, removed, _, _ := mock.snapshot()
+		if len(removed) == spec.Players {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	_, removed, _, _ := mock.snapshot()
+	t.Fatalf("background drive did not remove reserved controllers: removed %d, want %d", len(removed), spec.Players)
+}
+
+// TestStartExperimentGame_ValidatesSpec confirms the async start rejects an invalid
+// spec without spawning a goroutine or leaving controllers reserved.
+func TestStartExperimentGame_ValidatesSpec(t *testing.T) {
+	mock := &fakeMock{}
+	coord := &fakeCoord{gameID: "g"}
+	h := newHarness(t, mock, coord)
+	defer h.stop()
+
+	_, err := h.runner.StartExperimentGame(context.Background(), context.Background(),
+		Spec{RunID: "r", GameName: "JoustFFA", Players: 1})
+	if err == nil {
+		t.Fatal("expected a spec-validation error for Players < 2")
+	}
+	if added, _, _, _ := mock.snapshot(); len(added) != 0 {
+		t.Fatalf("invalid spec reserved %d controllers, want 0", len(added))
+	}
+}
+
 func TestRunShadowGame_HappyPath(t *testing.T) {
 	mock := &fakeMock{}
 	coord := &fakeCoord{

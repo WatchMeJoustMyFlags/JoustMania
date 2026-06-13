@@ -67,6 +67,17 @@ func buildStartConfig(spec Spec, serials []string) *gcpb.StartGameConfig {
 		Players:     players,
 		Sensitivity: int32(spec.Sensitivity),
 	}
+	// Experiment-cohort binding (#976): an experiment game is started with
+	// origin=AGENT (always classified shadow coordinator-side) and its
+	// experiment_id/arm so the started session's eval-context + telemetry carry the
+	// cohort attribution from the first frame. An unbound shadow game (the #778
+	// one-shot runner, ExperimentID == "") sets neither, leaving origin UNSPECIFIED
+	// — still shadow, byte-unchanged from before.
+	if spec.ExperimentID != "" {
+		cfg.Origin = gcpb.GameOrigin_GAME_ORIGIN_AGENT
+		cfg.ExperimentId = spec.ExperimentID
+		cfg.Arm = spec.Arm
+	}
 	switch spec.GameName {
 	case "JoustFFA":
 		cfg.GameConfig = &gcpb.StartGameConfig_FfaConfig{FfaConfig: &gcpb.FFAConfig{}}

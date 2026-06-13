@@ -59,6 +59,38 @@ func DirFromEnv() string {
 	return DefaultDir
 }
 
+// List enumerates the experiment_ids with a durable journal under root — every
+// sub-directory that holds an intent.json. It is the rehydration scan (#831 / the
+// #978 registry's Rehydrate input): the registry Loads each id to rebuild its
+// live set on startup. A missing root yields an empty slice (no experiments yet),
+// never an error, so a first-run agent rehydrates trivially. The returned ids are
+// the DIRECTORY names — for a sanitized id (exp_<hex> is already safe) this is the
+// experiment_id verbatim; Load reads intent.json's experiment_id regardless.
+func List(root string) ([]string, error) {
+	if root == "" {
+		root = DefaultDir
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("list experiments root %q: %w", root, err)
+	}
+	var ids []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		// Only count a dir that actually holds an intent.json — skip stray dirs.
+		if _, err := os.Stat(filepath.Join(root, e.Name(), intentFile)); err != nil {
+			continue
+		}
+		ids = append(ids, e.Name())
+	}
+	return ids, nil
+}
+
 // store binds a root experiments directory. It holds no per-experiment state and
 // resolves each experiment's sub-directory from its (sanitized) id.
 type store struct {

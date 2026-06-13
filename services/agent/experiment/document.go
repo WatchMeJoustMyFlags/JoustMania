@@ -120,6 +120,23 @@ func (f *flagObj) setRaw(key string, raw json.RawMessage) {
 	f.values[key] = raw
 }
 
+// del removes one key from the flag object, preserving the order of the rest.
+// A no-op when the key is absent. Used by Strip to drop a torn-down experiment's
+// reserved variant (the teardown inverse of set/setRaw).
+func (f *flagObj) del(key string) {
+	if _, exists := f.values[key]; !exists {
+		return
+	}
+	delete(f.values, key)
+	kept := f.keys[:0]
+	for _, k := range f.keys {
+		if k != key {
+			kept = append(kept, k)
+		}
+	}
+	f.keys = kept
+}
+
 // get decodes one key of the flag object into v. ok=false when the key is
 // absent.
 func (f *flagObj) get(key string, v any) (bool, error) {
