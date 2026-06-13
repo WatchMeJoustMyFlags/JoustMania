@@ -347,6 +347,103 @@ func TestCheckRealResolution_DetectsChange(t *testing.T) {
 	}
 }
 
+// ---- Type-compatibility guard (#953 N3) ------------------------------------
+
+// A string on a numeric flag must be REJECTED with type_mismatch before any
+// write — a shadow game's reader of invincibility_seconds expects a float and
+// would crash/misbehave on a string. File unchanged, blocked span emitted.
+func TestReview_BlocksStringOnNumericFlag(t *testing.T) {
+	g, path, rec := gateWithRecorder(t)
+	before := mustRead(t, path)
+
+	err := g.Review(context.Background(), Proposal{
+		FlagKey:           "invincibility_seconds",
+		ExperimentalValue: "six",
+		Rationale:         "mistyped value an LLM might emit",
+	})
+	assertBlocked(t, err, ReasonTypeMismatch)
+	assertUnchanged(t, path, before)
+	assertSpan(t, rec, SpanProposed, true, ReasonTypeMismatch)
+}
+
+// A numeric value on a numeric flag is accepted — and crucially an INTEGER on a
+// float-variant flag (6 vs the 4.0 variants) is NOT a false reject: JSON has one
+// number kind.
+func TestReview_AcceptsIntOnFloatFlag(t *testing.T) {
+	g, _, _ := gateWithRecorder(t)
+	if err := g.Review(context.Background(), Proposal{
+		FlagKey:           "invincibility_seconds",
+		ExperimentalValue: 6, // int literal vs the flag's 4.0/6.0 float variants
+	}); err != nil {
+		t.Fatalf("int on float-variant flag rejected: %v", err)
+	}
+}
+
+// A float value on a flag whose variants are integers (num_teams: 2..6) is also
+// accepted — same number kind, no int-vs-float reject in the other direction.
+func TestReview_AcceptsFloatOnIntFlag(t *testing.T) {
+	g, _, _ := gateWithRecorder(t)
+	if err := g.Review(context.Background(), Proposal{
+		FlagKey:           "num_teams",
+		ExperimentalValue: 4.0,
+	}); err != nil {
+		t.Fatalf("float on int-variant flag rejected: %v", err)
+	}
+}
+
+// A bool on a bool flag (random_assignment: true/false) is accepted.
+func TestReview_AcceptsBoolOnBoolFlag(t *testing.T) {
+	g, _, _ := gateWithRecorder(t)
+	if err := g.Review(context.Background(), Proposal{
+		FlagKey:           "random_assignment",
+		ExperimentalValue: false,
+	}); err != nil {
+		t.Fatalf("bool on bool flag rejected: %v", err)
+	}
+}
+
+// A number on a bool flag is rejected with type_mismatch, file unchanged.
+func TestReview_BlocksNumberOnBoolFlag(t *testing.T) {
+	g, path, rec := gateWithRecorder(t)
+	before := mustRead(t, path)
+
+	err := g.Review(context.Background(), Proposal{
+		FlagKey:           "random_assignment",
+		ExperimentalValue: 1,
+	})
+	assertBlocked(t, err, ReasonTypeMismatch)
+	assertUnchanged(t, path, before)
+	assertSpan(t, rec, SpanProposed, true, ReasonTypeMismatch)
+}
+
+// Unit-level: checkTypeCompatible's kind matching, including the int-vs-float
+// nuance and the experimental-variant skip (an existing agent_experiment of a
+// different kind must NOT constrain the new value).
+func TestCheckTypeCompatible_KindMatching(t *testing.T) {
+	numFlag := mustFlag(t, `{"variants":{"a":1.0,"b":2.0},"defaultVariant":"a"}`)
+	if rej := checkTypeCompatible(numFlag, 5); rej != nil {
+		t.Fatalf("int on numeric flag rejected: %v", rej)
+	}
+	if rej := checkTypeCompatible(numFlag, "x"); rej == nil || rej.Reason != ReasonTypeMismatch {
+		t.Fatalf("string on numeric flag: got %v, want type_mismatch", rej)
+	}
+
+	boolFlag := mustFlag(t, `{"variants":{"on":true,"off":false},"defaultVariant":"on"}`)
+	if rej := checkTypeCompatible(boolFlag, true); rej != nil {
+		t.Fatalf("bool on bool flag rejected: %v", rej)
+	}
+	if rej := checkTypeCompatible(boolFlag, 3); rej == nil || rej.Reason != ReasonTypeMismatch {
+		t.Fatalf("number on bool flag: got %v, want type_mismatch", rej)
+	}
+
+	// The reserved experimental variant is skipped as a type witness: a stale
+	// agent_experiment string must not block a numeric re-experiment.
+	staleExp := mustFlag(t, `{"variants":{"a":1.0,"agent_experiment":"oops"},"defaultVariant":"a"}`)
+	if rej := checkTypeCompatible(staleExp, 9.0); rej != nil {
+		t.Fatalf("numeric value blocked by stale experimental variant: %v", rej)
+	}
+}
+
 // ---- Idempotent re-experimentation -----------------------------------------
 
 func TestReview_ReExperimentIsIdempotent(t *testing.T) {

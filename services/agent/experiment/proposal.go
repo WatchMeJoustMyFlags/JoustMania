@@ -45,8 +45,11 @@ type Proposal struct {
 	FlagKey string
 
 	// ExperimentalValue is the value shadow games should resolve for FlagKey. It
-	// is added as a new variant; its JSON type should match the flag's existing
-	// variants (the game-side reader expects a consistent type).
+	// is added as a new variant; its JSON kind MUST match the flag's existing
+	// variants (the game-side reader expects a consistent type). The Gate enforces
+	// this (ReasonTypeMismatch) — e.g. a string on a numeric flag is rejected
+	// before the write. JSON has one number type, so int-vs-float (6 vs 4.0) is
+	// fine.
 	ExperimentalValue any
 
 	// Rationale is the agent's hypothesis ("why this value might improve the
