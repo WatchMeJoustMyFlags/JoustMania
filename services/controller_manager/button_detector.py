@@ -185,8 +185,19 @@ class ButtonDetector:
                 f"Button event {serial}: T={trigger} M={move} X={cross} O={circle} []={square} /\\={triangle} PS={ps}"
             )
 
-        # Publish events to all subscribers
-        if events:
+        # Publish events to all subscribers — but never announce reserved
+        # controllers to button-stream consumers (the menu). #784 suppressed
+        # reserved controllers from connect/disconnect events and the
+        # connected_serials roster, but left this regular button-event path
+        # un-filtered. That asymmetry let a reserved controller's button press
+        # auto-register it in the menu's connected set (StateManager registers
+        # any controller it receives a button for), while the reconcile path —
+        # driven by the reserved-free roster — could prune it again. The
+        # resulting nondeterministic connected/ready mismatch broke
+        # all_ready() (ready_count == connected_count) and intermittently
+        # prevented game start (#805). Reserved controllers stay fully usable
+        # via the gameplay-data stream and explicit-serial commands.
+        if events and not info.get(ControllerInfoKey.RESERVED, False):
             for event in events:
                 self.event_publisher.publish_to_subscribers(self._subscribers, event, "button")
 

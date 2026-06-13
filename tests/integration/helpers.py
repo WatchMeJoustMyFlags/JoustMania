@@ -325,7 +325,15 @@ async def get_controller_client(docker_compose):
 
 
 async def get_mock_controller_serials(docker_compose) -> list[str]:
-    """Get list of mock controller serials via ListMockControllers."""
+    """Get list of *menu-visible* (non-reserved) mock controller serials.
+
+    Reserved controllers (#784) are hidden from the menu and must never be
+    treated as lobby controllers by menu-flow helpers — counting or readying
+    a reserved serial through the menu path is exactly what caused #805. The
+    detailed ``controllers`` list carries the reserved flag, so filter on it
+    and fall back to the flat ``serials`` only when no detail is available
+    (older servers / backward compatibility).
+    """
     host = docker_compose.get_service_host("controller-manager", 50062)
     port = docker_compose.get_service_port("controller-manager", 50062)
     channel = grpc.aio.insecure_channel(f"{host}:{port}")
@@ -336,6 +344,8 @@ async def get_mock_controller_serials(docker_compose) -> list[str]:
     )
     await channel.close()
 
+    if response.controllers:
+        return [c.serial for c in response.controllers if not c.reserved]
     return list(response.serials)
 
 
@@ -372,20 +382,30 @@ async def setup_mock_controllers(
         existing = await mock_client.ListMockControllers(
             controller_manager_mock_pb2.ListRequest()
         )
-        if existing.count >= count:
+        # Only reuse *non-reserved* controllers. Reserved controllers (#784)
+        # are hidden from the menu, so counting them toward the lobby roster
+        # (or returning their serials) hands the menu-flow helpers serials the
+        # menu can never see ready — the root cause of #805. When detailed
+        # controller info is unavailable, fall back to the flat serial list.
+        if existing.controllers:
+            unreserved = [c.serial for c in existing.controllers if not c.reserved]
+        else:
+            unreserved = list(existing.serials)
+
+        if len(unreserved) >= count:
             await channel.close()
-            return list(existing.serials[:count])
+            return unreserved[:count]
 
         # Add the needed controllers
-        needed = count - existing.count
+        needed = count - len(unreserved)
         response = await mock_client.AddControllers(
             controller_manager_mock_pb2.AddControllersRequest(count=needed)
         )
         assert response.success, f"Failed to add controllers: {response.error}"
         await channel.close()
 
-        # Return all serials (existing + newly added)
-        all_serials = list(existing.serials) + list(response.serials)
+        # Return all serials (existing unreserved + newly added)
+        all_serials = unreserved + list(response.serials)
         return all_serials[:count]
 
     response = await mock_client.AddControllers(
