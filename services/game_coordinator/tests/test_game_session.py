@@ -267,9 +267,7 @@ class TestGameSessionLoop:
 
         await session._run_game_loop_async()
 
-        mock_metrics.games_completed_total.labels.assert_called_with(
-            mode="FFA", game_kind=GAME_KIND_SHADOW, experiment_id="", arm=""
-        )
+        mock_metrics.games_completed_total.labels.assert_called_with(mode="FFA", game_kind=GAME_KIND_SHADOW)
         mock_metrics.games_completed_total.labels.return_value.inc.assert_called_once()
 
     @pytest.mark.asyncio
@@ -322,8 +320,11 @@ class TestGameSessionLoop:
     @patch("services.game_coordinator.game_session.GameFactory")
     @patch("services.game_coordinator.game_session.tracer")
     async def test_loop_labels_lifecycle_metrics_with_experiment(self, mock_tracer_mod, mock_factory, mock_metrics):
-        """An experiment game labels its low-rate lifecycle metrics with
-        experiment_id + arm (#975 cardinality decision: per-game, not per-frame)."""
+        """An experiment game labels its per-live-game GAUGES with experiment_id +
+        arm (#975 cardinality decision: gauges are keyed on the unbounded game_id
+        and set per live game, so they add no permanent series). The cumulative
+        COUNTERS deliberately do NOT carry experiment_id/arm — a label on a
+        cumulative counter is one permanent series per experiment, forever."""
         session = _make_session(game_kind=GAME_KIND_SHADOW, experiment_id="exp_abc123", arm="control")
         mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
         mock_game = MagicMock()
@@ -335,9 +336,8 @@ class TestGameSessionLoop:
         mock_metrics.active_game.labels.assert_any_call(
             game_kind=GAME_KIND_SHADOW, game_id="game_abc123", experiment_id="exp_abc123", arm="control"
         )
-        mock_metrics.games_completed_total.labels.assert_called_with(
-            mode="FFA", game_kind=GAME_KIND_SHADOW, experiment_id="exp_abc123", arm="control"
-        )
+        # Cumulative counter: mode x game_kind only, no experiment labels.
+        mock_metrics.games_completed_total.labels.assert_called_with(mode="FFA", game_kind=GAME_KIND_SHADOW)
         mock_metrics.game_duration_seconds.labels.assert_any_call(
             game_kind=GAME_KIND_SHADOW, game_id="game_abc123", experiment_id="exp_abc123", arm="control"
         )

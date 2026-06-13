@@ -292,11 +292,13 @@ class GameSession:
                     # only the primary session resets it.
                     metrics.players_alive.set(0)
                 if self.game_name:
+                    # games_completed_total is a CUMULATIVE counter: it deliberately
+                    # does NOT carry experiment_id/arm (a label on a cumulative
+                    # counter is one permanent series per experiment, forever).
+                    # Per-experiment counts come from the span attributes (#975).
                     metrics.games_completed_total.labels(
                         mode=self.game_name,
                         game_kind=self.game_kind,
-                        experiment_id=self.experiment_id,
-                        arm=self.arm,
                     ).inc()
                 if self.game_start_time:
                     duration = time.time() - self.game_start_time

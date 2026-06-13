@@ -470,11 +470,13 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 experiment_id=session.experiment_id,
                 arm=session.arm,
             ).set(1)
+            # games_started_total is a CUMULATIVE counter: it deliberately does
+            # NOT carry experiment_id/arm (a label on a cumulative counter is one
+            # permanent series per experiment, forever). Per-experiment counts
+            # come from the game span's experiment.id/arm attributes (#975).
             metrics.games_started_total.labels(
                 mode=session.game_name,
                 game_kind=game_kind,
-                experiment_id=session.experiment_id,
-                arm=session.arm,
             ).inc()
             metrics.active_players.labels(
                 game_kind=game_kind,

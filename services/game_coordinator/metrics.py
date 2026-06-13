@@ -17,13 +17,17 @@ from lib.otel_metrics import Counter, Gauge, Histogram
 # primary (menu-driven) session reports game_kind="primary"; concurrent
 # agent/shadow sessions report game_kind="shadow".
 #
-# Experiment attribution (#975, epic #982): these are LOW-RATE, per-game
-# lifecycle metrics (one update at start, one at end) — NOT the high-volume
-# per-frame firehose — so adding experiment_id/arm labels here is safe: a series
-# per (live experiment × arm), not per frame. experiment_id is high-cardinality
-# but bounded by the number of concurrent experiments; the per-frame metrics
-# (game_player_accel_magnitude, etc.) deliberately do NOT carry it. The labels
-# are "" for a non-experiment game. Per-arm fitness is #979's dedicated metric.
+# Experiment attribution (#975, epic #982): the per-live-game GAUGES below carry
+# experiment_id/arm. This is safe precisely because they are gauges keyed on the
+# already-unbounded game_id and SET per live game — the experiment labels add no
+# permanent series; they come and go with the game's game_id and are cleared at
+# game end. The cumulative COUNTERS (games_started_total, games_completed_total)
+# deliberately do NOT carry experiment_id/arm: a label on a cumulative counter
+# creates one permanent series per experiment value, forever (TSDB blow-up), which
+# violates the §4.2 cardinality discipline. Per-experiment counts come from the
+# span attributes (experiment.id/experiment.arm) plus #979's dedicated game-end
+# metric. The per-frame metrics (game_player_accel_magnitude, etc.) carry none of
+# this. The gauge labels are "" for a non-experiment game.
 active_game = Gauge(
     "game_active",
     "Whether a game is currently running (0=no, 1=yes)",
@@ -45,13 +49,13 @@ game_duration_seconds = Gauge(
 games_started_total = Counter(
     "games_started_total",
     "Total number of games started",
-    ["mode", "game_kind", "experiment_id", "arm"],
+    ["mode", "game_kind"],
 )
 
 games_completed_total = Counter(
     "games_completed_total",
     "Total number of games completed",
-    ["mode", "game_kind", "experiment_id", "arm"],
+    ["mode", "game_kind"],
 )
 
 # Shadow game governance (#837).
