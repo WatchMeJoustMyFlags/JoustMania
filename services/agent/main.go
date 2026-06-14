@@ -35,6 +35,7 @@ import (
 	"github.com/joustmania/agent/gamesummary"
 	"github.com/joustmania/agent/gamewindow"
 	"github.com/joustmania/agent/gate"
+	"github.com/joustmania/agent/inference"
 	"github.com/joustmania/agent/infracontext"
 	"github.com/joustmania/agent/llm"
 	"github.com/joustmania/agent/promote"
@@ -313,6 +314,39 @@ func runShadowGame(ctx context.Context, logger *slog.Logger) {
 	)
 }
 
+// inferFunc is the shared inference seam shape (#1046/#1048): Infer(ctx, prompt) →
+// raw text. Both experiment.Backend (the proposer) and decision.Backend (the
+// chain) require exactly this method, so ONE value satisfies both. selectInferenceBackend
+// returns it (nil = the stub default) so main.go feeds the same backend to both seams.
+type inferFunc = func(ctx context.Context, prompt llm.Prompt) (string, error)
+
+// selectInferenceBackend reads the AGENT_INFERENCE_* env config (#1048) and returns
+// the inference delegate to feed BOTH the proposer and the decision chain — or nil
+// when the stub backend is selected (the DEFAULT → no behavior change: the proposer
+// keeps the inert proposeBackend{} stub and the decision chain keeps the
+// not-implemented sentinel, both degrading safely as before).
+//
+// AGENT_INFERENCE_BACKEND: "stub" (default) | "openai". Only "openai" (case-
+// insensitive) activates the real OpenAI-compatible client; any other value
+// (including unset/empty) selects the stub, so a typo fails SAFE to today's
+// behavior rather than to a broken backend. The base URL/model/key come from
+// AGENT_INFERENCE_BASE_URL (default the host Ollama), AGENT_INFERENCE_MODEL
+// (default phi4-mini), and AGENT_INFERENCE_API_KEY (optional — empty for the local
+// no-key path, set for a gateway/cloud target). Returns the chosen backend name for
+// the startup log too.
+func selectInferenceBackend() (inferFunc, string) {
+	backend := strings.ToLower(strings.TrimSpace(getEnv("AGENT_INFERENCE_BACKEND", "stub")))
+	if backend != "openai" {
+		return nil, "stub"
+	}
+	client := inference.New(
+		getEnv("AGENT_INFERENCE_BASE_URL", inference.DefaultBaseURL),
+		getEnv("AGENT_INFERENCE_API_KEY", ""),
+		getEnv("AGENT_INFERENCE_MODEL", inference.DefaultModel),
+	)
+	return client.Infer, "openai"
+}
+
 func main() {
 	listenAddr := getEnv("AGENT_LISTEN_ADDR", ":4317")
 	healthAddr := getEnv("AGENT_HEALTH_ADDR", ":13134")
@@ -408,11 +442,26 @@ func main() {
 	// inference.used (who #739 WILL call). Start() launches the background re-probe
 	// ticker (DefaultProbeInterval) and primes the cache in the background; it
 	// stops when ctx is cancelled at shutdown.
-	sharedResolver := decision.NewResolver(decision.DefaultChain(decision.Endpoints{
+	// Inference backend selection (#1048, per the #1046 design). ONE OpenAI-compatible
+	// client (or nil for the stub default) feeds BOTH the decision chain (here) AND the
+	// shadow-experiment proposer (below) — Go structural typing means a single Infer
+	// implementation satisfies decision.Backend and experiment.Backend. Default = stub
+	// → nil delegate → no behavior change (the chain keeps its not-implemented sentinel
+	// and degrades to rules; the proposer keeps proposeBackend{} and proposes nothing).
+	// AGENT_INFERENCE_BACKEND=openai points it at the host Ollama (or a gateway) for a
+	// real local inference path with no key.
+	inferDelegate, inferBackendName := selectInferenceBackend()
+	slog.Info("Inference backend selected (#1048)",
+		"backend", inferBackendName,
+		"base_url", getEnv("AGENT_INFERENCE_BASE_URL", inference.DefaultBaseURL),
+		"model", getEnv("AGENT_INFERENCE_MODEL", inference.DefaultModel),
+		"api_key_set", getEnv("AGENT_INFERENCE_API_KEY", "") != "",
+	)
+	sharedResolver := decision.NewResolver(decision.DefaultChainWithInfer(decision.Endpoints{
 		Cloud:     getEnv("AGENT_CLOUD_ENDPOINT", ""),                    // #742 credential-blocked: empty = permanently unreachable
 		Jetson:    getEnv("AGENT_JETSON_ENDPOINT", "jetson:11434"),       // #738 Ollama on the Jetson; unresolvable in dev
 		Localhost: getEnv("AGENT_LOCALHOST_ENDPOINT", "localhost:11434"), // #739 Ollama locally; unreachable unless running
-	}), decision.DefaultProbeInterval)
+	}, inferDelegate), decision.DefaultProbeInterval)
 	// The resolver's background probe ticker is started by run() (#923), which owns
 	// the agent's goroutine lifecycle, so it is stopped on ctx cancellation alongside
 	// every other runtime goroutine.
@@ -601,8 +650,13 @@ func main() {
 	// The vocab provider reads the LIVE game.json flag keys so the model is
 	// constrained to (and the decoder validates against) the actual flag surface.
 	experimentGate := experiment.NewGate(experiment.NewWriterFromEnv(logger), nil, logger)
+	// Feed the SAME inference backend (#1048) to the proposer that feeds the decision
+	// chain above: when AGENT_INFERENCE_BACKEND=openai, inferDelegate is the real
+	// OpenAI-compatible client and proposeBackendFor wraps it as an experiment.Backend;
+	// when nil (the stub default) it stays the inert proposeBackend{} so the propose
+	// path degrades to no-proposal exactly as before.
 	proposer := experiment.NewProposer(
-		proposeBackend{},
+		proposeBackendFor(inferDelegate),
 		experimentGate,
 		gameFlagVocab(getEnv("GAME_FLAG_PATH", experiment.DefaultGamePath)),
 		nil,
@@ -769,6 +823,29 @@ type proposeBackend struct{}
 
 func (proposeBackend) Infer(context.Context, llm.Prompt) (string, error) {
 	return "", errProposeBackendNotImplemented
+}
+
+// inferBackend adapts a bare inferFunc into an experiment.Backend (#1048). The
+// proposer takes a Backend (an interface with one Infer method); this lets the same
+// inference delegate that feeds the decision chain feed the proposer too, with no
+// second client instance — one OpenAIBackend, both seams.
+type inferBackend struct {
+	infer inferFunc
+}
+
+func (b inferBackend) Infer(ctx context.Context, prompt llm.Prompt) (string, error) {
+	return b.infer(ctx, prompt)
+}
+
+// proposeBackendFor selects the proposer's inference backend (#1048): the real
+// OpenAI-compatible client (wrapped as an experiment.Backend) when one was selected,
+// or the inert proposeBackend{} stub when delegate is nil (the default) — so the
+// propose path degrades to no-proposal exactly as before when inference is stubbed.
+func proposeBackendFor(delegate inferFunc) experiment.Backend {
+	if delegate == nil {
+		return proposeBackend{}
+	}
+	return inferBackend{infer: delegate}
 }
 
 // gameFlagVocab returns the live set of game.json flag keys at path — the
