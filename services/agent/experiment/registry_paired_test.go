@@ -92,6 +92,13 @@ func TestCap1MidPairTerminationNoDanglingFold(t *testing.T) {
 	if final.PairDiff != nil {
 		t.Fatalf("PairDiff must remain nil after mid-pair teardown, got %+v", final.PairDiff)
 	}
+	// The parked half is NOT actively drained at teardown — it lingers in this
+	// (now terminal, never-reloaded) experiment's own summary. Safety comes from
+	// PairDiff staying nil above (the verdict reads only completed pairs), not from
+	// draining the half. This pins the documented behavior in PendingHalf's doc.
+	if len(final.PendingPairs) != 1 {
+		t.Fatalf("parked half should linger after teardown (structurally unfoldable, not drained), PendingPairs=%+v", final.PendingPairs)
+	}
 	realVerdict := NewVerdictFromEnv()
 	v, ok := realVerdict.Evaluate(final)
 	if ok && v.Significant {

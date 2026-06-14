@@ -169,8 +169,12 @@ type ArmStat struct {
 // here keyed by pair index; when the partner concludes the per-pair difference
 // d = f_experimental − f_control is folded into Summary.PairDiff and the entry is
 // dropped. A half that never matches (the partner arm never spawned because the
-// experiment was torn down mid-pair) is dropped at teardown and NEVER folded — a
-// dangling half must not reach the verdict (#1004 carried-over correctness item 1).
+// experiment was torn down mid-pair) is STRUCTURALLY never folded: the verdict
+// reads only Summary.PairDiff (completed pairs), so a parked half can never reach
+// d_z (#1004 carried-over correctness item 1). It is NOT actively drained at
+// teardown — it lingers in that (now terminal, never-reloaded) experiment's own
+// Summary — but the retention is bounded (one entry per torn-down mid-pair
+// experiment) and cannot affect any result.
 type PendingHalf struct {
 	// Arm is the arm whose game concluded first (ArmExperimental or ArmControl). It
 	// fixes the sign of the difference when the partner arrives.
