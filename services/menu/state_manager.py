@@ -29,6 +29,11 @@ class StateManager:
         game_settings_writer: FlagConfigWriter,
         user_prefs_writer: FlagConfigWriter,
         publish_event: Callable[[str, dict], Coroutine],
+        *,
+        agent_settings_writer: FlagConfigWriter | None = None,
+        game_settings_client=None,
+        agent_settings_client=None,
+        interventions_client=None,
     ):
         """
         Initialize state manager.
@@ -39,11 +44,24 @@ class StateManager:
             game_settings_writer: FlagConfigWriter for game.json
             user_prefs_writer: FlagConfigWriter for user.json
             publish_event: Async function to publish events
+            agent_settings_writer: FlagConfigWriter for agent.json (kill-switch, #819)
+            game_settings_client: OpenFeature client for the "game" domain, used to
+                resolve effective (agent-override-aware) values for the truthful
+                admin display (#818).
+            agent_settings_client: OpenFeature client for the "agent" domain, used
+                to read the effective ``interventions_allowed`` level (#819).
+            interventions_client: read-only OpenFeature client for the
+                "interventions" domain, used to surface active agent overrides
+                (e.g. global_sensitivity_override) in the admin display (#818).
         """
         self.led = led
         self.audio = audio
         self.game_settings_writer = game_settings_writer
         self.user_prefs_writer = user_prefs_writer
+        self.agent_settings_writer = agent_settings_writer
+        self.game_settings_client = game_settings_client
+        self.agent_settings_client = agent_settings_client
+        self.interventions_client = interventions_client
         self.publish_event = publish_event
 
         # Controller state tracking - single source of truth

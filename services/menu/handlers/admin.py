@@ -9,10 +9,11 @@ Button mappings in admin mode:
 - Circle: Cycle sensitivity (unchanged)
 - Square: Toggle instructions (unchanged)
 - Triangle: Show battery (unchanged)
-- Move: Cycle between options (sensitivity / num_teams / force_all_start)
+- Move: Cycle between options (sensitivity / num_teams / force_all_start /
+  agent_control). agent_control (#819) cycles the agent kill-switch policy.
 - Trigger: Hold 3s = Force start game (LED dims during hold)
-- Select: Increase current option value
-- Start: Decrease current option value
+- Select: Increase current option value (agent_control: escalate agent policy)
+- Start: Decrease current option value (agent_control: restrict agent policy)
 - PS: Exit admin mode (unchanged)
 """
 
@@ -37,6 +38,20 @@ if TYPE_CHECKING:
     from services.menu.state_manager import StateManager
 
 logger = logging.getLogger(__name__)
+
+# Admin cycle option for the on-device agent kill-switch / policy control (#819).
+# Selecting it and pressing SELECT/START cycles the agent's GLOBAL
+# ``interventions_allowed`` policy in agent.json. This is NOT a game.json flag —
+# it is the human's control over the agent (docs/OWNERSHIP_MODEL.md §6.2), so it
+# is routed through a separate writer/client and handled specially in the
+# value-change paths rather than the generic game.json flag cycle.
+AGENT_CONTROL_OPTION = "agent_control"
+AGENT_POLICY_FLAG = "interventions_allowed"
+
+# Ordered policy levels for the kill-switch, most-restrictive first. "none" is the
+# panic-off floor (agent applies no deltas — the coordinator allow-list rejects
+# every intervention). Cycling forward escalates permissiveness.
+AGENT_POLICY_LEVELS = ["none", "ambient", "standard", "full"]
 
 
 class AdminModeCallbacks(Protocol):
@@ -111,11 +126,13 @@ class AdminModeHandler:
             "sensitivity",  # 0-4 (Ultra Slow to Ultra Fast)
             "num_teams",  # 2-6 teams (for Teams, RandomTeams, Traitor)
             "force_all_start",  # True/False (live-evaluated at force start)
+            AGENT_CONTROL_OPTION,  # agent kill-switch / policy (#819)
         ]
         self.option_colors = [
             Colors.Blue,  # sensitivity
             Colors.Turquoise,  # num_teams
             Colors.Orange,  # force_all_start
+            Colors.Purple,  # agent_control
         ]
 
         # Button debouncing (300ms for admin mode)
@@ -774,7 +791,10 @@ class AdminModeHandler:
 
             try:
                 writer = self._state_manager.game_settings_writer
-                old_variant = writer.get_current_variant("sensitivity")
+                # Resolve the EFFECTIVE current value (agent-override-aware) so the
+                # admin cycles from what the game is actually using, not the stale
+                # on-disk default (#818).
+                old_variant = self._effective_variant("sensitivity")
                 new_variant = writer.cycle_variant("sensitivity", forward=True)
 
                 if new_variant is None:
@@ -973,16 +993,19 @@ class AdminModeHandler:
         if self._state_manager is None:
             return
 
+        option_name = self.option_names[self.current_option]
+        if option_name == AGENT_CONTROL_OPTION:
+            await self.handle_agent_control(serial, forward=True)
+            return
+
         ctx = self._get_span_context()
         with self.tracer.start_as_current_span("admin_increase_value", context=ctx) as span:
             span.set_attribute(SpanAttr.CONTROLLER_SERIAL, serial)
-
-            option_name = self.option_names[self.current_option]
             span.set_attribute(SpanAttr.ADMIN_OPTION, option_name)
 
             try:
                 writer = self._state_manager.game_settings_writer
-                old_variant = writer.get_current_variant(option_name)
+                old_variant = self._effective_variant(option_name)
                 new_variant = writer.cycle_variant(option_name, forward=True)
 
                 if new_variant is None:
@@ -1019,16 +1042,19 @@ class AdminModeHandler:
         if self._state_manager is None:
             return
 
+        option_name = self.option_names[self.current_option]
+        if option_name == AGENT_CONTROL_OPTION:
+            await self.handle_agent_control(serial, forward=False)
+            return
+
         ctx = self._get_span_context()
         with self.tracer.start_as_current_span("admin_decrease_value", context=ctx) as span:
             span.set_attribute(SpanAttr.CONTROLLER_SERIAL, serial)
-
-            option_name = self.option_names[self.current_option]
             span.set_attribute(SpanAttr.ADMIN_OPTION, option_name)
 
             try:
                 writer = self._state_manager.game_settings_writer
-                old_variant = writer.get_current_variant(option_name)
+                old_variant = self._effective_variant(option_name)
                 new_variant = writer.cycle_variant(option_name, forward=False)
 
                 if new_variant is None:
@@ -1052,6 +1078,220 @@ class AdminModeHandler:
 
             except Exception as e:
                 logger.error(f"Error decreasing admin value: {e}", exc_info=True)
+
+    def _effective_variant(self, option_name: str) -> str | None:
+        """
+        Resolve the EFFECTIVE variant for a game.json option through flagd (#818).
+
+        The admin display must reflect the value the game would actually resolve
+        — including any agent override applied to the same flag domain — not the
+        stale game.json ``defaultVariant`` on disk. We read the live value via the
+        OpenFeature "game" client and map it back to a variant name.
+
+        Falls back to the on-disk ``defaultVariant`` when no client is wired, the
+        resolved value matches no known variant, or anything fails — so the
+        display degrades to today's behavior rather than going blank.
+
+        Args:
+            option_name: game.json flag key
+
+        Returns:
+            Effective variant name, or the on-disk default on fallback.
+        """
+        writer = self._state_manager.game_settings_writer
+        file_variant = writer.get_current_variant(option_name)
+
+        # Sensitivity is the one option the agent actively contends for: its
+        # global_sensitivity_override (interventions.json) overwrites the live
+        # game.sensitivity in place (docs/OWNERSHIP_MODEL.md §4.1). The game.json
+        # flag still reflects the human baseline, so to show the operator the
+        # value the game is ACTUALLY using we consult the override first. A
+        # value < 0 ("none") means no override -> fall through to the baseline.
+        if option_name == "sensitivity":
+            override = self._agent_sensitivity_override()
+            if override is not None:
+                return override
+
+        client = getattr(self._state_manager, "game_settings_client", None)
+        if client is None:
+            return file_variant
+
+        try:
+            # Use the on-disk default's value as the resolution fallback so a
+            # provider miss returns the file value unchanged.
+            default_value = writer.get_variant_value(option_name, file_variant) if file_variant else None
+            resolved = self._resolve_flag_value(client, option_name, default_value)
+            if resolved is None:
+                return file_variant
+            matched = writer.match_variant_for_value(option_name, resolved)
+            return matched or file_variant
+        except Exception as e:
+            logger.debug(f"Effective-variant resolution failed for '{option_name}': {e}")
+            return file_variant
+
+    def _agent_sensitivity_override(self) -> str | None:
+        """Return the agent's active sensitivity override as a variant name (#818).
+
+        Reads ``global_sensitivity_override`` from the interventions domain. The
+        flag's variant names match the game.json ``sensitivity`` variant names
+        1:1 (ultra_slow..ultra_fast), with ``none`` = -1 meaning "no override".
+        Returns the matching sensitivity variant name when an override is active,
+        else ``None`` (no override / no client / read error -> caller falls back
+        to the human baseline).
+        """
+        client = getattr(self._state_manager, "interventions_client", None)
+        if client is None:
+            return None
+        try:
+            value = client.get_integer_value("global_sensitivity_override", -1)
+            if value is None or value < 0:
+                return None
+            # Map the override integer back to a sensitivity variant name.
+            value_to_variant = {0: "ultra_slow", 1: "slow", 2: "medium", 3: "fast", 4: "ultra_fast"}
+            return value_to_variant.get(value)
+        except Exception as e:
+            logger.debug(f"agent sensitivity override read failed: {e}")
+            return None
+
+    @staticmethod
+    def _resolve_flag_value(client, flag_key: str, default):
+        """
+        Resolve a flag value through an OpenFeature client, typed by ``default``.
+
+        OpenFeature requires the correct typed getter; pick it from the default's
+        Python type so booleans/ints/floats/strings/objects each resolve cleanly.
+        """
+        if isinstance(default, bool):
+            return client.get_boolean_value(flag_key, default)
+        if isinstance(default, int):
+            return client.get_integer_value(flag_key, default)
+        if isinstance(default, float):
+            return client.get_float_value(flag_key, default)
+        if isinstance(default, str):
+            return client.get_string_value(flag_key, default)
+        if isinstance(default, (list, dict)):
+            return client.get_object_value(flag_key, default)
+        # Unknown/None default: try a string read (most game.json variants are
+        # scalar); a TYPE_MISMATCH returns the default, which is None here.
+        return client.get_string_value(flag_key, "") or None
+
+    async def handle_agent_control(self, serial: str, forward: bool = True) -> None:
+        """
+        Cycle the agent intervention policy from the device (#819 kill-switch).
+
+        Writes the GLOBAL ``interventions_allowed`` flag in agent.json through the
+        menu's agent writer, cycling none -> ambient -> standard -> full (and
+        back). "none" is the hard panic-off: the coordinator's allow-list then
+        rejects every agent intervention, so the switch is load-bearing at the
+        gate even if the agent process lags (docs/OWNERSHIP_MODEL.md §6.2).
+
+        This is global agent policy (read with a bare context, not game-scoped),
+        and it writes only agent.json — the menu/agent write surfaces stay
+        disjoint, so no real-resolution invariant is touched. flagd hot-reloads
+        the change within ~100ms; the agent re-reads it live per decision.
+
+        Args:
+            serial: Controller serial number
+            forward: True to escalate permissiveness, False to restrict.
+        """
+        from proto import controller_manager_pb2
+
+        if self._state_manager is None:
+            return
+
+        writer = getattr(self._state_manager, "agent_settings_writer", None)
+        if writer is None:
+            logger.warning("Agent control unavailable: no agent settings writer wired")
+            return
+
+        ctx = self._get_span_context()
+        with self.tracer.start_as_current_span("admin_agent_control", context=ctx) as span:
+            span.set_attribute(SpanAttr.CONTROLLER_SERIAL, serial)
+            span.set_attribute(SpanAttr.ADMIN_OPTION, AGENT_CONTROL_OPTION)
+
+            try:
+                old_level = self._current_agent_level()
+                new_level = self._next_agent_level(old_level, forward=forward)
+
+                if not writer.update_default_variant(AGENT_POLICY_FLAG, new_level):
+                    logger.warning(f"Failed to write agent policy '{new_level}'")
+                    return
+
+                span.set_attribute("old_level", old_level or "")
+                span.set_attribute("new_level", new_level)
+
+                # Visual feedback: distinct color per level so the agent's
+                # permission state is unambiguous at a glance. Red = off (panic),
+                # escalating warmth toward full.
+                level_colors = {
+                    "none": Colors.Red,  # agent disabled (panic off)
+                    "ambient": Colors.Turquoise,  # cosmetic-only
+                    "standard": Colors.Orange,  # tunable deltas
+                    "full": Colors.Green,  # all interventions
+                }
+                color = level_colors.get(new_level, Colors.Purple).value
+                await self._send_game_effect(
+                    serial,
+                    controller_manager_pb2.GAME_EFFECT_PULSE,
+                    color=color,
+                    duration_ms=800,
+                    speed=5,
+                )
+
+                # Voice feedback: "off" announces the panic-off; permissive levels
+                # announce a numbered level (1..3). Reuses existing vox assets.
+                level_voices = {
+                    "none": Sound.MENU_VOX_ADMINOP_OFF,
+                    "ambient": Sound.MENU_VOX_ADMINOP_1,
+                    "standard": Sound.MENU_VOX_ADMINOP_2,
+                    "full": Sound.MENU_VOX_ADMINOP_3,
+                }
+                voice = level_voices.get(new_level)
+                if voice:
+                    await self._play_voice(voice)
+
+                span.add_event(
+                    "agent_policy_changed",
+                    {"old_level": str(old_level), "new_level": new_level},
+                )
+                logger.info(f"Agent policy changed by admin {serial}: {old_level} -> {new_level}")
+
+            except Exception as e:
+                logger.error(f"Error changing agent policy: {e}", exc_info=True)
+
+    def _current_agent_level(self) -> str | None:
+        """Read the current effective agent policy level (#819).
+
+        Prefers the live flagd value (agent-domain client) so the cycle advances
+        from what the agent is actually using; falls back to the on-disk
+        defaultVariant.
+        """
+        writer = self._state_manager.agent_settings_writer
+        file_level = writer.get_current_variant(AGENT_POLICY_FLAG)
+
+        client = getattr(self._state_manager, "agent_settings_client", None)
+        if client is None:
+            return file_level
+        try:
+            default_value = writer.get_variant_value(AGENT_POLICY_FLAG, file_level) if file_level else []
+            resolved = client.get_object_value(AGENT_POLICY_FLAG, default_value)
+            matched = writer.match_variant_for_value(AGENT_POLICY_FLAG, resolved)
+            return matched or file_level
+        except Exception as e:
+            logger.debug(f"Agent level resolution failed: {e}")
+            return file_level
+
+    @staticmethod
+    def _next_agent_level(current: str | None, forward: bool = True) -> str:
+        """Return the next policy level, cycling AGENT_POLICY_LEVELS."""
+        levels = AGENT_POLICY_LEVELS
+        if current not in levels:
+            # Unknown/missing current value: forward starts permissive ladder at
+            # the first level; backward jumps to panic-off.
+            return levels[0] if forward else "none"
+        idx = levels.index(current)
+        new_idx = (idx + 1) % len(levels) if forward else (idx - 1) % len(levels)
+        return levels[new_idx]
 
     @staticmethod
     def _variant_to_value(option_name: str, variant_name: str) -> int | float | bool:
