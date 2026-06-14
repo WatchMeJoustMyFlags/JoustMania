@@ -134,3 +134,100 @@ func TestOnGameEnd_DrivenShadowGameYieldsNonZeroFitness(t *testing.T) {
 		t.Fatalf("60s/120s endurance progress = %v, want 0.5", fit)
 	}
 }
+
+// fp returns a pointer to a float64, distinguishing "observed" from "never
+// observed" the way the gamecontext signal fields do.
+func fp(v float64) *float64 { return &v }
+
+// concludedBalancedContext is a game-end snapshot exactly as the Store hands
+// OnGameEnd for a balanced shadow game: every player has been eliminated
+// (Active=false — the coordinator's game_player_alive=0), the session is over
+// (GameActive=false), but each player still carries the per-player skill_level it
+// reported while alive (the Store sets SkillLevel from game_player_skill_level and
+// never wipes Players — or their SkillLevel — on game end; see the realistic
+// ingest proof in gamecontext: TestGroundTruth_SkillLevelSurvivesToConclusionSnapshot).
+//
+// #1015 rework note: balanced's skill-gap sub-check reads c.Players DIRECTLY (it is
+// NOT Active-gated; see decision.skillGap), so it computes at conclusion from these
+// retained SkillLevels with no recovery step needed. The earlier premise that
+// "balanced folds 0 at conclusion because every player is eliminated" was false —
+// only spike-survival is Active-gated, and it is honestly skipped at conclusion
+// (its inputs are frozen at the last live frame and not meaningful post-game).
+func concludedBalancedContext() gamecontext.GameContext {
+	off := false
+	return gamecontext.GameContext{
+		SessionID:    "game_balanced_1",
+		GameKind:     "shadow",
+		ExperimentID: "exp_balanced",
+		Arm:          "experimental",
+		Session:      gamecontext.SessionSignals{GameActive: &off},
+		Players: map[string]*gamecontext.PlayerSignals{
+			"a": {Serial: "a", Active: &off, SkillLevel: fp(0.45)},
+			"b": {Serial: "b", Active: &off, SkillLevel: fp(0.55)},
+		},
+	}
+}
+
+// TestOnGameEnd_ConcludedBalancedGameFoldsNonZeroFromSkillGap is the corrected
+// #1015 acceptance. It asserts the BEHAVIORAL truth established by ground-truth
+// tracing: a concluded balanced shadow game in which >=2 eliminated players still
+// carry their retained skill_level folds a MEANINGFUL, non-zero balanced fitness
+// straight from the skill-gap sub-check — no Active-recovery needed, because
+// skill-gap reads c.Players directly. (A two-player skill gap of 0.10 against the
+// default max_skill_gap 0.4 scores 0.875.) This is the exact path onGameEnd uses.
+func TestOnGameEnd_ConcludedBalancedGameFoldsNonZeroFromSkillGap(t *testing.T) {
+	loop := &experimentLoop{
+		registry: nil, // not exercised: we score fitness directly via the same path onGameEnd uses
+		log:      testLogger(),
+		fitness:  defaultGameFitness,
+	}
+
+	// onGameEnd applies withEffectiveDuration only; balanced needs no signal recovery.
+	scored := withEffectiveDuration(concludedBalancedContext())
+	fit := loop.fitness(scored, decision.ObjectiveBalanced)
+	if fit <= 0 {
+		t.Fatalf("concluded balanced game with >=2 skill_level players must fold non-zero, got %v", fit)
+	}
+
+	eval := decision.EvaluateFitness(scored, decision.DefaultStaticConfig().FitnessThresholds)
+	r, ok := eval.Results[decision.ObjectiveBalanced]
+	if !ok || !r.Evaluated {
+		t.Fatal("balanced must be evaluated at conclusion (skill-gap computes)")
+	}
+	if _, ok := r.Values["balanced.skill_gap"]; !ok {
+		t.Error("skill_gap sub-signal must be present — it is the non-Active-gated driver")
+	}
+	// spike-survival is honestly absent at conclusion: it is Active-gated and every
+	// player has been eliminated. This is correct (its inputs would be frozen at the
+	// last live frame), NOT a bug to be patched by re-admitting dead players.
+	if _, ok := r.Values["balanced.spike_survival_ratio"]; ok {
+		t.Error("spike_survival must NOT be present at conclusion (Active-gated; honestly skipped)")
+	}
+}
+
+// TestBalanced_FoldsZeroOnlyWhenSkillLevelGenuinelyMissing is the contrast test
+// that would have caught the original false premise: balanced folds the worst-case
+// 0 ONLY when fewer than two players carry a skill_level (so skill-gap cannot
+// compute) AND no Active player has movement signals (so spike-survival is skipped
+// too). With skill_level present on >=2 players, balanced is never 0 at conclusion.
+func TestBalanced_FoldsZeroOnlyWhenSkillLevelGenuinelyMissing(t *testing.T) {
+	off := false
+	// Only ONE player carries a skill level: skill-gap needs >=2, so it is skipped;
+	// no Active player, so spike-survival is skipped → balanced computes nothing → 0.
+	gc := gamecontext.GameContext{
+		Session: gamecontext.SessionSignals{GameActive: &off},
+		Players: map[string]*gamecontext.PlayerSignals{
+			"a": {Serial: "a", Active: &off, SkillLevel: fp(0.5)},
+			"b": {Serial: "b", Active: &off}, // no skill_level
+		},
+	}
+	if fit := defaultGameFitness(gc, decision.ObjectiveBalanced); fit != 0 {
+		t.Fatalf("balanced with <2 skill_level players and no active movers must fold 0, got %v", fit)
+	}
+
+	// Add skill_level to the second player → skill-gap computes → non-zero.
+	gc.Players["b"].SkillLevel = fp(0.6)
+	if fit := defaultGameFitness(gc, decision.ObjectiveBalanced); fit <= 0 {
+		t.Fatalf("balanced with 2 skill_level players must fold non-zero from skill-gap, got %v", fit)
+	}
+}

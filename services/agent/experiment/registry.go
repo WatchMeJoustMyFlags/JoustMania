@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/experiment/journal"
 )
 
@@ -140,7 +141,7 @@ type Intent struct {
 	FlagKey string
 	// ExperimentalValue is the candidate value the experimental arm resolves.
 	ExperimentalValue any
-	// Objective is the fitness objective being optimized (e.g. "engagement_balanced").
+	// Objective is the fitness objective being optimized (one of "endurance"/"balanced"/"accelerate"; chaos is rejected at Declare, #1015).
 	Objective string
 	// Arms are the arm names. Empty ⇒ DefaultArms() (experimental + control).
 	Arms []string
@@ -423,6 +424,16 @@ func NewRegistry(cfg RegistryConfig) *Registry {
 // fails if the journal already has this id (re-mint collision is astronomically
 // unlikely; a real collision is surfaced, not silently clobbered).
 func (r *Registry) Declare(in Intent) (string, error) {
+	// Fail-fast on a non-experimentable objective (#1015). chaos has no fitness
+	// function — every game on it would fold the worst-case 0 and the experiment
+	// would run its whole budget (up to the #1001 target) only to conclude
+	// inconclusive. Reject it at declaration so the wasted run never starts; the
+	// experimentable objectives (endurance/balanced/accelerate, and the empty
+	// objective which folds as balanced) pass through unchanged.
+	if !decision.IsExperimentable(in.Objective) {
+		return "", fmt.Errorf("registry: declare experiment: objective %q is not experimentable: no fitness function", in.Objective)
+	}
+
 	arms := in.Arms
 	if len(arms) == 0 {
 		arms = DefaultArms()

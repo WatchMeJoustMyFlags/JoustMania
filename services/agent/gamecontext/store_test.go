@@ -467,3 +467,50 @@ func TestStore_AppendInterventionEvent(t *testing.T) {
 		t.Errorf("event[1] = %+v, want blocked grant_shield -> BB:22", tl[1])
 	}
 }
+
+// TestStore_SkillLevelSurvivesToConclusionSnapshot is the #1015 ground-truth proof:
+// driving the realistic ingest path (per-player skill/movement setters while alive,
+// then game_player_alive=0 on elimination, then game_active=0) leaves each
+// eliminated player's SkillLevel intact in the OnGameEnd snapshot. This is the fact
+// the corrected balanced fitness rests on: balanced's skill-gap sub-check reads
+// these retained SkillLevels directly (not Active-gated), so a concluded game with
+// >=2 players carrying skill_level folds NON-ZERO with no recovery step — refuting
+// the original "balanced folds 0 at conclusion" premise. (The Store never wipes
+// Players or their SkillLevel on game end; the snapshot is taken before any TTL
+// eviction, in SetGameActive's true->false transition.)
+func TestStore_SkillLevelSurvivesToConclusionSnapshot(t *testing.T) {
+	clk := &clock{t: time.Unix(1000, 0)}
+	s := NewStore(time.Hour, time.Hour, clk.now)
+
+	var endSnap *GameContext
+	s.OnGameEnd = func(c GameContext) { cp := c; endSnap = &cp }
+
+	s.SetGameActive(true)
+	for _, pl := range []struct {
+		serial string
+		skill  float64
+	}{{"a", 0.45}, {"b", 0.55}} {
+		s.SetPlayerAlive(pl.serial, true)
+		s.SetPlayerSkill(pl.serial, pl.skill, true) // preferred source: game_player_skill_level
+	}
+	// Both eliminated (game_player_alive=0) before the game ends.
+	s.SetPlayerAlive("a", false)
+	s.SetPlayerAlive("b", false)
+	s.SetGameActive(false) // fires OnGameEnd with the pre-reset snapshot
+
+	if endSnap == nil {
+		t.Fatal("OnGameEnd never fired")
+	}
+	withSkill := 0
+	for serial, p := range endSnap.Players {
+		if p.Active == nil || *p.Active {
+			t.Errorf("player %s expected Active=false at conclusion, got %v", serial, p.Active)
+		}
+		if p.SkillLevel != nil {
+			withSkill++
+		}
+	}
+	if withSkill < 2 {
+		t.Fatalf("only %d eliminated players retained SkillLevel at conclusion; balanced skill-gap would not compute", withSkill)
+	}
+}

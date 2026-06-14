@@ -50,3 +50,26 @@ func TestNormalizedWeights_EmptyFallsBack(t *testing.T) {
 		t.Errorf("custom weights = %v, want passthrough", w)
 	}
 }
+
+// TestIsExperimentable pins the #1015 contract: the three objectives with a
+// fitness function (and the empty objective, which folds as balanced) are
+// experimentable; chaos — which has no fitness function — is not, so Declare can
+// fail-fast on it instead of wasting a whole experiment budget folding zeros.
+func TestIsExperimentable(t *testing.T) {
+	cases := []struct {
+		objective string
+		want      bool
+	}{
+		{ObjectiveEndurance, true},
+		{ObjectiveBalanced, true},
+		{ObjectiveAccelerate, true},
+		{"", true}, // empty folds as balanced in defaultGameFitness
+		{ObjectiveChaos, false},
+		{"engagement_balanced", false}, // out-of-vocab objectives fold 0, not experimentable
+	}
+	for _, tc := range cases {
+		if got := IsExperimentable(tc.objective); got != tc.want {
+			t.Errorf("IsExperimentable(%q) = %v, want %v", tc.objective, got, tc.want)
+		}
+	}
+}
