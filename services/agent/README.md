@@ -115,7 +115,7 @@ grace.
 ### Span attribution
 
 Decision spans are independently attributable per game. The root
-`agent.span_received` span carries both `session.id` and the `game.id` alias
+`agent.signal_received` span carries both `session.id` and the `game.id` alias
 (`session.id` **is** the real `game_id` since PR A's early adoption); the
 decision / `agent.disabled` / `agent.llm.prompt` spans carry `game.kind` (and the
 prompt-capture span carries `game.id` too). So a Jaeger query by `game.id` is
@@ -644,13 +644,20 @@ Every evaluation that produces decisions emits one trace (hierarchy always
 parent → child):
 
 ```
-agent.span_received          one per triggering OTLP Export (backdated to arrival)
+agent.signal_received          one per triggering OTLP Export (backdated to arrival)
   └─ agent.decision          one per Decision the rules engine returns
        └─ agent.action       one per decision, wrapping the ActionSink call
 ```
 
+The root span is **signal-agnostic** (#1053): a metric-triggered cycle and a
+trace-triggered cycle both emit `agent.signal_received`, distinguished only by
+`otlp.signal` (`metrics`|`traces`) + `rpc.service` — the name never implies
+spans-only activity (metrics are in fact the primary trigger; see *Signal
+timing*).
+
 **Traces are emitted only when the rules engine returns ≥ 1 decision** —
-including decisions that end up *blocked*. Idle evaluations cost no spans.
+including decisions that end up *blocked*. Idle evaluations cost no spans (they
+are instead counted by `agent_evaluations_total{outcome="idle"}`, #1053).
 Blocked actions are recorded (`decision.blocked = true` on both the decision
 and action spans, ActionSink **not** called), never silently dropped.
 
@@ -701,7 +708,7 @@ path-agnostic — it works for the LLM path automatically once M4 lands.
 
 When the existence layer reports the agent **off** (`enabled=false`) the loop
 short-circuits before any rules run, but still emits a **throttled** kill-switch
-trace so "agent off" is visible in Jaeger: a root `agent.span_received` with a
+trace so "agent off" is visible in Jaeger: a root `agent.signal_received` with a
 single `agent.disabled` child (no `agent.action` child — nothing was decided)
 carrying the same cycle-level flag attribution above (`agent.enabled=false`, the
 capability and permission flags that were in effect). Throttled to one per second
@@ -848,6 +855,17 @@ fitness → rollback); the game path had nothing. #918 closes the **measurement*
    the #844 retro prompt reads per-intervention effect evidence; both consume this
    span + metric.
 
+**Eval-cycle liveness (#1053):** the audit trace is emitted **only** when a rule
+fires, so idle cycles (signal arrives, nothing decided) are span-silent. To keep
+signal arrival observable without a span per idle cycle, **every** enabled eval
+cycle increments the metric `agent_evaluations_total` (`Int64Counter`), labeled
+`signal` (`metrics`|`traces`) and `outcome` (`decided`|`idle`). The labels are
+deliberately tiny (4 series max) — no per-game/per-serial dimensions. Because
+metrics are the agent's primary (~100 ms–1 s) trigger, `rate(agent_evaluations_total{signal="metrics"}[1m])`
+answers "is the agent receiving metrics?" directly, and the `outcome` split
+distinguishes "metrics arrive but trigger nothing" from "metrics aren't arriving"
+— the exact ambiguity that made the metric-driven loop look span-driven.
+
 **Lifecycle safety (#923 goleak):** each follow-up runs in a goroutine tracked on a
 `WaitGroup` (joined by `AwaitInflight` at shutdown) and bounded by the agent root
 context. It selects on the follow-up timer **and** `rootCtx.Done()`: on shutdown it
@@ -862,7 +880,7 @@ are used wherever one honestly applies:
 
 | Where | Convention |
 |-------|-----------|
-| `agent.span_received` | `rpc.system=grpc`, `rpc.service` (OTLP `TraceService`/`MetricsService`), `rpc.method=Export`; span kind `SERVER` |
+| `agent.signal_received` | `rpc.system=grpc`, `rpc.service` (OTLP `TraceService`/`MetricsService`), `rpc.method=Export`; span kind `SERVER` |
 | `agent.decision` | `gen_ai.agent.name` identity (the full [GenAI agent conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-agent-spans/) apply once an LLM inference path exists — `gen_ai.provider.name` etc. land as a `gen_ai.*` child span in llm mode) |
 | `agent.decision` event | `feature_flag` span event (`feature_flag.key=interventions.allowed`, `feature_flag.provider.name`, `feature_flag.result.variant`) — same shape the openfeature OTel hooks emit in the Python services; provider is `"stub"` until flagd (#725) |
 | `agent.action` failures | `span.RecordError` + `error.type` + status `ERROR` |
@@ -984,7 +1002,7 @@ change:
 
 `AGENT_PROBE_DECISIONS=true` swaps the rules engine for `ProbeRules`, which emits
 one synthetic `noop` decision at most every 5 s. Its only purpose is to drive a
-**full audit trace** (`agent.span_received → agent.decision → agent.action`)
+**full audit trace** (`agent.signal_received → agent.decision → agent.action`)
 without waiting for a live game to trigger the real rules — invaluable for
 verifying the trace pipeline end to end.
 
@@ -992,7 +1010,7 @@ verifying the trace pipeline end to end.
 by design.** `noop` is not in the `ambient`/`standard`/`full` allow-lists, so the
 permission layer blocks every probe decision with `decision.blocked=true`,
 `decision.block_reason=not_allowed`. This is still useful: the
-`agent.span_received → agent.decision` spans are emitted (a blocked decision is
+`agent.signal_received → agent.decision` spans are emitted (a blocked decision is
 traced, not dropped), so the OBSERVE→DECIDE path and the span schema are fully
 exercised — only the `agent.action` dispatch is withheld.
 

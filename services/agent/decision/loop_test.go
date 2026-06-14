@@ -115,7 +115,7 @@ func TestOnEvaluate_EmitsFullHierarchy(t *testing.T) {
 	if len(ended) != 3 {
 		t.Fatalf("spans = %d, want 3", len(ended))
 	}
-	roots := spansByName(ended, SpanReceived)
+	roots := spansByName(ended, SignalReceived)
 	decisions := spansByName(ended, SpanDecision)
 	actions := spansByName(ended, SpanAction)
 	if len(roots) != 1 || len(decisions) != 1 || len(actions) != 1 {
@@ -124,10 +124,10 @@ func TestOnEvaluate_EmitsFullHierarchy(t *testing.T) {
 
 	root, dec, act := roots[0], decisions[0], actions[0]
 	if root.Parent().IsValid() {
-		t.Error("span_received must be the root span")
+		t.Error("signal_received must be the root span")
 	}
 	if dec.Parent().SpanID() != root.SpanContext().SpanID() {
-		t.Error("agent.decision must be a child of agent.span_received")
+		t.Error("agent.decision must be a child of agent.signal_received")
 	}
 	if act.Parent().SpanID() != dec.SpanContext().SpanID() {
 		t.Error("agent.action must be a child of agent.decision")
@@ -228,7 +228,7 @@ func TestOnEvaluate_MultipleDecisions(t *testing.T) {
 	l.OnEvaluate(context.Background(), gamecontext.GameContext{}, testTrigger())
 
 	ended := sr.Ended()
-	if len(spansByName(ended, SpanReceived)) != 1 ||
+	if len(spansByName(ended, SignalReceived)) != 1 ||
 		len(spansByName(ended, SpanDecision)) != 2 ||
 		len(spansByName(ended, SpanAction)) != 2 {
 		t.Fatalf("spans = %d, want 1 root + 2 decisions + 2 actions", len(ended))
@@ -320,7 +320,7 @@ func TestOnEvaluate_ConcurrentExportHandlers(t *testing.T) {
 	}
 	wg.Wait()
 
-	if got := len(spansByName(sr.Ended(), SpanReceived)); got != 50 {
+	if got := len(spansByName(sr.Ended(), SignalReceived)); got != 50 {
 		t.Fatalf("root spans = %d, want 50", got)
 	}
 }
