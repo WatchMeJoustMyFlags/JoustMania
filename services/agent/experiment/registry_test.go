@@ -1205,3 +1205,119 @@ func TestBindAfterTeardownDropsTombstone(t *testing.T) {
 		t.Fatalf("tombstone not dropped on missing-experiment bind: %d left", leftover)
 	}
 }
+
+// tombstoneCount returns the registry's current tombstone-map size (test-only).
+func tombstoneCount(r *Registry) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.releaseTombstones)
+}
+
+// TestConcludeThenReleaseLeavesNoOrphanTombstone is the bounded-map regression for
+// the conclude-then-release ordering: ReleaseGame is documented as safe to call
+// alongside ConcludeGame. If telemetry concludes a (bound) game first and the drive
+// goroutine's terminal callback then calls ReleaseGame on the same id, the unfound
+// release must NOT leave an un-consumable tombstone — because no spawn is in flight,
+// it is provably a stale call and must be skipped. Before the spawnsInFlight gate
+// this leaked one map entry per occurrence forever.
+func TestConcludeThenReleaseLeavesNoOrphanTombstone(t *testing.T) {
+	spawner := &fakeSpawner{}
+	r := newTestRegistry(t, RegistryConfig{
+		MaxShadowGames: 2,
+		Spawner:        spawner,
+		Verdict:        fakeVerdict{concludeAtN: 1000},
+	})
+	ctx := context.Background()
+	id, err := r.Declare(sampleIntent())
+	if err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+	if err := r.Start(ctx, id); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if n := r.AllocateAndSpawn(ctx); n != 2 {
+		t.Fatalf("spawned %d, want 2", n)
+	}
+	gid := spawner.calls[0].gameID
+
+	// Telemetry concludes the bound game first.
+	if _, err := r.ConcludeGame(ctx, gid, 0.5, 30); err != nil {
+		t.Fatalf("ConcludeGame: %v", err)
+	}
+	// The drive goroutine's terminal callback now races in on the SAME id (no spawn
+	// is in flight — both spawns already bound). It must be a no-op with no tombstone.
+	if freed := r.ReleaseGame(gid, "late terminal callback"); freed {
+		t.Fatalf("ReleaseGame freed an already-concluded game, want false")
+	}
+	if n := tombstoneCount(r); n != 0 {
+		t.Fatalf("orphan tombstone leaked on conclude-then-release: %d, want 0", n)
+	}
+}
+
+// TestDoubleReleaseLeavesNoOrphanTombstone is the bounded-map regression for the
+// double-release ordering: the first ReleaseGame frees the bound slot; a second
+// ReleaseGame on the same id (no spawn in flight) must be an idempotent no-op that
+// leaves no tombstone.
+func TestDoubleReleaseLeavesNoOrphanTombstone(t *testing.T) {
+	spawner := &fakeSpawner{}
+	r := newTestRegistry(t, RegistryConfig{
+		MaxShadowGames: 2,
+		Spawner:        spawner,
+		Verdict:        fakeVerdict{concludeAtN: 1000},
+	})
+	ctx := context.Background()
+	id, err := r.Declare(sampleIntent())
+	if err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+	if err := r.Start(ctx, id); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if n := r.AllocateAndSpawn(ctx); n != 2 {
+		t.Fatalf("spawned %d, want 2", n)
+	}
+	gid := spawner.calls[0].gameID
+
+	if freed := r.ReleaseGame(gid, "error"); !freed {
+		t.Fatalf("first ReleaseGame should free the bound slot")
+	}
+	if freed := r.ReleaseGame(gid, "error again"); freed {
+		t.Fatalf("second ReleaseGame on the same id should be a no-op")
+	}
+	if n := tombstoneCount(r); n != 0 {
+		t.Fatalf("orphan tombstone leaked on double-release: %d, want 0", n)
+	}
+}
+
+// TestQuiescentRegistryHasNoTombstones is the bounded-map invariant: after a full
+// spawn/bind/conclude cycle with no spawn in flight, the tombstone map is empty (the
+// map is O(concurrent in-flight spawns) and quiescent-empty, never accumulating).
+func TestQuiescentRegistryHasNoTombstones(t *testing.T) {
+	spawner := &fakeSpawner{}
+	r := newTestRegistry(t, RegistryConfig{
+		MaxShadowGames: 2,
+		Spawner:        spawner,
+		Verdict:        fakeVerdict{concludeAtN: 1000},
+	})
+	ctx := context.Background()
+	id, _ := r.Declare(sampleIntent())
+	if err := r.Start(ctx, id); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	r.AllocateAndSpawn(ctx)
+	for _, c := range spawner.calls {
+		if _, err := r.ConcludeGame(ctx, c.gameID, 0.5, 30); err != nil {
+			t.Fatalf("ConcludeGame: %v", err)
+		}
+	}
+	r.mu.Lock()
+	inFlightSpawns := r.spawnsInFlight
+	tombs := len(r.releaseTombstones)
+	r.mu.Unlock()
+	if inFlightSpawns != 0 {
+		t.Fatalf("spawnsInFlight = %d after a full cycle, want 0", inFlightSpawns)
+	}
+	if tombs != 0 {
+		t.Fatalf("releaseTombstones = %d on a quiescent registry, want 0", tombs)
+	}
+}

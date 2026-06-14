@@ -269,11 +269,25 @@ type Registry struct {
 	// placeholder is in e.games, so findGameLocked cannot match it and ReleaseGame
 	// would no-op, then bindGame would record the game_id permanently and leak the
 	// slot forever. To close the race, ReleaseGame for an unfound game_id leaves a
-	// tombstone here; bindGame checks it and, on a hit, drops the reservation WITHOUT
-	// binding (freeing the slot, non-counting) and consumes the tombstone. The map is
-	// only ever populated for the brief window between spawn and bind, so it stays
-	// O(in-flight) at worst.
+	// tombstone here ONLY WHILE A SPAWN IS IN FLIGHT (spawnsInFlight > 0); bindGame
+	// checks it and, on a hit, drops the reservation WITHOUT binding (freeing the
+	// slot, non-counting) and consumes the tombstone.
+	//
+	// BOUNDEDNESS: a tombstone is only meaningful for a bind that is still coming, and
+	// a bind can only be pending while a spawn is in flight. So we (1) refuse to record
+	// a tombstone when spawnsInFlight == 0 (an unfound ReleaseGame then is provably a
+	// stale/duplicate call — already concluded or already released — not the race), and
+	// (2) clear the whole map whenever spawnsInFlight returns to 0 (no bind can be
+	// pending, so any survivor is a proven orphan). The map is therefore bounded by the
+	// number of CONCURRENT in-flight spawns — genuinely O(in-flight) — and is empty
+	// whenever the registry is quiescent. This is what makes the conclude-then-release
+	// and double-release orderings (which would otherwise leave an un-consumable
+	// tombstone) self-cleaning.
 	releaseTombstones map[string]string // game_id → release reason
+	// spawnsInFlight counts spawns currently between nextAllocation's reservation and
+	// bindGame (the only window in which a real game_id can be reported-terminal before
+	// it is bound). It gates and bounds releaseTombstones (see above).
+	spawnsInFlight int
 }
 
 // RegistryConfig configures a Registry. Every seam may be nil — a nil seam
@@ -615,6 +629,10 @@ func (r *Registry) nextAllocation() (id, arm string, ok bool) {
 		// is replaced by the real game id in bindGame, or released on spawn failure.
 		placeholder := reservationKey(cand, e.armCursor)
 		e.games[placeholder] = arm
+		// A spawn is now in flight (reserved, not yet bound). It is the only window in
+		// which a real game_id can be reported-terminal before bind, so this gates and
+		// bounds the tombstone map. Decremented in bindGame / releaseReservation.
+		r.spawnsInFlight++
 		return cand, arm, true
 	}
 	return "", "", false
@@ -656,6 +674,9 @@ func reservationKey(id string, seq int) string {
 func (r *Registry) bindGame(id, gameID, arm string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// The spawn that produced this game_id has resolved (whichever branch we take
+	// below). Account for it so the tombstone map stays bounded and self-cleaning.
+	defer r.spawnResolvedLocked()
 	e := r.entries[id]
 	if e == nil {
 		// Experiment vanished (torn down) between spawn and bind: nothing to bind, and
@@ -712,11 +733,32 @@ func (r *Registry) dropOneReservationLocked(e *entry, arm string) {
 func (r *Registry) releaseReservation(id, arm string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// The spawn resolved (with an error); account for it whether or not the
+	// experiment still exists, so spawnsInFlight cannot drift positive and pin the
+	// tombstone map open.
+	defer r.spawnResolvedLocked()
 	e := r.entries[id]
 	if e == nil {
 		return
 	}
 	r.dropOneReservationLocked(e, arm)
+}
+
+// spawnResolvedLocked records that one in-flight spawn has resolved (bound, freed,
+// or failed). When the count returns to zero NO bind can be pending, so any tombstone
+// still in the map is a proven orphan (a stale conclude-then-release or double-release
+// that no bindGame will ever consume) and is swept — keeping releaseTombstones bounded
+// by concurrent in-flight spawns and empty whenever the registry is quiescent. Assumes
+// r.mu is held.
+func (r *Registry) spawnResolvedLocked() {
+	if r.spawnsInFlight > 0 {
+		r.spawnsInFlight--
+	}
+	if r.spawnsInFlight == 0 && len(r.releaseTombstones) > 0 {
+		for k := range r.releaseTombstones {
+			delete(r.releaseTombstones, k)
+		}
+	}
 }
 
 // isReservation reports whether a game-map key is a reservation placeholder
@@ -817,22 +859,28 @@ func (r *Registry) ConcludeGame(ctx context.Context, gameID string, fitness floa
 // telemetry-driven ConcludeGame path never fires for it.
 //
 // It is IDEMPOTENT and SAFE to call alongside ConcludeGame: an unknown game_id
-// (already concluded/released, or not one of ours) is ignored. Returns whether a
-// slot was actually freed.
+// (already concluded/released, or not one of ours) is ignored — and never records a
+// lingering tombstone unless a bind is genuinely pending (spawnsInFlight > 0), so the
+// conclude-then-release and double-release orderings leave no orphan. Returns whether
+// a slot was actually freed.
 func (r *Registry) ReleaseGame(gameID, reason string) bool {
 	r.mu.Lock()
 	id, arm, e := r.findGameLocked(gameID)
 	if e == nil {
-		// The game_id is not (yet) bound. This is EITHER the bind-vs-fast-terminal
-		// race (#1014) — the terminal callback fired before AllocateAndSpawn bound the
-		// real game_id, so the reservation placeholder is still in e.games — OR a
-		// genuinely unknown id (already concluded/released, or not one of ours). We
-		// cannot tell the two apart here, so leave a tombstone: a pending bindGame for
-		// this id will detect it and free its reservation WITHOUT recording the id
-		// (closing the leak); a never-bound id's tombstone is swept on the owning
-		// experiment's teardown (and is harmless until then — it holds no slot).
-		if _, dup := r.releaseTombstones[gameID]; !dup {
-			r.releaseTombstones[gameID] = reason
+		// The game_id is not bound. This is EITHER the bind-vs-fast-terminal race
+		// (#1014) — the terminal callback fired before AllocateAndSpawn could bind the
+		// real game_id, so only the reservation placeholder is in e.games — OR a
+		// genuinely stale call (already concluded/released, or not one of ours). We tell
+		// them apart by spawnsInFlight: the race can ONLY happen while a spawn is in
+		// flight (a bind is still coming). So tombstone ONLY then; bindGame will detect
+		// it and free the reservation WITHOUT recording the id (closing the leak), and
+		// spawnResolvedLocked sweeps any survivor when the last spawn resolves. When NO
+		// spawn is in flight an unfound release is provably stale — recording a tombstone
+		// would just leak an entry no bind will ever consume, so we skip it.
+		if r.spawnsInFlight > 0 {
+			if _, dup := r.releaseTombstones[gameID]; !dup {
+				r.releaseTombstones[gameID] = reason
+			}
 		}
 		r.mu.Unlock()
 		return false // no bound slot freed (the bind, if any, frees it).
