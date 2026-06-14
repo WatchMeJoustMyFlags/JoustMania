@@ -262,6 +262,18 @@ type Registry struct {
 	// allocation: AllocateAndSpawn rotates the start of the live-experiment scan so
 	// no single experiment is always served first (equal-share, no starvation).
 	rrCursor int
+	// releaseTombstones records game_ids whose terminal callback (ReleaseGame) fired
+	// BEFORE the registry bound the game_id into e.games — the bind-vs-fast-terminal
+	// race (#1014). A game that hits a terminal outcome the instant it starts (e.g.
+	// game_error at admission) fires its TerminalCallback while only the reservation
+	// placeholder is in e.games, so findGameLocked cannot match it and ReleaseGame
+	// would no-op, then bindGame would record the game_id permanently and leak the
+	// slot forever. To close the race, ReleaseGame for an unfound game_id leaves a
+	// tombstone here; bindGame checks it and, on a hit, drops the reservation WITHOUT
+	// binding (freeing the slot, non-counting) and consumes the tombstone. The map is
+	// only ever populated for the brief window between spawn and bind, so it stays
+	// O(in-flight) at worst.
+	releaseTombstones map[string]string // game_id → release reason
 }
 
 // RegistryConfig configures a Registry. Every seam may be nil — a nil seam
@@ -374,18 +386,19 @@ func NewRegistry(cfg RegistryConfig) *Registry {
 		log = slog.Default()
 	}
 	return &Registry{
-		root:         cfg.Root,
-		maxCap:       maxCap,
-		effectiveCap: effectiveCap,
-		maxGames:     maxGames,
-		minN:         minN,
-		spawner:      cfg.Spawner,
-		verdict:      cfg.Verdict,
-		promo:        cfg.Promoter,
-		target:       cfg.Targeting,
-		clock:        clock,
-		log:          log,
-		entries:      make(map[string]*entry),
+		root:              cfg.Root,
+		maxCap:            maxCap,
+		effectiveCap:      effectiveCap,
+		maxGames:          maxGames,
+		minN:              minN,
+		spawner:           cfg.Spawner,
+		verdict:           cfg.Verdict,
+		promo:             cfg.Promoter,
+		target:            cfg.Targeting,
+		clock:             clock,
+		log:               log,
+		entries:           make(map[string]*entry),
+		releaseTombstones: make(map[string]string),
 	}
 }
 
@@ -551,8 +564,12 @@ func (r *Registry) AllocateAndSpawn(ctx context.Context) int {
 			// Stop this call rather than hot-loop on a failing spawner.
 			return spawned
 		}
-		r.bindGame(id, gameID, arm)
-		spawned++
+		if r.bindGame(id, gameID, arm) {
+			spawned++
+		}
+		// If bindGame did NOT bind (the #1014 bind-vs-fast-terminal race freed the
+		// reservation instead), the slot is back in the cap; the loop's next
+		// nextAllocation will refill it, so no special handling is needed here.
 	}
 }
 
@@ -623,21 +640,50 @@ func reservationKey(id string, seq int) string {
 // bindGame replaces the most-recent reservation for the experiment with the real
 // coordinator game_id, records a game_assigned journal event, and (re)allocation
 // is the caller's concern. Assumes the reservation exists (nextAllocation made it).
-func (r *Registry) bindGame(id, gameID, arm string) {
+//
+// BIND-VS-FAST-TERMINAL RACE (#1014): a game can hit a terminal outcome — and fire
+// its TerminalCallback → ReleaseGame(gameID) — BEFORE this bind runs (the drive
+// goroutine starts inside Spawn, before Spawn returns the game_id). When that
+// happens ReleaseGame cannot find the not-yet-bound game_id, so it leaves a
+// tombstone instead. bindGame detects that tombstone and, rather than recording the
+// game_id permanently (which would leak the slot forever — the terminal callback
+// already fired and will never fire again), it drops the reservation WITHOUT binding
+// and records a non-counting release. The slot returns to the cap immediately.
+//
+// It returns true when it bound the game_id (a live in-flight game), false when it
+// freed the reservation without binding (the race lost, or the experiment vanished)
+// — the caller counts only genuinely-started games.
+func (r *Registry) bindGame(id, gameID, arm string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	e := r.entries[id]
 	if e == nil {
-		return
+		// Experiment vanished (torn down) between spawn and bind: nothing to bind, and
+		// teardown already cleared the reservation. Drop any tombstone so it cannot
+		// outlive the experiment.
+		delete(r.releaseTombstones, gameID)
+		return false
 	}
+
+	// If the game already terminated before we could bind it, do NOT record the
+	// game_id — free the reservation slot instead and consume the tombstone.
+	if reason, tombstoned := r.releaseTombstones[gameID]; tombstoned {
+		delete(r.releaseTombstones, gameID)
+		r.dropOneReservationLocked(e, arm)
+		r.appendEvent(e.journal, journal.Event{
+			Kind:   journal.KindGameReleased,
+			GameID: gameID,
+			Arm:    arm,
+			Note:   reason,
+		})
+		r.log.Warn("experiment.game_released_before_bind (#1014)",
+			"experiment_id", id, "game_id", gameID, "arm", arm, "reason", reason)
+		return false
+	}
+
 	// Replace the matching reservation placeholder (an arbitrary one for this arm)
 	// with the real game id. We find ANY reservation for this arm to convert.
-	for k, a := range e.games {
-		if isReservation(k) && a == arm {
-			delete(e.games, k)
-			break
-		}
-	}
+	r.dropOneReservationLocked(e, arm)
 	e.games[gameID] = arm
 	r.appendEvent(e.journal, journal.Event{
 		Kind:   journal.KindGameAssigned,
@@ -645,6 +691,20 @@ func (r *Registry) bindGame(id, gameID, arm string) {
 		Arm:    arm,
 	})
 	r.log.Info("experiment.game_assigned", "experiment_id", id, "game_id", gameID, "arm", arm)
+	return true
+}
+
+// dropOneReservationLocked deletes one reservation placeholder for the arm from the
+// experiment's game map (an arbitrary one — they are interchangeable for the same
+// arm). It is the shared helper for bindGame (convert/free a reservation) and
+// releaseReservation (free on spawn failure). Assumes r.mu is held.
+func (r *Registry) dropOneReservationLocked(e *entry, arm string) {
+	for k, a := range e.games {
+		if isReservation(k) && a == arm {
+			delete(e.games, k)
+			return
+		}
+	}
 }
 
 // releaseReservation drops one reservation placeholder for the arm (used when a
@@ -656,12 +716,7 @@ func (r *Registry) releaseReservation(id, arm string) {
 	if e == nil {
 		return
 	}
-	for k, a := range e.games {
-		if isReservation(k) && a == arm {
-			delete(e.games, k)
-			return
-		}
-	}
+	r.dropOneReservationLocked(e, arm)
 }
 
 // isReservation reports whether a game-map key is a reservation placeholder
@@ -685,6 +740,10 @@ func (r *Registry) ConcludeGame(ctx context.Context, gameID string, fitness floa
 		return "", nil // not one of ours; ignore.
 	}
 	delete(e.games, gameID)
+	// Drop any release tombstone for this id: a bound game that concludes normally
+	// can never have one (bindGame consumes it before binding), but clear it
+	// defensively so an out-of-order unfound-release cannot linger.
+	delete(r.releaseTombstones, gameID)
 	f := fitness
 	r.appendEvent(e.journal, journal.Event{
 		Kind:      journal.KindGameConcluded,
@@ -764,10 +823,25 @@ func (r *Registry) ReleaseGame(gameID, reason string) bool {
 	r.mu.Lock()
 	id, arm, e := r.findGameLocked(gameID)
 	if e == nil {
+		// The game_id is not (yet) bound. This is EITHER the bind-vs-fast-terminal
+		// race (#1014) — the terminal callback fired before AllocateAndSpawn bound the
+		// real game_id, so the reservation placeholder is still in e.games — OR a
+		// genuinely unknown id (already concluded/released, or not one of ours). We
+		// cannot tell the two apart here, so leave a tombstone: a pending bindGame for
+		// this id will detect it and free its reservation WITHOUT recording the id
+		// (closing the leak); a never-bound id's tombstone is swept on the owning
+		// experiment's teardown (and is harmless until then — it holds no slot).
+		if _, dup := r.releaseTombstones[gameID]; !dup {
+			r.releaseTombstones[gameID] = reason
+		}
 		r.mu.Unlock()
-		return false // already concluded/released, or not one of ours.
+		return false // no bound slot freed (the bind, if any, frees it).
 	}
 	delete(e.games, gameID)
+	// A tombstone can never coexist with a bound game (bindGame consumes it before
+	// binding), but drop defensively so a prior unfound-release for a since-rebound id
+	// cannot linger.
+	delete(r.releaseTombstones, gameID)
 	r.appendEvent(e.journal, journal.Event{
 		Kind:   journal.KindGameReleased,
 		GameID: gameID,

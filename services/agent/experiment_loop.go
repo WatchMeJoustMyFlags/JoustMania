@@ -323,15 +323,32 @@ func (e *experimentLoop) onGameEnd(gc gamecontext.GameContext) {
 // AllocateAndSpawn so the freed slot is refilled promptly.
 func (e *experimentLoop) onGameTerminal(gameID string, outcome gamerunner.Outcome) {
 	if outcome == gamerunner.OutcomeCompleted {
-		// Natural completion: the telemetry path concludes it with its fitness
-		// sample. Do not release here (that would discard the sample).
+		// Natural completion: the telemetry path (onGameEnd → ConcludeGame) concludes
+		// it WITH its fitness sample. We deliberately do NOT release here because that
+		// would drop the sample (ReleaseGame is non-counting).
+		//
+		// KNOWN RESIDUAL RISK (#1014 follow-up): this trusts the telemetry
+		// game_active=0 datapoint to arrive for a COMPLETED game — the same signal this
+		// very backstop calls unreliable for ERRORED games. If telemetry drops a
+		// completed game's datapoint, its in-flight slot leaks identically and the
+		// effective_concurrency=1 loop deadlocks. The asymmetry is intentional for now:
+		// an errored game routinely loses its attribution (it can error at admission,
+		// before the experiment_id is ever stamped onto a span/metric), whereas a
+		// completed game has played long enough to emit a fully-attributed game-end
+		// datapoint, so the completed path is materially more reliable. A bounded
+		// grace backstop that releases a still-in-flight COMPLETED game non-counting
+		// after a timeout is the durable fix; it is tracked as a follow-up (#1020)
+		// rather than built here (it needs care not to race the fitness fold).
 		return
 	}
 	reason := "game ended without usable fitness sample: " + string(outcome)
 	if e.registry.ReleaseGame(gameID, reason) {
 		e.log.Warn("experiment: released in-flight slot for non-concluding game (#1014)",
 			"game_id", gameID, "outcome", outcome)
-		// Refill the freed slot (respecting the kill-switch).
+		// Refill the freed slot (respecting the kill-switch). context.Background is
+		// intentional: this runs on the drive goroutine, which has no tick/request
+		// context to thread through — the spawn it triggers is bounded by the runner's
+		// own RPC + ready timeouts, so an unbounded Background cannot stall here.
 		e.allocateIfEnabled(context.Background())
 	}
 }

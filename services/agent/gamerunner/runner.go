@@ -401,6 +401,25 @@ func (r *Runner) StartExperimentGame(startCtx, driveCtx context.Context, spec Sp
 	// controllers and closes the clients on the way out (success, timeout, or
 	// shutdown), so no controller or connection leaks.
 	go func() {
+		// #1014 deadlock backstop: the WHOLE point of onTerminal is to guarantee the
+		// registry's in-flight slot is released even on a failed game, so the release
+		// must itself be panic-proof. Fire it from a deferred closure that defaults to
+		// OutcomeError and is updated to the real outcome once known — so a panic or
+		// any future early-return in driveGame/awaitTerminal still releases the slot
+		// (a non-concluding OutcomeError release, never a lost slot). Registered FIRST
+		// so LIFO runs it LAST — after controller removal and client close — which
+		// means the registry slot is released after this run's controllers are gone.
+		// onTerminal synchronously kicks off the NEXT game's reserve+start; that next
+		// reservation can therefore race ahead of game N's already-completed
+		// removeControllers, but each run reserves its OWN uniquely-tagged controllers
+		// (Spec.Tag = "agent:<RunID>"), so there is no controller-identity collision.
+		finalOutcome := OutcomeError
+		defer func() {
+			if r.onTerminal != nil {
+				r.onTerminal(gameID, finalOutcome)
+			}
+		}()
+
 		defer cl.close()
 		defer func() {
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), r.cfg.RPCTimeout)
@@ -413,24 +432,11 @@ func (r *Runner) StartExperimentGame(startCtx, driveCtx context.Context, spec Sp
 		go r.driveGame(runDrive, cl, serials)
 
 		terminal, _, outcome := r.awaitTerminal(driveCtx, cl, stream, gameID)
+		finalOutcome = outcome
 		stopDrive()
 		r.log.Info("experiment shadow game finished",
 			"game_id", gameID, "run_id", spec.RunID, "experiment_id", spec.ExperimentID,
 			"arm", spec.Arm, "outcome", outcome, "terminal_event", terminal)
-
-		// Terminal-outcome hook (#1014): signal the registry the moment the game
-		// ends, regardless of outcome. For a game that did NOT conclude with a
-		// usable fitness sample (game_error / force-end / abort) the telemetry
-		// game_active=0 → ConcludeGame path may never fire (a game that errored at
-		// admission can be coalesced or lose its experiment attribution), leaking
-		// the in-flight slot and DEADLOCKING the effective_concurrency=1 loop. This
-		// hook lets the loop release the slot directly. It is a no-op when the
-		// telemetry path already concluded the game (ReleaseGame is idempotent on an
-		// unknown game_id). Runs BEFORE the deferred controller removal so the slot
-		// and the controllers free together.
-		if r.onTerminal != nil {
-			r.onTerminal(gameID, outcome)
-		}
 	}()
 
 	return gameID, nil
