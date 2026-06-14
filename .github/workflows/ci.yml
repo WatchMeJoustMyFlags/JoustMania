@@ -304,12 +304,17 @@ jobs:
       # (random.shuffle/sample/choice/uniform/...) silently breaks both CRN
       # pairing and concurrency isolation, so fail the build on any bare
       # `random.<lowercase>` under games/. `random.Random` (the per-instance ctor)
-      # is allowed; comment lines are ignored.
+      # is allowed; comments (full-line OR trailing-inline) are ignored.
       - name: CRN RNG-isolation gate
         if: matrix.service == 'game_coordinator'
         run: |
+          # grep emits `path:line:content`; strip any trailing `#` comment from the
+          # content portion (preserving the path:line: prefix) BEFORE matching, so a
+          # `random.` inside a comment — full-line or trailing-inline — never trips
+          # the gate, while a real bare `random.<lowercase>` call still does (#1032).
           if grep -rnE '(^|[^._a-zA-Z0-9])random\.[a-z]' services/game_coordinator/games --include='*.py' \
-               | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#'; then
+               | sed -E 's/(^[^:]+:[0-9]+:[^#]*)#.*$/\1/' \
+               | grep -E '(^|[^._a-zA-Z0-9])random\.[a-z]'; then
             echo "::error::Bare module-global random.* call found under services/game_coordinator/games."
             echo "Use the per-instance self._rng (random.Random(seed)) instead — see #1003."
             exit 1
