@@ -656,6 +656,18 @@ services:
       # the remediation_allowed flag (rollout flagd domain, read from rollout.json).
       # After a rollback, re-expansion is suppressed for the cooldown below.
       - AGENT_ROLLOUT_COOLDOWN_SECONDS=${AGENT_ROLLOUT_COOLDOWN_SECONDS:-30}
+      # Experiment cohort loop (#982/#991). Opt-in master switch + the optional
+      # env-seeded single experiment. Declared here (with default-off / empty
+      # defaults) so a host `export` or `.env` value reaches the container — a
+      # plain `up` keeps the framework inert (the M8 dry-run finding, #999). The
+      # promotion path stays gated by the `code_improvement` flags + kill-switch.
+      - AGENT_EXPERIMENTS_ENABLED=${AGENT_EXPERIMENTS_ENABLED:-false}
+      - AGENT_EXPERIMENT_TICK_SECONDS=${AGENT_EXPERIMENT_TICK_SECONDS:-30}
+      - AGENT_EXPERIMENT_SEED_FLAG=${AGENT_EXPERIMENT_SEED_FLAG:-}
+      - AGENT_EXPERIMENT_SEED_VALUE=${AGENT_EXPERIMENT_SEED_VALUE:-}
+      - AGENT_EXPERIMENT_SEED_OBJECTIVE=${AGENT_EXPERIMENT_SEED_OBJECTIVE:-}
+      - AGENT_EXPERIMENT_SEED_TARGET_N=${AGENT_EXPERIMENT_SEED_TARGET_N:-}
+      - AGENT_EXPERIMENT_SEED_HYPOTHESIS=${AGENT_EXPERIMENT_SEED_HYPOTHESIS:-}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - OTEL_SERVICE_NAME=agent
       - OTEL_SERVICE_NAMESPACE=infrastructure

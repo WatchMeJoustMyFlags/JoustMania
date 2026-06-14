@@ -94,6 +94,55 @@ up-mock:
 	@echo "  Prometheus: http://localhost/prometheus/"
 	@echo "  Grafana:    http://localhost/grafana/"
 
+# M8 agent shadow-game dry run (#999). Brings up a RUNNABLE experiment cohort
+# loop out-of-the-box: latest images (not the stale release IMAGE_TAG=0.7.0 from
+# .env), mock controllers + full observability (ci flag dir), the agent & the
+# dashboard profiles, the experiment loop enabled, and one seeded experiment.
+# The agent and flagd share the SAME flag dir (services/flagd/ci) so the agent's
+# game.json targeting writes actually reach the running flagd (the #999 dir-
+# mismatch fix lives in docker-compose.dry-run.yml).
+#
+# Gating chain (all must be satisfied for the loop to ACT):
+#   1. AGENT_EXPERIMENTS_ENABLED=true  -> set by docker-compose.dry-run.yml
+#   2. agent.json `enabled` = on       -> MANUAL opt-in, see step below (the
+#      master kill-switch stays fail-closed `off` by default; we do NOT mutate
+#      the committed flag here). Without it the loop self-aborts:
+#      `experiment.torn_down ... reason="kill-switch: agent disabled"`.
+#   3. code_improvement.* promotion gates -> remain default (promotion stays off)
+.PHONY: dry-run
+dry-run:
+	IMAGE_TAG=$(or $(IMAGE_TAG),latest) docker compose \
+		-f docker-compose.yml \
+		-f docker-compose.override.yml \
+		-f docker-compose.ci.yml \
+		-f docker-compose.dry-run.yml \
+		--profile agent --profile dashboard up -d $(if $(BUILD),--build)
+	@echo ""
+	@echo "=========================================="
+	@echo "JoustMania M8 AGENT DRY RUN is running"
+	@echo "=========================================="
+	@echo "  Images:        IMAGE_TAG=$(or $(IMAGE_TAG),latest) (current code, not the .env release pin)"
+	@echo "  Controllers:   mock (flagd ci/ dir, backend=mock)"
+	@echo "  Flag dir:      services/flagd/ci  (shared rw by agent + flagd -> writes are effective)"
+	@echo ""
+	@echo "  Experiment loop gating:"
+	@echo "    [x] AGENT_EXPERIMENTS_ENABLED=true   (set by docker-compose.dry-run.yml)"
+	@echo "    [x] seeded experiment: death_grace_period_seconds = 0.75 (objective=balanced, N=8/arm)"
+	@echo "    [ ] agent kill-switch  -> ENABLE IT (fail-closed off by default):"
+	@echo "        ./scripts/agent-killswitch.sh on   # flips services/flagd/ci/agent.json enabled -> on"
+	@echo "        docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile agent restart agent"
+	@echo "        (or edit services/flagd/ci/agent.json: flags.enabled.defaultVariant = \"on\")"
+	@echo "    [ ] code_improvement.* promotion gates stay OFF (no real-default promotion)"
+	@echo ""
+	@echo "  Observability:"
+	@echo "    Dashboard:  http://localhost/"
+	@echo "    Jaeger:     http://localhost/jaeger/    (agent decision-audit spans)"
+	@echo "    Prometheus: http://localhost/prometheus/"
+	@echo "    Grafana:    http://localhost/grafana/"
+	@echo ""
+	@echo "  Runbook: docs/agent-dry-run-runbook.md"
+	@echo "  Tear down: docker compose -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.ci.yml -f docker-compose.dry-run.yml --profile agent --profile dashboard down"
+
 # ============================================================================
 # Code Quality (using uv directly - fast, no Docker overhead)
 # ============================================================================

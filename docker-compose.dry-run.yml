@@ -1,0 +1,62 @@
+# M8 Agent Dry-Run Override (#999)
+#
+# Layered ON TOP of docker-compose.ci.yml so the stack runs with mock
+# controllers (backend=mock from services/flagd/ci/) and the full local
+# observability stack. Use via `make dry-run` (which also pins IMAGE_TAG=latest
+# and activates the `agent` + `dashboard` profiles):
+#
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f docker-compose.override.yml \
+#     -f docker-compose.ci.yml \
+#     -f docker-compose.dry-run.yml \
+#     --profile agent --profile dashboard up -d
+#
+# Why this file exists (the dry-run findings, #999):
+#
+# 1. Agent <-> flagd flag-dir mismatch. In ci-mode, docker-compose.ci.yml
+#    overrides flagd (and menu) to mount ./services/flagd/ci:/etc/flagd, but the
+#    base agent service keeps ./services/flagd:/etc/flagd. So the agent's
+#    experiment-scoped game.json writes (FLAGD_FLAG_DIR=/etc/flagd ->
+#    /etc/flagd/game.json) landed in the BASE file while flagd served the CI one
+#    — the writes never reached the running flagd. Here we !override the agent
+#    volume onto the SAME services/flagd/ci dir flagd and menu serve, so the file
+#    the agent writes IS the file flagd reads (the #959 single-source-of-truth
+#    invariant, extended to the agent under the ci flag dir).
+#
+# 2. Experiment framework opt-in. The base agent env now passes through the
+#    AGENT_EXPERIMENT* vars (default-off); this file turns ON the cohort loop and
+#    seeds ONE experiment so the declare->spawn->conclude->verdict loop has work.
+#    Override values still win, e.g.:
+#      AGENT_EXPERIMENT_SEED_FLAG=move_threshold make dry-run
+#
+# The agent MASTER kill-switch (agent.json `enabled`) still defaults to `off`
+# (fail-closed, unchanged). `make dry-run` prints the one-liner to flip the CI
+# copy on; we do NOT mutate the committed flag here so the default stays safe.
+
+services:
+  agent:
+    profiles:
+      - agent
+    # Resolve the dir mismatch: serve/write the SAME flag dir flagd + menu use
+    # under ci-mode. !override REPLACES the base ./services/flagd:/etc/flagd
+    # mount (compose merges array values by default).
+    volumes: !override
+      - ./services/flagd/ci:/etc/flagd
+    environment:
+      # Master opt-in for the #982/#991 experiment cohort loop.
+      - AGENT_EXPERIMENTS_ENABLED=${AGENT_EXPERIMENTS_ENABLED:-true}
+      # Seed ONE experiment at startup (simplest declaration trigger). The flag
+      # key must EXIST in services/flagd/ci/game.json and the value's JSON kind
+      # must match its existing variants (the Gate's type guard rejects a mistyped
+      # seed). death_grace_period_seconds is a numeric flag (variants 0.0..1.0);
+      # 0.75 is a new shadow-only value. Defaults chosen so a bare `make dry-run`
+      # produces a live experiment; override any via env/.env.
+      - AGENT_EXPERIMENT_SEED_FLAG=${AGENT_EXPERIMENT_SEED_FLAG:-death_grace_period_seconds}
+      - AGENT_EXPERIMENT_SEED_VALUE=${AGENT_EXPERIMENT_SEED_VALUE:-0.75}
+      - AGENT_EXPERIMENT_SEED_OBJECTIVE=${AGENT_EXPERIMENT_SEED_OBJECTIVE:-balanced}
+      - AGENT_EXPERIMENT_SEED_TARGET_N=${AGENT_EXPERIMENT_SEED_TARGET_N:-8}
+      - "AGENT_EXPERIMENT_SEED_HYPOTHESIS=${AGENT_EXPERIMENT_SEED_HYPOTHESIS:-M8 dry-run seed - a longer death grace period balances elimination cadence}"
+      # Faster refill tick than the 30s default so shadow games spin up promptly
+      # during a demo.
+      - AGENT_EXPERIMENT_TICK_SECONDS=${AGENT_EXPERIMENT_TICK_SECONDS:-15}
