@@ -72,12 +72,12 @@ class TestMenuServicerBasic:
         assert menu_servicer.get_menu_state() == menu_pb2.MenuState.RUNNING
 
     def test_get_game_options(self, menu_servicer):
-        """Test getting game options."""
-        # get_game_options returns game_options attribute if set, else empty
+        """get_game_options is populated from GAME_MODES so admin Cross cycling
+        works (#1030) — it is no longer the always-empty stub."""
         options = menu_servicer.get_game_options()
         assert isinstance(options, list)
-        # By default returns empty list until game_options is set
-        # This is used by AdminModeCallbacks
+        assert options == GAME_MODES
+        assert "JoustFFA" in options
 
 
 @pytest.mark.asyncio

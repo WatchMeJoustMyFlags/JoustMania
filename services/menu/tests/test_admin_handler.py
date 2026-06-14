@@ -26,6 +26,8 @@ def mock_callbacks():
     """Create mock callbacks."""
     callbacks = MagicMock()
     callbacks.get_game_options = MagicMock(return_value=["JoustFFA", "JoustTeams"])
+    callbacks.select_game_mode = AsyncMock()
+    callbacks.start_game = AsyncMock()
     return callbacks
 
 
@@ -418,6 +420,59 @@ class TestHandleForceStartFlagd:
         handler._publish_event.assert_called()
         call_args = handler._publish_event.call_args[0]
         assert call_args[0] == "game_requested"
+
+    @pytest.mark.asyncio
+    async def test_handle_force_start_invokes_coordinator_start(self, handler, mock_state_manager):
+        """Force start must actually launch the game through the coordinator start
+        path (#1029) — not merely publish the menu event. The selected mode +
+        force_all_start-aware roster must be passed to the start callback."""
+        mock_state_manager.current_game_mode.name = "JoustTeams"
+        mock_state_manager.connected_controllers = {"s1", "s2", "s3"}
+        mock_state_manager.ready_controllers = {"s1"}
+        handler._publish_event = AsyncMock()
+        handler.exit = AsyncMock()
+
+        # force_all_start=True -> start with ALL connected controllers.
+        mock_gs_client = MagicMock()
+        mock_gs_client.get_boolean_value = MagicMock(return_value=True)
+
+        with (
+            patch("services.menu.handlers.admin.asyncio.sleep", new_callable=AsyncMock),
+            patch("lib.feature_flags.get_flag_client", return_value=mock_gs_client),
+        ):
+            await handler.handle_force_start("test_serial")
+
+        handler.callbacks.start_game.assert_awaited_once()
+        args = handler.callbacks.start_game.await_args
+        assert args.args[0] == "test_serial"
+        assert args.args[1] == "admin_force_start"
+        # Roster honors force_all_start: all connected controllers.
+        roster = args.args[2]
+        assert set(roster) == {"s1", "s2", "s3"}
+
+    @pytest.mark.asyncio
+    async def test_handle_force_start_roster_uses_ready_when_not_force_all(self, handler, mock_state_manager):
+        """Without force_all_start, the start roster is the ready controllers
+        plus the admin controller (#1029)."""
+        mock_state_manager.current_game_mode.name = "JoustFFA"
+        mock_state_manager.connected_controllers = {"s1", "s2", "s3"}
+        mock_state_manager.ready_controllers = {"s1", "s2"}
+        handler._publish_event = AsyncMock()
+        handler.exit = AsyncMock()
+
+        mock_gs_client = MagicMock()
+        mock_gs_client.get_boolean_value = MagicMock(return_value=False)
+
+        with (
+            patch("services.menu.handlers.admin.asyncio.sleep", new_callable=AsyncMock),
+            patch("lib.feature_flags.get_flag_client", return_value=mock_gs_client),
+        ):
+            await handler.handle_force_start("admin_serial")
+
+        handler.callbacks.start_game.assert_awaited_once()
+        roster = handler.callbacks.start_game.await_args.args[2]
+        # ready (s1, s2) + admin (admin_serial), no duplicates.
+        assert set(roster) == {"s1", "s2", "admin_serial"}
 
 
 # ============================================================================
@@ -863,6 +918,18 @@ class TestHandleGameMode:
         await handler.handle_game_mode("test_serial")
 
         mock_state_manager.publish_event.assert_not_called()
+        handler.callbacks.select_game_mode.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_applies_selection_via_callback(self, handler, mock_state_manager):
+        """Cross cycling must actually apply the new selection through the menu
+        (#1030) — not just publish a fire-and-forget event."""
+        mock_state_manager.current_game_mode.name = "JoustFFA"
+        handler.callbacks.get_game_options.return_value = ["JoustFFA", "JoustTeams", "Werewolf"]
+
+        await handler.handle_game_mode("test_serial")
+
+        handler.callbacks.select_game_mode.assert_awaited_once_with("JoustTeams")
 
 
 class TestHandleGameModeChange:
