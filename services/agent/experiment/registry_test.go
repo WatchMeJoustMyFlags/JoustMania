@@ -1353,3 +1353,43 @@ func TestQuiescentRegistryHasNoTombstones(t *testing.T) {
 		t.Fatalf("releaseTombstones = %d on a quiescent registry, want 0", tombs)
 	}
 }
+
+// TestReconfigure_LiveCaps is the #1044 live-caps AC: Reconfigure applies
+// experiment_shadow_effective_concurrency / experiment_max_games / verdict_min_n /
+// verdict_min_pairs to the live registry (+ its Verdict) with no restart, clamps the
+// effective concurrency to the capacity bookkeeping bound, honors a 0 games-budget as
+// an explicit disable, and IGNORES a non-positive concurrency (never clobbering the
+// current cap on a flagd hiccup).
+func TestReconfigure_LiveCaps(t *testing.T) {
+	verdict := NewVerdict(8, 0.2, nil)
+	reg := NewRegistry(RegistryConfig{
+		Root:                  t.TempDir(),
+		MaxShadowGames:        20,
+		EffectiveConcurrency:  4,
+		MaxGamesPerExperiment: 50,
+		VerdictMinN:           8,
+		Verdict:               verdict,
+		Log:                   nil, // NewRegistry defaults to slog.Default()
+	})
+	if reg.EffectiveCapacity() != 4 {
+		t.Fatalf("setup EffectiveCapacity = %d, want 4", reg.EffectiveCapacity())
+	}
+
+	// Raise concurrency to 8, disable the games budget (0), tighten min-N/min-pairs.
+	reg.Reconfigure(8, 0, 16, 12)
+	if reg.EffectiveCapacity() != 8 {
+		t.Fatalf("Reconfigure did not raise EffectiveCapacity: got %d, want 8", reg.EffectiveCapacity())
+	}
+
+	// A non-positive concurrency must NOT clobber the live value (keep 8).
+	reg.Reconfigure(0, 50, 8, 5)
+	if reg.EffectiveCapacity() != 8 {
+		t.Fatalf("Reconfigure(0,...) clobbered EffectiveCapacity: got %d, want 8", reg.EffectiveCapacity())
+	}
+
+	// Concurrency is clamped to the capacity bookkeeping bound (maxCap = 20).
+	reg.Reconfigure(999, 50, 8, 5)
+	if reg.EffectiveCapacity() != 20 {
+		t.Fatalf("Reconfigure did not clamp EffectiveCapacity to maxCap: got %d, want 20", reg.EffectiveCapacity())
+	}
+}

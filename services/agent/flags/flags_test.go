@@ -639,3 +639,108 @@ func TestPromotion(t *testing.T) {
 		}
 	})
 }
+
+// TestExperiment_FlagOverridesEnvDefault is the #1044 acceptance: each migrated
+// experiment knob takes the agent.json flag value when present and falls back to
+// the env-derived bootstrap default (ExperimentDefaults) when the flag is absent.
+func TestExperiment_FlagOverridesEnvDefault(t *testing.T) {
+	// The env-derived bootstrap defaults the loop hands in.
+	def := ExperimentDefaults{
+		Enabled:                    false,
+		DynamicEnabled:             false,
+		Tick:                       30 * time.Second,
+		DynamicMaxConcurrent:       3,
+		VerdictMinN:                8,
+		VerdictMinPairs:            5,
+		MaxGames:                   50,
+		ShadowEffectiveConcurrency: 4,
+	}
+
+	t.Run("flags present override every env default", func(t *testing.T) {
+		stub := stubEvaluator{
+			booleans: map[string]bool{
+				keyExperimentsEnabled:       true,
+				keyExperimentDynamicEnabled: true,
+			},
+			floats: map[string]float64{keyExperimentTickSeconds: 10},
+			ints: map[string]int64{
+				keyExperimentDynamicMaxConcur:  6,
+				keyVerdictMinN:                 16,
+				keyVerdictMinPairs:             10,
+				keyExperimentMaxGames:          100,
+				keyExperimentShadowConcurrency: 8,
+			},
+		}
+		got := New(stub, nil).Experiment(context.Background(), def)
+		want := ExperimentConfig{
+			Enabled:                    true,
+			DynamicEnabled:             true,
+			Tick:                       10 * time.Second,
+			DynamicMaxConcurrent:       6,
+			VerdictMinN:                16,
+			VerdictMinPairs:            10,
+			MaxGames:                   100,
+			ShadowEffectiveConcurrency: 8,
+		}
+		if got != want {
+			t.Fatalf("Experiment with flags present = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("flags absent fall back to the env bootstrap defaults", func(t *testing.T) {
+		// An empty stub returns the passed default for every key (flag absent).
+		got := New(stubEvaluator{}, nil).Experiment(context.Background(), def)
+		want := ExperimentConfig{
+			Enabled:                    def.Enabled,
+			DynamicEnabled:             def.DynamicEnabled,
+			Tick:                       def.Tick,
+			DynamicMaxConcurrent:       def.DynamicMaxConcurrent,
+			VerdictMinN:                def.VerdictMinN,
+			VerdictMinPairs:            def.VerdictMinPairs,
+			MaxGames:                   def.MaxGames,
+			ShadowEffectiveConcurrency: def.ShadowEffectiveConcurrency,
+		}
+		if got != want {
+			t.Fatalf("Experiment with flags absent = %+v, want env defaults %+v", got, want)
+		}
+	})
+
+	t.Run("flagd errors fall back to the env bootstrap defaults (fail-safe)", func(t *testing.T) {
+		errAll := map[string]error{
+			keyExperimentsEnabled:          errors.New("down"),
+			keyExperimentDynamicEnabled:    errors.New("down"),
+			keyExperimentTickSeconds:       errors.New("down"),
+			keyExperimentDynamicMaxConcur:  errors.New("down"),
+			keyVerdictMinN:                 errors.New("down"),
+			keyVerdictMinPairs:             errors.New("down"),
+			keyExperimentMaxGames:          errors.New("down"),
+			keyExperimentShadowConcurrency: errors.New("down"),
+		}
+		got := New(stubEvaluator{errs: errAll}, nil).Experiment(context.Background(), def)
+		if got.Enabled != def.Enabled || got.Tick != def.Tick || got.VerdictMinN != def.VerdictMinN ||
+			got.MaxGames != def.MaxGames || got.ShadowEffectiveConcurrency != def.ShadowEffectiveConcurrency {
+			t.Fatalf("Experiment under flagd error did not fall back to env defaults: %+v", got)
+		}
+	})
+
+	t.Run("live re-read: a changed flag is reflected on the next call (never cached)", func(t *testing.T) {
+		stub := stubEvaluator{booleans: map[string]bool{keyExperimentsEnabled: false}}
+		f := New(stub, nil)
+		if f.Experiment(context.Background(), def).Enabled {
+			t.Fatal("expected disabled on first read")
+		}
+		// Flip the live flag value and re-read — Experiment must NOT cache.
+		stub.booleans[keyExperimentsEnabled] = true
+		if !f.Experiment(context.Background(), def).Enabled {
+			t.Fatal("Experiment cached the flag; a live change was not reflected on re-read")
+		}
+	})
+
+	t.Run("max_games=0 (disable budget) is honored verbatim, not floored", func(t *testing.T) {
+		stub := stubEvaluator{ints: map[string]int64{keyExperimentMaxGames: 0}}
+		got := New(stub, nil).Experiment(context.Background(), def)
+		if got.MaxGames != 0 {
+			t.Fatalf("max_games=0 must pass through as the explicit disable, got %d", got.MaxGames)
+		}
+	})
+}

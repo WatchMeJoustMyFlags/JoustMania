@@ -295,3 +295,38 @@ type constantStat struct {
 }
 
 func (c constantStat) Effect(_, _ journal.Welford) (float64, bool) { return c.effect, c.ok }
+
+// TestVerdict_SetThresholds_Live is the #1044 live-tunable-gate AC: SetThresholds
+// retunes the min-N / min-pairs gates with no reconstruction (a hot-reload of
+// verdict_min_n / verdict_min_pairs), and a non-positive value is IGNORED (keeps the
+// current gate — the fail-safe floor that never loosens the verdict on a flagd hiccup).
+func TestVerdict_SetThresholds_Live(t *testing.T) {
+	v := NewVerdict(4, 0.2, nil) // start at min-N 4
+	// 8 samples/arm with a clear positive effect: conclusive at min-N 4.
+	s := summaryWith(armFrom(spread(8, 0.9, 0.02)...), armFrom(spread(8, 0.1, 0.02)...))
+	if got, _ := v.Evaluate(s); !got.Significant {
+		t.Fatalf("min-N 4 with 8/arm + large effect should be conclusive, got %+v", got)
+	}
+
+	// Tighten min-N to 16 live: the SAME 8/arm summary is now under-powered.
+	v.SetThresholds(16, 16)
+	got, ok := v.Evaluate(s)
+	if !ok {
+		t.Fatal("Evaluate ok=false for a populated summary")
+	}
+	if got.Significant {
+		t.Fatalf("after SetThresholds(16) the 8/arm summary must be inconclusive (under-powered), got %+v", got)
+	}
+
+	// A non-positive update is ignored (min-N stays 16): still under-powered.
+	v.SetThresholds(0, -1)
+	if got, _ := v.Evaluate(s); got.Significant {
+		t.Fatalf("non-positive SetThresholds loosened the gate; want still inconclusive, got %+v", got)
+	}
+
+	// Loosen back to min-N 4 live: conclusive again.
+	v.SetThresholds(4, 3)
+	if got, _ := v.Evaluate(s); !got.Significant {
+		t.Fatalf("after SetThresholds(4) the 8/arm summary should be conclusive again, got %+v", got)
+	}
+}
