@@ -52,6 +52,12 @@ services:
   # them; it does not touch the agent's mount or relax the agent.json invariant
   # (that rests on code-level path guards, not filesystem perms — see
   # docs/OWNERSHIP_MODEL.md §2).
+  #
+  # Only the menu `depends_on` this step — intentionally NOT flagd or the agent.
+  # flagd only READS the flag files, and the agent runs as root and writes in
+  # place (O_TRUNC), so group perms are irrelevant to both. Adding a dependency
+  # there would needlessly serialize their startup behind this chmod for no gain.
+  # No `networks:` — this only chmods a local bind mount and needs no network.
   flag-dir-init:
     image: busybox:1.37.0
     container_name: joustmania-flag-dir-init
@@ -62,8 +68,6 @@ services:
       - "chgrp -R 65532 /etc/flagd && chmod -R g+w /etc/flagd && find /etc/flagd -type d -exec chmod g+s {} +"
     volumes:
       - ./services/flagd:/etc/flagd
-    networks:
-      - joustmania
     restart: "no"
     logging: *default-logging
 

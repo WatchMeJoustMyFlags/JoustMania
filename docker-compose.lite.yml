@@ -12,6 +12,36 @@
 # Use IMAGE_TAG environment variable to specify version (default: latest)
 
 services:
+  # Flag-dir permission init (#1031). The lite stack is a STANDALONE compose
+  # (not layered on docker-compose.yml), so it needs its own copy of this
+  # sidecar. The menu persists admin settings — game.json / user.json — by
+  # writing the bind-mounted flag files via lib/flag_config_writer.py (an
+  # in-place "w" truncate, so write perm on the FILE is what matters). The menu
+  # image runs nonroot (uid 65532, chainguard); the host flag files are owned by
+  # the deploy user (mode 644), so a nonroot write fails with PermissionError
+  # and the change is silently lost. This one-shot root sidecar makes the files
+  # the lite menu writes group-owned by the menu's nonroot gid (65532) and
+  # group-writable, so the nonroot menu can persist writes WITHOUT running as
+  # root. We chmod the SPECIFIC files the lite menu mounts (game.json,
+  # user.json) — lite bind-mounts individual files, not the whole dir, and the
+  # menu only ever writes these two. The sidecar mounts the whole dir to reach
+  # them on the same host inodes the menu sees.
+  #
+  # Lite has NO agent service, so the #819 agent.json kill-switch is not present
+  # here and agent.json persistence is out of scope. flagd only READS the files,
+  # so it does NOT depend on this step (a future reader should not "fix" that
+  # asymmetry — it would needlessly serialize flagd startup behind a chmod).
+  flag-dir-init:
+    image: busybox:1.37.0
+    container_name: joustmania-flag-dir-init
+    user: "0"  # must be root to chgrp/chmod the bind-mounted host files
+    command:
+      - "sh"
+      - "-c"
+      - "chgrp 65532 /etc/flagd/game.json /etc/flagd/user.json && chmod g+w /etc/flagd/game.json /etc/flagd/user.json"
+    volumes:
+      - ./services/flagd:/etc/flagd
+    restart: "no"
   # flagd for feature flag evaluation
   flagd:
     image: ghcr.io/open-feature/flagd:v0.16.0
@@ -147,6 +177,11 @@ services:
     depends_on:
       flagd:
         condition: service_started
+      # Wait for the flag files to be made group-writable so the nonroot menu
+      # can persist admin settings on first start (#1031). flagd intentionally
+      # does NOT depend on flag-dir-init — it only reads the files.
+      flag-dir-init:
+        condition: service_completed_successfully
     networks:
       - joustmania
     restart: unless-stopped
