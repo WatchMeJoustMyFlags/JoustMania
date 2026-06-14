@@ -86,6 +86,60 @@ class TestUpdateDefaultVariant:
 
         assert result is False
 
+    def test_permission_error_logged_loudly_not_swallowed(self, tmp_path, monkeypatch, caplog):
+        """#1031: a nonroot write that fails with PermissionError must NOT be
+        silently swallowed — it is logged at CRITICAL so non-persistence is
+        visible (safety-relevant: the #819 kill-switch is written this way)."""
+        import logging
+
+        path = _write_flag_file(tmp_path)
+        writer = FlagConfigWriter(path)
+
+        real_open = open
+
+        def fake_open(file, mode="r", *args, **kwargs):
+            # Reads succeed; only the write open is denied (the prod failure mode).
+            if "w" in mode:
+                raise PermissionError(13, "Permission denied")
+            return real_open(file, mode, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", fake_open)
+
+        with caplog.at_level(logging.CRITICAL):
+            result = writer.update_default_variant("sensitivity", "fast")
+
+        assert result is False
+        # Loud, searchable evidence — distinct from the generic catch-all.
+        assert any(rec.levelno == logging.CRITICAL for rec in caplog.records)
+        assert any("PERMISSION DENIED" in rec.getMessage() for rec in caplog.records)
+
+        # The on-disk file must be left as it was (write never landed).
+        data = json.loads(Path(path).read_text())
+        assert data["flags"]["sensitivity"]["defaultVariant"] == "medium"
+
+    def test_os_error_logged_not_swallowed(self, tmp_path, monkeypatch, caplog):
+        """A generic OSError on write (disk full, RO fs) is surfaced at ERROR
+        with a clear 'NOT persisted' message, not silently dropped."""
+        import logging
+
+        path = _write_flag_file(tmp_path)
+        writer = FlagConfigWriter(path)
+
+        real_open = open
+
+        def fake_open(file, mode="r", *args, **kwargs):
+            if "w" in mode:
+                raise OSError(28, "No space left on device")
+            return real_open(file, mode, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", fake_open)
+
+        with caplog.at_level(logging.ERROR):
+            result = writer.update_default_variant("sensitivity", "fast")
+
+        assert result is False
+        assert any("NOT persisted" in rec.getMessage() for rec in caplog.records)
+
     def test_atomic_write_produces_valid_json(self, tmp_path):
         path = _write_flag_file(tmp_path)
         writer = FlagConfigWriter(path)

@@ -82,6 +82,28 @@ class FlagConfigWriter:
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in {self.file_path}: {e}")
             return False
+        except PermissionError as e:
+            # #1031: the menu runs nonroot (uid 65532) and the bind-mounted flag
+            # files are host-owned. A permission denial here means the admin
+            # setting did NOT persist — surface it loudly and unmistakably
+            # instead of letting it disappear into the generic catch-all. This is
+            # safety-relevant: the #819 agent kill-switch (agent.json
+            # interventions_allowed) is written through this path.
+            logger.critical(
+                f"PERMISSION DENIED writing flag '{flag_key}' to {self.file_path}: {e}. "
+                "Admin setting NOT persisted. The service cannot write the flag dir — "
+                "ensure the flag-dir-init step made it group-writable (#1031).",
+                exc_info=True,
+            )
+            return False
+        except OSError as e:
+            # Disk full, read-only filesystem, I/O error, etc. — also a real
+            # non-persistence failure, not something to swallow quietly.
+            logger.error(
+                f"OS error writing flag '{flag_key}' to {self.file_path}: {e}. Admin setting NOT persisted.",
+                exc_info=True,
+            )
+            return False
         except Exception as e:
             logger.error(f"Error updating flag '{flag_key}': {e}")
             return False

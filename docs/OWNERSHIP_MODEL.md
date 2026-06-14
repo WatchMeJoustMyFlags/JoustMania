@@ -73,6 +73,20 @@ agent policy; the agent cannot persist its own governor (§1, §6.2).
 > the RW dir would be a sound defense-in-depth addition, but is not what the
 > guarantee currently rests on.
 
+> **How the nonroot menu can write the bind-mounted flag dir (#1031).** The menu
+> image runs nonroot (uid 65532, chainguard distroless) while the host flag files
+> are owned by the checkout/deploy user (mode 644), so a nonroot write would fail
+> with `PermissionError` and the admin setting would silently not persist — which
+> would also break the #819 kill-switch (`agent.json` `interventions_allowed`). A
+> one-shot root sidecar (`flag-dir-init` in `docker-compose.yml`) makes the shared
+> flag dir group-owned by the menu's nonroot gid and group-writable before the menu
+> starts, so the menu persists writes **without itself running as root**. This does
+> NOT relax the agent-never-writes-`agent.json` invariant above: that rests on
+> code-level path guards, and the agent already mounts the dir read-write and runs
+> as root (the permission change is invisible to it). As a defensive backstop, the
+> writer ([`lib/flag_config_writer.py`](../lib/flag_config_writer.py)) now logs a
+> permission/OS write failure loudly (CRITICAL) instead of swallowing it.
+
 ## 3. Parameter Ownership Table
 
 The eight admin flags. All are read once by the menu into `StartGameConfig`

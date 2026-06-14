@@ -35,6 +35,42 @@ x-logging: &default-logging
     labels: "com.docker.compose.service,com.docker.compose.image"
 
 services:
+  # Flag-dir permission init (#1031). The menu persists admin settings — game.json
+  # / user.json and the #819 kill-switch (agent.json interventions_allowed) — by
+  # writing the bind-mounted flag dir via lib/flag_config_writer.py. The menu image
+  # runs nonroot (uid 65532, chainguard); the host flag files are owned by the
+  # checkout/deploy user (mode 644), so a nonroot write fails with PermissionError
+  # and the change is silently lost. This one-shot root sidecar makes the shared
+  # flag dir group-owned by the menu's nonroot gid (65532) and group-writable, so
+  # the nonroot menu can persist writes WITHOUT the menu itself running as root.
+  #
+  # Why this and not a named volume: flagd, the agent and the menu all bind-mount
+  # the SAME host ./services/flagd dir (single source of truth, #959). A named
+  # volume would diverge from the host repo files. Why group, not chown owner:
+  # leaves the host user as file OWNER (still editable on a dev checkout), only the
+  # group is reassigned. flagd and the agent run as root, so this is invisible to
+  # them; it does not touch the agent's mount or relax the agent.json invariant
+  # (that rests on code-level path guards, not filesystem perms — see
+  # docs/OWNERSHIP_MODEL.md §2).
+  #
+  # Only the menu `depends_on` this step — intentionally NOT flagd or the agent.
+  # flagd only READS the flag files, and the agent runs as root and writes in
+  # place (O_TRUNC), so group perms are irrelevant to both. Adding a dependency
+  # there would needlessly serialize their startup behind this chmod for no gain.
+  # No `networks:` — this only chmods a local bind mount and needs no network.
+  flag-dir-init:
+    image: busybox:1.37.0
+    container_name: joustmania-flag-dir-init
+    user: "0"  # must be root to chgrp/chmod the bind-mounted host files
+    command:
+      - "sh"
+      - "-c"
+      - "chgrp -R 65532 /etc/flagd && chmod -R g+w /etc/flagd && find /etc/flagd -type d -exec chmod g+s {} +"
+    volumes:
+      - ./services/flagd:/etc/flagd
+    restart: "no"
+    logging: *default-logging
+
   # flagd for feature flag evaluation
   flagd:
     image: ghcr.io/open-feature/flagd:v0.16.0
@@ -382,6 +418,10 @@ services:
     depends_on:
       flagd:
         condition: service_started
+      # Wait for the flag dir to be made group-writable so the nonroot menu can
+      # persist admin settings on first start (#1031).
+      flag-dir-init:
+        condition: service_completed_successfully
     networks:
       - joustmania
     restart: unless-stopped
