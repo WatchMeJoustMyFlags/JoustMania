@@ -52,11 +52,21 @@ const (
 	// Below this magnitude (with N met) the arms are within-noise ⇒ INCONCLUSIVE.
 	// Tune via AGENT_VERDICT_EFFECT_THRESHOLD.
 	DefaultEffectThreshold = 0.5
+
+	// DefaultMinPairs is the minimum number of COMPLETED Common-Random-Numbers pairs
+	// (#1003) the PairDiff accumulator must reach before the PAIRED verdict path is
+	// conclusive — the paired analog of DefaultMinNPerArm. Because CRN removes the
+	// shared game variance inside each per-pair difference, far fewer pairs are needed
+	// for the same power than the two-arm path needs per arm, so this floor is smaller.
+	// Below it the paired path is under-powered and the verdict falls back / stays
+	// inconclusive. Tune via AGENT_VERDICT_MIN_PAIRS.
+	DefaultMinPairs = 5
 )
 
 const (
-	minNEnv   = "AGENT_VERDICT_MIN_N"
-	effectEnv = "AGENT_VERDICT_EFFECT_THRESHOLD"
+	minNEnv     = "AGENT_VERDICT_MIN_N"
+	effectEnv   = "AGENT_VERDICT_EFFECT_THRESHOLD"
+	minPairsEnv = "AGENT_VERDICT_MIN_PAIRS"
 )
 
 // CohortStat is the swappable arm-comparison strategy (design §8.3). Given the two
@@ -111,9 +121,14 @@ func (effectSizeGate) Effect(experimental, control journal.Welford) (float64, bo
 // FitnessMeasurer and decision loop already use), so a positive effect means the
 // experimental arm beat control.
 type Verdict struct {
-	// minN is the minimum Count both arms must reach for a conclusive verdict.
+	// minN is the minimum Count both arms must reach for a conclusive TWO-ARM verdict
+	// (the fallback path).
 	minN int
-	// effectThreshold is the minimum |effect| for a promote/discard verdict.
+	// minPairs is the minimum completed-pair count PairDiff must reach for a conclusive
+	// PAIRED verdict (the primary path when CRN pairs exist).
+	minPairs int
+	// effectThreshold is the minimum |effect| for a promote/discard verdict. It gates
+	// both the two-arm Cohen's d and the paired d_z (both are standardized effects).
 	effectThreshold float64
 	// stat is the swappable comparison strategy (default effectSizeGate).
 	stat CohortStat
@@ -122,9 +137,28 @@ type Verdict struct {
 // NewVerdict builds a Verdict with explicit thresholds. A non-positive minN falls
 // back to DefaultMinNPerArm; a non-positive effectThreshold falls back to
 // DefaultEffectThreshold. A nil stat falls back to the default Cohen's d gate.
+//
+// The paired-path min-pairs gate is set to the SAME minN value — a caller that asks
+// for a conclusive verdict at minN games per arm wants the paired path conclusive at
+// minN completed PAIRS too (the paired analog of min-N). This keeps the two paths
+// coherent for the single-knob caller; use NewVerdictWithPairs to gate pairs
+// independently (e.g. the smaller DefaultMinPairs floor, since CRN needs fewer pairs
+// for the same power).
 func NewVerdict(minN int, effectThreshold float64, stat CohortStat) *Verdict {
+	return NewVerdictWithPairs(minN, minN, effectThreshold, stat)
+}
+
+// NewVerdictWithPairs builds a Verdict with explicit two-arm min-N AND paired
+// min-pairs gates. A non-positive minN falls back to DefaultMinNPerArm; a
+// non-positive minPairs falls back to DefaultMinPairs; a non-positive
+// effectThreshold falls back to DefaultEffectThreshold; a nil stat falls back to the
+// default Cohen's d gate.
+func NewVerdictWithPairs(minN, minPairs int, effectThreshold float64, stat CohortStat) *Verdict {
 	if minN <= 0 {
 		minN = DefaultMinNPerArm
+	}
+	if minPairs <= 0 {
+		minPairs = DefaultMinPairs
 	}
 	if effectThreshold <= 0 {
 		effectThreshold = DefaultEffectThreshold
@@ -132,7 +166,7 @@ func NewVerdict(minN int, effectThreshold float64, stat CohortStat) *Verdict {
 	if stat == nil {
 		stat = effectSizeGate{}
 	}
-	return &Verdict{minN: minN, effectThreshold: effectThreshold, stat: stat}
+	return &Verdict{minN: minN, minPairs: minPairs, effectThreshold: effectThreshold, stat: stat}
 }
 
 // MinNFromEnv resolves the verdict min-N-per-arm gate from AGENT_VERDICT_MIN_N,
@@ -150,18 +184,34 @@ func MinNFromEnv() int {
 	return DefaultMinNPerArm
 }
 
+// MinPairsFromEnv resolves the paired-verdict min-completed-pairs gate from
+// AGENT_VERDICT_MIN_PAIRS, falling back to DefaultMinPairs on an unset, empty,
+// non-numeric, or non-positive value. It mirrors MinNFromEnv for the paired path so
+// the registry could reconcile a paired target the same way (#1001) without widening
+// the seam.
+func MinPairsFromEnv() int {
+	if v := strings.TrimSpace(os.Getenv(minPairsEnv)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return DefaultMinPairs
+}
+
 // NewVerdictFromEnv builds a Verdict from AGENT_VERDICT_MIN_N /
-// AGENT_VERDICT_EFFECT_THRESHOLD, falling back to the defaults on an unset, empty,
-// or invalid value. The default Cohen's d strategy is used.
+// AGENT_VERDICT_MIN_PAIRS / AGENT_VERDICT_EFFECT_THRESHOLD, falling back to the
+// defaults on an unset, empty, or invalid value. The default Cohen's d strategy is
+// used for the two-arm fallback path.
 func NewVerdictFromEnv() *Verdict {
 	minN := MinNFromEnv()
+	minPairs := MinPairsFromEnv()
 	threshold := DefaultEffectThreshold
 	if v := strings.TrimSpace(os.Getenv(effectEnv)); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
 			threshold = f
 		}
 	}
-	return NewVerdict(minN, threshold, effectSizeGate{})
+	return NewVerdictWithPairs(minN, minPairs, threshold, effectSizeGate{})
 }
 
 // Evaluate computes the current verdict for an experiment from its rolling
@@ -187,6 +237,17 @@ func NewVerdictFromEnv() *Verdict {
 // so the registry leaves any prior verdict untouched rather than overwriting it
 // with a vacuous one.
 func (v *Verdict) Evaluate(s journal.Summary) (journal.Verdict, bool) {
+	// PAIRED PATH (#1004): when seed-matched (experimental, control) pairs have
+	// completed (#1003), difference fitness PER PAIR. Common Random Numbers remove the
+	// shared game variance inside each d_i = f_exp_i − f_ctl_i, so the standardized
+	// paired effect d_z = mean(d)/sd(d) is a far tighter estimator than the two-arm
+	// pooled Cohen's d and reaches a conclusive verdict at far fewer games. Used
+	// whenever at least one pair has completed; otherwise we fall through to the
+	// two-arm path so legacy/unpaired experiments are unaffected (the fallback).
+	if s.PairDiff != nil && s.PairDiff.Count > 0 {
+		return v.evaluatePaired(*s.PairDiff)
+	}
+
 	expStat, expOK := s.Arms[ArmExperimental]
 	ctlStat, ctlOK := s.Arms[ArmControl]
 	if !expOK || !ctlOK || expStat == nil || ctlStat == nil {
@@ -248,6 +309,90 @@ func (v *Verdict) Evaluate(s journal.Summary) (journal.Verdict, bool) {
 			Significant: false,
 			Reason: fmt.Sprintf("within noise: |effect|=%.3f < threshold=%.2f (n=%d/%d)",
 				math.Abs(effect), v.effectThreshold, exp.Count, ctl.Count),
+		}, true
+	}
+}
+
+// evaluatePaired computes the verdict from the per-PAIR difference accumulator
+// (#1004). The statistic is the standardized paired effect d_z = mean(d) / sd(d),
+// where d_i = f_experimental_i − f_control_i and sd(d) is the UNBIASED sample
+// standard deviation sqrt(M2/(n−1)) over the n completed pairs — the same n−1
+// convention the two-arm gate uses (small-N honest, never inflating the effect).
+// It applies:
+//
+//   - n < minPairs ⇒ INCONCLUSIVE (under-powered paired sample). Mirrors the two-arm
+//     min-N gate: never a promote/discard on too few pairs.
+//   - sd(d) == 0 (every pair identical, e.g. a no-op flag with mean(d)==0, or a
+//     single pair) ⇒ INCONCLUSIVE (effect undefined). A genuine no-op flag produces
+//     per-pair deltas tightly centered on 0, so this correctly reads as no signal.
+//   - d_z >= +threshold ⇒ PROMOTE; d_z <= −threshold ⇒ DISCARD; else INCONCLUSIVE.
+//
+// Delta carries mean(d) (the average per-pair fitness improvement) for the audit
+// trail. The bool is always true: a non-nil non-empty PairDiff is a meaningful
+// (possibly interim) verdict the registry should record.
+func (v *Verdict) evaluatePaired(pd journal.Welford) (journal.Verdict, bool) {
+	meanD := pd.Mean
+
+	if pd.Count < v.minPairs {
+		return journal.Verdict{
+			Outcome:     OutcomeInconclusive,
+			Delta:       meanD,
+			Significant: false,
+			Reason: fmt.Sprintf("paired under-powered: pairs=%d < min_pairs=%d",
+				pd.Count, v.minPairs),
+		}, true
+	}
+
+	// Unbiased sample SD of the per-pair differences: sqrt(M2/(n−1)). Undefined for a
+	// single pair (handled by the min-pairs gate above for the default, but guard
+	// explicitly so a min_pairs=1 override can never divide by zero).
+	if pd.Count < 2 {
+		return journal.Verdict{
+			Outcome:     OutcomeInconclusive,
+			Delta:       meanD,
+			Significant: false,
+			Reason:      "paired effect undefined: need >= 2 pairs for a paired SD",
+		}, true
+	}
+	sdD := math.Sqrt(pd.M2 / float64(pd.Count-1))
+	if sdD == 0 {
+		// Zero spread across pairs — the per-pair difference is a constant. The
+		// standardized effect is undefined (the magnitude is in meanD, but with no
+		// spread there is no scale to standardize against), so treat it as no signal.
+		return journal.Verdict{
+			Outcome:     OutcomeInconclusive,
+			Delta:       meanD,
+			Significant: false,
+			Reason: fmt.Sprintf("paired effect undefined (zero spread across %d pairs)",
+				pd.Count),
+		}, true
+	}
+
+	dz := meanD / sdD
+	switch {
+	case dz >= v.effectThreshold:
+		return journal.Verdict{
+			Outcome:     CohortOutcomePromote,
+			Delta:       meanD,
+			Significant: true,
+			Reason: fmt.Sprintf("paired: experimental better: d_z=%.3f >= threshold=%.2f (pairs=%d)",
+				dz, v.effectThreshold, pd.Count),
+		}, true
+	case dz <= -v.effectThreshold:
+		return journal.Verdict{
+			Outcome:     CohortOutcomeDiscard,
+			Delta:       meanD,
+			Significant: true,
+			Reason: fmt.Sprintf("paired: experimental worse: d_z=%.3f <= -threshold=%.2f (pairs=%d)",
+				dz, v.effectThreshold, pd.Count),
+		}, true
+	default:
+		return journal.Verdict{
+			Outcome:     OutcomeInconclusive,
+			Delta:       meanD,
+			Significant: false,
+			Reason: fmt.Sprintf("paired within noise: |d_z|=%.3f < threshold=%.2f (pairs=%d)",
+				math.Abs(dz), v.effectThreshold, pd.Count),
 		}, true
 	}
 }

@@ -213,6 +213,15 @@ type entry struct {
 	// games maps a live (in-flight) shadow game_id → its arm. A game is removed on
 	// conclusion. len(games) is the experiment's current in-flight shadow count.
 	games map[string]string
+	// gamePairs maps a bound (in-flight) shadow game_id → its Common-Random-Numbers
+	// pair index (#1003), recorded at bind alongside the game_assigned event. It lets
+	// ConcludeGame / ReleaseGame recover the pair index for the game_concluded /
+	// game_released journal event so the paired-difference verdict (#1004) can match
+	// the two games of a pair. Reservation placeholders are NOT tracked here (they
+	// carry no real game_id yet); the entry is added in bindGame and removed when the
+	// game concludes or is released. It is rebuilt by Rehydrate's empty-in-flight
+	// reset just like games.
+	gamePairs map[string]int
 	// armCursor indexes arms for round-robin arm assignment within the experiment,
 	// so an experiment fills its arms evenly (experimental, control, experimental…).
 	//
@@ -482,12 +491,13 @@ func (r *Registry) Declare(in Intent) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.entries[id] = &entry{
-		id:      id,
-		journal: jrnl,
-		status:  StatusProposed,
-		flagKey: in.FlagKey,
-		arms:    arms,
-		games:   make(map[string]string),
+		id:        id,
+		journal:   jrnl,
+		status:    StatusProposed,
+		flagKey:   in.FlagKey,
+		arms:      arms,
+		games:     make(map[string]string),
+		gamePairs: make(map[string]int),
 	}
 	// Record the PROPOSED transition as a decision event for the audit trail.
 	r.recordDecision(jrnl, StatusProposed, "experiment declared")
@@ -842,6 +852,27 @@ func (r *Registry) bindGame(id, gameID, arm string, pairIndex int) bool {
 		return false
 	}
 
+	// TERMINAL-STATUS GUARD (#1004 carried-over item 3): a Spawn in flight during
+	// teardown (which clears e.games and sets a terminal status) could otherwise
+	// bindGame the real game_id back into a CONCLUDED/ABORTED experiment, re-adding a
+	// live slot to an experiment that is already done — a leak widened by CRN's
+	// two-arm reservation (two spawns in flight per pair). Refuse to bind into a
+	// terminal experiment: release the in-flight game externally (its drive goroutine
+	// is still running) and record a non-counting release for the audit trail, rather
+	// than resurrecting the experiment's in-flight set.
+	if e.status.IsTerminal() {
+		delete(r.releaseTombstones, gameID)
+		r.appendEvent(e.journal, journal.Event{
+			Kind:   journal.KindGameReleased,
+			GameID: gameID,
+			Arm:    arm,
+			Note:   "bind refused: experiment terminal at bind time (#1004)",
+		})
+		r.log.Warn("experiment.bind_refused_terminal (#1004)",
+			"experiment_id", id, "game_id", gameID, "arm", arm, "status", string(e.status))
+		return false
+	}
+
 	// If the game already terminated before we could bind it, do NOT record the
 	// game_id — free the reservation slot instead and consume the tombstone.
 	if reason, tombstoned := r.releaseTombstones[gameID]; tombstoned {
@@ -862,6 +893,7 @@ func (r *Registry) bindGame(id, gameID, arm string, pairIndex int) bool {
 	// with the real game id. We find ANY reservation for this arm to convert.
 	r.dropOneReservationLocked(e, arm)
 	e.games[gameID] = arm
+	e.gamePairs[gameID] = pairIndex
 	pi := pairIndex
 	r.appendEvent(e.journal, journal.Event{
 		Kind:      journal.KindGameAssigned,
@@ -941,6 +973,17 @@ func (r *Registry) ConcludeGame(ctx context.Context, gameID string, fitness floa
 		return "", nil // not one of ours; ignore.
 	}
 	delete(e.games, gameID)
+	// Recover the game's Common-Random-Numbers pair index (#1003) recorded at bind so
+	// the game_concluded event carries it — the journal's paired-difference fold
+	// (#1004) matches the two games of a pair by it. A bound game always has an entry;
+	// a missing one (legacy/rehydrated in-flight, which Rehydrate never restores)
+	// simply leaves PairIndex nil and the conclusion folds only into the two-arm path.
+	var pairIdx *int
+	if pi, ok := e.gamePairs[gameID]; ok {
+		p := pi
+		pairIdx = &p
+		delete(e.gamePairs, gameID)
+	}
 	// Drop any release tombstone for this id: a bound game that concludes normally
 	// can never have one (bindGame consumes it before binding), but clear it
 	// defensively so an out-of-order unfound-release cannot linger.
@@ -950,6 +993,7 @@ func (r *Registry) ConcludeGame(ctx context.Context, gameID string, fitness floa
 		Kind:      journal.KindGameConcluded,
 		GameID:    gameID,
 		Arm:       arm,
+		PairIndex: pairIdx,
 		Fitness:   &f,
 		DurationS: durationS,
 	})
@@ -1045,15 +1089,25 @@ func (r *Registry) ReleaseGame(gameID, reason string) bool {
 		return false // no bound slot freed (the bind, if any, frees it).
 	}
 	delete(e.games, gameID)
+	// Recover the pair index so the journal can drop a parked pending half whose
+	// partner is now gone (#1004 carried-over item 1): a released game that was the
+	// first-concluded half of an open pair must NEVER fold a fabricated difference.
+	var pairIdx *int
+	if pi, ok := e.gamePairs[gameID]; ok {
+		p := pi
+		pairIdx = &p
+		delete(e.gamePairs, gameID)
+	}
 	// A tombstone can never coexist with a bound game (bindGame consumes it before
 	// binding), but drop defensively so a prior unfound-release for a since-rebound id
 	// cannot linger.
 	delete(r.releaseTombstones, gameID)
 	r.appendEvent(e.journal, journal.Event{
-		Kind:   journal.KindGameReleased,
-		GameID: gameID,
-		Arm:    arm,
-		Note:   reason,
+		Kind:      journal.KindGameReleased,
+		GameID:    gameID,
+		Arm:       arm,
+		PairIndex: pairIdx,
+		Note:      reason,
 	})
 	r.mu.Unlock()
 
@@ -1270,8 +1324,10 @@ func (r *Registry) teardown(ctx context.Context, id, flagKey string, terminal St
 	}
 	e.status = terminal
 	// Free capacity: drop the in-flight games (reservations + bound games). Their
-	// slots return to the global cap for other experiments.
+	// slots return to the global cap for other experiments. gamePairs is the parallel
+	// (game_id → pair index) map; clear it too so no stale binding survives teardown.
 	e.games = make(map[string]string)
+	e.gamePairs = make(map[string]int)
 	r.appendEvent(e.journal, journal.Event{
 		Kind:   journal.KindOutcome,
 		Status: string(terminal),
@@ -1314,12 +1370,13 @@ func (r *Registry) Rehydrate(ids []string) error {
 			continue // done experiment — nothing to manage.
 		}
 		r.entries[id] = &entry{
-			id:      id,
-			journal: jrnl,
-			status:  st,
-			flagKey: view.Intent.FlagKey,
-			arms:    append([]string(nil), view.Intent.Arms...),
-			games:   make(map[string]string),
+			id:        id,
+			journal:   jrnl,
+			status:    st,
+			flagKey:   view.Intent.FlagKey,
+			arms:      append([]string(nil), view.Intent.Arms...),
+			games:     make(map[string]string),
+			gamePairs: make(map[string]int),
 		}
 	}
 	return nil
