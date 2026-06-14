@@ -24,28 +24,45 @@ import (
 // on ctx.Done(), or run returned before draining the shutdown goroutine), goleak
 // would find the survivor and fail the test.
 
-// leakIgnores are the goleak options the shutdown tests share. They name ONLY
-// process-global singletons that the agent's run() does NOT own and that no part of
-// run() can stop — so a survivor on these stacks is never a leak this test should
-// fail on:
+// leakOptions returns the goleak options each shutdown test uses. The deterministic
+// core is goleak.IgnoreCurrent(): captured at the START of every test (the deferred
+// call's arguments are evaluated when the defer statement runs, before run() spawns
+// anything), it snapshots the goroutine set that is ALREADY running — package-init
+// and other-test process-global singletons such as the OpenFeature event executor —
+// and excludes exactly those. The leak check therefore measures only the DELTA that
+// run() introduced, which is order-independent and resilient to library-internal
+// symbol renames.
 //
-//   - the OpenFeature SDK's event executor is a package-level singleton started on
-//     first API access (it lives for the process and is torn down only by
-//     openfeature.Shutdown(), which main() owns via a deferred shutdownFlags, NOT
-//     run()). It is reachable here because other tests in this package construct the
-//     flagd provider, leaving the executor running for the whole test binary.
-//   - gRPC's balancer watcher / connection-pool goroutines are likewise lazily
-//     created package singletons, not goroutines run() spawns.
-//   - go.opencensus.io's stats view worker is a package-level singleton started
-//     transitively when other tests in the binary construct the OTLP / gcp
-//     exporters; run() never starts it and cannot stop it.
+// This is the fix for #1036: these tests failed non-race because the OpenFeature
+// event-executor singleton (started lazily and never stopped by run() — only by
+// openfeature.Shutdown(), which main() owns) was a survivor goleak counted. The
+// previous static IgnoreTopFunction string for it had drifted from the SDK's actual
+// function name ("newEventExecutor." prefix that does not exist, one nesting level
+// off) and so silently matched nothing.
+//
+// The static IgnoreTopFunction/IgnoreAnyFunction entries below are kept as a
+// belt-and-braces backstop for the same process-global singletons in case one is
+// spawned lazily AFTER the baseline snapshot is taken (none should be, given these
+// tests omit flagd/OTEL, but it costs nothing):
+//
+//   - the OpenFeature SDK's event executor: a package-level singleton started on
+//     first API access, torn down only by openfeature.Shutdown(), which main() owns
+//     via a deferred shutdownFlags, NOT run(). The top-of-stack is the inner
+//     listener goroutine spawned inside startEventListener.
+//   - gRPC's balancer watcher / connection-pool goroutines: lazily created package
+//     singletons, not goroutines run() spawns.
+//   - go.opencensus.io's stats view worker: a package-level singleton started
+//     transitively when other tests construct the OTLP / gcp exporters; run() never
+//     starts it and cannot stop it.
 //
 // Everything run() DOES own (eviction loop, resolver probe ticker, shutdown
-// goroutine, health + gRPC servers) is NOT ignored, so the test still fails if any
-// of those leaks.
-func leakIgnores() []goleak.Option {
+// goroutine, health + gRPC servers) is spawned AFTER the baseline and is NOT in the
+// static ignore list, so the test still fails if any of those leaks.
+func leakOptions() []goleak.Option {
 	return []goleak.Option{
-		goleak.IgnoreTopFunction("github.com/open-feature/go-sdk/openfeature.newEventExecutor.(*eventExecutor).startEventListener.func1.1"),
+		// Baseline: everything already running before run() starts.
+		goleak.IgnoreCurrent(),
+		goleak.IgnoreTopFunction("github.com/open-feature/go-sdk/openfeature.(*eventExecutor).startEventListener.func1.1"),
 		goleak.IgnoreTopFunction("google.golang.org/grpc.(*ccBalancerWrapper).watcher"),
 		goleak.IgnoreAnyFunction("go.opencensus.io/stats/view.(*worker).start"),
 	}
@@ -118,7 +135,10 @@ func newShutdownComponents(t *testing.T) *serverComponents {
 // goleak would report the survivor with its stack and fail — exactly the leak this
 // test is meant to catch.
 func TestRun_GracefulShutdownNoGoroutineLeak(t *testing.T) {
-	defer goleak.VerifyNone(t, leakIgnores()...)
+	// leakOptions()'s IgnoreCurrent() snapshot is taken here (deferred args evaluate
+	// now, before run() spawns anything), so the leak check asserts only on run()'s
+	// own goroutines. See leakOptions for the #1036 rationale.
+	defer goleak.VerifyNone(t, leakOptions()...)
 
 	c := newShutdownComponents(t)
 
@@ -173,7 +193,11 @@ func TestRun_GracefulShutdownNoGoroutineLeak(t *testing.T) {
 // exited. If run's shutdown failed to let ctx-cancellation propagate (or returned
 // while context-bound work was still running), goleak would catch the survivor.
 func TestRun_ShutdownCancelsContextBoundWork(t *testing.T) {
-	defer goleak.VerifyNone(t, leakIgnores()...)
+	// The IgnoreCurrent() baseline inside leakOptions() is captured HERE (deferred
+	// args evaluate at the defer statement), which is BEFORE the context-bound
+	// inference analogue goroutine is spawned below — so that goroutine is NOT
+	// baselined-out and goleak still requires it to have exited on shutdown.
+	defer goleak.VerifyNone(t, leakOptions()...)
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mux := gamecontext.NewMultiplexer(func(string) *gamecontext.Store {
