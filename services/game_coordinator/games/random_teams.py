@@ -10,7 +10,6 @@ Phase 36b: Refactored to extend TeamsGameBase, eliminating ~550 lines of duplica
 
 import asyncio
 import logging
-import random
 import time
 
 from lib.types import Sound
@@ -53,6 +52,7 @@ class RandomTeamsGame(TeamsGameBase):
         num_teams: int = 2,
         initial_players: list | None = None,
         sensitivity: int = 2,
+        rng_seed: int = 0,
     ):
         """
         Initialize Random Teams game.
@@ -80,6 +80,7 @@ class RandomTeamsGame(TeamsGameBase):
             initial_players=initial_players,
             sensitivity=sensitivity,
             random_assignment=True,  # Always random for this mode
+            rng_seed=rng_seed,
         )
 
     def get_game_name(self) -> str:
@@ -89,7 +90,7 @@ class RandomTeamsGame(TeamsGameBase):
     def _generate_random_team_colors(self):
         """Generate random team colors (shuffled from available colors)."""
         available_colors = TEAM_COLORS.copy()
-        random.shuffle(available_colors)
+        self._rng.shuffle(available_colors)
         self.team_colors = available_colors[: self.num_teams]
 
         # Update team objects with random colors
@@ -115,7 +116,7 @@ class RandomTeamsGame(TeamsGameBase):
         team_pool = list(range(self.num_teams)) * teams_per_player
 
         # Shuffle the pool
-        random.shuffle(team_pool)
+        self._rng.shuffle(team_pool)
 
         # Assign teams
         assignments = {}
@@ -135,7 +136,11 @@ class RandomTeamsGame(TeamsGameBase):
         config = get_config_manager().get_config()
         game_start_time = time.time()
 
-        player_serials = [c.serial for c in controllers]
+        # Sort serials before any RNG-driven team assignment consumes the order
+        # (#1003 CRN alignment): a seed-matched pair shares the team-pool
+        # permutation, so it must zip it against the same pre-shuffle serial
+        # ordering for the assignment to map to the same players.
+        player_serials = sorted(c.serial for c in controllers)
 
         # Generate random team colors (do this BEFORE assigning teams)
         self._generate_random_team_colors()

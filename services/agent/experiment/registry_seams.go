@@ -59,7 +59,13 @@ type ShadowSpawner interface {
 	// capacity slot is not consumed. An error that wraps ErrSpawnBackpressure
 	// (errors.Is) signals the coordinator is at capacity (single-game cap) — the
 	// registry treats it as backpressure (release + retry next tick), not failure.
-	Spawn(ctx context.Context, experimentID, arm string) (gameID string, err error)
+	//
+	// seed is the paired Common-Random-Numbers seed (#1003): the registry derives
+	// one seed per (experimental, control) PAIR and hands the SAME value to both
+	// arms' Spawn calls, so the two games face an identical RNG-driven schedule and
+	// the only difference is the flag under test. 0 means entropy (an unbound
+	// shadow game). The seed is honored coordinator-side only for a shadow session.
+	Spawn(ctx context.Context, experimentID, arm string, seed uint64) (gameID string, err error)
 }
 
 // Outcome labels mirror the journal Verdict.Outcome strings (and the

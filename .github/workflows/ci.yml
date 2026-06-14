@@ -297,6 +297,25 @@ jobs:
           cd services/${{ matrix.service }}
           ruff check .
 
+      # CRN RNG-isolation gate (#1003): every random draw in a game mode MUST go
+      # through the per-instance self._rng (random.Random(seed)) so seed-matched
+      # paired shadow games stay deterministic and concurrent games never corrupt
+      # each other via global random state. A reintroduced module-global call
+      # (random.shuffle/sample/choice/uniform/...) silently breaks both CRN
+      # pairing and concurrency isolation, so fail the build on any bare
+      # `random.<lowercase>` under games/. `random.Random` (the per-instance ctor)
+      # is allowed; comment lines are ignored.
+      - name: CRN RNG-isolation gate
+        if: matrix.service == 'game_coordinator'
+        run: |
+          if grep -rnE '(^|[^._a-zA-Z0-9])random\.[a-z]' services/game_coordinator/games --include='*.py' \
+               | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#'; then
+            echo "::error::Bare module-global random.* call found under services/game_coordinator/games."
+            echo "Use the per-instance self._rng (random.Random(seed)) instead — see #1003."
+            exit 1
+          fi
+          echo "OK: no module-global random.* calls under games/"
+
       - name: Typecheck
         continue-on-error: true  # ty is immature, don't block CI
         run: |

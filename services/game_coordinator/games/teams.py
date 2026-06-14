@@ -8,7 +8,6 @@ Phase 36b: Refactored to extend TeamsGameBase, eliminating ~500 lines of duplica
 """
 
 import logging
-import random
 import time
 
 from services.game_coordinator.games.analytics import PlayerAnalytics
@@ -56,10 +55,14 @@ class SimpleTeamsGame(TeamsGameBase):
         config = get_config_manager().get_config()
         game_start_time = time.time()
 
-        # Create a list for assignment (optionally randomized)
-        controller_list = list(controllers)
+        # Create a list for assignment (optionally randomized). Sort by serial
+        # first so the optional shuffle below consumes a deterministic ordering
+        # (#1003 CRN alignment): a seed-matched pair shares the shuffle
+        # permutation, so it must start from the same pre-shuffle order for the
+        # permutation to map to the same players.
+        controller_list = sorted(controllers, key=lambda c: c.serial)
         if self.random_teams:
-            random.shuffle(controller_list)
+            self._rng.shuffle(controller_list)
             logger.info("Using randomized team assignment")
         else:
             logger.info("Using sequential team assignment")

@@ -9,7 +9,6 @@ Original JoustMania behavior preserved.
 
 import asyncio
 import logging
-import random
 import time
 from dataclasses import dataclass
 
@@ -96,6 +95,7 @@ class WerewolfGame(BaseGameMode):
         initial_players: list | None = None,
         sensitivity: int = 2,
         reveal_time_seconds: float = DEFAULT_REVEAL_TIME,
+        rng_seed: int = 0,
     ):
         """
         Initialize Werewolf game.
@@ -116,6 +116,7 @@ class WerewolfGame(BaseGameMode):
             game_id=game_id,
             initial_players=initial_players,
             sensitivity=sensitivity,
+            rng_seed=rng_seed,
         )
 
         # #766 F1: werewolf threshold overrides promoted to ``game.werewolf.thresholds``.
@@ -154,9 +155,10 @@ class WerewolfGame(BaseGameMode):
         num_players = len(controllers)
         num_werewolves = max(1, int(num_players * self.werewolf_fraction))  # minimum 1
 
-        # Randomly select werewolves
-        serials = [c.serial for c in controllers]
-        werewolf_serials = set(random.sample(serials, num_werewolves))
+        # Randomly select werewolves. Sort serials before the RNG consumes them
+        # (#1003 CRN alignment) so a seed-matched pair samples the same players.
+        serials = sorted(c.serial for c in controllers)
+        werewolf_serials = set(self._rng.sample(serials, num_werewolves))
 
         for controller in controllers:
             is_wolf = controller.serial in werewolf_serials

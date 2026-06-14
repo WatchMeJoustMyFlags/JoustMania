@@ -29,9 +29,10 @@ type spawnCall struct {
 	experimentID string
 	arm          string
 	gameID       string
+	seed         uint64
 }
 
-func (f *fakeSpawner) Spawn(_ context.Context, experimentID, arm string) (string, error) {
+func (f *fakeSpawner) Spawn(_ context.Context, experimentID, arm string, seed uint64) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.attempts++
@@ -45,7 +46,7 @@ func (f *fakeSpawner) Spawn(_ context.Context, experimentID, arm string) (string
 	}
 	f.seq++
 	gameID := fmt.Sprintf("game_%012d", f.seq)
-	f.calls = append(f.calls, spawnCall{experimentID, arm, gameID})
+	f.calls = append(f.calls, spawnCall{experimentID, arm, gameID, seed})
 	return gameID, nil
 }
 
@@ -1128,7 +1129,7 @@ type fastTerminalSpawner struct {
 	seq int
 }
 
-func (f *fastTerminalSpawner) Spawn(_ context.Context, _, _ string) (string, error) {
+func (f *fastTerminalSpawner) Spawn(_ context.Context, _, _ string, _ uint64) (string, error) {
 	f.mu.Lock()
 	f.seq++
 	seq := f.seq
@@ -1226,7 +1227,7 @@ func TestBindAfterTeardownDropsTombstone(t *testing.T) {
 	r.mu.Lock()
 	r.releaseTombstones["game_zzz"] = "stale (test)"
 	r.mu.Unlock()
-	if bound := r.bindGame("exp_missing", "game_zzz", ArmControl); bound {
+	if bound := r.bindGame("exp_missing", "game_zzz", ArmControl, 0); bound {
 		t.Fatalf("bindGame on a missing experiment returned bound=true, want false")
 	}
 	r.mu.Lock()

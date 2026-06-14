@@ -10,7 +10,6 @@ Original JoustMania behavior preserved.
 
 import asyncio
 import logging
-import random
 import time
 from dataclasses import dataclass
 
@@ -112,6 +111,7 @@ class TraitorGame(TeamsGameBase):
         initial_players: list | None = None,
         sensitivity: int = 2,
         num_teams: int = 0,
+        rng_seed: int = 0,
     ):
         """
         Initialize Traitor game.
@@ -139,6 +139,7 @@ class TraitorGame(TeamsGameBase):
             initial_players=initial_players,
             sensitivity=sensitivity,
             random_assignment=True,  # Traitor uses random team assignment
+            rng_seed=rng_seed,
         )
 
         self.traitor_serials: list[str] = []
@@ -186,6 +187,13 @@ class TraitorGame(TeamsGameBase):
         num_players = len(controllers)
         num_traitors = self._get_traitor_count(num_players)
 
+        # Sort controllers by serial BEFORE any RNG-driven traitor selection
+        # consumes the derived ordering (#1003 CRN alignment): both the
+        # round-robin team assignment below and the self._rng.choice traitor pick
+        # key off this order, so a seed-matched pair must see the same pre-shuffle
+        # ordering for the shared permutation to map to the same players.
+        controllers = sorted(controllers, key=lambda c: c.serial)
+
         # First, assign players to visible teams (round-robin)
         player_list = []
         for idx, controller in enumerate(controllers):
@@ -215,14 +223,14 @@ class TraitorGame(TeamsGameBase):
             team_players = available_by_team[team_idx]
             if team_players:
                 # Pick a random player from this team to be a traitor
-                traitor = random.choice(team_players)
+                traitor = self._rng.choice(team_players)
                 team_players.remove(traitor)
 
                 # Assign secret team (the opposing team they'll win with)
                 # For 2 teams: secret_team is the other team
                 # For 3+ teams: pick a random different team
                 possible_secret_teams = [t for t in range(self.num_teams) if t != traitor.team]
-                traitor.secret_team = random.choice(possible_secret_teams)
+                traitor.secret_team = self._rng.choice(possible_secret_teams)
                 traitor.is_traitor = True
                 self.traitor_serials.append(traitor.serial)
 

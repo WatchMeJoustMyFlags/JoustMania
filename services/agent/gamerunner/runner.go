@@ -184,6 +184,16 @@ type Spec struct {
 	// of an experiment.
 	ExperimentID string
 	Arm          string
+
+	// Seed is the deterministic RNG seed for paired CRN shadow games (#1003).
+	// When set (non-zero), it is threaded onto StartGameConfig.rng_seed so the
+	// game-coordinator constructs the game's per-instance RNG from it — the two
+	// games in a (experimental, control) pair share a Seed so they face an
+	// identical bracket order / role assignment / tempo schedule. 0 (the default)
+	// means entropy: an unbound shadow game or the #778 one-shot runner sets
+	// nothing, byte-unchanged from before. Honored coordinator-side ONLY for a
+	// shadow session (the hard real-protection invariant, epic #982 decision 7).
+	Seed uint64
 }
 
 // Tag returns the reservation tag for this run's controllers.

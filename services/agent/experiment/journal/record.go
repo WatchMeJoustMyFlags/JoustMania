@@ -114,6 +114,12 @@ type Event struct {
 	GameID string `json:"game_id,omitempty"`
 	// Arm is the arm the game belongs to (game_assigned / game_concluded). "" otherwise.
 	Arm string `json:"arm,omitempty"`
+	// PairIndex is the Common-Random-Numbers pair this game belongs to (#1003): the
+	// per-experiment monotonic index whose two games (one experimental, one control)
+	// share an RNG seed. Stamped on game_assigned so the paired-difference verdict
+	// (#1004) can recover which two games form a pair. A pointer so pair 0 is
+	// distinguishable from "not a paired event" and survives a rehydrate.
+	PairIndex *int `json:"pair_index,omitempty"`
 	// Fitness is the game's fitness sample (game_concluded only). Folded into the
 	// arm's Welford accumulator. A pointer so a genuine 0.0 sample is distinct from
 	// "no fitness on this event kind" and is preserved across a rehydrate.

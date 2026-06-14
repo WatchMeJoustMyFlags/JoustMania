@@ -85,6 +85,7 @@ class TeamsGameBase(BaseGameMode):
         initial_players: list | None = None,
         sensitivity: int = 2,
         random_assignment: bool = True,
+        rng_seed: int = 0,
     ):
         """
         Initialize team-based game mode.
@@ -106,6 +107,7 @@ class TeamsGameBase(BaseGameMode):
             game_id=game_id,
             initial_players=initial_players,
             sensitivity=sensitivity,
+            rng_seed=rng_seed,
         )
         # Override random_teams from base class with passed parameter
         self.random_teams = random_assignment

@@ -85,6 +85,7 @@ class GameFactory:
         initial_players: list,
         sensitivity: int = 2,
         game_config: Any | None = None,
+        rng_seed: int = 0,
     ) -> BaseGameMode:
         """
         Create a game instance based on game mode name and typed config.
@@ -98,6 +99,9 @@ class GameFactory:
             initial_players: List of Player protobuf messages from StartGame RPC
             sensitivity: Sensitivity level 0-4 (from StartGameConfig)
             game_config: StartGameConfig proto message with typed game_config oneof
+            rng_seed: Deterministic per-instance RNG seed for paired CRN shadow
+                games (#1003). 0 => entropy (today's behavior). Already zeroed for
+                a real session by the servicer's real-protection guard.
 
         Returns:
             Initialized game instance (call .run() to start)
@@ -123,6 +127,7 @@ class GameFactory:
             "game_id": game_id,
             "initial_players": initial_players,
             "sensitivity": sensitivity,
+            "rng_seed": rng_seed,
         }
 
         # Extract mode-specific config from oneof

@@ -401,12 +401,19 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             # might (erroneously) carry. This keeps the real-protection
             # guarantee structurally intact: a primary GameSession can never be
             # constructed with a non-empty experiment_id/arm.
+            #
+            # Paired CRN seed (#1003) rides the SAME guard: rng_seed makes a
+            # shadow session deterministic for Common-Random-Numbers pairing, but
+            # a real game MUST get entropy (0) so its behavior is byte-unchanged.
+            # Same invariant — never seed a primary session from a caller value.
             if game_kind == GAME_KIND_SHADOW:
                 experiment_id = getattr(config, "experiment_id", "")
                 arm = getattr(config, "arm", "")
+                rng_seed = getattr(config, "rng_seed", 0)
             else:
                 experiment_id = ""
                 arm = ""
+                rng_seed = 0
 
             session = GameSession(
                 game_id=game_id,
@@ -418,6 +425,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 parent_context=parent_context,
                 experiment_id=experiment_id,
                 arm=arm,
+                rng_seed=rng_seed,
             )
             # Shadow sessions own their bus; bind its state-sync to the
             # session so the bus updates that session's state directly.

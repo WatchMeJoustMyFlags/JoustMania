@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"os"
 	"sort"
@@ -214,6 +215,14 @@ type entry struct {
 	games map[string]string
 	// armCursor indexes arms for round-robin arm assignment within the experiment,
 	// so an experiment fills its arms evenly (experimental, control, experimental…).
+	//
+	// CRN pairing (#1003): consecutive arms form (experimental, control) PAIRS. The
+	// pair index is armCursor / len(arms) and the shared seed = pairSeed(id,
+	// pairIndex), so both arms of a pair derive the SAME seed automatically (it only
+	// changes at a pair boundary). The pair index is stamped on each game_assigned
+	// journal event (Event.PairIndex) so the paired-difference verdict (#1004) can
+	// recover which two games share a seed. The seed is a pure function of
+	// (experimentID, pairIndex) — NEVER a clock — so it is reproducible.
 	armCursor int
 }
 
@@ -565,57 +574,129 @@ func (r *Registry) AllocateAndSpawn(ctx context.Context) int {
 	}
 	spawned := 0
 	for {
-		// Each iteration is one round-robin PASS: pick the next live experiment
-		// (from the rotating cursor) that has capacity and spawn ONE game for it.
-		// Re-evaluate capacity each pick so the effective cap is never exceeded.
-		id, arm, ok := r.nextAllocation()
+		// Each iteration is one round-robin PASS: pick the next live experiment (from
+		// the rotating cursor) with capacity and reserve the next arm(s) of its
+		// current Common-Random-Numbers pair (#1003). When the effective cap admits
+		// two slots a whole (experimental, control) pair is reserved atomically; when
+		// it admits one (the single-game coordinator) one arm is reserved now and its
+		// seed-matched sibling follows on a later tick. Re-evaluate capacity each pick.
+		plan, ok := r.nextPair()
 		if !ok {
 			return spawned
 		}
-		gameID, err := r.spawner.Spawn(ctx, id, arm)
-		if err != nil {
-			// The slot was reserved optimistically; release it so neither a flaky
-			// spawn NOR benign backpressure permanently shrinks capacity.
-			r.releaseReservation(id, arm)
-			if errors.Is(err, ErrSpawnBackpressure) {
-				// Coordinator at capacity (single-game cap): benign backpressure,
-				// not a failure. Log at debug and stop this pass — the start is
-				// retried on the next tick. NO spawn_failed WARN (the #998 log spam).
-				r.log.Debug("experiment.spawn_backpressure",
-					"experiment_id", id, "arm", arm, "error", err)
-				return spawned
-			}
-			r.log.Warn("experiment.spawn_failed", "experiment_id", id, "arm", arm, "error", err)
-			// Stop this call rather than hot-loop on a failing spawner.
+		// ATOMIC for the slots reserved THIS tick (#1003): spawn the reserved arm(s)
+		// with the shared seed. If a multi-arm reservation's second spawn fails (or
+		// hits backpressure), spawnPair rolls the WHOLE same-tick group back — including
+		// a sibling that already started — so a half-pair never enters the cohort
+		// statistics from a single tick. (A pair split across ticks under effective
+		// cap 1 is completed by the verdict's pair_index matching in #1004.)
+		boundThisPair, stop := r.spawnPair(ctx, plan)
+		spawned += boundThisPair
+		if stop {
 			return spawned
 		}
-		if r.bindGame(id, gameID, arm) {
-			spawned++
-		}
-		// If bindGame did NOT bind (the #1014 bind-vs-fast-terminal race freed the
-		// reservation instead), the slot is back in the cap; the loop's next
-		// nextAllocation will refill it, so no special handling is needed here.
 	}
 }
 
-// nextAllocation picks the next (experiment_id, arm) to spawn under the global
-// cap, reserving the slot, or reports ok=false when the cap is full or no live
-// experiment exists. It advances both the cross-experiment round-robin cursor
-// (fairness) and the chosen experiment's per-arm cursor (even arm fill). Assumes
-// nothing; takes the lock.
-func (r *Registry) nextAllocation() (id, arm string, ok bool) {
+// pairPlan is the result of reserving the next arm(s) of one experiment's current
+// CRN pair: the experiment, the shared per-pair seed and pair index, and the arm(s)
+// reserved THIS tick (one or both, depending on the free effective budget). Their
+// reservation slots are already held; spawnPair turns them into real games or rolls
+// the same-tick group back.
+type pairPlan struct {
+	id        string
+	seed      uint64
+	pairIndex int
+	arms      []string // arm(s) reserved this tick, in reservation order
+}
+
+// startedArm is one arm of a CRN pair that successfully spawned a live game. It is
+// tracked during spawnPair so a later-arm failure can force-release the live
+// sibling(s) and keep the pair atomic.
+type startedArm struct {
+	arm    string
+	gameID string
+}
+
+// spawnPair spawns BOTH arms of a reserved CRN pair with the shared seed and binds
+// them. It returns how many arms it genuinely bound (a live in-flight game) and
+// whether AllocateAndSpawn should STOP this pass (backpressure or a genuine spawn
+// failure). On any spawn error it releases EVERY still-held reservation for the
+// pair — including a sibling arm that already spawned a live game — so a half-pair
+// never enters the cohort statistics (the atomic-pair invariant).
+func (r *Registry) spawnPair(ctx context.Context, plan pairPlan) (bound int, stop bool) {
+	var live []startedArm
+	for i, arm := range plan.arms {
+		gameID, err := r.spawner.Spawn(ctx, plan.id, arm, plan.seed)
+		if err != nil {
+			// Roll the WHOLE pair back atomically (#1003): release the failed arm and
+			// every arm AFTER it (whose Spawn was never attempted, still reserved), and
+			// force-release any earlier arm that already became a live game — so no
+			// half-pair survives into the cohort statistics. All cap slots return.
+			r.rollbackPair(plan, i, live)
+			if errors.Is(err, ErrSpawnBackpressure) {
+				r.log.Debug("experiment.spawn_backpressure",
+					"experiment_id", plan.id, "arm", arm, "seed", plan.seed, "error", err)
+				return 0, true
+			}
+			r.log.Warn("experiment.spawn_failed",
+				"experiment_id", plan.id, "arm", arm, "seed", plan.seed, "error", err)
+			return 0, true
+		}
+		if r.bindGame(plan.id, gameID, arm, plan.pairIndex) {
+			live = append(live, startedArm{arm: arm, gameID: gameID})
+		}
+		// If bindGame did NOT bind (the #1014 bind-vs-fast-terminal race freed the
+		// reservation instead) the slot is already back in the cap; the sibling arm
+		// still spawns so the pair completes if it can.
+	}
+	return len(live), false
+}
+
+// rollbackPair undoes a partially-spawned CRN pair on a spawn error (#1003), keeping
+// the pair atomic. failedIdx is the index in plan.arms whose Spawn just errored. It:
+//  1. releases the failed arm's still-held reservation (failedIdx),
+//  2. releases every arm AFTER failedIdx — their Spawn was never attempted, so they
+//     still hold a reservation placeholder, and
+//  3. force-releases (ReleaseGame) every earlier arm that already became a LIVE game,
+//     so a half-pair never enters the cohort statistics.
+//
+// Arms before failedIdx that did NOT become live (the #1014 bind-vs-fast-terminal
+// race already freed their reservation) need no action. Takes the lock per helper.
+func (r *Registry) rollbackPair(plan pairPlan, failedIdx int, liveSiblings []startedArm) {
+	// (1)+(2): the failed arm and all later, never-attempted arms still hold a
+	// reservation placeholder — release one per arm.
+	for i := failedIdx; i < len(plan.arms); i++ {
+		r.releaseReservation(plan.id, plan.arms[i])
+	}
+	// (3): tear down any earlier arm that already started a live game.
+	for _, s := range liveSiblings {
+		r.ReleaseGame(s.gameID, "crn pair rollback: sibling arm spawn failed (#1003)")
+	}
+}
+
+// nextPair reserves the next Common-Random-Numbers PAIR (#1003) for a live
+// experiment under both capacity caps, or reports ok=false when no live experiment
+// can fit a full pair. A pair is two arms (experimental + control) sharing one seed
+// = pairSeed(experimentID, pairIndex). It reserves BOTH arm slots atomically (under
+// r.mu) so the pair is all-or-nothing against the cap; spawnPair rolls them back on
+// a spawn failure. It advances the cross-experiment round-robin cursor (fairness),
+// the chosen experiment's per-arm cursor (even arm fill), and its monotonic pair
+// cursor. Assumes nothing; takes the lock.
+func (r *Registry) nextPair() (pairPlan, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	// Gate on the EFFECTIVE concurrency cap (#998): the registry must not hold more
-	// in-flight spawns than the coordinator can actually run, or every extra start
-	// is a doomed "Game already in progress". effectiveCap <= maxCap by construction.
-	if r.inFlightLocked() >= r.effectiveCap {
-		return "", "", false
+	// in-flight spawns than the coordinator can actually run. At least ONE free slot
+	// is required to make any progress.
+	free := r.effectiveCap - r.inFlightLocked()
+	if free <= 0 {
+		return pairPlan{}, false
 	}
 	live := r.liveIDsLocked()
 	if len(live) == 0 {
-		return "", "", false
+		return pairPlan{}, false
 	}
 	// Scan starting from the rotating cursor so a different experiment leads each
 	// pass — equal-share over time even when the cap is the binding constraint.
@@ -623,30 +704,67 @@ func (r *Registry) nextAllocation() (id, arm string, ok bool) {
 	for i := 0; i < len(live); i++ {
 		cand := live[(start+i)%len(live)]
 		e := r.entries[cand]
-		// Equal-share guard: do not let one experiment hold more than its fair
-		// ceil(cap/K) share while others want games — bound its in-flight count to
-		// the per-experiment share so K experiments converge to an even split.
-		share := r.perExperimentShareLocked(len(live))
-		if e.inFlight() >= share {
+		nArms := len(e.arms)
+		if nArms == 0 {
 			continue
 		}
-		// Reserve the slot: pick the arm (round-robin within the experiment) and
-		// advance both cursors. The actual bind happens after a successful spawn;
-		// reserve by recording a placeholder so concurrent passes see the slot taken.
-		arm := e.arms[e.armCursor%len(e.arms)]
-		e.armCursor++
+		// Equal-share guard: bound an experiment to its fair ceil(cap/K) share so K
+		// live experiments converge to an even split. Skip an experiment with no
+		// room for even a single arm.
+		share := r.perExperimentShareLocked(len(live))
+		shareRoom := share - e.inFlight()
+		if shareRoom <= 0 {
+			continue
+		}
+
+		// CRN pairing (#1003): the per-experiment arm cursor lays out games as
+		// consecutive (experimental, control) PAIRS. The pair index is armCursor /
+		// nArms, and the shared seed = pairSeed(id, pairIndex) — so BOTH arms of a
+		// pair derive the SAME seed automatically (the seed only changes at a pair
+		// boundary). We reserve as many of the CURRENT pair's REMAINING arms as fit
+		// the free + share budget THIS tick:
+		//   - effective cap >= 2 (and a fresh pair) ⇒ reserve BOTH arms atomically,
+		//     so spawnPair rolls the whole pair back if either start fails.
+		//   - effective cap == 1 (the single-game coordinator) ⇒ reserve ONE arm now;
+		//     its seed-matched sibling is reserved on a later tick (after this game
+		//     concludes and frees the slot) with the SAME derived seed. The pair is
+		//     still seed-matched; it just spans two ticks.
+		pairIndex := e.armCursor / nArms
+		armInPair := e.armCursor % nArms
+		remainingInPair := nArms - armInPair // arms left to dispatch in this pair
+		budget := free
+		if shareRoom < budget {
+			budget = shareRoom
+		}
+		toReserve := remainingInPair
+		if budget < toReserve {
+			toReserve = budget
+		}
+		if toReserve <= 0 {
+			continue
+		}
+
+		seed := pairSeed(cand, pairIndex)
 		r.rrCursor = (start + i + 1) % len(live)
-		// Reserve against the cap by pre-incrementing via a placeholder game id; it
-		// is replaced by the real game id in bindGame, or released on spawn failure.
-		placeholder := reservationKey(cand, e.armCursor)
-		e.games[placeholder] = arm
-		// A spawn is now in flight (reserved, not yet bound). It is the only window in
-		// which a real game_id can be reported-terminal before bind, so this gates and
-		// bounds the tombstone map. Decremented in bindGame / releaseReservation.
-		r.spawnsInFlight++
-		return cand, arm, true
+
+		arms := make([]string, 0, toReserve)
+		for s := 0; s < toReserve; s++ {
+			arm := e.arms[e.armCursor%nArms]
+			e.armCursor++
+			// Reserve against the cap by pre-incrementing via a placeholder game id; it
+			// is replaced by the real game id in bindGame, or released on spawn failure.
+			placeholder := reservationKey(cand, e.armCursor)
+			e.games[placeholder] = arm
+			// A spawn is now in flight (reserved, not yet bound). It is the only window
+			// in which a real game_id can be reported-terminal before bind, so this
+			// gates and bounds the tombstone map. Decremented in bindGame /
+			// releaseReservation (one per reserved arm).
+			r.spawnsInFlight++
+			arms = append(arms, arm)
+		}
+		return pairPlan{id: cand, seed: seed, pairIndex: pairIndex, arms: arms}, true
 	}
-	return "", "", false
+	return pairPlan{}, false
 }
 
 // perExperimentShareLocked is the equal-share ceiling per live experiment:
@@ -666,6 +784,29 @@ func reservationKey(id string, seq int) string {
 	return "__reserved__" + id + "__" + strconv.Itoa(seq)
 }
 
+// pairSeed derives the shared Common-Random-Numbers seed for a (experimental,
+// control) pair from (experimentID, pairIndex) using FNV-1a/64 (#1003). It is a
+// PURE function of its inputs — NEVER a clock — so the same experiment/pair maps
+// to the same seed across process restarts and journal rehydrates, which is what
+// makes a paired arm reproducible. Both arms of a pair receive this identical
+// value, so their shadow games face the same RNG-driven bracket/role/team schedule
+// and the only between-arm difference is the flag under test.
+//
+// The seed is never 0 for a real pair: a 0 seed means "entropy" coordinator-side,
+// so if the FNV digest happens to be 0 we nudge it to 1 (astronomically rare, but
+// it keeps a legitimate pair from accidentally falling into the entropy path).
+func pairSeed(experimentID string, pairIndex int) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(experimentID))
+	_, _ = h.Write([]byte{0}) // domain separator so id|index can't alias
+	_, _ = h.Write([]byte(strconv.Itoa(pairIndex)))
+	seed := h.Sum64()
+	if seed == 0 {
+		seed = 1
+	}
+	return seed
+}
+
 // bindGame replaces the most-recent reservation for the experiment with the real
 // coordinator game_id, records a game_assigned journal event, and (re)allocation
 // is the caller's concern. Assumes the reservation exists (nextAllocation made it).
@@ -682,7 +823,11 @@ func reservationKey(id string, seq int) string {
 // It returns true when it bound the game_id (a live in-flight game), false when it
 // freed the reservation without binding (the race lost, or the experiment vanished)
 // — the caller counts only genuinely-started games.
-func (r *Registry) bindGame(id, gameID, arm string) bool {
+//
+// pairIndex is the Common-Random-Numbers pair this game belongs to (#1003); it is
+// stamped onto the game_assigned event (Event.PairIndex) so the paired-difference
+// verdict (#1004) can recover which two games share a seed.
+func (r *Registry) bindGame(id, gameID, arm string, pairIndex int) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	// The spawn that produced this game_id has resolved (whichever branch we take
@@ -717,12 +862,15 @@ func (r *Registry) bindGame(id, gameID, arm string) bool {
 	// with the real game id. We find ANY reservation for this arm to convert.
 	r.dropOneReservationLocked(e, arm)
 	e.games[gameID] = arm
+	pi := pairIndex
 	r.appendEvent(e.journal, journal.Event{
-		Kind:   journal.KindGameAssigned,
-		GameID: gameID,
-		Arm:    arm,
+		Kind:      journal.KindGameAssigned,
+		GameID:    gameID,
+		Arm:       arm,
+		PairIndex: &pi,
 	})
-	r.log.Info("experiment.game_assigned", "experiment_id", id, "game_id", gameID, "arm", arm)
+	r.log.Info("experiment.game_assigned",
+		"experiment_id", id, "game_id", gameID, "arm", arm, "pair_index", pairIndex)
 	return true
 }
 
@@ -1140,6 +1288,15 @@ func (r *Registry) teardown(ctx context.Context, id, flagKey string, terminal St
 // crash time is no longer running, so the registry starts each rehydrated
 // experiment with an empty in-flight set and refills capacity on the next
 // AllocateAndSpawn. Terminal experiments are skipped (their work is done).
+//
+// CRN cursors (#1003): like armCursor, pairCursor restarts at 0 on rehydrate —
+// the in-flight set is empty after a crash, so the registry resumes allocating
+// pairs from index 0. A pairIndex may therefore repeat across a restart boundary
+// (same seed, but a genuinely NEW pair of games); the paired-difference verdict
+// (#1004) matches the two games of a pair by the (pair_index + the game_ids
+// assigned to it) recorded contiguously in the journal, so a post-restart repeat
+// is a distinct pair, not an aliasing hazard. This mirrors the accepted armCursor
+// restart semantics and keeps Rehydrate free of an event replay.
 func (r *Registry) Rehydrate(ids []string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
