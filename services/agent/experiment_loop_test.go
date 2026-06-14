@@ -453,6 +453,219 @@ func gameStillBound(loop *experimentLoop, expID, gameID string) bool {
 	return assigned
 }
 
+// fakeAfter is an injectable afterFunc (#1020) that captures scheduled callbacks
+// instead of relying on the wall clock, so the bounded-grace backstop can be fired
+// deterministically in a test without sleeping the real grace (60s by default).
+type fakeAfter struct {
+	mu      sync.Mutex
+	pending map[int]func()
+	seq     int
+}
+
+func newFakeAfter() *fakeAfter { return &fakeAfter{pending: map[int]func(){}} }
+
+// schedule matches the experimentLoop.afterFunc signature: it stores f under a
+// fresh id and returns a stop func that removes it (true if it was still pending).
+func (f *fakeAfter) schedule(_ time.Duration, fn func()) func() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seq++
+	id := f.seq
+	f.pending[id] = fn
+	return func() bool {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if _, ok := f.pending[id]; ok {
+			delete(f.pending, id)
+			return true
+		}
+		return false
+	}
+}
+
+// fireAll invokes (and removes) every still-pending timer — simulating the grace
+// window elapsing. Returns how many fired.
+func (f *fakeAfter) fireAll() int {
+	f.mu.Lock()
+	fns := make([]func(), 0, len(f.pending))
+	for id, fn := range f.pending {
+		fns = append(fns, fn)
+		delete(f.pending, id)
+	}
+	f.mu.Unlock()
+	for _, fn := range fns {
+		fn()
+	}
+	return len(fns)
+}
+
+func (f *fakeAfter) pendingCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.pending)
+}
+
+// TestExperimentLoop_CompletedGrace_ReleasesOnDroppedDatapoint is the headline
+// #1020 AC: a COMPLETED shadow game whose telemetry game_active=0 datapoint never
+// arrives (onGameEnd → ConcludeGame never runs) has its in-flight slot released by
+// the bounded-grace backstop after the grace elapses — so the loop can spawn again
+// at effective_concurrency=1 instead of deadlocking on the leaked slot. The grace
+// is fired via an injected fake clock so the test does not sleep the real 60s.
+func TestExperimentLoop_CompletedGrace_ReleasesOnDroppedDatapoint(t *testing.T) {
+	spawner := &recordingSpawner{}
+	resolve := func(context.Context) promote.Config { return promote.Config{Mode: promote.ModeIssue} }
+	loop := buildLoopForTest(t, spawner, resolve, &recordingRealDefault{}, &recordingGitHub{}, armFitness())
+	ctx := context.Background()
+
+	// Pin effective_concurrency=1 (the #998 default that #1014/#1020 protect): a
+	// single leaked slot is a full deadlock. A fake clock drives the grace.
+	fake := newFakeAfter()
+	loop.afterFunc = fake.schedule
+	loop.completedGrace = 60 * time.Second
+	loop.registry = newRegistryConcurrency1(t, spawner, resolve)
+
+	id, err := loop.registry.Declare(experiment.Intent{
+		Hypothesis: "h", FlagKey: "death_grace_period_seconds",
+		ExperimentalValue: 0.5, Objective: "engagement_balanced", TargetNPerArm: 5,
+	})
+	if err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+	if err := loop.registry.Start(ctx, id); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if n := loop.registry.AllocateAndSpawn(ctx); n == 0 {
+		t.Fatal("expected a spawn")
+	}
+	recs := spawner.drain()
+	if len(recs) != 1 {
+		t.Fatalf("expected exactly 1 spawn at concurrency=1, got %d", len(recs))
+	}
+	first := recs[0].gameID
+
+	// The single slot is now occupied — a second allocate cannot spawn (deadlock
+	// territory if the slot never frees).
+	if n := loop.registry.AllocateAndSpawn(ctx); n != 0 {
+		t.Fatalf("concurrency=1 should block a second spawn while a slot is held, got %d", n)
+	}
+
+	// The game COMPLETES but its telemetry datapoint is DROPPED: onGameTerminal sees
+	// OutcomeCompleted (arming the grace) and onGameEnd → ConcludeGame NEVER fires.
+	loop.onGameTerminal(first, gamerunner.OutcomeCompleted)
+	if fake.pendingCount() != 1 {
+		t.Fatalf("completed game should arm exactly one grace timer, pending=%d", fake.pendingCount())
+	}
+	if !gameStillBound(loop, id, first) {
+		t.Fatal("before the grace fires the completed game must stay bound (a late conclude could still win)")
+	}
+
+	// Grace elapses with no conclude in sight ⇒ the backstop releases the slot AND
+	// (inside fireCompletedGrace) nudges AllocateAndSpawn to refill it, proving the
+	// loop makes progress again rather than deadlocking on the leaked slot.
+	if fired := fake.fireAll(); fired != 1 {
+		t.Fatalf("expected the grace timer to fire once, fired=%d", fired)
+	}
+	if gameStillBound(loop, id, first) {
+		t.Fatal("grace backstop did not release the leaked completed-game slot (#1020): deadlock at concurrency=1")
+	}
+	// The release was NON-COUNTING: no fabricated fitness sample folded.
+	cv, _ := loop.registry.CompactView(id)
+	for arm, a := range cv.Arms {
+		if a.Count != 0 {
+			t.Fatalf("arm %q folded a sample (count=%d); grace release must be non-counting", arm, a.Count)
+		}
+	}
+
+	// The freed slot WAS reused: the backstop's refill spawned a fresh game (a
+	// different game_id), so the loop is unblocked at concurrency=1.
+	refill := spawner.drain()
+	if len(refill) != 1 || refill[0].gameID == first {
+		t.Fatalf("grace backstop did not refill the freed slot with a new spawn (got %+v); loop still deadlocked", refill)
+	}
+}
+
+// TestExperimentLoop_CompletedGrace_NoReleaseWhenConcluded is the no-regression AC:
+// a normally-concluding completed game folds its fitness sample via the telemetry
+// onGameEnd → ConcludeGame path, and when the grace timer later fires it is a no-op
+// (ReleaseGame finds nothing — the game already left in-flight). The sample stays
+// counted; the backstop never fabricates a non-counting release for a healthy game.
+func TestExperimentLoop_CompletedGrace_NoReleaseWhenConcluded(t *testing.T) {
+	spawner := &recordingSpawner{}
+	resolve := func(context.Context) promote.Config { return promote.Config{Mode: promote.ModeIssue} }
+	loop := buildLoopForTest(t, spawner, resolve, &recordingRealDefault{}, &recordingGitHub{}, armFitness())
+	ctx := context.Background()
+
+	fake := newFakeAfter()
+	loop.afterFunc = fake.schedule
+	loop.completedGrace = 60 * time.Second
+
+	id, err := loop.registry.Declare(experiment.Intent{
+		Hypothesis: "h", FlagKey: "death_grace_period_seconds",
+		ExperimentalValue: 0.5, Objective: "engagement_balanced", TargetNPerArm: 5,
+	})
+	if err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+	if err := loop.registry.Start(ctx, id); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if n := loop.registry.AllocateAndSpawn(ctx); n == 0 {
+		t.Fatal("expected a spawn")
+	}
+	rec := spawner.drain()[0]
+
+	// Completed terminal arms the grace, THEN telemetry concludes it normally
+	// (folding the experimental arm's high fitness sample) — the healthy path.
+	loop.onGameTerminal(rec.gameID, gamerunner.OutcomeCompleted)
+	loop.onGameEnd(gcFor(rec.gameID, rec.experimentID, rec.arm))
+
+	if gameStillBound(loop, id, rec.gameID) {
+		t.Fatal("ConcludeGame should have folded + freed the game before the grace fires")
+	}
+	cv, _ := loop.registry.CompactView(id)
+	if cv.Arms[rec.arm].Count != 1 {
+		t.Fatalf("normal conclude must fold exactly 1 sample into arm %q, got count=%d", rec.arm, cv.Arms[rec.arm].Count)
+	}
+	folded := cv.Arms[rec.arm].Count
+
+	// The grace timer fires LATE (after the legitimate conclude already won the
+	// race). It must be a pure no-op: no extra release, the sample stays counted.
+	fake.fireAll()
+	cv2, _ := loop.registry.CompactView(id)
+	if cv2.Arms[rec.arm].Count != folded {
+		t.Fatalf("late grace timer changed the folded sample count (%d → %d): it must be a no-op",
+			folded, cv2.Arms[rec.arm].Count)
+	}
+	if gameStillBound(loop, id, rec.gameID) {
+		t.Fatal("late grace timer re-bound or disturbed the concluded game")
+	}
+}
+
+// newRegistryConcurrency1 builds a registry pinned to effective_concurrency=1 (one
+// in-flight shadow game cap) so the #1020 deadlock condition is exercised exactly
+// as the #998 default deploys it. It mirrors buildLoopForTest's registry wiring.
+func newRegistryConcurrency1(t *testing.T, spawner experiment.ShadowSpawner, resolve promote.ConfigResolver) *experiment.Registry {
+	t.Helper()
+	log := testLogger()
+	gamePath := newGameFileForLoop(t)
+	writer := experiment.NewWriter(gamePath, log)
+	gate := experiment.NewGate(writer, nil, log)
+	targeting := experiment.NewGateTargetingWriter(gate, writer)
+	base := promote.NewPromoter(&recordingGitHub{}, nil, &recordingRealDefault{}, nil, nil, promote.RepoRef{}, nil, log)
+	promo := promote.NewExperimentPromoter(base, resolve)
+	return experiment.NewRegistry(experiment.RegistryConfig{
+		Root:                 t.TempDir(),
+		MaxShadowGames:       8,
+		EffectiveConcurrency: 1,
+		Spawner:              spawner,
+		Verdict:              experiment.NewVerdict(3, 0.5, nil),
+		Promoter:             promo,
+		Targeting:            targeting,
+		Log:                  log,
+	})
+}
+
 // TestBuildExperimentLoop_DisabledByDefault is the disabled-default AC: with the
 // opt-in OFF (the default, env unset), buildExperimentLoop returns nil — NO
 // Registry, NO seams, NO goroutines. The agent's normal behavior is unchanged.
