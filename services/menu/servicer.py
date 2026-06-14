@@ -613,29 +613,51 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
                 if self.state == menu_pb2.MenuState.GAME_STARTING:
                     self.state = menu_pb2.MenuState.RUNNING
                     await self.event_publisher.publish("game_start_cancelled", {})
+                # Restore lobby LEDs. The button monitor and lobby music are still
+                # running (we abort before _prepare_game_start), so a full
+                # _restart_lobby would be wrong here — but admin force-start sends a
+                # white flash before this path, so re-register controllers to set
+                # the proper lobby colors back. state_manager.reset() re-runs the
+                # CONNECTED on_enter handlers which set lobby colors.
+                await self.state_manager.reset()
                 return
 
             await self._prepare_game_start()
 
-            # Build player list and config
-            players = [
-                game_coordinator_pb2.Player(serial=s, team=i % 2, alive=True, score=0) for i, s in enumerate(roster)
-            ]
-            config = self._build_game_config(self.current_selection, players)
+            # _prepare_game_start() has already set state=GAME_STARTING and torn
+            # down the lobby (button monitor + lobby music). If anything in the
+            # prep/build window below throws (bad mode config, stub creation,
+            # audio/button RPC error), restore the lobby and reset state instead
+            # of leaving the menu stuck in GAME_STARTING with no lobby. The
+            # exception otherwise only surfaces in the background task's
+            # done-callback. _run_game_event_stream already self-protects, so this
+            # only needs to cover the synchronous prep/build window before it.
+            try:
+                # Build player list and config
+                players = [
+                    game_coordinator_pb2.Player(serial=s, team=i % 2, alive=True, score=0) for i, s in enumerate(roster)
+                ]
+                config = self._build_game_config(self.current_selection, players)
 
-            # Inject trace context into gRPC metadata
-            metadata = self._build_trace_metadata()
+                # Inject trace context into gRPC metadata
+                metadata = self._build_trace_metadata()
 
-            # Call GameCoordinator.StreamGameEvents with start_config
-            stub = game_coordinator_pb2_grpc.GameCoordinatorServiceStub(self.game_coordinator_channel)
-            request = game_coordinator_pb2.StreamEventsRequest(start_config=config)
+                # Call GameCoordinator.StreamGameEvents with start_config
+                stub = game_coordinator_pb2_grpc.GameCoordinatorServiceStub(self.game_coordinator_channel)
+                request = game_coordinator_pb2.StreamEventsRequest(start_config=config)
 
-            logger.info(
-                f"Starting game via GameCoordinator stream ({source}): "
-                f"{self.current_selection.name} with {len(roster)} players"
-            )
+                logger.info(
+                    f"Starting game via GameCoordinator stream ({source}): "
+                    f"{self.current_selection.name} with {len(roster)} players"
+                )
 
-            await self._run_game_event_stream(stub, request, metadata, span)
+                await self._run_game_event_stream(stub, request, metadata, span)
+            except Exception as e:
+                logger.error(f"Game start failed during preparation: {e}", exc_info=True)
+                span.record_exception(e)
+                if self.state == menu_pb2.MenuState.GAME_STARTING:
+                    await self._restart_lobby()
+                raise
 
     async def _prepare_game_start(self) -> None:
         """Stop lobby services in preparation for game start."""

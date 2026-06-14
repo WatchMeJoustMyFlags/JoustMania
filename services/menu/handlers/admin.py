@@ -642,7 +642,14 @@ class AdminModeHandler:
                 span.set_attribute("old_selection", current_selection)
                 span.set_attribute("new_selection", new_selection)
 
-                # Publish selection change
+                # Actually apply the selection through the menu so the coordinator
+                # start path (and the dashboard) see it — not just a fire-and-forget
+                # event nobody consumes (#1030). Route through the same working path
+                # as handle_game_mode so a future re-wiring (e.g. a backward-cycle
+                # button) can't silently reintroduce the dead-application bug.
+                await self.callbacks.select_game_mode(new_selection)
+
+                # Mirror the selection as an event for any listeners (dashboard).
                 await self._publish_event(
                     "game_selection_changed",
                     {"game_name": new_selection, "source": "admin_mode", "serial": serial},

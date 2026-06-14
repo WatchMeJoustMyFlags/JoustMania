@@ -959,6 +959,29 @@ class TestHandleGameModeChange:
         await handler.handle_game_mode_change("test_serial")
 
         mock_state_manager.publish_event.assert_not_called()
+        handler.callbacks.select_game_mode.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_forward_applies_selection_via_callback(self, handler, mock_state_manager):
+        """Forward cycling must actually apply the new selection through the menu
+        (same path as handle_game_mode) — not just publish a fire-and-forget
+        event (#1030). Guards against a future re-wiring reintroducing the bug."""
+        mock_state_manager.current_game_mode.name = "JoustFFA"
+        handler.callbacks.get_game_options.return_value = ["JoustFFA", "JoustTeams", "Werewolf"]
+
+        await handler.handle_game_mode_change("test_serial", forward=True)
+
+        handler.callbacks.select_game_mode.assert_awaited_once_with("JoustTeams")
+
+    @pytest.mark.asyncio
+    async def test_backward_applies_selection_via_callback(self, handler, mock_state_manager):
+        """Backward cycling must also apply the selection through the menu."""
+        mock_state_manager.current_game_mode.name = "JoustFFA"
+        handler.callbacks.get_game_options.return_value = ["JoustFFA", "JoustTeams", "Werewolf"]
+
+        await handler.handle_game_mode_change("test_serial", forward=False)
+
+        handler.callbacks.select_game_mode.assert_awaited_once_with("Werewolf")
 
 
 class TestHandleBattery:

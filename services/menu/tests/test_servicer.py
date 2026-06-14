@@ -1539,3 +1539,83 @@ class TestClearReadyState:
             MenuServicer._clear_ready_state(servicer)
 
         mock_metrics.player_ready.clear.assert_called_once()
+
+
+class TestRunGameLifecycleMidStartFailure:
+    """Tests for _run_game_lifecycle recovery when prep/build throws.
+
+    _prepare_game_start() sets state=GAME_STARTING and tears down the lobby. If
+    anything between there and the protected _run_game_event_stream throws (bad
+    mode config, stub creation, audio/button RPC error), the menu must not get
+    stuck in GAME_STARTING with no lobby — it should restore the lobby and reset
+    to RUNNING, then re-raise so the failure still surfaces.
+    """
+
+    @pytest.fixture
+    def servicer(self):
+        s = FakeMenuServicer()
+        # _run_game_lifecycle + _prepare_game_start + _restart_lobby dependencies
+        s.idle_monitor = MagicMock()
+        s.stop_button_monitor = AsyncMock()
+        s.start_button_monitor = AsyncMock()
+        # Two ready controllers so the roster check passes and we reach the
+        # prep/build window we want to exercise.
+        s.state_manager.controller_states = {
+            "s1": ControllerState.READY,
+            "s2": ControllerState.READY,
+        }
+        return s
+
+    async def _run(self, servicer):
+        """Call the real _run_game_lifecycle bound to the fake servicer."""
+        from unittest.mock import patch
+
+        from services.menu.servicer import MenuServicer
+
+        with patch("services.menu.servicer.metrics"):
+            await MenuServicer._run_game_lifecycle(servicer, "s1", source="web")
+
+    @pytest.mark.asyncio
+    async def test_build_config_exception_restores_lobby(self, servicer):
+        """An exception in _build_game_config restores the lobby and re-raises."""
+        from services.menu.servicer import MenuServicer
+
+        # Bind the real prep/restore helpers so we exercise the actual teardown +
+        # restore, but make config-building blow up mid-start.
+        servicer._prepare_game_start = lambda: MenuServicer._prepare_game_start(servicer)
+        servicer._restart_lobby = lambda: MenuServicer._restart_lobby(servicer)
+        servicer._build_trace_metadata = MagicMock(return_value=[])
+        servicer._build_game_config = MagicMock(side_effect=RuntimeError("bad mode config"))
+
+        with pytest.raises(RuntimeError, match="bad mode config"):
+            await self._run(servicer)
+
+        # Lobby restored, not stuck in GAME_STARTING.
+        assert servicer.state == menu_pb2.MenuState.RUNNING
+        servicer.start_button_monitor.assert_awaited()
+        servicer.audio.start_lobby_music.assert_awaited()
+        servicer.state_manager.reset.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_recovery_when_not_game_starting(self, servicer):
+        """If the failure happens after the lobby was already restored (state no
+        longer GAME_STARTING), we don't double-restore — but we still re-raise."""
+        from services.menu.servicer import MenuServicer
+
+        servicer._prepare_game_start = lambda: MenuServicer._prepare_game_start(servicer)
+        restart = AsyncMock()
+        servicer._restart_lobby = restart
+        servicer._build_trace_metadata = MagicMock(return_value=[])
+
+        def build_then_flip(*_args, **_kwargs):
+            # Simulate the stream already having restored the lobby.
+            servicer.state = menu_pb2.MenuState.RUNNING
+            raise RuntimeError("late failure")
+
+        servicer._build_game_config = MagicMock(side_effect=build_then_flip)
+
+        with pytest.raises(RuntimeError, match="late failure"):
+            await self._run(servicer)
+
+        # State already RUNNING, so the guard skips the redundant restore.
+        restart.assert_not_awaited()
