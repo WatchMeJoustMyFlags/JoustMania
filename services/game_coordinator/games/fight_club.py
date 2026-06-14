@@ -87,6 +87,7 @@ class FightClubGame(BaseGameMode):
         sensitivity: int = 2,
         invincibility_seconds: float = DEFAULT_INVINCIBILITY_DURATION,
         min_rounds: int = DEFAULT_MIN_ROUNDS,
+        rng_seed: int = 0,
     ):
         """
         Initialize Fight Club game.
@@ -108,6 +109,7 @@ class FightClubGame(BaseGameMode):
             game_id=game_id,
             initial_players=initial_players,
             sensitivity=sensitivity,
+            rng_seed=rng_seed,
         )
 
         self.queue: list[str] = []  # Queue of player serials

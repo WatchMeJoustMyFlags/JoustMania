@@ -71,6 +71,7 @@ class GameSession:
         parent_context,
         experiment_id: str = "",
         arm: str = "",
+        rng_seed: int = 0,
     ):
         self.game_id = game_id
         self.game_name = game_name
@@ -84,6 +85,12 @@ class GameSession:
         # grained labels WITHIN game_kind=shadow, never a replacement for it.
         self.experiment_id = experiment_id
         self.arm = arm
+        # Paired CRN seed (#1003): the deterministic per-instance RNG seed for a
+        # shadow game in an experiment pair. 0 means entropy (today's behavior).
+        # The servicer already zeroed this for a real (primary) session, so a
+        # primary game is structurally unable to be seeded — same real-protection
+        # guard as experiment_id/arm.
+        self.rng_seed = rng_seed
 
         self.game_start_time = time.time()
         self.game_state = game_coordinator_pb2.GameState.STARTING
@@ -230,6 +237,7 @@ class GameSession:
                         initial_players=self.players,
                         sensitivity=self.game_config.sensitivity if self.game_config else 2,
                         game_config=self.game_config,
+                        rng_seed=self.rng_seed,
                     )
                 except ValueError as e:
                     error_msg = str(e)

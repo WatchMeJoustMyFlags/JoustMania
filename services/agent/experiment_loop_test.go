@@ -40,14 +40,15 @@ type recordingSpawner struct {
 
 type spawnRec struct {
 	experimentID, arm, gameID string
+	seed                      uint64
 }
 
-func (r *recordingSpawner) Spawn(_ context.Context, experimentID, arm string) (string, error) {
+func (r *recordingSpawner) Spawn(_ context.Context, experimentID, arm string, seed uint64) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.seq++
 	id := "game_" + experimentID + "_" + arm + "_" + itoa(r.seq)
-	r.calls = append(r.calls, spawnRec{experimentID, arm, id})
+	r.calls = append(r.calls, spawnRec{experimentID, arm, id, seed})
 	return id, nil
 }
 

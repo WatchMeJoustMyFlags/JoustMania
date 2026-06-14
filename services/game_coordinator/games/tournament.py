@@ -11,7 +11,6 @@ Original JoustMania behavior preserved.
 import asyncio
 import logging
 import math
-import random
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -103,6 +102,7 @@ class TournamentGame(BaseGameMode):
         initial_players: list | None = None,
         sensitivity: int = 2,
         invincibility_seconds: float = DEFAULT_INVINCIBILITY_DURATION,
+        rng_seed: int = 0,
     ):
         """
         Initialize Tournament game.
@@ -123,6 +123,7 @@ class TournamentGame(BaseGameMode):
             game_id=game_id,
             initial_players=initial_players,
             sensitivity=sensitivity,
+            rng_seed=rng_seed,
         )
 
         self.bracket: list[Match] = []
@@ -177,9 +178,13 @@ class TournamentGame(BaseGameMode):
         self.total_rounds = int(math.log2(total_slots))
         num_byes = total_slots - player_count
 
-        # Shuffle players for random seeding
-        serials = list(self.players.keys())
-        random.shuffle(serials)
+        # Shuffle players for random seeding. Sort serials deterministically
+        # BEFORE the RNG consumes them (#1003 CRN alignment): a shared seed only
+        # makes the shuffle produce the same PERMUTATION, so the two games in a
+        # pair must feed it the same pre-shuffle ordering — otherwise the
+        # permutation maps to different players and CRN does not bite.
+        serials = sorted(self.players.keys())
+        self._rng.shuffle(serials)
 
         # Assign bracket positions
         for i, serial in enumerate(serials):
@@ -458,7 +463,7 @@ class TournamentGame(BaseGameMode):
 
             if elapsed >= self._match_duration:
                 # Time's up - both survive, random winner
-                match.winner_serial = random.choice([match.player1_serial, match.player2_serial])
+                match.winner_serial = self._rng.choice([match.player1_serial, match.player2_serial])
                 logger.info(f"Match {match.match_id} timeout - random winner: {match.winner_serial}")
                 break
 

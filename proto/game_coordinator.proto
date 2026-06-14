@@ -73,6 +73,18 @@ message StartGameConfig {
   string experiment_id = 5;  // e.g. "exp_<id>"; absent => not in any experiment
   string arm = 6;            // "experimental" | "control"; absent => not in any experiment
 
+  // Deterministic RNG seed for paired Common-Random-Numbers (CRN) shadow games
+  // (#1003). The experiment registry spawns (experimental, control) game pairs
+  // sharing this seed so both arms face an identical bracket order / role
+  // assignment / tempo schedule, and the only difference is the flag under
+  // test — collapsing the shared game variance out of the cohort verdict.
+  //
+  // HARD INVARIANT (#982): like experiment_id/arm, this only ever affects a
+  // SHADOW session. 0/absent => entropy (today's behavior); a real
+  // (menu-origin/primary) start ignores it — see game_coordinator's spawn
+  // binding, which only honors rng_seed for a shadow session.
+  uint64 rng_seed = 7;
+
   // Mode-specific configuration
   oneof game_config {
     FFAConfig ffa_config = 10;

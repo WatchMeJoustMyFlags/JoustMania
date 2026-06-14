@@ -1201,7 +1201,7 @@ class TestRunMatchActive:
 
         with (
             patch("services.game_coordinator.games.tournament.time.time", side_effect=fast_time),
-            patch("services.game_coordinator.games.tournament.random.choice", return_value=p1),
+            patch.object(game._rng, "choice", return_value=p1),
         ):
             await game._run_match(match)
 
@@ -1312,7 +1312,7 @@ class TestRunMatchActive:
 
         with (
             patch("services.game_coordinator.games.tournament.time.time", side_effect=fast_time),
-            patch("services.game_coordinator.games.tournament.random.choice", return_value=p2),
+            patch.object(game._rng, "choice", return_value=p2),
         ):
             await game._run_match(match)
 
@@ -1387,7 +1387,7 @@ class TestGameplayLoop:
 
         with (
             patch("services.game_coordinator.games.tournament.time.time", side_effect=fast_time),
-            patch("services.game_coordinator.games.tournament.random.choice", return_value=p1),
+            patch.object(game._rng, "choice", return_value=p1),
             patch("services.game_coordinator.games.tournament.asyncio.sleep", new_callable=AsyncMock),
         ):
             await game._gameplay_loop()
@@ -1432,7 +1432,7 @@ class TestGameplayLoop:
 
         with (
             patch("services.game_coordinator.games.tournament.time.time", side_effect=fast_time),
-            patch("services.game_coordinator.games.tournament.random.choice", side_effect=lambda x: x[0]),
+            patch.object(game._rng, "choice", side_effect=lambda x: x[0]),
             patch("services.game_coordinator.games.tournament.asyncio.sleep", new_callable=AsyncMock),
         ):
             await game._gameplay_loop()
@@ -1740,7 +1740,7 @@ class TestRunLifecycle:
 
         with (
             patch("services.game_coordinator.games.tournament.time.time", side_effect=fast_time),
-            patch("services.game_coordinator.games.tournament.random.choice", return_value=serials[0]),
+            patch.object(game._rng, "choice", return_value=serials[0]),
             patch("services.game_coordinator.games.tournament.asyncio.sleep", new_callable=AsyncMock),
         ):
             await game.run()

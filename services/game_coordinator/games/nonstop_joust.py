@@ -110,6 +110,7 @@ class NonstopJoustGame(BaseGameMode):
         initial_players: list | None = None,
         sensitivity: int = 2,
         time_limit_seconds: int = 0,
+        rng_seed: int = 0,
     ):
         """
         Initialize Nonstop Joust game.
@@ -130,6 +131,7 @@ class NonstopJoustGame(BaseGameMode):
             game_id=game_id,
             initial_players=initial_players,
             sensitivity=sensitivity,
+            rng_seed=rng_seed,
         )
 
         # Nonstop-specific settings - now passed via config

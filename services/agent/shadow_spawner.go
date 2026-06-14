@@ -86,12 +86,16 @@ func (s *shadowSpawner) SetRootContext(ctx context.Context) { s.root = ctx }
 // game DRIVE is bounded by the spawner's ROOT context so the game is not killed
 // when the tick returns — only at agent shutdown. An error means no game started
 // and the registry releases the reserved capacity slot.
-func (s *shadowSpawner) Spawn(ctx context.Context, experimentID, arm string) (string, error) {
+func (s *shadowSpawner) Spawn(ctx context.Context, experimentID, arm string, seed uint64) (string, error) {
 	runID := uuid.NewString()
 	spec := s.spec
 	spec.RunID = runID
 	spec.ExperimentID = experimentID
 	spec.Arm = arm
+	// Paired CRN seed (#1003): thread the registry-derived per-pair seed onto the
+	// spawn spec so the game-coordinator builds the shadow session's per-instance
+	// RNG from it. Both arms of a pair receive the same seed; 0 means entropy.
+	spec.Seed = seed
 
 	runner := gamerunner.New(s.cfg, s.log)
 	if s.onTerminal != nil {
@@ -114,6 +118,6 @@ func (s *shadowSpawner) Spawn(ctx context.Context, experimentID, arm string) (st
 		return "", fmt.Errorf("shadow spawn for experiment %s arm %s: %w", experimentID, arm, err)
 	}
 	s.log.Info("experiment: shadow game spawned",
-		"experiment_id", experimentID, "arm", arm, "game_id", gameID, "run_id", runID)
+		"experiment_id", experimentID, "arm", arm, "seed", seed, "game_id", gameID, "run_id", runID)
 	return gameID, nil
 }

@@ -445,6 +445,7 @@ class BaseGameMode(ABC):
         game_id: str = "",
         initial_players: list | None = None,  # List of Player protobuf messages
         sensitivity: int = 2,  # 0-4, passed from StartGameConfig (default MEDIUM)
+        rng_seed: int = 0,  # #1003 paired-CRN seed; 0 => entropy (today's behavior)
     ) -> None:
         """
         Initialize base game mode (Phase 33 - added type hints).
@@ -460,6 +461,18 @@ class BaseGameMode(ABC):
         self.controller_client = controller_manager_client
         self.event_publisher = event_publisher
         self.audio_client = audio_client
+
+        # Per-instance RNG (#1003 — the load-bearing CRN isolation). Shadow games
+        # run concurrently in ONE game_coordinator interpreter, so global
+        # random.seed() would corrupt a concurrent game's in-flight sequence.
+        # Every random draw in this game (and its subclasses) MUST go through
+        # self._rng so two seed-matched games in an (experimental, control) pair
+        # produce identical shuffles/samples/choices — the only difference being
+        # the flag under test. rng_seed == 0 (real games, unbound shadow games, or
+        # any pre-#1003 caller) maps to random.Random(None) == entropy: byte-for-
+        # byte today's behavior. A CI grep gate forbids bare ``random.`` under
+        # services/game_coordinator/games to keep this invariant from regressing.
+        self._rng = random.Random(rng_seed if rng_seed else None)
 
         # Game ID - subclasses can override with mode-specific prefix
         if not game_id:
@@ -2450,7 +2463,7 @@ class BaseGameMode(ABC):
             min_t = self._lerp(windows.fast_min, windows.end_fast_min, game_percent)
             max_t = self._lerp(windows.fast_max, windows.end_fast_max, game_percent)
 
-        delay = random.uniform(min_t, max_t)
+        delay = self._rng.uniform(min_t, max_t)
         return time.time() + delay
 
     async def _apply_tempo_change(self, target_tempo: float) -> None:

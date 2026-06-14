@@ -13,7 +13,6 @@ Original JoustMania behavior preserved (minus weapon system).
 
 import asyncio
 import logging
-import random
 import time
 from dataclasses import dataclass
 
@@ -103,6 +102,7 @@ class ZombieGame(BaseGameMode):
         game_id: str = "",
         initial_players: list | None = None,
         sensitivity: int = 2,
+        rng_seed: int = 0,
     ):
         """
         Initialize Zombie game.
@@ -122,6 +122,7 @@ class ZombieGame(BaseGameMode):
             game_id=game_id,
             initial_players=initial_players,
             sensitivity=sensitivity,
+            rng_seed=rng_seed,
         )
 
         # #766 F1: zombie threshold overrides promoted to ``game.zombie.thresholds``.
@@ -173,10 +174,12 @@ class ZombieGame(BaseGameMode):
         self.game_duration = calculate_game_duration(num_players)
         self.time_remaining = self.game_duration
 
-        # Randomly select initial zombies
-        serials = [c.serial for c in controllers]
+        # Randomly select initial zombies. Sort serials before the RNG consumes
+        # them (#1003 CRN alignment) so a seed-matched pair samples the same
+        # players from the same pre-shuffle ordering.
+        serials = sorted(c.serial for c in controllers)
         num_zombies = min(self.initial_zombies, num_players - 1)  # At least 1 human
-        zombie_serials = set(random.sample(serials, num_zombies))
+        zombie_serials = set(self._rng.sample(serials, num_zombies))
 
         for controller in controllers:
             is_zombie = controller.serial in zombie_serials
@@ -387,7 +390,7 @@ class ZombieGame(BaseGameMode):
         if zombie_player.is_zombie:
             # Zombie killed - set respawn timer
             zombie_player.alive = False
-            respawn_delay = random.uniform(self.zombie_respawn_min, self.zombie_respawn_max)
+            respawn_delay = self._rng.uniform(self.zombie_respawn_min, self.zombie_respawn_max)
             zombie_player.respawn_until = time.time() + respawn_delay
 
             logger.info(f"Zombie {serial} killed, respawning in {respawn_delay:.1f}s")

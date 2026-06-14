@@ -43,6 +43,7 @@ class SwapperGame(TeamsGameBase):
         game_id: str = "",
         initial_players: list | None = None,
         sensitivity: int = 2,
+        rng_seed: int = 0,
     ):
         """
         Initialize Swapper game.
@@ -65,6 +66,7 @@ class SwapperGame(TeamsGameBase):
             initial_players=initial_players,
             sensitivity=sensitivity,
             random_assignment=True,
+            rng_seed=rng_seed,
         )
 
         # Track the last player to die (excluded from winners)

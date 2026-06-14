@@ -174,6 +174,11 @@ func buildStartConfig(spec Spec, serials []string) *gcpb.StartGameConfig {
 		cfg.Origin = gcpb.GameOrigin_GAME_ORIGIN_AGENT
 		cfg.ExperimentId = spec.ExperimentID
 		cfg.Arm = spec.Arm
+		// Paired CRN seed (#1003): bind the experiment-derived seed AT SPAWN so
+		// the started shadow session builds its per-instance RNG from it. 0 means
+		// entropy (today's behavior); the coordinator honors it only for a shadow
+		// session (same real-protection guard as experiment_id/arm).
+		cfg.RngSeed = spec.Seed
 	}
 	switch spec.GameName {
 	case "JoustFFA":
