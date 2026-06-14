@@ -300,13 +300,22 @@ Enter admin mode by pressing all 4 face buttons (Cross + Circle + Square + Trian
 
 | Button | Action |
 |--------|--------|
-| Move | Cycle through settings (num_teams, force_all_start) |
-| Trigger | Increase current setting value |
-| Cross | Decrease current setting value |
+| Move | Cycle through settings (sensitivity, num_teams, force_all_start) |
+| Select | Increase current setting value |
+| Start | Decrease current setting value |
+| Cross | Cycle game mode |
 | Circle | Cycle sensitivity (Slow/Medium/Fast) |
 | Triangle | Show battery levels on all controllers |
 | Square | Toggle instruction display |
+| Trigger | Hold 3s = force start game |
 | PS | Exit admin mode |
+
+> **Controller-cycled surface (issue #815):** Only `sensitivity`, `num_teams`,
+> and `force_all_start` are cycled via Move. The per-mode tunables
+> `random_assignment`, `nonstop.time_limit_seconds`, `invincibility_seconds`,
+> `fight_club.min_rounds`, and `werewolf.reveal_time_seconds` remain `game.json`
+> flags set via dashboard/file/flagd — they are no longer cycled on the
+> controller. See [Ownership Model §3.1](../../docs/OWNERSHIP_MODEL.md#31-controller-cycled-admin-surface-issue-815).
 
 ### Timeout
 

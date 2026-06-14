@@ -75,6 +75,35 @@ no-ops** for that game — the game already captured its value.
 | `werewolf.reveal_time_seconds` | Human | `game.json` | Frozen at init | Agent has no override; human-only. |
 | `force_all_start` | Human | `game.json` | **Live** (read at start by menu, not frozen into a game) | Human-only; the one admin flag with no freeze. |
 
+### 3.1 Controller-cycled admin surface (issue [#815](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/815))
+
+The eight flags above are all human-owned, but they are **not** all worth cycling
+blind on a controller (MOVE to select an option, SELECT/START to nudge its value,
+with only an LED pulse + voice line as feedback). Deep per-mode knobs that are
+frozen at start and rarely changed at party time are awkward and error-prone on
+that surface, so #815 trimmed the **controller-cycled** list to the human
+essentials. **Every flag still exists in `game.json` and stays settable via the
+dashboard, the file, or flagd directly** — only the controller-cycle UI shrinks.
+
+| Flag | Decision | Rationale |
+|---|---|---|
+| `sensitivity` | **KEEP cycled** | Baseline calibration the admin tunes by feel; the primary human knob. |
+| `num_teams` | **KEEP cycled** | Structural pre-game choice; quick to set on the controller. |
+| `force_all_start` | **KEEP cycled** | Live-evaluated at force start (`admin.py` `handle_force_start`); human-essential. |
+| `random_assignment` | **MOVE → flag-only** | Folds into game-mode selection; dashboard/file/flagd only. |
+| `nonstop.time_limit_seconds` | **MOVE → flag-only** | Per-mode knob, frozen at start; dashboard/file/flagd only. |
+| `invincibility_seconds` | **MOVE → flag-only** | Per-mode knob overlapping agent `shield_seconds` (§4.2); dashboard/file/flagd only. |
+| `fight_club.min_rounds` | **MOVE → flag-only** | Per-mode knob, rarely changed at party time; dashboard/file/flagd only. |
+| `werewolf.reveal_time_seconds` | **MOVE → flag-only** | Per-mode knob, frozen at start; dashboard/file/flagd only. |
+
+The moved flags keep their definitions in
+[`services/flagd/game.json`](../services/flagd/game.json) and are still read at
+game start by [`services/menu/servicer.py`](../services/menu/servicer.py)
+`_build_game_config` (`random_assignment`, `nonstop.time_limit_seconds`,
+`invincibility_seconds`, `fight_club.min_rounds`, `werewolf.reveal_time_seconds`).
+The controller cycle is defined by `option_names` / `option_colors` in
+[`services/menu/handlers/admin.py`](../services/menu/handlers/admin.py).
+
 The agent's live intervention surface (all `interventions.json`, all bounded):
 
 | Parameter | Shape | Runtime target | Composition |

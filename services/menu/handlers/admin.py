@@ -9,7 +9,7 @@ Button mappings in admin mode:
 - Circle: Cycle sensitivity (unchanged)
 - Square: Toggle instructions (unchanged)
 - Triangle: Show battery (unchanged)
-- Move: Cycle between options (num_teams / force_all_start)
+- Move: Cycle between options (sensitivity / num_teams / force_all_start)
 - Trigger: Hold 3s = Force start game (LED dims during hold)
 - Select: Increase current option value
 - Start: Decrease current option value
@@ -96,26 +96,24 @@ class AdminModeHandler:
         self.session_span_context = None
 
         # Admin option navigation
-        # Options cycle through all game settings configurable via admin mode
+        # The controller-cycled surface is intentionally limited to the human
+        # essentials (issue #815): a baseline calibration knob (sensitivity), a
+        # structural pre-game choice (num_teams), and a live force-start toggle
+        # (force_all_start). The remaining per-mode tunables
+        # (random_assignment, nonstop.time_limit_seconds, invincibility_seconds,
+        # fight_club.min_rounds, werewolf.reveal_time_seconds) still EXIST as
+        # game.json flags and stay settable via dashboard/file/flagd — they are
+        # simply no longer cycled blind on the controller. See
+        # docs/OWNERSHIP_MODEL.md §3 for the per-flag keep/move decision.
         self.current_option = 0
         self.option_names = [
             "sensitivity",  # 0-4 (Ultra Slow to Ultra Fast)
             "num_teams",  # 2-6 teams (for Teams, RandomTeams, Traitor)
-            "random_assignment",  # True/False for Teams mode
-            "nonstop.time_limit_seconds",  # 0=unlimited, 60-300 seconds
-            "invincibility_seconds",  # 2.0-8.0 seconds (Tournament, FightClub)
-            "fight_club.min_rounds",  # 5-20 rounds
-            "werewolf.reveal_time_seconds",  # 20.0-60.0 seconds
-            "force_all_start",  # True/False
+            "force_all_start",  # True/False (live-evaluated at force start)
         ]
         self.option_colors = [
             Colors.Blue,  # sensitivity
             Colors.Turquoise,  # num_teams
-            Colors.Magenta,  # random_assignment
-            Colors.Yellow,  # nonstop.time_limit_seconds
-            Colors.Green,  # invincibility_seconds
-            Colors.Orange,  # fight_club.min_rounds
-            Colors.Purple,  # werewolf.reveal_time_seconds
             Colors.Orange,  # force_all_start
         ]
 
@@ -919,7 +917,7 @@ class AdminModeHandler:
         """
         Cycle through admin options.
 
-        Options: num_teams -> force_all_start -> num_teams
+        Options: sensitivity -> num_teams -> force_all_start -> sensitivity
 
         Args:
             serial: Controller serial number
