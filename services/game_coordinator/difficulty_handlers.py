@@ -10,9 +10,12 @@ intervention flags against the InterventionManager registry built in PR A:
   resumes the natural schedule from the current state via an explicit revert
   handler (#922 — the manager routes reverts to ``_revert_handlers``, not back to
   the apply-handler, so the override must be cleared there).
-- ``global_sensitivity_override`` — N2: live update of ``game.sensitivity``,
-  consumed next frame by ``_compute_effective_thresholds``; reverting to none
-  (-1) restores the sensitivity the game started with.
+- ``global_sensitivity_override`` — N2: a bounded, temporary override LAYER on
+  top of the admin baseline (never persisted into the baseline — #816 / M9
+  ownership model), consumed next frame by ``_compute_effective_thresholds``;
+  reverting to none (-1) clears the layer so the effective sensitivity returns
+  to the admin's CURRENT baseline (a mid-game admin change wins by invalidating
+  the override).
 - ``player_sensitivity_factor``   — N1: per-serial ``targeting_key`` evaluation
   sets each active player's ``sensitivity_factor`` (clamped 0.5-2.0); serials
   with no targeting match get the neutral default (1.0).
@@ -99,10 +102,14 @@ async def handle_music_tempo_override_revert(ctx: InterventionContext) -> None:
 async def handle_global_sensitivity_override(ctx: InterventionContext) -> None:
     """Apply / clear the agent global-sensitivity override on the live game.
 
-    A value >= 0 sets ``game.sensitivity`` to the matching ``Sensitivity`` index;
-    the change is picked up next frame by ``_compute_effective_thresholds``. A
-    value of -1 (none) restores the sensitivity the game was configured with at
-    start (``game.configured_sensitivity``).
+    The override is a bounded, temporary LAYER on top of the admin baseline; it
+    is never persisted into the baseline (the M9 ownership model — #816). A value
+    >= 0 sets the override to the matching ``Sensitivity`` index, picked up next
+    frame by ``_compute_effective_thresholds``. A value of -1 (none) CLEARS the
+    override so the effective sensitivity returns to the admin's CURRENT baseline
+    (``game.baseline_sensitivity``) — not a stale game-start snapshot. If the
+    admin changed the baseline while the override was active, the override was
+    already invalidated, so this clear is a safe no-op against the new baseline.
     """
     game = ctx.game
     if game is None:
@@ -111,17 +118,15 @@ async def handle_global_sensitivity_override(ctx: InterventionContext) -> None:
 
     idx = int(ctx.value)
     if idx < 0:
-        restored = getattr(game, "configured_sensitivity", game.sensitivity)
-        game.sensitivity = restored
-        logger.info(f"global_sensitivity_override: cleared, restored to {restored.name}")
+        game.clear_sensitivity_override()
         return
 
     try:
-        game.sensitivity = Sensitivity(idx)
+        sensitivity = Sensitivity(idx)
     except ValueError:
         logger.warning(f"global_sensitivity_override: invalid sensitivity index {idx}, ignoring")
         return
-    logger.info(f"global_sensitivity_override: live sensitivity -> {game.sensitivity.name}")
+    game.apply_sensitivity_override(sensitivity)
 
 
 async def handle_player_sensitivity_factor(ctx: InterventionContext, manager: InterventionManager) -> None:
