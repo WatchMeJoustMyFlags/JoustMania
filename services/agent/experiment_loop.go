@@ -377,10 +377,27 @@ func (e *experimentLoop) agentEnabled(ctx context.Context) bool {
 // At most one experiment is declared per call (one new flag explored per tick),
 // keeping the declaration rate bounded; the round-robin cursor rotates coverage
 // across ticks.
+//
+// CONCURRENCY (#1040 review): allocateIfEnabled is called concurrently from several
+// goroutines (tick, immediate allocate, per-partition onGameEnd, onGameTerminal
+// drive, fireCompletedGrace timer). The budget check, the per-flag dedup
+// (ActiveFlags), the cursor advance, and Declare must be ATOMIC as a unit — three
+// separate registry-lock acquisitions plus an unsynchronized cursor would otherwise
+// let N concurrent callers all pass the LiveCount<budget check and all declare
+// (TOCTOU over-declaration), and would data-race d.cursor. We hold the declarer's
+// own mutex (e.dynamic.mu) around the WHOLE decision path. That mutex WRAPS the
+// registry calls and the registry never calls back into the declarer, so there is
+// no lock-ordering deadlock with registry.mu.
 func (e *experimentLoop) declareDynamicIfEnabled(ctx context.Context) {
 	if e.dynamic == nil {
 		return // not opted in (default): env-seed behavior unchanged.
 	}
+	// Serialize the entire select→budget-check→dedup→declare sequence so only one
+	// dynamic declare is ever in flight (closes the TOCTOU over-declaration window)
+	// and d.cursor is mutated under the lock (closes the data race).
+	e.dynamic.mu.Lock()
+	defer e.dynamic.mu.Unlock()
+
 	// Over-declaration backstop: stop once the LIVE experiment set fills the
 	// concurrent-experiment budget. The budget is clamped to the shadow capacity
 	// because an experiment with no shadow slot to ever run is pointless.

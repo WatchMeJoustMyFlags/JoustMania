@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -384,6 +385,44 @@ func TestDeclareDynamic_BackstopClampedToCapacity(t *testing.T) {
 	}
 	if got := loop.registry.LiveCount(); got != 1 {
 		t.Fatalf("budget not clamped to capacity: LiveCount = %d, want 1", got)
+	}
+}
+
+// TestDeclareDynamic_ConcurrentCallersRespectBudget fires declareDynamicIfEnabled
+// from many goroutines at once — the REAL shape, since allocateIfEnabled is reached
+// concurrently from the tick, per-partition onGameEnd, onGameTerminal drive and the
+// grace-timer goroutines. Without the declarer mutex, concurrent callers all pass the
+// LiveCount<budget check before any commits its Declare (TOCTOU over-declaration) and
+// data-race d.cursor; with the mutex the whole select→budget-check→dedup→declare path
+// is atomic, so the live experiment set never exceeds the budget. Run under -race to
+// also catch the cursor race. (Reverting the mutex makes this fail: LiveCount > budget.)
+func TestDeclareDynamic_ConcurrentCallersRespectBudget(t *testing.T) {
+	loop, path := loopWithRealRegistry(t, 16) // ample capacity so the BUDGET is the bound
+	loop.dynamic = &dynamicDeclarer{
+		gameFlagPath:     path,
+		candidates:       []string{"sensitivity", "num_teams", "fight_club.min_rounds"},
+		defaultObjective: decision.ObjectiveBalanced,
+	}
+	const budget = 2
+	loop.dynamicMaxConcurrent = budget // well under capacity 16
+
+	const goroutines = 8
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			loop.declareDynamicIfEnabled(context.Background())
+		}()
+	}
+	wg.Wait()
+
+	got := loop.registry.LiveCount()
+	if got > budget {
+		t.Fatalf("concurrent declarers over-declared past the budget: LiveCount = %d, want <= %d", got, budget)
+	}
+	if got < 1 {
+		t.Fatalf("expected the concurrent declarers to declare at least one experiment, LiveCount = %d", got)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/experiment"
@@ -59,7 +60,27 @@ const (
 	// experiments. Non-positive/unset ⇒ 0 (the Registry reconciles it up to the
 	// verdict min-N, #1001).
 	envDynamicTargetN = "AGENT_EXPERIMENT_DYNAMIC_TARGET_N"
+
+	// envDynamicDenylist overrides the set of flag keys EXCLUDED from the DEFAULT
+	// (unset-candidates) rotation: a comma-separated list of flag keys. Unset ⇒
+	// defaultDynamicDenylist (the agent/experiment-machinery knobs below). The
+	// denylist applies ONLY when AGENT_EXPERIMENT_DYNAMIC_CANDIDATES is empty — an
+	// explicit candidate list is honored verbatim (the operator named them on purpose).
+	envDynamicDenylist = "AGENT_EXPERIMENT_DYNAMIC_DENYLIST"
 )
+
+// defaultDynamicDenylist is the set of game.json flag keys the autonomous declarer
+// excludes from its DEFAULT (all-tunable-flags) rotation: agent/experiment-control
+// knobs that are the declarer's OWN plumbing, not game-tuning parameters. The
+// declarer must never experiment on its own machinery (e.g. shadow_policy=block
+// would block the very shadow games the experiment needs to accrue samples).
+// Overridable via AGENT_EXPERIMENT_DYNAMIC_DENYLIST; bypassed entirely when an
+// explicit candidate list is configured.
+var defaultDynamicDenylist = map[string]struct{}{
+	// shadow_policy (#837): gates whether shadow games may start at all — tuning it
+	// to "block" would starve the declarer's own experiments. Pure agent plumbing.
+	"shadow_policy": {},
+}
 
 // dynamicEnabled reports whether the heuristic dynamic declarer opt-in is on.
 // This is the distinct, default-off #995 gate — independent of (and subordinate
@@ -78,17 +99,38 @@ func dynamicEnabled() bool {
 type pressureFunc func() map[string]float64
 
 // dynamicDeclarer selects and builds a fresh experiment Intent on its own from
-// the live game.json flag surface (#995). It holds a persisted round-robin cursor
-// so successive declarations cover DIFFERENT candidate flags deterministically (no
-// wall-clock / rand — variety comes from the cursor, the #995 testability rule).
+// the live game.json flag surface (#995). It holds an in-memory round-robin cursor
+// (resets on restart) so successive declarations cover DIFFERENT candidate flags
+// deterministically (no wall-clock / rand — variety comes from the cursor, the
+// #995 testability rule).
+//
+// CONCURRENCY (#1040 review): the whole select→budget-check→dedup→declare path is
+// reached CONCURRENTLY from several experiment-loop goroutines (tick, immediate
+// allocate, per-partition onGameEnd, onGameTerminal drive, fireCompletedGrace
+// timer). The declarer exposes mu so the loop can serialize that ENTIRE sequence
+// (LiveCount + ActiveFlags + cursor-advance + Declare) atomically — closing the
+// TOCTOU over-declaration window and the d.cursor data race. mu wraps the registry
+// calls (never the reverse) and the registry never calls back into the declarer, so
+// there is no lock-ordering deadlock with registry.mu.
 type dynamicDeclarer struct {
+	// mu serializes the loop's declare decision path (see the type doc). It is held
+	// by the caller (declareDynamicIfEnabled) around LiveCount/ActiveFlags/Declare so
+	// only ONE dynamic declare is ever in flight; it also guards d.cursor, which
+	// Declare mutates.
+	mu sync.Mutex
+
 	// gameFlagPath is the live game.json the declarer reads candidate flags +
 	// their current defaults/variants from (re-read each call so a hot-reloaded
 	// file is reflected).
 	gameFlagPath string
 	// candidates, when non-empty, restricts/orders the flags the declarer rotates
-	// over. Empty ⇒ all tunable flags discovered in game.json (sorted, stable).
+	// over. Empty ⇒ all tunable flags discovered in game.json (sorted, stable),
+	// minus denylist.
 	candidates []string
+	// denylist is the set of flag keys excluded from the DEFAULT (empty-candidates)
+	// rotation — agent/experiment-control knobs the declarer must not tune. Ignored
+	// when candidates is non-empty (an explicit list is honored verbatim).
+	denylist map[string]struct{}
 	// defaultObjective is the experimentable objective used when no pressure signal
 	// is available.
 	defaultObjective string
@@ -98,9 +140,10 @@ type dynamicDeclarer struct {
 	// pressure is the optional fitness-pressure selection signal (may be nil).
 	pressure pressureFunc
 
-	// cursor is the persisted round-robin position across candidate flags. It only
-	// advances when a declaration is actually emitted, so a tick that finds no
-	// declarable flag does not skip the surface. NOT a clock — pure rotation.
+	// cursor is the in-memory round-robin position across candidate flags (resets to
+	// 0 on restart — not journaled). It only advances when a declaration is actually
+	// emitted, so a tick that finds no declarable flag does not skip the surface. NOT
+	// a clock — pure rotation. Mutated only under mu (held by the loop's declare path).
 	cursor int
 }
 
@@ -121,6 +164,7 @@ func newDynamicDeclarerFromEnv(gameFlagPath string, pressure pressureFunc) *dyna
 	return &dynamicDeclarer{
 		gameFlagPath:     gameFlagPath,
 		candidates:       parseCandidates(os.Getenv(envDynamicCandidates)),
+		denylist:         denylistFromEnv(),
 		defaultObjective: objective,
 		targetN:          parseDynamicTargetN(os.Getenv(envDynamicTargetN)),
 		pressure:         pressure,
@@ -207,8 +251,15 @@ func (d *dynamicDeclarer) candidateOrder(flags map[string]candidateFlag) []strin
 		}
 		return order
 	}
+	deny := d.denylist
+	if deny == nil {
+		deny = defaultDynamicDenylist
+	}
 	order := make([]string, 0, len(flags))
 	for k := range flags {
+		if _, blocked := deny[k]; blocked {
+			continue // agent/experiment-control knob — never tune our own machinery.
+		}
 		order = append(order, k)
 	}
 	sort.Strings(order)
@@ -361,6 +412,23 @@ func parseCandidates(raw string) []string {
 		}
 	}
 	return out
+}
+
+// denylistFromEnv resolves the default-rotation denylist from
+// AGENT_EXPERIMENT_DYNAMIC_DENYLIST: UNSET ⇒ nil (caller falls back to
+// defaultDynamicDenylist); SET (even to empty) ⇒ exactly the parsed key set, so an
+// operator can shrink it or disable it entirely (empty value ⇒ empty set ⇒ no
+// exclusions). Always overridable.
+func denylistFromEnv() map[string]struct{} {
+	raw, ok := os.LookupEnv(envDynamicDenylist)
+	if !ok {
+		return nil // unset ⇒ use defaultDynamicDenylist.
+	}
+	set := make(map[string]struct{})
+	for _, k := range parseCandidates(raw) {
+		set[k] = struct{}{}
+	}
+	return set // possibly empty (explicit opt-out of all exclusions).
 }
 
 // parseDynamicTargetN parses the dynamic target-N override; non-positive/invalid ⇒
