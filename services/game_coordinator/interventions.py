@@ -1064,17 +1064,28 @@ class InterventionManager:
             if not targets:
                 return
 
+            import asyncio
+
             from proto import controller_manager_pb2
 
             # Distinct magenta pulse = "agent acted" — not a game event color.
-            for target_serial in targets:
-                cmd = controller_manager_pb2.GameplayStreamControl(
-                    game_effect=controller_manager_pb2.GameEffectCommand(
-                        serial=target_serial,
-                        effect=controller_manager_pb2.GAME_EFFECT_PULSE,
+            # Dispatch the per-target writes concurrently so a broadcast cue
+            # (e.g. an end_game HARD intervention with many players) doesn't add N
+            # sequential writes to the dispatch tail. Best-effort: any per-write
+            # failure is collected (return_exceptions) and never raised into the
+            # intervention path.
+            writes = [
+                stream.write(
+                    controller_manager_pb2.GameplayStreamControl(
+                        game_effect=controller_manager_pb2.GameEffectCommand(
+                            serial=target_serial,
+                            effect=controller_manager_pb2.GAME_EFFECT_PULSE,
+                        )
                     )
                 )
-                await stream.write(cmd)
+                for target_serial in targets
+            ]
+            await asyncio.gather(*writes, return_exceptions=True)
             logger.debug(f"agent cue: pulsed {len(targets)} controller(s) for '{spec.type_id}'")
         except Exception as e:
             logger.debug(f"agent cue emission failed for '{spec.type_id}': {e}")

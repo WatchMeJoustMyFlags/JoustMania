@@ -60,6 +60,19 @@ write surfaces stay disjoint (menu writes `game.json` / `user.json` and the one
 agent-policy key; the agent writes `interventions.json` only). The human owns
 agent policy; the agent cannot persist its own governor (§1, §6.2).
 
+> **How the agent-never-writes-`agent.json` invariant is enforced.** It rests on
+> **code discipline, not a container-mount restriction.** The agent bind-mounts
+> the whole flag directory `./services/flagd:/etc/flagd` **read-write** (it
+> legitimately writes `interventions.json`, and `game.json` experiment targeting),
+> so the filesystem does *not* protect `agent.json`. Two code-level guards do: (1)
+> the agent's experiment `Writer` is constructed with **hardcoded target paths**
+> that never point at `agent.json`, and (2)
+> [`services/agent/experiment/gate.go`](../services/agent/experiment/gate.go) **rejects any
+> intent whose resolved path is `agent.json`** (path-component + symlink-target
+> checks) before any write syscall. A per-file `agent.json` `:ro` mount on top of
+> the RW dir would be a sound defense-in-depth addition, but is not what the
+> guarantee currently rests on.
+
 ## 3. Parameter Ownership Table
 
 The eight admin flags. All are read once by the menu into `StartGameConfig`

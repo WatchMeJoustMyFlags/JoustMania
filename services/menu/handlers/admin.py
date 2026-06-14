@@ -791,10 +791,16 @@ class AdminModeHandler:
 
             try:
                 writer = self._state_manager.game_settings_writer
-                # Resolve the EFFECTIVE current value (agent-override-aware) so the
-                # admin cycles from what the game is actually using, not the stale
-                # on-disk default (#818).
-                old_variant = self._effective_variant("sensitivity")
+                # The CYCLE feedback must describe the baseline transition the
+                # admin is actually making: cycle_variant() advances the on-disk
+                # defaultVariant (the human-owned baseline), so old_variant must
+                # be the baseline value being cycled FROM, captured before the
+                # mutation. Using _effective_variant here would announce the
+                # agent's override (e.g. ultra_fast) as the source while we
+                # actually write baseline medium->fast — incoherent. The passive
+                # display path (viewing the option) still uses _effective_variant
+                # to show the truthful effective value, incl. override (#818).
+                old_variant = writer.get_current_variant("sensitivity")
                 new_variant = writer.cycle_variant("sensitivity", forward=True)
 
                 if new_variant is None:
@@ -1005,7 +1011,11 @@ class AdminModeHandler:
 
             try:
                 writer = self._state_manager.game_settings_writer
-                old_variant = self._effective_variant(option_name)
+                # Cycle feedback describes the baseline transition (defaultVariant
+                # being changed), captured before the mutation — NOT the effective
+                # value, which may be an agent override (#818). Passive display
+                # uses _effective_variant for the truthful effective value.
+                old_variant = writer.get_current_variant(option_name)
                 new_variant = writer.cycle_variant(option_name, forward=True)
 
                 if new_variant is None:
@@ -1054,7 +1064,11 @@ class AdminModeHandler:
 
             try:
                 writer = self._state_manager.game_settings_writer
-                old_variant = self._effective_variant(option_name)
+                # Cycle feedback describes the baseline transition (defaultVariant
+                # being changed), captured before the mutation — NOT the effective
+                # value, which may be an agent override (#818). Passive display
+                # uses _effective_variant for the truthful effective value.
+                old_variant = writer.get_current_variant(option_name)
                 new_variant = writer.cycle_variant(option_name, forward=False)
 
                 if new_variant is None:
@@ -1287,7 +1301,10 @@ class AdminModeHandler:
         levels = AGENT_POLICY_LEVELS
         if current not in levels:
             # Unknown/missing current value: forward starts permissive ladder at
-            # the first level; backward jumps to panic-off.
+            # the first level; backward jumps to panic-off. This is also the
+            # benign fail-safe for non-ladder variants — e.g. agent.json's
+            # `probe` variant of interventions_allowed isn't in AGENT_POLICY_LEVELS,
+            # so the next press collapses it to the ladder start (none).
             return levels[0] if forward else "none"
         idx = levels.index(current)
         new_idx = (idx + 1) % len(levels) if forward else (idx - 1) % len(levels)

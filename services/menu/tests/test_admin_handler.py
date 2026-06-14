@@ -1378,3 +1378,75 @@ class TestEffectiveValueDisplay:
         mock_state_manager.game_settings_writer.match_variant_for_value.return_value = "medium"
 
         assert handler._effective_variant("sensitivity") == "medium"
+
+
+class TestCycleFeedbackIsBaselineTransition:
+    """The CYCLE feedback (span event + log) must describe the human-owned
+    BASELINE transition the admin is actually making — NOT the agent's effective
+    override (#818 reviewer SHOULD-FIX).
+
+    Passive viewing of an option still shows the truthful effective value via
+    _effective_variant (covered by TestEffectiveValueDisplay); these tests pin the
+    distinct cycle path: old_variant = baseline being cycled FROM.
+    """
+
+    @staticmethod
+    def _cycle_event(handler):
+        """Return (name, attrs) of the last span add_event on the handler's span."""
+        span = handler.tracer.start_as_current_span.return_value.__enter__.return_value
+        assert span.add_event.called, "expected a span event for the cycle"
+        name, kwargs = span.add_event.call_args
+        # add_event(name, {attrs}) — attrs is the second positional arg.
+        return name[0], name[1]
+
+    @pytest.mark.asyncio
+    async def test_sensitivity_cycle_old_variant_is_baseline_not_override(self, handler, mock_state_manager):
+        """Agent overrode sensitivity to ultra_fast, baseline on disk is medium.
+
+        Cycling writes baseline medium -> fast. The feedback MUST read
+        'medium -> fast' (the baseline transition), never 'ultra_fast -> fast'.
+        Under the old effective-as-old_variant behavior this would announce
+        ultra_fast and fail.
+        """
+        mock_state_manager.game_settings_writer.get_current_variant.return_value = "medium"
+        mock_state_manager.game_settings_writer.cycle_variant.return_value = "fast"
+        # Active agent override -> _effective_variant would resolve ultra_fast.
+        mock_state_manager.interventions_client.get_integer_value.return_value = 4
+
+        await handler.handle_sensitivity("test_serial")
+
+        _name, attrs = self._cycle_event(handler)
+        assert attrs["old_variant"] == "medium"
+        assert attrs["new_variant"] == "fast"
+        # The effective-display path must NOT have been used to source old_variant.
+        mock_state_manager.interventions_client.get_integer_value.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_increase_value_old_variant_is_baseline_not_override(self, handler, mock_state_manager):
+        """handle_increase_value cycle feedback is the baseline transition."""
+        handler.current_option = handler.option_names.index("sensitivity")
+        mock_state_manager.game_settings_writer.get_current_variant.return_value = "medium"
+        mock_state_manager.game_settings_writer.cycle_variant.return_value = "fast"
+        mock_state_manager.interventions_client.get_integer_value.return_value = 4
+
+        await handler.handle_increase_value("test_serial")
+
+        _name, attrs = self._cycle_event(handler)
+        assert attrs["old_variant"] == "medium"
+        assert attrs["new_variant"] == "fast"
+        mock_state_manager.interventions_client.get_integer_value.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_decrease_value_old_variant_is_baseline_not_override(self, handler, mock_state_manager):
+        """handle_decrease_value cycle feedback is the baseline transition."""
+        handler.current_option = handler.option_names.index("sensitivity")
+        mock_state_manager.game_settings_writer.get_current_variant.return_value = "medium"
+        mock_state_manager.game_settings_writer.cycle_variant.return_value = "slow"
+        mock_state_manager.interventions_client.get_integer_value.return_value = 4
+
+        await handler.handle_decrease_value("test_serial")
+
+        _name, attrs = self._cycle_event(handler)
+        assert attrs["old_variant"] == "medium"
+        assert attrs["new_variant"] == "slow"
+        mock_state_manager.interventions_client.get_integer_value.assert_not_called()
