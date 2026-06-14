@@ -30,9 +30,11 @@ Mechanics (verified against the live code):
   ADMIN_FORCE_START_SECONDS (docker-compose.ci.yml) so a ~1.5s hold suffices.
 
 The surviving controller-cycled surface after the #815 rationalization (PR
-#1010) is sensitivity / num_teams / force_all_start (admin.py option_names), so
-these tests target those; the removed-from-controller tunables are not tested
-here.
+#1010) is sensitivity / num_teams / force_all_start, plus agent_control
+(the agent kill-switch, appended last by #819) — admin.py option_names. These
+tests target sensitivity / num_teams / force_all_start; the removed-from-
+controller tunables are not tested here, and agent_control (last index) does not
+shift their positions.
 """
 
 import asyncio
@@ -303,8 +305,9 @@ async def test_option_cycle_and_value_change_persists(
     """Move cycles the selected option (sensitivity -> num_teams), then Select
     increments the now-selected option's value, persisted to game.json.
 
-    The option order is ``[sensitivity, num_teams, force_all_start]`` and starts
-    at index 0 (sensitivity) on entry, so one Move lands on num_teams.
+    The option order is ``[sensitivity, num_teams, force_all_start,
+    agent_control]`` and starts at index 0 (sensitivity) on entry, so one Move
+    lands on num_teams (agent_control is appended last and does not shift this).
     """
     serials = await _start_menu_with_controllers(docker_compose, menu_client)
     admin_serial = serials[0]
