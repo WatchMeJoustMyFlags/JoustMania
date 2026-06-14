@@ -74,6 +74,46 @@ func TestEffectiveConcurrencyFromEnv(t *testing.T) {
 	}
 }
 
+// #1018 (option b): the default effective concurrency is now >1 so the registry
+// actually spawns CONCURRENT shadow games (the coordinator runs them in
+// parallel) and #1003's same-tick atomic pair reservation activates (it needs
+// effective concurrency >= 2 to reserve BOTH arms in one tick). This locks the
+// default boundary: it must stay >= 2 and <= the registry capacity ceiling.
+func TestDefaultEffectiveConcurrencyEnablesConcurrentPairing(t *testing.T) {
+	if DefaultEffectiveConcurrency < 2 {
+		t.Fatalf("DefaultEffectiveConcurrency = %d, want >= 2 so #1003 atomic pairing activates (#1018)",
+			DefaultEffectiveConcurrency)
+	}
+	if DefaultEffectiveConcurrency > DefaultMaxShadowGames {
+		t.Fatalf("DefaultEffectiveConcurrency = %d exceeds DefaultMaxShadowGames = %d (must stay under the ceiling)",
+			DefaultEffectiveConcurrency, DefaultMaxShadowGames)
+	}
+
+	// At the real default (no env override), a single tick spawns a WHOLE pair
+	// (both arms) — the concurrent behavior #1018 unlocks. Construct via
+	// NewRegistry so EffectiveConcurrency resolves from the default.
+	spawner := &fakeSpawner{}
+	r := NewRegistry(RegistryConfig{
+		Root:           t.TempDir(),
+		MaxShadowGames: DefaultMaxShadowGames,
+		// EffectiveConcurrency left 0 => resolves to DefaultEffectiveConcurrency.
+		Spawner: spawner,
+		Verdict: fakeVerdict{concludeAtN: 1000},
+		Clock:   fixedClock(),
+	})
+	ctx := context.Background()
+	id, err := r.Declare(sampleIntent())
+	if err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+	if err := r.Start(ctx, id); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if n := r.AllocateAndSpawn(ctx); n < 2 {
+		t.Fatalf("one tick spawned %d, want >= 2 (a full pair) under the new default", n)
+	}
+}
+
 // The effective cap bounds in-flight spawns to the coordinator's real
 // concurrency even when MaxShadowGames (capacity bookkeeping) is much larger, so
 // the registry does not over-spawn doomed concurrent starts (#998).

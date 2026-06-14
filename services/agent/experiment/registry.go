@@ -90,13 +90,20 @@ const maxShadowGamesEnv = "AGENT_MAX_SHADOW_GAMES"
 // DefaultEffectiveConcurrency is the default cap on the number of in-flight
 // shadow spawns the registry will hold at once — the EFFECTIVE concurrency, as
 // distinct from the registry's capacity bookkeeping (AGENT_MAX_SHADOW_GAMES).
-// The game-coordinator runs ONE game at a time (#998 / #988: "default cap of
-// 1"), so the registry must not keep attempting more concurrent starts than the
-// coordinator can admit — each over-spawn is a doomed start ("Game already in
-// progress"). Defaulting to 1 matches the coordinator's real cap; an operator
-// raises it via AGENT_SHADOW_EFFECTIVE_CONCURRENCY when the coordinator is taught
-// to run concurrent shadow games (the long-term fix tracked separately).
-const DefaultEffectiveConcurrency = 1
+//
+// #1018 (option b) taught the game-coordinator to run CONCURRENT shadow games:
+// the single-game guard now applies to REAL games only, and shadow sessions run
+// concurrently up to GAME_MAX_SHADOW_GAMES (coordinator default 4). So the
+// registry can keep multiple shadow starts in flight without each over-spawn
+// being a doomed "Game already in progress" start. Defaulting to 4 matches the
+// coordinator's default shadow cap and makes #1003's same-tick atomic pair
+// reservation activate (it needs effective concurrency >= 2 to reserve BOTH arms
+// in one tick → tighter CRN pairing). 4 is a deliberately conservative >1 value
+// for a single-interpreter coordinator on Pi 5-class hardware; it is well under
+// the AGENT_MAX_SHADOW_GAMES=20 registry ceiling and is clamped to it. An
+// operator raises/lowers it via AGENT_SHADOW_EFFECTIVE_CONCURRENCY. Backpressure
+// still applies: a coordinator-at-capacity rejection is release+retry next tick.
+const DefaultEffectiveConcurrency = 4
 
 // effectiveConcurrencyEnv overrides DefaultEffectiveConcurrency. A non-positive
 // value is treated as misconfiguration and falls back to the default.
