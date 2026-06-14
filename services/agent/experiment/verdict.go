@@ -135,16 +135,26 @@ func NewVerdict(minN int, effectThreshold float64, stat CohortStat) *Verdict {
 	return &Verdict{minN: minN, effectThreshold: effectThreshold, stat: stat}
 }
 
+// MinNFromEnv resolves the verdict min-N-per-arm gate from AGENT_VERDICT_MIN_N,
+// falling back to DefaultMinNPerArm on an unset, empty, non-numeric, or
+// non-positive value. It is exported so the registry can mirror the SAME min-N
+// the verdict uses (for target_n reconciliation and the inconclusive-past-target
+// termination guard, #1001) without duplicating the parse or widening the
+// CohortVerdict seam.
+func MinNFromEnv() int {
+	if v := strings.TrimSpace(os.Getenv(minNEnv)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return DefaultMinNPerArm
+}
+
 // NewVerdictFromEnv builds a Verdict from AGENT_VERDICT_MIN_N /
 // AGENT_VERDICT_EFFECT_THRESHOLD, falling back to the defaults on an unset, empty,
 // or invalid value. The default Cohen's d strategy is used.
 func NewVerdictFromEnv() *Verdict {
-	minN := DefaultMinNPerArm
-	if v := strings.TrimSpace(os.Getenv(minNEnv)); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			minN = n
-		}
-	}
+	minN := MinNFromEnv()
 	threshold := DefaultEffectThreshold
 	if v := strings.TrimSpace(os.Getenv(effectEnv)); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
