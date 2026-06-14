@@ -495,6 +495,15 @@ make protos
 
 ---
 
+## Settings Ownership (Human vs Agent)
+
+Two actors mutate overlapping game parameters: the human admin (pre-game intent,
+`game.json` / `user.json`) and the adaptive agent (bounded in-game deltas,
+`interventions.json`). The precedence, composition, and invalidation rules between
+them are specified in [Ownership Model](OWNERSHIP_MODEL.md).
+
+---
+
 ## Acknowledgments
 
 JoustMania's PS Move controller support was originally built on [psmoveapi](https://github.com/thp/psmoveapi) by Thomas Perl. The project has since migrated to direct HID communication via [hidapi](https://github.com/trezor/cython-hidapi), but psmoveapi's protocol documentation and reference implementation were instrumental in understanding the PS Move HID report format.
