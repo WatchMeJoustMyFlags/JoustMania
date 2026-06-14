@@ -1431,6 +1431,55 @@ func (r *Registry) Capacity() int { return r.maxCap }
 // 1) and clamped to Capacity.
 func (r *Registry) EffectiveCapacity() int { return r.effectiveCap }
 
+// Reconfigure live-updates the registry's runtime caps (#1044) so a hot-reload of
+// experiment_shadow_effective_concurrency / experiment_max_games / verdict_min_n
+// takes effect with NO restart. The experiment loop calls it each tick from the
+// live agent.json flags; the env-derived value is the bootstrap default the flag
+// falls back to, so a fresh agent.json reproduces byte-identical behavior.
+//
+// SAFETY (the #1044 hard-part-2 requirement): every field is updated UNDER r.mu,
+// the same lock that guards all capacity/lifecycle bookkeeping (spawnsInFlight,
+// the games maps, tombstones, the round-robin cursors). It only changes the cap
+// VALUES the allocator reads on its next pass — it never touches an in-flight
+// game, a reservation, or a tombstone — so lowering a cap mid-run simply stops NEW
+// allocations until in-flight drains below it; existing shadow games conclude /
+// release normally. minN is mirrored onto the verdict too (via SetThresholds) so
+// the two stay coherent, exactly as construction did. Non-positive inputs are
+// treated per-field as the constructor does:
+//   - effectiveConcurrency <= 0 ⇒ ignored (keep current; a zero cap would stall
+//     every experiment — misconfiguration);
+//   - maxGames < 0 ⇒ normalized to 0 (explicit "disable the games budget"); 0 is a
+//     legitimate disable and is honored verbatim;
+//   - minN <= 0 ⇒ ignored (keep current; the verdict's own floor also guards).
+//
+// minPairs is verdict-only (the registry does not mirror it); it is forwarded to
+// the verdict via SetThresholds. A negative minPairs is ignored there.
+func (r *Registry) Reconfigure(effectiveConcurrency, maxGames, minN, minPairs int) {
+	r.mu.Lock()
+	if effectiveConcurrency > 0 {
+		eff := effectiveConcurrency
+		if eff > r.maxCap {
+			eff = r.maxCap // never exceed the capacity-bookkeeping bound.
+		}
+		r.effectiveCap = eff
+	}
+	if maxGames >= 0 {
+		r.maxGames = maxGames // 0 ⇒ disable the games budget (other guards still terminate).
+	}
+	if minN > 0 {
+		r.minN = minN
+	}
+	r.mu.Unlock()
+
+	// Mirror the verdict gates outside r.mu (the verdict has its OWN lock; holding
+	// both is unnecessary and invites a lock-ordering question). SetThresholds
+	// ignores a non-positive value per gate, so a transient flagd hiccup never
+	// loosens the verdict.
+	if v, ok := r.verdict.(*Verdict); ok {
+		v.SetThresholds(minN, minPairs)
+	}
+}
+
 // Live returns the ids of experiments that may be allocated shadow capacity —
 // i.e. those in RUNNING (targeting written, ready to accrue games), sorted. A
 // PROPOSED experiment occupies a registry slot but is not yet spawnable, so it is

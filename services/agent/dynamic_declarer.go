@@ -148,12 +148,17 @@ type dynamicDeclarer struct {
 }
 
 // newDynamicDeclarerFromEnv builds the declarer from the AGENT_EXPERIMENT_DYNAMIC_*
-// env vars, or returns nil when the opt-in is off (so the caller wires nothing).
-// pressure is the optional live signal seam (nil ⇒ default-objective fallback).
+// env vars. pressure is the optional live signal seam (nil ⇒ default-objective
+// fallback).
+//
+// #1044: the declarer is ALWAYS built now — the on/off gate moved to the LIVE
+// experiment_dynamic_enabled flag, checked PER TICK by the loop
+// (declareDynamicIfEnabled), so an off→on flip at runtime starts dynamic
+// declaration with no restart. The env AGENT_EXPERIMENT_DYNAMIC_ENABLED is the
+// BOOTSTRAP DEFAULT that flag falls back to. The candidate-set + objective +
+// target-N + denylist remain env-configured (the candidate/denylist LISTS stay env
+// per the flagd list-flag trap; see flags.go), read once here at build.
 func newDynamicDeclarerFromEnv(gameFlagPath string, pressure pressureFunc) *dynamicDeclarer {
-	if !dynamicEnabled() {
-		return nil
-	}
 	objective := strings.TrimSpace(os.Getenv(envDynamicObjective))
 	if !decision.IsExperimentable(objective) {
 		objective = decision.ObjectiveBalanced

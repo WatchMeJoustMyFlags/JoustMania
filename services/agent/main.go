@@ -649,11 +649,15 @@ func main() {
 
 	// M7 / #991 experiment cohort loop — FINAL ASSEMBLY (epic #982). buildExperimentLoop
 	// constructs the experiment.Registry with the REAL seams (#976 spawner, #977
-	// targeting Gate/Writer, #979 verdict, #980/#961 promoter) ONLY when the opt-in
-	// AGENT_EXPERIMENTS_ENABLED=true. The DEFAULT (unset) returns nil: NO Registry,
-	// NO shadow spawns, NO targeting writes, NO promotions — the agent's behavior is
-	// byte-unchanged. The real-default promotion path stays behind ALL of #961's
-	// gates (the promoter built above + the kill-switch via the ConfigResolver).
+	// targeting Gate/Writer, #979 verdict, #980/#961 promoter). #1044 startup-gate
+	// inversion: the loop is ALWAYS built + run now, and SELF-GATES each tick on the
+	// LIVE agent.json experiments_enabled flag (default off, env AGENT_EXPERIMENTS_ENABLED
+	// is the bootstrap default). When disabled — the default — the loop does NOTHING:
+	// no rehydrate, no seed, no shadow spawn, no targeting write, no promotion — so the
+	// agent's behavior is byte-identical to the pre-#1044 nil-loop case, but an off→on
+	// flip at runtime starts it with no restart. The real-default promotion path stays
+	// behind ALL of #961's gates (the promoter built above + the kill-switch via the
+	// ConfigResolver).
 	expLoop := buildExperimentLoop(agentFlags, promoter, getEnv("GAME_FLAG_PATH", experiment.DefaultGamePath), logger)
 	if expLoop != nil {
 		// Bind the spawner's background game-drive goroutines to the agent's root

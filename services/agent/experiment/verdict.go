@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/joustmania/agent/experiment/journal"
 )
@@ -121,17 +122,41 @@ func (effectSizeGate) Effect(experimental, control journal.Welford) (float64, bo
 // FitnessMeasurer and decision loop already use), so a positive effect means the
 // experimental arm beat control.
 type Verdict struct {
+	// mu guards the live-tunable thresholds (minN / minPairs) so SetThresholds
+	// (#1044, called from the experiment loop's tick goroutine) and Evaluate (called
+	// under the registry lock from a ConcludeGame goroutine) never race. The other
+	// fields (effectThreshold / stat) are construction-immutable and read without the
+	// lock.
+	mu sync.RWMutex
 	// minN is the minimum Count both arms must reach for a conclusive TWO-ARM verdict
-	// (the fallback path).
+	// (the fallback path). Live-tunable via SetThresholds (#1044, verdict_min_n).
 	minN int
 	// minPairs is the minimum completed-pair count PairDiff must reach for a conclusive
-	// PAIRED verdict (the primary path when CRN pairs exist).
+	// PAIRED verdict (the primary path when CRN pairs exist). Live-tunable via
+	// SetThresholds (#1044, verdict_min_pairs).
 	minPairs int
 	// effectThreshold is the minimum |effect| for a promote/discard verdict. It gates
 	// both the two-arm Cohen's d and the paired d_z (both are standardized effects).
 	effectThreshold float64
 	// stat is the swappable comparison strategy (default effectSizeGate).
 	stat CohortStat
+}
+
+// SetThresholds live-updates the min-N and min-pairs gates (#1044) so a hot-reload
+// of verdict_min_n / verdict_min_pairs takes effect on the NEXT Evaluate with no
+// restart. A non-positive value is IGNORED for that gate (keeps the current value),
+// mirroring the constructor's fail-safe floor — a transient flagd hiccup that
+// resolves a knob to 0 must not silently make every thin sample "conclusive". It is
+// safe to call concurrently with Evaluate; both take v.mu.
+func (v *Verdict) SetThresholds(minN, minPairs int) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if minN > 0 {
+		v.minN = minN
+	}
+	if minPairs > 0 {
+		v.minPairs = minPairs
+	}
 }
 
 // NewVerdict builds a Verdict with explicit thresholds. A non-positive minN falls
@@ -237,6 +262,14 @@ func NewVerdictFromEnv() *Verdict {
 // so the registry leaves any prior verdict untouched rather than overwriting it
 // with a vacuous one.
 func (v *Verdict) Evaluate(s journal.Summary) (journal.Verdict, bool) {
+	// Snapshot the live-tunable gates ONCE under the lock (#1044) so a concurrent
+	// SetThresholds cannot tear them mid-evaluation; the rest of the method uses the
+	// locals.
+	v.mu.RLock()
+	minN := v.minN
+	minPairs := v.minPairs
+	v.mu.RUnlock()
+
 	// PAIRED PATH (#1004): when seed-matched (experimental, control) pairs have
 	// completed (#1003), difference fitness PER PAIR. Common Random Numbers remove the
 	// shared game variance inside each d_i = f_exp_i − f_ctl_i, so the standardized
@@ -245,7 +278,7 @@ func (v *Verdict) Evaluate(s journal.Summary) (journal.Verdict, bool) {
 	// whenever at least one pair has completed; otherwise we fall through to the
 	// two-arm path so legacy/unpaired experiments are unaffected (the fallback).
 	if s.PairDiff != nil && s.PairDiff.Count > 0 {
-		return v.evaluatePaired(*s.PairDiff)
+		return v.evaluatePaired(*s.PairDiff, minPairs)
 	}
 
 	expStat, expOK := s.Arms[ArmExperimental]
@@ -262,13 +295,13 @@ func (v *Verdict) Evaluate(s journal.Summary) (journal.Verdict, bool) {
 
 	// Min-N gate FIRST: an under-powered cohort is inconclusive regardless of the
 	// observed delta or effect (the #979 acceptance: never a false positive).
-	if exp.Count < v.minN || ctl.Count < v.minN {
+	if exp.Count < minN || ctl.Count < minN {
 		return journal.Verdict{
 			Outcome:     OutcomeInconclusive,
 			Delta:       delta,
 			Significant: false,
 			Reason: fmt.Sprintf("under-powered: n_experimental=%d n_control=%d < min_n=%d",
-				exp.Count, ctl.Count, v.minN),
+				exp.Count, ctl.Count, minN),
 		}, true
 	}
 
@@ -330,16 +363,16 @@ func (v *Verdict) Evaluate(s journal.Summary) (journal.Verdict, bool) {
 // Delta carries mean(d) (the average per-pair fitness improvement) for the audit
 // trail. The bool is always true: a non-nil non-empty PairDiff is a meaningful
 // (possibly interim) verdict the registry should record.
-func (v *Verdict) evaluatePaired(pd journal.Welford) (journal.Verdict, bool) {
+func (v *Verdict) evaluatePaired(pd journal.Welford, minPairs int) (journal.Verdict, bool) {
 	meanD := pd.Mean
 
-	if pd.Count < v.minPairs {
+	if pd.Count < minPairs {
 		return journal.Verdict{
 			Outcome:     OutcomeInconclusive,
 			Delta:       meanD,
 			Significant: false,
 			Reason: fmt.Sprintf("paired under-powered: pairs=%d < min_pairs=%d",
-				pd.Count, v.minPairs),
+				pd.Count, minPairs),
 		}, true
 	}
 

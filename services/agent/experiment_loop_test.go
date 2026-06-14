@@ -14,6 +14,7 @@ import (
 
 	"github.com/joustmania/agent/experiment"
 	"github.com/joustmania/agent/experiment/journal"
+	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
 	"github.com/joustmania/agent/gamerunner"
 	"github.com/joustmania/agent/promote"
@@ -186,8 +187,21 @@ func buildLoopForTest(
 	return &experimentLoop{
 		registry: reg,
 		log:      log,
-		tick:     time.Hour, // tests drive allocation explicitly
 		fitness:  fitness,
+		// #1044: the loop self-gates each tick on the live ExperimentConfig. With a nil
+		// flags client these tests drive allocation explicitly, so prime the bootstrap
+		// defaults ENABLED (the loop's gate ON) and a long tick — preserving the
+		// pre-#1044 "the loop runs and allocates" behavior the conclusion/grace tests
+		// assert. config(ctx) with a nil flags client returns these defaults verbatim.
+		expDefaults: flags.ExperimentDefaults{
+			Enabled:              true,
+			Tick:                 time.Hour, // tests drive allocation explicitly
+			DynamicMaxConcurrent: defaultDynamicMaxConcurrent,
+			// ShadowEffectiveConcurrency LEFT 0 on purpose: Reconfigure ignores a
+			// non-positive concurrency, so the loop's allocateIfEnabled does NOT clobber
+			// the registry's own EffectiveConcurrency (some tests pin concurrency=1 by
+			// swapping in their own registry). Production resolves a positive env/flag value.
+		},
 	}
 }
 
@@ -786,21 +800,37 @@ func newRegistryConcurrency1(t *testing.T, spawner experiment.ShadowSpawner, res
 	})
 }
 
-// TestBuildExperimentLoop_DisabledByDefault is the disabled-default AC: with the
-// opt-in OFF (the default, env unset), buildExperimentLoop returns nil — NO
-// Registry, NO seams, NO goroutines. The agent's normal behavior is unchanged.
+// TestBuildExperimentLoop_DisabledByDefault is the disabled-default AC (#1044
+// startup-gate inversion). The loop is ALWAYS built now (so an off→on flag flip can
+// start it at runtime), but with the opt-in OFF (the default, env unset) it
+// SELF-GATES to a no-op: experiments_enabled defaults to false, so allocateIfEnabled
+// runs no rehydrate, no seed, no allocate — byte-identical to the pre-#1044
+// nil-loop behavior. The env value is only the BOOTSTRAP DEFAULT.
 func TestBuildExperimentLoop_DisabledByDefault(t *testing.T) {
 	// Ensure the opt-in env is unset (the default).
 	t.Setenv(envExperimentsEnabled, "")
 	loop := buildExperimentLoop(nil, nil, "/nonexistent/game.json", testLogger())
-	if loop != nil {
-		t.Fatalf("buildExperimentLoop must return nil when AGENT_EXPERIMENTS_ENABLED is unset (default-off)")
+	if loop == nil {
+		t.Fatalf("buildExperimentLoop must ALWAYS build the loop now (#1044); gating is the live flag, not a nil return")
+	}
+	if loop.expDefaults.Enabled {
+		t.Fatalf("with AGENT_EXPERIMENTS_ENABLED unset the bootstrap default must be disabled, got Enabled=true")
+	}
+	// The loop self-gates OFF: an allocate tick with the disabled default does no
+	// work (no live experiments declared).
+	loop.allocateIfEnabled(context.Background())
+	if got := loop.registry.LiveCount(); got != 0 {
+		t.Fatalf("disabled-by-default loop declared work: LiveCount = %d, want 0", got)
+	}
+	if loop.startedOnce {
+		t.Fatalf("disabled-by-default loop ran its rehydrate+seed bootstrap; it must defer until enabled")
 	}
 
 	// Explicit "false" is also off.
 	t.Setenv(envExperimentsEnabled, "false")
-	if buildExperimentLoop(nil, nil, "/nonexistent/game.json", testLogger()) != nil {
-		t.Fatalf("buildExperimentLoop must return nil when AGENT_EXPERIMENTS_ENABLED=false")
+	loop2 := buildExperimentLoop(nil, nil, "/nonexistent/game.json", testLogger())
+	if loop2 == nil || loop2.expDefaults.Enabled {
+		t.Fatalf("AGENT_EXPERIMENTS_ENABLED=false must build a loop with the disabled bootstrap default")
 	}
 }
 
@@ -831,8 +861,9 @@ func TestExperimentLoop_RunShutdownNoLeak(t *testing.T) {
 	}
 	loop := buildLoopForTest(t, spawner, resolve, &recordingRealDefault{}, &recordingGitHub{}, armFitness())
 	// A short tick so the allocate loop actually fires during the test, proving it
-	// stops on ctx cancel rather than merely never having started.
-	loop.tick = 5 * time.Millisecond
+	// stops on ctx cancel rather than merely never having started. #1044: the tick is
+	// resolved live from expDefaults.Tick (nil flags client), so set it there.
+	loop.expDefaults.Tick = 5 * time.Millisecond
 	// Seed an experiment so the loop has live work each tick.
 	loop.seed = &experiment.Intent{
 		FlagKey: "invincibility_seconds", ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 100,
