@@ -1,0 +1,70 @@
+# LiteLLM gateway config (#1049, per the #1046 design)
+#
+# The "tool in the middle": the agent talks to ONE OpenAI-compatible endpoint
+# (this proxy on :4000) and backend selection + key custody + fallback chains
+# live HERE, in config — not in the agent's Go binary.
+#
+# Control-plane boundary (#1046): OpenFeature / agent.json stays the control
+# plane. The agent.json `model` flag (variants: phi4-mini | gemma3:4b | claude |
+# copilot) is sent verbatim as the OpenAI `model` param. The route NAMES below
+# MUST be a superset of those variants so a flag flip resolves to a real route.
+# This file only maps route -> provider; it does NOT decide WHICH route to use.
+#
+# Keys live ONLY in this gateway's env (ANTHROPIC_API_KEY), NEVER in the agent
+# container. The gateway works Ollama-only with NO key set — see fallbacks.
+
+model_list:
+  # ---- Free local default: host Ollama (no key, fully offline) ----
+  # api_base points at the HOST machine's Ollama; the compose service adds
+  # extra_hosts host.docker.internal:host-gateway so this resolves from the
+  # gateway container. OLLAMA_BASE_URL lets a deployment repoint it (e.g. a LAN
+  # Jetson) without editing this file.
+  - model_name: phi4-mini
+    litellm_params:
+      model: ollama_chat/phi4-mini
+      api_base: os.environ/OLLAMA_BASE_URL
+
+  # gemma3:4b — the higher-quality local tier (#738; typically the Jetson over
+  # the LAN). Same Ollama backend by default; repoint OLLAMA_BASE_URL per host.
+  - model_name: gemma3:4b
+    litellm_params:
+      model: ollama_chat/gemma3:4b
+      api_base: os.environ/OLLAMA_BASE_URL
+
+  # ---- Optional cloud top layer: Anthropic (API key, NOT Max OAuth) ----
+  # Reached only when ANTHROPIC_API_KEY is set in the GATEWAY env. The
+  # agent.json `model=claude` variant resolves here. Falls back to local on a
+  # cloud outage (see litellm_settings.fallbacks below).
+  - model_name: claude
+    litellm_params:
+      model: anthropic/claude-haiku-4-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # `copilot` is an agent.json variant but has NO sanctioned standalone API
+  # (#1046 dropped it). Map it to the local default so a stale flag value still
+  # resolves (fail-soft) instead of returning an unknown-model error.
+  - model_name: copilot
+    litellm_params:
+      model: ollama_chat/phi4-mini
+      api_base: os.environ/OLLAMA_BASE_URL
+
+litellm_settings:
+  # Fallback chains (#1046): a cloud outage degrades to LOCAL, never to nothing.
+  # claude -> phi4-mini keeps inference answering on Anthropic failure/unset key.
+  # The local routes have no cloud fallback (they ARE the terminal LLM tier);
+  # the agent's rules engine remains the always-present last rung (gateway
+  # outage != agent outage — that terminal fallback stays agent-side, #1046).
+  fallbacks:
+    - claude: ["phi4-mini"]
+    - gemma3:4b: ["phi4-mini"]
+  # Keep latency bounded so a hung backend degrades to the fallback promptly.
+  request_timeout: 30
+  # Don't abort the proxy if ANTHROPIC_API_KEY is unset — the gateway must run
+  # Ollama-only. The claude route simply errors on use and falls back to local.
+  drop_params: true
+
+general_settings:
+  # Optional shared key for the proxy's OpenAI-compatible API. When set, the
+  # agent must send it as AGENT_INFERENCE_API_KEY. Unset (default) = open on the
+  # internal docker network only (the service is not published to the host).
+  master_key: os.environ/LITELLM_MASTER_KEY

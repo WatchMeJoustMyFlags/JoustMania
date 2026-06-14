@@ -773,6 +773,63 @@ services:
           cpus: '0.5'
     logging: *default-logging
 
+  # LiteLLM gateway (#1049, per the #1046 design) — the OpenAI-compatible "tool
+  # in the middle". OPT-IN: behind the `gateway` profile, so a plain `up` runs
+  # WITHOUT it (the agent stays on its stub/Ollama-direct default, no behavior
+  # change). Enable with `--profile gateway` (see docs/agent-inference-gateway.md).
+  #
+  # When up, the agent points AGENT_INFERENCE_BASE_URL at http://litellm:4000/v1
+  # (set that + AGENT_INFERENCE_BACKEND=openai on the agent — see the runbook).
+  # Backend selection stays OpenFeature-driven (agent.json `model`); this gateway
+  # only resolves route -> provider and holds the keys (NEVER in the agent).
+  litellm:
+    image: ghcr.io/berriai/litellm:v1.88.2
+    container_name: joustmania-litellm
+    profiles:
+      - gateway
+    command: ["--config", "/etc/litellm/config.yaml", "--port", "4000"]
+    expose:
+      - "4000"
+    ports:
+      # Published so a host-side curl can smoke-test /v1/models and
+      # /v1/chat/completions. Drop this mapping on a hardened fleet host if the
+      # gateway should stay docker-network-internal only.
+      - "4000:4000"
+    environment:
+      # Free local default: where the gateway reaches Ollama. Defaults to the
+      # HOST machine's Ollama via host.docker.internal (extra_hosts below).
+      # Repoint to a LAN Jetson (#738) without editing config.yaml.
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      # OPTIONAL cloud layer. Leave empty to run Ollama-only; the `claude` route
+      # then errors on use and falls back to local (config.yaml fallbacks). The
+      # key lives HERE in the gateway env ONLY — never in the agent container.
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # Optional shared key for the proxy's own OpenAI-compatible API. Unset =
+      # open on the internal docker network. When set, the agent must send it via
+      # AGENT_INFERENCE_API_KEY.
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-}
+    volumes:
+      - ./services/litellm/config.yaml:/etc/litellm/config.yaml:ro
+    # Reach the HOST machine's Ollama (same mechanism the agent uses, #1048).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - joustmania
+    restart: unless-stopped
+    healthcheck:
+      # LiteLLM exposes a liveness endpoint at /health/liveliness.
+      test: ["CMD", "curl", "-fsS", "http://localhost:4000/health/liveliness"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: '1.0'
+    logging: *default-logging
+
   # Dashboard (Real-time controller visualization SPA)
   dashboard:
     image: ghcr.io/watchmejoustmyflags/joustmania/dashboard:${IMAGE_TAG:-latest}
