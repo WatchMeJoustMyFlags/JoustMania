@@ -71,6 +71,11 @@ message ButtonRequest {
         MOVE = 1;
         SELECT = 2;
         START = 3;
+        CROSS = 4;
+        CIRCLE = 5;
+        SQUARE = 6;
+        TRIANGLE = 7;
+        PS = 8;
     }
     Button button = 2;
     bool pressed = 3;

@@ -187,6 +187,11 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
                 controller_manager_mock_pb2.ButtonRequest.MOVE: ButtonKey.MOVE,
                 controller_manager_mock_pb2.ButtonRequest.SELECT: ButtonKey.SELECT,
                 controller_manager_mock_pb2.ButtonRequest.START: ButtonKey.START,
+                controller_manager_mock_pb2.ButtonRequest.CROSS: ButtonKey.CROSS,
+                controller_manager_mock_pb2.ButtonRequest.CIRCLE: ButtonKey.CIRCLE,
+                controller_manager_mock_pb2.ButtonRequest.SQUARE: ButtonKey.SQUARE,
+                controller_manager_mock_pb2.ButtonRequest.TRIANGLE: ButtonKey.TRIANGLE,
+                controller_manager_mock_pb2.ButtonRequest.PS: ButtonKey.PS,
             }
 
             button_key = button_map.get(request.button)

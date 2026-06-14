@@ -15,7 +15,7 @@ service_dir = test_dir.parent
 project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 
-from lib.controller_constants import AxisKey, StateKey
+from lib.controller_constants import AxisKey, ButtonKey, StateKey
 from proto import controller_manager_mock_pb2
 from services.controller_manager.mock_control_service import MockControllerService
 from services.controller_manager.multiplexer.mock_adapter import MockAdapter
@@ -96,6 +96,104 @@ class TestAddControllers:
         assert response.success
         assert len(response.serials) == 3
         assert len(adapter.controllers) == 5
+
+
+# Every proto ButtonRequest.Button enum value paired with the backend
+# ButtonKey it must drive. The mock SimulateButton API must cover all nine
+# physical buttons (#821) — the admin entry combo is the four face buttons held
+# together, and admin exit is the PS button.
+_BUTTON_CASES = [
+    (controller_manager_mock_pb2.ButtonRequest.TRIGGER, ButtonKey.TRIGGER),
+    (controller_manager_mock_pb2.ButtonRequest.MOVE, ButtonKey.MOVE),
+    (controller_manager_mock_pb2.ButtonRequest.SELECT, ButtonKey.SELECT),
+    (controller_manager_mock_pb2.ButtonRequest.START, ButtonKey.START),
+    (controller_manager_mock_pb2.ButtonRequest.CROSS, ButtonKey.CROSS),
+    (controller_manager_mock_pb2.ButtonRequest.CIRCLE, ButtonKey.CIRCLE),
+    (controller_manager_mock_pb2.ButtonRequest.SQUARE, ButtonKey.SQUARE),
+    (controller_manager_mock_pb2.ButtonRequest.TRIANGLE, ButtonKey.TRIANGLE),
+    (controller_manager_mock_pb2.ButtonRequest.PS, ButtonKey.PS),
+]
+
+
+class TestSimulateButton:
+    @pytest.mark.parametrize(("proto_button", "button_key"), _BUTTON_CASES)
+    def test_press_sets_backend_state(self, proto_button, button_key):
+        """Each of the nine buttons can be pressed and released independently."""
+        service, adapter = _make_service()
+        adapter.add_controller("BTN")
+
+        request = controller_manager_mock_pb2.ButtonRequest(serial="BTN", button=proto_button, pressed=True)
+        response = service.SimulateButton(request, None)
+        assert response.success
+        assert response.error == ""
+        assert adapter.controllers["BTN"][button_key] is True
+
+        release = controller_manager_mock_pb2.ButtonRequest(serial="BTN", button=proto_button, pressed=False)
+        response = service.SimulateButton(release, None)
+        assert response.success
+        assert adapter.controllers["BTN"][button_key] is False
+
+    def test_all_nine_buttons_covered(self):
+        """The parametrized cases must enumerate every ButtonKey (no gaps)."""
+        covered = {button_key for _proto_button, button_key in _BUTTON_CASES}
+        assert covered == set(ButtonKey)
+
+    def test_unknown_controller_returns_error(self):
+        service, _adapter = _make_service()
+        request = controller_manager_mock_pb2.ButtonRequest(
+            serial="MISSING",
+            button=controller_manager_mock_pb2.ButtonRequest.CROSS,
+            pressed=True,
+        )
+        response = service.SimulateButton(request, None)
+        assert not response.success
+        assert "not found" in response.error
+
+    def test_hold_all_four_face_buttons_simultaneously(self):
+        """Admin entry combo: CROSS+CIRCLE+SQUARE+TRIANGLE held together.
+
+        Each press is an independent dict key, so no releases are required
+        between presses — all four must read True at the same time (#821).
+        """
+        service, adapter = _make_service()
+        adapter.add_controller("ADMIN")
+
+        face_buttons = [
+            controller_manager_mock_pb2.ButtonRequest.CROSS,
+            controller_manager_mock_pb2.ButtonRequest.CIRCLE,
+            controller_manager_mock_pb2.ButtonRequest.SQUARE,
+            controller_manager_mock_pb2.ButtonRequest.TRIANGLE,
+        ]
+        for proto_button in face_buttons:
+            response = service.SimulateButton(
+                controller_manager_mock_pb2.ButtonRequest(serial="ADMIN", button=proto_button, pressed=True),
+                None,
+            )
+            assert response.success
+
+        controller = adapter.controllers["ADMIN"]
+        assert controller[ButtonKey.CROSS] is True
+        assert controller[ButtonKey.CIRCLE] is True
+        assert controller[ButtonKey.SQUARE] is True
+        assert controller[ButtonKey.TRIANGLE] is True
+        # Holding the combo must not have disturbed unrelated buttons.
+        assert controller[ButtonKey.PS] is False
+
+    def test_ps_button_for_admin_exit(self):
+        """Admin exit is the PS button — it must be simulatable on its own."""
+        service, adapter = _make_service()
+        adapter.add_controller("EXIT")
+
+        response = service.SimulateButton(
+            controller_manager_mock_pb2.ButtonRequest(
+                serial="EXIT",
+                button=controller_manager_mock_pb2.ButtonRequest.PS,
+                pressed=True,
+            ),
+            None,
+        )
+        assert response.success
+        assert adapter.controllers["EXIT"][ButtonKey.PS] is True
 
 
 # A faithful model of the game-coordinator side of death detection, so a pure
