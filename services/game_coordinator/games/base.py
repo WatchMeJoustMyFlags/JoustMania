@@ -1493,9 +1493,11 @@ class BaseGameMode(ABC):
         accel_mag = self._compute_accel_magnitude(accel)
 
         # Check grace period first - no death or warning during grace period
-        # Matches original JoustMania: if time.time() > no_rumble
+        # Matches original JoustMania: if time.time() > no_rumble. Uses the unified
+        # effective-grace rule (#817): max(agent shield grace_until, admin
+        # invincible_until) so the agent shield and admin baseline compose here too.
         current_time = time.time()
-        if current_time < player.grace_until:
+        if current_time < self.effective_grace_until(player):
             # During grace, reset the EMA so it re-primes from the first
             # post-grace frame. Invincibility must *forget* the death spike:
             # otherwise the EMA still holds it when grace expires and the
@@ -1588,6 +1590,48 @@ class BaseGameMode(ABC):
             )
             await self.gameplay_stream.write(effect_cmd)
 
+    @staticmethod
+    def effective_grace_until(player: "Player") -> float:
+        """
+        Single source of truth for a player's effective death-immunity deadline (#817).
+
+        Two independent actors grant temporary death-immunity through different
+        fields, and #817 (epic #814) ratifies how they compose:
+
+        - **Admin baseline** — ``invincible_until``: the pre-game
+          ``invincibility_seconds`` flag, materialized at match/round start by
+          Tournament/Fight Club (mode-specific; base ``Player`` has no such
+          field, so we read it defensively). The human owns this baseline.
+        - **Agent delta** — ``grace_until``: a temporary additive shield granted
+          mid-game via ``grant_shield`` (also reused by respawn/spawn grace). The
+          agent owns this bounded in-game delta and NEVER persists it to game.json.
+
+        Composition rule (ratified, do not relitigate):
+
+            effective_grace_until = max(grace_until, invincible_until)
+
+        i.e. a player is death-immune while *either* window is open. The agent can
+        only ever EXTEND protection (``grant_shield`` is extend-not-shorten on
+        ``grace_until``); it can neither shorten the admin baseline nor be
+        shortened by it. Symmetrically the admin baseline never silently cancels
+        an active agent shield. ``max`` is the only rule that honors both
+        ownership boundaries at once — overwrite or last-write-wins would let one
+        actor silently void the other.
+
+        Every death/immunity check (the base per-frame gate and the mode-specific
+        ``_kill_player_impl`` / ``_process_controller_state`` checks in Tournament
+        and Fight Club) routes through this helper so the rule lives in exactly
+        one place.
+        """
+        # base Player has no invincible_until; only Tournament/Fight Club add it.
+        return max(player.grace_until, getattr(player, "invincible_until", 0.0))
+
+    def is_in_grace(self, player: "Player", now: float | None = None) -> bool:
+        """True while the player's effective grace (admin ∪ agent) is still open (#817)."""
+        if now is None:
+            now = time.time()
+        return now < self.effective_grace_until(player)
+
     async def grant_shield(self, serial: str, seconds: float) -> bool:
         """
         Grant a temporary shield (invulnerability) to a player (#730, N3).
@@ -1628,11 +1672,16 @@ class BaseGameMode(ABC):
             return False
 
         new_grace = time.time() + seconds
-        # Extend-not-shorten: never pull an existing (longer) shield in.
-        if new_grace <= player.grace_until:
+        # Extend-not-shorten (#817): the agent only ever writes its own
+        # grace_until field — never invincible_until (the admin baseline). If the
+        # player's effective grace (max of agent shield + admin invincibility) is
+        # already longer than the request, this shield is a no-op extension: it
+        # adds nothing, and crucially does NOT shorten an active admin baseline.
+        if new_grace <= self.effective_grace_until(player):
             logger.info(
-                f"Shield for {serial}: existing grace ({player.grace_until:.2f}) "
-                f"already exceeds requested ({new_grace:.2f}); kept"
+                f"Shield for {serial}: existing effective grace "
+                f"({self.effective_grace_until(player):.2f}) already exceeds "
+                f"requested ({new_grace:.2f}); kept"
             )
             return True
 

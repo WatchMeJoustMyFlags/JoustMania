@@ -662,8 +662,10 @@ class TournamentGame(BaseGameMode):
         if player.tournament_state != TournamentState.FIGHTING:
             return
 
-        # Check invincibility
-        if time.time() < player.invincible_until:
+        # Check immunity via the unified effective-grace rule (#817):
+        # max(agent shield grace_until, admin invincible_until). Honors both an
+        # admin invincibility baseline and an agent shield landing mid-match.
+        if self.is_in_grace(player):
             logger.debug(f"Player {serial} is invincible")
             return
 

@@ -406,8 +406,9 @@ class FightClubGame(BaseGameMode):
         player = self.players[serial]
         fc_player = player
 
-        # Check if still invincible
-        if time.time() < fc_player.invincible_until:
+        # Check immunity via the unified effective-grace rule (#817):
+        # max(agent shield grace_until, admin invincible_until).
+        if self.is_in_grace(fc_player):
             logger.debug(f"Player {serial} is invincible, ignoring death")
             return
 
@@ -669,8 +670,12 @@ class FightClubGame(BaseGameMode):
         if fc_player.state not in (FightState.DEFENDER, FightState.FIGHTER):
             return
 
-        # Check invincibility
-        if time.time() < fc_player.invincible_until:
+        # Unified effective-grace gate (#817): max(agent shield grace_until, admin
+        # invincible_until). Fight Club overrides _process_controller_state and so
+        # bypasses the base grace_until gate — routing through is_in_grace here is
+        # what makes an agent shield (grant_shield) actually protect a Fight Club
+        # fighter, not just the admin invincibility window.
+        if self.is_in_grace(fc_player):
             return
 
         # Calculate acceleration magnitude
