@@ -1,0 +1,44 @@
+# LiteLLM gateway override (#1049, per the #1046 design)
+#
+# Layer this ON TOP of the base compose to route the agent THROUGH the LiteLLM
+# gateway instead of talking to Ollama directly. The gateway itself lives in
+# docker-compose.yml behind the `gateway` profile; this file flips the agent's
+# inference env so it dials the gateway service name.
+#
+# Usage (the gateway is OPT-IN — a plain `up` does NOT load this file):
+#
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f docker-compose.gateway.yml \
+#     --profile gateway up -d
+#
+# Set the OPTIONAL Anthropic cloud layer via the GATEWAY env only (a .env or an
+# export reaches the litellm service in docker-compose.yml — NEVER the agent):
+#
+#   ANTHROPIC_API_KEY=sk-ant-... docker compose -f docker-compose.yml \
+#     -f docker-compose.gateway.yml --profile gateway up -d
+#
+# Without a key the gateway runs Ollama-only and the `claude` route falls back
+# to the local model (see services/litellm/config.yaml fallbacks).
+#
+# This changes nothing about the DEFAULT stack: omit this file and the agent
+# keeps its stub/Ollama-direct default (docker-compose.yml).
+
+services:
+  agent:
+    environment:
+      # Route the agent's single OpenAI-compatible client at the gateway.
+      # The agent sends the agent.json `model` value as the OpenAI `model`
+      # param; the gateway resolves route -> provider (config.yaml model_list).
+      - AGENT_INFERENCE_BACKEND=openai
+      - AGENT_INFERENCE_BASE_URL=http://litellm:4000/v1
+      # The model the agent asks for by default. OpenFeature/agent.json `model`
+      # still owns selection at runtime; this is the env-level default the
+      # OpenAI client uses. Keep it a route the gateway defines (phi4-mini).
+      - AGENT_INFERENCE_MODEL=${AGENT_INFERENCE_MODEL:-phi4-mini}
+      # The proxy's optional master key. Only needed if LITELLM_MASTER_KEY is
+      # set on the gateway. Empty = unauthenticated on the internal network.
+      - AGENT_INFERENCE_API_KEY=${LITELLM_MASTER_KEY:-}
+    depends_on:
+      litellm:
+        condition: service_healthy

@@ -752,6 +752,13 @@ a real model, copy `llm.prompt.system` / `llm.prompt.user` into two files and ru
 [docs/research/739-prompt-capture.md](../../docs/research/739-prompt-capture.md)
 for the response contract and the forward path (#741 backend, #742 auth).
 
+> **Real inference backend (#1048/#1049):** the OpenAI-compatible `Backend.Infer`
+> (`inference/openai.go`) is driven by `AGENT_INFERENCE_*` env. By default it is a
+> `stub` (or Ollama-direct). To route through the optional **LiteLLM gateway** —
+> one endpoint, Ollama default + optional Anthropic, with fallback chains and
+> gateway-side key custody — see
+> [docs/agent-inference-gateway.md](../../docs/agent-inference-gateway.md).
+
 #### Post-game retrospective capture (M4, #844)
 
 When a game **ends** (the `GameActive` true→false transition fires the store's
