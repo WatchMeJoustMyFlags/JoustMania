@@ -490,13 +490,28 @@ class BaseGameMode(ABC):
         self.running = False
         self.gameplay_stream = None  # Phase 46: Bidirectional stream for feedback commands
 
-        # Settings - sensitivity is now passed via StartGameConfig
-        # Validate and convert to Sensitivity enum
+        # Settings - sensitivity is now passed via StartGameConfig.
+        #
+        # Sensitivity arbitration (#816, M9 ownership model — epic #814):
+        #   - ``baseline_sensitivity`` is the ADMIN's source of truth (pre-game
+        #     lobby intent). The admin may update it mid-game via
+        #     ``set_baseline_sensitivity`` (which invalidates any active agent
+        #     override — a human baseline change wins).
+        #   - ``sensitivity_override`` is the AGENT's bounded in-game override
+        #     LAYER (``None`` = no override). The agent never persists into the
+        #     baseline; clearing the override returns to the CURRENT baseline,
+        #     not a stale game-start snapshot.
+        #   - ``sensitivity`` (property below) is the EFFECTIVE level read by
+        #     ``_compute_effective_thresholds`` and the metrics/spans: the
+        #     override if active, otherwise the baseline.
+        # Validate and convert to Sensitivity enum.
         if 0 <= sensitivity <= 4:
-            self.sensitivity = Sensitivity(sensitivity)
+            self._baseline_sensitivity = Sensitivity(sensitivity)
         else:
             logger.warning(f"Sensitivity {sensitivity} out of range, using MEDIUM")
-            self.sensitivity = Sensitivity.MEDIUM
+            self._baseline_sensitivity = Sensitivity.MEDIUM
+        # No agent override at game start; effective == baseline.
+        self._sensitivity_override: Sensitivity | None = None
 
         # #766 F1: death/warning threshold tables promoted to the ``game.thresholds``
         # object flag. Read ONCE here (init-frozen by design — no live re-evaluation);
@@ -556,9 +571,12 @@ class BaseGameMode(ABC):
         # None = no override; the natural schedule runs. Set/cleared by the
         # music_tempo_override intervention handler; consumed in _check_music_speed.
         self.tempo_override: float | None = None
-        # Configured sensitivity captured at game start so a reverted
-        # global_sensitivity_override (#730 PR C) restores the original level.
-        self.configured_sensitivity = self.sensitivity
+        # Backwards-compatible alias kept for any external reader (#730 PR C).
+        # The reverted global_sensitivity_override now restores the CURRENT admin
+        # baseline (#816), so this is no longer the restore target — but the
+        # game-start snapshot is still useful telemetry, so expose it as a
+        # property mirroring the baseline at construction time.
+        self._configured_sensitivity = self._baseline_sensitivity
         self.dead_count = 0  # Track deaths for tempo timing
         # Elimination ordering for game_player_elimination_order metric (#730).
         # Incremented on each kill; the value at kill time is the player's order
@@ -580,6 +598,76 @@ class BaseGameMode(ABC):
         self.countdown_music_volume = _read_volume_flag("audio_volume.countdown_music", COUNTDOWN_MUSIC_VOLUME)
 
         logger.info(f"{self.get_game_name()} game initialized: {self.game_id}")
+
+    # ========================================================================
+    # Sensitivity arbitration (#816, M9 ownership model — epic #814)
+    # ========================================================================
+    # ``sensitivity`` is the EFFECTIVE level: the agent override if one is
+    # active, otherwise the admin baseline. Every reader (the per-frame
+    # ``_compute_effective_thresholds``, the game_sensitivity metric, span
+    # attributes) sees the effective value with no change. Writers are split by
+    # owner: the admin owns ``baseline_sensitivity`` (assigning ``sensitivity``
+    # is the admin path and routes here); the agent owns the override layer via
+    # ``apply_sensitivity_override`` / ``clear_sensitivity_override`` and never
+    # touches the baseline.
+
+    @property
+    def sensitivity(self) -> Sensitivity:
+        """Effective sensitivity: agent override if active, else admin baseline."""
+        if self._sensitivity_override is not None:
+            return self._sensitivity_override
+        return self._baseline_sensitivity
+
+    @sensitivity.setter
+    def sensitivity(self, value: Sensitivity) -> None:
+        """Admin path: set the baseline (clears any active agent override).
+
+        Assigning ``game.sensitivity`` is treated as a HUMAN baseline change
+        (the lobby/admin surface and existing test fixtures do this). Per the
+        ownership model a human baseline change invalidates the agent's active
+        override, so this delegates to :meth:`set_baseline_sensitivity`.
+        """
+        self.set_baseline_sensitivity(value)
+
+    @property
+    def baseline_sensitivity(self) -> Sensitivity:
+        """The admin's source-of-truth sensitivity (pre-game lobby intent)."""
+        return self._baseline_sensitivity
+
+    @property
+    def sensitivity_override(self) -> Sensitivity | None:
+        """The agent's active override layer, or ``None`` if no override."""
+        return self._sensitivity_override
+
+    @property
+    def configured_sensitivity(self) -> Sensitivity:
+        """Game-start sensitivity snapshot (telemetry only; not the restore target)."""
+        return self._configured_sensitivity
+
+    def set_baseline_sensitivity(self, value: Sensitivity) -> None:
+        """Update the admin baseline; invalidate any active agent override (#816).
+
+        A human baseline change wins: the agent's in-game override is dropped so
+        a later override clear cannot clobber fresh admin intent, and the
+        effective sensitivity reflects the new baseline immediately.
+        """
+        had_override = self._sensitivity_override is not None
+        self._baseline_sensitivity = value
+        self._sensitivity_override = None
+        if had_override:
+            logger.info(f"sensitivity: admin baseline -> {value.name}; active agent override invalidated")
+        else:
+            logger.info(f"sensitivity: admin baseline -> {value.name}")
+
+    def apply_sensitivity_override(self, value: Sensitivity) -> None:
+        """Agent path: set the temporary override layer on top of the baseline."""
+        self._sensitivity_override = value
+        logger.info(f"sensitivity: agent override -> {value.name} (baseline {self._baseline_sensitivity.name})")
+
+    def clear_sensitivity_override(self) -> None:
+        """Agent path: drop the override; effective returns to the CURRENT baseline."""
+        self._sensitivity_override = None
+        logger.info(f"sensitivity: agent override cleared, restored to baseline {self._baseline_sensitivity.name}")
 
     # ========================================================================
     # Abstract Methods - Subclasses MUST implement these
