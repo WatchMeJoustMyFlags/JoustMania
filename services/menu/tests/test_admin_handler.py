@@ -102,18 +102,30 @@ class TestAdminOptionNavigation:
     """Tests for admin option navigation."""
 
     def test_option_names_defined(self, handler):
-        """All expected options should be defined."""
+        """Controller-cycled surface is the 3 human essentials (issue #815).
+
+        The 5 per-mode tunables (random_assignment, nonstop.time_limit_seconds,
+        invincibility_seconds, fight_club.min_rounds, werewolf.reveal_time_seconds)
+        are intentionally NOT cycled on the controller anymore — they remain
+        settable via their game.json flags (dashboard/file/flagd).
+        """
         expected = [
             "sensitivity",
             "num_teams",
+            "force_all_start",
+        ]
+        assert handler.option_names == expected
+
+    def test_moved_options_not_cycled(self, handler):
+        """The 5 moved-to-flag-only options must NOT be in the controller cycle."""
+        moved = {
             "random_assignment",
             "nonstop.time_limit_seconds",
             "invincibility_seconds",
             "fight_club.min_rounds",
             "werewolf.reveal_time_seconds",
-            "force_all_start",
-        ]
-        assert handler.option_names == expected
+        }
+        assert moved.isdisjoint(handler.option_names)
 
     def test_option_colors_match_names(self, handler):
         """Each option should have a corresponding color."""
@@ -137,6 +149,27 @@ class TestAdminOptionNavigation:
         handler.current_option = len(handler.option_names) - 1
         await handler.handle_cycle_option("test_serial")
         assert handler.current_option == 0
+
+    @pytest.mark.asyncio
+    async def test_cycle_option_full_loop(self, handler):
+        """A full MOVE-cycle should visit each of the 3 options in order and wrap.
+
+        sensitivity (0) -> num_teams (1) -> force_all_start (2) -> sensitivity (0).
+        Guards against off-by-one / modulo bugs with the reduced list length.
+        """
+        handler.current_option = 0
+        expected_sequence = ["num_teams", "force_all_start", "sensitivity"]
+        for expected_name in expected_sequence:
+            await handler.handle_cycle_option("test_serial")
+            assert handler.option_names[handler.current_option] == expected_name
+
+    @pytest.mark.asyncio
+    async def test_cycle_option_index_always_in_bounds(self, handler):
+        """current_option must stay a valid index across many cycles."""
+        handler.current_option = 0
+        for _ in range(10):
+            await handler.handle_cycle_option("test_serial")
+            assert 0 <= handler.current_option < len(handler.option_names)
 
 
 class TestIncreaseValueSensitivity:
@@ -179,82 +212,13 @@ class TestIncreaseValueBoolean:
     """Tests for boolean settings increase (toggle) via FlagConfigWriter."""
 
     @pytest.mark.asyncio
-    async def test_random_assignment_cycles_forward(self, handler, mock_state_manager):
-        """random_assignment toggle should call cycle_variant with forward=True."""
-        handler.current_option = 2  # random_assignment
-
-        await handler.handle_increase_value("test_serial")
-
-        mock_state_manager.game_settings_writer.cycle_variant.assert_called_once_with("random_assignment", forward=True)
-
-    @pytest.mark.asyncio
     async def test_force_all_start_cycles_forward(self, handler, mock_state_manager):
         """force_all_start toggle should call cycle_variant with forward=True."""
-        handler.current_option = 7  # force_all_start
+        handler.current_option = 2  # force_all_start (index 2 in reduced surface)
 
         await handler.handle_increase_value("test_serial")
 
         mock_state_manager.game_settings_writer.cycle_variant.assert_called_once_with("force_all_start", forward=True)
-
-
-class TestIncreaseValueNonstopTimeLimit:
-    """Tests for nonstop_time_limit increase via FlagConfigWriter."""
-
-    @pytest.mark.asyncio
-    async def test_nonstop_time_limit_cycles_forward(self, handler, mock_state_manager):
-        """nonstop_time_limit should call cycle_variant with forward=True."""
-        handler.current_option = 3  # nonstop_time_limit
-
-        await handler.handle_increase_value("test_serial")
-
-        mock_state_manager.game_settings_writer.cycle_variant.assert_called_once_with(
-            "nonstop.time_limit_seconds", forward=True
-        )
-
-
-class TestIncreaseValueInvincibility:
-    """Tests for invincibility increase via FlagConfigWriter."""
-
-    @pytest.mark.asyncio
-    async def test_invincibility_cycles_forward(self, handler, mock_state_manager):
-        """invincibility should call cycle_variant with forward=True."""
-        handler.current_option = 4  # invincibility
-
-        await handler.handle_increase_value("test_serial")
-
-        mock_state_manager.game_settings_writer.cycle_variant.assert_called_once_with(
-            "invincibility_seconds", forward=True
-        )
-
-
-class TestIncreaseValueFightClubMinRounds:
-    """Tests for fight_club_min_rounds increase via FlagConfigWriter."""
-
-    @pytest.mark.asyncio
-    async def test_fight_club_min_rounds_cycles_forward(self, handler, mock_state_manager):
-        """fight_club_min_rounds should call cycle_variant with forward=True."""
-        handler.current_option = 5  # fight_club_min_rounds
-
-        await handler.handle_increase_value("test_serial")
-
-        mock_state_manager.game_settings_writer.cycle_variant.assert_called_once_with(
-            "fight_club.min_rounds", forward=True
-        )
-
-
-class TestIncreaseValueWerewolfRevealTime:
-    """Tests for werewolf_reveal_time increase via FlagConfigWriter."""
-
-    @pytest.mark.asyncio
-    async def test_werewolf_reveal_time_cycles_forward(self, handler, mock_state_manager):
-        """werewolf_reveal_time should call cycle_variant with forward=True."""
-        handler.current_option = 6  # werewolf_reveal_time
-
-        await handler.handle_increase_value("test_serial")
-
-        mock_state_manager.game_settings_writer.cycle_variant.assert_called_once_with(
-            "werewolf.reveal_time_seconds", forward=True
-        )
 
 
 class TestDecreaseValueSensitivity:
@@ -283,19 +247,17 @@ class TestDecreaseValueNumTeams:
         mock_state_manager.game_settings_writer.cycle_variant.assert_called_once_with("num_teams", forward=False)
 
 
-class TestDecreaseValueInvincibility:
-    """Tests for invincibility decrease via FlagConfigWriter."""
+class TestDecreaseValueForceAllStart:
+    """Tests for force_all_start decrease via FlagConfigWriter."""
 
     @pytest.mark.asyncio
-    async def test_invincibility_cycles_backward(self, handler, mock_state_manager):
-        """invincibility decrease should call cycle_variant with forward=False."""
-        handler.current_option = 4  # invincibility
+    async def test_force_all_start_cycles_backward(self, handler, mock_state_manager):
+        """force_all_start decrease should call cycle_variant with forward=False."""
+        handler.current_option = 2  # force_all_start (index 2 in reduced surface)
 
         await handler.handle_decrease_value("test_serial")
 
-        mock_state_manager.game_settings_writer.cycle_variant.assert_called_once_with(
-            "invincibility_seconds", forward=False
-        )
+        mock_state_manager.game_settings_writer.cycle_variant.assert_called_once_with("force_all_start", forward=False)
 
 
 class TestShowValueFeedback:

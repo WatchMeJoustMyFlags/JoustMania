@@ -42,9 +42,16 @@ Access advanced settings by pressing **all 4 front buttons simultaneously** (X +
 
 | Button | Function | Feedback |
 |--------|----------|----------|
-| **MOVE** | Cycle through options (num_teams / force_all_start) | Shows option color (1s) |
+| **MOVE** | Cycle through options (sensitivity / num_teams / force_all_start) | Shows option color (1s) |
 | **Select** | Increase current option value | Flashes based on value + voice |
 | **Start** | Decrease current option value | Flashes based on value + voice |
+
+> **Note (issue #815):** The controller-cycled option list is limited to the
+> three human essentials above. The per-mode tunables `random_assignment`,
+> `nonstop.time_limit_seconds`, `invincibility_seconds`, `fight_club.min_rounds`,
+> and `werewolf.reveal_time_seconds` are **no longer cycled on the controller** —
+> they still exist as `game.json` flags and are set via the dashboard, the file,
+> or flagd. See [Ownership Model §3.1](OWNERSHIP_MODEL.md#31-controller-cycled-admin-surface-issue-815).
 
 **Quick Access Functions:**
 
