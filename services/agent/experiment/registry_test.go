@@ -16,10 +16,12 @@ import (
 // game ids. It is the ShadowSpawner seam stub the registry drives in tests; the
 // real #976 RPC is not built here.
 type fakeSpawner struct {
-	mu      sync.Mutex
-	calls   []spawnCall
-	failNow bool // when true, Spawn returns an error (slot must be released)
-	seq     int
+	mu           sync.Mutex
+	calls        []spawnCall
+	failNow      bool // when true, Spawn returns a genuine error (slot must be released)
+	backpressNow bool // when true, Spawn returns ErrSpawnBackpressure (#998 backoff)
+	attempts     int  // total Spawn calls (including backpressure/failed ones)
+	seq          int
 }
 
 type spawnCall struct {
@@ -31,6 +33,12 @@ type spawnCall struct {
 func (f *fakeSpawner) Spawn(_ context.Context, experimentID, arm string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.attempts++
+	if f.backpressNow {
+		// Mimic the real shadowSpawner wrapping the coordinator's single-game cap
+		// rejection: the error wraps ErrSpawnBackpressure (errors.Is matches).
+		return "", fmt.Errorf("shadow spawn for %s/%s: %w: coordinator rejected start", experimentID, arm, ErrSpawnBackpressure)
+	}
 	if f.failNow {
 		return "", fmt.Errorf("spawn failed (test)")
 	}
@@ -38,6 +46,12 @@ func (f *fakeSpawner) Spawn(_ context.Context, experimentID, arm string) (string
 	gameID := fmt.Sprintf("game_%012d", f.seq)
 	f.calls = append(f.calls, spawnCall{experimentID, arm, gameID})
 	return gameID, nil
+}
+
+func (f *fakeSpawner) attemptCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.attempts
 }
 
 func (f *fakeSpawner) count() int {
@@ -139,6 +153,14 @@ func newTestRegistry(t *testing.T, cfg RegistryConfig) *Registry {
 	}
 	if cfg.Clock == nil {
 		cfg.Clock = fixedClock()
+	}
+	// The fairness / capacity tests predate the #998 effective-concurrency cap and
+	// assert the registry fills up to MaxShadowGames in a single tick. Default the
+	// effective cap to MaxShadowGames here so those tests keep exercising the
+	// capacity-bookkeeping / round-robin logic. Tests for the effective cap + the
+	// backpressure path set EffectiveConcurrency explicitly.
+	if cfg.EffectiveConcurrency == 0 && cfg.MaxShadowGames > 0 {
+		cfg.EffectiveConcurrency = cfg.MaxShadowGames
 	}
 	return NewRegistry(cfg)
 }

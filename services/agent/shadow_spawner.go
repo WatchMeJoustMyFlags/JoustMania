@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
 	"github.com/google/uuid"
 
+	"github.com/joustmania/agent/experiment"
 	"github.com/joustmania/agent/gamerunner"
 )
 
@@ -83,6 +85,17 @@ func (s *shadowSpawner) Spawn(ctx context.Context, experimentID, arm string) (st
 
 	gameID, err := runner.StartExperimentGame(ctx, s.root, spec)
 	if err != nil {
+		// The coordinator's single-game cap rejects concurrent starts with
+		// "Game already in progress" (gamerunner.ErrGameInProgress). That is
+		// backpressure, not a failure: the game-coordinator runs ONE game at a
+		// time and the registry (#998) should release the reservation and retry
+		// on the next tick rather than WARN per spawn. Translate the gamerunner
+		// sentinel into the experiment-package one the registry matches, keeping
+		// the underlying coordinator message for the debug log.
+		if errors.Is(err, gamerunner.ErrGameInProgress) {
+			return "", fmt.Errorf("shadow spawn for experiment %s arm %s: %w: %w",
+				experimentID, arm, experiment.ErrSpawnBackpressure, err)
+		}
 		return "", fmt.Errorf("shadow spawn for experiment %s arm %s: %w", experimentID, arm, err)
 	}
 	s.log.Info("experiment: shadow game spawned",

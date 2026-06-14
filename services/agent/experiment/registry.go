@@ -2,6 +2,7 @@ package experiment
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -84,6 +85,21 @@ const DefaultMaxShadowGames = 20
 // maxShadowGamesEnv overrides DefaultMaxShadowGames.
 const maxShadowGamesEnv = "AGENT_MAX_SHADOW_GAMES"
 
+// DefaultEffectiveConcurrency is the default cap on the number of in-flight
+// shadow spawns the registry will hold at once — the EFFECTIVE concurrency, as
+// distinct from the registry's capacity bookkeeping (AGENT_MAX_SHADOW_GAMES).
+// The game-coordinator runs ONE game at a time (#998 / #988: "default cap of
+// 1"), so the registry must not keep attempting more concurrent starts than the
+// coordinator can admit — each over-spawn is a doomed start ("Game already in
+// progress"). Defaulting to 1 matches the coordinator's real cap; an operator
+// raises it via AGENT_SHADOW_EFFECTIVE_CONCURRENCY when the coordinator is taught
+// to run concurrent shadow games (the long-term fix tracked separately).
+const DefaultEffectiveConcurrency = 1
+
+// effectiveConcurrencyEnv overrides DefaultEffectiveConcurrency. A non-positive
+// value is treated as misconfiguration and falls back to the default.
+const effectiveConcurrencyEnv = "AGENT_SHADOW_EFFECTIVE_CONCURRENCY"
+
 // Arm names. The experimental arm resolves the candidate value; the control arm
 // falls through to the existing default (within-experiment baseline). Both are
 // game_kind="shadow" (the hard invariant). These mirror the targeting contract
@@ -138,6 +154,19 @@ func MaxShadowGamesFromEnv() int {
 	return DefaultMaxShadowGames
 }
 
+// EffectiveConcurrencyFromEnv resolves the effective in-flight concurrency cap
+// from AGENT_SHADOW_EFFECTIVE_CONCURRENCY, falling back to
+// DefaultEffectiveConcurrency on an unset, empty, or non-positive value (a
+// zero/negative cap would stall every experiment, so it is misconfiguration).
+func EffectiveConcurrencyFromEnv() int {
+	if v := strings.TrimSpace(os.Getenv(effectiveConcurrencyEnv)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return DefaultEffectiveConcurrency
+}
+
 // entry is the registry's in-memory view of one experiment. It is a cache of the
 // journal: status + the (game_id → arm) map + the round-robin cursor. The journal
 // remains authoritative; on restart Rehydrate rebuilds every entry from disk.
@@ -166,14 +195,22 @@ func (e *entry) inFlight() int { return len(e.games) }
 // locking; the registry holds at most ONE journal handle per experiment (the
 // single-writer-per-experiment invariant the journal package requires).
 type Registry struct {
-	root    string
-	maxCap  int
-	spawner ShadowSpawner
-	verdict CohortVerdict
-	promo   Promoter
-	target  TargetingWriter
-	clock   func() time.Time
-	log     *slog.Logger
+	root string
+	// maxCap is the registry's capacity-bookkeeping cap on total in-flight shadow
+	// games across all experiments (AGENT_MAX_SHADOW_GAMES). It governs the fair
+	// per-experiment share split.
+	maxCap int
+	// effectiveCap bounds the number of in-flight spawns the registry actually
+	// holds at once — the coordinator's real concurrency (#998). It is <= maxCap;
+	// the registry stops allocating once in-flight reaches it, so it never hammers
+	// the single-game coordinator with doomed concurrent starts.
+	effectiveCap int
+	spawner      ShadowSpawner
+	verdict      CohortVerdict
+	promo        Promoter
+	target       TargetingWriter
+	clock        func() time.Time
+	log          *slog.Logger
 
 	mu      sync.Mutex
 	entries map[string]*entry
@@ -211,6 +248,12 @@ type RegistryConfig struct {
 	// MaxShadowGames is the fixed concurrent-shadow-game cap. Non-positive ⇒
 	// MaxShadowGamesFromEnv().
 	MaxShadowGames int
+	// EffectiveConcurrency bounds the in-flight spawns the registry holds at once
+	// to the coordinator's REAL concurrency (#998). The game-coordinator runs one
+	// game at a time, so allocating more than this many concurrent starts just
+	// produces doomed "Game already in progress" rejections. Non-positive ⇒
+	// EffectiveConcurrencyFromEnv() (default 1). It is clamped to <= MaxShadowGames.
+	EffectiveConcurrency int
 	// Spawner / Verdict / Promoter / Targeting are the injected seams.
 	Spawner   ShadowSpawner
 	Verdict   CohortVerdict
@@ -231,6 +274,16 @@ func NewRegistry(cfg RegistryConfig) *Registry {
 	if maxCap <= 0 {
 		maxCap = MaxShadowGamesFromEnv()
 	}
+	effectiveCap := cfg.EffectiveConcurrency
+	if effectiveCap <= 0 {
+		effectiveCap = EffectiveConcurrencyFromEnv()
+	}
+	// The registry can never hold more in-flight than its capacity bookkeeping
+	// allows, so clamp the effective cap to maxCap (a misconfigured higher value
+	// would otherwise silently never bind).
+	if effectiveCap > maxCap {
+		effectiveCap = maxCap
+	}
 	clock := cfg.Clock
 	if clock == nil {
 		clock = func() time.Time { return time.Now().UTC() }
@@ -240,15 +293,16 @@ func NewRegistry(cfg RegistryConfig) *Registry {
 		log = slog.Default()
 	}
 	return &Registry{
-		root:    cfg.Root,
-		maxCap:  maxCap,
-		spawner: cfg.Spawner,
-		verdict: cfg.Verdict,
-		promo:   cfg.Promoter,
-		target:  cfg.Targeting,
-		clock:   clock,
-		log:     log,
-		entries: make(map[string]*entry),
+		root:         cfg.Root,
+		maxCap:       maxCap,
+		effectiveCap: effectiveCap,
+		spawner:      cfg.Spawner,
+		verdict:      cfg.Verdict,
+		promo:        cfg.Promoter,
+		target:       cfg.Targeting,
+		clock:        clock,
+		log:          log,
+		entries:      make(map[string]*entry),
 	}
 }
 
@@ -353,16 +407,22 @@ func (r *Registry) Start(ctx context.Context, id string) error {
 
 // AllocateAndSpawn fills FREE shadow capacity across the live experiments by
 // equal-share / round-robin (epic #982 decision 3), spawning at most one game per
-// experiment per pass until the cap is reached or no live experiment wants
-// another game. It is the registry's capacity scheduler: call it whenever
-// capacity may have freed (a game concluded, an experiment started). It returns
-// the number of games spawned this call.
+// experiment per pass until the EFFECTIVE concurrency cap is reached or no live
+// experiment wants another game. It is the registry's capacity scheduler: call it
+// whenever capacity may have freed (a game concluded, an experiment started). It
+// returns the number of games spawned this call.
 //
 // Fairness: the live experiments are scanned starting from a rotating cursor and
 // each gets at most one new game per pass, so K experiments share the cap evenly
-// and none starves. The global cap is the sum of in-flight games across ALL
-// experiments; allocation never exceeds it. Real games preempting shadow at the
-// coordinator is out of scope — this bounds only the registry's own spawns.
+// and none starves. The effective cap (#998) bounds in-flight to the
+// coordinator's REAL concurrency so the registry never over-spawns doomed starts.
+//
+// Backpressure (#998): the game-coordinator runs ONE game at a time and rejects a
+// concurrent start with "Game already in progress". That is NOT a failure — the
+// spawner returns it wrapped as ErrSpawnBackpressure. AllocateAndSpawn releases
+// the reservation cleanly (no slot leak), logs at DEBUG (not WARN), and stops
+// this pass so the start is retried on the next tick. Only a GENUINE spawn error
+// still WARNs as experiment.spawn_failed.
 func (r *Registry) AllocateAndSpawn(ctx context.Context) int {
 	if r.spawner == nil {
 		return 0
@@ -371,16 +431,24 @@ func (r *Registry) AllocateAndSpawn(ctx context.Context) int {
 	for {
 		// Each iteration is one round-robin PASS: pick the next live experiment
 		// (from the rotating cursor) that has capacity and spawn ONE game for it.
-		// Re-evaluate capacity each pick so the global cap is never exceeded.
+		// Re-evaluate capacity each pick so the effective cap is never exceeded.
 		id, arm, ok := r.nextAllocation()
 		if !ok {
 			return spawned
 		}
 		gameID, err := r.spawner.Spawn(ctx, id, arm)
 		if err != nil {
-			// The slot was reserved optimistically; release it on failure so a
-			// flaky spawn does not permanently shrink capacity.
+			// The slot was reserved optimistically; release it so neither a flaky
+			// spawn NOR benign backpressure permanently shrinks capacity.
 			r.releaseReservation(id, arm)
+			if errors.Is(err, ErrSpawnBackpressure) {
+				// Coordinator at capacity (single-game cap): benign backpressure,
+				// not a failure. Log at debug and stop this pass — the start is
+				// retried on the next tick. NO spawn_failed WARN (the #998 log spam).
+				r.log.Debug("experiment.spawn_backpressure",
+					"experiment_id", id, "arm", arm, "error", err)
+				return spawned
+			}
 			r.log.Warn("experiment.spawn_failed", "experiment_id", id, "arm", arm, "error", err)
 			// Stop this call rather than hot-loop on a failing spawner.
 			return spawned
@@ -399,7 +467,10 @@ func (r *Registry) nextAllocation() (id, arm string, ok bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.inFlightLocked() >= r.maxCap {
+	// Gate on the EFFECTIVE concurrency cap (#998): the registry must not hold more
+	// in-flight spawns than the coordinator can actually run, or every extra start
+	// is a doomed "Game already in progress". effectiveCap <= maxCap by construction.
+	if r.inFlightLocked() >= r.effectiveCap {
 		return "", "", false
 	}
 	live := r.liveIDsLocked()
@@ -766,8 +837,15 @@ func (r *Registry) TotalInFlight() int {
 	return r.inFlightLocked()
 }
 
-// Capacity returns the configured fixed shadow-game cap.
+// Capacity returns the configured fixed shadow-game cap (the capacity-bookkeeping
+// bound, AGENT_MAX_SHADOW_GAMES).
 func (r *Registry) Capacity() int { return r.maxCap }
+
+// EffectiveCapacity returns the effective in-flight concurrency cap (#998) — the
+// number of concurrent shadow spawns the registry will actually hold, bounded to
+// the coordinator's real concurrency (AGENT_SHADOW_EFFECTIVE_CONCURRENCY, default
+// 1) and clamped to Capacity.
+func (r *Registry) EffectiveCapacity() int { return r.effectiveCap }
 
 // Live returns the ids of experiments that may be allocated shadow capacity —
 // i.e. those in RUNNING (targeting written, ready to accrue games), sorted. A

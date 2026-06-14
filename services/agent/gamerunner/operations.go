@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -12,6 +13,20 @@ import (
 	mockpb "github.com/joustmania/agent/gen/controller_manager_mock"
 	gcpb "github.com/joustmania/agent/gen/game_coordinator"
 )
+
+// ErrGameInProgress is the sentinel the coordinator's single-game cap surfaces:
+// it rejects a concurrent start with "Game already in progress" (servicer.py).
+// This is BACKPRESSURE — the coordinator runs one game at a time and the start
+// should be retried later, NOT a genuine failure. The experiment registry (#998)
+// matches it with errors.Is to back off instead of logging a per-spawn WARN.
+var ErrGameInProgress = errors.New("coordinator at capacity: game already in progress")
+
+// coordInProgressMarker is the substring the coordinator embeds in the
+// game_start_error event data when its single-game cap rejects a start
+// (servicer.py: `return False, "Game already in progress"`). Matched
+// case-insensitively so a future wording tweak that keeps the phrase still maps
+// to backpressure.
+const coordInProgressMarker = "already in progress"
 
 // reserveControllers adds N reserved+tagged mock controllers and returns their
 // serials (step a). Reserved controllers are invisible to the menu (#777).
@@ -130,12 +145,33 @@ func (r *Runner) startAndCapture(
 			return nil, "", fmt.Errorf("recv game start event: %w", err)
 		}
 		if event.GetEventType() == eventGameStartError {
-			return nil, "", fmt.Errorf("coordinator rejected start: %v", event.GetData())
+			data := event.GetData()
+			// The coordinator's single-game cap ("Game already in progress") is
+			// backpressure, not a failure: wrap the sentinel so the registry (#998)
+			// backs off and retries on the next tick instead of WARNing per spawn.
+			if startRejectedInProgress(data) {
+				return nil, "", fmt.Errorf("coordinator rejected start (%v): %w", data, ErrGameInProgress)
+			}
+			return nil, "", fmt.Errorf("coordinator rejected start: %v", data)
 		}
 		if id := event.GetGameId(); id != "" {
 			return stream, id, nil
 		}
 	}
+}
+
+// startRejectedInProgress reports whether a game_start_error event's data is the
+// coordinator's single-game-cap rejection ("Game already in progress"). The
+// coordinator publishes the reason under the "error" key (servicer.py); we scan
+// every value so a future key/wording change that keeps the phrase still maps to
+// backpressure rather than a hard failure.
+func startRejectedInProgress(data map[string]string) bool {
+	for _, v := range data {
+		if strings.Contains(strings.ToLower(v), coordInProgressMarker) {
+			return true
+		}
+	}
+	return false
 }
 
 // driveGame keeps the game alive and pushes it toward its win condition (step

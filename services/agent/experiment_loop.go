@@ -114,6 +114,7 @@ func buildExperimentLoop(
 	logger.Warn("Experiment cohort loop ENABLED (#991, epic #982) — opt-in is ON",
 		"tick", experimentTick(),
 		"max_shadow_games", experiment.MaxShadowGamesFromEnv(),
+		"effective_concurrency", experiment.EffectiveConcurrencyFromEnv(),
 		"seed_flag", os.Getenv(envSeedFlag))
 
 	// TargetingWriter (#977): a Gate over a Writer pinned to the game flagset. The
