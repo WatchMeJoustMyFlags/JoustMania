@@ -2,9 +2,19 @@ package experiment
 
 import (
 	"context"
+	"errors"
 
 	"github.com/joustmania/agent/experiment/journal"
 )
+
+// ErrSpawnBackpressure is the sentinel a ShadowSpawner returns when the start
+// could not proceed because the coordinator is already running a game (the
+// single-game cap rejects concurrent starts). It is NOT a failure: the registry
+// (#998) releases the reservation cleanly, logs at debug, counts it as
+// backpressure, and retries on the next AllocateAndSpawn tick instead of
+// emitting a per-spawn spawn_failed WARN. A spawner wraps it (errors.Is matches)
+// so the underlying coordinator message is preserved for the debug log.
+var ErrSpawnBackpressure = errors.New("shadow spawn backpressure: coordinator at capacity")
 
 // registry_seams.go defines the INJECTED boundaries of the experiment registry
 // (design §7). The registry owns ONLY the lifecycle + capacity + book-keeping
@@ -46,7 +56,9 @@ import (
 type ShadowSpawner interface {
 	// Spawn starts a shadow game for the experiment's arm and returns its game_id.
 	// An error means no game was started; the registry records nothing and the
-	// capacity slot is not consumed.
+	// capacity slot is not consumed. An error that wraps ErrSpawnBackpressure
+	// (errors.Is) signals the coordinator is at capacity (single-game cap) — the
+	// registry treats it as backpressure (release + retry next tick), not failure.
 	Spawn(ctx context.Context, experimentID, arm string) (gameID string, err error)
 }
 
