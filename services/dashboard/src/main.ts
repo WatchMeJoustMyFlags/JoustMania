@@ -7,7 +7,14 @@ import { controllerClient, gameClient, menuClient } from "./client.js";
 import { ControllerGrid } from "./components/ControllerGrid.js";
 import { GameStatus } from "./components/GameStatus.js";
 import { Controls } from "./components/Controls.js";
+import { ExperimentsView } from "./components/ExperimentsView.js";
+import { fetchExperiments } from "./experiments.js";
 import type { GameplayData } from "./gen/controller_manager_pb.js";
+
+// Poll cadence for the agent experiment view (Loki query). Matches the slow,
+// human-readable refresh rate of the embedded observability panels rather than
+// the 30Hz controller stream — experiment state moves on the order of games.
+const EXPERIMENTS_POLL_MS = 5000;
 
 // State
 interface AppState {
@@ -32,6 +39,7 @@ const state: AppState = {
 let controllerGrid: ControllerGrid;
 let gameStatus: GameStatus;
 let controls: Controls;
+let experimentsView: ExperimentsView;
 
 // Initialize the dashboard
 async function init() {
@@ -45,6 +53,7 @@ async function init() {
     onStopGame: handleStopGame,
     onModeChange: handleModeChange,
   });
+  experimentsView = new ExperimentsView("experiments-grid");
 
   // Set up tab navigation
   setupTabs();
@@ -54,6 +63,9 @@ async function init() {
 
   // Start streaming game events
   startGameEventStream();
+
+  // Start polling the agent experiment telemetry (Loki)
+  startExperimentsPolling();
 
   console.log("Dashboard initialized");
 }
@@ -133,6 +145,27 @@ async function startGameEventStream() {
     // Retry after delay
     setTimeout(startGameEventStream, 2000);
   }
+}
+
+// Poll the agent's experiment telemetry from Loki and refresh the view.
+// Self-rescheduling timeout (not setInterval) so a slow query can never stack
+// overlapping requests.
+function startExperimentsPolling() {
+  const tick = async () => {
+    try {
+      const experiments = await fetchExperiments();
+      experimentsView.render(experiments);
+    } catch (error) {
+      console.error("Experiments poll error:", error);
+      // Keep whatever is on screen if we've rendered before; otherwise show why.
+      if (!experimentsView.rendered) {
+        experimentsView.setError("Could not reach Loki for experiment telemetry.");
+      }
+    } finally {
+      setTimeout(tick, EXPERIMENTS_POLL_MS);
+    }
+  };
+  tick();
 }
 
 // Handle game events
