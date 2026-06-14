@@ -680,6 +680,14 @@ services:
       # it and the game coordinator converges on its contents (#730). In-place
       # rewrite (no temp+rename) avoids EBUSY on this bind mount.
       - ./services/flagd:/etc/flagd
+      # Durable experiment journal (#1023, completes #831). The agent writes the
+      # per-experiment intent/events.jsonl/summary.json under AGENT_EXPERIMENT_DIR
+      # (default /var/lib/joustmania/agent/experiments; see
+      # services/agent/experiment/journal/store.go). #831 made the journal survive
+      # a process restart; this named volume makes it survive container recreation
+      # (`docker compose down`, image upgrade) too, so a long-running cohort's
+      # accumulated per-arm samples + verdict state are not silently wiped.
+      - agent-experiments:/var/lib/joustmania/agent/experiments
     depends_on:
       flagd:
         condition: service_started
@@ -753,3 +761,6 @@ volumes:
   loki-data:
   jaeger-data:
   controller-names:
+  # Durable experiment journal for the agent (#1023). See the agent service's
+  # volumes block for the rationale and the matching AGENT_EXPERIMENT_DIR path.
+  agent-experiments:

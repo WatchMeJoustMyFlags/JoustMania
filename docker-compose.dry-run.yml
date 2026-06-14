@@ -43,6 +43,12 @@ services:
     # mount (compose merges array values by default).
     volumes: !override
       - ./services/flagd/ci:/etc/flagd
+      # !override REPLACES the base agent volumes list, which would otherwise drop
+      # the durable experiment journal volume (#1023). Re-declare it here so the
+      # dry-run/demo stack also keeps cohort journal state across recreation. The
+      # top-level `agent-experiments:` volume is defined in docker-compose.yml and
+      # carries through the compose merge — no redeclaration needed here.
+      - agent-experiments:/var/lib/joustmania/agent/experiments
     environment:
       # Master opt-in for the #982/#991 experiment cohort loop.
       - AGENT_EXPERIMENTS_ENABLED=${AGENT_EXPERIMENTS_ENABLED:-true}
