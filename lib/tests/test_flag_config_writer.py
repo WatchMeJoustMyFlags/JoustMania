@@ -187,3 +187,43 @@ class TestCycleVariant:
         result = writer.cycle_variant("nonexistent")
 
         assert result is None
+
+
+class TestGetVariantValue:
+    """Tests for FlagConfigWriter.get_variant_value (#818)."""
+
+    def test_returns_variant_value(self, tmp_path):
+        path = _write_flag_file(tmp_path)
+        writer = FlagConfigWriter(path)
+        assert writer.get_variant_value("sensitivity", "fast") == 3
+        assert writer.get_variant_value("game_mode", "teams") == "JoustTeams"
+
+    def test_missing_flag_returns_none(self, tmp_path):
+        path = _write_flag_file(tmp_path)
+        writer = FlagConfigWriter(path)
+        assert writer.get_variant_value("nope", "x") is None
+
+    def test_missing_variant_returns_none(self, tmp_path):
+        path = _write_flag_file(tmp_path)
+        writer = FlagConfigWriter(path)
+        assert writer.get_variant_value("sensitivity", "nope") is None
+
+
+class TestMatchVariantForValue:
+    """Tests for FlagConfigWriter.match_variant_for_value (#818)."""
+
+    def test_matches_value_to_variant(self, tmp_path):
+        path = _write_flag_file(tmp_path)
+        writer = FlagConfigWriter(path)
+        assert writer.match_variant_for_value("sensitivity", 4) == "ultra_fast"
+        assert writer.match_variant_for_value("game_mode", "JoustFFA") == "ffa"
+
+    def test_no_match_returns_none(self, tmp_path):
+        path = _write_flag_file(tmp_path)
+        writer = FlagConfigWriter(path)
+        assert writer.match_variant_for_value("sensitivity", 99) is None
+
+    def test_missing_flag_returns_none(self, tmp_path):
+        path = _write_flag_file(tmp_path)
+        writer = FlagConfigWriter(path)
+        assert writer.match_variant_for_value("nope", 1) is None

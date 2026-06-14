@@ -76,10 +76,18 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         self.game_coordinator_channel = create_channel(f"{game_coordinator_host}:{game_coordinator_port}")
         self.audio_channel = create_channel(f"{audio_host}:{audio_port}")
 
-        # Initialize flagd domains for game, user, and system settings
+        # Initialize flagd domains for game, user, system, and agent settings
         init_flag_domain("game")
         init_flag_domain("user")
         init_flag_domain("system")
+        # The agent domain is read for the truthful admin display (#818) and
+        # written for the on-device agent kill-switch (#819).
+        init_flag_domain("agent")
+        # The interventions domain is read (never written) by the admin display so
+        # an active agent override (e.g. global_sensitivity_override) shows up as
+        # the effective value an operator sees (#818). The menu NEVER writes
+        # interventions.json — that is the agent's exclusive write surface.
+        init_flag_domain("interventions")
 
         # FlagConfigWriter instances for persisting settings changes. Resolve the
         # active flag directory through the single source of truth (#959/#966):
@@ -88,11 +96,23 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         # lands in the file flagd actually serves.
         self.game_settings_writer = FlagConfigWriter(str(active_flag_file("game")))
         self.user_prefs_writer = FlagConfigWriter(str(active_flag_file("user")))
+        # Agent policy writer for the on-device kill-switch (#819). The human
+        # owns agent policy per docs/OWNERSHIP_MODEL.md §2/§6.2 — the agent never
+        # writes agent.json, so granting the menu a writer keeps the write
+        # surfaces disjoint (menu: game/user/agent baselines; agent:
+        # interventions.json only).
+        self.agent_settings_writer = FlagConfigWriter(str(active_flag_file("agent")))
 
         # OpenFeature clients for reading settings
         self.game_settings_client = get_flag_client("game")
         self.user_prefs_client = get_flag_client("user")
         self.system_client = get_flag_client("system")
+        # Client for resolving effective (agent-override-aware) values for the
+        # admin display (#818) and the kill-switch level (#819).
+        self.agent_settings_client = get_flag_client("agent")
+        # Read-only client for surfacing active agent overrides in the admin
+        # display (#818); the menu never writes this domain.
+        self.interventions_client = get_flag_client("interventions")
 
         # Utility classes
         self.led = LedController(self.controller_channel)
@@ -107,6 +127,10 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             audio=self.audio,
             game_settings_writer=self.game_settings_writer,
             user_prefs_writer=self.user_prefs_writer,
+            agent_settings_writer=self.agent_settings_writer,
+            game_settings_client=self.game_settings_client,
+            agent_settings_client=self.agent_settings_client,
+            interventions_client=self.interventions_client,
             publish_event=self.event_publisher.publish,
         )
 

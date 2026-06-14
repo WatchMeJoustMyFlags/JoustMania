@@ -134,6 +134,56 @@ class FlagConfigWriter:
             logger.error(f"Error reading current variant for '{flag_key}': {e}")
             return None
 
+    def get_variant_value(self, flag_key: str, variant_name: str):
+        """
+        Get the raw value of a named variant for a flag.
+
+        Args:
+            flag_key: Flag name
+            variant_name: Variant name
+
+        Returns:
+            The variant's value, or None if the flag/variant is missing.
+        """
+        try:
+            with open(self.file_path) as f:
+                data = json.load(f)
+
+            flag = data.get("flags", {}).get(flag_key, {})
+            return flag.get("variants", {}).get(variant_name)
+        except Exception as e:
+            logger.error(f"Error reading variant value for '{flag_key}.{variant_name}': {e}")
+            return None
+
+    def match_variant_for_value(self, flag_key: str, value) -> str | None:
+        """
+        Find the variant name whose value equals ``value``.
+
+        Used to reconcile a value resolved live through flagd (which may include
+        agent overrides applied to the same flag domain) back to a human-readable
+        variant name for display feedback (issue #818). Returns the first variant
+        whose value matches; ``None`` if no variant matches or on error.
+
+        Args:
+            flag_key: Flag name
+            value: Resolved value to match against the flag's variants
+
+        Returns:
+            Matching variant name, or None.
+        """
+        try:
+            with open(self.file_path) as f:
+                data = json.load(f)
+
+            variants = data.get("flags", {}).get(flag_key, {}).get("variants", {})
+            for variant_name, variant_value in variants.items():
+                if variant_value == value:
+                    return variant_name
+            return None
+        except Exception as e:
+            logger.error(f"Error matching variant for '{flag_key}' value: {e}")
+            return None
+
     def cycle_variant(self, flag_key: str, forward: bool = True) -> str | None:
         """
         Cycle the defaultVariant to the next (or previous) variant.

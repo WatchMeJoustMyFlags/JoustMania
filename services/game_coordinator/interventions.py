@@ -480,6 +480,7 @@ class InterventionManager:
 
         self._interventions_client = None  # interventions domain
         self._agent_client = None  # agent domain (backstop reads)
+        self._user_client = None  # user domain (on-device cue gate, #818)
 
         # Per-session, per-flag last-applied nonce (edge-triggered exactly-once)
         # and last-applied state value (state-shaped change detection). Keyed
@@ -711,6 +712,10 @@ class InterventionManager:
 
             init_flag_domain("agent")
             self._agent_client = get_flag_client("agent")
+
+            # User domain holds the operator-facing cue mute toggle (#818).
+            init_flag_domain("user")
+            self._user_client = get_flag_client("user")
 
             api.add_handler(ProviderEvent.PROVIDER_CONFIGURATION_CHANGED, self._on_flags_changed)
             logger.info("InterventionManager: registered PROVIDER_CONFIGURATION_CHANGED handler")
@@ -1016,6 +1021,74 @@ class InterventionManager:
             return
 
         await self._record(spec, target, objective, session, blocked=False, block_reason="")
+
+        # On-device visibility cue (#818): surface HARD-class agent actions at the
+        # controller so an operator can tell agent activity from a malfunction.
+        # Gated behind a user.json mute toggle so it can be silenced for demos.
+        if spec.weight >= WEIGHT_HARD:
+            await self._emit_agent_cue(spec, target, game)
+
+    def _cue_enabled(self) -> bool:
+        """Whether the on-device agent-intervention cue is enabled (#818).
+
+        Reads the ``agent_intervention_cue`` toggle from the user domain. Defaults
+        to ON (fail-open to visibility) when the client is unavailable or the read
+        fails — the whole point of #818 is that the operator can SEE agent action.
+        """
+        if self._user_client is None:
+            return True
+        try:
+            return bool(self._user_client.get_boolean_value("agent_intervention_cue", True, EvaluationContext()))
+        except Exception as e:
+            logger.debug(f"agent cue gate read failed, defaulting to enabled: {e}")
+            return True
+
+    async def _emit_agent_cue(self, spec: InterventionSpec, target: str | None, game: object) -> None:
+        """Pulse a distinct 'agent acted' LED on the controller(s) (#818).
+
+        Minimal, non-disruptive: a short magenta LED PULSE (GAME_EFFECT_PULSE
+        auto-restores to the base color) on the affected player when the
+        intervention is player-targeted, else broadcast to all active players. A
+        player-targeted intervention on a now-dead/unknown serial yields no target
+        and is skipped. Best-effort — any failure is swallowed so the cue can
+        never break the intervention path.
+        """
+        if not self._cue_enabled():
+            return
+        stream = getattr(game, "gameplay_stream", None) if game is not None else None
+        if stream is None:
+            return
+        try:
+            cue_serial = target if spec.player_targeted and target else ""
+            targets = _effect_targets(game, cue_serial)
+            if not targets:
+                return
+
+            import asyncio
+
+            from proto import controller_manager_pb2
+
+            # Distinct magenta pulse = "agent acted" — not a game event color.
+            # Dispatch the per-target writes concurrently so a broadcast cue
+            # (e.g. an end_game HARD intervention with many players) doesn't add N
+            # sequential writes to the dispatch tail. Best-effort: any per-write
+            # failure is collected (return_exceptions) and never raised into the
+            # intervention path.
+            writes = [
+                stream.write(
+                    controller_manager_pb2.GameplayStreamControl(
+                        game_effect=controller_manager_pb2.GameEffectCommand(
+                            serial=target_serial,
+                            effect=controller_manager_pb2.GAME_EFFECT_PULSE,
+                        )
+                    )
+                )
+                for target_serial in targets
+            ]
+            await asyncio.gather(*writes, return_exceptions=True)
+            logger.debug(f"agent cue: pulsed {len(targets)} controller(s) for '{spec.type_id}'")
+        except Exception as e:
+            logger.debug(f"agent cue emission failed for '{spec.type_id}': {e}")
 
     def _check_chain(self, spec: InterventionSpec, target: str | None, game: object) -> str | None:
         """Run the enforcement chain. Returns a block reason or None if allowed.

@@ -49,11 +49,29 @@ periods). Sections 4–5 define those compositions precisely.
 | `game.json` | Human admin | Menu admin mode → `FlagConfigWriter` | Menu builds `StartGameConfig` at start; coordinator freezes at init | Per-deployment (persists across games) |
 | `user.json` | Human admin | Menu admin mode → `FlagConfigWriter` | Menu / audio (volumes, voice, instructions) | Per-deployment |
 | `interventions.json` | Agent | Agent ActionSink → `writer.go` | Coordinator `InterventionManager`, live | Ephemeral (cleared/neutral between games) |
-| `agent.json` | Operator (file/CI), **not** admin mode | Hand-edited / deploy config | Agent + coordinator policy gates | Per-deployment |
+| `agent.json` | Operator (human) | Hand-edited / deploy config **and** menu admin mode → `FlagConfigWriter` (`interventions_allowed` only, #819) | Agent + coordinator policy gates | Per-deployment |
 
 `agent.json` holds the agent's own governor — `enabled`, `mode`, `objectives`,
-`interventions_allowed`, and the `policy.*` budgets. **Admin mode cannot write it
-today**, which is the gap #819 closes (see §6).
+`interventions_allowed`, and the `policy.*` budgets. As of #819, **menu admin mode
+may write the single `interventions_allowed` key** (the on-device kill-switch);
+every other key in `agent.json` is still hand-edited / deploy config only. The
+**agent process never writes `agent.json`** — that invariant is unchanged, so the
+write surfaces stay disjoint (menu writes `game.json` / `user.json` and the one
+agent-policy key; the agent writes `interventions.json` only). The human owns
+agent policy; the agent cannot persist its own governor (§1, §6.2).
+
+> **How the agent-never-writes-`agent.json` invariant is enforced.** It rests on
+> **code discipline, not a container-mount restriction.** The agent bind-mounts
+> the whole flag directory `./services/flagd:/etc/flagd` **read-write** (it
+> legitimately writes `interventions.json`, and `game.json` experiment targeting),
+> so the filesystem does *not* protect `agent.json`. Two code-level guards do: (1)
+> the agent's experiment `Writer` is constructed with **hardcoded target paths**
+> that never point at `agent.json`, and (2)
+> [`services/agent/experiment/gate.go`](../services/agent/experiment/gate.go) **rejects any
+> intent whose resolved path is `agent.json`** (path-component + symlink-target
+> checks) before any write syscall. A per-file `agent.json` `:ro` mount on top of
+> the RW dir would be a sound defense-in-depth addition, but is not what the
+> guarantee currently rests on.
 
 ## 3. Parameter Ownership Table
 
@@ -262,6 +280,27 @@ A conforming implementation must provide, at minimum:
   intervention events) and metrics (`game_interventions_total`); #818 is the
   *human-facing*, on-device surfacing of that same activity, not new instrumentation.
 
+**Implemented (#818).** Two surfaces:
+
+1. **Truthful admin display.** Admin mode resolves option values through the
+   live flagd "game" client and maps the resolved value back to a variant name
+   (`AdminModeHandler._effective_variant`,
+   [`services/menu/handlers/admin.py`](../services/menu/handlers/admin.py)), so an
+   operator cycling `sensitivity` sees the value the game is *actually* using
+   (including an active agent `global_sensitivity_override`), not the stale
+   on-disk `defaultVariant`. Falls back to the file default when flagd is
+   unreachable or the resolved value matches no variant.
+2. **On-device cue.** When the coordinator applies a **HARD-class** intervention
+   (`spec.weight >= WEIGHT_HARD` — `adjust_global_sensitivity`,
+   `eliminate_player`, `revive_player`, `end_game`), it emits a short magenta
+   `GAME_EFFECT_PULSE` on the affected controller(s) (broadcast for non-targeted
+   actions) via `InterventionManager._emit_agent_cue`
+   ([`services/game_coordinator/interventions.py`](../services/game_coordinator/interventions.py)).
+   This is gated behind the **`agent_intervention_cue`** toggle in `user.json`
+   (default ON; CI default OFF) so it can be muted for demos, and is best-effort
+   (failures never break the intervention path). MEDIUM/SOFT interventions are
+   intentionally silent to avoid disrupting gameplay.
+
 ### 6.2 Kill-switch / policy control (`#819`)
 
 The admin MUST have an **on-device** way to constrain the agent without editing
@@ -284,6 +323,27 @@ The admin MUST have an **on-device** way to constrain the agent without editing
 > constrain the **agent**. Nothing today governs the **human** path — the admin
 > write path has no policy layer, by design (the human is trusted). #819 adds the
 > human's *control over the agent*, not a constraint on the human.
+
+**Implemented (#819).** Admin mode gains a new controller-cycled option,
+`agent_control` (MOVE to select it, SELECT/START to change), that cycles the
+GLOBAL `interventions_allowed` policy in `agent.json` through the levels
+`none → ambient → standard → full` and back
+(`AdminModeHandler.handle_agent_control`,
+[`services/menu/handlers/admin.py`](../services/menu/handlers/admin.py)). `none`
+is the hard panic-off: it is **load-bearing at the gate** because the
+coordinator's allow-list (`_check_chain`, step (a)) then rejects every agent
+intervention regardless of what the agent process does. Each level has a distinct
+LED color (red = off / Turquoise / Orange / green = full) and a voice line.
+
+- **Write-ownership decision (recorded).** The menu writes the single
+  `interventions_allowed` key in `agent.json` via a dedicated
+  `FlagConfigWriter(agent.json)` (`MenuServicer.agent_settings_writer`); the agent
+  process remains read-only on `agent.json`. The write surfaces stay disjoint
+  (§2), so no real-resolution invariant is touched — this is global policy, read
+  by the agent and coordinator with a bare (non-game-scoped) `EvaluationContext`.
+- **Hot-reload.** flagd picks up the file write via inotify (<100ms) and the
+  agent re-reads `interventions_allowed` live per decision, so the change takes
+  effect without a restart (with the usual sub-second flagd reload lag).
 
 ## 7. Source Map
 

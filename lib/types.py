@@ -345,6 +345,14 @@ class Sound(StrEnum):
     MENU_VOX_ADMINOP_FORCE_ALL_START = "adminop_force_all_start"
     MENU_VOX_ADMINOP_RANDOM_TEAM_SIZE = "adminop_random_team_size"
 
+    # Agent kill-switch (#819) voice announcements. Reuse existing on/off and
+    # numbered admin vox assets so no new audio is required; the LED color is the
+    # primary, unambiguous feedback. "none" announces off (agent disabled / panic
+    # off); the permissive levels announce a numbered level.
+    MENU_VOX_ADMINOP_ON = "adminop_on"
+    MENU_VOX_ADMINOP_OFF = "adminop_off"
+    MENU_VOX_ADMINOP_1 = "adminop_1"
+
 
 class GameEvent(StrEnum):
     """
