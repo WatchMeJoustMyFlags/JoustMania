@@ -642,6 +642,125 @@ func TestExperimentLoop_CompletedGrace_NoReleaseWhenConcluded(t *testing.T) {
 	}
 }
 
+// TestExperimentLoop_CompletedGrace_StopAllRaceGuard is the #1020 concurrency
+// regression anchor (review suggestion #3). It exercises the shutdown timer-fire
+// race that the synchronous fakeAfter seam cannot: grace timers are armed for
+// genuinely in-flight shadow games, then their callbacks fire on real goroutines
+// concurrently with stopAllCompletedGrace() from another goroutine. The afterFunc
+// seam returns a stop that always reports "too late" (false) — exactly the
+// adversarial case where time.AfterFunc(...).Stop() loses to an already-firing
+// callback — so the graceShutdown guard is the ONLY thing that can prevent a
+// callback firing after shutdown from calling ReleaseGame + allocateIfEnabled and
+// spawning a brand-new shadow game during/after teardown. Two assertions, both
+// load-bearing because the games are really bound (ReleaseGame would return true):
+//   - under -race: no data race / panic across the graceTimers map + guard;
+//   - callbacks that fire AFTER stopAll has returned (guard latched) must NOT spawn.
+func TestExperimentLoop_CompletedGrace_StopAllRaceGuard(t *testing.T) {
+	spawner := &recordingSpawner{}
+	resolve := func(context.Context) promote.Config { return promote.Config{Mode: promote.ModeIssue} }
+	loop := buildLoopForTest(t, spawner, resolve, &recordingRealDefault{}, &recordingGitHub{}, armFitness())
+	loop.completedGrace = 60 * time.Second
+	ctx := context.Background()
+
+	// captureAfter records each scheduled callback (instead of firing it on a wall
+	// clock) so the test fires them on real goroutines interleaved with stopAll. Its
+	// stop ALWAYS returns false, modeling a callback already past the point Stop()
+	// can cancel it — forcing the guard (not Stop) to be what blocks a post-shutdown spawn.
+	var capMu sync.Mutex
+	var callbacks []func()
+	captureAfter := func(_ time.Duration, fn func()) func() bool {
+		capMu.Lock()
+		callbacks = append(callbacks, fn)
+		capMu.Unlock()
+		return func() bool { return false }
+	}
+	loop.afterFunc = captureAfter
+
+	// Declare + start an experiment and put a game in-flight (AllocateAndSpawn spawns
+	// one per call into the free slot), so the armed grace timer is for a game the
+	// registry STILL holds — ReleaseGame would return true, meaning a non-guarded late
+	// callback WOULD ReleaseGame + refill-spawn a brand-new game during shutdown.
+	id, err := loop.registry.Declare(experiment.Intent{
+		Hypothesis: "h", FlagKey: "death_grace_period_seconds",
+		ExperimentalValue: 0.5, Objective: "engagement_balanced", TargetNPerArm: 50,
+	})
+	if err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+	if err := loop.registry.Start(ctx, id); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if n := loop.registry.AllocateAndSpawn(ctx); n == 0 {
+		t.Fatal("expected the registry to spawn into a free in-flight slot")
+	}
+	inFlight := spawner.drain()
+	if len(inFlight) == 0 {
+		t.Fatal("expected an in-flight shadow game to arm grace for")
+	}
+	boundGame := inFlight[0].gameID
+
+	// Phase 1 (race coverage): concurrently arm many grace timers for distinct (not
+	// in-flight) ids while stopAllCompletedGrace runs — this is the map-mutation +
+	// guard-latch interleaving the -race detector validates. These ids aren't bound,
+	// so even if a callback fires unguarded it can't spawn; the point here is purely
+	// no-data-race / no-panic on graceTimers + graceShutdown under concurrency.
+	const churn = 32
+	var armWG sync.WaitGroup
+	for i := 0; i < churn; i++ {
+		armWG.Add(1)
+		go func(n int) {
+			defer armWG.Done()
+			loop.armCompletedGrace("game_churn_" + itoa(n))
+		}(i)
+	}
+	armWG.Add(1)
+	go func() {
+		defer armWG.Done()
+		loop.stopAllCompletedGrace()
+	}()
+	armWG.Wait()
+
+	// Phase 2 (load-bearing guard assertion): stopAll has now latched graceShutdown.
+	// Arm grace for the STILL-in-flight game (armCompletedGrace records the timer even
+	// post-latch — only fireCompletedGrace is guarded), capture its callback, and fire
+	// it on goroutines. Each enters fireCompletedGrace with graceShutdown=true, so the
+	// guard must make it bail BEFORE ReleaseGame/allocateIfEnabled. Without the guard,
+	// it would ReleaseGame(true)+refill and spawn a brand-new game during shutdown.
+	capMu.Lock()
+	callbacks = nil // drop the phase-1 churn callbacks; we only fire the bound-game one.
+	capMu.Unlock()
+	loop.armCompletedGrace(boundGame)
+	capMu.Lock()
+	fired := append([]func(){}, callbacks...)
+	capMu.Unlock()
+	if len(fired) != 1 {
+		t.Fatalf("expected exactly one armed grace timer for the bound game, captured %d", len(fired))
+	}
+
+	var postWG sync.WaitGroup
+	for i := 0; i < 8; i++ { // fire the same callback repeatedly on goroutines (race + idempotency).
+		postWG.Add(1)
+		go func() {
+			defer postWG.Done()
+			fired[0]()
+		}()
+	}
+	postWG.Wait()
+
+	if recs := spawner.drain(); len(recs) != 0 {
+		t.Fatalf("grace callback spawned %d game(s) AFTER stopAll shutdown latched; the #1020 guard must prevent any post-shutdown spawn", len(recs))
+	}
+	if !gameStillBound(loop, id, boundGame) {
+		t.Fatal("the guarded callback released the in-flight game during shutdown; it must bail before ReleaseGame")
+	}
+	loop.graceMu.Lock()
+	shuttingDown := loop.graceShutdown
+	loop.graceMu.Unlock()
+	if !shuttingDown {
+		t.Fatal("stopAllCompletedGrace must latch graceShutdown so a later-firing callback bails")
+	}
+}
+
 // newRegistryConcurrency1 builds a registry pinned to effective_concurrency=1 (one
 // in-flight shadow game cap) so the #1020 deadlock condition is exercised exactly
 // as the #998 default deploys it. It mirrors buildLoopForTest's registry wiring.

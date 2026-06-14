@@ -116,6 +116,14 @@ type experimentLoop struct {
 	// them on shutdown (no goroutine/timer leak past teardown).
 	graceMu     sync.Mutex
 	graceTimers map[string]func() bool
+	// graceShutdown is set under graceMu by stopAllCompletedGrace and checked at the
+	// top of fireCompletedGrace. time.AfterFunc(...).Stop() does NOT wait for an
+	// already-firing callback, so on shutdown a grace goroutine can enter
+	// fireCompletedGrace after run() has called stopAllCompletedGrace() and returned.
+	// This flag makes that already-firing callback bail (drop its entry and return
+	// without ReleaseGame/allocate) so no shadow game is spawned during/after
+	// shutdown — honoring run()'s "no goroutine outlives run()" contract (#1020).
+	graceShutdown bool
 }
 
 // gameFitnessFunc scores a finished game (its pre-reset GameContext) into one
@@ -438,6 +446,14 @@ func (e *experimentLoop) armCompletedGrace(gameID string) {
 func (e *experimentLoop) fireCompletedGrace(gameID string) {
 	e.graceMu.Lock()
 	delete(e.graceTimers, gameID)
+	// Shutdown race guard (#1020): if stopAllCompletedGrace already ran, this timer
+	// was firing while run() tore down (its Stop() returned false — too late). Drop
+	// the entry and bail WITHOUT ReleaseGame/allocate so we never spawn a shadow game
+	// during/after shutdown. Both setter and checker hold graceMu, so this is race-free.
+	if e.graceShutdown {
+		e.graceMu.Unlock()
+		return
+	}
 	e.graceMu.Unlock()
 
 	reason := "completed game's telemetry game_active=0 datapoint never arrived (#1020 grace backstop)"
@@ -472,6 +488,9 @@ func (e *experimentLoop) stopCompletedGrace(gameID string) {
 // cancellation alongside AbortAll.
 func (e *experimentLoop) stopAllCompletedGrace() {
 	e.graceMu.Lock()
+	// Latch shutdown FIRST: any callback already firing (whose Stop() returns false)
+	// will observe this under graceMu in fireCompletedGrace and bail without spawning.
+	e.graceShutdown = true
 	for id, stop := range e.graceTimers {
 		stop()
 		delete(e.graceTimers, id)
