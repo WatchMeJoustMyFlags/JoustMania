@@ -42,6 +42,9 @@
         <button class="tab-btn active" data-tab="controllers">
           <span class="tab-icon">&#127918;</span> Controllers
         </button>
+        <button class="tab-btn" data-tab="experiments">
+          <span class="tab-icon">&#129514;</span> Experiments
+        </button>
         <button class="tab-btn" data-tab="metrics">
           <span class="tab-icon">&#128200;</span> Metrics
         </button>
@@ -56,6 +59,17 @@
           <div id="controller-grid" class="controller-grid">
             <!-- Controller cards will be rendered here -->
             <div class="loading">Connecting to controller manager...</div>
+          </div>
+        </div>
+
+        <!-- Experiments Tab (cohort framework, #981) -->
+        <div id="tab-experiments" class="tab-panel">
+          <div class="embed-header experiments-header">
+            <h3>Agent Experiments <span class="experiments-subtitle">live cohort runs</span></h3>
+            <a href="/grafana/explore?left=%7B%22datasource%22:%22loki%22%7D" target="_blank" class="external-link">Open logs in Grafana &#8599;</a>
+          </div>
+          <div id="experiments-grid" class="experiments-grid">
+            <div class="loading">Loading experiments&hellip;</div>
           </div>
         </div>
 

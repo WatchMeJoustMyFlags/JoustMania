@@ -15,6 +15,14 @@ export default defineConfig({
         target: 'http://localhost:8080',
         changeOrigin: true,
       },
+      // Proxy Loki queries (agent experiment telemetry, #981) through envoy,
+      // which routes /loki/* to the Loki HTTP API (port 80 entry point). In
+      // production the dashboard is served behind the same envoy, so this proxy
+      // only matters for `vite dev`.
+      '/loki': {
+        target: 'http://localhost:80',
+        changeOrigin: true,
+      },
     },
   },
 })

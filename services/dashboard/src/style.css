@@ -457,3 +457,169 @@ body {
     gap: 20px;
   }
 }
+
+/* ===================================================================== */
+/* Experiments view (#981) — agent cohort framework live runs            */
+/* ===================================================================== */
+
+.experiments-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 12px 4px;
+}
+
+.experiments-header h3 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.experiments-subtitle {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  font-weight: normal;
+  margin-left: 8px;
+}
+
+.experiments-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+  padding: 4px;
+}
+
+.experiment-card {
+  background: var(--bg-card);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--border-radius);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.experiment-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.experiment-id {
+  font-family: monospace;
+  font-size: 0.9rem;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.experiment-verdict {
+  font-size: 0.75rem;
+  font-weight: bold;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 3px 10px;
+  border-radius: 12px;
+  white-space: nowrap;
+}
+
+.verdict-running {
+  background: rgba(33, 150, 243, 0.18);
+  color: var(--accent-info);
+}
+
+.verdict-promote {
+  background: rgba(76, 175, 80, 0.18);
+  color: var(--accent-success);
+}
+
+.verdict-discard {
+  background: rgba(233, 69, 96, 0.18);
+  color: var(--accent-primary);
+}
+
+.verdict-inconclusive {
+  background: rgba(255, 152, 0, 0.18);
+  color: var(--accent-warning);
+}
+
+.experiment-arms {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.experiment-arm {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+
+.arm-name {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.arm-stats {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.arm-count,
+.arm-mean {
+  font-family: monospace;
+  color: var(--text-primary);
+}
+
+.arm-inflight {
+  font-size: 0.7rem;
+  color: var(--accent-info);
+}
+
+.experiment-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 10px;
+}
+
+.experiment-delta {
+  font-family: monospace;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.delta-positive {
+  color: var(--accent-success);
+}
+
+.delta-negative {
+  color: var(--accent-primary);
+}
+
+.delta-neutral {
+  color: var(--text-secondary);
+}
+
+.delta-label {
+  font-family: inherit;
+  font-weight: normal;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.experiment-reason {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
