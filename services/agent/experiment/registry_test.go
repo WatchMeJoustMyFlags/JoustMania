@@ -1082,3 +1082,242 @@ func TestMaxGamesPerExperimentConfig(t *testing.T) {
 		t.Fatalf("negative config maxGames = %d, want 0 (disabled)", r.maxGames)
 	}
 }
+
+// fastTerminalSpawner reproduces the bind-vs-fast-terminal race (#1014): inside
+// Spawn — i.e. BEFORE Spawn returns and the registry can call bindGame — it fires
+// the terminal callback by calling ReleaseGame(gameID) on the registry, exactly as
+// a game that errors at admission would (its drive goroutine fires onTerminal →
+// ReleaseGame the instant it starts). The real gamerunner spawns its drive
+// goroutine inside StartExperimentGame before returning the id, so this ordering is
+// real, not contrived; the default fakeSpawner binds synchronously and never
+// exercises it.
+type fastTerminalSpawner struct {
+	mu  sync.Mutex
+	reg *Registry // set after construction so Spawn can call back into the registry
+	seq int
+}
+
+func (f *fastTerminalSpawner) Spawn(_ context.Context, _, _ string) (string, error) {
+	f.mu.Lock()
+	f.seq++
+	seq := f.seq
+	gameID := fmt.Sprintf("game_%012d", seq)
+	reg := f.reg
+	f.mu.Unlock()
+	// Only the FIRST game races a pre-bind terminal; otherwise the always-release
+	// would make AllocateAndSpawn refill-and-release in a tight loop (the slot keeps
+	// freeing). One pre-bind terminal is enough to exercise the race; subsequent
+	// spawns bind normally so the pass terminates.
+	if seq == 1 {
+		// Terminal callback fires BEFORE Spawn returns ⇒ before AllocateAndSpawn binds.
+		reg.ReleaseGame(gameID, "game_error at admission (test)")
+	}
+	return gameID, nil
+}
+
+// TestBindVsFastTerminalDoesNotLeakSlot is the #1014 regression: a game that
+// terminates (error) BEFORE the registry binds its game_id must NOT leak the
+// in-flight slot. Before the fix, ReleaseGame no-op'd on the not-yet-bound id and
+// bindGame then recorded the id permanently, pinning the slot forever and
+// deadlocking the effective_concurrency=1 loop. The fix tombstones the early
+// release and frees the reservation at bind time, so a SUBSEQUENT AllocateAndSpawn
+// succeeds.
+func TestBindVsFastTerminalDoesNotLeakSlot(t *testing.T) {
+	spawner := &fastTerminalSpawner{}
+	r := newTestRegistry(t, RegistryConfig{
+		MaxShadowGames:       1,
+		EffectiveConcurrency: 1, // the exact deadlock-prone shape (#1014 target case)
+		Spawner:              spawner,
+		Verdict:              fakeVerdict{concludeAtN: 1000},
+	})
+	spawner.mu.Lock()
+	spawner.reg = r
+	spawner.mu.Unlock()
+
+	ctx := context.Background()
+	id, err := r.Declare(sampleIntent())
+	if err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+	if err := r.Start(ctx, id); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// One pass: the FIRST spawned game terminates before bind, freeing its slot; the
+	// pass then refills it with a healthy game (seq>=2 binds normally). Before the
+	// fix the first game's id was bound permanently — TotalInFlight would have
+	// settled at 1 holding a DEAD game, and no further game could ever start. With
+	// the fix the lone slot holds the healthy second game, proving the dead game's
+	// slot was reclaimed.
+	r.AllocateAndSpawn(ctx)
+	if total := r.TotalInFlight(); total != 1 {
+		t.Fatalf("in-flight %d, want 1 (the dead game's slot reclaimed + refilled)", total)
+	}
+
+	// The slot must hold the SECOND (healthy) game, not the first (released) one.
+	r.mu.Lock()
+	_, _, e := r.findGameLocked("game_000000000001")
+	firstStillBound := e != nil
+	_, _, e2 := r.findGameLocked("game_000000000002")
+	secondBound := e2 != nil
+	leftoverTombstones := len(r.releaseTombstones)
+	r.mu.Unlock()
+	if firstStillBound {
+		t.Fatalf("released game_000000000001 is still bound — the #1014 slot leak")
+	}
+	if !secondBound {
+		t.Fatalf("healthy game_000000000002 not bound — the freed slot was not reused")
+	}
+	// No tombstone may linger after bind consumed it (bounded-map invariant).
+	if leftoverTombstones != 0 {
+		t.Fatalf("releaseTombstones has %d leftover entries, want 0", leftoverTombstones)
+	}
+
+	// Conclude the healthy game and confirm the slot frees for a brand-new spawn —
+	// end-to-end proof the loop is not deadlocked.
+	if _, err := r.ConcludeGame(ctx, "game_000000000002", 0.5, 10); err != nil {
+		t.Fatalf("ConcludeGame: %v", err)
+	}
+	if total := r.TotalInFlight(); total != 0 {
+		t.Fatalf("in-flight %d after concluding the healthy game, want 0", total)
+	}
+	if n := r.AllocateAndSpawn(ctx); n != 1 {
+		t.Fatalf("post-conclude spawned %d, want 1 (loop not deadlocked)", n)
+	}
+}
+
+// TestBindAfterTeardownDropsTombstone covers the bindGame e==nil branch: if the
+// experiment is torn down between the early release and the bind, bindGame must not
+// resurrect a tombstone (it has no entry to free) — the map must end empty.
+func TestBindAfterTeardownDropsTombstone(t *testing.T) {
+	r := newTestRegistry(t, RegistryConfig{MaxShadowGames: 1, EffectiveConcurrency: 1})
+	// Seed a tombstone for an id whose experiment does not exist, then bind it.
+	r.mu.Lock()
+	r.releaseTombstones["game_zzz"] = "stale (test)"
+	r.mu.Unlock()
+	if bound := r.bindGame("exp_missing", "game_zzz", ArmControl); bound {
+		t.Fatalf("bindGame on a missing experiment returned bound=true, want false")
+	}
+	r.mu.Lock()
+	leftover := len(r.releaseTombstones)
+	r.mu.Unlock()
+	if leftover != 0 {
+		t.Fatalf("tombstone not dropped on missing-experiment bind: %d left", leftover)
+	}
+}
+
+// tombstoneCount returns the registry's current tombstone-map size (test-only).
+func tombstoneCount(r *Registry) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.releaseTombstones)
+}
+
+// TestConcludeThenReleaseLeavesNoOrphanTombstone is the bounded-map regression for
+// the conclude-then-release ordering: ReleaseGame is documented as safe to call
+// alongside ConcludeGame. If telemetry concludes a (bound) game first and the drive
+// goroutine's terminal callback then calls ReleaseGame on the same id, the unfound
+// release must NOT leave an un-consumable tombstone — because no spawn is in flight,
+// it is provably a stale call and must be skipped. Before the spawnsInFlight gate
+// this leaked one map entry per occurrence forever.
+func TestConcludeThenReleaseLeavesNoOrphanTombstone(t *testing.T) {
+	spawner := &fakeSpawner{}
+	r := newTestRegistry(t, RegistryConfig{
+		MaxShadowGames: 2,
+		Spawner:        spawner,
+		Verdict:        fakeVerdict{concludeAtN: 1000},
+	})
+	ctx := context.Background()
+	id, err := r.Declare(sampleIntent())
+	if err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+	if err := r.Start(ctx, id); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if n := r.AllocateAndSpawn(ctx); n != 2 {
+		t.Fatalf("spawned %d, want 2", n)
+	}
+	gid := spawner.calls[0].gameID
+
+	// Telemetry concludes the bound game first.
+	if _, err := r.ConcludeGame(ctx, gid, 0.5, 30); err != nil {
+		t.Fatalf("ConcludeGame: %v", err)
+	}
+	// The drive goroutine's terminal callback now races in on the SAME id (no spawn
+	// is in flight — both spawns already bound). It must be a no-op with no tombstone.
+	if freed := r.ReleaseGame(gid, "late terminal callback"); freed {
+		t.Fatalf("ReleaseGame freed an already-concluded game, want false")
+	}
+	if n := tombstoneCount(r); n != 0 {
+		t.Fatalf("orphan tombstone leaked on conclude-then-release: %d, want 0", n)
+	}
+}
+
+// TestDoubleReleaseLeavesNoOrphanTombstone is the bounded-map regression for the
+// double-release ordering: the first ReleaseGame frees the bound slot; a second
+// ReleaseGame on the same id (no spawn in flight) must be an idempotent no-op that
+// leaves no tombstone.
+func TestDoubleReleaseLeavesNoOrphanTombstone(t *testing.T) {
+	spawner := &fakeSpawner{}
+	r := newTestRegistry(t, RegistryConfig{
+		MaxShadowGames: 2,
+		Spawner:        spawner,
+		Verdict:        fakeVerdict{concludeAtN: 1000},
+	})
+	ctx := context.Background()
+	id, err := r.Declare(sampleIntent())
+	if err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+	if err := r.Start(ctx, id); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if n := r.AllocateAndSpawn(ctx); n != 2 {
+		t.Fatalf("spawned %d, want 2", n)
+	}
+	gid := spawner.calls[0].gameID
+
+	if freed := r.ReleaseGame(gid, "error"); !freed {
+		t.Fatalf("first ReleaseGame should free the bound slot")
+	}
+	if freed := r.ReleaseGame(gid, "error again"); freed {
+		t.Fatalf("second ReleaseGame on the same id should be a no-op")
+	}
+	if n := tombstoneCount(r); n != 0 {
+		t.Fatalf("orphan tombstone leaked on double-release: %d, want 0", n)
+	}
+}
+
+// TestQuiescentRegistryHasNoTombstones is the bounded-map invariant: after a full
+// spawn/bind/conclude cycle with no spawn in flight, the tombstone map is empty (the
+// map is O(concurrent in-flight spawns) and quiescent-empty, never accumulating).
+func TestQuiescentRegistryHasNoTombstones(t *testing.T) {
+	spawner := &fakeSpawner{}
+	r := newTestRegistry(t, RegistryConfig{
+		MaxShadowGames: 2,
+		Spawner:        spawner,
+		Verdict:        fakeVerdict{concludeAtN: 1000},
+	})
+	ctx := context.Background()
+	id, _ := r.Declare(sampleIntent())
+	if err := r.Start(ctx, id); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	r.AllocateAndSpawn(ctx)
+	for _, c := range spawner.calls {
+		if _, err := r.ConcludeGame(ctx, c.gameID, 0.5, 30); err != nil {
+			t.Fatalf("ConcludeGame: %v", err)
+		}
+	}
+	r.mu.Lock()
+	inFlightSpawns := r.spawnsInFlight
+	tombs := len(r.releaseTombstones)
+	r.mu.Unlock()
+	if inFlightSpawns != 0 {
+		t.Fatalf("spawnsInFlight = %d after a full cycle, want 0", inFlightSpawns)
+	}
+	if tombs != 0 {
+		t.Fatalf("releaseTombstones = %d on a quiescent registry, want 0", tombs)
+	}
+}

@@ -46,7 +46,19 @@ type shadowSpawner struct {
 	// shutdown (ctx cancel) stops in-flight shadow games and never leaks a goroutine
 	// (mirrors the #917 SetRootContext pattern). Set via SetRootContext before run.
 	root context.Context
+
+	// onTerminal, when set, is invoked the moment a spawned game reaches a terminal
+	// outcome (#1014). The experiment loop wires it to the registry so a game that
+	// ended WITHOUT a usable fitness sample (game_error / force-end) has its
+	// in-flight slot released directly, independent of the telemetry path — the
+	// deadlock backstop for effective_concurrency=1.
+	onTerminal gamerunner.TerminalCallback
 }
+
+// SetTerminalCallback registers the #1014 terminal-outcome hook, propagated to
+// every per-spawn gamerunner so the registry frees the slot for a non-concluding
+// game even if the telemetry game_active=0 path never fires for it.
+func (s *shadowSpawner) SetTerminalCallback(cb gamerunner.TerminalCallback) { s.onTerminal = cb }
 
 // newShadowSpawner builds the spawner over the gamerunner config + a template spec
 // drawn from the SHADOW_GAME_* env (the same spec the #778 one-shot runner uses), so
@@ -82,6 +94,9 @@ func (s *shadowSpawner) Spawn(ctx context.Context, experimentID, arm string) (st
 	spec.Arm = arm
 
 	runner := gamerunner.New(s.cfg, s.log)
+	if s.onTerminal != nil {
+		runner.SetTerminalCallback(s.onTerminal)
+	}
 
 	gameID, err := runner.StartExperimentGame(ctx, s.root, spec)
 	if err != nil {

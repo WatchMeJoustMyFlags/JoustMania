@@ -141,7 +141,7 @@ func buildExperimentLoop(
 		Log:       logger,
 	})
 
-	return &experimentLoop{
+	loop := &experimentLoop{
 		registry: registry,
 		spawner:  spawner,
 		flags:    flagsClient,
@@ -150,6 +150,12 @@ func buildExperimentLoop(
 		seed:     seedIntentFromEnv(),
 		fitness:  defaultGameFitness,
 	}
+	// Wire the #1014 terminal-outcome backstop: each spawned game signals its
+	// terminal outcome here, and a non-concluding game releases its in-flight slot
+	// directly (independent of the telemetry game_active=0 path), so the
+	// effective_concurrency=1 loop can never deadlock on an errored game.
+	spawner.SetTerminalCallback(loop.onGameTerminal)
+	return loop
 }
 
 // promotionConfigResolver builds the #980 ConfigResolver from the live agent
@@ -300,6 +306,49 @@ func (e *experimentLoop) onGameEnd(gc gamecontext.GameContext) {
 	}
 	if status == experiment.StatusRunning {
 		// A freed in-flight slot; refill it (respecting the kill-switch).
+		e.allocateIfEnabled(context.Background())
+	}
+}
+
+// onGameTerminal is the #1014 terminal-outcome backstop, invoked by a spawned
+// game's drive goroutine the instant the game ends. For a game that ended WITHOUT
+// a usable fitness sample — game_error or force-end (timeout) — it RELEASES the
+// in-flight slot directly via the registry (a NON-COUNTING release: no fitness
+// sample, no budget increment), so the effective_concurrency=1 loop can never
+// deadlock waiting on a telemetry game_active=0 datapoint that may never arrive
+// for a failed game. A naturally COMPLETED game is left to the telemetry-driven
+// onGameEnd → ConcludeGame path, which folds its real fitness sample; releasing
+// it here would drop that sample. ReleaseGame is idempotent, so even if the
+// telemetry path raced ahead this is a safe no-op. After a release it nudges
+// AllocateAndSpawn so the freed slot is refilled promptly.
+func (e *experimentLoop) onGameTerminal(gameID string, outcome gamerunner.Outcome) {
+	if outcome == gamerunner.OutcomeCompleted {
+		// Natural completion: the telemetry path (onGameEnd → ConcludeGame) concludes
+		// it WITH its fitness sample. We deliberately do NOT release here because that
+		// would drop the sample (ReleaseGame is non-counting).
+		//
+		// KNOWN RESIDUAL RISK (#1014 follow-up): this trusts the telemetry
+		// game_active=0 datapoint to arrive for a COMPLETED game — the same signal this
+		// very backstop calls unreliable for ERRORED games. If telemetry drops a
+		// completed game's datapoint, its in-flight slot leaks identically and the
+		// effective_concurrency=1 loop deadlocks. The asymmetry is intentional for now:
+		// an errored game routinely loses its attribution (it can error at admission,
+		// before the experiment_id is ever stamped onto a span/metric), whereas a
+		// completed game has played long enough to emit a fully-attributed game-end
+		// datapoint, so the completed path is materially more reliable. A bounded
+		// grace backstop that releases a still-in-flight COMPLETED game non-counting
+		// after a timeout is the durable fix; it is tracked as a follow-up (#1020)
+		// rather than built here (it needs care not to race the fitness fold).
+		return
+	}
+	reason := "game ended without usable fitness sample: " + string(outcome)
+	if e.registry.ReleaseGame(gameID, reason) {
+		e.log.Warn("experiment: released in-flight slot for non-concluding game (#1014)",
+			"game_id", gameID, "outcome", outcome)
+		// Refill the freed slot (respecting the kill-switch). context.Background is
+		// intentional: this runs on the drive goroutine, which has no tick/request
+		// context to thread through — the spawn it triggers is bounded by the runner's
+		// own RPC + ready timeouts, so an unbounded Background cannot stall here.
 		e.allocateIfEnabled(context.Background())
 	}
 }

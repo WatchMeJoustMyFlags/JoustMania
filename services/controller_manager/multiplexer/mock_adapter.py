@@ -86,6 +86,14 @@ class MockAdapter(ControllerIOAdapter):
         self._num_controllers = num_controllers
         self.controllers: dict[str, dict] = {}
         self._observers: list[asyncio.Queue] = []
+        # Monotonic serial counter for auto-generated serials. It NEVER decreases,
+        # even when controllers are removed, so a freshly added controller can never
+        # collide with one whose removal is still in flight (issue #1013): the old
+        # len()-based scheme reused MOCK000N after a removal, so a new AddControllers
+        # could hand back a serial already held by a not-yet-removed prior game,
+        # collapsing two distinct players to one serial and aborting FFA with
+        # "Need at least 2 players, got 1".
+        self._next_serial = 0
         logger.info(f"MockAdapter initialized with {num_controllers} controllers")
 
     @property
@@ -271,7 +279,16 @@ class MockAdapter(ControllerIOAdapter):
             tag: Identifies the owning agent/game (orphan cleanup, debugging).
         """
         if serial is None:
-            serial = f"MOCK{len(self.controllers):04d}"
+            # Use a monotonic counter (never reused after removal) so an
+            # auto-generated serial is globally unique for the adapter's lifetime
+            # and cannot collide with a controller whose removal is still in flight
+            # (#1013). Skip any serial that somehow already exists (e.g. a caller
+            # passed an explicit "MOCK000N" earlier) to keep the guarantee absolute.
+            serial = f"MOCK{self._next_serial:04d}"
+            self._next_serial += 1
+            while serial in self.controllers:
+                serial = f"MOCK{self._next_serial:04d}"
+                self._next_serial += 1
         if serial in self.controllers:
             logger.warning(f"Mock: Controller {serial} already exists")
             return serial
