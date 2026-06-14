@@ -155,11 +155,13 @@ There are **three** distinct grace mechanisms, and they must not be conflated:
 
 **The collision.** Human invincibility uses a **mode-local** field
 (`invincible_until`, checked independently in each mode's kill path), while the
-agent shield extends the **mode-agnostic** `grace_until` on the base class. A
-death is suppressed if `time.time() < grace_until` **OR** (in those two modes)
-`time.time() < invincible_until`. There is no single composed grace window — the
-effective protection is whichever check the kill path happens to run, with no
-defined precedence.
+agent shield extends the **mode-agnostic** `grace_until` on the base class.
+**Today these are not composed:** Fight Club and Tournament kill paths check
+*only* `invincible_until` ([`fight_club.py:410`](../services/game_coordinator/games/fight_club.py)/[`:673`](../services/game_coordinator/games/fight_club.py), [`tournament.py:666`](../services/game_coordinator/games/tournament.py)) — an
+agent shield (`grace_until`) is **not** honored in those modes' kill checks,
+while base-class modes consult `grace_until` only. There is no single composed
+grace window, and protection depends on which check the kill path happens to
+run, with no defined precedence.
 
 **Ratified rule.**
 
@@ -242,7 +244,7 @@ The admin MUST have an **on-device** way to constrain the agent without editing
   `interventions_allowed` allow-list and `policy.*` budgets that the coordinator
   already enforces (the enforcement chain — allow-list → mode matrix → battery
   guard → rate limit — lives in
-  [`interventions.py:_enforce`](../services/game_coordinator/interventions.py),
+  [`interventions.py:_check_chain`](../services/game_coordinator/interventions.py),
   ~lines 1023-1050; it gates the *agent* only, never the human).
 - The control must be **load-bearing at the gate**: flipping the kill-switch off
   means the coordinator's allow-list rejects every agent intervention, so the
