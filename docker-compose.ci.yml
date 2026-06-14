@@ -67,14 +67,19 @@ services:
   # settings). Point it at the SAME CI flag directory flagd serves (#959) so a
   # menu-driven flag write lands in the file flagd reads, not a stale base copy.
   # !override replaces the base [./services/flagd:/etc/flagd] mount.
+  # Flag-dir permission init (#1031) — point it at the CI flag dir so the nonroot
+  # menu can persist admin writes to the same files flagd serves. !override
+  # replaces the base [./services/flagd:/etc/flagd] mount with the CI dir.
+  flag-dir-init:
+    volumes: !override
+      - ./services/flagd/ci:/etc/flagd
+
   menu:
     # The menu persists admin-mode settings (sensitivity, num_teams, game
     # selection) by writing game.json/user.json in the bind-mounted CI flag dir.
-    # The image runs as nonroot (uid 65532) but the host flag files are owned by
-    # the checkout user, so the nonroot menu cannot write them. Run as root in CI
-    # so the admin write path is exercisable end-to-end — same pattern other
-    # bind-mount writers use (jaeger/grafana run as user "0" in the base compose).
-    user: "0"
+    # The image runs as nonroot (uid 65532). #1031: flag-dir-init makes the CI flag
+    # dir group-writable, so the menu persists writes as nonroot — the `user: "0"`
+    # hack is gone and the prod-like (nonroot) admin write path is exercised in CI.
     volumes: !override
       - ./services/flagd/ci:/etc/flagd
     environment:
