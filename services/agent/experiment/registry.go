@@ -745,6 +745,42 @@ func (r *Registry) ConcludeGame(ctx context.Context, gameID string, fitness floa
 	return StatusRunning, nil
 }
 
+// ReleaseGame frees the in-flight slot held by a shadow game that ended WITHOUT
+// producing a usable fitness sample (#1014): a game that terminated in
+// game_error, was force-ended on timeout, or was aborted. Unlike ConcludeGame it
+// does NOT fold a fitness sample, recompute the verdict, or advance the
+// termination budget — a transient game failure must not pollute the cohort with
+// a fabricated 0-fitness sample (epic #982: fitness is observed, never assumed).
+// It simply drops the (game_id → arm) binding so the slot returns to the cap,
+// records a non-counting release event for the audit trail, and lets the next
+// AllocateAndSpawn refill it. This is the BACKSTOP that guarantees the
+// effective_concurrency=1 loop can never deadlock on an errored game even if the
+// telemetry-driven ConcludeGame path never fires for it.
+//
+// It is IDEMPOTENT and SAFE to call alongside ConcludeGame: an unknown game_id
+// (already concluded/released, or not one of ours) is ignored. Returns whether a
+// slot was actually freed.
+func (r *Registry) ReleaseGame(gameID, reason string) bool {
+	r.mu.Lock()
+	id, arm, e := r.findGameLocked(gameID)
+	if e == nil {
+		r.mu.Unlock()
+		return false // already concluded/released, or not one of ours.
+	}
+	delete(e.games, gameID)
+	r.appendEvent(e.journal, journal.Event{
+		Kind:   journal.KindGameReleased,
+		GameID: gameID,
+		Arm:    arm,
+		Note:   reason,
+	})
+	r.mu.Unlock()
+
+	r.log.Info("experiment.game_released",
+		"experiment_id", id, "game_id", gameID, "arm", arm, "reason", reason)
+	return true
+}
+
 // shouldGiveUp implements the #1001 termination guard: it decides whether an
 // experiment that is still inconclusive must be concluded INCONCLUSIVE (rather
 // than left RUNNING forever). It returns a human-readable reason and true when

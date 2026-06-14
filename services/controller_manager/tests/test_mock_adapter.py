@@ -253,6 +253,51 @@ class TestMockAdapterExtraMethods:
         serial = adapter.add_controller("mock_controller_0")
         assert serial == "mock_controller_0"
 
+    def test_auto_serial_is_monotonic_and_never_reused_after_removal(self):
+        """Regression for #1013: auto-generated serials must never be reused.
+
+        The old len()-based scheme generated MOCK{len(controllers):04d}, so a
+        removal shrank len() and the NEXT add re-minted a just-removed serial.
+        When the previous shadow game's controllers were still being removed, a
+        new AddControllers could hand back a serial already held by a not-yet-
+        removed controller, collapsing two distinct players to one serial and
+        aborting FFA with "Need at least 2 players, got 1". A monotonic counter
+        guarantees every auto serial is unique for the adapter's lifetime.
+        """
+        adapter = MockAdapter(num_controllers=0)
+        adapter.discover()
+
+        # Game 1 reserves two controllers.
+        a = adapter.add_controller()
+        b = adapter.add_controller()
+        assert [a, b] == ["MOCK0000", "MOCK0001"]
+
+        # Game 1 ends: remove ONE controller (simulating an in-flight cleanup
+        # where the other removal has not landed yet).
+        assert adapter.remove_controller(a) is True
+
+        # Game 2 reserves two more. Under the old len()-based scheme call 1 would
+        # have re-minted MOCK0001 (len()==1) — colliding with the surviving b and
+        # returning a DUPLICATE. The monotonic counter keeps every serial unique.
+        c = adapter.add_controller()
+        d = adapter.add_controller()
+        assert c not in (a, b), f"reused a prior serial: {c}"
+        assert d not in (a, b, c), f"reused a prior serial: {d}"
+        assert c != d, "AddControllers handed back two identical serials"
+        # All currently-tracked serials are distinct.
+        assert len(set(adapter.controllers)) == len(adapter.controllers)
+
+    def test_auto_serial_skips_collisions_with_explicit_serials(self):
+        """A monotonic auto serial that collides with an earlier explicit add
+        is skipped, preserving the uniqueness guarantee (#1013)."""
+        adapter = MockAdapter(num_controllers=0)
+        adapter.discover()
+        # Pre-seed the serial the counter would generate first.
+        adapter.add_controller("MOCK0000")
+        auto = adapter.add_controller()
+        assert auto != "MOCK0000"
+        assert auto in adapter.controllers
+
     def test_remove_controller(self):
         adapter = MockAdapter(num_controllers=1)
         adapter.discover()

@@ -49,7 +49,89 @@ func (r *Runner) reserveControllers(ctx context.Context, cl *clients, spec Spec)
 	if len(serials) != spec.Players {
 		return serials, fmt.Errorf("AddControllers returned %d serials, want %d", len(serials), spec.Players)
 	}
+	// Reject DUPLICATE serials (#1013). The game roster is a serial-keyed map, so
+	// two identical serials collapse to one player and FFA aborts with "Need at
+	// least 2 players, got 1". A duplicate means the controller-manager handed back
+	// a serial it had already minted (the len()-based naming colliding with a prior
+	// game's not-yet-removed controller) — surface it here rather than start an
+	// under-populated game.
+	if dup := firstDuplicate(serials); dup != "" {
+		return serials, fmt.Errorf("AddControllers returned duplicate serial %q (got %v): under-populated roster", dup, serials)
+	}
+
+	// Readiness gate (#1013): wait until every reserved serial is VISIBLE to the
+	// mock service before the game is started. AddControllers is synchronous on the
+	// adapter, but this guards against any propagation lag between reservation and
+	// the coordinator reading the roster, so a spawned game reliably fields all
+	// spec.Players controllers.
+	if err := r.waitControllersReady(ctx, cl, serials); err != nil {
+		return serials, err
+	}
 	return serials, nil
+}
+
+// firstDuplicate returns the first serial that appears more than once in the
+// slice, or "" when every serial is unique.
+func firstDuplicate(serials []string) string {
+	seen := make(map[string]struct{}, len(serials))
+	for _, s := range serials {
+		if _, ok := seen[s]; ok {
+			return s
+		}
+		seen[s] = struct{}{}
+	}
+	return ""
+}
+
+// waitControllersReady polls ListMockControllers until every serial in want is
+// present (registered/visible), or the readiness timeout elapses (#1013). It
+// returns nil once all serials are visible, or an error describing which serials
+// never appeared. The poll is cheap (an in-memory list on the mock service) and
+// the happy path returns on the first check, so a normally-immediate registration
+// costs one extra RPC.
+func (r *Runner) waitControllersReady(ctx context.Context, cl *clients, want []string) error {
+	deadline := time.Now().Add(r.cfg.ReadyTimeout)
+	ticker := time.NewTicker(r.cfg.ReadyPollInterval)
+	defer ticker.Stop()
+
+	for {
+		missing := r.missingControllers(ctx, cl, want)
+		if len(missing) == 0 {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("reserved controllers not ready within %s: missing %v", r.cfg.ReadyTimeout, missing)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("readiness wait cancelled: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+// missingControllers returns the subset of want that ListMockControllers does not
+// currently report as present. A failed List leaves every serial "missing" so the
+// caller retries until the deadline rather than starting a game on stale state.
+func (r *Runner) missingControllers(ctx context.Context, cl *clients, want []string) []string {
+	rpcCtx, cancel := context.WithTimeout(ctx, r.cfg.RPCTimeout)
+	defer cancel()
+	resp, err := cl.mock.ListMockControllers(rpcCtx, &mockpb.ListRequest{})
+	if err != nil {
+		r.log.Debug("ListMockControllers failed during readiness wait", "error", err)
+		return append([]string(nil), want...)
+	}
+	present := make(map[string]struct{}, len(resp.GetSerials()))
+	for _, s := range resp.GetSerials() {
+		present[s] = struct{}{}
+	}
+	var missing []string
+	for _, s := range want {
+		if _, ok := present[s]; !ok {
+			missing = append(missing, s)
+		}
+	}
+	return missing
 }
 
 // removeControllers removes each serial best-effort. Cleanup must not fail the

@@ -15,6 +15,7 @@ import (
 	"github.com/joustmania/agent/experiment"
 	"github.com/joustmania/agent/experiment/journal"
 	"github.com/joustmania/agent/gamecontext"
+	"github.com/joustmania/agent/gamerunner"
 	"github.com/joustmania/agent/promote"
 )
 
@@ -370,6 +371,86 @@ func TestExperimentLoop_OnGameEnd_IgnoresNonExperimentGames(t *testing.T) {
 	if n := loop.registry.TotalInFlight(); n != 0 {
 		t.Fatalf("non-experiment game-ends touched the registry (in-flight=%d)", n)
 	}
+}
+
+// TestExperimentLoop_OnGameTerminal_ReleasesErroredGame is the #1014 loop-level
+// AC: when a spawned game ends in game_error (OutcomeError), the terminal hook
+// releases the in-flight slot via the registry — WITHOUT folding a fitness
+// sample — so an effective_concurrency=1 loop does not deadlock. A naturally
+// COMPLETED game is left for the telemetry onGameEnd path (no release here).
+func TestExperimentLoop_OnGameTerminal_ReleasesErroredGame(t *testing.T) {
+	spawner := &recordingSpawner{}
+	resolve := func(context.Context) promote.Config { return promote.Config{Mode: promote.ModeIssue} }
+	loop := buildLoopForTest(t, spawner, resolve, &recordingRealDefault{}, &recordingGitHub{}, armFitness())
+	ctx := context.Background()
+
+	id, err := loop.registry.Declare(experiment.Intent{
+		Hypothesis: "h", FlagKey: "death_grace_period_seconds",
+		ExperimentalValue: 0.5, Objective: "engagement_balanced", TargetNPerArm: 3,
+	})
+	if err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+	if err := loop.registry.Start(ctx, id); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if n := loop.registry.AllocateAndSpawn(ctx); n == 0 {
+		t.Fatal("expected a spawn")
+	}
+	recs := spawner.drain()
+	if len(recs) == 0 {
+		t.Fatal("spawner recorded no game")
+	}
+	gameID := recs[0].gameID
+	if loop.registry.TotalInFlight() == 0 {
+		t.Fatal("expected in-flight games after spawn")
+	}
+
+	// A naturally completed game does NOT release here (telemetry concludes it):
+	// the specific game binding survives so the telemetry onGameEnd path can fold
+	// its fitness sample.
+	loop.onGameTerminal(gameID, gamerunner.OutcomeCompleted)
+	if !gameStillBound(loop, id, gameID) {
+		t.Fatal("OutcomeCompleted released the game binding; it must defer to the telemetry conclude path")
+	}
+
+	// A game_error releases THAT game's slot (no deadlock) without folding a
+	// sample. (The loop may immediately refill the freed slot with a NEW game —
+	// that is the correct no-deadlock behavior — so assert on the specific binding
+	// being gone, plus that no fitness sample was folded.)
+	loop.onGameTerminal(gameID, gamerunner.OutcomeError)
+	if gameStillBound(loop, id, gameID) {
+		t.Fatal("OutcomeError did not release the errored game's binding (slot leak / deadlock risk)")
+	}
+	cv, _ := loop.registry.CompactView(id)
+	for arm, a := range cv.Arms {
+		if a.Count != 0 {
+			t.Fatalf("arm %q folded a sample (count=%d) on an errored game; release must be non-counting", arm, a.Count)
+		}
+	}
+}
+
+// gameStillBound reports whether gameID is still an in-flight binding of the
+// experiment (a game_concluded/game_released event drops it). It inspects the
+// journal tail since the registry exposes no per-game accessor.
+func gameStillBound(loop *experimentLoop, expID, gameID string) bool {
+	cv, ok := loop.registry.CompactView(expID)
+	if !ok {
+		return false
+	}
+	assigned := false
+	for _, ev := range cv.RecentTail {
+		if ev.GameID != gameID {
+			continue
+		}
+		switch ev.Kind {
+		case journal.KindGameAssigned:
+			assigned = true
+		case journal.KindGameConcluded, journal.KindGameReleased:
+			assigned = false
+		}
+	}
+	return assigned
 }
 
 // TestBuildExperimentLoop_DisabledByDefault is the disabled-default AC: with the

@@ -101,6 +101,16 @@ type Config struct {
 	// RPCTimeout bounds individual unary RPCs (AddControllers, SimulateDeath,
 	// ForceEndGame, …).
 	RPCTimeout time.Duration
+
+	// ReadyTimeout bounds how long reserveControllers waits for its reserved
+	// controllers to become VISIBLE (registered) to the mock service before
+	// starting the game (#1013). A start that proceeds before all spec.Players
+	// controllers are present can admit an under-populated game that FFA aborts
+	// ("Need at least 2 players, got 1").
+	ReadyTimeout time.Duration
+	// ReadyPollInterval is how often the readiness gate re-checks the controller
+	// roster while waiting for all reserved serials to appear.
+	ReadyPollInterval time.Duration
 }
 
 // Default config values. Conservative and CI-friendly.
@@ -111,6 +121,13 @@ const (
 	DefaultMovementInterval = 250 * time.Millisecond
 	DefaultKillInterval     = 1500 * time.Millisecond
 	DefaultRPCTimeout       = 10 * time.Second
+	// DefaultReadyTimeout bounds the readiness gate (#1013). Controller
+	// registration is normally immediate, so this only ever absorbs a brief
+	// propagation lag; a generous ceiling keeps it from ever masking a genuine
+	// failure to reserve.
+	DefaultReadyTimeout = 10 * time.Second
+	// DefaultReadyPollInterval is the readiness-gate re-check cadence.
+	DefaultReadyPollInterval = 100 * time.Millisecond
 )
 
 // withDefaults returns a copy of c with any unset field filled from the
@@ -133,6 +150,12 @@ func (c Config) withDefaults() Config {
 	}
 	if c.RPCTimeout <= 0 {
 		c.RPCTimeout = DefaultRPCTimeout
+	}
+	if c.ReadyTimeout <= 0 {
+		c.ReadyTimeout = DefaultReadyTimeout
+	}
+	if c.ReadyPollInterval <= 0 {
+		c.ReadyPollInterval = DefaultReadyPollInterval
 	}
 	return c
 }
@@ -199,12 +222,25 @@ func defaultDialer(target string) (grpc.ClientConnInterface, func() error, error
 	return conn, conn.Close, nil
 }
 
+// TerminalCallback is invoked by an experiment game's background goroutine the
+// instant the game reaches a terminal outcome (#1014), carrying the
+// coordinator game_id and the classified Outcome. It is the SYNCHRONOUS,
+// telemetry-independent signal the experiment registry uses to release the
+// in-flight slot for a game that did NOT conclude with a usable fitness sample
+// (game_error / force-end / abort), so the effective_concurrency=1 loop can never
+// deadlock waiting on a metric that may never arrive for a failed game. It is
+// only ever called for an EXPERIMENT-bound game (StartExperimentGame).
+type TerminalCallback func(gameID string, outcome Outcome)
+
 // Runner drives shadow games against a coordinator + mock control service.
 type Runner struct {
 	cfg    Config
 	log    *slog.Logger
 	tracer trace.Tracer
 	dial   dialer
+	// onTerminal, when set, is called once an experiment game reaches a terminal
+	// outcome. nil ⇒ no callback (the #778 one-shot runner does not use it).
+	onTerminal TerminalCallback
 }
 
 // New builds a Runner with the given config. log may be nil (slog.Default used).
@@ -219,6 +255,12 @@ func New(cfg Config, log *slog.Logger) *Runner {
 		dial:   defaultDialer,
 	}
 }
+
+// SetTerminalCallback registers the #1014 terminal-outcome hook. It is invoked by
+// the background drive goroutine of StartExperimentGame the moment the game ends
+// (any outcome). The experiment loop wires it to release the in-flight slot for a
+// non-concluding outcome so the cohort loop cannot deadlock.
+func (r *Runner) SetTerminalCallback(cb TerminalCallback) { r.onTerminal = cb }
 
 // clients bundles the two gRPC clients a run needs plus their cleanup.
 type clients struct {
@@ -375,6 +417,20 @@ func (r *Runner) StartExperimentGame(startCtx, driveCtx context.Context, spec Sp
 		r.log.Info("experiment shadow game finished",
 			"game_id", gameID, "run_id", spec.RunID, "experiment_id", spec.ExperimentID,
 			"arm", spec.Arm, "outcome", outcome, "terminal_event", terminal)
+
+		// Terminal-outcome hook (#1014): signal the registry the moment the game
+		// ends, regardless of outcome. For a game that did NOT conclude with a
+		// usable fitness sample (game_error / force-end / abort) the telemetry
+		// game_active=0 → ConcludeGame path may never fire (a game that errored at
+		// admission can be coalesced or lose its experiment attribution), leaking
+		// the in-flight slot and DEADLOCKING the effective_concurrency=1 loop. This
+		// hook lets the loop release the slot directly. It is a no-op when the
+		// telemetry path already concluded the game (ReleaseGame is idempotent on an
+		// unknown game_id). Runs BEFORE the deferred controller removal so the slot
+		// and the controllers free together.
+		if r.onTerminal != nil {
+			r.onTerminal(gameID, outcome)
+		}
 	}()
 
 	return gameID, nil

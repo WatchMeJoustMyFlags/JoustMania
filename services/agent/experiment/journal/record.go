@@ -82,6 +82,13 @@ const (
 	// KindGameConcluded — a game finished and carries its fitness sample. This is
 	// the ONLY event that folds into an arm's Welford accumulator.
 	KindGameConcluded EventKind = "game_concluded"
+	// KindGameReleased — a shadow game ended WITHOUT a usable fitness sample
+	// (game_error / timeout / abort) so its in-flight slot was freed WITHOUT
+	// folding a sample (#1014). It is a NON-COUNTING release: it never touches an
+	// arm's Welford accumulator, so a transient game failure cannot pollute the
+	// cohort with a fabricated 0-fitness sample. It is recorded purely for the
+	// audit trail (why a bound game vanished without a conclusion).
+	KindGameReleased EventKind = "game_released"
 	// KindInterimVerdict — the rolling verdict recorded after a conclusion.
 	KindInterimVerdict EventKind = "interim_verdict"
 	// KindDecision — a status transition (continue/stop/promote).
