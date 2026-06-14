@@ -868,3 +868,217 @@ func TestConcurrentAllocateAndConcludeNoLeak(t *testing.T) {
 		t.Fatalf("after settling allocate, in-flight %d != cap %d (reservation leak?)", total, cap)
 	}
 }
+
+// --- #1001 termination guard tests ---
+
+// alwaysInconclusive is a CohortVerdict that NEVER concludes: it always returns
+// an inconclusive verdict (as the real verdict does for all-zero / within-noise /
+// degenerate cohorts). It isolates the registry's termination guard from the
+// verdict so a test proves the registry itself bounds the experiment.
+type alwaysInconclusive struct{}
+
+func (alwaysInconclusive) Evaluate(_ journal.Summary) (journal.Verdict, bool) {
+	return journal.Verdict{Outcome: OutcomeInconclusive, Reason: "always inconclusive (test)"}, true
+}
+
+// drainToTerminal repeatedly refills shadow capacity and concludes every spawned
+// game with the same fitness, until the experiment reaches a terminal status or
+// safetyMax games have been concluded (a safety net so a REGRESSED guard fails
+// the test instead of looping forever). It returns the terminal status and the
+// number of games concluded. The spawner is the source of truth for the spawned
+// game ids (robust regardless of journal tail size).
+func drainToTerminal(t *testing.T, r *Registry, spawner *fakeSpawner, id string, fitness float64, safetyMax int) (Status, int) {
+	t.Helper()
+	ctx := context.Background()
+	done := map[string]bool{}
+	concluded := 0
+	for concluded < safetyMax {
+		r.AllocateAndSpawn(ctx)
+
+		// Conclude every spawned-but-not-yet-concluded game for this experiment.
+		spawner.mu.Lock()
+		pending := make([]string, 0, len(spawner.calls))
+		for _, c := range spawner.calls {
+			if c.experimentID == id && !done[c.gameID] {
+				pending = append(pending, c.gameID)
+			}
+		}
+		spawner.mu.Unlock()
+
+		if len(pending) == 0 {
+			st, _ := r.Status(id)
+			t.Fatalf("no games to conclude but experiment still %s (stuck)", st)
+		}
+
+		for _, gid := range pending {
+			st, err := r.ConcludeGame(ctx, gid, fitness, 60)
+			if err != nil {
+				t.Fatalf("ConcludeGame(%s): %v", gid, err)
+			}
+			done[gid] = true
+			concluded++
+			if st.IsTerminal() {
+				return st, concluded
+			}
+		}
+	}
+	st, _ := r.Status(id)
+	return st, concluded
+}
+
+// (a) GAMES BUDGET: with a verdict that never concludes, the experiment MUST stop
+// at the configured max-games budget instead of spawning forever. This is the
+// direct #1001 regression: the dry run hit 235 games with no bound.
+func TestTerminationGamesBudget(t *testing.T) {
+	root := t.TempDir()
+	spawner := &fakeSpawner{}
+	targeting := &fakeTargeting{}
+	r := newTestRegistry(t, RegistryConfig{
+		Root:                  root,
+		MaxShadowGames:        2,
+		MaxGamesPerExperiment: 6,   // small budget for the test
+		VerdictMinN:           100, // huge so the inconclusive-past-target guard never fires
+		Spawner:               spawner,
+		Verdict:               alwaysInconclusive{},
+		Targeting:             targeting,
+	})
+	ctx := context.Background()
+
+	id, err := r.Declare(sampleIntent())
+	if err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+	if err := r.Start(ctx, id); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	st, concluded := drainToTerminal(t, r, spawner, id, 0.5, 50)
+	if !st.IsTerminal() {
+		t.Fatalf("experiment did not terminate (status=%s, concluded=%d)", st, concluded)
+	}
+	if st != StatusDiscarded {
+		t.Fatalf("terminal status = %s, want discarded (inconclusive teardown)", st)
+	}
+	// It must have stopped near the budget, not run unbounded.
+	if concluded > 6+2 { // budget + one in-flight capacity pass of slack
+		t.Fatalf("concluded %d games, want ~6 (budget); guard did not bound the experiment", concluded)
+	}
+	if got := targeting.strippedIDs(); len(got) != 1 || got[0] != id {
+		t.Fatalf("stripped = %v, want [%s] (teardown freed targeting)", got, id)
+	}
+}
+
+// (c) DEGENERATE VARIANCE / all-zero fitness: using the REAL verdict, all games
+// score fitness=0 ⇒ both arms zero-variance ⇒ undefined effect ⇒ permanent
+// inconclusive. The experiment MUST terminate via the degenerate-variance guard
+// once both arms pass target N — not loop forever (the exact #997/#1001 case).
+func TestTerminationAllZeroFitnessDegenerate(t *testing.T) {
+	root := t.TempDir()
+	spawner := &fakeSpawner{}
+	targeting := &fakeTargeting{}
+	r := newTestRegistry(t, RegistryConfig{
+		Root:                  root,
+		MaxShadowGames:        2,
+		MaxGamesPerExperiment: 1000, // do NOT let the budget be what stops it
+		VerdictMinN:           3,
+		Spawner:               spawner,
+		Verdict:               NewVerdict(3, 0.5, nil), // the real min-N + Cohen's d gate
+		Targeting:             targeting,
+	})
+	ctx := context.Background()
+
+	in := sampleIntent()
+	in.TargetNPerArm = 3
+	id, err := r.Declare(in)
+	if err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+	if err := r.Start(ctx, id); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	st, concluded := drainToTerminal(t, r, spawner, id, 0.0, 100)
+	if !st.IsTerminal() {
+		t.Fatalf("all-zero experiment did not terminate (status=%s, concluded=%d)", st, concluded)
+	}
+	if st != StatusDiscarded {
+		t.Fatalf("terminal status = %s, want discarded", st)
+	}
+	// Should stop shortly after both arms reach target N=3 (≈6 games), nowhere near
+	// the 1000 budget.
+	if concluded > 12 {
+		t.Fatalf("concluded %d games, want ~6 (degenerate guard at target N)", concluded)
+	}
+}
+
+// (target_n < min-N) must NOT cause an infinite under-powered loop. Declare
+// reconciles target_n up to min-N, and the guard then concludes once both arms
+// reach that floor. Uses the real verdict with constant non-zero fitness (still
+// inconclusive because zero within-arm variance).
+func TestTerminationTargetBelowMinNDoesNotLoop(t *testing.T) {
+	root := t.TempDir()
+	spawner := &fakeSpawner{}
+	targeting := &fakeTargeting{}
+	r := newTestRegistry(t, RegistryConfig{
+		Root:                  root,
+		MaxShadowGames:        2,
+		MaxGamesPerExperiment: 1000, // budget must not be the stopper
+		VerdictMinN:           8,    // min-N well above target_n
+		Spawner:               spawner,
+		Verdict:               NewVerdict(8, 0.5, nil),
+		Targeting:             targeting,
+	})
+	ctx := context.Background()
+
+	in := sampleIntent()
+	in.TargetNPerArm = 2 // < min-N=8: would loop forever without reconciliation
+	id, err := r.Declare(in)
+	if err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+
+	// Declare must have reconciled the persisted target_n up to min-N.
+	jrnl, err := journal.Load(root, id)
+	if err != nil {
+		t.Fatalf("journal.Load: %v", err)
+	}
+	if got := jrnl.Intent().TargetNPerArm; got != 8 {
+		t.Fatalf("persisted target_n = %d, want 8 (reconciled up to min-N)", got)
+	}
+
+	if err := r.Start(ctx, id); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	st, concluded := drainToTerminal(t, r, spawner, id, 0.42, 200)
+	if !st.IsTerminal() {
+		t.Fatalf("target_n<min-N experiment did not terminate (status=%s, concluded=%d)", st, concluded)
+	}
+	// Terminates around both arms reaching N=8 (≈16 games), not unbounded.
+	if concluded > 24 {
+		t.Fatalf("concluded %d games, want ~16 (reconciled target N=8)", concluded)
+	}
+}
+
+// Config/env semantics: MaxGamesPerExperimentFromEnv honors an explicit disable,
+// and NewRegistry's zero/negative handling matches the documented rule.
+func TestMaxGamesPerExperimentConfig(t *testing.T) {
+	t.Setenv(maxGamesPerExperimentEnv, "")
+	if got := MaxGamesPerExperimentFromEnv(); got != DefaultMaxGamesPerExperiment {
+		t.Fatalf("unset env = %d, want default %d", got, DefaultMaxGamesPerExperiment)
+	}
+	t.Setenv(maxGamesPerExperimentEnv, "0")
+	if got := MaxGamesPerExperimentFromEnv(); got != 0 {
+		t.Fatalf("env=0 = %d, want 0 (disabled)", got)
+	}
+	t.Setenv(maxGamesPerExperimentEnv, "garbage")
+	if got := MaxGamesPerExperimentFromEnv(); got != DefaultMaxGamesPerExperiment {
+		t.Fatalf("env=garbage = %d, want default", got)
+	}
+
+	// A negative config value disables the budget (registry maxGames clamps to 0).
+	r := NewRegistry(RegistryConfig{Root: t.TempDir(), MaxGamesPerExperiment: -1})
+	if r.maxGames != 0 {
+		t.Fatalf("negative config maxGames = %d, want 0 (disabled)", r.maxGames)
+	}
+}
