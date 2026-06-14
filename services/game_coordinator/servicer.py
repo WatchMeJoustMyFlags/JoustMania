@@ -412,7 +412,12 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             for ended_id in [
                 gid for gid, sess in self.sessions.items() if sess.game_state == game_coordinator_pb2.GameState.ENDED
             ]:
-                self.sessions.pop(ended_id, None)
+                ended_session = self.sessions.pop(ended_id, None)
+                if ended_session is not None:
+                    # Mirror _retire_session: drop this session's game_id-labeled
+                    # gauge series so naturally-ended shadows don't leak series
+                    # (#1018). Idempotent / missing-series safe.
+                    ended_session.clear_metrics()
                 if self._primary_game_id == ended_id:
                     self._primary_game_id = None
                     # Mirror _retire_session: the persistent primary bus
@@ -635,7 +640,12 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         """Remove a finished session from the registry and free the primary slot
         if it owned it, so a new primary can start."""
         with self._sessions_lock:
-            self.sessions.pop(game_id, None)
+            session = self.sessions.pop(game_id, None)
+            if session is not None:
+                # Remove this session's game_id-labeled gauge series so the
+                # zeroed-but-persistent series don't accumulate as shadows churn
+                # short-lived game_ids (#1018). Idempotent / missing-series safe.
+                session.clear_metrics()
             if self._primary_game_id == game_id:
                 self._primary_game_id = None
                 # The primary bus is persistent and outlives the session; clear

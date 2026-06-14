@@ -85,6 +85,52 @@ class TestPerPlayerMetricLabels:
         mock_alive.labels.return_value.set.assert_called_with(1)
 
 
+class TestPlayersAliveAggregateIsPrimaryOnly:
+    """The unlabeled ``players_alive`` aggregate gauge (the live-dashboard count)
+    is written by the PRIMARY session only. With concurrent shadow games (#1018)
+    a headless shadow must not stomp the real game's count via this single
+    last-writer-wins series."""
+
+    @pytest.mark.asyncio
+    async def test_primary_kill_writes_players_alive(self, ffa_game):
+        game = ffa_game  # default game_kind == "primary"
+        serial = next(iter(game.players))
+
+        with patch("services.game_coordinator.metrics.players_alive") as mock_agg:
+            await game._kill_player(serial, accel_mag=5.0)
+
+        mock_agg.set.assert_called()  # primary updates the aggregate
+
+    @pytest.mark.asyncio
+    async def test_shadow_kill_does_not_write_players_alive(self, ffa_game):
+        game = ffa_game
+        game.game_kind = "shadow"
+        serial = next(iter(game.players))
+
+        with patch("services.game_coordinator.metrics.players_alive") as mock_agg:
+            await game._kill_player(serial, accel_mag=5.0)
+
+        mock_agg.set.assert_not_called()  # shadow must NOT touch the aggregate
+
+    @pytest.mark.asyncio
+    async def test_shadow_initialize_does_not_write_players_alive(self):
+        mock_cm = MockControllerManagerService(num_controllers=2, death_schedule={}, max_duration=10.0)
+        collector = EventCollector()
+        game = FFAGame(
+            controller_manager_client=mock_cm,
+            event_publisher=collector.publish,
+            audio_client=None,
+            game_id=GAME_ID,
+            initial_players=[game_coordinator_pb2.Player(serial="p1"), game_coordinator_pb2.Player(serial="p2")],
+        )
+        game.game_kind = "shadow"
+
+        with patch("services.game_coordinator.metrics.players_alive") as mock_agg:
+            await game._initialize_players()
+
+        mock_agg.set.assert_not_called()
+
+
 class TestLifecycleSpanGameIdentity:
     def test_lifecycle_span_carries_game_id_and_kind(self, ffa_game):
         game = ffa_game

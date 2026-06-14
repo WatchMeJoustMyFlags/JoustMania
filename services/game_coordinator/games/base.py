@@ -783,6 +783,20 @@ class BaseGameMode(ABC):
     # Concrete Methods - Shared implementation used by all subclasses
     # ========================================================================
 
+    def _set_players_alive_aggregate(self, alive_count: int) -> None:
+        """Set the unlabeled ``players_alive`` aggregate gauge — primary only.
+
+        ``game_players_alive`` is a single UNLABELED time series feeding the
+        live dashboard's "players alive" count. With concurrent shadow games
+        (#1018) every game-mode instance would otherwise write this one series,
+        so a headless shadow could stomp the real game's count (last-writer
+        wins). Only the primary (real, player-facing) session is the "live"
+        game the aggregate represents, so shadows must not touch it. The
+        per-serial ``player_alive`` gauge is game_id-labeled and stays isolated.
+        """
+        if self.game_kind != GAME_KIND_SHADOW:
+            metrics.players_alive.set(alive_count)
+
     async def _initialize_players(self):
         """Initialize players from StartGame RPC payload."""
         try:
@@ -802,7 +816,7 @@ class BaseGameMode(ABC):
             # Set alive metric for all initialized players (Phase 75: filter dead from dashboard)
             for serial in self.players:
                 metrics.player_alive.labels(serial=serial, game_id=self.game_id).set(1)
-            metrics.players_alive.set(len(self.players))
+            self._set_players_alive_aggregate(len(self.players))
 
             logger.info(f"Initialized {len(self.players)} players from StartGame RPC")
 
@@ -1777,7 +1791,7 @@ class BaseGameMode(ABC):
 
         metrics.player_alive.labels(serial=serial, game_id=self.game_id).set(1)
         alive_count = len([p for p in self.players.values() if p.alive])
-        metrics.players_alive.set(alive_count)
+        self._set_players_alive_aggregate(alive_count)
 
         if player.span:
             player.span.add_event("player_revived", attributes={"spawn_grace": grace})
@@ -1837,7 +1851,7 @@ class BaseGameMode(ABC):
         # Metric removal happens at game end via clear_all_player_analytics().
         metrics.player_alive.labels(serial=serial, game_id=self.game_id).set(0)
         alive_count = len([p for p in self.players.values() if p.alive])
-        metrics.players_alive.set(alive_count)
+        self._set_players_alive_aggregate(alive_count)
 
         # Record elimination order (1 = first out) for #730 / #722 §7.
         # Makes session.elimination_sequence queryable per game.

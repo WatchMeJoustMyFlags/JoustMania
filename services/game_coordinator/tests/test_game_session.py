@@ -417,6 +417,43 @@ class TestGameSessionForceEnd:
         assert session.game_state == game_coordinator_pb2.GameState.ENDED
 
 
+class TestGameSessionClearMetrics:
+    """clear_metrics() removes this session's game_id-labeled gauge series on
+    retire so zeroed-but-persistent series don't accumulate as shadow games
+    churn short-lived game_ids (#1018)."""
+
+    @patch("services.game_coordinator.game_session.metrics")
+    def test_clear_metrics_removes_exact_label_tuple(self, mock_metrics):
+        session = _make_session(game_kind=GAME_KIND_SHADOW, experiment_id="exp_abc123", arm="experimental")
+
+        session.clear_metrics()
+
+        # Each game_id-labeled gauge removed with the EXACT tuple it was set with
+        # (game_kind, game_id, experiment_id, arm), in declaration order.
+        expected = (GAME_KIND_SHADOW, "game_abc123", "exp_abc123", "experimental")
+        mock_metrics.active_game.remove.assert_called_once_with(*expected)
+        mock_metrics.active_players.remove.assert_called_once_with(*expected)
+        mock_metrics.game_duration_seconds.remove.assert_called_once_with(*expected)
+
+    @patch("services.game_coordinator.game_session.metrics")
+    def test_clear_metrics_primary_uses_empty_experiment_labels(self, mock_metrics):
+        session = _make_session(game_kind=GAME_KIND_PRIMARY)
+
+        session.clear_metrics()
+
+        expected = (GAME_KIND_PRIMARY, "game_abc123", "", "")
+        mock_metrics.active_game.remove.assert_called_once_with(*expected)
+
+    def test_clear_metrics_idempotent_on_missing_series(self):
+        """A double-retire (or never-started session) must not raise — the gauge
+        client pops missing series silently and remove() is KeyError/Value-guarded."""
+        session = _make_session(game_kind=GAME_KIND_SHADOW)
+
+        # Real metrics module (no series ever set for this game_id).
+        session.clear_metrics()
+        session.clear_metrics()  # second call must also be safe
+
+
 class TestGameSessionInit:
     def test_primary_is_primary(self):
         session = _make_session(game_kind=GAME_KIND_PRIMARY)
