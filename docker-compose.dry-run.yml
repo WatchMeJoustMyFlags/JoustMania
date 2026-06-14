@@ -66,3 +66,7 @@ services:
       # Faster refill tick than the 30s default so shadow games spin up promptly
       # during a demo.
       - AGENT_EXPERIMENT_TICK_SECONDS=${AGENT_EXPERIMENT_TICK_SECONDS:-15}
+      # Heuristic dynamic declarer (#995/#1041): default-off; set true to have the
+      # agent autonomously pick which game.json flag to experiment on (alongside the
+      # seed). The other AGENT_EXPERIMENT_DYNAMIC_* knobs pass through from the base.
+      - AGENT_EXPERIMENT_DYNAMIC_ENABLED=${AGENT_EXPERIMENT_DYNAMIC_ENABLED:-false}
