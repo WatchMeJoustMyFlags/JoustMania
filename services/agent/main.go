@@ -706,10 +706,10 @@ func main() {
 	// targeting Gate/Writer, #979 verdict, #980/#961 promoter). #1044 startup-gate
 	// inversion: the loop is ALWAYS built + run now, and SELF-GATES each tick on the
 	// LIVE agent.json experiments_enabled flag (default off, env AGENT_EXPERIMENTS_ENABLED
-	// is the bootstrap default). When disabled — the default — the loop does NOTHING:
-	// no rehydrate, no seed, no shadow spawn, no targeting write, no promotion — so the
-	// agent's behavior is byte-identical to the pre-#1044 nil-loop case, but an off→on
-	// flip at runtime starts it with no restart. The real-default promotion path stays
+	// is the bootstrap default). When disabled — the default — the loop is BEHAVIORALLY
+	// INERT: no rehydrate, no seed, no shadow spawn, no targeting write, no promotion —
+	// the only residual work is one ~30s no-op tick goroutine. An off→on flip at runtime
+	// starts it with no restart. The real-default promotion path stays
 	// behind ALL of #961's gates (the promoter built above + the kill-switch via the
 	// ConfigResolver).
 	expLoop := buildExperimentLoop(agentFlags, promoter, getEnv("GAME_FLAG_PATH", experiment.DefaultGamePath), logger)
