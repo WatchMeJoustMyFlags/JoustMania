@@ -46,6 +46,8 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
+from openfeature.evaluation_context import EvaluationContext  # noqa: E402
+
 from proto import (  # noqa: E402
     controller_manager_mock_pb2,
     menu_pb2,
@@ -53,10 +55,13 @@ from proto import (  # noqa: E402
 
 from tests.integration.helpers import (  # noqa: E402
     ADMIN_WHITE,
+    GameEventCollector,
     MenuEventCollector,
     active_flag_file,
+    async_poll_until,
     enter_admin_mode,
     exit_admin_mode,
+    flagd_probe_client,
     get_controller_color,
     get_controller_serials,
     get_game_client,
@@ -67,6 +72,7 @@ from tests.integration.helpers import (  # noqa: E402
     press_admin_combo,
     select_game_mode,
     setup_mock_controllers,
+    wait_for_lobby_colors,
 )
 
 GAME_FLAG_PATH = active_flag_file("game")
@@ -169,6 +175,22 @@ def _default_variant(path: str, flag_key: str) -> str:
     return doc["flags"][flag_key]["defaultVariant"]
 
 
+def _set_default_variant(path: str, flag_key: str, variant: str) -> None:
+    """Flip a flag's defaultVariant in the served CI flag file (idempotent).
+
+    flagd hot-reloads the file; the ``admin_flags`` fixture restores it. Safe to
+    call repeatedly as a ``poll_until`` rewrite to self-heal a coalesced
+    file-watch event under CI load.
+    """
+    with open(path) as fh:
+        doc = json.load(fh)
+    if doc["flags"][flag_key]["defaultVariant"] == variant:
+        return
+    doc["flags"][flag_key]["defaultVariant"] = variant
+    with open(path, "w") as fh:
+        json.dump(doc, fh, indent=2)
+
+
 async def _wait_default_variant_changes(
     path: str, flag_key: str, baseline: str, timeout: float = PERSIST_TIMEOUT_SECONDS
 ) -> str:
@@ -237,7 +259,9 @@ async def test_ps_exit_restores_lobby_color(docker_compose, menu_client, mock_cl
 
 
 @pytest.mark.asyncio
-async def test_partial_combo_does_not_enter_admin(docker_compose, menu_client, mock_client):
+async def test_partial_combo_does_not_enter_admin(
+    docker_compose, menu_client, mock_client
+):
     """Pressing only three of the four face buttons must NOT enter admin mode:
     the LED never goes admin-white."""
     serials = await _start_menu_with_controllers(docker_compose, menu_client)
@@ -266,7 +290,9 @@ async def test_partial_combo_does_not_enter_admin(docker_compose, menu_client, m
 
 
 @pytest.mark.asyncio
-async def test_sensitivity_change_persists(docker_compose, menu_client, mock_client, admin_flags):
+async def test_sensitivity_change_persists(
+    docker_compose, menu_client, mock_client, admin_flags
+):
     """In admin mode, Circle cycles sensitivity; the change persists by advancing
     the ``sensitivity`` flag's defaultVariant in the served game.json."""
     serials = await _start_menu_with_controllers(docker_compose, menu_client)
@@ -340,35 +366,92 @@ async def test_option_cycle_and_value_change_persists(
 
 
 @pytest.mark.asyncio
-async def test_force_start_requests_game(docker_compose, menu_client, mock_client, admin_flags):
+async def test_force_start_requests_game(
+    docker_compose, menu_client, mock_client, admin_flags
+):
     """Holding the trigger in admin mode force-starts the game: the menu publishes
-    a ``game_requested`` event with source=admin_force_start naming the current
-    game mode.
+    a ``game_requested`` event (source=admin_force_start) AND actually invokes the
+    coordinator start path (#1029).
 
-    NOTE (behavioral finding, #823): ``AdminModeHandler.handle_force_start`` only
-    publishes this event and sets the menu state to GAME_STARTING — it does NOT
-    invoke the menu's ``_start_game`` coordinator path (unlike the ready-flow's
-    ``start_game_callback``), and nothing in the menu bridges the
-    ``game_requested`` event back to it. So admin force-start does not actually
-    start a coordinator game today; this test asserts the real current behavior
-    (the menu event), which is the contract the surface exposes.
+    Previously ``handle_force_start`` only published the menu event and set
+    GAME_STARTING; it never invoked the menu's ``start_game`` coordinator path, so
+    the menu lit up but NO start was ever attempted. The fix wires force-start
+    through ``MenuServicer.start_game`` with the force_all_start-aware roster.
+
+    We enable ``force_all_start`` so the roster is the menu's CONNECTED
+    controllers (no dependence on cross-test ready state) and poll flagd until the
+    write is served. The decisive #1029 signal is that the menu now *invokes* the
+    coordinator start: it either reaches ``game_started`` (roster intact) or, if
+    the shared-session roster has churned below the minimum, surfaces
+    ``game_start_cancelled`` from inside ``_start_game`` — BOTH happen only because
+    ``start_game`` is now called. Before the fix neither occurred (the menu sat in
+    GAME_STARTING with no coordinator contact at all).
     """
+    # Enable force_all_start and confirm flagd is serving it (rewrite self-heal
+    # covers a coalesced file-watch event under CI load) before force-starting.
+    _set_default_variant(GAME_FLAG_PATH, "force_all_start", "on")
+    with flagd_probe_client(docker_compose, "game") as probe:
+        served = await async_poll_until(
+            lambda: (
+                probe.get_boolean_value("force_all_start", False, EvaluationContext())
+                is True
+            ),
+            rewrite=lambda: _set_default_variant(
+                GAME_FLAG_PATH, "force_all_start", "on"
+            ),
+        )
+    assert served, "flagd never served force_all_start=on"
+
     serials = await _start_menu_with_controllers(docker_compose, menu_client)
     admin_serial = serials[0]
 
-    async with MenuEventCollector(menu_client) as menu_collector:
-        await enter_admin_mode(mock_client, admin_serial)
+    # Wait until the controllers are registered in the lobby (they only get a
+    # lobby color once the menu sees them connected).
+    await wait_for_lobby_colors(mock_client, serials, timeout=15.0)
 
-        # Hold the trigger past the (CI-shortened) force-start threshold.
-        await hold_trigger_for_force_start(mock_client, admin_serial, hold_seconds=1.5)
+    game_client, game_channel = await get_game_client(docker_compose)
+    try:
+        async with (
+            MenuEventCollector(menu_client) as menu_collector,
+            GameEventCollector(game_client) as game_collector,
+        ):
+            await enter_admin_mode(mock_client, admin_serial)
 
-        requested = await menu_collector.wait_for_event("game_requested", timeout=10.0)
-        assert requested.data.get("source") == "admin_force_start", (
-            f"unexpected force-start source: {dict(requested.data)}"
-        )
-        assert requested.data.get("game_name"), (
-            f"force-start request carried no game_name: {dict(requested.data)}"
-        )
+            # Hold the trigger past the (CI-shortened) force-start threshold.
+            await hold_trigger_for_force_start(
+                mock_client, admin_serial, hold_seconds=1.5
+            )
+
+            requested = await menu_collector.wait_for_event(
+                "game_requested", timeout=10.0
+            )
+            assert requested.data.get("source") == "admin_force_start", (
+                f"unexpected force-start source: {dict(requested.data)}"
+            )
+            assert requested.data.get("game_name"), (
+                f"force-start request carried no game_name: {dict(requested.data)}"
+            )
+
+            # #1029: force-start must INVOKE the coordinator start path. Accept
+            # either a real coordinator start (game_started) or the menu's
+            # start-aborted signal (game_start_cancelled) — both prove start_game
+            # was called; before the fix, neither ever fired.
+            started_task = asyncio.create_task(
+                game_collector.wait_for_event("game_started", timeout=15.0)
+            )
+            cancelled_task = asyncio.create_task(
+                menu_collector.wait_for_event("game_start_cancelled", timeout=15.0)
+            )
+            done, pending = await asyncio.wait(
+                {started_task, cancelled_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            invoked = any(not t.cancelled() and t.exception() is None for t in done)
+            assert invoked, "force-start did not invoke the coordinator start path"
+    finally:
+        await game_channel.close()
 
 
 # =============================================================================
@@ -380,33 +463,41 @@ async def test_force_start_requests_game(docker_compose, menu_client, mock_clien
 async def test_force_start_respects_selected_game_mode(
     docker_compose, menu_client, mock_client, admin_flags
 ):
-    """Force start requests the game mode currently selected in the menu (not a
-    hardcoded default): with JoustTeams selected, admin force start publishes a
-    ``game_requested`` naming JoustTeams.
+    """Admin Cross cycles the game mode (#1030) and force start respects it:
+    starting from JoustFFA, one Cross press in admin advances the menu selection
+    to JoustTeams (the next entry in the game registry), and a subsequent force
+    start publishes a ``game_requested`` naming JoustTeams.
 
-    NOTE (behavioral finding, #823): the plan's "Cross cycles the mode in admin"
-    path is currently DEAD — ``AdminModeHandler.handle_game_mode`` reads
-    ``callbacks.get_game_options()``, but ``MenuServicer.get_game_options``
-    returns ``self.game_options`` which is never populated (always []), so Cross
-    in admin logs "No game options available" and changes nothing. This test
-    therefore drives the selection through the WORKING menu path
-    (``select_game_mode``) and asserts force start respects it — the real
-    "respects selected mode" contract.
+    Previously the Cross path was DEAD: ``get_game_options()`` always returned []
+    so Cross logged "No game options available" and changed nothing. The fix
+    populates ``MenuServicer.game_options`` from the game registry and applies the
+    selection through the menu, so admin Cross cycling is now live.
     """
-    selected_mode = "JoustTeams"
+    # Start on JoustFFA; one Cross press advances to the next registry entry.
     serials = await _start_menu_with_controllers(
-        docker_compose, menu_client, game_mode=selected_mode
+        docker_compose, menu_client, game_mode="JoustFFA"
     )
     admin_serial = serials[0]
+    expected_mode = "JoustTeams"  # GAME_MODES[index(JoustFFA) + 1]
 
     async with MenuEventCollector(menu_client) as menu_collector:
         await enter_admin_mode(mock_client, admin_serial)
 
-        # Force start: the requested mode must be the menu's current selection.
+        # Cross: cycle the game mode forward. This must actually change the menu's
+        # selection now (not just log "No game options available").
+        await press_admin_button(mock_client, admin_serial, _Button.CROSS)
+        selection = await menu_collector.wait_for_event(
+            "selection_changed", timeout=10.0
+        )
+        assert selection.data.get("game_name") == expected_mode, (
+            f"admin Cross did not advance selection to {expected_mode}: {dict(selection.data)}"
+        )
+
+        # Force start: the requested mode must be the admin-cycled selection.
         await hold_trigger_for_force_start(mock_client, admin_serial, hold_seconds=1.5)
         requested = await menu_collector.wait_for_event("game_requested", timeout=10.0)
         assert requested.data.get("source") == "admin_force_start"
-        assert requested.data.get("game_name") == selected_mode, (
+        assert requested.data.get("game_name") == expected_mode, (
             f"force start requested {requested.data.get('game_name')}, "
-            f"expected menu-selected {selected_mode}"
+            f"expected admin-cycled {expected_mode}"
         )

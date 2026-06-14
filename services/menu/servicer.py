@@ -61,6 +61,10 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         """Initialize menu service."""
         self.state = menu_pb2.MenuState.STOPPED
         self.current_selection: Games = Games.JoustFFA
+        # Selectable game modes, exposed to the admin handler so controller Cross
+        # cycling and the dashboard share one source of truth (#1030). GAME_MODES
+        # already excludes unimplemented/meta modes.
+        self.game_options: list[str] = list(GAME_MODES)
 
         # Persistent gRPC channels
         from lib.grpc_utils import create_channel
@@ -189,7 +193,34 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
 
     def get_game_options(self) -> list[str]:
         """Get list of available game options (AdminModeCallbacks)."""
-        return self.game_options if hasattr(self, "game_options") else []
+        return list(self.game_options)
+
+    async def select_game_mode(self, game_name: str) -> None:
+        """Select a game mode by name (AdminModeCallbacks).
+
+        Mirrors the web/controller select path so admin Cross cycling lands in
+        the SAME state the coordinator start path reads (#1030): it updates the
+        servicer's ``current_selection``, the state_manager's game mode (the
+        value the admin handler displays), and persists the choice to flagd.
+        """
+        game_mode = Games.from_name(game_name)
+        if game_mode is None or game_name not in GAME_MODES:
+            logger.warning(f"Admin selected unknown game mode: {game_name}")
+            return
+        self.current_selection = game_mode
+        self.state_manager.set_game_mode(game_mode)
+        await self.event_publisher.publish("selection_changed", {"game_name": game_mode.name, "source": "admin"})
+        self.user_prefs_writer.update_default_variant("current_game", game_mode.name)
+        logger.info(f"Game selected via admin: {game_mode.name}")
+
+    async def start_game(self, serial: str, source: str, controllers: list[str] | None = None) -> None:
+        """Start a coordinator game (AdminModeCallbacks).
+
+        Lets the admin force-start path launch the selected mode through the same
+        coordinator start path the ready/web flow uses (#1029), optionally with an
+        explicit controller roster (admin force-start honors force_all_start).
+        """
+        await self._start_game(serial, source=source, controllers=controllers)
 
     # ControllerEventCallbacks protocol implementation
 
@@ -505,7 +536,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         await self.audio_channel.close()
         logger.info("Menu service gRPC channels closed")
 
-    async def _start_game(self, serial: str, source: str = "controller"):
+    async def _start_game(self, serial: str, source: str = "controller", controllers: list[str] | None = None):
         """
         Schedule game start as a background task.
 
@@ -516,6 +547,8 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         Args:
             serial: Controller serial that triggered the start (for logging)
             source: Source of the start request ("controller" or "web")
+            controllers: Optional explicit roster (admin force-start passes the
+                force_all_start-aware list); None uses the ready controllers.
         """
         # Cancel any existing game lifecycle task (defensive)
         if self._game_lifecycle_task is not None and not self._game_lifecycle_task.done():
@@ -525,7 +558,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
                 await self._game_lifecycle_task
 
         # Schedule game lifecycle as background task to avoid blocking button monitor
-        self._game_lifecycle_task = asyncio.create_task(self._run_game_lifecycle(serial, source))
+        self._game_lifecycle_task = asyncio.create_task(self._run_game_lifecycle(serial, source, controllers))
 
         # Log any exceptions from the background task
         def _log_exception(t):
@@ -537,7 +570,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
 
         self._game_lifecycle_task.add_done_callback(_log_exception)
 
-    async def _run_game_lifecycle(self, serial: str, source: str = "controller"):
+    async def _run_game_lifecycle(self, serial: str, source: str = "controller", controllers: list[str] | None = None):
         """
         Run the full game lifecycle via StreamGameEvents.
 
@@ -550,6 +583,8 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         Args:
             serial: Controller serial that triggered the start (for logging)
             source: Source of the start request ("controller" or "web")
+            controllers: Optional explicit roster (admin force-start passes the
+                force_all_start-aware list); None uses the ready controllers.
         """
         from proto import game_coordinator_pb2, game_coordinator_pb2_grpc
 
@@ -567,36 +602,62 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             span.set_attribute("game.name", self.current_selection.name)
             span.set_attribute("game.source", source)
 
-            # Get controllers from state_manager (source of truth)
-            controllers = list(self.state_manager.ready_controllers)
-            span.set_attribute("controller.count", len(controllers))
+            # Roster: an explicit list (admin force-start, force_all_start-aware)
+            # overrides the default ready-controllers source of truth.
+            roster = list(controllers) if controllers is not None else list(self.state_manager.ready_controllers)
+            span.set_attribute("controller.count", len(roster))
 
-            if len(controllers) < 2:
-                logger.warning(f"Not enough players to start game: {len(controllers)}")
+            if len(roster) < 2:
+                logger.warning(f"Not enough players to start game: {len(roster)}")
+                # Don't leave the menu stuck in GAME_STARTING if a start aborts.
+                if self.state == menu_pb2.MenuState.GAME_STARTING:
+                    self.state = menu_pb2.MenuState.RUNNING
+                    await self.event_publisher.publish("game_start_cancelled", {})
+                # Restore lobby LEDs. The button monitor and lobby music are still
+                # running (we abort before _prepare_game_start), so a full
+                # _restart_lobby would be wrong here — but admin force-start sends a
+                # white flash before this path, so re-register controllers to set
+                # the proper lobby colors back. state_manager.reset() re-runs the
+                # CONNECTED on_enter handlers which set lobby colors.
+                await self.state_manager.reset()
                 return
 
             await self._prepare_game_start()
 
-            # Build player list and config
-            players = [
-                game_coordinator_pb2.Player(serial=s, team=i % 2, alive=True, score=0)
-                for i, s in enumerate(controllers)
-            ]
-            config = self._build_game_config(self.current_selection, players)
+            # _prepare_game_start() has already set state=GAME_STARTING and torn
+            # down the lobby (button monitor + lobby music). If anything in the
+            # prep/build window below throws (bad mode config, stub creation,
+            # audio/button RPC error), restore the lobby and reset state instead
+            # of leaving the menu stuck in GAME_STARTING with no lobby. The
+            # exception otherwise only surfaces in the background task's
+            # done-callback. _run_game_event_stream already self-protects, so this
+            # only needs to cover the synchronous prep/build window before it.
+            try:
+                # Build player list and config
+                players = [
+                    game_coordinator_pb2.Player(serial=s, team=i % 2, alive=True, score=0) for i, s in enumerate(roster)
+                ]
+                config = self._build_game_config(self.current_selection, players)
 
-            # Inject trace context into gRPC metadata
-            metadata = self._build_trace_metadata()
+                # Inject trace context into gRPC metadata
+                metadata = self._build_trace_metadata()
 
-            # Call GameCoordinator.StreamGameEvents with start_config
-            stub = game_coordinator_pb2_grpc.GameCoordinatorServiceStub(self.game_coordinator_channel)
-            request = game_coordinator_pb2.StreamEventsRequest(start_config=config)
+                # Call GameCoordinator.StreamGameEvents with start_config
+                stub = game_coordinator_pb2_grpc.GameCoordinatorServiceStub(self.game_coordinator_channel)
+                request = game_coordinator_pb2.StreamEventsRequest(start_config=config)
 
-            logger.info(
-                f"Starting game via GameCoordinator stream ({source}): "
-                f"{self.current_selection.name} with {len(controllers)} players"
-            )
+                logger.info(
+                    f"Starting game via GameCoordinator stream ({source}): "
+                    f"{self.current_selection.name} with {len(roster)} players"
+                )
 
-            await self._run_game_event_stream(stub, request, metadata, span)
+                await self._run_game_event_stream(stub, request, metadata, span)
+            except Exception as e:
+                logger.error(f"Game start failed during preparation: {e}", exc_info=True)
+                span.record_exception(e)
+                if self.state == menu_pb2.MenuState.GAME_STARTING:
+                    await self._restart_lobby()
+                raise
 
     async def _prepare_game_start(self) -> None:
         """Stop lobby services in preparation for game start."""

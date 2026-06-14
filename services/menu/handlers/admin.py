@@ -65,6 +65,14 @@ class AdminModeCallbacks(Protocol):
         """Get list of available game options."""
         ...
 
+    async def select_game_mode(self, game_name: str) -> None:
+        """Select a game mode by name (updates menu selection + persists)."""
+        ...
+
+    async def start_game(self, serial: str, source: str, controllers: list[str] | None = None) -> None:
+        """Start a coordinator game with an optional explicit controller roster."""
+        ...
+
 
 class AdminModeHandler:
     """
@@ -560,7 +568,13 @@ class AdminModeHandler:
                 span.set_attribute("old_selection", current_selection)
                 span.set_attribute("new_selection", new_selection)
 
-                # Publish selection change
+                # Actually apply the selection through the menu so the coordinator
+                # start path (and the dashboard) see it — not just a fire-and-
+                # forget event nobody consumes (#1030). select_game_mode updates
+                # current_selection, the state_manager game mode, and persists.
+                await self.callbacks.select_game_mode(new_selection)
+
+                # Mirror the selection as an event for any listeners (dashboard).
                 await self._publish_event(
                     "game_selection_changed",
                     {"game_name": new_selection, "source": "admin_mode", "serial": serial},
@@ -628,7 +642,14 @@ class AdminModeHandler:
                 span.set_attribute("old_selection", current_selection)
                 span.set_attribute("new_selection", new_selection)
 
-                # Publish selection change
+                # Actually apply the selection through the menu so the coordinator
+                # start path (and the dashboard) see it — not just a fire-and-forget
+                # event nobody consumes (#1030). Route through the same working path
+                # as handle_game_mode so a future re-wiring (e.g. a backward-cycle
+                # button) can't silently reintroduce the dead-application bug.
+                await self.callbacks.select_game_mode(new_selection)
+
+                # Mirror the selection as an event for any listeners (dashboard).
                 await self._publish_event(
                     "game_selection_changed",
                     {"game_name": new_selection, "source": "admin_mode", "serial": serial},
@@ -706,29 +727,38 @@ class AdminModeHandler:
                     },
                 )
 
+                # Capture the selected mode before exit() tears down session state.
+                game_name = self._current_game_mode
+
                 # Exit admin mode (ends session_span)
                 await self.exit()
 
                 # Small delay for visual feedback
                 await asyncio.sleep(0.3)
 
-                # Start the game
+                # Mark the menu as starting and announce the request (consumed by
+                # the dashboard / integration tests).
                 from proto import menu_pb2
 
                 self.callbacks.set_menu_state(menu_pb2.MenuState.GAME_STARTING)
                 await self._publish_event(
                     "game_requested",
                     {
-                        "game_name": self._current_game_mode,
+                        "game_name": game_name,
                         "source": "admin_force_start",
                         "serial": serial,
                         "controllers": json.dumps(controllers),
                     },
                 )
 
+                # Actually launch the game through the coordinator start path
+                # (#1029) with the force_all_start-aware roster — previously this
+                # only lit up the menu but no game began. _start_game resets the
+                # menu state if the roster is too small, so we don't get stuck.
+                await self.callbacks.start_game(serial, "admin_force_start", controllers)
+
                 logger.info(
-                    f"Force starting game '{self._current_game_mode}' via admin controller {serial} "
-                    f"with {len(controllers)} players"
+                    f"Force starting game '{game_name}' via admin controller {serial} with {len(controllers)} players"
                 )
 
             except Exception as e:
