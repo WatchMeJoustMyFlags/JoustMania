@@ -908,9 +908,38 @@ All configuration is via environment variables:
 | `AGENT_VERDICT_MIN_N` | `8` | #979 min games per arm before a conclusive verdict (else inconclusive) |
 | `AGENT_VERDICT_EFFECT_THRESHOLD` | `0.5` | #979 minimum \|Cohen's d\| for a promote/discard verdict |
 | `AGENT_EXPERIMENT_SEED_FLAG` | _unset_ | When set (and the loop is enabled), declares ONE env-seeded experiment at startup on this game.json flag — the simplest declaration trigger for the demo. Paired with `AGENT_EXPERIMENT_SEED_VALUE` / `_OBJECTIVE` / `_TARGET_N` / `_HYPOTHESIS` |
+| `AGENT_EXPERIMENT_SEED_VALUE` | _unset_ | The seed experiment's experimental value. Parsed as a number when it parses as a float, else bool for `true`/`false`, else the raw string. Its JSON kind must match the flag's existing variants (the Gate's type guard rejects a mistyped seed at the targeting write) |
+| `AGENT_EXPERIMENT_SEED_OBJECTIVE` | `balanced` | The seed experiment's fitness objective (`endurance` / `balanced` / `accelerate` / `chaos`) |
+| `AGENT_EXPERIMENT_SEED_TARGET_N` | _unset_ | Target games per arm for the seed experiment (positive int; falls back to the registry default when unset) |
+| `AGENT_EXPERIMENT_SEED_HYPOTHESIS` | _generated_ | Free-text hypothesis recorded on the seed experiment's intent |
 
 > The Go agent uses the flagd **RPC** resolver (gRPC evaluation port `8013`),
 > not the in-process sync port `8015` that the Python services use.
+
+### Experiment cohort loop dry run (#982/#991/#999)
+
+`make dry-run` brings the cohort loop up **runnable out-of-the-box** — latest
+images, mock controllers, full observability, the loop enabled, and one seeded
+experiment. See the [dry-run runbook](../../docs/agent-dry-run-runbook.md) for
+the operator steps and the silent-failure traps it avoids (stale `IMAGE_TAG`,
+the kill-switch default, and the agent↔flagd flag-dir mismatch under the ci dir).
+
+The loop ACTS only when **three independent gates** are all satisfied — kept
+separate so a dry run can spawn shadow games without ever risking a real-default
+change:
+
+1. **Experiments opt-in** — `AGENT_EXPERIMENTS_ENABLED=true`. Builds the
+   `experiment.Registry` and runs declare → spawn → conclude → verdict →
+   (gated) promote. Default `false` ⇒ no Registry, no shadow spawns, no
+   targeting writes, no promotions.
+2. **Master kill-switch** — `agent.json` `enabled` = `on` (read live each
+   cycle; `off` is the fail-closed default). When `off` the loop short-circuits
+   with a throttled `kill-switch: agent disabled` span. Flip the **dry-run** copy
+   with `./scripts/agent-killswitch.sh on` — production default stays `off`.
+3. **`code_improvement.*` promotion gates** — separate flags that gate the
+   **real-default promotion** action only (still subject to the invariant gate +
+   kill-switch). They stay at defaults in the dry run, so a concluded experiment
+   yields a **verdict** but does **not** rewrite the real game.json default.
 
 ### Probe mode (`AGENT_PROBE_DECISIONS`)
 
