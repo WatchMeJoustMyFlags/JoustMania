@@ -365,7 +365,9 @@ class TestMultiSession:
         """ForceEndGame (no game_id) ends the primary and frees the primary slot."""
         with _NO_THREAD:
             _, gid1 = await servicer._start_game_from_config(_config(serials=("a1", "a2")), _MockSpan())
-            _, gid2 = await servicer._start_game_from_config(_config(serials=("b1", "b2")), _MockSpan())
+            # Second concurrent session is a shadow (#1018: a second MENU start is
+            # rejected by the real-game single-game guard).
+            _, gid2 = await servicer._start_game_from_config(_shadow_config(serials=("b1", "b2")), _MockSpan())
 
             resp = await servicer.ForceEndGame(
                 game_coordinator_pb2.ForceEndGameRequest(reason="test"), MockGrpcContext()
@@ -440,6 +442,128 @@ class TestMultiSession:
             mock_death.set.assert_called_once_with(0)
 
 
+class TestConcurrentShadowGames:
+    """Concurrent shadow games (#1018, option b).
+
+    The single-game guard is scoped to REAL games only: N shadow games run at
+    the same time (up to ``GAME_MAX_SHADOW_GAMES``), while a second REAL game is
+    still rejected. These tests pin the caps explicitly so they don't depend on
+    the module defaults.
+    """
+
+    @pytest.fixture
+    def servicer(self):
+        return GameCoordinatorServicer()
+
+    @pytest.fixture(autouse=True)
+    def allow_shadows(self):
+        """Run shadows alongside a real game where needed; policy=allow."""
+        with patch("services.game_coordinator.servicer._shadow_policy", lambda: "allow"):
+            yield
+
+    @pytest.mark.asyncio
+    async def test_multiple_shadows_run_concurrently(self, servicer):
+        """3 shadow games all reach RUNNING at the same time (no single-game guard
+        among shadows). This is the core #1018 behavior — effective concurrency
+        was 1 under #998's backpressure; now N shadows coexist."""
+        with patch.dict(os.environ, {"GAME_MAX_SHADOW_GAMES": "4", "GAME_MAX_CONCURRENT_GAMES": "8"}):
+            gids = []
+            for i in range(3):
+                gid, session = await _start_running(servicer, _shadow_config(serials=(f"a{i}", f"b{i}")))
+                gids.append(gid)
+                assert session.game_kind == "shadow"
+
+        # All three distinct, all registered, all RUNNING simultaneously.
+        assert len(set(gids)) == 3
+        for gid in gids:
+            assert gid in servicer.sessions
+            assert servicer.sessions[gid].game_state == game_coordinator_pb2.GameState.RUNNING
+
+    @pytest.mark.asyncio
+    async def test_shadow_cap_rejects_beyond_limit(self, servicer):
+        """A shadow start beyond GAME_MAX_SHADOW_GAMES is rejected (backpressure)."""
+        with _NO_THREAD, patch.dict(os.environ, {"GAME_MAX_SHADOW_GAMES": "2", "GAME_MAX_CONCURRENT_GAMES": "8"}):
+            ok1, _ = await servicer._start_game_from_config(_shadow_config(serials=("a1", "a2")), _MockSpan())
+            ok2, _ = await servicer._start_game_from_config(_shadow_config(serials=("b1", "b2")), _MockSpan())
+            ok3, error = await servicer._start_game_from_config(_shadow_config(serials=("c1", "c2")), _MockSpan())
+
+        assert ok1 and ok2
+        assert ok3 is False
+        assert "already in progress" in error.lower()
+
+    @pytest.mark.asyncio
+    async def test_second_real_game_rejected_while_shadows_run(self, servicer):
+        """The single-game guard is REAL-only: two real games can't coexist even
+        though many shadows can. The second MENU start is rejected."""
+        with _NO_THREAD, patch.dict(os.environ, {"GAME_MAX_SHADOW_GAMES": "4", "GAME_MAX_CONCURRENT_GAMES": "8"}):
+            ok1, gid1 = await servicer._start_game_from_config(_config(serials=("r1", "r2")), _MockSpan())
+            # Shadows are fine alongside the real game.
+            oks, _ = await servicer._start_game_from_config(_shadow_config(serials=("s1", "s2")), _MockSpan())
+            # A second real game is rejected by the real-game single-game guard.
+            ok2, error = await servicer._start_game_from_config(_config(serials=("r3", "r4")), _MockSpan())
+
+        assert ok1 and oks
+        assert servicer.sessions[gid1].game_kind == "primary"
+        assert ok2 is False
+        assert "already in progress" in error.lower()
+
+    @pytest.mark.asyncio
+    async def test_real_game_preempts_concurrent_shadows(self, servicer):
+        """Real-vs-shadow policy: the real game takes precedence. An incoming real
+        game preempts ALL live shadows so it gets the resources (#837), regardless
+        of how many shadows were running concurrently (#1018)."""
+        with patch.dict(os.environ, {"GAME_MAX_SHADOW_GAMES": "4", "GAME_MAX_CONCURRENT_GAMES": "8"}):
+            shadow_gids = []
+            for i in range(3):
+                gid, _ = await _start_running(servicer, _shadow_config(serials=(f"s{i}", f"t{i}")))
+                shadow_gids.append(gid)
+
+            with _NO_THREAD:
+                ok, real_gid = await servicer._start_game_from_config(_config(serials=("r1", "r2")), _MockSpan())
+
+        assert ok is True
+        # Every shadow was preempted/retired; only the real game remains.
+        for gid in shadow_gids:
+            assert gid not in servicer.sessions
+        assert servicer.sessions[real_gid].game_kind == "primary"
+        assert servicer._primary_game_id == real_gid
+
+    @pytest.mark.asyncio
+    async def test_concurrent_shadows_isolated_event_streams(self, servicer):
+        """Two concurrent shadows do not cross-contaminate: each bus delivers only
+        its own game's events (independent scoring/death/effect dispatch)."""
+        with patch.dict(os.environ, {"GAME_MAX_SHADOW_GAMES": "4", "GAME_MAX_CONCURRENT_GAMES": "8"}):
+            gid1, s1 = await _start_running(servicer, _shadow_config(serials=("a1", "a2")))
+            gid2, s2 = await _start_running(servicer, _shadow_config(serials=("b1", "b2")))
+
+        bus1, bus2 = s1.event_bus, s2.event_bus
+        # Each shadow owns a DISTINCT EventBus instance (no shared mutable bus).
+        assert bus1 is not bus2
+        assert bus1 is not servicer.primary_event_bus
+        assert bus2 is not servicer.primary_event_bus
+
+        q1 = await bus1.subscribe("sub1")
+        q2 = await bus2.subscribe("sub2")
+        await bus1.publish("player_death", {"serial": "a1"})
+        await bus2.publish("player_death", {"serial": "b1"})
+
+        e1 = q1.get_nowait()
+        e2 = q2.get_nowait()
+        assert e1.game_id == gid1 and e1.data["serial"] == "a1"
+        assert e2.game_id == gid2 and e2.data["serial"] == "b1"
+        # Neither queue saw the other's death event (no cross-contamination).
+        assert q1.empty()
+        assert q2.empty()
+
+    def test_shadow_cap_clamped_to_total_ceiling(self):
+        """The shadow cap can never exceed the total ceiling, even if configured
+        higher (the total ceiling is the hard runaway safety net)."""
+        from services.game_coordinator.servicer import _max_shadow_games
+
+        with patch.dict(os.environ, {"GAME_MAX_SHADOW_GAMES": "50", "GAME_MAX_CONCURRENT_GAMES": "3"}):
+            assert _max_shadow_games() == 3
+
+
 class TestGameIdRouting:
     """game_id routing in the proto + coordinator wiring (#776)."""
 
@@ -468,7 +592,9 @@ class TestGameIdRouting:
         """
         with _NO_THREAD:
             _, gid1 = await servicer._start_game_from_config(_config(serials=("a1", "a2")), _MockSpan())
-            _, gid2 = await servicer._start_game_from_config(_config(serials=("b1", "b2")), _MockSpan())
+            # Second concurrent session is a shadow (#1018: a second MENU start is
+            # rejected by the real-game single-game guard).
+            _, gid2 = await servicer._start_game_from_config(_shadow_config(serials=("b1", "b2")), _MockSpan())
 
         bus1 = servicer.sessions[gid1].event_bus
         bus2 = servicer.sessions[gid2].event_bus
@@ -517,7 +643,8 @@ class TestGameIdRouting:
         """StreamGameEvents(game_id=...) subscribes to exactly that game's bus."""
         with _NO_THREAD:
             _, gid1 = await servicer._start_game_from_config(_config(serials=("a1", "a2")), _MockSpan())
-            _, gid2 = await servicer._start_game_from_config(_config(serials=("b1", "b2")), _MockSpan())
+            # gid2 is a shadow (#1018: a second MENU start is rejected).
+            _, gid2 = await servicer._start_game_from_config(_shadow_config(serials=("b1", "b2")), _MockSpan())
 
         request = game_coordinator_pb2.StreamEventsRequest(game_id=gid2)
         context = MockGrpcContext()
@@ -550,7 +677,7 @@ class TestGameIdRouting:
         """ForceEndGame(game_id=shadow) ends only the shadow, leaving the primary."""
         with _NO_THREAD:
             _, gid1 = await servicer._start_game_from_config(_config(serials=("a1", "a2")), _MockSpan())
-            _, gid2 = await servicer._start_game_from_config(_config(serials=("b1", "b2")), _MockSpan())
+            _, gid2 = await servicer._start_game_from_config(_shadow_config(serials=("b1", "b2")), _MockSpan())
 
             resp = await servicer.ForceEndGame(
                 game_coordinator_pb2.ForceEndGameRequest(reason="test", game_id=gid2), MockGrpcContext()
@@ -575,7 +702,8 @@ class TestGameIdRouting:
     async def test_get_game_state_by_game_id(self, servicer, cap_two):
         """GetGameState(game_id=...) returns that specific session's state."""
         gid1, _ = await _start_running(servicer, _config(game_name="FFA", serials=("a1", "a2")))
-        gid2, _ = await _start_running(servicer, _config(game_name="Teams", serials=("b1", "b2")))
+        # gid2 is a shadow (#1018: a second MENU start is rejected).
+        gid2, _ = await _start_running(servicer, _shadow_config(game_name="Teams", serials=("b1", "b2")))
 
         resp1 = await servicer.GetGameState(game_coordinator_pb2.GetGameStateRequest(game_id=gid1), MockGrpcContext())
         resp2 = await servicer.GetGameState(game_coordinator_pb2.GetGameStateRequest(game_id=gid2), MockGrpcContext())
@@ -597,7 +725,7 @@ class TestGameIdRouting:
     async def test_list_games_shows_running_then_empties(self, servicer, cap_two):
         """ListGames enumerates all live sessions, then empties as they end."""
         gid1, _ = await _start_running(servicer, _config(game_name="FFA", serials=("a1", "a2")))
-        gid2, _ = await _start_running(servicer, _config(game_name="Teams", serials=("b1", "b2")))
+        gid2, _ = await _start_running(servicer, _shadow_config(game_name="Teams", serials=("b1", "b2")))
 
         resp = await servicer.ListGames(game_coordinator_pb2.ListGamesRequest(), MockGrpcContext())
         assert resp.success is True
@@ -688,11 +816,14 @@ class TestShadowGameGovernance:
         Simulated by making the first preemption pass a no-op (as if the shadow
         slipped in just after it ran): attempt 0 hits the full cap, attempt 1
         preempts for real and admits.
+
+        Pins the total ceiling to 1 (#1018 default is 8) so a single live shadow
+        fills the ceiling and the real game must preempt to win the slot.
         """
-        # cap defaults to 1; a live shadow occupies the only slot.
-        with _NO_THREAD:
+        # Total ceiling pinned to 1; a live shadow occupies the only slot.
+        with _NO_THREAD, patch.dict(os.environ, {"GAME_MAX_CONCURRENT_GAMES": "1"}):
             ok, _ = await servicer._start_game_from_config(_shadow_config(serials=("s1", "s2")), _MockSpan())
-        assert ok is True
+            assert ok is True
 
         real_preempt = servicer._preempt_shadow_sessions
         calls = {"n": 0}
@@ -704,7 +835,7 @@ class TestShadowGameGovernance:
             return await real_preempt()
 
         servicer._preempt_shadow_sessions = flaky_preempt
-        with _NO_THREAD:
+        with _NO_THREAD, patch.dict(os.environ, {"GAME_MAX_CONCURRENT_GAMES": "1"}):
             ok, gid = await servicer._start_game_from_config(_config(serials=("r1", "r2")), _MockSpan())
 
         assert ok is True, f"real game lost the admission race: {gid}"

@@ -57,10 +57,12 @@ services:
     environment: !override
       OTEL_SERVICE_NAME: game-coordinator-service
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
-      # Raise the concurrent-games cap for the integration suite only (#779).
-      # The coordinator defaults to 1 (production default, unchanged); the
-      # concurrent/shadow-isolation tests need multiple live sessions on one
-      # stack. This override stays in CI compose; production keeps cap=1.
+      # Pin the total concurrent-games ceiling for the integration suite (#779).
+      # Since #1018 (option b) the coordinator runs shadow games CONCURRENTLY:
+      # the single-game guard is REAL-only and shadows run up to
+      # GAME_MAX_SHADOW_GAMES (default 4), bounded by this total ceiling (default
+      # 8). The suite pins 4 to keep multiple live sessions on one stack
+      # deterministic for the concurrent/shadow-isolation tests.
       GAME_MAX_CONCURRENT_GAMES: "4"
 
   # Menu - writes game.json/user.json via FlagConfigWriter (game selection, admin

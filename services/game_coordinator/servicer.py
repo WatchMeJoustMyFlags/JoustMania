@@ -22,6 +22,20 @@ persistent primary bus; UNSPECIFIED/AGENT starts are ALWAYS shadow sessions
 ``shadow_policy=block`` (prod default) — a shadow start is rejected while a real
 game is live. ``ForceEndGame`` / ``GetGameState`` with an empty game_id operate
 on the primary session (game_id routing is #776).
+
+Concurrent shadow games (#1018, option b): the single-game guard ("Game already
+in progress") applies to REAL/primary games ONLY. A REAL game is strictly
+one-at-a-time (the primary slot; a second menu start is rejected). SHADOW games,
+being headless + game_id-isolated (each with its own EventBus/state), run
+CONCURRENTLY up to ``GAME_MAX_SHADOW_GAMES`` (default 4) — this is what realizes
+the agent registry's K×N capacity (effective concurrency was 1 under #998's
+backpressure). The real-vs-shadow interaction policy is unchanged and simple:
+the real game ALWAYS takes precedence — an incoming real game preempts ALL live
+shadows (#837), and with ``shadow_policy=block`` (prod default) a shadow start is
+refused while a real game is live. The only thing #1018 changes is that shadows
+no longer trip the single-game guard among THEMSELVES. ``GAME_MAX_CONCURRENT_GAMES``
+(default 8) is the hard total ceiling on primary + shadow sessions — a runaway
+safety net, not the single-game guard.
 """
 
 import asyncio
@@ -48,20 +62,51 @@ logger = logging.getLogger(__name__)
 # Lazy telemetry initialization - defers OTLP setup until first span
 tracer = get_tracer(__name__)
 
-# Concurrency cap (#775). Default 1 preserves today's behavior exactly: the
-# second concurrent start is rejected with the legacy "Game already in progress"
-# message. Tests/agents raise it for multi-session.
-DEFAULT_MAX_CONCURRENT_GAMES = 1
+# Total concurrency cap (#775). The hard ceiling on TOTAL live sessions
+# (primary + every shadow) the coordinator will register at once — a runaway
+# safety net, NOT the single-game guard. Default 8 leaves room for one real
+# game plus several concurrent shadow games; tune via GAME_MAX_CONCURRENT_GAMES.
+DEFAULT_MAX_CONCURRENT_GAMES = 8
 
 
 def _max_concurrent_games() -> int:
-    """Read the concurrent-games cap from the environment (default 1)."""
+    """Read the TOTAL concurrent-games ceiling from the environment.
+
+    Bounds primary + shadow sessions together so a misconfigured agent cannot
+    register unbounded sessions. The single-game guard for REAL games and the
+    shadow concurrency cap are enforced separately (see ``_admit_session_locked``)."""
     raw = os.getenv("GAME_MAX_CONCURRENT_GAMES", str(DEFAULT_MAX_CONCURRENT_GAMES))
     try:
         value = int(raw)
     except (TypeError, ValueError):
         return DEFAULT_MAX_CONCURRENT_GAMES
     return max(1, value)
+
+
+# Concurrent-shadow cap (#1018, option b). Shadow games are headless and
+# game_id-isolated (own EventBus/state), so N may run AT THE SAME TIME — this is
+# what realizes the registry's K×N capacity (effective concurrency was 1 under
+# #998's backpressure). This caps how many shadow sessions run concurrently,
+# independent of the REAL game's single-game guard. Default 4 is a sane >1 value
+# for a single-interpreter coordinator on Pi 5-class hardware (well under the
+# agent's AGENT_MAX_SHADOW_GAMES=20 registry ceiling); tune via
+# GAME_MAX_SHADOW_GAMES. Always clamped to the total ceiling above.
+DEFAULT_MAX_SHADOW_GAMES = 4
+
+
+def _max_shadow_games() -> int:
+    """Read the concurrent-shadow cap from the environment (default 4).
+
+    This is the number of shadow sessions allowed to run CONCURRENTLY. It is
+    independent of the real-game single-game guard (a real game preempts shadows
+    and owns the primary slot). Clamped to the total ceiling so it can never
+    exceed ``_max_concurrent_games()``."""
+    raw = os.getenv("GAME_MAX_SHADOW_GAMES", str(DEFAULT_MAX_SHADOW_GAMES))
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = DEFAULT_MAX_SHADOW_GAMES
+    return max(1, min(value, _max_concurrent_games()))
 
 
 # Shadow game resource policy (#837). ``block`` (prod default) rejects shadow
@@ -341,12 +386,20 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         return preempted
 
     def _admit_session_locked(self, config, is_real: bool, parent_span):
-        """Sweep + cap-check + classify + register a session under the lock.
+        """Sweep + classify + cap-check + register a session under the lock.
 
         Returns ``((session, game_kind, game_id), cap_full)`` where the first
-        element is ``None`` when the cap rejected the start (``cap_full=True``).
+        element is ``None`` when a cap rejected the start (``cap_full=True``).
         Extracted from ``_start_game_from_config`` so the real-game admission
         retry (#837) can re-run it after a second preemption pass.
+
+        Single-game guard scoping (#1018, option b): the guard that rejects a
+        second concurrent start with "Game already in progress" now applies to
+        REAL/primary games ONLY. A REAL game is one-at-a-time (the primary slot);
+        SHADOW games run CONCURRENTLY up to ``_max_shadow_games()`` because they
+        are headless + game_id-isolated (own EventBus/state). The total ceiling
+        ``_max_concurrent_games()`` bounds primary + shadow together as a runaway
+        safety net.
         """
         with self._sessions_lock:
             # Retire sessions whose games already ENDED (#775). A natural
@@ -359,7 +412,12 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             for ended_id in [
                 gid for gid, sess in self.sessions.items() if sess.game_state == game_coordinator_pb2.GameState.ENDED
             ]:
-                self.sessions.pop(ended_id, None)
+                ended_session = self.sessions.pop(ended_id, None)
+                if ended_session is not None:
+                    # Mirror _retire_session: drop this session's game_id-labeled
+                    # gauge series so naturally-ended shadows don't leak series
+                    # (#1018). Idempotent / missing-series safe.
+                    ended_session.clear_metrics()
                 if self._primary_game_id == ended_id:
                     self._primary_game_id = None
                     # Mirror _retire_session: the persistent primary bus
@@ -367,11 +425,6 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                     # A new primary re-stamps it below; this covers the
                     # cap-rejected early return.
                     self.primary_event_bus.current_game_id = ""
-
-            # Concurrency gate (#775). Default cap 1 reproduces the legacy
-            # single-game rejection message exactly.
-            if len(self.sessions) >= _max_concurrent_games():
-                return None, True
 
             # Decide kind + bus (#837). ONLY a real (menu-origin) game with no
             # live primary claims the primary slot + persistent primary bus.
@@ -383,6 +436,31 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             else:
                 game_kind = GAME_KIND_SHADOW
                 event_bus = EventBus()
+
+            # Per-kind concurrency guards (#1018, option b).
+            #
+            # REAL single-game guard: a real (menu-origin) start with a primary
+            # already live was classified SHADOW above (the primary slot is
+            # taken). But two REAL games must never coexist, so reject it with
+            # the legacy "Game already in progress" message rather than quietly
+            # demoting the real start to a shadow. This is the single-game guard
+            # the issue scopes to real games — previously emergent from the
+            # global cap=1, now explicit.
+            if is_real and self._primary_game_id is not None:
+                return None, True
+
+            # SHADOW concurrency cap: count live shadow sessions and reject a new
+            # shadow once the concurrent-shadow cap is full. This is what bounds
+            # concurrent shadows without a real game ever tripping it.
+            if game_kind == GAME_KIND_SHADOW:
+                live_shadows = sum(1 for sess in self.sessions.values() if sess.game_kind == GAME_KIND_SHADOW)
+                if live_shadows >= _max_shadow_games():
+                    return None, True
+
+            # Total ceiling (runaway safety net): never register more than the
+            # absolute total of primary + shadow sessions.
+            if len(self.sessions) >= _max_concurrent_games():
+                return None, True
 
             game_id = f"game_{uuid.uuid4().hex[:12]}"
             parent_context = trace.set_span_in_context(parent_span)
@@ -562,7 +640,12 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         """Remove a finished session from the registry and free the primary slot
         if it owned it, so a new primary can start."""
         with self._sessions_lock:
-            self.sessions.pop(game_id, None)
+            session = self.sessions.pop(game_id, None)
+            if session is not None:
+                # Remove this session's game_id-labeled gauge series so the
+                # zeroed-but-persistent series don't accumulate as shadows churn
+                # short-lived game_ids (#1018). Idempotent / missing-series safe.
+                session.clear_metrics()
             if self._primary_game_id == game_id:
                 self._primary_game_id = None
                 # The primary bus is persistent and outlives the session; clear

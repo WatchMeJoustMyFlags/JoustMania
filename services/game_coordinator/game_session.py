@@ -26,6 +26,7 @@ import asyncio
 import logging
 import threading
 import time
+from contextlib import suppress
 
 from lib.feature_flags import (
     GAME_KIND_REAL as EVAL_GAME_KIND_REAL,
@@ -107,6 +108,30 @@ class GameSession:
     @property
     def is_primary(self) -> bool:
         return self.game_kind == GAME_KIND_PRIMARY
+
+    def clear_metrics(self) -> None:
+        """Remove this session's game_id-labeled gauge series on retire (#1018).
+
+        ``active_game`` / ``active_players`` / ``game_duration_seconds`` are set
+        on start and zeroed on end, but the zeroed series persists in the TSDB
+        forever. With concurrent shadow games churning many short-lived game_ids
+        this grows the series set unboundedly. Removing the EXACT label tuple
+        each was set with (game_kind, game_id, experiment_id, arm) at retire
+        keeps cardinality bounded.
+
+        Idempotent: a double-retire or never-started session may have no series
+        for some/all of these; the prometheus client raises KeyError/ValueError
+        on ``.remove()`` of a missing label set, so each is suppressed. Mirrors
+        the per-player cleanup in ``metrics.clear_player_analytics``.
+        """
+        labels = (self.game_kind, self.game_id, self.experiment_id, self.arm)
+        for gauge in (
+            metrics.active_game,
+            metrics.active_players,
+            metrics.game_duration_seconds,
+        ):
+            with suppress(KeyError, ValueError):
+                gauge.remove(*labels)
 
     def on_event_state_sync(self, event_type: str) -> None:
         """EventBus state-sync callback bound to THIS session's state (#775).
