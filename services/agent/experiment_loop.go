@@ -278,6 +278,15 @@ func (e *experimentLoop) onGameEnd(gc gamecontext.GameContext) {
 	if cv, ok := e.registry.CompactView(gc.ExperimentID); ok {
 		objective = cv.Intent.Objective
 	}
+	// The coordinator emits game_duration_seconds ONLY at game end (one gauge set in
+	// the session teardown), so for an agent-spawned shadow game it routinely loses
+	// the race against the game_active=0 datapoint that fires THIS hook — leaving
+	// gc.Session.DurationSeconds nil at conclusion. That nil made every
+	// duration-based objective (endurance/accelerate) skip its fitness function and
+	// fold the worst-case 0 (#997). Recover the real elapsed time from the partition's
+	// own start→end phase timeline so a concluded shadow game carries a meaningful,
+	// objective-relevant duration even when the end-only gauge has not arrived.
+	gc = withEffectiveDuration(gc)
 	fitness := e.fitness(gc, objective)
 	duration := 0.0
 	if gc.Session.DurationSeconds != nil {
@@ -312,6 +321,61 @@ func defaultGameFitness(gc gamecontext.GameContext, objective string) float64 {
 		return r.Progress
 	}
 	return 0
+}
+
+// withEffectiveDuration returns gc with Session.DurationSeconds populated from the
+// partition's start→end phase timeline when the coordinator's end-only
+// game_duration_seconds gauge has not yet been observed (DurationSeconds == nil).
+// It is a no-op when the gauge IS present (the gauge is authoritative) or when the
+// timeline lacks a start/end pair to bracket (no signal to recover — a genuinely
+// signal-less game still folds the worst-case 0, the #994 contract).
+//
+// This is the honest #997 fix: the recovered value is the real wall-clock game
+// duration the agent's own Store stamped on the session phase events
+// (SetGameActive start/end), NOT a fabricated number — so duration-based
+// objectives (endurance/accelerate) get the signal they need at conclusion.
+func withEffectiveDuration(gc gamecontext.GameContext) gamecontext.GameContext {
+	if gc.Session.DurationSeconds != nil {
+		return gc
+	}
+	dur, ok := timelinePhaseDuration(gc.Timeline)
+	if !ok {
+		return gc
+	}
+	gc.Session.DurationSeconds = &dur
+	return gc
+}
+
+// timelinePhaseDuration derives the elapsed game time from a partition's rolling
+// narrative: the seconds between the session's "start" phase event and its "end"
+// phase event. It returns false when either bracket is missing or the span is
+// non-positive (nothing trustworthy to recover). The end snapshot the Store hands
+// OnGameEnd is taken right AFTER appending the "end" phase (store.go SetGameActive),
+// so both brackets are present on a normally concluded game.
+func timelinePhaseDuration(timeline []gamecontext.TimelineEvent) (float64, bool) {
+	var start, end time.Time
+	var haveStart, haveEnd bool
+	for _, ev := range timeline {
+		if ev.Kind != gamecontext.EventPhase {
+			continue
+		}
+		switch ev.Detail {
+		case "start":
+			start = ev.At
+			haveStart = true
+		case "end":
+			end = ev.At
+			haveEnd = true
+		}
+	}
+	if !haveStart || !haveEnd {
+		return 0, false
+	}
+	d := end.Sub(start).Seconds()
+	if d <= 0 {
+		return 0, false
+	}
+	return d, true
 }
 
 // experimentTick resolves the AllocateAndSpawn cadence from
