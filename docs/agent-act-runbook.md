@@ -38,7 +38,7 @@ With `docker compose up`, the agent:
   `GameContext`, gates on whether a game is live with fresh data.
 - **Decides**: runs the objective-weighted rules engine each gated cycle,
   evaluating all four flag layers from flagd live.
-- **Traces**: emits the `agent.span_received → agent.decision → agent.action`
+- **Traces**: emits the `agent.signal_received → agent.decision → agent.action`
   audit trace whenever the engine returns ≥ 1 decision (idle cycles cost no
   spans).
 - **Dispatches nothing**: the action sink is `NoopActions`
@@ -193,7 +193,7 @@ can verify the trace pipeline without a live game. See the agent README →
 
 - **Default variant**: `noop` is in no standard allow-list, so probe decisions
   are **blocked by design** (`decision.block_reason=not_allowed`). The
-  `agent.span_received → agent.decision` spans still emit — OBSERVE→DECIDE and the
+  `agent.signal_received → agent.decision` spans still emit — OBSERVE→DECIDE and the
   span schema are fully exercised; only `agent.action` is withheld.
 - **Full path**: flip `interventions_allowed` to the **`probe`** variant
   (`["noop"]`) in `agent.json`, plus `AGENT_INTERVENTIONS_ENABLED=true` and
@@ -239,7 +239,7 @@ not at normal play.
 
 | Tool | Path | Use |
 |------|------|-----|
-| **Jaeger** | `http://localhost:8080/jaeger/` | Decision audit traces: `agent.span_received → agent.decision → agent.action`, and `agent.disabled` kill-switch traces. Service: `agent` |
+| **Jaeger** | `http://localhost:8080/jaeger/` | Decision audit traces: `agent.signal_received → agent.decision → agent.action`, and `agent.disabled` kill-switch traces. Service: `agent` |
 | **Grafana** | `http://localhost:8080/grafana/` | Dashboards in `services/grafana/dashboards/` |
 | **Prometheus** | `http://localhost:8080/prometheus/` | `game_interventions_total`, agent process metrics |
 | **agent logs** | `docker compose logs -f agent` | Sink-enabled warning, flag evaluation, block reasons |

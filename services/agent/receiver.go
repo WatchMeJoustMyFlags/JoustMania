@@ -14,7 +14,7 @@ import (
 )
 
 // Full OTLP gRPC service names, recorded as rpc.service (semconv) on the
-// agent.span_received root span.
+// agent.signal_received root span.
 const (
 	otlpTraceService   = "opentelemetry.proto.collector.trace.v1.TraceService"
 	otlpMetricsService = "opentelemetry.proto.collector.metrics.v1.MetricsService"

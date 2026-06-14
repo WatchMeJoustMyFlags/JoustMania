@@ -328,7 +328,7 @@ func TestLoopSet_ShadowVsRealAttribution(t *testing.T) {
 			t.Errorf("%s decision span game.kind=%q, want %q", id, got, wantKind)
 		}
 		// game.id alias must equal the partition's game id on the root span.
-		roots := spansByName(recorders[id].Ended(), SpanReceived)
+		roots := spansByName(recorders[id].Ended(), SignalReceived)
 		if len(roots) != 1 {
 			t.Fatalf("%s emitted %d root spans, want 1", id, len(roots))
 		}

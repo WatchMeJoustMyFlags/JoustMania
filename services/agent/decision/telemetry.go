@@ -3,16 +3,25 @@ package decision
 // Span names for the agent's decision audit trail (issue #724). The hierarchy
 // is always parent -> child:
 //
-//	agent.span_received          one per triggering OTLP Export
+//	agent.signal_received        one per triggering OTLP Export (metrics OR traces)
 //	  └─ agent.decision          one per Decision the rules engine returns
 //	       └─ agent.action       one per decision, wrapping the ActionSink call
 //
+// The root span is signal-AGNOSTIC (#1053): a metric-triggered cycle and a
+// trace-triggered cycle both emit agent.signal_received, distinguished by the
+// otlp.signal (metrics|traces) + rpc.service attributes — NOT by the span name.
+// Metrics are the agent's PRIMARY (~100ms-1s) trigger; the old "span_received"
+// name implied trace-only activity and misled readers into thinking metrics
+// were not wired (they are — see receiver.go ApplyMetrics -> OnEvaluate).
+//
 // Traces are only emitted when the rules engine returns at least one decision
 // (including decisions that end up blocked) — the trace IS the audit log of
-// agent activity, not of agent idle time.
+// agent activity, not of agent idle time. Idle cycles (signal arrives, no rule
+// fires) are instead made observable via the agent_evaluations_total counter
+// (#1053), so "are signals arriving?" is answerable without a span per cycle.
 //
 // Where OpenTelemetry semantic conventions exist they are used (semconv
-// v1.34.0): rpc.* on agent.span_received (it wraps an inbound OTLP gRPC
+// v1.34.0): rpc.* on agent.signal_received (it wraps an inbound OTLP gRPC
 // Export), gen_ai.agent.name as the agent identity on agent.decision (the full
 // GenAI agent conventions apply once an LLM inference path exists — its
 // requireds, e.g. gen_ai.provider.name, are only honest in llm mode), a
@@ -22,9 +31,9 @@ package decision
 // fitness.*, agent.mode, agent.objectives and interventions.allowed attributes
 // have no semantic convention and are custom to this project.
 const (
-	SpanReceived = "agent.span_received"
-	SpanDecision = "agent.decision"
-	SpanAction   = "agent.action"
+	SignalReceived = "agent.signal_received"
+	SpanDecision   = "agent.decision"
+	SpanAction     = "agent.action"
 )
 
 // SpanDisabled is the kill-switch trace emitted when the existence layer reports
@@ -47,7 +56,7 @@ const SpanLLMPrompt = "agent.llm.prompt"
 
 // SpanLLMInfer is the actual-inference span (#739): emitted when the llm path
 // calls a resolved backend's Infer (NOT the capture path, which only renders the
-// prompt). It is a child of agent.span_received and a SIBLING of the resulting
+// prompt). It is a child of agent.signal_received and a SIBLING of the resulting
 // agent.decision span, carrying the GenAI request attribution and — on a parsed
 // response — the model's reasoning + chosen objective + action. On an Infer error
 // or an unparseable response it carries AttrLLMInferError and the cycle falls back
@@ -56,7 +65,7 @@ const SpanLLMInfer = "agent.llm.infer"
 
 // SpanLLMApply is the ASYNC-application audit root (#917): emitted when an
 // async inference RESULT lands, seconds after the cycle that fired it, carrying
-// the whole re-validation outcome. Because the firing cycle's agent.span_received
+// the whole re-validation outcome. Because the firing cycle's agent.signal_received
 // has long since ended (the loop never blocks on Infer), the async result cannot
 // hang off it — so the apply path opens its OWN root span backdated to the moment
 // inference completed. It parents the agent.llm.infer call span and, when the
@@ -320,7 +329,7 @@ const (
 // loop — the infra path already has fitness->rollback, the game path had nothing
 // (#918). It is MEASUREMENT ONLY: it never reverts the intervention.
 //
-// Because the dispatch cycle's agent.span_received root has long since ended (the
+// Because the dispatch cycle's agent.signal_received root has long since ended (the
 // follow-up window is seconds later), the effect cannot hang off it — so the sampler
 // opens its OWN root span backdated to dispatch time, parenting an
 // agent.intervention.effect span per evaluated objective, so a Jaeger trace shows the

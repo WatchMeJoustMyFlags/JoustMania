@@ -138,7 +138,7 @@ func TestDisabledSpan_EmittedWithFlagAttribution(t *testing.T) {
 	l.OnEvaluate(context.Background(), gamecontext.GameContext{SessionID: "s1"}, testTrigger())
 
 	ended := sr.Ended()
-	roots := spansByName(ended, SpanReceived)
+	roots := spansByName(ended, SignalReceived)
 	disabled := spansByName(ended, SpanDisabled)
 	if len(roots) != 1 || len(disabled) != 1 {
 		t.Fatalf("spans = %d root + %d disabled, want 1/1 (no action span)", len(roots), len(disabled))
@@ -157,7 +157,7 @@ func TestDisabledSpan_EmittedWithFlagAttribution(t *testing.T) {
 		t.Errorf("policy.battery_threshold = %d, want 20", v.AsInt64())
 	}
 	if d.Parent().SpanID() != roots[0].SpanContext().SpanID() {
-		t.Error("disabled span must be a child of agent.span_received")
+		t.Error("disabled span must be a child of agent.signal_received")
 	}
 }
 
