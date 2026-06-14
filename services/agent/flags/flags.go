@@ -116,6 +116,31 @@ const (
 	keySessionGraceSeconds  = "lifecycle.session_grace_seconds"
 	keyEvictIntervalSeconds = "lifecycle.evict_interval_seconds"
 	keyDecisionThrottleSecs = "decision.throttle_seconds"
+
+	// Experiment / cohort framework runtime knobs (#1044). These migrate the
+	// runtime-tunable AGENT_EXPERIMENT_* env vars to LIVE agent.json flags so they
+	// are hot-reloadable / dashboard-controllable with no container restart, exactly
+	// like the kill-switch + llm.* gate flags. They are read LIVE each experiment
+	// tick (experiment_loop.go) — NOT cached — so a flag flip takes effect on the
+	// next tick. The ENV value (#1041/#1043 bootstrap passthrough) stays the
+	// DEFAULT each read falls back to when the flag is absent/unreadable: flag
+	// overrides, env is the floor (fail-safe, exactly the kill-switch pattern).
+	//
+	// The flagd numeric-flag gotcha applies: every numeric one MUST use the typed
+	// getter (a numeric flag read via ObjectValue silently TYPE_MISMATCHes to its
+	// default — see llmGate). The two LIST-valued declarer knobs
+	// (AGENT_EXPERIMENT_DYNAMIC_CANDIDATES / _DENYLIST) deliberately STAY as env:
+	// top-level LIST flags hit the same get_object_value TYPE_MISMATCH and only the
+	// in-process resolver (port 8015) reads them, so a list flag here would be
+	// silently broken (the issue permits keeping those two as env).
+	keyExperimentsEnabled          = "experiments_enabled"
+	keyExperimentDynamicEnabled    = "experiment_dynamic_enabled"
+	keyExperimentTickSeconds       = "experiment_tick_seconds"
+	keyExperimentDynamicMaxConcur  = "experiment_dynamic_max_concurrent"
+	keyVerdictMinN                 = "verdict_min_n"
+	keyVerdictMinPairs             = "verdict_min_pairs"
+	keyExperimentMaxGames          = "experiment_max_games"
+	keyExperimentShadowConcurrency = "experiment_shadow_effective_concurrency"
 )
 
 // Safe defaults applied when flagd is unreachable or a flag is undefined.
@@ -536,6 +561,83 @@ func (f *Flags) Promotion(ctx context.Context) PromotionConfig {
 	return PromotionConfig{
 		Mode:   f.stringFlag(ctx, keyPromotionMode, DefaultPromotionMode),
 		Target: f.stringFlag(ctx, keyPromotionTarget, DefaultPromotionTarget),
+	}
+}
+
+// ExperimentDefaults carries the BOOTSTRAP defaults for the experiment runtime
+// knobs (#1044): the values resolved ONCE at startup from the AGENT_EXPERIMENT_*
+// env vars (#1041/#1043). Each Experiment() read falls back to the matching field
+// here when its agent.json flag is absent/unreadable — so flag overrides, env is
+// the floor, and a fresh agent.json (no new flags) reproduces byte-identical
+// env-based behavior. The caller (experiment_loop.go) builds this from the env
+// resolvers it already owns and hands it in, keeping the flags package free of any
+// AGENT_EXPERIMENT_* env knowledge.
+type ExperimentDefaults struct {
+	// Enabled is AGENT_EXPERIMENTS_ENABLED (the loop opt-in).
+	Enabled bool
+	// DynamicEnabled is AGENT_EXPERIMENT_DYNAMIC_ENABLED (the #995 declarer opt-in).
+	DynamicEnabled bool
+	// Tick is AGENT_EXPERIMENT_TICK_SECONDS as a duration (the AllocateAndSpawn cadence).
+	Tick time.Duration
+	// DynamicMaxConcurrent is AGENT_EXPERIMENT_DYNAMIC_MAX_CONCURRENT.
+	DynamicMaxConcurrent int
+	// VerdictMinN is AGENT_VERDICT_MIN_N.
+	VerdictMinN int
+	// VerdictMinPairs is AGENT_VERDICT_MIN_PAIRS.
+	VerdictMinPairs int
+	// MaxGames is AGENT_EXPERIMENT_MAX_GAMES (per-experiment termination budget).
+	MaxGames int
+	// ShadowEffectiveConcurrency is AGENT_SHADOW_EFFECTIVE_CONCURRENCY.
+	ShadowEffectiveConcurrency int
+}
+
+// ExperimentConfig is the LIVE-resolved experiment runtime configuration (#1044),
+// re-read each experiment tick so a flag flip takes effect with no restart. Every
+// field mirrors an ExperimentDefaults field, with the agent.json flag taking
+// precedence when present and the env-derived default applying otherwise.
+type ExperimentConfig struct {
+	// Enabled gates the WHOLE experiment loop (experiments_enabled). When false the
+	// loop does nothing — no rehydrate-spawn, no seed, no allocate. Flipping it on
+	// at runtime starts the loop; flipping it off aborts every live experiment.
+	Enabled bool
+	// DynamicEnabled gates the #995 heuristic declarer (experiment_dynamic_enabled).
+	// When false the loop declares only the static env seed (if any).
+	DynamicEnabled bool
+	// Tick is the AllocateAndSpawn cadence (experiment_tick_seconds). A non-positive
+	// flag value falls back to the env default (durationFlag guard).
+	Tick time.Duration
+	// DynamicMaxConcurrent caps simultaneously-live dynamically-declared experiments
+	// (experiment_dynamic_max_concurrent).
+	DynamicMaxConcurrent int
+	// VerdictMinN is the verdict min-N-per-arm gate (verdict_min_n).
+	VerdictMinN int
+	// VerdictMinPairs is the paired-verdict min-completed-pairs gate (verdict_min_pairs).
+	VerdictMinPairs int
+	// MaxGames is the per-experiment termination budget (experiment_max_games).
+	MaxGames int
+	// ShadowEffectiveConcurrency is the in-flight shadow-spawn concurrency cap
+	// (experiment_shadow_effective_concurrency).
+	ShadowEffectiveConcurrency int
+}
+
+// Experiment evaluates the eight migrated experiment runtime knobs (#1044) for one
+// experiment tick. Read LIVE (never cached) so a hot-reload of any knob takes
+// effect on the next tick. Each flag falls back to the matching ExperimentDefaults
+// field (the env-derived bootstrap default) on any evaluation error or flag
+// absence — so flag overrides, env is the floor, and a fresh agent.json reproduces
+// byte-identical env behavior. Numeric flags use the TYPED getters (the flagd
+// numeric-flag gotcha — see llmGate); the duration uses durationFlag (which floors
+// a non-positive value at the default).
+func (f *Flags) Experiment(ctx context.Context, def ExperimentDefaults) ExperimentConfig {
+	return ExperimentConfig{
+		Enabled:                    f.boolFlag(ctx, keyExperimentsEnabled, def.Enabled),
+		DynamicEnabled:             f.boolFlag(ctx, keyExperimentDynamicEnabled, def.DynamicEnabled),
+		Tick:                       f.durationFlag(ctx, keyExperimentTickSeconds, def.Tick.Seconds()),
+		DynamicMaxConcurrent:       f.intFlag(ctx, keyExperimentDynamicMaxConcur, def.DynamicMaxConcurrent),
+		VerdictMinN:                f.intFlag(ctx, keyVerdictMinN, def.VerdictMinN),
+		VerdictMinPairs:            f.intFlag(ctx, keyVerdictMinPairs, def.VerdictMinPairs),
+		MaxGames:                   f.intFlag(ctx, keyExperimentMaxGames, def.MaxGames),
+		ShadowEffectiveConcurrency: f.intFlag(ctx, keyExperimentShadowConcurrency, def.ShadowEffectiveConcurrency),
 	}
 }
 

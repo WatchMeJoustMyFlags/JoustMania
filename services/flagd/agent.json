@@ -443,6 +443,76 @@
         "github": "github"
       },
       "defaultVariant": "local"
+    },
+    "experiments_enabled": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "off"
+    },
+    "experiment_dynamic_enabled": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "off"
+    },
+    "experiment_tick_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "fast": 10,
+        "default": 30,
+        "slow": 60
+      },
+      "defaultVariant": "default"
+    },
+    "experiment_dynamic_max_concurrent": {
+      "state": "ENABLED",
+      "variants": {
+        "one": 1,
+        "default": 3,
+        "wide": 6
+      },
+      "defaultVariant": "default"
+    },
+    "verdict_min_n": {
+      "state": "ENABLED",
+      "variants": {
+        "quick": 4,
+        "default": 8,
+        "strict": 16
+      },
+      "defaultVariant": "default"
+    },
+    "verdict_min_pairs": {
+      "state": "ENABLED",
+      "variants": {
+        "quick": 3,
+        "default": 5,
+        "strict": 10
+      },
+      "defaultVariant": "default"
+    },
+    "experiment_max_games": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 50,
+        "long": 100,
+        "unlimited": 0
+      },
+      "defaultVariant": "default"
+    },
+    "experiment_shadow_effective_concurrency": {
+      "state": "ENABLED",
+      "variants": {
+        "one": 1,
+        "default": 4,
+        "wide": 8
+      },
+      "defaultVariant": "default"
     }
   }
 }
