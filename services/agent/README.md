@@ -914,6 +914,44 @@ All configuration is via environment variables:
 | `AGENT_EXPERIMENT_SEED_TARGET_N` | _unset_ | Target games per arm for the seed experiment (positive int; falls back to the registry default when unset) |
 | `AGENT_EXPERIMENT_SEED_HYPOTHESIS` | _generated_ | Free-text hypothesis recorded on the seed experiment's intent |
 
+> **#1044 — runtime-tunable experiment knobs are now LIVE `agent.json` flags.**
+> The experiment loop reads these on **every tick** from the `agent` flagd domain,
+> with the env var above as the **bootstrap default** the flag falls back to when
+> absent/unreadable (the kill-switch pattern: flag overrides, env is the floor). So
+> they are hot-reloadable / dashboard-controllable with **no container restart**, and
+> a fresh `agent.json` (no new flags) reproduces byte-identical env behavior. The
+> migrated flags (see [`services/flagd/agent.json`](../flagd/agent.json)):
+>
+> | flag (`agent.json`) | env bootstrap default |
+> |---|---|
+> | `experiments_enabled` | `AGENT_EXPERIMENTS_ENABLED` |
+> | `experiment_dynamic_enabled` | `AGENT_EXPERIMENT_DYNAMIC_ENABLED` |
+> | `experiment_tick_seconds` | `AGENT_EXPERIMENT_TICK_SECONDS` |
+> | `experiment_dynamic_max_concurrent` | `AGENT_EXPERIMENT_DYNAMIC_MAX_CONCURRENT` |
+> | `experiment_shadow_effective_concurrency` | `AGENT_SHADOW_EFFECTIVE_CONCURRENCY` |
+> | `experiment_max_games` | `AGENT_EXPERIMENT_MAX_GAMES` |
+> | `verdict_min_n` | `AGENT_VERDICT_MIN_N` |
+> | `verdict_min_pairs` | `AGENT_VERDICT_MIN_PAIRS` |
+>
+> **Startup-gate inversion:** the loop + dynamic declarer are now **always built and
+> run**; they self-gate each tick on the live `experiments_enabled` /
+> `experiment_dynamic_enabled` flags. An off→on flip **starts** the loop (it runs the
+> deferred rehydrate + seed bootstrap and begins allocating); an on→off flip **stops**
+> it cleanly (`AbortAll` strips targeting and frees capacity — in-flight shadow games
+> conclude/release normally). The master `enabled` kill-switch still wins: a disabled
+> agent does nothing regardless of these flags. **`agent.json` is human-owned** — the
+> agent has **no** write path to it (its only flagd write is `experiment.Writer`,
+> hardcoded to `game.json` + the `:ro` mount backstop), so it can never enable its own
+> experiments.
+>
+> **Stays env (NOT migrated):** `AGENT_EXPERIMENT_DIR` (filesystem concern), the
+> one-shot `AGENT_EXPERIMENT_SEED_*` (startup seed), and the two **list-valued**
+> declarer knobs `AGENT_EXPERIMENT_DYNAMIC_CANDIDATES` / `_DENYLIST` — a top-level
+> flagd **LIST** flag hits a `get_object_value` `TYPE_MISMATCH` (only the in-process
+> resolver reads list flags; the agent uses the RPC resolver), so a list flag here
+> would be silently broken. `AGENT_VERDICT_EFFECT_THRESHOLD` also stays env for now
+> (it ties to the #1042 practical-significance floor; not part of this migration).
+
 > The Go agent uses the flagd **RPC** resolver (gRPC evaluation port `8013`),
 > not the in-process sync port `8015` that the Python services use.
 

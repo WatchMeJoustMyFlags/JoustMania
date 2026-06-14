@@ -10,6 +10,7 @@ import (
 
 	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/experiment"
+	"github.com/joustmania/agent/flags"
 )
 
 // dynamic_declarer_test.go is the #995 acceptance suite for the HEURISTIC dynamic
@@ -120,17 +121,25 @@ func TestDynamicDeclarer_GatePassesObjectAndBoolFlags(t *testing.T) {
 	}
 }
 
-// TestDynamicDeclarer_DisabledByDefault is the regression guard: with the opt-in
-// unset, newDynamicDeclarerFromEnv returns nil, so the loop wires no declarer and
-// the env-seed path is byte-identical.
+// TestDynamicDeclarer_DisabledByDefault is the regression guard (#1044 update):
+// the declarer is ALWAYS constructed now, but with experiment_dynamic_enabled OFF
+// (the default, here via a zero-value ExperimentConfig) declareDynamicIfEnabled is
+// a no-op — the env-seed path is byte-identical. It also asserts a nil declarer is
+// safe (the test/degraded wiring).
 func TestDynamicDeclarer_DisabledByDefault(t *testing.T) {
 	t.Setenv(envDynamicEnabled, "") // explicitly unset/empty
-	if d := newDynamicDeclarerFromEnv("/etc/flagd/game.json", nil); d != nil {
-		t.Fatal("declarer constructed while opt-in is OFF (default) — must be nil")
+	// The declarer is built regardless of the opt-in now (gating moved to the LIVE
+	// flag, checked per tick).
+	if d := newDynamicDeclarerFromEnv("/etc/flagd/game.json", nil); d == nil {
+		t.Fatal("declarer must always be constructed (#1044) — gating is per-tick via the live flag")
 	}
-	// Also assert the loop's hook is a no-op with a nil declarer (no panic, no work).
+	// A nil declarer is a no-op (test/degraded wiring): no panic, no work.
 	loop := &experimentLoop{dynamic: nil, log: testLogger()}
-	loop.declareDynamicIfEnabled(context.Background()) // must not panic / touch a nil registry.
+	loop.declareDynamicIfEnabled(context.Background(), flags.ExperimentConfig{DynamicEnabled: true})
+	// A wired declarer with DynamicEnabled=false (the live flag off) is ALSO a no-op
+	// even though the declarer is present — proving the per-tick flag gate.
+	loop.dynamic = &dynamicDeclarer{gameFlagPath: "/etc/flagd/game.json"}
+	loop.declareDynamicIfEnabled(context.Background(), flags.ExperimentConfig{DynamicEnabled: false})
 }
 
 // TestDynamicDeclarer_EnabledFromEnv asserts the opt-in constructs a declarer and
@@ -312,9 +321,40 @@ func loopWithRealRegistry(t *testing.T, maxShadow int) (*experimentLoop, string)
 	loop := &experimentLoop{
 		registry: reg,
 		log:      log,
-		tick:     time.Hour,
+		// #1044: the tick cadence is now resolved from the live config; tests drive
+		// allocation explicitly, so a long bootstrap-default tick is ample. The
+		// configOverride keeps the loop's gates ON so allocateIfEnabled-based tests
+		// exercise the declare path (per-test overrides may flip it).
+		expDefaults: flags.ExperimentDefaults{
+			Enabled:                    true,
+			DynamicEnabled:             true,
+			Tick:                       time.Hour,
+			DynamicMaxConcurrent:       defaultDynamicMaxConcurrent,
+			ShadowEffectiveConcurrency: 4,
+		},
+	}
+	loop.configOverride = func(context.Context) flags.ExperimentConfig {
+		return flags.ExperimentConfig{
+			Enabled:                    true,
+			DynamicEnabled:             true,
+			Tick:                       time.Hour,
+			DynamicMaxConcurrent:       defaultDynamicMaxConcurrent,
+			ShadowEffectiveConcurrency: 4,
+		}
 	}
 	return loop, gamePath
+}
+
+// dynCfg is a test helper: a live ExperimentConfig with the loop + dynamic gates ON
+// and the given concurrent-experiment budget (#1044). It replaces the former
+// loop.dynamicMaxConcurrent field the declare-path tests set directly.
+func dynCfg(maxConcurrent int) flags.ExperimentConfig {
+	return flags.ExperimentConfig{
+		Enabled:                    true,
+		DynamicEnabled:             true,
+		DynamicMaxConcurrent:       maxConcurrent,
+		ShadowEffectiveConcurrency: 4,
+	}
 }
 
 // TestDeclareDynamic_DeclaresAndStarts asserts the loop's hook declares a fresh
@@ -327,9 +367,9 @@ func TestDeclareDynamic_DeclaresAndStarts(t *testing.T) {
 		candidates:       []string{"sensitivity", "num_teams"},
 		defaultObjective: decision.ObjectiveBalanced,
 	}
-	loop.dynamicMaxConcurrent = 5
+	cfg := dynCfg(5)
 
-	loop.declareDynamicIfEnabled(context.Background())
+	loop.declareDynamicIfEnabled(context.Background(), cfg)
 	if got := loop.registry.LiveCount(); got != 1 {
 		t.Fatalf("after 1 dynamic declare LiveCount = %d, want 1", got)
 	}
@@ -339,7 +379,7 @@ func TestDeclareDynamic_DeclaresAndStarts(t *testing.T) {
 	}
 
 	// Second call: sensitivity is now active ⇒ the declarer must pick num_teams.
-	loop.declareDynamicIfEnabled(context.Background())
+	loop.declareDynamicIfEnabled(context.Background(), cfg)
 	if got := loop.registry.LiveCount(); got != 2 {
 		t.Fatalf("after 2 dynamic declares LiveCount = %d, want 2", got)
 	}
@@ -358,10 +398,10 @@ func TestDeclareDynamic_RespectsConcurrentBackstop(t *testing.T) {
 		candidates:       []string{"sensitivity", "num_teams", "fight_club.min_rounds"},
 		defaultObjective: decision.ObjectiveBalanced,
 	}
-	loop.dynamicMaxConcurrent = 2 // budget of 2 (well under capacity 8)
+	cfg := dynCfg(2) // budget of 2 (well under capacity 8)
 
 	for i := 0; i < 5; i++ {
-		loop.declareDynamicIfEnabled(context.Background())
+		loop.declareDynamicIfEnabled(context.Background(), cfg)
 	}
 	if got := loop.registry.LiveCount(); got != 2 {
 		t.Fatalf("declarer exceeded the concurrent backstop: LiveCount = %d, want 2", got)
@@ -378,10 +418,10 @@ func TestDeclareDynamic_BackstopClampedToCapacity(t *testing.T) {
 		candidates:       []string{"sensitivity", "num_teams", "fight_club.min_rounds"},
 		defaultObjective: decision.ObjectiveBalanced,
 	}
-	loop.dynamicMaxConcurrent = 99 // huge — but capacity clamps it to 1
+	cfg := dynCfg(99) // huge — but capacity clamps it to 1
 
 	for i := 0; i < 5; i++ {
-		loop.declareDynamicIfEnabled(context.Background())
+		loop.declareDynamicIfEnabled(context.Background(), cfg)
 	}
 	if got := loop.registry.LiveCount(); got != 1 {
 		t.Fatalf("budget not clamped to capacity: LiveCount = %d, want 1", got)
@@ -404,7 +444,7 @@ func TestDeclareDynamic_ConcurrentCallersRespectBudget(t *testing.T) {
 		defaultObjective: decision.ObjectiveBalanced,
 	}
 	const budget = 2
-	loop.dynamicMaxConcurrent = budget // well under capacity 16
+	cfg := dynCfg(budget) // well under capacity 16
 
 	const goroutines = 8
 	var wg sync.WaitGroup
@@ -412,7 +452,7 @@ func TestDeclareDynamic_ConcurrentCallersRespectBudget(t *testing.T) {
 	for i := 0; i < goroutines; i++ {
 		go func() {
 			defer wg.Done()
-			loop.declareDynamicIfEnabled(context.Background())
+			loop.declareDynamicIfEnabled(context.Background(), cfg)
 		}()
 	}
 	wg.Wait()
@@ -437,7 +477,6 @@ func TestDeclareDynamic_KillSwitchOffDeclaresNothing(t *testing.T) {
 		candidates:       []string{"sensitivity"},
 		defaultObjective: decision.ObjectiveBalanced,
 	}
-	loop.dynamicMaxConcurrent = 5
 	loop.enabledOverride = func(context.Context) bool { return false } // kill-switch OFF
 
 	loop.allocateIfEnabled(context.Background())
