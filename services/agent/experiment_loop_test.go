@@ -526,7 +526,7 @@ func TestExperimentLoop_CompletedGrace_ReleasesOnDroppedDatapoint(t *testing.T) 
 
 	id, err := loop.registry.Declare(experiment.Intent{
 		Hypothesis: "h", FlagKey: "death_grace_period_seconds",
-		ExperimentalValue: 0.5, Objective: "engagement_balanced", TargetNPerArm: 5,
+		ExperimentalValue: 0.5, Objective: "endurance", TargetNPerArm: 5,
 	})
 	if err != nil {
 		t.Fatalf("Declare: %v", err)
@@ -602,7 +602,7 @@ func TestExperimentLoop_CompletedGrace_NoReleaseWhenConcluded(t *testing.T) {
 
 	id, err := loop.registry.Declare(experiment.Intent{
 		Hypothesis: "h", FlagKey: "death_grace_period_seconds",
-		ExperimentalValue: 0.5, Objective: "engagement_balanced", TargetNPerArm: 5,
+		ExperimentalValue: 0.5, Objective: "endurance", TargetNPerArm: 5,
 	})
 	if err != nil {
 		t.Fatalf("Declare: %v", err)
@@ -682,7 +682,7 @@ func TestExperimentLoop_CompletedGrace_StopAllRaceGuard(t *testing.T) {
 	// callback WOULD ReleaseGame + refill-spawn a brand-new game during shutdown.
 	id, err := loop.registry.Declare(experiment.Intent{
 		Hypothesis: "h", FlagKey: "death_grace_period_seconds",
-		ExperimentalValue: 0.5, Objective: "engagement_balanced", TargetNPerArm: 50,
+		ExperimentalValue: 0.5, Objective: "endurance", TargetNPerArm: 50,
 	})
 	if err != nil {
 		t.Fatalf("Declare: %v", err)
