@@ -43,6 +43,25 @@ import "time"
 // gamesummary.SchemaVersion.
 const SchemaVersion = 1
 
+// Canonical arm names for the Common-Random-Numbers paired-difference verdict
+// (#1004). The journal folds a per-PAIR difference d_i = f_experimental − f_control
+// into Summary.PairDiff, so apply() must know which of a pair's two arms carries
+// the positive sign. These mirror the experiment-package targeting constants
+// (targeting.ArmExperimental / registry.ArmControl = "experimental"/"control");
+// they are duplicated here as opaque strings rather than imported so the journal
+// stays free of an import cycle on the experiment package. A pair whose two arms
+// are neither of these (a non-standard arm split) simply never folds a PairDiff —
+// the verdict then falls back to the two-arm path, so the values are advisory, not
+// load-bearing for legacy/custom experiments.
+const (
+	// ArmExperimental is the arm that resolves the candidate value (positive sign in
+	// the per-pair difference).
+	ArmExperimental = "experimental"
+	// ArmControl is the within-experiment baseline arm (negative sign in the per-pair
+	// difference).
+	ArmControl = "control"
+)
+
 // Intent is the immutable goal of an experiment (design §9.4a, intent.json).
 // Written exactly once by Create and never rewritten — the audit record of WHAT
 // the agent tried and WHY. Field names are stable wire contract.
@@ -143,6 +162,23 @@ type ArmStat struct {
 	Welford
 }
 
+// PendingHalf is one arm of a Common-Random-Numbers pair (#1003/#1004) that has
+// concluded while its seed-matched partner has not yet. The two games of a pair do
+// NOT conclude simultaneously — under the single-game coordinator (effective cap 1)
+// they are even spawned on different ticks — so the first arm to conclude is parked
+// here keyed by pair index; when the partner concludes the per-pair difference
+// d = f_experimental − f_control is folded into Summary.PairDiff and the entry is
+// dropped. A half that never matches (the partner arm never spawned because the
+// experiment was torn down mid-pair) is dropped at teardown and NEVER folded — a
+// dangling half must not reach the verdict (#1004 carried-over correctness item 1).
+type PendingHalf struct {
+	// Arm is the arm whose game concluded first (ArmExperimental or ArmControl). It
+	// fixes the sign of the difference when the partner arrives.
+	Arm string `json:"arm"`
+	// Fitness is that game's fitness sample, awaiting its partner.
+	Fitness float64 `json:"fitness"`
+}
+
 // Verdict is the current comparison verdict carried on the rolling summary and on
 // interim_verdict/outcome events. This package does NOT compute significance — the
 // aggregator (#979) supplies the verdict; the journal only stores it (it stays the
@@ -183,4 +219,22 @@ type Summary struct {
 	Arms map[string]*ArmStat `json:"arms"`
 	// Verdict is the current rolling verdict, or nil before any has been recorded.
 	Verdict *Verdict `json:"verdict,omitempty"`
+
+	// PairDiff is the Welford accumulator over per-PAIR fitness differences
+	// d_i = f_experimental_i − f_control_i for the Common-Random-Numbers pairing
+	// (#1003/#1004). Folded once per COMPLETED pair (both arms concluded). It is the
+	// paired-difference estimator's sufficient statistic: with CRN removing the shared
+	// game variance inside each d_i, mean(d)/sd(d) is a far tighter standardized
+	// effect than the two-arm pooled Cohen's d, so a verdict is reached at far fewer
+	// games. nil until the first pair completes; legacy/unpaired experiments leave it
+	// nil and the verdict falls back to the two-arm gate. omitempty so old summaries
+	// (and the common case before any pair completes) carry no extra bytes.
+	PairDiff *Welford `json:"pair_diff,omitempty"`
+	// PendingPairs buffers the first-concluded arm of each not-yet-complete pair,
+	// keyed by pair index, until its seed-matched partner concludes (see PendingHalf).
+	// It is part of the durable Summary (NOT transient registry memory) so replay on
+	// Load reconstructs it exactly — apply() stays a pure fold of the event stream
+	// (the #831 durability guarantee). omitempty so a summary with no in-flight pairs
+	// carries no extra bytes.
+	PendingPairs map[int]PendingHalf `json:"pending_pairs,omitempty"`
 }

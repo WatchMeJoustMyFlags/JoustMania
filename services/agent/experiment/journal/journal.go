@@ -168,7 +168,19 @@ func (j *Journal) apply(e Event) {
 			}
 			// An event for an arm not in Intent.Arms is still recorded in the log
 			// (the complete audit trail) but folds into no accumulator.
+
+			// Common-Random-Numbers paired fold (#1004): if this conclusion carries a
+			// pair index, drive the pending-pairs buffer toward a per-pair difference.
+			j.applyPairConcluded(e)
 		}
+	case KindGameReleased:
+		// A non-counting release (#1014) of a game that never produced a usable
+		// fitness sample. If it was the first-concluded half of a still-open pair, drop
+		// the dangling half so it can NEVER be folded as a fabricated difference — the
+		// partner is gone (the experiment is tearing down or the game errored), so the
+		// pair can never complete (#1004 carried-over item 1). A released game that was
+		// not a parked half (its partner already folded, or it never parked) is a no-op.
+		j.applyPairReleased(e)
 	case KindInterimVerdict, KindOutcome:
 		if e.Verdict != nil {
 			v := *e.Verdict
@@ -184,6 +196,98 @@ func (j *Journal) apply(e Event) {
 	}
 
 	j.appendTail(e)
+}
+
+// applyPairConcluded folds a concluded game into the Common-Random-Numbers
+// pending-pairs buffer (#1003/#1004). It is called only for a KindGameConcluded
+// event that carries a Fitness sample. Assumes j.mu is held (called from apply).
+//
+// A pair's two arms conclude at DIFFERENT times (under the single-game coordinator
+// they are even spawned on different ticks), so:
+//   - the FIRST arm of a pair to conclude is PARKED in PendingPairs[pairIndex];
+//   - when the SECOND (partner) arm concludes, the per-pair difference
+//     d = f_experimental − f_control is computed and folded into PairDiff, and the
+//     pending entry is dropped (the buffer drains).
+//
+// Folding requires a genuine experimental↔control pair: a second conclusion for the
+// SAME arm at the same pair index (which cannot happen for a well-formed pair, but
+// is handled defensively) overwrites the parked half rather than folding a
+// same-arm difference. A conclusion without a pair index (legacy/unpaired) is
+// ignored here — the per-arm Welford fold above still captures it for the two-arm
+// fallback verdict.
+func (j *Journal) applyPairConcluded(e Event) {
+	if e.PairIndex == nil {
+		return // not a paired game; the two-arm path covers it.
+	}
+	pi := *e.PairIndex
+	f := *e.Fitness
+
+	parked, pending := j.summary.PendingPairs[pi]
+	if !pending {
+		// First half of this pair to conclude — park it (lazily create the buffer).
+		if j.summary.PendingPairs == nil {
+			j.summary.PendingPairs = make(map[int]PendingHalf)
+		}
+		j.summary.PendingPairs[pi] = PendingHalf{Arm: e.Arm, Fitness: f}
+		return
+	}
+
+	// The partner concluded. Fold a per-pair difference only if the two halves are
+	// the canonical experimental/control arms (one of each). A same-arm repeat is a
+	// malformed pair — refresh the parked half and do not fold a bogus difference.
+	d, ok := pairDelta(parked.Arm, parked.Fitness, e.Arm, f)
+	if !ok {
+		j.summary.PendingPairs[pi] = PendingHalf{Arm: e.Arm, Fitness: f}
+		return
+	}
+
+	if j.summary.PairDiff == nil {
+		j.summary.PairDiff = &Welford{}
+	}
+	j.summary.PairDiff.Add(d)
+	delete(j.summary.PendingPairs, pi)
+	if len(j.summary.PendingPairs) == 0 {
+		// Keep the map nil when empty so a drained buffer serializes away (omitempty).
+		j.summary.PendingPairs = nil
+	}
+}
+
+// applyPairReleased drops a parked pending half whose game was released without a
+// usable fitness sample (#1014/#1004). A released game that was the FIRST-concluded
+// half of an open pair can never complete (its partner is gone), so its half must be
+// dropped — never folded as a fabricated difference (#1004 carried-over item 1).
+// Assumes j.mu is held.
+func (j *Journal) applyPairReleased(e Event) {
+	if e.PairIndex == nil || j.summary.PendingPairs == nil {
+		return
+	}
+	pi := *e.PairIndex
+	if parked, ok := j.summary.PendingPairs[pi]; ok && parked.Arm == e.Arm {
+		// Only drop the half that THIS released game parked (arm match). A release for
+		// a pair whose parked half belongs to the OTHER arm is left intact: the parked
+		// arm still concluded normally and may yet match a re-spawned partner.
+		delete(j.summary.PendingPairs, pi)
+		if len(j.summary.PendingPairs) == 0 {
+			j.summary.PendingPairs = nil
+		}
+	}
+}
+
+// pairDelta returns the signed per-pair difference d = f_experimental − f_control
+// for the two concluded halves of a Common-Random-Numbers pair, and whether the
+// two arms form a canonical experimental/control pair (one of each). It returns
+// ok=false when the two halves are the same arm or either is a non-canonical arm —
+// in which case no PairDiff is folded and the verdict falls back to the two-arm
+// path.
+func pairDelta(armA string, fA float64, armB string, fB float64) (d float64, ok bool) {
+	switch {
+	case armA == ArmExperimental && armB == ArmControl:
+		return fA - fB, true
+	case armA == ArmControl && armB == ArmExperimental:
+		return fB - fA, true
+	default:
+		return 0, false
+	}
 }
 
 // appendTail adds e to the bounded recent-events tail, trimming the oldest so the
@@ -352,6 +456,16 @@ func (j *Journal) copySummaryLocked() Summary {
 	if j.summary.Verdict != nil {
 		v := *j.summary.Verdict
 		out.Verdict = &v
+	}
+	if j.summary.PairDiff != nil {
+		pd := *j.summary.PairDiff
+		out.PairDiff = &pd
+	}
+	if len(j.summary.PendingPairs) > 0 {
+		out.PendingPairs = make(map[int]PendingHalf, len(j.summary.PendingPairs))
+		for k, v := range j.summary.PendingPairs {
+			out.PendingPairs[k] = v
+		}
 	}
 	return out
 }
