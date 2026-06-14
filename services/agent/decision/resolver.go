@@ -167,12 +167,26 @@ func NewResolver(chain []Backend, interval time.Duration) *Resolver {
 // localhost (#739). Each tier probes a TCP endpoint; in dev every endpoint is
 // unreachable, so the chain degrades to rules — which is exactly the standalone,
 // no-Jetson-no-cloud behavior #741 requires. main.go reads the endpoint addresses
-// from env (sensible defaults documented on the Endpoints fields).
+// from env (sensible defaults documented on the Endpoints fields). Every tier's
+// Infer returns the not-implemented sentinel (no real client) — use
+// DefaultChainWithInfer to wire a real OpenAI-compatible backend (#1048).
 func DefaultChain(eps Endpoints) []Backend {
+	return DefaultChainWithInfer(eps, nil)
+}
+
+// DefaultChainWithInfer is DefaultChain with a real inference delegate injected into
+// EVERY tier (#1048). When inferFn is non-nil (AGENT_INFERENCE_BACKEND=openai,
+// main.go passing the shared inference.OpenAIBackend.Infer), a resolved+reachable
+// tier calls the real OpenAI-compatible client instead of returning the sentinel —
+// the SAME client instance the proposer uses, so one backend feeds both seams. A
+// nil inferFn yields the exact DefaultChain behavior (sentinel error → rules), so
+// the stub default is unchanged. Availability is still the per-tier TCP dial; the
+// delegate only changes what a reachable tier returns from Infer.
+func DefaultChainWithInfer(eps Endpoints, inferFn func(ctx context.Context, prompt llm.Prompt) (string, error)) []Backend {
 	return []Backend{
-		newEndpointBackend(TierCloud, eps.Cloud),
-		newEndpointBackend(TierGemma, eps.Jetson),
-		newEndpointBackend(TierPhi, eps.Localhost),
+		newEndpointBackendWithInfer(TierCloud, eps.Cloud, inferFn),
+		newEndpointBackendWithInfer(TierGemma, eps.Jetson, inferFn),
+		newEndpointBackendWithInfer(TierPhi, eps.Localhost, inferFn),
 	}
 }
 

@@ -696,6 +696,17 @@ services:
       # the remediation_allowed flag (rollout flagd domain, read from rollout.json).
       # After a rollback, re-expansion is suppressed for the cooldown below.
       - AGENT_ROLLOUT_COOLDOWN_SECONDS=${AGENT_ROLLOUT_COOLDOWN_SECONDS:-30}
+      # ---- Inference backend (#1048, per the #1046 design) ----
+      # The real LLM inference seam for BOTH the proposer and the decision loop.
+      # ONE OpenAI-compatible HTTP client feeds both. Default = stub → no behavior
+      # change (the proposer proposes nothing, the decision chain degrades to rules),
+      # so a plain `up` stays inert. Set AGENT_INFERENCE_BACKEND=openai to point it at
+      # the HOST machine's Ollama (host.docker.internal:11434 via extra_hosts below,
+      # no key needed) or at a gateway/cloud endpoint (set the base URL + API key).
+      - AGENT_INFERENCE_BACKEND=${AGENT_INFERENCE_BACKEND:-stub}
+      - AGENT_INFERENCE_BASE_URL=${AGENT_INFERENCE_BASE_URL:-http://host.docker.internal:11434/v1}
+      - AGENT_INFERENCE_MODEL=${AGENT_INFERENCE_MODEL:-phi4-mini}
+      - AGENT_INFERENCE_API_KEY=${AGENT_INFERENCE_API_KEY:-}
       # Experiment cohort loop (#982/#991). Opt-in master switch + the optional
       # env-seeded single experiment. Declared here (with default-off / empty
       # defaults) so a host `export` or `.env` value reaches the container — a
@@ -740,6 +751,12 @@ services:
     depends_on:
       flagd:
         condition: service_started
+    # Reach the HOST machine's Ollama (#1048): host.docker.internal resolves to the
+    # host gateway so AGENT_INFERENCE_BASE_URL=http://host.docker.internal:11434/v1
+    # hits the host's Ollama from inside the container. Harmless when inference is
+    # stubbed (the default) — nothing dials it.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - joustmania
     restart: unless-stopped

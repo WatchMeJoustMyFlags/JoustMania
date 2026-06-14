@@ -56,6 +56,14 @@ type endpointBackend struct {
 	// so a future test of the real backend (not the resolver) could stub it, mirroring
 	// the Backend interface's own test seam. Nil means "use the default dialer".
 	dial func(ctx context.Context, addr string) (net.Conn, error)
+	// infer is the INJECTED real inference call (#1048). When non-nil, Infer
+	// delegates to it (the shared inference.OpenAIBackend client, OpenAI-compatible
+	// over HTTP) instead of returning errInferNotImplemented. main.go injects the
+	// SAME client instance into every chain tier when AGENT_INFERENCE_BACKEND=openai,
+	// so a resolved+reachable tier produces real model text; nil (the default,
+	// AGENT_INFERENCE_BACKEND=stub) keeps the honest not-implemented sentinel and the
+	// chain degrades to rules exactly as before — no behavior change.
+	infer func(ctx context.Context, prompt llm.Prompt) (string, error)
 }
 
 // newEndpointBackend builds a production probe for one tier. An empty addr yields a
@@ -63,6 +71,15 @@ type endpointBackend struct {
 // state for an unconfigured tier (no cloud credentials, no Jetson on the LAN).
 func newEndpointBackend(name, addr string) *endpointBackend {
 	return &endpointBackend{name: name, addr: addr}
+}
+
+// newEndpointBackendWithInfer builds a production probe whose Infer delegates to the
+// supplied inference function (#1048). It is the real-backend variant of
+// newEndpointBackend: Available is still the TCP dial, but a resolved+reachable tier
+// now calls a real OpenAI-compatible client instead of returning the sentinel. A nil
+// inferFn is tolerated (Infer then falls back to the sentinel error).
+func newEndpointBackendWithInfer(name, addr string, inferFn func(ctx context.Context, prompt llm.Prompt) (string, error)) *endpointBackend {
+	return &endpointBackend{name: name, addr: addr, infer: inferFn}
 }
 
 func (e *endpointBackend) Name() string { return e.name }
@@ -103,19 +120,21 @@ func (e *endpointBackend) Available(ctx context.Context) bool {
 // errors.Is it.
 var errInferNotImplemented = errors.New("decision: endpoint inference not implemented (blocked on #738 Jetson / #742 cloud)")
 
-// Infer is the PRODUCTION inference call seam (#739) — and is deliberately
-// NOT-YET-IMPLEMENTED. The real model call (Ollama /api/chat for the Jetson
-// gemma3:4b and localhost phi4-mini tiers, the cloud chat API for claude/copilot)
-// is OUT OF SCOPE here: the Jetson backend is hardware-blocked (#738) and the
-// cloud backend is credential-blocked (#742). Returning an error keeps the system
-// HONEST and SAFE: a tier whose endpoint TCP-dials open (so Available reports it
-// reachable, and inference.used names it) but has no client yet cannot fabricate
-// a Decision — llm_decide catches this error and falls back to rules with
-// FallbackUnparseable-class attribution. #738/#742 replace this body with: build
-// the provider request from `prompt` (System+User), POST to e.addr with a bounded
-// ctx, and return the model's raw response string for decode.go to parse. The
-// signature and the parse pipeline are already in place, so those issues only fill
-// in the transport.
-func (e *endpointBackend) Infer(_ context.Context, _ llm.Prompt) (string, error) {
+// Infer is the PRODUCTION inference call seam (#739/#1048). When an inference
+// delegate was injected (newEndpointBackendWithInfer, AGENT_INFERENCE_BACKEND=openai),
+// it forwards prompt to the real OpenAI-compatible client (#1048,
+// inference.OpenAIBackend) and returns the model's raw response for decode.go to
+// parse defensively. When NO delegate is injected (the default stub backend) it
+// returns errInferNotImplemented — the honest, safe state #738 (Jetson) / #742
+// (cloud) historically left it in: a tier whose endpoint TCP-dials open (so
+// Available reports it reachable, and inference.used names it) but has no client
+// cannot fabricate a Decision, so llm_decide falls back to rules. Either way a
+// delegate error (unreachable / non-2xx / timeout / unparseable) is just another
+// Infer error and degrades to rules SAFELY — the call site already treats every
+// error identically.
+func (e *endpointBackend) Infer(ctx context.Context, prompt llm.Prompt) (string, error) {
+	if e.infer != nil {
+		return e.infer(ctx, prompt)
+	}
 	return "", errInferNotImplemented
 }
