@@ -68,8 +68,19 @@ services:
   # menu-driven flag write lands in the file flagd reads, not a stale base copy.
   # !override replaces the base [./services/flagd:/etc/flagd] mount.
   menu:
+    # The menu persists admin-mode settings (sensitivity, num_teams, game
+    # selection) by writing game.json/user.json in the bind-mounted CI flag dir.
+    # The image runs as nonroot (uid 65532) but the host flag files are owned by
+    # the checkout user, so the nonroot menu cannot write them. Run as root in CI
+    # so the admin write path is exercisable end-to-end — same pattern other
+    # bind-mount writers use (jaeger/grafana run as user "0" in the base compose).
+    user: "0"
     volumes: !override
       - ./services/flagd/ci:/etc/flagd
+    environment:
+      # Shorten the admin trigger-hold force-start window for integration tests
+      # so they don't have to sleep the full 3s real-play hold (#823).
+      - ADMIN_FORCE_START_SECONDS=0.6
 
   # Pairing Daemon - Requires hardware, excluded from CI
   pairing-daemon:

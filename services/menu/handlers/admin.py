@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from typing import TYPE_CHECKING, Protocol
 
@@ -130,7 +131,10 @@ class AdminModeHandler:
         # Trigger hold tracking for force start
         self._trigger_press_time: float | None = None
         self._trigger_hold_task: asyncio.Task | None = None
-        self._force_start_threshold = 3.0  # seconds
+        # Hold duration (seconds) before a trigger-hold force-starts the game.
+        # Defaults to 3s for real play; CI overrides via ADMIN_FORCE_START_SECONDS
+        # to a short hold so integration tests don't sleep for the full duration.
+        self._force_start_threshold = float(os.environ.get("ADMIN_FORCE_START_SECONDS", "3.0"))
 
     # ControllerHandler protocol methods
 
