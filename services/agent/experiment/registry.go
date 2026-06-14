@@ -1467,6 +1467,17 @@ func (r *Registry) Reconfigure(effectiveConcurrency, maxGames, minN, minPairs in
 		r.maxGames = maxGames // 0 ⇒ disable the games budget (other guards still terminate).
 	}
 	if minN > 0 {
+		// LIVE minN raise (#1051): updating r.minN here applies the new floor to FUTURE
+		// Declare calls (which clamp target_n up to r.minN at declare time) and to the
+		// per-experiment "give up" guard (shouldGiveUp computes target = max(target_n,
+		// r.minN) on every read), but it does NOT retro-clamp the PERSISTED target_n of an
+		// already-declared experiment. That is HARMLESS and deliberately left
+		// un-retro-clamped: the verdict's own minN — mirrored below via SetThresholds — is
+		// the real conclusiveness backstop (an experiment can never reach a conclusive
+		// verdict below it regardless of its stored target_n), and the give-up guard already
+		// lifts the lifecycle "target reached" point to max(target_n, r.minN) on every read.
+		// Rewriting the durable intent mid-flight would disturb in-flight game accounting for
+		// no behavioral gain, so we don't.
 		r.minN = minN
 	}
 	r.mu.Unlock()

@@ -804,8 +804,8 @@ func newRegistryConcurrency1(t *testing.T, spawner experiment.ShadowSpawner, res
 // startup-gate inversion). The loop is ALWAYS built now (so an off→on flag flip can
 // start it at runtime), but with the opt-in OFF (the default, env unset) it
 // SELF-GATES to a no-op: experiments_enabled defaults to false, so allocateIfEnabled
-// runs no rehydrate, no seed, no allocate — byte-identical to the pre-#1044
-// nil-loop behavior. The env value is only the BOOTSTRAP DEFAULT.
+// runs no rehydrate, no seed, no allocate — behaviorally inert (the only residual
+// work is the no-op tick). The env value is only the BOOTSTRAP DEFAULT.
 func TestBuildExperimentLoop_DisabledByDefault(t *testing.T) {
 	// Ensure the opt-in env is unset (the default).
 	t.Setenv(envExperimentsEnabled, "")

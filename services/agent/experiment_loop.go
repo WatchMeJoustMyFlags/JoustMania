@@ -24,15 +24,18 @@ import (
 // shadow games into its arms, fold their conclusions into the journal, reach a
 // verdict, and (gated) route a promote verdict to the #961 Promoter.
 //
-// OVERRIDING SAFETY (#991): the ENTIRE loop is opt-in behind AGENT_EXPERIMENTS_ENABLED
-// (default false) AND the agent kill-switch (agent.json `enabled`). When disabled
-// — the default — NOTHING here runs: no Registry is constructed, no shadow game is
-// spawned, no targeting is written, no promotion is attempted. The agent behaves
-// EXACTLY as it does today. buildExperimentLoop returns nil in that case and run()
-// never starts the loop. The real-DEFAULT promotion path stays behind ALL of
-// #961's existing gates (AGENT_CODE_IMPROVEMENT_ENABLED + token + kill-switch) —
-// this file only ROUTES a concluded experiment to that already-gated Promoter; it
-// adds no new privilege.
+// OVERRIDING SAFETY (#991/#1044): the ENTIRE loop is gated behind the LIVE
+// experiments_enabled flag (env AGENT_EXPERIMENTS_ENABLED is the bootstrap default,
+// false) AND the agent kill-switch (agent.json `enabled`). Since #1044 the loop is
+// ALWAYS built + run (so an off→on flag flip starts it with no restart), but while
+// disabled — the default — it is BEHAVIORALLY INERT: no shadow game is spawned, no
+// targeting is written, no promotion is attempted, the rehydrate+seed bootstrap is
+// deferred (startedOnce), and AllocateAndSpawn is skipped. The only residual work is
+// the registry/spawner/gate structs and one ~30s no-op tick (a no-op AbortAll + a few
+// live flag reads) — observably inert, though not literally zero goroutines. The
+// real-DEFAULT promotion path stays behind ALL of #961's existing gates
+// (AGENT_CODE_IMPROVEMENT_ENABLED + token + kill-switch) — this file only ROUTES a
+// concluded experiment to that already-gated Promoter; it adds no new privilege.
 
 const (
 	// envExperimentsEnabled is the distinct opt-in for the experiment LOOP itself
@@ -182,10 +185,12 @@ type experimentLoop struct {
 // aggregator folds. The default (defaultGameFitness) reuses the M7 fitness engine.
 type gameFitnessFunc func(gc gamecontext.GameContext, objective string) float64
 
-// buildExperimentLoop constructs the experiment loop with the REAL seams, or
-// returns nil when the opt-in (AGENT_EXPERIMENTS_ENABLED) is off — the default,
-// byte-unchanged behavior. It NEVER constructs the Registry or any seam when
-// disabled, so the disabled agent has zero experiment surface.
+// buildExperimentLoop constructs the experiment loop with the REAL seams. Since the
+// #1044 startup-gate inversion the loop is ALWAYS built (no nil return) so an off→on
+// flip of the live experiments_enabled flag starts it with no restart. While the flag
+// is off — the default — the loop is BEHAVIORALLY INERT (it self-gates each tick: no
+// rehydrate, no seed, no spawn, no targeting write, no promotion), so the disabled
+// agent's experiment surface is observably dormant.
 //
 // Seams wired (the #991 assembly):
 //   - TargetingWriter → experiment.NewGateTargetingWriter(gate, writer): Apply via
@@ -205,9 +210,9 @@ func buildExperimentLoop(
 	// an off→on flip at runtime starts it with no restart. It SELF-GATES each tick on
 	// the live flag (allocateIfEnabled / run): while disabled it does nothing —
 	// rehydrate+seed are deferred (startedOnce) and AllocateAndSpawn is skipped — so
-	// the disabled agent's behavior is byte-identical to the pre-#1044 nil-loop case.
-	// The env AGENT_EXPERIMENTS_ENABLED becomes the BOOTSTRAP DEFAULT the flag falls
-	// back to.
+	// the disabled agent is behaviorally inert (it runs one no-op tick goroutine but
+	// spawns/writes/promotes nothing). The env AGENT_EXPERIMENTS_ENABLED becomes the
+	// BOOTSTRAP DEFAULT the flag falls back to.
 	expDefaults := experimentDefaultsFromEnv()
 
 	logger.Info("Experiment cohort loop constructed (#991/#1044) — gated LIVE by agent.json experiments_enabled",
@@ -292,9 +297,9 @@ func promotionConfigResolver(f *flags.Flags) promote.ConfigResolver {
 // live ExperimentConfig and SELF-GATES:
 //   - DISABLED (experiments_enabled false, the default) ⇒ AbortAll every live
 //     experiment and do nothing else. No rehydrate, no seed, no allocate. This is
-//     byte-identical to the pre-#1044 "loop was never built" behavior, and it
-//     subsumes the kill-switch teardown (a disabled agent and a disabled-experiments
-//     flag both tear the experiment surface down).
+//     behaviorally inert (the only residual work is one no-op tick), and it subsumes
+//     the kill-switch teardown (a disabled agent and a disabled-experiments flag both
+//     tear the experiment surface down).
 //   - ENABLED ⇒ on the FIRST enabled tick run the one-time rehydrate (#831 durable
 //     resume) + seed declaration (startedOnce); then apply the live caps
 //     (Reconfigure) and refill shadow capacity (allocate + dynamic declare). An
@@ -522,6 +527,15 @@ func (e *experimentLoop) declareDynamicIfEnabled(ctx context.Context, cfg flags.
 // callers of allocateIfEnabled run it exactly once. A rehydrate error is logged and
 // the bootstrap is STILL marked done (we do not want to re-rehydrate every tick); a
 // seed declare error is logged and tolerated (the loop proceeds without the seed).
+//
+// ONE-SHOT ENV SEED (#1051): startedOnce latches for the lifetime of the loop, so on
+// an off→on→off→on cycle the env seed is declared EXACTLY ONCE — on the first enable
+// — and is NOT re-declared on any later re-enable. This is intentional: the env seed
+// is a one-shot STARTUP trigger, not a per-enable action. After a teardown
+// (on→off AbortAll) the seed experiment is terminal, so a re-enable resumes work via
+// rehydrate (any non-terminal experiment in the durable journal) + the dynamic
+// declarer (if experiment_dynamic_enabled is on) — never by re-running the env seed.
+// (TestExperimentsEnabled_OffOnOff pins this re-enable behavior.)
 func (e *experimentLoop) ensureStarted(ctx context.Context) {
 	e.startMu.Lock()
 	defer e.startMu.Unlock()

@@ -81,7 +81,9 @@ func loopForConfigTest(t *testing.T, maxShadow int) (*experimentLoop, *recording
 // TestExperimentsEnabled_OffOnOff is the startup-gate-inversion AC (#1044): the loop
 // is always running, but a runtime off->on flip STARTS it (rehydrate+seed+allocate)
 // and an on->off flip STOPS it cleanly (AbortAll strips targeting + frees capacity),
-// all with no restart and no in-flight corruption.
+// all with no restart and no in-flight corruption. The final off->on->off->on cycle
+// pins the #1051 one-shot-env-seed semantic: the env seed is declared EXACTLY ONCE
+// (on the first enable) and is NOT re-declared on a later re-enable.
 func TestExperimentsEnabled_OffOnOff(t *testing.T) {
 	loop, spawner, lc := loopForConfigTest(t, 8)
 	ctx := context.Background()
@@ -120,6 +122,28 @@ func TestExperimentsEnabled_OffOnOff(t *testing.T) {
 	}
 	if n := loop.registry.TotalInFlight(); n != 0 {
 		t.Fatalf("on->off flip left in-flight shadow slots: %d, want 0 (no leaked capacity)", n)
+	}
+	spawner.drain() // discard spawns from the first enable; we measure only the re-enable below.
+
+	// Flip ON again — the off->on->off->on RE-ENABLE (#1051). startedOnce latched on
+	// the FIRST enable, so the one-shot env seed is NOT re-declared here: the seed
+	// experiment is now terminal (aborted by the on->off teardown) and ensureStarted
+	// short-circuits. A re-enable resumes via rehydrate (no non-terminal experiment
+	// survives the abort) + the dynamic declarer (unwired in this test) — never by
+	// re-running the env seed. So no fresh seed experiment appears and nothing spawns.
+	if !loop.startedOnce {
+		t.Fatal("startedOnce must stay latched across off->on->off->on (one-shot bootstrap)")
+	}
+	lc.set(flags.ExperimentConfig{Enabled: true, ShadowEffectiveConcurrency: 4})
+	loop.allocateIfEnabled(ctx)
+	if !loop.startedOnce {
+		t.Fatal("re-enable cleared startedOnce; the env-seed bootstrap must remain one-shot")
+	}
+	if got := loop.registry.LiveCount(); got != 0 {
+		t.Fatalf("re-enable RE-DECLARED the one-shot env seed: LiveCount=%d, want 0 (seed is a startup-only trigger; #1051)", got)
+	}
+	if recs := spawner.drain(); len(recs) != 0 {
+		t.Fatalf("re-enable spawned shadow games off the one-shot seed: %d, want 0 (#1051)", len(recs))
 	}
 }
 
