@@ -66,6 +66,31 @@ const (
 	ObjectiveChaos      = "chaos"
 )
 
+// experimentableObjectives is the set of objectives that have a fitness function
+// (EvaluateFitness can score them). chaos is deliberately absent: it is
+// unpredictability by definition and has no success/degradation target to
+// measure (see fitness.go header), so an experiment declared on it could only
+// ever fold the worst-case 0 and run to inconclusive. Declare uses
+// IsExperimentable to fail-fast such an experiment rather than waste its budget.
+var experimentableObjectives = map[string]struct{}{
+	ObjectiveEndurance:  {},
+	ObjectiveBalanced:   {},
+	ObjectiveAccelerate: {},
+}
+
+// IsExperimentable reports whether an objective has a fitness function and can
+// therefore yield a non-trivial fitness sample for an experiment. The empty
+// objective is treated as experimentable: defaultGameFitness folds an empty
+// objective as balanced, which IS experimentable. chaos is the sole non-
+// experimentable objective today.
+func IsExperimentable(objective string) bool {
+	if objective == "" {
+		return true
+	}
+	_, ok := experimentableObjectives[objective]
+	return ok
+}
+
 // DefaultObjectiveWeights is the engine fallback when no objectives source is
 // wired or the source provides no value (#726 acceptance criterion). The flagd
 // flag's own default (balanced_focused) surfaces once #727 wires the flag.

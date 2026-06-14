@@ -3,6 +3,7 @@ package experiment
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -170,7 +171,7 @@ func sampleIntent() Intent {
 		Hypothesis:        "raising grace reduces frustration deaths",
 		FlagKey:           "death_grace_period_seconds",
 		ExperimentalValue: 0.5,
-		Objective:         "engagement_balanced",
+		Objective:         "balanced", // an experimentable objective (#1015): Declare rejects non-experimentable ones.
 		TargetNPerArm:     2,
 	}
 }
@@ -206,6 +207,36 @@ func TestDeclarePersistsIntentAndIsProposed(t *testing.T) {
 	}
 	if got := in.Arms; len(got) != 2 || got[0] != ArmExperimental || got[1] != ArmControl {
 		t.Fatalf("arms = %v, want [experimental control]", got)
+	}
+}
+
+// Declare fails fast on a non-experimentable objective (#1015): chaos has no
+// fitness function, so an experiment on it could only ever fold the worst-case 0
+// and run to inconclusive (wasting its whole #1001 budget). It must be rejected at
+// declaration — never minted, never persisted.
+func TestDeclareRejectsNonExperimentableObjective(t *testing.T) {
+	r := newTestRegistry(t, RegistryConfig{Root: t.TempDir()})
+
+	in := sampleIntent()
+	in.Objective = "chaos"
+	id, err := r.Declare(in)
+	if err == nil {
+		t.Fatalf("Declare(chaos) must fail, got id %q", id)
+	}
+	if id != "" {
+		t.Fatalf("rejected Declare must mint no id, got %q", id)
+	}
+	if !strings.Contains(err.Error(), "not experimentable") {
+		t.Fatalf("error %q must explain chaos is not experimentable", err)
+	}
+
+	// The experimentable objectives still declare cleanly.
+	for _, obj := range []string{"endurance", "balanced", "accelerate"} {
+		in := sampleIntent()
+		in.Objective = obj
+		if _, err := r.Declare(in); err != nil {
+			t.Fatalf("Declare(%s) must succeed, got %v", obj, err)
+		}
 	}
 }
 

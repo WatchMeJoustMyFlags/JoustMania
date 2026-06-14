@@ -22,9 +22,9 @@ const (
 	metricDeathsTotal    = "game_player_deaths_total"    // live
 	metricPeakAccel      = "game_player_peak_accel"      // live (game_id carrier)
 
-	metricMovementVariance = "game_player_movement_variance" // proposed (#722 §7)
+	metricMovementVariance = "game_player_movement_variance" // live (coordinator emits at ~10Hz, #730/#1015)
 	metricBatteryPct       = "controller_battery_pct"        // proposed
-	metricSkillLevel       = "game_player_skill_level"       // proposed
+	metricSkillLevel       = "game_player_skill_level"       // live (coordinator emits at ~10Hz, #730/#1015)
 	metricEliminationOrder = "game_player_elimination_order" // proposed
 )
 

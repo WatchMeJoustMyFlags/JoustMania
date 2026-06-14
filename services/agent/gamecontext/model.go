@@ -19,8 +19,8 @@ type PlayerSignals struct {
 	MovementIntensity *float64
 
 	// MovementVariance is the variance of recent movement.
-	// Source: game_player_movement_variance{serial} (proposed by #722 research,
-	// docs/research/722-intervention-surface.md §7); nil until producers ship it.
+	// Source: game_player_movement_variance{serial} (live; the coordinator emits
+	// it per-player at ~10Hz, #730 / #1015). nil until the first reading arrives.
 	MovementVariance *float64
 
 	// BatteryPct is the controller battery percentage (0-100).
@@ -29,7 +29,8 @@ type PlayerSignals struct {
 	BatteryPct *float64
 
 	// SkillLevel is a normalized 0.0-1.0 skill estimate.
-	// Preferred source: game_player_skill_level{serial} (proposed).
+	// Preferred source: game_player_skill_level{serial} (live; the coordinator
+	// emits it per-player at ~10Hz, #730 / #1015).
 	// Fallback proxy: game_player_playstyle{serial} (0-3) / 3.
 	SkillLevel *float64
 

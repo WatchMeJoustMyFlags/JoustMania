@@ -386,7 +386,7 @@ func TestExperimentLoop_OnGameTerminal_ReleasesErroredGame(t *testing.T) {
 
 	id, err := loop.registry.Declare(experiment.Intent{
 		Hypothesis: "h", FlagKey: "death_grace_period_seconds",
-		ExperimentalValue: 0.5, Objective: "engagement_balanced", TargetNPerArm: 3,
+		ExperimentalValue: 0.5, Objective: "balanced", TargetNPerArm: 3,
 	})
 	if err != nil {
 		t.Fatalf("Declare: %v", err)

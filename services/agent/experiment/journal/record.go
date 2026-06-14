@@ -62,7 +62,7 @@ type Intent struct {
 	// ExperimentalValue is the candidate value the experimental arm resolves. Any
 	// JSON scalar/object; stored verbatim for the audit trail and later attribution.
 	ExperimentalValue any `json:"experimental_value"`
-	// Objective is the fitness objective being optimized (e.g. "engagement_balanced").
+	// Objective is the fitness objective being optimized (one of "endurance"/"balanced"/"accelerate"; chaos is rejected at Declare, #1015).
 	Objective string `json:"objective"`
 	// TargetNPerArm is the minimum games per arm before a verdict can be conclusive.
 	TargetNPerArm int `json:"target_n_per_arm"`

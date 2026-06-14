@@ -341,6 +341,7 @@ func (e *experimentLoop) onGameEnd(gc gamecontext.GameContext) {
 	// own start→end phase timeline so a concluded shadow game carries a meaningful,
 	// objective-relevant duration even when the end-only gauge has not arrived.
 	gc = withEffectiveDuration(gc)
+	gc = withEffectiveBalancedSignals(gc)
 	fitness := e.fitness(gc, objective)
 	duration := 0.0
 	if gc.Session.DurationSeconds != nil {
@@ -571,6 +572,58 @@ func timelinePhaseDuration(timeline []gamecontext.TimelineEvent) (float64, bool)
 		return 0, false
 	}
 	return d, true
+}
+
+// withEffectiveBalancedSignals is the balanced-objective analog of
+// withEffectiveDuration (#1015, following the #1005/#997 discipline): it makes the
+// balanced fitness fold computable at conclusion from the per-player signals the
+// game already produced, without fabricating any number.
+//
+// The coordinator emits per-player game_player_skill_level /
+// game_player_movement_variance / game_player_accel_magnitude at ~10Hz during the
+// game; those readings ARE retained in the game-end snapshot's Players map (the
+// Store never wipes players on game_active=0). The balanced fold's two sub-checks
+// are skill-gap (reads c.Players directly) and spike-survival. The spike-survival
+// sub-check scores only players marked Active — but at conclusion EVERY player has
+// been eliminated (game_player_alive=0), so no player is Active and spike-survival
+// is skipped, costing balanced half its signal (a winner-decided game can lose
+// skill-gap too, leaving the fold to fold 0). The active=true gate is the right
+// thing DURING a live game (only current participants matter) but is exactly wrong
+// at conclusion, where the participant set is "everyone who played".
+//
+// So at conclusion only — when the session has ended (GameActive is false) and no
+// player is currently Active — we mark every player that still carries movement
+// signals as Active, reconstructing the at-end participant set so spike-survival
+// reads their real last-known variance/intensity. This is a no-op while any player
+// is still Active (the live gate stays authoritative) and adds nothing for a player
+// without the signals (no fabrication). It never invents values; it only re-admits
+// players whose own real readings already sit on the snapshot.
+func withEffectiveBalancedSignals(gc gamecontext.GameContext) gamecontext.GameContext {
+	if len(gc.Players) == 0 {
+		return gc
+	}
+	// Authoritative live state wins: if the game still reports active, or any player
+	// is still Active, the live participant set is correct — do not touch it.
+	if gc.Session.GameActive != nil && *gc.Session.GameActive {
+		return gc
+	}
+	for _, p := range gc.Players {
+		if p != nil && p.Active != nil && *p.Active {
+			return gc
+		}
+	}
+	// Concluded game with no active players: re-admit those carrying movement
+	// signals so the spike-survival sub-check can fold their retained readings.
+	active := true
+	for _, p := range gc.Players {
+		if p == nil {
+			continue
+		}
+		if p.MovementVariance != nil && p.MovementIntensity != nil {
+			p.Active = &active
+		}
+	}
+	return gc
 }
 
 // experimentTick resolves the AllocateAndSpawn cadence from
