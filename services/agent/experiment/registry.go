@@ -1441,6 +1441,39 @@ func (r *Registry) Live() []string {
 	return r.liveIDsLocked()
 }
 
+// ActiveFlags returns the set of flag keys that have at least one LIVE
+// (non-terminal: PROPOSED or RUNNING) experiment. The dynamic declarer (#995)
+// uses it to avoid stacking a second concurrent experiment on a flag that is
+// already under test. A flag torn down (terminal) is not included — its targeting
+// branch is stripped, so it is free to experiment on again.
+func (r *Registry) ActiveFlags() map[string]struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]struct{}, len(r.entries))
+	for _, e := range r.entries {
+		if !e.status.IsTerminal() {
+			out[e.flagKey] = struct{}{}
+		}
+	}
+	return out
+}
+
+// LiveCount returns the number of LIVE (non-terminal) experiments the registry is
+// managing — PROPOSED + RUNNING + CONCLUDED/PROMOTING (anything not yet torn
+// down). The dynamic declarer (#995) uses it as the over-declaration backstop:
+// it stops declaring once the live set fills the concurrent-experiment budget.
+func (r *Registry) LiveCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, e := range r.entries {
+		if !e.status.IsTerminal() {
+			n++
+		}
+	}
+	return n
+}
+
 // CompactView returns the bounded journal view for an experiment (intent +
 // per-arm aggregates + recent tail) — the read surface the dashboard / LLM
 // consume. ok=false if unknown.
