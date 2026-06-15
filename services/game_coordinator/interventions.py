@@ -150,7 +150,7 @@ class InterventionSpec:
     payload_required: bool = True
 
 
-# Registry of all 10 intervention flags (§8). Ordered to keep diffs stable.
+# Registry of all intervention flags (§8). Ordered to keep diffs stable.
 # PRs C/D/E attach real handlers via register_handler(); they do NOT edit this
 # table. Adding a brand-new intervention appends one row here.
 INTERVENTION_SPECS: tuple[InterventionSpec, ...] = (
@@ -181,6 +181,21 @@ INTERVENTION_SPECS: tuple[InterventionSpec, ...] = (
         player_targeted=True,
         value_kind="float",
         # 1.0 is the neutral default; a value != 1.0 is an intervention.
+        none_value=1.0,
+    ),
+    InterventionSpec(
+        flag_key="player_handicap_factor",
+        type_id="set_player_handicap",
+        weight=WEIGHT_MEDIUM,
+        edge_triggered=False,
+        player_targeted=True,
+        value_kind="float",
+        # 1.0 is the neutral default; a value != 1.0 is an intervention (#1107,
+        # #1103 MVP action 1). MULTIPLICATIVE per-player handicap that COMPOSES
+        # with player_sensitivity_factor (>1 harder to die / "help", <1 easier /
+        # "rein in"), clamped [0.5, 2.0] in base.py. SHADOW-game-only initially:
+        # the agent's interventions_allowed allow-list (the load-bearing gate)
+        # only includes this type in the new `shadow_experimental` variant.
         none_value=1.0,
     ),
     InterventionSpec(

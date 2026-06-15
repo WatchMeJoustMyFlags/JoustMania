@@ -274,6 +274,73 @@ class TestComputeEffectiveThresholds:
         assert warn_above == pytest.approx(warn_at_max, abs=1e-9)
         assert death_above == pytest.approx(death_at_max, abs=1e-9)
 
+    # --- #1107: per-player MULTIPLICATIVE handicap_factor ---------------- #
+
+    def test_handicap_neutral_is_noop(self, game):
+        """handicap_factor=1.0 (the default) leaves thresholds unchanged."""
+        from lib.types import Sensitivity
+
+        game.sensitivity = Sensitivity.MEDIUM
+        game.music_speed = SLOW_MUSIC_SPEED
+        base = Player(serial="test", sensitivity_factor=1.0, handicap_factor=1.0)
+        warn_b, death_b = game._compute_effective_thresholds(base)
+        # Default constructed player has handicap_factor 1.0 too.
+        plain = Player(serial="test", sensitivity_factor=1.0)
+        warn_p, death_p = game._compute_effective_thresholds(plain)
+        assert warn_b == pytest.approx(warn_p) and death_b == pytest.approx(death_p)
+
+    def test_handicap_above_one_raises_threshold(self, game):
+        """handicap_factor > 1 MULTIPLIES the threshold up (harder to die / help)."""
+        from lib.types import Sensitivity
+
+        game.sensitivity = Sensitivity.MEDIUM
+        game.music_speed = SLOW_MUSIC_SPEED
+        neutral = Player(serial="t", sensitivity_factor=1.0, handicap_factor=1.0)
+        helped = Player(serial="t", sensitivity_factor=1.0, handicap_factor=1.5)
+        warn_n, death_n = game._compute_effective_thresholds(neutral)
+        warn_h, death_h = game._compute_effective_thresholds(helped)
+        assert warn_h == pytest.approx(warn_n * 1.5)
+        assert death_h == pytest.approx(death_n * 1.5)
+
+    def test_handicap_below_one_lowers_threshold(self, game):
+        """handicap_factor < 1 lowers the threshold (easier to die / rein in)."""
+        from lib.types import Sensitivity
+
+        game.sensitivity = Sensitivity.MEDIUM
+        game.music_speed = SLOW_MUSIC_SPEED
+        neutral = Player(serial="t", sensitivity_factor=1.0, handicap_factor=1.0)
+        reined = Player(serial="t", sensitivity_factor=1.0, handicap_factor=0.5)
+        _, death_n = game._compute_effective_thresholds(neutral)
+        _, death_r = game._compute_effective_thresholds(reined)
+        assert death_r == pytest.approx(death_n * 0.5)
+
+    def test_handicap_clamped_to_band(self, game):
+        """handicap_factor is independently clamped to [0.5, 2.0]."""
+        from lib.types import Sensitivity
+
+        game.sensitivity = Sensitivity.MEDIUM
+        game.music_speed = SLOW_MUSIC_SPEED
+        above = Player(serial="t", sensitivity_factor=1.0, handicap_factor=5.0)
+        at_max = Player(serial="t", sensitivity_factor=1.0, handicap_factor=2.0)
+        below = Player(serial="t", sensitivity_factor=1.0, handicap_factor=0.1)
+        at_min = Player(serial="t", sensitivity_factor=1.0, handicap_factor=0.5)
+        assert game._compute_effective_thresholds(above) == pytest.approx(game._compute_effective_thresholds(at_max))
+        assert game._compute_effective_thresholds(below) == pytest.approx(game._compute_effective_thresholds(at_min))
+
+    def test_handicap_composes_multiplicatively_with_sensitivity(self, game):
+        """handicap and sensitivity are SEPARATE knobs that compose: a 2.0
+        sensitivity (halves) and a 2.0 handicap (doubles) net to neutral."""
+        from lib.types import Sensitivity
+
+        game.sensitivity = Sensitivity.MEDIUM
+        game.music_speed = SLOW_MUSIC_SPEED
+        neutral = Player(serial="t", sensitivity_factor=1.0, handicap_factor=1.0)
+        composed = Player(serial="t", sensitivity_factor=2.0, handicap_factor=2.0)
+        warn_n, death_n = game._compute_effective_thresholds(neutral)
+        warn_c, death_c = game._compute_effective_thresholds(composed)
+        assert warn_c == pytest.approx(warn_n)
+        assert death_c == pytest.approx(death_n)
+
 
 # ========================================================================
 # _process_controller_state (player name capture)

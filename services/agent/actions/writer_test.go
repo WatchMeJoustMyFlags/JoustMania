@@ -295,6 +295,46 @@ func TestGrantShieldTargeted(t *testing.T) {
 	}
 }
 
+// TestSetPlayerHandicapTargeted verifies the #1107 set_player_handicap writer
+// case emits the player_handicap_factor flag as a per-serial targeted state flag
+// (mirrors adjust_player_sensitivity), with the neutral "default" fall-through.
+func TestSetPlayerHandicapTargeted(t *testing.T) {
+	w, path := newTestWriter(t)
+	// >1 = "help" (harder to die); <1 = "rein in" (easier).
+	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionSetPlayerHandicap, TargetSerial: "AA", Value: "1.75"}); err != nil {
+		t.Fatalf("apply AA: %v", err)
+	}
+	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionSetPlayerHandicap, TargetSerial: "BB", Value: "0.6"}); err != nil {
+		t.Fatalf("apply BB: %v", err)
+	}
+
+	assertTargetingResolves(t, path, flagPlayerHandicapFactor, "AA", "agent_AA")
+	assertTargetingResolves(t, path, flagPlayerHandicapFactor, "BB", "agent_BB")
+	assertTargetingResolves(t, path, flagPlayerHandicapFactor, "ZZ", neutralDefault)
+
+	variants := readFlag(t, path, flagPlayerHandicapFactor)["variants"].(map[string]any)
+	if variants["agent_AA"].(float64) != 1.75 || variants["agent_BB"].(float64) != 0.6 {
+		t.Fatalf("variant values wrong: %v", variants)
+	}
+	assertStructurallyValid(t, path)
+}
+
+// TestSetPlayerHandicapDefaultValue verifies an empty Value falls back to the
+// writer's neutral-leaning default (within the [0.5,2.0] clamp band).
+func TestSetPlayerHandicapDefaultValue(t *testing.T) {
+	w, path := newTestWriter(t)
+	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionSetPlayerHandicap, TargetSerial: "AA"}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	v := readFlag(t, path, flagPlayerHandicapFactor)["variants"].(map[string]any)["agent_AA"].(float64)
+	if v != defaultPlayerHandicap {
+		t.Fatalf("default handicap value = %v, want %v", v, defaultPlayerHandicap)
+	}
+	if v < 0.5 || v > 2.0 {
+		t.Fatalf("default handicap %v outside clamp band [0.5,2.0]", v)
+	}
+}
+
 func TestTargetedRequiresSerial(t *testing.T) {
 	w, _ := newTestWriter(t)
 	err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionAdjustPlayerSensitivity})

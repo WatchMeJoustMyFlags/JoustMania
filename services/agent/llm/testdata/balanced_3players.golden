@@ -34,6 +34,10 @@ GAME MODE — FFA (Free-For-All), last player standing:
     to be unfairly eliminated, and play audio cues / controller effects to steer
     the room. note: death_grace_period_seconds governs post-death respawn grace
     and has NO effect in FFA (no respawns) — it is not a lever here.
+  - set_player_handicap: per-player multiplier on that player's death threshold
+    (>1 = higher threshold = harder to eliminate / "help"; <1 = lower = easier /
+    "rein in"), clamped 0.5-2.0; COMPOSES WITH (does not replace) per-player
+    sensitivity, so use it for continuous rubber-banding toward fairness.
 
 OBJECTIVES (weights; higher = more important this session):
   balanced=0.7, chaos=0.1, endurance=0.1

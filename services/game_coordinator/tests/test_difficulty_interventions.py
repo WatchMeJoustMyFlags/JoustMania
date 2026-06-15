@@ -38,6 +38,7 @@ from services.game_coordinator.difficulty_handlers import (
     handle_global_sensitivity_override,
     handle_music_tempo_override,
     handle_music_tempo_override_revert,
+    handle_player_handicap_factor,
     handle_player_sensitivity_factor,
     register_difficulty_handlers,
 )
@@ -320,6 +321,81 @@ class TestPlayerSensitivityFactor:
         await handle_player_sensitivity_factor(make_ctx("player_sensitivity_factor", 1.5, None), mgr)
 
 
+class TestPlayerHandicapFactor:
+    """#1107 (#1103 MVP action 1): per-player MULTIPLICATIVE handicap that
+    COMPOSES with sensitivity_factor (>1 harder to die, <1 easier), clamped
+    [0.5, 2.0]."""
+
+    @pytest.mark.asyncio
+    async def test_targeted_player_changed_others_default(self):
+        game = make_game(num_players=3)
+        mgr, _ = make_manager(game=game)
+        mgr._interventions_client = TargetingFlagClient(default=1.0, per_serial={"p2": 1.5})
+
+        await handle_player_handicap_factor(make_ctx("player_handicap_factor", 1.5, game), mgr)
+
+        assert game.players["p1"].handicap_factor == pytest.approx(1.0)
+        assert game.players["p2"].handicap_factor == pytest.approx(1.5)
+        assert game.players["p3"].handicap_factor == pytest.approx(1.0)
+
+    @pytest.mark.asyncio
+    async def test_factor_is_clamped(self):
+        game = make_game(num_players=2)
+        mgr, _ = make_manager(game=game)
+        mgr._interventions_client = TargetingFlagClient(default=1.0, per_serial={"p1": 5.0, "p2": 0.1})
+
+        await handle_player_handicap_factor(make_ctx("player_handicap_factor", 0, game), mgr)
+
+        assert game.players["p1"].handicap_factor == pytest.approx(2.0)
+        assert game.players["p2"].handicap_factor == pytest.approx(0.5)
+
+    @pytest.mark.asyncio
+    async def test_help_raises_threshold_rein_in_lowers(self):
+        """>1 handicap = higher (harder) threshold; <1 = lower (easier)."""
+        game = make_game(num_players=2)
+        p1 = game.players["p1"]
+        _, death_neutral = game._compute_effective_thresholds(p1)
+
+        mgr, _ = make_manager(game=game)
+        mgr._interventions_client = TargetingFlagClient(default=1.0, per_serial={"p1": 1.5})
+        await handle_player_handicap_factor(make_ctx("player_handicap_factor", 1.5, game), mgr)
+        _, death_help = game._compute_effective_thresholds(p1)
+        assert death_help > death_neutral  # harder to die
+
+        mgr._interventions_client = TargetingFlagClient(default=1.0, per_serial={"p1": 0.5})
+        await handle_player_handicap_factor(make_ctx("player_handicap_factor", 0.5, game), mgr)
+        _, death_rein = game._compute_effective_thresholds(p1)
+        assert death_rein < death_neutral  # easier to die
+
+    @pytest.mark.asyncio
+    async def test_composes_with_sensitivity_not_replaces(self):
+        """Handicap and sensitivity are SEPARATE knobs that both apply."""
+        game = make_game(num_players=1)
+        p1 = game.players["p1"]
+        _, death_neutral = game._compute_effective_thresholds(p1)
+
+        # sensitivity_factor 2.0 alone halves the threshold (easier).
+        p1.sensitivity_factor = 2.0
+        _, death_sens_only = game._compute_effective_thresholds(p1)
+        assert death_sens_only == pytest.approx(death_neutral / 2.0)
+
+        # Add a 2.0 handicap (harder): it MULTIPLIES the already-divided threshold,
+        # composing back to the neutral threshold (0.5 * 2.0 == 1.0 net).
+        mgr, _ = make_manager(game=game)
+        mgr._interventions_client = TargetingFlagClient(default=1.0, per_serial={"p1": 2.0})
+        await handle_player_handicap_factor(make_ctx("player_handicap_factor", 2.0, game), mgr)
+        _, death_both = game._compute_effective_thresholds(p1)
+        assert p1.sensitivity_factor == pytest.approx(2.0)  # sensitivity untouched
+        assert p1.handicap_factor == pytest.approx(2.0)
+        assert death_both == pytest.approx(death_neutral)
+
+    @pytest.mark.asyncio
+    async def test_no_live_game_is_noop(self):
+        mgr, _ = make_manager(game=None)
+        mgr._interventions_client = TargetingFlagClient(default=1.0)
+        await handle_player_handicap_factor(make_ctx("player_handicap_factor", 1.5, None), mgr)
+
+
 # --------------------------------------------------------------------------- #
 # resolve_player_targets (reusable helper) — PR D consumes this
 # --------------------------------------------------------------------------- #
@@ -384,6 +460,8 @@ class TestRegistration:
         assert mgr._handlers["global_sensitivity_override"] is handle_global_sensitivity_override
         # player_sensitivity_factor is bound via closure (not identity-equal).
         assert callable(mgr._handlers["player_sensitivity_factor"])
+        # #1107: player_handicap_factor is also closure-bound (mirrors sensitivity).
+        assert callable(mgr._handlers["player_handicap_factor"])
         # #922: music_tempo_override needs an explicit revert handler (the manager
         # routes reverts to _revert_handlers, not back to the apply-handler).
         assert mgr._revert_handlers["music_tempo_override"] is handle_music_tempo_override_revert

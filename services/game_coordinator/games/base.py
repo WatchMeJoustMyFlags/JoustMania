@@ -384,6 +384,14 @@ class Player:
     # 1.0 = default, >1.0 = more sensitive (easier to die), <1.0 = less sensitive (harder to die)
     # Thresholds are divided by this factor: higher factor = lower threshold = easier to trigger
     sensitivity_factor: float = 1.0
+    # Per-player MULTIPLICATIVE handicap on the death/warning threshold (#1107,
+    # #1103 MVP action 1). A SEPARATE agent-only knob that COMPOSES with (does not
+    # replace) sensitivity_factor. Intent-framed and OPPOSITE in direction to
+    # sensitivity_factor: >1.0 raises the effective threshold (harder to die ->
+    # "help"); <1.0 lowers it (easier to die -> "rein in"). Clamped [0.5, 2.0] in
+    # _compute_effective_thresholds. 1.0 = neutral (no effect). Shadow-game-only
+    # initially via the interventions_allowed allow-list gate.
+    handicap_factor: float = 1.0
     # Per-player countdown span (created before countdown, ended after)
     _countdown_span: trace.Span | None = None
     # Health tracking (#571: controller health on player_lifecycle spans)
@@ -1342,7 +1350,18 @@ class BaseGameMode(ABC):
         # neutral 1.0/1.0 this preserves the prior behavior exactly.
         combined_factor = player.sensitivity_factor * self.global_difficulty_factor
         clamped_factor = max(0.5, min(2.0, combined_factor))
-        return base_warn / clamped_factor, base_death / clamped_factor
+        warn = base_warn / clamped_factor
+        death = base_death / clamped_factor
+
+        # Apply the per-player agent handicap (#1107) as a SEPARATE multiplicative
+        # knob that composes with — does not replace — the sensitivity/difficulty
+        # factor above. It is clamped independently to [0.5, 2.0] and MULTIPLIES
+        # the threshold (intent-framed, opposite direction to sensitivity_factor):
+        # >1.0 raises the threshold (harder to die / "help"); <1.0 lowers it
+        # (easier / "rein in"). At the neutral 1.0 this is a no-op, preserving the
+        # prior behavior exactly.
+        handicap = max(0.5, min(2.0, player.handicap_factor))
+        return warn * handicap, death * handicap
 
     def _record_player_analytics(
         self,

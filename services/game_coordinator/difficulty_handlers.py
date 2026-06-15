@@ -19,6 +19,12 @@ intervention flags against the InterventionManager registry built in PR A:
 - ``player_sensitivity_factor``   — N1: per-serial ``targeting_key`` evaluation
   sets each active player's ``sensitivity_factor`` (clamped 0.5-2.0); serials
   with no targeting match get the neutral default (1.0).
+- ``player_handicap_factor``      — #1107 (#1103 MVP action 1): per-serial
+  ``targeting_key`` evaluation sets each active player's ``handicap_factor``
+  (clamped 0.5-2.0), a SEPARATE multiplicative knob that COMPOSES with
+  ``sensitivity_factor`` (>1 harder to die / "help", <1 easier / "rein in").
+  SHADOW-game-only initially via the ``shadow_experimental`` interventions_allowed
+  variant; serials with no targeting match get the neutral default (1.0).
 
 Handler contract (PR A): handlers are ``async def handler(ctx) -> None``, called
 only after the enforcement chain passes (they do NOT re-check policy), and the
@@ -52,6 +58,13 @@ SENSITIVITY_FACTOR_DEFAULT = 1.0
 GLOBAL_DIFFICULTY_FACTOR_MIN = 0.5
 GLOBAL_DIFFICULTY_FACTOR_MAX = 2.0
 GLOBAL_DIFFICULTY_FACTOR_DEFAULT = 1.0
+
+# Per-player handicap factor clamp + neutral (#1107). Mirrors the independent
+# handicap clamp in base.py _compute_effective_thresholds. A SEPARATE knob that
+# composes multiplicatively with sensitivity_factor (>1 harder to die, <1 easier).
+HANDICAP_FACTOR_MIN = 0.5
+HANDICAP_FACTOR_MAX = 2.0
+HANDICAP_FACTOR_DEFAULT = 1.0
 
 # Profile names that mean "neutral / restore the game's init-resolved windows".
 _NEUTRAL_PACING_PROFILES = frozenset({"none", "default", ""})
@@ -161,6 +174,48 @@ async def handle_player_sensitivity_factor(ctx: InterventionContext, manager: In
         clamped = max(SENSITIVITY_FACTOR_MIN, min(SENSITIVITY_FACTOR_MAX, factor))
         player.sensitivity_factor = clamped
         logger.info(f"player_sensitivity_factor: {serial} -> {clamped:.2f}")
+
+
+async def handle_player_handicap_factor(ctx: InterventionContext, manager: InterventionManager) -> None:
+    """Apply per-player MULTIPLICATIVE handicap factors (#1107, #1103 MVP action 1).
+
+    Mirrors :func:`handle_player_sensitivity_factor`: resolves the flag once per
+    active serial via the manager's reusable ``resolve_player_targets`` helper
+    (per-serial ``targeting_key`` + per-game ``gameId`` composition), clamps each
+    resolved value to [0.5, 2.0], and writes it to the player's ``handicap_factor``
+    (consumed next frame by ``_compute_effective_thresholds`` where it MULTIPLIES
+    the threshold, composing with — not replacing — ``sensitivity_factor``).
+
+    Intent-framed and OPPOSITE in direction to sensitivity: >1.0 raises the
+    threshold (harder to die / "help"); <1.0 lowers it (easier / "rein in").
+    Serials with no targeting match resolve to the neutral default (1.0), so a
+    partial revert restores the reverted players to neutral on the next change.
+    Battery-gated serials are skipped by the helper. SHADOW-game-only initially:
+    rejected for real games by the interventions_allowed allow-list (the
+    load-bearing chain gate), so this handler only ever runs in shadow games.
+    """
+    game = ctx.game
+    if game is None:
+        logger.debug("player_handicap_factor: no live game, ignoring")
+        return
+
+    factors = manager.resolve_player_targets(
+        flag_key=ctx.spec.flag_key,
+        default=HANDICAP_FACTOR_DEFAULT,
+        game=game,
+        value_kind="float",
+        battery_gate=True,
+        game_id=ctx.game_id,
+    )
+
+    players = getattr(game, "players", {})
+    for serial, factor in factors.items():
+        player = players.get(serial)
+        if player is None:
+            continue
+        clamped = max(HANDICAP_FACTOR_MIN, min(HANDICAP_FACTOR_MAX, factor))
+        player.handicap_factor = clamped
+        logger.info(f"player_handicap_factor: {serial} -> {clamped:.2f}")
 
 
 async def handle_global_difficulty_factor(ctx: InterventionContext) -> None:
@@ -273,6 +328,16 @@ def register_difficulty_handlers(manager: InterventionManager) -> None:
     manager.register_handler(
         "player_sensitivity_factor",
         lambda ctx: handle_player_sensitivity_factor(ctx, manager),
+    )
+    # player_handicap_factor (#1107) mirrors player_sensitivity_factor exactly:
+    # it is a player-targeted state flag, so reverts are handled inside the apply
+    # handler (unmatched serials resolve to the neutral 1.0 default), NOT via
+    # _revert_handlers — the targeted-state evaluation path never consults that
+    # map (see InterventionManager._evaluate_targeted_state). Same closure-binds-
+    # the-manager shape as sensitivity above.
+    manager.register_handler(
+        "player_handicap_factor",
+        lambda ctx: handle_player_handicap_factor(ctx, manager),
     )
     # #766 F6: two new state-shaped levers. Both restore their baseline on revert.
     manager.register_handler("global_difficulty_factor", handle_global_difficulty_factor)

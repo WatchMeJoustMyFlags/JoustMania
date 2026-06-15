@@ -242,7 +242,11 @@ var modeFragments = map[string]string{
     sensitivity, grant a short per-player movement-grace shield to a player about
     to be unfairly eliminated, and play audio cues / controller effects to steer
     the room. note: death_grace_period_seconds governs post-death respawn grace
-    and has NO effect in FFA (no respawns) — it is not a lever here.`,
+    and has NO effect in FFA (no respawns) — it is not a lever here.
+  - set_player_handicap: per-player multiplier on that player's death threshold
+    (>1 = higher threshold = harder to eliminate / "help"; <1 = lower = easier /
+    "rein in"), clamped 0.5-2.0; COMPOSES WITH (does not replace) per-player
+    sensitivity, so use it for continuous rubber-banding toward fairness.`,
 	"zombie":     `GAME MODE — Zombie (role-based, respawn): humans vs zombies; a tagged human becomes a zombie and respawn/role-change exists, so eliminated players CAN re-enter as the other role. (Detailed levers not yet specified — reason conservatively within the physics above.)`,
 	"swapper":    `GAME MODE — Swapper (role/team-swap, respawn): players swap roles/teams during play and respawn exists, so an eliminated player is not necessarily permanently out. (Detailed levers not yet specified — reason conservatively within the physics above.)`,
 	"tournament": `GAME MODE — Tournament (bracket): players advance through a bracket of matches rather than one free-for-all; elimination is per-match. (Detailed levers not yet specified — reason conservatively within the physics above.)`,
