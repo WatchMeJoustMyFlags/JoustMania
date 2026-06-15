@@ -250,6 +250,18 @@ type Loop struct {
 	// wiring still works.
 	evaluations otelmetric.Int64Counter
 
+	// decisions counts EVERY decision the engine returns, applied or blocked
+	// (agent_decisions_total{action,blocked,block_reason}, #790), so the demo
+	// dashboard can split applied vs blocked by reason. Defaults to a no-op so a
+	// Loop built without metrics wiring still works.
+	decisions otelmetric.Int64Counter
+
+	// interventionsApplied counts decisions that pass every permission gate AND
+	// apply successfully through the action sink (agent_interventions_applied_total
+	// {action}, #790) — the numerator for the applied-rate panel. Defaults to a
+	// no-op so a Loop built without metrics wiring still works.
+	interventionsApplied otelmetric.Int64Counter
+
 	// asyncInferState is the per-Loop async-inference machinery (#917): the pile-up
 	// guard, the in-flight wait group, this loop's game id, the re-validation context
 	// provider, and the agent root context. Embedded so the async surface lives in one
@@ -309,15 +321,17 @@ func NewLoop(flagSource FlagSource, log *slog.Logger) *Loop {
 		flagSource = disabledFlags{}
 	}
 	return &Loop{
-		Flags:       flagSource,
-		Rules:       NoopRules{},
-		Actions:     NoopActions{},
-		Log:         log,
-		Tracer:      otel.Tracer(instrumentationName),
-		now:         time.Now,
-		throttle:    DefaultThrottleInterval,
-		llmGated:    defaultLLMGatedCounter(),
-		evaluations: defaultEvaluationsCounter(),
+		Flags:                flagSource,
+		Rules:                NoopRules{},
+		Actions:              NoopActions{},
+		Log:                  log,
+		Tracer:               otel.Tracer(instrumentationName),
+		now:                  time.Now,
+		throttle:             DefaultThrottleInterval,
+		llmGated:             defaultLLMGatedCounter(),
+		evaluations:          defaultEvaluationsCounter(),
+		decisions:            defaultDecisionsCounter(),
+		interventionsApplied: defaultInterventionsAppliedCounter(),
 		effectSampler: effectSampler{
 			effectDelta: defaultEffectDeltaHistogram(),
 		},
@@ -412,6 +426,43 @@ func (l *Loop) recordEvaluation(ctx context.Context, signal, outcome string) {
 	l.evaluations.Add(ctx, 1, otelmetric.WithAttributes(
 		attribute.String("signal", signal),
 		attribute.String("outcome", outcome),
+	))
+}
+
+// metricAction maps a Decision to the bounded action label for the #790 counters:
+// the intervention id, or "noop" when empty (a contract-following engine noop
+// yields an empty intervention). Keeping the empty case as the literal "noop"
+// matches the intervention vocabulary and keeps the label a small closed set.
+func metricAction(intervention string) string {
+	if intervention == "" {
+		return "noop"
+	}
+	return intervention
+}
+
+// recordDecision bumps agent_decisions_total for one decision the engine returned
+// (#790), applied OR blocked. block_reason is empty when applied and the specific
+// BlockReason ("not_allowed"/"battery_threshold"/"rate_limit") when blocked, so the
+// dashboard can split applied vs blocked by reason. Labels are bounded: action (the
+// intervention vocabulary), blocked (bool), block_reason (the closed BlockReason
+// set). The counter is never nil (NewLoop seeds a no-op), so this is safe from the
+// concurrent Export-handler goroutines that drive runDecision.
+func (l *Loop) recordDecision(ctx context.Context, action string, blocked bool, reason BlockReason) {
+	l.decisions.Add(ctx, 1, otelmetric.WithAttributes(
+		attribute.String("action", metricAction(action)),
+		attribute.Bool("blocked", blocked),
+		attribute.String("block_reason", string(reason)),
+	))
+}
+
+// recordInterventionApplied bumps agent_interventions_applied_total after a
+// decision passes every permission gate AND applies successfully through the action
+// sink (#790) — the numerator for the applied-rate panel. Label: action. The
+// counter is never nil (NewLoop seeds a no-op), so this is safe from the concurrent
+// Export-handler goroutines that drive runDecision.
+func (l *Loop) recordInterventionApplied(ctx context.Context, action string) {
+	l.interventionsApplied.Add(ctx, 1, otelmetric.WithAttributes(
+		attribute.String("action", metricAction(action)),
 	))
 }
 
@@ -884,6 +935,12 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	))
 	defer aSpan.End()
 
+	// Count EVERY decision the engine returned (#790), applied or blocked, before
+	// branching — block_reason is empty when applied, the BlockReason when blocked —
+	// so the demo dashboard can split applied vs blocked by reason. Emitted alongside
+	// the existing audit span/log, not in place of it.
+	l.recordDecision(ctx, d.Intervention, blocked, reason)
+
 	if blocked {
 		state.recordBlocked(d, reason, cost)
 		// Feed the BLOCKED outcome into this game's #916 rolling narrative timeline
@@ -937,7 +994,12 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 		aSpan.SetStatus(codes.Error, err.Error())
 		l.Log.Error("agent.apply_failed",
 			"error", err, "intervention", d.Intervention)
+		return
 	}
+	// Apply succeeded: count the intervention as applied (#790) — the numerator for
+	// the dashboard's applied-rate panel. Only a clean Apply increments this; an
+	// apply error returns above so a failed dispatch is NOT counted as applied.
+	l.recordInterventionApplied(ctx, d.Intervention)
 }
 
 // emitDisabledSpan emits the kill-switch trace for a cycle where the existence
