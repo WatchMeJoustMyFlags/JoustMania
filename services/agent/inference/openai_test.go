@@ -12,6 +12,9 @@ import (
 	"time"
 
 	"github.com/joustmania/agent/llm"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 // sampleCompletion is a realistic OpenAI-compatible /chat/completions response body.
@@ -228,4 +231,84 @@ func TestWithTimeout(t *testing.T) {
 			t.Errorf("timeout = %v, want default %v", b.httpClient.Timeout, DefaultTimeout)
 		}
 	})
+}
+
+// withTraceContextPropagator installs the W3C TraceContext propagator as the global
+// for the duration of a test, restoring the previous one afterward. This mirrors the
+// agent's real otel.go setup (a composite that includes propagation.TraceContext) so
+// the #1096 injection path under test behaves exactly as it does in production.
+func withTraceContextPropagator(t *testing.T) {
+	t.Helper()
+	prev := otel.GetTextMapPropagator()
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() { otel.SetTextMapPropagator(prev) })
+}
+
+// TestInfer_InjectsTraceparentWithinActiveSpan is the #1096 core assertion: when Infer
+// is called with a ctx carrying an active (sampled) span — exactly what the sync
+// llmDecide path does after starting agent.llm.infer — the outbound request MUST carry
+// a W3C `traceparent` header whose trace-id matches the active span's trace-id. This is
+// what lets the litellm gateway nest its provider-truth gen_ai span under the agent's
+// span (one trace). Infer must still succeed normally.
+func TestInfer_InjectsTraceparentWithinActiveSpan(t *testing.T) {
+	withTraceContextPropagator(t)
+
+	var gotTraceparent string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotTraceparent = r.Header.Get("traceparent")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, sampleCompletion)
+	}))
+	defer srv.Close()
+
+	// A real SDK tracer provider with AlwaysSample so the started span is recording and
+	// sampled — only sampled spans produce a traceparent the downstream will honor.
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.AlwaysSample()))
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+	ctx, span := tp.Tracer("test").Start(context.Background(), "agent.llm.infer")
+	defer span.End()
+	wantTraceID := span.SpanContext().TraceID().String()
+
+	b := newMockBackend(srv, "", "phi4-mini")
+	if _, err := b.Infer(ctx, llm.Prompt{System: "s", User: "u"}); err != nil {
+		t.Fatalf("Infer error: %v", err)
+	}
+
+	if gotTraceparent == "" {
+		t.Fatal("no traceparent header sent despite active span; want one")
+	}
+	// W3C format: version-traceid-spanid-flags; assert the trace-id matches the active
+	// span so the gateway span will nest under THIS trace, not an orphan.
+	if !strings.Contains(gotTraceparent, wantTraceID) {
+		t.Errorf("traceparent %q does not carry active trace-id %q", gotTraceparent, wantTraceID)
+	}
+}
+
+// TestInfer_NoTraceparentWithoutActiveSpan asserts the default-safe path: with no active
+// span in ctx, Inject is a no-op (no traceparent header written) and Infer still works.
+// This covers the Ollama-direct current setup (it ignores the header anyway) and any
+// caller that runs outside a span — the injection must never break a plain call.
+func TestInfer_NoTraceparentWithoutActiveSpan(t *testing.T) {
+	withTraceContextPropagator(t)
+
+	var sawTraceparent bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, sawTraceparent = r.Header["Traceparent"]
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, sampleCompletion)
+	}))
+	defer srv.Close()
+
+	b := newMockBackend(srv, "", "phi4-mini")
+	// context.Background() carries no span -> propagator Inject writes nothing.
+	out, err := b.Infer(context.Background(), llm.Prompt{System: "s", User: "u"})
+	if err != nil {
+		t.Fatalf("Infer error with no active span: %v", err)
+	}
+	if out == "" {
+		t.Error("want content returned even with no active span")
+	}
+	if sawTraceparent {
+		t.Error("traceparent header sent without an active span; want none (no-op inject)")
+	}
 }
