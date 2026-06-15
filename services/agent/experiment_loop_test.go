@@ -100,6 +100,14 @@ func (r *recordingRealDefault) count() int {
 	return len(r.calls)
 }
 
+// loopWatcher is a non-degrading autonomous safety-net Watcher (#1016): autonomous
+// now FAILS CLOSED without a Watcher wired, so these end-to-end loop tests must wire
+// one for the real-default write path to be reachable. It reports "not degraded" so
+// a promoted change is kept (the gating-and-keep path these tests assert).
+type loopWatcher struct{}
+
+func (loopWatcher) Degraded(context.Context, string, float64) (bool, error) { return false, nil }
+
 // recordingGitHub records OpenIssue/OpenPR so a test can assert the safe (issue)
 // path was taken instead of a real-default mutation.
 type recordingGitHub struct {
@@ -166,7 +174,9 @@ func buildLoopForTest(
 	gate := experiment.NewGate(writer, nil, log)
 	targeting := experiment.NewGateTargetingWriter(gate, writer)
 
-	base := promote.NewPromoter(github, nil, realDef, nil, nil, promote.RepoRef{}, nil, log)
+	// #1016: autonomous fails closed without a Watcher, so wire a non-degrading one
+	// (the safety net) for the real-default write path to be reachable in these tests.
+	base := promote.NewPromoter(github, nil, realDef, loopWatcher{}, nil, promote.RepoRef{}, nil, log)
 	promo := promote.NewExperimentPromoter(base, resolveConfig)
 
 	// Low min-N so a handful of conclusions reaches a conclusive verdict; effect

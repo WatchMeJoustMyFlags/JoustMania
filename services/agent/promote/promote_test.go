@@ -79,7 +79,26 @@ type fakeWatcher struct {
 	err      error
 }
 
-func (w fakeWatcher) Degraded(context.Context, string) (bool, error) { return w.degraded, w.err }
+func (w fakeWatcher) Degraded(context.Context, string, float64) (bool, error) {
+	return w.degraded, w.err
+}
+
+// baselineRecordingWatcher records the baseline + flag it was asked to judge, so a
+// test can assert the Promoter threads Evidence.FitnessBefore through to the watch.
+type baselineRecordingWatcher struct {
+	calls        int
+	lastBaseline float64
+	lastFlag     string
+	degraded     bool
+	err          error
+}
+
+func (w *baselineRecordingWatcher) Degraded(_ context.Context, flag string, baseline float64) (bool, error) {
+	w.calls++
+	w.lastFlag = flag
+	w.lastBaseline = baseline
+	return w.degraded, w.err
+}
 
 // recordingReverter records real-default reverts.
 type recordingReverter struct {
@@ -264,10 +283,12 @@ func TestPromotePRModeLocal(t *testing.T) {
 }
 
 // --- mode=autonomous: applies to the REAL default (separate writer), outcome
-// applied; a degradation reverts. ---
+// applied when the watch holds (no degradation); a degradation reverts. A Watcher
+// MUST be wired (the safety net) — see TestPromoteAutonomousFailsClosedWithoutWatcher. ---
 func TestPromoteAutonomousApplied(t *testing.T) {
 	realDef := &recordingRealDefault{}
-	p, rec := promoterWithRecorder(t, &recordingGitHub{}, &recordingGit{}, realDef, nil, nil)
+	// A wired, non-degrading watcher is the safety net that lets the apply stand.
+	p, rec := promoterWithRecorder(t, &recordingGitHub{}, &recordingGit{}, realDef, fakeWatcher{degraded: false}, &recordingReverter{})
 
 	res := p.Promote(context.Background(), promoteProposal, promoteVerdict,
 		Config{Mode: ModeAutonomous, Target: TargetLocal, Enabled: true}, testEvidence())
@@ -320,6 +341,57 @@ func TestPromoteAutonomousRevertsOnUnconfirmableWatch(t *testing.T) {
 	}
 	if rev.calls != 1 {
 		t.Errorf("RevertRealDefault calls = %d, want 1", rev.calls)
+	}
+}
+
+// --- FAIL CLOSED (#1016): autonomous with NO Watcher REFUSES to apply. This is the
+// key safety assertion: an unguarded autonomous promotion (apply to real players
+// with no auto-revert) is the unacceptable state, so a nil Watcher is a HARD STOP —
+// nothing is written to the real default. This test would FAIL if the apply path
+// reverted to the old "apply without a watch" behaviour. ---
+func TestPromoteAutonomousFailsClosedWithoutWatcher(t *testing.T) {
+	realDef := &recordingRealDefault{}
+	rev := &recordingReverter{}
+	// realDef + reverter wired, but NO Watcher (the safety net is not connected).
+	p, _ := promoterWithRecorder(t, &recordingGitHub{}, &recordingGit{}, realDef, nil, rev)
+
+	res := p.Promote(context.Background(), promoteProposal, promoteVerdict,
+		Config{Mode: ModeAutonomous, Target: TargetLocal, Enabled: true}, testEvidence())
+
+	if res.Outcome != OutcomeDiscarded {
+		t.Fatalf("outcome = %q, want discarded (no watcher → fail closed)", res.Outcome)
+	}
+	if len(realDef.calls) != 0 {
+		t.Fatalf("SAFETY: autonomous applied to the real default %d time(s) with NO watch wired", len(realDef.calls))
+	}
+	if rev.calls != 0 {
+		t.Errorf("nothing was applied, so nothing should be reverted: revert calls = %d", rev.calls)
+	}
+	if !strings.Contains(res.Reason, "safety net") {
+		t.Errorf("reason = %q, want it to name the missing safety net", res.Reason)
+	}
+}
+
+// --- the watcher receives the pre-promotion baseline (Evidence.FitnessBefore) so it
+// can compare recent real-game fitness against what the promotion was justified by. ---
+func TestPromoteAutonomousPassesBaselineToWatcher(t *testing.T) {
+	realDef := &recordingRealDefault{}
+	bw := &baselineRecordingWatcher{}
+	p, _ := promoterWithRecorder(t, &recordingGitHub{}, &recordingGit{}, realDef, bw, &recordingReverter{})
+
+	ev := testEvidence()
+	ev.FitnessBefore = 0.61
+	p.Promote(context.Background(), promoteProposal, promoteVerdict,
+		Config{Mode: ModeAutonomous, Target: TargetLocal, Enabled: true}, ev)
+
+	if bw.calls != 1 {
+		t.Fatalf("watcher Degraded calls = %d, want 1", bw.calls)
+	}
+	if bw.lastBaseline != 0.61 {
+		t.Errorf("watcher baseline = %v, want 0.61 (Evidence.FitnessBefore)", bw.lastBaseline)
+	}
+	if bw.lastFlag != promoteProposal.FlagKey {
+		t.Errorf("watcher flag = %q, want %q", bw.lastFlag, promoteProposal.FlagKey)
 	}
 }
 

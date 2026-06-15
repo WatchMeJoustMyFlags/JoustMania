@@ -235,15 +235,22 @@ type RealDefaultWriter interface {
 }
 
 // Watcher observes real games after an autonomous real-default change and reports
-// whether fitness DEGRADED (so the change should be reverted). It reuses M7-7's
-// fitness measurement seam where wired; a nil Watcher means "no live watch wired
-// yet" — autonomous applies and records OutcomeApplied without a watch (the live
-// watch+revert wiring is the documented follow-up; see main.go).
+// whether fitness DEGRADED vs the pre-promotion baseline (so the change should be
+// reverted). It reuses M7-7's fitness measurement seam where wired.
+//
+// FAIL-CLOSED CONTRACT (#1016): a nil Watcher is NOT "apply without a watch" — it
+// is a HARD STOP. An autonomous real-default change with no safety net wired is the
+// single most dangerous state in the loop (apply to real players with no
+// auto-revert), so promoteAutonomous REFUSES to apply when the Watcher is nil
+// rather than applying unguarded. A safety net that is not connected blocks the
+// action; it is never silently skipped.
 type Watcher interface {
-	// Degraded reports whether real-game fitness degraded after the change (true →
-	// the Promoter reverts via RealDefaultReverter). An error is treated as "cannot
-	// confirm healthy" → fail-safe revert.
-	Degraded(ctx context.Context, flagKey string) (bool, error)
+	// Degraded reports whether real-game fitness degraded vs baseline after the
+	// change (true → the Promoter reverts via RealDefaultReverter). baseline is the
+	// pre-promotion real-game fitness (Evidence.FitnessBefore) the recent window is
+	// compared against. An error is treated as "cannot confirm healthy" → fail-safe
+	// revert.
+	Degraded(ctx context.Context, flagKey string, baseline float64) (bool, error)
 }
 
 // RealDefaultReverter rolls back an autonomous real-default change on degradation.
@@ -263,7 +270,7 @@ type Promoter struct {
 	github   GitHubClient        // wire boundary; recording fake in tests, env-gated real client in main.go
 	git      GitClient           // local-target commit; temp git repo in tests
 	realDef  RealDefaultWriter   // autonomous real-default mutation (nil = not wired)
-	watcher  Watcher             // autonomous live watch (nil = not wired; applies without watch)
+	watcher  Watcher             // autonomous live watch (nil = HARD STOP: autonomous refuses to apply, #1016)
 	reverter RealDefaultReverter // autonomous degradation rollback (nil = not wired)
 	repo     RepoRef             // owner/name/base used to build issue/PR/commit requests
 	tracer   trace.Tracer

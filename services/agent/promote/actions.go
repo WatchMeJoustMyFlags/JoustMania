@@ -90,10 +90,15 @@ func (pr *Promoter) promotePR(ctx context.Context, p experiment.Proposal, ev Evi
 //     RealDefaultWriter — explicitly NOT the shadow experiment.Writer (which is
 //     structurally shadow-only). A nil RealDefaultWriter (real path not wired) → a
 //     recorded no-op; the shadow Writer is never reused to sneak a real change.
-//   - WATCH + REVERT: after applying, the Watcher observes real games; on
-//     degradation the RealDefaultReverter rolls the real default back (reusing M7-7's
-//     watch/revert seams where wired). A nil Watcher means no live watch is wired yet
-//     (documented follow-up) — applied without a watch.
+//   - WATCH + REVERT: after applying, the Watcher observes real-game fitness for a
+//     window; on degradation vs the pre-promotion baseline the RealDefaultReverter
+//     rolls the real default back (the OutcomeRevert path, reusing M7-7's
+//     watch/revert seams).
+//   - FAIL CLOSED WITHOUT A WATCH (#1016): a nil Watcher is a HARD STOP, NOT an
+//     apply-without-watch. An unguarded autonomous promotion (apply to real players
+//     with no auto-revert) is the unacceptable state, so we REFUSE to apply when no
+//     Watcher is wired — checked BEFORE the real-default write, so nothing is ever
+//     written without a connected safety net.
 func (pr *Promoter) promoteAutonomous(ctx context.Context, p experiment.Proposal, cfg Config, ev Evidence, res *Result) {
 	if !cfg.Enabled {
 		res.Outcome = OutcomeDiscarded
@@ -105,6 +110,14 @@ func (pr *Promoter) promoteAutonomous(ctx context.Context, p experiment.Proposal
 		res.Reason = "autonomous requested but no real-default writer wired; real default not changed"
 		return
 	}
+	// FAIL CLOSED (#1016): no safety net → refuse to apply. Checked BEFORE the write
+	// so an autonomous promotion can NEVER touch the real default without a
+	// watch→auto-revert loop connected behind it.
+	if pr.watcher == nil {
+		res.Outcome = OutcomeDiscarded
+		res.Reason = "autonomous requested but no watch/auto-revert wired; refusing to apply to real default without a safety net (#1016)"
+		return
+	}
 
 	// The one sanctioned real-player-affecting write, through the gated seam.
 	if err := pr.realDef.SetRealDefault(ctx, p.FlagKey, ev.RealDefaultValue); err != nil {
@@ -114,13 +127,9 @@ func (pr *Promoter) promoteAutonomous(ctx context.Context, p experiment.Proposal
 	}
 	res.Outcome = OutcomeApplied
 
-	// No live watch wired yet: apply and record. The watch+revert wiring reuses
-	// M7-7's Validator/Reverter seams and is the documented follow-up (main.go).
-	if pr.watcher == nil {
-		return
-	}
-
-	degraded, err := pr.watcher.Degraded(ctx, p.FlagKey)
+	// Watch real-game fitness for the promoted flag's objective and auto-revert on
+	// degradation vs the pre-promotion baseline (Evidence.FitnessBefore).
+	degraded, err := pr.watcher.Degraded(ctx, p.FlagKey, ev.FitnessBefore)
 	// An error means we cannot CONFIRM the change is healthy; fail safe by treating
 	// it as a degradation so a real-player change is rolled back rather than left
 	// unverified.
