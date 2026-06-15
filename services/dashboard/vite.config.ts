@@ -23,6 +23,14 @@ export default defineConfig({
         target: 'http://localhost:80',
         changeOrigin: true,
       },
+      // Proxy VictoriaMetrics queries (agent applied-intervention count, #792)
+      // through envoy, which routes /victoria-metrics/* to the VM HTTP API. As
+      // with /loki, this only matters for `vite dev`; in production the dashboard
+      // is served behind the same envoy.
+      '/victoria-metrics': {
+        target: 'http://localhost:80',
+        changeOrigin: true,
+      },
     },
   },
 })
