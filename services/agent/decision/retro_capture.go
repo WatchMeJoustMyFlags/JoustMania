@@ -242,7 +242,7 @@ type retroPromptAttrs struct {
 //   - agent.mode            = "retro"
 //   - agent.objectives      = sorted "k=v" weights (summarizeObjectives)
 //   - interventions.allowed = the allow-list summary (allowedSummary)
-//   - session.id            = the finished session's id
+//   - session.id / game.id  = the finished session's id (= the real game_id, #1088)
 //   - llm.retro.system / llm.retro.user = the FULL prompt text (uncapped)
 //   - llm.retro.bytes       = len(system)+len(user)
 //   - inference.configured  = <model flag>
@@ -268,7 +268,12 @@ func retroPromptAttributes(in retroPromptAttrs) []attribute.KeyValue {
 		attribute.String(AttrGameKind, in.gameKind),
 		attribute.String(AttrObjectives, summarizeObjectives(in.objectives)),
 		attribute.String(AttrInterventionsAllowed, allowedSummary(in.allowed)),
-		attribute.String("session.id", in.sessionID),
+		// session.id + game.id (#1088): the post-game retro span is attributable to the
+		// finished game like the in-game agent.llm.prompt span, so a Jaeger query by
+		// game.id surfaces the retrospective alongside the game's in-play decisions.
+		// game.id IS the SessionID (= the real game_id since #845 PR A).
+		attribute.String(AttrSessionID, in.sessionID),
+		attribute.String(AttrGameID, in.sessionID),
 		// The captured prompt: full text (uncapped) plus its size.
 		attribute.String(AttrLLMRetroSystem, system),
 		attribute.String(AttrLLMRetroUser, user),

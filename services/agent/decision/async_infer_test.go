@@ -237,6 +237,19 @@ func TestAsync_FreshResultApplied(t *testing.T) {
 	if v, ok := attrValue(apply[0], "inference.applied"); !ok || !v.AsBool() {
 		t.Error("apply span inference.applied must be true for a fresh applied result")
 	}
+	// #1088: both the apply root and the async inference span carry game.id (= the
+	// loop's game id) so the whole async fire->infer->apply trace is queryable by
+	// game.id, alongside the synchronous per-game spans.
+	if v, ok := attrValue(apply[0], AttrGameID); !ok || v.AsString() != "g1" {
+		t.Errorf("apply span %s = %q (present=%v), want g1", AttrGameID, v.AsString(), ok)
+	}
+	inf := spansByName(sr.Ended(), SpanLLMInfer)
+	if len(inf) != 1 {
+		t.Fatalf("agent.llm.infer spans = %d, want 1", len(inf))
+	}
+	if v, ok := attrValue(inf[0], AttrGameID); !ok || v.AsString() != "g1" {
+		t.Errorf("async infer span %s = %q (present=%v), want g1", AttrGameID, v.AsString(), ok)
+	}
 }
 
 // ---- Acceptance: stale result discarded — game ended during inference ----

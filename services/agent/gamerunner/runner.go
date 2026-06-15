@@ -342,7 +342,14 @@ func (r *Runner) RunShadowGame(ctx context.Context, spec Spec) (Result, error) {
 	res.GameName = spec.GameName
 	res.Duration = time.Since(start)
 	if res.GameID != "" {
-		span.SetAttributes(attribute.String("shadow_game.game_id", res.GameID))
+		// shadow_game.game_id is the run-domain key; game.id (#1088) is the SAME
+		// game_<uuid> under the canonical, cross-family key so a Jaeger query by
+		// game.id correlates this run span with the agent's decision/llm spans and
+		// the coordinator's per-game trace.
+		span.SetAttributes(
+			attribute.String("shadow_game.game_id", res.GameID),
+			attribute.String("game.id", res.GameID),
+		)
 	}
 	span.SetAttributes(
 		attribute.String("shadow_game.outcome", string(res.Outcome)),

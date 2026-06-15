@@ -848,7 +848,7 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	reason, blocked := l.evaluatePermission(snapshot, c, d, now, cost)
 
 	dCtx, dSpan := l.Tracer.Start(ctx, SpanDecision,
-		trace.WithAttributes(decisionAttributes(state, d, blocked, reason, c.GameKind)...))
+		trace.WithAttributes(decisionAttributes(state, d, blocked, reason, c.GameKind, c.SessionID)...))
 	defer dSpan.End()
 
 	// The interventions.allowed evaluation as a feature_flag.* span event
@@ -867,6 +867,10 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	_, aSpan := l.Tracer.Start(dCtx, SpanAction, trace.WithAttributes(
 		attribute.String(AttrDecisionAction, d.Intervention),
 		attribute.Bool(AttrDecisionBlocked, blocked),
+		// session.id + game.id (#1088): the action span acts on a specific game, so
+		// it carries the same game.id as its parent decision span for correlation.
+		attribute.String(AttrSessionID, c.SessionID),
+		attribute.String(AttrGameID, c.SessionID),
 	))
 	defer aSpan.End()
 
@@ -961,7 +965,7 @@ func (l *Loop) emitDisabledSpan(ctx context.Context, snapshot flags.Snapshot, c 
 	// nothing. AttrDecisionAction is empty (no action) and AttrDecisionBlocked is
 	// false (no decision was blocked by a permission gate — the loop never ran).
 	_, dSpan := l.Tracer.Start(rootCtx, SpanDisabled,
-		trace.WithAttributes(decisionAttributes(&state, Decision{}, false, "", c.GameKind)...))
+		trace.WithAttributes(decisionAttributes(&state, Decision{}, false, "", c.GameKind, c.SessionID)...))
 	dSpan.End()
 }
 
@@ -1054,7 +1058,7 @@ func (l *Loop) shouldLog() bool {
 // attribute; subsystems that do not exist yet contribute explicit placeholder
 // values (see telemetry.go). The block reason (#728) is carried only when a
 // decision is blocked.
-func decisionAttributes(state *LayerState, d Decision, blocked bool, reason BlockReason, gameKind string) []attribute.KeyValue {
+func decisionAttributes(state *LayerState, d Decision, blocked bool, reason BlockReason, gameKind, gameID string) []attribute.KeyValue {
 	objective := d.ObjectiveServed
 	if objective == "" {
 		objective = DefaultObjectives
@@ -1063,6 +1067,14 @@ func decisionAttributes(state *LayerState, d Decision, blocked bool, reason Bloc
 		semconv.GenAIAgentName(AgentName),
 		// game.kind (#845): schema-complete — empty string when unknown.
 		attribute.String(AttrGameKind, gameKind),
+		// session.id + game.id alias (#1088): the child agent.decision / agent.disabled
+		// spans carry the SAME game.id as their agent.signal_received root, so a Jaeger
+		// query by game.id matches every per-game span — not just the root — and
+		// correlates the agent's orphan trace with the coordinator's per-game trace.
+		// game.id IS the SessionID (= the real game_id since #845 PR A); empty when
+		// unknown (schema-complete).
+		attribute.String(AttrSessionID, gameID),
+		attribute.String(AttrGameID, gameID),
 	}
 	// Cycle-level flag attribution: lift the whole LayerState onto the span so a
 	// single trace answers "which flags were in effect" (#729). agent.objectives
