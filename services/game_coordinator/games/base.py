@@ -402,7 +402,7 @@ class PollDegradationError(Exception):
     """Synthetic exception for poll degradation span events.
 
     Not raised for control flow — only passed to span.record_exception()
-    so Dynatrace failure analysis can group and alert on poll health issues
+    so failure analysis can group and alert on poll health issues
     by exception type (PollDegradationError) and message.
     """
 

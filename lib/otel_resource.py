@@ -2,9 +2,9 @@
 Shared OTEL Resource builder for JoustMania Python services.
 
 Centralizes resource attribute construction so all three signal pipelines
-(traces, metrics, logs) emit identical resource metadata. Dynatrace uses
-these attributes for service detection, release tracking, and Smartscape
-topology linking.
+(traces, metrics, logs) emit identical resource metadata. These standard
+OTEL attributes drive service detection, release tracking, and topology
+linking in the local observability stack.
 """
 
 import os
@@ -19,7 +19,7 @@ def _get_host_name() -> str:
 
     Inside Docker, platform.node() returns the container ID. The
     OTEL_RESOURCE_ATTRIBUTES env var (set in docker-compose.yml) provides
-    the real host name for Dynatrace Smartscape topology linking.
+    the real host name for topology linking in the observability stack.
     """
     otel_attrs = os.getenv("OTEL_RESOURCE_ATTRIBUTES", "")
     for pair in otel_attrs.split(","):
@@ -31,17 +31,17 @@ def _get_host_name() -> str:
 
 
 def get_otel_resource() -> Resource:
-    """Build a shared OTEL Resource with standard + Dynatrace-relevant attributes.
+    """Build a shared OTEL Resource with standard semantic-convention attributes.
 
-    Attributes and their Dynatrace impact:
+    Attributes and their observability impact:
     - service.name: Service entity detection
-    - service.namespace: Service grouping in Services screen
+    - service.namespace: Service grouping
     - service.version: Release tracking, version-aware error analytics
-    - service.instance.id: Per-instance metrics, process group instance detection
+    - service.instance.id: Per-instance metrics
     - deployment.environment: Environment filtering, release comparison
-    - host.name: Host entity linking in Smartscape topology
+    - host.name: Host entity linking in topology
     - container.name: Container entity linking (from OTEL_SERVICE_NAME)
-    - process.*: Process group detection, runtime vulnerability matching
+    - process.*: Process group detection, runtime identification
     - telemetry.sdk.*: SDK identification and language detection
     """
     service_name = os.getenv("OTEL_SERVICE_NAME", "unknown")

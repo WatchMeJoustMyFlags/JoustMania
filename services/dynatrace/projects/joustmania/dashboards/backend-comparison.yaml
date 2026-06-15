@@ -1,9 +1,0 @@
-configs:
-  - id: backend-comparison
-    type:
-      document:
-        kind: dashboard
-        private: false
-    config:
-      name: "JoustMania - Backend Comparison"
-      template: backend-comparison.json

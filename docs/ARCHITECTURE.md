@@ -386,7 +386,6 @@ Settings are configured via admin mode (hold all 4 face buttons):
 | File | Purpose |
 |------|---------|
 | `docker-compose.yml` | Full stack with observability |
-| `docker-compose.dynatrace.yml` | Dynatrace parallel export (see [Dynatrace docs](DYNATRACE.md)) |
 | `docker-compose.lite.yml` | Minimal stack (no observability) |
 | `docker-compose.test.yml` | Integration testing |
 | `docker-compose.ci.yml` | CI builds |
@@ -427,14 +426,6 @@ Each service exposes Prometheus metrics at `/metrics`:
 - Active stream counts
 - Controller counts
 - Game statistics
-
-### Dynatrace (Optional)
-
-JoustMania supports optional parallel export of all telemetry (traces, metrics, logs) to Dynatrace via OTLP HTTP. This is enabled via a Docker Compose override file that swaps the OTEL Collector config to add Dynatrace-specific pipelines.
-
-The local stack continues to operate identically — Dynatrace receives a parallel copy of the data with delta temporality conversion for counters.
-
-See [Dynatrace Integration](DYNATRACE.md) for setup instructions.
 
 ---
 
