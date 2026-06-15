@@ -87,12 +87,17 @@ up-mock:
 # mismatch fix lives in docker-compose.dry-run.yml).
 #
 # Gating chain (all must be satisfied for the loop to ACT):
-#   1. AGENT_EXPERIMENTS_ENABLED=true  -> set by docker-compose.dry-run.yml
-#   2. agent.json `enabled` = on       -> MANUAL opt-in, see step below (the
-#      master kill-switch stays fail-closed `off` by default; we do NOT mutate
-#      the committed flag here). Without it the loop self-aborts:
+#   1. flagd `experiments_enabled` flag = on  -> the LIVE gate post-#1044. It
+#      OVERRIDES the AGENT_EXPERIMENTS_ENABLED env, which is now dead config for
+#      this purpose. Fail-closed `off` by default; MANUAL opt-in via the enable
+#      step below.
+#   2. agent.json `enabled` = on       -> master kill-switch, fail-closed `off`
+#      by default. Without it the loop self-aborts:
 #      `experiment.torn_down ... reason="kill-switch: agent disabled"`.
+#      (The enable step below flips BOTH 1 and 2 in one command.)
 #   3. code_improvement.* promotion gates -> remain default (promotion stays off)
+# We do NOT mutate the committed flag files here; the operator runs the enable
+# step, which flips the ci/ flag dir at runtime only.
 .PHONY: dry-run
 dry-run:
 	IMAGE_TAG=$(or $(IMAGE_TAG),latest) docker compose \
@@ -110,12 +115,14 @@ dry-run:
 	@echo "  Flag dir:      services/flagd/ci  (shared rw by agent + flagd -> writes are effective)"
 	@echo ""
 	@echo "  Experiment loop gating:"
-	@echo "    [x] AGENT_EXPERIMENTS_ENABLED=true   (set by docker-compose.dry-run.yml)"
+	@echo "    [!] flagd experiments_enabled flag is the LIVE gate (post-#1044) and"
+	@echo "        OVERRIDES AGENT_EXPERIMENTS_ENABLED env. Fail-closed off by default."
 	@echo "    [x] seeded experiment: death_grace_period_seconds = 0.75 (objective=balanced, N=8/arm)"
-	@echo "    [ ] agent kill-switch  -> ENABLE IT (fail-closed off by default):"
-	@echo "        ./scripts/agent-killswitch.sh on   # flips services/flagd/ci/agent.json enabled -> on"
+	@echo "    [ ] ENABLE experiments  -> ONE step (flips enabled + experiments_enabled on):"
+	@echo "        ./scripts/agent-dryrun-enable.sh on   # ci/agent.json: enabled + experiments_enabled -> on"
+	@echo "        # add AGENT_INFERENCE_BACKEND=openai to also flip mode -> llm"
 	@echo "        docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile agent restart agent"
-	@echo "        (or edit services/flagd/ci/agent.json: flags.enabled.defaultVariant = \"on\")"
+	@echo "        # restore defaults afterwards: ./scripts/agent-dryrun-enable.sh off"
 	@echo "    [ ] code_improvement.* promotion gates stay OFF (no real-default promotion)"
 	@echo ""
 	@echo "  Observability:"
