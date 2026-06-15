@@ -341,6 +341,28 @@ func (pr *Promoter) SetRewatcher(r Rewatcher) {
 	pr.rewatcher = r
 }
 
+// SeedLastRevert pre-populates the post-revert cooldown map from durably-persisted
+// revert timestamps (#1076 item 3), so post-revert thrash protection survives an
+// agent restart. Called once from main.go after construction with the reverter's
+// PersistedRevertTimes. A nil/empty map is a no-op. Existing in-memory entries are
+// only overwritten by a LATER persisted stamp (a fresh in-process revert always
+// wins), so seeding can never roll a cooldown backward.
+func (pr *Promoter) SeedLastRevert(times map[string]time.Time) {
+	if len(times) == 0 {
+		return
+	}
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
+	if pr.lastRevert == nil {
+		pr.lastRevert = map[string]time.Time{}
+	}
+	for k, t := range times {
+		if existing, ok := pr.lastRevert[k]; !ok || t.After(existing) {
+			pr.lastRevert[k] = t
+		}
+	}
+}
+
 // RepoRef identifies the GitHub repo + default base branch a promotion targets.
 // Populated from env in main.go (GITHUB_REPOSITORY / GITHUB_BASE_BRANCH); the
 // fakes in tests use a fixed value.

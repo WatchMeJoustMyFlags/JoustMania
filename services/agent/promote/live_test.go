@@ -118,6 +118,45 @@ func TestRevertCooldownSuppressesImmediateRepromotion(t *testing.T) {
 	}
 }
 
+// TestSeedLastRevertPreservesCooldownAcrossRestart: a post-revert cooldown stamp
+// recovered from the durable store (#1076 item 3) must suppress an immediate
+// re-promotion after a restart — modeling an agent that reverted, then restarted, then
+// is asked to re-promote the same flag inside the cooldown window.
+func TestSeedLastRevertPreservesCooldownAcrossRestart(t *testing.T) {
+	realDef := &recordingRealDefault{}
+	rev := &recordingReverter{}
+	healthy := fakeWatcher{degraded: false} // would normally apply + keep
+	p, _ := promoterWithRecorder(t, &recordingGitHub{}, &recordingGit{}, realDef, healthy, rev)
+
+	now := time.Unix(2000, 0)
+	p.SetClock(func() time.Time { return now })
+	p.SetCooldown(5 * time.Minute)
+
+	// Simulate a pre-restart revert at t=1900 recovered from the durable store.
+	p.SeedLastRevert(map[string]time.Time{promoteProposal.FlagKey: time.Unix(1900, 0)})
+
+	cfg := Config{Mode: ModeAutonomous, Target: TargetLocal, Enabled: true}
+
+	// Within the seeded cooldown (1900 + 5m > 2000): re-promotion is suppressed.
+	res := p.Promote(context.Background(), promoteProposal, promoteVerdict, cfg, testEvidence())
+	if res.Outcome != OutcomeDiscarded {
+		t.Fatalf("re-promotion outcome = %q, want discarded (seeded cooldown holds)", res.Outcome)
+	}
+	if len(realDef.calls) != 0 {
+		t.Errorf("SetRealDefault calls = %d, want 0 (apply suppressed by restored cooldown)", len(realDef.calls))
+	}
+
+	// Past the seeded cooldown: a re-promotion is allowed again.
+	now = time.Unix(1900, 0).Add(6 * time.Minute)
+	res2 := p.Promote(context.Background(), promoteProposal, promoteVerdict, cfg, testEvidence())
+	if res2.Outcome == OutcomeDiscarded {
+		t.Fatalf("post-cooldown outcome = %q, want NOT discarded (cooldown elapsed)", res2.Outcome)
+	}
+	if len(realDef.calls) != 1 {
+		t.Errorf("SetRealDefault calls = %d, want 1 (apply allowed after cooldown elapsed)", len(realDef.calls))
+	}
+}
+
 var errTelemetry = errTelemetryT("telemetry unreachable")
 
 type errTelemetryT string
