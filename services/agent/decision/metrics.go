@@ -67,6 +67,61 @@ func defaultEvaluationsCounter() otelmetric.Int64Counter {
 	return newEvaluationsCounter(otel.GetMeterProvider())
 }
 
+// newDecisionsCounter builds the agent_decisions_total counter from the given
+// meter provider (#790). It is incremented once per decision the rules/llm engine
+// returns, INCLUDING the ones a permission gate blocks, so the demo dashboard's
+// applied-vs-blocked panel (#789/#1113) can break decisions down by outcome.
+// Labels: action=<intervention id or "noop">, blocked=<bool>, block_reason=<""
+// when applied; not_allowed|battery_threshold|rate_limit when blocked>. The
+// block_reason set is the closed set of decision.BlockReason values, so
+// cardinality stays bounded. An instrument-creation error yields a no-op counter
+// so the Loop always has a usable instrument and tests that never wire a real
+// meter provider still work — mirrors newLLMGatedCounter.
+func newDecisionsCounter(mp otelmetric.MeterProvider) otelmetric.Int64Counter {
+	c, err := mp.Meter(decisionMeterName).Int64Counter(
+		"agent_decisions_total",
+		otelmetric.WithDescription("Total decisions returned by the agent engine, labeled by action, blocked (bool), and block_reason (empty when applied; not_allowed|battery_threshold|rate_limit when blocked) (#790)"),
+	)
+	if err != nil {
+		c, _ = metricnoop.NewMeterProvider().Meter(decisionMeterName).Int64Counter("agent_decisions_total")
+	}
+	return c
+}
+
+// defaultDecisionsCounter is the no-op fallback counter a Loop uses until one is
+// injected (NewLoop wires the global meter provider; tests may leave it). It keeps
+// the per-decision increment path nil-safe without every test having to set a counter.
+func defaultDecisionsCounter() otelmetric.Int64Counter {
+	return newDecisionsCounter(otel.GetMeterProvider())
+}
+
+// newInterventionsAppliedCounter builds the agent_interventions_applied_total
+// counter from the given meter provider (#790). It is incremented once per
+// decision that passes EVERY permission gate AND is successfully applied through
+// the ActionSink — the numerator for the demo dashboard's "interventions applied"
+// rate panel (#789/#1113). Label: action=<intervention id or "noop">. An
+// instrument-creation error yields a no-op counter so the Loop always has a usable
+// instrument and tests that never wire a real meter provider still work — mirrors
+// newLLMGatedCounter.
+func newInterventionsAppliedCounter(mp otelmetric.MeterProvider) otelmetric.Int64Counter {
+	c, err := mp.Meter(decisionMeterName).Int64Counter(
+		"agent_interventions_applied_total",
+		otelmetric.WithDescription("Total interventions successfully applied through the action sink, labeled by action (#790)"),
+	)
+	if err != nil {
+		c, _ = metricnoop.NewMeterProvider().Meter(decisionMeterName).Int64Counter("agent_interventions_applied_total")
+	}
+	return c
+}
+
+// defaultInterventionsAppliedCounter is the no-op fallback counter a Loop uses
+// until one is injected (NewLoop wires the global meter provider; tests may leave
+// it). It keeps the post-Apply increment path nil-safe without every test having to
+// set a counter.
+func defaultInterventionsAppliedCounter() otelmetric.Int64Counter {
+	return newInterventionsAppliedCounter(otel.GetMeterProvider())
+}
+
 // newEffectDeltaHistogram builds the agent_intervention_effect_delta histogram from
 // the given meter provider (#918). It records the follow_up-baseline change in a
 // game's fitness/objective signal a follow-up window after an intervention was
