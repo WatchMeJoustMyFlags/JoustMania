@@ -103,6 +103,24 @@ func TestClassifyActivity(t *testing.T) {
 	if got := ClassifyActivity(mk(0.2, 1.8, 0.3, 1.7)); got != ActivityErratic {
 		t.Errorf("bursty = %q, want erratic", got)
 	}
+	// #1085: a smooth monotonic fade-out (high → settled-to-still) must read idle —
+	// the player's CURRENT state — not erratic. The std-vs-mean test alone fires on
+	// the decline because the early high samples inflate both mean and std.
+	if got := ClassifyActivity(mk(0.90, 0.50, 0.10, 0.05, 0.02, 0.00)); got != ActivityIdle {
+		t.Errorf("monotonic fade = %q, want idle", got)
+	}
+	// Guard the other direction: a genuinely bursty tail must stay erratic even
+	// though its window mean is comparable to the fade above.
+	if got := ClassifyActivity(mk(0.1, 0.9, 0.1, 0.8, 0.1, 0.9)); got != ActivityErratic {
+		t.Errorf("sustained bursty = %q, want erratic", got)
+	}
+	// Steady high keeps reading active; steady low keeps reading idle.
+	if got := ClassifyActivity(mk(0.9, 0.95, 0.92, 0.9, 0.93, 0.91)); got != ActivityActive {
+		t.Errorf("steady high = %q, want active", got)
+	}
+	if got := ClassifyActivity(mk(0.05, 0.1, 0.08, 0.02, 0.0, 0.03)); got != ActivityIdle {
+		t.Errorf("steady low = %q, want idle", got)
+	}
 }
 
 // TestComputeProximity: the closest call uses the threshold IN FORCE at each

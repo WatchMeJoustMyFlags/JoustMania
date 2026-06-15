@@ -270,6 +270,15 @@ const (
 // the mean) is a deliberately coarse, explainable cut.
 const erraticStdFrac = 0.5
 
+// idleTailLen is how many of the most-recent window samples define the player's
+// CURRENT state for the idle short-circuit (#1085). A player who has faded out and
+// is now standing still should read as idle even if earlier samples were high; the
+// std-vs-mean erratic test would otherwise fire on the smooth decline (the early
+// high samples both keep the mean above idleFloor and inflate the std), labelling a
+// faded-out player a thrasher — the opposite engagement signal. Kept short so it
+// reflects where the player *settled*, not the tail of the decline.
+const idleTailLen = 2
+
 // ClassifyActivity classifies a movement window as idle / active / erratic, or
 // unknown when there is nothing to classify. It is a pure function of the samples
 // so the prompt and retro derive the same label deterministically. The window is
@@ -292,6 +301,22 @@ func ClassifyActivity(samples []MovementSample) Activity {
 	n := float64(len(window))
 	mean := sum / n
 	if mean <= idleFloor {
+		return ActivityIdle
+	}
+	// Recency short-circuit (#1085): the player's CURRENT state is what matters for
+	// a live decision. If the most-recent samples are at/below the idle floor, the
+	// player has settled into stillness — classify idle before the erratic test,
+	// which would otherwise mislabel a smooth fade-out (0.90→…→0.00) as thrashing.
+	// A genuinely bursty player keeps a high tail, so this leaves erratic intact.
+	tail := window
+	if len(tail) > idleTailLen {
+		tail = tail[len(tail)-idleTailLen:]
+	}
+	var tailSum float64
+	for _, s := range tail {
+		tailSum += s.Intensity
+	}
+	if tailSum/float64(len(tail)) <= idleFloor {
 		return ActivityIdle
 	}
 	variance := sumSq/n - mean*mean
