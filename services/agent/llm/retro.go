@@ -133,6 +133,8 @@ func buildRetroUser(ctx gamecontext.GameContext, now time.Time) string {
 	// analyst sees the trend over the whole session (when players faded, when the
 	// game ended), not just the terminal snapshot.
 	writeTimeline(&b, ctx, now)
+	// #1082: the game-speed track the per-player proximity tracks are read against.
+	writeSpeedTrack(&b, ctx)
 
 	b.WriteString("\nPlayers (sorted by serial; \"unknown\" = signal never observed):\n")
 	if len(ctx.Players) == 0 {
@@ -152,6 +154,13 @@ func buildRetroUser(ctx gamecontext.GameContext, now time.Time) string {
 			floatPtrOrUnknown(p.MovementIntensity),
 			floatPtrOrUnknown(p.MovementVariance),
 		))
+		// #1082: the per-player movement TIME-SERIES line — sparkline + activity +
+		// proximity-to-death — so the analyst sees WHO was active/idle/erratic and WHO
+		// was close to death over the game, not just the end-state snapshot. The
+		// "→elim" marker fires for an eliminated player who crossed the threshold.
+		if track := renderPlayerTrack(p, ctx, now, eliminated(serial, ctx.Session.EliminationSequence)); track != "" {
+			lines = append(lines, track)
+		}
 	}
 	b.WriteString(strings.Join(lines, "\n"))
 	return b.String()

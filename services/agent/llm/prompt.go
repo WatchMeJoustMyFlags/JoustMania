@@ -323,9 +323,15 @@ func buildUser(ctx gamecontext.GameContext, now time.Time) string {
 	fmt.Fprintf(&b, "  duration_seconds: %s\n", floatPtrOrUnknown(ctx.Session.DurationSeconds))
 	fmt.Fprintf(&b, "  active_players: %s\n", intPtrOrUnknown(ctx.Session.ActivePlayerCount))
 	fmt.Fprintf(&b, "  game_active: %s\n", boolPtrOrUnknown(ctx.Session.GameActive))
+	// Game-speed / threshold reference frame (#1082): the per-player intensity
+	// tracks below are read against these — the same intensity is near-death at
+	// slow tempo, barely-trying at fast tempo.
+	fmt.Fprintf(&b, "  music_tempo: %s\n", floatPtrOrUnknown(ctx.Session.MusicTempo))
+	fmt.Fprintf(&b, "  death_threshold: %s\n", floatPtrOrUnknown(ctx.Session.DeathThreshold))
 	fmt.Fprintf(&b, "  elimination_sequence: [%s]\n", strings.Join(ctx.Session.EliminationSequence, ", "))
 
 	writeTimeline(&b, ctx, now)
+	writeSpeedTrack(&b, ctx)
 
 	b.WriteString("\nPlayers (sorted by serial; \"unknown\" = signal never observed):\n")
 	if len(ctx.Players) == 0 {
@@ -351,9 +357,62 @@ func buildUser(ctx gamecontext.GameContext, now time.Time) string {
 			floatPtrOrUnknown(p.BatteryPct),
 			floatPtrOrUnknown(p.SkillLevel),
 		))
+		// #1082: a second, compact per-player line carrying the movement TIME-SERIES
+		// (sparkline), the derived activity classification, and the proximity-to-death
+		// readout — so the model can read an elimination against its lead-up, not just
+		// the terminal snapshot. Rendered only when the player has a movement series.
+		if track := renderPlayerTrack(p, ctx, now, eliminated(serial, ctx.Session.EliminationSequence)); track != "" {
+			lines = append(lines, track)
+		}
 	}
 	b.WriteString(strings.Join(lines, "\n"))
 	return b.String()
+}
+
+// renderPlayerTrack builds the compact per-player movement TIME-SERIES line
+// (#1082): "    <serial>: act<sparkline> <activity> <proximity>". The sparkline is
+// scaled against the session death threshold (a full bar == at the elimination
+// threshold); the proximity readout reads each sample's intensity against the
+// threshold IN FORCE then (via the session speed track). Returns "" when the
+// player has no movement history, so the second line is omitted entirely for a
+// player the agent never saw move.
+func renderPlayerTrack(p *gamecontext.PlayerSignals, ctx gamecontext.GameContext, now time.Time, isEliminated bool) string {
+	if p == nil || len(p.History) == 0 {
+		return ""
+	}
+	spark := gamecontext.RenderSparkline(p.History, ctx.Session.DeathThreshold)
+	activity := gamecontext.ClassifyActivity(p.History)
+	prox := gamecontext.ComputeProximity(p.History, ctx.SpeedTrack, ctx.Session.DeathThreshold)
+	return fmt.Sprintf("    %s: act%s %s %s",
+		p.Serial, spark, activity, gamecontext.RenderProximity(prox, now, isEliminated && prox.Crossed))
+}
+
+// eliminated reports whether a serial appears in the elimination sequence — used
+// to append the "→elim" marker to a player who crossed the death threshold AND
+// was eliminated (#1082).
+func eliminated(serial string, sequence []string) bool {
+	for _, s := range sequence {
+		if s == serial {
+			return true
+		}
+	}
+	return false
+}
+
+// writeSpeedTrack renders the session game-speed (tempo) sparkline (#1082): the
+// reference frame the per-player tracks are read against. The track ramps over the
+// game (accelerate rules / adjust_music_tempo step it), so it renders as a rising
+// sparkline. Omitted entirely when no tempo was ever observed (keeps the no-signal
+// prompt byte-identical to the pre-#1082 output for that section).
+func writeSpeedTrack(b *strings.Builder, ctx gamecontext.GameContext) {
+	spark := gamecontext.RenderSpeedTrack(ctx.SpeedTrack)
+	if spark == "" {
+		return
+	}
+	b.WriteString("\nGame speed (tempo over the game; oldest first):\n")
+	b.WriteString("  speed: ")
+	b.WriteString(spark)
+	b.WriteString("\n")
 }
 
 // writeTimeline renders the compact RECENT EVENTS section shared by the in-game

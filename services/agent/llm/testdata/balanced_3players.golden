@@ -40,6 +40,8 @@ Session:
   duration_seconds: 95.50
   active_players: 2
   game_active: true
+  music_tempo: unknown
+  death_threshold: unknown
   elimination_sequence: [CC:33]
 
 Recent events (oldest first; age relative to captured_at):

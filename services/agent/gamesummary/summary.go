@@ -83,6 +83,11 @@ type Summary struct {
 	// game moved through, oldest-first (#928 "engagement trend"). Derived entirely
 	// from the #916 timeline's state-delta entries.
 	EngagementTrend []EngagementPoint `json:"engagement_trend"`
+	// SpeedSparkline is the game-speed (music tempo) TIME-SERIES rendered as a
+	// sparkline (#1082): the reference frame the per-player proximity tracks are read
+	// against (the same intensity is near-death at slow tempo, barely-trying at
+	// fast). "" when no tempo was observed.
+	SpeedSparkline string `json:"speed_sparkline,omitempty"`
 	// Dominance is the dominant-player detection result (#928 "dominant player").
 	Dominance Dominance `json:"dominance"`
 	// Interventions is the list of agent interventions that fired and their outcome
@@ -119,6 +124,23 @@ type PlayerArc struct {
 	// known — the "how was this player doing" snapshot the arc closes on.
 	FinalSkill     *float64 `json:"final_skill,omitempty"`
 	FinalIntensity *float64 `json:"final_intensity,omitempty"`
+
+	// MovementSparkline is the compact movement TIME-SERIES for this player (#1082):
+	// the bucketed intensity series rendered as a Unicode block sparkline scaled
+	// against the session death threshold (a full bar == at the elimination
+	// threshold). "" when the player had no movement history. This is the per-player
+	// trajectory the issue calls for — the trend, not the single end snapshot.
+	MovementSparkline string `json:"movement_sparkline,omitempty"`
+	// Activity is the derived activity classification over the player's recent
+	// window: "idle" | "active" | "erratic" | "unknown" (#1082).
+	Activity string `json:"activity,omitempty"`
+	// NearDeathRatio is the player's CLOSEST call to the death threshold over the
+	// game, as a fraction of the threshold (1.0 == at the threshold). nil when no
+	// proximity could be computed (no movement samples or no threshold observed).
+	NearDeathRatio *float64 `json:"near_death_ratio,omitempty"`
+	// NearDeathOffsetSeconds is WHEN that closest call happened, relative to game
+	// start; nil when NearDeathRatio is nil.
+	NearDeathOffsetSeconds *float64 `json:"near_death_offset_seconds,omitempty"`
 }
 
 // EliminationEvent is one (offset, serial, order) point in the elimination
@@ -231,6 +253,7 @@ func BuildSummary(c gamecontext.GameContext, opts BuildOptions) Summary {
 		PlayerArcs:        arcs,
 		EliminationSpread: elims,
 		EngagementTrend:   trend,
+		SpeedSparkline:    gamecontext.RenderSpeedTrack(c.SpeedTrack),
 		Dominance:         dom,
 		Interventions:     interventions,
 	}
@@ -400,6 +423,20 @@ func buildPlayerArcs(c gamecontext.GameContext, elims []EliminationEvent, anchor
 		if p := c.Players[serial]; p != nil {
 			arc.FinalSkill = copyFloatPtr(p.SkillLevel)
 			arc.FinalIntensity = copyFloatPtr(p.MovementIntensity)
+			// Per-player movement TIME-SERIES (#1082): the sparkline (scaled against the
+			// session death threshold), the activity classification, and the closest call
+			// to the death threshold + when it happened (offset from game start). All
+			// derived from the bounded per-player history carried on the snapshot.
+			if len(p.History) > 0 {
+				arc.MovementSparkline = gamecontext.RenderSparkline(p.History, c.Session.DeathThreshold)
+				arc.Activity = string(gamecontext.ClassifyActivity(p.History))
+				if prox := gamecontext.ComputeProximity(p.History, c.SpeedTrack, c.Session.DeathThreshold); prox.Observed {
+					ratio := prox.Ratio
+					arc.NearDeathRatio = &ratio
+					off := offset(prox.At, anchor)
+					arc.NearDeathOffsetSeconds = &off
+				}
+			}
 		}
 		if elim, ok := elimBySerial[serial]; ok {
 			arc.Eliminated = true

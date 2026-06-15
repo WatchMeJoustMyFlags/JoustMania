@@ -39,6 +39,15 @@ type PlayerSignals struct {
 	// Fallback source: controller_connected{serial} == 1.
 	Active *bool
 
+	// History is the bounded per-player movement TIME-SERIES (#1082): an oldest-
+	// first slice of bucketed (t, intensity[, variance]) samples, a SNAPSHOT copy
+	// of the Store's per-player ring (shares no backing array with the live ring,
+	// so it is safe to render after later Store mutations). nil until the first
+	// intensity sample for this player arrives. The llm prompt / retro and the
+	// game summary render it as a compact sparkline + a proximity-to-death track —
+	// never as raw floats — via RenderSparkline / ComputeProximity / ClassifyActivity.
+	History []MovementSample
+
 	// LastUpdate is the last time any signal for this player changed.
 	LastUpdate time.Time
 
@@ -73,6 +82,24 @@ type SessionSignals struct {
 	// Source: game_current_mode{mode} label (value != 0) (live), or span
 	// attribute game.mode.
 	GameMode *string
+
+	// MusicTempo is the current applied game speed / music tempo — the reference
+	// frame the per-player intensity tracks must be read against (#1082): the same
+	// intensity is near-death at slow tempo and barely trying at fast tempo.
+	// Source: game_music_tempo (live; 1.0=slow .. ~1.3=fast, 0=no game). nil until
+	// observed. The accelerate rules (R5/R6/R7) and adjust_music_tempo interventions
+	// ramp it over the game, so the Store also keeps a per-tick SpeedTrack.
+	MusicTempo *float64
+
+	// DeathThreshold / WarningThreshold are the current effective (tempo-
+	// interpolated) elimination / warning thresholds in g-force (#1082).
+	// Source: game_effective_death_threshold / game_effective_warning_threshold
+	// (live). These are SESSION-level (one effective value, after the slow<->fast
+	// LERP), not per-player — the per-sensitivity tables stay internal to the
+	// coordinator. Proximity-to-death is each player's MovementIntensity read
+	// against DeathThreshold. nil until observed.
+	DeathThreshold   *float64
+	WarningThreshold *float64
 
 	// LastUpdate is the last time any session signal changed.
 	LastUpdate time.Time
@@ -110,4 +137,13 @@ type GameContext struct {
 	// recorded yet. The llm package renders it into a compact timeline section in
 	// both the in-game prompt (#739) and the retro (#844) via RenderTimeline.
 	Timeline []TimelineEvent
+
+	// SpeedTrack is a bounded, oldest-first SNAPSHOT of the session game-speed /
+	// death-threshold track (#1082): per-tick (t, tempo, death_threshold) samples,
+	// the reference frame the per-player proximity-to-death is read against (the
+	// same intensity is near-death at slow tempo, barely-trying at fast tempo). It
+	// shares no backing array with the live ring (safe to render after later Store
+	// mutations). nil until the first tempo/threshold reading arrives. Rendered as a
+	// compact tempo sparkline (RenderSpeedTrack) alongside the per-player sparklines.
+	SpeedTrack []SpeedSample
 }

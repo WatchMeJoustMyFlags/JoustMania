@@ -380,3 +380,43 @@ func TestApplyMetrics_NoExperimentLabelsLeavesAttributionEmpty(t *testing.T) {
 		t.Fatalf("Arm = %q, want empty (real game has no arm)", snap.Arm)
 	}
 }
+
+// TestApplyMetrics_SpeedAndThreshold verifies the #1082 game-speed / threshold
+// reference-frame gauges (no serial label) are ingested into the session signals
+// and the speed track, and that the coordinator's v==0 "no game" sentinel is
+// skipped rather than recorded as a real 0.0.
+func TestApplyMetrics_SpeedAndThreshold(t *testing.T) {
+	s := newTestStore()
+
+	if !s.ApplyMetrics(metricsWith(metricMusicTempo, 1.3, nil)) {
+		t.Fatal("expected music tempo update")
+	}
+	if !s.ApplyMetrics(metricsWith(metricEffectiveDeathThr, 1.8, nil)) {
+		t.Fatal("expected death threshold update")
+	}
+	if !s.ApplyMetrics(metricsWith(metricEffectiveWarnThr, 1.2, nil)) {
+		t.Fatal("expected warning threshold update")
+	}
+	snap := s.Snapshot()
+	if snap.Session.MusicTempo == nil || *snap.Session.MusicTempo != 1.3 {
+		t.Errorf("music tempo = %v, want 1.3", snap.Session.MusicTempo)
+	}
+	if snap.Session.DeathThreshold == nil || *snap.Session.DeathThreshold != 1.8 {
+		t.Errorf("death threshold = %v, want 1.8", snap.Session.DeathThreshold)
+	}
+	if snap.Session.WarningThreshold == nil || *snap.Session.WarningThreshold != 1.2 {
+		t.Errorf("warning threshold = %v, want 1.2", snap.Session.WarningThreshold)
+	}
+	if len(snap.SpeedTrack) == 0 {
+		t.Error("speed track should carry the tempo/threshold samples")
+	}
+
+	// v==0 sentinel: a "no game" reading must NOT be recorded and must not be a hit.
+	s2 := newTestStore()
+	if s2.ApplyMetrics(metricsWith(metricMusicTempo, 0, nil)) {
+		t.Error("tempo v==0 (no game) should be skipped")
+	}
+	if s2.Snapshot().Session.MusicTempo != nil {
+		t.Error("tempo v==0 must not be recorded")
+	}
+}

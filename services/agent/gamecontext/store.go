@@ -29,6 +29,19 @@ type Store struct {
 	// the next session on the same partition.
 	history timeline
 
+	// playerHistory is the bounded per-player movement TIME-SERIES (#1082): one
+	// fixed-capacity ring per serial of bucketed (t, intensity[, variance]) samples,
+	// guarded by s.mu like the #916 narrative. It lives ON the Store so it is
+	// per-partition and is reset/evicted alongside the rest of the session-scoped
+	// state. A player's ring is dropped when that player is TTL-evicted.
+	playerHistory map[string]*playerHistory
+
+	// speedTrack is the bounded session game-speed / death-threshold track (#1082):
+	// per-tick (t, tempo, death_threshold) samples, the reference frame the per-
+	// player proximity-to-death reads against. Session-scoped like the narrative,
+	// reset on a new session and on grace exit.
+	speedTrack speedTrack
+
 	// deathCounts tracks the last game_player_deaths_total per serial, so the
 	// fallback elimination source can detect increases.
 	deathCounts map[string]float64
@@ -128,13 +141,14 @@ func NewStore(playerTTL, sessionGrace time.Duration, now func() time.Time) *Stor
 		ctx: GameContext{
 			Players: make(map[string]*PlayerSignals),
 		},
-		history:      newTimeline(),
-		deathCounts:  make(map[string]float64),
-		elimOrder:    make(map[string]int),
-		disconnected: make(map[string]bool),
-		playerTTL:    playerTTL,
-		sessionGrace: sessionGrace,
-		now:          now,
+		history:       newTimeline(),
+		playerHistory: make(map[string]*playerHistory),
+		deathCounts:   make(map[string]float64),
+		elimOrder:     make(map[string]int),
+		disconnected:  make(map[string]bool),
+		playerTTL:     playerTTL,
+		sessionGrace:  sessionGrace,
+		now:           now,
 	}
 }
 
@@ -233,9 +247,29 @@ func (s *Store) SetPlayerIntensity(serial string, v float64) {
 	p := s.player(serial)
 	p.MovementIntensity = ptr(v)
 	s.touch(p)
+	// Append to the per-player movement TIME-SERIES (#1082), bucket-deduped to ~1Hz
+	// so the 60Hz firehose never churns the ring. Carry the player's last-observed
+	// variance alongside so the sample is self-describing.
+	s.recordPlayerSample(serial, v, p.MovementVariance)
 	// A movement-intensity change can move the session mean — record a state delta
 	// (deduped) so the narrative captures the energy trend (#916).
 	s.recordStateDelta()
+}
+
+// recordPlayerSample appends a bucketed (t, intensity, variance) sample to the
+// player's movement ring (#1082), creating the ring on demand. Caller holds s.mu.
+func (s *Store) recordPlayerSample(serial string, intensity float64, variance *float64) {
+	h := s.playerHistory[serial]
+	if h == nil {
+		h = &playerHistory{}
+		s.playerHistory[serial] = h
+	}
+	var vcopy *float64
+	if variance != nil {
+		v := *variance
+		vcopy = &v
+	}
+	h.record(MovementSample{At: s.now(), Intensity: intensity, Variance: vcopy})
 }
 
 // SetPlayerVariance records movement variance, creating the player on demand.
@@ -353,6 +387,38 @@ func (s *Store) SetGameMode(mode string) {
 	s.touchSession()
 }
 
+// SetMusicTempo records the current applied game speed / music tempo (#1082) and
+// appends it to the session speed track (the reference frame proximity-to-death
+// reads against). Bucket-deduped to ~1Hz like the per-player samples.
+func (s *Store) SetMusicTempo(v float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ctx.Session.MusicTempo = ptr(v)
+	s.touchSession()
+	s.speedTrack.record(SpeedSample{At: s.now(), Tempo: ptr(v)})
+}
+
+// SetDeathThreshold records the current effective (tempo-interpolated) death
+// threshold (#1082) and appends it to the session speed track so proximity-to-
+// death can read the threshold IN FORCE at each movement sample's time.
+func (s *Store) SetDeathThreshold(v float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ctx.Session.DeathThreshold = ptr(v)
+	s.touchSession()
+	s.speedTrack.record(SpeedSample{At: s.now(), DeathThreshold: ptr(v)})
+}
+
+// SetWarningThreshold records the current effective warning threshold (#1082).
+// It is a session signal only (no track sample) — the proximity track keys off the
+// death threshold; the warning threshold is rendered as context in the header.
+func (s *Store) SetWarningThreshold(v float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ctx.Session.WarningThreshold = ptr(v)
+	s.touchSession()
+}
+
 // SetGameActive records game-active state and manages session lifecycle.
 // A false->true transition starts a new session (bumps the sequence, assigns a
 // synthetic SessionID, clears per-game state). A true->false transition opens
@@ -382,6 +448,11 @@ func (s *Store) SetGameActive(active bool) {
 		// "start" phase event (#916). Reset here (not only on grace exit) so a
 		// back-to-back restart cannot carry the previous game's trend.
 		s.history.reset()
+		// Drop the prior game's per-player movement series + speed track so a back-
+		// to-back restart cannot carry the previous game's trend (#1082), mirroring
+		// the #916 narrative reset.
+		s.playerHistory = make(map[string]*playerHistory)
+		s.speedTrack.reset()
 		s.history.append(TimelineEvent{At: s.now(), Kind: EventPhase, Detail: "start"})
 	case prev && !active:
 		s.endedAt = s.now()
@@ -593,6 +664,13 @@ func (s *Store) snapshotLocked() GameContext {
 	out.Players = make(map[string]*PlayerSignals, len(s.ctx.Players))
 	for serial, p := range s.ctx.Players {
 		cp := *p
+		// Attach a fresh, oldest-first copy of this player's movement series (#1082):
+		// samples() allocates a new slice sharing no backing array with the ring, so a
+		// later record never mutates a handed-out snapshot — the same shared-nothing
+		// guarantee Players / Timeline give.
+		if h := s.playerHistory[serial]; h != nil {
+			cp.History = h.samples()
+		}
 		out.Players[serial] = &cp
 	}
 	if s.ctx.Session.EliminationSequence != nil {
@@ -605,6 +683,9 @@ func (s *Store) snapshotLocked() GameContext {
 	// ring, so a later append never mutates a handed-out snapshot — the same
 	// shared-nothing guarantee the Players/EliminationSequence copies give.
 	out.Timeline = s.history.events()
+	// Carry a fresh, oldest-first copy of the session speed/threshold track (#1082),
+	// shared-nothing with the live ring like the timeline above.
+	out.SpeedTrack = s.speedTrack.samples()
 	return out
 }
 
@@ -649,6 +730,7 @@ func (s *Store) EvictStale() {
 			delete(s.ctx.Players, serial)
 			delete(s.disconnected, serial)
 			delete(s.deathCounts, serial)
+			delete(s.playerHistory, serial) // drop the evicted player's movement ring (#1082)
 		}
 	}
 
@@ -665,5 +747,9 @@ func (s *Store) EvictStale() {
 		// session-scoped state (#916): the ring buffer is evicted with the session
 		// so a new game on this partition starts with an empty timeline.
 		s.history.reset()
+		// Likewise drop the per-player movement series + the session speed track
+		// (#1082) so the next game on this partition starts with empty tracks.
+		s.playerHistory = make(map[string]*playerHistory)
+		s.speedTrack.reset()
 	}
 }
