@@ -818,6 +818,23 @@ services:
       # open on the internal docker network. When set, the agent must send it via
       # AGENT_INFERENCE_API_KEY.
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-}
+      # OpenTelemetry (#1087): the `otel` callback (config.yaml litellm_settings)
+      # emits one gen_ai span per LLM call to the shared collector -> Jaeger.
+      # LiteLLM's otel integration reads OTEL_EXPORTER + OTEL_ENDPOINT directly;
+      # the underlying OTEL SDK also honours OTEL_EXPORTER_OTLP_ENDPOINT, so set
+      # both to the collector. Service identity matches the stack convention
+      # (name=litellm, namespace=infrastructure). NB: LiteLLM builds its own
+      # Resource via OTELResourceDetector, which reads OTEL_SERVICE_NAME +
+      # OTEL_RESOURCE_ATTRIBUTES but NOT a standalone OTEL_SERVICE_NAMESPACE var —
+      # so service.namespace is carried in OTEL_RESOURCE_ATTRIBUTES here (the
+      # OTEL_SERVICE_NAMESPACE line is kept for convention/parity with the SDK
+      # services and harms nothing).
+      - OTEL_SERVICE_NAME=litellm
+      - OTEL_SERVICE_NAMESPACE=infrastructure
+      - OTEL_EXPORTER=otlp_grpc
+      - OTEL_ENDPOINT=http://otel-collector:4317
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_RESOURCE_ATTRIBUTES=service.namespace=infrastructure,host.name=${JOUSTMANIA_HOST:-joustmania}
     volumes:
       - ./services/litellm/config.yaml:/etc/litellm/config.yaml:ro
     # Reach the HOST machine's Ollama (same mechanism the agent uses, #1048).
