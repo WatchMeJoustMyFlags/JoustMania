@@ -448,6 +448,10 @@ func (j *Journal) Summary() Summary {
 // copySummaryLocked deep-copies the rolling summary. Assumes j.mu is held.
 func (j *Journal) copySummaryLocked() Summary {
 	out := j.summary
+	// Objective is a derived VIEW field (#992): always sourced from the immutable
+	// intent, never folded onto the persisted summary, so it survives a rehydrate
+	// (intent.json is authoritative) without summary-schema migration.
+	out.Objective = j.intent.Objective
 	out.Arms = make(map[string]*ArmStat, len(j.summary.Arms))
 	for name, stat := range j.summary.Arms {
 		s := *stat

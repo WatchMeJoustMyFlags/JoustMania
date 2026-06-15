@@ -210,6 +210,29 @@ func TestRehydrate_SurvivesRestart(t *testing.T) {
 	}
 }
 
+// TestSummary_ObjectiveFromIntent: Summary().Objective is a derived view field
+// (#992) always sourced from the immutable intent, so it is present on a fresh
+// journal AND survives a rehydrate from disk (intent.json is authoritative) — the
+// #992 recent-real anchor reads it to key the per-objective baseline.
+func TestSummary_ObjectiveFromIntent(t *testing.T) {
+	dir := t.TempDir()
+	j, err := Create(dir, testIntent())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if got := j.Summary().Objective; got != "engagement_balanced" {
+		t.Fatalf("fresh Summary().Objective = %q, want %q", got, "engagement_balanced")
+	}
+
+	reloaded, err := Load(dir, "exp_a1b2c3d4e5f6")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := reloaded.Summary().Objective; got != "engagement_balanced" {
+		t.Fatalf("rehydrated Summary().Objective = %q, want %q", got, "engagement_balanced")
+	}
+}
+
 // TestRehydrate_RecomputesFromLogNotSummaryCache: the event log is the source of
 // truth. A corrupted summary.json on disk must NOT influence Load — the rebuilt
 // summary comes purely from intent + events.

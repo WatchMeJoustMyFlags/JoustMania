@@ -32,12 +32,17 @@ import (
 //
 // CONTROL ARM is the PRIMARY decision basis (decision 5): the within-experiment
 // shadow control arm is differenced against the experimental arm here. The
-// recent-real baseline (the M7-7 validate.Baseline seam) is a SECONDARY sanity
-// anchor; it is NOT wired through this seam because CohortVerdict.Evaluate is
-// handed only a Summary (no ctx / Proposal to call Baseline.Fitness against) — see
-// the wiring note at the bottom of this file. Shipping the within-experiment
-// comparison (the primary basis) and deferring the baseline cross-check is the
-// path the issue authorizes.
+// recent-real baseline is a SECONDARY substrate-validity anchor (#992, relates
+// #1017): when recent REAL play exists for the experiment's objective, a PROMOTE
+// must additionally hold up against it (the experimental arm must not REGRESS below
+// the recent-real baseline beyond a margin) or it is downgraded to inconclusive.
+// The anchor only ever GATES a promote — it never forces one, and discard /
+// inconclusive verdicts are unaffected. It FAILS OPEN: with no real-game data (the
+// mock/shadow-only reality) the anchor is skipped and the within-experiment verdict
+// stands. The baseline is read via an injected, nil-safe RecentRealBaseline accessor
+// (wired with WithRecentRealBaseline); the objective is carried on the Summary
+// (journal.Summary.Objective), so the CohortVerdict.Evaluate seam signature is
+// UNCHANGED — see applyRecentRealAnchor and the wiring note at the bottom.
 
 // Default gate thresholds. Tuned conservative: a verdict needs a non-trivial
 // sample per arm and a medium standardized effect before it commits.
@@ -99,7 +104,31 @@ const (
 	minPairsEnv  = "AGENT_VERDICT_MIN_PAIRS"
 	minRawEffEnv = "AGENT_VERDICT_MIN_RAW_EFFECT"
 	sdFloorEnv   = "AGENT_VERDICT_SD_FLOOR"
+	// anchorMarginEnv tunes the recent-real regression margin (#992). Falls back to
+	// DefaultAnchorMargin (which mirrors the #1042 raw-effect floor).
+	anchorMarginEnv = "AGENT_VERDICT_ANCHOR_MARGIN"
 )
+
+// DefaultAnchorMargin is the recent-real regression margin (#992): a PROMOTE
+// verdict is downgraded only when the experimental arm mean falls BELOW the
+// recent-real baseline by MORE than this margin. It mirrors DefaultMinRawEffect
+// (the #1042 practical-significance floor) on purpose — the same "don't act on a
+// fitness change smaller than ~2% of the [0,1] range" don't-care band applies to
+// the secondary cross-check, so a shadow-winner that is within noise of recent
+// real play is NOT treated as a regression. Tune via AGENT_VERDICT_ANCHOR_MARGIN.
+const DefaultAnchorMargin = DefaultMinRawEffect
+
+// RecentRealBaseline is the injected secondary-anchor accessor (#992): given the
+// experiment's fitness objective it returns the mean finalized fitness of the last
+// N REAL (game_kind="real") games for that objective and whether such a baseline
+// is AVAILABLE (ok=false ⇒ no/insufficient real samples — the mock/shadow-only
+// reality). It is the read seam over the #965 FitnessStore's RecentReal, adapted
+// to the (objective)→(mean, ok) shape the verdict needs WITHOUT importing the
+// store. A nil accessor (the default) means the anchor is entirely absent; ok=false
+// means the anchor is SKIPPED for this evaluation. Both fail OPEN — absence of real
+// data must never block the within-experiment verdict (the demo/shadow loop runs
+// with no real games today).
+type RecentRealBaseline func(objective string) (mean float64, ok bool)
 
 // CohortStat is the swappable arm-comparison strategy (design §8.3). Given the two
 // arms' raw running statistics it returns a standardized effect size (experimental
@@ -192,6 +221,34 @@ type Verdict struct {
 	sdFloor float64
 	// stat is the swappable comparison strategy (default effectSizeGate).
 	stat CohortStat
+	// recentRealBaseline is the SECONDARY-ANCHOR accessor (#992): the recent-real
+	// fitness baseline for an objective. nil ⇒ the anchor is absent (the verdict is
+	// the pure within-experiment comparison). When non-nil it GATES (never forces) a
+	// PROMOTE: a shadow-winner that would regress vs recent real play is downgraded to
+	// INCONCLUSIVE. Construction-immutable; wired via WithRecentRealBaseline.
+	recentRealBaseline RecentRealBaseline
+	// anchorMargin is the recent-real regression margin (#992). Construction-immutable.
+	anchorMargin float64
+}
+
+// WithRecentRealBaseline wires the SECONDARY recent-real anchor (#992) onto the
+// verdict and returns the same *Verdict for chaining. The accessor is nil-safe at
+// every use site (a nil accessor leaves the verdict the pure within-experiment
+// comparison), so callers that have no FitnessStore simply never call this. A
+// non-positive margin falls back to DefaultAnchorMargin.
+//
+// It is a post-construction wiring step (not a constructor parameter) deliberately:
+// every existing NewVerdict* call site stays unchanged, and the registry can build
+// the verdict, then attach the baseline once the FitnessStore exists — keeping the
+// seam one-directional (the verdict reads the baseline; it never reaches into the
+// store). Call once at construction, before the verdict is handed to the registry.
+func (v *Verdict) WithRecentRealBaseline(accessor RecentRealBaseline, margin float64) *Verdict {
+	if margin <= 0 {
+		margin = DefaultAnchorMargin
+	}
+	v.recentRealBaseline = accessor
+	v.anchorMargin = margin
+	return v
 }
 
 // SetThresholds live-updates the min-N and min-pairs gates (#1044) so a hot-reload
@@ -367,7 +424,16 @@ func (v *Verdict) Evaluate(s journal.Summary) (journal.Verdict, bool) {
 	// whenever at least one pair has completed; otherwise we fall through to the
 	// two-arm path so legacy/unpaired experiments are unaffected (the fallback).
 	if s.PairDiff != nil && s.PairDiff.Count > 0 {
-		return v.evaluatePaired(*s.PairDiff, minPairs)
+		// The experimental arm mean (the value a promote would make the real default)
+		// for the #992 recent-real anchor. The two-arm Welford accumulators are folded
+		// alongside the paired diffs, so the experimental arm's running mean is present
+		// even on the paired path; default to the per-pair mean when the arm is absent
+		// (legacy/degenerate) so the anchor still has a sensible experimental value.
+		expMean := s.PairDiff.Mean
+		if a, ok := s.Arms[ArmExperimental]; ok && a != nil {
+			expMean = a.Welford.Mean
+		}
+		return v.evaluatePaired(*s.PairDiff, minPairs, s.Objective, expMean)
 	}
 
 	expStat, expOK := s.Arms[ArmExperimental]
@@ -422,13 +488,15 @@ func (v *Verdict) Evaluate(s journal.Summary) (journal.Verdict, bool) {
 
 	switch {
 	case effect >= v.effectThreshold:
-		return journal.Verdict{
+		promote := journal.Verdict{
 			Outcome:     CohortOutcomePromote,
 			Delta:       delta,
 			Significant: true,
 			Reason: fmt.Sprintf("experimental better: effect=%.3f >= threshold=%.2f, |delta|=%.4f >= min_raw=%.4f (n=%d/%d)",
 				effect, v.effectThreshold, math.Abs(delta), v.minRawEffect, exp.Count, ctl.Count),
-		}, true
+		}
+		// SECONDARY anchor (#992): gate the promote against recent real play.
+		return v.applyRecentRealAnchor(promote, s.Objective, exp.Mean), true
 	case effect <= -v.effectThreshold:
 		return journal.Verdict{
 			Outcome:     CohortOutcomeDiscard,
@@ -448,6 +516,63 @@ func (v *Verdict) Evaluate(s journal.Summary) (journal.Verdict, bool) {
 	}
 }
 
+// applyRecentRealAnchor is the SECONDARY substrate-validity guard (#992, relates
+// #1017): it cross-checks a PROMOTE verdict against recent REAL play. The within-
+// experiment (shadow) arm comparison is the PRIMARY decision (above); this anchor
+// only ever GATES a promote — it never forces one, and it leaves discard /
+// inconclusive verdicts untouched.
+//
+// Behaviour (a secondary anchor that fails OPEN on missing real data):
+//
+//   - The verdict is not a PROMOTE ⇒ returned UNCHANGED (the anchor only gates
+//     promotion). Discard / inconclusive are never affected.
+//   - No accessor wired (recentRealBaseline == nil) OR the accessor reports no
+//     recent-real data (ok == false — the mock/shadow-only reality with no real
+//     games) ⇒ the anchor is SKIPPED and the PROMOTE stands UNCHANGED. This is the
+//     explicit fail-OPEN: absence of real data must not block the demo/shadow loop.
+//   - Recent-real data IS available AND the experimental value would REGRESS below
+//     the baseline by more than anchorMargin ⇒ the PROMOTE is DOWNGRADED to
+//     INCONCLUSIVE (the within-experiment shadow winner is worse than recent real
+//     play, so it is not a trustworthy real-default change), with a reason that names
+//     the regression. Significant is cleared.
+//   - Recent-real data available AND the experimental value holds up (≥ baseline −
+//     margin) ⇒ the PROMOTE stands; the reason is annotated with the cleared anchor.
+//
+// experimentalValue is the experimental arm's mean fitness (the value a promotion
+// would make the real default) — exp.Mean in the two-arm path, the experimental
+// arm mean in the paired path. objective selects the per-objective baseline.
+func (v *Verdict) applyRecentRealAnchor(verdict journal.Verdict, objective string, experimentalValue float64) journal.Verdict {
+	if verdict.Outcome != CohortOutcomePromote {
+		return verdict // anchor gates promotion only; discard/inconclusive unaffected.
+	}
+	if v.recentRealBaseline == nil {
+		return verdict // anchor absent — pure within-experiment verdict stands.
+	}
+	baseline, ok := v.recentRealBaseline(objective)
+	if !ok {
+		// No / insufficient recent-real data (the mock/shadow-only reality). FAIL OPEN:
+		// the within-experiment verdict stands so the demo/shadow loop is never blocked.
+		verdict.Reason += " | recent-real anchor: skipped (no real-game baseline)"
+		return verdict
+	}
+	// Regression test: the experimental value must not fall below recent real play by
+	// more than the margin. margin mirrors the #1042 practical-significance floor, so a
+	// shadow winner within noise of recent real play is NOT treated as a regression.
+	if experimentalValue < baseline-v.anchorMargin {
+		return journal.Verdict{
+			Outcome:     OutcomeInconclusive,
+			Delta:       verdict.Delta,
+			Significant: false,
+			Reason: fmt.Sprintf("promote gated by recent-real regression: experimental=%.4f < recent_real=%.4f - margin=%.4f (objective=%q); %s",
+				experimentalValue, baseline, v.anchorMargin, objective, verdict.Reason),
+		}
+	}
+	// Anchor cleared — annotate the promote reason so the cross-check is observable.
+	verdict.Reason += fmt.Sprintf(" | recent-real anchor: held (experimental=%.4f >= recent_real=%.4f - margin=%.4f)",
+		experimentalValue, baseline, v.anchorMargin)
+	return verdict
+}
+
 // evaluatePaired computes the verdict from the per-PAIR difference accumulator
 // (#1004). The statistic is the standardized paired effect d_z = mean(d) / sd(d),
 // where d_i = f_experimental_i − f_control_i and sd(d) is the UNBIASED sample
@@ -465,7 +590,7 @@ func (v *Verdict) Evaluate(s journal.Summary) (journal.Verdict, bool) {
 // Delta carries mean(d) (the average per-pair fitness improvement) for the audit
 // trail. The bool is always true: a non-nil non-empty PairDiff is a meaningful
 // (possibly interim) verdict the registry should record.
-func (v *Verdict) evaluatePaired(pd journal.Welford, minPairs int) (journal.Verdict, bool) {
+func (v *Verdict) evaluatePaired(pd journal.Welford, minPairs int, objective string, experimentalMean float64) (journal.Verdict, bool) {
 	meanD := pd.Mean
 
 	if pd.Count < minPairs {
@@ -529,13 +654,15 @@ func (v *Verdict) evaluatePaired(pd journal.Welford, minPairs int) (journal.Verd
 
 	switch {
 	case dz >= v.effectThreshold:
-		return journal.Verdict{
+		promote := journal.Verdict{
 			Outcome:     CohortOutcomePromote,
 			Delta:       meanD,
 			Significant: true,
 			Reason: fmt.Sprintf("paired: experimental better: d_z=%.3f >= threshold=%.2f, |mean_d|=%.4f >= min_raw=%.4f (pairs=%d)",
 				dz, v.effectThreshold, math.Abs(meanD), v.minRawEffect, pd.Count),
-		}, true
+		}
+		// SECONDARY anchor (#992): gate the paired promote against recent real play.
+		return v.applyRecentRealAnchor(promote, objective, experimentalMean), true
 	case dz <= -v.effectThreshold:
 		return journal.Verdict{
 			Outcome:     CohortOutcomeDiscard,
@@ -555,16 +682,22 @@ func (v *Verdict) evaluatePaired(pd journal.Welford, minPairs int) (journal.Verd
 	}
 }
 
-// Wiring note (recent-real baseline, design §8.3 secondary anchor — DEFERRED):
+// Wiring note (recent-real baseline, design §8.3 secondary anchor — IMPLEMENTED #992):
 //
-// The within-experiment control arm is the PRIMARY decision basis and is fully
-// implemented above. The recent-real baseline (validate.Baseline.Fitness) is the
-// design's SECONDARY sanity cross-check. It is NOT wired here because the
-// CohortVerdict seam (registry_seams.go) deliberately passes only a
-// journal.Summary — there is no ctx / Proposal in Evaluate's signature to call
-// Baseline.Fitness(ctx, p) against, and the registry's ConcludeGame call site does
-// not thread one through. Plumbing it would mean widening the seam (and the
-// registry call sites), which is out of scope for this issue. Follow-up: either
-// fold a recent-real baseline sample into a third pseudo-arm on the Summary at
-// game-end, or annotate the Verdict.Reason with a baseline cross-check after the
-// registry gains access to Baseline. Tracked as a follow-up on epic #982.
+// The within-experiment control arm is the PRIMARY decision basis (the paired d_z /
+// two-arm Cohen's d above). The recent-real baseline is the design's SECONDARY
+// substrate-validity cross-check, now wired WITHOUT widening the CohortVerdict seam:
+//
+//   - The objective the baseline is keyed by is carried on journal.Summary.Objective
+//     (a derived view field the journal copies from the immutable Intent on every
+//     Summary() call), so Evaluate's signature stays Evaluate(s journal.Summary).
+//   - The baseline itself is read via the injected RecentRealBaseline accessor
+//     (WithRecentRealBaseline), a nil-safe func(objective)→(mean, ok) over the #965
+//     FitnessStore.RecentReal. The verdict reads the baseline; it never imports or
+//     reaches into the store (the seam stays one-directional).
+//   - applyRecentRealAnchor gates ONLY a PROMOTE and fails OPEN (nil accessor or
+//     ok=false ⇒ promote stands), so the mock/shadow-only loop is never blocked.
+//
+// The registry builds the verdict and attaches the baseline in experiment_loop.go
+// once the FitnessStore exists. Tracked on epic #982; relates #1017 (the offline
+// validity study that makes this anchor's threshold meaningful).
