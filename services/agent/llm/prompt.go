@@ -255,6 +255,44 @@ const genericModeFragment = `GAME MODE — not specified this cycle: reason only
   and the live snapshot; do not assume mode-specific mechanics (respawn, roles,
   brackets) that are not stated.`
 
+// ffaImpactModel is the YOUR LEVERS AND THEIR IMPACT block (#1102): it tells the
+// model the MAGNITUDE of each lever's effect, not just its direction, so it can
+// gauge how aggressive an action is. It is FFA-focused (the mode we run) and is
+// composed alongside the #1091 FFA mechanics + the allow-list. Every number is
+// verified against services/game_coordinator/games/base.py:
+//   - death threshold = lerp(SLOW_MAX[sens], FAST_MAX[sens], tempo%), with
+//     SLOW_MAX=[1.3,1.5,1.8,2.5,3.2], FAST_MAX=[1.6,1.8,2.8,3.2,3.5] over
+//     sensitivity 0..4, and tempo% = (music_tempo-1.0)/(1.3-1.0) clamped to [0,1]
+//     (SLOW_MUSIC_SPEED=1.0, FAST_MUSIC_SPEED=1.3). So tempo 1.0=>SLOW_MAX,
+//     1.3=>FAST_MAX, 1.15=>midpoint. Higher sens level = higher bar = harder to
+//     die; slower tempo = lower bar = easier to die.
+//   - grant_shield extends grace_until by shield_seconds (3/5/10s variants);
+//     while shielded the per-frame death check is skipped entirely.
+//   - eliminate_player is immediate + permanent (FFA); end_game ends the round;
+//     win = last player alive.
+//
+// Worked example numbers (sens 2->3 at slow: 1.8->2.5; tempo 1.0->1.3 at sens 2:
+// 1.8->2.8) are taken straight from the arrays above so the model has a concrete
+// sense of scale. Kept terse — the prompt budget is already large.
+const ffaImpactModel = `YOUR LEVERS AND THEIR IMPACT (FFA; magnitudes from base.py — use to gauge how
+aggressive an action is). A player dies when smoothed intensity exceeds the
+death threshold = lerp(SLOW_MAX[sens], FAST_MAX[sens], tempo%), where
+SLOW_MAX=[1.3,1.5,1.8,2.5,3.2] (at tempo 1.0) and FAST_MAX=[1.6,1.8,2.8,3.2,3.5]
+(at tempo 1.3) across sensitivity levels 0..4; tempo 1.15 is the midpoint.
+Higher sensitivity level = higher bar = HARDER to die; slower tempo = lower bar
+= EASIER to die. So:
+  - adjust_music_tempo / set_pacing_profile: shifts EVERYONE's bar along the
+    LERP. e.g. at sens 2, tempo 1.0->1.3 raises the death bar 1.8->2.8 (much
+    more movement tolerated); dropping tempo lowers it (eliminations come faster).
+  - adjust_global_sensitivity / adjust_player_sensitivity: steps the level for
+    all / one player. e.g. at slow tempo, level 2->3 moves that bar 1.8->2.5
+    (harder to die); 2->1 moves it 1.8->1.5 (easier). One step is a sizable jump.
+  - grant_shield: extends a player's grace window by ~3s (short) / 5s (default) /
+    10s (long); during it they CANNOT be eliminated, then the EMA re-primes. Use
+    to save a player about to be unfairly eliminated.
+  - eliminate_player: immediate and PERMANENT removal. end_game: ends the round
+    now. Both are maximal, irreversible actions — last player alive wins.`
+
 // normalizeMode maps a raw game-mode string to a stable fragment key (#1091). The
 // mode reaches the agent from two sources that disagree on casing/wording:
 // game_coordinator's get_game_name() ("FFA", "Zombie", "Swapper", "Tournament",
@@ -286,6 +324,20 @@ func modePromptFragment(rawMode string) string {
 		return frag
 	}
 	return genericModeFragment
+}
+
+// modeImpactFragment returns the lever-IMPACT block for the current mode (#1102),
+// or "" for any non-FFA / unknown mode. The magnitudes are FFA-specific (they cite
+// FFA's permanent-elimination + last-player-alive mechanics and base.py's threshold
+// arrays), so we only emit them for FFA — the one mode we test/run. For other modes
+// the model still has the #1091 mechanics + the allow-list; it just lacks the (mode-
+// specific, not-yet-verified) magnitudes, which is honest rather than wrong. Empty
+// string means no section is emitted, keeping those prompts unchanged.
+func modeImpactFragment(rawMode string) string {
+	if normalizeMode(rawMode) == "ffa" {
+		return ffaImpactModel
+	}
+	return ""
 }
 
 // Build renders the deterministic prompt for one decision cycle. The same
@@ -341,6 +393,15 @@ OBJECTIVES (weights; higher = more important this session):
 You may ONLY choose interventions from this allow-list. Anything else is rejected:
   `)
 	b.WriteString(joinInterventions(s.InterventionsAllowed))
+	// Lever-IMPACT block (#1102): maps each allowed intervention to the MAGNITUDE of
+	// its effect on the death threshold / grace, so the model reasons about how
+	// aggressive an action is, not just its direction. FFA-only (magnitudes are
+	// mode-specific); "" for other modes leaves the prompt unchanged. Placed right
+	// after the allow-list it annotates, before the policy constraints.
+	if impact := modeImpactFragment(mode); impact != "" {
+		b.WriteString("\n\n")
+		b.WriteString(impact)
+	}
 	b.WriteString(`
 
 POLICY CONSTRAINTS:

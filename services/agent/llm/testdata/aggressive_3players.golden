@@ -41,6 +41,25 @@ OBJECTIVES (weights; higher = more important this session):
 You may ONLY choose interventions from this allow-list. Anything else is rejected:
   grant_shield, play_audio_cue, set_music_tempo
 
+YOUR LEVERS AND THEIR IMPACT (FFA; magnitudes from base.py — use to gauge how
+aggressive an action is). A player dies when smoothed intensity exceeds the
+death threshold = lerp(SLOW_MAX[sens], FAST_MAX[sens], tempo%), where
+SLOW_MAX=[1.3,1.5,1.8,2.5,3.2] (at tempo 1.0) and FAST_MAX=[1.6,1.8,2.8,3.2,3.5]
+(at tempo 1.3) across sensitivity levels 0..4; tempo 1.15 is the midpoint.
+Higher sensitivity level = higher bar = HARDER to die; slower tempo = lower bar
+= EASIER to die. So:
+  - adjust_music_tempo / set_pacing_profile: shifts EVERYONE's bar along the
+    LERP. e.g. at sens 2, tempo 1.0->1.3 raises the death bar 1.8->2.8 (much
+    more movement tolerated); dropping tempo lowers it (eliminations come faster).
+  - adjust_global_sensitivity / adjust_player_sensitivity: steps the level for
+    all / one player. e.g. at slow tempo, level 2->3 moves that bar 1.8->2.5
+    (harder to die); 2->1 moves it 1.8->1.5 (easier). One step is a sizable jump.
+  - grant_shield: extends a player's grace window by ~3s (short) / 5s (default) /
+    10s (long); during it they CANNOT be eliminated, then the EMA re-primes. Use
+    to save a player about to be unfairly eliminated.
+  - eliminate_player: immediate and PERMANENT removal. end_game: ends the round
+    now. Both are maximal, irreversible actions — last player alive wins.
+
 POLICY CONSTRAINTS:
   - Player-targeted interventions are blocked when the target's battery < 20%.
   - At most 2 weighted interventions per minute across the session.
