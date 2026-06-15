@@ -150,11 +150,10 @@ func fp(v float64) *float64 { return &v }
 // TestGroundTruth_SkillLevelSurvivesToConclusionSnapshot and
 // TestStore_MovementAggregatesSurviveToConclusionSnapshot).
 //
-// Both balanced sub-checks now fold at conclusion: skill-gap reads c.Players
-// DIRECTLY (never Active-gated; see decision.skillGap), and — after #1024 —
-// spike-survival reads the RETAINED whole-game aggregates instead of the
-// frozen-last-sample instantaneous signals, so it is also no longer Active-gated
-// and is MEANINGFUL post-game.
+// Balanced binds on skill-gap (reads c.Players DIRECTLY; never Active-gated; see
+// decision.skillGap). The retained whole-game aggregates (PeakAccel +
+// MovementVarianceAggregate) feed the spike-survival ratio, which is RECORDED for
+// observability/#1125 but does NOT gate balanced.
 func concludedBalancedContext() gamecontext.GameContext {
 	off := false
 	return gamecontext.GameContext{
@@ -173,16 +172,15 @@ func concludedBalancedContext() gamecontext.GameContext {
 	}
 }
 
-// TestOnGameEnd_ConcludedBalancedGameFoldsNonZeroFromBothSubChecks is the #1024
-// acceptance (Option 1: retained whole-game aggregate). It asserts the restored
-// two-signal balanced contract: a concluded balanced shadow game in which >=2
-// eliminated players still carry their retained skill_level AND their retained
-// whole-game movement aggregates folds a MEANINGFUL, non-zero balanced fitness
-// from BOTH sub-checks — skill-gap (reads c.Players directly) and spike-survival
-// (now reads the retained PeakAccel + MovementVarianceAggregate, no longer
-// Active-gated, so it is meaningful post-game instead of honestly skipped). This
-// is the exact path onGameEnd uses.
-func TestOnGameEnd_ConcludedBalancedGameFoldsNonZeroFromBothSubChecks(t *testing.T) {
+// TestOnGameEnd_ConcludedBalancedGameFoldsNonZeroFromSkillGapAtConclusion is the
+// #1024 Option-2 acceptance. It asserts the balanced contract: a concluded
+// balanced shadow game in which >=2 eliminated players still carry their retained
+// skill_level folds a MEANINGFUL, non-zero balanced fitness from SKILL-GAP ALONE
+// (reads c.Players directly; never Active-gated). The spike-survival ratio is
+// RECORDED on the span from the retained whole-game aggregates (the data
+// foundation for #1125) but does NOT contribute to balanced progress/satisfied.
+// This is the exact path onGameEnd uses.
+func TestOnGameEnd_ConcludedBalancedGameFoldsNonZeroFromSkillGapAtConclusion(t *testing.T) {
 	loop := &experimentLoop{
 		registry: nil, // not exercised: we score fitness directly via the same path onGameEnd uses
 		log:      testLogger(),
@@ -193,7 +191,7 @@ func TestOnGameEnd_ConcludedBalancedGameFoldsNonZeroFromBothSubChecks(t *testing
 	scored := withEffectiveDuration(concludedBalancedContext())
 	fit := loop.fitness(scored, decision.ObjectiveBalanced)
 	if fit <= 0 {
-		t.Fatalf("concluded balanced game must fold non-zero at conclusion, got %v", fit)
+		t.Fatalf("concluded balanced game must fold non-zero from skill-gap at conclusion, got %v", fit)
 	}
 
 	eval := decision.EvaluateFitness(scored, decision.DefaultStaticConfig().FitnessThresholds)
@@ -202,26 +200,29 @@ func TestOnGameEnd_ConcludedBalancedGameFoldsNonZeroFromBothSubChecks(t *testing
 		t.Fatal("balanced must be evaluated at conclusion")
 	}
 
-	// Sub-check 1: skill-gap (never Active-gated).
+	// Binding driver: skill-gap (never Active-gated). Progress derives from it alone.
 	gapProgress, ok := r.Values["balanced.skill_gap_progress"]
 	if !ok {
-		t.Fatal("skill_gap sub-signal must be present — non-Active-gated driver")
+		t.Fatal("skill_gap sub-signal must be present — the binding driver")
 	}
 	if gapProgress <= 0 {
-		t.Errorf("skill-gap sub-check must fold non-zero, got progress %v", gapProgress)
+		t.Errorf("skill-gap must fold non-zero, got progress %v", gapProgress)
+	}
+	if r.Progress != gapProgress {
+		t.Errorf("balanced progress %v must equal skill_gap_progress %v (skill-gap binds only)", r.Progress, gapProgress)
 	}
 
-	// Sub-check 2: spike-survival, the #1024 restoration. Present AND non-zero at
-	// conclusion because it now reads the retained whole-game aggregates.
-	survivalProgress, ok := r.Values["balanced.spike_survival_progress"]
-	if !ok {
-		t.Fatal("spike_survival sub-signal MUST be present at conclusion now (#1024 retained aggregate)")
+	// Spike-survival: RECORDED from the retained whole-game aggregates (#1125
+	// foundation) but NON-BINDING — present in values, does not change satisfied.
+	ratio, present := r.Values["balanced.spike_survival_ratio"]
+	if !present {
+		t.Fatal("spike_survival_ratio MUST be recorded at conclusion for observability/#1125")
 	}
-	if survivalProgress <= 0 {
-		t.Errorf("spike-survival sub-check must fold non-zero at conclusion, got progress %v", survivalProgress)
+	if ratio != 1.0 {
+		t.Errorf("both players survive (std <= 0.30*peak) → recorded ratio 1.0, got %v", ratio)
 	}
-	if ratio := r.Values["balanced.spike_survival_ratio"]; ratio != 1.0 {
-		t.Errorf("both players survive (variance_aggregate <= peak_accel) → ratio 1.0, got %v", ratio)
+	if _, present := r.Values["balanced.spike_survival_progress"]; !present {
+		t.Fatal("spike_survival_progress MUST be recorded at conclusion for observability/#1125")
 	}
 }
 

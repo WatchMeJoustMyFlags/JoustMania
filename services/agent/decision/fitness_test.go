@@ -162,66 +162,82 @@ func TestEvaluateBalanced_SkillGap(t *testing.T) {
 	}
 }
 
+// TestEvaluateBalanced_SpikeSurvival asserts the Option-2 contract: spike-survival
+// is RECORDED for observability (#1125) but does NOT gate balanced. Balanced binds
+// on skill-gap only. Here a small skill gap (0.2 <= 0.4) satisfies balanced even
+// though spike-survival ratio (0.667 < 0.8 threshold) would have failed the old
+// two-signal check — proving the ratio no longer sets satisfied=false.
 func TestEvaluateBalanced_SpikeSurvival(t *testing.T) {
-	fit := defaultFit() // spike_survival_threshold = 0.8
-	// Three players carrying the RETAINED whole-game aggregates (#1024): a player
-	// survives when std=sqrt(varAgg) <= 0.30*peak (dimensionless, both in g). With
-	// peak=2.0 the survive bound is varAgg <= (0.3*2)^2 = 0.36. Two survive, one
-	// does not -> ratio 2/3 = 0.667 < 0.8 -> fails survival. Active is irrelevant:
-	// spike-survival is no longer Active-gated, so it computes the same whether
-	// players are alive or eliminated (TestEvaluateBalanced_SpikeSurvivalAtConclusion).
+	fit := defaultFit() // spike_survival_threshold = 0.8, max_skill_gap = 0.4
+	// Three players carrying RETAINED whole-game aggregates + skill levels. The
+	// spike-survival ratio is recorded: a player "survives" when std=sqrt(varAgg)
+	// <= 0.30*peak. With peak=2.0 the survive bound is varAgg <= (0.3*2)^2 = 0.36.
+	// Two survive, one does not -> ratio 2/3 = 0.667 (< 0.8) — recorded but NOT
+	// gating. Skill gap is 0.2 (within 0.4) -> balanced satisfied on skill-gap.
 	c := playersCtx(
-		&gamecontext.PlayerSignals{Serial: "a", PeakAccel: fp(2.0), MovementVarianceAggregate: fp(0.09)}, // std 0.3 <= 0.6 -> survive
-		&gamecontext.PlayerSignals{Serial: "b", PeakAccel: fp(2.0), MovementVarianceAggregate: fp(0.25)}, // std 0.5 <= 0.6 -> survive
-		&gamecontext.PlayerSignals{Serial: "c", PeakAccel: fp(2.0), MovementVarianceAggregate: fp(1.0)},  // std 1.0 > 0.6 -> spike-thrown
+		&gamecontext.PlayerSignals{Serial: "a", SkillLevel: fp(0.5), PeakAccel: fp(2.0), MovementVarianceAggregate: fp(0.09)}, // std 0.3 <= 0.6 -> survive
+		&gamecontext.PlayerSignals{Serial: "b", SkillLevel: fp(0.7), PeakAccel: fp(2.0), MovementVarianceAggregate: fp(0.25)}, // std 0.5 <= 0.6 -> survive
+		&gamecontext.PlayerSignals{Serial: "c", SkillLevel: fp(0.6), PeakAccel: fp(2.0), MovementVarianceAggregate: fp(1.0)},  // std 1.0 > 0.6 -> spike-thrown
 	)
 	r, ok := evaluateBalanced(c, fit)
 	if !ok {
 		t.Fatal("expected evaluation")
 	}
+	// Spike-survival ratio is RECORDED for observability...
 	if got := r.Values["balanced.spike_survival_ratio"]; got < 0.66 || got > 0.67 {
-		t.Errorf("survival_ratio = %v, want ~0.667", got)
+		t.Errorf("survival_ratio = %v, want ~0.667 (recorded for observability)", got)
 	}
-	if r.Satisfied {
-		t.Error("survival 0.667 < 0.8 must fail balanced")
+	// ...but does NOT gate: balanced is satisfied on the small skill gap (0.2 <= 0.4)
+	// even though the recorded ratio 0.667 is below the 0.8 threshold.
+	if !r.Satisfied {
+		t.Error("balanced must be satisfied on skill-gap (0.2 <= 0.4); spike-survival must NOT gate")
+	}
+	// Progress derives from skill-gap only, not min(skill, survival).
+	if got := r.Values["balanced.skill_gap_progress"]; r.Progress != got {
+		t.Errorf("progress = %v, want skill_gap_progress %v (spike-survival must not bind progress)", r.Progress, got)
 	}
 }
 
-// TestEvaluateBalanced_SpikeSurvivalAtConclusion is the #1024 proof: at game
-// conclusion EVERY player is eliminated (Active=false) and the instantaneous
-// MovementIntensity/MovementVariance are frozen, yet spike-survival still
-// computes non-trivially because it reads the RETAINED whole-game aggregates
-// (PeakAccel + MovementVarianceAggregate). The prior Active-gated instantaneous
-// check would have skipped entirely here.
+// TestEvaluateBalanced_SpikeSurvivalAtConclusion asserts the Option-2 contract at
+// game conclusion: every player is eliminated (Active=false) and the instantaneous
+// MovementIntensity/MovementVariance are frozen, yet the spike-survival ratio is
+// still RECORDED from the RETAINED whole-game aggregates (PeakAccel +
+// MovementVarianceAggregate) — present in Values for observability/#1125 — while
+// balanced's verdict binds on skill-gap only.
 func TestEvaluateBalanced_SpikeSurvivalAtConclusion(t *testing.T) {
 	fit := defaultFit() // spike_survival_threshold = 0.8
-	dead := func(serial string, peak, varAgg float64) *gamecontext.PlayerSignals {
+	dead := func(serial string, skill, peak, varAgg float64) *gamecontext.PlayerSignals {
 		return &gamecontext.PlayerSignals{
 			Serial:                    serial,
 			Active:                    bp(false), // eliminated at conclusion
+			SkillLevel:                fp(skill),
 			PeakAccel:                 fp(peak),
 			MovementVarianceAggregate: fp(varAgg),
-			// Frozen last-sample instantaneous values are deliberately set to a
-			// value that, under the OLD check, would have inverted the verdict;
-			// the new check ignores them entirely.
+			// Frozen last-sample instantaneous values are deliberately set; the
+			// spike-survival computation ignores them entirely.
 			MovementIntensity: fp(0.1),
 			MovementVariance:  fp(5.0),
 		}
 	}
 	c := playersCtx(
-		dead("a", 2.0, 0.09), // survives: std 0.3 <= 0.30*2.0 = 0.6
-		dead("b", 2.0, 0.25), // survives: std 0.5 <= 0.6
-		dead("c", 2.0, 1.0),  // thrown by spikes: std 1.0 > 0.6
+		dead("a", 0.5, 2.0, 0.09), // survives: std 0.3 <= 0.30*2.0 = 0.6
+		dead("b", 0.7, 2.0, 0.25), // survives: std 0.5 <= 0.6
+		dead("c", 0.6, 2.0, 1.0),  // thrown by spikes: std 1.0 > 0.6
 	)
 	r, ok := evaluateBalanced(c, fit)
 	if !ok {
-		t.Fatal("expected evaluation at conclusion (spike-survival must NOT be skipped)")
+		t.Fatal("expected evaluation at conclusion (skill-gap binds balanced)")
 	}
 	if _, present := r.Values["balanced.spike_survival_ratio"]; !present {
-		t.Fatal("spike_survival_ratio absent at conclusion; sub-check was skipped")
+		t.Fatal("spike_survival_ratio must be RECORDED at conclusion for observability/#1125")
 	}
 	if got := r.Values["balanced.spike_survival_ratio"]; got < 0.66 || got > 0.67 {
 		t.Errorf("conclusion survival_ratio = %v, want ~0.667 from retained aggregates", got)
+	}
+	// Verdict binds on skill-gap only (gap 0.2 <= 0.4 -> satisfied), not the
+	// recorded sub-threshold ratio.
+	if !r.Satisfied {
+		t.Error("balanced must be satisfied on skill-gap at conclusion; spike-survival must NOT gate")
 	}
 }
 
