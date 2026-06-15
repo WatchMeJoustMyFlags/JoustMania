@@ -221,6 +221,15 @@ type Loop struct {
 	// a single budget. Nil until injected; a nil budget gates every llm attempt
 	// with llm_budget_exhausted (fail-closed: no shared cap means no llm).
 	budget *llmBudget
+	// budgetOverride, when > 0, replaces the per-cycle llm.max_requests_per_minute
+	// flag value as the budget cap (#964). It exists for LIVE inference operation
+	// (AGENT_LLM_MAX_REQUESTS_PER_MINUTE): under the eval-cycle rate the flag default
+	// (6/min) exhausts the budget almost immediately, gating the llm path with
+	// llm_budget_exhausted even when a backend is reachable. An operator can raise the
+	// cap for a live dry-run via one env knob without editing flagd. Zero (the default,
+	// and every existing test) means "no override" → the flag value governs exactly as
+	// before, so the default-off path is unchanged. Set at construction, before serving.
+	budgetOverride int
 
 	// resolver is the SHARED inference fallback-chain resolver (#741), injected via
 	// SetResolver from the one instance main.go constructs (one availability cache
@@ -321,6 +330,31 @@ func NewLoop(flagSource FlagSource, log *slog.Logger) *Loop {
 // collectively exceed llm.max_requests_per_minute. Not safe to call concurrently
 // with OnEvaluate — set it during construction, before the loop serves.
 func (l *Loop) SetLLMBudget(b *llmBudget) { l.budget = b }
+
+// SetLLMBudgetOverride sets a per-minute LLM request cap that REPLACES the live
+// llm.max_requests_per_minute flag value (#964). main.go passes
+// AGENT_LLM_MAX_REQUESTS_PER_MINUTE when an operator wants a higher live cap for a
+// real-inference dry-run (the flag default of 6/min exhausts under the eval-cycle
+// rate, gating the llm path with llm_budget_exhausted even with a reachable backend).
+// A non-positive value is ignored (the flag governs), so the default-off path is
+// unchanged. Set during construction, before the loop serves.
+func (l *Loop) SetLLMBudgetOverride(maxPerMinute int) {
+	if maxPerMinute > 0 {
+		l.budgetOverride = maxPerMinute
+	}
+}
+
+// budgetCap returns the per-minute LLM request cap to enforce this cycle: the
+// startup env override (#964) when one is set, else the live
+// llm.max_requests_per_minute flag value (#847). Keeping the flag as the default
+// preserves the never-cached, tune-live contract; the override is purely an
+// operator escape hatch for live inference and defaults to off.
+func (l *Loop) budgetCap(flagValue int) int {
+	if l.budgetOverride > 0 {
+		return l.budgetOverride
+	}
+	return flagValue
+}
 
 // SetResolver injects the SHARED inference fallback-chain resolver (#741). main.go
 // constructs ONE Resolver (one availability cache + one background probe ticker for
@@ -719,7 +753,7 @@ func (l *Loop) gateLLM(ctx context.Context, snapshot flags.Snapshot, c gameconte
 	// (never injected) fails closed — no shared cap means no llm. The budget is
 	// charged here, last, so an attempt blocked by cadence above never draws it
 	// down.
-	if l.budget == nil || !l.budget.allow(t, snapshot.LLMGate.MaxRequestsPerMinute) {
+	if l.budget == nil || !l.budget.allow(t, l.budgetCap(snapshot.LLMGate.MaxRequestsPerMinute)) {
 		l.recordGated(ctx, FallbackBudgetExhausted)
 		return FallbackBudgetExhausted
 	}

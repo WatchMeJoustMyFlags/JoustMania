@@ -2,6 +2,9 @@ package decision
 
 import (
 	"context"
+	"net"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -129,6 +132,18 @@ type Resolver struct {
 	// index downward. The rules engine is the implicit terminal rung below it.
 	chain []Backend
 
+	// inferenceTier is the name of the configured-inference-backend tier (#964): when
+	// AGENT_INFERENCE_BACKEND=openai, main.go builds a Resolver whose chain TOP is a
+	// real OpenAI-compatible tier named after AGENT_INFERENCE_MODEL, probed at the
+	// host:port of AGENT_INFERENCE_BASE_URL and Infer-delegating to the same client
+	// the proposer uses. When this is non-empty resolve() ALWAYS starts the walk at
+	// this tier regardless of the agent.model flag, so the configured backend IS the
+	// inference path and a stale/default model flag (phi4-mini) can no longer skip
+	// past it down the chain — closing the #964 "resolver decoupled from
+	// AGENT_INFERENCE_BASE_URL" gap. Empty (the stub default) restores the pre-#964
+	// behavior: the walk starts at the tier the model flag selects (resolveTierFromModel).
+	inferenceTier string
+
 	// mu guards available. The decision hot path takes it for a cheap read; the
 	// background refresh takes it for the write. Held only around the map read and
 	// write, never across a probe (probes run before the lock is taken).
@@ -190,6 +205,86 @@ func DefaultChainWithInfer(eps Endpoints, inferFn func(ctx context.Context, prom
 	}
 }
 
+// InferenceTier describes the configured real inference backend as a resolver tier
+// (#964). When AGENT_INFERENCE_BACKEND=openai, main.go fills it from the SAME
+// AGENT_INFERENCE_* config that builds the OpenAIBackend, so the resolver's
+// availability probe targets the configured backend's host:port (Addr) and the tier
+// is named after the configured model (Model = AGENT_INFERENCE_MODEL). The zero value
+// (no real backend selected) yields no inference tier and the chain/resolver behave
+// exactly as before — the stub default is byte-identical.
+type InferenceTier struct {
+	// Model is the tier name, equal to AGENT_INFERENCE_MODEL. It becomes inference.used
+	// on the decision span and gen_ai.request.model on the inference span, so a single
+	// AGENT_INFERENCE_MODEL drives the backend request AND the decision-loop attribution
+	// (#964 gap 3: one source of truth, no more phi4-mini/AGENT_INFERENCE_MODEL drift).
+	Model string
+	// Addr is the host:port the availability probe TCP-dials, parsed from
+	// AGENT_INFERENCE_BASE_URL (see InferenceProbeAddr). Empty makes the tier
+	// permanently unreachable (the chain degrades exactly as today), so a
+	// mis-/un-parseable base URL fails SAFE to rules rather than to a broken tier.
+	Addr string
+	// Infer is the real OpenAI-compatible delegate (the SAME inference.OpenAIBackend
+	// the proposer uses). Non-nil on AGENT_INFERENCE_BACKEND=openai; a reachable tier
+	// then produces real model text instead of the not-implemented sentinel.
+	Infer func(ctx context.Context, prompt llm.Prompt) (string, error)
+}
+
+// NewInferenceResolver builds the production Resolver for the configured real
+// inference backend (#964). The configured-inference tier (named after the model) is
+// the chain TOP, probed at its own host:port, followed by the legacy cloud/jetson/
+// localhost tiers (still probed at their endpoints, still Infer-delegating to the
+// same client) so the existing fallback chain remains intact below the configured
+// backend. resolve() ALWAYS starts the walk at the configured-inference tier (it is
+// the canonical inference path), then degrades down the legacy chain and finally to
+// rules — graceful degradation is preserved end to end. interval is the background
+// re-probe cadence (DefaultProbeInterval when non-positive).
+func NewInferenceResolver(tier InferenceTier, eps Endpoints, interval time.Duration) *Resolver {
+	chain := make([]Backend, 0, 4)
+	chain = append(chain, newEndpointBackendWithInfer(tier.Model, tier.Addr, tier.Infer))
+	// Skip any legacy tier whose Name() duplicates the configured model. The
+	// availability map is keyed by Name() (see Refresh/resolve), so a duplicate
+	// (e.g. AGENT_INFERENCE_MODEL unset -> DefaultModel "phi4-mini" == TierPhi) would
+	// collide on one key and the legacy localhost probe — unreachable in the
+	// container — would clobber the configured tier's availability under last-write-
+	// wins, silently degrading a reachable backend to rules. The configured tier
+	// (probed at tier.Addr) supersedes the same-named legacy rung entirely.
+	for _, b := range DefaultChainWithInfer(eps, tier.Infer) {
+		if b.Name() == tier.Model {
+			continue
+		}
+		chain = append(chain, b)
+	}
+	r := NewResolver(chain, interval)
+	r.inferenceTier = tier.Model
+	return r
+}
+
+// InferenceProbeAddr derives the host:port a TCP availability probe should dial from
+// an OpenAI-compatible base URL (#964). It strips the scheme and any path (e.g.
+// "http://192.168.224.1:11434/v1" -> "192.168.224.1:11434"), and when the URL omits a
+// port it supplies the scheme default (443 for https, else 80) so the probe still has
+// a concrete dial target. An unparseable / host-less URL returns "" — the caller then
+// builds a permanently-unreachable tier (fail-safe to rules), never a panic.
+func InferenceProbeAddr(baseURL string) string {
+	u, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	host := u.Hostname()
+	if host == "" {
+		return ""
+	}
+	port := u.Port()
+	if port == "" {
+		if u.Scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	return net.JoinHostPort(host, port)
+}
+
 // resolveTierFromModel maps the configured agent.model flag to the index of the
 // chain tier it selects as the TOP of the walk. claude/copilot -> the cloud tier
 // (index 0); gemma3:4b -> the Jetson tier; phi4-mini -> the localhost tier; any
@@ -197,6 +292,20 @@ func DefaultChainWithInfer(eps Endpoints, inferFn func(ctx context.Context, prom
 // and degrades through every rung rather than silently skipping the chain. It
 // returns the chain index to start resolving from.
 func (r *Resolver) resolveTierFromModel(model string) int {
+	// #964: when a real inference backend is configured (AGENT_INFERENCE_BACKEND=openai),
+	// it is the canonical inference path — ALWAYS start the walk at its tier, whatever
+	// the agent.model flag says. This is what wires the decision-loop resolver to
+	// AGENT_INFERENCE_BASE_URL/AGENT_INFERENCE_MODEL: the configured backend's tier is
+	// the chain top, so a reachable backend resolves to a non-nil Backend and decide()
+	// actually CALLS it (mode=llm) instead of degrading to rules because a default
+	// phi4-mini flag pointed at an unreachable localhost tier.
+	if r.inferenceTier != "" {
+		for i, b := range r.chain {
+			if b.Name() == r.inferenceTier {
+				return i
+			}
+		}
+	}
 	if _, isCloud := cloudModels[model]; isCloud {
 		return 0
 	}
