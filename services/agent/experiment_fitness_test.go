@@ -164,10 +164,11 @@ func concludedBalancedContext() gamecontext.GameContext {
 		Arm:          "experimental",
 		Session:      gamecontext.SessionSignals{GameActive: &off},
 		Players: map[string]*gamecontext.PlayerSignals{
-			// Retained whole-game aggregates: variance_aggregate <= peak_accel for
-			// both → both survive spikes → survival_ratio 1.0.
-			"a": {Serial: "a", Active: &off, SkillLevel: fp(0.45), PeakAccel: fp(2.0), MovementVarianceAggregate: fp(0.4)},
-			"b": {Serial: "b", Active: &off, SkillLevel: fp(0.55), PeakAccel: fp(2.0), MovementVarianceAggregate: fp(0.6)},
+			// Retained whole-game aggregates: std=sqrt(varAgg) <= 0.30*peak for both
+			// (peak 2.0 → survive bound varAgg <= 0.36) → both survive spikes →
+			// survival_ratio 1.0.
+			"a": {Serial: "a", Active: &off, SkillLevel: fp(0.45), PeakAccel: fp(2.0), MovementVarianceAggregate: fp(0.09)}, // std 0.3 <= 0.6
+			"b": {Serial: "b", Active: &off, SkillLevel: fp(0.55), PeakAccel: fp(2.0), MovementVarianceAggregate: fp(0.16)}, // std 0.4 <= 0.6
 		},
 	}
 }

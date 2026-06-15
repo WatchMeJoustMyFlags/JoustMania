@@ -1,6 +1,7 @@
 package decision
 
 import (
+	"math"
 	"sort"
 
 	"github.com/joustmania/agent/gamecontext"
@@ -277,10 +278,23 @@ func skillGapProgress(gap, maxGap float64) float64 {
 //
 // It is therefore NOT Active-gated: it iterates every player (c.Players directly,
 // like skillGap), so a concluded game with eliminated players still contributes.
-// A player survives when their whole-game variance does not exceed their
-// whole-game peak intensity (large erratic swings relative to sustained peak
-// effort indicate a player thrown by spikes). Returns the ratio and whether any
-// player had both retained aggregates.
+// spikeSurvivalMaxStdPeakRatio is the DIMENSIONLESS spikiness threshold: a
+// player "survives" spikes when their whole-game movement std-deviation is at
+// most this fraction of their whole-game peak intensity (std/peak <= k). Both
+// are in g, so the ratio is unitless. Real PS Move accel play lands std/peak in
+// ~[0.15, 0.40] (steady players low, erratic/spiky players high), so 0.30
+// discriminates steady survivors from spike-thrown players. This is a
+// CONSERVATIVE default pending empirical calibration against recorded games
+// (tracked as a follow-up); the prior `variance(g²) <= peak(g)` comparison was
+// dimensionally unsound and degenerate (near-always true), restoring no signal.
+const spikeSurvivalMaxStdPeakRatio = 0.30
+
+// A player survives when their whole-game movement std-deviation is a small
+// fraction of their whole-game peak intensity (std/peak <= spikeSurvivalMaxStdPeakRatio):
+// large erratic swings relative to sustained peak effort indicate a player
+// thrown by spikes. std = sqrt(MovementVarianceAggregate); both std and PeakAccel
+// are in g, so the comparison is dimensionally consistent. Returns the ratio and
+// whether any player had both retained aggregates.
 //
 // Confound note (#1024): a whole-game aggregate is far less confounded than the
 // frozen last-sample (which captured only the elimination instant, the moment a
@@ -293,8 +307,17 @@ func spikeSurvivalRatio(c gamecontext.GameContext) (float64, bool) {
 		if p == nil || p.MovementVarianceAggregate == nil || p.PeakAccel == nil {
 			continue
 		}
+		peak := *p.PeakAccel
+		if peak <= 0 {
+			// No peak observed → no spike to survive; treat as a survivor so a
+			// motionless/never-moved player isn't counted as spike-thrown.
+			total++
+			survivors++
+			continue
+		}
 		total++
-		if *p.MovementVarianceAggregate <= *p.PeakAccel {
+		std := math.Sqrt(*p.MovementVarianceAggregate)
+		if std <= spikeSurvivalMaxStdPeakRatio*peak {
 			survivors++
 		}
 	}

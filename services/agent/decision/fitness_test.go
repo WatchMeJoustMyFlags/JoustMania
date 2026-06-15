@@ -164,15 +164,16 @@ func TestEvaluateBalanced_SkillGap(t *testing.T) {
 
 func TestEvaluateBalanced_SpikeSurvival(t *testing.T) {
 	fit := defaultFit() // spike_survival_threshold = 0.8
-	// Three players carrying the RETAINED whole-game aggregates (#1024): two
-	// survive (variance_aggregate <= peak_accel), one does not -> ratio 2/3 =
-	// 0.667 < 0.8 -> fails survival. Active is irrelevant: spike-survival is no
-	// longer Active-gated, so it computes the same whether players are alive or
-	// eliminated (proven below in TestEvaluateBalanced_SpikeSurvivalAtConclusion).
+	// Three players carrying the RETAINED whole-game aggregates (#1024): a player
+	// survives when std=sqrt(varAgg) <= 0.30*peak (dimensionless, both in g). With
+	// peak=2.0 the survive bound is varAgg <= (0.3*2)^2 = 0.36. Two survive, one
+	// does not -> ratio 2/3 = 0.667 < 0.8 -> fails survival. Active is irrelevant:
+	// spike-survival is no longer Active-gated, so it computes the same whether
+	// players are alive or eliminated (TestEvaluateBalanced_SpikeSurvivalAtConclusion).
 	c := playersCtx(
-		&gamecontext.PlayerSignals{Serial: "a", PeakAccel: fp(1.0), MovementVarianceAggregate: fp(0.5)},
-		&gamecontext.PlayerSignals{Serial: "b", PeakAccel: fp(1.0), MovementVarianceAggregate: fp(0.9)},
-		&gamecontext.PlayerSignals{Serial: "c", PeakAccel: fp(1.0), MovementVarianceAggregate: fp(2.0)},
+		&gamecontext.PlayerSignals{Serial: "a", PeakAccel: fp(2.0), MovementVarianceAggregate: fp(0.09)}, // std 0.3 <= 0.6 -> survive
+		&gamecontext.PlayerSignals{Serial: "b", PeakAccel: fp(2.0), MovementVarianceAggregate: fp(0.25)}, // std 0.5 <= 0.6 -> survive
+		&gamecontext.PlayerSignals{Serial: "c", PeakAccel: fp(2.0), MovementVarianceAggregate: fp(1.0)},  // std 1.0 > 0.6 -> spike-thrown
 	)
 	r, ok := evaluateBalanced(c, fit)
 	if !ok {
@@ -208,9 +209,9 @@ func TestEvaluateBalanced_SpikeSurvivalAtConclusion(t *testing.T) {
 		}
 	}
 	c := playersCtx(
-		dead("a", 2.0, 0.5), // survives: 0.5 <= 2.0
-		dead("b", 2.0, 1.0), // survives: 1.0 <= 2.0
-		dead("c", 2.0, 9.0), // thrown by spikes: 9.0 > 2.0
+		dead("a", 2.0, 0.09), // survives: std 0.3 <= 0.30*2.0 = 0.6
+		dead("b", 2.0, 0.25), // survives: std 0.5 <= 0.6
+		dead("c", 2.0, 1.0),  // thrown by spikes: std 1.0 > 0.6
 	)
 	r, ok := evaluateBalanced(c, fit)
 	if !ok {
