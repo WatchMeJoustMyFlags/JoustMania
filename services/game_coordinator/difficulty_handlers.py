@@ -39,11 +39,13 @@ not conflict structurally.
 """
 
 import logging
+import time
+from dataclasses import replace
 
 from lib.feature_flags import read_object_flag_variant
 from lib.types import Sensitivity
 
-from .games.base import resolve_music_windows
+from .games.base import parse_ramp_tempo_value, resolve_music_windows
 from .interventions import InterventionContext, InterventionManager
 
 logger = logging.getLogger(__name__)
@@ -308,6 +310,58 @@ def _restore_init_windows(game: object) -> None:
     logger.info("pacing_profile: restored init-resolved music windows")
 
 
+async def handle_ramp_tempo(ctx: InterventionContext) -> None:
+    """Arm a scheduled tempo CURVE on the live game (#1117, #1103 MVP action 2).
+
+    State-shaped STRING: ``ctx.value`` is ``"<target>:<seconds>:<curve>"`` (e.g.
+    ``"1.3:8:linear"``). The value is parsed + bounds-validated by
+    :func:`parse_ramp_tempo_value` (target clamped to the valid tempo range,
+    seconds > 0 and capped, curve in {linear, ease}); a MALFORMED value yields
+    ``None`` and is a safe no-op (the descriptor is NOT changed, so no garbage is
+    dispatched). On a valid value the descriptor's interpolation origin is anchored
+    to the live music_speed + now and stored on ``game.tempo_ramp``; the game's
+    100ms ``_check_music_speed`` loop then interpolates toward the target via the
+    SINGLE tempo-owner seam (no second writer). When ``tempo_schedule_mode==agent``
+    this curve drives the schedule. The neutral value ("none") never reaches here;
+    reverting drops the descriptor via :func:`handle_ramp_tempo_revert`.
+    """
+    game = ctx.game
+    if game is None:
+        logger.debug("ramp_tempo: no live game, ignoring")
+        return
+
+    descriptor = parse_ramp_tempo_value(ctx.value)
+    if descriptor is None:
+        logger.warning(f"ramp_tempo: malformed value {ctx.value!r}, ignoring (no-op)")
+        return
+
+    # Anchor the curve's origin to the live tempo + clock so it ramps from where
+    # the music actually is right now.
+    armed = replace(descriptor, start_tempo=game.music_speed, start_time=time.time())
+    game.tempo_ramp = armed
+    logger.info(
+        f"ramp_tempo: armed {armed.start_tempo:.2f}x -> {armed.target_tempo:.2f}x "
+        f"over {armed.duration:.1f}s ({armed.curve})"
+    )
+
+
+async def handle_ramp_tempo_revert(ctx: InterventionContext) -> None:
+    """Drop the ramp descriptor on revert so the default rule resumes (#1117).
+
+    The manager routes a state flag's revert-to-neutral ("none") to
+    ``_revert_handlers`` rather than re-invoking the apply handler, so without this
+    entry ``game.tempo_ramp`` would stay pinned at the last curve and the music
+    loop would hold at its target forever. Clearing it lets ``_check_music_speed``
+    resume the natural slow/fast schedule from the held tempo on its next tick.
+    """
+    game = ctx.game
+    if game is None:
+        logger.debug("ramp_tempo: no live game on revert, ignoring")
+        return
+    game.tempo_ramp = None
+    logger.info("ramp_tempo: reverted, natural schedule resumes from held tempo")
+
+
 def register_difficulty_handlers(manager: InterventionManager) -> None:
     """Wire the difficulty handlers onto the manager (one line per flag).
 
@@ -344,3 +398,9 @@ def register_difficulty_handlers(manager: InterventionManager) -> None:
     manager._revert_handlers["global_difficulty_factor"] = handle_global_difficulty_factor_revert
     manager.register_handler("pacing_profile", handle_pacing_profile)
     manager._revert_handlers["pacing_profile"] = handle_pacing_profile_revert
+    # #1117 ramp_tempo: session-scoped string state flag (scheduled tempo curve).
+    # Like music_tempo_override it needs an explicit revert handler (#922): the
+    # manager routes the revert-to-neutral ("none") to _revert_handlers, NOT the
+    # apply handler, so the descriptor must be dropped there or it stays pinned.
+    manager.register_handler("tempo_ramp", handle_ramp_tempo)
+    manager._revert_handlers["tempo_ramp"] = handle_ramp_tempo_revert

@@ -88,6 +88,16 @@
       },
       "defaultVariant": "none"
     },
+    "tempo_ramp": {
+      "state": "ENABLED",
+      "variants": {
+        "none": "none",
+        "ramp_up": "1.3:8:linear",
+        "ramp_down": "1.0:8:linear",
+        "ease_up": "1.3:8:ease"
+      },
+      "defaultVariant": "none"
+    },
     "eliminate_player": {
       "state": "ENABLED",
       "variants": {

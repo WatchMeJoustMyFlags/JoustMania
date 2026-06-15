@@ -72,3 +72,39 @@ func TestSetPlayerHandicapIsShadowOnly(t *testing.T) {
 		})
 	}
 }
+
+// TestRampTempoIsShadowOnly is the load-bearing gating proof for #1117 (#1103 MVP
+// action 2): ramp_tempo MUST appear ONLY in the shadow_experimental variant of
+// interventions_allowed and MUST be absent from every real-facing variant
+// (ambient/standard/full). The allow-list is the enforcement gate, so absence from
+// the real variants means ramp_tempo is rejected for real games by construction.
+// Asserted on BOTH the production and CI flagd agent configs.
+func TestRampTempoIsShadowOnly(t *testing.T) {
+	paths := []string{
+		filepath.Join("..", "..", "flagd", "agent.json"),
+		filepath.Join("..", "..", "flagd", "ci", "agent.json"),
+	}
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			variants := readInterventionsAllowed(t, path)
+
+			shadow, ok := variants["shadow_experimental"]
+			if !ok {
+				t.Fatalf("%s: missing shadow_experimental variant", path)
+			}
+			if !contains(shadow, InterventionRampTempo) {
+				t.Fatalf("%s: shadow_experimental must include %q", path, InterventionRampTempo)
+			}
+
+			for _, realVariant := range []string{"ambient", "standard", "full"} {
+				list, ok := variants[realVariant]
+				if !ok {
+					t.Fatalf("%s: missing expected real variant %q", path, realVariant)
+				}
+				if contains(list, InterventionRampTempo) {
+					t.Fatalf("%s: real variant %q must NOT include %q (shadow-only)", path, realVariant, InterventionRampTempo)
+				}
+			}
+		})
+	}
+}

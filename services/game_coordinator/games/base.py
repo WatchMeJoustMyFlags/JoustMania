@@ -92,6 +92,111 @@ def resolve_tempo_schedule_mode(value: object) -> str:
     return TEMPO_SCHEDULE_MODE_DEFAULT
 
 
+# #1117 (#1103 MVP action 2): ``ramp_tempo`` — a scheduled tempo CURVE that fills
+# the #1114 ``agent``-mode seam. The agent emits a single string directive
+# ``"<target>:<seconds>:<curve>"`` (e.g. ``"1.3:8:linear"``); the game-side records
+# a RampDescriptor and ``_check_music_speed`` interpolates the live tempo toward
+# the target over the duration (the SAME single tempo-owner seam the override /
+# ``agent`` mode uses — no competing tempo writer), holding at target when done.
+#
+# Bounds (validated at parse time so a malformed value degrades to a safe no-op,
+# never dispatches garbage): target is clamped to the valid music-speed range
+# [SLOW_MUSIC_SPEED, FAST_MUSIC_SPEED]; seconds must be > 0 and is capped at
+# RAMP_TEMPO_MAX_SECONDS so a stray huge value can't freeze pacing for the whole
+# round; curve is one of the closed vocabulary {linear, ease}.
+RAMP_CURVE_LINEAR = "linear"
+RAMP_CURVE_EASE = "ease"
+_VALID_RAMP_CURVES = (RAMP_CURVE_LINEAR, RAMP_CURVE_EASE)
+# Upper bound on a single ramp's duration (seconds). Generous enough for a slow
+# pacing curve, small enough that a malformed huge value can't suspend the natural
+# schedule for an entire game.
+RAMP_TEMPO_MAX_SECONDS = 60.0
+
+
+@dataclass(frozen=True)
+class RampDescriptor:
+    """A scheduled tempo curve (#1117). Immutable; replaced wholesale on a new ramp.
+
+    Attributes:
+        start_tempo: Music speed when the ramp began (the interpolation origin).
+        target_tempo: Clamped destination tempo, held once reached.
+        start_time: ``time.time()`` when the ramp began.
+        duration: Ramp length in seconds (> 0, capped at RAMP_TEMPO_MAX_SECONDS).
+        curve: Interpolation shape — ``linear`` or ``ease`` (smoothstep).
+    """
+
+    start_tempo: float
+    target_tempo: float
+    start_time: float
+    duration: float
+    curve: str
+
+    def tempo_at(self, now: float) -> float:
+        """Interpolated tempo at ``now``; clamped to the target once complete."""
+        if self.duration <= 0:
+            return self.target_tempo
+        progress = (now - self.start_time) / self.duration
+        if progress <= 0.0:
+            return self.start_tempo
+        if progress >= 1.0:
+            return self.target_tempo
+        if self.curve == RAMP_CURVE_EASE:
+            # Smoothstep: ease in and out, monotone, hits 0/1 at the endpoints.
+            progress = progress * progress * (3.0 - 2.0 * progress)
+        return self.start_tempo + (self.target_tempo - self.start_tempo) * progress
+
+    def is_complete(self, now: float) -> bool:
+        """True once the ramp has reached (and should hold at) its target."""
+        return self.duration <= 0 or (now - self.start_time) >= self.duration
+
+
+def parse_ramp_tempo_value(value: object) -> RampDescriptor | None:
+    """Parse a ``ramp_tempo`` directive ``"<target>:<seconds>:<curve>"`` (#1117).
+
+    Returns a partially-filled :class:`RampDescriptor` (``start_tempo`` /
+    ``start_time`` are 0.0 placeholders — the handler fills them from the live
+    game) on a VALID directive, or ``None`` for any malformed / neutral input so
+    the caller degrades to a safe no-op (never dispatches garbage). Validation:
+
+    * exactly three ``:``-delimited fields;
+    * target is a finite number, clamped to ``[SLOW_MUSIC_SPEED, FAST_MUSIC_SPEED]``;
+    * seconds is a finite number ``> 0``, capped at :data:`RAMP_TEMPO_MAX_SECONDS`;
+    * curve is one of :data:`_VALID_RAMP_CURVES`.
+
+    ``"none"`` / ``""`` (the neutral value) and any parse failure return ``None``.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if text == "" or text.lower() == "none":
+        return None
+    parts = text.split(":")
+    if len(parts) != 3:
+        return None
+    target_raw, seconds_raw, curve_raw = (p.strip() for p in parts)
+    curve = curve_raw.lower()
+    if curve not in _VALID_RAMP_CURVES:
+        return None
+    try:
+        target = float(target_raw)
+        seconds = float(seconds_raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(target) or not math.isfinite(seconds):
+        return None
+    if seconds <= 0.0:
+        return None
+    seconds = min(seconds, RAMP_TEMPO_MAX_SECONDS)
+    target = max(SLOW_MUSIC_SPEED, min(FAST_MUSIC_SPEED, target))
+    return RampDescriptor(
+        start_tempo=0.0,  # filled by the handler from the live music_speed
+        target_tempo=target,
+        start_time=0.0,  # filled by the handler from time.time()
+        duration=seconds,
+        curve=curve,
+    )
+
+
 # Span attribute keys (S1192 - avoid duplicate string literals)
 GAME_MODE_ATTR = "game.mode"
 
@@ -643,6 +748,13 @@ class BaseGameMode(ABC):
         # no directive present => "agent" mode falls back to the default rule.
         # Set by the agent primitive in a follow-up PR; never set in this PR.
         self.agent_tempo_next_delay: float | None = None
+        # #1117 (#1103 MVP action 2): active ramp_tempo CURVE descriptor, or None
+        # for no ramp (the default-safe state — behavior unchanged). When set, the
+        # single tempo owner (``_check_music_speed``) interpolates the live tempo
+        # toward the descriptor's target over its duration and holds there. Set by
+        # the ramp_tempo handler; cleared by its revert handler. Lives ONLY on the
+        # game object (bounded delta — never persisted to game.json, ownership §1).
+        self.tempo_ramp: RampDescriptor | None = None
 
         # #766 F6: live global difficulty factor (analogue of per-player
         # ``sensitivity_factor``). Combined with the per-player factor in
@@ -2685,6 +2797,36 @@ class BaseGameMode(ABC):
 
         logger.debug(f"Next tempo change at +{self.change_time - time.time():.1f}s")
 
+    async def _apply_ramp_tempo(self, target_tempo: float) -> None:
+        """Apply one interpolated step of a ramp_tempo curve (#1117).
+
+        Like :meth:`_apply_tempo_change` this sends the audio ``ChangeTempo`` RPC
+        and updates ``music_speed`` + metrics, so the ramp goes through the SAME
+        single tempo owner (no second writer / no race). It deliberately does NOT
+        flip ``speed_up`` or reset ``change_time``: a ramp applies many small steps
+        toward a target, and leaving the schedule bookkeeping untouched lets the
+        natural slow/fast schedule resume from the held tempo once the ramp is
+        reverted — exactly like the override path.
+        """
+        from proto import audio_pb2
+
+        old_tempo = self.music_speed
+        with tracer.start_as_current_span("music_tempo_ramp") as span:
+            span.set_attribute("old_tempo", old_tempo)
+            span.set_attribute("new_tempo", target_tempo)
+            span.set_attribute("dead_count", self.dead_count)
+            await self.audio_client.ChangeTempo(
+                audio_pb2.ChangeTempoRequest(
+                    track_id=self.music_track_id,
+                    new_tempo=target_tempo,
+                    transition_duration=MUSIC_TRANSITION_DURATION,
+                )
+            )
+
+        self.music_speed = target_tempo
+        metrics.music_tempo.set(self.music_speed)
+        self._emit_threshold_metrics()
+
     async def _check_music_speed(self):
         """
         Check and update music tempo (Phase 70).
@@ -2706,6 +2848,23 @@ class BaseGameMode(ABC):
                     await self._apply_tempo_change(self.tempo_override)
                 except Exception as e:
                     logger.warning(f"Failed to apply tempo override: {e}")
+            return
+
+        # #1117 ramp_tempo CURVE (#1103 MVP action 2): while a ramp descriptor is
+        # active the music loop interpolates the live tempo toward the target each
+        # 100ms tick and holds at target when complete — the SAME single tempo
+        # owner the override uses, so there is no second tempo writer / no race.
+        # This drives the schedule when ``tempo_schedule_mode == agent``: the agent
+        # primitive replaces the schedule's discrete slow/fast hops with this
+        # curve. ``change_time`` is left untouched so the natural slow/fast schedule
+        # resumes from the held tempo once the ramp is reverted (mirrors override).
+        if self.tempo_ramp is not None:
+            desired = self.tempo_ramp.tempo_at(time.time())
+            if abs(self.music_speed - desired) > 1e-3:
+                try:
+                    await self._apply_ramp_tempo(desired)
+                except Exception as e:
+                    logger.warning(f"Failed to apply ramp tempo: {e}")
             return
 
         if time.time() >= self.change_time:

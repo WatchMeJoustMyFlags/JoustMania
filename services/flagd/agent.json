@@ -122,7 +122,8 @@
           "eliminate_player",
           "revive_player",
           "end_game",
-          "set_player_handicap"
+          "set_player_handicap",
+          "ramp_tempo"
         ]
       },
       "defaultVariant": "ambient"
