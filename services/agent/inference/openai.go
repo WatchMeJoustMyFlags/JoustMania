@@ -49,13 +49,15 @@ const DefaultBaseURL = "http://host.docker.internal:11434/v1"
 // one-flag JSON replies the proposer/decision prompts ask for.
 const DefaultModel = "phi4-mini"
 
-// defaultTimeout bounds a single Infer round-trip when the caller's ctx carries no
-// deadline. A local model on a modest box can take a few seconds for a short
-// completion; 60s is generous enough not to truncate a legitimate slow reply while
-// still guaranteeing a hung endpoint cannot wedge the (already async, off-hot-path)
+// DefaultTimeout bounds a single Infer round-trip when the caller's ctx carries no
+// deadline. A local 8B model cold-loading on Ollama can take well over a minute for
+// a large-prompt completion (#1079: gemma4 cold-start was cut off at exactly 60s);
+// 120s is generous enough not to truncate a legitimate slow reply while still
+// guaranteeing a hung endpoint cannot wedge the (already async, off-hot-path)
 // inference goroutine forever. A caller-supplied ctx deadline still wins when it is
-// sooner — this only fills in a floor when none is set.
-const defaultTimeout = 60 * time.Second
+// sooner — this only fills in a floor when none is set. Override per-deployment via
+// AGENT_INFERENCE_TIMEOUT_SECONDS (#1079), plumbed through main.go + WithTimeout.
+const DefaultTimeout = 120 * time.Second
 
 // OpenAIBackend is the OpenAI-compatible inference backend. It POSTs a System+User
 // prompt to <BaseURL>/chat/completions and returns choices[0].message.content as
@@ -91,11 +93,24 @@ func WithHTTPClient(c *http.Client) Option {
 	}
 }
 
+// WithTimeout overrides the default http.Client timeout (#1079). A non-positive
+// duration is ignored so DefaultTimeout (or an injected WithHTTPClient) stands —
+// matching the "non-positive = ignore" env semantics used elsewhere. main.go feeds
+// AGENT_INFERENCE_TIMEOUT_SECONDS here so a local-8B-cold deployment can raise the
+// ceiling above the default without code changes.
+func WithTimeout(d time.Duration) Option {
+	return func(b *OpenAIBackend) {
+		if d > 0 {
+			b.httpClient.Timeout = d
+		}
+	}
+}
+
 // New builds an OpenAIBackend. An empty baseURL falls back to DefaultBaseURL and an
 // empty model to DefaultModel, so a partially-configured deployment still targets
 // the host Ollama rather than a broken empty URL. apiKey may be empty (the local,
-// no-key path). The default http.Client carries defaultTimeout as a backstop; a
-// per-call ctx deadline still applies on top of it.
+// no-key path). The default http.Client carries DefaultTimeout as a backstop (raise
+// it with WithTimeout); a per-call ctx deadline still applies on top of it.
 func New(baseURL, apiKey, model string, opts ...Option) *OpenAIBackend {
 	if strings.TrimSpace(baseURL) == "" {
 		baseURL = DefaultBaseURL
@@ -107,7 +122,7 @@ func New(baseURL, apiKey, model string, opts ...Option) *OpenAIBackend {
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		apiKey:     apiKey,
 		model:      model,
-		httpClient: &http.Client{Timeout: defaultTimeout},
+		httpClient: &http.Client{Timeout: DefaultTimeout},
 	}
 	for _, opt := range opts {
 		opt(b)

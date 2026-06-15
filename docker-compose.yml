@@ -707,6 +707,16 @@ services:
       - AGENT_INFERENCE_BASE_URL=${AGENT_INFERENCE_BASE_URL:-http://host.docker.internal:11434/v1}
       - AGENT_INFERENCE_MODEL=${AGENT_INFERENCE_MODEL:-phi4-mini}
       - AGENT_INFERENCE_API_KEY=${AGENT_INFERENCE_API_KEY:-}
+      # HTTP round-trip timeout for a single inference call, in seconds (#1079).
+      # Empty default = inference.DefaultTimeout (120s) — long enough for a local 8B
+      # cold-start, which was being cut off at the old hardcoded 60s. Bump higher
+      # (e.g. 180) for a heavier model / slower box.
+      - AGENT_INFERENCE_TIMEOUT_SECONDS=${AGENT_INFERENCE_TIMEOUT_SECONDS:-}
+      # LIVE per-minute LLM request budget override (#964/#1071). Read in main.go via
+      # SetLLMBudgetOverride; empty default = ignored (the flag-derived cap governs),
+      # matching the Go "non-positive = ignore" semantics. Declared here so a host
+      # `export` or `.env` value actually reaches the container (#1078).
+      - AGENT_LLM_MAX_REQUESTS_PER_MINUTE=${AGENT_LLM_MAX_REQUESTS_PER_MINUTE:-}
       # Experiment cohort loop (#982/#991). Opt-in master switch + the optional
       # env-seeded single experiment. Declared here (with default-off / empty
       # defaults) so a host `export` or `.env` value reaches the container — a
