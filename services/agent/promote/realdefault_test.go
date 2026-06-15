@@ -43,6 +43,7 @@ func TestRealDefaultWriterChangesDefaultVariant(t *testing.T) {
 	t.Setenv("AGENT_CODE_IMPROVEMENT_ENABLED", "true")
 	t.Setenv("AGENT_AUTONOMOUS_ENABLED", "true")
 	t.Setenv("AGENT_REAL_DEFAULT_FLAG_PATH", path)
+	t.Setenv("AGENT_EXPERIMENT_DIR", t.TempDir()) // durable snapshot store (#1076) → temp
 
 	w, err := NewRealDefaultWriterFromEnv(discardLogger())
 	if err != nil {
@@ -94,6 +95,7 @@ func TestRealDefaultWriterRejectsTypeMismatch(t *testing.T) {
 	t.Setenv("AGENT_CODE_IMPROVEMENT_ENABLED", "true")
 	t.Setenv("AGENT_AUTONOMOUS_ENABLED", "true")
 	t.Setenv("AGENT_REAL_DEFAULT_FLAG_PATH", path)
+	t.Setenv("AGENT_EXPERIMENT_DIR", t.TempDir()) // durable snapshot store (#1076) → temp
 	w, err := NewRealDefaultWriterFromEnv(discardLogger())
 	if err != nil || w == nil {
 		t.Fatalf("writer build: err=%v nil=%v", err, w == nil)
@@ -152,14 +154,9 @@ func resolvedDefault(t *testing.T, path, flagKey string) string {
 
 func realDefaultWriterForTest(t *testing.T, path string) *fileRealDefaultWriter {
 	t.Helper()
-	t.Setenv("AGENT_CODE_IMPROVEMENT_ENABLED", "true")
-	t.Setenv("AGENT_AUTONOMOUS_ENABLED", "true")
-	t.Setenv("AGENT_REAL_DEFAULT_FLAG_PATH", path)
-	w, err := NewRealDefaultWriterFromEnv(discardLogger())
-	if err != nil || w == nil {
-		t.Fatalf("writer build: err=%v nil=%v", err, w == nil)
-	}
-	return w
+	// Point the durable snapshot store (#1076) at a temp dir so tests never touch the
+	// real /var/lib persistence path.
+	return realDefaultWriterForTestWithStore(t, path, t.TempDir())
 }
 
 // TestRevertRestoresExactPriorValue is the safety-critical property (#1065): a
@@ -266,6 +263,151 @@ func TestRevertWithoutSnapshotIsRefused(t *testing.T) {
 	w := realDefaultWriterForTest(t, path)
 	if err := w.RevertRealDefault(context.Background(), "death_grace_period_ms"); err == nil {
 		t.Fatal("RevertRealDefault with no snapshot should be refused, got nil error")
+	}
+}
+
+// realDefaultWriterForTestWithStore builds a writer like realDefaultWriterForTest but
+// also points the durable snapshot store (#1076) at storeDir, so the test can build a
+// SECOND writer over the same dir to simulate an agent restart. Returns the writer.
+func realDefaultWriterForTestWithStore(t *testing.T, path, storeDir string) *fileRealDefaultWriter {
+	t.Helper()
+	t.Setenv("AGENT_CODE_IMPROVEMENT_ENABLED", "true")
+	t.Setenv("AGENT_AUTONOMOUS_ENABLED", "true")
+	t.Setenv("AGENT_REAL_DEFAULT_FLAG_PATH", path)
+	t.Setenv("AGENT_EXPERIMENT_DIR", storeDir)
+	w, err := NewRealDefaultWriterFromEnv(discardLogger())
+	if err != nil || w == nil {
+		t.Fatalf("writer build: err=%v nil=%v", err, w == nil)
+	}
+	return w
+}
+
+// TestSnapshotSurvivesRestartAndReverts is the #1076 key test: a snapshot persisted by
+// one writer must let a SUBSEQUENT writer (a new instance over the SAME durable store,
+// modeling an agent restart between apply and revert) revert to the EXACT pre-promotion
+// value. Without persistence the second writer would find no snapshot and refuse the
+// revert, stranding the regression on live players.
+func TestSnapshotSurvivesRestartAndReverts(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFlagFile(t, dir) // default=300, defaultVariant=default
+	storeDir := t.TempDir()
+	ctx := context.Background()
+
+	// --- "before restart" writer: apply the promotion (captures + persists snapshot).
+	w1 := realDefaultWriterForTestWithStore(t, path, storeDir)
+	if err := w1.SetRealDefault(ctx, "death_grace_period_ms", 500); err != nil {
+		t.Fatalf("SetRealDefault: %v", err)
+	}
+	if got := resolvedDefault(t, path, "death_grace_period_ms"); got != "500" {
+		t.Fatalf("post-promotion default = %s, want 500", got)
+	}
+
+	// --- simulate restart: a brand-new writer over the SAME durable store dir. It must
+	// rehydrate the snapshot from disk (w1's in-memory map is gone).
+	w2 := realDefaultWriterForTestWithStore(t, path, storeDir)
+	if _, held := w2.snapshots["death_grace_period_ms"]; !held {
+		t.Fatal("restart writer did not rehydrate the persisted snapshot (#1076 strand-on-restart bug)")
+	}
+	if err := w2.RevertRealDefault(ctx, "death_grace_period_ms"); err != nil {
+		t.Fatalf("post-restart RevertRealDefault: %v", err)
+	}
+	if got := resolvedDefault(t, path, "death_grace_period_ms"); got != "300" {
+		t.Errorf("post-restart revert default = %s, want exact pre-promotion 300", got)
+	}
+}
+
+// TestSnapshotSurvivesRestartDespiteInterveningClobber mirrors the #1065
+// intervening-slot-overwrite test but across a RESTART boundary: the persisted
+// snapshot must carry the VALUE (not just the variant name), so a post-restart revert
+// restores the exact prior value even if the original variant's slot was clobbered.
+func TestSnapshotSurvivesRestartDespiteInterveningClobber(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFlagFile(t, dir)
+	storeDir := t.TempDir()
+	ctx := context.Background()
+
+	w1 := realDefaultWriterForTestWithStore(t, path, storeDir)
+	if err := w1.SetRealDefault(ctx, "death_grace_period_ms", 500); err != nil {
+		t.Fatalf("SetRealDefault: %v", err)
+	}
+	// An intervening write clobbers the ORIGINAL "default" variant's value to garbage.
+	clobberVariantValue(t, path, "death_grace_period_ms", "default", 999)
+
+	// Restart: new writer, must restore the SNAPSHOTTED 300, not the clobbered 999.
+	w2 := realDefaultWriterForTestWithStore(t, path, storeDir)
+	if err := w2.RevertRealDefault(ctx, "death_grace_period_ms"); err != nil {
+		t.Fatalf("post-restart RevertRealDefault: %v", err)
+	}
+	if got := resolvedDefault(t, path, "death_grace_period_ms"); got != "300" {
+		t.Errorf("post-restart revert default = %s, want exact snapshotted 300 (NOT clobbered 999)", got)
+	}
+}
+
+// TestRevertDropsPersistedSnapshotButKeepsCooldown: after a successful revert the
+// durable snapshot is dropped (a fresh promotion re-snapshots), but the post-revert
+// cooldown stamp is PERSISTED so thrash protection survives a restart. A restart after
+// the revert must therefore NOT resurrect a stale snapshot, yet must expose the revert
+// timestamp.
+func TestRevertDropsPersistedSnapshotButKeepsCooldown(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFlagFile(t, dir)
+	storeDir := t.TempDir()
+	ctx := context.Background()
+
+	w1 := realDefaultWriterForTestWithStore(t, path, storeDir)
+	if err := w1.SetRealDefault(ctx, "death_grace_period_ms", 500); err != nil {
+		t.Fatalf("SetRealDefault: %v", err)
+	}
+	if err := w1.RevertRealDefault(ctx, "death_grace_period_ms"); err != nil {
+		t.Fatalf("RevertRealDefault: %v", err)
+	}
+
+	// Restart: the stale snapshot must NOT come back, but the cooldown stamp must.
+	w2 := realDefaultWriterForTestWithStore(t, path, storeDir)
+	if _, held := w2.snapshots["death_grace_period_ms"]; held {
+		t.Error("restart resurrected a snapshot for an already-reverted flag (would mis-revert a future un-snapshotted state)")
+	}
+	times := w2.PersistedRevertTimes()
+	if _, ok := times["death_grace_period_ms"]; !ok {
+		t.Error("post-revert cooldown stamp did not survive restart (#1076 item 3)")
+	}
+	// A revert with no snapshot is correctly refused after restart.
+	if err := w2.RevertRealDefault(ctx, "death_grace_period_ms"); err == nil {
+		t.Error("revert of an already-reverted flag after restart should be refused")
+	}
+}
+
+// TestPromoteFailsClosedWhenSnapshotCannotPersist: if the durable snapshot write
+// fails, SetRealDefault must REFUSE the promotion rather than mutate the flag file
+// without a durable revert path (which would reintroduce the strand-on-restart bug).
+func TestPromoteFailsClosedWhenSnapshotCannotPersist(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFlagFile(t, dir)
+	before, _ := os.ReadFile(path)
+	storeDir := t.TempDir()
+	ctx := context.Background()
+
+	w := realDefaultWriterForTestWithStore(t, path, storeDir)
+	// Make the store path unwritable: replace the store DIR with a regular file so the
+	// MkdirAll/CreateTemp inside flush fails.
+	if err := os.RemoveAll(storeDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(storeDir, []byte("not a dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.SetRealDefault(ctx, "death_grace_period_ms", 500); err == nil {
+		t.Fatal("SetRealDefault must fail closed when the snapshot cannot be persisted")
+	}
+	// The flag file must be UNCHANGED — no real-default mutation without a durable revert.
+	after, _ := os.ReadFile(path)
+	if string(before) != string(after) {
+		t.Error("flag file was mutated despite the snapshot-persist failure (strand-on-restart risk)")
+	}
+	// The in-memory snapshot must not linger (it would imply a revert is possible when
+	// the file was never mutated).
+	if _, held := w.snapshots["death_grace_period_ms"]; held {
+		t.Error("in-memory snapshot lingered after a failed persist")
 	}
 }
 

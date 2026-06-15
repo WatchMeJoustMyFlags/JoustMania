@@ -278,6 +278,12 @@ func buildPromoter(rootCtx context.Context, store *experiment.FitnessStore, objR
 
 	p := promote.NewPromoter(ghIface, gitIface, realDefIface, watcherIface, reverterIface, repo, nil, logger)
 	p.SetCooldown(revertCooldown())
+	// Seed the post-revert cooldown from the durable snapshot store (#1076 item 3) so
+	// thrash protection survives an agent restart. realDef carries the persisted revert
+	// timestamps; a nil writer (autonomous off) yields nothing to seed.
+	if realDef != nil {
+		p.SeedLastRevert(realDef.PersistedRevertTimes())
+	}
 	if rewatcher != nil {
 		p.SetRewatcher(rewatcher)
 	}

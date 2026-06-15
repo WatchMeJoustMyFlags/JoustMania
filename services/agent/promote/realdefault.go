@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 )
 
 // realdefault.go is the autonomous mode's REAL defaultVariant mutation — the
@@ -55,6 +56,27 @@ type fileRealDefaultWriter struct {
 	// state BEFORE the agent first touched the flag, never to an intermediate
 	// agent-written value.
 	snapshots map[string]defaultSnapshot
+	// snaps is the DURABLE backing for snapshots + the post-revert cooldown stamps
+	// (#1076). Without it, a restart between an autonomous apply and a later revert
+	// strands the regression (RevertRealDefault finds no snapshot in memory). It is
+	// loaded on construction and written through on first-touch snapshot + on
+	// successful revert. nil only when the persistence dir was unreadable at
+	// construction (logged); the in-memory map then still works for the live process.
+	snaps *snapStore
+	// clock is an injectable time source for the persisted post-revert cooldown stamp
+	// (#1076). nil → time.Now (production). Tests set it to drive the stamp.
+	clock func() time.Time
+}
+
+// PersistedRevertTimes exposes the durable post-revert cooldown stamps so the
+// Promoter can seed its in-memory lastRevert map after a restart (#1076 item 3),
+// preserving post-revert thrash protection across the restart boundary. Empty when
+// no flag has been reverted or the store is unavailable.
+func (w *fileRealDefaultWriter) PersistedRevertTimes() map[string]time.Time {
+	if w.snaps == nil {
+		return nil
+	}
+	return w.snaps.loadLastRevert()
 }
 
 // defaultSnapshot is the exact pre-promotion real-default state for one flag: the
@@ -107,9 +129,25 @@ func NewRealDefaultWriterFromEnv(log *slog.Logger) (*fileRealDefaultWriter, erro
 	if _, err := os.Stat(path); err != nil {
 		return nil, fmt.Errorf("AGENT_REAL_DEFAULT_FLAG_PATH=%q not readable: %w", path, err)
 	}
+	// Load the DURABLE snapshot store (#1076) from the persisted volume so a revert
+	// after an agent restart still finds the pre-promotion snapshot. A missing file
+	// is a clean first run; a corrupt/unreadable file is logged and the agent starts
+	// with an empty in-memory map rather than refusing to boot — the durable copy is
+	// a safety net, not a hard prerequisite for the (default-off) autonomous path.
+	dir := snapStoreDir()
+	snaps, err := newSnapStore(dir)
+	if err != nil {
+		log.Warn("code_improvement real-default snapshot store could not be loaded; starting with empty in-memory snapshots (a revert of a PRE-restart promotion may be unavailable until re-snapshotted)",
+			"dir", dir, "error", err)
+	}
+	loaded := snaps.loadSnapshots()
+	if len(loaded) > 0 {
+		log.Warn("code_improvement real-default reverter restored pre-promotion snapshots from durable store (#1076): a post-restart revert can roll these back",
+			"flags", len(loaded))
+	}
 	log.Warn("code_improvement AUTONOMOUS real-default writer ENABLED (#936): autonomous promotions WILL change the REAL defaultVariant for live players",
 		"path", path)
-	return &fileRealDefaultWriter{path: path, log: log, snapshots: map[string]defaultSnapshot{}}, nil
+	return &fileRealDefaultWriter{path: path, log: log, snapshots: loaded, snaps: snaps}, nil
 }
 
 // SetRealDefault changes the REAL defaultVariant for flagKey to value: it ensures a
@@ -194,6 +232,19 @@ func (w *fileRealDefaultWriter) SetRealDefault(_ context.Context, flagKey string
 			}
 		}
 		w.snapshots[flagKey] = snap
+		// Persist the snapshot DURABLY before the mutating write (#1076), so a revert
+		// after an agent restart can still roll back. Surface a persistence failure as
+		// an error and ABORT the promotion: applying a real-default change whose revert
+		// snapshot did not reach disk would reintroduce the exact strand-on-restart bug
+		// this issue closes (the flag file would hold the promoted value with no durable
+		// way to undo it after a restart). Drop the in-memory snapshot too so state stays
+		// consistent with the un-mutated file.
+		if w.snaps != nil {
+			if err := w.snaps.putSnapshot(flagKey, snap); err != nil {
+				delete(w.snapshots, flagKey)
+				return fmt.Errorf("persist pre-promotion snapshot for %q (refusing to promote without a durable revert path): %w", flagKey, err)
+			}
+		}
 	}
 
 	// Point at an existing variant if one already equals value (keeps the file tidy),
@@ -301,7 +352,30 @@ func (w *fileRealDefaultWriter) RevertRealDefault(_ context.Context, flagKey str
 	}
 	// Drop the snapshot so a subsequent promotion re-captures fresh prior state.
 	delete(w.snapshots, flagKey)
+	// Durably drop the snapshot AND stamp the revert time (#1076), so (a) a restart
+	// does not resurrect a stale snapshot for an already-reverted flag, and (b) the
+	// post-revert cooldown (#1065 item 3) survives a restart — the Promoter seeds
+	// lastRevert from this stamp on boot. Persistence failure here is logged, NOT
+	// returned: the revert itself ALREADY succeeded (the file holds the prior value),
+	// so failing the call would wrongly imply the rollback did not happen. The only
+	// cost of a lost stamp is a missed cooldown across a restart that coincides with a
+	// store-write failure — strictly less dangerous than a stranded regression.
+	if w.snaps != nil {
+		if err := w.snaps.markReverted(flagKey, w.now()); err != nil {
+			w.log.Warn("code_improvement real-default revert succeeded but durable snapshot/cooldown update failed; cooldown may not survive a restart (#1076)",
+				"flag", flagKey, "error", err)
+		}
+	}
 	return nil
+}
+
+// now returns the writer's time source. Production uses time.Now; tests can swap it
+// to drive the persisted cooldown stamp deterministically.
+func (w *fileRealDefaultWriter) now() time.Time {
+	if w.clock != nil {
+		return w.clock()
+	}
+	return time.Now()
 }
 
 // writeInPlace overwrites the file at the same path WITHOUT temp+rename (EBUSY on
