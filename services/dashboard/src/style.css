@@ -481,6 +481,25 @@ body {
   margin-left: 8px;
 }
 
+/* "last updated Ns ago" hint; pushes to the right, link trails it. */
+.experiments-freshness {
+  margin-left: auto;
+  margin-right: 12px;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.experiments-freshness[hidden] {
+  display: none;
+}
+
+/* Loud variant once the data is considered stale (a poll has been failing). */
+.experiments-freshness.stale {
+  color: #f0b429;
+  font-weight: 600;
+}
+
 .experiments-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));

@@ -13,6 +13,26 @@
  * pipeline and shipped to Loki labeled `service_name="agent"` (see
  * services/otel-collector/config.yaml + services/envoy/envoy.yaml `/loki/*`).
  *
+ * LOKI LABEL CONTRACT — `service_name="agent"`
+ * --------------------------------------------
+ * This view is empty unless the agent's container logs arrive in Loki under the
+ * stream label `service_name="agent"`. That label is produced by a chain that
+ * this query is tightly coupled to:
+ *
+ *   1. docker-compose.yml defines the agent under the compose service name
+ *      `agent` and the json-file log driver tags it with the docker label
+ *      `com.docker.compose.service=agent` (see the logging `labels:` anchor).
+ *   2. The collector's `transform/docker_logs` processor promotes that docker
+ *      label to the OTEL resource attribute `service.name` (config.yaml ~L195).
+ *   3. The `otlphttp/loki` exporter ships to Loki's native OTLP endpoint, which
+ *      maps the `service.name` resource attribute to the `service_name` stream
+ *      label.
+ *
+ * If any link changes (compose service renamed, the transform dropped, or Loki's
+ * resource→label mapping retuned) the selector below silently returns zero
+ * streams and the view goes blank with no error. Keep the matching comment in
+ * services/otel-collector/config.yaml (`transform/docker_logs`) in sync.
+ *
  * The dashboard already embeds the same observability stack (Grafana / Jaeger
  * iframes) and reaches it through envoy. This module reuses that exact data path
  * — it queries the Loki HTTP API at `/loki/...` — rather than inventing a new
@@ -23,14 +43,34 @@
 
 const BASE_URL = import.meta.env.DEV ? "" : globalThis.location.origin;
 
-/** Loki LogQL selector for the agent's experiment lifecycle log lines. */
+/**
+ * Loki LogQL selector for the agent's experiment lifecycle log lines.
+ *
+ * `service_name="agent"` is a load-bearing contract — see the LOKI LABEL
+ * CONTRACT note in the module header before changing it.
+ */
 const EXPERIMENT_LOG_QUERY =
   '{service_name="agent"} |= "experiment."';
 
 /** How far back to look for experiment activity. */
 const LOOKBACK_SECONDS = 60 * 60; // 1 hour
 
-/** Max log lines Loki returns per query (newest first). */
+/**
+ * Max log lines Loki returns per query.
+ *
+ * The fold is sample-additive: every `experiment.game_concluded` /
+ * `experiment.game_assigned` line contributes to a count/sum, and the mean &
+ * delta are only correct if we see ALL of them. On a busy K×N run a 1h window
+ * can exceed this cap. We fetch with `direction: forward` (see fetchExperiments)
+ * so that, if the window is ever truncated, we keep the OLDEST lines — i.e. the
+ * complete prefix of each experiment's lifecycle (assignments + early
+ * conclusions + the terminal verdict for already-finished experiments) — rather
+ * than the newest tail. That biases toward correct historical aggregates; the
+ * cost is that the very latest in-flight lines of a still-running experiment may
+ * be dropped once the window is saturated. 5000 lines comfortably covers a
+ * typical demo/shadow run; raise this if a single 1h window legitimately emits
+ * more experiment lifecycle lines.
+ */
 const QUERY_LIMIT = 5000;
 
 /** Per-arm rolling aggregate folded from `experiment.game_concluded` lines. */
@@ -119,7 +159,21 @@ interface MutableArm {
 interface MutableExperiment {
   experimentId: string;
   arms: Map<string, MutableArm>;
-  verdict: string;
+  /**
+   * Terminal verdict signals, captured INDEPENDENTLY so precedence is resolved
+   * explicitly in finalizeExperiment rather than depending on which terminal
+   * line happens to be folded last.
+   *
+   *   concludedOutcome  ← experiment.concluded   `outcome` (promote/discard/inconclusive)
+   *   tornDownStatus    ← experiment.torn_down   `status`  (done/discarded/aborted)
+   *
+   * Both fire at terminal; the agent's `concluded.outcome` is the authoritative
+   * statistical verdict, while `torn_down.status` describes lifecycle disposition
+   * (and is the ONLY signal for experiments that are torn down without ever
+   * concluding, e.g. aborted). See the precedence rule in finalizeExperiment.
+   */
+  concludedOutcome: string | null;
+  tornDownStatus: string | null;
   reason: string;
   lastUpdatedMs: number;
   live: boolean;
@@ -141,8 +195,15 @@ function touch(exp: MutableExperiment, tsMs: number) {
 /**
  * Fold a batch of agent log lines into per-experiment aggregates.
  *
- * Each entry is [logLine, epochMs]. Order-independent: counts/sums are additive
- * and terminal state is sticky (a torn-down experiment never flips back live).
+ * Each entry is [logLine, epochMs]. The fold is ORDER-INDEPENDENT by construction
+ * and does not rely on the Loki query direction:
+ *   - sample counts/sums are additive (commutative),
+ *   - `live` is sticky-false (any terminal line wins, regardless of position),
+ *   - the rendered verdict is derived from the two terminal signals
+ *     (concludedOutcome / tornDownStatus) by an EXPLICIT precedence rule in
+ *     finalizeExperiment — NOT by "whichever terminal line was folded last".
+ * This means a future change to `direction` (forward/backward) cannot silently
+ * flip the verdict.
  */
 export function aggregateLogLines(
   lines: { line: string; tsMs: number }[],
@@ -155,7 +216,8 @@ export function aggregateLogLines(
       e = {
         experimentId: id,
         arms: new Map(),
-        verdict: "running",
+        concludedOutcome: null,
+        tornDownStatus: null,
         reason: "",
         lastUpdatedMs: 0,
         live: true,
@@ -190,12 +252,14 @@ export function aggregateLogLines(
         break;
       }
       case "experiment.concluded": {
-        if (fields["outcome"]) exp.verdict = fields["outcome"];
+        // Authoritative statistical verdict; recorded independently of teardown.
+        if (fields["outcome"]) exp.concludedOutcome = fields["outcome"];
+        exp.live = false;
         break;
       }
       case "experiment.torn_down": {
-        // Terminal: prefer the explicit status, fall back to a label.
-        exp.verdict = fields["status"] || exp.verdict || "torn_down";
+        // Lifecycle disposition; recorded independently of the conclusion.
+        if (fields["status"]) exp.tornDownStatus = fields["status"];
         if (fields["reason"]) exp.reason = fields["reason"];
         exp.live = false;
         break;
@@ -239,11 +303,30 @@ function finalizeExperiment(exp: MutableExperiment): ExperimentView {
     experimentId: exp.experimentId,
     arms,
     delta,
-    verdict: exp.verdict,
+    verdict: resolveVerdict(exp),
     reason: exp.reason,
     lastUpdatedMs: exp.lastUpdatedMs,
     live: exp.live,
   };
+}
+
+/**
+ * Resolve the rendered verdict from the captured terminal signals using an
+ * EXPLICIT precedence, so it never depends on log-line ordering:
+ *
+ *   1. `experiment.concluded` outcome (promote/discard/inconclusive) — the
+ *      authoritative statistical verdict — wins whenever present.
+ *   2. else `experiment.torn_down` status (done/discarded/aborted) — covers
+ *      experiments torn down WITHOUT a conclusion (e.g. aborted).
+ *   3. else "running" — no terminal line seen yet.
+ *
+ * `normalizeVerdict()` in ExperimentsView maps both vocabularies to a display
+ * label; this function only decides WHICH raw signal to surface.
+ */
+function resolveVerdict(exp: MutableExperiment): string {
+  if (exp.concludedOutcome) return exp.concludedOutcome;
+  if (exp.tornDownStatus) return exp.tornDownStatus;
+  return "running";
 }
 
 function armRank(arm: string): number {
@@ -265,7 +348,10 @@ export async function fetchExperiments(): Promise<ExperimentView[]> {
     start: startNs.toString(),
     end: endNs.toString(),
     limit: String(QUERY_LIMIT),
-    direction: "backward",
+    // forward = oldest-first. If the QUERY_LIMIT cap truncates the window we want
+    // to keep the complete lifecycle prefix (assignments + conclusions) for
+    // correct counts/means, not the newest tail. See QUERY_LIMIT note above.
+    direction: "forward",
   });
 
   const url = `${BASE_URL}/loki/loki/api/v1/query_range?${params.toString()}`;

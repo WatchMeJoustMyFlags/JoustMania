@@ -184,6 +184,13 @@ processors:
         action: insert
 
   # Transform processor — promote Docker labels to OTEL resource attributes
+  #
+  # LOKI LABEL CONTRACT: setting service.name here is what gives the agent's
+  # container logs the Loki stream label `service_name="agent"` (Loki's native
+  # OTLP ingestion maps the service.name resource attribute -> service_name
+  # label). The dashboard's experiments view queries `{service_name="agent"}`
+  # and goes silently blank if this mapping changes — keep it in sync with the
+  # LOKI LABEL CONTRACT note in services/dashboard/src/experiments.ts.
   transform/docker_logs:
     error_mode: ignore
     log_statements:
