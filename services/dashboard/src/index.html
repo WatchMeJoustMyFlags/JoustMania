@@ -42,6 +42,9 @@
         <button class="tab-btn active" data-tab="controllers">
           <span class="tab-icon">&#127918;</span> Controllers
         </button>
+        <button class="tab-btn" data-tab="agent">
+          <span class="tab-icon">&#129302;</span> Agent
+        </button>
         <button class="tab-btn" data-tab="experiments">
           <span class="tab-icon">&#129514;</span> Experiments
         </button>
@@ -59,6 +62,37 @@
           <div id="controller-grid" class="controller-grid">
             <!-- Controller cards will be rendered here -->
             <div class="loading">Connecting to controller manager...</div>
+          </div>
+        </div>
+
+        <!-- Agent Tab (decision feed, flag panel, intervention overlay, #792) -->
+        <div id="tab-agent" class="tab-panel">
+          <div class="embed-header agent-header">
+            <h3>Agent <span class="agent-subtitle">live decisions &amp; interventions</span></h3>
+            <span id="agent-freshness" class="experiments-freshness" hidden></span>
+            <a href="/jaeger/search?service=agent&operation=agent.decision&limit=50" target="_blank" rel="noreferrer" class="external-link">Full decision trace in Jaeger &#8599;</a>
+          </div>
+          <div class="agent-layout">
+            <section class="agent-panel agent-panel-feed">
+              <h4 class="agent-panel-title">Decision feed</h4>
+              <div id="agent-feed" class="agent-feed">
+                <div class="loading">Loading agent activity&hellip;</div>
+              </div>
+            </section>
+            <aside class="agent-side">
+              <section class="agent-panel">
+                <h4 class="agent-panel-title">Effective flags</h4>
+                <div id="agent-flags" class="agent-flags">
+                  <div class="loading">Loading&hellip;</div>
+                </div>
+              </section>
+              <section class="agent-panel">
+                <h4 class="agent-panel-title">Interventions</h4>
+                <div id="agent-overlay" class="agent-overlay">
+                  <div class="loading">Loading&hellip;</div>
+                </div>
+              </section>
+            </aside>
           </div>
         </div>
 

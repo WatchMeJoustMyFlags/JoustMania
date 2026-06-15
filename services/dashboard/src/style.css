@@ -642,3 +642,275 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ===== Agent tab (#792) ===== */
+
+.agent-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 12px 4px;
+}
+
+.agent-header h3 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.agent-subtitle {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  font-weight: normal;
+  margin-left: 8px;
+}
+
+/* Two columns: a wide decision feed and a narrow side stack. */
+.agent-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
+  gap: 16px;
+  padding: 4px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .agent-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.agent-side {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.agent-panel {
+  background: var(--bg-card);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--border-radius);
+  padding: 12px 14px;
+}
+
+.agent-panel-title {
+  margin: 0 0 10px;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+
+/* Decision feed: a scrollable rolling tail. */
+.agent-feed {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.agent-feed-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  background: rgba(255, 255, 255, 0.03);
+  border-left: 3px solid transparent;
+}
+
+.agent-feed-blocked {
+  border-left-color: var(--accent-primary);
+}
+
+.agent-feed-discarded {
+  border-left-color: var(--accent-warning);
+}
+
+.agent-feed-rollout {
+  border-left-color: var(--accent-info);
+}
+
+.agent-feed-time {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.agent-badge {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 1px 6px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
+.agent-badge-blocked {
+  background: rgba(233, 69, 96, 0.2);
+  color: var(--accent-primary);
+}
+
+.agent-badge-discarded {
+  background: rgba(255, 152, 0, 0.2);
+  color: var(--accent-warning);
+}
+
+.agent-badge-rollout {
+  background: rgba(33, 150, 243, 0.2);
+  color: var(--accent-info);
+}
+
+.agent-feed-signal {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.agent-feed-action {
+  font-family: monospace;
+  font-size: 0.78rem;
+  color: var(--text-primary);
+}
+
+.agent-feed-session {
+  font-family: monospace;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+
+.agent-feed-reason {
+  margin-left: auto;
+  color: var(--text-secondary);
+  font-size: 0.76rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Flag panel. */
+.agent-flags-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agent-flag {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.82rem;
+  padding: 3px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.agent-flag-key {
+  color: var(--text-secondary);
+}
+
+.agent-flag-val {
+  font-family: monospace;
+  color: var(--text-primary);
+}
+
+.agent-flags-note {
+  margin-top: 10px;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.agent-flags-note a {
+  color: var(--accent-info);
+}
+
+/* Intervention overlay. */
+.agent-overlay-stats {
+  display: flex;
+  gap: 20px;
+  margin-bottom: 12px;
+}
+
+.agent-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.agent-stat-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-secondary);
+}
+
+.agent-stat-val {
+  font-size: 1.4rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-stat-applied {
+  color: var(--accent-success);
+}
+
+.agent-stat-blocked {
+  color: var(--accent-primary);
+}
+
+.agent-stat-na {
+  color: var(--text-secondary);
+  font-size: 1rem;
+}
+
+.agent-stat-sub {
+  font-size: 0.72rem;
+  color: var(--accent-warning);
+}
+
+.agent-overlay-cols {
+  display: flex;
+  gap: 16px;
+}
+
+.agent-overlay-col {
+  flex: 1;
+  min-width: 0;
+}
+
+.agent-overlay-col h4 {
+  margin: 0 0 6px;
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-secondary);
+}
+
+.agent-tally {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.8rem;
+  padding: 3px 0;
+}
+
+.agent-tally-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-tally-count {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.agent-tally-blocked {
+  color: var(--accent-primary);
+}
+
+.agent-tally-empty {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}

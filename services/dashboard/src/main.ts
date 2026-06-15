@@ -9,12 +9,20 @@ import { GameStatus } from "./components/GameStatus.js";
 import { Controls } from "./components/Controls.js";
 import { ExperimentsView } from "./components/ExperimentsView.js";
 import { fetchExperiments } from "./experiments.js";
+import { AgentView } from "./components/AgentView.js";
+import { fetchAgentView } from "./agent.js";
 import type { GameplayData } from "./gen/controller_manager_pb.js";
 
 // Poll cadence for the agent experiment view (Loki query). Matches the slow,
 // human-readable refresh rate of the embedded observability panels rather than
 // the 30Hz controller stream — experiment state moves on the order of games.
 const EXPERIMENTS_POLL_MS = 5000;
+
+// Poll cadence for the agent decision/flag/intervention view (Loki + VM query).
+// Faster than the experiment view (state moves per decision, not per game) but
+// still well under the agent's signal rate — this is an observability tail, not
+// a live stream.
+const AGENT_POLL_MS = 2000;
 
 // State
 interface AppState {
@@ -40,6 +48,7 @@ let controllerGrid: ControllerGrid;
 let gameStatus: GameStatus;
 let controls: Controls;
 let experimentsView: ExperimentsView;
+let agentView: AgentView;
 
 // Initialize the dashboard
 async function init() {
@@ -54,6 +63,7 @@ async function init() {
     onModeChange: handleModeChange,
   });
   experimentsView = new ExperimentsView("experiments-grid", "experiments-freshness");
+  agentView = new AgentView("agent-feed", "agent-flags", "agent-overlay", "agent-freshness");
 
   // Set up tab navigation
   setupTabs();
@@ -66,6 +76,9 @@ async function init() {
 
   // Start polling the agent experiment telemetry (Loki)
   startExperimentsPolling();
+
+  // Start polling the agent decision/flag/intervention telemetry (Loki + VM)
+  startAgentPolling();
 
   console.log("Dashboard initialized");
 }
@@ -192,6 +205,49 @@ function startExperimentsPolling() {
       }
     } else if (experimentsPollTimer === null) {
       // Resume: poll immediately so the operator sees fresh data on return.
+      tick();
+    }
+  });
+
+  tick();
+}
+
+// Poll the agent's decision/flag/intervention telemetry and refresh the view.
+// Same self-rescheduling + tab-hidden-pause + staleness model as the experiments
+// poller (#1047): a slow query can't stack, a hidden tab burns no queries, and a
+// failed poll keeps the last good render on screen flagged stale.
+let agentPollTimer: ReturnType<typeof setTimeout> | null = null;
+
+function startAgentPolling() {
+  const tick = async () => {
+    agentPollTimer = null;
+    if (document.hidden) return;
+    try {
+      const view = await fetchAgentView();
+      agentView.render(view);
+    } catch (error) {
+      console.error("Agent poll error:", error);
+      if (agentView.rendered) {
+        agentView.markStale();
+      } else {
+        agentView.setError("Could not reach Loki for agent telemetry.");
+      }
+    } finally {
+      if (!document.hidden) {
+        agentPollTimer = setTimeout(tick, AGENT_POLL_MS);
+      }
+    }
+  };
+
+  setInterval(() => agentView.updateFreshness(), 1000);
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      if (agentPollTimer !== null) {
+        clearTimeout(agentPollTimer);
+        agentPollTimer = null;
+      }
+    } else if (agentPollTimer === null) {
       tick();
     }
   });
