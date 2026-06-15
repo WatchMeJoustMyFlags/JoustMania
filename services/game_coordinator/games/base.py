@@ -112,6 +112,13 @@ _VALID_RAMP_CURVES = (RAMP_CURVE_LINEAR, RAMP_CURVE_EASE)
 # schedule for an entire game.
 RAMP_TEMPO_MAX_SECONDS = 60.0
 
+# Per-step audio transition for a ramp (#1122 review): the ramp applies a small
+# tempo step every ~100ms loop tick, so each step's ChangeTempo must glide over
+# roughly one tick rather than MUSIC_TRANSITION_DURATION (1.5s) — otherwise every
+# tick stacks an overlapping 1.5s transition chasing a stale target. The loop's
+# interpolation owns the overall smoothness; the audio just tracks each step.
+RAMP_TEMPO_STEP_TRANSITION = 0.12
+
 
 @dataclass(frozen=True)
 class RampDescriptor:
@@ -2819,7 +2826,13 @@ class BaseGameMode(ABC):
                 audio_pb2.ChangeTempoRequest(
                     track_id=self.music_track_id,
                     new_tempo=target_tempo,
-                    transition_duration=MUSIC_TRANSITION_DURATION,
+                    # Short per-step transition (#1122 review): the ramp applies
+                    # a small step every ~100ms tick, so each step must glide over
+                    # roughly one tick — NOT the 1.5s MUSIC_TRANSITION_DURATION,
+                    # which would stack ~N overlapping 1.5s transitions all chasing
+                    # a stale target. The loop's own interpolation provides the
+                    # overall smoothness; the audio just needs to track each step.
+                    transition_duration=RAMP_TEMPO_STEP_TRANSITION,
                 )
             )
 
