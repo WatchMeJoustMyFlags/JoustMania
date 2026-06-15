@@ -413,8 +413,10 @@ class ZombieGame(BaseGameMode):
             zombie_player.color = ZOMBIE_COLOR
             zombie_player.team = 1
             # Grace period so the death spike that converted the human can't
-            # instantly re-kill the fresh zombie (#757). Matches respawn grace.
-            zombie_player.grace_until = time.time() + 2.0
+            # instantly re-kill the fresh zombie (#757). Sourced from the
+            # ``game.death_grace_period_seconds`` flag (#766 F2 / #1090), frozen per
+            # game at init in BaseGameMode; matches the respawn grace below.
+            zombie_player.grace_until = time.time() + self.death_grace_period
 
             # Update lists
             if serial in self.human_serials:
@@ -482,7 +484,9 @@ class ZombieGame(BaseGameMode):
             zombie_player = player
             zombie_player.alive = True
             zombie_player.respawn_until = 0.0
-            zombie_player.grace_until = time.time() + 2.0  # Grace period after respawn
+            # Grace period after respawn, sourced from ``game.death_grace_period_seconds``
+            # (#766 F2 / #1090), frozen per game at init in BaseGameMode.
+            zombie_player.grace_until = time.time() + self.death_grace_period
 
             logger.info(f"Zombie {serial} respawned!")
 

@@ -165,9 +165,11 @@ class SwapperGame(TeamsGameBase):
         # Track last death for winner exclusion
         self.last_death_serial = serial
 
-        # Set grace period for after respawn (2.0s total from now)
-        grace_duration = 2.0
-        player.grace_until = time.time() + grace_duration
+        # Post-swap invincibility window so the death spike that triggered the swap
+        # cannot instantly re-kill the player on their new team (#757). Sourced from
+        # the ``game.death_grace_period_seconds`` flag (#766 F2 / #1090), frozen per
+        # game at init in BaseGameMode.
+        player.grace_until = time.time() + self.death_grace_period
 
         # Log the swap
         swap_count = getattr(player, "swap_count", 0) + 1

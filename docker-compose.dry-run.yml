@@ -55,14 +55,23 @@ services:
       # Seed ONE experiment at startup (simplest declaration trigger). The flag
       # key must EXIST in services/flagd/ci/game.json and the value's JSON kind
       # must match its existing variants (the Gate's type guard rejects a mistyped
-      # seed). death_grace_period_seconds is a numeric flag (variants 0.0..1.0);
-      # 0.75 is a new shadow-only value. Defaults chosen so a bare `make dry-run`
-      # produces a live experiment; override any via env/.env.
-      - AGENT_EXPERIMENT_SEED_FLAG=${AGENT_EXPERIMENT_SEED_FLAG:-death_grace_period_seconds}
-      - AGENT_EXPERIMENT_SEED_VALUE=${AGENT_EXPERIMENT_SEED_VALUE:-0.75}
+      # seed).
+      #
+      # #1090: seed on a REAL FFA lever. ``game.windows`` is the music-tempo pacing
+      # table that drives how fast the music cycles fast<->slow; the game-coordinator
+      # reads it per game (base.py _get_music_change_time) and the resulting
+      # music_speed LERPs the per-frame death threshold in _compute_effective_thresholds
+      # (base.py:1319) consumed by the FFA death check (base.py:1556). The seed value
+      # is the pre-vetted, in-bounds ``frantic`` variant object (faster tempo cycling
+      # => shorter, more intense FFA games) — a genuinely measurable game-length /
+      # difficulty effect, unlike the former death_grace_period_seconds seed which FFA
+      # ignores entirely (it is a respawn-mode-only knob; see #1090). The seed VALUE is
+      # parsed as JSON when it begins with '{' (parseSeedValue, #1090).
+      - AGENT_EXPERIMENT_SEED_FLAG=${AGENT_EXPERIMENT_SEED_FLAG:-windows}
+      - "AGENT_EXPERIMENT_SEED_VALUE=${AGENT_EXPERIMENT_SEED_VALUE:-{\"min_music_fast_time\":6,\"max_music_fast_time\":11,\"min_music_slow_time\":6,\"max_music_slow_time\":14,\"end_min_music_fast_time\":8,\"end_max_music_fast_time\":14,\"end_min_music_slow_time\":5,\"end_max_music_slow_time\":8}}"
       - AGENT_EXPERIMENT_SEED_OBJECTIVE=${AGENT_EXPERIMENT_SEED_OBJECTIVE:-balanced}
       - AGENT_EXPERIMENT_SEED_TARGET_N=${AGENT_EXPERIMENT_SEED_TARGET_N:-8}
-      - "AGENT_EXPERIMENT_SEED_HYPOTHESIS=${AGENT_EXPERIMENT_SEED_HYPOTHESIS:-M8 dry-run seed - a longer death grace period balances elimination cadence}"
+      - "AGENT_EXPERIMENT_SEED_HYPOTHESIS=${AGENT_EXPERIMENT_SEED_HYPOTHESIS:-M8 dry-run seed - frantic music pacing windows shorten and intensify FFA games}"
       # Faster refill tick than the 30s default so shadow games spin up promptly
       # during a demo.
       - AGENT_EXPERIMENT_TICK_SECONDS=${AGENT_EXPERIMENT_TICK_SECONDS:-15}
