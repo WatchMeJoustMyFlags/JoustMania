@@ -8,16 +8,27 @@
  */
 import type { ArmAggregate, ExperimentView } from "../experiments.js";
 
+/**
+ * After this many ms without a successful poll, a kept-on-screen view is flagged
+ * "stale" so an operator isn't fooled by frozen numbers. Set comfortably above
+ * the poll cadence (5s) so a single missed tick doesn't cry wolf.
+ */
+const STALE_AFTER_MS = 15_000;
+
 export class ExperimentsView {
   private readonly container: HTMLElement;
+  private readonly freshnessEl: HTMLElement | null;
   private hasRendered = false;
+  /** Epoch ms of the last SUCCESSFUL render (null until the first one). */
+  private lastUpdatedMs: number | null = null;
 
-  constructor(containerId: string) {
+  constructor(containerId: string, freshnessId?: string) {
     const container = document.getElementById(containerId);
     if (!container) {
       throw new Error(`Container element not found: ${containerId}`);
     }
     this.container = container;
+    this.freshnessEl = freshnessId ? document.getElementById(freshnessId) : null;
   }
 
   setError(message: string) {
@@ -25,8 +36,35 @@ export class ExperimentsView {
     this.hasRendered = true;
   }
 
+  /**
+   * Mark the data as potentially stale (a poll just failed but we're keeping the
+   * last good render on screen). The freshness hint updates to "stale" once the
+   * last good update is older than STALE_AFTER_MS.
+   */
+  markStale() {
+    this.updateFreshness();
+  }
+
+  /** Refresh the "last updated Ns ago / stale" hint from the current clock. */
+  updateFreshness() {
+    const el = this.freshnessEl;
+    if (!el || this.lastUpdatedMs === null) return;
+
+    const ageMs = Date.now() - this.lastUpdatedMs;
+    const ageSec = Math.max(0, Math.round(ageMs / 1000));
+    const stale = ageMs >= STALE_AFTER_MS;
+
+    el.textContent = stale
+      ? `stale — last updated ${ageSec}s ago`
+      : `updated ${ageSec}s ago`;
+    el.classList.toggle("stale", stale);
+    el.hidden = false;
+  }
+
   render(experiments: ExperimentView[]) {
     this.hasRendered = true;
+    this.lastUpdatedMs = Date.now();
+    this.updateFreshness();
 
     if (experiments.length === 0) {
       this.container.innerHTML =

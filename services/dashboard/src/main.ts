@@ -53,7 +53,7 @@ async function init() {
     onStopGame: handleStopGame,
     onModeChange: handleModeChange,
   });
-  experimentsView = new ExperimentsView("experiments-grid");
+  experimentsView = new ExperimentsView("experiments-grid", "experiments-freshness");
 
   // Set up tab navigation
   setupTabs();
@@ -149,22 +149,53 @@ async function startGameEventStream() {
 
 // Poll the agent's experiment telemetry from Loki and refresh the view.
 // Self-rescheduling timeout (not setInterval) so a slow query can never stack
-// overlapping requests.
+// overlapping requests. Polling pauses while the tab is hidden (no point hitting
+// Loki for a view nobody is looking at) and resumes on visibility change.
+let experimentsPollTimer: ReturnType<typeof setTimeout> | null = null;
+
 function startExperimentsPolling() {
   const tick = async () => {
+    experimentsPollTimer = null;
+    // Don't burn a Loki query on a hidden tab; the visibility handler resumes.
+    if (document.hidden) return;
     try {
       const experiments = await fetchExperiments();
       experimentsView.render(experiments);
     } catch (error) {
       console.error("Experiments poll error:", error);
-      // Keep whatever is on screen if we've rendered before; otherwise show why.
-      if (!experimentsView.rendered) {
+      // Keep whatever is on screen if we've rendered before (and flag it stale);
+      // otherwise show why.
+      if (experimentsView.rendered) {
+        experimentsView.markStale();
+      } else {
         experimentsView.setError("Could not reach Loki for experiment telemetry.");
       }
     } finally {
-      setTimeout(tick, EXPERIMENTS_POLL_MS);
+      // Only reschedule while visible; visibilitychange restarts an idle loop.
+      if (!document.hidden) {
+        experimentsPollTimer = setTimeout(tick, EXPERIMENTS_POLL_MS);
+      }
     }
   };
+
+  // Keep the "updated Ns ago / stale" hint counting up between polls (even while
+  // polls are failing or the loop is paused). The dashboard lives for the page
+  // session, so this interval is never cleared.
+  setInterval(() => experimentsView.updateFreshness(), 1000);
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      // Pause: cancel any pending poll. An in-flight fetch is allowed to settle.
+      if (experimentsPollTimer !== null) {
+        clearTimeout(experimentsPollTimer);
+        experimentsPollTimer = null;
+      }
+    } else if (experimentsPollTimer === null) {
+      // Resume: poll immediately so the operator sees fresh data on return.
+      tick();
+    }
+  });
+
   tick();
 }
 
