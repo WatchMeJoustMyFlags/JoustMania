@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -167,6 +168,37 @@ type Run struct {
 	// Games is the number of games the runner actually completed, echoed back so
 	// the measurer and the span agree on the realized sample size.
 	Games int
+}
+
+// runIDSep joins shadow game_ids into the Run.ID. The live SyntheticRunner
+// (shadow_validation_runner.go) encodes the batch's shadow game_ids as a
+// comma-joined Run.ID; the StoreMeasurer (validate_seams.go) decodes them with
+// RunGameIDs to read each game's finalized fitness back from the store. A coordinator
+// game_id is "game_<hex>" and never contains a comma, so the split is unambiguous.
+const runIDSep = ","
+
+// NewRun builds a Run handle from a batch of shadow game_ids, encoding them into the
+// Run.ID so the FitnessMeasurer can recover them. Games is set to len(ids) — the
+// realized sample size the Validator records and the measurer averages over.
+func NewRun(gameIDs []string) Run {
+	return Run{ID: strings.Join(gameIDs, runIDSep), Games: len(gameIDs)}
+}
+
+// RunGameIDs decodes the shadow game_ids a Run carries (the inverse of NewRun).
+// An empty ID yields no ids; empty fragments (a stray separator) are dropped so a
+// malformed id list never produces phantom empty game_ids the measurer would miss.
+func RunGameIDs(run Run) []string {
+	if run.ID == "" {
+		return nil
+	}
+	parts := strings.Split(run.ID, runIDSep)
+	ids := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			ids = append(ids, p)
+		}
+	}
+	return ids
 }
 
 // FitnessMeasurer reads the aggregate fitness of a completed synthetic Run. It is
