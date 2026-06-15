@@ -123,6 +123,10 @@ func (l *Loop) llmDecide(ctx context.Context, backend Backend, snapshot flags.Sn
 	// the COUNT actually injected — what the model truly saw, not the raw flag.
 	infCtx, span := l.Tracer.Start(ctx, SpanLLMInfer, trace.WithAttributes(
 		append(semconvGenAIChat(backend.Name()),
+			// session.id + game.id (#1088): the real inference span is attributable to
+			// its game like the sibling decision / agent.llm.prompt spans.
+			attribute.String(AttrSessionID, c.SessionID),
+			attribute.String(AttrGameID, c.SessionID),
 			attribute.Int(AttrLLMContextGames, contextCount),
 			// M7-3 (#930): the operator-note view on the REAL inference span — present +
 			// rune length, the bounded low-cardinality record of what the model saw.

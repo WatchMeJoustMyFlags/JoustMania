@@ -141,9 +141,12 @@ func TestRetroCapture_SchemaComplete(t *testing.T) {
 		AttrObjectives:           "chaos=0.3,endurance=0.7",
 		AttrInterventionsAllowed: "noop,grant_shield",
 		"session.id":             "session-7",
-		AttrInferenceConfigured:  "phi4-mini",
-		AttrInferenceUsed:        DefaultInference, // "none", NOT "rules"
-		AttrInferenceFallback:    FallbackNoBackend,
+		// #1088: the retro span carries game.id (= the session id) so a Jaeger query
+		// by game.id surfaces the post-game retrospective alongside the in-game spans.
+		AttrGameID:              "session-7",
+		AttrInferenceConfigured: "phi4-mini",
+		AttrInferenceUsed:       DefaultInference, // "none", NOT "rules"
+		AttrInferenceFallback:   FallbackNoBackend,
 	}
 	for key, expected := range wantStr {
 		if v, ok := attrValue(span, key); !ok || v.AsString() != expected {

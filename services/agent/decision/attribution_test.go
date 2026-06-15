@@ -122,6 +122,41 @@ func TestDecisionSpan_BlockedAttribution(t *testing.T) {
 	}
 }
 
+// TestPerGameSpans_CarryGameID is the #1088 correlation assertion: every agent
+// span that operates on a specific game carries the SAME game.id (and its
+// session.id alias) as its agent.signal_received root, so a Jaeger query by
+// game.id matches the whole per-game trace — not just the root — and correlates
+// the agent's orphan trace with the coordinator's per-game trace. game.id IS the
+// SessionID (= the real game_id since #845 PR A).
+func TestPerGameSpans_CarryGameID(t *testing.T) {
+	const gameID = "game_abc123def456"
+	snap := flags.Snapshot{
+		Enabled:              true,
+		Mode:                 "rules",
+		InterventionsAllowed: []string{"grant_shield"},
+		Policy:               flags.Policy{MaxInterventionsPerMinute: 10},
+	}
+	l, sr := recordingLoop(t, snap, []Decision{{Intervention: "grant_shield", Reason: "x"}})
+
+	l.OnEvaluate(context.Background(), gamecontext.GameContext{SessionID: gameID, GameKind: "shadow"}, testTrigger())
+
+	ended := sr.Ended()
+	// Every per-game span family in this cycle must carry game.id == the session id.
+	for _, name := range []string{SignalReceived, SpanDecision, SpanAction} {
+		spans := spansByName(ended, name)
+		if len(spans) != 1 {
+			t.Fatalf("%s spans = %d, want 1", name, len(spans))
+		}
+		s := spans[0]
+		if v, ok := attrValue(s, AttrGameID); !ok || v.AsString() != gameID {
+			t.Errorf("%s: %s = %q (present=%v), want %q", name, AttrGameID, v.AsString(), ok, gameID)
+		}
+		if v, ok := attrValue(s, AttrSessionID); !ok || v.AsString() != gameID {
+			t.Errorf("%s: %s = %q (present=%v), want %q", name, AttrSessionID, v.AsString(), ok, gameID)
+		}
+	}
+}
+
 // TestDisabledSpan_EmittedWithFlagAttribution: the kill switch (enabled=false)
 // still emits a trace showing "agent off" with the flags in effect (#729 §4).
 func TestDisabledSpan_EmittedWithFlagAttribution(t *testing.T) {

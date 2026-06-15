@@ -148,6 +148,11 @@ func TestLLMDecide_ValidResponseTakesLLMPath(t *testing.T) {
 	if v, ok := attrValue(inf[0], "gen_ai.request.model"); !ok || v.AsString() != "phi4-mini" {
 		t.Errorf("infer span gen_ai.request.model = %q, want phi4-mini", v.AsString())
 	}
+	// #1088: the real inference span carries game.id (= the session id) for
+	// per-game correlation, like the sibling decision / agent.llm.prompt spans.
+	if v, ok := attrValue(inf[0], AttrGameID); !ok || v.AsString() != "s1" {
+		t.Errorf("infer span %s = %q (present=%v), want s1", AttrGameID, v.AsString(), ok)
+	}
 }
 
 // unavailableBackend is a chain tier whose probe never reports reachable, used to
