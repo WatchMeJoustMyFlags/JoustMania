@@ -49,6 +49,12 @@ model_list:
       api_base: os.environ/OLLAMA_BASE_URL
 
 litellm_settings:
+  # OpenTelemetry (#1087): emit one span per LLM call (gen_ai semconv — model,
+  # token counts, latency, success/failure, fallback) to the shared collector.
+  # The "otel" callback covers both success and failure. Exporter target +
+  # service identity come from the OTEL_* env vars set on the gateway service in
+  # docker-compose.yml (OTEL_EXPORTER=otlp_grpc, OTEL_ENDPOINT=otel-collector:4317).
+  callbacks: ["otel"]
   # Fallback chains (#1046): a cloud outage degrades to LOCAL, never to nothing.
   # claude -> phi4-mini keeps inference answering on Anthropic failure/unset key.
   # The local routes have no cloud fallback (they ARE the terminal LLM tier);
