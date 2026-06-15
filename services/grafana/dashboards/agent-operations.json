@@ -264,7 +264,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Agent ActionSink flag-write outcomes per minute: result=ok means an intervention was successfully written to the interventions flag file; result=error means the agent could not apply it (e.g. flagd file unreachable). This is the queryable applied-vs-blocked signal today; the richer per-type agent_interventions_applied_total / agent_decisions_total breakdown lands with #790. Source: agent_intervention_writes_total.",
+      "description": "Agent decision outcomes per minute. 'applied' = decisions that dispatched (blocked=false); the remaining series are decisions blocked before dispatch, split by reason (not_allowed = interventions disabled by policy; battery_threshold = target controller below battery floor; rate_limit = per-minute intervention budget exhausted). Source: agent_decisions_total{blocked,block_reason} (#1115).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -316,22 +316,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "error"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "red",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "ok"
+              "options": "applied"
             },
             "properties": [
               {
@@ -371,12 +356,21 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (result) (rate(agent_intervention_writes_total[5m])) * 60",
-          "legendFormat": "{{result}}",
+          "expr": "sum(rate(agent_decisions_total{blocked=\"false\"}[5m])) * 60",
+          "legendFormat": "applied",
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (block_reason) (rate(agent_decisions_total{blocked=\"true\"}[5m])) * 60",
+          "legendFormat": "{{block_reason}}",
+          "refId": "B"
         }
       ],
-      "title": "Interventions Applied vs Blocked (flag-write outcome)",
+      "title": "Interventions Applied vs Blocked",
       "type": "timeseries"
     },
     {
