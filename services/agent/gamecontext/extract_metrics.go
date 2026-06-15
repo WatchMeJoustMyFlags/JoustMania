@@ -22,6 +22,15 @@ const (
 	metricDeathsTotal    = "game_player_deaths_total"    // live
 	metricPeakAccel      = "game_player_peak_accel"      // live (game_id carrier)
 
+	// Game-speed / threshold reference frame (#1082). All three are SESSION-level
+	// gauges the coordinator already emits (no serial label): game_music_tempo is
+	// the applied game speed (1.0=slow..~1.3=fast); the effective thresholds are the
+	// tempo-interpolated death/warning thresholds in g-force, so proximity-to-death
+	// reads as "intensity vs threshold AT that tempo".
+	metricMusicTempo        = "game_music_tempo"                 // live (Phase 70)
+	metricEffectiveDeathThr = "game_effective_death_threshold"   // live (Phase 80)
+	metricEffectiveWarnThr  = "game_effective_warning_threshold" // live (Phase 80)
+
 	metricMovementVariance = "game_player_movement_variance" // live (coordinator emits at ~10Hz, #730/#1015)
 	metricBatteryPct       = "controller_battery_pct"        // proposed
 	metricSkillLevel       = "game_player_skill_level"       // live (coordinator emits at ~10Hz, #730/#1015)
@@ -276,6 +285,27 @@ func (s *Store) applyDataPoint(name string, dp pmetric.NumberDataPoint) bool {
 				s.SetGameMode(mv.AsString())
 				return true
 			}
+		}
+
+	// --- game-speed / threshold reference frame (#1082; session-level, no serial) ---
+	// These gauges carry no game_id label (like game_current_mode), so they are not
+	// routed through adoptGame; they record onto whatever partition the multiplexer
+	// selected. v==0 is the coordinator's "no game" sentinel for tempo/thresholds, so
+	// a zero reading is skipped rather than recorded as a real 0.0 speed/threshold.
+	case metricMusicTempo:
+		if v != 0 {
+			s.SetMusicTempo(v)
+			return true
+		}
+	case metricEffectiveDeathThr:
+		if v != 0 {
+			s.SetDeathThreshold(v)
+			return true
+		}
+	case metricEffectiveWarnThr:
+		if v != 0 {
+			s.SetWarningThreshold(v)
+			return true
 		}
 	}
 	return false

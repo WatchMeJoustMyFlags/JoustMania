@@ -79,6 +79,42 @@ func retroTimelineContext() gamecontext.GameContext {
 	return ctx
 }
 
+// retroMovementContext is retroTimelineContext plus per-player movement series and
+// a session game-speed/threshold track (#1082), so the retro golden exercises the
+// sparkline + activity + proximity-to-death + tempo rendering at game end. AA:11 is
+// the near-death survivor (winner); BB:22 faded to idle (eliminated #1); CC:33
+// crossed the threshold and was eliminated #2.
+func retroMovementContext() gamecontext.GameContext {
+	ctx := retroTimelineContext()
+	at := func(secsBefore int) time.Time {
+		return fixedNow.Add(time.Duration(-secsBefore) * time.Second)
+	}
+	ctx.Session.MusicTempo = fptr(1.25)
+	ctx.Session.DeathThreshold = fptr(1.75)
+	ctx.Session.WarningThreshold = fptr(1.15)
+
+	ms := func(secsBefore int, tempo, thr float64) gamecontext.SpeedSample {
+		return gamecontext.SpeedSample{At: at(secsBefore), Tempo: fptr(tempo), DeathThreshold: fptr(thr)}
+	}
+	ctx.SpeedTrack = []gamecontext.SpeedSample{
+		ms(140, 1.00, 1.50), ms(110, 1.08, 1.58), ms(80, 1.15, 1.65),
+		ms(50, 1.20, 1.70), ms(20, 1.25, 1.75),
+	}
+	smp := func(secsBefore int, intensity float64) gamecontext.MovementSample {
+		return gamecontext.MovementSample{At: at(secsBefore), Intensity: intensity}
+	}
+	ctx.Players["AA:11"].History = []gamecontext.MovementSample{
+		smp(140, 0.50), smp(110, 0.90), smp(80, 1.30), smp(50, 1.60), smp(20, 1.68),
+	}
+	ctx.Players["BB:22"].History = []gamecontext.MovementSample{
+		smp(140, 0.80), smp(110, 0.40), smp(80, 0.10), smp(50, 0.02),
+	}
+	ctx.Players["CC:33"].History = []gamecontext.MovementSample{
+		smp(140, 1.10), smp(100, 1.50), smp(92, 1.80),
+	}
+	return ctx
+}
+
 type retroCase struct {
 	name     string
 	snapshot flags.Snapshot
@@ -118,6 +154,13 @@ func retroCases() []retroCase {
 			name:     "retro_timeline",
 			snapshot: retroSnapshot(),
 			context:  retroTimelineContext(),
+		},
+		{
+			// #1082: per-player movement sparklines + activity + proximity-to-death +
+			// the session game-speed track, at game end.
+			name:     "retro_movement",
+			snapshot: retroSnapshot(),
+			context:  retroMovementContext(),
 		},
 		{
 			// No players, nil session signals: every field renders "unknown"/[].

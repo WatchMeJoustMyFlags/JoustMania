@@ -311,3 +311,64 @@ func TestBuildSummary_EmptyTimeline(t *testing.T) {
 }
 
 func bptr(b bool) *bool { return &b }
+
+// TestBuildSummary_MovementSeries verifies the #1082 per-player movement series +
+// game-speed track flow into the Summary: a player with movement history gets a
+// sparkline, an activity classification, and a proximity-to-death ratio/offset; the
+// summary carries the game-speed sparkline.
+func TestBuildSummary_MovementSeries(t *testing.T) {
+	clock := base
+	s := gamecontext.NewStore(time.Hour, time.Hour, func() time.Time { return clock })
+	var snap gamecontext.GameContext
+	s.OnGameEnd = func(c gamecontext.GameContext) { snap = c }
+
+	s.SetGameKind("real")
+	s.SetGameMode("ffa")
+	s.SetGameActive(true)
+	s.AdoptSessionID("game_move0001")
+	s.SetActivePlayerCount(2)
+
+	// Tempo + threshold ramp over the game (the reference frame).
+	s.SetMusicTempo(1.0)
+	s.SetDeathThreshold(1.5)
+	s.SetPlayerIntensity("AA:11", 0.5)
+	s.SetPlayerIntensity("BB:22", 1.0)
+
+	clock = at(20)
+	s.SetMusicTempo(1.2)
+	s.SetDeathThreshold(1.7)
+	s.SetPlayerIntensity("AA:11", 1.4)  // ramps toward threshold
+	s.SetPlayerIntensity("BB:22", 1.75) // crosses
+
+	clock = at(25)
+	s.SetEliminationOrder("BB:22", 1)
+	s.SetActivePlayerCount(1)
+
+	clock = at(40)
+	s.SetSessionDuration(40)
+	s.SetGameActive(false)
+
+	got := BuildSummary(snap, BuildOptions{Now: at(41)})
+
+	if got.SpeedSparkline == "" {
+		t.Error("expected non-empty SpeedSparkline")
+	}
+	byserial := map[string]PlayerArc{}
+	for _, a := range got.PlayerArcs {
+		byserial[a.Serial] = a
+	}
+	aa := byserial["AA:11"]
+	if aa.MovementSparkline == "" {
+		t.Error("AA:11 missing movement sparkline")
+	}
+	if aa.Activity == "" || aa.Activity == string(gamecontext.ActivityUnknown) {
+		t.Errorf("AA:11 activity = %q, want a real classification", aa.Activity)
+	}
+	if aa.NearDeathRatio == nil || aa.NearDeathOffsetSeconds == nil {
+		t.Errorf("AA:11 proximity not populated: ratio=%v off=%v", aa.NearDeathRatio, aa.NearDeathOffsetSeconds)
+	}
+	bb := byserial["BB:22"]
+	if bb.NearDeathRatio == nil || *bb.NearDeathRatio < 1.0 {
+		t.Errorf("BB:22 should have crossed the threshold; ratio=%v", bb.NearDeathRatio)
+	}
+}

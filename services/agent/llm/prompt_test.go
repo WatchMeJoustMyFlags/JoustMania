@@ -105,6 +105,53 @@ func timelineContext() gamecontext.GameContext {
 	return ctx
 }
 
+// movementContext is the #1082 fixture: a populated per-player movement TIME-SERIES
+// plus a session game-speed/threshold track, exercising the sparkline + activity +
+// proximity-to-death rendering and the tempo ramp. It builds on timelineContext so
+// the new sections render alongside the #916 narrative.
+//
+// AA:11 is a steady-active player whose intensity ramps up and approaches the death
+// threshold (a near-death survivor). BB:22 is mostly idle (a fader). CC:33 (the
+// eliminated player) crosses the threshold right before its elimination. The speed
+// track ramps from slow (1.0) to fast (1.3), and the death threshold rises with it.
+func movementContext() gamecontext.GameContext {
+	ctx := timelineContext()
+	at := func(secsBefore int) time.Time {
+		return fixedNow.Add(time.Duration(-secsBefore) * time.Second)
+	}
+	// Session reference frame: current applied tempo + effective thresholds (#1082).
+	ctx.Session.MusicTempo = fptr(1.30)
+	ctx.Session.DeathThreshold = fptr(1.80)
+	ctx.Session.WarningThreshold = fptr(1.20)
+
+	// Session game-speed / death-threshold track, oldest-first, ramping over the game.
+	ms := func(secsBefore int, tempo, thr float64) gamecontext.SpeedSample {
+		return gamecontext.SpeedSample{At: at(secsBefore), Tempo: fptr(tempo), DeathThreshold: fptr(thr)}
+	}
+	ctx.SpeedTrack = []gamecontext.SpeedSample{
+		ms(60, 1.00, 1.50), ms(50, 1.05, 1.55), ms(40, 1.12, 1.62),
+		ms(30, 1.20, 1.70), ms(20, 1.25, 1.75), ms(10, 1.30, 1.80),
+	}
+
+	hist := func(samples ...gamecontext.MovementSample) []gamecontext.MovementSample { return samples }
+	smp := func(secsBefore int, intensity float64) gamecontext.MovementSample {
+		return gamecontext.MovementSample{At: at(secsBefore), Intensity: intensity}
+	}
+	// AA:11 (survivor): ramps from calm to near the threshold — steady & active.
+	ctx.Players["AA:11"].History = hist(
+		smp(60, 0.40), smp(50, 0.70), smp(40, 1.05), smp(30, 1.45), smp(20, 1.60), smp(10, 1.66),
+	)
+	// BB:22 (fader): a brief burst then idle — mostly standing still.
+	ctx.Players["BB:22"].History = hist(
+		smp(60, 0.90), smp(50, 0.50), smp(40, 0.10), smp(30, 0.05), smp(20, 0.02), smp(10, 0.00),
+	)
+	// CC:33 (eliminated #1): flailing hard, crosses the threshold right before elim.
+	ctx.Players["CC:33"].History = hist(
+		smp(60, 1.10), smp(55, 1.50), smp(50, 0.80), smp(48, 1.75),
+	)
+	return ctx
+}
+
 type goldenCase struct {
 	name     string
 	snapshot flags.Snapshot
@@ -151,6 +198,13 @@ func goldenCases() []goldenCase {
 			name:     "timeline_3players",
 			snapshot: baseSnapshot(balancedVariant),
 			context:  timelineContext(),
+		},
+		{
+			// #1082: per-player movement sparklines + activity + proximity-to-death,
+			// plus the session game-speed (tempo) track. Exercises every new section.
+			name:     "movement_3players",
+			snapshot: baseSnapshot(balancedVariant),
+			context:  movementContext(),
 		},
 		{
 			name: "all_unknown",
@@ -300,6 +354,8 @@ func TestNilSessionFields(t *testing.T) {
 		"duration_seconds: unknown",
 		"active_players: unknown",
 		"game_active: unknown",
+		"music_tempo: unknown",     // #1082
+		"death_threshold: unknown", // #1082
 		"kind=unknown",
 		"mode=unknown",
 		"elimination_sequence: []",
