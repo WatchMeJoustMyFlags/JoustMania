@@ -109,6 +109,23 @@ type experimentLoop struct {
 	flags    *flags.Flags
 	log      *slog.Logger
 
+	// fitnessStore is the finalized-per-game fitness store (#965/#1017): onGameEnd
+	// records every concluded game's settled fitness here, keyed by game_id, for
+	// BOTH a shadow validation game (read back by the M7-7 StoreMeasurer) and a real
+	// primary game (averaged by the StoreBaseline). It is the instrumentation the
+	// Validator's Baseline/FitnessMeasurer seams read. nil ⇒ recording is skipped
+	// (test wiring that does not exercise the validation path).
+	fitnessStore *experiment.FitnessStore
+
+	// validator is the M7-7 synthetic-validation gate (#935) wired over the LIVE #965
+	// seams: it runs a candidate Proposal through real shadow games (the
+	// shadowValidationRunner), measures their finalized fitness against the recent-real
+	// baseline (the StoreMeasurer + StoreBaseline), and returns a promote/discard/revert
+	// Decision. It is invoked ONLY from the gated, fail-closed (#1016)
+	// autonomous-promotion path; merely holding it is inert. nil in test wiring that
+	// does not exercise validation.
+	validator *experiment.Validator
+
 	// expDefaults are the BOOTSTRAP defaults for the migrated runtime knobs (#1044):
 	// the values resolved ONCE at startup from the AGENT_EXPERIMENT_* env vars. Each
 	// tick's live config(ctx) read falls back to these when the matching agent.json
@@ -248,17 +265,35 @@ func buildExperimentLoop(
 		Log:       logger,
 	})
 
+	// FitnessStore (#965/#1017): the finalized-per-game fitness store onGameEnd
+	// Records into and the M7-7 validation seams read from. It is the instrumentation
+	// that turns the Validator's injected fitness reads into REAL ones.
+	fitnessStore := experiment.NewFitnessStore(fitnessStoreCapacity())
+
 	loop := &experimentLoop{
 		registry:       registry,
 		spawner:        spawner,
 		flags:          flagsClient,
 		log:            logger,
+		fitnessStore:   fitnessStore,
 		expDefaults:    expDefaults,
 		seed:           seedIntentFromEnv(),
 		fitness:        defaultGameFitness,
 		completedGrace: completedGrace(),
 		dynamic:        newDynamicDeclarerFromEnv(gameFlagPath, nil),
 	}
+	// Build the M7-7 Validator (#935) over the LIVE seams (#965): the shadow
+	// SyntheticRunner drives real shadow games via the spawner; the FitnessMeasurer +
+	// Baseline read the finalized store; the Reverter strips shadow targeting via the
+	// #977 Writer. It is stored on the loop for the (gated, fail-closed #1016)
+	// autonomous-promotion path to invoke; merely building it is inert.
+	loop.validator = experiment.NewValidator(
+		experiment.NewStoreBaseline(fitnessStore, validatorObjectiveResolver(registry), validationBaselineRecentN(), validationBaselineMinSamples()),
+		newShadowValidationRunner(spawner, fitnessStore, validationGameTimeout(), logger),
+		experiment.NewStoreMeasurer(fitnessStore),
+		experiment.NewWriterReverter(writer),
+		nil, logger,
+	)
 	logger.Info("Dynamic experiment declarer constructed (#995/#1044) — gated LIVE by agent.json experiment_dynamic_enabled",
 		"env_dynamic_default", expDefaults.DynamicEnabled,
 		"candidates", os.Getenv(envDynamicCandidates))
@@ -587,27 +622,44 @@ func (e *experimentLoop) declareAndStart(ctx context.Context, in experiment.Inte
 // existing per-game retro/summary path. After a conclusion it nudges
 // AllocateAndSpawn so the freed slot is refilled promptly (capacity churn).
 func (e *experimentLoop) onGameEnd(gc gamecontext.GameContext) {
-	if gc.ExperimentID == "" {
-		return // not an experiment game.
-	}
-	objective := ""
-	if cv, ok := e.registry.CompactView(gc.ExperimentID); ok {
-		objective = cv.Intent.Objective
-	}
 	// The coordinator emits game_duration_seconds ONLY at game end (one gauge set in
 	// the session teardown), so for an agent-spawned shadow game it routinely loses
 	// the race against the game_active=0 datapoint that fires THIS hook — leaving
 	// gc.Session.DurationSeconds nil at conclusion. That nil made every
 	// duration-based objective (endurance/accelerate) skip its fitness function and
 	// fold the worst-case 0 (#997). Recover the real elapsed time from the partition's
-	// own start→end phase timeline so a concluded shadow game carries a meaningful,
-	// objective-relevant duration even when the end-only gauge has not arrived.
+	// own start→end phase timeline so a concluded game carries a meaningful,
+	// objective-relevant duration even when the end-only gauge has not arrived. This
+	// recovery now applies to REAL games too (#1017 §3 item 2) so a dropped end gauge
+	// cannot poison the recent-real baseline with a worst-case 0.
 	gc = withEffectiveDuration(gc)
-	fitness := e.fitness(gc, objective)
 	duration := 0.0
 	if gc.Session.DurationSeconds != nil {
 		duration = *gc.Session.DurationSeconds
 	}
+
+	if gc.ExperimentID == "" {
+		// Not an experiment game. Pre-#965 this returned immediately and the game's
+		// fitness was dropped. The #1017 instrumentation gap: a REAL primary game's
+		// fitness is COMPUTABLE today (same EvaluateFitness, substrate-agnostic) but is
+		// never stored — leaving the Validator's Baseline seam with no real-game signal.
+		// Record it into the finalized-per-game store (keyed by game_id) so the
+		// StoreBaseline can read the mean of the last N real games. This is a pure ADD:
+		// a non-experiment game still does nothing else (no cohort fold, no allocate).
+		e.recordFinalizedRealFitness(gc, duration)
+		return
+	}
+
+	objective := ""
+	if cv, ok := e.registry.CompactView(gc.ExperimentID); ok {
+		objective = cv.Intent.Objective
+	}
+	fitness := e.fitness(gc, objective)
+	// Record the SHADOW game's finalized fitness keyed by game_id (#965) so the M7-7
+	// StoreMeasurer can read a validation batch's fitness back. This is the same
+	// scalar ConcludeGame folds into the cohort journal — captured for the validation
+	// path too.
+	e.recordFinalizedFitness(gc, objective, fitness, duration)
 	status, err := e.registry.ConcludeGame(context.Background(), gc.SessionID, fitness, duration)
 	if err != nil {
 		e.log.Warn("experiment: conclude game failed", "game_id", gc.SessionID, "error", err)
@@ -617,6 +669,75 @@ func (e *experimentLoop) onGameEnd(gc gamecontext.GameContext) {
 		// A freed in-flight slot; refill it (respecting the kill-switch).
 		e.allocateIfEnabled(context.Background())
 	}
+}
+
+// recordFinalizedFitness writes one finalized SHADOW-game fitness sample into the
+// store keyed by game_id (#965). It is the capture side the StoreMeasurer reads:
+// the same defaultGameFitness scalar ConcludeGame folds into the cohort journal,
+// settled (post-withEffectiveDuration), available to the validation path. A nil
+// store (test wiring) is a no-op.
+func (e *experimentLoop) recordFinalizedFitness(gc gamecontext.GameContext, objective string, fitness, duration float64) {
+	if e.fitnessStore == nil {
+		return
+	}
+	if objective == "" {
+		objective = decision.ObjectiveBalanced
+	}
+	e.fitnessStore.Record(experiment.FitnessSample{
+		GameID:    gc.SessionID,
+		Fitness:   fitness,
+		Objective: objective,
+		GameKind:  gameKindOrDefault(gc),
+		DurationS: duration,
+	})
+}
+
+// recordFinalizedRealFitness writes a REAL primary game's finalized fitness into
+// the store (#1017 §3 item 1) — the previously-DROPPED real-game fitness the
+// Validator's Baseline needs. A real game is not bound to one objective, so it is
+// scored against EVERY experimentable objective its GameContext can evaluate and a
+// per-objective sample is recorded; the StoreBaseline then filters by the
+// experiment-under-validation's objective. Only objectives the fitness function
+// actually evaluated (signals present) are recorded — a missing-signal objective is
+// never fabricated (#731 honesty). A nil store or a non-real game_kind is skipped
+// (only real games seed the baseline). A nil store (test wiring) is a no-op.
+func (e *experimentLoop) recordFinalizedRealFitness(gc gamecontext.GameContext, duration float64) {
+	if e.fitnessStore == nil {
+		return
+	}
+	// Guard the baseline against shadow/unknown-kind games: only a game explicitly
+	// labeled real may seed the recent-real baseline. An agent-spawned shadow game
+	// never reaches here (it carries an ExperimentID), but a defensively-labeled
+	// shadow game with no ExperimentID must not pollute the real baseline.
+	if gameKindOrDefault(gc) != experiment.GameKindReal {
+		return
+	}
+	eval := decision.EvaluateFitness(gc, decision.DefaultStaticConfig().FitnessThresholds)
+	for objective, r := range eval.Results {
+		if !r.Evaluated || !decision.IsExperimentable(objective) {
+			continue
+		}
+		e.fitnessStore.Record(experiment.FitnessSample{
+			GameID:    gc.SessionID,
+			Fitness:   r.Progress,
+			Objective: objective,
+			GameKind:  experiment.GameKindReal,
+			DurationS: duration,
+		})
+	}
+}
+
+// gameKindOrDefault returns the game's kind label, defaulting an empty label to
+// "real": the coordinator labels a player-facing game "real" but an older/edge
+// datapoint may omit the label, and the conservative default for the baseline is to
+// treat an unlabeled, non-experiment game as real (it has no ExperimentID and was
+// not agent-spawned). An agent shadow game ALWAYS carries an ExperimentID, so it is
+// never mislabeled real by this default.
+func gameKindOrDefault(gc gamecontext.GameContext) string {
+	if gc.GameKind == "" {
+		return experiment.GameKindReal
+	}
+	return gc.GameKind
 }
 
 // onGameTerminal is the #1014 terminal-outcome backstop, invoked by a spawned
@@ -894,6 +1015,92 @@ func dynamicMaxConcurrent() int {
 		}
 	}
 	return defaultDynamicMaxConcurrent
+}
+
+// M7-7 validation seam env knobs (#965). These tune the LIVE Validator wiring; all
+// have safe defaults so the validation path is wired even with none set. They are
+// distinct from the cohort knobs (#1044) because the synthetic-validation gate is a
+// separate, gated path (the autonomous-promotion #1016 surface).
+const (
+	// envFitnessStoreCapacity overrides the finalized-fitness ring size.
+	envFitnessStoreCapacity = "AGENT_FITNESS_STORE_CAPACITY"
+	// envValidationGameTimeout overrides the per-cycle await for shadow games' fitness.
+	envValidationGameTimeout = "AGENT_VALIDATION_GAME_TIMEOUT_SECONDS"
+	// envValidationBaselineRecentN overrides how many recent real games the baseline averages.
+	envValidationBaselineRecentN = "AGENT_VALIDATION_BASELINE_RECENT_N"
+	// envValidationBaselineMinSamples overrides the minimum real samples a baseline needs.
+	envValidationBaselineMinSamples = "AGENT_VALIDATION_BASELINE_MIN_SAMPLES"
+)
+
+// defaultValidationBaselineRecentN is the default number of recent real games the
+// StoreBaseline averages. It mirrors the verdict's DefaultMinNPerArm (8) so the
+// baseline rests on a comparable sample to what the cohort verdict already trusts
+// (#1017 §2).
+const defaultValidationBaselineRecentN = 8
+
+// defaultValidationBaselineMinSamples is the default minimum real samples before a
+// baseline is trusted. Below it the Validator FAILS CLOSED (no promotion against a
+// baseline of too-few real games). A conservative floor of 3 means a baseline is
+// never a single-game fluke.
+const defaultValidationBaselineMinSamples = 3
+
+// fitnessStoreCapacity resolves the finalized-fitness ring size from
+// AGENT_FITNESS_STORE_CAPACITY, falling back to the package default on an
+// unset/invalid/non-positive value.
+func fitnessStoreCapacity() int {
+	return positiveIntEnv(envFitnessStoreCapacity, experiment.DefaultFitnessStoreCapacity)
+}
+
+// validationGameTimeout resolves the per-cycle await timeout from
+// AGENT_VALIDATION_GAME_TIMEOUT_SECONDS (seconds), falling back to
+// DefaultValidationGameTimeout on an unset/invalid/non-positive value.
+func validationGameTimeout() time.Duration {
+	if v := strings.TrimSpace(os.Getenv(envValidationGameTimeout)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return DefaultValidationGameTimeout
+}
+
+// validationBaselineRecentN resolves how many recent real games the baseline
+// averages from AGENT_VALIDATION_BASELINE_RECENT_N.
+func validationBaselineRecentN() int {
+	return positiveIntEnv(envValidationBaselineRecentN, defaultValidationBaselineRecentN)
+}
+
+// validationBaselineMinSamples resolves the minimum real samples a baseline needs
+// from AGENT_VALIDATION_BASELINE_MIN_SAMPLES.
+func validationBaselineMinSamples() int {
+	return positiveIntEnv(envValidationBaselineMinSamples, defaultValidationBaselineMinSamples)
+}
+
+// positiveIntEnv parses a positive integer env var, returning fallback on an
+// unset/invalid/non-positive value.
+func positiveIntEnv(key string, fallback int) int {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return fallback
+}
+
+// validatorObjectiveResolver maps a Proposal to its experiment's fitness objective
+// by reading the registry's CompactView keyed by the proposal's ExperimentID. The
+// objective is what the StoreBaseline filters recent-real samples by, so the
+// baseline is per-objective (#1017 §3 item 4). An unknown experiment id yields ""
+// (any-objective), the safe degrade.
+func validatorObjectiveResolver(reg *experiment.Registry) experiment.ObjectiveResolver {
+	return func(p experiment.Proposal) string {
+		if reg == nil || p.ExperimentID == "" {
+			return ""
+		}
+		if cv, ok := reg.CompactView(p.ExperimentID); ok {
+			return cv.Intent.Objective
+		}
+		return ""
+	}
 }
 
 // seedIntentFromEnv builds the single seed experiment Intent from the
