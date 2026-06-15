@@ -12,7 +12,7 @@ The fastest path is:
 ```bash
 make dry-run
 ./scripts/agent-dryrun-enable.sh on   # the loop is inert until you do this
-docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile agent restart agent
+                                      # (gate flip takes effect live ~1 s — no restart)
 ```
 
 `./scripts/agent-dryrun-enable.sh on` flips **both** live gates in the ci/ flag

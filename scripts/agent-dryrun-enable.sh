@@ -29,9 +29,13 @@
 # `mode=llm` is applied on `on` only when an inference backend is configured:
 #   AGENT_INFERENCE_BACKEND=openai ./scripts/agent-dryrun-enable.sh on
 #
-# After flipping, flagd hot-reloads the file; restart the agent so the loop
-# re-reads the existence layer:
-#   docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile agent restart agent
+# After flipping, flagd hot-reloads the file and the gate flips take effect LIVE
+# (~1 s): since #1044 the experiment loop is always built and self-gates each tick
+# on the live experiments_enabled flag (and reads `mode` live too), so an off→on
+# flip starts it with NO agent restart. A restart/recreate is only required when
+# you set/change the AGENT_INFERENCE_* env vars (read at process start):
+#   AGENT_INFERENCE_BACKEND=openai ... \
+#     docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile agent up -d agent
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

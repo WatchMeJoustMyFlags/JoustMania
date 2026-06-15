@@ -51,12 +51,12 @@ make dry-run
 ```
 
 The loop is **inert until you opt in** (both live gates are fail-closed `off` by
-default). Flip them on, then restart the agent so it re-reads the existence
-layer:
+default). Flip them on — the gate flips take effect **live** (~1 s; since #1044
+the loop is always built and self-gates each tick on the live flags, so an
+off→on flip starts it with **no agent restart**):
 
 ```bash
 ./scripts/agent-dryrun-enable.sh on
-docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile agent restart agent
 ```
 
 `agent-dryrun-enable.sh on` flips, **in the `services/flagd/ci/` flag dir only**
@@ -85,15 +85,17 @@ configure an OpenAI-compatible backend **before** running the enable script (the
 script only flips `mode → llm` when it sees `AGENT_INFERENCE_BACKEND=openai`):
 
 ```bash
-# Ollama-direct (simplest). Restart the agent with the backend env set:
+# Ollama-direct (simplest). Recreate the agent with the backend env set
+# (the AGENT_INFERENCE_* vars are read at process start, so this recreate IS
+# required to pick them up):
 AGENT_INFERENCE_BACKEND=openai \
 AGENT_INFERENCE_BASE_URL=http://host.docker.internal:11434/v1 \
 AGENT_INFERENCE_MODEL=phi4-mini \
   docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile agent up -d agent
 
-# then flip the gates (this run also flips mode -> llm because the env is set):
+# then flip the gates (this run also flips mode -> llm because the env is set).
+# The gate + mode flips take effect live (~1 s) — no further restart needed:
 AGENT_INFERENCE_BACKEND=openai ./scripts/agent-dryrun-enable.sh on
-docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile agent restart agent
 ```
 
 - The `agent.json` `model` flag selects the route; variants are `phi4-mini`
@@ -128,9 +130,9 @@ The whole stack is proxied through envoy on port **80**:
 - [ ] **Gates on**: `./scripts/agent-dryrun-enable.sh status` shows
       `enabled = on`, `experiments_enabled = on`, and `mode = llm` (real
       inference) or `rules` (stub) — whichever you intend to show.
-- [ ] **Agent restarted** since the enable flip (the existence layer is read at
-      restart): the log shows live `experiment.*` activity, **not**
-      `kill-switch: agent disabled`.
+- [ ] **Loop live** since the enable flip (the gate flip takes effect within ~1 s,
+      self-gated per-tick since #1044 — no restart needed): the log shows live
+      `experiment.*` activity, **not** `kill-switch: agent disabled`.
 - [ ] **Inference reachable** (only if showing `mode=llm`): a throwaway curl from
       inside the agent network returns 200 + your model
       (`docker run --rm curlimages/curl -s http://<host>:11434/api/tags`), and
@@ -296,15 +298,16 @@ error.
   shows `kill-switch: agent disabled` / `agent.disabled` spans (`agent.enabled=false`).
 - **Check**: `./scripts/agent-dryrun-enable.sh status` (or `agent-killswitch.sh
   status`) — `enabled` is `off`.
-- **Fix**: flip it on and **restart the agent** (the experiment-loop existence
-  layer is read at restart):
+- **Fix**: flip it on — the gate flip takes effect **live** within ~1 s, no
+  restart needed:
   ```bash
   ./scripts/agent-dryrun-enable.sh on
-  docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile agent restart agent
   ```
-  (The kill-switch *flag* itself is hot-reloaded for the ACT path; the
-  *experiment loop* needs the agent restart to re-read the existence layer — this
-  is why the bring-up sequence restarts the agent after the enable.)
+  (Both the kill-switch *flag* and the *experiment loop* gate are read live: the
+  ACT path hot-reloads the flag, and since #1044 the loop is always built and
+  self-gates each tick on the live `experiments_enabled` flag — an off→on flip
+  starts it with no agent restart. A restart/recreate is only needed when you
+  set/change the `AGENT_INFERENCE_*` env vars, which are read at process start.)
 
 ### F. Flag changes not taking effect (flagd `ci/` vs base dir)
 
