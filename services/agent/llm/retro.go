@@ -190,6 +190,46 @@ func playerOutcome(serial string, eliminationSequence []string) string {
 	return "survivor"
 }
 
+// RetroOutcome is the STRUCTURED game outcome the retro is built from (#1100):
+// the same winner / final-active-players / elimination-count / duration the
+// retrospective prompt renders into its "Outcome" block, but exposed as discrete
+// values so retro_capture.go can stamp them as queryable span ATTRIBUTES instead
+// of leaving them buried in the prompt text. Pointers distinguish "the signal was
+// never observed" (nil) from a real zero, so the span omits an unobserved attr
+// rather than emitting a misleading 0.
+type RetroOutcome struct {
+	// Winner is the sole survivor's serial, or "" when there is no single,
+	// unambiguous winner (zero or multiple survivors) — see winnerSerial.
+	Winner string
+	// FinalActivePlayers is the session's final active-player count, or nil when
+	// never observed.
+	FinalActivePlayers *int
+	// EliminationCount is the number of players in the elimination sequence.
+	EliminationCount int
+	// DurationSeconds is the final observed game duration, or nil when unknown.
+	DurationSeconds *float64
+}
+
+// DeriveRetroOutcome extracts the structured game outcome from a finished-game
+// GameContext (#1100). It is the SINGLE source of truth shared with the prompt:
+// it derives the winner from the SAME (roster, elimination sequence) pair that
+// buildRetroUser renders, so the span attributes and the prompt text can never
+// disagree. It reads only already-structured GameContext fields — it NEVER parses
+// the rendered prompt text. The winner is "" (not the prompt's "unknown" literal)
+// when ambiguous, so the caller can cleanly omit the attribute.
+func DeriveRetroOutcome(ctx gamecontext.GameContext) RetroOutcome {
+	winner := winnerSerial(sortedSerials(ctx.Players), ctx.Session.EliminationSequence)
+	if winner == unknown {
+		winner = ""
+	}
+	return RetroOutcome{
+		Winner:             winner,
+		FinalActivePlayers: ctx.Session.ActivePlayerCount,
+		EliminationCount:   len(ctx.Session.EliminationSequence),
+		DurationSeconds:    ctx.Session.DurationSeconds,
+	}
+}
+
 // winnerSerial returns the sole survivor's serial — a player present in the
 // roster but absent from the elimination sequence — when EXACTLY one player
 // survived. Zero survivors (everyone eliminated) or more than one survivor both

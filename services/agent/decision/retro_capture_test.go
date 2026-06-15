@@ -326,6 +326,113 @@ func TestRetroCapture_ConfiguredBackendUnreachable(t *testing.T) {
 	}
 }
 
+// attrAbsent fails if the named attribute is present on the span — used to assert
+// the #1100 experiment.* correlation attrs are cleanly OMITTED for a non-experiment
+// game (no empty/garbage tags).
+func attrAbsent(t *testing.T, span sdktrace.ReadOnlySpan, key string) {
+	t.Helper()
+	if _, ok := attrValue(span, key); ok {
+		t.Errorf("attr %s must be ABSENT, but it is present", key)
+	}
+}
+
+// TestRetroCapture_OutcomeAttributes: every retro span carries the STRUCTURED
+// game-outcome attributes (#1100) derived from the GameContext (not the prompt
+// text). endedSession() has survivor AA:11, one elimination (BB:22), duration 90,
+// and no observed active-player count.
+func TestRetroCapture_OutcomeAttributes(t *testing.T) {
+	rc, sr := recordingRetro(t, retroFlagSnapshot())
+	rc.OnGameEnd(endedSession())
+
+	span := spansByName(sr.Ended(), SpanLLMRetro)[0]
+	if v, ok := attrValue(span, AttrGameWinner); !ok || v.AsString() != "AA:11" {
+		t.Errorf("game.winner = %q (present=%v), want %q", v.AsString(), ok, "AA:11")
+	}
+	if v, ok := attrValue(span, AttrGameEliminationCount); !ok || v.AsInt64() != 1 {
+		t.Errorf("game.elimination_count = %d (present=%v), want 1", v.AsInt64(), ok)
+	}
+	if v, ok := attrValue(span, AttrGameDurationSeconds); !ok || v.AsFloat64() != 90.0 {
+		t.Errorf("game.duration_seconds = %v (present=%v), want 90", v.AsFloat64(), ok)
+	}
+	// No active-player count was observed, so the attribute is cleanly omitted (not 0).
+	attrAbsent(t, span, AttrGameFinalActivePlayers)
+}
+
+// TestRetroCapture_ExperimentAttributesPresent: when the finished game was a
+// shadow-experiment arm (ExperimentID/Arm on the GameContext) AND a recorded
+// fitness sample is available via the lookup seam, the retro span stamps
+// experiment.id / experiment.arm / experiment.fitness (#1100).
+func TestRetroCapture_ExperimentAttributesPresent(t *testing.T) {
+	rc, sr := recordingRetro(t, retroFlagSnapshot())
+	rc.SetFitnessLookup(func(gameID string) (float64, bool) {
+		if gameID == "session-7" {
+			return 0.42, true
+		}
+		return 0, false
+	})
+
+	c := endedSession()
+	c.GameKind = "shadow"
+	c.ExperimentID = "exp_abc123def456"
+	c.Arm = "experimental"
+	rc.OnGameEnd(c)
+
+	span := spansByName(sr.Ended(), SpanLLMRetro)[0]
+	if v, ok := attrValue(span, AttrExperimentID); !ok || v.AsString() != "exp_abc123def456" {
+		t.Errorf("experiment.id = %q (present=%v), want %q", v.AsString(), ok, "exp_abc123def456")
+	}
+	if v, ok := attrValue(span, AttrExperimentArm); !ok || v.AsString() != "experimental" {
+		t.Errorf("experiment.arm = %q (present=%v), want %q", v.AsString(), ok, "experimental")
+	}
+	if v, ok := attrValue(span, AttrExperimentFitness); !ok || v.AsFloat64() != 0.42 {
+		t.Errorf("experiment.fitness = %v (present=%v), want 0.42", v.AsFloat64(), ok)
+	}
+}
+
+// TestRetroCapture_ExperimentAttributesAbsentForRealGame: a non-experiment (real /
+// standalone) game carries NO experiment.* correlation attrs — they are cleanly
+// omitted, never emitted empty/garbage (#1100). The structured outcome attrs are
+// still present (they apply to every game).
+func TestRetroCapture_ExperimentAttributesAbsentForRealGame(t *testing.T) {
+	rc, sr := recordingRetro(t, retroFlagSnapshot())
+	// A fitness lookup IS wired, but the game is not an experiment, so it must never
+	// be consulted and experiment.fitness must be absent.
+	rc.SetFitnessLookup(func(string) (float64, bool) { return 0.99, true })
+
+	rc.OnGameEnd(endedSession()) // ExperimentID == "" (a real game)
+
+	span := spansByName(sr.Ended(), SpanLLMRetro)[0]
+	attrAbsent(t, span, AttrExperimentID)
+	attrAbsent(t, span, AttrExperimentArm)
+	attrAbsent(t, span, AttrExperimentFitness)
+	// Outcome attrs are game-agnostic, so they are still present.
+	if _, ok := attrValue(span, AttrGameEliminationCount); !ok {
+		t.Error("game.elimination_count must be present for a real game too")
+	}
+}
+
+// TestRetroCapture_ExperimentFitnessOmittedWhenUnavailable: an experiment game with
+// id/arm but NO recorded fitness yet (lookup reports not-found, or no lookup wired)
+// stamps experiment.id / experiment.arm but OMITS experiment.fitness — default-safe
+// (#1100).
+func TestRetroCapture_ExperimentFitnessOmittedWhenUnavailable(t *testing.T) {
+	rc, sr := recordingRetro(t, retroFlagSnapshot())
+	// No fitness lookup wired at all (the pre-#1100 / nil-seam default).
+	c := endedSession()
+	c.ExperimentID = "exp_no_fitness"
+	c.Arm = "control"
+	rc.OnGameEnd(c)
+
+	span := spansByName(sr.Ended(), SpanLLMRetro)[0]
+	if v, ok := attrValue(span, AttrExperimentID); !ok || v.AsString() != "exp_no_fitness" {
+		t.Errorf("experiment.id = %q (present=%v), want %q", v.AsString(), ok, "exp_no_fitness")
+	}
+	if v, ok := attrValue(span, AttrExperimentArm); !ok || v.AsString() != "control" {
+		t.Errorf("experiment.arm = %q (present=%v), want %q", v.AsString(), ok, "control")
+	}
+	attrAbsent(t, span, AttrExperimentFitness)
+}
+
 // TestRetroCapture_StubDefaultUnchanged: with NO resolver wired (the stub default),
 // the retro attribution is byte-identical to pre-#1080 — model = the agent.model flag
 // (phi4-mini), used = "none", fallback = no_backend_available. This is the
