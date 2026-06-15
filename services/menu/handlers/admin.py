@@ -1317,8 +1317,12 @@ class AdminModeHandler:
         if client is None:
             return file_level
         try:
-            default_value = writer.get_variant_value(AGENT_POLICY_FLAG, file_level) if file_level else []
-            resolved = client.get_object_value(AGENT_POLICY_FLAG, default_value)
+            # interventions_allowed is a STRING flag (comma-separated ids; #1127),
+            # so resolve it with the string getter and match the string value back
+            # to a variant name. Reading it via get_object_value would TYPE_MISMATCH
+            # to the passed default and break the live-level reconciliation.
+            default_value = writer.get_variant_value(AGENT_POLICY_FLAG, file_level) if file_level else ""
+            resolved = self._resolve_flag_value(client, AGENT_POLICY_FLAG, default_value)
             matched = writer.match_variant_for_value(AGENT_POLICY_FLAG, resolved)
             return matched or file_level
         except Exception as e:

@@ -472,9 +472,12 @@ model**, applied in order:
      the M4 LLM path lands. They are passed along the `llm` path stub.
 4. **Permission** (constrains which actions dispatch, and how fast) — applied to
    each candidate decision in this order, blocking with an attributed reason:
-   - `interventions_allowed` (object → `[]string`): the allow-list gate (#727).
-     A decision whose intervention is not on the list is blocked
-     (`reason=not_allowed`). An empty allow-list dispatches nothing.
+   - `interventions_allowed` (string of comma-separated ids → `[]string`): the
+     allow-list gate (#727). A decision whose intervention is not on the list is
+     blocked (`reason=not_allowed`). An empty allow-list dispatches nothing. It is
+     a STRING flag (not a LIST/object flag): the flagd RPC resolver the agent uses
+     silently TYPE_MISMATCHes a top-level LIST flag to its empty default, which
+     would block every intervention (#1127); a string is read cleanly.
    - `policy.battery_threshold` (int %, default 20): a **player-targeted**
      decision is blocked (`reason=battery_threshold`) when the target player's
      battery is below the threshold — a low-battery controller signals unreliable

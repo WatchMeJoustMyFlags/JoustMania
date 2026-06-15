@@ -553,9 +553,13 @@ class _ScalarFlagClient:
 
 
 class _AllowAllAgent:
-    def get_object_value(self, key, default, _ctx=None):
+    def get_string_value(self, key, default, _ctx=None):
+        # interventions_allowed is a STRING flag: comma-separated ids (#1127).
         if key == "interventions_allowed":
-            return ["adjust_music_tempo", "adjust_global_sensitivity", "adjust_player_sensitivity"]
+            return "adjust_music_tempo,adjust_global_sensitivity,adjust_player_sensitivity"
+        return default
+
+    def get_object_value(self, key, default, _ctx=None):
         return default
 
     def get_integer_value(self, key, default, _ctx=None):

@@ -4,15 +4,20 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 // agentFlagDoc is the minimal shape needed to read interventions_allowed variants
-// from a flagd agent flag file.
+// from a flagd agent flag file. Each variant value is held as RawMessage because
+// interventions_allowed migrated from a LIST flag to a STRING flag of
+// comma-separated ids (#1127 — the flagd RPC list-flag trap), so a variant may be
+// either a JSON array (legacy) or a comma-separated string. readInterventionsAllowed
+// normalizes both into []string.
 type agentFlagDoc struct {
 	Flags struct {
 		InterventionsAllowed struct {
-			Variants map[string][]string `json:"variants"`
+			Variants map[string]json.RawMessage `json:"variants"`
 		} `json:"interventions_allowed"`
 	} `json:"flags"`
 }
@@ -27,11 +32,36 @@ func readInterventionsAllowed(t *testing.T, path string) map[string][]string {
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatalf("unmarshal %s: %v", path, err)
 	}
-	v := doc.Flags.InterventionsAllowed.Variants
-	if len(v) == 0 {
+	if len(doc.Flags.InterventionsAllowed.Variants) == 0 {
 		t.Fatalf("%s: interventions_allowed has no variants", path)
 	}
-	return v
+	out := make(map[string][]string, len(doc.Flags.InterventionsAllowed.Variants))
+	for name, rawVal := range doc.Flags.InterventionsAllowed.Variants {
+		out[name] = parseAllowedVariant(t, path, name, rawVal)
+	}
+	return out
+}
+
+// parseAllowedVariant decodes one interventions_allowed variant value, accepting
+// either the STRING form ("a,b,c"; #1127) or the legacy JSON-array form.
+func parseAllowedVariant(t *testing.T, path, name string, rawVal json.RawMessage) []string {
+	t.Helper()
+	var asString string
+	if err := json.Unmarshal(rawVal, &asString); err == nil {
+		ids := make([]string, 0)
+		for _, tok := range strings.Split(asString, ",") {
+			if s := strings.TrimSpace(tok); s != "" {
+				ids = append(ids, s)
+			}
+		}
+		return ids
+	}
+	var asList []string
+	if err := json.Unmarshal(rawVal, &asList); err == nil {
+		return asList
+	}
+	t.Fatalf("%s: interventions_allowed variant %q has unexpected shape: %s", path, name, rawVal)
+	return nil
 }
 
 // TestSetPlayerHandicapIsShadowOnly is the load-bearing gating proof for #1107

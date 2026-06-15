@@ -108,7 +108,8 @@ def _wire_manager(provider, *, threshold=20, budget=10, game=None):
     mgr._interventions_client = FakeFlagClient()
     mgr._agent_client = FakeFlagClient(
         {
-            "interventions_allowed": list(ALL_TYPES),
+            # interventions_allowed is a STRING flag: comma-separated ids (#1127).
+            "interventions_allowed": ",".join(sorted(ALL_TYPES)),
             "policy.max_interventions_per_minute": budget,
             "policy.battery_threshold": threshold,
         }

@@ -106,7 +106,8 @@ def make_manager(
         events.append((event_type, data))
 
     agent_values = {
-        "interventions_allowed": list(ALL_TYPES) if allowed is None else allowed,
+        # interventions_allowed is a STRING flag: comma-separated ids (#1127).
+        "interventions_allowed": ",".join(sorted(ALL_TYPES)) if allowed is None else allowed,
         # Agent-owned per-game budget (NOT read by the coordinator backstop).
         "policy.max_interventions_per_minute": 2,
         # Coordinator-owned generous global backstop (what _refresh_budget reads).
@@ -297,7 +298,7 @@ async def test_state_flag_revert_to_none_not_dispatched():
 async def test_allowed_membership_blocks():
     mgr, events = make_manager(
         interventions={"eliminate_player": "1:ctrl_a"},
-        allowed=["play_audio_cue"],  # eliminate not allowed
+        allowed="play_audio_cue",  # eliminate not allowed
     )
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
@@ -361,13 +362,13 @@ async def test_blocked_intervention_does_not_consume_backstop_budget():
     clock = Clock()
     mgr, _ = make_manager(
         interventions={"eliminate_player": "1:ctrl_a"},
-        allowed=["eliminate_player"],
+        allowed="eliminate_player",
         backstop=2,
         time_fn=clock,
     )
     # block eliminate via membership by removing it AFTER constructing? Instead
     # verify the rate limiter directly: a not-allowed type returns before check.
-    mgr._agent_client.set("interventions_allowed", [])  # now nothing allowed
+    mgr._agent_client.set("interventions_allowed", "")  # now nothing allowed
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()  # blocked (not allowed) -> no reservation
     assert mgr._rate_limiter.current_weight() == pytest.approx(0.0)

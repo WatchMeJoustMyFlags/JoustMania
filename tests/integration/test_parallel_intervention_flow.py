@@ -707,13 +707,15 @@ async def test_parallel_interventions(flag_files, docker_compose, headless_clean
     # Wait until flagd actually SERVES the permission flip before any scenario
     # writes (#894: condition poll, not a fixed settle).
     with open(AGENT_PATH) as fh:
+        # interventions_allowed is a STRING flag: comma-separated ids (#1127),
+        # so probe it with the string getter and compare the served string.
         expected_full = json.load(fh)["flags"]["interventions_allowed"]["variants"]["full"]
     from openfeature.evaluation_context import EvaluationContext
 
     with flagd_probe_client(docker_compose, "agent") as flag_client:
         assert await async_poll_until(
-            lambda: flag_client.get_object_value(
-                "interventions_allowed", None, EvaluationContext()
+            lambda: flag_client.get_string_value(
+                "interventions_allowed", "", EvaluationContext()
             )
             == expected_full,
             rewrite=lambda: set_interventions_allowed("full"),

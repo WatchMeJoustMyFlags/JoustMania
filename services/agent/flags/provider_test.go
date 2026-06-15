@@ -46,8 +46,9 @@ func TestEvaluate_WithInMemoryProvider(t *testing.T) {
 		keyInterventionsAllowed: {
 			State:          memprovider.Enabled,
 			DefaultVariant: "ambient",
+			// STRING flag: comma-separated ids (#1127), read via StringValue.
 			Variants: map[string]any{
-				"ambient": []any{"play_audio_cue", "adjust_volume"},
+				"ambient": "play_audio_cue,adjust_volume",
 			},
 		},
 		keyBatteryThreshold: {
