@@ -194,8 +194,8 @@ func TestNew_Defaults(t *testing.T) {
 	if b.model != DefaultModel {
 		t.Errorf("model = %q, want default %q", b.model, DefaultModel)
 	}
-	if b.httpClient == nil || b.httpClient.Timeout != defaultTimeout {
-		t.Errorf("httpClient timeout = %v, want %v", b.httpClient.Timeout, defaultTimeout)
+	if b.httpClient == nil || b.httpClient.Timeout != DefaultTimeout {
+		t.Errorf("httpClient timeout = %v, want %v", b.httpClient.Timeout, DefaultTimeout)
 	}
 }
 
@@ -204,4 +204,28 @@ func TestNew_TrimsTrailingSlash(t *testing.T) {
 	if b.baseURL != "http://x/v1" {
 		t.Errorf("baseURL = %q, want trailing slash trimmed", b.baseURL)
 	}
+}
+
+// TestWithTimeout covers the #1079 configurable HTTP timeout: a positive duration
+// overrides DefaultTimeout, while a non-positive (or zero) duration is ignored so
+// DefaultTimeout stands — mirroring the "non-positive = ignore" env semantics.
+func TestWithTimeout(t *testing.T) {
+	t.Run("positive overrides default", func(t *testing.T) {
+		b := New("", "", "", WithTimeout(180*time.Second))
+		if b.httpClient.Timeout != 180*time.Second {
+			t.Errorf("timeout = %v, want 180s", b.httpClient.Timeout)
+		}
+	})
+	t.Run("zero keeps default", func(t *testing.T) {
+		b := New("", "", "", WithTimeout(0))
+		if b.httpClient.Timeout != DefaultTimeout {
+			t.Errorf("timeout = %v, want default %v", b.httpClient.Timeout, DefaultTimeout)
+		}
+	})
+	t.Run("negative keeps default", func(t *testing.T) {
+		b := New("", "", "", WithTimeout(-5*time.Second))
+		if b.httpClient.Timeout != DefaultTimeout {
+			t.Errorf("timeout = %v, want default %v", b.httpClient.Timeout, DefaultTimeout)
+		}
+	})
 }

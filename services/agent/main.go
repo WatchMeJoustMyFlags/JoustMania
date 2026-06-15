@@ -363,8 +363,10 @@ type inferFunc = func(ctx context.Context, prompt llm.Prompt) (string, error)
 // behavior rather than to a broken backend. The base URL/model/key come from
 // AGENT_INFERENCE_BASE_URL (default the host Ollama), AGENT_INFERENCE_MODEL
 // (default phi4-mini), and AGENT_INFERENCE_API_KEY (optional — empty for the local
-// no-key path, set for a gateway/cloud target). Returns the chosen backend name for
-// the startup log too.
+// no-key path, set for a gateway/cloud target). The HTTP round-trip timeout comes
+// from AGENT_INFERENCE_TIMEOUT_SECONDS (#1079, default inference.DefaultTimeout) so a
+// local 8B cold-start can be given a longer ceiling than the 60s that was cutting it
+// off. Returns the chosen backend name for the startup log too.
 func selectInferenceBackend() (inferFunc, string) {
 	backend := strings.ToLower(strings.TrimSpace(getEnv("AGENT_INFERENCE_BACKEND", "stub")))
 	if backend != "openai" {
@@ -374,6 +376,7 @@ func selectInferenceBackend() (inferFunc, string) {
 		getEnv("AGENT_INFERENCE_BASE_URL", inference.DefaultBaseURL),
 		getEnv("AGENT_INFERENCE_API_KEY", ""),
 		getEnv("AGENT_INFERENCE_MODEL", inference.DefaultModel),
+		inference.WithTimeout(secondsEnv("AGENT_INFERENCE_TIMEOUT_SECONDS", inference.DefaultTimeout)),
 	)
 	return client.Infer, "openai"
 }
