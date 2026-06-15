@@ -35,6 +35,8 @@ import (
 	"time"
 
 	"github.com/joustmania/agent/llm"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 // DefaultBaseURL points at the HOST machine's Ollama OpenAI-compatible endpoint
@@ -207,6 +209,25 @@ func (b *OpenAIBackend) Infer(ctx context.Context, prompt llm.Prompt) (string, e
 	if b.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+b.apiKey)
 	}
+
+	// W3C trace-context propagation (#1096, #1088 Phase 2 for the inference hop).
+	// Inject `traceparent` (the global propagator is otel.go's TraceContext) from the
+	// request's ctx, which carries the active inference span (sync llmDecide starts
+	// agent.llm.infer on this ctx before calling Infer). When the agent is routed
+	// through the litellm gateway (AGENT_INFERENCE_BASE_URL=.../litellm), the gateway
+	// reads this header and nests its provider-truth gen_ai span as a CHILD of the
+	// agent's span — one navigable trace (agent decision -> gateway call -> provider).
+	//
+	// OWNERSHIP SPLIT (#1096): the agent span keeps DECISION/INTENT attrs only
+	// (gen_ai.agent.name, gen_ai.operation.name, intended model, gen_ai.output.type);
+	// the GATEWAY owns PROVIDER TRUTH (actual model after fallback, token counts,
+	// latency, cost). We deliberately set NO provider-truth attrs here — we only LINK
+	// the traces so the gateway's span (which carries them) is reachable.
+	//
+	// DEFAULT-SAFE: Ollama-direct (the current setup) simply ignores an unknown
+	// `traceparent` header — no behavior change. If no span/propagator is active in
+	// ctx, Inject is a no-op (no header written). Never errors, never panics.
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
 
 	resp, err := b.httpClient.Do(req)
 	if err != nil {
