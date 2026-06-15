@@ -6,6 +6,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
 	"github.com/joustmania/agent/llm"
@@ -233,10 +236,24 @@ func (l *Loop) runInfer(root context.Context, snapshot flags.Snapshot, backend B
 		ContextNote:  contextNote,
 	})
 
-	// The raw inference call (#739). Spans are NOT created here — they are emitted by
-	// applyAsyncResult so the agent.llm.infer span hangs off the async apply root
-	// (the fire-cycle root has long since ended; the loop never blocked on this).
-	raw, inferErr := backend.Infer(inferCtx, prompt)
+	// The raw inference call (#739). The ATTRIBUTION agent.llm.infer span is still
+	// emitted later by applyAsyncResult (it is deliberately backdated to fire start so
+	// the apply trace covers fire->apply); we do NOT move it. But that means at THIS
+	// point — when the HTTP call actually fires — no infer span is active in ctx, so
+	// #1112's traceparent injection (openai.go) would have nothing to parent a litellm
+	// gateway's gen_ai span under (it would orphan onto the async-apply root or a
+	// parent-less trace). To restore "one trace" on the async/production path (#1096
+	// follow-up) we open a MINIMAL, short-lived client span JUST around the outbound
+	// call so callCtx carries an active, sampled span for the injector to read. It
+	// carries only the request model — no gen_ai attribution duplication; the apply-time
+	// agent.llm.infer keeps owning that. Default-safe: with a no-op tracer/propagator
+	// this is a no-op and no header is written.
+	callCtx, callSpan := l.Tracer.Start(inferCtx, SpanLLMInferCall,
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attribute.String("gen_ai.request.model", backend.Name())),
+	)
+	raw, inferErr := backend.Infer(callCtx, prompt)
+	callSpan.End()
 	end := now()
 
 	l.applyAsyncResult(root, snapshot, trig, asyncOutcome{

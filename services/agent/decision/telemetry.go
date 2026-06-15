@@ -75,6 +75,23 @@ const SpanLLMInfer = "agent.llm.infer"
 // inference.discarded_reason; an applied result carries the normal decision schema.
 const SpanLLMApply = "agent.llm.apply"
 
+// SpanLLMInferCall is the OUTBOUND-HTTP client span wrapped around the async
+// backend.Infer call (#1096 async follow-up). On the SYNC path agent.llm.infer is
+// active in ctx when Infer runs, so #1112's traceparent injection (openai.go) parents
+// the litellm gateway's gen_ai span under it. On the ASYNC path (#917) the attribution
+// agent.llm.infer span is emitted LATER, at apply time (emitAsyncInferSpan), so when
+// the HTTP call actually fires in runInfer there is NO infer span in ctx and the
+// gateway span would orphan onto the async-apply root (or a parent-less trace).
+//
+// Rather than move the deliberately apply-time attribution span (it is backdated and
+// timed for fire->apply accounting), we open this MINIMAL client span JUST around the
+// outbound call so its ctx carries an active, sampled span for the injector to read.
+// It is a short-lived SpanKindClient marker carrying only the request model — no
+// gen_ai attribution duplication; the apply-time agent.llm.infer keeps owning that.
+// It shares the call's trace, so the gateway span nests under the same trace as the
+// agent decision, restoring "one trace" on the production async path too.
+const SpanLLMInferCall = "agent.llm.infer.call"
+
 // AttrLLMLatencyMs is the wall time a single async inference took, fire to
 // completion, in integer milliseconds (#917). Recorded on the agent.llm.apply
 // root and the agent.llm.infer span for EVERY async result — applied, discarded,
