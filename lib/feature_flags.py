@@ -365,7 +365,7 @@ def read_float_flag(domain: str, flag_key: str, default: float, game_id: str | N
         return default
 
 
-def read_string_flag(domain: str, flag_key: str, default: str) -> str:
+def read_string_flag(domain: str, flag_key: str, default: str, game_id: str | None = None) -> str:
     """
     Read a string-typed flag live, with a hardcoded fallback.
 
@@ -380,6 +380,9 @@ def read_string_flag(domain: str, flag_key: str, default: str) -> str:
         domain: OpenFeature domain / flagSetId (e.g. "game")
         flag_key: String flag key (e.g. "shadow_policy")
         default: Fallback value returned on any error or missing flag
+        game_id: Optional owning game id (#838/#1109); added as the ``gameId``
+            context so flagd targeting can scope the value per game. ``None``/empty
+            resolves identically to today (pure context addition).
 
     Returns:
         The flag's string value, or ``default`` on failure.
@@ -387,7 +390,7 @@ def read_string_flag(domain: str, flag_key: str, default: str) -> str:
     try:
         init_flag_domain(domain)
         client = get_flag_client(domain)
-        details = client.get_string_details(flag_key, default, EvaluationContext())
+        details = client.get_string_details(flag_key, default, _calibration_context(game_id))
         if _report_details_error(flag_key, details):
             return default
         value = details.value

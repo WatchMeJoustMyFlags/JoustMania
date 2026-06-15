@@ -34,6 +34,7 @@ from lib.feature_flags import (
     GAME_KIND_SHADOW,
     read_float_flag,
     read_object_flag,
+    read_string_flag,
     set_game_transaction_context,
 )
 from lib.telemetry import inject_trace_context
@@ -56,6 +57,40 @@ COUNTDOWN_BEEP_COUNT = 3  # Number of beeps (Red/Yellow/Green)
 SLOW_MUSIC_SPEED = 1.0  # Normal playback
 FAST_MUSIC_SPEED = 1.3  # 30% faster
 MUSIC_TRANSITION_DURATION = 1.5  # Seconds to smoothly transition
+
+# #1109: tempo-schedule SOURCE selector (``game.tempo_schedule_mode`` flag).
+# The tempo-change decision ALWAYS flows through the single pacing-policy seam
+# (``_decide_next_change_delay``); this flag selects which policy that seam runs:
+#   * "rule"  — the rule engine owns the decision. The DEFAULT rule reproduces
+#     the historical random-window timing (``_rng.uniform`` within the lerped
+#     ``music_windows``) byte-for-byte, so the unset/default behavior is
+#     unchanged WITHOUT a second legacy code path. A deterministic non-random
+#     rule is a follow-up policy (#1108) — the default rule simply keeps the RNG.
+#   * "agent" — the seam yields the next-change decision to agent tempo
+#     directives (#1103 ramp_tempo, a follow-up). Until that primitive lands the
+#     mode is a clean STUB: with no directive present it falls back to the
+#     default rule, so selecting "agent" early is safe (never freezes pacing).
+# There is intentionally NO "random" mode: randomness survives as the default
+# RULE, not as a separate mode (maintainer re-scope, #1109).
+TEMPO_MODE_RULE = "rule"
+TEMPO_MODE_AGENT = "agent"
+# Unset / unknown values resolve to the rule engine's default rule => back-compat.
+TEMPO_SCHEDULE_MODE_DEFAULT = TEMPO_MODE_RULE
+_VALID_TEMPO_SCHEDULE_MODES = (TEMPO_MODE_RULE, TEMPO_MODE_AGENT)
+
+
+def resolve_tempo_schedule_mode(value: object) -> str:
+    """Validate the ``game.tempo_schedule_mode`` flag value.
+
+    Any value other than the known modes (``rule``/``agent``) — including a
+    missing flag, a non-string, or a stale ``random`` left over from an older
+    config — resolves to :data:`TEMPO_SCHEDULE_MODE_DEFAULT` (``rule``), whose
+    default policy reproduces today's behavior. This keeps the seam default-safe.
+    """
+    if isinstance(value, str) and value in _VALID_TEMPO_SCHEDULE_MODES:
+        return value
+    return TEMPO_SCHEDULE_MODE_DEFAULT
+
 
 # Span attribute keys (S1192 - avoid duplicate string literals)
 GAME_MODE_ATTR = "game.mode"
@@ -590,6 +625,25 @@ class BaseGameMode(ABC):
         # neutral profile. Never reassigned after init (the live handler swaps
         # ``self.music_windows`` only).
         self.init_music_windows = self.music_windows
+
+        # #1109: tempo-schedule SOURCE mode (``game.tempo_schedule_mode``). Read
+        # ONCE here for the initial value, then kept LIVE by the
+        # PROVIDER_CONFIGURATION_CHANGED listener (TempoScheduleManager), which
+        # atomically swaps ``self.tempo_schedule_mode`` mid-game exactly like the
+        # F6 ``music_windows`` seam. The single pacing pathway
+        # (``_decide_next_change_delay``) reads this attribute fresh on every
+        # tempo-change decision, so flipping the flag switches the source LIVE
+        # without a restart. Default/unknown => "rule" (default rule reproduces
+        # today's random-window timing => behavior unchanged).
+        self.tempo_schedule_mode = resolve_tempo_schedule_mode(
+            read_string_flag("game", "tempo_schedule_mode", TEMPO_SCHEDULE_MODE_DEFAULT, game_id=self.game_id)
+        )
+        # #1109 agent-mode seam (#1103 follow-up): the next-change delay an agent
+        # tempo directive (ramp_tempo) wants the schedule to honor. ``None`` =>
+        # no directive present => "agent" mode falls back to the default rule.
+        # Set by the agent primitive in a follow-up PR; never set in this PR.
+        self.agent_tempo_next_delay: float | None = None
+
         # #766 F6: live global difficulty factor (analogue of per-player
         # ``sensitivity_factor``). Combined with the per-player factor in
         # ``_compute_effective_thresholds``; 1.0 is neutral (baseline behavior).
@@ -2493,6 +2547,53 @@ class BaseGameMode(ABC):
 
         As more players die, tempo changes become more frequent.
         Returns absolute time (time.time() + delay).
+
+        #1109: this is the SINGLE pacing pathway. The delay is produced by the
+        pacing-policy seam (:meth:`_decide_next_change_delay`), which dispatches
+        on the live ``self.tempo_schedule_mode``. There is no separate legacy RNG
+        branch beside the seam — the historical random-window timing is folded in
+        as the rule engine's default rule (:meth:`_default_rule_delay`).
+        """
+        return time.time() + self._decide_next_change_delay()
+
+    def _decide_next_change_delay(self) -> float:
+        """Pacing-policy seam: produce the delay (seconds) until the next change.
+
+        Dispatches on ``self.tempo_schedule_mode`` (read fresh every call, so the
+        PROVIDER_CONFIGURATION_CHANGED listener's live swap takes effect on the
+        next tempo decision):
+
+        * ``rule`` (default / back-compat) — run the rule engine. The default
+          rule is :meth:`_default_rule_delay`, the windowed RNG that reproduces
+          today's timing exactly.
+        * ``agent`` — yield to an agent tempo directive
+          (``self.agent_tempo_next_delay``, set by the #1103 follow-up). STUB for
+          Phase 1: with no directive present, fall back to the default rule so
+          pacing never freezes when ``agent`` is selected before the primitive
+          ships.
+
+        Any unexpected mode falls through to the default rule (fail-safe).
+        """
+        mode = self.tempo_schedule_mode
+        if mode == TEMPO_MODE_AGENT:
+            directive = self.agent_tempo_next_delay
+            if directive is not None and directive >= 0:
+                return float(directive)
+            # No directive yet (#1103 not shipped) -> hold the established pacing
+            # by falling back to the default rule. (A future variant could hold
+            # the current tempo instead; falling back keeps pacing alive today.)
+            return self._default_rule_delay()
+        # mode == "rule" (and any unknown value): the rule engine's default rule.
+        return self._default_rule_delay()
+
+    def _default_rule_delay(self) -> float:
+        """Default pacing rule: the historical random-window schedule.
+
+        Folds the former ``_get_music_change_time`` body in verbatim so the
+        ``rule`` mode's default policy is byte-for-byte the pre-#1109 timing:
+        a ``_rng.uniform`` draw within the (game-progression-lerped, F6-swappable)
+        ``self.music_windows``. Randomness survives here as a RULE, not a mode.
+        Returns a relative delay in seconds.
         """
         # Calculate game progression (0.0 = start, 1.0 = near end)
         min_moves = len(self.players) - 2
@@ -2513,8 +2614,22 @@ class BaseGameMode(ABC):
             min_t = self._lerp(windows.fast_min, windows.end_fast_min, game_percent)
             max_t = self._lerp(windows.fast_max, windows.end_fast_max, game_percent)
 
-        delay = self._rng.uniform(min_t, max_t)
-        return time.time() + delay
+        return self._rng.uniform(min_t, max_t)
+
+    def apply_tempo_schedule_mode(self, value: object) -> None:
+        """Atomically swap the live tempo-schedule SOURCE mode (#1109).
+
+        Called by the PROVIDER_CONFIGURATION_CHANGED listener
+        (TempoScheduleManager) with the freshly-resolved ``game.tempo_schedule_mode``
+        flag value for THIS game's ``gameId``. The value is validated and stored
+        in a single attribute store (like the F6 ``music_windows`` swap), so the
+        100ms music loop / ``_decide_next_change_delay`` picks up the new source
+        on its next decision without tearing — live mid-game mode switching.
+        """
+        new_mode = resolve_tempo_schedule_mode(value)
+        if new_mode != self.tempo_schedule_mode:
+            logger.info(f"tempo_schedule_mode: {self.tempo_schedule_mode} -> {new_mode}")
+        self.tempo_schedule_mode = new_mode  # atomic single-store swap
 
     async def _apply_tempo_change(self, target_tempo: float) -> None:
         """
