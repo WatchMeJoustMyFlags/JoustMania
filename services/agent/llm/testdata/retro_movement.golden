@@ -47,7 +47,7 @@ Outcome:
 Recent events (oldest first; age relative to captured_at):
   -150s phase: start
   -140s state: active_players=3 mean_intensity=0.80
-  -90s elimination: CC:33 (#1)
+  -90s elimination: BB:22 (#1)
   -40s state: active_players=2 mean_intensity=0.45
   +0s phase: end
 
@@ -58,6 +58,6 @@ Players (sorted by serial; "unknown" = signal never observed):
   AA:11: outcome=survivor battery_pct=72.00 skill=0.80 movement_intensity=1.25 movement_variance=0.40
     AA:11: act▃▅▆██ active near-death@-20s(0.96×thr)
   BB:22: outcome=eliminated #1 battery_pct=40.00 skill=0.30 movement_intensity=0.10 movement_variance=0.05
-    BB:22: act▄▂__ erratic near-death@-140s(0.53×thr)
+    BB:22: act▄▂__ idle near-death@-140s(0.53×thr)
   CC:33: outcome=eliminated #2 battery_pct=unknown skill=unknown movement_intensity=unknown movement_variance=unknown
     CC:33: act▆▇█ active near-death@-92s(1.14×thr)→elim

@@ -88,6 +88,6 @@ Players (sorted by serial; "unknown" = signal never observed):
   AA:11: active=true movement_intensity=1.25 movement_variance=0.40 battery_pct=85.00 skill=0.60
     AA:11: act▂▄▅▇██ active near-death@-10s(0.92×thr)
   BB:22: active=true movement_intensity=0.00 movement_variance=0.05 battery_pct=15.00 skill=0.30
-    BB:22: act▅▃____ erratic near-death@-60s(0.60×thr)
+    BB:22: act▅▃____ idle near-death@-60s(0.60×thr)
   CC:33: active=unknown movement_intensity=unknown movement_variance=unknown battery_pct=unknown skill=unknown
     CC:33: act▅▇▄█ active near-death@-48s(1.13×thr)→elim

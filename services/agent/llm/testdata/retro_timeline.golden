@@ -47,7 +47,7 @@ Outcome:
 Recent events (oldest first; age relative to captured_at):
   -150s phase: start
   -140s state: active_players=3 mean_intensity=0.80
-  -90s elimination: CC:33 (#1)
+  -90s elimination: BB:22 (#1)
   -40s state: active_players=2 mean_intensity=0.45
   +0s phase: end
 

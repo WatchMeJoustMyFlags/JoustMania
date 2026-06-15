@@ -72,7 +72,7 @@ func retroTimelineContext() gamecontext.GameContext {
 	ctx.Timeline = []gamecontext.TimelineEvent{
 		{At: at(150), Kind: gamecontext.EventPhase, Detail: "start"},
 		{At: at(140), Kind: gamecontext.EventStateDelta, ActivePlayers: iptr(3), MeanIntensity: fptr(0.80)},
-		{At: at(90), Kind: gamecontext.EventElimination, Serial: "CC:33", Order: 1},
+		{At: at(90), Kind: gamecontext.EventElimination, Serial: "BB:22", Order: 1},
 		{At: at(40), Kind: gamecontext.EventStateDelta, ActivePlayers: iptr(2), MeanIntensity: fptr(0.45)},
 		{At: at(0), Kind: gamecontext.EventPhase, Detail: "end"},
 	}
