@@ -209,6 +209,15 @@ type Summary struct {
 	SchemaVersion int `json:"schema_version"`
 	// ExperimentID joins the summary to its intent and events.
 	ExperimentID string `json:"experiment_id"`
+	// Objective is the experiment's fitness objective (endurance/balanced/accelerate),
+	// copied from Intent.Objective onto every Summary the journal hands out (#992). It
+	// lets the CohortVerdict seam read the objective WITHOUT widening Evaluate's
+	// signature — the recent-real baseline anchor (#992) is per-objective, so the
+	// verdict needs the objective to look up the right baseline. It is a derived VIEW
+	// field sourced from the immutable intent on every Summary() call, not folded from
+	// the event stream, so it is always correct after a rehydrate (intent.json is
+	// authoritative). omitempty so the empty-objective case adds no bytes.
+	Objective string `json:"objective,omitempty"`
 	// Status is the experiment lifecycle status ("running", "concluded", ...). It is
 	// set from decision/outcome events; defaults to "running" at Create.
 	Status string `json:"status"`

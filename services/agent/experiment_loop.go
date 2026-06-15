@@ -256,19 +256,31 @@ func buildExperimentLoop(
 	// ShadowSpawner (#976): the real outbound game-coordinator client.
 	spawner := newShadowSpawner(gamerunner.ConfigFromEnv(), logger)
 
+	// FitnessStore (#965/#1017): the finalized-per-game fitness store onGameEnd
+	// Records into and the M7-7 validation seams read from. It is the instrumentation
+	// that turns the Validator's injected fitness reads into REAL ones. Built BEFORE
+	// the verdict so the #992 recent-real anchor can read it.
+	fitnessStore := experiment.NewFitnessStore(fitnessStoreCapacity())
+
+	// CohortVerdict (#979) + recent-real SECONDARY anchor (#992): the within-experiment
+	// comparison gated by recent REAL play. The anchor reads the FitnessStore's
+	// RecentReal mean for the experiment's objective via a nil-safe accessor; it fails
+	// OPEN when no real-game baseline exists (the current mock/shadow-only reality), so
+	// it never blocks the shadow loop. recentN/minSamples reuse the validation-baseline
+	// knobs so the anchor and the M7-7 Validator agree on what "enough real data" means.
+	verdict := experiment.NewVerdictFromEnv().WithRecentRealBaseline(
+		recentRealBaselineAccessor(fitnessStore, validationBaselineRecentN(), validationBaselineMinSamples()),
+		experiment.DefaultAnchorMargin,
+	)
+
 	registry := experiment.NewRegistry(experiment.RegistryConfig{
 		Root:      journal.DirFromEnv(),
 		Spawner:   spawner,
-		Verdict:   experiment.NewVerdictFromEnv(),
+		Verdict:   verdict,
 		Promoter:  promo,
 		Targeting: targeting,
 		Log:       logger,
 	})
-
-	// FitnessStore (#965/#1017): the finalized-per-game fitness store onGameEnd
-	// Records into and the M7-7 validation seams read from. It is the instrumentation
-	// that turns the Validator's injected fitness reads into REAL ones.
-	fitnessStore := experiment.NewFitnessStore(fitnessStoreCapacity())
 
 	loop := &experimentLoop{
 		registry:       registry,
@@ -1061,6 +1073,36 @@ func validationGameTimeout() time.Duration {
 		}
 	}
 	return DefaultValidationGameTimeout
+}
+
+// recentRealBaselineAccessor adapts the #965 FitnessStore into the verdict's #992
+// RecentRealBaseline seam: given an objective it returns the mean finalized fitness
+// of the last recentN REAL games and whether a TRUSTWORTHY baseline exists (>=
+// minSamples real samples). It returns ok=false (anchor SKIPPED — fail open) when
+// the store is unwired or too few real samples exist, mirroring StoreBaseline's
+// fail-closed-for-promotion threshold but expressed as the anchor's fail-OPEN bool.
+// store may be nil ⇒ the accessor always reports ok=false (anchor disabled).
+func recentRealBaselineAccessor(store *experiment.FitnessStore, recentN, minSamples int) experiment.RecentRealBaseline {
+	if recentN < 1 {
+		recentN = 1
+	}
+	if minSamples < 1 {
+		minSamples = 1
+	}
+	return func(objective string) (float64, bool) {
+		if store == nil {
+			return 0, false
+		}
+		samples := store.RecentReal(objective, recentN)
+		if len(samples) < minSamples {
+			return 0, false
+		}
+		var sum float64
+		for _, s := range samples {
+			sum += s.Fitness
+		}
+		return sum / float64(len(samples)), true
+	}
 }
 
 // validationBaselineRecentN resolves how many recent real games the baseline
