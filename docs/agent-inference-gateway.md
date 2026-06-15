@@ -76,6 +76,14 @@ Where the gateway reaches Ollama is `OLLAMA_BASE_URL` (default
 `extra_hosts: host-gateway`). Repoint it at a LAN Jetson without editing
 `config.yaml`.
 
+> Reaching a **host** Ollama is the most common live-inference foot-gun: Ollama
+> must bind `0.0.0.0` (not its `127.0.0.1` default), and under **WSL2 with
+> Ollama on Windows** the container must dial the WSL default-route gateway IP,
+> *not* `host.docker.internal`. See
+> [`agent-ollama-host-runbook.md`](agent-ollama-host-runbook.md) for the full
+> checklist — both the gateway's `OLLAMA_BASE_URL` and the Ollama-direct
+> `AGENT_INFERENCE_BASE_URL` need it.
+
 ## The Anthropic key — gateway-only, optional
 
 The Anthropic API key lives **only** in the gateway's env (`ANTHROPIC_API_KEY`
