@@ -62,12 +62,43 @@ const (
 	// Below it the paired path is under-powered and the verdict falls back / stays
 	// inconclusive. Tune via AGENT_VERDICT_MIN_PAIRS.
 	DefaultMinPairs = 5
+
+	// DefaultMinRawEffect is the PRACTICAL-significance floor (#1042): the minimum RAW
+	// effect magnitude — |mean_d| (paired) or |mean_exp − mean_ctl| (two-arm) — a
+	// promote/discard verdict requires, regardless of how large the STANDARDIZED effect
+	// (d_z / Cohen's d) is. Below it the verdict is INCONCLUSIVE.
+	//
+	// WHY: on near-deterministic shadow games the per-pair difference is tiny but
+	// perfectly consistent, so sd(d)→0 and d_z = mean_d/sd(d) explodes (the dry-run saw
+	// d_z=-34 on a ~0.0004 fitness delta). Statistical significance ≠ practical
+	// significance: a tiny-but-consistent delta is not worth promoting/discarding on.
+	//
+	// VALUE 0.02 = 2% of the ~0..1 fitness range. Rationale: a fitness change smaller
+	// than 2% of the achievable range is below what we'd act on for a party game — it is
+	// in the don't-care band — while every genuinely meaningful effect in practice (and
+	// in the test suite, deltas ≥0.05) clears it comfortably. Tune via
+	// AGENT_VERDICT_MIN_RAW_EFFECT.
+	DefaultMinRawEffect = 0.02
+
+	// DefaultSDFloor is the minimum-standard-deviation floor (#1042, defense in depth):
+	// the denominator of d_z / Cohen's d is floored at this value so the standardized
+	// statistic stays finite and meaningful when the observed spread collapses toward 0
+	// (near-deterministic games). It does NOT replace the raw-effect floor above — it
+	// keeps d_z from reporting an absurd magnitude in the audit trail / logs.
+	//
+	// VALUE 1e-4: two orders of magnitude below any real-play spread (real per-game
+	// fitness noise is ~0.01+), so it never distorts a real-noise verdict — it only bites
+	// in the degenerate sd→0 regime, where the raw-effect floor is the real gate anyway.
+	// Tune via AGENT_VERDICT_SD_FLOOR.
+	DefaultSDFloor = 1e-4
 )
 
 const (
-	minNEnv     = "AGENT_VERDICT_MIN_N"
-	effectEnv   = "AGENT_VERDICT_EFFECT_THRESHOLD"
-	minPairsEnv = "AGENT_VERDICT_MIN_PAIRS"
+	minNEnv      = "AGENT_VERDICT_MIN_N"
+	effectEnv    = "AGENT_VERDICT_EFFECT_THRESHOLD"
+	minPairsEnv  = "AGENT_VERDICT_MIN_PAIRS"
+	minRawEffEnv = "AGENT_VERDICT_MIN_RAW_EFFECT"
+	sdFloorEnv   = "AGENT_VERDICT_SD_FLOOR"
 )
 
 // CohortStat is the swappable arm-comparison strategy (design §8.3). Given the two
@@ -90,14 +121,22 @@ type CohortStat interface {
 // POPULATION variance M2/Count). Population variance would under-state spread at
 // small N and inflate the effect size toward a premature verdict; the sample
 // (n−1) form is the conservative, correct choice here.
-type effectSizeGate struct{}
+type effectSizeGate struct {
+	// sdFloor floors the pooled SD denominator (#1042) so Cohen's d stays finite and
+	// bounded when the pooled spread collapses toward 0 (near-deterministic arms). A
+	// non-positive value means "no floor" (legacy behaviour — divide-by-zero is then
+	// guarded by the pooledSD==0 ⇒ ok=false branch).
+	sdFloor float64
+}
 
 // Effect computes Cohen's d = (mean_exp − mean_control) / pooledSD, using the
-// pooled UNBIASED sample variance. It returns ok=false when either arm has fewer
-// than 2 samples (sample variance undefined) or the pooled SD is zero (no spread —
-// the standardized effect is undefined / infinite, which the min-N gate handles
-// separately so we never divide by zero).
-func (effectSizeGate) Effect(experimental, control journal.Welford) (float64, bool) {
+// pooled UNBIASED sample variance. The pooled SD denominator is floored at sdFloor
+// (#1042) so a near-deterministic pair can't produce an absurd Cohen's d. It returns
+// ok=false only when either arm has fewer than 2 samples (sample variance undefined)
+// or the floored denominator is still zero (sdFloor not set AND pooled SD is exactly
+// 0 — no spread, the standardized effect is undefined, which the min-N gate and the
+// raw-effect floor handle separately so we never divide by zero).
+func (g effectSizeGate) Effect(experimental, control journal.Welford) (float64, bool) {
 	if experimental.Count < 2 || control.Count < 2 {
 		return 0, false
 	}
@@ -110,6 +149,10 @@ func (effectSizeGate) Effect(experimental, control journal.Welford) (float64, bo
 	dfCtl := float64(control.Count - 1)
 	pooledVar := (dfExp*varExp + dfCtl*varCtl) / (dfExp + dfCtl)
 	pooledSD := math.Sqrt(pooledVar)
+	// Floor the denominator (#1042) so Cohen's d can't explode when pooledSD→0.
+	if g.sdFloor > 0 && pooledSD < g.sdFloor {
+		pooledSD = g.sdFloor
+	}
 	if pooledSD == 0 {
 		return 0, false
 	}
@@ -138,6 +181,15 @@ type Verdict struct {
 	// effectThreshold is the minimum |effect| for a promote/discard verdict. It gates
 	// both the two-arm Cohen's d and the paired d_z (both are standardized effects).
 	effectThreshold float64
+	// minRawEffect is the PRACTICAL-significance floor (#1042): the minimum RAW effect
+	// magnitude (|mean_d| paired / |mean_exp − mean_ctl| two-arm) a promote/discard
+	// requires, on top of the standardized effectThreshold. Below it ⇒ INCONCLUSIVE no
+	// matter how large the standardized effect is. Construction-immutable.
+	minRawEffect float64
+	// sdFloor is the minimum-SD floor (#1042) applied to the d_z denominator in the
+	// paired path (the two-arm path's floor lives in effectSizeGate.sdFloor).
+	// Construction-immutable.
+	sdFloor float64
 	// stat is the swappable comparison strategy (default effectSizeGate).
 	stat CohortStat
 }
@@ -179,6 +231,20 @@ func NewVerdict(minN int, effectThreshold float64, stat CohortStat) *Verdict {
 // effectThreshold falls back to DefaultEffectThreshold; a nil stat falls back to the
 // default Cohen's d gate.
 func NewVerdictWithPairs(minN, minPairs int, effectThreshold float64, stat CohortStat) *Verdict {
+	return NewVerdictWithFloors(minN, minPairs, effectThreshold, DefaultMinRawEffect, DefaultSDFloor, stat)
+}
+
+// NewVerdictWithFloors is the full constructor (#1042): it adds the practical-
+// significance floors (minRawEffect, sdFloor) to the min-N / min-pairs / effect-
+// threshold gates. A non-positive minN/minPairs/effectThreshold falls back to its
+// default. A non-positive minRawEffect/sdFloor falls back to its default
+// (DefaultMinRawEffect / DefaultSDFloor) — pass the default explicitly to disable a
+// floor only by setting the env knob, never via a silent 0.
+//
+// When stat is nil the default Cohen's d gate is built WITH the resolved sdFloor so
+// the two-arm path is floored too; a caller-supplied stat is used verbatim (it owns
+// its own denominator handling).
+func NewVerdictWithFloors(minN, minPairs int, effectThreshold, minRawEffect, sdFloor float64, stat CohortStat) *Verdict {
 	if minN <= 0 {
 		minN = DefaultMinNPerArm
 	}
@@ -188,10 +254,23 @@ func NewVerdictWithPairs(minN, minPairs int, effectThreshold float64, stat Cohor
 	if effectThreshold <= 0 {
 		effectThreshold = DefaultEffectThreshold
 	}
-	if stat == nil {
-		stat = effectSizeGate{}
+	if minRawEffect <= 0 {
+		minRawEffect = DefaultMinRawEffect
 	}
-	return &Verdict{minN: minN, minPairs: minPairs, effectThreshold: effectThreshold, stat: stat}
+	if sdFloor <= 0 {
+		sdFloor = DefaultSDFloor
+	}
+	if stat == nil {
+		stat = effectSizeGate{sdFloor: sdFloor}
+	}
+	return &Verdict{
+		minN:            minN,
+		minPairs:        minPairs,
+		effectThreshold: effectThreshold,
+		minRawEffect:    minRawEffect,
+		sdFloor:         sdFloor,
+		stat:            stat,
+	}
 }
 
 // MinNFromEnv resolves the verdict min-N-per-arm gate from AGENT_VERDICT_MIN_N,
@@ -230,13 +309,23 @@ func MinPairsFromEnv() int {
 func NewVerdictFromEnv() *Verdict {
 	minN := MinNFromEnv()
 	minPairs := MinPairsFromEnv()
-	threshold := DefaultEffectThreshold
-	if v := strings.TrimSpace(os.Getenv(effectEnv)); v != "" {
+	threshold := floatFromEnv(effectEnv, DefaultEffectThreshold)
+	minRawEffect := floatFromEnv(minRawEffEnv, DefaultMinRawEffect)
+	sdFloor := floatFromEnv(sdFloorEnv, DefaultSDFloor)
+	// stat=nil so NewVerdictWithFloors builds the default gate WITH the resolved sdFloor.
+	return NewVerdictWithFloors(minN, minPairs, threshold, minRawEffect, sdFloor, nil)
+}
+
+// floatFromEnv resolves a positive float knob from env, falling back to def on an
+// unset, empty, non-numeric, or non-positive value (the same fail-safe convention
+// MinNFromEnv / the effectThreshold parse use).
+func floatFromEnv(key string, def float64) float64 {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
-			threshold = f
+			return f
 		}
 	}
-	return NewVerdictWithPairs(minN, minPairs, threshold, effectSizeGate{})
+	return def
 }
 
 // Evaluate computes the current verdict for an experiment from its rolling
@@ -318,22 +407,35 @@ func (v *Verdict) Evaluate(s journal.Summary) (journal.Verdict, bool) {
 		}, true
 	}
 
+	// PRACTICAL-significance floor (#1042): even a large standardized effect must be
+	// backed by a raw mean difference worth acting on. A tiny-but-consistent delta
+	// (near-deterministic arms ⇒ huge Cohen's d on a meaningless gap) is INCONCLUSIVE.
+	if math.Abs(effect) >= v.effectThreshold && math.Abs(delta) < v.minRawEffect {
+		return journal.Verdict{
+			Outcome:     OutcomeInconclusive,
+			Delta:       delta,
+			Significant: false,
+			Reason: fmt.Sprintf("not practically significant: |delta|=%.4f < min_raw_effect=%.4f (effect=%.3f, n=%d/%d)",
+				math.Abs(delta), v.minRawEffect, effect, exp.Count, ctl.Count),
+		}, true
+	}
+
 	switch {
 	case effect >= v.effectThreshold:
 		return journal.Verdict{
 			Outcome:     CohortOutcomePromote,
 			Delta:       delta,
 			Significant: true,
-			Reason: fmt.Sprintf("experimental better: effect=%.3f >= threshold=%.2f (n=%d/%d)",
-				effect, v.effectThreshold, exp.Count, ctl.Count),
+			Reason: fmt.Sprintf("experimental better: effect=%.3f >= threshold=%.2f, |delta|=%.4f >= min_raw=%.4f (n=%d/%d)",
+				effect, v.effectThreshold, math.Abs(delta), v.minRawEffect, exp.Count, ctl.Count),
 		}, true
 	case effect <= -v.effectThreshold:
 		return journal.Verdict{
 			Outcome:     CohortOutcomeDiscard,
 			Delta:       delta,
 			Significant: true,
-			Reason: fmt.Sprintf("experimental worse: effect=%.3f <= -threshold=%.2f (n=%d/%d)",
-				effect, v.effectThreshold, exp.Count, ctl.Count),
+			Reason: fmt.Sprintf("experimental worse: effect=%.3f <= -threshold=%.2f, |delta|=%.4f >= min_raw=%.4f (n=%d/%d)",
+				effect, v.effectThreshold, math.Abs(delta), v.minRawEffect, exp.Count, ctl.Count),
 		}, true
 	default:
 		return journal.Verdict{
@@ -388,10 +490,18 @@ func (v *Verdict) evaluatePaired(pd journal.Welford, minPairs int) (journal.Verd
 		}, true
 	}
 	sdD := math.Sqrt(pd.M2 / float64(pd.Count-1))
+	// Minimum-SD floor (#1042, defense in depth): floor the d_z denominator so a
+	// near-deterministic pair set (sd→0) can't produce an absurd standardized effect.
+	// At sd=0 exactly this also replaces the old "zero spread ⇒ undefined" bail-out:
+	// the raw-effect floor below is now the gate that keeps a zero-spread no-op
+	// inconclusive, so a zero-spread set with a meaningful meanD can legitimately
+	// conclude (floored d_z is large AND |meanD| clears the practical floor).
+	if v.sdFloor > 0 && sdD < v.sdFloor {
+		sdD = v.sdFloor
+	}
 	if sdD == 0 {
-		// Zero spread across pairs — the per-pair difference is a constant. The
-		// standardized effect is undefined (the magnitude is in meanD, but with no
-		// spread there is no scale to standardize against), so treat it as no signal.
+		// Only reachable if the SD floor was disabled (sdFloor<=0) AND the spread is
+		// exactly 0. The standardized effect is undefined; treat as no signal.
 		return journal.Verdict{
 			Outcome:     OutcomeInconclusive,
 			Delta:       meanD,
@@ -402,22 +512,37 @@ func (v *Verdict) evaluatePaired(pd journal.Welford, minPairs int) (journal.Verd
 	}
 
 	dz := meanD / sdD
+
+	// PRACTICAL-significance floor (#1042): a tiny-but-consistent per-pair delta yields
+	// a huge d_z on near-deterministic shadow games (the dry-run's d_z=-34 on a ~0.0004
+	// fitness gap). Require |meanD| to clear the minimum meaningful delta before
+	// promote/discard, regardless of d_z magnitude — otherwise INCONCLUSIVE.
+	if math.Abs(dz) >= v.effectThreshold && math.Abs(meanD) < v.minRawEffect {
+		return journal.Verdict{
+			Outcome:     OutcomeInconclusive,
+			Delta:       meanD,
+			Significant: false,
+			Reason: fmt.Sprintf("paired not practically significant: |mean_d|=%.4f < min_raw_effect=%.4f (d_z=%.3f, pairs=%d)",
+				math.Abs(meanD), v.minRawEffect, dz, pd.Count),
+		}, true
+	}
+
 	switch {
 	case dz >= v.effectThreshold:
 		return journal.Verdict{
 			Outcome:     CohortOutcomePromote,
 			Delta:       meanD,
 			Significant: true,
-			Reason: fmt.Sprintf("paired: experimental better: d_z=%.3f >= threshold=%.2f (pairs=%d)",
-				dz, v.effectThreshold, pd.Count),
+			Reason: fmt.Sprintf("paired: experimental better: d_z=%.3f >= threshold=%.2f, |mean_d|=%.4f >= min_raw=%.4f (pairs=%d)",
+				dz, v.effectThreshold, math.Abs(meanD), v.minRawEffect, pd.Count),
 		}, true
 	case dz <= -v.effectThreshold:
 		return journal.Verdict{
 			Outcome:     CohortOutcomeDiscard,
 			Delta:       meanD,
 			Significant: true,
-			Reason: fmt.Sprintf("paired: experimental worse: d_z=%.3f <= -threshold=%.2f (pairs=%d)",
-				dz, v.effectThreshold, pd.Count),
+			Reason: fmt.Sprintf("paired: experimental worse: d_z=%.3f <= -threshold=%.2f, |mean_d|=%.4f >= min_raw=%.4f (pairs=%d)",
+				dz, v.effectThreshold, math.Abs(meanD), v.minRawEffect, pd.Count),
 		}, true
 	default:
 		return journal.Verdict{

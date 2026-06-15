@@ -933,6 +933,8 @@ All configuration is via environment variables:
 | `AGENT_EXPERIMENT_DIR` | `/var/lib/joustmania/agent/experiments` | Durable experiment journal root (intent/events/summary per experiment); the registry rehydrates from it on startup |
 | `AGENT_VERDICT_MIN_N` | `8` | #979 min games per arm before a conclusive verdict (else inconclusive) |
 | `AGENT_VERDICT_EFFECT_THRESHOLD` | `0.5` | #979 minimum \|Cohen's d\| for a promote/discard verdict |
+| `AGENT_VERDICT_MIN_RAW_EFFECT` | `0.02` | #1042 practical-significance floor: minimum RAW effect (\|mean_d\| paired / \|mean_exp − mean_ctl\| two-arm) for a promote/discard. Below it ⇒ inconclusive regardless of how large the standardized d_z / Cohen's d is — stops near-deterministic shadow games promoting on a trivially-tiny but perfectly-consistent delta. 0.02 = 2% of the ~0..1 fitness range |
+| `AGENT_VERDICT_SD_FLOOR` | `0.0001` | #1042 minimum-SD floor (defense in depth): floors the d_z / Cohen's d denominator so the standardized stat stays finite when the spread collapses toward 0 (sd→0). 1e-4 is two orders below any real-play spread, so it never distorts a real-noise verdict |
 | `AGENT_EXPERIMENT_SEED_FLAG` | _unset_ | When set (and the loop is enabled), declares ONE env-seeded experiment at startup on this game.json flag — the simplest declaration trigger for the demo. Paired with `AGENT_EXPERIMENT_SEED_VALUE` / `_OBJECTIVE` / `_TARGET_N` / `_HYPOTHESIS` |
 | `AGENT_EXPERIMENT_SEED_VALUE` | _unset_ | The seed experiment's experimental value. Parsed as a number when it parses as a float, else bool for `true`/`false`, else the raw string. Its JSON kind must match the flag's existing variants (the Gate's type guard rejects a mistyped seed at the targeting write) |
 | `AGENT_EXPERIMENT_SEED_OBJECTIVE` | `balanced` | The seed experiment's fitness objective (`endurance` / `balanced` / `accelerate` / `chaos`) |
@@ -974,8 +976,9 @@ All configuration is via environment variables:
 > declarer knobs `AGENT_EXPERIMENT_DYNAMIC_CANDIDATES` / `_DENYLIST` — a top-level
 > flagd **LIST** flag hits a `get_object_value` `TYPE_MISMATCH` (only the in-process
 > resolver reads list flags; the agent uses the RPC resolver), so a list flag here
-> would be silently broken. `AGENT_VERDICT_EFFECT_THRESHOLD` also stays env for now
-> (it ties to the #1042 practical-significance floor; not part of this migration).
+> would be silently broken. `AGENT_VERDICT_EFFECT_THRESHOLD` and the #1042
+> practical-significance floors (`AGENT_VERDICT_MIN_RAW_EFFECT`,
+> `AGENT_VERDICT_SD_FLOOR`) also stay env for now (not part of this migration).
 
 > The Go agent uses the flagd **RPC** resolver (gRPC evaluation port `8013`),
 > not the in-process sync port `8015` that the Python services use.
