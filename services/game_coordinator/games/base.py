@@ -1598,6 +1598,13 @@ class BaseGameMode(ABC):
             metrics.player_skill_level.labels(serial=serial, game_id=self.game_id).set(
                 player.analytics.get_skill_level()
             )
+            # Whole-game RETAINED movement-variance aggregate (#1024). Emitted
+            # while alive like skill_level; the agent retains it into the
+            # conclusion snapshot so balanced-fitness spike-survival is meaningful
+            # post-game (vs. the frozen-last-sample game_player_movement_variance).
+            metrics.player_movement_variance_aggregate.labels(serial=serial, game_id=self.game_id).set(
+                player.analytics.cumulative_variance
+            )
 
         # Record to histogram for distribution analysis
         metrics.accel_distribution.labels(game_mode=self.get_game_name()).observe(accel_mag)

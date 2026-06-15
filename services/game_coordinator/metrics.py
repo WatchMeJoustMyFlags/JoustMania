@@ -261,6 +261,20 @@ player_skill_level = Gauge(
     ["serial", "game_id"],
 )
 
+# Whole-game RETAINED movement-variance aggregate (#1024). Unlike
+# game_player_movement_variance (a rolling-window value frozen at the last live
+# frame before elimination), this is the cumulative Welford variance over the
+# ENTIRE game and stays meaningful at conclusion — emitted while alive and
+# retained by the agent into the OnGameEnd snapshot, exactly like
+# game_player_skill_level. The agent's balanced-fitness spike-survival sub-check
+# reads this aggregate post-game instead of the frozen last sample.
+player_movement_variance_aggregate = Gauge(
+    "game_player_movement_variance_aggregate",
+    "Whole-game cumulative variance of acceleration magnitude (g^2, Welford). "
+    "Retained whole-game aggregate; meaningful at game conclusion (#1024).",
+    ["serial", "game_id"],
+)
+
 player_elimination_order = Gauge(
     "game_player_elimination_order",
     "Order in which a player was eliminated (1=first out). Set on elimination; "
@@ -333,6 +347,9 @@ def clear_player_analytics(serial: str, game_id: str = "") -> None:
         player_skill_level.remove(serial, game_id)
 
     with suppress(KeyError, ValueError):
+        player_movement_variance_aggregate.remove(serial, game_id)
+
+    with suppress(KeyError, ValueError):
         player_alive.remove(serial, game_id)
 
     # peak_accel and elimination_order also carry serial + game_id labels.
@@ -400,6 +417,8 @@ def clear_all_player_analytics() -> None:
     player_movement_variance._values.clear()
     player_skill_level._metrics.clear()
     player_skill_level._values.clear()
+    player_movement_variance_aggregate._metrics.clear()
+    player_movement_variance_aggregate._values.clear()
     player_peak_accel._metrics.clear()
     player_peak_accel._values.clear()
     player_elimination_order._metrics.clear()

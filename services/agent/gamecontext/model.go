@@ -21,7 +21,24 @@ type PlayerSignals struct {
 	// MovementVariance is the variance of recent movement.
 	// Source: game_player_movement_variance{serial} (live; the coordinator emits
 	// it per-player at ~10Hz, #730 / #1015). nil until the first reading arrives.
+	// This is a FROZEN last-sample at conclusion (the windowed value at the last
+	// live frame before elimination) and is therefore only meaningful mid-game.
 	MovementVariance *float64
+
+	// PeakAccel is the player's whole-game PEAK accel magnitude (g-force), a
+	// monotonically-increasing whole-game aggregate.
+	// Source: game_player_peak_accel{serial} (live; coordinator emits it per-player
+	// at ~1Hz). RETAINED into the OnGameEnd snapshot like SkillLevel, so it stays
+	// meaningful at conclusion. Used by balanced-fitness spike-survival (#1024).
+	PeakAccel *float64
+
+	// MovementVarianceAggregate is the whole-game CUMULATIVE variance of accel
+	// magnitude (g^2, Welford over every frame), in contrast to MovementVariance's
+	// frozen rolling-window last-sample.
+	// Source: game_player_movement_variance_aggregate{serial} (live; coordinator
+	// emits it per-player at ~1Hz). RETAINED into the OnGameEnd snapshot like
+	// SkillLevel, so balanced-fitness spike-survival is meaningful post-game (#1024).
+	MovementVarianceAggregate *float64
 
 	// BatteryPct is the controller battery percentage (0-100).
 	// Preferred source: controller_battery_pct{serial} (proposed).

@@ -88,6 +88,47 @@ class TestWindowedVariance:
         assert analytics.std_deviation >= 0.0
 
 
+class TestCumulativeVariance:
+    """Whole-game retained variance aggregate (#1024).
+
+    Unlike windowed_variance (frozen at the last live frame), this accumulates
+    over EVERY frame and is retained by the agent into the conclusion snapshot, so
+    balanced-fitness spike-survival is meaningful post-game.
+    """
+
+    def test_empty_returns_zero(self):
+        assert _make_analytics().cumulative_variance == 0.0
+
+    def test_single_sample_returns_zero(self):
+        analytics = _make_analytics()
+        _feed(analytics, [1.0], _config())
+        assert analytics.cumulative_variance == 0.0
+
+    def test_known_sequence_matches_sample_variance(self):
+        analytics = _make_analytics()
+        seq = [1.0, 2.0, 3.0, 4.0, 5.0]
+        _feed(analytics, seq, _config())
+        # Sample variance of 1..5 = 2.5
+        assert math.isclose(analytics.cumulative_variance, 2.5, rel_tol=1e-9)
+        assert math.isclose(analytics.cumulative_variance, _sample_variance(seq), rel_tol=1e-9)
+
+    def test_equals_std_deviation_squared(self):
+        analytics = _make_analytics()
+        _feed(analytics, [0.5, 2.5, 1.0, 3.0, 1.5], _config())
+        assert math.isclose(analytics.cumulative_variance, analytics.std_deviation**2, rel_tol=1e-9)
+
+    def test_covers_whole_game_not_just_recent_window(self):
+        # An early jittery burst followed by a long calm tail: the rolling window
+        # forgets the burst (drops toward 0) but the cumulative aggregate retains
+        # its influence over the whole game. This is exactly the #1024 property:
+        # the aggregate stays meaningful at conclusion when the window is frozen.
+        analytics = _make_analytics()
+        _feed(analytics, [0.5, 2.5] * 30, _config())  # early spiky play
+        _feed(analytics, [1.5] * (MOVEMENT_VARIANCE_WINDOW * 4), _config())  # long calm tail
+        assert math.isclose(analytics.windowed_variance, 0.0, abs_tol=1e-9)
+        assert analytics.cumulative_variance > 0.0
+
+
 class TestSkillLevel:
     def test_empty_input_returns_zero(self):
         assert _make_analytics().get_skill_level() == 0.0
