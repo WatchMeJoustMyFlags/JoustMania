@@ -207,6 +207,18 @@ func goldenCases() []goldenCase {
 			context:  movementContext(),
 		},
 		{
+			// #1091: a non-FFA mode selects its stub fragment (here Zombie, set via
+			// get_game_name()'s "Zombie" casing). Reuses the timeline fixture so the
+			// only difference from the FFA cases is the mode-specific System block.
+			name:     "zombie_mode",
+			snapshot: baseSnapshot(balancedVariant),
+			context: func() gamecontext.GameContext {
+				ctx := timelineContext()
+				ctx.Session.GameMode = sptr("Zombie")
+				return ctx
+			}(),
+		},
+		{
 			name: "all_unknown",
 			snapshot: flags.Snapshot{
 				Mode:                 "llm",
