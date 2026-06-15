@@ -271,13 +271,124 @@ func TestVerdictFromEnv(t *testing.T) {
 	}
 }
 
+// TestVerdictFromEnv_Floors (#1042): the practical-significance floor and SD floor are
+// configurable via AGENT_VERDICT_MIN_RAW_EFFECT / AGENT_VERDICT_SD_FLOOR, with
+// fallback to defaults on unset/invalid values.
+func TestVerdictFromEnv_Floors(t *testing.T) {
+	t.Setenv(minRawEffEnv, "0.05")
+	t.Setenv(sdFloorEnv, "0.001")
+	v := NewVerdictFromEnv()
+	if v.minRawEffect != 0.05 {
+		t.Fatalf("env minRawEffect = %v, want 0.05", v.minRawEffect)
+	}
+	if v.sdFloor != 0.001 {
+		t.Fatalf("env sdFloor = %v, want 0.001", v.sdFloor)
+	}
+	// The default gate must be built WITH the resolved sdFloor so the two-arm path is
+	// floored too.
+	g, ok := v.stat.(effectSizeGate)
+	if !ok {
+		t.Fatalf("default stat should be effectSizeGate, got %T", v.stat)
+	}
+	if g.sdFloor != 0.001 {
+		t.Fatalf("two-arm gate sdFloor = %v, want 0.001 (must inherit the env SD floor)", g.sdFloor)
+	}
+
+	// Invalid / non-positive fall back to defaults.
+	t.Setenv(minRawEffEnv, "garbage")
+	t.Setenv(sdFloorEnv, "-1")
+	v2 := NewVerdictFromEnv()
+	if v2.minRawEffect != DefaultMinRawEffect || v2.sdFloor != DefaultSDFloor {
+		t.Fatalf("invalid floor env should fall back to defaults, got rawEffect=%v sdFloor=%v",
+			v2.minRawEffect, v2.sdFloor)
+	}
+}
+
+// TestVerdict_TwoArm_TinyDelta_NotPractical (#1042) is the two-arm analog of the
+// dry-run bug: N met, a large standardized Cohen's d (tight spread), but a raw mean
+// delta FAR below the practical-significance floor ⇒ INCONCLUSIVE, not promote.
+func TestVerdict_TwoArm_TinyDelta_NotPractical(t *testing.T) {
+	v := NewVerdict(8, 0.5, nil)
+	// Means differ by only 0.005 (< 0.02 floor) but the spread is tiny (±0.0005), so
+	// Cohen's d is huge — exactly the trap the floor must catch.
+	exp := armFrom(spread(12, 0.5050, 0.0005)...)
+	ctl := armFrom(spread(12, 0.5000, 0.0005)...)
+
+	got, ok := v.Evaluate(summaryWith(exp, ctl))
+	if !ok {
+		t.Fatalf("expected ok=true")
+	}
+	if got.Outcome != OutcomeInconclusive || got.Significant {
+		t.Fatalf("two-arm tiny-delta verdict = %+v, want INCONCLUSIVE (raw-effect floor)", got)
+	}
+}
+
+// TestVerdict_TwoArm_MeaningfulDelta_TightSpread_Promote (#1042): a delta ABOVE the
+// raw-effect floor with a clear direction still promotes — the floor ADDS to, doesn't
+// replace, the effect-size test.
+func TestVerdict_TwoArm_MeaningfulDelta_TightSpread_Promote(t *testing.T) {
+	v := NewVerdict(8, 0.5, nil)
+	// Delta 0.10 (>> 0.02 floor), tight spread ⇒ large Cohen's d ⇒ PROMOTE.
+	exp := armFrom(spread(12, 0.60, 0.01)...)
+	ctl := armFrom(spread(12, 0.50, 0.01)...)
+
+	got, ok := v.Evaluate(summaryWith(exp, ctl))
+	if !ok {
+		t.Fatalf("expected ok=true")
+	}
+	if got.Outcome != CohortOutcomePromote || !got.Significant {
+		t.Fatalf("meaningful-delta verdict = %+v, want PROMOTE", got)
+	}
+}
+
+// TestVerdict_TwoArm_SDFloor_CapsCohenD (#1042): with the SD floor active, even a
+// pooled SD near 0 yields a finite Cohen's d (no Inf/NaN). The default gate inherits
+// DefaultSDFloor.
+func TestVerdict_TwoArm_SDFloor_CapsCohenD(t *testing.T) {
+	g := effectSizeGate{sdFloor: DefaultSDFloor}
+	// Near-zero spread, meaningful mean gap: without a floor Cohen's d would blow up.
+	exp := journal.Welford{}
+	ctl := journal.Welford{}
+	for _, s := range spread(10, 0.50, 1e-12) {
+		exp.Add(s)
+	}
+	for _, s := range spread(10, 0.40, 1e-12) {
+		ctl.Add(s)
+	}
+	effect, ok := g.Effect(exp, ctl)
+	if !ok {
+		t.Fatalf("expected ok=true with SD floor active")
+	}
+	if math.IsInf(effect, 0) || math.IsNaN(effect) {
+		t.Fatalf("Cohen's d = %v, want finite (SD floor must cap it)", effect)
+	}
+	// delta 0.10 / sdFloor 1e-4 = 1000 — large but finite.
+	if effect < 100 {
+		t.Fatalf("expected a large (floored) effect, got %v", effect)
+	}
+}
+
+// TestVerdict_DefaultsIncludeFloors (#1042): the default constructor wires the floors.
+func TestVerdict_DefaultsIncludeFloors(t *testing.T) {
+	v := NewVerdict(8, 0.5, nil)
+	if v.minRawEffect != DefaultMinRawEffect {
+		t.Fatalf("minRawEffect = %v, want default %v", v.minRawEffect, DefaultMinRawEffect)
+	}
+	if v.sdFloor != DefaultSDFloor {
+		t.Fatalf("sdFloor = %v, want default %v", v.sdFloor, DefaultSDFloor)
+	}
+}
+
 // TestVerdict_SwappableStrategy verifies a custom CohortStat replaces the gate
 // without touching the seam — the design's swappability requirement (§8.3).
 func TestVerdict_SwappableStrategy(t *testing.T) {
 	// A stub strategy that always reports a large positive effect, ignoring the
 	// actual stats — stands in for a future Welch / non-parametric test.
 	v := NewVerdict(2, 0.5, constantStat{effect: 5.0, ok: true})
-	exp := armFrom(0.5, 0.5, 0.5) // identical samples — default gate would be inconclusive
+	// The arms carry a clear raw mean difference (0.8 vs 0.5) so the #1042 practical-
+	// significance floor passes; the point is that the SWAPPABLE strategy's reported
+	// effect (5.0) — not the default Cohen's d — drives the promote.
+	exp := armFrom(0.8, 0.8, 0.8)
 	ctl := armFrom(0.5, 0.5, 0.5)
 
 	got, ok := v.Evaluate(summaryWith(exp, ctl))

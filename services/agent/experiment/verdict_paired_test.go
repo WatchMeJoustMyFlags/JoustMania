@@ -88,17 +88,54 @@ func TestPairedVerdict_NoOpFlagWithinNoise(t *testing.T) {
 	}
 }
 
-func TestPairedVerdict_ZeroSpreadUndefined(t *testing.T) {
+// TestPairedVerdict_ZeroSpreadMeaningfulDelta_SDFloor (#1042): every pair identical
+// (zero spread) but with a MEANINGFUL per-pair delta (0.20, well above the raw-effect
+// floor). The minimum-SD floor caps the denominator so d_z is large-but-finite (not
+// NaN/Inf), and because the raw effect clears the practical floor this is a legitimate
+// PROMOTE — the SD floor turns the old "undefined ⇒ inconclusive" bail-out into a sane
+// conclusion when the delta actually matters.
+func TestPairedVerdict_ZeroSpreadMeaningfulDelta_SDFloor(t *testing.T) {
 	v := NewVerdictWithPairs(8, 5, 0.5, nil)
-	// Every pair identical (zero spread): paired SD = 0 ⇒ effect undefined ⇒
-	// INCONCLUSIVE (no false promote despite a non-zero mean).
 	pd := pairDiffFrom(0.20, 0.20, 0.20, 0.20, 0.20, 0.20)
 	got, ok := v.Evaluate(pairedSummary(pd))
 	if !ok {
 		t.Fatalf("expected ok=true")
 	}
+	if got.Outcome != CohortOutcomePromote || !got.Significant {
+		t.Fatalf("verdict = %+v, want PROMOTE (meaningful delta, SD floored)", got)
+	}
+}
+
+// TestPairedVerdict_TinyConsistentDelta_NotPractical (#1042) is the EXACT dry-run
+// scenario: a tiny per-pair delta (~ -0.0005) that is perfectly consistent across
+// pairs. The SD collapses toward 0 so the standardized d_z is enormous (would be the
+// dry-run's d_z=-34), but |mean_d| is FAR below the practical-significance floor →
+// INCONCLUSIVE, NOT discard. This is the core bug fix.
+func TestPairedVerdict_TinyConsistentDelta_NotPractical(t *testing.T) {
+	v := NewVerdictWithPairs(8, 5, 0.5, nil)
+	// exp ~0.0496..0.0506 vs ctl ~0.0500..0.0510 ⇒ d_i ≈ -0.0004..-0.0006, tiny + consistent.
+	pd := pairDiffFrom(-0.0004, -0.0005, -0.0006, -0.0005, -0.0004, -0.0005)
+	got, ok := v.Evaluate(pairedSummary(pd))
+	if !ok {
+		t.Fatalf("expected ok=true")
+	}
 	if got.Outcome != OutcomeInconclusive || got.Significant {
-		t.Fatalf("verdict = %+v, want zero-spread INCONCLUSIVE", got)
+		t.Fatalf("verdict = %+v, want INCONCLUSIVE (tiny delta below raw-effect floor); the dry-run bug would DISCARD here", got)
+	}
+}
+
+// TestPairedVerdict_NoOpFlag_ZeroDelta_Inconclusive (#1042): a true no-op flag with
+// IDENTICAL fitness per pair ⇒ mean_d == 0 and zero spread. SD floored, but mean_d=0
+// is below the raw-effect floor ⇒ INCONCLUSIVE (never a false promote/discard).
+func TestPairedVerdict_NoOpFlag_ZeroDelta_Inconclusive(t *testing.T) {
+	v := NewVerdictWithPairs(8, 5, 0.5, nil)
+	pd := pairDiffFrom(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+	got, ok := v.Evaluate(pairedSummary(pd))
+	if !ok {
+		t.Fatalf("expected ok=true")
+	}
+	if got.Outcome != OutcomeInconclusive || got.Significant {
+		t.Fatalf("verdict = %+v, want no-op INCONCLUSIVE", got)
 	}
 }
 
