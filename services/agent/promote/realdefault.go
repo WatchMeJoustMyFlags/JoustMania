@@ -34,10 +34,43 @@ import (
 // file in place. It mirrors the in-place write discipline of experiment.Writer
 // (O_NOFOLLOW, no temp+rename — EBUSY on the bind mount flagd watches) but writes
 // the REAL default, not a shadow rule.
+//
+// It also implements RealDefaultReverter: SetRealDefault SNAPSHOTS the pre-write
+// {defaultVariant name + its concrete value} at write time, and RevertRealDefault
+// RESTORES that exact prior state. Snapshotting the VALUE (not just the variant
+// name) is the safety-critical property (#1065): pointing defaultVariant back at a
+// remembered NAME is unsafe if an intervening promotion overwrote that variant's
+// value (e.g. a second autonomous write clobbers variants["promoted"]). Restoring
+// the captured value reconstructs exactly what real games resolved before the
+// promotion, regardless of what happened to the slot in between.
 type fileRealDefaultWriter struct {
 	path string
 	log  *slog.Logger
 	mu   sync.Mutex
+	// snapshots holds the pre-promotion state per flagKey, captured inside
+	// SetRealDefault before the mutation. RevertRealDefault restores from it. Keyed by
+	// flagKey so concurrent promotions of different flags each remember their own prior
+	// state. A re-promotion of the SAME flag is intentionally NOT re-snapshotted while a
+	// snapshot is already held (see SetRealDefault) so a revert always rolls back to the
+	// state BEFORE the agent first touched the flag, never to an intermediate
+	// agent-written value.
+	snapshots map[string]defaultSnapshot
+}
+
+// defaultSnapshot is the exact pre-promotion real-default state for one flag: the
+// defaultVariant NAME that was in effect and the concrete VALUE that name resolved
+// to. RevertRealDefault writes both back, so even if the named variant's value was
+// later overwritten the prior real resolution is reconstructed verbatim.
+type defaultSnapshot struct {
+	// hadDefault is false when the flag had NO defaultVariant before the promotion (a
+	// malformed/edge flag); revert then removes the agent-introduced default rather
+	// than inventing one.
+	hadDefault bool
+	// variant is the defaultVariant name in effect pre-promotion.
+	variant string
+	// value is the concrete JSON value that `variant` resolved to pre-promotion. Stored
+	// raw so it round-trips byte-for-byte. nil when the variant had no value entry.
+	value json.RawMessage
 }
 
 // NewRealDefaultWriterFromEnv returns the REAL-default writer IFF the autonomous
@@ -76,7 +109,7 @@ func NewRealDefaultWriterFromEnv(log *slog.Logger) (*fileRealDefaultWriter, erro
 	}
 	log.Warn("code_improvement AUTONOMOUS real-default writer ENABLED (#936): autonomous promotions WILL change the REAL defaultVariant for live players",
 		"path", path)
-	return &fileRealDefaultWriter{path: path, log: log}, nil
+	return &fileRealDefaultWriter{path: path, log: log, snapshots: map[string]defaultSnapshot{}}, nil
 }
 
 // SetRealDefault changes the REAL defaultVariant for flagKey to value: it ensures a
@@ -137,6 +170,32 @@ func (w *fileRealDefaultWriter) SetRealDefault(_ context.Context, flagKey string
 			}
 		}
 	}
+	// SNAPSHOT the pre-promotion state (#1065) BEFORE mutating, so RevertRealDefault
+	// can restore the EXACT prior {defaultVariant name + value}. We snapshot only the
+	// FIRST time we touch a flag (no snapshot held yet): a re-promotion of the same
+	// flag must still revert to the state before the agent EVER touched it, not to an
+	// intermediate agent-written value. The snapshot captures the VALUE, not just the
+	// name, so a later promotion overwriting the named slot cannot corrupt the revert.
+	if w.snapshots == nil {
+		w.snapshots = map[string]defaultSnapshot{}
+	}
+	if _, held := w.snapshots[flagKey]; !held {
+		snap := defaultSnapshot{}
+		if curDef, ok := flag["defaultVariant"]; ok {
+			var curName string
+			if json.Unmarshal(curDef, &curName) == nil {
+				snap.hadDefault = true
+				snap.variant = curName
+				if curRaw, present := variants[curName]; present {
+					// Copy the raw bytes so a later in-place mutation of `variants` cannot
+					// reach into the snapshot.
+					snap.value = append(json.RawMessage(nil), curRaw...)
+				}
+			}
+		}
+		w.snapshots[flagKey] = snap
+	}
+
 	// Point at an existing variant if one already equals value (keeps the file tidy),
 	// else add a reserved "promoted" variant. Either way defaultVariant moves.
 	variantName := "promoted"
@@ -163,6 +222,86 @@ func (w *fileRealDefaultWriter) SetRealDefault(_ context.Context, flagKey string
 	w.log.Warn("code_improvement.autonomous changing REAL defaultVariant (#936)",
 		"flag", flagKey, "variant", variantName)
 	return w.writeInPlace(append(out, '\n'))
+}
+
+// RevertRealDefault restores the EXACT pre-promotion real default for flagKey from
+// the snapshot SetRealDefault captured at write time (#1065). It rewrites both the
+// defaultVariant name AND the concrete value that name resolved to before the
+// promotion, so even if an intervening write overwrote the slot, real games resolve
+// the prior value verbatim after the revert. After a successful revert the snapshot
+// is dropped (a fresh promotion re-snapshots). It is the concrete RealDefaultReverter
+// the autonomous safety net rolls back through.
+func (w *fileRealDefaultWriter) RevertRealDefault(_ context.Context, flagKey string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	snap, held := w.snapshots[flagKey]
+	if !held {
+		// Nothing to revert to: the agent never wrote this flag (or already reverted).
+		// Refuse rather than guess — a revert with no captured prior state could only
+		// fabricate one, which is exactly the unsafe behavior #1065 calls out.
+		return fmt.Errorf("revert real default %q: no pre-promotion snapshot captured", flagKey)
+	}
+
+	raw, err := os.ReadFile(w.path)
+	if err != nil {
+		return fmt.Errorf("read flag file %q: %w", w.path, err)
+	}
+	var doc struct {
+		Metadata json.RawMessage            `json:"metadata,omitempty"`
+		Flags    map[string]json.RawMessage `json:"flags"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return fmt.Errorf("parse flag file: %w", err)
+	}
+	flagRaw, ok := doc.Flags[flagKey]
+	if !ok {
+		return fmt.Errorf("flag %q not present", flagKey)
+	}
+	var flag map[string]json.RawMessage
+	if err := json.Unmarshal(flagRaw, &flag); err != nil {
+		return fmt.Errorf("parse flag %q: %w", flagKey, err)
+	}
+
+	if !snap.hadDefault {
+		// The flag had no defaultVariant before the agent touched it; remove the one the
+		// promotion introduced rather than inventing a default.
+		delete(flag, "defaultVariant")
+	} else {
+		var variants map[string]json.RawMessage
+		if vr, ok := flag["variants"]; ok {
+			if err := json.Unmarshal(vr, &variants); err != nil {
+				return fmt.Errorf("parse variants of %q: %w", flagKey, err)
+			}
+		} else {
+			variants = map[string]json.RawMessage{}
+		}
+		// Restore the EXACT prior value into the prior variant name (it may have been
+		// overwritten by an intervening promotion), then point defaultVariant back at it.
+		if snap.value != nil {
+			variants[snap.variant] = append(json.RawMessage(nil), snap.value...)
+		}
+		vrOut, _ := json.Marshal(variants)
+		flag["variants"] = vrOut
+		dvOut, _ := json.Marshal(snap.variant)
+		flag["defaultVariant"] = dvOut
+	}
+
+	flagOut, _ := json.Marshal(flag)
+	doc.Flags[flagKey] = flagOut
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal flag file: %w", err)
+	}
+
+	w.log.Warn("code_improvement.autonomous REVERTING REAL defaultVariant to pre-promotion state (#1065)",
+		"flag", flagKey, "variant", snap.variant)
+	if err := w.writeInPlace(append(out, '\n')); err != nil {
+		return err
+	}
+	// Drop the snapshot so a subsequent promotion re-captures fresh prior state.
+	delete(w.snapshots, flagKey)
+	return nil
 }
 
 // writeInPlace overwrites the file at the same path WITHOUT temp+rename (EBUSY on

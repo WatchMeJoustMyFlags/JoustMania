@@ -819,7 +819,7 @@ func newRegistryConcurrency1(t *testing.T, spawner experiment.ShadowSpawner, res
 func TestBuildExperimentLoop_DisabledByDefault(t *testing.T) {
 	// Ensure the opt-in env is unset (the default).
 	t.Setenv(envExperimentsEnabled, "")
-	loop := buildExperimentLoop(nil, nil, "/nonexistent/game.json", testLogger())
+	loop := buildExperimentLoop(nil, nil, nil, "/nonexistent/game.json", testLogger())
 	if loop == nil {
 		t.Fatalf("buildExperimentLoop must ALWAYS build the loop now (#1044); gating is the live flag, not a nil return")
 	}
@@ -838,7 +838,7 @@ func TestBuildExperimentLoop_DisabledByDefault(t *testing.T) {
 
 	// Explicit "false" is also off.
 	t.Setenv(envExperimentsEnabled, "false")
-	loop2 := buildExperimentLoop(nil, nil, "/nonexistent/game.json", testLogger())
+	loop2 := buildExperimentLoop(nil, nil, nil, "/nonexistent/game.json", testLogger())
 	if loop2 == nil || loop2.expDefaults.Enabled {
 		t.Fatalf("AGENT_EXPERIMENTS_ENABLED=false must build a loop with the disabled bootstrap default")
 	}
