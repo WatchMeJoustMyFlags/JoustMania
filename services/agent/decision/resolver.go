@@ -241,7 +241,19 @@ type InferenceTier struct {
 func NewInferenceResolver(tier InferenceTier, eps Endpoints, interval time.Duration) *Resolver {
 	chain := make([]Backend, 0, 4)
 	chain = append(chain, newEndpointBackendWithInfer(tier.Model, tier.Addr, tier.Infer))
-	chain = append(chain, DefaultChainWithInfer(eps, tier.Infer)...)
+	// Skip any legacy tier whose Name() duplicates the configured model. The
+	// availability map is keyed by Name() (see Refresh/resolve), so a duplicate
+	// (e.g. AGENT_INFERENCE_MODEL unset -> DefaultModel "phi4-mini" == TierPhi) would
+	// collide on one key and the legacy localhost probe — unreachable in the
+	// container — would clobber the configured tier's availability under last-write-
+	// wins, silently degrading a reachable backend to rules. The configured tier
+	// (probed at tier.Addr) supersedes the same-named legacy rung entirely.
+	for _, b := range DefaultChainWithInfer(eps, tier.Infer) {
+		if b.Name() == tier.Model {
+			continue
+		}
+		chain = append(chain, b)
+	}
 	r := NewResolver(chain, interval)
 	r.inferenceTier = tier.Model
 	return r

@@ -141,6 +141,42 @@ func TestInferenceResolver_DegradesToLegacyTier(t *testing.T) {
 	}
 }
 
+// TestInferenceResolver_ModelNameCollidesWithLegacyTier: when AGENT_INFERENCE_MODEL
+// equals a legacy tier name (the default "phi4-mini" == TierPhi when the model is
+// unset), the configured tier and the legacy rung would share one availability-map
+// key. NewInferenceResolver must drop the same-named legacy rung so the reachable
+// configured tier is NOT clobbered by the unreachable legacy localhost probe. Without
+// the fix this resolves to rules (no_backend_available) despite a reachable backend.
+func TestInferenceResolver_ModelNameCollidesWithLegacyTier(t *testing.T) {
+	addr, closeFn := listenLocal(t)
+	defer closeFn()
+
+	called := false
+	delegate := func(context.Context, llm.Prompt) (string, error) {
+		called = true
+		return `{"intervention":"noop"}`, nil
+	}
+	// Configured model name == TierPhi. Legacy localhost points at an unreachable
+	// port (the container/dev reality) — last-write-wins would otherwise clobber the
+	// configured tier's availability under the shared "phi4-mini" key.
+	r := NewInferenceResolver(
+		InferenceTier{Model: TierPhi, Addr: addr, Infer: delegate},
+		Endpoints{Localhost: "127.0.0.1:1"},
+		0)
+	r.Refresh(context.Background())
+
+	res := r.resolve(TierPhi)
+	if res.Backend == nil {
+		t.Fatal("Backend nil: same-named legacy tier clobbered the reachable configured tier (the #964 collision bug)")
+	}
+	if res.Used != TierPhi || res.FallbackReason != "" {
+		t.Errorf("resolve = %+v, want %s with empty fallback (configured tier reachable)", res, TierPhi)
+	}
+	if _, err := res.Backend.Infer(context.Background(), llm.Prompt{}); err != nil || !called {
+		t.Errorf("resolved Backend did not reach the configured delegate: err=%v called=%v", err, called)
+	}
+}
+
 // TestStubResolver_NoInferenceTier_Unchanged: the stub default (NewResolver, no
 // inference tier) selects the tier the agent.model flag names, exactly as before #964 —
 // the default-off path is byte-identical (regression guard for gap 1+3 not leaking into
