@@ -460,8 +460,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.5, sum by (type, le) (rate(agent_intervention_effect_delta_bucket[10m])))",
-          "legendFormat": "{{type}}",
+          "expr": "histogram_quantile(0.5, sum by (intervention_type, le) (rate(agent_intervention_effect_delta_bucket[10m])))",
+          "legendFormat": "{{intervention_type}}",
           "refId": "A"
         }
       ],
@@ -549,8 +549,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (objective) (rate(agent_intervention_effect_delta_count[5m])) * 60",
-          "legendFormat": "{{objective}}",
+          "expr": "sum by (intervention_objective) (rate(agent_intervention_effect_delta_count[5m])) * 60",
+          "legendFormat": "{{intervention_objective}}",
           "refId": "A"
         }
       ],
