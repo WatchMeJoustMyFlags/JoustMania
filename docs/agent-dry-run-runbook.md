@@ -11,23 +11,45 @@ The fastest path is:
 
 ```bash
 make dry-run
-./scripts/agent-killswitch.sh on    # the loop is inert until you do this
+./scripts/agent-dryrun-enable.sh on   # the loop is inert until you do this
 docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile agent restart agent
 ```
 
+`./scripts/agent-dryrun-enable.sh on` flips **both** live gates in the ci/ flag
+dir in one step — the master `enabled` kill-switch **and** the
+`experiments_enabled` flag (the LIVE experiment gate post-#1044). With an
+inference backend configured, also exercise `mode=llm`:
+
+```bash
+AGENT_INFERENCE_BACKEND=openai ./scripts/agent-dryrun-enable.sh on   # also flips mode -> llm
+```
+
+Restore the fail-closed defaults afterwards with
+`./scripts/agent-dryrun-enable.sh off`.
+
 `make dry-run` prints the same steps and the observability URLs on completion.
+
+> **Why a manual step at all?** After #1044 the experiment config moved from env
+> vars to flagd flags. The `experiments_enabled` flag is now the LIVE gate and it
+> **overrides** the `AGENT_EXPERIMENTS_ENABLED=true` env that
+> `docker-compose.dry-run.yml` sets — so the env alone produces **zero**
+> experiment activity (#1077). The enable script is the single opt-in that turns
+> the loop on without changing any production fail-closed default.
 
 ---
 
 ## Why a plain `docker compose up` produces a DEAD run
 
-Three defaults silently combine into a loop that never runs (the #999 findings):
+Several defaults silently combine into a loop that never runs (the #999 + #1077
+findings):
 
 | # | Default | Symptom | Fix in the dry-run path |
 |---|---------|---------|-------------------------|
-| 1 | `.env` pins `IMAGE_TAG=0.7.0` (release-please) | A plain `up` runs the last RELEASE images — they predate the experiment framework, so `AGENT_EXPERIMENTS_ENABLED=true` is silently ignored (no `Experiment cohort loop ENABLED` log) | `make dry-run` pins `IMAGE_TAG=latest` (override with `IMAGE_TAG=... make dry-run`, or add `BUILD=1` to build locally) |
-| 2 | Agent master kill-switch `agent.json` `enabled` = `off` (fail-closed) | Loop declares + writes targeting then self-aborts: `experiment.torn_down ... reason="kill-switch: agent disabled"` | **Manual opt-in** — `./scripts/agent-killswitch.sh on` (flips the **ci** flag dir only; production default stays `off`) |
+| 1 | `.env` pins `IMAGE_TAG=0.7.0` (release-please) | A plain `up` runs the last RELEASE images — they predate the experiment framework, so the loop never constructs (no `Experiment cohort loop` log) | `make dry-run` pins `IMAGE_TAG=latest` (override with `IMAGE_TAG=... make dry-run`, or add `BUILD=1` to build locally) |
+| 2 | Agent master kill-switch `agent.json` `enabled` = `off` (fail-closed) | Loop declares + writes targeting then self-aborts: `experiment.torn_down ... reason="kill-switch: agent disabled"` | **Manual opt-in** — `./scripts/agent-dryrun-enable.sh on` (flips the **ci** flag dir only; production default stays `off`) |
 | 3 | The agent compose env did not declare `AGENT_EXPERIMENTS_ENABLED` / `AGENT_EXPERIMENT_SEED_*` | A host `export` never reached the container (needed a custom override) | These vars are now declared (default-off) on the `agent` service in `docker-compose.yml`; the dry-run override turns them on |
+| 5 | **(#1044/#1077)** flagd `experiments_enabled` flag = `off` (fail-closed) **overrides** the `AGENT_EXPERIMENTS_ENABLED=true` env | The loop is constructed but `gated LIVE by agent.json experiments_enabled` — `env_enabled_default=true` is dead config; **zero** `experiment.*` activity | **Manual opt-in** — `./scripts/agent-dryrun-enable.sh on` flips `experiments_enabled` (and `enabled`, row 2) in the **ci** flag dir only; production default stays `off` |
+| 6 | **(#1044/#1077)** flagd `mode` flag = `rules` (fail-closed) | Even with experiments on, the inference backend is never exercised (stays on the rules engine) | `AGENT_INFERENCE_BACKEND=openai ./scripts/agent-dryrun-enable.sh on` flips `mode -> llm` in the ci flag dir; without a backend `rules` is correct (stub) |
 
 And one **silent-ineffective** trap:
 
@@ -44,18 +66,26 @@ value to the real default, three independent gates must be satisfied. They are
 intentionally separate so a dry run can spawn shadows without ever risking a
 real-default change.
 
-1. **Experiments opt-in** — `AGENT_EXPERIMENTS_ENABLED=true`.
-   Constructs the `experiment.Registry` and runs the
-   declare → spawn → conclude → verdict → (gated) promote loop. Default `false`
-   ⇒ no Registry, no shadow spawns, no targeting writes, no promotions.
-   *Set by `docker-compose.dry-run.yml`.*
+1. **Experiments opt-in** — flagd `experiments_enabled` flag = `on`.
+   Post-#1044 this **flagd flag is the LIVE gate** and **overrides** the
+   `AGENT_EXPERIMENTS_ENABLED=true` env (which `docker-compose.dry-run.yml` still
+   sets, but is now dead config for this purpose — the loop logs
+   `gated LIVE by agent.json experiments_enabled`). When `off` (the fail-closed
+   default) there are no shadow spawns, no targeting writes, no promotions.
+   *Manual opt-in via `./scripts/agent-dryrun-enable.sh on` — never default-on.*
 
 2. **Agent master kill-switch** — `agent.json` `enabled` flag = `on`.
    Read live from flagd each cycle. When `off` (the fail-closed default) the
    loop short-circuits before any work and emits a throttled
    `kill-switch: agent disabled` span. Hot-reloaded — no restart needed for the
    flag flip itself, but the agent re-reads it each cycle.
-   *Manual opt-in via `./scripts/agent-killswitch.sh on` — never default-on.*
+   *Flipped together with gate 1 by `./scripts/agent-dryrun-enable.sh on` —
+   never default-on.*
+
+   *(Optional) inference backend* — flagd `mode` flag = `llm`. Default `rules`
+   (the stub backend, correct without a backend). When an inference backend is
+   configured, `AGENT_INFERENCE_BACKEND=openai ./scripts/agent-dryrun-enable.sh on`
+   also flips `mode -> llm` so the dry run exercises the LLM decision path.
 
 3. **`code_improvement.*` promotion gates** — separate flags in the agent
    domain (`code_improvement.mode`, `.target`, `.validation_games`,
@@ -108,8 +138,13 @@ seed at the targeting write).
 
 ## Verifying it is alive
 
-- **Logs**: `docker compose ... logs -f agent` shows `Experiment cohort loop ENABLED`
-  and per-tick `AllocateAndSpawn` activity (not `kill-switch: agent disabled`).
+- **Logs**: `docker compose ... logs -f agent`. At startup the loop is always
+  *constructed* (`Experiment cohort loop constructed … gated LIVE by agent.json
+  experiments_enabled`, `env_enabled_default=true`) — that line alone does NOT
+  mean it is running. Once `experiments_enabled` is flipped `on`, you see
+  per-tick `experiment.declared` / `experiment.started` / `experiment.game_assigned`
+  activity (not `kill-switch: agent disabled` and not the
+  `experiments_enabled flag off` abort).
 - **Jaeger** (`http://localhost/jaeger/`, service `agent`): experiment
   declare/spawn/conclude/verdict spans.
 - **flagd**: `services/flagd/ci/game.json` gains a reserved experiment variant +
@@ -123,5 +158,5 @@ docker compose \
   -f docker-compose.yml -f docker-compose.override.yml \
   -f docker-compose.ci.yml -f docker-compose.dry-run.yml \
   --profile agent --profile dashboard down
-./scripts/agent-killswitch.sh off    # restore the fail-closed default
+./scripts/agent-dryrun-enable.sh off    # restore the fail-closed defaults (enabled/experiments_enabled/mode)
 ```
