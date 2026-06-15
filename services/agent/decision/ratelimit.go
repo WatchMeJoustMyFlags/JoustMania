@@ -46,6 +46,13 @@ const (
 	InterventionAdjustVolume            = "adjust_volume"
 	InterventionAdjustMusicTempo        = "adjust_music_tempo"
 	InterventionAdjustPlayerSensitivity = "adjust_player_sensitivity"
+	// InterventionSetPlayerHandicap (#1107, #1103 MVP action 1) is a per-player
+	// MULTIPLICATIVE handicap on the death threshold that composes with — does not
+	// replace — adjust_player_sensitivity (>1 harder to die / "help", <1 easier /
+	// "rein in"). SHADOW-game-only initially: allow-listed only via the
+	// `shadow_experimental` interventions_allowed variant (services/flagd/agent.json),
+	// never the real-facing ambient/standard/full variants.
+	InterventionSetPlayerHandicap       = "set_player_handicap"
 	InterventionGrantShield             = "grant_shield"
 	InterventionAdjustGlobalSensitivity = "adjust_global_sensitivity"
 	InterventionAdjustGlobalDifficulty  = "adjust_global_difficulty"
@@ -80,6 +87,7 @@ var interventionWeights = map[string]float64{
 	// Medium (1)
 	InterventionAdjustMusicTempo:        1,
 	InterventionAdjustPlayerSensitivity: 1,
+	InterventionSetPlayerHandicap:       1, // #1107 (#1103 MVP action 1)
 	InterventionGrantShield:             1,
 	InterventionAdjustGlobalDifficulty:  1, // #766 F6
 	InterventionSetPacingProfile:        1, // #766 F6

@@ -35,6 +35,17 @@
       "defaultVariant": "default",
       "targeting": {}
     },
+    "player_handicap_factor": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 1.0,
+        "rein_in": 0.75,
+        "help": 1.25,
+        "big_help": 1.75
+      },
+      "defaultVariant": "default",
+      "targeting": {}
+    },
     "shield_seconds": {
       "state": "ENABLED",
       "variants": {

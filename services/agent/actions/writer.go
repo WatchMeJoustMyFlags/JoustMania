@@ -45,6 +45,7 @@ const (
 	flagMusicTempoOverride        = "music_tempo_override"
 	flagGlobalSensitivityOverride = "global_sensitivity_override"
 	flagPlayerSensitivityFactor   = "player_sensitivity_factor"
+	flagPlayerHandicapFactor      = "player_handicap_factor" // #1107 (#1103 MVP action 1)
 	flagShieldSeconds             = "shield_seconds"
 	flagVolumeOverride            = "volume_override"
 	flagGlobalDifficultyFactor    = "global_difficulty_factor" // #766 F6
@@ -100,6 +101,7 @@ const (
 	defaultVolume            = 0.7  // matches "normal"
 	defaultGlobalSensitivity = 2    // matches "medium"
 	defaultPlayerSensitivity = 1.5  // matches "handicap"
+	defaultPlayerHandicap    = 1.25 // #1107: mild "help" (>1 harder to die), within [0.5,2.0]
 	defaultShieldSeconds     = 5    // matches "default"
 	defaultGlobalDifficulty  = 1.5  // matches interventions.json "hard" (#766 F6)
 	defaultPacingProfile     = "frantic"
@@ -382,6 +384,8 @@ func (w *Writer) mutate(doc *orderedDoc, d decision.Decision) error {
 	// Per-player state-shaped overrides (flagd targeting if-ladder).
 	case decision.InterventionAdjustPlayerSensitivity:
 		return w.setTargeted(doc, flagPlayerSensitivityFactor, neutralDefault, d.TargetSerial, w.numOr(d.Value, defaultPlayerSensitivity))
+	case decision.InterventionSetPlayerHandicap: // #1107 (#1103 MVP action 1), shadow-only
+		return w.setTargeted(doc, flagPlayerHandicapFactor, neutralDefault, d.TargetSerial, w.numOr(d.Value, defaultPlayerHandicap))
 	case decision.InterventionGrantShield:
 		return w.setTargeted(doc, flagShieldSeconds, neutralNone, d.TargetSerial, w.numOr(d.Value, defaultShieldSeconds))
 
