@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"os"
 	"strconv"
@@ -58,7 +59,7 @@ const (
 	// the declaration-trigger note below). When envSeedFlag is set the loop
 	// Declares ONE experiment at startup so the cohort loop has something to run.
 	envSeedFlag       = "AGENT_EXPERIMENT_SEED_FLAG"       // game.json flag key to experiment on
-	envSeedValue      = "AGENT_EXPERIMENT_SEED_VALUE"      // experimental value (parsed as number, else string)
+	envSeedValue      = "AGENT_EXPERIMENT_SEED_VALUE"      // experimental value (number/bool/JSON object|array/string)
 	envSeedObjective  = "AGENT_EXPERIMENT_SEED_OBJECTIVE"  // fitness objective (default balanced)
 	envSeedTargetN    = "AGENT_EXPERIMENT_SEED_TARGET_N"   // target games per arm
 	envSeedHypothesis = "AGENT_EXPERIMENT_SEED_HYPOTHESIS" // free-text hypothesis
@@ -1187,10 +1188,12 @@ func seedIntentFromEnv() *experiment.Intent {
 }
 
 // parseSeedValue parses the seed experimental value: a number when it parses as a
-// float, a bool for "true"/"false", else the raw string. The Gate's type guard
-// rejects a value whose JSON kind does not match the flag's existing variants, so
-// a mistyped seed fails closed at Start (the targeting write) — never reaching a
-// shadow game.
+// float, a bool for "true"/"false", a JSON object/array when the raw text begins
+// with '{' or '[' and parses as valid JSON (so an OBJECT-valued game flag — e.g.
+// the FFA difficulty/pacing levers “game.thresholds“ / “game.windows“ — can be
+// seeded, #1090), else the raw string. The Gate's type guard rejects a value whose
+// JSON kind does not match the flag's existing variants, so a mistyped seed fails
+// closed at Start (the targeting write) — never reaching a shadow game.
 func parseSeedValue(raw string) any {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -1201,6 +1204,14 @@ func parseSeedValue(raw string) any {
 	}
 	if b, err := strconv.ParseBool(raw); err == nil {
 		return b
+	}
+	// Structured (object/array) seed: only attempt JSON when the text is clearly
+	// a JSON composite, so a bare string seed is never accidentally reinterpreted.
+	if len(raw) > 0 && (raw[0] == '{' || raw[0] == '[') {
+		var v any
+		if err := json.Unmarshal([]byte(raw), &v); err == nil {
+			return v
+		}
 	}
 	return raw
 }

@@ -338,8 +338,16 @@ def resolve_music_windows(flag_value: dict) -> MusicWindows:
 # This is purely visual feedback, NOT protection (player can still die during warning)
 WARNING_DURATION = 0.5
 
-# Grace period for respawn modes (no death or warning during this time)
-DEATH_GRACE_PERIOD = 0.5  # seconds of invincibility after death (for respawn modes)
+# Post-respawn/conversion invincibility window (no death or warning during this
+# time). This is a RESPAWN-MODE concept ONLY: it protects a player who has just
+# respawned, been revived, or been converted (e.g. zombie infection) from being
+# instantly re-killed by the same motion spike. FFA (ffa.py) has NO respawn — a
+# death is permanent elimination — so this knob and the ``game.death_grace_period_seconds``
+# flag that overrides it have NO EFFECT on FFA gameplay. Do not treat
+# ``death_grace_period_seconds`` as an FFA difficulty/pacing lever (see #1090).
+# The unrelated STARTUP grace (residual-motion guard at game start) is a separate,
+# fixed 0.3s window applied to every mode and is intentionally NOT derived from this.
+DEATH_GRACE_PERIOD = 2.0  # seconds of invincibility after respawn (respawn modes only)
 
 # Log at import time to verify correct version is deployed
 logger.info(f"base.py loaded: WARNING_DURATION={WARNING_DURATION}s")
@@ -545,9 +553,18 @@ class BaseGameMode(ABC):
         # back to the hardcoded default (4.0) when flagd is unavailable.
         self._ema_weight = get_config_manager().read_ema_weight()
 
-        # #766 F2: post-death grace period promoted to ``game.death_grace_period_seconds``.
+        # #766 F2: post-respawn grace period promoted to ``game.death_grace_period_seconds``.
         # Read ONCE here (init-frozen); malformed/negative values fall back to the
         # DEATH_GRACE_PERIOD module constant (the source of truth).
+        #
+        # SCOPE (#1090): this is the post-respawn/conversion invincibility window for
+        # RESPAWN modes only (zombie conversion + respawn, swapper team-swap). It is
+        # CONSUMED by those modes (zombie.py / swapper.py set ``player.grace_until =
+        # time.time() + self.death_grace_period``). FFA has no respawn, so this flag
+        # has NO effect on FFA — it is NOT an FFA difficulty/pacing lever. The real
+        # FFA difficulty/pacing levers are ``game.thresholds`` (death thresholds) and
+        # ``game.windows`` (tempo cadence), both consumed per-frame in
+        # ``_compute_effective_thresholds``.
         self.death_grace_period = resolve_non_negative_duration(
             read_float_flag("game", "death_grace_period_seconds", DEATH_GRACE_PERIOD, game_id=self.game_id),
             DEATH_GRACE_PERIOD,

@@ -117,7 +117,7 @@ dry-run:
 	@echo "  Experiment loop gating:"
 	@echo "    [!] flagd experiments_enabled flag is the LIVE gate (post-#1044) and"
 	@echo "        OVERRIDES AGENT_EXPERIMENTS_ENABLED env. Fail-closed off by default."
-	@echo "    [x] seeded experiment: death_grace_period_seconds = 0.75 (objective=balanced, N=8/arm)"
+	@echo "    [x] seeded experiment: windows = frantic music pacing (objective=balanced, N=8/arm)"
 	@echo "    [ ] ENABLE experiments  -> ONE step (flips enabled + experiments_enabled on):"
 	@echo "        ./scripts/agent-dryrun-enable.sh on   # ci/agent.json: enabled + experiments_enabled -> on"
 	@echo "        # add AGENT_INFERENCE_BACKEND=openai to also flip mode -> llm"
