@@ -275,6 +275,27 @@ func rolloutCooldown() time.Duration {
 	return secondsEnv("AGENT_ROLLOUT_COOLDOWN_SECONDS", decision.DefaultRolloutCooldown)
 }
 
+// llmBudgetOverride reads the LIVE LLM per-minute request cap override from
+// AGENT_LLM_MAX_REQUESTS_PER_MINUTE (#964). The decision loop normally reads the cap
+// from the llm.max_requests_per_minute flag (default 6), which under the eval-cycle
+// rate exhausts the budget almost immediately and gates the llm path with
+// llm_budget_exhausted even when a backend is reachable. This env override lets an
+// operator raise the cap for a real-inference dry-run without editing flagd. An
+// unset/empty/invalid/non-positive value returns 0 = "no override" (the flag
+// governs), so the default-off path is unchanged.
+func llmBudgetOverride() int {
+	s := strings.TrimSpace(os.Getenv("AGENT_LLM_MAX_REQUESTS_PER_MINUTE"))
+	if s == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n <= 0 {
+		slog.Warn("AGENT_LLM_MAX_REQUESTS_PER_MINUTE invalid; ignoring (flag governs) (#964)", "value", s)
+		return 0
+	}
+	return n
+}
+
 // secondsEnv parses a positive integer "seconds" env var into a Duration,
 // returning fallback on an empty/invalid/non-positive value.
 func secondsEnv(key string, fallback time.Duration) time.Duration {
@@ -431,6 +452,15 @@ func main() {
 	// per-game cadence + eligibility layers live on each Loop; only the budget is
 	// shared across loops.
 	sharedLLMBudget := decision.NewLLMBudget()
+	// LIVE LLM budget override (#964): AGENT_LLM_MAX_REQUESTS_PER_MINUTE raises the
+	// per-minute LLM request cap above the llm.max_requests_per_minute flag default
+	// (6/min, which exhausts under the eval-cycle rate). 0 = no override (the flag
+	// governs), so the default-off path is unchanged. Read once at startup and applied
+	// to every per-game loop below, mirroring the shared budget instance itself.
+	llmBudgetCapOverride := llmBudgetOverride()
+	if llmBudgetCapOverride > 0 {
+		slog.Info("LLM request budget override enabled (#964)", "max_per_minute", llmBudgetCapOverride)
+	}
 	// Startup self-heal (#924): when the real action sink is enabled, validate the
 	// interventions file and repair a poisoned (unparseable) one to the neutral
 	// document before the first decision cycle. A corrupt file would otherwise make
@@ -461,17 +491,44 @@ func main() {
 	// AGENT_INFERENCE_BACKEND=openai points it at the host Ollama (or a gateway) for a
 	// real local inference path with no key.
 	inferDelegate, inferBackendName := selectInferenceBackend()
+	inferBaseURL := getEnv("AGENT_INFERENCE_BASE_URL", inference.DefaultBaseURL)
+	inferModel := getEnv("AGENT_INFERENCE_MODEL", inference.DefaultModel)
 	slog.Info("Inference backend selected (#1048)",
 		"backend", inferBackendName,
-		"base_url", getEnv("AGENT_INFERENCE_BASE_URL", inference.DefaultBaseURL),
-		"model", getEnv("AGENT_INFERENCE_MODEL", inference.DefaultModel),
+		"base_url", inferBaseURL,
+		"model", inferModel,
 		"api_key_set", getEnv("AGENT_INFERENCE_API_KEY", "") != "",
 	)
-	sharedResolver := decision.NewResolver(decision.DefaultChainWithInfer(decision.Endpoints{
+	legacyEndpoints := decision.Endpoints{
 		Cloud:     getEnv("AGENT_CLOUD_ENDPOINT", ""),                    // #742 credential-blocked: empty = permanently unreachable
 		Jetson:    getEnv("AGENT_JETSON_ENDPOINT", "jetson:11434"),       // #738 Ollama on the Jetson; unresolvable in dev
 		Localhost: getEnv("AGENT_LOCALHOST_ENDPOINT", "localhost:11434"), // #739 Ollama locally; unreachable unless running
-	}, inferDelegate), decision.DefaultProbeInterval)
+	}
+	// #964: when a REAL inference backend is configured (AGENT_INFERENCE_BACKEND=openai),
+	// build a Resolver whose chain TOP is the configured backend itself — named after
+	// AGENT_INFERENCE_MODEL, probed at the host:port parsed from AGENT_INFERENCE_BASE_URL,
+	// Infer-delegating to the SAME client the proposer uses. resolve() always starts at
+	// that tier, so a reachable backend yields a non-nil Backend and the decision loop
+	// reaches mode=llm instead of degrading to rules because the default phi4-mini model
+	// flag pointed at an unreachable localhost tier. A single AGENT_INFERENCE_* config now
+	// drives the backend request, the resolver's availability probe, AND the inference.used
+	// attribution. When inferDelegate is nil (the stub DEFAULT) the legacy DefaultChainWithInfer
+	// resolver is built unchanged — byte-identical degrade-to-rules behavior.
+	var sharedResolver *decision.Resolver
+	if inferDelegate != nil {
+		probeAddr := decision.InferenceProbeAddr(inferBaseURL)
+		slog.Info("Inference-backend resolver tier wired (#964)",
+			"model", inferModel, "probe_addr", probeAddr)
+		sharedResolver = decision.NewInferenceResolver(decision.InferenceTier{
+			Model: inferModel,
+			Addr:  probeAddr,
+			Infer: inferDelegate,
+		}, legacyEndpoints, decision.DefaultProbeInterval)
+	} else {
+		sharedResolver = decision.NewResolver(
+			decision.DefaultChainWithInfer(legacyEndpoints, inferDelegate),
+			decision.DefaultProbeInterval)
+	}
 	// The resolver's background probe ticker is started by run() (#923), which owns
 	// the agent's goroutine lifecycle, so it is stopped on ctx cancellation alongside
 	// every other runtime goroutine.
@@ -515,6 +572,11 @@ func main() {
 		// references the same instance: the gate's eligibility + cadence layers are
 		// per-loop, but the budget layer is one global cap across all games.
 		loop.SetLLMBudget(sharedLLMBudget)
+		// Apply the LIVE budget override (#964): when AGENT_LLM_MAX_REQUESTS_PER_MINUTE is
+		// set it replaces the llm.max_requests_per_minute flag value as the per-minute cap,
+		// so a real-inference dry-run is not gated by llm_budget_exhausted under the eval
+		// rate. 0 (unset) is ignored — the flag governs, default-off path unchanged.
+		loop.SetLLMBudgetOverride(llmBudgetCapOverride)
 		// Inject the SHARED inference resolver (#741): every per-game loop resolves the
 		// fallback chain against the same availability cache, so a gate-admitted llm
 		// cycle reports the honest inference.used tier and any degradation reason.
