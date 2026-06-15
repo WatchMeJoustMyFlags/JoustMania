@@ -187,8 +187,16 @@ func rolloutActuator(logger *slog.Logger) decision.RolloutActuator {
 // Promote on a validated experiment is the documented follow-up (the proposer is
 // #931, parallel; the SyntheticRunner/Watcher live wiring reuses M7-7's seams where
 // merged). buildPromoter wires the env-gated promotion SURFACE; the autonomous
-// watch+revert seams (Watcher/RealDefaultReverter) are nil until that live
-// measurement is wired, so autonomous applies-and-records without a watch for now.
+// watch+revert seams (Watcher/RealDefaultReverter) are nil until the live real-game
+// fitness source (promote.RealGameFitness, reading the #731 evaluator / gamewindow)
+// is wired.
+//
+// FAIL-CLOSED (#1016): with the Watcher nil, autonomous now REFUSES to apply to the
+// real default (a hard stop), rather than applying without a safety net. So an
+// operator who flips mode=autonomous before the live watch is wired gets a recorded
+// no-op (OutcomeDiscarded), NOT an unguarded real-default change. Building the
+// real RealGameFitness source + NewFitnessWatcher here is the live-verify follow-up;
+// the watch→degradation→revert WIRING + decision logic ships + is unit-tested now.
 func buildPromoter(logger *slog.Logger) *promote.Promoter {
 	// Resolve the target for client construction from the ENV (AGENT_CODE_IMPROVEMENT_TARGET),
 	// distinct from the LIVE flag (code_improvement.target) that Promote dispatches on.
@@ -238,8 +246,10 @@ func buildPromoter(logger *slog.Logger) *promote.Promoter {
 		Base:  getEnv("GITHUB_BASE_BRANCH", "main"),
 	}
 	// Watcher + RealDefaultReverter (autonomous live watch+revert) reuse M7-7's
-	// fitness measurement seams; they are nil until that live wiring lands, so
-	// autonomous applies+records without a watch (documented follow-up).
+	// fitness measurement seams; they are nil until the live real-game fitness source
+	// is wired. Per #1016 a nil Watcher makes autonomous FAIL CLOSED (refuse to apply
+	// to the real default), so this is safe: autonomous degrades to a recorded no-op
+	// rather than an unguarded real change until the safety net is connected.
 	return promote.NewPromoter(ghIface, gitIface, realDefIface, nil, nil, repo, nil, logger)
 }
 
