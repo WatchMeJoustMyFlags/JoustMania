@@ -11,6 +11,14 @@
       },
       "defaultVariant": "allow"
     },
+    "tempo_schedule_mode": {
+      "state": "ENABLED",
+      "variants": {
+        "rule": "rule",
+        "agent": "agent"
+      },
+      "defaultVariant": "rule"
+    },
     "sensitivity": {
       "state": "ENABLED",
       "variants": {
