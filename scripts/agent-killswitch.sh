@@ -16,9 +16,12 @@
 #   ./scripts/agent-killswitch.sh off   # disable it again
 #   ./scripts/agent-killswitch.sh status
 #
-# After flipping, flagd hot-reloads the file; restart the agent so the loop
-# re-reads the existence layer:
-#   docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile agent restart agent
+# After flipping, flagd hot-reloads the file and the change takes effect LIVE
+# (~1 s): the agent reads the `enabled` kill-switch live each cycle (and since
+# #1044 the experiment loop is always built and self-gates each tick on the live
+# flags), so an off→on flip starts it with NO agent restart. A restart/recreate
+# is only required when you set/change the AGENT_INFERENCE_* env vars (read at
+# process start).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
