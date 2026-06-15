@@ -281,6 +281,30 @@ func (s *Store) SetPlayerVariance(serial string, v float64) {
 	s.touch(p)
 }
 
+// SetPlayerPeakAccel records the player's whole-game peak accel magnitude (a
+// monotonic whole-game aggregate), creating the player on demand. Retained into
+// the conclusion snapshot like SkillLevel so balanced-fitness spike-survival is
+// meaningful post-game (#1024).
+func (s *Store) SetPlayerPeakAccel(serial string, v float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := s.player(serial)
+	p.PeakAccel = ptr(v)
+	s.touch(p)
+}
+
+// SetPlayerVarianceAggregate records the player's whole-game cumulative movement
+// variance (a retained whole-game aggregate), creating the player on demand.
+// Distinct from SetPlayerVariance, which records the frozen-at-conclusion
+// rolling-window value (#1024).
+func (s *Store) SetPlayerVarianceAggregate(serial string, v float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := s.player(serial)
+	p.MovementVarianceAggregate = ptr(v)
+	s.touch(p)
+}
+
 // SetPlayerBattery records battery percentage. A fallback-source update is
 // ignored once a preferred-source value has been seen for this player.
 func (s *Store) SetPlayerBattery(serial string, pct float64, preferred bool) {

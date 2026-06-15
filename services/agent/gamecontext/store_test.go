@@ -514,3 +514,51 @@ func TestStore_SkillLevelSurvivesToConclusionSnapshot(t *testing.T) {
 		t.Fatalf("only %d eliminated players retained SkillLevel at conclusion; balanced skill-gap would not compute", withSkill)
 	}
 }
+
+// TestStore_MovementAggregatesSurviveToConclusionSnapshot is the #1024 ground-truth
+// proof, mirroring the skill_level proof above: driving the realistic ingest path
+// (per-player whole-game movement-aggregate setters while alive, then
+// game_player_alive=0 on elimination, then game_active=0) leaves each eliminated
+// player's PeakAccel and MovementVarianceAggregate intact in the OnGameEnd
+// snapshot. This is the fact Option 1 rests on: balanced's spike-survival sub-check
+// now reads these RETAINED whole-game aggregates (not the frozen-last-sample
+// instantaneous signals), so it is meaningful at conclusion where every player is
+// eliminated.
+func TestStore_MovementAggregatesSurviveToConclusionSnapshot(t *testing.T) {
+	clk := &clock{t: time.Unix(1000, 0)}
+	s := NewStore(time.Hour, time.Hour, clk.now)
+
+	var endSnap *GameContext
+	s.OnGameEnd = func(c GameContext) { cp := c; endSnap = &cp }
+
+	s.SetGameActive(true)
+	for _, pl := range []struct {
+		serial  string
+		peak    float64
+		varAggr float64
+	}{{"a", 2.0, 0.4}, {"b", 2.5, 0.6}} {
+		s.SetPlayerAlive(pl.serial, true)
+		s.SetPlayerPeakAccel(pl.serial, pl.peak)            // game_player_peak_accel
+		s.SetPlayerVarianceAggregate(pl.serial, pl.varAggr) // game_player_movement_variance_aggregate
+	}
+	// Both eliminated (game_player_alive=0) before the game ends.
+	s.SetPlayerAlive("a", false)
+	s.SetPlayerAlive("b", false)
+	s.SetGameActive(false) // fires OnGameEnd with the pre-reset snapshot
+
+	if endSnap == nil {
+		t.Fatal("OnGameEnd never fired")
+	}
+	withAggregates := 0
+	for serial, p := range endSnap.Players {
+		if p.Active == nil || *p.Active {
+			t.Errorf("player %s expected Active=false at conclusion, got %v", serial, p.Active)
+		}
+		if p.PeakAccel != nil && p.MovementVarianceAggregate != nil {
+			withAggregates++
+		}
+	}
+	if withAggregates < 2 {
+		t.Fatalf("only %d eliminated players retained both movement aggregates at conclusion; balanced spike-survival would not compute", withAggregates)
+	}
+}

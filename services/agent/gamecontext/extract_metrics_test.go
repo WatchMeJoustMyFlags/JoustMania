@@ -208,6 +208,53 @@ func TestApplyMetrics_VarianceNilWhenAbsent(t *testing.T) {
 	}
 }
 
+// TestApplyMetrics_PeakAccelRetained verifies the #1024 retained whole-game peak
+// accel aggregate: a per-player game_player_peak_accel datapoint records the value
+// onto PlayerSignals.PeakAccel (it is no longer a value-discarding game_id carrier)
+// AND still adopts the game_id it carries.
+func TestApplyMetrics_PeakAccelRetained(t *testing.T) {
+	s := newTestStore()
+	if !s.ApplyMetrics(metricsWith(metricPeakAccel, 2.7, map[string]string{
+		attrSerial: "A",
+		attrGameID: "game-9",
+	})) {
+		t.Fatal("expected peak_accel update")
+	}
+	snap := s.Snapshot()
+	if p := snap.Players["A"]; p == nil || p.PeakAccel == nil || *p.PeakAccel != 2.7 {
+		t.Fatalf("PeakAccel not retained, got %+v", snap.Players["A"])
+	}
+	if snap.SessionID != "game-9" {
+		t.Fatalf("SessionID = %q, want game-9 (peak_accel still carries game_id)", snap.SessionID)
+	}
+}
+
+// TestApplyMetrics_PeakAccelSeriallessStillAdoptsGameID verifies the legacy
+// serial-less carrier path still works (game_id adopted, no player created).
+func TestApplyMetrics_PeakAccelSeriallessStillAdoptsGameID(t *testing.T) {
+	s := newTestStore()
+	if !s.ApplyMetrics(metricsWith(metricPeakAccel, 0, map[string]string{
+		attrGameID: "game-3",
+	})) {
+		t.Fatal("serial-less peak_accel must still contribute its game_id")
+	}
+	if got := s.Snapshot().SessionID; got != "game-3" {
+		t.Fatalf("SessionID = %q, want game-3", got)
+	}
+}
+
+// TestApplyMetrics_MovementVarianceAggregateRetained verifies the #1024 retained
+// whole-game variance aggregate records onto PlayerSignals.MovementVarianceAggregate.
+func TestApplyMetrics_MovementVarianceAggregateRetained(t *testing.T) {
+	s := newTestStore()
+	if !s.ApplyMetrics(metricsWith(metricMovementVarianceAggregate, 0.6, serial("A"))) {
+		t.Fatal("expected variance-aggregate update")
+	}
+	if v := s.Snapshot().Players["A"].MovementVarianceAggregate; v == nil || *v != 0.6 {
+		t.Fatalf("MovementVarianceAggregate not retained, got %v", v)
+	}
+}
+
 func TestApplyMetrics_MissingSerialSkipped(t *testing.T) {
 	s := newTestStore()
 	if s.ApplyMetrics(metricsWith(metricAccelMagnitude, 1.2, nil)) {

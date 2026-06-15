@@ -272,6 +272,25 @@ class PlayerAnalytics:
         return math.sqrt(self._m2 / (self.sample_count - 1))
 
     @property
+    def cumulative_variance(self) -> float:
+        """Whole-game sample variance of accel magnitude (Welford's algorithm).
+
+        This is the variance counterpart of ``std_deviation`` (it is exactly
+        ``std_deviation ** 2``), accumulated over EVERY frame of the game rather
+        than only the recent rolling window. Unlike ``windowed_variance`` — which
+        is frozen at the last live frame before a player is eliminated and is
+        therefore meaningless once the game has concluded — this whole-game
+        aggregate is retained and stays meaningful at game conclusion (#1024),
+        so the agent's balanced-fitness spike-survival sub-check can be evaluated
+        post-game from a stable aggregate instead of a frozen last sample.
+
+        Returns 0.0 until at least two samples are present.
+        """
+        if self.sample_count < 2:
+            return 0.0
+        return self._m2 / (self.sample_count - 1)
+
+    @property
     def windowed_variance(self) -> float:
         """
         Sample variance of accel magnitude over the rolling window (#730).

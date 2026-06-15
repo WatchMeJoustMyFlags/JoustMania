@@ -20,7 +20,7 @@ const (
 	metricGameActive     = "game_active"                 // live
 	metricGameMode       = "game_current_mode"           // live (coordinator emits game_current_mode; #848)
 	metricDeathsTotal    = "game_player_deaths_total"    // live
-	metricPeakAccel      = "game_player_peak_accel"      // live (game_id carrier)
+	metricPeakAccel      = "game_player_peak_accel"      // live (whole-game aggregate + game_id carrier)
 
 	// Game-speed / threshold reference frame (#1082). All three are SESSION-level
 	// gauges the coordinator already emits (no serial label): game_music_tempo is
@@ -35,6 +35,12 @@ const (
 	metricBatteryPct       = "controller_battery_pct"        // proposed
 	metricSkillLevel       = "game_player_skill_level"       // live (coordinator emits at ~10Hz, #730/#1015)
 	metricEliminationOrder = "game_player_elimination_order" // proposed
+
+	// Whole-game RETAINED movement-variance aggregate (#1024). Emitted while alive
+	// at ~1Hz; retained into the conclusion snapshot like skill_level so the
+	// balanced-fitness spike-survival sub-check is meaningful post-game (vs. the
+	// frozen-last-sample game_player_movement_variance).
+	metricMovementVarianceAggregate = "game_player_movement_variance_aggregate" // live
 )
 
 // Attribute keys.
@@ -254,10 +260,22 @@ func (s *Store) applyDataPoint(name string, dp pmetric.NumberDataPoint) bool {
 			return true
 		}
 	case metricPeakAccel:
-		// Game-end carrier of game_id; serial not required here. adoptGame is the
-		// only thing this datapoint contributes.
+		// Whole-game PEAK accel aggregate (#1024): when it carries a serial, retain
+		// the per-player value (used by balanced-fitness spike-survival at
+		// conclusion). It also carries game_id, so adoptGame regardless.
 		if labels.GameID != "" || labels.GameKind != "" {
 			s.adoptGame(labels)
+		}
+		if serial, ok := serialOf(); ok {
+			s.SetPlayerPeakAccel(serial, v)
+			return true
+		}
+		// Serial-less datapoint still usefully contributed the game_id.
+		return labels.GameID != "" || labels.GameKind != ""
+	case metricMovementVarianceAggregate:
+		if serial, ok := serialOf(); ok {
+			s.adoptGame(labels)
+			s.SetPlayerVarianceAggregate(serial, v)
 			return true
 		}
 

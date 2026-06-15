@@ -130,17 +130,22 @@ func evaluateEndurance(c gamecontext.GameContext, fit FitnessThresholds) (Fitnes
 // gap is within max_skill_gap. Requires at least two players with a skill level;
 // skipped otherwise.
 //
-// Spike survival: the fraction of active players who "survive" movement spikes,
-// derived from the available per-player signals. We treat a player's
-// movement_variance as the spikiness of their play; a player survives spikes
-// when their variance is bounded relative to their movement intensity — large
-// erratic swings (variance) relative to sustained effort (intensity) indicate a
-// player being thrown by spikes. survival_ratio = active survivors / active
-// players with both signals. Documented derivation: a player survives when
-// variance <= intensity (spikes do not dominate their movement); the session
-// passes when survival_ratio >= spike_survival_threshold. This part is skipped
-// when no active player has both signals, so the gap is honest rather than
-// fabricated.
+// Spike survival (#1024): the fraction of players who "survive" movement spikes
+// over the WHOLE game, derived from RETAINED whole-game aggregates rather than a
+// frozen last-sample. We treat a player's whole-game movement variance
+// (MovementVarianceAggregate, cumulative Welford) as the spikiness of their play;
+// a player survives spikes when that variance is bounded relative to their
+// whole-game peak intensity (PeakAccel) — large erratic swings relative to
+// sustained peak effort indicate a player being thrown by spikes. Both inputs are
+// retained into the conclusion snapshot like skill_level, so — unlike the prior
+// Active-gated instantaneous check — this is MEANINGFUL AT CONCLUSION, where every
+// player is eliminated and none is Active. It is NOT Active-gated; it iterates
+// every player (like skill-gap). survival_ratio = survivors / players with both
+// retained aggregates. Documented derivation: a player survives when
+// variance_aggregate <= peak_accel (spikes do not dominate their whole-game
+// movement); the session passes when survival_ratio >= spike_survival_threshold.
+// This part is skipped when no player has both retained aggregates, so the gap is
+// honest rather than fabricated.
 //
 // The balanced result combines both sub-checks: Progress is the lower (worse) of
 // the two sub-progresses that could be computed; Satisfied requires every
@@ -261,19 +266,35 @@ func skillGapProgress(gap, maxGap float64) float64 {
 	return clamp01(1 - gap/(2*maxGap))
 }
 
-// spikeSurvivalRatio derives the fraction of active players who survive movement
-// spikes from the available signals (see evaluateBalanced for the rationale): a
-// player survives when their movement_variance does not exceed their
-// movement_intensity. Returns the ratio and whether any active player had both
-// signals.
+// spikeSurvivalRatio derives the fraction of players who survive movement spikes
+// over the WHOLE game (#1024). It reads each player's RETAINED whole-game
+// aggregates — MovementVarianceAggregate (cumulative Welford variance over every
+// frame) against PeakAccel (the whole-game peak accel magnitude) — rather than
+// the frozen-last-sample instantaneous MovementVariance / MovementIntensity that
+// the live check used. Because both inputs are whole-game aggregates retained
+// into the conclusion snapshot (like SkillLevel), this is meaningful at game
+// conclusion, where every player is eliminated and none is Active.
+//
+// It is therefore NOT Active-gated: it iterates every player (c.Players directly,
+// like skillGap), so a concluded game with eliminated players still contributes.
+// A player survives when their whole-game variance does not exceed their
+// whole-game peak intensity (large erratic swings relative to sustained peak
+// effort indicate a player thrown by spikes). Returns the ratio and whether any
+// player had both retained aggregates.
+//
+// Confound note (#1024): a whole-game aggregate is far less confounded than the
+// frozen last-sample (which captured only the elimination instant, the moment a
+// flag-under-test is most likely to perturb), but a flag that systematically
+// changes overall play spikiness across arms will still move this signal — that
+// is by design (it IS measuring spikiness), not an artifact of the last frame.
 func spikeSurvivalRatio(c gamecontext.GameContext) (float64, bool) {
 	var total, survivors int
-	for _, p := range activePlayers(c) {
-		if p.MovementVariance == nil || p.MovementIntensity == nil {
+	for _, p := range c.Players {
+		if p == nil || p.MovementVarianceAggregate == nil || p.PeakAccel == nil {
 			continue
 		}
 		total++
-		if *p.MovementVariance <= *p.MovementIntensity {
+		if *p.MovementVarianceAggregate <= *p.PeakAccel {
 			survivors++
 		}
 	}

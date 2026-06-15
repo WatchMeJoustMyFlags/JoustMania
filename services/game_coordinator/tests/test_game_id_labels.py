@@ -162,6 +162,7 @@ class TestMetricDeclarationsCarryGameId:
             metrics.player_movement_zone,
             metrics.player_playstyle,
             metrics.player_movement_variance,
+            metrics.player_movement_variance_aggregate,
             metrics.player_skill_level,
             metrics.player_peak_accel,
             metrics.player_elimination_order,
@@ -176,9 +177,11 @@ class TestCleanupRemovesGameIdScopedSeries:
             patch("services.game_coordinator.metrics.player_alive") as mock_alive,
             patch("services.game_coordinator.metrics.player_accel_magnitude") as mock_accel,
             patch("services.game_coordinator.metrics.player_skill_level") as mock_skill,
+            patch("services.game_coordinator.metrics.player_movement_variance_aggregate") as mock_var_agg,
         ):
             metrics.clear_player_analytics("AA:BB:CC", game_id=GAME_ID)
 
         mock_alive.remove.assert_called_once_with("AA:BB:CC", GAME_ID)
         mock_accel.remove.assert_called_once_with("AA:BB:CC", GAME_ID)
         mock_skill.remove.assert_called_once_with("AA:BB:CC", GAME_ID)
+        mock_var_agg.remove.assert_called_once_with("AA:BB:CC", GAME_ID)

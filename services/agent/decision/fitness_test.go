@@ -164,12 +164,15 @@ func TestEvaluateBalanced_SkillGap(t *testing.T) {
 
 func TestEvaluateBalanced_SpikeSurvival(t *testing.T) {
 	fit := defaultFit() // spike_survival_threshold = 0.8
-	// Three active players with movement signals: two survive (variance <=
-	// intensity), one does not -> ratio 2/3 = 0.667 < 0.8 -> fails survival.
+	// Three players carrying the RETAINED whole-game aggregates (#1024): two
+	// survive (variance_aggregate <= peak_accel), one does not -> ratio 2/3 =
+	// 0.667 < 0.8 -> fails survival. Active is irrelevant: spike-survival is no
+	// longer Active-gated, so it computes the same whether players are alive or
+	// eliminated (proven below in TestEvaluateBalanced_SpikeSurvivalAtConclusion).
 	c := playersCtx(
-		&gamecontext.PlayerSignals{Serial: "a", MovementIntensity: fp(1.0), MovementVariance: fp(0.5)},
-		&gamecontext.PlayerSignals{Serial: "b", MovementIntensity: fp(1.0), MovementVariance: fp(0.9)},
-		&gamecontext.PlayerSignals{Serial: "c", MovementIntensity: fp(1.0), MovementVariance: fp(2.0)},
+		&gamecontext.PlayerSignals{Serial: "a", PeakAccel: fp(1.0), MovementVarianceAggregate: fp(0.5)},
+		&gamecontext.PlayerSignals{Serial: "b", PeakAccel: fp(1.0), MovementVarianceAggregate: fp(0.9)},
+		&gamecontext.PlayerSignals{Serial: "c", PeakAccel: fp(1.0), MovementVarianceAggregate: fp(2.0)},
 	)
 	r, ok := evaluateBalanced(c, fit)
 	if !ok {
@@ -180,6 +183,44 @@ func TestEvaluateBalanced_SpikeSurvival(t *testing.T) {
 	}
 	if r.Satisfied {
 		t.Error("survival 0.667 < 0.8 must fail balanced")
+	}
+}
+
+// TestEvaluateBalanced_SpikeSurvivalAtConclusion is the #1024 proof: at game
+// conclusion EVERY player is eliminated (Active=false) and the instantaneous
+// MovementIntensity/MovementVariance are frozen, yet spike-survival still
+// computes non-trivially because it reads the RETAINED whole-game aggregates
+// (PeakAccel + MovementVarianceAggregate). The prior Active-gated instantaneous
+// check would have skipped entirely here.
+func TestEvaluateBalanced_SpikeSurvivalAtConclusion(t *testing.T) {
+	fit := defaultFit() // spike_survival_threshold = 0.8
+	dead := func(serial string, peak, varAgg float64) *gamecontext.PlayerSignals {
+		return &gamecontext.PlayerSignals{
+			Serial:                    serial,
+			Active:                    bp(false), // eliminated at conclusion
+			PeakAccel:                 fp(peak),
+			MovementVarianceAggregate: fp(varAgg),
+			// Frozen last-sample instantaneous values are deliberately set to a
+			// value that, under the OLD check, would have inverted the verdict;
+			// the new check ignores them entirely.
+			MovementIntensity: fp(0.1),
+			MovementVariance:  fp(5.0),
+		}
+	}
+	c := playersCtx(
+		dead("a", 2.0, 0.5), // survives: 0.5 <= 2.0
+		dead("b", 2.0, 1.0), // survives: 1.0 <= 2.0
+		dead("c", 2.0, 9.0), // thrown by spikes: 9.0 > 2.0
+	)
+	r, ok := evaluateBalanced(c, fit)
+	if !ok {
+		t.Fatal("expected evaluation at conclusion (spike-survival must NOT be skipped)")
+	}
+	if _, present := r.Values["balanced.spike_survival_ratio"]; !present {
+		t.Fatal("spike_survival_ratio absent at conclusion; sub-check was skipped")
+	}
+	if got := r.Values["balanced.spike_survival_ratio"]; got < 0.66 || got > 0.67 {
+		t.Errorf("conclusion survival_ratio = %v, want ~0.667 from retained aggregates", got)
 	}
 }
 
@@ -215,8 +256,8 @@ func TestEvaluateFitness_KeyVocabulary(t *testing.T) {
 	// A fully-populated context exercises every function and pins the dotted key
 	// vocabulary recorded on the span.
 	c := playersCtx(
-		&gamecontext.PlayerSignals{Serial: "a", SkillLevel: fp(0.1), MovementIntensity: fp(1.0), MovementVariance: fp(0.5)},
-		&gamecontext.PlayerSignals{Serial: "b", SkillLevel: fp(0.9), MovementIntensity: fp(1.0), MovementVariance: fp(2.0)},
+		&gamecontext.PlayerSignals{Serial: "a", SkillLevel: fp(0.1), PeakAccel: fp(1.0), MovementVarianceAggregate: fp(0.5)},
+		&gamecontext.PlayerSignals{Serial: "b", SkillLevel: fp(0.9), PeakAccel: fp(1.0), MovementVarianceAggregate: fp(2.0)},
 	)
 	c.Session.DurationSeconds = fp(90)
 	eval := EvaluateFitness(c, defaultFit())

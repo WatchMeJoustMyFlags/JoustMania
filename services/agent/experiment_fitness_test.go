@@ -142,17 +142,19 @@ func fp(v float64) *float64 { return &v }
 // concludedBalancedContext is a game-end snapshot exactly as the Store hands
 // OnGameEnd for a balanced shadow game: every player has been eliminated
 // (Active=false — the coordinator's game_player_alive=0), the session is over
-// (GameActive=false), but each player still carries the per-player skill_level it
-// reported while alive (the Store sets SkillLevel from game_player_skill_level and
-// never wipes Players — or their SkillLevel — on game end; see the realistic
-// ingest proof in gamecontext: TestGroundTruth_SkillLevelSurvivesToConclusionSnapshot).
+// (GameActive=false), but each player still carries the per-player signals it
+// reported while alive. The Store sets SkillLevel from game_player_skill_level and
+// — as of #1024 — PeakAccel + MovementVarianceAggregate from the retained
+// whole-game movement aggregates, and never wipes Players (or these retained
+// fields) on game end (see the realistic ingest proofs in gamecontext:
+// TestGroundTruth_SkillLevelSurvivesToConclusionSnapshot and
+// TestStore_MovementAggregatesSurviveToConclusionSnapshot).
 //
-// #1015 rework note: balanced's skill-gap sub-check reads c.Players DIRECTLY (it is
-// NOT Active-gated; see decision.skillGap), so it computes at conclusion from these
-// retained SkillLevels with no recovery step needed. The earlier premise that
-// "balanced folds 0 at conclusion because every player is eliminated" was false —
-// only spike-survival is Active-gated, and it is honestly skipped at conclusion
-// (its inputs are frozen at the last live frame and not meaningful post-game).
+// Both balanced sub-checks now fold at conclusion: skill-gap reads c.Players
+// DIRECTLY (never Active-gated; see decision.skillGap), and — after #1024 —
+// spike-survival reads the RETAINED whole-game aggregates instead of the
+// frozen-last-sample instantaneous signals, so it is also no longer Active-gated
+// and is MEANINGFUL post-game.
 func concludedBalancedContext() gamecontext.GameContext {
 	off := false
 	return gamecontext.GameContext{
@@ -162,20 +164,24 @@ func concludedBalancedContext() gamecontext.GameContext {
 		Arm:          "experimental",
 		Session:      gamecontext.SessionSignals{GameActive: &off},
 		Players: map[string]*gamecontext.PlayerSignals{
-			"a": {Serial: "a", Active: &off, SkillLevel: fp(0.45)},
-			"b": {Serial: "b", Active: &off, SkillLevel: fp(0.55)},
+			// Retained whole-game aggregates: variance_aggregate <= peak_accel for
+			// both → both survive spikes → survival_ratio 1.0.
+			"a": {Serial: "a", Active: &off, SkillLevel: fp(0.45), PeakAccel: fp(2.0), MovementVarianceAggregate: fp(0.4)},
+			"b": {Serial: "b", Active: &off, SkillLevel: fp(0.55), PeakAccel: fp(2.0), MovementVarianceAggregate: fp(0.6)},
 		},
 	}
 }
 
-// TestOnGameEnd_ConcludedBalancedGameFoldsNonZeroFromSkillGap is the corrected
-// #1015 acceptance. It asserts the BEHAVIORAL truth established by ground-truth
-// tracing: a concluded balanced shadow game in which >=2 eliminated players still
-// carry their retained skill_level folds a MEANINGFUL, non-zero balanced fitness
-// straight from the skill-gap sub-check — no Active-recovery needed, because
-// skill-gap reads c.Players directly. (A two-player skill gap of 0.10 against the
-// default max_skill_gap 0.4 scores 0.875.) This is the exact path onGameEnd uses.
-func TestOnGameEnd_ConcludedBalancedGameFoldsNonZeroFromSkillGap(t *testing.T) {
+// TestOnGameEnd_ConcludedBalancedGameFoldsNonZeroFromBothSubChecks is the #1024
+// acceptance (Option 1: retained whole-game aggregate). It asserts the restored
+// two-signal balanced contract: a concluded balanced shadow game in which >=2
+// eliminated players still carry their retained skill_level AND their retained
+// whole-game movement aggregates folds a MEANINGFUL, non-zero balanced fitness
+// from BOTH sub-checks — skill-gap (reads c.Players directly) and spike-survival
+// (now reads the retained PeakAccel + MovementVarianceAggregate, no longer
+// Active-gated, so it is meaningful post-game instead of honestly skipped). This
+// is the exact path onGameEnd uses.
+func TestOnGameEnd_ConcludedBalancedGameFoldsNonZeroFromBothSubChecks(t *testing.T) {
 	loop := &experimentLoop{
 		registry: nil, // not exercised: we score fitness directly via the same path onGameEnd uses
 		log:      testLogger(),
@@ -186,39 +192,53 @@ func TestOnGameEnd_ConcludedBalancedGameFoldsNonZeroFromSkillGap(t *testing.T) {
 	scored := withEffectiveDuration(concludedBalancedContext())
 	fit := loop.fitness(scored, decision.ObjectiveBalanced)
 	if fit <= 0 {
-		t.Fatalf("concluded balanced game with >=2 skill_level players must fold non-zero, got %v", fit)
+		t.Fatalf("concluded balanced game must fold non-zero at conclusion, got %v", fit)
 	}
 
 	eval := decision.EvaluateFitness(scored, decision.DefaultStaticConfig().FitnessThresholds)
 	r, ok := eval.Results[decision.ObjectiveBalanced]
 	if !ok || !r.Evaluated {
-		t.Fatal("balanced must be evaluated at conclusion (skill-gap computes)")
+		t.Fatal("balanced must be evaluated at conclusion")
 	}
-	if _, ok := r.Values["balanced.skill_gap"]; !ok {
-		t.Error("skill_gap sub-signal must be present — it is the non-Active-gated driver")
+
+	// Sub-check 1: skill-gap (never Active-gated).
+	gapProgress, ok := r.Values["balanced.skill_gap_progress"]
+	if !ok {
+		t.Fatal("skill_gap sub-signal must be present — non-Active-gated driver")
 	}
-	// spike-survival is honestly absent at conclusion: it is Active-gated and every
-	// player has been eliminated. This is correct (its inputs would be frozen at the
-	// last live frame), NOT a bug to be patched by re-admitting dead players.
-	if _, ok := r.Values["balanced.spike_survival_ratio"]; ok {
-		t.Error("spike_survival must NOT be present at conclusion (Active-gated; honestly skipped)")
+	if gapProgress <= 0 {
+		t.Errorf("skill-gap sub-check must fold non-zero, got progress %v", gapProgress)
+	}
+
+	// Sub-check 2: spike-survival, the #1024 restoration. Present AND non-zero at
+	// conclusion because it now reads the retained whole-game aggregates.
+	survivalProgress, ok := r.Values["balanced.spike_survival_progress"]
+	if !ok {
+		t.Fatal("spike_survival sub-signal MUST be present at conclusion now (#1024 retained aggregate)")
+	}
+	if survivalProgress <= 0 {
+		t.Errorf("spike-survival sub-check must fold non-zero at conclusion, got progress %v", survivalProgress)
+	}
+	if ratio := r.Values["balanced.spike_survival_ratio"]; ratio != 1.0 {
+		t.Errorf("both players survive (variance_aggregate <= peak_accel) → ratio 1.0, got %v", ratio)
 	}
 }
 
-// TestBalanced_FoldsZeroOnlyWhenSkillLevelGenuinelyMissing is the contrast test
-// that would have caught the original false premise: balanced folds the worst-case
-// 0 ONLY when fewer than two players carry a skill_level (so skill-gap cannot
-// compute) AND no Active player has movement signals (so spike-survival is skipped
-// too). With skill_level present on >=2 players, balanced is never 0 at conclusion.
+// TestBalanced_FoldsZeroOnlyWhenSkillLevelGenuinelyMissing is the contrast test:
+// balanced folds the worst-case 0 ONLY when fewer than two players carry a
+// skill_level (so skill-gap cannot compute) AND no player carries the retained
+// movement aggregates (so spike-survival is skipped too). With skill_level present
+// on >=2 players, balanced is never 0 at conclusion.
 func TestBalanced_FoldsZeroOnlyWhenSkillLevelGenuinelyMissing(t *testing.T) {
 	off := false
 	// Only ONE player carries a skill level: skill-gap needs >=2, so it is skipped;
-	// no Active player, so spike-survival is skipped → balanced computes nothing → 0.
+	// no player carries PeakAccel/MovementVarianceAggregate, so spike-survival is
+	// skipped → balanced computes nothing → 0.
 	gc := gamecontext.GameContext{
 		Session: gamecontext.SessionSignals{GameActive: &off},
 		Players: map[string]*gamecontext.PlayerSignals{
 			"a": {Serial: "a", Active: &off, SkillLevel: fp(0.5)},
-			"b": {Serial: "b", Active: &off}, // no skill_level
+			"b": {Serial: "b", Active: &off}, // no skill_level, no aggregates
 		},
 	}
 	if fit := defaultGameFitness(gc, decision.ObjectiveBalanced); fit != 0 {
