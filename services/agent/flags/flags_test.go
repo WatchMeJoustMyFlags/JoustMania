@@ -79,6 +79,10 @@ func TestEvaluate_FlagdShape(t *testing.T) {
 			keyMode:          "llm",
 			keyModel:         "claude",
 			keyPromptVariant: "aggressive",
+			// interventions_allowed is a STRING flag: comma-separated ids (#1127),
+			// read cleanly by the flagd RPC resolver (a LIST flag TYPE_MISMATCHes
+			// there and silently blocks every intervention).
+			keyInterventionsAllowed: "play_audio_cue,grant_shield",
 		},
 		ints: map[string]int64{
 			keyBatteryThreshold:            30,
@@ -96,8 +100,7 @@ func TestEvaluate_FlagdShape(t *testing.T) {
 		},
 		objects: map[string]any{
 			// flagd surfaces object flags as map[string]any / []any.
-			keyObjectives:           map[string]any{"endurance": 0.7, "chaos": 0.3},
-			keyInterventionsAllowed: []any{"play_audio_cue", "grant_shield"},
+			keyObjectives: map[string]any{"endurance": 0.7, "chaos": 0.3},
 		},
 	}
 	f := New(stub, nil)
@@ -288,8 +291,7 @@ func TestEvaluate_DefaultsOnError(t *testing.T) {
 
 func TestEvaluate_UnexpectedObjectShapeFallsBack(t *testing.T) {
 	stub := stubEvaluator{objects: map[string]any{
-		keyObjectives:           "not-a-map",
-		keyInterventionsAllowed: map[string]any{"unexpected": true},
+		keyObjectives: "not-a-map",
 	}}
 	f := New(stub, nil)
 	got := f.Evaluate(context.Background())
@@ -297,9 +299,49 @@ func TestEvaluate_UnexpectedObjectShapeFallsBack(t *testing.T) {
 	if !reflect.DeepEqual(got.Objectives, map[string]float64{"endurance": 1.0}) {
 		t.Errorf("Objectives = %v, want default on bad shape", got.Objectives)
 	}
-	if len(got.InterventionsAllowed) != 0 {
-		t.Errorf("InterventionsAllowed = %v, want empty on bad shape", got.InterventionsAllowed)
-	}
+}
+
+// TestInterventionsAllowed_StringFlag pins the #1127 fix: interventions_allowed
+// is a STRING flag (comma-separated ids), NOT a LIST/object flag. A LIST flag
+// read via the flagd RPC resolver's ObjectValue silently TYPE_MISMATCHes to its
+// passed default — for an allow-list that empty default blocks EVERY
+// intervention even with a non-`none` variant active. Reading the string variant
+// must resolve to the full id list so a permitted intervention can dispatch.
+func TestInterventionsAllowed_StringFlag(t *testing.T) {
+	t.Run("non-none variant resolves to full list", func(t *testing.T) {
+		stub := stubEvaluator{strings: map[string]string{
+			// the shadow_experimental variant, comma-separated as in agent.json.
+			keyInterventionsAllowed: "play_audio_cue,grant_shield,ramp_tempo",
+		}}
+		got := New(stub, nil).Evaluate(context.Background())
+		want := []string{"play_audio_cue", "grant_shield", "ramp_tempo"}
+		if !reflect.DeepEqual(got.InterventionsAllowed, want) {
+			t.Fatalf("InterventionsAllowed = %v, want %v", got.InterventionsAllowed, want)
+		}
+		// A permitted intervention passes the allow-list gate (NOT blocked).
+		if !got.Permits("grant_shield") {
+			t.Errorf("grant_shield should be allowed under a non-none variant")
+		}
+	})
+
+	t.Run("none variant (empty string) blocks all", func(t *testing.T) {
+		stub := stubEvaluator{strings: map[string]string{keyInterventionsAllowed: ""}}
+		got := New(stub, nil).Evaluate(context.Background())
+		if len(got.InterventionsAllowed) != 0 {
+			t.Errorf("InterventionsAllowed = %v, want empty for the none variant", got.InterventionsAllowed)
+		}
+		if got.Permits("grant_shield") {
+			t.Errorf("grant_shield must be blocked when allow-list is empty (fail-closed)")
+		}
+	})
+
+	t.Run("unreadable flag fails closed", func(t *testing.T) {
+		stub := stubEvaluator{errs: map[string]error{keyInterventionsAllowed: errors.New("flagd down")}}
+		got := New(stub, nil).Evaluate(context.Background())
+		if len(got.InterventionsAllowed) != 0 {
+			t.Errorf("InterventionsAllowed = %v, want empty on read error (fail-closed)", got.InterventionsAllowed)
+		}
+	})
 }
 
 // TestEvaluate_LLMGate_FlagdShape: the three #847 gate flags resolve through the

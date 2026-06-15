@@ -91,7 +91,8 @@ def make_manager(*, interventions=None, game=None, end_game_fn=None, budget=20):
         events.append((event_type, data))
 
     agent_values = {
-        "interventions_allowed": list(ALL_TYPES),
+        # interventions_allowed is a STRING flag: comma-separated ids (#1127).
+        "interventions_allowed": ",".join(sorted(ALL_TYPES)),
         "policy.max_interventions_per_minute": budget,
         "policy.battery_threshold": 20,
     }

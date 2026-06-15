@@ -309,9 +309,14 @@ class _AgentStub:
             return 20
         return default
 
-    def get_object_value(self, key, default, _ctx=None):
+    def get_string_value(self, key, default, _ctx=None):
+        # interventions_allowed is a STRING flag: comma-separated ids (#1127).
+        # Call sites still pass a list; join it here to match the flag format.
         if key == "interventions_allowed":
-            return self._allowed
+            return ",".join(self._allowed)
+        return default
+
+    def get_object_value(self, key, default, _ctx=None):
         return default
 
 

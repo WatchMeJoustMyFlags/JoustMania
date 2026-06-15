@@ -1306,12 +1306,19 @@ class InterventionManager:
         return result
 
     def _allowed_types(self) -> set[str]:
+        # interventions_allowed is a STRING flag whose value is a comma-separated
+        # list of intervention ids (`none` == ""). It used to be a LIST/object
+        # flag, but the agent's flagd RPC resolver silently TYPE_MISMATCHes
+        # get_object_value on a top-level LIST flag and falls back to its empty
+        # default, blocking EVERY intervention even with a non-`none` variant
+        # active (#1127). Both sides now read a string and parse it identically;
+        # the coordinator's in-process resolver reads the string cleanly too.
         if self._agent_client is None:
             return set()
         try:
-            value = self._agent_client.get_object_value("interventions_allowed", [], EvaluationContext())
-            if isinstance(value, list):
-                return set(value)
+            value = self._agent_client.get_string_value("interventions_allowed", "", EvaluationContext())
+            if isinstance(value, str):
+                return {token.strip() for token in value.split(",") if token.strip()}
         except Exception as e:
             logger.debug(f"InterventionManager: interventions_allowed read failed: {e}")
         return set()

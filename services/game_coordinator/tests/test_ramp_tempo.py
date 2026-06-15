@@ -348,6 +348,16 @@ def test_interventions_json_well_formed(path):
 def test_ramp_tempo_shadow_only_in_agent_json(path):
     data = json.loads(path.read_text())
     variants = data["flags"]["interventions_allowed"]["variants"]
-    assert "ramp_tempo" in variants["shadow_experimental"]
+
+    # interventions_allowed migrated from a LIST flag to a STRING flag of
+    # comma-separated ids (#1127, the flagd RPC list-flag trap). Parse either
+    # shape into a set of ids so the membership assertion is exact (not a
+    # substring match that could false-positive on shared prefixes).
+    def ids(variant):
+        if isinstance(variant, str):
+            return {tok.strip() for tok in variant.split(",") if tok.strip()}
+        return set(variant)
+
+    assert "ramp_tempo" in ids(variants["shadow_experimental"])
     for real in ("ambient", "standard", "full"):
-        assert "ramp_tempo" not in variants[real], f"{path}: {real} must not include ramp_tempo"
+        assert "ramp_tempo" not in ids(variants[real]), f"{path}: {real} must not include ramp_tempo"

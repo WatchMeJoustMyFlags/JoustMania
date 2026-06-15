@@ -19,6 +19,7 @@ package flags
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/open-feature/go-sdk/openfeature"
@@ -846,21 +847,41 @@ func (f *Flags) objectives(ctx context.Context) map[string]float64 {
 	return weights
 }
 
-// interventionsAllowed resolves the allow-list object into []string. The flag's
-// variants are JSON arrays, surfaced as []any of strings. An empty or
-// unparseable result yields an empty list (dispatch nothing).
+// interventionsAllowed resolves the allow-list into []string. The flag is a
+// STRING flag whose variants are comma-separated intervention ids (e.g.
+// "play_audio_cue,grant_shield"); `none` is the empty string. It is deliberately
+// NOT a LIST/object flag: top-level LIST flags hit the flagd RPC resolver's
+// get_object_value TYPE_MISMATCH and silently fall back to the passed default —
+// for an allow-list that default is empty, so the gate would block EVERY
+// intervention even when a non-`none` variant is active (#1127). A STRING flag is
+// read cleanly by the RPC resolver, so the agent honors the live variant; the
+// game_coordinator (in-process resolver) reads the same string and parses it
+// identically. An empty or unreadable value yields an empty list (dispatch
+// nothing) — fail-closed.
 func (f *Flags) interventionsAllowed(ctx context.Context) []string {
-	raw, err := f.client.ObjectValue(ctx, keyInterventionsAllowed, []any{}, openfeature.EvaluationContext{})
+	raw, err := f.client.StringValue(ctx, keyInterventionsAllowed, "", openfeature.EvaluationContext{})
 	if err != nil {
 		f.log.Debug("flags.interventions_allowed fell back to empty", "error", err)
 		return nil
 	}
-	list, ok := toStringSlice(raw)
-	if !ok {
-		f.log.Warn("flags.interventions_allowed had unexpected shape, blocking all", "value", raw)
+	return parseCSVList(raw)
+}
+
+// parseCSVList splits a comma-separated flag value into a slice of trimmed,
+// non-empty tokens. The empty string (the `none` variant) yields nil — an empty
+// allow-list, the fail-closed default.
+func parseCSVList(raw string) []string {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if s := strings.TrimSpace(p); s != "" {
+			out = append(out, s)
+		}
+	}
+	if len(out) == 0 {
 		return nil
 	}
-	return list
+	return out
 }
 
 // llmGate resolves the three LLM-call-gate flags (#847) for one cycle. Each falls
