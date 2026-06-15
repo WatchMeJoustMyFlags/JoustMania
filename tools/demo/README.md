@@ -114,6 +114,56 @@ is enough to confirm the driver tripped a rule. LLM inference being unreachable
 (#1059) is fine: the decision loop runs in **rules mode**, exactly what this driver
 targets.
 
+## Real-stack validation harness (#1070)
+
+`validation_harness.py` builds on this driver to provide the maintainer's **"run
+the real stack, check many things, find gaps"** capability — exploratory,
+observability-driven gap-finding that **complements** (does not replace) the unit
+suite and the integration tests (#1069). Where the driver just *plays a beat*, the
+harness drives a **scenario matrix**, **collects what the agent actually did** from
+the live stack, and **reports PASS/ANOMALY** with where to look.
+
+For each scenario it: snapshots the flags it flips, flips them (e.g.
+`interventions_allowed` level, accelerate target), drives the matching #794 movement
+pattern against a real game, then **collects observations** and **restores the
+flags** (idempotent — leaves stack state as it found it):
+
+- **agent logs** — `docker logs joustmania-agent` for `agent.evaluate mode=…` and
+  `agent.decision_blocked intervention=… reason=…`
+- **Prometheus** (via envoy `/prometheus/`) — `agent_evaluations_total`,
+  `game_interventions_total{type,blocked}`
+- **Jaeger** (optional, `--jaeger`) — the `agent.signal_received → agent.decision →
+  agent.action` decision span chain
+
+The report flags gaps: a rule that didn't fire, a zero/missing counter, an
+allowed intervention that was blocked (or vice-versa), `mode=rules` when `llm` was
+expected, a broken span chain — and prints where to look for each. `--fail-on-anomaly`
+exits non-zero on any hard anomaly (for a smoke-test gate).
+
+| Scenario group | Scenarios | Covers |
+|----------------|-----------|--------|
+| each decision rule | `skill_gap` (R3), `statue` (R8), `death_cascade` (R1/R2), `idle_dominator` (R5/R6), `low_variance` (R1/R2/R8) | every rule the driver can trip |
+| allowed vs blocked | `blocked_ambient` (R3 blocked@ambient), `blocked_none` (blocked@none), `allowed_full` (eliminate_player allowed@full) | each `interventions_allowed` level |
+| edge cases | `edge_underpopulated` (1 player → fire nothing), `edge_rapid_cascade` (dense early cascade) | under-populated game, rapid death cascade |
+
+```bash
+make dry-run
+./scripts/agent-killswitch.sh on
+cd services/game_coordinator
+uv run python ../../tools/demo/validation_harness.py --list           # the matrix
+uv run python ../../tools/demo/validation_harness.py --all             # whole matrix
+uv run python ../../tools/demo/validation_harness.py --scenario statue,skill_gap
+uv run python ../../tools/demo/validation_harness.py --all --jaeger --fail-on-anomaly
+```
+
+The matrix + report logic are unit-tested (collection mocked) in
+`tools/demo/test_validation_harness.py`:
+
+```bash
+cd services/game_coordinator
+uv run --with pytest python -m pytest ../../tools/demo/test_validation_harness.py -v
+```
+
 ## See also
 
 - `docs/agent-act-runbook.md` — opening the act gates / blocked-decision demos
