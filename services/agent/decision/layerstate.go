@@ -59,6 +59,15 @@ type LayerState struct {
 	Model         string
 	PromptVariant string
 
+	// ConfiguredModel is inference.configured on the decision span (#1080): the model
+	// of the configured inference backend (AGENT_INFERENCE_MODEL, e.g. gemma4:latest)
+	// when a real backend is wired, else the agent.model flag. newLayerState seeds it
+	// from the flag (Model); the loop overrides it with the resolver's configured
+	// model when AGENT_INFERENCE_BACKEND=openai, so the span reports the backend
+	// actually used instead of the stale phi4-mini flag. Distinct from Model, which
+	// stays the raw agent.model capability flag (agent.model attribute).
+	ConfiguredModel string
+
 	// LLMFallbackReason is the inference.fallback_reason this cycle's llm path
 	// resolved to (#847 + #741). It is the PER-CYCLE replacement for the static
 	// inferenceAttribution. On an llm cycle the loop sets it to, in order of
@@ -116,6 +125,11 @@ func newLayerState(s flags.Snapshot) LayerState {
 		Mode:       s.Mode,
 		Objectives: s.Objectives,
 		Model:      s.Capability.Model,
+		// inference.configured defaults to the agent.model flag; the loop overrides it
+		// with the configured inference model (AGENT_INFERENCE_MODEL) when a real
+		// backend is wired (#1080), so a default phi4-mini flag no longer mislabels a
+		// gemma4-configured span.
+		ConfiguredModel: s.Capability.Model,
 		// Record the EFFECTIVE prompt variant (#740), not the raw flag value: the
 		// llm path resolves an unknown/garbage prompt_variant to "conservative"
 		// before building the prompt, so the decision span's agent.prompt_variant

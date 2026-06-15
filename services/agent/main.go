@@ -759,6 +759,13 @@ func main() {
 	// budget the in-game gate uses (#847 acceptance #7): inject the one instance the
 	// per-game loops also hold, so a retro at game end cannot blow the per-minute cap.
 	retro.SetLLMBudget(sharedLLMBudget)
+	// #1080: route the retro inference attribution through the SAME shared resolver the
+	// per-game loops use (SetResolver above), so when AGENT_INFERENCE_BACKEND=openai the
+	// retro reports the configured backend (gemma4 @ AGENT_INFERENCE_BASE_URL) instead of
+	// resolving the agent.model flag's unreachable phi4-mini legacy tier. With the stub
+	// default the resolver has no configured tier and the chain is unreachable, so the
+	// retro degrades to used="none"/no_backend_available exactly as before.
+	retro.SetResolver(sharedResolver)
 
 	// Game narrative builder (#928, M7-1): on the SAME GameActive true->false
 	// transition, aggregate the partition's pre-reset snapshot (live signals + the

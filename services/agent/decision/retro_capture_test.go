@@ -12,6 +12,7 @@ import (
 
 	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
+	"github.com/joustmania/agent/llm"
 )
 
 // retroSnapshot is a representative llm-mode snapshot for the retro capture tests.
@@ -255,5 +256,94 @@ func TestRetroCapture_SkipsEmptySession(t *testing.T) {
 	rc.OnGameEnd(c)
 	if n := len(spansByName(sr.Ended(), SpanLLMRetro)); n != 0 {
 		t.Errorf("agent.llm.retro spans = %d, want 0 for an empty session id", n)
+	}
+}
+
+// TestRetroCapture_ConfiguredBackendReachable is the #1080 fix: with a real inference
+// backend wired via the SHARED resolver (AGENT_INFERENCE_BACKEND=openai → gemma4) and
+// reachable, the retro span and log report the CONFIGURED model (gemma4:latest), use
+// it as the resolved tier, and carry NO fallback reason — NOT the agent.model flag's
+// (phi4-mini) unreachable legacy tier with no_backend_available.
+func TestRetroCapture_ConfiguredBackendReachable(t *testing.T) {
+	addr, closeFn := listenLocal(t)
+	defer closeFn()
+
+	const configured = "gemma4:latest"
+	delegate := func(context.Context, llm.Prompt) (string, error) { return `{"intervention":"noop"}`, nil }
+	// The flag snapshot still says phi4-mini (the ci default) — the configured backend
+	// must win regardless, exactly like the decision loop.
+	rc, sr := recordingRetro(t, retroFlagSnapshot())
+	r := NewInferenceResolver(InferenceTier{Model: configured, Addr: addr, Infer: delegate}, Endpoints{}, 0)
+	r.Refresh(context.Background())
+	rc.SetResolver(r)
+
+	rc.OnGameEnd(endedSession())
+
+	span := spansByName(sr.Ended(), SpanLLMRetro)[0]
+	want := map[string]string{
+		"gen_ai.request.model":  configured,
+		AttrInferenceConfigured: configured,
+		AttrInferenceUsed:       configured,
+		AttrInferenceFallback:   "", // configured backend reachable: no degradation
+	}
+	for key, expected := range want {
+		if v, ok := attrValue(span, key); !ok || v.AsString() != expected {
+			t.Errorf("attr %s = %q (present=%v), want %q", key, v.AsString(), ok, expected)
+		}
+	}
+}
+
+// TestRetroCapture_ConfiguredBackendUnreachable: with a configured backend wired but
+// unreachable (and the legacy chain down), the retro still ATTRIBUTES the configured
+// model (gemma4), but honestly reports used="none" (the retro DIVERGENCE — no rules
+// fallback at game end) with no_backend_available. This is the genuine-unreachable
+// degradation, distinct from the #1080 bug where it always hit phi4-mini.
+func TestRetroCapture_ConfiguredBackendUnreachable(t *testing.T) {
+	const configured = "gemma4:latest"
+	delegate := func(context.Context, llm.Prompt) (string, error) { return "", nil }
+	rc, sr := recordingRetro(t, retroFlagSnapshot())
+	// Addr nothing listens on → probe fails; legacy endpoints empty → all unreachable.
+	r := NewInferenceResolver(InferenceTier{Model: configured, Addr: "127.0.0.1:1", Infer: delegate}, Endpoints{}, 0)
+	r.Refresh(context.Background())
+	rc.SetResolver(r)
+
+	rc.OnGameEnd(endedSession())
+
+	span := spansByName(sr.Ended(), SpanLLMRetro)[0]
+	want := map[string]string{
+		"gen_ai.request.model":  configured, // still attribute the configured model
+		AttrInferenceConfigured: configured,
+		AttrInferenceUsed:       DefaultInference, // "none" — retro has no rules fallback
+		AttrInferenceFallback:   FallbackNoBackend,
+	}
+	for key, expected := range want {
+		if v, ok := attrValue(span, key); !ok || v.AsString() != expected {
+			t.Errorf("attr %s = %q (present=%v), want %q", key, v.AsString(), ok, expected)
+		}
+	}
+	if v, _ := attrValue(span, AttrInferenceUsed); v.AsString() == InferenceRules {
+		t.Errorf("inference.used = %q, must NOT be %q for a retrospective", v.AsString(), InferenceRules)
+	}
+}
+
+// TestRetroCapture_StubDefaultUnchanged: with NO resolver wired (the stub default),
+// the retro attribution is byte-identical to pre-#1080 — model = the agent.model flag
+// (phi4-mini), used = "none", fallback = no_backend_available. This is the
+// default-safety guarantee: the stub path does not change.
+func TestRetroCapture_StubDefaultUnchanged(t *testing.T) {
+	rc, sr := recordingRetro(t, retroFlagSnapshot()) // no SetResolver
+	rc.OnGameEnd(endedSession())
+
+	span := spansByName(sr.Ended(), SpanLLMRetro)[0]
+	want := map[string]string{
+		"gen_ai.request.model":  "phi4-mini",
+		AttrInferenceConfigured: "phi4-mini",
+		AttrInferenceUsed:       DefaultInference,
+		AttrInferenceFallback:   FallbackNoBackend,
+	}
+	for key, expected := range want {
+		if v, ok := attrValue(span, key); !ok || v.AsString() != expected {
+			t.Errorf("attr %s = %q (present=%v), want %q", key, v.AsString(), ok, expected)
+		}
 	}
 }

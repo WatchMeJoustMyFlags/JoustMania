@@ -285,6 +285,31 @@ func InferenceProbeAddr(baseURL string) string {
 	return net.JoinHostPort(host, port)
 }
 
+// ConfiguredModel returns the name of the configured real-inference tier (#964) —
+// AGENT_INFERENCE_MODEL — when one was wired via NewInferenceResolver, else "".
+// It is the single source of truth for "what model is the configured inference
+// backend" so the decision-span and retro-capture attribution (#1080) can report
+// the model actually configured (e.g. gemma4:latest) instead of the stale
+// agent.model flag (phi4-mini). Empty means no real backend is configured (the
+// stub default), and callers fall back to the flag — byte-identical to before.
+func (r *Resolver) ConfiguredModel() string { return r.inferenceTier }
+
+// ResolveConfigured resolves WHICH tier would serve right now, starting from the
+// configured-inference tier when one is wired, else from the given fallback model
+// flag (#1080). It is the public entry the retro-capture seam uses: it reuses the
+// SAME resolve()/availability cache the decision loop uses, so retro inference
+// targets the configured backend (gemma4) and only degrades when that is genuinely
+// unreachable — instead of always hitting the unreachable phi4-mini legacy tier.
+// When no real backend is configured (inferenceTier == "") it resolves against the
+// fallbackModel flag exactly as the decision loop does, preserving prior behavior.
+func (r *Resolver) ResolveConfigured(fallbackModel string) Resolution {
+	model := r.inferenceTier
+	if model == "" {
+		model = fallbackModel
+	}
+	return r.resolve(model)
+}
+
 // resolveTierFromModel maps the configured agent.model flag to the index of the
 // chain tier it selects as the TOP of the walk. claude/copilot -> the cloud tier
 // (index 0); gemma3:4b -> the Jetson tier; phi4-mini -> the localhost tier; any
