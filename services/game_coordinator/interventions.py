@@ -237,6 +237,24 @@ INTERVENTION_SPECS: tuple[InterventionSpec, ...] = (
         # "none" (and "default") mean the neutral init-resolved windows.
         none_value="none",
     ),
+    # #1117 (#1103 MVP action 2) — ramp_tempo: a scheduled tempo CURVE that fills
+    # the #1114 ``agent``-mode tempo seam. Session-scoped STRING state flag whose
+    # value is "<target>:<seconds>:<curve>" (e.g. "1.3:8:linear"); the handler
+    # records a RampDescriptor and the game's 100ms _check_music_speed loop
+    # interpolates toward target via the single tempo-owner seam (no second
+    # writer). SHADOW-game-only initially: allow-listed ONLY via the
+    # `shadow_experimental` interventions_allowed variant (the load-bearing gate),
+    # never the real-facing ambient/standard/full variants.
+    InterventionSpec(
+        flag_key="tempo_ramp",
+        type_id="ramp_tempo",
+        weight=WEIGHT_MEDIUM,
+        edge_triggered=False,
+        player_targeted=False,
+        value_kind="string",
+        # "none" means no ramp (the default-safe neutral value).
+        none_value="none",
+    ),
     # --- Edge-triggered (one-shot) flags ---
     InterventionSpec(
         flag_key="eliminate_player",

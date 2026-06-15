@@ -55,6 +55,10 @@ Higher sensitivity level = higher bar = HARDER to die; slower tempo = lower bar
   - adjust_music_tempo / set_pacing_profile: shifts EVERYONE's bar along the
     LERP. e.g. at sens 2, tempo 1.0->1.3 raises the death bar 1.8->2.8 (much
     more movement tolerated); dropping tempo lowers it (eliminations come faster).
+  - ramp_tempo ("<target>:<seconds>:<curve>", curve linear|ease): the same
+    tempo lever as a SCHEDULED CURVE — ramps everyone's bar to the target tempo
+    smoothly over N seconds instead of one step. One action buys a whole pacing
+    arc (e.g. "1.3:8:linear" eases the room toward "more movement tolerated").
   - adjust_global_sensitivity / adjust_player_sensitivity: steps the level for
     all / one player. e.g. at slow tempo, level 2->3 moves that bar 1.8->2.5
     (harder to die); 2->1 moves it 1.8->1.5 (easier). One step is a sizable jump.

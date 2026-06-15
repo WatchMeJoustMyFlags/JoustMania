@@ -29,6 +29,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 
 	"go.opentelemetry.io/otel"
@@ -50,6 +51,7 @@ const (
 	flagVolumeOverride            = "volume_override"
 	flagGlobalDifficultyFactor    = "global_difficulty_factor" // #766 F6
 	flagPacingProfile             = "pacing_profile"           // #766 F6
+	flagTempoRamp                 = "tempo_ramp"               // #1117 (#1103 MVP action 2)
 	flagEliminatePlayer           = "eliminate_player"
 	flagRevivePlayer              = "revive_player"
 	flagAudioCue                  = "audio_cue"
@@ -105,7 +107,19 @@ const (
 	defaultShieldSeconds     = 5    // matches "default"
 	defaultGlobalDifficulty  = 1.5  // matches interventions.json "hard" (#766 F6)
 	defaultPacingProfile     = "frantic"
+	// defaultTempoRamp is the safe fallback ramp_tempo curve (#1117): ramp to the
+	// fast tempo over 8s, linear — used when a Decision carries no Value or a
+	// malformed one. Matches interventions.json "ramp_up".
+	defaultTempoRamp = "1.3:8:linear"
 )
+
+// tempoRampMaxSeconds bounds a single ramp's duration (mirrors base.py
+// RAMP_TEMPO_MAX_SECONDS) so the writer never emits a curve that could suspend
+// the natural schedule for a whole game.
+const tempoRampMaxSeconds = 60.0
+
+// validTempoRampCurves is the closed curve vocabulary (mirrors base.py).
+var validTempoRampCurves = map[string]bool{"linear": true, "ease": true}
 
 // Writer is the production ActionSink. It is safe for concurrent use; the agent
 // is the only writer of the interventions file.
@@ -346,6 +360,7 @@ var stateNeutral = map[string]string{
 	flagVolumeOverride:            neutralNone,
 	flagGlobalDifficultyFactor:    neutralDefault, // #766 F6 (neutral = 1.0 "default")
 	flagPacingProfile:             neutralNone,    // #766 F6 (neutral = "none")
+	flagTempoRamp:                 neutralNone,    // #1117 (neutral = "none")
 }
 
 var targetedNeutral = map[string]string{
@@ -380,6 +395,8 @@ func (w *Writer) mutate(doc *orderedDoc, d decision.Decision) error {
 		return w.setState(doc, flagGlobalDifficultyFactor, w.numOr(d.Value, defaultGlobalDifficulty))
 	case decision.InterventionSetPacingProfile: // #766 F6 (string state-shaped)
 		return w.setStateString(doc, flagPacingProfile, w.payloadOr(d.Value, defaultPacingProfile))
+	case decision.InterventionRampTempo: // #1117 (#1103 MVP action 2), shadow-only
+		return w.setStateString(doc, flagTempoRamp, w.tempoRampOr(d.Value, defaultTempoRamp))
 
 	// Per-player state-shaped overrides (flagd targeting if-ladder).
 	case decision.InterventionAdjustPlayerSensitivity:
@@ -498,6 +515,32 @@ func (w *Writer) setTargeted(doc *orderedDoc, flagKey, neutral, serial string, v
 // payloadOr returns v, or the default when v is empty.
 func (w *Writer) payloadOr(v, def string) string {
 	if v == "" {
+		return def
+	}
+	return v
+}
+
+// tempoRampOr validates a ramp_tempo directive "<target>:<seconds>:<curve>" and
+// returns it, or def when v is empty/malformed/out-of-bounds (#1117). It is a
+// defensive sibling of numOr: the game-side parser (base.py parse_ramp_tempo_value)
+// independently validates again and no-ops on garbage, but validating here keeps a
+// malformed LLM value from ever being written to the flag file. Bounds mirror
+// base.py: target in [1.0, 1.3], seconds > 0 (capped), curve in {linear, ease}.
+func (w *Writer) tempoRampOr(v, def string) string {
+	if v == "" {
+		return def
+	}
+	parts := strings.Split(strings.TrimSpace(v), ":")
+	if len(parts) != 3 {
+		w.log.Warn("agent.action_bad_value", "value", v, "fallback", def)
+		return def
+	}
+	target, terr := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
+	seconds, serr := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+	curve := strings.ToLower(strings.TrimSpace(parts[2]))
+	if terr != nil || serr != nil || !validTempoRampCurves[curve] ||
+		seconds <= 0 || target < 1.0 || target > 1.3 || seconds > tempoRampMaxSeconds {
+		w.log.Warn("agent.action_bad_value", "value", v, "fallback", def)
 		return def
 	}
 	return v

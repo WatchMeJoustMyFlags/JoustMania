@@ -57,9 +57,16 @@ const (
 	InterventionAdjustGlobalSensitivity = "adjust_global_sensitivity"
 	InterventionAdjustGlobalDifficulty  = "adjust_global_difficulty"
 	InterventionSetPacingProfile        = "set_pacing_profile"
-	InterventionEliminatePlayer         = "eliminate_player"
-	InterventionRevivePlayer            = "revive_player"
-	InterventionEndGame                 = "end_game"
+	// InterventionRampTempo (#1117, #1103 MVP action 2) is a session-scoped
+	// scheduled tempo CURVE ("<target>:<seconds>:<curve>") that fills the #1114
+	// agent-mode tempo seam — one budget charge buys a ramp instead of re-emitting
+	// discrete adjust_music_tempo steps. SHADOW-game-only initially: allow-listed
+	// only via the `shadow_experimental` interventions_allowed variant
+	// (services/flagd/agent.json), never the real-facing ambient/standard/full.
+	InterventionRampTempo       = "ramp_tempo"
+	InterventionEliminatePlayer = "eliminate_player"
+	InterventionRevivePlayer    = "revive_player"
+	InterventionEndGame         = "end_game"
 
 	// InterventionNoop is the probe-mode synthetic intervention (ProbeRules). It
 	// carries no game effect: when dispatched through the action sink it is a
@@ -91,6 +98,7 @@ var interventionWeights = map[string]float64{
 	InterventionGrantShield:             1,
 	InterventionAdjustGlobalDifficulty:  1, // #766 F6
 	InterventionSetPacingProfile:        1, // #766 F6
+	InterventionRampTempo:               1, // #1117 (#1103 MVP action 2)
 	// Hard (2)
 	InterventionAdjustGlobalSensitivity: 2,
 	InterventionEliminatePlayer:         2,
