@@ -145,3 +145,48 @@ func TestInferenceFlow_UnreachableBackendStaysRules(t *testing.T) {
 		t.Errorf("action sink calls = %d, want 1 (rules decision dispatched)", sink.calls.Load())
 	}
 }
+
+// TestInferenceFlow_DecisionSpanConfiguredReflectsBackend is the #1080 attribution half:
+// the agent.decision span's inference.configured must report the CONFIGURED inference
+// model (AGENT_INFERENCE_MODEL = gemma4:latest), not the stale agent.model flag
+// (phi4-mini). It holds whether the backend is reachable (mode=llm) or unreachable
+// (degraded to rules) — the configured attribution is independent of reachability.
+// agent.model (AttrModel) still reports the raw flag, unchanged.
+func TestInferenceFlow_DecisionSpanConfiguredReflectsBackend(t *testing.T) {
+	cases := []struct {
+		name      string
+		reachable bool
+	}{
+		{"reachable", true},
+		{"unreachable", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			delegate := func(context.Context, llm.Prompt) (string, error) { return flowResponse, nil }
+			addr := "127.0.0.1:1" // unreachable by default
+			if tc.reachable {
+				var closeFn func()
+				addr, closeFn = listenLocal(t)
+				defer closeFn()
+			}
+			r := NewInferenceResolver(InferenceTier{Model: flowModel, Addr: addr, Infer: delegate}, Endpoints{}, 0)
+			r.Refresh(context.Background())
+
+			l, sr, _ := flowLoop(t, r)
+			l.OnEvaluate(context.Background(), gamecontext.GameContext{SessionID: "s1", GameKind: "real"}, testTrigger())
+
+			decs := spansByName(sr.Ended(), SpanDecision)
+			if len(decs) != 1 {
+				t.Fatalf("agent.decision spans = %d, want 1", len(decs))
+			}
+			if v, ok := attrValue(decs[0], AttrInferenceConfigured); !ok || v.AsString() != flowModel {
+				t.Errorf("inference.configured = %q, want %q (AGENT_INFERENCE_MODEL, not phi4-mini flag)", v.AsString(), flowModel)
+			}
+			// agent.model still reports the raw capability flag — only inference.configured
+			// reflects the configured backend.
+			if v, ok := attrValue(decs[0], AttrModel); !ok || v.AsString() != "phi4-mini" {
+				t.Errorf("agent.model = %q, want the raw flag %q", v.AsString(), "phi4-mini")
+			}
+		})
+	}
+}

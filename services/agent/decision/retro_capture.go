@@ -94,6 +94,16 @@ type RetroCoordinator struct {
 	// ungated by the global cap (used by tests / single-purpose wiring that does not
 	// share a budget — capture proceeds as before #847). Injected via SetLLMBudget.
 	budget *llmBudget
+	// resolver is the SHARED inference fallback-chain resolver (#741/#964), injected
+	// via SetResolver — the SAME instance every per-game Loop holds (#1080). When a
+	// real inference backend is configured (AGENT_INFERENCE_BACKEND=openai), the retro
+	// resolves against it (gemma4 @ AGENT_INFERENCE_BASE_URL) so retro attribution
+	// targets the configured model/tier and only degrades when it is genuinely
+	// unreachable — instead of always hitting the unreachable phi4-mini legacy tier.
+	// A nil resolver (tests / stub-default wiring without one) preserves the pre-#1080
+	// behavior: model = the agent.model flag, used = "none", fallback =
+	// no_backend_available, exactly as before.
+	resolver *Resolver
 	// llmGated counts gated retro captures (agent_llm_gated_total{reason=...}),
 	// sharing the in-game counter name. Defaults to a no-op so tests need not wire it.
 	llmGated otelmetric.Int64Counter
@@ -133,6 +143,15 @@ func NewRetroCoordinator(flagSource FlagSource, log *slog.Logger) *RetroCoordina
 // uses. main.go passes the one instance every per-game Loop also holds. Not safe
 // to call concurrently with OnGameEnd — set it during construction.
 func (rc *RetroCoordinator) SetLLMBudget(b *llmBudget) { rc.budget = b }
+
+// SetResolver injects the SHARED inference fallback-chain resolver (#1080), the same
+// instance every per-game Loop holds (SetResolver on the Loop). The retro then routes
+// its inference attribution through the SAME configured backend the decision loop and
+// proposer use: when AGENT_INFERENCE_BACKEND=openai the resolver's configured tier
+// (AGENT_INFERENCE_MODEL @ AGENT_INFERENCE_BASE_URL) is the canonical path, so retro
+// no longer reports the unreachable phi4-mini legacy tier. Not safe to call
+// concurrently with OnGameEnd — set it during construction.
+func (rc *RetroCoordinator) SetResolver(r *Resolver) { rc.resolver = r }
 
 // OnGameEnd is the gamecontext.Store.OnGameEnd callback. It captures the
 // retrospective prompt for a finished session exactly once. It is defensive:
@@ -183,6 +202,17 @@ func (rc *RetroCoordinator) OnGameEnd(c gamecontext.GameContext) {
 		Now:      now(),
 	})
 
+	// #1080: resolve the inference attribution through the SAME shared resolver the
+	// decision loop and proposer use, so a configured backend (gemma4) is reported as
+	// the model/tier — not the agent.model flag's unreachable phi4-mini legacy tier.
+	// retroInference falls back to the flag-only "none"/no_backend_available attribution
+	// when no resolver is wired (the pre-#1080 default), keeping that path identical.
+	attr := rc.retroInference(snapshot.Capability.Model)
+	// Attribute the prompt to the model that WOULD serve (the configured backend when
+	// one is wired), overriding the flag-derived BuildRetro model so the span's
+	// gen_ai.request.model and the log line both name the configured model.
+	prompt.Model = attr.configured
+
 	_, span := rc.Tracer.Start(context.Background(), SpanLLMRetro,
 		trace.WithAttributes(retroPromptAttributes(retroPromptAttrs{
 			prompt:     prompt,
@@ -190,15 +220,74 @@ func (rc *RetroCoordinator) OnGameEnd(c gamecontext.GameContext) {
 			gameKind:   c.GameKind,
 			objectives: snapshot.Objectives,
 			allowed:    snapshot.InterventionsAllowed,
+			configured: attr.configured,
+			used:       attr.used,
+			fallback:   attr.fallback,
 		})...))
 	span.End()
 
 	rc.Log.Info("agent.llm.retro_captured",
 		"session_id", c.SessionID,
-		"model", prompt.Model,
+		"model", attr.configured,
 		"bytes", len(prompt.System)+len(prompt.User),
-		"fallback_reason", FallbackNoBackend,
+		"fallback_reason", attr.fallback,
 	)
+}
+
+// retroAttribution is the inference attribution for one retro capture: the
+// configured model (gen_ai.request.model / inference.configured), the tier that
+// WOULD serve (inference.used), and any degradation reason (#1080).
+type retroAttribution struct {
+	configured string
+	used       string
+	fallback   string
+}
+
+// retroInference computes the retro span/log inference attribution (#1080), routing
+// through the SHARED resolver so it matches the decision loop's configured backend.
+//
+//   - No resolver wired (tests / stub-default without one): preserve the pre-#1080
+//     attribution exactly — configured = the agent.model flag, used = "none"
+//     (DefaultInference: a retro has no rules fallback, see the DIVERGENCE note on
+//     retroPromptAttributes), fallback = no_backend_available.
+//   - Resolver wired: configured = the configured inference model when one is set
+//     (AGENT_INFERENCE_MODEL), else the flag. used/fallback come from resolving the
+//     SAME availability cache the decision loop reads:
+//   - configured tier reachable -> used = the tier, fallback = "" (a real backend
+//     WOULD serve the retro — no degradation);
+//   - a lower legacy tier serves -> used = that tier, fallback = endpoint_unreachable;
+//   - whole chain unreachable    -> used = "none" (DefaultInference, NOT "rules":
+//     the retro DIVERGENCE — no rules fallback at game end), fallback =
+//     no_backend_available — byte-identical to the legacy stub path.
+func (rc *RetroCoordinator) retroInference(flagModel string) retroAttribution {
+	if rc.resolver == nil {
+		return retroAttribution{
+			configured: flagModel,
+			used:       DefaultInference,
+			fallback:   FallbackNoBackend,
+		}
+	}
+	configured := rc.resolver.ConfiguredModel()
+	if configured == "" {
+		configured = flagModel
+	}
+	res := rc.resolver.ResolveConfigured(flagModel)
+	// A nil Backend means the whole chain was unreachable and the decision loop would
+	// fall back to rules; the retro has no rules fallback, so it reports used="none"
+	// (the DIVERGENCE) with the chain's no_backend_available reason — identical to the
+	// pre-#1080 stub attribution.
+	if res.Backend == nil {
+		return retroAttribution{
+			configured: configured,
+			used:       DefaultInference,
+			fallback:   res.FallbackReason,
+		}
+	}
+	return retroAttribution{
+		configured: configured,
+		used:       res.Used,
+		fallback:   res.FallbackReason,
+	}
 }
 
 // claimSession records sessionID as captured and reports whether THIS call won
@@ -230,6 +319,13 @@ type retroPromptAttrs struct {
 	gameKind   string
 	objectives map[string]float64
 	allowed    []string
+	// configured/used/fallback are the #1080 inference attribution resolved through
+	// the shared resolver: the configured backend model, the tier that WOULD serve,
+	// and any degradation reason. They replace the formerly hard-coded
+	// model-flag/"none"/no_backend_available trio.
+	configured string
+	used       string
+	fallback   string
 }
 
 // retroPromptAttributes is the SOLE builder of the agent.llm.retro span attribute
@@ -245,16 +341,23 @@ type retroPromptAttrs struct {
 //   - session.id / game.id  = the finished session's id (= the real game_id, #1088)
 //   - llm.retro.system / llm.retro.user = the FULL prompt text (uncapped)
 //   - llm.retro.bytes       = len(system)+len(user)
-//   - inference.configured  = <model flag>
-//   - inference.used        = "none"   (see DIVERGENCE below)
-//   - inference.fallback_reason = "no_backend_available"
+//   - inference.configured  = the configured backend model (#1080), or the model flag
+//   - inference.used        = the tier that WOULD serve, or "none" (see DIVERGENCE)
+//   - inference.fallback_reason = "" when the configured backend is reachable, else
+//     endpoint_unreachable / no_backend_available
 //
-// DIVERGENCE from the in-game capture: inference.used is "none", NOT "rules".
-// The in-game path falls back to the rules engine, so "rules" is the honest
-// answer for "what decided this cycle". A retrospective has NO rules fallback —
-// nothing runs in place of the offline analyst at game end, so claiming "rules"
-// would be a lie. "none" (DefaultInference) is the honest value: no inference of
-// any kind ran. #741's backend will supply used="llm" once it answers.
+// #1080: configured/used/fallback are resolved through the SHARED resolver (the same
+// one the decision loop uses), so when AGENT_INFERENCE_BACKEND=openai the retro names
+// the configured model (gemma4) instead of the agent.model flag's unreachable
+// phi4-mini legacy tier. With no resolver wired the legacy flag-only attribution is
+// preserved exactly (see retroInference).
+//
+// DIVERGENCE from the in-game capture: when nothing is reachable, inference.used is
+// "none", NOT "rules". The in-game path falls back to the rules engine, so "rules" is
+// the honest answer for "what decided this cycle". A retrospective has NO rules
+// fallback — nothing runs in place of the offline analyst at game end, so claiming
+// "rules" would be a lie. "none" (DefaultInference) is the honest value: no inference
+// of any kind ran. A reachable configured backend (#1080) reports used=<that tier>.
 func retroPromptAttributes(in retroPromptAttrs) []attribute.KeyValue {
 	system := in.prompt.System
 	user := in.prompt.User
@@ -278,11 +381,13 @@ func retroPromptAttributes(in retroPromptAttrs) []attribute.KeyValue {
 		attribute.String(AttrLLMRetroSystem, system),
 		attribute.String(AttrLLMRetroUser, user),
 		attribute.Int(AttrLLMRetroBytes, len(system)+len(user)),
-		// Inference attribution: the prompt was captured, but no backend ran and
-		// there is no rules fallback for a retrospective, so used="none".
-		attribute.String(AttrInferenceConfigured, in.prompt.Model),
-		attribute.String(AttrInferenceUsed, DefaultInference),
-		attribute.String(AttrInferenceFallback, FallbackNoBackend),
+		// Inference attribution (#1080): resolved through the shared resolver so the
+		// configured backend (gemma4) is named when one is wired; used is the tier that
+		// WOULD serve (or "none" when nothing is reachable — the retro DIVERGENCE), and
+		// fallback is empty when the configured backend is reachable.
+		attribute.String(AttrInferenceConfigured, in.configured),
+		attribute.String(AttrInferenceUsed, in.used),
+		attribute.String(AttrInferenceFallback, in.fallback),
 	}
 }
 

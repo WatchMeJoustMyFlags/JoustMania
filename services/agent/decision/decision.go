@@ -461,6 +461,16 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 
 	snapshot := l.Flags.Evaluate(ctx)
 	state := newLayerState(snapshot)
+	// #1080 attribution: report inference.configured as the model of the configured
+	// inference backend (AGENT_INFERENCE_MODEL) when one is wired, not the stale
+	// agent.model flag. The resolver is the single source of truth (ConfiguredModel);
+	// empty (stub default, no real backend) leaves the flag-seeded value untouched, so
+	// the default path is byte-identical.
+	if l.resolver != nil {
+		if cfg := l.resolver.ConfiguredModel(); cfg != "" {
+			state.ConfiguredModel = cfg
+		}
+	}
 
 	// Existence layer: enabled=false short-circuits before any rules evaluation.
 	// This is the safe default when flagd is unreachable. The disabled state is
@@ -1152,7 +1162,7 @@ func layerStateAttributes(state *LayerState) []attribute.KeyValue {
 		attribute.String(AttrModel, state.Model),
 		attribute.String(AttrPromptVariant, state.PromptVariant),
 		// Inference attribution (path-agnostic).
-		attribute.String(AttrInferenceConfigured, state.Model),
+		attribute.String(AttrInferenceConfigured, state.ConfiguredModel),
 		attribute.String(AttrInferenceUsed, inferenceUsed),
 		attribute.String(AttrInferenceFallback, fallback),
 		// Permission layer.
