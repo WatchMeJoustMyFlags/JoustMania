@@ -4,7 +4,7 @@ OTEL Log Export with Trace Correlation for JoustMania.
 Attaches an OpenTelemetry LoggingHandler to Python's root logger so all
 existing ``logging.getLogger()`` calls automatically flow through OTLP.
 The OTEL handler injects trace_id and span_id from the active span context,
-enabling log-trace correlation in Dynatrace and other backends.
+enabling log-trace correlation in the observability backend.
 
 Usage:
     from lib.otel_logging import init_logging

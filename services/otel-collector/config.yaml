@@ -75,8 +75,6 @@ receivers:
         field: attributes.time
 
   # Host: OS-level metrics from the Raspberry Pi (replaces node-exporter)
-  # Split into three collection intervals matching the Dynatrace config
-  # so both configs use the same receiver names.
   # Requires hostfs volume mounts: /proc, /sys, / → /hostfs/
   hostmetrics/1m:
     root_path: /hostfs/root

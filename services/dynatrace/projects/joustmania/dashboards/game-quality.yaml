@@ -1,9 +1,0 @@
-configs:
-  - id: game-quality
-    type:
-      document:
-        kind: dashboard
-        private: false
-    config:
-      name: "JoustMania - Game Quality"
-      template: game-quality.json

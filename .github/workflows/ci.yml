@@ -45,7 +45,6 @@ jobs:
       lib: ${{ steps.f.outputs.lib }}
       rust: ${{ steps.f.outputs.rust }}
       agent: ${{ steps.f.outputs.agent }}
-      exporter: ${{ steps.f.outputs.exporter }}
       dockerfiles: ${{ steps.f.outputs.dockerfiles }}
       proto_pkg: ${{ steps.f.outputs.proto_pkg }}
       integration_deps: ${{ steps.f.outputs.integration_deps }}
@@ -80,8 +79,6 @@ jobs:
               - 'proto/psmove_hid.proto'
             agent:
               - 'services/agent/**'
-            exporter:
-              - 'images/otel-collector/dtbizeventsexporter/**'
             dockerfiles:
               - '**/Dockerfile'
               - '.hadolint.yaml'
@@ -388,29 +385,6 @@ jobs:
       - name: Cargo clippy
         working-directory: services/rust-hid
         run: cargo clippy -- -D warnings
-
-  # Go exporter tests (dtbizevents custom exporter)
-  exporter-tests:
-    name: Exporter Tests
-    runs-on: ubuntu-latest
-    needs: [changes]
-    if: needs.changes.outputs.exporter == 'true' || needs.changes.outputs.run_all_checks == 'true'
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version: '1.25'
-          # No go.sum committed (go mod tidy runs at test time), so module caching can't key off it
-          cache: false
-
-      - name: Run tests
-        working-directory: images/otel-collector/dtbizeventsexporter
-        run: |
-          go mod tidy
-          go test -v -race ./...
 
   # Go agent service tests (OTLP fan-out target)
   agent-tests:
@@ -739,7 +713,6 @@ jobs:
       - lib-tests
       - service-checks
       - rust-checks
-      - exporter-tests
       - agent-tests
       - lint-dockerfiles
       - sonarcloud

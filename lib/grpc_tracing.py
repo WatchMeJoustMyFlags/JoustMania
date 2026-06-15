@@ -8,13 +8,13 @@ CLIENT INTERCEPTORS:
 - Inject W3C Trace Context (traceparent, tracestate) into outgoing gRPC metadata
 - Optionally create client spans (disabled by default, enable with OTEL_GRPC_CLIENT_SPANS=true)
 - When grpc_rpc_spans flag is enabled, create CLIENT spans with full RPC semantic convention
-  attributes for Dynatrace service topology (Smartscape)
+  attributes for service topology in the trace backend
 
 SERVER INTERCEPTORS:
 - Extract W3C Trace Context from incoming gRPC metadata
 - Attach extracted context so service spans are linked to the parent trace
 - When grpc_rpc_spans flag is enabled, create SERVER spans with full RPC semantic convention
-  attributes for Dynatrace service topology (Smartscape)
+  attributes for service topology in the trace backend
 
 Usage (Client):
     from lib.grpc_tracing import get_context_propagation_interceptors

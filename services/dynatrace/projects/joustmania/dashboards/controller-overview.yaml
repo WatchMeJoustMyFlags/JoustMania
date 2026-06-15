@@ -1,9 +1,0 @@
-configs:
-  - id: controller-overview
-    type:
-      document:
-        kind: dashboard
-        private: false
-    config:
-      name: "JoustMania - Controller Overview"
-      template: controller-overview.json

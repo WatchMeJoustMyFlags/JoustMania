@@ -117,7 +117,7 @@ static_resources:
 
                 # Generate trace context and propagate W3C traceparent headers.
                 # Envoy sends spans to the OTEL Collector via gRPC, which
-                # forwards them to Jaeger (local) and Dynatrace (cloud).
+                # forwards them to Jaeger.
                 generate_request_id: true
                 tracing:
                   provider:

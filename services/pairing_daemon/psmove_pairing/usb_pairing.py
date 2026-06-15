@@ -32,7 +32,7 @@ class PairingError(Exception):
     """Synthetic exception for pairing failure span events.
 
     Not raised for control flow — only passed to span.record_exception()
-    so Dynatrace failure analysis can group and alert on pairing issues.
+    so failure analysis can group and alert on pairing issues.
     """
 
 

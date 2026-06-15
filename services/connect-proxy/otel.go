@@ -42,7 +42,7 @@ func resolveHostName() string {
 	return h
 }
 
-// newOTELResource builds a shared resource with standard + Dynatrace-relevant attributes.
+// newOTELResource builds a shared resource with standard OTEL semantic-convention attributes.
 func newOTELResource(ctx context.Context, serviceName, namespace string) (*resource.Resource, error) {
 	hostname := resolveHostName()
 	return resource.New(ctx,

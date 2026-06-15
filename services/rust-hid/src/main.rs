@@ -93,7 +93,7 @@ fn resolve_host_name() -> String {
         .unwrap_or_else(|_| "unknown".into())
 }
 
-/// Build a shared OTEL resource with standard + Dynatrace-relevant attributes.
+/// Build a shared OTEL resource with standard OTEL semantic-convention attributes.
 fn build_otel_resource() -> opentelemetry_sdk::Resource {
     use opentelemetry::KeyValue;
 
