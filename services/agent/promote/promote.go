@@ -47,6 +47,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -275,6 +277,68 @@ type Promoter struct {
 	repo     RepoRef             // owner/name/base used to build issue/PR/commit requests
 	tracer   trace.Tracer
 	log      *slog.Logger
+
+	// --- autonomous re-promotion COOLDOWN (#1065 item 3) ---
+	// A revert (especially the fail-safe revert on a telemetry error) must not be able
+	// to thrash: err→revert→re-promote→err→revert with no pause. After a revert the
+	// flag enters a cooldown; an autonomous re-promotion of the SAME flag inside the
+	// cooldown is refused (recorded no-op), so the loop cannot run hot. Defaults to
+	// DefaultRevertCooldown; SetCooldown overrides (env-driven from main.go).
+	cooldown   time.Duration
+	now        func() time.Time // injectable clock (tests); defaults to time.Now
+	mu         sync.Mutex       // guards lastRevert
+	lastRevert map[string]time.Time
+
+	// --- re-watch scheduling (#1065 item 4) ---
+	// When a watch sees INSUFFICIENT real games, the apply stands but is unverified. If
+	// a rewatcher is wired, the Promoter schedules a background re-watch that polls as
+	// more real games complete and reverts if a degradation is later CONFIRMED. nil →
+	// no re-watch (the apply stands unverified, exactly today's behavior). Wired in
+	// main.go alongside the live watcher.
+	rewatcher Rewatcher
+}
+
+// DefaultRevertCooldown is the default post-revert cooldown before the same flag may
+// be autonomously re-promoted (#1065 item 3). Conservative: long enough that a
+// telemetry-error revert loop cannot spin, short enough that a genuinely better arm
+// can be retried after the transient clears.
+const DefaultRevertCooldown = 10 * time.Minute
+
+// Rewatcher schedules a background re-watch of an autonomously-applied flag whose
+// initial watch had INSUFFICIENT real games to judge (#1065 item 4). The Promoter
+// hands it everything needed to re-observe and act: the flag, the pre-promotion
+// baseline, the live Watcher, and a revert closure that performs (and records) a
+// fail-safe revert. The implementation polls as more real games complete and invokes
+// revert on a CONFIRMED degradation. It runs in the background (a promotion call must
+// not block on real games), so a nil Rewatcher means "no re-watch" (apply stands).
+type Rewatcher interface {
+	// Schedule starts a background re-watch. It MUST NOT block the caller. watch is the
+	// live Watcher (reuse the same degradation policy); revert performs the gated
+	// fail-safe revert + journalling when a later cycle confirms degradation.
+	Schedule(ctx context.Context, flagKey string, baseline float64, watch Watcher, revert func(ctx context.Context))
+}
+
+// SetCooldown overrides the post-revert re-promotion cooldown (#1065 item 3). A
+// non-positive duration leaves the default in place. Called from main.go to make the
+// cooldown env-tunable without widening NewPromoter's heavily-used signature.
+func (pr *Promoter) SetCooldown(d time.Duration) {
+	if d > 0 {
+		pr.cooldown = d
+	}
+}
+
+// SetClock injects the time source the cooldown uses (tests drive a fake clock). A
+// nil clock is ignored. Production uses the default time.Now.
+func (pr *Promoter) SetClock(now func() time.Time) {
+	if now != nil {
+		pr.now = now
+	}
+}
+
+// SetRewatcher wires the background re-watch scheduler (#1065 item 4). nil leaves
+// re-watch disabled (an insufficient-games apply stands unverified, as today).
+func (pr *Promoter) SetRewatcher(r Rewatcher) {
+	pr.rewatcher = r
 }
 
 // RepoRef identifies the GitHub repo + default base branch a promotion targets.
@@ -307,14 +371,17 @@ func NewPromoter(github GitHubClient, git GitClient, realDef RealDefaultWriter, 
 		log = slog.Default()
 	}
 	return &Promoter{
-		github:   github,
-		git:      git,
-		realDef:  realDef,
-		watcher:  watcher,
-		reverter: reverter,
-		repo:     repo,
-		tracer:   tracer,
-		log:      log,
+		github:     github,
+		git:        git,
+		realDef:    realDef,
+		watcher:    watcher,
+		reverter:   reverter,
+		repo:       repo,
+		tracer:     tracer,
+		log:        log,
+		cooldown:   DefaultRevertCooldown,
+		now:        time.Now,
+		lastRevert: map[string]time.Time{},
 	}
 }
 

@@ -84,15 +84,11 @@ func (p WatchPolicy) normalize() WatchPolicy {
 		// "revert on any drop below baseline"; use the noise-absorbing default.
 		p.DegradationMargin = DefaultDegradationMargin
 	}
-	if p.WindowGames < p.MinGames {
-		p.WindowGames = p.MinGames
-	}
-	if p.WindowGames < DefaultWindowGames {
-		// Keep the window at least the default unless explicitly larger via MinGames.
-		if DefaultWindowGames >= p.MinGames {
-			p.WindowGames = DefaultWindowGames
-		}
-	}
+	// The window must be at least MinGames (it can never be narrower than the evidence
+	// floor) AND at least the default observation width (so an unset/small window still
+	// observes enough recent games). max of all three satisfies both invariants in one
+	// step.
+	p.WindowGames = maxInt(p.WindowGames, p.MinGames, DefaultWindowGames)
 	return p
 }
 
@@ -147,6 +143,56 @@ func DefaultWatchPolicy() WatchPolicy {
 	}
 }
 
+// WatchVerdict is the tri-state outcome of one observation window, distinguishing
+// the case the boolean Degraded conflates: a CONFIRMED healthy keep, a CONFIRMED
+// degradation (revert), and INSUFFICIENT evidence (too few real games to judge —
+// neither keep nor revert, re-watch as more games complete). Surfacing the
+// insufficient case is what lets the Promoter schedule a re-watch (#1065 item 4)
+// instead of silently keeping an unverified change.
+type WatchVerdict int
+
+const (
+	// VerdictInsufficient: fewer than MinGames real samples observed — cannot judge.
+	// The apply stands for now; a re-watch should run as more real games complete.
+	VerdictInsufficient WatchVerdict = iota
+	// VerdictHealthy: enough samples and fitness held within margin of baseline.
+	VerdictHealthy
+	// VerdictDegraded: enough samples and fitness fell past the degradation margin.
+	VerdictDegraded
+)
+
+// Observe is the tri-state form of Degraded: it returns VerdictInsufficient /
+// VerdictHealthy / VerdictDegraded plus any seam error (a read failure → caller
+// fails closed, same as Degraded). The Promoter uses it to tell "keep, verified"
+// apart from "keep, unverified — re-watch later". Degraded is kept as the Watcher
+// interface method (insufficient and healthy both map to false) for compatibility.
+func (w *fitnessWatcher) Observe(ctx context.Context, flagKey string, baseline float64) (WatchVerdict, error) {
+	samples, err := w.fitness.Recent(ctx, flagKey, w.policy.WindowGames)
+	if err != nil {
+		return VerdictInsufficient, fmt.Errorf("read recent real-game fitness for %q: %w", flagKey, err)
+	}
+	if len(samples) < w.policy.MinGames {
+		w.log.Info("autonomous watch: insufficient real games to judge degradation",
+			"flag", flagKey, "samples", len(samples), "min_games", w.policy.MinGames)
+		return VerdictInsufficient, nil
+	}
+	recent := mean(samples)
+	drop := baseline - recent
+	degraded := drop > w.policy.DegradationMargin
+	w.log.Info("autonomous watch: real-game fitness judged",
+		"flag", flagKey,
+		"baseline", baseline,
+		"recent_mean", recent,
+		"drop", drop,
+		"margin", w.policy.DegradationMargin,
+		"games", len(samples),
+		"degraded", degraded)
+	if degraded {
+		return VerdictDegraded, nil
+	}
+	return VerdictHealthy, nil
+}
+
 // Degraded reports whether real-game fitness degraded vs baseline after the
 // autonomous apply. The decision:
 //
@@ -160,33 +206,27 @@ func DefaultWatchPolicy() WatchPolicy {
 //  3. compute the recent mean and declare degradation when
 //     baseline - recentMean > DegradationMargin.
 func (w *fitnessWatcher) Degraded(ctx context.Context, flagKey string, baseline float64) (bool, error) {
-	samples, err := w.fitness.Recent(ctx, flagKey, w.policy.WindowGames)
+	// Delegate to the tri-state Observe and collapse it: only a CONFIRMED degradation
+	// reverts; INSUFFICIENT evidence and HEALTHY both keep the apply (false). A seam
+	// error surfaces so the Promoter's fail-safe revert fires (it treats err != nil as
+	// a revert).
+	verdict, err := w.Observe(ctx, flagKey, baseline)
 	if err != nil {
-		// Cannot read real-game fitness → cannot confirm healthy. Surface the error so
-		// the Promoter's fail-safe revert fires (it treats err != nil as a revert).
-		return false, fmt.Errorf("read recent real-game fitness for %q: %w", flagKey, err)
+		return false, err
 	}
-	if len(samples) < w.policy.MinGames {
-		// Not enough real games yet to judge. Do NOT revert (one/few games is not
-		// evidence of degradation), and do NOT error (the read succeeded). The apply
-		// stands; degradation can only be CONFIRMED with MinGames of evidence.
-		w.log.Info("autonomous watch: insufficient real games to judge degradation",
-			"flag", flagKey, "samples", len(samples), "min_games", w.policy.MinGames)
-		return false, nil
-	}
+	return verdict == VerdictDegraded, nil
+}
 
-	recent := mean(samples)
-	drop := baseline - recent
-	degraded := drop > w.policy.DegradationMargin
-	w.log.Info("autonomous watch: real-game fitness judged",
-		"flag", flagKey,
-		"baseline", baseline,
-		"recent_mean", recent,
-		"drop", drop,
-		"margin", w.policy.DegradationMargin,
-		"games", len(samples),
-		"degraded", degraded)
-	return degraded, nil
+// maxInt returns the largest of the given ints (used by normalize to clamp the
+// window up to both the MinGames floor and the default width in one step).
+func maxInt(xs ...int) int {
+	m := xs[0]
+	for _, x := range xs[1:] {
+		if x > m {
+			m = x
+		}
+	}
+	return m
 }
 
 // mean returns the arithmetic mean of a non-empty slice (callers guard len via

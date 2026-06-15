@@ -219,6 +219,7 @@ type gameFitnessFunc func(gc gamecontext.GameContext, objective string) float64
 func buildExperimentLoop(
 	flagsClient *flags.Flags,
 	promoter *promote.Promoter,
+	fitnessStore *experiment.FitnessStore,
 	gameFlagPath string,
 	logger *slog.Logger,
 ) *experimentLoop {
@@ -258,9 +259,13 @@ func buildExperimentLoop(
 
 	// FitnessStore (#965/#1017): the finalized-per-game fitness store onGameEnd
 	// Records into and the M7-7 validation seams read from. It is the instrumentation
-	// that turns the Validator's injected fitness reads into REAL ones. Built BEFORE
-	// the verdict so the #992 recent-real anchor can read it.
-	fitnessStore := experiment.NewFitnessStore(fitnessStoreCapacity())
+	// that turns the Validator's injected fitness reads into REAL ones. It is now built
+	// by the CALLER (main.go) and passed in so the SAME store also backs the autonomous
+	// Watcher's real-game fitness source (#1057). A nil store (a test or a caller that
+	// did not build one) falls back to a fresh local store so the loop is still valid.
+	if fitnessStore == nil {
+		fitnessStore = experiment.NewFitnessStore(fitnessStoreCapacity())
+	}
 
 	// CohortVerdict (#979) + recent-real SECONDARY anchor (#992): the within-experiment
 	// comparison gated by recent REAL play. The anchor reads the FitnessStore's

@@ -191,13 +191,22 @@ func rolloutActuator(logger *slog.Logger) decision.RolloutActuator {
 // fitness source (promote.RealGameFitness, reading the #731 evaluator / gamewindow)
 // is wired.
 //
-// FAIL-CLOSED (#1016): with the Watcher nil, autonomous now REFUSES to apply to the
-// real default (a hard stop), rather than applying without a safety net. So an
-// operator who flips mode=autonomous before the live watch is wired gets a recorded
-// no-op (OutcomeDiscarded), NOT an unguarded real-default change. Building the
-// real RealGameFitness source + NewFitnessWatcher here is the live-verify follow-up;
-// the watch→degradation→revert WIRING + decision logic ships + is unit-tested now.
-func buildPromoter(logger *slog.Logger) *promote.Promoter {
+// FAIL-CLOSED (#1016/#1057): the autonomous Watcher + RealDefaultReverter are now
+// LIVE-WIRED, but only when autonomous is safely enabled (the same env gate the
+// real-default writer uses) AND a real fitness source is available. When the gate is
+// off — the default — the Watcher stays nil, so autonomous REFUSES to apply (a hard
+// stop), NOT an unguarded real-default change. The live wiring:
+//   - RealGameFitness: reads recent REAL-game fitness from the #965 FitnessStore (the
+//     same finalized-per-game real fitness the recent-real baseline reads). Until real
+//     games populate the store it returns 0 samples ⇒ INSUFFICIENT ⇒ apply stays
+//     unverified + re-watched, never a false healthy keep.
+//   - RealDefaultReverter: the SAME concrete fileRealDefaultWriter, which snapshots the
+//     pre-promotion {defaultVariant + value} at write time and restores it exactly on
+//     revert (#1065).
+//   - Rewatcher: a background poller that re-observes an insufficient-games apply as
+//     more real games complete (#1065 item 4).
+//   - Cooldown: a post-revert cooldown suppresses re-promotion thrash (#1065 item 3).
+func buildPromoter(rootCtx context.Context, store *experiment.FitnessStore, objResolver *promote.LateObjectiveResolver, logger *slog.Logger) *promote.Promoter {
 	// Resolve the target for client construction from the ENV (AGENT_CODE_IMPROVEMENT_TARGET),
 	// distinct from the LIVE flag (code_improvement.target) that Promote dispatches on.
 	// This is a deliberate DOUBLE gate and is STRICTER than a single switch: opening a
@@ -235,9 +244,13 @@ func buildPromoter(logger *slog.Logger) *promote.Promoter {
 	if git != nil {
 		gitIface = git
 	}
+	// The real-default writer is ALSO the reverter (it snapshots prior state at write
+	// time, #1065). Keep a concrete handle so the same instance backs both seams.
 	var realDefIface promote.RealDefaultWriter
+	var reverterIface promote.RealDefaultReverter
 	if realDef != nil {
 		realDefIface = realDef
+		reverterIface = realDef
 	}
 
 	repo := promote.RepoRef{
@@ -245,12 +258,30 @@ func buildPromoter(logger *slog.Logger) *promote.Promoter {
 		Name:  firstField(getEnv("GITHUB_REPOSITORY", ""), 1),
 		Base:  getEnv("GITHUB_BASE_BRANCH", "main"),
 	}
-	// Watcher + RealDefaultReverter (autonomous live watch+revert) reuse M7-7's
-	// fitness measurement seams; they are nil until the live real-game fitness source
-	// is wired. Per #1016 a nil Watcher makes autonomous FAIL CLOSED (refuse to apply
-	// to the real default), so this is safe: autonomous degrades to a recorded no-op
-	// rather than an unguarded real change until the safety net is connected.
-	return promote.NewPromoter(ghIface, gitIface, realDefIface, nil, nil, repo, nil, logger)
+
+	// LIVE WATCH (#1057/#1065): build the Watcher over the real fitness source ONLY
+	// when the real-default writer is present (the autonomous env gate is satisfied AND
+	// a real-default path exists) AND a FitnessStore is available to read real-game
+	// fitness from. Otherwise leave the Watcher nil so autonomous FAILS CLOSED (refuses
+	// to apply) — never an unguarded real-default change.
+	var watcherIface promote.Watcher
+	var rewatcher promote.Rewatcher
+	if realDef != nil && store != nil {
+		fitnessSource := promote.NewStoreRealGameFitness(store, objResolver.Resolve)
+		watcher := promote.NewFitnessWatcher(fitnessSource, promote.DefaultWatchPolicy(), logger)
+		watcherIface = watcher
+		rewatcher = promote.NewPollingRewatcher(rootCtx, rewatchInterval(), rewatchTimeout(), logger)
+		logger.Warn("code_improvement AUTONOMOUS watch+revert LIVE-WIRED (#1057/#1065): autonomous promotions are now a closed apply→watch→keep-or-revert loop")
+	} else {
+		logger.Info("code_improvement autonomous watch NOT wired (autonomous env gate off or no fitness store); autonomous fails closed (#1016)")
+	}
+
+	p := promote.NewPromoter(ghIface, gitIface, realDefIface, watcherIface, reverterIface, repo, nil, logger)
+	p.SetCooldown(revertCooldown())
+	if rewatcher != nil {
+		p.SetRewatcher(rewatcher)
+	}
+	return p
 }
 
 // firstField splits an "owner/repo" string and returns the owner (i==0) or repo
@@ -259,6 +290,25 @@ func firstField(repo string, i int) string {
 	parts := strings.SplitN(repo, "/", 2)
 	if i < len(parts) {
 		return parts[i]
+	}
+	return ""
+}
+
+// objectiveForFlag resolves the fitness objective a promoted flag's experiment
+// serves by scanning the registry's LIVE experiments for one whose intent targets
+// flagKey (#1057). The autonomous Watcher uses this to read the right per-objective
+// recent-real fitness from the FitnessStore. Best-effort: a concluded/torn-down
+// experiment is gone from Live(), so this returns "" (any-objective) — a safe
+// degrade, since the watcher still observes a recent-real fitness trend, just
+// unfiltered by objective.
+func objectiveForFlag(reg *experiment.Registry, flagKey string) string {
+	if reg == nil || flagKey == "" {
+		return ""
+	}
+	for _, id := range reg.Live() {
+		if cv, ok := reg.CompactView(id); ok && cv.Intent.FlagKey == flagKey {
+			return cv.Intent.Objective
+		}
 	}
 	return ""
 }
@@ -294,6 +344,24 @@ func llmBudgetOverride() int {
 		return 0
 	}
 	return n
+}
+
+// revertCooldown reads the autonomous post-revert re-promotion cooldown (#1065
+// item 3) from AGENT_AUTONOMOUS_REVERT_COOLDOWN_SECONDS, else the package default.
+func revertCooldown() time.Duration {
+	return secondsEnv("AGENT_AUTONOMOUS_REVERT_COOLDOWN_SECONDS", promote.DefaultRevertCooldown)
+}
+
+// rewatchInterval reads the background re-watch poll interval (#1065 item 4) from
+// AGENT_AUTONOMOUS_REWATCH_INTERVAL_SECONDS, else the package default.
+func rewatchInterval() time.Duration {
+	return secondsEnv("AGENT_AUTONOMOUS_REWATCH_INTERVAL_SECONDS", promote.DefaultRewatchInterval)
+}
+
+// rewatchTimeout reads how long a background re-watch waits for enough real games
+// (#1065 item 4) from AGENT_AUTONOMOUS_REWATCH_TIMEOUT_SECONDS, else the default.
+func rewatchTimeout() time.Duration {
+	return secondsEnv("AGENT_AUTONOMOUS_REWATCH_TIMEOUT_SECONDS", promote.DefaultRewatchTimeout)
 }
 
 // secondsEnv parses a positive integer "seconds" env var into a Duration,
@@ -766,7 +834,19 @@ func main() {
 	// proposer is #931; the autonomous watch+revert reuses M7-7's seams); here the
 	// gated promotion surface is constructed and held so the wiring + the env gate
 	// are in place and observable.
-	promoter := buildPromoter(logger)
+	// FitnessStore (#965/#1017): the finalized-per-game fitness store. It is built HERE
+	// (hoisted out of buildExperimentLoop) so it can back BOTH the experiment loop's
+	// validation/anchor seams AND the autonomous Watcher's real-game fitness source
+	// (#1057). The experiment loop's onGameEnd Records into it; the Watcher reads
+	// recent REAL samples out of it.
+	fitnessStore := experiment.NewFitnessStore(fitnessStoreCapacity())
+	// objResolver maps a promoted flag → its experiment's objective for the Watcher's
+	// store reads. It is late-bound: the registry that knows the mapping is built inside
+	// buildExperimentLoop (below), so the resolver is SET there once the registry exists.
+	// Until then it resolves to "" (any-objective) — safe, just unfiltered.
+	objResolver := &promote.LateObjectiveResolver{}
+
+	promoter := buildPromoter(ctx, fitnessStore, objResolver, logger)
 	slog.Info("Code-improvement promotion surface enabled (#936, M7-8)",
 		"code_improvement_enabled", getEnv("AGENT_CODE_IMPROVEMENT_ENABLED", "false"),
 		"target", getEnv("AGENT_CODE_IMPROVEMENT_TARGET", string(promote.TargetLocal)),
@@ -784,11 +864,20 @@ func main() {
 	// starts it with no restart. The real-default promotion path stays
 	// behind ALL of #961's gates (the promoter built above + the kill-switch via the
 	// ConfigResolver).
-	expLoop := buildExperimentLoop(agentFlags, promoter, getEnv("GAME_FLAG_PATH", experiment.DefaultGamePath), logger)
+	expLoop := buildExperimentLoop(agentFlags, promoter, fitnessStore, getEnv("GAME_FLAG_PATH", experiment.DefaultGamePath), logger)
 	if expLoop != nil {
 		// Bind the spawner's background game-drive goroutines to the agent's root
 		// context so shutdown cancels in-flight shadow games (no goroutine leak).
 		expLoop.spawner.SetRootContext(ctx)
+		// Now the registry exists: install the flag→objective resolver the autonomous
+		// Watcher uses to read the right per-objective recent-real fitness (#1057). Until
+		// this point it resolved to "" (any-objective); from here it is precise.
+		if expLoop.registry != nil {
+			reg := expLoop.registry
+			objResolver.Set(func(flagKey string) string {
+				return objectiveForFlag(reg, flagKey)
+			})
+		}
 	}
 
 	// GameContext multiplexer (#845 PR B): one Store partition per game_id, plus the
