@@ -850,6 +850,20 @@ func main() {
 	// (#1057). The experiment loop's onGameEnd Records into it; the Watcher reads
 	// recent REAL samples out of it.
 	fitnessStore := experiment.NewFitnessStore(fitnessStoreCapacity())
+	// #1100: give the retro span access to a finished experiment game's RECORDED
+	// fitness, keyed by game_id, so an agent.llm.retro span carries experiment.fitness
+	// alongside experiment.id / experiment.arm — making a retro joinable to the fitness
+	// its arm scored. The experiment loop's onGameEnd (chained BEFORE retro.OnGameEnd
+	// below) Records the settled sample into THIS store first, so the lookup sees it at
+	// retro time. A non-experiment game has no sample (and carries no ExperimentID), so
+	// the lookup is never even consulted for it — default-safe.
+	retro.SetFitnessLookup(func(gameID string) (float64, bool) {
+		s, ok := fitnessStore.Get(gameID)
+		if !ok {
+			return 0, false
+		}
+		return s.Fitness, true
+	})
 	// objResolver maps a promoted flag → its experiment's objective for the Watcher's
 	// store reads. It is late-bound: the registry that knows the mapping is built inside
 	// buildExperimentLoop (below), so the resolver is SET there once the registry exists.
@@ -908,22 +922,27 @@ func main() {
 		s := gamecontext.NewStore(lifecycle.PlayerTTL, lifecycle.SessionGrace, nil)
 		s.SetTTLSources(lifecycleHolder.PlayerTTL, lifecycleHolder.SessionGrace)
 		s.SetOwnService(ownService)
-		// Chain BOTH game-end consumers onto the single store hook (#928): the #844
-		// retrospective AND the M7-1 summary builder both fire on game end with the
-		// pre-reset snapshot. Each has its OWN once-per-game dedupe, so chaining cannot
-		// make either double-fire. Order is retro-then-summary, but they are independent
-		// (neither reads the other's state).
-		// Chain the #991 experiment conclusion hook too (nil when the loop is
-		// disabled, so chainGameEnd skips it — zero overhead in the default path). For
-		// an experiment-bound shadow game it folds the game's fitness into the cohort
-		// journal via Registry.ConcludeGame; for every NON-experiment game it is a
-		// no-op (ConcludeGame ignores an unknown game_id), so the existing retro/
-		// summary behavior is untouched.
+		// Chain the game-end consumers onto the single store hook (#928): the #991
+		// experiment conclusion hook, the #844 retrospective, the M7-1 summary builder,
+		// and the M7-4 proposer all fire on game end with the pre-reset snapshot. Each
+		// has its OWN once-per-game dedupe, so chaining cannot make any double-fire, and
+		// they are otherwise independent (no consumer reads another's in-memory state).
+		//
+		// ORDER (#1100): the experiment conclusion hook runs FIRST so it records the
+		// game's finalized fitness into the #965 FitnessStore BEFORE the retro reads it
+		// back by game_id (SetFitnessLookup) — making experiment.fitness available on the
+		// agent.llm.retro span at retro time for an experiment arm. The chain is one
+		// synchronous call on this goroutine, so "record-then-read" is guaranteed. The
+		// experiment hook is nil when the loop is disabled (chainGameEnd skips it — zero
+		// overhead in the default path); for an experiment-bound shadow game it folds the
+		// fitness into the cohort journal via Registry.ConcludeGame, and for every
+		// NON-experiment game it is a no-op (ConcludeGame ignores an unknown game_id), so
+		// the existing retro/summary behavior is untouched.
 		var experimentOnGameEnd func(gamecontext.GameContext)
 		if expLoop != nil {
 			experimentOnGameEnd = expLoop.onGameEnd
 		}
-		s.OnGameEnd = chainGameEnd(retro.OnGameEnd, summaries.OnGameEnd, proposeOnGameEnd, experimentOnGameEnd)
+		s.OnGameEnd = chainGameEnd(experimentOnGameEnd, retro.OnGameEnd, summaries.OnGameEnd, proposeOnGameEnd)
 		return s
 	})
 	mux.SetOwnService(ownService)

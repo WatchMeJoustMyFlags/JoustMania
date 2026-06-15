@@ -58,6 +58,41 @@ const (
 	AttrLLMRetroBytes = "llm.retro.bytes"
 )
 
+// Structured game-outcome and experiment-correlation attribute keys (#1100). They
+// surface the game outcome (winner / final active players / elimination count /
+// duration) and the shadow-experiment attribution (id / arm / recorded fitness)
+// as DISCRETE, queryable span attributes — the outcome was previously buried only
+// in the llm.retro.user prompt TEXT, and the experiment correlation was absent
+// entirely, so a retro could not be joined to the experiment/arm that spawned it
+// or pivoted on its outcome. The outcome keys reuse the established game.* /
+// experiment.* vocabulary (game.id/game.kind on this span, experiment.id/
+// experiment.arm on the gamecontext span attrs, gamesummary's duration_seconds).
+// Every key is ADDITIVE and OMITTED when its signal is absent (a non-experiment
+// game carries no experiment.* attrs; an unobserved outcome field is dropped), so
+// the schema never emits empty or garbage tags.
+const (
+	// AttrGameWinner is the sole survivor's serial. Omitted when there is no single
+	// unambiguous winner (zero or multiple survivors).
+	AttrGameWinner = "game.winner"
+	// AttrGameFinalActivePlayers is the session's final active-player count. Omitted
+	// when never observed.
+	AttrGameFinalActivePlayers = "game.final_active_players"
+	// AttrGameEliminationCount is the number of eliminations recorded for the game.
+	AttrGameEliminationCount = "game.elimination_count"
+	// AttrGameDurationSeconds is the final observed game duration. Omitted when unknown.
+	AttrGameDurationSeconds = "game.duration_seconds"
+	// AttrExperimentID / AttrExperimentArm are the shadow-experiment attribution this
+	// game belonged to. They mirror the gamecontext span attribute keys (extract_spans.go)
+	// so a Jaeger query joins the retro to the experiment that spawned it. Omitted for a
+	// real / standalone game (no experiment id).
+	AttrExperimentID  = "experiment.id"
+	AttrExperimentArm = "experiment.arm"
+	// AttrExperimentFitness is the game's recorded objective fitness (the #965 finalized
+	// per-game sample) when it is available at retro time. Omitted when no fitness lookup
+	// is wired or the store has no settled sample for this game yet.
+	AttrExperimentFitness = "experiment.fitness"
+)
+
 // retroModeValue is the agent.mode value recorded on the retro-capture span. The
 // span only ever exists at game end on the offline-analyst path, so it is
 // constant — distinct from the in-game llmModeValue.
@@ -108,6 +143,15 @@ type RetroCoordinator struct {
 	// sharing the in-game counter name. Defaults to a no-op so tests need not wire it.
 	llmGated otelmetric.Int64Counter
 
+	// fitnessLookup resolves a finished game's recorded objective fitness by game_id
+	// (#1100), reading the #965 finalized-per-game FitnessStore. When wired and a
+	// settled sample exists, the retro stamps experiment.fitness on the span so a
+	// retro is joinable to the fitness its arm scored. nil (the default / tests /
+	// pre-#1100 wiring) means no fitness attribute is ever emitted — the span is
+	// byte-identical to before except for the always-additive outcome attrs. Injected
+	// via SetFitnessLookup; not safe to call concurrently with OnGameEnd.
+	fitnessLookup func(gameID string) (float64, bool)
+
 	// mu guards the captured-session dedupe state.
 	mu sync.Mutex
 	// captured is the set of recently captured SessionIDs (membership = already
@@ -152,6 +196,18 @@ func (rc *RetroCoordinator) SetLLMBudget(b *llmBudget) { rc.budget = b }
 // no longer reports the unreachable phi4-mini legacy tier. Not safe to call
 // concurrently with OnGameEnd — set it during construction.
 func (rc *RetroCoordinator) SetResolver(r *Resolver) { rc.resolver = r }
+
+// SetFitnessLookup injects the recorded-fitness lookup seam (#1100): a func that
+// returns a finished game's settled objective fitness by game_id (reading the #965
+// FitnessStore) and whether one is available. When wired and a sample exists at
+// retro time, the retro stamps experiment.fitness on the span so a retro joins to
+// the fitness its arm scored. A nil lookup (the default) means experiment.fitness
+// is never emitted — default-safe, the span is unchanged but for the additive
+// outcome attrs. Not safe to call concurrently with OnGameEnd — set it during
+// construction.
+func (rc *RetroCoordinator) SetFitnessLookup(f func(gameID string) (float64, bool)) {
+	rc.fitnessLookup = f
+}
 
 // OnGameEnd is the gamecontext.Store.OnGameEnd callback. It captures the
 // retrospective prompt for a finished session exactly once. It is defensive:
@@ -213,17 +269,26 @@ func (rc *RetroCoordinator) OnGameEnd(c gamecontext.GameContext) {
 	// gen_ai.request.model and the log line both name the configured model.
 	prompt.Model = attr.configured
 
+	attrs := retroPromptAttributes(retroPromptAttrs{
+		prompt:     prompt,
+		sessionID:  c.SessionID,
+		gameKind:   c.GameKind,
+		objectives: snapshot.Objectives,
+		allowed:    snapshot.InterventionsAllowed,
+		configured: attr.configured,
+		used:       attr.used,
+		fallback:   attr.fallback,
+	})
+	// #1100: structured game-outcome attributes (queryable, not buried in the prompt
+	// text) and shadow-experiment correlation (id / arm / recorded fitness). All are
+	// additive and cleanly OMITTED when their signal is absent (a non-experiment game,
+	// an unobserved outcome field, no fitness lookup wired), so the schema never emits
+	// empty/garbage tags and the default path is unchanged.
+	attrs = append(attrs, rc.outcomeAttributes(c)...)
+	attrs = append(attrs, rc.experimentAttributes(c)...)
+
 	_, span := rc.Tracer.Start(context.Background(), SpanLLMRetro,
-		trace.WithAttributes(retroPromptAttributes(retroPromptAttrs{
-			prompt:     prompt,
-			sessionID:  c.SessionID,
-			gameKind:   c.GameKind,
-			objectives: snapshot.Objectives,
-			allowed:    snapshot.InterventionsAllowed,
-			configured: attr.configured,
-			used:       attr.used,
-			fallback:   attr.fallback,
-		})...))
+		trace.WithAttributes(attrs...))
 	span.End()
 
 	rc.Log.Info("agent.llm.retro_captured",
@@ -389,6 +454,59 @@ func retroPromptAttributes(in retroPromptAttrs) []attribute.KeyValue {
 		attribute.String(AttrInferenceUsed, in.used),
 		attribute.String(AttrInferenceFallback, in.fallback),
 	}
+}
+
+// outcomeAttributes builds the STRUCTURED game-outcome span attributes (#1100):
+// winner / final-active-players / elimination-count / duration as DISCRETE,
+// queryable tags. They are derived from the same already-structured GameContext
+// fields the retro prompt renders its Outcome block from (llm.DeriveRetroOutcome —
+// the SINGLE source of truth shared with the prompt), so the span and the prompt
+// text can never disagree, and NOTHING is re-parsed out of the prompt. Each
+// optional field is omitted when its signal was never observed (winner ambiguous,
+// active-count/duration nil) so the span carries no misleading zeros. The
+// elimination count is always present (a finished game has a definite, possibly
+// empty, elimination sequence).
+func (rc *RetroCoordinator) outcomeAttributes(c gamecontext.GameContext) []attribute.KeyValue {
+	o := llm.DeriveRetroOutcome(c)
+	out := make([]attribute.KeyValue, 0, 4)
+	if o.Winner != "" {
+		out = append(out, attribute.String(AttrGameWinner, o.Winner))
+	}
+	if o.FinalActivePlayers != nil {
+		out = append(out, attribute.Int(AttrGameFinalActivePlayers, *o.FinalActivePlayers))
+	}
+	out = append(out, attribute.Int(AttrGameEliminationCount, o.EliminationCount))
+	if o.DurationSeconds != nil {
+		out = append(out, attribute.Float64(AttrGameDurationSeconds, *o.DurationSeconds))
+	}
+	return out
+}
+
+// experimentAttributes builds the shadow-EXPERIMENT correlation span attributes
+// (#1100): experiment.id + experiment.arm when the finished game was an experiment
+// arm, plus experiment.fitness when a recorded fitness sample is available at retro
+// time via the injected lookup seam. The id / arm come straight off the GameContext
+// (the cohort enrichment carried on every lifecycle signal — extract_spans.go), so
+// no registry seam is needed and the lookup never races the registry's conclude-time
+// binding deletion. For a REAL / standalone game (ExperimentID == "") this returns
+// NOTHING — the correlation attrs are absent entirely, never emitted empty. Fitness
+// is stamped only when a lookup is wired AND a settled sample exists; otherwise it
+// is simply omitted (default-safe).
+func (rc *RetroCoordinator) experimentAttributes(c gamecontext.GameContext) []attribute.KeyValue {
+	if c.ExperimentID == "" {
+		return nil // not part of an experiment: emit no experiment.* attrs.
+	}
+	out := make([]attribute.KeyValue, 0, 3)
+	out = append(out, attribute.String(AttrExperimentID, c.ExperimentID))
+	if c.Arm != "" {
+		out = append(out, attribute.String(AttrExperimentArm, c.Arm))
+	}
+	if rc.fitnessLookup != nil {
+		if fitness, ok := rc.fitnessLookup(c.SessionID); ok {
+			out = append(out, attribute.Float64(AttrExperimentFitness, fitness))
+		}
+	}
+	return out
 }
 
 // compile-time guard: RetroCoordinator.OnGameEnd matches the store hook signature.
