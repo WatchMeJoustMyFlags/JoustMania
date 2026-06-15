@@ -810,16 +810,44 @@ func TestConcurrentAllocateNeverExceedsCap(t *testing.T) {
 func TestConcurrentAllocateAndConcludeNoLeak(t *testing.T) {
 	const cap = 8
 	spawner := &fakeSpawner{}
+	// ROOT CAUSE of the historical flake (#1097): this is a TEST-DESIGN issue, not a
+	// registry race. The settling invariant below ("a final allocate refills to
+	// exactly the cap") only holds while every experiment is still RUNNING. The test
+	// concludes hundreds of games at a CONSTANT fitness (0.5), so each experiment's
+	// arms hit zero variance past their target N — the #1001 termination guard
+	// legitimately concludes them INCONCLUSIVE ("degenerate variance past target N").
+	// Whether all K experiments terminate before the final allocate is purely a
+	// function of the conclude race's timing, so the settling allocate would
+	// intermittently find NO live experiment, bind nothing, and report in-flight 0.
+	//
+	// Fix: disable ALL three #1001 give-up guards for this test so the experiments
+	// stay live regardless of timing — the invariant we actually want to assert
+	// (reservation accounting returns to cap) is then deterministic. The leak
+	// detection is fully preserved: a genuine reservation leak would still leave the
+	// settling in-flight BELOW cap.
+	//   - MaxGamesPerExperiment: -1 disables the absolute games-budget guard (a).
+	//   - VerdictMinN: -1 disables min-N reconciliation so the huge intent target_n
+	//     below survives Declare unchanged.
+	//   - a target_n far above any reachable game count keeps the inconclusive-past-
+	//     target (b) and degenerate-variance (c) guards inert (arms never reach it).
 	r := newTestRegistry(t, RegistryConfig{
-		MaxShadowGames: cap,
-		Spawner:        spawner,
-		Verdict:        fakeVerdict{concludeAtN: 1_000_000}, // never conclude the experiment itself
+		MaxShadowGames:        cap,
+		Spawner:               spawner,
+		Verdict:               fakeVerdict{concludeAtN: 1_000_000}, // never conclude the experiment itself
+		MaxGamesPerExperiment: -1,                                  // disable games-budget termination guard (#1097)
+		VerdictMinN:           -1,                                  // disable min-N reconciliation so target_n stays huge (#1097)
 	})
 	ctx := context.Background()
 
+	// A target_n far above any game count this test can reach, so the
+	// inconclusive-past-target and degenerate-variance termination guards stay inert
+	// and the experiments never self-conclude during the alloc/conclude race (#1097).
+	liveIntent := sampleIntent()
+	liveIntent.TargetNPerArm = 1_000_000
+
 	const k = 4
 	for i := 0; i < k; i++ {
-		id, err := r.Declare(sampleIntent())
+		id, err := r.Declare(liveIntent)
 		if err != nil {
 			t.Fatalf("Declare: %v", err)
 		}
