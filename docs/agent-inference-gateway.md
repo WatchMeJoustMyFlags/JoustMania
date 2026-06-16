@@ -82,7 +82,11 @@ Where the gateway reaches Ollama is `OLLAMA_BASE_URL` (default
 > *not* `host.docker.internal`. See
 > [`agent-ollama-host-runbook.md`](agent-ollama-host-runbook.md) for the full
 > checklist — both the gateway's `OLLAMA_BASE_URL` and the Ollama-direct
-> `AGENT_INFERENCE_BASE_URL` need it.
+> `AGENT_INFERENCE_BASE_URL` need it. That runbook (§4) also covers
+> `OLLAMA_KEEP_ALIVE` and the agent's startup pre-warm (#1130): set
+> `OLLAMA_KEEP_ALIVE=-1` on whichever Ollama the gateway proxies so the model
+> stays resident instead of unloading after ~5 min idle and re-paying the
+> ~30-100s cold load.
 
 ## The Anthropic key — gateway-only, optional
 
