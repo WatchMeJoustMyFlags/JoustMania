@@ -10,6 +10,25 @@ path):
     ->  games conclude with fitness  ->  paired-difference verdict
     ->  experiment terminates (concluded / torn_down)
 
+DEDICATED COORDINATOR (#1163) — WHY THE FULL SOAK IS NOW A HARD GATE
+--------------------------------------------------------------------
+The full declare -> verdict -> teardown SOAK used to be xfail(strict=False): the
+SHARED suite coordinator runs a single session registry (capped at
+GAME_MAX_CONCURRENT_GAMES=4) that the suite's per-test ``coordinator_idle``
+autouse fixture force-ends before EVERY test, so the cohort loop's in-flight
+paired shadow games were repeatedly wiped and contended for slots with the
+warmup/residual real game — only ~3 games concluded in a brief free window, then
+the loop starved before its games-budget/target-N backstop fired.
+
+This module now layers ``docker-compose.agent-coordinator.yml`` on top of the
+dry-run overlay, which adds a DEDICATED game-coordinator
+(``agent-game-coordinator``) with its OWN session registry, and points the agent
+at it via ``GAME_COORDINATOR_ADDR``. The suite's ``coordinator_idle`` fixture
+dials the SHARED ``game-coordinator`` by service name, so it never touches this
+one — the cohort loop gets exclusive, uninterrupted coordinator time and the
+soak completes deterministically. That is why the verdict+teardown test below is
+a HARD assertion (no longer xfail).
+
 WHY THIS TEST IS STRUCTURED THE WAY IT IS
 -----------------------------------------
 The agent service runs under ``profiles: [agent]`` and is NOT started by the
@@ -52,16 +71,14 @@ inference-absent stub backend, graceful degradation to ``mode=rules``,
 experiment.declared, and paired (CRN control + experimental) shadow games that
 each conclude WITH a fitness scalar.
 
-The full verdict + teardown SOAK is a separate OPPORTUNISTIC (xfail) test: the
-game-coordinator runs ONE game at a time and the cohort loop contends for it
-with the rest of the integration suite, so spawning is throttled by
-ErrSpawnBackpressure and the soak can be starved before reaching a verdict
-within the timeout. That test passes when the loop wins enough coordinator time
-and xfails (not a suite failure) when starved — see its module note for the root
-cause and the proposed harness fix. With synthetic mock games producing tiny,
-noisy deltas the verdict is expected to be inconclusive (#1042
-practical-significance floor) — when it does terminate, we assert the loop
-REACHES a verdict and TEARS DOWN, not any particular outcome.
+The full verdict + teardown SOAK is the FINAL test in this module and is now a
+HARD gate (#1163): with the dedicated coordinator above, the cohort loop owns
+its registry, so spawning is no longer throttled by the shared-suite contention
+that previously starved it (ErrSpawnBackpressure) and the loop reaches a verdict
+and tears down deterministically within the timeout. With synthetic mock games
+producing tiny, noisy deltas the verdict is expected to be inconclusive (#1042
+practical-significance floor) — so we assert the loop REACHES a verdict and TEARS
+DOWN, not any particular outcome.
 """
 
 import json
@@ -100,14 +117,33 @@ AGENT_FLAG_PATH = active_flag_file("agent")
 # The dry-run overlay carries the #999 agent flag-dir fix + the agent profile.
 DRY_RUN_COMPOSE_FILE = "docker-compose.dry-run.yml"
 
+# The #1163 dedicated-coordinator overlay: adds ``agent-game-coordinator`` (its own
+# session registry) and points the agent's GAME_COORDINATOR_ADDR at it, so the
+# cohort loop gets exclusive coordinator time (the suite's coordinator_idle
+# autouse fixture only force-ends the SHARED ``game-coordinator``). This is what
+# promotes the full verdict+teardown soak from xfail to a HARD gate.
+AGENT_COORDINATOR_COMPOSE_FILE = "docker-compose.agent-coordinator.yml"
+
+# Dedicated coordinator service name (docker-compose.agent-coordinator.yml). Started
+# alongside the agent under --profile agent so the cohort loop spawns against it.
+AGENT_COORDINATOR_SERVICE = "agent-game-coordinator"
+
 # Exact lifecycle log strings emitted by services/agent (load-bearing assertions).
 LOG_BACKEND_SELECTED = "Inference backend selected"  # main.go:573 (#1048)
 LOG_BACKEND_STUB = "backend=stub"  # graceful degradation: no inference wired
 LOG_MODE_RULES = "mode=rules"  # agent.evaluate degrades to rules with no backend
 LOG_DECLARED = "experiment.declared"  # registry.go:511
 LOG_GAME_CONCLUDED = "experiment.game_concluded"  # registry.go:1027 (carries fitness=)
-LOG_CONCLUDED = "experiment.concluded"  # registry.go:1217 (carries outcome=)
-LOG_TORN_DOWN = "experiment.torn_down"  # registry.go:1343
+LOG_CONCLUDED = "experiment.concluded"  # registry.go (always logged; carries outcome=)
+LOG_TORN_DOWN = "experiment.torn_down"  # registry.go teardown (discard/inconclusive/abort)
+# The PROMOTE verdict routes conclude -> promote (status DONE) -> teardown, but the
+# teardown idempotency guard early-returns on the already-terminal DONE status WITHOUT
+# logging experiment.torn_down (registry.go: end-span-then-guard). So on a promote
+# outcome the terminal teardown is surfaced by the promotion log line instead. The
+# cohort soak's hard terminal assertion accepts EITHER terminal marker so it is
+# deterministic regardless of which verdict the synthetic games happen to produce.
+LOG_PROMOTED = "code_improvement.promoted"  # promote routed (target/local sink)
+LOG_PROMOTE_FAILED = "experiment.promote_failed"  # promote attempted, sink unavailable
 
 # Polling budgets (seconds). Generous worst-case bounds under CI load, NOT paid
 # waits — each poll returns as soon as the line appears.
@@ -183,6 +219,7 @@ def _compose_prefix(docker_compose) -> list[str]:
     so the agent joins the same network and the same flagd."""
     prefix = list(docker_compose.docker_compose_command())
     prefix += ["-f", DRY_RUN_COMPOSE_FILE]
+    prefix += ["-f", AGENT_COORDINATOR_COMPOSE_FILE]
     return prefix
 
 
@@ -285,10 +322,15 @@ def agent_experiment_stack(docker_compose):
     #    so the session bring-up never built it).
     use_prebuilt = os.getenv("USE_PREBUILT_IMAGES", "false").lower() == "true"
     use_dev_mounts = os.getenv("USE_DEV_MOUNTS", "false").lower() == "true"
+    # Bring up BOTH the dedicated coordinator (#1163) and the agent. The dedicated
+    # coordinator reuses the SAME game-coordinator-service image the session stack
+    # already built/pulled, so no extra build cost — only the profile-gated agent
+    # image may need a build in build mode. --wait blocks until both are healthy so
+    # the agent's first shadow spawn lands on a ready coordinator.
     up_cmd = [*prefix, "--profile", AGENT_SERVICE, "up", "-d", "--wait"]
     if not use_prebuilt and not use_dev_mounts:
         up_cmd.append("--build")
-    up_cmd.append(AGENT_SERVICE)
+    up_cmd += [AGENT_COORDINATOR_SERVICE, AGENT_SERVICE]
     up = subprocess.run(
         up_cmd,
         cwd=cwd,
@@ -298,15 +340,25 @@ def agent_experiment_stack(docker_compose):
         timeout=600,
     )
     assert up.returncode == 0, (
-        f"failed to start agent container:\nSTDOUT:{up.stdout}\nSTDERR:{up.stderr}"
+        "failed to start agent + dedicated coordinator containers:\n"
+        f"STDOUT:{up.stdout}\nSTDERR:{up.stderr}"
     )
 
     try:
         yield docker_compose
     finally:
-        # 3. Stop + remove the agent so other modules see the agent ABSENT again.
+        # 3. Stop + remove the agent AND the dedicated coordinator so other modules
+        #    see the agent ABSENT again and the dedicated coordinator does not leak.
         subprocess.run(
-            [*prefix, "--profile", AGENT_SERVICE, "rm", "-sf", AGENT_SERVICE],
+            [
+                *prefix,
+                "--profile",
+                AGENT_SERVICE,
+                "rm",
+                "-sf",
+                AGENT_SERVICE,
+                AGENT_COORDINATOR_SERVICE,
+            ],
             cwd=cwd,
             env=env,
             capture_output=True,
@@ -384,7 +436,7 @@ def test_cohort_loop_spawns_paired_games_that_conclude_with_fitness(
     arms) -> each concludes WITH a fitness scalar -> the per-game fitness feeds
     the verdict seam. This is the reliably-observable core of the loop and the
     standing CI gate for the inference-absent guarantee — the full verdict +
-    teardown SOAK is a separate (xfail) test, see its docstring for why."""
+    teardown SOAK is the next (HARD) test, see its docstring."""
     assert _poll_log_contains(LOG_DECLARED, DECLARE_TIMEOUT), (
         "experiment was never declared"
     )
@@ -410,54 +462,60 @@ def test_cohort_loop_spawns_paired_games_that_conclude_with_fitness(
     assert "panic:" not in _agent_logs(), "agent panicked during the cohort loop"
 
 
-# The full verdict + teardown SOAK cannot complete RELIABLY in the shared
-# integration session. ROOT CAUSE (diagnosed from CI run 27610202170): the
-# game-coordinator runs ONE game at a time (registry.go:582), and the cohort loop
-# competes for it with the REST of the integration suite, which is concurrently
-# starting its own real games against the SAME coordinator. Each time the agent
-# tries to spawn the next shadow game while another test holds the coordinator it
-# gets gamerunner.ErrGameInProgress -> ErrSpawnBackpressure (shadow_spawner.go:114)
-# and silently backs off to retry next tick (a Debug-level log, invisible at
-# LOG_LEVEL=info). In the observed run the loop got 3 games through a brief free
-# window, then starved: neither the games-budget backstop (experiment_max_games)
-# nor the per-arm target N was reached within CONCLUDE_TIMEOUT, so no verdict /
-# teardown was emitted. This is a HARNESS limitation, NOT a loop bug — the loop
-# correctly declared, spawned paired games, and concluded each with fitness (all
-# asserted hard above), and degraded to rules without crashing.
+# The full verdict + teardown SOAK is now a HARD gate (#1163). It used to be
+# xfail(strict=False) because the cohort loop competed for the SHARED suite
+# coordinator (single session registry, GAME_MAX_CONCURRENT_GAMES=4) with the
+# warmup/residual real game AND had its in-flight paired shadow games force-ended
+# by the per-test ``coordinator_idle`` autouse fixture (conftest.py) — each spawn
+# while the coordinator was busy/quiesced returned gamerunner.ErrGameInProgress
+# -> ErrSpawnBackpressure (shadow_spawner.go) and backed off, so the loop won only
+# a brief free window (~3 games concluded) then starved before the games-budget /
+# target-N backstop fired (diagnosed from CI run 27610202170).
 #
-# SMALLEST HARNESS FIX to make this a hard gate (out of scope for this test-only
-# change): give the cohort loop exclusive coordinator access for its soak window —
-# e.g. a dedicated game-coordinator instance for the agent profile in a separate
-# compose project, or a suite-level lock that quiesces other coordinator-using
-# tests while this module runs. Until then this asserts the full lifecycle
-# OPPORTUNISTICALLY (xfail, non-strict): it PASSES when the loop happens to win
-# enough coordinator time to terminate, and XFAILs (not a suite failure) when it
-# is starved — so a real regression that breaks teardown when the loop DOES get to
-# run still surfaces (xpass under a clean window), without the shared-suite
-# contention making CI flaky.
-@pytest.mark.xfail(
-    reason="single-game coordinator contention with the parallel suite can starve "
-    "the cohort soak before verdict/teardown; see module note + issue #1069",
-    strict=False,
-)
+# THE FIX: docker-compose.agent-coordinator.yml gives the agent its OWN
+# game-coordinator (``agent-game-coordinator``, its own session registry) and the
+# agent is pointed at it via GAME_COORDINATOR_ADDR. The suite's coordinator_idle
+# fixture dials the SHARED ``game-coordinator`` by service name, so it never
+# touches this one — the cohort loop gets exclusive, uninterrupted coordinator
+# time and the soak terminates deterministically within CONCLUDE_TIMEOUT. So this
+# is now a HARD assertion (no xfail): a regression that breaks declare -> verdict
+# -> teardown fails CI.
 def test_cohort_loop_runs_to_verdict_and_terminates(agent_experiment_stack):
     """The FULL cohort loop reaches a terminal verdict and TEARS DOWN:
-    declared -> paired games conclude -> verdict -> experiment.concluded +
-    experiment.torn_down. Opportunistic (xfail) — see the module note above for
-    the single-game-coordinator contention that makes it non-deterministic in the
-    shared session, and the proposed harness fix to promote it to a hard gate."""
+    declared -> paired games conclude -> verdict -> experiment.concluded ->
+    targeting torn down + capacity freed. HARD gate (#1163): the agent runs against
+    a DEDICATED coordinator (docker-compose.agent-coordinator.yml) so it owns its
+    registry and is not starved by the shared-suite contention — see the comment
+    above."""
     assert _poll_log_contains(LOG_DECLARED, DECLARE_TIMEOUT), (
         "experiment was never declared"
     )
     assert _poll_log_contains(LOG_GAME_CONCLUDED, CONCLUDE_TIMEOUT), (
         "no shadow game ever concluded"
     )
-    # The experiment reaches a verdict and TERMINATES.
+    # The experiment reaches a verdict (always logged, every outcome).
     assert _poll_log_contains(LOG_CONCLUDED, CONCLUDE_TIMEOUT), (
         "experiment never reached a verdict (no experiment.concluded); log tail:\n"
         + _agent_logs()[-4000:]
     )
-    assert _poll_log_contains(LOG_TORN_DOWN, CONCLUDE_TIMEOUT), (
-        "experiment never tore down; log tail:\n" + _agent_logs()[-4000:]
+
+    # ...and TERMINATES (targeting stripped, capacity freed). The terminal marker
+    # depends on the verdict outcome (see the LOG_PROMOTED note): a discard/
+    # inconclusive/abort logs experiment.torn_down; a promote routes through the
+    # promoter (status DONE) and surfaces the promotion log line instead. Accept
+    # EITHER so the gate is deterministic regardless of which the synthetic mock
+    # games produce — both prove the loop reached a TERMINAL state and freed the
+    # experiment, which is the regression this gate guards.
+    def _terminated() -> bool:
+        log = _agent_logs()
+        return (
+            LOG_TORN_DOWN in log
+            or LOG_PROMOTED in log
+            or LOG_PROMOTE_FAILED in log
+        )
+
+    assert poll_until(_terminated, timeout=CONCLUDE_TIMEOUT, interval=1.0), (
+        "experiment never reached a terminal teardown (no experiment.torn_down / "
+        "promotion terminal); log tail:\n" + _agent_logs()[-4000:]
     )
     assert "panic:" not in _agent_logs(), "agent panicked during the cohort loop"

@@ -1,0 +1,93 @@
+# Dedicated game-coordinator for the agent cohort-loop soak (#1163).
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# The agent experiment cohort loop drives synthetic shadow games against a
+# game-coordinator. The SHARED suite coordinator (joustmania-game-coordinator) is
+# a single session registry capped at GAME_MAX_CONCURRENT_GAMES=4 and is also the
+# target of the suite's per-test ``coordinator_idle`` autouse fixture, which
+# force-ends EVERY live session before each test (tests/integration/conftest.py).
+# So while the cohort module runs, the agent's in-flight paired shadow games are
+# repeatedly wiped by that quiesce and contend for the shared coordinator's slots
+# with the warmup/residual real game. The loop wins only a brief free window —
+# ~3 games conclude — then starves before the games-budget/target-N backstop
+# fires, so the full declare -> verdict -> teardown SOAK could not complete within
+# the timeout. That is why #1069 (PR #1159) had to mark the soak xfail(strict=False).
+#
+# THE FIX (Option A from #1163: a dedicated coordinator)
+# ------------------------------------------------------
+# Give the agent its OWN game-coordinator instance with its OWN session registry
+# and capacity. The agent is pointed at it via GAME_COORDINATOR_ADDR (already an
+# env override on the agent's gamerunner; see services/agent/gamerunner/env.go).
+# The suite's coordinator_idle fixture dials ``game-coordinator`` by service name,
+# so it NEVER touches this dedicated one — the cohort loop gets exclusive,
+# uninterrupted coordinator time and the soak completes deterministically.
+#
+# Layered ON TOP of docker-compose.dry-run.yml by the cohort test module
+# (test_experiment_cohort_loop.py) under ``--profile agent``, so it is inert for
+# every other stack / test.
+#
+# COLLISION SAFETY (#1163 constraint)
+# -----------------------------------
+# - Distinct container_name (joustmania-agent-game-coordinator) — no clash with
+#   the hardcoded joustmania-game-coordinator.
+# - NO host port binding (``expose`` only) — docker-compose.override.yml binds
+#   50053 on the host for the SHARED coordinator; this dedicated one is reached
+#   only by in-network service DNS (agent-game-coordinator:50053), so there is no
+#   host-port collision.
+# - Shares the existing controller-manager (mock-control API) and flagd: shadow
+#   games reserve TAG-ISOLATED mock controllers (no slot contention there) and
+#   read the SAME shadow-scoped flag rules the agent writes via flagd. The only
+#   thing dedicated is the session registry / capacity, which is the contended
+#   resource.
+
+services:
+  # Dedicated coordinator for the agent profile. Same image/build as the shared
+  # one; default FLAGD_HOST=flagd / CONTROLLER_MANAGER_HOST=controller-manager
+  # (services/game_coordinator/grpc_clients.py) reach the shared flagd +
+  # controller-manager on the joustmania network.
+  agent-game-coordinator:
+    profiles:
+      - agent
+    image: ghcr.io/watchmejoustmyflags/joustmania/game-coordinator-service:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: services/game_coordinator/Dockerfile
+    container_name: joustmania-agent-game-coordinator
+    # Internal-only: reached by service DNS (agent-game-coordinator:50053). No
+    # host binding, so it cannot collide with the override's 50053 host map.
+    expose:
+      - "50053"
+      - "8000"
+    environment:
+      - OTEL_SERVICE_NAME=agent-game-coordinator-service
+      - OTEL_SERVICE_NAMESPACE=joustmania
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+      - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
+      - SERVICE_VERSION=${IMAGE_TAG:-dev}
+      # The cohort soak owns this whole coordinator: let the agent run its paired
+      # arms concurrently without tripping the total ceiling. Mirrors the CI
+      # shadow caps but on a registry NOTHING else touches.
+      - GAME_MAX_CONCURRENT_GAMES=8
+      - GAME_MAX_SHADOW_GAMES=4
+    depends_on:
+      flagd:
+        condition: service_started
+    networks:
+      - joustmania
+    restart: unless-stopped
+    stop_grace_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: '1.0'
+
+  # Point the agent's shadow-game runner at the dedicated coordinator. The mock
+  # controller endpoint stays the shared controller-manager (tag-isolated mock
+  # controllers — no contention). GAME_COORDINATOR_ADDR is read by
+  # services/agent/gamerunner/env.go (ConfigFromEnv); declare it here so compose
+  # passes it through to the container.
+  agent:
+    environment:
+      - GAME_COORDINATOR_ADDR=agent-game-coordinator:50053
