@@ -47,7 +47,12 @@ func (l *Loop) applyAsyncResult(root context.Context, snapshot flags.Snapshot, t
 	// Export arrival) so the trace duration covers the whole fire->infer->apply span,
 	// the same backdating runDecision's root uses. It carries the game id so a Jaeger
 	// query by game.id finds the async decision alongside the sync ones.
-	applyCtx, applyRoot := l.Tracer.Start(root, SpanLLMApply,
+	// #1140 (Slice A): the apply root is parent-less by the #917 non-blocking design.
+	// Link it back to the fire cycle's originating agent.signal_received trace (carried
+	// as a SpanContext value on the outcome) so the apply trace — and the agent.decision/
+	// agent.action spans nested under it — is navigable from the signal that caused it.
+	// No-op when out.fireSC is invalid (the production default), exactly like gameTraceLink.
+	applyOpts := []trace.SpanStartOption{
 		trace.WithTimestamp(trig.T0),
 		trace.WithSpanKind(trace.SpanKindInternal),
 		trace.WithAttributes(
@@ -55,7 +60,9 @@ func (l *Loop) applyAsyncResult(root context.Context, snapshot flags.Snapshot, t
 			attribute.String(AttrGameID, l.gameID),
 			attribute.Int64(AttrLLMLatencyMs, out.latencyMs()),
 		),
-	)
+	}
+	applyOpts = append(applyOpts, fireCycleLink(out.fireSC)...)
+	applyCtx, applyRoot := l.Tracer.Start(root, SpanLLMApply, applyOpts...)
 	defer applyRoot.End()
 
 	// Emit the agent.llm.infer call span as a child of the apply root, with the REAL
