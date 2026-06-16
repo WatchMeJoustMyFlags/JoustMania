@@ -79,3 +79,23 @@ services:
       # agent autonomously pick which game.json flag to experiment on (alongside the
       # seed). The other AGENT_EXPERIMENT_DYNAMIC_* knobs pass through from the base.
       - AGENT_EXPERIMENT_DYNAMIC_ENABLED=${AGENT_EXPERIMENT_DYNAMIC_ENABLED:-false}
+
+  # #1167: experiment-heavy collector envelope. The dry-run cohort loop runs ~4
+  # paired shadow games/tick (~20 in flight), each emitting decision/action/effect
+  # + experiment.* spans (all #1140 Links). At the lean #1161 base envelope
+  # (768 MiB container / limiter 600/150) the collector OOM-killed (exit 137)
+  # within ~2 min and refused/dropped agent spans. We keep ALL spans (no sampling)
+  # and instead raise the ceiling ONLY for this experiment-heavy stack so the
+  # Pi/prod base stays lean (experiments default off there). Raise the container
+  # to 1536 MiB AND set the env-substituted limiter (config.yaml memory_limiter)
+  # to 1200/300 so the limiter sheds NEAR the 1.5 GiB ceiling (~80% / ~25%) rather
+  # than backpressuring at 600 — without this matching limiter bump the bigger
+  # container would be wasted. Merges onto the base collector by service name.
+  otel-collector:
+    environment:
+      - OTEL_MEMLIMIT_MIB=1200
+      - OTEL_MEMSPIKE_MIB=300
+    deploy:
+      resources:
+        limits:
+          memory: 1536m
