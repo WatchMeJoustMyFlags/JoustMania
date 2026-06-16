@@ -565,6 +565,21 @@ class Player:
     # allow-list gate. See ``_compute_effective_thresholds`` for the precedence.
     soft_penalty_until: float = 0.0
     soft_penalty_factor: float = 1.0
+    # Time-boxed AUTO-RUBBERBAND boost (#1143, #1103 Phase 3). A SINGLE agent
+    # decision (auto_rubberband=gentle|strong) is expanded by the coordinator
+    # across players based on the LIVE skill gap: the trailing player(s) — those
+    # closest to their death threshold — receive a temporary handicap BOOST that
+    # COMPRESSES the gap to the leader. Like partial_shield it STRENGTHENS (boost
+    # >= 1.0, composed by MAX), but unlike it the boost is computed per-player
+    # from the gap and is CAPPED so the boosted laggard can never overtake the
+    # current leader (never inverts standings). While ``rubberband_until`` is in
+    # the future, ``rubberband_boost`` composes into the effective handicap by the
+    # MAX (alongside partial_shield), still clamped [0.5, 2.0] so even a maxed
+    # boost is "harder to die", never immune / never instant-death. On expiry the
+    # boost silently stops applying (no reset task needed). 1.0 / past deadline =
+    # inactive. Shadow-game-only via the allow-list gate.
+    rubberband_until: float = 0.0
+    rubberband_boost: float = 1.0
     # Per-player countdown span (created before countdown, ended after)
     _countdown_span: trace.Span | None = None
     # Health tracking (#571: controller health on player_lifecycle spans)
@@ -1571,16 +1586,21 @@ class BaseGameMode(ABC):
         # Composition precedence (last-applied wins by intent):
         #   1. standing handicap_factor (set_player_handicap, #1107)
         #   2. partial_shield boost (#1129) — STRENGTHENS via max (protection)
+        #   2b. auto_rubberband boost (#1143) — STRENGTHENS via max (gap-compression)
         #   3. soft_penalty tighten (#1134) — WEAKENS via min (pressure)
-        # The soft_penalty MIN is applied AFTER the partial_shield MAX, so an
-        # active tighten can cut through an active partial_shield boost: pressure
-        # deliberately overrides protection (the mirror of partial_shield, which
-        # could never weaken a standing handicap). The final clamp [0.5, 2.0]
-        # keeps even a fully-tightened threshold finite — never instant-death.
+        # The two STRENGTHENING boosts (partial_shield, auto_rubberband) both
+        # compose by MAX so the strongest active protection wins; the soft_penalty
+        # MIN is applied AFTER, so an active tighten can cut through either boost:
+        # pressure deliberately overrides protection (the mirror of partial_shield,
+        # which could never weaken a standing handicap). The final clamp [0.5, 2.0]
+        # keeps even a fully-tightened threshold finite — never instant-death — and
+        # caps even a maxed boost at 2x — "harder to die", never immune.
         now = time.time()
         effective_handicap = player.handicap_factor
         if now < player.partial_shield_until:
             effective_handicap = max(effective_handicap, player.partial_shield_boost)
+        if now < player.rubberband_until:
+            effective_handicap = max(effective_handicap, player.rubberband_boost)
         if now < player.soft_penalty_until:
             effective_handicap = min(effective_handicap, player.soft_penalty_factor)
         handicap = max(0.5, min(2.0, effective_handicap))
@@ -2186,6 +2206,141 @@ class BaseGameMode(ABC):
         await self._warn_player(serial, 0.0, self._compute_effective_thresholds(player)[0])
 
         return True
+
+    # Auto-rubberband defaults (#1143, #1103 Phase 3). A SINGLE agent decision is
+    # expanded across players by the coordinator from the live skill gap. The
+    # boost is TIME-BOXED (re-applied each agent cycle while the decision holds)
+    # and BOUNDED: ``RUBBERBAND_MAX_BOOST_GENTLE``/``_STRONG`` cap the per-player
+    # boost added on top of the neutral 1.0, and the boost a laggard gets is
+    # ADDITIONALLY capped so its boosted death threshold can never exceed the
+    # current leader's (no inversion of standings). Seconds are short so the boost
+    # naturally expires shortly after the decision is withdrawn.
+    RUBBERBAND_BOOST_MIN = 1.0
+    RUBBERBAND_BOOST_MAX = 2.0
+    RUBBERBAND_DEFAULT_SECONDS = 5.0
+    RUBBERBAND_MAX_SECONDS = 30.0
+    # Per-strength cap on the boost ADDED above the neutral 1.0 (so gentle tops out
+    # at 1.2x, strong at 1.4x — well inside the [0.5, 2.0] threshold clamp).
+    RUBBERBAND_MAX_BOOST_GENTLE = 0.2
+    RUBBERBAND_MAX_BOOST_STRONG = 0.4
+
+    async def apply_auto_rubberband(self, strength: str, seconds: float | None = None) -> int:
+        """Auto-compress the live skill gap by boosting the trailing player(s) (#1143).
+
+        Unlike :meth:`set_player_handicap` / :meth:`grant_partial_shield` (the
+        agent hand-picks one serial + factor), ``auto_rubberband`` is a SINGLE
+        decision (``"gentle"`` | ``"strong"``) that the COORDINATOR expands across
+        players from the live skill gap. The standing proxy is each alive player's
+        HEADROOM to their effective death threshold (``death - smoothed_accel``):
+        a large headroom = comfortably ahead (the leader), a small headroom = on
+        the edge (the laggard). Trailing players receive a temporary handicap
+        BOOST — the same #1107 mechanism, composed by MAX in
+        :meth:`_compute_effective_thresholds` — that raises their death threshold,
+        compressing the gap to the leader.
+
+        Safety (never inverts standings, never instant-death):
+
+        - The boost added above 1.0 is capped per strength
+          (``RUBBERBAND_MAX_BOOST_GENTLE`` 0.2 / ``RUBBERBAND_MAX_BOOST_STRONG``
+          0.4), so a laggard's threshold rises by at most 20% / 40%.
+        - It is ADDITIONALLY capped so the laggard's BOOSTED death threshold can
+          never exceed the current leader's death threshold — compression only,
+          never overtaking (no standings inversion).
+        - The combined handicap is still clamped [0.5, 2.0] downstream, so even a
+          maxed boost is "harder to die", never immune / never instant-death.
+
+        Needs at least two alive players to have a gap to compress; with fewer it
+        is a no-op. Time-box / strengthen semantics mirror
+        :meth:`grant_partial_shield` (extend-not-shorten, strengthen-not-weaken).
+
+        Args:
+            strength: ``"gentle"`` or ``"strong"``. Any other value is a no-op.
+            seconds: Boost window; defaults to ``RUBBERBAND_DEFAULT_SECONDS``,
+                capped at ``RUBBERBAND_MAX_SECONDS``.
+
+        Returns:
+            The number of players boosted (0 on a no-op).
+        """
+        strength = (strength or "").strip().lower()
+        if strength == "gentle":
+            max_boost = self.RUBBERBAND_MAX_BOOST_GENTLE
+        elif strength == "strong":
+            max_boost = self.RUBBERBAND_MAX_BOOST_STRONG
+        else:
+            return 0  # unknown strength: safe no-op
+
+        if seconds is None:
+            seconds = self.RUBBERBAND_DEFAULT_SECONDS
+        if seconds <= 0:
+            return 0
+        seconds = min(seconds, self.RUBBERBAND_MAX_SECONDS)
+
+        # Rank alive players by headroom to their effective death threshold. We
+        # need at least two to have a gap to compress.
+        alive = [p for p in self.players.values() if p.alive]
+        if len(alive) < 2:
+            return 0
+
+        headrooms: dict[str, tuple[float, float]] = {}  # serial -> (headroom, death)
+        for p in alive:
+            _, death = self._compute_effective_thresholds(p)
+            headrooms[p.serial] = (death - p.smoothed_accel, death)
+
+        # Leader = most headroom (comfortably ahead); laggard ranking from least.
+        max_leader_headroom = max(hd[0] for hd in headrooms.values())
+        # The gap span across the field; if everyone is equal there is nothing to
+        # compress (gap == 0) and we no-op rather than boost identically.
+        min_headroom = min(hd[0] for hd in headrooms.values())
+        gap = max_leader_headroom - min_headroom
+        if gap <= 1e-9:
+            return 0
+
+        now = time.time()
+        boosted = 0
+        for p in alive:
+            headroom, death = headrooms[p.serial]
+            if death <= 0:
+                continue
+            # How far behind the leader this player is, in [0, 1]: the laggard
+            # (min headroom) is 1.0, the leader is 0.0. The boost scales with this
+            # deficit and the strength cap, so the leader gets ~0 and the laggard
+            # gets up to max_boost.
+            deficit = (max_leader_headroom - headroom) / gap
+            target_boost = 1.0 + max_boost * deficit
+            # No-invert cap (standings = headroom to death, NOT the raw threshold).
+            # The boosted player's headroom (death*boost - accel) must never exceed
+            # the leader's headroom — compression toward the leader, never past it.
+            # Solve death*boost - accel <= leader_headroom => boost <= cap.
+            no_invert_cap = (max_leader_headroom + p.smoothed_accel) / death
+            target_boost = min(target_boost, max(1.0, no_invert_cap))
+            # Final clamp to the rubberband boost band (still re-clamped [0.5,2.0]
+            # downstream when composed).
+            target_boost = max(self.RUBBERBAND_BOOST_MIN, min(self.RUBBERBAND_BOOST_MAX, target_boost))
+            if target_boost <= 1.0 + 1e-9:
+                continue  # nothing to add for this player (e.g. the leader)
+
+            new_until = now + seconds
+            # Extend-not-shorten / strengthen-not-weaken (mirror partial_shield).
+            boost = target_boost
+            if now < p.rubberband_until:
+                new_until = max(new_until, p.rubberband_until)
+                boost = max(boost, p.rubberband_boost)
+            p.rubberband_until = new_until
+            p.rubberband_boost = boost
+            boosted += 1
+            if p.span:
+                p.span.add_event(
+                    "auto_rubberband_boost",
+                    attributes={
+                        "rubberband_strength": strength,
+                        "rubberband_boost": boost,
+                        "rubberband_seconds": seconds,
+                    },
+                )
+
+        if boosted:
+            logger.info(f"Auto-rubberband ({strength}): boosted {boosted} trailing player(s) for {seconds:.1f}s")
+        return boosted
 
     # Spawn grace applied to a revived player so they don't instantly re-die
     # before they can stop moving (#730, N5). Mirrors Nonstop/Zombie respawn grace.
