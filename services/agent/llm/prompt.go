@@ -275,6 +275,10 @@ const genericModeFragment = `GAME MODE — not specified this cycle: reason only
 //   - partial_shield (#1129) instead raises the player's death threshold by up to
 //     ~2x via a time-boxed handicap for N seconds — much harder to die but NOT
 //     immune (clamped, finite threshold), the softer sibling of grant_shield.
+//   - soft_penalty (#1134) is a RECOVERABLE alternative to eliminate_player: "warn"
+//     just flashes the on-notice cue (no threshold change); "tighten" briefly LOWERS
+//     the death threshold (mirror of partial_shield) so they're easier to die for a
+//     few seconds — pressure, not guaranteed elimination (still clamped, never instant).
 //   - eliminate_player is immediate + permanent (FFA); end_game ends the round;
 //     win = last player alive.
 //
@@ -305,6 +309,12 @@ Higher sensitivity level = higher bar = HARDER to die; slower tempo = lower bar
     2.0): makes a player MUCH harder to eliminate (raises their death threshold by
     up to ~2x via a time-boxed handicap) for N seconds, but NOT immune — a huge
     spike can still kill them. A softer, less binary alternative to grant_shield.
+  - soft_penalty ("warn" default | "tighten" | "tighten:<seconds>:<factor>",
+    factor 0.5-1.0 default 0.6): a graduated, RECOVERABLE alternative to
+    eliminate_player. "warn" flashes the on-notice cue only (no threshold change);
+    "tighten" briefly LOWERS the death threshold (mirror of partial_shield) so the
+    player is easier to die for N seconds — pressure, NOT guaranteed elimination
+    (still clamped, never instant-death).
   - eliminate_player: immediate and PERMANENT removal. end_game: ends the round
     now. Both are maximal, irreversible actions — last player alive wins.`
 

@@ -68,6 +68,17 @@
       "defaultVariant": "none",
       "targeting": {}
     },
+    "soft_penalty_action": {
+      "state": "ENABLED",
+      "variants": {
+        "none": "none",
+        "warn": "warn",
+        "tighten": "tighten",
+        "tighten_hard": "tighten:5:0.5"
+      },
+      "defaultVariant": "none",
+      "targeting": {}
+    },
     "volume_override": {
       "state": "ENABLED",
       "variants": {

@@ -121,6 +121,112 @@ async def handle_partial_shield(ctx: InterventionContext, manager: InterventionM
         await grant(serial, seconds, boost)
 
 
+# Soft-penalty (#1134, #1103 Phase 3) value parsing. Value is a STRING:
+#   "warn" (default)               -> visible warning feedback, no threshold change
+#   "tighten"                      -> default expiring handicap reduction
+#   "tighten:<seconds>:<factor>"   -> explicit tighten window/strength
+# Bounds mirror BaseGameMode's clamps so a malformed value degrades to a safe
+# default ("warn") rather than dispatching garbage.
+SOFT_PENALTY_NONE_VALUES = frozenset({"", "none", "off", "0"})
+SOFT_PENALTY_DEFAULT_SECONDS = 5.0
+SOFT_PENALTY_DEFAULT_FACTOR = 0.6
+SOFT_PENALTY_FACTOR_MIN = 0.5
+SOFT_PENALTY_FACTOR_MAX = 1.0
+SOFT_PENALTY_MAX_SECONDS = 30.0
+
+
+def parse_soft_penalty_value(value: object) -> tuple[str, float, float] | None:
+    """Parse a soft_penalty value into ``(action, seconds, factor)`` or ``None``.
+
+    Accepts ``"warn"``, ``"tighten"`` or ``"tighten:<seconds>:<factor>"``.
+    Returns ``None`` only for the neutral / empty forms (caller treats ``None`` as
+    a safe no-op). ANY malformed/unknown value degrades to the safe default
+    ``("warn", 0.0, 1.0)`` — never garbage:
+
+    - ``"warn"`` -> ``("warn", 0.0, 1.0)`` (seconds/factor unused by warn).
+    - ``"tighten"`` -> default seconds/factor.
+    - ``"tighten:<seconds>:<factor>"`` -> parsed + clamped (seconds capped at
+      ``SOFT_PENALTY_MAX_SECONDS``, factor to [``SOFT_PENALTY_FACTOR_MIN``,
+      ``SOFT_PENALTY_FACTOR_MAX``]); non-numeric / non-positive seconds -> the
+      default tighten window rather than a garbage dispatch.
+    """
+    text = str(value).strip().lower()
+    if text in SOFT_PENALTY_NONE_VALUES:
+        return None
+
+    parts = text.split(":")
+    head = parts[0]
+
+    if head == "tighten":
+        seconds = SOFT_PENALTY_DEFAULT_SECONDS
+        factor = SOFT_PENALTY_DEFAULT_FACTOR
+        if len(parts) == 3:
+            try:
+                parsed_seconds = float(parts[1])
+                parsed_factor = float(parts[2])
+            except ValueError:
+                parsed_seconds = parsed_factor = None
+            if parsed_seconds is not None and parsed_seconds > 0:
+                seconds = min(parsed_seconds, SOFT_PENALTY_MAX_SECONDS)
+            if parsed_factor is not None:
+                factor = max(SOFT_PENALTY_FACTOR_MIN, min(SOFT_PENALTY_FACTOR_MAX, parsed_factor))
+        # Any other shape ("tighten:5", "tighten:a:b:c") keeps safe defaults.
+        return "tighten", seconds, factor
+
+    # "warn" and every unknown/malformed value degrade to the safe default warn.
+    return "warn", 0.0, 1.0
+
+
+async def handle_soft_penalty(ctx: InterventionContext, manager: InterventionManager) -> None:
+    """Apply per-player graduated soft penalties via per-serial targeting (#1134).
+
+    A RECOVERABLE alternative to the permanent ``eliminate_player``. Resolves the
+    STRING flag once per active serial via the manager's reusable
+    ``resolve_player_targets`` helper, parses each value with
+    :func:`parse_soft_penalty_value` (neutral -> skip; malformed -> safe default
+    ``warn``), and dispatches:
+
+    - ``warn`` -> ``game.warn_player`` (visible flash + rumble cue, NO threshold
+      change — fully recoverable).
+    - ``tighten`` -> ``game.apply_soft_penalty`` (short EXPIRING handicap
+      reduction; the MIRROR of partial_shield — temporarily easier to die, still
+      clamped, never instant-death).
+
+    Reverting requires no action: warn leaves no state, and a tighten simply stops
+    applying when its deadline passes (``_compute_effective_thresholds`` reads it
+    live each frame).
+    """
+    game = ctx.game
+    if game is None:
+        logger.debug("soft_penalty: no live game, ignoring")
+        return
+
+    values = manager.resolve_player_targets(
+        flag_key=ctx.spec.flag_key,
+        default="none",
+        game=game,
+        value_kind="string",
+        battery_gate=True,
+        game_id=ctx.game_id,
+    )
+
+    warn = getattr(game, "warn_player", None)
+    tighten = getattr(game, "apply_soft_penalty", None)
+    if not callable(warn) or not callable(tighten):
+        logger.debug("soft_penalty: game missing warn_player/apply_soft_penalty, ignoring")
+        return
+
+    for serial, raw in values.items():
+        parsed = parse_soft_penalty_value(raw)
+        if parsed is None:
+            continue  # neutral: no penalty for this serial
+        action, seconds, factor = parsed
+        if action == "tighten":
+            await tighten(serial, seconds, factor)
+        else:
+            await warn(serial)
+
+
 async def handle_shield_seconds(ctx: InterventionContext, manager: InterventionManager) -> None:
     """Grant per-player shields via per-serial targeting resolution (N3).
 
@@ -232,6 +338,11 @@ def register_lifecycle_handlers(manager: InterventionManager) -> None:
     manager.register_handler(
         "partial_shield_seconds",
         lambda ctx: handle_partial_shield(ctx, manager),
+    )
+    # soft_penalty (#1134) also needs the manager for the targeting helper.
+    manager.register_handler(
+        "soft_penalty_action",
+        lambda ctx: handle_soft_penalty(ctx, manager),
     )
     manager.register_handler("eliminate_player", handle_eliminate_player)
     manager.register_handler("revive_player", handle_revive_player)
