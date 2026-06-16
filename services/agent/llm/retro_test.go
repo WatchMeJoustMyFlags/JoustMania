@@ -9,6 +9,7 @@ import (
 
 	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
+	"github.com/joustmania/agent/gamesummary"
 )
 
 // retroSnapshot is the shared flag snapshot for the retro golden scenarios. Only
@@ -21,6 +22,14 @@ func retroSnapshot() flags.Snapshot {
 			"balanced":  0.7,
 			"chaos":     0.1,
 			"endurance": 0.1,
+		},
+		// #1158: the retro System prompt now renders the REAL intervention allow-list
+		// as the recommendation surface (no phantom calibration flags), so the golden
+		// snapshot carries a representative "standard" variant allow-list.
+		InterventionsAllowed: []string{
+			"play_audio_cue", "send_controller_effect", "adjust_volume",
+			"adjust_music_tempo", "set_pacing_profile", "adjust_player_sensitivity",
+			"grant_shield",
 		},
 		Capability: flags.Capability{Model: "phi4-mini"},
 	}
@@ -209,7 +218,12 @@ func TestRetroGolden(t *testing.T) {
 			got := renderRetroGolden(BuildRetro(RetroInput{
 				Snapshot: tc.snapshot,
 				Context:  tc.context,
-				Now:      fixedNow,
+				// #1158: build the per-game Summary the same way retro_capture.go does —
+				// a pure fold over the finished-game snapshot with the injected Now — so
+				// the golden exercises the per-player ARC stanzas (PlayerArc), not the old
+				// flat terminal snapshot.
+				Summary: gamesummary.BuildSummary(tc.context, gamesummary.BuildOptions{Now: fixedNow}),
+				Now:     fixedNow,
 			}))
 			path := filepath.Join("testdata", tc.name+".golden")
 			if *update {
@@ -276,9 +290,11 @@ func TestWinnerSerial(t *testing.T) {
 // TestRetroDeterminism: identical input yields byte-identical output regardless
 // of player map insertion order.
 func TestRetroDeterminism(t *testing.T) {
+	ctx := retroThreePlayers()
 	in := RetroInput{
 		Snapshot: retroSnapshot(),
-		Context:  retroThreePlayers(),
+		Context:  ctx,
+		Summary:  gamesummary.BuildSummary(ctx, gamesummary.BuildOptions{Now: fixedNow}),
 		Now:      fixedNow,
 	}
 	first := BuildRetro(in)
@@ -288,20 +304,89 @@ func TestRetroDeterminism(t *testing.T) {
 	}
 }
 
-// TestRetroContractKeys: the System prompt names every response-contract key and
-// every calibration flag, so it cannot drift from the documented surface.
+// TestRetroContractKeys: the System prompt names every response-contract key, so
+// it cannot drift from the documented surface (#1158: lever/session_focus, not the
+// old phantom-flag "flag" enum).
 func TestRetroContractKeys(t *testing.T) {
 	sys := BuildRetro(RetroInput{Snapshot: retroSnapshot(), Context: retroThreePlayers(), Now: fixedNow}).System
-	for _, key := range []string{"session_assessment", "suggestions", "flag", "value", "reason"} {
+	for _, key := range []string{"session_assessment", "suggestions", "lever", "value", "reason", "session_focus"} {
 		if !strings.Contains(sys, `"`+key+`"`) {
 			t.Errorf("system prompt missing response-contract key %q", key)
 		}
 	}
-	for _, flag := range []string{
-		calibDifficultyFactor, calibPacingProfile, calibThresholdTable, calibObjectiveVariant,
+}
+
+// TestRetroSystemNoPhantomFlags asserts the four phantom calibration flags the
+// pre-#1158 prompt invented are GONE from the System prompt — none are real
+// agent-readable init flags (threshold_table / objective_variant exist nowhere;
+// global_difficulty_factor / pacing_profile are game_coordinator intervention-domain
+// flags the agent only writes INDIRECTLY via interventions, never reads at INIT).
+// The retro must recommend REAL intervention levers, not phantom flags.
+func TestRetroSystemNoPhantomFlags(t *testing.T) {
+	sys := BuildRetro(RetroInput{Snapshot: retroSnapshot(), Context: retroThreePlayers(), Now: fixedNow}).System
+	// threshold_table / objective_variant / global_difficulty_factor exist in no
+	// agent-readable init surface and must be absent outright.
+	for _, phantom := range []string{
+		"global_difficulty_factor", "threshold_table", "objective_variant",
 	} {
-		if !strings.Contains(sys, flag) {
-			t.Errorf("system prompt missing calibration flag %q", flag)
+		if strings.Contains(sys, phantom) {
+			t.Errorf("system prompt still cites phantom calibration flag %q", phantom)
+		}
+	}
+	// The bare "pacing_profile" calibration flag is phantom; the legitimate
+	// set_pacing_profile INTERVENTION (which contains it) is allowed. So scrub the
+	// real lever name first, then assert the bare flag name is gone.
+	scrubbed := strings.ReplaceAll(sys, "set_pacing_profile", "")
+	if strings.Contains(scrubbed, "pacing_profile") {
+		t.Errorf("system prompt still cites phantom calibration flag \"pacing_profile\" (not as set_pacing_profile)")
+	}
+	// The old calibration-surface framing ("read at game INIT") must be gone.
+	if strings.Contains(sys, "read at\ngame INIT") || strings.Contains(sys, "CALIBRATION SURFACE") {
+		t.Errorf("system prompt still frames an init-time calibration surface")
+	}
+	// The renamed advisory goal field must not collide with the in-game objective_served.
+	if strings.Contains(sys, "objective_served") {
+		t.Errorf("retro system prompt should use session_focus, not the in-game objective_served")
+	}
+}
+
+// TestRetroSystemPhysicsGrounding asserts the System prompt carries the SAME
+// physics + FFA-mode grounding the in-game prompt got (#1091), so the offline
+// analyst reasons within the real mechanics (#1158 fix B).
+func TestRetroSystemPhysicsGrounding(t *testing.T) {
+	sys := BuildRetro(RetroInput{Snapshot: retroSnapshot(), Context: retroThreePlayers(), Now: fixedNow}).System
+	for _, want := range []string{
+		"HOW THE GAME PHYSICALLY WORKS:",
+		"GAME MODE — FFA",
+		// a real lever from the allow-list, proving the recommendation surface is real.
+		"adjust_music_tempo",
+	} {
+		if !strings.Contains(sys, want) {
+			t.Errorf("retro system prompt missing grounding %q", want)
+		}
+	}
+}
+
+// TestRetroUserPerPlayerArcs asserts the User prompt renders the rich per-player
+// ARC fields from the Summary (#1158 fix A), not the old flat terminal snapshot.
+func TestRetroUserPerPlayerArcs(t *testing.T) {
+	ctx := retroMovementContext()
+	user := BuildRetro(RetroInput{
+		Snapshot: retroSnapshot(),
+		Context:  ctx,
+		Summary:  gamesummary.BuildSummary(ctx, gamesummary.BuildOptions{Now: fixedNow}),
+		Now:      fixedNow,
+	}).User
+	for _, want := range []string{
+		"Player arcs",
+		"survival_seconds=",
+		"elimination_offset_seconds=",
+		"near_death_ratio=",
+		"final_intensity=",
+		"Engagement trend (room",
+	} {
+		if !strings.Contains(user, want) {
+			t.Errorf("retro user prompt missing per-player arc field %q in:\n%s", want, user)
 		}
 	}
 }

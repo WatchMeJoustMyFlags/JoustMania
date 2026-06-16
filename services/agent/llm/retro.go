@@ -24,11 +24,13 @@ package llm
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
+	"github.com/joustmania/agent/gamesummary"
 )
 
 // RetroPrompt is the System/User prompt pair the agent would send to the offline
@@ -45,77 +47,113 @@ type RetroPrompt struct {
 type RetroInput struct {
 	Snapshot flags.Snapshot
 	Context  gamecontext.GameContext
-	Now      time.Time // injected for determinism — BuildRetro must never read the wall clock
+	// Summary is the already-built per-game narrative (#1158). The retro renders the
+	// rich per-player PlayerArc stanzas (survival / elimination-offset / sparkline /
+	// activity / near-death) the agent ALREADY computes in gamesummary.BuildSummary,
+	// instead of re-deriving a flat terminal snapshot. It is built by the caller from
+	// the SAME finished-game GameContext (gamesummary.BuildSummary is a pure fold), so
+	// no clock/disk is touched here and the prompt stays deterministic (PlayerArcs are
+	// serial-sorted, all offsets relative to game start). A zero Summary (no arcs)
+	// falls back to the room-level outcome block alone.
+	Summary gamesummary.Summary
+	Now     time.Time // injected for determinism — BuildRetro must never read the wall clock
 }
-
-// Calibration-surface flag names the analyst may suggest. These are the #766
-// calibration flags read at game INIT (docs/research/722-intervention-surface.md
-// §11) — NOT the in-game intervention allow-list. They are listed here once so
-// the System prompt and the contract-presence test share a single source.
-const (
-	calibDifficultyFactor = "global_difficulty_factor"
-	calibPacingProfile    = "pacing_profile"
-	calibThresholdTable   = "threshold_table"
-	calibObjectiveVariant = "objective_variant"
-)
 
 // BuildRetro renders the deterministic retrospective prompt for one finished
 // session. The same RetroInput (with a fixed Now) always yields a byte-identical
-// RetroPrompt.
+// RetroPrompt. The System prompt is grounded in the SAME physics + mode mechanics
+// the in-game prompt uses (#1158: physicalModel + modePromptFragment), and the
+// suggestion vocabulary is the REAL intervention allow-list — there are no
+// init-time "calibration flags"; the agent only ever acts through interventions.
 func BuildRetro(in RetroInput) RetroPrompt {
+	mode := stringOrUnknown(in.Context.Session.GameMode)
 	return RetroPrompt{
-		System: buildRetroSystem(),
-		User:   buildRetroUser(in.Context, in.Now),
+		System: buildRetroSystem(mode, in.Snapshot.InterventionsAllowed),
+		User:   buildRetroUser(in.Context, in.Summary, in.Now),
 		Model:  in.Snapshot.Capability.Model,
 	}
 }
 
 // buildRetroSystem renders the System prompt: the post-game analyst role, the
-// calibration surface as the suggestion vocabulary, the smallest-change policy,
-// and the JSON response contract. It takes no input — the calibration surface is
-// fixed, so the System prompt is constant (the session evidence lives in User).
-func buildRetroSystem() string {
-	return `You are the JoustMania post-game analyst. A physical movement party game has just
-ended. You receive a full session summary and must suggest CALIBRATION TWEAKS that
-would make the NEXT game more fun. You are NOT controlling a live game — you make
-at most a handful of recommendations, which a human reviews. Suggestions are
+// game-physics + mode grounding (#1158: the SAME physicalModel + modePromptFragment
+// the in-game buildSystem got via #1091, so the offline analyst reasons within the
+// real mechanics and cannot hallucinate combat/respawn/init-only "calibration
+// flags"), the REAL next-game lever vocabulary (the intervention allow-list — the
+// agent has no init-time calibration surface; it only ever acts through
+// interventions), the smallest-change policy, and the JSON response contract.
+//
+// #1158 fix B: the four phantom flags this prompt previously enumerated
+// (global_difficulty_factor / pacing_profile / threshold_table / objective_variant)
+// are GONE. Verified against the real schema: threshold_table and objective_variant
+// exist in NO flagd source; global_difficulty_factor and pacing_profile DO exist but
+// only as game_coordinator (interventions domain) flags the agent writes INDIRECTLY
+// via the adjust_global_difficulty / set_pacing_profile INTERVENTIONS — there is no
+// agent-side "read at game INIT" calibration surface. So the analyst recommends
+// LEVERS from the live intervention allow-list (the agent's only acting surface),
+// framed as how the NEXT game should open / be paced. The former objective_variant
+// enum collided with the in-game objective_served enum; the retro's advisory goal
+// field is renamed session_focus to remove the collision.
+func buildRetroSystem(mode string, allowed []string) string {
+	var b strings.Builder
+	b.WriteString(`You are the JoustMania post-game analyst. A physical movement party game has just
+ended. You receive a full session summary and must suggest how the NEXT game should
+be set up and paced to make it more fun. You are NOT controlling a live game — you
+make at most a handful of recommendations, which a human reviews. Suggestions are
 RECORDED ONLY and never auto-applied.
 
-CALIBRATION SURFACE — you may ONLY suggest changes to these flags. Each is read at
-game INIT:
+`)
+	// Physics + current-mode grounding (#1158), shared verbatim with the in-game
+	// prompt (#1091): the analyst must reason within the game's actual mechanics —
+	// motion-controlled, tempo-scaled elimination, no health/damage/combat — so it
+	// never invents mechanics the system does not have.
+	b.WriteString(physicalModel)
+	b.WriteString("\n\n")
+	b.WriteString(modePromptFragment(mode))
+	b.WriteString(`
 
-  ` + calibDifficultyFactor + `   (float, ~0.5..1.5; 1.0 = current) — scales overall
-                             movement demand for the next game.
-  ` + calibPacingProfile + `             (enum: "relaxed" | "standard" | "intense") — the
-                             music-schedule preset that shapes round tempo.
-  ` + calibThresholdTable + `            (named death/warning threshold table, e.g.
-                             "easy" | "standard" | "hard").
-  ` + calibObjectiveVariant + `          (enum: endurance | balanced | accelerate | chaos) —
-                             the session goal weighting for the next game.
+YOUR RECOMMENDATION SURFACE — the agent has NO init-time "calibration flags"; it
+only ever acts through INTERVENTIONS. So recommend how the next game should OPEN and
+be PACED using these same levers (only those the live allow-list below permits):
+`)
+	b.WriteString("  " + joinInterventions(allowed))
+	b.WriteString(`
 
-POLICY: suggest the SMALLEST change that addresses an observed problem. If the
-session looked healthy, return an empty suggestions list. Do not invent flags
-outside the calibration surface.
+POLICY: suggest the SMALLEST change that addresses an observed problem, grounded in
+the session evidence below (who faded when, who was near death, the engagement
+trend). If the session looked healthy, return an empty suggestions list. Do not
+invent levers outside the allow-list above.
 
 RESPONSE CONTRACT — reply with EXACTLY ONE JSON object, no prose, matching:
 {
   "session_assessment": "<one short sentence: how did this game go?>",
   "suggestions": [
     {
-      "flag": "<one of: ` + calibDifficultyFactor + `, ` + calibPacingProfile + `, ` + calibThresholdTable + `, ` + calibObjectiveVariant + `>",
-      "value": "<the suggested value as a string>",
+      "lever": "<one of the allow-list levers above>",
+      "value": "<the suggested next-game value/direction as a string>",
       "reason": "<one short sentence tying the change to session evidence>"
     }
-  ]
+  ],
+  "session_focus": "<one of: endurance, balanced, accelerate, chaos — the goal the next game should lean toward>"
 }
-If no tweak is warranted, return "suggestions": [].`
+If no tweak is warranted, return "suggestions": [].`)
+	return b.String()
 }
 
 // buildRetroUser renders the User message: the session header, the derived
-// outcome (duration, final active players, elimination order, winner), and the
-// per-player end-state sorted by serial. Now is rendered as the captured_at
-// timestamp in UTC RFC3339.
-func buildRetroUser(ctx gamecontext.GameContext, now time.Time) string {
+// outcome (duration, final active players, elimination order, winner), the
+// room-level engagement TREND, and the per-player ARC stanzas (#1158). Now is
+// rendered as the captured_at timestamp in UTC RFC3339.
+//
+// #1158 fix A: the per-player section is now built from the rich PlayerArc the
+// agent ALREADY computes in gamesummary.BuildSummary (survival_seconds /
+// elimination_offset_seconds / movement_sparkline / activity / final_intensity /
+// near_death_ratio + offset), instead of re-deriving a flat terminal snapshot that
+// dropped most of those values. Arcs are serial-sorted and offset-based, so the
+// stanza block stays deterministic. The room-level outcome / timeline / engagement
+// trend / speed blocks remain as context. When the Summary carries no arcs (a
+// pre-#1158 caller that never built one, or a game with no players), the stanza
+// block falls back to "(none)" and the rest of the prompt is unchanged.
+func buildRetroUser(ctx gamecontext.GameContext, summary gamesummary.Summary, now time.Time) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "SESSION RETROSPECTIVE (session=%s, kind=%s, mode=%s, captured_at=%s)\n",
 		ctx.SessionID, gameKindOrUnknown(ctx.GameKind), stringOrUnknown(ctx.Session.GameMode), now.UTC().Format(time.RFC3339))
@@ -135,35 +173,85 @@ func buildRetroUser(ctx gamecontext.GameContext, now time.Time) string {
 	writeTimeline(&b, ctx, now)
 	// #1082: the game-speed track the per-player proximity tracks are read against.
 	writeSpeedTrack(&b, ctx)
+	// #1158: the room-level engagement trend (active-count + mean-intensity over the
+	// game), straight off the Summary the agent already derived, kept as the
+	// session-wide context the per-player arcs read against.
+	writeEngagementTrend(&b, summary.EngagementTrend)
 
-	b.WriteString("\nPlayers (sorted by serial; \"unknown\" = signal never observed):\n")
-	if len(ctx.Players) == 0 {
+	// #1158: per-player ARC stanzas from the already-built Summary, replacing the old
+	// flat snapshot. Arcs are serial-sorted by BuildSummary, so the block is
+	// deterministic.
+	b.WriteString("\nPlayer arcs (sorted by serial; offsets relative to game start; \"unknown\" = never observed):\n")
+	if len(summary.PlayerArcs) == 0 {
 		b.WriteString("  (none)")
 		return b.String()
 	}
-
-	lines := make([]string, 0, len(serials))
-	for _, serial := range serials {
-		p := ctx.Players[serial]
-		lines = append(lines, fmt.Sprintf(
-			"  %s: outcome=%s battery_pct=%s skill=%s movement_intensity=%s movement_variance=%s",
-			serial,
-			playerOutcome(serial, ctx.Session.EliminationSequence),
-			floatPtrOrUnknown(p.BatteryPct),
-			floatPtrOrUnknown(p.SkillLevel),
-			floatPtrOrUnknown(p.MovementIntensity),
-			floatPtrOrUnknown(p.MovementVariance),
-		))
-		// #1082: the per-player movement TIME-SERIES line — sparkline + activity +
-		// proximity-to-death — so the analyst sees WHO was active/idle/erratic and WHO
-		// was close to death over the game, not just the end-state snapshot. The
-		// "→elim" marker fires for an eliminated player who crossed the threshold.
-		if track := renderPlayerTrack(p, ctx, now, eliminated(serial, ctx.Session.EliminationSequence)); track != "" {
-			lines = append(lines, track)
+	for i, arc := range summary.PlayerArcs {
+		if i > 0 {
+			b.WriteString("\n")
 		}
+		writePlayerArc(&b, arc, ctx.Session.EliminationSequence)
 	}
-	b.WriteString(strings.Join(lines, "\n"))
 	return b.String()
+}
+
+// writeEngagementTrend renders the room-level engagement series the Summary
+// derived from the #916 timeline (#1158): each down-sampled (offset, active,
+// mean-intensity) point, oldest-first, so the analyst sees how the WHOLE room's
+// engagement moved over the game. Omitted entirely when the trend is empty (keeps
+// the no-narrative prompt compact).
+func writeEngagementTrend(b *strings.Builder, trend []gamesummary.EngagementPoint) {
+	if len(trend) == 0 {
+		return
+	}
+	b.WriteString("\nEngagement trend (room; offset_seconds: active / mean_intensity; oldest first):\n")
+	for _, pt := range trend {
+		fmt.Fprintf(b, "  +%ss: active=%s mean_intensity=%s\n",
+			strconv.FormatFloat(pt.OffsetSeconds, 'f', 0, 64),
+			intPtrOrUnknown(pt.ActivePlayers),
+			floatPtrOrUnknown(pt.MeanIntensity))
+	}
+}
+
+// writePlayerArc renders one PlayerArc as a multi-field stanza (#1158): the
+// outcome + survival/elimination timing, the movement TIME-SERIES (sparkline +
+// activity), the closest call to the death threshold and when it happened, and the
+// final-state aggregates. Every field falls back to the "unknown" literal when the
+// arc never observed it, so a never-seen player renders honestly rather than
+// fabricating zeros. Pure over the arc + elimination sequence — no clock.
+func writePlayerArc(b *strings.Builder, arc gamesummary.PlayerArc, eliminationSequence []string) {
+	fmt.Fprintf(b, "  %s: outcome=%s survival_seconds=%s elimination_offset_seconds=%s\n",
+		arc.Serial,
+		playerOutcome(arc.Serial, eliminationSequence),
+		floatPtrOrUnknown(arc.SurvivalSeconds),
+		floatPtrOrUnknown(arc.EliminationOffsetSeconds))
+	fmt.Fprintf(b, "    movement=%s activity=%s\n",
+		sparklineOrUnknown(arc.MovementSparkline),
+		stringValueOrUnknown(arc.Activity))
+	fmt.Fprintf(b, "    near_death_ratio=%s near_death_offset_seconds=%s\n",
+		floatPtrOrUnknown(arc.NearDeathRatio),
+		floatPtrOrUnknown(arc.NearDeathOffsetSeconds))
+	fmt.Fprintf(b, "    final_intensity=%s final_skill=%s",
+		floatPtrOrUnknown(arc.FinalIntensity),
+		floatPtrOrUnknown(arc.FinalSkill))
+}
+
+// sparklineOrUnknown renders a movement sparkline string, or the "unknown" literal
+// when empty (the player had no movement history) — mirroring stringOrUnknown for
+// the non-pointer Summary string fields.
+func sparklineOrUnknown(s string) string {
+	if s == "" {
+		return unknown
+	}
+	return s
+}
+
+// stringValueOrUnknown renders a plain string field, or "unknown" when empty.
+func stringValueOrUnknown(s string) string {
+	if s == "" {
+		return unknown
+	}
+	return s
 }
 
 // sortedSerials returns the player serials sorted ascending. Sorting (not map

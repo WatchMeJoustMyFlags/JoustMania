@@ -13,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/joustmania/agent/gamecontext"
+	"github.com/joustmania/agent/gamesummary"
 	"github.com/joustmania/agent/llm"
 )
 
@@ -252,10 +253,27 @@ func (rc *RetroCoordinator) OnGameEnd(c gamecontext.GameContext) {
 		return
 	}
 
+	// #1158: build the per-game narrative Summary from the SAME finished-game
+	// snapshot and feed it to the retro, so the prompt renders the rich per-player
+	// PlayerArc stanzas (survival / elimination-offset / movement sparkline /
+	// activity / near-death) the agent already derives — not a flat terminal
+	// snapshot. We call gamesummary.BuildSummary DIRECTLY rather than reusing the
+	// gamesummary.Coordinator's Observer seam: that seam is a one-way PUSH sink
+	// (Observer.Record(Summary)) the Coordinator fires to a registered window store,
+	// with no way to pull the Summary back here, and the retro path holds no
+	// reference to the Coordinator. BuildSummary is a documented PURE fold over the
+	// snapshot (no clock/disk/network), so calling it here with the same injected
+	// now() is cheap and deterministic, and keeps the retro self-contained — the two
+	// once-per-game components stay decoupled. The injected now() matches BuildRetro's
+	// Now so the Summary's GeneratedAt and the prompt's captured_at agree.
+	retroNow := now()
+	summary := gamesummary.BuildSummary(c, gamesummary.BuildOptions{Now: retroNow})
+
 	prompt := llm.BuildRetro(llm.RetroInput{
 		Snapshot: snapshot,
 		Context:  c,
-		Now:      now(),
+		Summary:  summary,
+		Now:      retroNow,
 	})
 
 	// #1080: resolve the inference attribution through the SAME shared resolver the
