@@ -52,14 +52,15 @@ func (l *Loop) applyAsyncResult(root context.Context, snapshot flags.Snapshot, t
 	// as a SpanContext value on the outcome) so the apply trace — and the agent.decision/
 	// agent.action spans nested under it — is navigable from the signal that caused it.
 	// No-op when out.fireSC is invalid (the production default), exactly like gameTraceLink.
-	// #1178: also start it as a remote CHILD of the game span — the async-materialized
-	// decision/action are part of the game, so they live INSIDE the game trace. The
-	// fire-cycle Link is KEPT alongside (navigates to the originating signal cycle); the
-	// game span is the new ROOT parent. Graceful fallback: when the game trace ids
-	// (carried on the outcome from fire time) are absent/invalid gameRemoteParent returns
-	// root unchanged, so this stays its own root + fire-cycle Link exactly as before.
+	// #1195 (refining #1178): also start it as a remote CHILD of the gameplay_phase
+	// span — the async-materialized decision/action are part of the game's active play,
+	// so they live INSIDE the game trace nested under gameplay_phase. The fire-cycle
+	// Link is KEPT alongside (navigates to the originating signal cycle); gameplay_phase
+	// is the new parent. Two-tier fallback (inGameRemoteParent): gameplay_phase span_id
+	// -> game ROOT span_id (#1187) -> own root + fire-cycle Link, all carried on the
+	// outcome from fire time, so this never loses correlation.
 	applyParent := root
-	if parentCtx, ok := gameRemoteParent(root, out.gameTraceID, out.gameTraceSpanID); ok {
+	if parentCtx, ok := inGameRemoteParent(root, out.gameTraceID, out.gameTraceSpanID, out.gameplayPhaseSpanID); ok {
 		applyParent = parentCtx
 	}
 	applyOpts := []trace.SpanStartOption{

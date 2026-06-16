@@ -62,14 +62,26 @@ current_game_mode = Gauge(
 # agent's Link references the actual game-start span (Jaeger highlights it via
 # uiFind) rather than an all-zero span id under that trace.
 #
-# Cardinality: game_trace_id and game_trace_span_id are both 1:1 with game_id (one
-# trace/root span per game), so they multiply NO series beyond the already-unbounded
-# game_id. Like the other per-game gauges it is SET to 1 inside the live game span
-# and REMOVED at retire (clear_metrics, #1018) so the series does not accumulate.
+# It ADDITIONALLY carries the hex span_id of the gameplay_phase sub-span as
+# gameplay_phase_span_id (#1195). gameplay_phase is the STABLE span covering the
+# whole active-play window WITHIN the game trace; the agent re-parents its in-game
+# decision chain (signal_received -> decision -> action) under THIS span instead of
+# the game root (#1187), so a reader sees interventions nested where they actually
+# occurred. Same trace as game_trace_span_id (game_trace_id is identical), so it is
+# a strict refinement: the agent falls back to game_trace_span_id (game root) when
+# this is empty (gameplay_phase not yet open / unsampled). The gamesummary hub-link
+# (#1174) and the retro/experiment Links deliberately KEEP targeting game_trace_span_id
+# (the root) — only the in-game decision chain retargets to gameplay_phase.
+#
+# Cardinality: game_trace_id / game_trace_span_id / gameplay_phase_span_id are each
+# 1:1 with game_id (one trace/root span/gameplay_phase span per game), so they
+# multiply NO series beyond the already-unbounded game_id. Like the other per-game
+# gauges it is SET to 1 inside the live game span and REMOVED at retire (clear_metrics,
+# #1018) so the series does not accumulate.
 game_trace_correlation = Gauge(
     "game_trace_correlation",
     "Correlation marker tying a live game_id to its root span trace_id (always 1 while live)",
-    ["game_kind", "game_id", "game_trace_id", "game_trace_span_id"],
+    ["game_kind", "game_id", "game_trace_id", "game_trace_span_id", "gameplay_phase_span_id"],
 )
 
 game_duration_seconds = Gauge(
