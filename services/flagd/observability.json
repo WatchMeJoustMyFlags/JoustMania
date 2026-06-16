@@ -14,11 +14,14 @@
       "targeting": {
         "if": [
           {
-            "==": [
+            "in": [
               {
                 "var": "service"
               },
-              "controller-manager-service"
+              [
+                "controller-manager-service",
+                "game-coordinator-service"
+              ]
             ]
           },
           "realtime",
