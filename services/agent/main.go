@@ -576,6 +576,14 @@ func main() {
 		"model", inferModel,
 		"api_key_set", getEnv("AGENT_INFERENCE_API_KEY", "") != "",
 	)
+	// Inference cold-start pre-warm (#1130). When a REAL backend is configured
+	// (inferDelegate != nil, AGENT_INFERENCE_BACKEND=openai), fire ONE best-effort
+	// throwaway Infer in the background so the host Ollama model is resident before
+	// the first real decision/proposal pays the ~30-100s cold load. No-op for the
+	// stub default (nil delegate) → byte-identical startup. Bounded by the configured
+	// inference timeout, non-blocking, non-fatal — see prewarmInference.
+	prewarmInference(ctx, inferDelegate, inferModel,
+		secondsEnv("AGENT_INFERENCE_TIMEOUT_SECONDS", inference.DefaultTimeout))
 	legacyEndpoints := decision.Endpoints{
 		Cloud:     getEnv("AGENT_CLOUD_ENDPOINT", ""),                    // #742 credential-blocked: empty = permanently unreachable
 		Jetson:    getEnv("AGENT_JETSON_ENDPOINT", "jetson:11434"),       // #738 Ollama on the Jetson; unresolvable in dev
