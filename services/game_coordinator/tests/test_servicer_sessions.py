@@ -1173,6 +1173,14 @@ class TestExperimentSpawnBinding:
         assert order.index(kind_calls[0]) < order.index(("create_game", None, None))
 
 
+class _MockSpanContext:
+    """trace_id=0 (invalid, like an unsampled span) so the servicer attempts no
+    #1157 game-trace Link for direct _start_game_from_config callers."""
+
+    trace_id = 0
+    span_id = 0
+
+
 class _MockSpan:
     """Minimal span supporting set_attribute + context-manager protocol."""
 
@@ -1184,6 +1192,9 @@ class _MockSpan:
 
     def add_event(self, name, attributes=None):
         pass
+
+    def get_span_context(self):
+        return _MockSpanContext()
 
     def __enter__(self):
         return self

@@ -255,16 +255,19 @@ func TestApplyMetrics_MovementVarianceAggregateRetained(t *testing.T) {
 	}
 }
 
-// TestApplyMetrics_AdoptsGameTraceID verifies the #1133 trace-correlation signal:
-// game_trace_correlation carries game_id + game_trace_id and adopts both into the
-// context so the decision loop can link agent.decision to the originating game trace.
+// TestApplyMetrics_AdoptsGameTraceID verifies the #1133/#1157 trace-correlation
+// signal: game_trace_correlation carries game_id + game_trace_id + game_trace_span_id
+// and adopts all into the context so the decision loop can link agent.decision to the
+// originating game's root span.
 func TestApplyMetrics_AdoptsGameTraceID(t *testing.T) {
 	s := newTestStore()
 	const tid = "4bf92f3577b34da6a3ce929d0e0e4736"
+	const sid = "051581bf3cb55c13"
 	if !s.ApplyMetrics(metricsWith(metricTraceCorrelation, 1, map[string]string{
-		attrGameID:      "game-99",
-		attrGameKind:    "real",
-		attrGameTraceID: tid,
+		attrGameID:          "game-99",
+		attrGameKind:        "real",
+		attrGameTraceID:     tid,
+		attrGameTraceSpanID: sid,
 	})) {
 		t.Fatal("game_trace_correlation carrying game_trace_id must apply")
 	}
@@ -275,11 +278,14 @@ func TestApplyMetrics_AdoptsGameTraceID(t *testing.T) {
 	if snap.GameTraceID != tid {
 		t.Fatalf("GameTraceID = %q, want %q", snap.GameTraceID, tid)
 	}
+	if snap.GameTraceSpanID != sid {
+		t.Fatalf("GameTraceSpanID = %q, want %q", snap.GameTraceSpanID, sid)
+	}
 }
 
 // TestApplyMetrics_TraceCorrelationWithoutTraceIDIsSafe documents the fallback:
-// a correlation datapoint missing game_trace_id still routes its game_id but leaves
-// GameTraceID empty (no link will be added) — no error.
+// a correlation datapoint missing game_trace_id/game_trace_span_id still routes its
+// game_id but leaves both empty (no link will be added) — no error.
 func TestApplyMetrics_TraceCorrelationWithoutTraceIDIsSafe(t *testing.T) {
 	s := newTestStore()
 	if !s.ApplyMetrics(metricsWith(metricTraceCorrelation, 1, map[string]string{
@@ -293,6 +299,9 @@ func TestApplyMetrics_TraceCorrelationWithoutTraceIDIsSafe(t *testing.T) {
 	}
 	if snap.GameTraceID != "" {
 		t.Fatalf("GameTraceID = %q, want empty (no game_trace_id label)", snap.GameTraceID)
+	}
+	if snap.GameTraceSpanID != "" {
+		t.Fatalf("GameTraceSpanID = %q, want empty (no game_trace_span_id label)", snap.GameTraceSpanID)
 	}
 }
 

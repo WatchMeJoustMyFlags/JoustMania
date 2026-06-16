@@ -218,6 +218,12 @@ const (
 	// don't surface Link attributes in search. Empty/absent when no valid game
 	// trace_id was ingested (graceful fallback: no link and no attribute are added).
 	AttrGameTraceID = "game.trace_id"
+	// AttrGameTraceSpanID is the hex span_id of the originating game-coordinator
+	// root game span (#1157, follow-up to #1133). Stamped in the SAME two places as
+	// AttrGameTraceID (the gameTraceLink Link attribute + a plain span attribute) so
+	// the Link references the actual game-start span and the span_id is searchable
+	// as a span tag. Empty/absent when no valid game span_id was ingested.
+	AttrGameTraceSpanID = "game.trace_span_id"
 	// AttrEnabled is the existence-layer kill switch (agent.enabled). Lifted from
 	// the cycle's LayerState onto every decision span (including the disabled
 	// kill-switch span) so a trace shows whether the agent was live (#729).

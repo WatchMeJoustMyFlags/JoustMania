@@ -15,10 +15,14 @@ import (
 // Absent/invalid trace_id -> no Link, no error (graceful fallback). The link
 // complements, does not replace, the game.id attribute.
 
-// endedSessionWithTrace is a finished-game GameContext carrying a game trace_id.
+const retroGameSpanID = "051581bf3cb55c13" // valid 8-byte hex span id (#1157)
+
+// endedSessionWithTrace is a finished-game GameContext carrying a game trace_id
+// (paired with a valid span_id, #1157, so a valid trace alone produces a link).
 func endedSessionWithTrace(traceID string) gamecontext.GameContext {
 	c := endedSession()
 	c.GameTraceID = traceID
+	c.GameTraceSpanID = retroGameSpanID
 	return c
 }
 
@@ -54,15 +58,29 @@ func TestRetroSpan_LinksToGameTrace(t *testing.T) {
 	if !links[0].SpanContext.TraceID().IsValid() {
 		t.Error("link trace_id must be valid")
 	}
-	// The trace id is stamped on the link as a queryable attribute.
-	var foundLinkAttr bool
+	// #1157: the retro link now targets the actual game-start span.
+	wantSID, _ := trace.SpanIDFromHex(retroGameSpanID)
+	if got := links[0].SpanContext.SpanID(); got != wantSID {
+		t.Errorf("link span_id = %s, want %s", got, wantSID)
+	}
+	if !links[0].SpanContext.SpanID().IsValid() {
+		t.Error("link span_id must be valid")
+	}
+	// Both ids are stamped on the link as queryable attributes.
+	var foundTraceAttr, foundSpanAttr bool
 	for _, kv := range links[0].Attributes {
 		if string(kv.Key) == AttrGameTraceID && kv.Value.AsString() == gameTrace {
-			foundLinkAttr = true
+			foundTraceAttr = true
+		}
+		if string(kv.Key) == AttrGameTraceSpanID && kv.Value.AsString() == retroGameSpanID {
+			foundSpanAttr = true
 		}
 	}
-	if !foundLinkAttr {
+	if !foundTraceAttr {
 		t.Errorf("link must carry %s=%s", AttrGameTraceID, gameTrace)
+	}
+	if !foundSpanAttr {
+		t.Errorf("link must carry %s=%s", AttrGameTraceSpanID, retroGameSpanID)
 	}
 	// The trace id is ALSO a plain span attribute (searchable on backends that don't
 	// surface link attributes).

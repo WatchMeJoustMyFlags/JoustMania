@@ -61,6 +61,10 @@ const (
 	// dedicated game_trace_correlation signal (#1133). Hex string; empty when the
 	// game span was unsampled.
 	attrGameTraceID = "game_trace_id"
+	// attrGameTraceSpanID is the coordinator root game-span span_id carried on the
+	// same game_trace_correlation signal (#1157). Hex string; empty when the game
+	// span was unsampled.
+	attrGameTraceSpanID = "game_trace_span_id"
 	// Experiment attribution (#975, epic #982): finer-grained labels WITHIN a
 	// shadow game. Carried on the LOW-RATE lifecycle metrics (game_active,
 	// game_active_players, game_duration_seconds) the same way game_kind is —
@@ -95,6 +99,9 @@ type gameLabels struct {
 	// signal is the dedicated game_trace_correlation gauge — empty on every other
 	// signal. Like ExperimentID/Arm it is partition ENRICHMENT, not a routing key.
 	GameTraceID string
+	// GameTraceSpanID carries the coordinator's root game-span span_id (#1157),
+	// likewise only on the game_trace_correlation gauge and likewise enrichment.
+	GameTraceSpanID string
 }
 
 // gameIDOf reads the game_id datapoint label; empty when absent.
@@ -137,14 +144,23 @@ func gameTraceIDOf(attrs pcommon.Map) string {
 	return ""
 }
 
+// gameTraceSpanIDOf reads the game_trace_span_id datapoint label (#1157); empty when absent.
+func gameTraceSpanIDOf(attrs pcommon.Map) string {
+	if v, ok := attrs.Get(attrGameTraceSpanID); ok {
+		return v.AsString()
+	}
+	return ""
+}
+
 // metricGameLabels resolves the game identity labels on a metric datapoint.
 func metricGameLabels(attrs pcommon.Map) gameLabels {
 	return gameLabels{
-		GameID:       gameIDOf(attrs),
-		GameKind:     gameKindOf(attrs),
-		ExperimentID: experimentIDOf(attrs),
-		Arm:          armOf(attrs),
-		GameTraceID:  gameTraceIDOf(attrs),
+		GameID:          gameIDOf(attrs),
+		GameKind:        gameKindOf(attrs),
+		ExperimentID:    experimentIDOf(attrs),
+		Arm:             armOf(attrs),
+		GameTraceID:     gameTraceIDOf(attrs),
+		GameTraceSpanID: gameTraceSpanIDOf(attrs),
 	}
 }
 
@@ -374,5 +390,6 @@ func (s *Store) adoptGame(labels gameLabels) {
 	s.SetGameKind(labels.GameKind)
 	s.SetExperimentID(labels.ExperimentID)
 	s.SetArm(labels.Arm)
-	s.SetGameTraceID(labels.GameTraceID) // #1133: empty on all but game_trace_correlation
+	s.SetGameTraceID(labels.GameTraceID)         // #1133: empty on all but game_trace_correlation
+	s.SetGameTraceSpanID(labels.GameTraceSpanID) // #1157: ditto
 }

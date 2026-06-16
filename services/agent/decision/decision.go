@@ -949,12 +949,16 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	startOpts := []trace.SpanStartOption{
 		trace.WithAttributes(decisionAttributes(state, d, blocked, reason, c.GameKind, c.SessionID)...),
 	}
-	startOpts = append(startOpts, gameTraceLink(c.GameTraceID)...)
+	startOpts = append(startOpts, gameTraceLink(c.GameTraceID, c.GameTraceSpanID)...)
 	if c.GameTraceID != "" {
 		// Also stamp the originating trace_id as a span ATTRIBUTE (not only the Link
 		// attribute), so it is searchable as a span tag in Jaeger even on backends
 		// that don't surface Link attributes in search (#1133 review).
 		startOpts = append(startOpts, trace.WithAttributes(attribute.String(AttrGameTraceID, c.GameTraceID)))
+	}
+	if c.GameTraceSpanID != "" {
+		// Likewise stamp the originating span_id as a searchable span attribute (#1157).
+		startOpts = append(startOpts, trace.WithAttributes(attribute.String(AttrGameTraceSpanID, c.GameTraceSpanID)))
 	}
 	dCtx, dSpan := l.Tracer.Start(ctx, SpanDecision, startOpts...)
 	defer dSpan.End()
@@ -1155,36 +1159,46 @@ func (l *Loop) shouldLog() bool {
 	return true
 }
 
-// gameTraceLink builds the trace-correlation span option for #1133: when gameTraceID
-// is a valid hex trace_id (ingested into GameContext from the game_trace_correlation
-// signal), it returns a single trace.WithLinks option whose Link targets a remote
-// SpanContext reconstructed from that trace_id, so the agent.decision span LINKS to the
-// originating game trace (navigable in Jaeger). The Link has no span_id — we correlate
-// to the game's TRACE, not one specific span in it — so the SpanContext carries only the
-// trace_id and is marked Remote + Sampled; it still validates (a non-zero trace_id is
-// sufficient for IsValid on a remote link target). An empty or unparseable id yields NO
-// option, so the span is created exactly as before: graceful fallback, no Link, no error.
+// gameTraceLink builds the trace-correlation span option for #1133/#1157: when
+// gameTraceID is a valid hex trace_id AND gameTraceSpanID is a valid hex span_id
+// (both ingested into GameContext from the game_trace_correlation signal), it
+// returns a single trace.WithLinks option whose Link targets a remote SpanContext
+// reconstructed from BOTH ids. That makes the agent.decision span LINK to the
+// originating game's root span (not merely its trace), so Jaeger's uiFind
+// highlights the actual game-start span (#1157) instead of an all-zero span id
+// under the trace. The SpanContext is marked Remote + Sampled.
 //
-// The trace_id is also stamped as a plain attribute on the Link; the caller additionally
-// stamps it as a span attribute (see runDecision) so it stays queryable as a span tag on
-// backends that don't surface Link attributes in search.
-func gameTraceLink(gameTraceID string) []trace.SpanStartOption {
-	if gameTraceID == "" {
+// An empty/unparseable trace_id OR span_id yields NO option, so the span is created
+// exactly as before: graceful fallback, no Link, no error. Pre-#1157 emitters (or
+// an unsampled game span) carry an empty span_id and therefore produce no Link —
+// the same as a missing trace_id. Both ids are also stamped as plain attributes on
+// the Link; the caller additionally stamps them as span attributes (see runDecision)
+// so they stay queryable as span tags on backends that don't surface Link attributes.
+func gameTraceLink(gameTraceID, gameTraceSpanID string) []trace.SpanStartOption {
+	if gameTraceID == "" || gameTraceSpanID == "" {
 		return nil
 	}
 	tid, err := trace.TraceIDFromHex(gameTraceID)
 	if err != nil || !tid.IsValid() {
 		return nil
 	}
+	sid, err := trace.SpanIDFromHex(gameTraceSpanID)
+	if err != nil || !sid.IsValid() {
+		return nil
+	}
 	sc := trace.NewSpanContext(trace.SpanContextConfig{
 		TraceID:    tid,
+		SpanID:     sid,
 		TraceFlags: trace.FlagsSampled,
 		Remote:     true,
 	})
 	return []trace.SpanStartOption{
 		trace.WithLinks(trace.Link{
 			SpanContext: sc,
-			Attributes:  []attribute.KeyValue{attribute.String(AttrGameTraceID, gameTraceID)},
+			Attributes: []attribute.KeyValue{
+				attribute.String(AttrGameTraceID, gameTraceID),
+				attribute.String(AttrGameTraceSpanID, gameTraceSpanID),
+			},
 		}),
 	}
 }
