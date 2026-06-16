@@ -479,6 +479,19 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             # Jaeger) without inheriting the stream's trace_id as the game's root.
             stream_span_context = parent_span.get_span_context() if parent_span is not None else None
 
+            # Spawn-traceparent propagation (#1182, epic #1181). When the agent
+            # spawns a shadow game it injects its long-lived EXPERIMENT span's
+            # traceparent into the StreamGameEvents call; the server interceptor
+            # extracts it (lib/grpc_tracing.py) so the current span's context here
+            # chains back to that experiment span. We capture it as the candidate
+            # PARENT for a shadow + experiment-bound game so its lifecycle span is
+            # a CHILD of the experiment span (causal parent-child, not just a
+            # Link). For a real game (or any game with no incoming traceparent)
+            # this is the same harmless SpanContext used for the Link; the strict
+            # shadow+experiment gate in GameSession keeps a real game own-rooted
+            # (#1157/#1164).
+            experiment_parent_span_context = stream_span_context
+
             # Experiment/cohort spawn binding (#976, epic #982). The caller
             # provides (experiment_id, arm) on StartGameConfig; the registry
             # (#978) will decide+supply them later — #976 is only the plumbing
@@ -515,6 +528,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 event_bus=event_bus,
                 game_kind=game_kind,
                 stream_span_context=stream_span_context,
+                experiment_parent_span_context=experiment_parent_span_context,
                 experiment_id=experiment_id,
                 arm=arm,
                 rng_seed=rng_seed,

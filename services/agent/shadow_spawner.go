@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/joustmania/agent/experiment"
 	"github.com/joustmania/agent/gamerunner"
@@ -96,6 +97,13 @@ func (s *shadowSpawner) Spawn(ctx context.Context, experimentID, arm string, see
 	// spawn spec so the game-coordinator builds the shadow session's per-instance
 	// RNG from it. Both arms of a pair receive the same seed; 0 means entropy.
 	spec.Seed = seed
+	// Spawn-traceparent propagation (#1182, epic #1181): the registry carries the
+	// experiment's long-lived ROOT span context on the spawn ctx as a remote
+	// parent. Thread it onto the spec so StartExperimentGame injects it as the
+	// outgoing traceparent and the coordinator's game span becomes a CHILD of the
+	// experiment span. An invalid SpanContext (no root span) threads nothing, so
+	// the game stays own-rooted — graceful.
+	spec.ExperimentSpanContext = trace.SpanContextFromContext(ctx)
 
 	runner := gamerunner.New(s.cfg, s.log)
 	if s.onTerminal != nil {

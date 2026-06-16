@@ -73,6 +73,7 @@ class GameSession:
         event_bus: EventBus,
         game_kind: str,
         stream_span_context=None,
+        experiment_parent_span_context=None,
         experiment_id: str = "",
         arm: str = "",
         rng_seed: int = 0,
@@ -89,6 +90,14 @@ class GameSession:
         # so the inbound call stays navigable in Jaeger. None when there is no
         # recordable inbound span (telemetry off / unsampled) — handled gracefully.
         self.stream_span_context = stream_span_context
+        # SpanContext of the SPAWNING agent EXPERIMENT span, propagated as the
+        # incoming traceparent on the shadow-game spawn RPC (#1182, epic #1181).
+        # For a SHADOW + experiment-bound game this becomes the game-lifecycle
+        # span's PARENT (causal parent-child, not a Link) so the game span is a
+        # CHILD of its long-lived experiment span in the same trace. None for a
+        # real game, an unbound shadow game, or when no traceparent was injected
+        # — those keep the own-root model (#1157/#1164), handled gracefully.
+        self.experiment_parent_span_context = experiment_parent_span_context
         # Experiment attribution within a shadow session (#975, epic #982). Empty
         # for a non-experiment game; set by #976's spawn binding. These are finer-
         # grained labels WITHIN game_kind=shadow, never a replacement for it.
@@ -265,9 +274,32 @@ class GameSession:
         if self.stream_span_context is not None and self.stream_span_context.trace_id != 0:
             links.append(trace.Link(self.stream_span_context))
 
+        # Choose the game-span PARENT context (#1182, epic #1181).
+        #
+        # A real (primary) game — and any shadow game NOT bound to an experiment —
+        # is rooted as its OWN trace (#1157/#1164): we pass an explicit empty
+        # Context so neither the inbound stream span nor any ambient span parents
+        # it. The inbound call stays navigable via the Link above.
+        #
+        # A SHADOW + experiment-bound game whose spawn carried the agent's
+        # experiment traceparent is instead made a CHILD of that experiment span
+        # (causal parent-child), so it nests under the long-lived experiment span
+        # in the same trace. The gate is STRICT (shadow AND experiment_id AND a
+        # valid injected parent) so the real-game own-root structure is never
+        # touched. We still keep the Link (harmless for shadow, navigability for
+        # real).
+        parent_context = Context()
+        if (
+            self.game_kind == GAME_KIND_SHADOW
+            and self.experiment_id
+            and self.experiment_parent_span_context is not None
+            and self.experiment_parent_span_context.trace_id != 0
+        ):
+            parent_context = trace.set_span_in_context(trace.NonRecordingSpan(self.experiment_parent_span_context))
+
         with tracer.start_as_current_span(
             game_span_name,
-            context=Context(),
+            context=parent_context,
             links=links,
         ) as game_span:
             game_span.set_attribute("game.name", self.game_name)

@@ -743,9 +743,20 @@ type startedArm struct {
 // pair — including a sibling arm that already spawned a live game — so a half-pair
 // never enters the cohort statistics (the atomic-pair invariant).
 func (r *Registry) spawnPair(ctx context.Context, plan pairPlan) (bound int, stop bool) {
+	// Spawn-traceparent propagation (#1182, epic #1181): carry this experiment's
+	// long-lived ROOT span context on the spawn ctx as a REMOTE parent. The
+	// spawner reads it off the ctx and (for an experiment-bound shadow game)
+	// injects it as the outgoing traceparent so the coordinator's game span
+	// becomes a CHILD of the experiment span. When the experiment has no valid
+	// root span (tracer unwired / torn down) the ctx is unchanged, so nothing is
+	// injected and the game stays own-rooted — graceful, exactly as before.
+	spawnCtx := ctx
+	if sc, ok := r.ExperimentSpanContext(plan.id); ok {
+		spawnCtx = trace.ContextWithRemoteSpanContext(ctx, sc)
+	}
 	var live []startedArm
 	for i, arm := range plan.arms {
-		gameID, err := r.spawner.Spawn(ctx, plan.id, arm, plan.seed)
+		gameID, err := r.spawner.Spawn(spawnCtx, plan.id, arm, plan.seed)
 		if err != nil {
 			// Roll the WHOLE pair back atomically (#1003): release the failed arm and
 			// every arm AFTER it (whose Spawn was never attempted, still reserved), and
