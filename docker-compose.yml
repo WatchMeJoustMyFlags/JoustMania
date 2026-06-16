@@ -137,6 +137,11 @@ services:
     command: ["--config", "/etc/jaeger/config.yaml"]
     networks:
       - joustmania
+    # #1191: self-heal from an OOM (exit 137) instead of staying DEAD with the
+    # trace UI unreachable. With the prior RestartPolicy=no, a single OOM under
+    # the agent experiment-loop span volume left /jaeger 503 for the rest of the
+    # session. unless-stopped brings the trace store back automatically.
+    restart: unless-stopped
     healthcheck:
       test: [ "CMD", "wget", "--spider", "-q", "http://localhost:16686/jaeger/" ]
       interval: 10s
@@ -146,7 +151,15 @@ services:
     deploy:
       resources:
         limits:
-          memory: 384m
+          # #1191: raised 384m -> 1024m. The trace-BACKEND analogue of the
+          # collector OOM (#1173): the agent experiment loop + the #1178/#1188
+          # span hierarchy produce a lot of spans, and Jaeger's badger storage
+          # (compaction + value-log cache) outgrew 384m, getting OOM-killed
+          # (exit 137). Jaeger is a dev/observability component (not a
+          # Pi-gameplay service), so the budget is raised globally rather than
+          # per-stack. Badger span TTL is bounded in services/jaeger/config.yaml
+          # so the store can't creep unbounded over a long demo.
+          memory: 1024m
           cpus: '0.5'
     logging: *default-logging
 
