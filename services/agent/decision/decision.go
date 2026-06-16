@@ -732,7 +732,19 @@ func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, c gamecontex
 				// means this cycle emits no synchronous decision span — the async apply
 				// trace carries it.
 				if l.asyncEnabled() {
-					if l.fireInferAsync(snapshot, res.Backend, c, trig) {
+					// #1140 (Slice A): capture the fire-cycle's currently-active SpanContext
+					// so the async job can add an OTel Link back to it from BOTH the
+					// agent.llm.infer.call and agent.llm.apply spans — stitching the three
+					// otherwise-disjoint async-decision trace roots (signal_received,
+					// infer.call, apply) into one navigable whole WITHOUT parenting (the
+					// #917 non-blocking design forbids a shared trace). We stash the
+					// SpanContext value (NOT the live ctx) so nothing leaks/expires across
+					// the goroutine boundary. When no span is active in ctx (the production
+					// default — there is no otelgrpc interceptor, and the agent.signal_received
+					// root is created only on the SYNC decided path, after decide() returns),
+					// the SpanContext is invalid and both Link sites gracefully add no link.
+					fireSC := trace.SpanContextFromContext(ctx)
+					if l.fireInferAsync(snapshot, res.Backend, c, trig, fireSC) {
 						// Fired: defer entirely to the async apply path. No sync decision.
 						return nil
 					}
@@ -1169,6 +1181,42 @@ func gameTraceLink(gameTraceID string) []trace.SpanStartOption {
 		trace.WithLinks(trace.Link{
 			SpanContext: sc,
 			Attributes:  []attribute.KeyValue{attribute.String(AttrGameTraceID, gameTraceID)},
+		}),
+	}
+}
+
+// attrLinkKind labels a span Link with what the link points at, so a reader who lands
+// on the link target knows WHY it is there. #1140 (Slice A) stamps it
+// linkKindFireCycle on the agent.llm.infer.call + agent.llm.apply Links so a reader of
+// either async trace knows the link navigates back to the originating fire cycle's
+// agent.signal_received trace. Defined locally here (not in telemetry.go) to keep the
+// new attribute owned by Slice A.
+const (
+	attrLinkKind      = "link.kind"
+	attrLinkTraceID   = "link.trace_id"
+	linkKindFireCycle = "fire_cycle"
+)
+
+// fireCycleLink builds the #1140 (Slice A) trace-continuity span option: when the
+// captured fire-cycle SpanContext is valid, it returns a single trace.WithLinks option
+// whose Link targets that SpanContext — so the agent.llm.infer.call and agent.llm.apply
+// spans (each on their own parent-less root, by the #917 non-blocking design) LINK back
+// to the fire cycle's originating agent.signal_received trace and are navigable in
+// Jaeger as one logical decision. The Link carries link.kind=fire_cycle plus the fire
+// trace_id as queryable attributes. An invalid/zero SpanContext (the production default,
+// where no span is active at fire time) yields NO option, so the span is created exactly
+// as before: graceful fallback, no Link, no error — mirroring gameTraceLink's contract.
+func fireCycleLink(sc trace.SpanContext) []trace.SpanStartOption {
+	if !sc.IsValid() {
+		return nil
+	}
+	return []trace.SpanStartOption{
+		trace.WithLinks(trace.Link{
+			SpanContext: sc,
+			Attributes: []attribute.KeyValue{
+				attribute.String(attrLinkKind, linkKindFireCycle),
+				attribute.String(attrLinkTraceID, sc.TraceID().String()),
+			},
 		}),
 	}
 }

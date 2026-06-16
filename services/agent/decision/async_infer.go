@@ -161,7 +161,12 @@ func (l *Loop) asyncEnabled() bool { return l.ctxProvider != nil }
 // The captured snapshot is used ONLY to build the prompt and bound the call; the
 // APPLY path re-fetches the current context from the provider, never this snapshot —
 // that separation is the whole point of #917.
-func (l *Loop) fireInferAsync(snapshot flags.Snapshot, backend Backend, c gamecontext.GameContext, trig EvalTrigger) bool {
+//
+// #1140 (Slice A): fireSC is the fire-cycle's currently-active SpanContext, captured
+// by decide() at the moment of firing. It is threaded (as a value, not a live ctx)
+// through runInfer to BOTH async trace roots so each can add an OTel Link back to the
+// originating signal_received trace. An invalid fireSC means no link (graceful).
+func (l *Loop) fireInferAsync(snapshot flags.Snapshot, backend Backend, c gamecontext.GameContext, trig EvalTrigger, fireSC trace.SpanContext) bool {
 	// Pile-up guard: only one Infer in flight per game. CompareAndSwap makes the
 	// claim atomic against the concurrent Export handlers — exactly one cycle wins.
 	if !l.inflight.CompareAndSwap(false, true) {
@@ -185,7 +190,7 @@ func (l *Loop) fireInferAsync(snapshot flags.Snapshot, backend Backend, c gameco
 	go func() {
 		defer l.inferWG.Done()
 		defer l.inflight.Store(false) // release the guard for the next cycle, always
-		l.runInfer(root, snapshot, backend, c, trig, budget)
+		l.runInfer(root, snapshot, backend, c, trig, budget, fireSC)
 	}()
 	return true
 }
@@ -198,7 +203,7 @@ func (l *Loop) fireInferAsync(snapshot flags.Snapshot, backend Backend, c gameco
 // path then runs the deterministic rules engine for the CURRENT context (the #741
 // timeout -> rules chain), so the game always gets a decision. The latency is
 // measured fire-to-completion and recorded on the apply trace regardless of outcome.
-func (l *Loop) runInfer(root context.Context, snapshot flags.Snapshot, backend Backend, c gamecontext.GameContext, trig EvalTrigger, budget time.Duration) {
+func (l *Loop) runInfer(root context.Context, snapshot flags.Snapshot, backend Backend, c gamecontext.GameContext, trig EvalTrigger, budget time.Duration, fireSC trace.SpanContext) {
 	now := l.now
 	if now == nil {
 		now = time.Now
@@ -248,10 +253,15 @@ func (l *Loop) runInfer(root context.Context, snapshot flags.Snapshot, backend B
 	// carries only the request model — no gen_ai attribution duplication; the apply-time
 	// agent.llm.infer keeps owning that. Default-safe: with a no-op tracer/propagator
 	// this is a no-op and no header is written.
-	callCtx, callSpan := l.Tracer.Start(inferCtx, SpanLLMInferCall,
+	// #1140 (Slice A): Link this otherwise parent-less outbound-call root back to the
+	// originating fire-cycle's agent.signal_received trace, so a reader of the infer
+	// trace can navigate to the signal that caused it. No-op when fireSC is invalid.
+	callOpts := []trace.SpanStartOption{
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(attribute.String("gen_ai.request.model", backend.Name())),
-	)
+	}
+	callOpts = append(callOpts, fireCycleLink(fireSC)...)
+	callCtx, callSpan := l.Tracer.Start(inferCtx, SpanLLMInferCall, callOpts...)
 	raw, inferErr := backend.Infer(callCtx, prompt)
 	callSpan.End()
 	end := now()
@@ -266,6 +276,7 @@ func (l *Loop) runInfer(root context.Context, snapshot flags.Snapshot, backend B
 		contextGames:       contextCount,
 		contextNotePresent: notePresent,
 		contextNoteLen:     noteLen,
+		fireSC:             fireSC,
 	})
 }
 
@@ -301,4 +312,9 @@ type asyncOutcome struct {
 	// present=false/len=0 when the note was unset, flagd-unreachable, or rejected.
 	contextNotePresent bool
 	contextNoteLen     int
+	// fireSC is the fire-cycle's active SpanContext captured at fire time (#1140 Slice A),
+	// carried (as a value, never a live ctx) so applyAsyncResult can add an OTel Link from
+	// the agent.llm.apply root back to the originating agent.signal_received trace. Invalid
+	// (the production default — no span active at fire time) yields no link (graceful).
+	fireSC trace.SpanContext
 }
