@@ -62,6 +62,14 @@ func systemPromptSHA(system string) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(system)))[:systemPromptSHALen]
 }
 
+// responseSHA returns the short hex fingerprint of an LLM raw RESPONSE (#1169/#1179),
+// the same scheme systemPromptSHA uses for prompts: the first systemPromptSHALen hex
+// chars of the SHA-256 digest. It is stamped on the span as llm.retro.response_sha256
+// in place of the full raw text; the once-per-hash reference log resolves it.
+func responseSHA(raw string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(raw)))[:systemPromptSHALen]
+}
+
 // capUserPrompt bounds the user-prompt text emitted on a span to maxUserPromptBytes,
 // appending userPromptTruncatedMarker when it has to cut. The content is preserved
 // up to the bound — the user prompt is the variable reasoning input we keep (#1168),
@@ -124,3 +132,43 @@ var systemPromptRef = &systemPromptReference{}
 // that assert the once-per-fingerprint emission semantics and must start from a
 // clean slate (the singleton otherwise persists across tests in one binary).
 func resetSystemPromptRef() { systemPromptRef = &systemPromptReference{} }
+
+// retroResponseReference emits the analyst's full RAW reply text exactly ONCE per
+// distinct fingerprint for the process lifetime (#1179), the response counterpart of
+// systemPromptReference. The agent.llm.retro span carries only response_sha256; this
+// carries the full text the hash maps to, on a dedicated LOG line (the OOM is the
+// TRACES pipeline — keep the big recorded-only text off it). On first sight of a hash
+// the full text is logged; subsequent sights are no-ops.
+type retroResponseReference struct {
+	// seen maps a response fingerprint -> struct{} once it has been logged.
+	seen sync.Map
+}
+
+// emit logs the full raw response on the dedicated reference line the FIRST time it
+// sees a given fingerprint, and is a no-op on every subsequent sight. It returns true
+// when it actually emitted (first sight), which tests use to assert the once-per-hash
+// semantics. The log carries the hash, the session id (so a reply is attributable),
+// and the full raw text. A nil log uses slog.Default so the reference is never dropped.
+func (r *retroResponseReference) emit(log *slog.Logger, hash, sessionID, raw string) bool {
+	if _, loaded := r.seen.LoadOrStore(hash, struct{}{}); loaded {
+		return false // already emitted this fingerprint
+	}
+	if log == nil {
+		log = slog.Default()
+	}
+	log.Info(SpanLLMRetroResponseRef,
+		"response_sha256", hash,
+		"session_id", sessionID,
+		"response", raw,
+	)
+	return true
+}
+
+// retroResponseRef is the process-lifetime singleton for the retro raw-response
+// reference (#1179), shared across all concurrent game-end retros so a given raw reply
+// is logged once for the whole process. Tests reset it via resetRetroResponseRef.
+var retroResponseRef = &retroResponseReference{}
+
+// resetRetroResponseRef clears the process-lifetime seen-set for tests that assert
+// the once-per-fingerprint emission semantics.
+func resetRetroResponseRef() { retroResponseRef = &retroResponseReference{} }
