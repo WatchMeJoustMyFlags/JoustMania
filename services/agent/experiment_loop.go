@@ -491,7 +491,7 @@ func (e *experimentLoop) allocateIfEnabled(ctx context.Context) {
 	// freshly-Started experiment can accrue games on the same tick.
 	e.declareDynamicIfEnabled(ctx, cfg)
 	if n := e.registry.AllocateAndSpawn(ctx); n > 0 {
-		e.log.Info("experiment: spawned shadow games this tick", "count", n,
+		e.log.Debug("experiment: spawned shadow games this tick", "count", n,
 			"in_flight", e.registry.TotalInFlight(), "capacity", e.registry.Capacity())
 	}
 }

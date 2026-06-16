@@ -936,7 +936,7 @@ func (l *Loop) captureLLMPrompt(ctx context.Context, snapshot flags.Snapshot, c 
 	_, span := l.Tracer.Start(ctx, SpanLLMPrompt, trace.WithAttributes(attrs...))
 	span.End()
 
-	l.Log.Info("agent.llm.prompt_captured",
+	l.Log.Debug("agent.llm.prompt_captured",
 		"session_id", c.SessionID,
 		"variant", prompt.Variant,
 		"model", prompt.Model,
