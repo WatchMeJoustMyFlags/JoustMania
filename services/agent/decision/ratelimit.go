@@ -60,7 +60,16 @@ const (
 	// reuses the #1107 handicap mechanism. SHADOW-game-only initially: allow-listed
 	// only via the `shadow_experimental` interventions_allowed variant
 	// (services/flagd/agent.json), never the real-facing ambient/standard/full.
-	InterventionPartialShield           = "partial_shield"
+	InterventionPartialShield = "partial_shield"
+	// InterventionSoftPenalty (#1134, #1103 Phase 3) is a per-player graduated,
+	// RECOVERABLE alternative to the permanent eliminate_player. Value "warn"
+	// (default; fires visible warning feedback, no threshold change) | "tighten" |
+	// "tighten:<seconds>:<factor>" (a short EXPIRING handicap REDUCTION, the MIRROR
+	// of partial_shield — temporarily easier to die but still clamped, never
+	// instant-death). SHADOW-game-only initially: allow-listed only via the
+	// `shadow_experimental` interventions_allowed variant (services/flagd/agent.json),
+	// never the real-facing ambient/standard/full.
+	InterventionSoftPenalty             = "soft_penalty"
 	InterventionAdjustGlobalSensitivity = "adjust_global_sensitivity"
 	InterventionAdjustGlobalDifficulty  = "adjust_global_difficulty"
 	InterventionSetPacingProfile        = "set_pacing_profile"
@@ -104,6 +113,7 @@ var interventionWeights = map[string]float64{
 	InterventionSetPlayerHandicap:       1, // #1107 (#1103 MVP action 1)
 	InterventionGrantShield:             1,
 	InterventionPartialShield:           1, // #1129 (#1103 Phase 2) — MEDIUM
+	InterventionSoftPenalty:             1, // #1134 (#1103 Phase 3) — MEDIUM
 	InterventionAdjustGlobalDifficulty:  1, // #766 F6
 	InterventionSetPacingProfile:        1, // #766 F6
 	InterventionRampTempo:               1, // #1117 (#1103 MVP action 2)

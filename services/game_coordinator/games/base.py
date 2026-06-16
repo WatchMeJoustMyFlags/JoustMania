@@ -551,6 +551,20 @@ class Player:
     # deadline = inactive (no effect). Shadow-game-only via the allow-list gate.
     partial_shield_until: float = 0.0
     partial_shield_boost: float = 1.0
+    # Time-boxed SOFT-PENALTY tighten (#1134, #1103 Phase 3). The deliberate
+    # MIRROR of partial_shield: where partial_shield STRENGTHENS protection (max,
+    # factor >= 1.0), a tighten WEAKENS it for a short window (factor < 1.0),
+    # making the player TEMPORARILY EASIER to eliminate — graduated pressure, not
+    # guaranteed elimination. While ``soft_penalty_until`` is in the future,
+    # ``soft_penalty_factor`` composes into the effective handicap by taking the
+    # MIN (so it can cut through even a partial_shield boost — pressure overrides
+    # protection), then the existing [0.5, 2.0] clamp keeps the threshold finite
+    # (never instant-death). On expiry the factor simply stops applying (no reset
+    # task needed) and the effective handicap falls back to the standing/shielded
+    # value. 1.0 / past deadline = inactive (no effect). Shadow-game-only via the
+    # allow-list gate. See ``_compute_effective_thresholds`` for the precedence.
+    soft_penalty_until: float = 0.0
+    soft_penalty_factor: float = 1.0
     # Per-player countdown span (created before countdown, ended after)
     _countdown_span: trace.Span | None = None
     # Health tracking (#571: controller health on player_lifecycle spans)
@@ -1553,9 +1567,22 @@ class BaseGameMode(ABC):
         # silently drops out and the standing handicap_factor resumes. Still
         # clamped [0.5, 2.0] below, so even a ~2.0 boost is "much harder to die",
         # never truly immune (the deliberate distinction from grant_shield).
+        #
+        # Composition precedence (last-applied wins by intent):
+        #   1. standing handicap_factor (set_player_handicap, #1107)
+        #   2. partial_shield boost (#1129) — STRENGTHENS via max (protection)
+        #   3. soft_penalty tighten (#1134) — WEAKENS via min (pressure)
+        # The soft_penalty MIN is applied AFTER the partial_shield MAX, so an
+        # active tighten can cut through an active partial_shield boost: pressure
+        # deliberately overrides protection (the mirror of partial_shield, which
+        # could never weaken a standing handicap). The final clamp [0.5, 2.0]
+        # keeps even a fully-tightened threshold finite — never instant-death.
+        now = time.time()
         effective_handicap = player.handicap_factor
-        if time.time() < player.partial_shield_until:
+        if now < player.partial_shield_until:
             effective_handicap = max(effective_handicap, player.partial_shield_boost)
+        if now < player.soft_penalty_until:
+            effective_handicap = min(effective_handicap, player.soft_penalty_factor)
         handicap = max(0.5, min(2.0, effective_handicap))
         return warn * handicap, death * handicap
 
@@ -2058,6 +2085,105 @@ class BaseGameMode(ABC):
                 )
             )
             await self.gameplay_stream.write(effect_cmd)
+
+        return True
+
+    # Soft-penalty defaults (#1134, #1103 Phase 3). The tighten factor is the
+    # MIRROR of the partial_shield boost: a factor BELOW 1.0 weakens the player's
+    # threshold for a short window (easier to die). It is clamped to the same
+    # lower handicap bound (0.5) so even a fully-tightened threshold stays finite
+    # — never instant-death. Seconds are capped so a single arming can't last
+    # forever.
+    SOFT_PENALTY_DEFAULT_FACTOR = 0.6
+    SOFT_PENALTY_FACTOR_MIN = 0.5
+    SOFT_PENALTY_FACTOR_MAX = 1.0
+    SOFT_PENALTY_MAX_SECONDS = 30.0
+
+    async def warn_player(self, serial: str) -> bool:
+        """Fire the visible warning feedback for a player as an agent cue (#1134).
+
+        This is the ``soft_penalty`` ``"warn"`` action: a graduated, fully
+        RECOVERABLE alternative to ``eliminate_player``. It reuses the existing
+        ``_warn_player`` feedback (white flash + rumble) as an agent-driven
+        "you're on notice" cue. It changes NO thresholds and grants NO protection
+        — purely visual/haptic, the player can still die immediately. We pass the
+        player's current effective warning threshold so the span event is
+        consistent with a natural warning; ``accel_mag`` is 0.0 (agent-driven, no
+        triggering motion).
+
+        Returns True if the warning fired, False if the player is unknown/dead.
+        """
+        player = self.players.get(serial)
+        if not player or not player.alive:
+            return False
+        effective_warn, _ = self._compute_effective_thresholds(player)
+        await self._warn_player(serial, 0.0, effective_warn)
+        return True
+
+    async def apply_soft_penalty(self, serial: str, seconds: float, factor: float | None = None) -> bool:
+        """Apply a time-boxed soft-penalty TIGHTEN to a player (#1134, Phase 3).
+
+        The deliberate MIRROR of :meth:`grant_partial_shield`: where a partial
+        shield STRENGTHENS protection (boost >= 1.0, composed by ``max``), a
+        tighten WEAKENS it for ``seconds`` (``factor`` < 1.0, composed by ``min``
+        in :meth:`_compute_effective_thresholds`) — making the player TEMPORARILY
+        EASIER to eliminate. It is graduated PRESSURE, not guaranteed elimination:
+        the effective handicap is still clamped [0.5, 2.0], so even a maxed
+        tighten only lowers the threshold to half — never instant-death.
+
+        Because the tighten composes by ``min`` AFTER the partial_shield ``max``,
+        it can cut through an active partial_shield boost (pressure overrides
+        protection). On expiry the factor silently stops applying — no reset task
+        — and the standing/shielded handicap resumes.
+
+        Time-box semantics mirror :meth:`grant_partial_shield`: extend-not-shorten
+        on the deadline and tighten-not-loosen on the factor, so repeated arming
+        never reduces in-flight pressure (keeps the LOWER, stronger factor).
+
+        Args:
+            serial: Controller serial number.
+            seconds: Penalty duration. Non-positive is a no-op (False); capped at
+                ``SOFT_PENALTY_MAX_SECONDS``.
+            factor: Handicap multiplier while active; clamped
+                [``SOFT_PENALTY_FACTOR_MIN``, ``SOFT_PENALTY_FACTOR_MAX``].
+                Defaults to ``SOFT_PENALTY_DEFAULT_FACTOR`` (0.6).
+
+        Returns:
+            True if a tighten was armed/extended, False if the player is
+            unknown/dead or the duration was non-positive.
+        """
+        if seconds <= 0:
+            return False
+
+        player = self.players.get(serial)
+        if not player or not player.alive:
+            return False
+
+        seconds = min(seconds, self.SOFT_PENALTY_MAX_SECONDS)
+        if factor is None:
+            factor = self.SOFT_PENALTY_DEFAULT_FACTOR
+        factor = max(self.SOFT_PENALTY_FACTOR_MIN, min(self.SOFT_PENALTY_FACTOR_MAX, factor))
+
+        new_until = time.time() + seconds
+        # Extend-not-shorten / tighten-not-loosen: keep whichever active window is
+        # longer and whichever active factor is LOWER (stronger pressure), so
+        # repeated arming never reduces in-flight pressure.
+        if time.time() < player.soft_penalty_until:
+            new_until = max(new_until, player.soft_penalty_until)
+            factor = min(factor, player.soft_penalty_factor)
+        player.soft_penalty_until = new_until
+        player.soft_penalty_factor = factor
+        logger.info(f"Soft penalty tighten {serial}: factor={factor:.2f} for {seconds:.1f}s (until={new_until:.2f})")
+
+        if player.span:
+            player.span.add_event(
+                "soft_penalty_tighten",
+                attributes={"soft_penalty_seconds": seconds, "soft_penalty_factor": factor},
+            )
+
+        # Visible warning feedback so the tighten is observable to the player
+        # ("you're on notice"), reusing the same warn cue as the "warn" action.
+        await self._warn_player(serial, 0.0, self._compute_effective_thresholds(player)[0])
 
         return True
 

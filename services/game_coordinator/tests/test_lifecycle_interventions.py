@@ -48,7 +48,9 @@ from services.game_coordinator.lifecycle_handlers import (
     handle_partial_shield,
     handle_revive_player,
     handle_shield_seconds,
+    handle_soft_penalty,
     parse_partial_shield_value,
+    parse_soft_penalty_value,
     register_lifecycle_handlers,
 )
 
@@ -315,6 +317,114 @@ class TestPartialShieldHandler:
 
 
 # --------------------------------------------------------------------------- #
+# soft_penalty: value parser (#1134)
+# --------------------------------------------------------------------------- #
+class TestParseSoftPenaltyValue:
+    def test_warn_default(self):
+        assert parse_soft_penalty_value("warn") == ("warn", 0.0, 1.0)
+
+    def test_bare_tighten_defaults(self):
+        action, seconds, factor = parse_soft_penalty_value("tighten")
+        assert action == "tighten"
+        assert seconds == 5.0
+        assert factor == 0.6
+
+    def test_tighten_with_params(self):
+        assert parse_soft_penalty_value("tighten:8:0.6") == ("tighten", 8.0, 0.6)
+
+    def test_tighten_seconds_capped(self):
+        _, secs, _ = parse_soft_penalty_value("tighten:9999:0.6")
+        assert secs == 30.0
+
+    def test_tighten_factor_clamped(self):
+        assert parse_soft_penalty_value("tighten:5:0.1")[2] == 0.5
+        assert parse_soft_penalty_value("tighten:5:1.5")[2] == 1.0
+
+    @pytest.mark.parametrize("neutral", ["", "none", "off", "0", "  "])
+    def test_neutral_is_none(self, neutral):
+        assert parse_soft_penalty_value(neutral) is None
+
+    @pytest.mark.parametrize(
+        "bad",
+        ["abc", "loosen", "tighten:5", "tighten:a:b", "tighten:0:0.6", "tighten:-3:0.6", "tighten:5:0.6:1"],
+    )
+    def test_malformed_degrades_to_warn(self, bad):
+        """ANY malformed/unknown value degrades to the safe default warn — never a
+        garbage dispatch, and crucially never an accidental tighten."""
+        result = parse_soft_penalty_value(bad)
+        # "tighten:5" / bad-param forms keep the tighten action with safe defaults;
+        # unknown actions degrade to warn. Either way it is never garbage.
+        assert result is not None
+        action, seconds, factor = result
+        if bad.startswith("tighten:"):
+            assert action == "tighten"
+            assert 0 < seconds <= 30.0
+            assert 0.5 <= factor <= 1.0
+        else:
+            assert action == "warn"
+
+
+# --------------------------------------------------------------------------- #
+# soft_penalty handler (#1134)
+# --------------------------------------------------------------------------- #
+class TestSoftPenaltyHandler:
+    @pytest.mark.asyncio
+    async def test_warn_fires_no_threshold_change(self):
+        game = make_ffa_game(num_players=2)
+        mgr, _ = make_manager(game=game)
+        mgr._interventions_client = TargetingFlagClient(default="none", per_serial={"p1": "warn"})
+
+        before = game._compute_effective_thresholds(game.players["p1"])
+        await handle_soft_penalty(make_ctx("soft_penalty_action", "warn", game), mgr)
+
+        # warn: visible cue only, no tighten armed, thresholds unchanged.
+        assert game.players["p1"].soft_penalty_until == 0.0
+        assert game.players["p1"].warning_until > time.time()
+        assert before == pytest.approx(game._compute_effective_thresholds(game.players["p1"]))
+        assert game.players["p2"].warning_until == 0.0
+
+    @pytest.mark.asyncio
+    async def test_tighten_arms_only_targeted_serials(self):
+        game = make_ffa_game(num_players=3)
+        mgr, _ = make_manager(game=game)
+        mgr._interventions_client = TargetingFlagClient(default="none", per_serial={"p1": "tighten:8:0.6"})
+
+        await handle_soft_penalty(make_ctx("soft_penalty_action", "tighten:8:0.6", game), mgr)
+
+        assert game.players["p1"].soft_penalty_until > time.time()
+        assert game.players["p1"].soft_penalty_factor == pytest.approx(0.6)
+        assert game.players["p2"].soft_penalty_until == 0.0
+        assert game.players["p3"].soft_penalty_until == 0.0
+
+    @pytest.mark.asyncio
+    async def test_malformed_value_degrades_to_warn(self):
+        game = make_ffa_game(num_players=1)
+        mgr, _ = make_manager(game=game)
+        mgr._interventions_client = TargetingFlagClient(default="none", per_serial={"p1": "garbage"})
+
+        await handle_soft_penalty(make_ctx("soft_penalty_action", "garbage", game), mgr)
+        # Degrades to warn: a cue fires, but NO tighten is armed.
+        assert game.players["p1"].soft_penalty_until == 0.0
+        assert game.players["p1"].warning_until > time.time()
+
+    @pytest.mark.asyncio
+    async def test_battery_gated_serial_skipped(self):
+        game = make_ffa_game(num_players=2)
+        mgr, _ = make_manager(game=game, battery={"p1": 90, "p2": 5}, threshold=20)
+        mgr._interventions_client = TargetingFlagClient(default="none", per_serial={"p1": "tighten", "p2": "tighten"})
+
+        await handle_soft_penalty(make_ctx("soft_penalty_action", "tighten", game), mgr)
+        assert game.players["p1"].soft_penalty_until > 0.0
+        assert game.players["p2"].soft_penalty_until == 0.0
+
+    @pytest.mark.asyncio
+    async def test_no_live_game_is_noop(self):
+        mgr, _ = make_manager(game=None)
+        mgr._interventions_client = TargetingFlagClient(default="none")
+        await handle_soft_penalty(make_ctx("soft_penalty_action", "warn", None), mgr)  # no raise
+
+
+# --------------------------------------------------------------------------- #
 # eliminate_player handler
 # --------------------------------------------------------------------------- #
 class TestEliminatePlayerHandler:
@@ -425,6 +535,7 @@ class TestRegistration:
         for flag in (
             "shield_seconds",
             "partial_shield_seconds",
+            "soft_penalty_action",
             "eliminate_player",
             "revive_player",
         ):

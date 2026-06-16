@@ -49,6 +49,7 @@ const (
 	flagPlayerHandicapFactor      = "player_handicap_factor" // #1107 (#1103 MVP action 1)
 	flagShieldSeconds             = "shield_seconds"
 	flagPartialShieldSeconds      = "partial_shield_seconds" // #1129 (#1103 Phase 2)
+	flagSoftPenaltyAction         = "soft_penalty_action"    // #1134 (#1103 Phase 3)
 	flagVolumeOverride            = "volume_override"
 	flagGlobalDifficultyFactor    = "global_difficulty_factor" // #766 F6
 	flagPacingProfile             = "pacing_profile"           // #766 F6
@@ -116,6 +117,10 @@ const (
 	// 5 seconds at the default ~2.0 boost — used when a Decision carries no Value
 	// or a malformed one. "<seconds>:<boost>" with boost at the [1.0,2.0] max.
 	defaultPartialShield = "5:2.0"
+	// defaultSoftPenalty is the safe fallback soft_penalty directive (#1134): the
+	// gentlest, fully-recoverable "warn" — used when a Decision carries no Value or
+	// a malformed one. Never escalates an unparseable value to a tighten.
+	defaultSoftPenalty = "warn"
 )
 
 // partial_shield bounds (#1129) — mirror BaseGameMode's clamps so the writer
@@ -124,6 +129,16 @@ const (
 	partialShieldMaxSeconds = 30.0
 	partialShieldBoostMin   = 1.0
 	partialShieldBoostMax   = 2.0
+)
+
+// soft_penalty bounds (#1134) — mirror BaseGameMode's clamps so the writer never
+// emits a directive the game side would reject. tighten factor < 1.0 WEAKENS the
+// threshold (mirror of partial_shield's >= 1.0 boost); the [0.5,1.0] band keeps
+// it from ever reaching instant-death.
+const (
+	softPenaltyMaxSeconds = 30.0
+	softPenaltyFactorMin  = 0.5
+	softPenaltyFactorMax  = 1.0
 )
 
 // tempoRampMaxSeconds bounds a single ramp's duration (mirrors base.py
@@ -420,6 +435,8 @@ func (w *Writer) mutate(doc *orderedDoc, d decision.Decision) error {
 		return w.setTargeted(doc, flagShieldSeconds, neutralNone, d.TargetSerial, w.numOr(d.Value, defaultShieldSeconds))
 	case decision.InterventionPartialShield: // #1129 (#1103 Phase 2), shadow-only
 		return w.setTargetedString(doc, flagPartialShieldSeconds, neutralNone, d.TargetSerial, w.partialShieldOr(d.Value, defaultPartialShield))
+	case decision.InterventionSoftPenalty: // #1134 (#1103 Phase 3), shadow-only
+		return w.setTargetedString(doc, flagSoftPenaltyAction, neutralNone, d.TargetSerial, w.softPenaltyOr(d.Value, defaultSoftPenalty))
 
 	// Probe-mode synthetic intervention: no game effect, but a dispatched success
 	// so probe mode (AGENT_PROBE_DECISIONS + the `probe` interventions_allowed
@@ -594,6 +611,49 @@ func (w *Writer) partialShieldOr(v, def string) string {
 			w.log.Warn("agent.action_bad_value", "value", v, "fallback", def)
 			return def
 		}
+	}
+	return v
+}
+
+// softPenaltyOr validates a soft_penalty directive "warn" | "tighten" |
+// "tighten:<seconds>:<factor>" (#1134) and returns it, or def ("warn") when v is
+// empty/malformed/out-of-bounds. Defensive sibling of partialShieldOr: the
+// game-side parser (lifecycle_handlers.parse_soft_penalty_value) independently
+// re-validates, but validating here keeps a malformed LLM value from ever
+// reaching the flag file and — critically — never lets garbage escalate into a
+// tighten (an unknown value degrades to the gentlest "warn"). Bounds mirror the
+// game side: tighten seconds > 0 (capped), factor in [0.5, 1.0].
+func (w *Writer) softPenaltyOr(v, def string) string {
+	if v == "" {
+		return def
+	}
+	t := strings.ToLower(strings.TrimSpace(v))
+	if t == "warn" {
+		return v
+	}
+	parts := strings.Split(t, ":")
+	if parts[0] != "tighten" {
+		// Unknown action: degrade to the safe default rather than dispatch garbage.
+		w.log.Warn("agent.action_bad_value", "value", v, "fallback", def)
+		return def
+	}
+	// Bare "tighten" uses game-side defaults; only the 3-field form carries bounds.
+	if len(parts) == 1 {
+		return v
+	}
+	if len(parts) != 3 {
+		w.log.Warn("agent.action_bad_value", "value", v, "fallback", def)
+		return def
+	}
+	seconds, serr := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+	if serr != nil || seconds <= 0 || seconds > softPenaltyMaxSeconds {
+		w.log.Warn("agent.action_bad_value", "value", v, "fallback", def)
+		return def
+	}
+	factor, ferr := strconv.ParseFloat(strings.TrimSpace(parts[2]), 64)
+	if ferr != nil || factor < softPenaltyFactorMin || factor > softPenaltyFactorMax {
+		w.log.Warn("agent.action_bad_value", "value", v, "fallback", def)
+		return def
 	}
 	return v
 }

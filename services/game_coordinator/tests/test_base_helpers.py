@@ -413,6 +413,106 @@ class TestComputeEffectiveThresholds:
         _, death = game._compute_effective_thresholds(p)
         assert death > 0 and death != float("inf")
 
+    # --- #1134: time-boxed soft_penalty TIGHTEN in the threshold path -------- #
+
+    def test_soft_penalty_active_lowers_threshold(self, game):
+        """An active tighten WEAKENS the threshold via its factor (< 1.0)."""
+        from lib.types import Sensitivity
+
+        game.sensitivity = Sensitivity.MEDIUM
+        game.music_speed = SLOW_MUSIC_SPEED
+        neutral = Player(serial="t", sensitivity_factor=1.0, handicap_factor=1.0)
+        tightened = Player(
+            serial="t",
+            sensitivity_factor=1.0,
+            handicap_factor=1.0,
+            soft_penalty_until=time.time() + 5.0,
+            soft_penalty_factor=0.6,
+        )
+        _, death_n = game._compute_effective_thresholds(neutral)
+        _, death_t = game._compute_effective_thresholds(tightened)
+        assert death_t == pytest.approx(death_n * 0.6)
+        assert death_t < death_n  # easier to die
+
+    def test_soft_penalty_expired_is_noop(self, game):
+        """A tighten whose deadline has passed leaves thresholds at the standing
+        handicap (no reset task — it simply stops applying)."""
+        from lib.types import Sensitivity
+
+        game.sensitivity = Sensitivity.MEDIUM
+        game.music_speed = SLOW_MUSIC_SPEED
+        plain = Player(serial="t", sensitivity_factor=1.0, handicap_factor=1.0)
+        expired = Player(
+            serial="t",
+            sensitivity_factor=1.0,
+            handicap_factor=1.0,
+            soft_penalty_until=time.time() - 1.0,  # already past
+            soft_penalty_factor=0.6,
+        )
+        assert game._compute_effective_thresholds(expired) == pytest.approx(game._compute_effective_thresholds(plain))
+
+    def test_soft_penalty_clamped_not_instant_death(self, game):
+        """Even a maxed tighten (0.5) is clamped to the 0.5 lower bound — the
+        threshold drops to half, never to zero (never instant-death)."""
+        from lib.types import Sensitivity
+
+        game.sensitivity = Sensitivity.MEDIUM
+        game.music_speed = SLOW_MUSIC_SPEED
+        neutral = Player(serial="t", sensitivity_factor=1.0, handicap_factor=1.0)
+        p = Player(
+            serial="t",
+            sensitivity_factor=1.0,
+            handicap_factor=1.0,
+            soft_penalty_until=time.time() + 5.0,
+            soft_penalty_factor=0.5,
+        )
+        _, death_n = game._compute_effective_thresholds(neutral)
+        _, death = game._compute_effective_thresholds(p)
+        assert death == pytest.approx(death_n * 0.5)
+        assert death > 0
+
+    def test_soft_penalty_min_overrides_partial_shield(self, game):
+        """Precedence: tighten composes by MIN AFTER partial_shield's MAX, so an
+        active tighten cuts through an active partial_shield boost (pressure
+        overrides protection). Effective = min(max(1.0, 2.0), 0.6) = 0.6."""
+        from lib.types import Sensitivity
+
+        game.sensitivity = Sensitivity.MEDIUM
+        game.music_speed = SLOW_MUSIC_SPEED
+        neutral = Player(serial="t", sensitivity_factor=1.0, handicap_factor=1.0)
+        both = Player(
+            serial="t",
+            sensitivity_factor=1.0,
+            handicap_factor=1.0,
+            partial_shield_until=time.time() + 5.0,
+            partial_shield_boost=2.0,
+            soft_penalty_until=time.time() + 5.0,
+            soft_penalty_factor=0.6,
+        )
+        _, death_n = game._compute_effective_thresholds(neutral)
+        _, death = game._compute_effective_thresholds(both)
+        # tighten wins: 0.6, not the shield's 2.0.
+        assert death == pytest.approx(death_n * 0.6)
+
+    def test_soft_penalty_min_with_standing_handicap(self, game):
+        """A tighten 0.6 against a standing help-handicap 1.8: min(1.8, 0.6) = 0.6,
+        so the tighten cuts through the standing help too."""
+        from lib.types import Sensitivity
+
+        game.sensitivity = Sensitivity.MEDIUM
+        game.music_speed = SLOW_MUSIC_SPEED
+        neutral = Player(serial="t", sensitivity_factor=1.0, handicap_factor=1.0)
+        p = Player(
+            serial="t",
+            sensitivity_factor=1.0,
+            handicap_factor=1.8,
+            soft_penalty_until=time.time() + 5.0,
+            soft_penalty_factor=0.6,
+        )
+        _, death_n = game._compute_effective_thresholds(neutral)
+        _, death = game._compute_effective_thresholds(p)
+        assert death == pytest.approx(death_n * 0.6)
+
 
 # ========================================================================
 # grant_partial_shield primitive (#1129)
@@ -480,6 +580,101 @@ class TestGrantPartialShield:
         await game.grant_partial_shield("AA", 1.0, 1.1)
         assert game.players["AA"].partial_shield_until == pytest.approx(far)
         assert game.players["AA"].partial_shield_boost == pytest.approx(2.0)
+
+
+# ========================================================================
+# soft_penalty primitives: warn_player + apply_soft_penalty (#1134)
+# ========================================================================
+
+
+class TestSoftPenaltyPrimitives:
+    """Tests for warn_player (warn) and apply_soft_penalty (tighten)."""
+
+    @pytest.fixture
+    def game(self):
+        mock_cm = MockControllerManagerService(num_controllers=2)
+        game = FFAGame(
+            controller_manager_client=mock_cm,
+            event_publisher=async_noop,
+            audio_client=None,
+            game_id="test_soft_penalty",
+        )
+        game.players["AA"] = Player(serial="AA", alive=True)
+        return game
+
+    # --- warn: feedback only, NO threshold change --------------------------- #
+
+    @pytest.mark.asyncio
+    async def test_warn_fires_feedback_no_threshold_change(self, game):
+        from lib.types import Sensitivity
+
+        game.sensitivity = Sensitivity.MEDIUM
+        before = game._compute_effective_thresholds(game.players["AA"])
+        ok = await game.warn_player("AA")
+        assert ok is True
+        # warn is purely visual/haptic: warning_until set, thresholds untouched.
+        assert game.players["AA"].warning_until > time.time()
+        assert game.players["AA"].soft_penalty_until == 0.0
+        after = game._compute_effective_thresholds(game.players["AA"])
+        assert before == pytest.approx(after)
+
+    @pytest.mark.asyncio
+    async def test_warn_unknown_or_dead_noop(self, game):
+        assert await game.warn_player("ZZ") is False
+        game.players["AA"].alive = False
+        assert await game.warn_player("AA") is False
+
+    # --- tighten: expiring handicap reduction ------------------------------- #
+
+    @pytest.mark.asyncio
+    async def test_tighten_arms_factor_and_deadline(self, game):
+        ok = await game.apply_soft_penalty("AA", 5.0, 0.6)
+        assert ok is True
+        p = game.players["AA"]
+        assert p.soft_penalty_factor == pytest.approx(0.6)
+        assert p.soft_penalty_until > time.time()
+
+    @pytest.mark.asyncio
+    async def test_tighten_default_factor_when_omitted(self, game):
+        await game.apply_soft_penalty("AA", 5.0)
+        assert game.players["AA"].soft_penalty_factor == pytest.approx(game.SOFT_PENALTY_DEFAULT_FACTOR)
+
+    @pytest.mark.asyncio
+    async def test_tighten_factor_clamped_to_band(self, game):
+        # Below the floor clamps up to 0.5 (never instant-death).
+        await game.apply_soft_penalty("AA", 5.0, 0.1)
+        assert game.players["AA"].soft_penalty_factor == pytest.approx(game.SOFT_PENALTY_FACTOR_MIN)
+        # Above 1.0 clamps to 1.0 (a no-op weakening) — but tighten-not-loosen
+        # keeps the stronger (lower) factor from the first arming.
+        await game.apply_soft_penalty("AA", 5.0, 9.0)
+        assert game.players["AA"].soft_penalty_factor == pytest.approx(game.SOFT_PENALTY_FACTOR_MIN)
+
+    @pytest.mark.asyncio
+    async def test_tighten_seconds_capped(self, game):
+        await game.apply_soft_penalty("AA", 9999.0)
+        assert game.players["AA"].soft_penalty_until <= time.time() + game.SOFT_PENALTY_MAX_SECONDS + 1.0
+
+    @pytest.mark.asyncio
+    async def test_tighten_nonpositive_seconds_noop(self, game):
+        assert await game.apply_soft_penalty("AA", 0.0) is False
+        assert await game.apply_soft_penalty("AA", -3.0) is False
+        assert game.players["AA"].soft_penalty_until == 0.0
+
+    @pytest.mark.asyncio
+    async def test_tighten_unknown_or_dead_player_noop(self, game):
+        assert await game.apply_soft_penalty("ZZ", 5.0) is False
+        game.players["AA"].alive = False
+        assert await game.apply_soft_penalty("AA", 5.0) is False
+
+    @pytest.mark.asyncio
+    async def test_tighten_extend_not_shorten_strengthen_not_loosen(self, game):
+        await game.apply_soft_penalty("AA", 30.0, 0.5)
+        far = game.players["AA"].soft_penalty_until
+        # A shorter, WEAKER (higher factor) re-arming must not reduce the active
+        # window or loosen the active factor.
+        await game.apply_soft_penalty("AA", 1.0, 0.9)
+        assert game.players["AA"].soft_penalty_until == pytest.approx(far)
+        assert game.players["AA"].soft_penalty_factor == pytest.approx(0.5)
 
 
 # ========================================================================

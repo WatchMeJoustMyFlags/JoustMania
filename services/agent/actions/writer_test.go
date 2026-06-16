@@ -391,6 +391,74 @@ func TestPartialShieldMalformedFallsBackSafe(t *testing.T) {
 	}
 }
 
+// TestSoftPenaltyTargeted verifies the #1134 soft_penalty writer case emits the
+// soft_penalty_action flag as a per-serial targeted STRING state flag with the
+// neutral "none" fall-through, preserving the warn/tighten value verbatim.
+func TestSoftPenaltyTargeted(t *testing.T) {
+	w, path := newTestWriter(t)
+	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionSoftPenalty, TargetSerial: "AA", Value: "tighten:8:0.6"}); err != nil {
+		t.Fatalf("apply AA: %v", err)
+	}
+	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionSoftPenalty, TargetSerial: "BB", Value: "warn"}); err != nil {
+		t.Fatalf("apply BB: %v", err)
+	}
+
+	assertTargetingResolves(t, path, flagSoftPenaltyAction, "AA", "agent_AA")
+	assertTargetingResolves(t, path, flagSoftPenaltyAction, "BB", "agent_BB")
+	assertTargetingResolves(t, path, flagSoftPenaltyAction, "ZZ", neutralNone)
+
+	variants := readFlag(t, path, flagSoftPenaltyAction)["variants"].(map[string]any)
+	if variants["agent_AA"].(string) != "tighten:8:0.6" {
+		t.Fatalf("agent_AA value = %v, want tighten:8:0.6", variants["agent_AA"])
+	}
+	if variants["agent_BB"].(string) != "warn" {
+		t.Fatalf("agent_BB value = %v, want warn", variants["agent_BB"])
+	}
+	assertStructurallyValid(t, path)
+}
+
+// TestSoftPenaltyDefaultValue verifies an empty Value falls back to the writer's
+// safe default directive ("warn" — the gentlest, fully-recoverable action).
+func TestSoftPenaltyDefaultValue(t *testing.T) {
+	w, path := newTestWriter(t)
+	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionSoftPenalty, TargetSerial: "AA"}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if v := readFlag(t, path, flagSoftPenaltyAction)["variants"].(map[string]any)["agent_AA"].(string); v != defaultSoftPenalty {
+		t.Fatalf("default soft_penalty value = %v, want %v", v, defaultSoftPenalty)
+	}
+}
+
+// TestSoftPenaltyBareTightenPreserved verifies the bare "tighten" form (game-side
+// defaults) is preserved verbatim, not coerced to a 3-field directive.
+func TestSoftPenaltyBareTightenPreserved(t *testing.T) {
+	w, path := newTestWriter(t)
+	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionSoftPenalty, TargetSerial: "AA", Value: "tighten"}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if v := readFlag(t, path, flagSoftPenaltyAction)["variants"].(map[string]any)["agent_AA"].(string); v != "tighten" {
+		t.Fatalf("bare tighten value = %v, want tighten", v)
+	}
+}
+
+// TestSoftPenaltyMalformedFallsBackSafe verifies malformed directives degrade to
+// the safe default "warn" (never a garbage flag, and crucially never escalate an
+// unknown value into a tighten): unknown action, out-of-band factor, non-positive
+// seconds, wrong field count all fall back to warn.
+func TestSoftPenaltyMalformedFallsBackSafe(t *testing.T) {
+	for _, bad := range []string{"abc", "loosen", "tighten:5", "tighten:0:0.6", "tighten:-3:0.6", "tighten:5:0.2", "tighten:5:1.5", "tighten:5:abc", "tighten:5:0.6:1"} {
+		w, path := newTestWriter(t)
+		if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionSoftPenalty, TargetSerial: "AA", Value: bad}); err != nil {
+			t.Fatalf("apply %q: %v", bad, err)
+		}
+		v := readFlag(t, path, flagSoftPenaltyAction)["variants"].(map[string]any)["agent_AA"].(string)
+		if v != defaultSoftPenalty {
+			t.Fatalf("malformed %q wrote %q, want safe default %q", bad, v, defaultSoftPenalty)
+		}
+		assertStructurallyValid(t, path)
+	}
+}
+
 func TestTargetedRequiresSerial(t *testing.T) {
 	w, _ := newTestWriter(t)
 	err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionAdjustPlayerSensitivity})
