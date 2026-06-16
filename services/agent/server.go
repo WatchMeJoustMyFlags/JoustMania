@@ -43,6 +43,11 @@ type serverComponents struct {
 	mux   *gamecontext.Multiplexer
 	loops *decision.LoopSet
 
+	// retro is the post-game RetroCoordinator. Its async inference goroutines (#1179)
+	// are joined on shutdown via AwaitInflight so no retro outlives the process. May be
+	// nil (tests that do not exercise the retro path).
+	retro *decision.RetroCoordinator
+
 	// resolver is the shared inference resolver whose background probe ticker is
 	// started by run and stopped when ctx is cancelled. It may be nil (tests that
 	// do not exercise the inference path).
@@ -146,6 +151,14 @@ func (c *serverComponents) run(ctx context.Context) error {
 		c.logger.Info("Shutdown requested, stopping servers...")
 		grpcServer.GracefulStop()
 		c.loops.AwaitInflight()
+		// Join in-flight async retro inference goroutines (#1179) too: ctx (the agent
+		// root) is already cancelled, and each retro goroutine bridges root.Done() to its
+		// budget-context cancel (SetRootContext), so a well-behaved in-flight Infer is
+		// unblocked promptly rather than waiting out the full latency budget; AwaitInflight
+		// then joins them. No retro outlives the process.
+		if c.retro != nil {
+			c.retro.AwaitInflight()
+		}
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = healthServer.Shutdown(shutdownCtx)

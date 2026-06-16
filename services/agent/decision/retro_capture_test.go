@@ -286,6 +286,9 @@ func TestRetroCapture_ConfiguredBackendReachable(t *testing.T) {
 	rc.SetResolver(r)
 
 	rc.OnGameEnd(endedSession())
+	// #1179: the retro now actually calls Infer ASYNC when a backend resolves, so the
+	// span ends inside the fired goroutine — join it before reading the spans.
+	rc.AwaitInflight()
 
 	span := spansByName(sr.Ended(), SpanLLMRetro)[0]
 	want := map[string]string{

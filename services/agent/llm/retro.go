@@ -22,6 +22,8 @@ package llm
 // follow-up wires a real backend once the fallback chain (#741) exists.
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -72,6 +74,95 @@ func BuildRetro(in RetroInput) RetroPrompt {
 		User:   buildRetroUser(in.Context, in.Summary, in.Now),
 		Model:  in.Snapshot.Capability.Model,
 	}
+}
+
+// RetroResponse is the DECODED post-game analyst reply (#1179): the structured
+// shape of the JSON object buildRetroSystem's RESPONSE CONTRACT asks the offline
+// analyst to return (llm/retro.go:146-158). It is the retro sibling of the in-game
+// Response (decode.go): the offline analyst gives a session assessment, a handful of
+// tuning suggestions, and the session focus the next game should lean toward. Unlike
+// the in-game Response it dispatches NOTHING — the retro is RECORDED ONLY (the agent
+// never auto-applies a suggestion), so DecodeRetro is deliberately FORGIVING about
+// the suggestion vocabulary (it does not reject an unknown intervention_type/emphasis):
+// a recorded-only conclusion is captured as-is for a human to read, not gated like a
+// dispatchable action. The only hard requirement is that the reply be a single JSON
+// object — anything else is unparseable and stamped as a parse failure on the span.
+type RetroResponse struct {
+	// SessionAssessment is the analyst's one-sentence read on how the game went.
+	SessionAssessment string `json:"session_assessment"`
+	// Suggestions are the (possibly empty) tuning recommendations. A healthy session
+	// legitimately yields an empty list — that is a VALID, contract-following reply.
+	Suggestions []RetroSuggestion `json:"suggestions"`
+	// SessionFocus is the goal the next session should lean toward (one of
+	// endurance/balanced/accelerate/chaos per the contract). Captured verbatim — not
+	// validated against a vocabulary, since the retro is recorded-only.
+	SessionFocus string `json:"session_focus"`
+}
+
+// RetroSuggestion is one recorded tuning recommendation from the analyst (#1179):
+// which intervention TYPE to change, how (emphasis), and why. Captured as-is for a
+// human to review; never auto-applied, so no field is validated against an allow-list.
+type RetroSuggestion struct {
+	// InterventionType is the allow-list intervention the analyst recommends tuning.
+	InterventionType string `json:"intervention_type"`
+	// Emphasis is the direction of the change (enable/weight_up/weight_down/disable).
+	Emphasis string `json:"emphasis"`
+	// Reason is the one-sentence justification tying the change to session evidence.
+	Reason string `json:"reason"`
+}
+
+// Retro-decode rejection reasons (#1179). The retro path is recorded-only, so the
+// ONLY failure mode is "the reply was not a single JSON object" — there are no
+// required-field or vocabulary checks (a healthy session yields an empty, but valid,
+// reply). Both reasons are stamped as the parse-failure marker on the agent.llm.retro
+// span (parse_ok=false + llm.infer.error).
+var (
+	// ErrRetroEmptyResponse: the analyst returned nothing usable (empty/whitespace).
+	ErrRetroEmptyResponse = errors.New("llm: empty retro response")
+	// ErrRetroNotJSON: no single JSON object could be extracted/parsed from the reply.
+	ErrRetroNotJSON = errors.New("llm: retro response is not a single JSON object")
+)
+
+// DecodeRetro parses a raw analyst reply into a RetroResponse, or returns a typed
+// error (#1179). It is the retro sibling of the in-game Decode (decode.go) and shares
+// its DEFENSIVE JSON extraction: a real model wraps its object in prose or ```json
+// fences despite the "no prose" instruction, so DecodeRetro locates the first '{' and
+// the matching last '}' and parses the span between them (extractJSONObject).
+//
+// It is intentionally LESS strict than Decode: the in-game Decode validates required
+// fields and a closed objective vocabulary because its output DISPATCHES an action;
+// the retro is RECORDED ONLY (never auto-applied), so DecodeRetro captures whatever
+// well-formed JSON the analyst returns — an empty suggestions list, an unknown
+// emphasis, a missing focus are all captured verbatim for a human to read. The single
+// hard requirement is parseability: a non-JSON reply is unparseable and the caller
+// stamps parse_ok=false on the span.
+//
+// CONTRACT CAVEAT: the ONLY thing this guarantees is "a parseable JSON object". A
+// structurally-valid but contentless object (e.g. {"foo":1}) parses fine — it yields
+// parse_ok=true with an empty conclusion (empty assessment/focus, no suggestions),
+// INDISTINGUISHABLE from a genuinely empty healthy reply ({}). Callers cannot infer
+// "the analyst said nothing useful" vs "the analyst saw nothing to flag" from parse_ok
+// alone; both are valid, recorded-only outcomes.
+func DecodeRetro(raw string) (RetroResponse, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return RetroResponse{}, ErrRetroEmptyResponse
+	}
+
+	obj, err := extractJSONObject(trimmed)
+	if err != nil {
+		// Normalize the in-game ErrNotJSON to the retro-namespaced reason so callers
+		// log a coherent "retro" cause; the underlying defensive extraction is shared.
+		return RetroResponse{}, ErrRetroNotJSON
+	}
+
+	var r RetroResponse
+	// DisallowUnknownFields is intentionally NOT used: a compliant analyst may add
+	// commentary keys, and we only consume the contracted ones (mirrors Decode).
+	if err := json.Unmarshal(obj, &r); err != nil {
+		return RetroResponse{}, fmt.Errorf("%w: %v", ErrRetroNotJSON, err)
+	}
+	return r, nil
 }
 
 // buildRetroSystem renders the System prompt: the post-game analyst role, the

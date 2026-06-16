@@ -206,6 +206,75 @@ const (
 	AttrLLMPromptBytes = "llm.prompt.bytes"
 )
 
+// Custom attribute keys for the retro INFERENCE CONCLUSION (#1179): the values
+// captured on the agent.llm.retro span once the offline analyst actually answers.
+// Until #1179 the retro span only carried the PROMPT (a 10µs capture-only stub);
+// these keys carry the analyst's decoded reply so the maintainer can read the agent's
+// post-game LEARNING in Jaeger. They live in the llm.retro.* namespace alongside the
+// prompt keys (AttrLLMRetroSystemSHA etc., retro_capture.go) so the two never collide.
+//
+// The per-suggestion detail is NOT crammed into a single high-cardinality attribute:
+// each suggestion is emitted as one span EVENT (retro.suggestion) carrying the
+// intervention_type / emphasis / reason, so a reader can expand the timeline and the
+// suggestions stay queryable without ballooning the attribute set.
+const (
+	// AttrLLMRetroSessionAssessment is the analyst's one-sentence read on the game
+	// (RetroResponse.SessionAssessment). Stamped only on a parsed reply.
+	AttrLLMRetroSessionAssessment = "llm.retro.session_assessment"
+	// AttrLLMRetroSessionFocus is the goal the analyst says the next session should
+	// lean toward (RetroResponse.SessionFocus). Stamped only on a parsed reply.
+	AttrLLMRetroSessionFocus = "llm.retro.session_focus"
+	// AttrLLMRetroSuggestionCount is the number of tuning suggestions the analyst
+	// returned (len(RetroResponse.Suggestions)) — 0 is a valid, healthy-session reply.
+	AttrLLMRetroSuggestionCount = "llm.retro.suggestion_count"
+	// AttrLLMRetroLatencyMs is the wall time the inference call took, in integer
+	// milliseconds. Recorded on EVERY backend-called retro (success, decode failure,
+	// or transport/timeout error) so retro inference latency is always queryable —
+	// the retro-namespace counterpart of AttrLLMLatencyMs.
+	AttrLLMRetroLatencyMs = "llm.retro.latency_ms"
+	// AttrLLMRetroParseOK is true when DecodeRetro turned the reply into a
+	// RetroResponse, false when the reply was unparseable. Always present on a
+	// backend-called retro; absent on the capture-only fallback (no backend).
+	AttrLLMRetroParseOK = "llm.retro.parse_ok"
+	// AttrLLMRetroResponseSHA is the FINGERPRINT (short hex SHA-256) of the analyst's
+	// RAW reply text (#1169 pattern): stamped on the span INSTEAD of the full text,
+	// which is large and would re-load the #1167 traces pipeline. The full raw reply is
+	// emitted ONCE per distinct fingerprint on the agent.llm.retro_response reference
+	// LOG line, so this hash is always resolvable to the exact text.
+	AttrLLMRetroResponseSHA = "llm.retro.response_sha256"
+)
+
+// SpanLLMRetroSuggestion is the span EVENT name carrying one decoded retro suggestion
+// (#1179): one event per RetroResponse.Suggestion on the agent.llm.retro span,
+// attributes intervention_type / emphasis / reason. Emitting them as events (not as
+// one fat attribute) keeps each suggestion queryable in Jaeger while bounding the
+// attribute set.
+const SpanLLMRetroSuggestion = "retro.suggestion"
+
+// Span-event attribute keys for a single retro.suggestion event (#1179): the three
+// fields of a RetroSuggestion. Low-cardinality type/emphasis labels + the free-text
+// reason, scoped to the event so they never collide with span-level llm.retro.* keys.
+const (
+	AttrRetroSuggestionType     = "intervention_type"
+	AttrRetroSuggestionEmphasis = "emphasis"
+	AttrRetroSuggestionReason   = "reason"
+)
+
+// SpanLLMRetroResponseRef is the message of the once-per-fingerprint reference LOG
+// line for the analyst's RAW reply (#1169 pattern, #1179): the full raw text is large
+// and recorded-only, so — exactly like the system-prompt reference (prompt_fingerprint.go)
+// — it rides a LOG line (not the traces pipeline) emitted ONCE per distinct
+// response_sha256, keeping the big text off the span while staying resolvable.
+const SpanLLMRetroResponseRef = "agent.llm.retro_response"
+
+// SpanLLMRetroFailed is the WARN log message emitted when a backend-called retro
+// could not yield a conclusion (#1179): a transport/timeout error or an unparseable
+// reply. It is the silent-failure guard — a retro that asked the model but got nothing
+// usable is logged loudly (with the cause) instead of vanishing, so the maintainer
+// sees that the post-game learning attempt failed rather than mistaking "no
+// conclusion" for "nothing to say".
+const SpanLLMRetroFailed = "agent.llm.retro_failed"
+
 // Custom attribute keys of the decision-span schema (issue #724). Attributes
 // covered by a semantic convention (gen_ai.agent.name, rpc.*, error.type,
 // feature_flag.*) use the semconv constants directly and are not listed here.

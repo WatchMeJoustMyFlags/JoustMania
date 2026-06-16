@@ -780,6 +780,12 @@ func main() {
 	// default the resolver has no configured tier and the chain is unreachable, so the
 	// retro degrades to used="none"/no_backend_available exactly as before.
 	retro.SetResolver(sharedResolver)
+	// #1179: bound every async retro inference goroutine to the agent's root context so
+	// shutdown cancellation unblocks a well-behaved in-flight Infer (no leak), the same
+	// SetRootContext pattern the per-game loops use. The retro now actually CALLS the
+	// resolved backend at game end (async), decodes the conclusion, and stamps it on the
+	// agent.llm.retro span.
+	retro.SetRootContext(ctx)
 
 	// Game narrative builder (#928, M7-1): on the SAME GameActive true->false
 	// transition, aggregate the partition's pre-reset snapshot (live signals + the
@@ -997,6 +1003,7 @@ func main() {
 		pipe:             pipe,
 		mux:              mux,
 		loops:            loops,
+		retro:            retro,
 		resolver:         sharedResolver,
 		evictInterval:    lifecycleHolder.EvictInterval(),
 		evictIntervalSrc: lifecycleHolder.EvictInterval,

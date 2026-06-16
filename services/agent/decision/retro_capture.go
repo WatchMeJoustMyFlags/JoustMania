@@ -12,6 +12,7 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
 	"github.com/joustmania/agent/gamesummary"
 	"github.com/joustmania/agent/llm"
@@ -162,6 +163,19 @@ type RetroCoordinator struct {
 	// via SetFitnessLookup; not safe to call concurrently with OnGameEnd.
 	fitnessLookup func(gameID string) (float64, bool)
 
+	// inferWG tracks every in-flight retro inference goroutine (#1179). OnGameEnd is
+	// a lifecycle hook and MUST NOT block on the 2-10s network call, so the
+	// infer+decode+capture runs in its own goroutine; this wait group lets graceful
+	// shutdown and tests join all in-flight retros (AwaitInflight) so no goroutine
+	// outlives the process and tests can deterministically wait for the conclusion to
+	// land before asserting — mirroring the in-game Loop.inferWG.
+	inferWG sync.WaitGroup
+	// rootCtx is the agent's root context (#1179): the retro inference goroutine bridges
+	// rootCtx.Done() to its (span-derived) budget context's cancel, so shutdown
+	// cancellation promptly unblocks a well-behaved in-flight Infer. Nil means no bridge
+	// — the latency budget alone bounds the call.
+	rootCtx context.Context
+
 	// mu guards the captured-session dedupe state.
 	mu sync.Mutex
 	// captured is the set of recently captured SessionIDs (membership = already
@@ -218,6 +232,21 @@ func (rc *RetroCoordinator) SetResolver(r *Resolver) { rc.resolver = r }
 func (rc *RetroCoordinator) SetFitnessLookup(f func(gameID string) (float64, bool)) {
 	rc.fitnessLookup = f
 }
+
+// SetRootContext injects the agent's root context (#1179). The async retro inference
+// goroutine keeps its latency-budget context derived from the retro SPAN context (to
+// preserve #1112 trace parenting), and separately bridges root.Done() -> cancel() so
+// shutdown cancellation promptly unblocks a well-behaved in-flight Infer instead of
+// waiting out the full budget. Nil (the default) means no bridge is installed — the
+// latency budget is the sole deadline. Not safe to call concurrently with OnGameEnd —
+// set it during construction.
+func (rc *RetroCoordinator) SetRootContext(ctx context.Context) { rc.rootCtx = ctx }
+
+// AwaitInflight blocks until every in-flight async retro inference has completed
+// (#1179). main.go calls it during graceful shutdown so no retro goroutine outlives
+// the process; tests call it to make the conclusion land deterministically before
+// asserting (no real sleeps). Safe to call when nothing is in flight.
+func (rc *RetroCoordinator) AwaitInflight() { rc.inferWG.Wait() }
 
 // OnGameEnd is the gamecontext.Store.OnGameEnd callback. It captures the
 // retrospective prompt for a finished session exactly once. It is defensive:
@@ -340,8 +369,7 @@ func (rc *RetroCoordinator) OnGameEnd(c gamecontext.GameContext) {
 			trace.WithAttributes(attribute.String(AttrGameTraceID, c.GameTraceID)))
 	}
 
-	_, span := rc.Tracer.Start(context.Background(), SpanLLMRetro, startOpts...)
-	span.End()
+	spanCtx, span := rc.Tracer.Start(context.Background(), SpanLLMRetro, startOpts...)
 
 	rc.Log.Info("agent.llm.retro_captured",
 		"session_id", c.SessionID,
@@ -349,6 +377,158 @@ func (rc *RetroCoordinator) OnGameEnd(c gamecontext.GameContext) {
 		"bytes", len(prompt.System)+len(prompt.User),
 		"fallback_reason", attr.fallback,
 	)
+
+	// #1179: actually CALL the model. When a real backend resolved, ask it for the
+	// post-game conclusion and stamp the decoded assessment/suggestions/focus on the
+	// SAME span — which now ends AFTER the response (real latency), not at 10µs. When
+	// no backend resolved (chain unreachable / no resolver wired), keep the pre-#1179
+	// capture-only behavior: end the span now with fallback=no_backend_available.
+	if attr.backend == nil {
+		span.End()
+		return
+	}
+
+	// ASYNC: OnGameEnd is a lifecycle hook on the game-end transition — it must NOT
+	// block on the 2-10s inference call. Fire the infer+decode+capture in its own
+	// goroutine (mirroring the in-game runInfer/applyAsyncResult split) and return
+	// immediately; the span ends inside the goroutine once the response lands. Tracked
+	// on inferWG so shutdown/tests can join it (AwaitInflight).
+	budget := retroLatencyBudget(snapshot)
+	rc.inferWG.Add(1)
+	go rc.runRetroInfer(spanCtx, span, attr.backend, prompt, c.SessionID, budget)
+}
+
+// retroLatencyBudget is the wall-clock cap for one retro inference call (#1179),
+// reusing the SAME llm.latency_budget_seconds flag the in-game async path uses so a
+// retro can never outlive the configured budget. A non-positive value (a hand-built
+// test snapshot) floors at the default — a retro must never run without a deadline, or
+// a hung Infer would leak its goroutine and pin the span open forever.
+func retroLatencyBudget(snapshot flags.Snapshot) time.Duration {
+	budget := snapshot.LLMGate.LatencyBudget
+	if budget <= 0 {
+		budget = time.Duration(flags.DefaultLLMLatencyBudgetSeconds * float64(time.Second))
+	}
+	return budget
+}
+
+// runRetroInfer is the body of the fired retro goroutine (#1179): it calls Infer under
+// the latency-budget context, decodes the reply, stamps the conclusion (or the failure)
+// on the agent.llm.retro span, and ends the span. It runs OFF the game-end hook, so it
+// may take seconds without blocking the lifecycle transition.
+//
+// FAIL-OPEN: it is total and never panics out — a flagd/backend/timeout/decode failure
+// stamps the error on the span (parse_ok=false + llm.infer.error) and emits a WARN log,
+// but the span always ends cleanly. OnGameEnd has already returned by the time this
+// runs, so nothing here can break the game-end transition.
+func (rc *RetroCoordinator) runRetroInfer(ctx context.Context, span trace.Span, backend Backend, prompt llm.RetroPrompt, sessionID string, budget time.Duration) {
+	defer rc.inferWG.Done()
+	defer span.End()
+
+	now := rc.now
+	if now == nil {
+		now = time.Now
+	}
+
+	// inferCtx MUST stay derived from ctx (the live retro span context), NOT from
+	// rootCtx: #1112 requires the outbound-call client span below to be parented under
+	// THIS retro span ("one trace" through the litellm gateway), and that parenting flows
+	// through ctx. WithTimeout(ctx, budget) gives us the span parent plus the latency
+	// budget. (The sibling in-game path async_infer.go:232 derives from root directly
+	// because it carries no span-parent-from-ctx constraint — do not copy that here.)
+	inferCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+
+	// Linked cancellation: WithTimeout(ctx, budget) does NOT inherit rootCtx's
+	// cancellation (ctx is the standalone retro root, not a child of root), so on
+	// shutdown an in-flight Infer would otherwise wait out the full ~8s budget. Bridge
+	// root.Done() -> cancel() with a small goroutine so shutdown promptly unblocks a
+	// well-behaved Infer; the goroutine also exits when inferCtx finishes normally, so it
+	// never leaks. A nil rootCtx (tests / unwired) skips the bridge — the budget timeout
+	// remains the sole deadline.
+	if root := rc.rootCtx; root != nil {
+		go func() {
+			select {
+			case <-root.Done():
+				cancel()
+			case <-inferCtx.Done():
+			}
+		}()
+	}
+
+	// Wrap the outbound call in a short-lived client span (mirroring async_infer.go's
+	// SpanLLMInferCall) so callCtx carries an active, sampled span for the #1112
+	// traceparent injector to read — restoring "one trace" through the litellm gateway.
+	callCtx, callSpan := rc.Tracer.Start(inferCtx, SpanLLMInferCall,
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("gen_ai.request.model", backend.Name()),
+			attribute.String(AttrGameID, sessionID),
+			attribute.String(AttrSessionID, sessionID),
+		),
+	)
+	start := now()
+	// The retro prompt's System/User map onto the inference Prompt's System/User;
+	// Model rides for attribution (already stamped on the span). The retro has no
+	// in-game Variant.
+	raw, inferErr := backend.Infer(callCtx, llm.Prompt{
+		System: prompt.System,
+		User:   prompt.User,
+		Model:  prompt.Model,
+	})
+	callSpan.End()
+	latencyMs := now().Sub(start).Milliseconds()
+
+	span.SetAttributes(attribute.Int64(AttrLLMRetroLatencyMs, latencyMs))
+
+	// Transport / timeout failure: stamp the error, log loudly, end (fail-open).
+	if inferErr != nil {
+		span.SetAttributes(
+			attribute.Bool(AttrLLMRetroParseOK, false),
+			attribute.String(AttrLLMInferError, inferErr.Error()),
+		)
+		rc.Log.Warn(SpanLLMRetroFailed,
+			"session_id", sessionID,
+			"latency_ms", latencyMs,
+			"error", inferErr.Error(),
+		)
+		return
+	}
+
+	// Keep the big raw text off the traces pipeline (#1169): stamp only the
+	// fingerprint, emit the full text once-per-hash on the reference log.
+	sha := responseSHA(raw)
+	span.SetAttributes(attribute.String(AttrLLMRetroResponseSHA, sha))
+	retroResponseRef.emit(rc.Log, sha, sessionID, raw)
+
+	resp, decodeErr := llm.DecodeRetro(raw)
+	if decodeErr != nil {
+		span.SetAttributes(
+			attribute.Bool(AttrLLMRetroParseOK, false),
+			attribute.String(AttrLLMInferError, decodeErr.Error()),
+		)
+		rc.Log.Warn(SpanLLMRetroFailed,
+			"session_id", sessionID,
+			"latency_ms", latencyMs,
+			"error", decodeErr.Error(),
+		)
+		return
+	}
+
+	// Success: stamp the decoded conclusion on the span and emit one queryable event
+	// per suggestion.
+	span.SetAttributes(
+		attribute.Bool(AttrLLMRetroParseOK, true),
+		attribute.String(AttrLLMRetroSessionAssessment, resp.SessionAssessment),
+		attribute.String(AttrLLMRetroSessionFocus, resp.SessionFocus),
+		attribute.Int(AttrLLMRetroSuggestionCount, len(resp.Suggestions)),
+	)
+	for _, s := range resp.Suggestions {
+		span.AddEvent(SpanLLMRetroSuggestion, trace.WithAttributes(
+			attribute.String(AttrRetroSuggestionType, s.InterventionType),
+			attribute.String(AttrRetroSuggestionEmphasis, s.Emphasis),
+			attribute.String(AttrRetroSuggestionReason, s.Reason),
+		))
+	}
 }
 
 // retroAttribution is the inference attribution for one retro capture: the
@@ -358,6 +538,11 @@ type retroAttribution struct {
 	configured string
 	used       string
 	fallback   string
+	// backend is the LIVE resolved Backend the retro should actually call Infer on
+	// (#1179) — the same instance the resolver handed back, surfaced here instead of
+	// discarded. Nil when the whole chain was unreachable (or no resolver is wired):
+	// the retro then stays capture-only with fallback=no_backend_available.
+	backend Backend
 }
 
 // retroInference computes the retro span/log inference attribution (#1080), routing
@@ -392,7 +577,8 @@ func (rc *RetroCoordinator) retroInference(flagModel string) retroAttribution {
 	// A nil Backend means the whole chain was unreachable and the decision loop would
 	// fall back to rules; the retro has no rules fallback, so it reports used="none"
 	// (the DIVERGENCE) with the chain's no_backend_available reason — identical to the
-	// pre-#1080 stub attribution.
+	// pre-#1080 stub attribution. The nil backend is surfaced (#1179) so OnGameEnd keeps
+	// the capture-only path with no_backend_available.
 	if res.Backend == nil {
 		return retroAttribution{
 			configured: configured,
@@ -400,10 +586,13 @@ func (rc *RetroCoordinator) retroInference(flagModel string) retroAttribution {
 			fallback:   res.FallbackReason,
 		}
 	}
+	// #1179: surface the LIVE Backend so OnGameEnd can actually call Infer on it,
+	// instead of resolving the attribution and discarding the resolved tier.
 	return retroAttribution{
 		configured: configured,
 		used:       res.Used,
 		fallback:   res.FallbackReason,
+		backend:    res.Backend,
 	}
 }
 
