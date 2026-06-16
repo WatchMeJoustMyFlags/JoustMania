@@ -138,19 +138,38 @@ receivers:
 
 processors:
   # Batch processor for better performance (traces/logs)
+  # #1155: shorter timeout + smaller batch flush sooner, lowering peak heap held
+  # by the trace/log pipelines under sustained agent experiment-loop span volume
+  # (4 paired shadow games/tick × decision/action/effect/experiment spans).
   batch:
-    timeout: 10s
-    send_batch_size: 1024
+    timeout: 5s
+    send_batch_size: 512
+    send_batch_max_size: 1024
 
   # Fast batch processor for sub-second metrics (Issue #105)
   batch/fast:
     timeout: 100ms
     send_batch_size: 1000
 
-  # Memory limiter to prevent OOM
+  # Memory limiter to prevent OOM (#1155).
+  #
+  # ROOT CAUSE of the exit-137 OOM-kills: limit_mib (512) was set ABOVE the
+  # container's `deploy.resources.limits.memory` ceiling (was 256 MiB) in
+  # docker-compose.yml. With no spike_limit_mib, the soft limit defaulted to
+  # 512 - 20% = ~410 MiB (the "~422 MiB" observed). Both the hard AND soft limit
+  # sat ABOVE the kernel cgroup ceiling, so the kernel OOM-killed the container
+  # long before the limiter could ever shed load — the limiter never engaged.
+  #
+  # FIX: the container ceiling is raised to 768 MiB in docker-compose.yml and the
+  # limiter is aligned BELOW it per OTEL guidance (limit_mib ~= 80% of container,
+  # spike_limit_mib ~= 25% of limit_mib). Now the limiter refuses/sheds data at
+  # ~600 MiB (soft ~450 MiB) — well under the 768 MiB cgroup ceiling — so under
+  # the agent experiment-loop span burst the collector backpressures instead of
+  # being OOM-killed, and keeps exporting the #1140 trace-correlation spans.
   memory_limiter:
     check_interval: 1s
-    limit_mib: 512
+    limit_mib: 600
+    spike_limit_mib: 150
 
   # Resource processors set service.namespace per pipeline.
   # The prometheusremotewrite exporter prefixes job labels with the namespace
