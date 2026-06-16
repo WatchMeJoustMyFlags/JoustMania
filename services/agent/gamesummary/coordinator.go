@@ -48,6 +48,13 @@ const (
 	attrEngagementPoints  = "summary.engagement_points"
 	attrDominated         = "summary.dominated"
 	attrPath              = "summary.path"
+	// attrGameTraceID / attrGameTraceSpanID are the canonical game-session-trace Link
+	// attribute keys (#1133/#1157), matching decision.AttrGameTraceID /
+	// AttrGameTraceSpanID verbatim so the summary's hub Link (#1174) carries the SAME
+	// attribute names every other agent spoke does. Defined locally (not imported from
+	// decision) because decision imports gamesummary — an import cycle the other way.
+	attrGameTraceID     = "game.trace_id"
+	attrGameTraceSpanID = "game.trace_span_id"
 )
 
 // dedupeWindow bounds the per-game claimed-id LRU. It mirrors the retro's bounded
@@ -149,7 +156,15 @@ func (c *Coordinator) OnGameEnd(gc gamecontext.GameContext) {
 
 	// The span IS the audit of the aggregation (#928 acceptance). It is a standalone
 	// root: there is no inbound RPC context at game end (same as the retro span).
-	_, span := c.tracer.Start(context.Background(), SpanGameSummary)
+	//
+	// Hub-and-spoke correlation (#1174): Link this per-game outcome span back to the
+	// game-session trace (the hub) via the SHARED gamecontext.TraceLink primitive — the
+	// same Link logic retro + decision + experiment.* carry (decision.GameTraceLink
+	// delegates to it) — so "show me everything for game X" lists the summary among the
+	// spokes. The ids come from the OnGameEnd GameContext (#1133 correlation gauge).
+	// nil-safe: empty/invalid ids => no Link, no error.
+	startOpts := gamecontext.TraceLink(gc.GameTraceID, gc.GameTraceSpanID, attrGameTraceID, attrGameTraceSpanID)
+	_, span := c.tracer.Start(context.Background(), SpanGameSummary, startOpts...)
 	defer span.End()
 
 	summary := BuildSummary(gc, BuildOptions{Now: now()})

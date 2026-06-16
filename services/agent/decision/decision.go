@@ -645,7 +645,7 @@ func (l *Loop) setLastLayer(state LayerState) {
 // demote this to SpanKindInternal and drop the rpc.* attributes to avoid a duplicate
 // server span for the same RPC.
 func (l *Loop) startSignalReceivedSpan(ctx context.Context, c gamecontext.GameContext, trig EvalTrigger) (context.Context, trace.Span) {
-	return l.Tracer.Start(ctx, SignalReceived,
+	startOpts := []trace.SpanStartOption{
 		trace.WithTimestamp(trig.T0),
 		trace.WithSpanKind(trace.SpanKindServer),
 		trace.WithAttributes(
@@ -659,7 +659,19 @@ func (l *Loop) startSignalReceivedSpan(ctx context.Context, c gamecontext.GameCo
 			// and makes two concurrent games' traces independently attributable.
 			attribute.String(AttrGameID, c.SessionID),
 		),
-	)
+	}
+	// Hub-and-spoke correlation (#1174): this cycle-root span is the parent of the whole
+	// sync decision->action subtree AND the #1140 async fire anchor (both call this shared
+	// helper). Linking it to the game-session trace pulls that ENTIRE subtree onto the hub
+	// in one change. Stamp the game trace_id as a searchable attribute too. nil-safe.
+	startOpts = append(startOpts, gameTraceLink(c.GameTraceID, c.GameTraceSpanID)...)
+	if c.GameTraceID != "" {
+		startOpts = append(startOpts, trace.WithAttributes(attribute.String(AttrGameTraceID, c.GameTraceID)))
+	}
+	if c.GameTraceSpanID != "" {
+		startOpts = append(startOpts, trace.WithAttributes(attribute.String(AttrGameTraceSpanID, c.GameTraceSpanID)))
+	}
+	return l.Tracer.Start(ctx, SignalReceived, startOpts...)
 }
 
 // decide selects the decision path from snapshot.Mode and runs it. The "rules"
@@ -1030,7 +1042,7 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	// thresholds from this cycle's snapshot, so baseline and follow-up sample the SAME
 	// fitness functions against the SAME thresholds. Off the hot path: a cheap map copy
 	// plus a goroutine + timer (bounded, leak-safe via effectWG + rootCtx).
-	if id := l.scheduleEffectSample(d, state.FitnessEvaluated, fitnessThresholds(snapshot.Fitness)); id != "" {
+	if id := l.scheduleEffectSample(dCtx, c, d, state.FitnessEvaluated, fitnessThresholds(snapshot.Fitness)); id != "" {
 		dSpan.SetAttributes(attribute.String(AttrDecisionInterventionID, id))
 	}
 	// Feed the DISPATCHED outcome into this game's #916 rolling narrative timeline
@@ -1180,32 +1192,12 @@ func (l *Loop) shouldLog() bool {
 // the Link; the caller additionally stamps them as span attributes (see runDecision)
 // so they stay queryable as span tags on backends that don't surface Link attributes.
 func gameTraceLink(gameTraceID, gameTraceSpanID string) []trace.SpanStartOption {
-	if gameTraceID == "" || gameTraceSpanID == "" {
-		return nil
-	}
-	tid, err := trace.TraceIDFromHex(gameTraceID)
-	if err != nil || !tid.IsValid() {
-		return nil
-	}
-	sid, err := trace.SpanIDFromHex(gameTraceSpanID)
-	if err != nil || !sid.IsValid() {
-		return nil
-	}
-	sc := trace.NewSpanContext(trace.SpanContextConfig{
-		TraceID:    tid,
-		SpanID:     sid,
-		TraceFlags: trace.FlagsSampled,
-		Remote:     true,
-	})
-	return []trace.SpanStartOption{
-		trace.WithLinks(trace.Link{
-			SpanContext: sc,
-			Attributes: []attribute.KeyValue{
-				attribute.String(AttrGameTraceID, gameTraceID),
-				attribute.String(AttrGameTraceSpanID, gameTraceSpanID),
-			},
-		}),
-	}
+	// Delegates to the single primitive in gamecontext (#1174): the implementation moved
+	// there so the cycle-independent game-end emitters (gamesummary, which decision
+	// imports and so cannot import back) share the EXACT same Link logic instead of a
+	// replica. The canonical Link attribute keys (AttrGameTraceID / AttrGameTraceSpanID)
+	// are passed through, so the on-wire attributes are unchanged.
+	return gamecontext.TraceLink(gameTraceID, gameTraceSpanID, AttrGameTraceID, AttrGameTraceSpanID)
 }
 
 // GameTraceLink is the exported entry point to the gameTraceLink primitive so other
@@ -1231,6 +1223,10 @@ const (
 	attrLinkKind      = "link.kind"
 	attrLinkTraceID   = "link.trace_id"
 	linkKindFireCycle = "fire_cycle"
+	// linkKindDecision labels the #1174 Link from an agent.intervention.effect span back
+	// to the agent.decision span that caused it, so a reader on the effect span can
+	// navigate to the originating decision (the named "no clue what it relates to" gap).
+	linkKindDecision = "decision"
 )
 
 // fireCycleLink builds the #1140 (Slice A) trace-continuity span option: when the
@@ -1251,6 +1247,29 @@ func fireCycleLink(sc trace.SpanContext) []trace.SpanStartOption {
 			SpanContext: sc,
 			Attributes: []attribute.KeyValue{
 				attribute.String(attrLinkKind, linkKindFireCycle),
+				attribute.String(attrLinkTraceID, sc.TraceID().String()),
+			},
+		}),
+	}
+}
+
+// decisionLink builds the #1174 Link from an agent.intervention.effect span back to its
+// CAUSING agent.decision span. The effect span is emitted on its own backdated root
+// seconds after the decision (the follow-up window), so a Link — not parent-child — is
+// the correct relationship, mirroring fireCycleLink. When the captured decision
+// SpanContext is valid it returns one trace.WithLinks option carrying
+// link.kind=decision plus the decision trace_id as a queryable attribute; an
+// invalid/zero SpanContext (no-op tracer / no active decision span) yields NO option —
+// graceful fallback, no Link, no error.
+func decisionLink(sc trace.SpanContext) []trace.SpanStartOption {
+	if !sc.IsValid() {
+		return nil
+	}
+	return []trace.SpanStartOption{
+		trace.WithLinks(trace.Link{
+			SpanContext: sc,
+			Attributes: []attribute.KeyValue{
+				attribute.String(attrLinkKind, linkKindDecision),
 				attribute.String(attrLinkTraceID, sc.TraceID().String()),
 			},
 		}),

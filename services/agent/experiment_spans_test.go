@@ -115,6 +115,11 @@ func TestExperimentSpans_FitnessAndEvaluateEmitted(t *testing.T) {
 	if _, ok := expSpan_attr(fit[0], decision.AttrExperimentFitness); !ok {
 		t.Errorf("experiment.fitness must carry %s", decision.AttrExperimentFitness)
 	}
+	// #1174 consistency: the game trace_id is also a SEARCHABLE span attribute, not only
+	// a Link attribute.
+	if v, ok := expSpan_attr(fit[0], decision.AttrGameTraceID); !ok || v != gameTrace {
+		t.Errorf("experiment.fitness %s = %q, want %q", decision.AttrGameTraceID, v, gameTrace)
+	}
 	assertLinksToTrace(t, fit[0], gameTrace, gameSpan, "experiment.fitness")
 
 	eval := expSpan_findByName(ended, decision.SpanExperimentEvaluate)
@@ -123,6 +128,9 @@ func TestExperimentSpans_FitnessAndEvaluateEmitted(t *testing.T) {
 	}
 	if v, ok := expSpan_attr(eval[0], decision.AttrExperimentStatus); !ok || v == "" {
 		t.Errorf("experiment.evaluate must carry a non-empty %s, got %q", decision.AttrExperimentStatus, v)
+	}
+	if v, ok := expSpan_attr(eval[0], decision.AttrGameTraceID); !ok || v != gameTrace {
+		t.Errorf("experiment.evaluate %s = %q, want %q", decision.AttrGameTraceID, v, gameTrace)
 	}
 	assertLinksToTrace(t, eval[0], gameTrace, gameSpan, "experiment.evaluate")
 }
@@ -150,6 +158,14 @@ func TestExperimentSpans_VerdictEmitted(t *testing.T) {
 	}
 	if v, ok := expSpan_attr(last, decision.AttrExperimentID); !ok || v != expID {
 		t.Errorf("experiment.verdict %s = %q, want %q", decision.AttrExperimentID, v, expID)
+	}
+	// #1174 consistency: the verdict span now stamps game.id + experiment.arm directly
+	// (it previously carried neither), so it is queryable by game/arm like its siblings.
+	if v, ok := expSpan_attr(last, decision.AttrGameID); !ok || v == "" {
+		t.Errorf("experiment.verdict must carry a non-empty %s", decision.AttrGameID)
+	}
+	if v, ok := expSpan_attr(last, decision.AttrExperimentArm); !ok || v == "" {
+		t.Errorf("experiment.verdict must carry a non-empty %s", decision.AttrExperimentArm)
 	}
 	// The verdict span nests under an experiment.evaluate span (shares its trace).
 	evals := expSpan_findByName(ended, decision.SpanExperimentEvaluate)

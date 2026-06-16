@@ -272,7 +272,14 @@ func (l *Loop) runInfer(root context.Context, snapshot flags.Snapshot, backend B
 	// trace can navigate to the signal that caused it. No-op when fireSC is invalid.
 	callOpts := []trace.SpanStartOption{
 		trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(attribute.String("gen_ai.request.model", backend.Name())),
+		trace.WithAttributes(
+			attribute.String("gen_ai.request.model", backend.Name()),
+			// game.id + session.id (#1174): make the outbound-call span findable by game,
+			// so the LLM call for game X is a queryable spoke (it already Links to the
+			// fire cycle, which Links to the hub). c is THIS game's GameContext.
+			attribute.String(AttrGameID, c.SessionID),
+			attribute.String(AttrSessionID, c.SessionID),
+		),
 	}
 	callOpts = append(callOpts, fireCycleLink(fireSC)...)
 	callCtx, callSpan := l.Tracer.Start(inferCtx, SpanLLMInferCall, callOpts...)
