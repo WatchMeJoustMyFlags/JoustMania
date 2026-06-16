@@ -746,7 +746,19 @@ jobs:
     # so `!cancelled()` is still true on failure and the step below still
     # exit-1's — real failures keep blocking. Per-job `cancelled` results (e.g. a
     # single timed-out job in an otherwise-live run) are still caught below.
-    if: ${{ !cancelled() }}
+    #
+    # The second clause guards the label-gate cascade: on a non-`ci-full`
+    # `labeled` event the `changes` job is skipped (see its `if`), so every real
+    # check is skipped too. WITHOUT this clause ci-complete would still run with
+    # all-`skipped` needs and post `CI Complete: success` on the head SHA —
+    # which, under the repo's latest-status-wins ruleset (strict checks OFF),
+    # would OVERWRITE a prior real `CI Complete: FAILURE` on that same SHA and
+    # unblock a red merge with no re-run. Skipping ci-complete on those events
+    # means a label-only change posts NO status, so the SHA's prior real result
+    # stands. (Adding `ci-full` itself runs the full pipeline normally.)
+    if: >-
+      ${{ !cancelled() &&
+      (github.event.action != 'labeled' || github.event.label.name == 'ci-full') }}
     steps:
       - name: Check all jobs passed
         env:
