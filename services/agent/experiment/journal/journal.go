@@ -436,6 +436,21 @@ func (j *Journal) Intent() Intent {
 	return j.intent
 }
 
+// Events returns the FULL ordered append-only event log read from disk — the
+// complete game-by-game audit trail, NOT the bounded in-memory tail CompactView
+// exposes. It is a READ-ONLY accessor for offline / dossier consumers (#1183) that
+// need every per-game conclusion, not the O(1) rolling aggregate. It re-reads
+// events.jsonl from disk on each call (the live journal only retains the recent
+// tail in memory, §9.2), so it is O(N) and intended for a human-driven dossier
+// read, not a hot path. Torn-tail recovery is identical to Load (store.readEvents).
+// The returned slice is freshly allocated; mutating it cannot affect journal state.
+func (j *Journal) Events() ([]Event, error) {
+	j.mu.Lock()
+	id := j.intent.ExperimentID
+	j.mu.Unlock()
+	return j.store.readEvents(id)
+}
+
 // Summary returns a deep copy of the current rolling summary (the full per-arm
 // Welford state, including M2). The map and arm pointers are copied so the caller
 // cannot mutate the journal's live state.
