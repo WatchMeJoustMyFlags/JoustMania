@@ -744,12 +744,42 @@ func (e *experimentLoop) scoreGameFitness(gc gamecontext.GameContext, objective 
 		attrs = append(attrs, attribute.String(decision.AttrGameTraceID, gc.GameTraceID))
 	}
 	opts := append([]trace.SpanStartOption{trace.WithAttributes(attrs...)}, gameLink...)
-	_, span := e.tracer.Start(context.Background(), decision.SpanExperimentFitness, opts...)
+	// #1188: re-parent under the experiment ROOT span for an experiment-bound game so
+	// the per-game fitness is a CHILD of the experiment (the experiment outlives its
+	// games, so this is timeline-correct). The gameLink is RETAINED — the span is still
+	// navigable to the originating game trace as before. A non-experiment game / unwired
+	// tracer / no root span yields an invalid SpanContext, so experimentParentCtx falls
+	// back to context.Background(): the current own-root behavior, unchanged.
+	ctx := e.experimentParentCtx(gc.ExperimentID)
+	_, span := e.tracer.Start(ctx, decision.SpanExperimentFitness, opts...)
 	defer span.End()
 
 	fitness := e.fitness(gc, objective)
 	span.SetAttributes(attribute.Float64(decision.AttrExperimentFitness, fitness))
 	return fitness
+}
+
+// experimentParentCtx returns a context whose remote parent is the experiment's
+// long-lived agent.experiment ROOT span (#1188), for re-parenting an experiment-bound
+// game's analysis spans (experiment.fitness / evaluate) under it. It reads the root
+// span's SpanContext from the registry by experiment_id and installs it as the remote
+// parent via gamecontext.RemoteParentFromSpanContext.
+//
+// GRACEFUL FALLBACK: an empty/unknown experiment_id, an unwired registry, or a missing
+// root span (the experiment torn down, or the tracer disabled) returns plain
+// context.Background() — the pre-#1188 own-root behavior — so a NON-experiment game and
+// the no-telemetry test path are unchanged and span emission is never broken.
+func (e *experimentLoop) experimentParentCtx(experimentID string) context.Context {
+	base := context.Background()
+	if experimentID == "" || e.registry == nil {
+		return base
+	}
+	sc, ok := e.registry.ExperimentSpanContext(experimentID)
+	if !ok {
+		return base
+	}
+	ctx, _ := gamecontext.RemoteParentFromSpanContext(base, sc)
+	return ctx
 }
 
 // concludeWithSpan folds the concluded game into its arm (the existing
@@ -775,7 +805,11 @@ func (e *experimentLoop) concludeWithSpan(gc gamecontext.GameContext, fitness, d
 		attrs = append(attrs, attribute.String(decision.AttrGameTraceID, gc.GameTraceID))
 	}
 	opts := append([]trace.SpanStartOption{trace.WithAttributes(attrs...)}, gameLink...)
-	ctx, span := e.tracer.Start(context.Background(), decision.SpanExperimentEvaluate, opts...)
+	// #1188: re-parent experiment.evaluate under the experiment ROOT span (same
+	// graceful-fallback as scoreGameFitness — own-root for a non-experiment game). The
+	// experiment.verdict child below inherits this ctx, so it stays a child of evaluate.
+	parent := e.experimentParentCtx(gc.ExperimentID)
+	ctx, span := e.tracer.Start(parent, decision.SpanExperimentEvaluate, opts...)
 	defer span.End()
 
 	status, err := e.registry.ConcludeGame(ctx, gc.SessionID, fitness, duration)

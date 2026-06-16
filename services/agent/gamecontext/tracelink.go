@@ -64,6 +64,25 @@ func RemoteParent(ctx context.Context, gameTraceID, gameTraceSpanID string) (con
 	return trace.ContextWithRemoteSpanContext(ctx, sc), true
 }
 
+// RemoteParentFromSpanContext is the SpanContext-typed sibling of RemoteParent
+// (#1188): it installs an ALREADY-CONSTRUCTED SpanContext as the remote parent of the
+// passed ctx, so a span started from the returned ctx joins that SpanContext's trace as
+// its child. It exists because the experiment ROOT span (registry.go, #1188) is exposed
+// as a trace.SpanContext — not as a pair of hex ids — and its per-experiment analysis
+// spans (experiment.fitness / evaluate, agent.llm.retro, agent.game.summary) re-parent
+// under it from components that hold only the SpanContext, not the live span.
+//
+// An INVALID SpanContext (the zero value, or any !IsValid) returns the UNCHANGED ctx and
+// ok=false, so the caller starts the span exactly as before — the same graceful-fallback
+// contract as RemoteParent, ensuring a non-experiment game (no experiment SpanContext)
+// never re-parents and span emission is never broken.
+func RemoteParentFromSpanContext(ctx context.Context, sc trace.SpanContext) (context.Context, bool) {
+	if !sc.IsValid() {
+		return ctx, false
+	}
+	return trace.ContextWithRemoteSpanContext(ctx, sc), true
+}
+
 // gameSpanContext reconstructs the remote SpanContext of the coordinator's game span from
 // its hex trace_id + span_id. It is the single source of the #1133/#1157 SpanContext
 // construction, shared by TraceLink (Link target) and RemoteParent (remote parent). The

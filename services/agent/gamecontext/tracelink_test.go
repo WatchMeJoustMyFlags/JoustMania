@@ -89,3 +89,32 @@ func TestRemoteParent(t *testing.T) {
 		})
 	}
 }
+
+// TestRemoteParentFromSpanContext covers the #1188 SpanContext-typed sibling: a VALID
+// SpanContext is installed as the remote parent (ok=true); an invalid (zero)
+// SpanContext returns the unchanged ctx + ok=false (graceful own-root fallback).
+func TestRemoteParentFromSpanContext(t *testing.T) {
+	base := context.Background()
+
+	// Invalid (zero) SpanContext => no re-parent, unchanged ctx.
+	if ctx, ok := RemoteParentFromSpanContext(base, trace.SpanContext{}); ok || ctx != base {
+		t.Errorf("zero SpanContext: ok=%v ctx-changed=%v, want ok=false, unchanged", ok, ctx != base)
+	}
+
+	tid, _ := trace.TraceIDFromHex(validTrace)
+	sid, _ := trace.SpanIDFromHex(validSpanID)
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: tid, SpanID: sid, TraceFlags: trace.FlagsSampled,
+	})
+	ctx, ok := RemoteParentFromSpanContext(base, sc)
+	if !ok {
+		t.Fatal("valid SpanContext must re-parent (ok=true)")
+	}
+	got := trace.SpanContextFromContext(ctx)
+	if got.TraceID() != tid || got.SpanID() != sid {
+		t.Errorf("remote parent = %s/%s, want %s/%s", got.TraceID(), got.SpanID(), tid, sid)
+	}
+	if !got.IsRemote() {
+		t.Error("installed parent SpanContext must be marked Remote")
+	}
+}

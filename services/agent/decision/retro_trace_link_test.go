@@ -89,6 +89,62 @@ func TestRetroSpan_LinksToGameTrace(t *testing.T) {
 	}
 }
 
+// TestRetroSpan_ReparentedUnderExperiment (#1188): when an experiment-parent seam is
+// wired and the finished game is experiment-bound with a live root span, the
+// agent.llm.retro span is a CHILD of the experiment root span (same trace_id, parent =
+// the root span_id), AND the game Link is retained. A non-experiment game keeps its
+// own-root behavior.
+func TestRetroSpan_ReparentedUnderExperiment(t *testing.T) {
+	const gameTrace = "4bf92f3577b34da6a3ce929d0e0e4736"
+	rootTID, _ := trace.TraceIDFromHex("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	rootSID, _ := trace.SpanIDFromHex("bbbbbbbbbbbbbbbb")
+	rootSC := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: rootTID, SpanID: rootSID, TraceFlags: trace.FlagsSampled, Remote: true,
+	})
+
+	rc, sr := recordingRetro(t, retroFlagSnapshot())
+	rc.SetExperimentParent(func(id string) (trace.SpanContext, bool) {
+		if id == "exp_42" {
+			return rootSC, true
+		}
+		return trace.SpanContext{}, false
+	})
+
+	c := endedSessionWithTrace(gameTrace)
+	c.ExperimentID = "exp_42"
+	rc.OnGameEnd(c)
+
+	spans := spansByName(sr.Ended(), SpanLLMRetro)
+	if len(spans) != 1 {
+		t.Fatalf("agent.llm.retro spans = %d, want 1", len(spans))
+	}
+	span := spans[0]
+	if got := span.SpanContext().TraceID(); got != rootTID {
+		t.Errorf("retro trace_id = %s, want experiment root %s", got, rootTID)
+	}
+	if got := span.Parent().SpanID(); got != rootSID {
+		t.Errorf("retro parent span_id = %s, want experiment root %s", got, rootSID)
+	}
+	// The game Link is RETAINED (re-parenting is additive).
+	if n := len(span.Links()); n != 1 {
+		t.Errorf("retro links = %d, want 1 (game Link retained under experiment re-parent)", n)
+	}
+
+	// A non-experiment game (seam returns ok=false) stays own-root.
+	rc2, sr2 := recordingRetro(t, retroFlagSnapshot())
+	rc2.SetExperimentParent(func(string) (trace.SpanContext, bool) { return trace.SpanContext{}, false })
+	c2 := endedSession()
+	c2.ExperimentID = "exp_unknown"
+	rc2.OnGameEnd(c2)
+	own := spansByName(sr2.Ended(), SpanLLMRetro)
+	if len(own) != 1 {
+		t.Fatalf("non-experiment retro spans = %d, want 1", len(own))
+	}
+	if own[0].Parent().IsValid() {
+		t.Error("non-experiment retro must remain own-root (no valid parent)")
+	}
+}
+
 // TestRetroSpan_NoLinkWhenTraceAbsent: a finished game with no GameTraceID (a shadow
 // game, or any game before the correlation signal arrives) emits the retro span with
 // NO Link and NO game.trace_id attribute — graceful fallback, byte-identical to

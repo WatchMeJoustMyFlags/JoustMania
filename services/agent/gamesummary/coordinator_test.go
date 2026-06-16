@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/joustmania/agent/gamecontext"
 )
@@ -222,5 +223,62 @@ func TestCoordinator_EndToEndFromStore(t *testing.T) {
 
 	if _, err := os.Stat(c.writer.Path("game_e2e")); err != nil {
 		t.Errorf("end-to-end store summary not written: %v", err)
+	}
+}
+
+// TestCoordinator_ReparentsUnderExperiment (#1188): when an experiment-parent seam is
+// wired and the finished game is experiment-bound with a live root span, the
+// agent.game.summary span is a CHILD of the experiment root span (same trace_id, parent
+// = the root span_id). A non-experiment game keeps its own-root behavior.
+func TestCoordinator_ReparentsUnderExperiment(t *testing.T) {
+	c, sr, _ := recordingCoordinator(t)
+
+	// A stand-in experiment ROOT span context the seam returns for "exp_1".
+	rootTID, _ := trace.TraceIDFromHex("4bf92f3577b34da6a3ce929d0e0e4736")
+	rootSID, _ := trace.SpanIDFromHex("00f067aa0ba902b7")
+	rootSC := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: rootTID, SpanID: rootSID, TraceFlags: trace.FlagsSampled, Remote: true,
+	})
+	c.SetExperimentParent(func(id string) (trace.SpanContext, bool) {
+		if id == "exp_1" {
+			return rootSC, true
+		}
+		return trace.SpanContext{}, false
+	})
+
+	// Experiment-bound game => re-parented under the experiment root span.
+	c.OnGameEnd(gamecontext.GameContext{
+		SessionID: "game_exp", ExperimentID: "exp_1", GameKind: "shadow",
+		Session: gamecontext.SessionSignals{GameActive: bptr(false)},
+	})
+	// Non-experiment game => own-root (the seam returns ok=false).
+	c.OnGameEnd(gamecontext.GameContext{
+		SessionID: "game_real", GameKind: "real",
+		Session: gamecontext.SessionSignals{GameActive: bptr(false)},
+	})
+
+	spans := spansByName(sr.Ended(), SpanGameSummary)
+	if len(spans) != 2 {
+		t.Fatalf("agent.game.summary spans = %d, want 2", len(spans))
+	}
+	var exp, real sdktrace.ReadOnlySpan
+	for _, s := range spans {
+		if v, _ := spanAttr(s, attrGameID); v.AsString() == "game_exp" {
+			exp = s
+		} else {
+			real = s
+		}
+	}
+	if exp == nil || real == nil {
+		t.Fatal("expected one experiment-bound and one real summary span")
+	}
+	if got := exp.SpanContext().TraceID(); got != rootTID {
+		t.Errorf("experiment summary trace_id = %s, want root %s", got, rootTID)
+	}
+	if got := exp.Parent().SpanID(); got != rootSID {
+		t.Errorf("experiment summary parent = %s, want root span %s", got, rootSID)
+	}
+	if real.Parent().IsValid() {
+		t.Error("non-experiment summary must be own-root (no valid parent)")
 	}
 }

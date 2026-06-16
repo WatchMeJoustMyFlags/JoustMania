@@ -90,6 +90,16 @@ type Coordinator struct {
 	// game end. Set once at construction via SetObserver, before the coordinator
 	// serves, so no lock is needed around the read.
 	observer Observer
+	// experimentParent resolves the agent.experiment ROOT span's SpanContext by
+	// experiment_id (#1188), reading the registry's ExperimentSpanContext. When wired
+	// and the finished game is experiment-bound with a live root span, the
+	// agent.game.summary span is re-parented as a remote CHILD of the experiment span
+	// (joining the experiment's trace) instead of the pre-#1188 game-LINKED own-root
+	// span. The game Link is retained so the summary stays navigable to its game too. A
+	// nil seam (the default / tests), a non-experiment game, or a torn-down experiment
+	// (ok=false) falls back to the existing behavior. Set once at construction via
+	// SetExperimentParent, before the coordinator serves, so no lock is needed.
+	experimentParent func(experimentID string) (trace.SpanContext, bool)
 	// now is injectable for tests; nil uses time.Now. It stamps Summary.GeneratedAt
 	// only — the aggregation itself is clock-free.
 	now func() time.Time
@@ -123,6 +133,18 @@ func NewCoordinator(w *Writer, log *slog.Logger) *Coordinator {
 // observer is exactly the M7-1 behavior. Set during construction, before the
 // store fires OnGameEnd, so the field read in OnGameEnd needs no lock.
 func (c *Coordinator) SetObserver(o Observer) { c.observer = o }
+
+// SetExperimentParent wires the experiment ROOT-span SpanContext lookup seam (#1188):
+// a func returning the agent.experiment span's SpanContext for an experiment_id
+// (reading the registry's ExperimentSpanContext) and whether one is available. When
+// wired and the finished game is experiment-bound with a live root span, the
+// agent.game.summary span is re-parented as a remote CHILD of the experiment span. A
+// nil seam (the default), a non-experiment game, or a torn-down experiment falls back
+// to the pre-#1188 game-linked own-root span. Set during construction, before the
+// store fires OnGameEnd, so the field read needs no lock.
+func (c *Coordinator) SetExperimentParent(f func(experimentID string) (trace.SpanContext, bool)) {
+	c.experimentParent = f
+}
 
 // instrumentationName scopes the coordinator's tracer, matching the agent module
 // convention used by the decision package.
@@ -164,7 +186,13 @@ func (c *Coordinator) OnGameEnd(gc gamecontext.GameContext) {
 	// spokes. The ids come from the OnGameEnd GameContext (#1133 correlation gauge).
 	// nil-safe: empty/invalid ids => no Link, no error.
 	startOpts := gamecontext.TraceLink(gc.GameTraceID, gc.GameTraceSpanID, attrGameTraceID, attrGameTraceSpanID)
-	_, span := c.tracer.Start(context.Background(), SpanGameSummary, startOpts...)
+	// #1188: re-parent the summary under the experiment ROOT span for an
+	// experiment-bound game (the experiment outlives its games, so its per-game summary
+	// is a timeline-correct child). The game Link above is retained. A non-experiment
+	// game / unwired seam / torn-down experiment yields context.Background() — the
+	// pre-#1188 own-root behavior, unchanged.
+	parent := c.summaryParentCtx(gc.ExperimentID)
+	_, span := c.tracer.Start(parent, SpanGameSummary, startOpts...)
 	defer span.End()
 
 	summary := BuildSummary(gc, BuildOptions{Now: now()})
@@ -226,6 +254,28 @@ func (c *Coordinator) claimGame(gameID string) bool {
 		delete(c.claimed, oldest)
 	}
 	return true
+}
+
+// summaryParentCtx returns the context the agent.game.summary span is started from
+// (#1188): a context whose remote parent is the experiment ROOT span for an
+// experiment-bound game with a live root span, else plain context.Background() (the
+// pre-#1188 own-root behavior). Reads the SpanContext via the injected experimentParent
+// seam and installs it with gamecontext.RemoteParentFromSpanContext.
+//
+// GRACEFUL FALLBACK: an empty experiment_id, a nil seam, or ok=false all yield
+// context.Background(), so the summary span is unchanged from before #1188 and emission
+// is never broken.
+func (c *Coordinator) summaryParentCtx(experimentID string) context.Context {
+	base := context.Background()
+	if experimentID == "" || c.experimentParent == nil {
+		return base
+	}
+	sc, ok := c.experimentParent(experimentID)
+	if !ok {
+		return base
+	}
+	ctx, _ := gamecontext.RemoteParentFromSpanContext(base, sc)
+	return ctx
 }
 
 // compile-time guard: Coordinator.OnGameEnd matches the store hook signature.

@@ -14,6 +14,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/experiment/journal"
@@ -240,6 +243,28 @@ type entry struct {
 	// recover which two games share a seed. The seed is a pure function of
 	// (experimentID, pairIndex) — NEVER a clock — so it is reproducible.
 	armCursor int
+
+	// span is the long-lived experiment ROOT span (#1188, epic #1181 PR2): the
+	// agent.experiment span started when the experiment becomes RUNNING (Start /
+	// Rehydrate) and ended on the terminal transition (teardown). spanCtx is its
+	// SpanContext, exposed via ExperimentSpanContext so the per-experiment analysis
+	// spans (retro / summary, emitted from other components) can re-parent under it.
+	//
+	// LIFECYCLE INVARIANT (no leak): the span is started exactly once per entry (the
+	// startSpanLocked guard is idempotent) and End()ed exactly once, in teardown — the
+	// SINGLE terminal chokepoint every terminal transition (concluded → discarded/done,
+	// aborted) routes through. A nil span (tracer unwired in tests, or never started) is
+	// always safe to End/read.
+	//
+	// RESTART DISCONTINUITY (#1188): the SpanContext is NOT persisted. A rehydrated
+	// experiment (Rehydrate, after a restart) gets a BRAND-NEW root span with a fresh
+	// trace_id, so its post-restart analysis spans hang under the new root — the
+	// pre-restart trace is a separate, already-closed trace. This is deliberate for this
+	// cut: restoring a SpanContext across a process boundary would require persisting +
+	// re-injecting trace ids the journal does not record, for a span that can no longer
+	// be appended to anyway.
+	span    trace.Span
+	spanCtx trace.SpanContext
 }
 
 // inFlight returns the experiment's current count of live (unconcluded) shadow
@@ -268,6 +293,11 @@ type Registry struct {
 	target       TargetingWriter
 	clock        func() time.Time
 	log          *slog.Logger
+	// tracer emits the long-lived agent.experiment ROOT span (#1188). nil-safe like
+	// the #1142 experiment_loop tracer: a nil tracer disables the root span entirely
+	// (every start/end/read is guarded), so the registry stays fully functional in
+	// unit tests that do not wire telemetry. Production injects otel.Tracer(...).
+	tracer trace.Tracer
 
 	// maxGames is the per-experiment termination budget (#1001): the registry gives
 	// up and concludes an experiment INCONCLUSIVE once it has accrued this many
@@ -373,6 +403,12 @@ type RegistryConfig struct {
 	Clock func() time.Time
 	// Log nil ⇒ slog.Default().
 	Log *slog.Logger
+	// Tracer emits the agent.experiment ROOT span (#1188). nil ⇒ otel.Tracer(...) with
+	// the agent instrumentation scope (the production default; the global provider is a
+	// no-op until configured, so this is safe). A test may inject a recording tracer to
+	// assert the root span, or leave it nil to disable the span. The root span and its
+	// re-parenting are OBSERVABILITY ONLY — a nil tracer changes no lifecycle behavior.
+	Tracer trace.Tracer
 }
 
 // NewRegistry builds a Registry over the injected seams. It does NOT touch the
@@ -425,6 +461,13 @@ func NewRegistry(cfg RegistryConfig) *Registry {
 	if log == nil {
 		log = slog.Default()
 	}
+	tracer := cfg.Tracer
+	if tracer == nil {
+		// Default to the agent instrumentation scope (#1188). The global provider is a
+		// no-op until the agent configures OTEL, so this never emits spurious spans in a
+		// test that does not set up a provider.
+		tracer = otel.Tracer(experimentInstrumentationName)
+	}
 	return &Registry{
 		root:              cfg.Root,
 		maxCap:            maxCap,
@@ -437,10 +480,16 @@ func NewRegistry(cfg RegistryConfig) *Registry {
 		target:            cfg.Targeting,
 		clock:             clock,
 		log:               log,
+		tracer:            tracer,
 		entries:           make(map[string]*entry),
 		releaseTombstones: make(map[string]string),
 	}
 }
+
+// experimentInstrumentationName scopes the registry's root-span tracer. It matches
+// the decision package's instrumentationName so every agent span shares one
+// instrumentation scope in Jaeger.
+const experimentInstrumentationName = "github.com/joustmania/agent"
 
 // Declare defines a new experiment: it mints an experiment_id, persists the
 // immutable intent to the journal (journal.Create), records it as PROPOSED in the
@@ -562,9 +611,61 @@ func (r *Registry) Start(ctx context.Context, id string) error {
 		return nil
 	}
 	e.status = StatusRunning
+	// #1188: start the long-lived agent.experiment ROOT span now that the experiment is
+	// RUNNING (idempotent — a no-op if it is somehow already started). The analysis
+	// spans re-parent under it; teardown ends it.
+	r.startSpanLocked(e, intent)
 	r.recordDecision(e.journal, StatusRunning, "experiment started")
 	r.log.Info("experiment.started", "experiment_id", id)
 	return nil
+}
+
+// startSpanLocked starts the experiment's long-lived agent.experiment ROOT span
+// (#1188) and records its SpanContext on the entry. It is idempotent (a no-op when
+// the span already exists), nil-tracer-safe (no-op), and assumes r.mu is held.
+//
+// The span is started from context.Background() — it is the trace ROOT, with no
+// inbound parent (the experiment is an autonomous, long-lived activity, not a
+// request). intent supplies the identifying attributes; on a partial/zero intent the
+// per-field guards simply skip the empty attrs.
+func (r *Registry) startSpanLocked(e *entry, intent journal.Intent) {
+	if r.tracer == nil || e == nil || e.span != nil {
+		return
+	}
+	attrs := []attribute.KeyValue{
+		attribute.String(decision.AttrExperimentID, e.id),
+	}
+	if intent.FlagKey != "" {
+		attrs = append(attrs, attribute.String(decision.AttrExperimentFlagKey, intent.FlagKey))
+	}
+	if intent.Objective != "" {
+		attrs = append(attrs, attribute.String(decision.AttrExperimentObjective, intent.Objective))
+	}
+	if intent.TargetNPerArm > 0 {
+		attrs = append(attrs, attribute.Int(decision.AttrExperimentTargetN, intent.TargetNPerArm))
+	}
+	if len(intent.Arms) > 0 {
+		attrs = append(attrs, attribute.String(decision.AttrExperimentArms, strings.Join(intent.Arms, ",")))
+	}
+	_, span := r.tracer.Start(context.Background(), decision.SpanExperiment, trace.WithAttributes(attrs...))
+	e.span = span
+	e.spanCtx = span.SpanContext()
+}
+
+// endSpanLocked ends the experiment's root span exactly once (#1188). It is the
+// inverse of startSpanLocked, called from teardown — the single terminal chokepoint —
+// so the span never leaks regardless of which terminal transition fired. Idempotent
+// (clears e.span) and nil-safe. Assumes r.mu is held.
+func (r *Registry) endSpanLocked(e *entry) {
+	if e == nil || e.span == nil {
+		return
+	}
+	e.span.End()
+	e.span = nil
+	// Clear the recorded SpanContext too so ExperimentSpanContext reports unavailable
+	// after teardown: a torn-down experiment is no longer a re-parent target (its span
+	// has ended, so a late analysis span must fall back to its own-root behavior).
+	e.spanCtx = trace.SpanContext{}
 }
 
 // AllocateAndSpawn fills FREE shadow capacity across the live experiments by
@@ -1249,7 +1350,19 @@ func (r *Registry) promote(ctx context.Context, id string, jrnl *journal.Journal
 	}
 	e.status = StatusPromoting
 	r.recordDecision(e.journal, StatusPromoting, "routing to promoter")
+	// #1188: re-parent the code_improvement.promote span as the experiment's TERMINAL
+	// child. The promote span is started from the ctx passed to Promoter.Promote, so
+	// installing the still-live experiment ROOT span on the ctx (an in-process
+	// parent-child, the span lives in THIS process) makes the promotion the experiment's
+	// terminal child with no change to the promote package. The span is captured under
+	// the lock (it is ended later, in teardown, after this returns). A nil span (tracer
+	// unwired) leaves ctx unchanged — graceful.
+	span := e.span
 	r.mu.Unlock()
+
+	if span != nil {
+		ctx = trace.ContextWithSpan(ctx, span)
+	}
 
 	if r.promo != nil {
 		if err := r.promo.Promote(ctx, jrnl.CompactView()); err != nil {
@@ -1326,6 +1439,13 @@ func (r *Registry) teardown(ctx context.Context, id, flagKey string, terminal St
 	if e == nil {
 		return
 	}
+	// #1188: end the long-lived agent.experiment ROOT span here — teardown is the
+	// SINGLE terminal chokepoint every terminal transition routes through (conclude →
+	// discarded/done, abort), so ending it here guarantees no leak on ANY terminal path.
+	// It is placed BEFORE the idempotency guard (and is itself idempotent) so the
+	// promote→DONE path — where promote() already set the terminal status, making the
+	// guard below early-return — still ends the span exactly once.
+	r.endSpanLocked(e)
 	if e.status.IsTerminal() && e.status == terminal {
 		return
 	}
@@ -1376,7 +1496,7 @@ func (r *Registry) Rehydrate(ids []string) error {
 		if st.IsTerminal() {
 			continue // done experiment — nothing to manage.
 		}
-		r.entries[id] = &entry{
+		e := &entry{
 			id:        id,
 			journal:   jrnl,
 			status:    st,
@@ -1385,6 +1505,16 @@ func (r *Registry) Rehydrate(ids []string) error {
 			games:     make(map[string]string),
 			gamePairs: make(map[string]int),
 		}
+		// #1188 RESTART DISCONTINUITY: a rehydrated experiment gets a BRAND-NEW root
+		// span with a fresh trace_id — the SpanContext is NOT persisted across the
+		// restart (the pre-restart trace is already closed and un-appendable). The new
+		// span outlives this rehydrated entry exactly like a freshly-Started one and is
+		// ended in teardown. Rehydrate is the only place a RUNNING entry is created
+		// WITHOUT going through Start, so the span must be started here too. A rehydrated
+		// PROPOSED entry also gets one; if Start later runs, startSpanLocked is a no-op
+		// (idempotent), so no double span.
+		r.startSpanLocked(e, jrnl.Intent())
+		r.entries[id] = e
 	}
 	return nil
 }
@@ -1532,6 +1662,31 @@ func (r *Registry) LiveCount() int {
 		}
 	}
 	return n
+}
+
+// ExperimentSpanContext returns the SpanContext of an experiment's long-lived
+// agent.experiment ROOT span (#1188), for re-parenting that experiment's analysis
+// spans (retro / summary) under it from components OUTSIDE the registry. It is a
+// clean READ accessor: it touches no lifecycle/mutation state, takes the lock only to
+// read the entry's recorded SpanContext, and never mutates.
+//
+// ok=false (and the zero SpanContext) when the experiment is unknown, has no root span
+// (tracer unwired, or already torn down + span ended), or the SpanContext is invalid —
+// every "no usable parent" case. Callers fall back to their CURRENT behavior on
+// ok=false, so a NON-experiment game (empty/unknown experiment_id) never re-parents:
+// graceful, never breaking span emission.
+func (r *Registry) ExperimentSpanContext(id string) (trace.SpanContext, bool) {
+	r.mu.Lock()
+	e := r.entries[id]
+	var sc trace.SpanContext
+	if e != nil {
+		sc = e.spanCtx
+	}
+	r.mu.Unlock()
+	if e == nil || !sc.IsValid() {
+		return trace.SpanContext{}, false
+	}
+	return sc, true
 }
 
 // CompactView returns the bounded journal view for an experiment (intent +
