@@ -552,12 +552,101 @@
       "type": "timeseries"
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Interventions the agent actually dispatched through the action sink, per minute, split by action. Counts only decisions that passed EVERY gate (kill-switch, allow-list, battery, rate-limit) and reached the real Writer — so a bar here is an intervention that took effect, not merely a permitted decision. Empty until interventions APPLY: needs the ACT sink (AGENT_INTERVENTIONS_ENABLED=true) plus a permitting interventions_allowed variant (the demo uses shadow_experimental; see docs/agent-demo-runbook.md Act 2b and the #1127 allow-list fix). Source: agent_interventions_applied_total{action} (#790). Validated live: grant_shield series present.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "applied/min",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "bars",
+            "fillOpacity": 70,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      },
+      "id": 10,
+      "options": {
+        "legend": {
+          "calcs": ["sum"],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "10.2.3",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (action) (rate(agent_interventions_applied_total[5m])) * 60",
+          "legendFormat": "{{action}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Interventions Dispatched (by action)",
+      "type": "timeseries"
+    },
+    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 25
+        "y": 33
       },
       "id": 102,
       "panels": [],
@@ -597,7 +686,7 @@
         "h": 6,
         "w": 6,
         "x": 0,
-        "y": 26
+        "y": 34
       },
       "id": 7,
       "options": {
@@ -686,7 +775,7 @@
         "h": 6,
         "w": 9,
         "x": 6,
-        "y": 26
+        "y": 34
       },
       "id": 8,
       "options": {
@@ -775,7 +864,7 @@
         "h": 6,
         "w": 9,
         "x": 15,
-        "y": 26
+        "y": 34
       },
       "id": 9,
       "options": {
@@ -820,6 +909,6 @@
   "timezone": "",
   "title": "Agent Operations — Fleet",
   "uid": "agent-operations",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }

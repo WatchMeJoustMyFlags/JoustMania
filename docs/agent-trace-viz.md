@@ -182,6 +182,40 @@ Manual tags: `{"decision.action":"grant_shield"}`. **Validated live: 10
 results.** Swap the action value (`grant_shield`, etc.) to spotlight a specific
 remediation.
 
+### Bonus — interventions that actually *dispatched* (post-#1127)
+
+Once `interventions_allowed` is set to a permitting variant (the demo uses
+`shadow_experimental` — see
+[demo runbook → Act 2b](agent-demo-runbook.md#act-2b--interventions-applying-not-just-blocked)),
+decisions stop blocking `not_allowed` and **dispatch**. The dispatched ones are
+the `agent.action` spans **without** `decision.blocked=true`. Filter for the
+applied side directly:
+
+```
+http://localhost/jaeger/search?service=agent&operation=agent.action&lookback=2d&limit=20&tags=%7B%22decision.blocked%22%3A%22false%22%7D
+```
+
+Manual: **Operation** `agent.action` · **Tags** `{"decision.blocked":"false"}`.
+Pair with the per-game join — add `"game.id":"game_<id>"` to the tag object — to
+show every intervention the agent *applied* to one game (the storyline from
+[act (d)](#d-all-activity-for-one-game--the-1095-join)). Until #1127 this filter
+returned nothing, because the allow-list resolved to `none` and every decision
+blocked `not_allowed`; it now returns the live dispatches. Contrast with
+[act (e)](#e-blocked--discarded-decisions) (`decision.blocked":"true"`) to show
+applied vs blocked side by side.
+
+**The matching metrics** (Grafana **Agent Operations — Fleet**,
+[`agent-operations.json`](../services/grafana/dashboards/agent-operations.json),
+or `http://localhost/prometheus/`):
+
+- `sum(rate(agent_decisions_total{blocked="false"}[5m]))` — applied decisions/sec
+  (the `blocked="true"` complement is split by `block_reason`).
+- `sum by (action) (rate(agent_interventions_applied_total[5m]))` — interventions
+  that passed **every** gate and dispatched through the sink, split by action.
+  *(`agent_interventions_applied_total` counts only true dispatches;
+  `agent_decisions_total{blocked="false"}` counts permitted decisions — they track
+  together once the ACT sink is enabled.)*
+
 ### Bonus — code-improvement loop
 
 ```

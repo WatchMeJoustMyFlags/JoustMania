@@ -105,13 +105,25 @@ effect, volume only). To allow more, flip its `defaultVariant` in `agent.json`:
 | Variant | Allows |
 |---------|--------|
 | `none` | nothing (empty allow-list) |
-| `ambient` (stock) | `play_audio_cue`, `send_controller_effect`, `adjust_volume` |
-| `standard` | + tempo, pacing, player sensitivity, shield |
-| `full` | + global sensitivity/difficulty, eliminate, revive, end_game |
 | `probe` | `noop` only — for [probe mode](#probe-mode-full-path-without-touching-the-game) |
+| `ambient` (stock) | `play_audio_cue`, `send_controller_effect`, `adjust_volume` |
+| `standard` | + tempo, pacing, player sensitivity, `grant_shield` |
+| `full` | + global sensitivity/difficulty, eliminate, revive, end_game |
+| `shadow_experimental` | + `set_player_handicap` (#1107), `ramp_tempo` (#1122), `partial_shield` (#1132) — **shadow-only** levers, also gated to shadow games in the coordinator |
 
 An intervention not on the active list is **blocked** (`decision.blocked=true`,
 `decision.block_reason=not_allowed`) — traced, never silently dropped.
+
+> **The variants are comma-separated STRINGS, not arrays (#1127).** Each variant
+> value is a single string like `"play_audio_cue,send_controller_effect,…"`. They
+> used to be JSON arrays, which silently TYPE_MISMATCHed through flagd's RPC
+> resolver and resolved to the empty default — so the agent blocked **every**
+> intervention `not_allowed` and nothing ever dispatched. #1127 reshaped them to
+> strings the agent/coordinator/menu all parse. If a fresh stack still shows
+> everything blocked `not_allowed`, confirm the variant values are strings.
+
+The [demo runbook → Act 2b](agent-demo-runbook.md#act-2b--interventions-applying-not-just-blocked)
+walks the full ladder + the three shadow-only levers as a stage act.
 
 ---
 
