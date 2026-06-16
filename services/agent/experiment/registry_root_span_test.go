@@ -242,3 +242,63 @@ func assertRootSpanEndedOnce(t *testing.T, r *Registry, sr *tracetest.SpanRecord
 		t.Error("ExperimentSpanContext must be unavailable after teardown (span ended)")
 	}
 }
+
+// TestRootSpan_CarriesThesisAttr (#1184): the agent.experiment root span carries the
+// experiment THESIS (the immutable Intent.Hypothesis) as experiment.thesis, so the
+// trace records the experiment's WHY, not just the flag/value mechanics.
+func TestRootSpan_CarriesThesisAttr(t *testing.T) {
+	r, sr := rootSpanRegistry(t, RegistryConfig{
+		Spawner: &fakeSpawner{}, Verdict: fakeVerdict{concludeAtN: 1000}, Targeting: &fakeTargeting{},
+		MaxShadowGames: 4,
+	})
+	id, err := r.Declare(sampleIntent())
+	if err != nil {
+		t.Fatalf("declare: %v", err)
+	}
+	if err := r.Start(context.Background(), id); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	// Force the root span to end so it is recorded (Ended() only returns ended spans).
+	if err := r.Abort(context.Background(), id, "test"); err != nil {
+		t.Fatalf("abort: %v", err)
+	}
+	spans := rootSpans(sr)
+	if len(spans) != 1 {
+		t.Fatalf("agent.experiment ended spans = %d, want 1", len(spans))
+	}
+	got, ok := rootSpanAttr(spans[0], decision.AttrExperimentThesis)
+	if !ok {
+		t.Fatalf("root span missing %s attribute", decision.AttrExperimentThesis)
+	}
+	if want := sampleIntent().Hypothesis; got != want {
+		t.Errorf("experiment.thesis = %q, want %q", got, want)
+	}
+}
+
+// TestRootSpan_OmitsEmptyThesis (#1184): a thesis-less (legacy) intent adds no empty
+// experiment.thesis attr — the guard keeps a partial intent clean.
+func TestRootSpan_OmitsEmptyThesis(t *testing.T) {
+	r, sr := rootSpanRegistry(t, RegistryConfig{
+		Spawner: &fakeSpawner{}, Verdict: fakeVerdict{concludeAtN: 1000}, Targeting: &fakeTargeting{},
+		MaxShadowGames: 4,
+	})
+	in := sampleIntent()
+	in.Hypothesis = ""
+	id, err := r.Declare(in)
+	if err != nil {
+		t.Fatalf("declare: %v", err)
+	}
+	if err := r.Start(context.Background(), id); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := r.Abort(context.Background(), id, "test"); err != nil {
+		t.Fatalf("abort: %v", err)
+	}
+	spans := rootSpans(sr)
+	if len(spans) != 1 {
+		t.Fatalf("agent.experiment ended spans = %d, want 1", len(spans))
+	}
+	if _, ok := rootSpanAttr(spans[0], decision.AttrExperimentThesis); ok {
+		t.Errorf("experiment.thesis attr must be omitted for an empty thesis")
+	}
+}
