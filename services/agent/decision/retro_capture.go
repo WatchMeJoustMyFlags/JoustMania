@@ -49,13 +49,22 @@ const SpanLLMRetro = "agent.llm.retro"
 // agent.llm.prompt keys (telemetry.go) but in the retro namespace so the two
 // capture kinds never collide in a single trace view.
 const (
-	// AttrLLMRetroSystem / AttrLLMRetroUser carry the full, uncapped System and
-	// User retrospective prompt text. As with the in-game capture, the Go SDK
-	// applies no attribute length limit and the collector does not truncate, so the
-	// entire prompt is preserved for offline replay (scripts/replay-prompt.sh).
-	AttrLLMRetroSystem = "llm.retro.system"
-	AttrLLMRetroUser   = "llm.retro.user"
-	// AttrLLMRetroBytes is len(system)+len(user), the prompt size in bytes (int).
+	// AttrLLMRetroSystemSHA is the FINGERPRINT of the retrospective System prompt
+	// (#1168), the retro-namespace counterpart of AttrLLMPromptSystemSHA: the short
+	// hex SHA-256 of the full system text, stamped INSTEAD of the text. The retro
+	// system prompt is large and effectively constant (it got the physics model in
+	// #1160), so shipping its full text per retro span was part of the #1167
+	// traces-pipeline collector OOM. The full text is emitted ONCE per distinct
+	// fingerprint on the shared agent.llm.system_prompt reference LOG line
+	// (prompt_fingerprint.go), so this hash is always resolvable to the exact text.
+	AttrLLMRetroSystemSHA = "llm.retro.system_sha256"
+	// AttrLLMRetroUser carries the User retrospective prompt text — the VARIABLE,
+	// valuable analysis input — KEPT on the span, capped at maxUserPromptBytes with a
+	// truncation marker. The Go SDK applies no attribute length limit and the
+	// collector does not truncate.
+	AttrLLMRetroUser = "llm.retro.user"
+	// AttrLLMRetroBytes is len(system)+len(user): the FULL prompt size in bytes (int),
+	// unchanged by #1168 (system TEXT no longer emitted, but still counted).
 	AttrLLMRetroBytes = "llm.retro.bytes"
 )
 
@@ -287,6 +296,15 @@ func (rc *RetroCoordinator) OnGameEnd(c gamecontext.GameContext) {
 	// gen_ai.request.model and the log line both name the configured model.
 	prompt.Model = attr.configured
 
+	// #1168: the retro span carries only the System-prompt fingerprint; emit the full
+	// text once per distinct fingerprint on the shared agent.llm.system_prompt
+	// reference log (the same singleton the in-game capture uses) so the hash stays
+	// resolvable to its text without paying per span (the #1167 OOM). The retro system
+	// prompt is its own variant of the constant text, so it hashes distinctly from the
+	// in-game one and is emitted once on its own first sight.
+	systemPromptRef.emit(rc.Log, systemPromptSHA(prompt.System),
+		snapshot.Capability.PromptVariant, retroModeValue, allowedSummary(snapshot.InterventionsAllowed), prompt.System)
+
 	attrs := retroPromptAttributes(retroPromptAttrs{
 		prompt:     prompt,
 		sessionID:  c.SessionID,
@@ -438,8 +456,9 @@ type retroPromptAttrs struct {
 //   - agent.objectives      = sorted "k=v" weights (summarizeObjectives)
 //   - interventions.allowed = the allow-list summary (allowedSummary)
 //   - session.id / game.id  = the finished session's id (= the real game_id, #1088)
-//   - llm.retro.system / llm.retro.user = the FULL prompt text (uncapped)
-//   - llm.retro.bytes       = len(system)+len(user)
+//   - llm.retro.system_sha256 = the System-prompt FINGERPRINT (#1168), NOT the text
+//   - llm.retro.user        = the User prompt text (capped at maxUserPromptBytes)
+//   - llm.retro.bytes       = len(system)+len(user) (full size; system TEXT not emitted)
 //   - inference.configured  = the configured backend model (#1080), or the model flag
 //   - inference.used        = the tier that WOULD serve, or "none" (see DIVERGENCE)
 //   - inference.fallback_reason = "" when the configured backend is reachable, else
@@ -476,9 +495,12 @@ func retroPromptAttributes(in retroPromptAttrs) []attribute.KeyValue {
 		// game.id IS the SessionID (= the real game_id since #845 PR A).
 		attribute.String(AttrSessionID, in.sessionID),
 		attribute.String(AttrGameID, in.sessionID),
-		// The captured prompt: full text (uncapped) plus its size.
-		attribute.String(AttrLLMRetroSystem, system),
-		attribute.String(AttrLLMRetroUser, user),
+		// #1168: the System prompt rides as a FINGERPRINT (resolvable via the
+		// once-per-hash agent.llm.system_prompt reference log), NOT the full text. The
+		// User prompt (variable, valuable) is KEPT, capped at maxUserPromptBytes. bytes
+		// still counts the full system+user size.
+		attribute.String(AttrLLMRetroSystemSHA, systemPromptSHA(system)),
+		attribute.String(AttrLLMRetroUser, capUserPrompt(user)),
 		attribute.Int(AttrLLMRetroBytes, len(system)+len(user)),
 		// Inference attribution (#1080): resolved through the shared resolver so the
 		// configured backend (gemma4) is named when one is wired; used is the tier that

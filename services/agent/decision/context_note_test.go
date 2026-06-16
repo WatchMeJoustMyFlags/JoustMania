@@ -147,8 +147,13 @@ func TestContextNote_CaptureSpanCarriesPresence(t *testing.T) {
 	if v, ok := attrValue(caps[0], AttrLLMContextNoteLen); !ok || v.AsInt64() != int64(len([]rune(note))) {
 		t.Errorf("capture span %s = %d, want %d", AttrLLMContextNoteLen, v.AsInt64(), len([]rune(note)))
 	}
-	if v, ok := attrValue(caps[0], AttrLLMPromptSystem); !ok || !strings.Contains(v.AsString(), note) {
-		t.Errorf("capture span System prompt missing the operator note")
+	// #1168: the System text no longer rides the span (only its fingerprint), so the
+	// note's PRESENCE in the prompt is asserted via the present/len attrs above; the
+	// note's TEXT reaching the System prompt is covered by the production-path tests
+	// (the backend.lastPromptSystem assertions). Here we just confirm the span carries
+	// the System-prompt fingerprint instead of the full text.
+	if v, ok := attrValue(caps[0], AttrLLMPromptSystemSHA); !ok || v.AsString() == "" {
+		t.Errorf("capture span missing the System-prompt fingerprint (llm.prompt.system_sha256)")
 	}
 }
 

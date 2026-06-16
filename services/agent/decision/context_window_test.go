@@ -199,8 +199,13 @@ func TestContextWindow_CaptureSpanAlsoCarriesCount(t *testing.T) {
 	if v, ok := attrValue(caps[0], AttrLLMContextGames); !ok || v.AsInt64() != 2 {
 		t.Errorf("capture span %s = %d (present=%v), want 2", AttrLLMContextGames, v.AsInt64(), ok)
 	}
-	if v, ok := attrValue(caps[0], AttrLLMPromptSystem); !ok || !strings.Contains(v.AsString(), "PRIOR GAMES") {
-		t.Errorf("capture span System prompt missing the cross-game block")
+	// #1168: the System text no longer rides the span (only its fingerprint), so the
+	// cross-game block's injection is asserted via the context_games attr above; the
+	// block's TEXT reaching the System prompt is covered by the production-path test
+	// (TestContextWindow_AsyncPathInjectsBlock's backend assertion). Here we just
+	// confirm the span carries the System-prompt fingerprint instead of the full text.
+	if v, ok := attrValue(caps[0], AttrLLMPromptSystemSHA); !ok || v.AsString() == "" {
+		t.Errorf("capture span missing the System-prompt fingerprint (llm.prompt.system_sha256)")
 	}
 }
 

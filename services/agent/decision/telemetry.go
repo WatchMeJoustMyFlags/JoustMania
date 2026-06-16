@@ -183,14 +183,26 @@ const AttrLLMInferError = "llm.infer.error"
 // attributes use semconv constants where they exist; these three carry the
 // captured prompt text and size, which have no semantic convention.
 const (
-	// AttrLLMPromptSystem / AttrLLMPromptUser carry the full, uncapped System and
-	// User prompt text the agent would have sent this cycle. The Go SDK applies no
-	// attribute length limit and the collector does not truncate, so the entire
-	// prompt is preserved for offline replay (scripts/replay-prompt.sh).
-	AttrLLMPromptSystem = "llm.prompt.system"
-	AttrLLMPromptUser   = "llm.prompt.user"
-	// AttrLLMPromptBytes is len(system)+len(user), the prompt size in bytes (int),
-	// for at-a-glance sizing without copying the full text out of the span.
+	// AttrLLMPromptSystemSHA is the FINGERPRINT of the System prompt (#1168): the
+	// short hex SHA-256 (systemPromptSHA) of the full system text, stamped INSTEAD of
+	// the text itself. The system prompt is large and effectively constant (a pure
+	// function of the low-cardinality prompt_variant + mode + interventions_allowed,
+	// all already on this span — plus the #929 PRIOR-GAMES block / #930 note when
+	// present), so shipping its full text on every span (4 shadow games/tick) was the
+	// redundant bulk that drove the #1167 traces-pipeline collector OOM. The full text
+	// is emitted ONCE per distinct fingerprint on the agent.llm.system_prompt
+	// reference LOG line (prompt_fingerprint.go), so this hash is always resolvable to
+	// the exact text without paying per span.
+	AttrLLMPromptSystemSHA = "llm.prompt.system_sha256"
+	// AttrLLMPromptUser carries the User prompt text the agent would have sent this
+	// cycle — the VARIABLE, valuable reasoning input (per-player arcs, timeline), so
+	// it is KEPT on the span (capped at maxUserPromptBytes with a truncation marker so
+	// a pathological game cannot reintroduce per-span bloat). The Go SDK applies no
+	// attribute length limit and the collector does not truncate.
+	AttrLLMPromptUser = "llm.prompt.user"
+	// AttrLLMPromptBytes is len(system)+len(user): the FULL prompt size in bytes (int),
+	// unchanged by #1168 (it still counts the system prompt even though the system TEXT
+	// is no longer emitted), so the at-a-glance sizing is the same number as before.
 	AttrLLMPromptBytes = "llm.prompt.bytes"
 )
 

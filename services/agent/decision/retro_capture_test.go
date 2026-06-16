@@ -68,8 +68,13 @@ func TestRetroCapture_EmitsSpan(t *testing.T) {
 	if len(spans) != 1 {
 		t.Fatalf("agent.llm.retro spans = %d, want 1", len(spans))
 	}
-	if v, ok := attrValue(spans[0], AttrLLMRetroSystem); !ok || v.AsString() == "" {
-		t.Error("llm.retro.system must be present and non-empty")
+	// #1168: the span carries the System-prompt FINGERPRINT, not the full text.
+	if v, ok := attrValue(spans[0], AttrLLMRetroSystemSHA); !ok || v.AsString() == "" {
+		t.Error("llm.retro.system_sha256 must be present and non-empty")
+	}
+	// The full retro system text must NOT ride on the span anymore (the #1167 OOM bulk).
+	if v, ok := attrValue(spans[0], "llm.retro.system"); ok {
+		t.Errorf("llm.retro.system must be ABSENT (got %q) — only the fingerprint rides the span", v.AsString())
 	}
 	if v, ok := attrValue(spans[0], AttrLLMRetroUser); !ok || v.AsString() == "" {
 		t.Error("llm.retro.user must be present and non-empty")
@@ -158,12 +163,15 @@ func TestRetroCapture_SchemaComplete(t *testing.T) {
 	if v, _ := attrValue(span, AttrInferenceUsed); v.AsString() == InferenceRules {
 		t.Errorf("inference.used = %q, must NOT be %q for a retrospective", v.AsString(), InferenceRules)
 	}
-	// llm.retro.bytes equals the combined length of the two prompt texts.
-	sys, _ := attrValue(span, AttrLLMRetroSystem)
+	// #1168: the System TEXT is no longer on the span — only its fingerprint.
+	if v, ok := attrValue(span, AttrLLMRetroSystemSHA); !ok || len(v.AsString()) != systemPromptSHALen {
+		t.Errorf("llm.retro.system_sha256 = %q (present=%v), want %d hex chars", v.AsString(), ok, systemPromptSHALen)
+	}
+	// llm.retro.bytes still counts the FULL system+user size, so it strictly exceeds
+	// the (user-only) text that now rides the span.
 	usr, _ := attrValue(span, AttrLLMRetroUser)
-	wantBytes := int64(len(sys.AsString()) + len(usr.AsString()))
-	if v, ok := attrValue(span, AttrLLMRetroBytes); !ok || v.AsInt64() != wantBytes {
-		t.Errorf("llm.retro.bytes = %d, want %d", v.AsInt64(), wantBytes)
+	if v, ok := attrValue(span, AttrLLMRetroBytes); !ok || v.AsInt64() <= int64(len(usr.AsString())) {
+		t.Errorf("llm.retro.bytes = %d, want > user-text len %d (system size still counted)", v.AsInt64(), len(usr.AsString()))
 	}
 }
 
