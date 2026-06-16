@@ -1203,6 +1203,19 @@ func gameTraceLink(gameTraceID, gameTraceSpanID string) []trace.SpanStartOption 
 	}
 }
 
+// GameTraceLink is the exported entry point to the gameTraceLink primitive so other
+// agent packages (e.g. the experiment loop, #1140 Slice C) can build the SAME
+// game-trace-correlation span Link the agent.decision / agent.llm.retro spans use,
+// instead of maintaining a divergent replica. It carries identical semantics: when
+// BOTH gameTraceID and gameTraceSpanID are valid hex ids it returns one trace.WithLinks
+// option targeting the game's root span (so Jaeger highlights the game-start span,
+// #1157); an empty/unparseable/all-zero trace_id OR span_id yields NO option (graceful
+// fallback, no Link, no error). Sharing this avoids the #1157 span_id=0 bug recurring
+// in a replica.
+func GameTraceLink(gameTraceID, gameTraceSpanID string) []trace.SpanStartOption {
+	return gameTraceLink(gameTraceID, gameTraceSpanID)
+}
+
 // attrLinkKind labels a span Link with what the link points at, so a reader who lands
 // on the link target knows WHY it is there. #1140 (Slice A) stamps it
 // linkKindFireCycle on the agent.llm.infer.call + agent.llm.apply Links so a reader of

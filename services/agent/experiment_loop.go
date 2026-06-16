@@ -689,10 +689,11 @@ func (e *experimentLoop) onGameEnd(gc gamecontext.GameContext) {
 	// #1140 Slice C: emit the experiment-lifecycle spans around the EXISTING fitness /
 	// conclusion computations — observability only, no change to the values computed,
 	// their order, or the loop's control flow. Each span is Linked to the originating
-	// game trace (the #1133 link-from-hex pattern, replicated here as
-	// experimentGameTraceLink) so the experiment phase is navigable to the game it
-	// aggregates.
-	gameLink := experimentGameTraceLink(gc.GameTraceID)
+	// game trace via the SHARED decision.GameTraceLink primitive (#1133/#1157), passing
+	// BOTH the game trace_id AND its root span_id so Jaeger highlights the game-start
+	// span (#1157) instead of an all-zero span id. Sharing the primitive (rather than a
+	// replica) keeps the experiment.* Links at parity with the decision/retro Links.
+	gameLink := decision.GameTraceLink(gc.GameTraceID, gc.GameTraceSpanID)
 
 	// experiment.fitness: the per-shadow-game fitness scalar the cohort aggregator folds.
 	fitness := e.scoreGameFitness(gc, objective, gameLink)
@@ -805,34 +806,6 @@ func (e *experimentLoop) recordVerdictSpan(ctx context.Context, experimentID str
 // decision package's instrumentationName literal so all agent spans share one
 // instrumentation scope in Jaeger.
 const experimentInstrumentationName = "github.com/joustmania/agent"
-
-// experimentGameTraceLink replicates the #1133 gameTraceLink primitive (which is
-// package-private to the decision package) for the experiment loop: when gameTraceID
-// is a valid hex trace_id, it returns a single trace.WithLinks option whose Link
-// targets a remote, sampled SpanContext reconstructed from that trace_id, so an
-// experiment-lifecycle span LINKS to the originating game trace (navigable in Jaeger).
-// The Link carries the trace_id as an attribute. An empty or unparseable id yields NO
-// option — graceful fallback, no Link, no error — exactly like gameTraceLink.
-func experimentGameTraceLink(gameTraceID string) []trace.SpanStartOption {
-	if gameTraceID == "" {
-		return nil
-	}
-	tid, err := trace.TraceIDFromHex(gameTraceID)
-	if err != nil || !tid.IsValid() {
-		return nil
-	}
-	sc := trace.NewSpanContext(trace.SpanContextConfig{
-		TraceID:    tid,
-		TraceFlags: trace.FlagsSampled,
-		Remote:     true,
-	})
-	return []trace.SpanStartOption{
-		trace.WithLinks(trace.Link{
-			SpanContext: sc,
-			Attributes:  []attribute.KeyValue{attribute.String(decision.AttrGameTraceID, gameTraceID)},
-		}),
-	}
-}
 
 // recordFinalizedFitness writes one finalized SHADOW-game fitness sample into the
 // store keyed by game_id (#965). It is the capture side the StoreMeasurer reads:
