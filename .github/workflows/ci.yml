@@ -41,6 +41,19 @@ jobs:
     name: Detect changes
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # #1086: only the `ci-full` label should drive a fresh full run when added to
+    # an EXISTING PR. Adding any OTHER label (e.g. `bug`) to a PR must not spawn a
+    # redundant heavy CI run on an already-tested SHA. `opened`/`synchronize`/
+    # `reopened`/`push`/`workflow_dispatch` always proceed; a `labeled` action
+    # proceeds only when the added label is `ci-full`. (The create-PR-with-
+    # `ci-full` double fire is still handled by the concurrency group + the
+    # ci-complete `!cancelled()` guard below — both the opened and the labeled
+    # run are legitimate there; the cancelled one simply posts no blocking
+    # status.) NOTE: for pull_request events the trigger type is in
+    # `github.event.action` (event_name is always `pull_request`).
+    if: >-
+      github.event.action != 'labeled' ||
+      github.event.label.name == 'ci-full'
     outputs:
       lib: ${{ steps.f.outputs.lib }}
       rust: ${{ steps.f.outputs.rust }}
@@ -703,7 +716,7 @@ jobs:
   # Final status check job for branch protection
   # This job depends on all other jobs and provides a single status check
   # that represents the entire CI pipeline's health.
-  # Skipped jobs (path filter) keep this green; failures/cancellations fail it.
+  # Skipped jobs (path filter) keep this green; failures fail it.
   ci-complete:
     name: CI Complete
     runs-on: ubuntu-latest
@@ -721,7 +734,19 @@ jobs:
       - docker-build
       - docker-build-extra
       - retag-skipped
-    if: always()
+    # #1086: was `always()`. Creating a PR with a label (`gh pr create --label
+    # ci-full`) fires BOTH the `opened` and `labeled` pull_request events, so two
+    # runs start on the same SHA; the `concurrency` group below cancels the
+    # older one. Under `always()` that CANCELLED run still ran ci-complete, and
+    # the step concluded FAILURE (cancelled `needs`) — posting a stale
+    # `CI Complete: FAILURE` status that blocked auto-merge even though the
+    # surviving run was green. `!cancelled()` makes a concurrency-superseded run
+    # SKIP ci-complete entirely (posts no blocking status), so only the
+    # surviving run's status counts. Genuine job failures are NOT cancellations,
+    # so `!cancelled()` is still true on failure and the step below still
+    # exit-1's — real failures keep blocking. Per-job `cancelled` results (e.g. a
+    # single timed-out job in an otherwise-live run) are still caught below.
+    if: ${{ !cancelled() }}
     steps:
       - name: Check all jobs passed
         env:
