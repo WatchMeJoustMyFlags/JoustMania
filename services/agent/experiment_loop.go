@@ -10,6 +10,10 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/experiment"
 	"github.com/joustmania/agent/experiment/journal"
@@ -109,6 +113,14 @@ type experimentLoop struct {
 	spawner  *shadowSpawner
 	flags    *flags.Flags
 	log      *slog.Logger
+
+	// tracer emits the #1140 Slice C experiment-lifecycle spans (experiment.fitness /
+	// experiment.evaluate / experiment.verdict) so the otherwise log-only "learn from
+	// games" loop is an actual trace. Defaulted to the agent's tracer in
+	// buildExperimentLoop; tests inject a recording tracer. A nil tracer is treated as
+	// a no-op (the loop never panics on a span emission), so test wiring that does not
+	// set it leaves behavior unchanged.
+	tracer trace.Tracer
 
 	// fitnessStore is the finalized-per-game fitness store (#965/#1017): onGameEnd
 	// records every concluded game's settled fitness here, keyed by game_id, for
@@ -293,6 +305,7 @@ func buildExperimentLoop(
 		spawner:        spawner,
 		flags:          flagsClient,
 		log:            logger,
+		tracer:         otel.Tracer(experimentInstrumentationName),
 		fitnessStore:   fitnessStore,
 		expDefaults:    expDefaults,
 		seed:           seedIntentFromEnv(),
@@ -672,13 +685,27 @@ func (e *experimentLoop) onGameEnd(gc gamecontext.GameContext) {
 	if cv, ok := e.registry.CompactView(gc.ExperimentID); ok {
 		objective = cv.Intent.Objective
 	}
-	fitness := e.fitness(gc, objective)
+
+	// #1140 Slice C: emit the experiment-lifecycle spans around the EXISTING fitness /
+	// conclusion computations — observability only, no change to the values computed,
+	// their order, or the loop's control flow. Each span is Linked to the originating
+	// game trace (the #1133 link-from-hex pattern, replicated here as
+	// experimentGameTraceLink) so the experiment phase is navigable to the game it
+	// aggregates.
+	gameLink := experimentGameTraceLink(gc.GameTraceID)
+
+	// experiment.fitness: the per-shadow-game fitness scalar the cohort aggregator folds.
+	fitness := e.scoreGameFitness(gc, objective, gameLink)
 	// Record the SHADOW game's finalized fitness keyed by game_id (#965) so the M7-7
 	// StoreMeasurer can read a validation batch's fitness back. This is the same
 	// scalar ConcludeGame folds into the cohort journal — captured for the validation
 	// path too.
 	e.recordFinalizedFitness(gc, objective, fitness, duration)
-	status, err := e.registry.ConcludeGame(context.Background(), gc.SessionID, fitness, duration)
+
+	// experiment.evaluate: fold the concluded game into its arm and observe the
+	// resulting lifecycle status; experiment.verdict (a child) records the rolling
+	// paired-difference verdict the registry computed, when one is present.
+	status, err := e.concludeWithSpan(gc, fitness, duration, gameLink)
 	if err != nil {
 		e.log.Warn("experiment: conclude game failed", "game_id", gc.SessionID, "error", err)
 		return
@@ -686,6 +713,124 @@ func (e *experimentLoop) onGameEnd(gc gamecontext.GameContext) {
 	if status == experiment.StatusRunning {
 		// A freed in-flight slot; refill it (respecting the kill-switch).
 		e.allocateIfEnabled(context.Background())
+	}
+}
+
+// scoreGameFitness computes one finished experiment game's fitness scalar (the
+// existing gameFitnessFunc) inside the #1140 experiment.fitness span. The span is
+// OBSERVABILITY ONLY — it wraps the SAME e.fitness(gc, objective) call and returns
+// its result unchanged. It carries the experiment correlation (id / arm / game.id /
+// objective) and the resulting experiment.fitness, and Links to the game trace when
+// one is in scope. A nil tracer (test wiring) is a no-op: the fitness call runs
+// directly with no span.
+func (e *experimentLoop) scoreGameFitness(gc gamecontext.GameContext, objective string, gameLink []trace.SpanStartOption) float64 {
+	if e.tracer == nil {
+		return e.fitness(gc, objective)
+	}
+	attrs := []attribute.KeyValue{
+		attribute.String(decision.AttrExperimentID, gc.ExperimentID),
+		attribute.String(decision.AttrGameID, gc.SessionID),
+	}
+	if gc.Arm != "" {
+		attrs = append(attrs, attribute.String(decision.AttrExperimentArm, gc.Arm))
+	}
+	if objective != "" {
+		attrs = append(attrs, attribute.String(decision.AttrExperimentObjective, objective))
+	}
+	opts := append([]trace.SpanStartOption{trace.WithAttributes(attrs...)}, gameLink...)
+	_, span := e.tracer.Start(context.Background(), decision.SpanExperimentFitness, opts...)
+	defer span.End()
+
+	fitness := e.fitness(gc, objective)
+	span.SetAttributes(attribute.Float64(decision.AttrExperimentFitness, fitness))
+	return fitness
+}
+
+// concludeWithSpan folds the concluded game into its arm (the existing
+// registry.ConcludeGame) inside the #1140 experiment.evaluate span and, when the
+// conclusion produced a rolling verdict, emits a child experiment.verdict span. Both
+// are OBSERVABILITY ONLY — the fold, the status, and the verdict are exactly what the
+// registry computes; the spans record them, they do not change them. experiment.evaluate
+// Links to the game trace. A nil tracer (test wiring) is a no-op: ConcludeGame runs
+// directly with no span. The returned (status, err) are passed straight through.
+func (e *experimentLoop) concludeWithSpan(gc gamecontext.GameContext, fitness, duration float64, gameLink []trace.SpanStartOption) (experiment.Status, error) {
+	if e.tracer == nil {
+		return e.registry.ConcludeGame(context.Background(), gc.SessionID, fitness, duration)
+	}
+	attrs := []attribute.KeyValue{
+		attribute.String(decision.AttrExperimentID, gc.ExperimentID),
+		attribute.String(decision.AttrGameID, gc.SessionID),
+	}
+	if gc.Arm != "" {
+		attrs = append(attrs, attribute.String(decision.AttrExperimentArm, gc.Arm))
+	}
+	opts := append([]trace.SpanStartOption{trace.WithAttributes(attrs...)}, gameLink...)
+	ctx, span := e.tracer.Start(context.Background(), decision.SpanExperimentEvaluate, opts...)
+	defer span.End()
+
+	status, err := e.registry.ConcludeGame(ctx, gc.SessionID, fitness, duration)
+	span.SetAttributes(attribute.String(decision.AttrExperimentStatus, string(status)))
+
+	// experiment.verdict (child): record the rolling paired-difference verdict the
+	// registry computed, when the conclusion produced one. We READ it back via
+	// CompactView — the registry owns the math; this span only surfaces the result.
+	if err == nil {
+		e.recordVerdictSpan(ctx, gc.ExperimentID)
+	}
+	return status, err
+}
+
+// recordVerdictSpan emits the #1140 experiment.verdict span carrying the rolling
+// paired-difference verdict (outcome / delta / significance) the registry computed
+// for the experiment, read back via CompactView. It is OBSERVABILITY ONLY — it
+// computes nothing. The span is emitted only when a verdict is actually present
+// (a conclusion that has not yet produced one adds no empty span). The ctx is the
+// experiment.evaluate span's context, so the verdict span nests under it.
+func (e *experimentLoop) recordVerdictSpan(ctx context.Context, experimentID string) {
+	cv, ok := e.registry.CompactView(experimentID)
+	if !ok || cv.Verdict == nil {
+		return
+	}
+	v := cv.Verdict
+	_, span := e.tracer.Start(ctx, decision.SpanExperimentVerdict, trace.WithAttributes(
+		attribute.String(decision.AttrExperimentID, experimentID),
+		attribute.String(decision.AttrVerdictOutcome, v.Outcome),
+		attribute.Float64(decision.AttrVerdictDelta, v.Delta),
+		attribute.Bool(decision.AttrVerdictSignificant, v.Significant),
+	))
+	span.End()
+}
+
+// experimentInstrumentationName scopes the experiment loop's tracer. It matches the
+// decision package's instrumentationName literal so all agent spans share one
+// instrumentation scope in Jaeger.
+const experimentInstrumentationName = "github.com/joustmania/agent"
+
+// experimentGameTraceLink replicates the #1133 gameTraceLink primitive (which is
+// package-private to the decision package) for the experiment loop: when gameTraceID
+// is a valid hex trace_id, it returns a single trace.WithLinks option whose Link
+// targets a remote, sampled SpanContext reconstructed from that trace_id, so an
+// experiment-lifecycle span LINKS to the originating game trace (navigable in Jaeger).
+// The Link carries the trace_id as an attribute. An empty or unparseable id yields NO
+// option — graceful fallback, no Link, no error — exactly like gameTraceLink.
+func experimentGameTraceLink(gameTraceID string) []trace.SpanStartOption {
+	if gameTraceID == "" {
+		return nil
+	}
+	tid, err := trace.TraceIDFromHex(gameTraceID)
+	if err != nil || !tid.IsValid() {
+		return nil
+	}
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    tid,
+		TraceFlags: trace.FlagsSampled,
+		Remote:     true,
+	})
+	return []trace.SpanStartOption{
+		trace.WithLinks(trace.Link{
+			SpanContext: sc,
+			Attributes:  []attribute.KeyValue{attribute.String(decision.AttrGameTraceID, gameTraceID)},
+		}),
 	}
 }
 

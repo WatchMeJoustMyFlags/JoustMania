@@ -287,8 +287,24 @@ func (rc *RetroCoordinator) OnGameEnd(c gamecontext.GameContext) {
 	attrs = append(attrs, rc.outcomeAttributes(c)...)
 	attrs = append(attrs, rc.experimentAttributes(c)...)
 
-	_, span := rc.Tracer.Start(context.Background(), SpanLLMRetro,
-		trace.WithAttributes(attrs...))
+	// #1140 Slice B: the retro is post-game / async, so it stays a ROOT span (no
+	// parent — there is no inbound RPC context at game end), but it is no longer
+	// ORPHANED from the game it reflects on. When the finished session carries a
+	// valid game-coordinator trace_id (GameContext.GameTraceID, #1133), add the SAME
+	// span Link the agent.decision span uses (gameTraceLink, package-level in this
+	// package), so agent.llm.retro is navigable to the originating game trace in
+	// Jaeger. The trace_id is also stamped as a plain span attribute (mirroring
+	// runDecision) so it stays queryable as a tag on backends that don't surface Link
+	// attributes in search. An empty/invalid id yields no Link and no attribute —
+	// graceful fallback, the span is byte-identical to before.
+	startOpts := []trace.SpanStartOption{trace.WithAttributes(attrs...)}
+	startOpts = append(startOpts, gameTraceLink(c.GameTraceID)...)
+	if c.GameTraceID != "" {
+		startOpts = append(startOpts,
+			trace.WithAttributes(attribute.String(AttrGameTraceID, c.GameTraceID)))
+	}
+
+	_, span := rc.Tracer.Start(context.Background(), SpanLLMRetro, startOpts...)
 	span.End()
 
 	rc.Log.Info("agent.llm.retro_captured",

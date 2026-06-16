@@ -404,5 +404,55 @@ const (
 // in Jaeger. Present only on dispatched (applied) decisions that schedule a follow-up.
 const AttrDecisionInterventionID = "decision.intervention_id"
 
+// Experiment / cohort lifecycle spans (#1140 Slice C). Before this the entire
+// "learn from games" loop (experiment_loop.go) was LOG-ONLY — the retro/experiment
+// phase was invisible in traces. These spans make that loop an actual trace, in the
+// established dot-notation namespace, each carrying experiment.id / arm / fitness
+// attributes and (where a game trace_id is in scope) a span Link to the originating
+// game trace (the same #1133 link-from-hex primitive gameTraceLink uses). They are
+// OBSERVABILITY ONLY: they wrap the existing fitness/verdict/conclusion computations
+// without changing verdict math, fitness computation, promotion gating, or the loop's
+// control flow.
+const (
+	// SpanExperimentFitness wraps the per-shadow-game fitness scalar computation in
+	// onGameEnd: the gameFitnessFunc that scores one finished experiment game into the
+	// [0,1] sample the cohort aggregator folds. Carries experiment.id / arm / game.id /
+	// objective + the resulting experiment.fitness, Linked to the game trace.
+	SpanExperimentFitness = "experiment.fitness"
+	// SpanExperimentEvaluate wraps one experiment-conclusion: folding a concluded
+	// shadow game into its arm (ConcludeGame) and the resulting lifecycle status.
+	// Carries experiment.id / game.id / the resulting experiment.status, Linked to the
+	// game trace. It is the parent of any experiment.verdict span.
+	SpanExperimentEvaluate = "experiment.evaluate"
+	// SpanExperimentVerdict is the paired-difference decision span: emitted under
+	// experiment.evaluate when the conclusion produced a rolling verdict (the #979
+	// min-N + effect-size comparison the registry computed). Carries the verdict
+	// outcome / delta / significance. It records the verdict, it does NOT compute it
+	// (the registry owns the math) — observability only.
+	SpanExperimentVerdict = "experiment.verdict"
+)
+
+// Custom attribute keys for the experiment-lifecycle spans (#1140 Slice C). They
+// reuse the established experiment.* vocabulary (AttrExperimentID / AttrExperimentArm /
+// AttrExperimentFitness, defined in retro_capture.go) and add the conclusion-status
+// and verdict keys. No cross-session player identity is ever stamped — only
+// experiment.id / arm / game.id (the no-player-identity constraint, #23).
+const (
+	// AttrExperimentStatus is the experiment lifecycle status that resulted from
+	// folding a game (e.g. "running" / "concluded"), recorded on experiment.evaluate.
+	AttrExperimentStatus = "experiment.status"
+	// AttrExperimentObjective is the experiment's fitness objective
+	// (endurance/balanced/accelerate) the per-game fitness was scored against,
+	// recorded on experiment.fitness.
+	AttrExperimentObjective = "experiment.objective"
+	// AttrVerdictOutcome / AttrVerdictDelta / AttrVerdictSignificant carry the rolling
+	// paired-difference verdict the registry computed: the outcome label
+	// ("inconclusive"/"promote"/"discard"), the experimental-minus-control delta, and
+	// whether it cleared the significance bar. Recorded on experiment.verdict.
+	AttrVerdictOutcome     = "verdict.outcome"
+	AttrVerdictDelta       = "verdict.delta"
+	AttrVerdictSignificant = "verdict.significant"
+)
+
 // instrumentationName scopes the agent's tracer.
 const instrumentationName = "github.com/joustmania/agent"
