@@ -166,10 +166,24 @@ processors:
   # ~600 MiB (soft ~450 MiB) — well under the 768 MiB cgroup ceiling — so under
   # the agent experiment-loop span burst the collector backpressures instead of
   # being OOM-killed, and keeps exporting the #1140 trace-correlation spans.
+  #
+  # #1167: this config.yaml is mounted READ-ONLY by EVERY stack (base/Pi/prod,
+  # ci, dry-run, gateway), so the limiter can't be hardcoded per-stack. The two
+  # thresholds are env-substituted with LEAN DEFAULTS equal to the #1161 base
+  # values, using the OTel Collector confmap env provider's default-value syntax
+  # `${env:VAR:-default}` (supported since collector v0.108.0; this image is
+  # built with OCB 0.153.0, well past that — see images/otel-collector/Dockerfile).
+  # If the env vars are unset (base/Pi/prod + ci) the limiter stays at 600/150
+  # under the lean 768 MiB ceiling. The experiment-heavy stacks
+  # (docker-compose.dry-run.yml + docker-compose.gateway.yml) raise the container
+  # ceiling to 1536 MiB AND set OTEL_MEMLIMIT_MIB=1200 / OTEL_MEMSPIKE_MIB=300 so
+  # the limiter sheds NEAR the 1.5 GiB ceiling (~80% / ~25%) instead of pointlessly
+  # backpressuring at 600 — without the matching limiter bump the bigger container
+  # would be wasted. No span sampling: ALL spans are kept.
   memory_limiter:
     check_interval: 1s
-    limit_mib: 600
-    spike_limit_mib: 150
+    limit_mib: ${env:OTEL_MEMLIMIT_MIB:-600}
+    spike_limit_mib: ${env:OTEL_MEMSPIKE_MIB:-150}
 
   # Resource processors set service.namespace per pipeline.
   # The prometheusremotewrite exporter prefixes job labels with the namespace

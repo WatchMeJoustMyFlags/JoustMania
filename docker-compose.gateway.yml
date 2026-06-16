@@ -42,3 +42,22 @@ services:
     depends_on:
       litellm:
         condition: service_healthy
+
+  # #1167: experiment-heavy collector envelope (live-inference stack). When the
+  # agent routes through the LiteLLM gateway it runs the SAME experiment cohort
+  # loop / shadow-game span volume as dry-run, so the lean #1161 base envelope
+  # (768 MiB / limiter 600/150) OOM-kills (exit 137) the collector under sustained
+  # load. We keep ALL spans (no sampling) and raise the ceiling ONLY for this
+  # experiment-heavy stack so the Pi/prod base stays lean. Raise the container to
+  # 1536 MiB AND set the env-substituted limiter (config.yaml memory_limiter) to
+  # 1200/300 so it sheds NEAR the 1.5 GiB ceiling (~80% / ~25%) rather than at 600
+  # — without this matching limiter bump the bigger container would be wasted.
+  # Merges onto the base collector by service name. Mirrors docker-compose.dry-run.yml.
+  otel-collector:
+    environment:
+      - OTEL_MEMLIMIT_MIB=1200
+      - OTEL_MEMSPIKE_MIB=300
+    deploy:
+      resources:
+        limits:
+          memory: 1536m
