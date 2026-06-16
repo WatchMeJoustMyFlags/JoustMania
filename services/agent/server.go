@@ -151,9 +151,11 @@ func (c *serverComponents) run(ctx context.Context) error {
 		c.logger.Info("Shutdown requested, stopping servers...")
 		grpcServer.GracefulStop()
 		c.loops.AwaitInflight()
-		// Join in-flight async retro inference goroutines (#1179) too: ctx is already
-		// cancelled, so each retro's budget context is cancelled and a well-behaved Infer
-		// returns promptly. No retro outlives the process.
+		// Join in-flight async retro inference goroutines (#1179) too: ctx (the agent
+		// root) is already cancelled, and each retro goroutine bridges root.Done() to its
+		// budget-context cancel (SetRootContext), so a well-behaved in-flight Infer is
+		// unblocked promptly rather than waiting out the full latency budget; AwaitInflight
+		// then joins them. No retro outlives the process.
 		if c.retro != nil {
 			c.retro.AwaitInflight()
 		}

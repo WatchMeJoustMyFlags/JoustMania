@@ -227,6 +227,74 @@ func TestRetro_OnGameEndDoesNotBlock(t *testing.T) {
 	}
 }
 
+// TestRetro_RootContextCancellationUnblocksInfer: the seam the #1185 review flagged as
+// untested. The retro goroutine keeps its budget context derived from the SPAN context
+// (for #1112 parenting), so it does NOT inherit rootCtx cancellation automatically;
+// SetRootContext installs a root.Done() -> cancel() bridge. With a backend that blocks
+// until its ctx is cancelled and a generous latency budget (so the budget timeout can
+// NOT be what unblocks us), cancelling rootCtx must promptly unblock the in-flight
+// Infer: the goroutine returns, the span ends stamped with the cancellation error, and
+// AwaitInflight joins.
+func TestRetro_RootContextCancellationUnblocksInfer(t *testing.T) {
+	resetRetroResponseRef()
+	started := make(chan struct{})
+	var startOnce sync.Once
+	rc, sr := recordingRetro(t, retroFlagSnapshot())
+	// A well-behaved backend: it honors ctx and returns its cancellation error rather
+	// than ignoring the deadline. It blocks indefinitely on the context otherwise.
+	rc.SetResolver(reachableRetroResolver(t, "gemma4:latest",
+		func(ctx context.Context, _ llm.Prompt) (string, error) {
+			startOnce.Do(func() { close(started) })
+			<-ctx.Done()
+			return "", ctx.Err()
+		}))
+
+	// A long latency budget guarantees that anything which unblocks the call within the
+	// test timeout must be the root-cancellation bridge, not the budget timeout.
+	snap := retroFlagSnapshot()
+	snap.LLMGate.LatencyBudget = 30 * time.Second
+	rc.Flags = &settableFlags{snap: snap}
+
+	root, cancelRoot := context.WithCancel(context.Background())
+	rc.SetRootContext(root)
+
+	rc.OnGameEnd(endedSession())
+
+	// Wait for the Infer to be genuinely in flight, then cancel the root context.
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		cancelRoot()
+		t.Fatal("retro inference never started")
+	}
+	cancelRoot()
+
+	// AwaitInflight must join promptly (well under the 30s budget) — the bridge unblocked
+	// the call. A test deadline guards against a regression where it waits the budget out.
+	joined := make(chan struct{})
+	go func() { rc.AwaitInflight(); close(joined) }()
+	select {
+	case <-joined:
+	case <-time.After(3 * time.Second):
+		t.Fatal("root cancellation did not unblock the in-flight retro Infer (bridge missing/broken)")
+	}
+
+	// The span ended (it was NOT left open) and carries the cancellation as a stamped
+	// failure (fail-open: parse_ok=false + llm.infer.error), proving the call returned
+	// via cancellation rather than completing or leaking.
+	spans := spansByName(sr.Ended(), SpanLLMRetro)
+	if len(spans) != 1 {
+		t.Fatalf("retro spans = %d, want 1 (span must end on cancellation)", len(spans))
+	}
+	span := spans[0]
+	if v, ok := attrValue(span, AttrLLMRetroParseOK); !ok || v.AsBool() {
+		t.Errorf("parse_ok = %v (present=%v), want false on cancellation", v.AsBool(), ok)
+	}
+	if v, ok := attrValue(span, AttrLLMInferError); !ok || v.AsString() == "" {
+		t.Error("llm.infer.error must be present and non-empty on a cancelled Infer")
+	}
+}
+
 // TestRetro_CaptureOnlyWhenNoBackend: with no resolver wired (nil backend), the retro
 // stays capture-only — the span ends synchronously, carries no conclusion, no
 // parse_ok, and reports no_backend_available.

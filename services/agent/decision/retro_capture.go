@@ -170,9 +170,10 @@ type RetroCoordinator struct {
 	// outlives the process and tests can deterministically wait for the conclusion to
 	// land before asserting — mirroring the in-game Loop.inferWG.
 	inferWG sync.WaitGroup
-	// rootCtx is the agent's root context (#1179): the retro inference goroutine derives
-	// its latency-budget context from it, so shutdown cancellation unblocks a
-	// well-behaved in-flight Infer. Nil falls back to context.Background.
+	// rootCtx is the agent's root context (#1179): the retro inference goroutine bridges
+	// rootCtx.Done() to its (span-derived) budget context's cancel, so shutdown
+	// cancellation promptly unblocks a well-behaved in-flight Infer. Nil means no bridge
+	// — the latency budget alone bounds the call.
 	rootCtx context.Context
 
 	// mu guards the captured-session dedupe state.
@@ -232,11 +233,13 @@ func (rc *RetroCoordinator) SetFitnessLookup(f func(gameID string) (float64, boo
 	rc.fitnessLookup = f
 }
 
-// SetRootContext injects the agent's root context (#1179) so the async retro
-// inference goroutine derives its latency-budget context from it; shutdown
-// cancellation then unblocks a well-behaved in-flight Infer. Nil (the default) means
-// the goroutine uses context.Background — bounded by the latency budget alone. Not
-// safe to call concurrently with OnGameEnd — set it during construction.
+// SetRootContext injects the agent's root context (#1179). The async retro inference
+// goroutine keeps its latency-budget context derived from the retro SPAN context (to
+// preserve #1112 trace parenting), and separately bridges root.Done() -> cancel() so
+// shutdown cancellation promptly unblocks a well-behaved in-flight Infer instead of
+// waiting out the full budget. Nil (the default) means no bridge is installed — the
+// latency budget is the sole deadline. Not safe to call concurrently with OnGameEnd —
+// set it during construction.
 func (rc *RetroCoordinator) SetRootContext(ctx context.Context) { rc.rootCtx = ctx }
 
 // AwaitInflight blocks until every in-flight async retro inference has completed
@@ -426,16 +429,31 @@ func (rc *RetroCoordinator) runRetroInfer(ctx context.Context, span trace.Span, 
 		now = time.Now
 	}
 
-	root := rc.rootCtx
-	if root == nil {
-		root = context.Background()
-	}
-	// Bound the call by the latency budget; a backend that honors ctx unblocks at the
-	// deadline. inferCtx is derived from ctx (the live span context) so #1112's
-	// traceparent injection parents any gateway gen_ai span under this retro trace, and
-	// from rootCtx's cancellation indirectly via the budget timeout.
+	// inferCtx MUST stay derived from ctx (the live retro span context), NOT from
+	// rootCtx: #1112 requires the outbound-call client span below to be parented under
+	// THIS retro span ("one trace" through the litellm gateway), and that parenting flows
+	// through ctx. WithTimeout(ctx, budget) gives us the span parent plus the latency
+	// budget. (The sibling in-game path async_infer.go:232 derives from root directly
+	// because it carries no span-parent-from-ctx constraint — do not copy that here.)
 	inferCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
+
+	// Linked cancellation: WithTimeout(ctx, budget) does NOT inherit rootCtx's
+	// cancellation (ctx is the standalone retro root, not a child of root), so on
+	// shutdown an in-flight Infer would otherwise wait out the full ~8s budget. Bridge
+	// root.Done() -> cancel() with a small goroutine so shutdown promptly unblocks a
+	// well-behaved Infer; the goroutine also exits when inferCtx finishes normally, so it
+	// never leaks. A nil rootCtx (tests / unwired) skips the bridge — the budget timeout
+	// remains the sole deadline.
+	if root := rc.rootCtx; root != nil {
+		go func() {
+			select {
+			case <-root.Done():
+				cancel()
+			case <-inferCtx.Done():
+			}
+		}()
+	}
 
 	// Wrap the outbound call in a short-lived client span (mirroring async_infer.go's
 	// SpanLLMInferCall) so callCtx carries an active, sampled span for the #1112

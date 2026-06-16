@@ -136,6 +136,13 @@ var (
 // emphasis, a missing focus are all captured verbatim for a human to read. The single
 // hard requirement is parseability: a non-JSON reply is unparseable and the caller
 // stamps parse_ok=false on the span.
+//
+// CONTRACT CAVEAT: the ONLY thing this guarantees is "a parseable JSON object". A
+// structurally-valid but contentless object (e.g. {"foo":1}) parses fine — it yields
+// parse_ok=true with an empty conclusion (empty assessment/focus, no suggestions),
+// INDISTINGUISHABLE from a genuinely empty healthy reply ({}). Callers cannot infer
+// "the analyst said nothing useful" vs "the analyst saw nothing to flag" from parse_ok
+// alone; both are valid, recorded-only outcomes.
 func DecodeRetro(raw string) (RetroResponse, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
