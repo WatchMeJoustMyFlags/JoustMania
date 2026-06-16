@@ -1045,12 +1045,20 @@ class InterventionManager:
                 self._state_bucket(session.game_id)[spec.flag_key] = None
             return
 
-        default = float(spec.none_value) if isinstance(spec.none_value, (int, float)) else 1.0
+        # Read each serial with a TYPE-APPROPRIATE getter keyed off the spec's
+        # declared value_kind. STRING-valued targeted flags (partial_shield_seconds
+        # "5:2.0", soft_penalty_action "tighten:5:0.5"/"warn") MUST use the string
+        # getter: a float read TYPE_MISMATCHes and silently resolves to the default
+        # (the flagd typed-getter trap, #1127/#909), so change detection would
+        # operate on the default and miss the value->neutral revert transition.
+        # The numeric targeted flags (player_sensitivity_factor / player_handicap_
+        # factor / shield_seconds) keep their float getter via value_kind="float".
+        default = _spec_default(spec)
         resolved = self.resolve_player_targets(
             spec.flag_key,
             default,
             game,
-            value_kind=spec.value_kind if spec.value_kind in ("int", "float") else "float",
+            value_kind=spec.value_kind if spec.value_kind in ("int", "float", "string") else "float",
             battery_gate=True,
             game_id=session.game_id,
         )

@@ -689,3 +689,76 @@ async def test_player_targeted_state_revert_to_neutral_does_not_fire():
         mgr._interventions_client.set("shield_seconds", 0)
         await mgr.evaluate_all()  # back to neutral -> no enforced intervention
     assert len(_applied(events, "grant_shield")) == 1
+
+
+# --------------------------------------------------------------------------- #
+# STRING-valued player-targeted state-flag change detection (#1150)
+#
+# soft_penalty_action ("warn"/"tighten:5:0.5"/"none") and partial_shield_seconds
+# ("5:2.0"/"0") are STRING-valued targeted flags. Change detection must read them
+# with the STRING getter (per spec.value_kind), not a float getter: a float read
+# TYPE_MISMATCHes and silently resolves to the default (the flagd typed-getter
+# trap, #1127/#909), so the real current value is never seen and the revert
+# transition (value -> neutral) is not reliably detected. The numeric targeted
+# flags (player_handicap_factor, a float) must keep working unchanged.
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_string_targeted_state_dispatches_and_reverts():
+    """soft_penalty_action: a string value dispatches, and reverting it to its
+    string neutral ("none") IS change-detected — the revert collapses the change
+    key to empty so no further enforced intervention fires. A float read would
+    coerce-fail to the default and never see either transition."""
+    game = FakeGame("Nonstop Joust", players={"p1": FakePlayer("p1")})
+    mgr, events = make_manager(interventions={"soft_penalty_action": "none"}, game=game, backstop=10)
+    with patch("services.game_coordinator.metrics.interventions_total"):
+        await mgr.evaluate_all()  # neutral "none" -> no dispatch
+    assert _applied(events, "soft_penalty") == []
+
+    with patch("services.game_coordinator.metrics.interventions_total"):
+        mgr._interventions_client.set("soft_penalty_action", "tighten:5:0.5")
+        await mgr.evaluate_all()  # real string value -> dispatch
+    assert len(_applied(events, "soft_penalty")) == 1
+
+    # Revert to the string neutral. The change key collapses to empty, so the
+    # value->neutral transition is detected and nothing new is enforced. Before
+    # the fix the float read coerced both reads to the default, so the change key
+    # never reflected the real value and the revert was not reliably detected.
+    with patch("services.game_coordinator.metrics.interventions_total"):
+        mgr._interventions_client.set("soft_penalty_action", "none")
+        await mgr.evaluate_all()
+    assert len(_applied(events, "soft_penalty")) == 1
+    # The recorded change-detection baseline is back to the empty (neutral) key.
+    assert mgr._state_bucket("").get("soft_penalty_action") == ()
+
+
+@pytest.mark.asyncio
+async def test_partial_shield_string_value_change_detected():
+    """partial_shield_seconds ("5:2.0") is also string-valued: its real value is
+    seen by change detection (not coerce-failed to the default)."""
+    game = FakeGame("Nonstop Joust", players={"p1": FakePlayer("p1")})
+    mgr, events = make_manager(interventions={"partial_shield_seconds": "0"}, game=game, backstop=10)
+    with patch("services.game_coordinator.metrics.interventions_total"):
+        await mgr.evaluate_all()  # neutral "0" -> no dispatch
+        mgr._interventions_client.set("partial_shield_seconds", "5:2.0")
+        await mgr.evaluate_all()  # real value -> dispatch
+    assert len(_applied(events, "partial_shield")) == 1
+    # The change-detection baseline holds the REAL string, not a coerced default.
+    assert mgr._state_bucket("").get("partial_shield_seconds") == (("p1", "5:2.0"),)
+
+
+@pytest.mark.asyncio
+async def test_float_targeted_state_still_works_with_string_fix():
+    """The float-typed targeted flag (player_handicap_factor) is unaffected by
+    the string-getter fix: it still reads as a float and change-detects."""
+    game = FakeGame("Nonstop Joust", players={"p1": FakePlayer("p1")})
+    mgr, events = make_manager(interventions={"player_handicap_factor": 1.0}, game=game, backstop=10)
+    with patch("services.game_coordinator.metrics.interventions_total"):
+        await mgr.evaluate_all()  # neutral 1.0 -> no dispatch
+    assert _applied(events, "set_player_handicap") == []
+
+    with patch("services.game_coordinator.metrics.interventions_total"):
+        mgr._interventions_client.set("player_handicap_factor", 1.5)
+        await mgr.evaluate_all()  # 1.5 -> dispatch
+    assert len(_applied(events, "set_player_handicap")) == 1
+    # Baseline holds the coerced float value, not a string.
+    assert mgr._state_bucket("").get("player_handicap_factor") == (("p1", 1.5),)
