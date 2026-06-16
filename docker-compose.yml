@@ -193,7 +193,15 @@ services:
     deploy:
       resources:
         limits:
-          memory: 256m
+          # #1155: raised 256m -> 768m. At 256m the kernel OOM-killed the
+          # collector (exit 137) under sustained agent experiment-loop span
+          # volume before the memory_limiter (limit_mib was 512, ABOVE this
+          # ceiling) could ever shed load. The limiter is now aligned BELOW
+          # this ceiling (limit_mib=600, spike_limit_mib=150) per OTEL guidance
+          # (~80% / ~25%), so it backpressures at ~600m with ~168m headroom for
+          # off-heap/GC spikes instead of being OOM-killed. Keeps the #1140
+          # trace-correlation spans flowing. See services/otel-collector/config.yaml.
+          memory: 768m
           cpus: '0.5'
     logging: *default-logging
 
