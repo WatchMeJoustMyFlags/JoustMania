@@ -389,6 +389,126 @@ func TestInfraLoop_HoldExpansionSuppresses(t *testing.T) {
 	}
 }
 
+// TestInfraLoop_ReconcileSuppressesDoubleWrite is the #828 guarantee: after an
+// expansion the observed RolloutCount lags for the full observe latency. With a
+// dwell SHORTER than that latency, a naive loop would re-read NextStage(stale=0)
+// and re-write the SAME stage ("one") a second time. The reconcile guard
+// suppresses the expansion until the observation catches up to what we wrote.
+func TestInfraLoop_ReconcileSuppressesDoubleWrite(t *testing.T) {
+	clock := time.Unix(1000, 0)
+	rollout := &fakeRollout{}
+	l, sr := newInfraLoop(t, rollout, &clock)
+	// Short dwell so the dwell timer is NOT the thing blocking the re-expand — the
+	// reconcile guard must carry correctness on its own.
+	l.dwell = time.Second
+
+	// First expansion: none(0) → one. lastWritten is now 1.
+	l.OnInfraEvaluate(context.Background(), infraSnap("rust", 0, clock, 30))
+	if got := rollout.calls(); len(got) != 1 || got[0] != "one" {
+		t.Fatalf("writes = %v, want [one]", got)
+	}
+
+	// Dwell elapses, but the observed stage is STILL the stale 0 (observation
+	// lagging). Without the reconcile guard NextStage(0)=one would be re-written.
+	clock = clock.Add(2 * time.Second)
+	l.OnInfraEvaluate(context.Background(), infraSnap("rust", 0, clock, 30))
+	if got := rollout.calls(); len(got) != 1 {
+		t.Fatalf("writes = %v, want only the first expansion (reconcile suppresses double-write)", got)
+	}
+
+	// Observation catches up to stage one(1): the loop may now expand one → three.
+	clock = clock.Add(2 * time.Second)
+	l.OnInfraEvaluate(context.Background(), infraSnap("rust", 1, clock, 30))
+	if got := rollout.calls(); len(got) != 2 || got[1] != "three" {
+		t.Fatalf("writes = %v, want [one three] once observation caught up", got)
+	}
+	if n := len(infraSpans(sr)); n != 3 {
+		t.Errorf("got %d spans, want 3 (one per active cycle)", n)
+	}
+}
+
+// TestInfraLoop_ProgressiveClimbsOnFreshObservation confirms the reconcile guard
+// does NOT block the normal climb: each cycle the observation reflects the prior
+// write, so the ladder advances none→one→three→six as observed stages catch up.
+func TestInfraLoop_ProgressiveClimbsOnFreshObservation(t *testing.T) {
+	clock := time.Unix(1000, 0)
+	rollout := &fakeRollout{}
+	l, _ := newInfraLoop(t, rollout, &clock)
+	l.dwell = time.Second
+
+	stages := []int{0, 1, 3, 6}
+	wantWrites := []string{"one", "three", "six", "all"}
+	for i, stage := range stages {
+		clock = clock.Add(2 * time.Second) // exceed dwell each cycle
+		l.OnInfraEvaluate(context.Background(), infraSnap("rust", stage, clock, 30))
+		if got := rollout.calls(); len(got) != i+1 {
+			t.Fatalf("after observing stage %d, writes = %v, want %d total", stage, got, i+1)
+		}
+	}
+	if got := rollout.calls(); len(got) != len(wantWrites) {
+		t.Fatalf("writes = %v, want %v", got, wantWrites)
+	}
+	for i, w := range wantWrites {
+		if rollout.calls()[i] != w {
+			t.Fatalf("write[%d] = %q, want %q", i, rollout.calls()[i], w)
+		}
+	}
+}
+
+// TestInfraLoop_StaleObservationSkipped checks the optional freshness guard:
+// an observation older than the configured bound is skipped (no write, no span).
+func TestInfraLoop_StaleObservationSkipped(t *testing.T) {
+	clock := time.Unix(1000, 0)
+	rollout := &fakeRollout{}
+	l, sr := newInfraLoop(t, rollout, &clock)
+	l.SetObserveStaleness(3 * time.Second)
+
+	snap := infraSnap("rust", 0, clock, 30)
+	snap.UpdatedAt = clock.Add(-10 * time.Second) // observed 10s ago, beyond the 3s bound
+	l.OnInfraEvaluate(context.Background(), snap)
+
+	if got := rollout.calls(); len(got) != 0 {
+		t.Fatalf("writes = %v, want none (stale observation skipped)", got)
+	}
+	if n := len(infraSpans(sr)); n != 0 {
+		t.Fatalf("got %d spans, want 0 (stale observation skipped before span)", n)
+	}
+}
+
+// TestInfraLoop_AbsentTimestampNotBlocked is the graceful-default guarantee: a
+// zero/absent UpdatedAt (test helpers, an older producer) must NOT block action
+// even when the freshness guard is enabled.
+func TestInfraLoop_AbsentTimestampNotBlocked(t *testing.T) {
+	clock := time.Unix(1000, 0)
+	rollout := &fakeRollout{}
+	l, _ := newInfraLoop(t, rollout, &clock)
+	l.SetObserveStaleness(3 * time.Second)
+
+	// infraSnap leaves UpdatedAt zero; the guard must treat it as "behave as before".
+	l.OnInfraEvaluate(context.Background(), infraSnap("rust", 0, clock, 30))
+
+	if got := rollout.calls(); len(got) != 1 || got[0] != "one" {
+		t.Fatalf("writes = %v, want [one] (absent timestamp must not block action)", got)
+	}
+}
+
+// TestInfraLoop_FreshObservationActedOn confirms a within-bound observation is
+// acted on when the freshness guard is enabled.
+func TestInfraLoop_FreshObservationActedOn(t *testing.T) {
+	clock := time.Unix(1000, 0)
+	rollout := &fakeRollout{}
+	l, _ := newInfraLoop(t, rollout, &clock)
+	l.SetObserveStaleness(3 * time.Second)
+
+	snap := infraSnap("rust", 0, clock, 30)
+	snap.UpdatedAt = clock.Add(-1 * time.Second) // within the 3s bound
+	l.OnInfraEvaluate(context.Background(), snap)
+
+	if got := rollout.calls(); len(got) != 1 || got[0] != "one" {
+		t.Fatalf("writes = %v, want [one] (fresh observation acted on)", got)
+	}
+}
+
 func TestInfraLoop_NilActuatorNeverExpands(t *testing.T) {
 	clock := time.Unix(1000, 0)
 	l, sr := newInfraLoop(t, nil, &clock)

@@ -151,6 +151,19 @@ processors:
     timeout: 100ms
     send_batch_size: 1000
 
+  # Traces batch processor (#828): a shorter timeout than the shared `batch`
+  # so the SECOND hop of the agent observe path (collector → otlp/agent) flushes
+  # sooner. Combined with the lower controller-manager BSP flush (per-service
+  # observability flag), this cuts the controller.bluetooth_health observe
+  # latency the rollout loop reacts to. Smaller, sooner trace batches also lower
+  # the collector's peak heap held by the traces pipeline (synergy with the
+  # #1167/#1173 memory work — the memory_limiter envelope is untouched). The
+  # logs/filelog pipelines keep the shared `batch` (5s) unchanged.
+  batch/traces:
+    timeout: 2s
+    send_batch_size: 512
+    send_batch_max_size: 1024
+
   # Memory limiter to prevent OOM (#1155).
   #
   # ROOT CAUSE of the exit-137 OOM-kills: limit_mib (512) was set ABOVE the
@@ -321,7 +334,7 @@ service:
     # Traces pipeline
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, batch, resource]
+      processors: [memory_limiter, batch/traces, resource]
       exporters: [otlp/jaeger, otlp/agent, debug]
 
     # Metrics pipeline - uses fast batch processor for sub-second updates

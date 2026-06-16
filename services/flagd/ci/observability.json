@@ -19,6 +19,28 @@
         "disabled": false
       },
       "defaultVariant": "enabled"
+    },
+    "otel_bsp_schedule_delay_millis": {
+      "state": "ENABLED",
+      "variants": {
+        "fast": 500,
+        "default": 5000
+      },
+      "defaultVariant": "default",
+      "targeting": {
+        "if": [
+          {
+            "==": [
+              {
+                "var": "service"
+              },
+              "controller-manager-service"
+            ]
+          },
+          "fast",
+          null
+        ]
+      }
     }
   }
 }
