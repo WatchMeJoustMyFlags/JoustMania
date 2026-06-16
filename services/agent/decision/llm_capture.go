@@ -52,8 +52,9 @@ type llmPromptAttrs struct {
 //   - agent.prompt_variant  = <resolved variant from llm.Prompt.Variant>
 //   - agent.objectives      = sorted "k=v" weights (summarizeObjectives)
 //   - interventions.allowed = the allow-list summary (allowedSummary)
-//   - llm.prompt.system / llm.prompt.user = the FULL prompt text (uncapped)
-//   - llm.prompt.bytes      = len(system)+len(user)
+//   - llm.prompt.system_sha256 = the System-prompt FINGERPRINT (#1168), NOT the text
+//   - llm.prompt.user       = the User prompt text (capped at maxUserPromptBytes)
+//   - llm.prompt.bytes      = len(system)+len(user) (full size; system TEXT not emitted)
 //   - inference.configured  = <model flag>
 //   - inference.used        = "rules"   (the rules engine actually decided)
 //   - inference.fallback_reason = "no_backend_available"  (#741 supplies the real
@@ -75,9 +76,13 @@ func llmPromptAttributes(in llmPromptAttrs) []attribute.KeyValue {
 		attribute.String(AttrPromptVariant, in.prompt.Variant),
 		attribute.String(AttrObjectives, summarizeObjectives(in.objectives)),
 		attribute.String(AttrInterventionsAllowed, allowedSummary(in.allowed)),
-		// The captured prompt: full text (uncapped) plus its size.
-		attribute.String(AttrLLMPromptSystem, system),
-		attribute.String(AttrLLMPromptUser, user),
+		// #1168: the System prompt rides as a FINGERPRINT (resolvable via the
+		// once-per-hash agent.llm.system_prompt reference log), NOT the full text —
+		// that constant bulk drove the #1167 collector OOM. The User prompt (variable,
+		// valuable) is KEPT, capped at maxUserPromptBytes. bytes still counts the full
+		// system+user size so the at-a-glance number is unchanged.
+		attribute.String(AttrLLMPromptSystemSHA, systemPromptSHA(system)),
+		attribute.String(AttrLLMPromptUser, capUserPrompt(user)),
 		attribute.Int(AttrLLMPromptBytes, len(system)+len(user)),
 		// Inference attribution: the prompt was captured, but no backend ran, so
 		// the rules engine decided. #741's resolve_backend() supplies the honest

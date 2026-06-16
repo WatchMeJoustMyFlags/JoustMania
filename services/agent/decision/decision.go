@@ -916,6 +916,11 @@ func (l *Loop) captureLLMPrompt(ctx context.Context, snapshot flags.Snapshot, c 
 		attribute.Bool(AttrLLMContextNotePresent, notePresent),
 		attribute.Int(AttrLLMContextNoteLen, noteLen),
 	)
+	// #1168: the span carries only the System-prompt fingerprint; emit the full text
+	// once per distinct fingerprint on the agent.llm.system_prompt reference log so
+	// the hash stays resolvable to its text without paying per span (the #1167 OOM).
+	systemPromptRef.emit(l.Log, systemPromptSHA(prompt.System),
+		prompt.Variant, llmModeValue, allowedSummary(snapshot.InterventionsAllowed), prompt.System)
 	_, span := l.Tracer.Start(ctx, SpanLLMPrompt, trace.WithAttributes(attrs...))
 	span.End()
 
