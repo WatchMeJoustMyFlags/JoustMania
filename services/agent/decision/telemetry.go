@@ -210,6 +210,13 @@ const (
 	// two concurrent games' decision traces are independently attributable.
 	AttrSessionID = "session.id"
 	AttrGameID    = "game.id"
+	// AttrGameTraceID is the hex trace_id of the originating game-coordinator trace
+	// (#1133, Phase 2 of #1088). Carried as an attribute on the OTel Link the
+	// agent.decision span adds to that game trace (gameTraceLink) — so even a backend
+	// that does not render Links keeps the correlation id queryable on the span, and a
+	// reader sees WHICH trace the link points at. Empty/absent when no valid game
+	// trace_id was ingested (graceful fallback: no link is added at all).
+	AttrGameTraceID = "game.trace_id"
 	// AttrEnabled is the existence-layer kill switch (agent.enabled). Lifted from
 	// the cycle's LayerState onto every decision span (including the disabled
 	// kill-switch span) so a trace shows whether the agent was live (#729).

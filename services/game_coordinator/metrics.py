@@ -40,6 +40,34 @@ current_game_mode = Gauge(
     ["mode"],  # 'ffa', 'teams_simple', 'teams_random', 'nonstop_joust', 'none'
 )
 
+# Trace-correlation signal (#1133, Phase 2 of #1088). A dedicated, low-rate
+# per-game gauge whose VALUE is always 1 while the game's root span is live; its
+# payload is the labels. It carries the game span's hex trace_id as game_trace_id
+# alongside game_id so the agent — which consumes game state only as METRICS (no
+# parent trace context) — can read the originating game trace_id during ingest and
+# add an OTel span LINK from agent.decision to that trace (navigable in Jaeger),
+# not merely a shared game.id attribute (Phase 1, #1095).
+#
+# Why a dedicated signal and not an exemplar (the OTLP-native alternative the issue
+# asked us to evaluate FIRST): the coordinator's gauges go through
+# lib.otel_metrics, which uses the OTel SDK's create_observable_gauge + a flush-time
+# callback yielding metrics.Observation(value, labels). Observable gauges expose NO
+# API to attach exemplars (exemplars are auto-sampled by the SDK for sum/histogram
+# aggregations from the active span at record time — there is no active span at the
+# async callback flush, and the Observation API takes no exemplar). So the exemplar
+# path is not feasible end-to-end in this stack; this dedicated attribute-carrying
+# signal is the documented Approach B.
+#
+# Cardinality: game_trace_id is 1:1 with game_id (one trace per game), so it
+# multiplies NO series beyond the already-unbounded game_id. Like the other
+# per-game gauges it is SET to 1 inside the live game span and REMOVED at retire
+# (clear_metrics, #1018) so the series does not accumulate.
+game_trace_correlation = Gauge(
+    "game_trace_correlation",
+    "Correlation marker tying a live game_id to its root span trace_id (always 1 while live)",
+    ["game_kind", "game_id", "game_trace_id"],
+)
+
 game_duration_seconds = Gauge(
     "game_duration_seconds",
     "Duration of current game in seconds",

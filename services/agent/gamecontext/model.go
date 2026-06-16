@@ -142,9 +142,18 @@ type GameContext struct {
 	// partitions by ExperimentID; the Multiplexer still partitions on game_id.
 	ExperimentID string
 	Arm          string
-	Session      SessionSignals
-	Players      map[string]*PlayerSignals
-	UpdatedAt    time.Time
+	// GameTraceID is the hex trace_id of the coordinator's root game span for this
+	// session (#1133, Phase 2 of #1088). Source: the game_trace_id datapoint label on
+	// the dedicated game_trace_correlation gauge the coordinator emits while the game
+	// span is live. The agent has no parent trace context (it consumes game state only
+	// as metrics), so this id is what lets the decision loop add an OTel span LINK from
+	// agent.decision to the originating game trace — navigable in Jaeger, not merely a
+	// shared game.id attribute (Phase 1). Empty when not yet observed or the game span
+	// was unsampled; an empty value means "no link" (graceful fallback, no error).
+	GameTraceID string
+	Session     SessionSignals
+	Players     map[string]*PlayerSignals
+	UpdatedAt   time.Time
 
 	// Timeline is a bounded, oldest-first slice of the partition's recent rolling
 	// narrative (#916): periodic state deltas, eliminations, and session phase

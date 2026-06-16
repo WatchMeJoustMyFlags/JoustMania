@@ -22,6 +22,14 @@ const (
 	metricDeathsTotal    = "game_player_deaths_total"    // live
 	metricPeakAccel      = "game_player_peak_accel"      // live (whole-game aggregate + game_id carrier)
 
+	// Trace-correlation signal (#1133, Phase 2 of #1088). A dedicated low-rate
+	// per-game gauge (value always 1 while the game span is live) whose payload is its
+	// labels: game_id + the game span's hex game_trace_id. The agent reads game_trace_id
+	// here so the decision loop can add an OTel span LINK from agent.decision to the
+	// originating game trace — the agent otherwise has no parent context (it consumes
+	// game state only as metrics). Falls back gracefully (no link) when absent/unsampled.
+	metricTraceCorrelation = "game_trace_correlation"
+
 	// Game-speed / threshold reference frame (#1082). All three are SESSION-level
 	// gauges the coordinator already emits (no serial label): game_music_tempo is
 	// the applied game speed (1.0=slow..~1.3=fast); the effective thresholds are the
@@ -49,6 +57,10 @@ const (
 	attrMode     = "mode"
 	attrGameID   = "game_id"
 	attrGameKind = "game_kind"
+	// attrGameTraceID is the coordinator root game-span trace_id carried on the
+	// dedicated game_trace_correlation signal (#1133). Hex string; empty when the
+	// game span was unsampled.
+	attrGameTraceID = "game_trace_id"
 	// Experiment attribution (#975, epic #982): finer-grained labels WITHIN a
 	// shadow game. Carried on the LOW-RATE lifecycle metrics (game_active,
 	// game_active_players, game_duration_seconds) the same way game_kind is —
@@ -79,6 +91,10 @@ type gameLabels struct {
 	// a cohort is reconstructed by grouping partitions that share an ExperimentID.
 	ExperimentID string
 	Arm          string
+	// GameTraceID carries the coordinator's root game-span trace_id (#1133) when the
+	// signal is the dedicated game_trace_correlation gauge — empty on every other
+	// signal. Like ExperimentID/Arm it is partition ENRICHMENT, not a routing key.
+	GameTraceID string
 }
 
 // gameIDOf reads the game_id datapoint label; empty when absent.
@@ -113,6 +129,14 @@ func armOf(attrs pcommon.Map) string {
 	return ""
 }
 
+// gameTraceIDOf reads the game_trace_id datapoint label (#1133); empty when absent.
+func gameTraceIDOf(attrs pcommon.Map) string {
+	if v, ok := attrs.Get(attrGameTraceID); ok {
+		return v.AsString()
+	}
+	return ""
+}
+
 // metricGameLabels resolves the game identity labels on a metric datapoint.
 func metricGameLabels(attrs pcommon.Map) gameLabels {
 	return gameLabels{
@@ -120,6 +144,7 @@ func metricGameLabels(attrs pcommon.Map) gameLabels {
 		GameKind:     gameKindOf(attrs),
 		ExperimentID: experimentIDOf(attrs),
 		Arm:          armOf(attrs),
+		GameTraceID:  gameTraceIDOf(attrs),
 	}
 }
 
@@ -295,6 +320,13 @@ func (s *Store) applyDataPoint(name string, dp pmetric.NumberDataPoint) bool {
 		s.SetGameActive(v == 1)
 		s.adoptGame(labels)
 		return true
+	case metricTraceCorrelation:
+		// Dedicated trace-correlation signal (#1133): value is always 1; the payload is
+		// the labels (game_id + game_trace_id). Route through adoptGame so the
+		// game_trace_id enriches the same partition the multiplexer selected on game_id;
+		// SetGameTraceID ignores an empty id, so a malformed datapoint is a safe no-op.
+		s.adoptGame(labels)
+		return labels.GameTraceID != "" || labels.GameID != ""
 	case metricGameMode:
 		// game_current_mode is a primary/legacy signal: it NEVER carries game_id,
 		// so it is deliberately not routed through adoptGame.
@@ -342,4 +374,5 @@ func (s *Store) adoptGame(labels gameLabels) {
 	s.SetGameKind(labels.GameKind)
 	s.SetExperimentID(labels.ExperimentID)
 	s.SetArm(labels.Arm)
+	s.SetGameTraceID(labels.GameTraceID) // #1133: empty on all but game_trace_correlation
 }
