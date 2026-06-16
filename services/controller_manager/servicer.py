@@ -570,6 +570,42 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             logger.error(f"RenameController error: {e}", exc_info=True)
             return controller_manager_pb2.RenameControllerResponse(success=False, error=str(e))
 
+    async def GetConnectedControllers(self, _request, _context):
+        """Return the authoritative live roster of connected controllers (#1153).
+
+        Unlike the event-piggybacked ``connected_serials`` (only refreshed on the
+        next CONNECT/DISCONNECT), this reads the current ``tracked_controllers``
+        synchronously so a client can reconcile ghost controllers after a missed
+        disconnect with no later event. Reserved controllers (#777) are excluded,
+        mirroring the roster sent on the button-event stream.
+        """
+        span = trace.get_current_span()
+
+        # Snapshot to stay consistent if the discovery loop mutates the dict.
+        # This method has no await points, but a snapshot keeps it robust.
+        tracked_snapshot = dict(self.tracked_controllers)
+
+        # visible_serials() is the canonical "what button-stream consumers (the
+        # menu) may see" filter (excludes reserved controllers, #777). Reuse it
+        # so the RPC and the stream roster never silently diverge.
+        serials = visible_serials(tracked_snapshot)
+        controllers = [
+            controller_manager_pb2.ConnectedController(
+                serial=serial,
+                name=tracked_snapshot[serial].get(ControllerInfoKey.NAME, ""),
+                battery=tracked_snapshot[serial].get(ControllerInfoKey.BATTERY, 0),
+            )
+            for serial in serials
+        ]
+
+        span.set_attribute("controller.count", len(serials))
+        logger.debug(f"GetConnectedControllers: {len(serials)} connected")
+
+        return controller_manager_pb2.GetConnectedControllersResponse(
+            connected_serials=serials,
+            controllers=controllers,
+        )
+
     async def shutdown(self):
         """Shutdown the controller manager."""
         logger.info("Shutting down ControllerManager...")

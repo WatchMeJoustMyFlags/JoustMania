@@ -17,6 +17,12 @@ service ControllerManagerService {
   // Rename a controller (set custom human-readable name)
   rpc RenameController(RenameControllerRequest) returns (RenameControllerResponse);
 
+  // Query the controller manager's authoritative live roster on demand (#1153).
+  // Unlike the event-piggybacked connected_serials (only refreshed on the next
+  // CONNECT/DISCONNECT), this returns the current connected set synchronously so
+  // a client (the menu) can reconcile ghosts after a missed disconnect.
+  rpc GetConnectedControllers(GetConnectedControllersRequest) returns (GetConnectedControllersResponse);
+
 }
 
 // Controller state data
@@ -229,4 +235,23 @@ message RenameControllerRequest {
 message RenameControllerResponse {
   bool success = 1;
   string error = 2;       // Error message if success is false
+}
+
+// Live-roster query (#1153). Empty request: returns the whole connected roster.
+message GetConnectedControllersRequest {
+}
+
+// One connected controller in the authoritative live roster.
+message ConnectedController {
+  string serial = 1;   // Controller serial
+  string name = 2;     // Human-readable controller name (Issue #7)
+  int32 battery = 3;   // Last-known battery level
+}
+
+message GetConnectedControllersResponse {
+  // Authoritative connected serials at the moment of the call. Convenience
+  // mirror of controllers[].serial so callers that only need the roster set
+  // don't have to unpack the richer messages.
+  repeated string connected_serials = 1;
+  repeated ConnectedController controllers = 2;
 }
