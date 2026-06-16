@@ -63,6 +63,15 @@ type WindowSignals struct {
 	// RolloutCount is the current_controller_count under rollout, 0 when off.
 	// Source: bluetooth.rollout_count.
 	RolloutCount int
+
+	// RolloutStrategy is the controller-manager's active rollout strategy —
+	// "off" | "immediate" | "progressive" — surfaced so the agent can skip its
+	// count ladder under "immediate" (where the controller-manager routes ALL
+	// controllers at once and the ladder is meaningless). Empty when the
+	// producing controller-manager is older than #829 and omits the attribute;
+	// callers treat "" as "behave as before" (the progressive ladder).
+	// Source: bluetooth.rollout_strategy.
+	RolloutStrategy string
 }
 
 // InfraContext is the full accumulated infrastructure view: the latest window

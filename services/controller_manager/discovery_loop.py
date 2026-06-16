@@ -751,6 +751,18 @@ class DiscoveryLoop:
             except Exception:
                 logger.debug("Failed to read rollout summary for health span", exc_info=True)
 
+        # Active rollout strategy ("off"/"immediate"/"progressive"). The agent
+        # reads this to skip its count ladder under "immediate" routing. Empty
+        # on any error so a flagd outage never breaks span emission; the agent
+        # treats absence as "behave as before" (progressive ladder).
+        rollout_strategy = ""
+        rollout_strategy_fn = getattr(self.backend, "rollout_strategy", None)
+        if rollout_strategy_fn is not None:
+            try:
+                rollout_strategy = rollout_strategy_fn()
+            except Exception:
+                logger.debug("Failed to read rollout strategy for health span", exc_info=True)
+
         # --- Span: periodic root span, like controller.discover ---------------
         with tracer.start_as_current_span("controller.bluetooth_health") as span:
             span.set_attribute("bluetooth.event_gap_ms", float(signals["event_gap_ms"]))
@@ -759,6 +771,7 @@ class DiscoveryLoop:
             span.set_attribute("bluetooth.active_controllers", int(signals["active_controllers"]))
             span.set_attribute("bluetooth.target_backend", target_backend)
             span.set_attribute("bluetooth.rollout_count", int(rollout_count))
+            span.set_attribute("bluetooth.rollout_strategy", rollout_strategy)
 
             # One event per active serial with per-serial signals.
             for serial, s in signals["per_serial"].items():

@@ -134,6 +134,14 @@ const DefaultRolloutCooldown = 30 * time.Second
 // decision span when the loop expands (e.g. 3 after advancing none→one→three).
 const AttrRolloutControllerCount = "rollout.controller_count"
 
+// rolloutStrategyImmediate is the controller-manager strategy under which ALL
+// controllers are routed to the target backend at once (no progressive cohort).
+// The current_controller_count ladder is meaningless under it, so the loop
+// observes only — it never climbs the ladder or writes flag flips that would
+// correspond to no routing change (#829). It mirrors the "immediate" literal in
+// services/controller_manager/multiplexer/rollout_router.py.
+const rolloutStrategyImmediate = "immediate"
+
 // InfraLoop runs the progressive-rollout expansion controller (#734). On each
 // infra observe cycle it gates on controller freshness, evaluates Bluetooth
 // fitness against the live fitness.bluetooth.* thresholds, reads the OBSERVED
@@ -302,7 +310,19 @@ func (l *InfraLoop) OnInfraEvaluate(ctx context.Context, snap infracontext.Infra
 		l.rollbackInFlight = false
 	}
 
+	// Under strategy=immediate the controller-manager routes ALL controllers to
+	// the target at once, so the count ladder is meaningless: climbing it would
+	// only write flag flips and emit "expand" decisions that correspond to no
+	// routing change (#829). Observe only — record action="none" and skip the
+	// expand/rollback decision entirely. Absent/empty strategy (older
+	// controller-manager spans) is NOT immediate, so it falls through to the
+	// progressive ladder unchanged — no regression.
+	immediate := snap.Window.RolloutStrategy == rolloutStrategyImmediate
+
 	switch {
+	case immediate:
+		// Observe-only: action remains RemediationNone, no write, no ladder climb.
+
 	case fit.Evaluated && fit.Passing:
 		// Fitness passes → climb the ladder if eligible (PR E expansion).
 		if l.rollout != nil {

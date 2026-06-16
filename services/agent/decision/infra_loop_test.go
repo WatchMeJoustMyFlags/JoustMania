@@ -88,6 +88,13 @@ func infraSnap(target string, stage int, now time.Time, hz float64) infracontext
 	}
 }
 
+// infraSnapStrategy is infraSnap with the observed rollout strategy set (#829).
+func infraSnapStrategy(target string, stage int, now time.Time, hz float64, strategy string) infracontext.InfraContext {
+	snap := infraSnap(target, stage, now, hz)
+	snap.Window.RolloutStrategy = strategy
+	return snap
+}
+
 // newInfraLoop builds a loop with a fake clock, fake rollout actuator, default
 // thresholds, an always-pass gate, and a recording tracer.
 func newInfraLoop(t *testing.T, rollout RolloutActuator, clock *time.Time) (*InfraLoop, *tracetest.SpanRecorder) {
@@ -160,6 +167,80 @@ func TestInfraLoop_ExpandsWhenPassing(t *testing.T) {
 	}
 	if v, _ := spanStr(spans[0], AttrFitnessViolations); v != "" {
 		t.Errorf("fitness.violations = %q, want empty", v)
+	}
+}
+
+// TestInfraLoop_ImmediateStrategySkipsLadder is the #829 guarantee: under
+// strategy=immediate the controller-manager routes ALL controllers at once, so
+// the count ladder is meaningless. Even with passing fitness at stage 0 (which
+// would otherwise expand to "one"), the loop must NOT write and must record
+// remediation.action="none" — but still emit the observe span.
+func TestInfraLoop_ImmediateStrategySkipsLadder(t *testing.T) {
+	clock := time.Unix(1000, 0)
+	rollout := &fakeRollout{}
+	l, sr := newInfraLoop(t, rollout, &clock)
+
+	l.OnInfraEvaluate(context.Background(), infraSnapStrategy("rust", 0, clock, 30, "immediate"))
+
+	if got := rollout.calls(); len(got) != 0 {
+		t.Fatalf("writes = %v, want none under strategy=immediate (no ladder climb)", got)
+	}
+	spans := infraSpans(sr)
+	if len(spans) != 1 {
+		t.Fatalf("got %d spans, want 1 (immediate still observes)", len(spans))
+	}
+	if v, _ := spanStr(spans[0], AttrRemediationAction); v != RemediationNone {
+		t.Errorf("remediation.action = %q, want %q (observe-only under immediate)", v, RemediationNone)
+	}
+	// The expand-destination attribute must be absent (no expand happened).
+	if _, ok := spanInt(spans[0], AttrRolloutControllerCount); ok {
+		t.Errorf("rollout.controller_count present, want absent (no expand under immediate)")
+	}
+	// The observed strategy is surfaced on the span for the operator.
+	if v, ok := spanStr(spans[0], AttrBluetoothRolloutStrategy); !ok || v != "immediate" {
+		t.Errorf("bluetooth.rollout_strategy = %q (ok=%v), want %q", v, ok, "immediate")
+	}
+}
+
+// TestInfraLoop_ProgressiveStrategyClimbsLadder is the explicit-progressive
+// counterpart: strategy="progressive" behaves exactly like the ladder path.
+func TestInfraLoop_ProgressiveStrategyClimbsLadder(t *testing.T) {
+	clock := time.Unix(1000, 0)
+	rollout := &fakeRollout{}
+	l, _ := newInfraLoop(t, rollout, &clock)
+
+	l.OnInfraEvaluate(context.Background(), infraSnapStrategy("rust", 0, clock, 30, "progressive"))
+
+	if got := rollout.calls(); len(got) != 1 || got[0] != "one" {
+		t.Fatalf("writes = %v, want [one] under strategy=progressive", got)
+	}
+}
+
+// TestInfraLoop_AbsentStrategyClimbsLadder is the graceful-default guarantee
+// (#829): an older controller-manager that omits bluetooth.rollout_strategy
+// produces an empty strategy, which must behave exactly as before — the
+// progressive ladder climbs. No regression.
+func TestInfraLoop_AbsentStrategyClimbsLadder(t *testing.T) {
+	clock := time.Unix(1000, 0)
+	rollout := &fakeRollout{}
+	l, sr := newInfraLoop(t, rollout, &clock)
+
+	// infraSnap leaves RolloutStrategy == "" (attribute absent on the span).
+	l.OnInfraEvaluate(context.Background(), infraSnap("rust", 0, clock, 30))
+
+	if got := rollout.calls(); len(got) != 1 || got[0] != "one" {
+		t.Fatalf("writes = %v, want [one] when strategy absent (progressive ladder as before)", got)
+	}
+	spans := infraSpans(sr)
+	if len(spans) != 1 {
+		t.Fatalf("got %d spans, want 1", len(spans))
+	}
+	if v, _ := spanStr(spans[0], AttrRemediationAction); v != RemediationExpand {
+		t.Errorf("remediation.action = %q, want %q (absent strategy → ladder)", v, RemediationExpand)
+	}
+	// Strategy is present-but-empty on the span (schema-complete unknown).
+	if v, ok := spanStr(spans[0], AttrBluetoothRolloutStrategy); !ok || v != "" {
+		t.Errorf("bluetooth.rollout_strategy = %q (ok=%v), want present-but-empty", v, ok)
 	}
 }
 

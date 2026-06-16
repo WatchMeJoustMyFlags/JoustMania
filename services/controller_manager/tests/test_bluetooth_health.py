@@ -186,6 +186,7 @@ class TestSpanEmission:
         backend = MagicMock()
         backend.get_adapter_type.return_value = "unstable"
         backend.rollout_summary.return_value = ("unstable", 3)
+        backend.rollout_strategy.return_value = "progressive"
         loop = _make_loop(backend)
         loop._window_start = 0.0
         _feed(loop, "AA", [{"n": i} if i % 5 != 0 else None for i in range(10)], dt=0.01)
@@ -201,6 +202,7 @@ class TestSpanEmission:
         assert a["bluetooth.dropped_events_pct"] == 0.2
         assert a["bluetooth.target_backend"] == "unstable"
         assert a["bluetooth.rollout_count"] == 3
+        assert a["bluetooth.rollout_strategy"] == "progressive"
         assert isinstance(a["bluetooth.event_gap_ms"], float)
         assert isinstance(a["bluetooth.movement_update_hz"], float)
 

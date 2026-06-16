@@ -134,3 +134,27 @@ class TestCurrentTarget:
         router = RolloutRouter()
         with patch("lib.feature_flags.get_flag_client", side_effect=RuntimeError("flagd down")):
             assert router.current_target() == ("", 0)
+
+
+def _strategy(**kw):
+    router = RolloutRouter()
+    with patch("lib.feature_flags.get_flag_client", return_value=_client(**kw)):
+        return router.current_strategy()
+
+
+class TestCurrentStrategy:
+    """Strategy string surfaced on the bluetooth-health span (#829)."""
+
+    def test_off(self):
+        assert _strategy(strategy="off") == "off"
+
+    def test_immediate(self):
+        assert _strategy(strategy="immediate") == "immediate"
+
+    def test_progressive(self):
+        assert _strategy(strategy="progressive") == "progressive"
+
+    def test_flag_client_error_reports_empty(self):
+        router = RolloutRouter()
+        with patch("lib.feature_flags.get_flag_client", side_effect=RuntimeError("flagd down")):
+            assert router.current_strategy() == ""
