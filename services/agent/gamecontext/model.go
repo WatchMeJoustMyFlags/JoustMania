@@ -151,9 +151,17 @@ type GameContext struct {
 	// shared game.id attribute (Phase 1). Empty when not yet observed or the game span
 	// was unsampled; an empty value means "no link" (graceful fallback, no error).
 	GameTraceID string
-	Session     SessionSignals
-	Players     map[string]*PlayerSignals
-	UpdatedAt   time.Time
+	// GameTraceSpanID is the hex span_id of the coordinator's root game span for
+	// this session (#1157, follow-up to #1133). Source: the game_trace_span_id
+	// datapoint label on the same game_trace_correlation gauge. Carried alongside
+	// GameTraceID so the decision/retro Link references the actual game-start span
+	// (Jaeger highlights it via uiFind) rather than an all-zero span id under the
+	// trace. Empty when not yet observed or the game span was unsampled; an empty
+	// trace_id OR span_id means "no link" (graceful fallback, no error).
+	GameTraceSpanID string
+	Session         SessionSignals
+	Players         map[string]*PlayerSignals
+	UpdatedAt       time.Time
 
 	// Timeline is a bounded, oldest-first slice of the partition's recent rolling
 	// narrative (#916): periodic state deltas, eliminations, and session phase

@@ -472,7 +472,12 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 return None, True
 
             game_id = f"game_{uuid.uuid4().hex[:12]}"
-            parent_context = trace.set_span_in_context(parent_span)
+            # The game-lifecycle span is rooted as its OWN trace (#1157), not as a
+            # child of the long-lived StreamGameEvents stream span. We capture the
+            # inbound stream/start-RPC span's SpanContext here so the session can
+            # add an OTel Link back to it (keeping the inbound call navigable in
+            # Jaeger) without inheriting the stream's trace_id as the game's root.
+            stream_span_context = parent_span.get_span_context() if parent_span is not None else None
 
             # Experiment/cohort spawn binding (#976, epic #982). The caller
             # provides (experiment_id, arm) on StartGameConfig; the registry
@@ -509,7 +514,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 game_config=config,
                 event_bus=event_bus,
                 game_kind=game_kind,
-                parent_context=parent_context,
+                stream_span_context=stream_span_context,
                 experiment_id=experiment_id,
                 arm=arm,
                 rng_seed=rng_seed,

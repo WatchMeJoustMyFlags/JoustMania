@@ -316,7 +316,7 @@ func (rc *RetroCoordinator) OnGameEnd(c gamecontext.GameContext) {
 	// attributes in search. An empty/invalid id yields no Link and no attribute —
 	// graceful fallback, the span is byte-identical to before.
 	startOpts := []trace.SpanStartOption{trace.WithAttributes(attrs...)}
-	startOpts = append(startOpts, gameTraceLink(c.GameTraceID)...)
+	startOpts = append(startOpts, gameTraceLink(c.GameTraceID, c.GameTraceSpanID)...)
 	if c.GameTraceID != "" {
 		startOpts = append(startOpts,
 			trace.WithAttributes(attribute.String(AttrGameTraceID, c.GameTraceID)))

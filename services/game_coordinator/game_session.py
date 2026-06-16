@@ -29,6 +29,7 @@ import time
 from contextlib import suppress
 
 from opentelemetry import trace
+from opentelemetry.context import Context
 
 from lib.feature_flags import (
     GAME_KIND_REAL as EVAL_GAME_KIND_REAL,
@@ -71,7 +72,7 @@ class GameSession:
         game_config,
         event_bus: EventBus,
         game_kind: str,
-        parent_context,
+        stream_span_context=None,
         experiment_id: str = "",
         arm: str = "",
         rng_seed: int = 0,
@@ -82,7 +83,12 @@ class GameSession:
         self.game_config = game_config
         self.event_bus = event_bus
         self.game_kind = game_kind
-        self.game_parent_context = parent_context
+        # SpanContext of the inbound StreamGameEvents/StartGame RPC span (#1157).
+        # The game-lifecycle span is rooted as its OWN trace (a NEW root, not a
+        # child of the long-lived stream), and this is added back as an OTel Link
+        # so the inbound call stays navigable in Jaeger. None when there is no
+        # recordable inbound span (telemetry off / unsampled) — handled gracefully.
+        self.stream_span_context = stream_span_context
         # Experiment attribution within a shadow session (#975, epic #982). Empty
         # for a non-experiment game; set by #976's spawn binding. These are finer-
         # grained labels WITHIN game_kind=shadow, never a replacement for it.
@@ -103,6 +109,12 @@ class GameSession:
         # game_trace_id label so the agent can link agent.decision -> this game trace.
         # Empty until the span opens; used at retire to remove the exact gauge series.
         self.game_trace_id = ""
+        # Hex span_id of this session's root game span (#1157). Carried alongside
+        # game_trace_id on the correlation gauge so the agent's Link references the
+        # actual game-start span (Jaeger highlights it via uiFind) rather than an
+        # all-zero span id under the trace. Captured/cleared in lockstep with
+        # game_trace_id.
+        self.game_trace_span_id = ""
 
         # Per-session loop runs in its own thread with its own GrpcClientManager.
         self.clients = GrpcClientManager()
@@ -140,12 +152,15 @@ class GameSession:
             with suppress(KeyError, ValueError):
                 gauge.remove(*labels)
 
-        # The trace-correlation gauge (#1133) carries a different label tuple
-        # (game_kind, game_id, game_trace_id) and was only set when the span was
-        # sampled (game_trace_id non-empty), so remove it separately and only then.
+        # The trace-correlation gauge (#1133/#1157) carries a different label tuple
+        # (game_kind, game_id, game_trace_id, game_trace_span_id) and was only set
+        # when the span was sampled (game_trace_id non-empty), so remove it
+        # separately and only then.
         if self.game_trace_id:
             with suppress(KeyError, ValueError):
-                metrics.game_trace_correlation.remove(self.game_kind, self.game_id, self.game_trace_id)
+                metrics.game_trace_correlation.remove(
+                    self.game_kind, self.game_id, self.game_trace_id, self.game_trace_span_id
+                )
 
     def on_event_state_sync(self, event_type: str) -> None:
         """EventBus state-sync callback bound to THIS session's state (#775).
@@ -238,11 +253,23 @@ class GameSession:
         # Get the display name for the game span
         game_span_name = get_game_display_name(self.game_name)
 
-        # Parent context captured from the StartGame RPC span keeps the game span
-        # in the same trace as the StartGame call.
-        parent_context = self.game_parent_context
+        # Root the game-lifecycle span as its OWN trace (#1157), NOT as a child of
+        # the long-lived StreamGameEvents stream span. Following the agent's
+        # trace-correlation Link then lands on the game itself, and a single bidi
+        # stream no longer parents (and bloats) every game's trace. We pass an
+        # explicit empty Context so any ambient span in this thread/context is also
+        # ignored as a parent. The inbound stream/start-RPC span stays navigable
+        # via an OTel Link back to it (omitted when there is no recordable inbound
+        # span — telemetry off / unsampled — so we never link to an invalid context).
+        links = []
+        if self.stream_span_context is not None and self.stream_span_context.trace_id != 0:
+            links.append(trace.Link(self.stream_span_context))
 
-        with tracer.start_as_current_span(game_span_name, context=parent_context) as game_span:
+        with tracer.start_as_current_span(
+            game_span_name,
+            context=Context(),
+            links=links,
+        ) as game_span:
             game_span.set_attribute("game.name", self.game_name)
             game_span.set_attribute("game.id", self.game_id)
             game_span.set_attribute("game.kind", self.game_kind)
@@ -263,10 +290,15 @@ class GameSession:
             span_ctx = game_span.get_span_context()
             if span_ctx.trace_id != 0:
                 self.game_trace_id = trace.format_trace_id(span_ctx.trace_id)
+                # Carry the root span's span_id too (#1157) so the agent's Link
+                # references the actual game-start span (Jaeger uiFind highlight)
+                # rather than an all-zero span id under that trace.
+                self.game_trace_span_id = trace.format_span_id(span_ctx.span_id)
                 metrics.game_trace_correlation.labels(
                     game_kind=self.game_kind,
                     game_id=self.game_id,
                     game_trace_id=self.game_trace_id,
+                    game_trace_span_id=self.game_trace_span_id,
                 ).set(1)
 
             try:

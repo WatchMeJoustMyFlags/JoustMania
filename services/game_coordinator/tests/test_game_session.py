@@ -27,20 +27,21 @@ from services.game_coordinator.game_session import GAME_KIND_PRIMARY, GAME_KIND_
 
 
 class MockSpanContext:
-    """Mock SpanContext exposing trace_id (#1133 correlation gauge reads it)."""
+    """Mock SpanContext exposing trace_id + span_id (#1133/#1157 gauge reads both)."""
 
-    def __init__(self, trace_id):
+    def __init__(self, trace_id, span_id=0x051581BF3CB55C13):
         self.trace_id = trace_id
+        self.span_id = span_id
 
 
 class MockSpan:
     """Mock OpenTelemetry span supporting set_attribute + context manager."""
 
-    def __init__(self, trace_id=0x4BF92F3577B34DA6A3CE929D0E0E4736):
+    def __init__(self, trace_id=0x4BF92F3577B34DA6A3CE929D0E0E4736, span_id=0x051581BF3CB55C13):
         self.attributes = {}
         # Non-zero trace_id by default so the #1133 correlation gauge fires; a test
         # can pass trace_id=0 to exercise the unsampled-span fallback (no gauge).
-        self._span_context = MockSpanContext(trace_id)
+        self._span_context = MockSpanContext(trace_id, span_id)
 
     def set_attribute(self, key, value):
         self.attributes[key] = value
@@ -73,7 +74,7 @@ def _make_session(game_kind=GAME_KIND_PRIMARY, experiment_id="", arm=""):
         game_config=game_coordinator_pb2.StartGameConfig(sensitivity=2),
         event_bus=event_bus,
         game_kind=game_kind,
-        parent_context=None,
+        stream_span_context=None,
         experiment_id=experiment_id,
         arm=arm,
     )
@@ -89,8 +90,8 @@ def _make_session(game_kind=GAME_KIND_PRIMARY, experiment_id="", arm=""):
     return session
 
 
-def _tracer_mock(trace_id=0x4BF92F3577B34DA6A3CE929D0E0E4736):
-    mock_span = MockSpan(trace_id=trace_id)
+def _tracer_mock(trace_id=0x4BF92F3577B34DA6A3CE929D0E0E4736, span_id=0x051581BF3CB55C13):
+    mock_span = MockSpan(trace_id=trace_id, span_id=span_id)
     mock_tracer = MagicMock()
     mock_tracer.start_as_current_span.return_value.__enter__ = MagicMock(return_value=mock_span)
     mock_tracer.start_as_current_span.return_value.__exit__ = MagicMock(return_value=False)
@@ -360,24 +361,31 @@ class TestGameSessionLoop:
     @patch("services.game_coordinator.game_session.GameFactory")
     @patch("services.game_coordinator.game_session.tracer")
     async def test_loop_emits_trace_correlation_gauge(self, mock_tracer_mod, mock_factory, mock_metrics):
-        """#1133: while the game span is live the loop publishes game_trace_correlation
-        carrying game_id + the span's hex trace_id, so the agent can link
-        agent.decision -> this game trace. The hex id is captured onto the session."""
+        """#1133/#1157: while the game span is live the loop publishes
+        game_trace_correlation carrying game_id + the span's hex trace_id AND its
+        hex span_id, so the agent can link agent.decision -> this exact game span.
+        Both hex ids are captured onto the session."""
         from opentelemetry import trace as ot_trace
 
         session = _make_session(game_kind=GAME_KIND_SHADOW)
         trace_id = 0x4BF92F3577B34DA6A3CE929D0E0E4736
-        mock_tracer_mod.start_as_current_span = _tracer_mock(trace_id=trace_id).start_as_current_span
+        span_id = 0x051581BF3CB55C13
+        mock_tracer_mod.start_as_current_span = _tracer_mock(trace_id=trace_id, span_id=span_id).start_as_current_span
         mock_game = MagicMock()
         mock_game.run = AsyncMock()
         mock_factory.create_game.return_value = mock_game
 
         await session._run_game_loop_async()
 
-        expected_hex = ot_trace.format_trace_id(trace_id)
-        assert session.game_trace_id == expected_hex
+        expected_trace_hex = ot_trace.format_trace_id(trace_id)
+        expected_span_hex = ot_trace.format_span_id(span_id)
+        assert session.game_trace_id == expected_trace_hex
+        assert session.game_trace_span_id == expected_span_hex
         mock_metrics.game_trace_correlation.labels.assert_any_call(
-            game_kind=GAME_KIND_SHADOW, game_id="game_abc123", game_trace_id=expected_hex
+            game_kind=GAME_KIND_SHADOW,
+            game_id="game_abc123",
+            game_trace_id=expected_trace_hex,
+            game_trace_span_id=expected_span_hex,
         )
         mock_metrics.game_trace_correlation.labels.return_value.set.assert_any_call(1)
 
@@ -398,7 +406,64 @@ class TestGameSessionLoop:
         await session._run_game_loop_async()
 
         assert session.game_trace_id == ""
+        assert session.game_trace_span_id == ""
         mock_metrics.game_trace_correlation.labels.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("services.game_coordinator.game_session.metrics")
+    @patch("services.game_coordinator.game_session.GameFactory")
+    @patch("services.game_coordinator.game_session.tracer")
+    async def test_game_span_is_rooted_with_link_to_stream(self, mock_tracer_mod, mock_factory, mock_metrics):
+        """#1157: the game-lifecycle span is started as a NEW ROOT (explicit empty
+        Context, never the inbound stream span's context) with an OTel Link back to
+        the inbound stream/start-RPC SpanContext — keeping the call navigable
+        without parenting the game under the long-lived stream trace."""
+        from opentelemetry.context import Context
+
+        stream_ctx = MockSpanContext(trace_id=0x11112222333344445555666677778888, span_id=0xAABBCCDDEEFF0011)
+        session = _make_session(game_kind=GAME_KIND_SHADOW)
+        session.stream_span_context = stream_ctx
+        mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
+        mock_game = MagicMock()
+        mock_game.run = AsyncMock()
+        mock_factory.create_game.return_value = mock_game
+
+        await session._run_game_loop_async()
+
+        _, kwargs = mock_tracer_mod.start_as_current_span.call_args
+        # Rooted as its own trace: an explicit empty Context, NOT the stream context.
+        assert isinstance(kwargs["context"], Context)
+        assert len(kwargs["context"]) == 0
+        # Exactly one Link, pointing at the inbound stream SpanContext.
+        links = kwargs["links"]
+        assert len(links) == 1
+        assert links[0].context is stream_ctx
+
+    @pytest.mark.asyncio
+    @patch("services.game_coordinator.game_session.metrics")
+    @patch("services.game_coordinator.game_session.GameFactory")
+    @patch("services.game_coordinator.game_session.tracer")
+    async def test_game_span_rooted_without_link_when_no_stream_context(
+        self, mock_tracer_mod, mock_factory, mock_metrics
+    ):
+        """#1157: with no recordable inbound span (telemetry off / unsampled stream),
+        the game span is still rooted but carries NO Link (never link an invalid
+        context). stream_span_context=None and trace_id==0 are both treated as 'none'."""
+        from opentelemetry.context import Context
+
+        for stream_ctx in (None, MockSpanContext(trace_id=0, span_id=0)):
+            session = _make_session(game_kind=GAME_KIND_SHADOW)
+            session.stream_span_context = stream_ctx
+            mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
+            mock_game = MagicMock()
+            mock_game.run = AsyncMock()
+            mock_factory.create_game.return_value = mock_game
+
+            await session._run_game_loop_async()
+
+            _, kwargs = mock_tracer_mod.start_as_current_span.call_args
+            assert isinstance(kwargs["context"], Context)
+            assert kwargs["links"] == []
 
     @pytest.mark.asyncio
     @patch("services.game_coordinator.game_session.metrics")
@@ -504,16 +569,17 @@ class TestGameSessionClearMetrics:
 
     @patch("services.game_coordinator.game_session.metrics")
     def test_clear_metrics_removes_trace_correlation_when_set(self, mock_metrics):
-        """#1133: the trace-correlation gauge (labels game_kind, game_id,
-        game_trace_id) is removed at retire ONLY when a trace id was captured —
-        otherwise it was never set."""
+        """#1133/#1157: the trace-correlation gauge (labels game_kind, game_id,
+        game_trace_id, game_trace_span_id) is removed at retire ONLY when a trace
+        id was captured — otherwise it was never set."""
         session = _make_session(game_kind=GAME_KIND_SHADOW)
         session.game_trace_id = "4bf92f3577b34da6a3ce929d0e0e4736"
+        session.game_trace_span_id = "051581bf3cb55c13"
 
         session.clear_metrics()
 
         mock_metrics.game_trace_correlation.remove.assert_called_once_with(
-            GAME_KIND_SHADOW, "game_abc123", "4bf92f3577b34da6a3ce929d0e0e4736"
+            GAME_KIND_SHADOW, "game_abc123", "4bf92f3577b34da6a3ce929d0e0e4736", "051581bf3cb55c13"
         )
 
     @patch("services.game_coordinator.game_session.metrics")

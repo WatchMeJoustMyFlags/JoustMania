@@ -58,14 +58,18 @@ current_game_mode = Gauge(
 # path is not feasible end-to-end in this stack; this dedicated attribute-carrying
 # signal is the documented Approach B.
 #
-# Cardinality: game_trace_id is 1:1 with game_id (one trace per game), so it
-# multiplies NO series beyond the already-unbounded game_id. Like the other
-# per-game gauges it is SET to 1 inside the live game span and REMOVED at retire
-# (clear_metrics, #1018) so the series does not accumulate.
+# It also carries the root span's hex span_id as game_trace_span_id (#1157) so the
+# agent's Link references the actual game-start span (Jaeger highlights it via
+# uiFind) rather than an all-zero span id under that trace.
+#
+# Cardinality: game_trace_id and game_trace_span_id are both 1:1 with game_id (one
+# trace/root span per game), so they multiply NO series beyond the already-unbounded
+# game_id. Like the other per-game gauges it is SET to 1 inside the live game span
+# and REMOVED at retire (clear_metrics, #1018) so the series does not accumulate.
 game_trace_correlation = Gauge(
     "game_trace_correlation",
     "Correlation marker tying a live game_id to its root span trace_id (always 1 while live)",
-    ["game_kind", "game_id", "game_trace_id"],
+    ["game_kind", "game_id", "game_trace_id", "game_trace_span_id"],
 )
 
 game_duration_seconds = Gauge(

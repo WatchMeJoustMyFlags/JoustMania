@@ -539,6 +539,22 @@ func (s *Store) SetGameTraceID(id string) {
 	s.touchSession()
 }
 
+// SetGameTraceSpanID records the coordinator's root game-span span_id (#1157) from
+// the game_trace_span_id label on the game_trace_correlation signal. Mirrors
+// SetGameTraceID exactly: an empty id is ignored so an unlabeled signal never
+// clobbers a previously observed span id. The decision/retro loop reads this to
+// set the SpanID on its game-trace Link so Jaeger highlights the actual game-start
+// span; an empty value there simply yields no Link (graceful fallback).
+func (s *Store) SetGameTraceSpanID(id string) {
+	if id == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ctx.GameTraceSpanID = id
+	s.touchSession()
+}
+
 // SetArm records the experiment arm ("experimental"/"control", #975) from the
 // arm datapoint label or the experiment.arm span attribute. An empty arm is
 // ignored so an unlabeled signal never clobbers a previously observed arm.
@@ -780,7 +796,8 @@ func (s *Store) EvictStale() {
 		s.ctx.GameKind = ""
 		s.ctx.ExperimentID = ""
 		s.ctx.Arm = ""
-		s.ctx.GameTraceID = "" // drop the finished game's trace link (#1133)
+		s.ctx.GameTraceID = ""     // drop the finished game's trace link (#1133)
+		s.ctx.GameTraceSpanID = "" // ditto, the linked span_id (#1157)
 		s.elimOrder = make(map[string]int)
 		s.endedAt = time.Time{}
 		s.ctx.UpdatedAt = now

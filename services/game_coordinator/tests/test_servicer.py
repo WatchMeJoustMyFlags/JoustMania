@@ -52,6 +52,14 @@ class MockGrpcContext:
         return self._metadata
 
 
+class _MockSpanContext:
+    """trace_id=0 (invalid, like an unsampled span) so the servicer attempts no
+    #1157 game-trace Link for direct _start_game_from_config callers."""
+
+    trace_id = 0
+    span_id = 0
+
+
 class MockSpan:
     """Mock OpenTelemetry span."""
 
@@ -64,6 +72,9 @@ class MockSpan:
 
     def add_event(self, name, attributes=None):
         self.events.append((name, attributes))
+
+    def get_span_context(self):
+        return _MockSpanContext()
 
     def __enter__(self):
         return self

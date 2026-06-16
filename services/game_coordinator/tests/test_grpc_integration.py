@@ -83,6 +83,16 @@ def _make_start_config(game_name="FFA", num_players=3, sensitivity=2, origin=Non
     )
 
 
+class _MockSpanContext:
+    """Minimal SpanContext: the servicer reads trace_id off the inbound span's
+    context to decide whether to add a #1157 game-trace Link. trace_id=0 (invalid,
+    as for an unsampled span) means no Link is attempted — the path direct
+    _start_game_from_config callers exercise."""
+
+    trace_id = 0
+    span_id = 0
+
+
 class _MockSpan:
     """Minimal span for direct _start_game_from_config calls (no gRPC span)."""
 
@@ -91,6 +101,9 @@ class _MockSpan:
 
     def add_event(self, name, attributes=None):
         pass
+
+    def get_span_context(self):
+        return _MockSpanContext()
 
     def __enter__(self):
         return self
