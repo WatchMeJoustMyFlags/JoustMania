@@ -517,6 +517,56 @@ func TestRehydrate_TornTrailingLineDropped(t *testing.T) {
 	}
 }
 
+// TestEvents_ReadOnlyDoesNotTruncateTornTail: the dossier read path (#1183,
+// Journal.Events → readEventsReadOnly) drops a torn final line IN-MEMORY but must
+// NEVER truncate the file — a read-only consumer opens an independent handle to a
+// possibly-live experiment, and truncating could race the live writer and discard a
+// just-committed event. The torn bytes must survive so the WRITING handle's next
+// Load recovers them.
+func TestEvents_ReadOnlyDoesNotTruncateTornTail(t *testing.T) {
+	dir := t.TempDir()
+	j, err := Create(dir, testIntent())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	base := testIntent().CreatedAt
+	for i := 0; i < 3; i++ {
+		if err := j.AppendEvent(fitnessEvent("experimental", 0.7, base.Add(time.Duration(i)*time.Minute))); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+
+	eventsPath := filepath.Join(dir, "exp_a1b2c3d4e5f6", eventsFile)
+	sizeBefore := fileSize(t, eventsPath)
+	appendRawNoNewline(t, eventsPath, `{"seq":4,"kind":"game_concluded","fitn`)
+	sizeWithTorn := fileSize(t, eventsPath)
+	if sizeWithTorn <= sizeBefore {
+		t.Fatalf("test setup: torn line did not grow the file (%d <= %d)", sizeWithTorn, sizeBefore)
+	}
+
+	// Events() drops the torn tail in-memory (3 valid events) ...
+	got, err := j.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	if len(got) != 3 {
+		t.Errorf("Events returned %d events, want 3 (torn tail dropped in-memory)", len(got))
+	}
+	// ... but must NOT have touched the file — the torn bytes are still on disk.
+	if after := fileSize(t, eventsPath); after != sizeWithTorn {
+		t.Errorf("Events truncated the file (%d → %d); the read path must never write", sizeWithTorn, after)
+	}
+
+	// The writing path (Load) still recovers the torn tail, proving Events left the
+	// recovery to the owning handle.
+	if _, err := Load(dir, "exp_a1b2c3d4e5f6"); err != nil {
+		t.Fatalf("Load after read-only Events: %v", err)
+	}
+	if after := fileSize(t, eventsPath); after != sizeBefore {
+		t.Errorf("Load did not truncate the torn tail (%d != %d)", after, sizeBefore)
+	}
+}
+
 // TestRehydrate_InteriorCorruptionHardErrors: a malformed line that is NOT the last
 // line cannot be a torn tail (a later event was durably committed after it). That
 // signals a genuine lost/corrupted write, so Load must HARD-ERROR rather than
@@ -607,6 +657,16 @@ func readLines(t *testing.T, path string) []string {
 		t.Fatalf("scan %s: %v", path, err)
 	}
 	return lines
+}
+
+// fileSize returns the byte size of a file, failing the test if it cannot be stat'd.
+func fileSize(t *testing.T, path string) int64 {
+	t.Helper()
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	return fi.Size()
 }
 
 // summariesEqual compares two rolling summaries for the fields a rehydrate must

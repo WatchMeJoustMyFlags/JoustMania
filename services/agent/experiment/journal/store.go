@@ -221,30 +221,75 @@ func (s *store) readIntent(experimentID string) (Intent, error) {
 // statistics (consistent with the Seq-gap reasoning).
 func (s *store) readEvents(experimentID string) ([]Event, error) {
 	path := filepath.Join(s.dir(experimentID), eventsFile)
+	events, validBytes, tornLineNo, err := s.scanEvents(experimentID, path)
+	if err != nil {
+		return nil, err
+	}
+
+	// A torn final line at EOF: drop it (already excluded from events) and truncate
+	// the partial bytes so the recovered journal stays loadable and the next append
+	// continues cleanly after the last VALID event. This is the WRITING recovery path
+	// (Load / AppendEvent) — the single live handle the registry owns, so the truncate
+	// is safe. Read-only consumers must use readEventsReadOnly instead.
+	if tornLineNo > 0 {
+		log.Printf("journal: dropping torn final line %d of events log for %q (partial write from a crash); reconverging from %d prior event(s)", tornLineNo, experimentID, len(events))
+		if err := os.Truncate(path, validBytes); err != nil {
+			return nil, fmt.Errorf("truncate torn tail of events log for %q: %w", experimentID, err)
+		}
+	}
+	return events, nil
+}
+
+// readEventsReadOnly loads events.jsonl in order WITHOUT ever writing to it — the
+// read path for the dossier / offline consumers (#1183). It returns the same event
+// slice readEvents would (a torn final line is dropped in-memory), but it NEVER
+// truncates the file. This preserves two invariants the truncating readEvents would
+// break for a read-only caller:
+//   - the append-only audit-trail guarantee (§9.1b: the file is NEVER rewritten or
+//     truncated) — honored from the reader's side;
+//   - the single-writer-per-experiment invariant (journal.Create/Load doc): a
+//     dossier opens an INDEPENDENT handle to a possibly-LIVE experiment's dir while
+//     the registry's writing handle holds it. A truncate here could race an in-flight
+//     appendEventLine and discard an event the live writer just durably committed and
+//     the in-memory summary already folded. A pure read cannot.
+//
+// Recovery of a genuine torn tail is left to the writing handle (the next Load /
+// AppendEvent on the registry's handle), which is where it is safe.
+func (s *store) readEventsReadOnly(experimentID string) ([]Event, error) {
+	path := filepath.Join(s.dir(experimentID), eventsFile)
+	events, _, _, err := s.scanEvents(experimentID, path)
+	return events, err
+}
+
+// scanEvents parses events.jsonl into the valid events, reporting the byte offset of
+// the end of the last valid line (validBytes) and the 1-based line number of a torn
+// final line (tornLineNo > 0) if one was detected. It NEVER writes to the file — the
+// caller decides whether to truncate (readEvents does; readEventsReadOnly does not).
+//
+// It distinguishes a "malformed interior line" (hard error) from a "malformed final
+// line" (torn tail → dropped). bufio.Scanner cannot look ahead, so when a line fails
+// to unmarshal we DEFER the verdict: stash it and keep scanning. If nothing more
+// follows, it was the tail; if another non-empty line follows, the stashed one was
+// interior and we hard-error (an event followed by a later durably-committed event
+// cannot itself be a torn tail — it signals a genuine lost/corrupted write).
+func (s *store) scanEvents(experimentID, path string) (events []Event, validBytes int64, tornLineNo int, err error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return nil, 0, 0, nil
 		}
-		return nil, fmt.Errorf("open events log for %q: %w", experimentID, err)
+		return nil, 0, 0, fmt.Errorf("open events log for %q: %w", experimentID, err)
 	}
 	defer func() { _ = f.Close() }()
 
-	var events []Event
 	scanner := bufio.NewScanner(f)
 	// Allow long lines (a large experimental_value is not on events, but a Note
 	// could be sizable); 1 MiB ceiling is generous for a single event line.
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
-	// We must distinguish "malformed interior line" (hard error) from "malformed
-	// final line" (torn tail → drop). bufio.Scanner cannot look ahead, so when a
-	// line fails to unmarshal we DEFER the decision: stash it and keep scanning. If
-	// nothing more follows, it was the tail; if another non-empty line follows, the
-	// stashed one was interior and we hard-error.
 	lineNo := 0
-	// offset tracks the byte position of the END of the last successfully parsed
-	// line, so a torn tail can be truncated back to that point.
-	var validBytes int64
+	// validBytes tracks the byte position of the END of the last successfully parsed
+	// line, so a torn tail can be truncated back to that point by the writing path.
 	var pendingBad bool      // a malformed line is awaiting the tail/interior verdict
 	var pendingBadLineNo int // its 1-based line number, for the error/log message
 	for scanner.Scan() {
@@ -263,7 +308,7 @@ func (s *store) readEvents(experimentID string) ([]Event, error) {
 		// A non-empty line follows a previously stashed bad line → that bad line was
 		// interior, not a torn tail. Hard error.
 		if pendingBad {
-			return nil, fmt.Errorf("decode event line %d for %q: malformed interior line (a later event follows it)", pendingBadLineNo, experimentID)
+			return nil, 0, 0, fmt.Errorf("decode event line %d for %q: malformed interior line (a later event follows it)", pendingBadLineNo, experimentID)
 		}
 		var e Event
 		if err := json.Unmarshal(raw, &e); err != nil {
@@ -277,18 +322,11 @@ func (s *store) readEvents(experimentID string) ([]Event, error) {
 		validBytes += lineLen
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan events log for %q: %w", experimentID, err)
+		return nil, 0, 0, fmt.Errorf("scan events log for %q: %w", experimentID, err)
 	}
 
-	// A still-pending bad line at EOF is the torn tail: drop it and truncate the
-	// partial bytes so the recovered journal stays loadable and the next append
-	// continues cleanly after the last VALID event.
 	if pendingBad {
-		log.Printf("journal: dropping torn final line %d of events log for %q (partial write from a crash); reconverging from %d prior event(s)", pendingBadLineNo, experimentID, len(events))
-		_ = f.Close() // release the read handle before truncating
-		if err := os.Truncate(path, validBytes); err != nil {
-			return nil, fmt.Errorf("truncate torn tail of events log for %q: %w", experimentID, err)
-		}
+		tornLineNo = pendingBadLineNo
 	}
-	return events, nil
+	return events, validBytes, tornLineNo, nil
 }

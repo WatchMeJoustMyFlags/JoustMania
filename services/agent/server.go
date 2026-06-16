@@ -66,6 +66,12 @@ type serverComponents struct {
 	// game (tests, and the unset env default).
 	shadow func(context.Context)
 
+	// dossier, when non-nil, is the read-only experiment-dossier reader (#1183). Its
+	// GET /experiments[/{id}] routes are mounted on the health HTTP server below so the
+	// dossier shares the agent's lifecycle with no extra port. Nil leaves the health
+	// server serving only /healthz (the test path and the pre-#1183 behavior).
+	dossier *dossierReader
+
 	// experiments, when non-nil, runs the #991 experiment cohort loop in its own
 	// ctx-bounded goroutine: declare → spawn shadow games into arms → conclude →
 	// (gated) promote. Nil = the experiment loop opt-in (AGENT_EXPERIMENTS_ENABLED)
@@ -189,6 +195,11 @@ func (c *serverComponents) startHealthServer() *http.Server {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("OK"))
 	})
+	// Mount the read-only experiment-dossier routes (#1183) on the same mux when a
+	// reader is wired. GET-only, journal-off-disk reads — never blocks the agent loop.
+	if c.dossier != nil {
+		registerDossierRoutes(healthMux, c.dossier)
+	}
 	healthServer := &http.Server{Addr: c.healthAddr, Handler: healthMux}
 	go func() {
 		c.logger.Info("Health server listening", "addr", c.healthAddr)

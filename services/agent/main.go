@@ -1009,6 +1009,11 @@ func main() {
 		evictIntervalSrc: lifecycleHolder.EvictInterval,
 		shadow:           shadow,
 		experiments:      experiments,
+		// Read-only experiment-dossier HTTP view (#1183): serves GET /experiments[/{id}]
+		// off the durable journal on the existing health server. Always wired — it reads
+		// the same journals the experiment loop writes, and surfaces nothing when the
+		// experiments root is empty (a first-run / experiments-disabled agent).
+		dossier: newDossierReader(),
 	}
 	if err := components.run(ctx); err != nil {
 		slog.Error("gRPC server failed", "error", err)
