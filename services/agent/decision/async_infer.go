@@ -162,16 +162,30 @@ func (l *Loop) asyncEnabled() bool { return l.ctxProvider != nil }
 // APPLY path re-fetches the current context from the provider, never this snapshot —
 // that separation is the whole point of #917.
 //
-// #1140 (Slice A): fireSC is the fire-cycle's currently-active SpanContext, captured
-// by decide() at the moment of firing. It is threaded (as a value, not a live ctx)
-// through runInfer to BOTH async trace roots so each can add an OTel Link back to the
-// originating signal_received trace. An invalid fireSC means no link (graceful).
-func (l *Loop) fireInferAsync(snapshot flags.Snapshot, backend Backend, c gamecontext.GameContext, trig EvalTrigger, fireSC trace.SpanContext) bool {
+// #1140 (Slice A): on a SUCCESSFUL fire this creates the anchor agent.signal_received
+// span for the cycle — the fire cycle is NOT idle, it dispatched a decision, so it gets
+// a real trace root. The anchor is created AFTER the pile-up guard claim (a skipped fire
+// dispatches no inference and therefore gets no anchor), anchored at trig.T0 with the
+// same SERVER kind + rpc.*/session.id/game.id shape as the sync path (shared helper), and
+// ended immediately — the async work runs later under its own linked roots; this anchor
+// is just the navigable origin. Its SpanContext is captured as a VALUE (never the live
+// ctx) and threaded through runInfer to BOTH async trace roots so each adds an OTel Link
+// back to it. In production this anchor is always valid (we create it here), fixing the
+// original defect where trace.SpanContextFromContext(ctx) was captured at the fire site
+// and was always invalid (no span active in that ctx) → the Links were a permanent no-op.
+func (l *Loop) fireInferAsync(ctx context.Context, snapshot flags.Snapshot, backend Backend, c gamecontext.GameContext, trig EvalTrigger) bool {
 	// Pile-up guard: only one Infer in flight per game. CompareAndSwap makes the
 	// claim atomic against the concurrent Export handlers — exactly one cycle wins.
 	if !l.inflight.CompareAndSwap(false, true) {
 		return false
 	}
+
+	// Anchor span for the fire cycle (#1140 Slice A): created only now, after the
+	// claim succeeded, so a pile-up-skipped cycle never produces a stray root. End it
+	// at once; fireSC is the value the async roots Link back to.
+	_, anchor := l.startSignalReceivedSpan(ctx, c, trig)
+	fireSC := anchor.SpanContext()
+	anchor.End()
 
 	budget := snapshot.LLMGate.LatencyBudget
 	if budget <= 0 {

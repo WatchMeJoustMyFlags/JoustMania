@@ -607,21 +607,7 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 	// otelgrpc.NewServerHandler is ever added to the agent's gRPC server,
 	// demote this span to SpanKindInternal and drop the rpc.* attributes to
 	// avoid a duplicate server span for the same RPC.
-	rootCtx, root := l.Tracer.Start(ctx, SignalReceived,
-		trace.WithTimestamp(trig.T0),
-		trace.WithSpanKind(trace.SpanKindServer),
-		trace.WithAttributes(
-			semconv.RPCSystemGRPC,
-			semconv.RPCService(trig.RPCService),
-			semconv.RPCMethod("Export"),
-			attribute.String("otlp.signal", trig.Signal),
-			attribute.String(AttrSessionID, c.SessionID),
-			// game.id alias (#845): session.id IS the game_id since PR A; the alias
-			// keeps Jaeger queries by game.id symmetrical with the coordinator spans
-			// and makes two concurrent games' traces independently attributable.
-			attribute.String(AttrGameID, c.SessionID),
-		),
-	)
+	rootCtx, root := l.startSignalReceivedSpan(ctx, c, trig)
 	defer root.End()
 
 	for _, d := range decisions {
@@ -646,6 +632,34 @@ func (l *Loop) setLastLayer(state LayerState) {
 	l.mu.Lock()
 	l.lastLayer = state
 	l.mu.Unlock()
+}
+
+// startSignalReceivedSpan opens the per-cycle agent.signal_received root span: the
+// SERVER-kind span that wraps the inbound OTLP Export with rpc.* semconv attrs,
+// anchored at the trigger's T0 and tagged with session.id + the game.id alias
+// (#845). It is the single shared shape for every site that needs the cycle root —
+// the sync decided path (OnEvaluate), the kill-switch path (emitDisabledSpan), and
+// the async-fire anchor (#1140 Slice A) — so the attribute set never drifts between
+// them. The caller owns ending the returned span. CAVEAT (carried from the original
+// site): if otelgrpc.NewServerHandler is ever added to the agent's gRPC server,
+// demote this to SpanKindInternal and drop the rpc.* attributes to avoid a duplicate
+// server span for the same RPC.
+func (l *Loop) startSignalReceivedSpan(ctx context.Context, c gamecontext.GameContext, trig EvalTrigger) (context.Context, trace.Span) {
+	return l.Tracer.Start(ctx, SignalReceived,
+		trace.WithTimestamp(trig.T0),
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes(
+			semconv.RPCSystemGRPC,
+			semconv.RPCService(trig.RPCService),
+			semconv.RPCMethod("Export"),
+			attribute.String("otlp.signal", trig.Signal),
+			attribute.String(AttrSessionID, c.SessionID),
+			// game.id alias (#845): session.id IS the game_id since PR A; the alias
+			// keeps Jaeger queries by game.id symmetrical with the coordinator spans
+			// and makes two concurrent games' traces independently attributable.
+			attribute.String(AttrGameID, c.SessionID),
+		),
+	)
 }
 
 // decide selects the decision path from snapshot.Mode and runs it. The "rules"
@@ -732,19 +746,23 @@ func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, c gamecontex
 				// means this cycle emits no synchronous decision span — the async apply
 				// trace carries it.
 				if l.asyncEnabled() {
-					// #1140 (Slice A): capture the fire-cycle's currently-active SpanContext
-					// so the async job can add an OTel Link back to it from BOTH the
-					// agent.llm.infer.call and agent.llm.apply spans — stitching the three
-					// otherwise-disjoint async-decision trace roots (signal_received,
-					// infer.call, apply) into one navigable whole WITHOUT parenting (the
-					// #917 non-blocking design forbids a shared trace). We stash the
-					// SpanContext value (NOT the live ctx) so nothing leaks/expires across
-					// the goroutine boundary. When no span is active in ctx (the production
-					// default — there is no otelgrpc interceptor, and the agent.signal_received
-					// root is created only on the SYNC decided path, after decide() returns),
-					// the SpanContext is invalid and both Link sites gracefully add no link.
-					fireSC := trace.SpanContextFromContext(ctx)
-					if l.fireInferAsync(snapshot, res.Backend, c, trig, fireSC) {
+					// #1140 (Slice A): an async-fire cycle is NOT idle — a decision was
+					// dispatched (just asynchronously). It therefore deserves a trace
+					// presence, and that presence is the ANCHOR the later agent.llm.infer.call
+					// and agent.llm.apply roots Link back to. fireInferAsync creates that anchor
+					// agent.signal_received span at fire time and threads its SpanContext into the
+					// async job (see async_infer.go). The original Slice A captured
+					// trace.SpanContextFromContext(ctx) here, but in production ctx carries NO
+					// active span: there is no otelgrpc interceptor, and OnEvaluate creates the
+					// agent.signal_received root only on the SYNC decided path (len(decisions)>0,
+					// AFTER decide() returns) — an async-fire cycle returns nil from decide(), so
+					// OnEvaluate hits the idle-return and creates no span at all. The captured
+					// SpanContext was thus always invalid in production → the Links were a
+					// permanent no-op and the fire cycle had zero trace presence. The anchor lives
+					// only on a cycle that actually dispatches async inference (created AFTER the
+					// pile-up guard claim), so the sync-decided and true-idle paths are untouched —
+					// no new span spam on idle ticks.
+					if l.fireInferAsync(ctx, snapshot, res.Backend, c, trig) {
 						// Fired: defer entirely to the async apply path. No sync decision.
 						return nil
 					}
@@ -1043,21 +1061,7 @@ func (l *Loop) emitDisabledSpan(ctx context.Context, snapshot flags.Snapshot, c 
 	if !l.shouldLog() {
 		return
 	}
-	rootCtx, root := l.Tracer.Start(ctx, SignalReceived,
-		trace.WithTimestamp(trig.T0),
-		trace.WithSpanKind(trace.SpanKindServer),
-		trace.WithAttributes(
-			semconv.RPCSystemGRPC,
-			semconv.RPCService(trig.RPCService),
-			semconv.RPCMethod("Export"),
-			attribute.String("otlp.signal", trig.Signal),
-			attribute.String(AttrSessionID, c.SessionID),
-			// game.id alias (#845): session.id IS the game_id since PR A; the alias
-			// keeps Jaeger queries by game.id symmetrical with the coordinator spans
-			// and makes two concurrent games' traces independently attributable.
-			attribute.String(AttrGameID, c.SessionID),
-		),
-	)
+	rootCtx, root := l.startSignalReceivedSpan(ctx, c, trig)
 	defer root.End()
 
 	// One agent.disabled span carrying the full flag attribution; it is named
