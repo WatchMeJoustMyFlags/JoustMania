@@ -287,6 +287,17 @@ func (p *ControllerManagerProxy) RenameController(
 	return connect.NewResponse(resp), nil
 }
 
+func (p *ControllerManagerProxy) GetConnectedControllers(
+	ctx context.Context,
+	req *connect.Request[controllerpb.GetConnectedControllersRequest],
+) (*connect.Response[controllerpb.GetConnectedControllersResponse], error) {
+	resp, err := p.client.GetConnectedControllers(ctx, req.Msg)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
 // GameCoordinatorProxy implements the Connect handler by proxying to gRPC
 type GameCoordinatorProxy struct {
 	client gamepb.GameCoordinatorServiceClient
@@ -410,4 +421,3 @@ func (p *MenuProxy) ProcessInput(
 	}
 	return connect.NewResponse(resp), nil
 }
-
