@@ -474,6 +474,47 @@ class TestHandleForceStartFlagd:
         # ready (s1, s2) + admin (admin_serial), no duplicates.
         assert set(roster) == {"s1", "s2", "admin_serial"}
 
+    @pytest.mark.asyncio
+    async def test_force_start_not_blocked_by_ghost_controller(self, handler, mock_state_manager):
+        """Regression for #551: a ghost controller (the menu tracks more
+        connected controllers than are ready, e.g. after a missed DISCONNECT
+        during a gRPC GOAWAY) must NOT block admin force-start.
+
+        The normal trigger/auto path gates on all_ready() (ready == connected),
+        which stays False while a ghost lingers, so the game can never start
+        that way. Admin force-start is the operator's escape hatch: it must
+        bypass that gate entirely and launch with the real ready set rather
+        than waiting for the phantom controller to become ready.
+        """
+        mock_state_manager.current_game_mode.name = "JoustFFA"
+        # 16 ready, but the menu still tracks a 17th "ghost" as connected after a
+        # missed disconnect -> connected_count (17) != ready_count (16). The
+        # all-ready gate would refuse to start here.
+        ready = {f"s{i}" for i in range(16)}
+        mock_state_manager.ready_controllers = set(ready)
+        mock_state_manager.connected_controllers = ready | {"ghost"}
+        handler._publish_event = AsyncMock()
+        handler.exit = AsyncMock()
+
+        # force_all_start=False -> roster is the real ready set (+ admin if not
+        # already ready). The ghost is NOT ready, so it is excluded.
+        mock_gs_client = MagicMock()
+        mock_gs_client.get_boolean_value = MagicMock(return_value=False)
+
+        with (
+            patch("services.menu.handlers.admin.asyncio.sleep", new_callable=AsyncMock),
+            patch("lib.feature_flags.get_flag_client", return_value=mock_gs_client),
+        ):
+            await handler.handle_force_start("s0")
+
+        # The game must actually start despite the ready/connected mismatch.
+        handler.callbacks.start_game.assert_awaited_once()
+        roster = handler.callbacks.start_game.await_args.args[2]
+        # Started with the real ready set; the ghost is ignored. Admin (s0) is
+        # already ready, so no extra controller is appended.
+        assert set(roster) == ready
+        assert "ghost" not in roster
+
 
 # ============================================================================
 # Tier 1 — Core Lifecycle
