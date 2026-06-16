@@ -442,13 +442,21 @@ func (j *Journal) Intent() Intent {
 // need every per-game conclusion, not the O(1) rolling aggregate. It re-reads
 // events.jsonl from disk on each call (the live journal only retains the recent
 // tail in memory, §9.2), so it is O(N) and intended for a human-driven dossier
-// read, not a hot path. Torn-tail recovery is identical to Load (store.readEvents).
+// read, not a hot path.
+//
+// It is strictly READ-ONLY: it uses readEventsReadOnly, which NEVER truncates the
+// file. A dossier consumer opens an INDEPENDENT handle to a possibly-LIVE
+// experiment's dir while the registry's writing handle holds it, so it must not
+// invoke the truncating torn-tail recovery (that could race an in-flight append and
+// discard an event the live writer just committed, breaking the §9.1b append-only
+// guarantee and the single-writer invariant). A genuine torn tail is dropped
+// in-memory here and recovered by the writing handle on its next Load/AppendEvent.
 // The returned slice is freshly allocated; mutating it cannot affect journal state.
 func (j *Journal) Events() ([]Event, error) {
 	j.mu.Lock()
 	id := j.intent.ExperimentID
 	j.mu.Unlock()
-	return j.store.readEvents(id)
+	return j.store.readEventsReadOnly(id)
 }
 
 // Summary returns a deep copy of the current rolling summary (the full per-arm

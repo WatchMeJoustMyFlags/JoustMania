@@ -376,6 +376,9 @@ func gamesFromEvents(events []journal.Event) []gameView {
 
 // notesFromEvents collects the decision/outcome audit annotations in order — the
 // closest the journal carries to a narrative of the experiment's progression.
+// KindInterimVerdict is DELIBERATELY excluded: an interim verdict is a rolling
+// snapshot, not a decision/conclusion, and its current value is already surfaced via
+// the summary's Verdict — including it here would duplicate noise per conclusion.
 func notesFromEvents(events []journal.Event) []noteView {
 	var notes []noteView
 	for _, e := range events {
