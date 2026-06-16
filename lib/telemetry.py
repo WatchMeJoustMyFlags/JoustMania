@@ -35,6 +35,11 @@ from lib.otel_resource import get_otel_resource
 
 logger = logging.getLogger(__name__)
 
+# Fail-open default for the BSP flush delay (#828). The OpenTelemetry Python SDK
+# default is 5000ms; we keep that as the safe fallback so telemetry init behaves
+# exactly as before whenever the flagd read below is unavailable.
+_DEFAULT_BSP_SCHEDULE_DELAY_MS = 5000
+
 # Lazy initialization state
 _initialized = False
 _init_lock = threading.Lock()
@@ -85,6 +90,53 @@ class SpanAttr:
     VALIDATION_REASON = "validation.reason"
 
 
+def _get_bsp_schedule_delay_ms(service_name: str) -> int:
+    """Read the BSP flush delay from flagd, per-service, fail-open (#828).
+
+    The agent observes ``controller.bluetooth_health`` spans 8-16s late because
+    the BatchSpanProcessor's default flush (~5s) compounds with the collector
+    traces batch. This makes the flush delay a flagd flag with PER-SERVICE
+    TARGETING so controller-manager can flush faster (lower rollout-health
+    observe latency) while other services keep the conservative default.
+
+    READ-ONCE-AT-INIT: the SDK fixes schedule_delay at BatchSpanProcessor
+    construction, so this is read exactly once during telemetry init and never
+    re-tuned live (mirrors lib/otel_metrics._get_export_interval_ms).
+
+    FAIL-OPEN: telemetry init runs very early in service startup, before flagd
+    is guaranteed reachable. This MUST NOT break or block telemetry — on ANY
+    error (provider not ready, missing flag, evaluation error, non-numeric
+    value) it returns the safe SDK-equivalent default. The flagd client itself
+    is fail-open with a bounded internal deadline, so an unreachable flagd
+    resolves to the supplied default rather than hanging.
+
+    The ``feature_flags`` import is done lazily INSIDE this function on purpose:
+    ``lib.feature_flags`` -> ``lib.flag_eval_visibility`` -> ``lib.otel_metrics``,
+    so a module-level import here would risk an import cycle through the
+    telemetry/metrics shared libs. Mirrors otel_metrics._get_export_interval_ms.
+    """
+    try:
+        from openfeature.evaluation_context import EvaluationContext
+
+        from lib.feature_flags import get_flag_client, init_flag_domain
+
+        init_flag_domain("observability")
+        client = get_flag_client("observability")
+        delay = client.get_integer_value(
+            "otel_bsp_schedule_delay_millis",
+            _DEFAULT_BSP_SCHEDULE_DELAY_MS,
+            EvaluationContext(attributes={"service": service_name}),
+        )
+        logger.info(f"otel_bsp_schedule_delay_millis from flagd: {delay}ms (service={service_name})")
+        return delay
+    except Exception as e:
+        logger.warning(
+            f"Failed to read otel_bsp_schedule_delay_millis from flagd, "
+            f"using default {_DEFAULT_BSP_SCHEDULE_DELAY_MS}ms: {e}"
+        )
+        return _DEFAULT_BSP_SCHEDULE_DELAY_MS
+
+
 def _do_init() -> None:
     """Perform actual OpenTelemetry initialization from env vars (internal)."""
     otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
@@ -92,9 +144,11 @@ def _do_init() -> None:
 
     resource = get_otel_resource()
 
+    schedule_delay_ms = _get_bsp_schedule_delay_ms(service_name)
+
     provider = TracerProvider(resource=resource)
     otlp_exporter = OTLPSpanExporter(endpoint=otlp_endpoint, insecure=True)
-    provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
+    provider.add_span_processor(BatchSpanProcessor(otlp_exporter, schedule_delay_millis=schedule_delay_ms))
 
     trace.set_tracer_provider(provider)
 

@@ -3,7 +3,7 @@
 import os
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -132,6 +132,45 @@ class TestInitTelemetry:
 
         tracer = init_telemetry()
         assert isinstance(tracer, trace.Tracer)
+
+
+class TestGetBspScheduleDelay:
+    """Tests for _get_bsp_schedule_delay_ms (#828): per-service flagd read, fail-open."""
+
+    def test_fail_open_default_when_flagd_unavailable(self):
+        """flagd unreachable / any error → safe SDK-equivalent default, never raises."""
+        with patch("lib.feature_flags.init_flag_domain", side_effect=RuntimeError("flagd down")):
+            delay = telemetry_module._get_bsp_schedule_delay_ms("controller-manager-service")
+        assert delay == telemetry_module._DEFAULT_BSP_SCHEDULE_DELAY_MS
+
+    def test_reads_per_service_value_from_flagd(self):
+        """Success path: the resolved per-service flag value is returned."""
+        fake_client = MagicMock()
+        fake_client.get_integer_value.return_value = 500
+        with (
+            patch("lib.feature_flags.init_flag_domain"),
+            patch("lib.feature_flags.get_flag_client", return_value=fake_client),
+        ):
+            delay = telemetry_module._get_bsp_schedule_delay_ms("controller-manager-service")
+        assert delay == 500
+        # The service identity must reach the eval context as the "service" attribute
+        # so flagd targeting resolves per service.
+        ctx = fake_client.get_integer_value.call_args.args[2]
+        assert ctx.attributes.get("service") == "controller-manager-service"
+
+    def test_do_init_passes_schedule_delay_to_bsp(self):
+        """_do_init must wire the resolved delay into the BatchSpanProcessor."""
+        with (
+            patch.object(telemetry_module, "_get_bsp_schedule_delay_ms", return_value=500) as mock_get,
+            patch.object(telemetry_module, "BatchSpanProcessor") as mock_bsp,
+            patch.object(telemetry_module, "OTLPSpanExporter"),
+            patch.object(telemetry_module, "TracerProvider"),
+            patch.object(telemetry_module, "get_otel_resource"),
+            patch.object(telemetry_module.trace, "set_tracer_provider"),
+        ):
+            telemetry_module._do_init()
+        mock_get.assert_called_once()
+        assert mock_bsp.call_args.kwargs["schedule_delay_millis"] == 500
 
 
 class TestEnsureInitialized:

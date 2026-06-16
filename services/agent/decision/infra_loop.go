@@ -176,8 +176,25 @@ type InfraLoop struct {
 	// the locked decide path). Kept as a settable seam for tests.
 	holdExpansion func(now time.Time) bool
 
+	// observeStaleness, when > 0, makes the loop skip acting on an InfraContext
+	// snapshot whose UpdatedAt is older than this bound (the observation predates
+	// the freshness window). GRACEFUL on a zero/absent UpdatedAt: an unset
+	// timestamp (test helpers, an older producer) must NOT block action, so the
+	// guard only fires when UpdatedAt is non-zero AND too old. Zero disables it.
+	observeStaleness time.Duration
+
 	mu            sync.Mutex
 	lastExpansion time.Time
+	// lastWritten is the controller-count VALUE the loop last advanced the rollout
+	// TO (the stage of the last successful expand, or 0 after a rollback). It makes
+	// expansion correctness independent of the dwell-vs-observe-latency race (#828):
+	// after an expand the observed RolloutCount lags for the full observe latency, so
+	// re-reading NextStage(stale_stage) would re-write the SAME stage (a double-write)
+	// if the dwell happens to be shorter than that latency. The loop only expands once
+	// the observation has CAUGHT UP (observed stage >= lastWritten); until then the
+	// just-written stage is in flight and re-writing it is suppressed. Zero means
+	// "nothing written yet", so the first expansion is never blocked.
+	lastWritten int
 	// cooldownUntil is the wall-clock time until which re-expansion is suppressed
 	// after a rollback. Zero = no cooldown. In-memory only (process restart clears
 	// it, which is the demo reset path).
@@ -269,6 +286,16 @@ func (l *InfraLoop) SetGate(g func(snap infracontext.InfraContext, now time.Time
 	}
 }
 
+// SetObserveStaleness sets the freshness bound (#828): an InfraContext snapshot
+// whose UpdatedAt is older than d is skipped (the observation predates the
+// freshness window). d <= 0 disables the guard (the default). The guard is always
+// graceful on a zero/absent UpdatedAt — an unset timestamp never blocks action.
+func (l *InfraLoop) SetObserveStaleness(d time.Duration) {
+	l.mu.Lock()
+	l.observeStaleness = d
+	l.mu.Unlock()
+}
+
 // OnInfraEvaluate runs one rollout-expansion decision cycle. See InfraLoop's doc
 // for the decision matrix. Safe for concurrent use.
 func (l *InfraLoop) OnInfraEvaluate(ctx context.Context, snap infracontext.InfraContext) {
@@ -277,6 +304,14 @@ func (l *InfraLoop) OnInfraEvaluate(ctx context.Context, snap infracontext.Infra
 	// (1) Gate: no fresh controllers → nothing to observe, no span (PR G may
 	// revisit emitting an "idle" span).
 	if l.gate != nil && !l.gate(snap, now) {
+		return
+	}
+
+	// (1b) Freshness guard (#828): skip acting on an observation older than the
+	// configured bound. GRACEFUL on an absent timestamp — a zero UpdatedAt (test
+	// helpers default it to zero; an older producer may omit it) must NOT block
+	// action, so the guard only fires when UpdatedAt is non-zero AND too old.
+	if l.observeStaleness > 0 && !snap.UpdatedAt.IsZero() && now.Sub(snap.UpdatedAt) > l.observeStaleness {
 		return
 	}
 
@@ -326,13 +361,14 @@ func (l *InfraLoop) OnInfraEvaluate(ctx context.Context, snap infracontext.Infra
 	case fit.Evaluated && fit.Passing:
 		// Fitness passes → climb the ladder if eligible (PR E expansion).
 		if l.rollout != nil {
-			if variant, value, ok := l.rollout.NextStage(stage); ok && l.shouldExpandLocked(now) {
+			if variant, value, ok := l.rollout.NextStage(stage); ok && l.shouldExpandLocked(now, stage) {
 				action = RemediationExpand
 				expandedTo = value
 				wroteVariant = variant
 				writeErr = l.rollout.SetControllerCount(variant)
 				if writeErr == nil {
 					l.lastExpansion = now
+					l.lastWritten = value
 				}
 			}
 		}
@@ -360,6 +396,9 @@ func (l *InfraLoop) OnInfraEvaluate(ctx context.Context, snap infracontext.Infra
 			if writeErr == nil {
 				l.rollbackInFlight = true
 				l.cooldownUntil = now.Add(l.cooldown)
+				// Reset the reconcile anchor: the rollout was reset to none(0), so the
+				// next expansion is gated on the observation returning to 0 (#828).
+				l.lastWritten = rolloutStageNoneValue
 			}
 		default:
 			// Active stage but rollback NOT allowed → recommend only (span, no write).
@@ -372,15 +411,29 @@ func (l *InfraLoop) OnInfraEvaluate(ctx context.Context, snap infracontext.Infra
 	l.emitDecisionSpan(ctx, now, snap, fit, target, stage, action, expandedTo, wroteVariant, writeErr)
 }
 
-// shouldExpandLocked is the expansion guard: the dwell since the last expansion
-// must have elapsed AND no hold may be in force. Caller holds mu.
+// shouldExpandLocked is the expansion guard: the observation must have caught up
+// to the last write, the dwell since the last expansion must have elapsed, AND no
+// hold may be in force. Caller holds mu; observedStage is the rollout count read
+// off this cycle's health span.
 //
+//   - reconcile (#828): the observed stage must be >= the value we last wrote
+//     (lastWritten). After an expand the observed RolloutCount lags for the full
+//     observe latency, so re-reading NextStage(stale_stage) would re-write the
+//     SAME stage if the dwell is shorter than that latency. Suppressing expansion
+//     until the observation catches up makes correctness independent of the
+//     dwell-vs-latency race — it no longer relies on the dwell exceeding latency.
+//     lastWritten zero (never written) never blocks the first expansion.
 //   - dwell: fitness needs time to observe each new stage before we add more
 //     controllers. lastExpansion zero (never expanded) passes the dwell check so
 //     the first expansion is not delayed.
 //   - holdExpansion: PR F's post-rollback cooldown — true while now is before
 //     cooldownUntil, blocking re-expansion for a window after a rollback.
-func (l *InfraLoop) shouldExpandLocked(now time.Time) bool {
+func (l *InfraLoop) shouldExpandLocked(now time.Time, observedStage int) bool {
+	if observedStage < l.lastWritten {
+		// The observation has not yet caught up to the stage we already wrote — the
+		// last expansion is still in flight. Acting now would re-write the same stage.
+		return false
+	}
 	if !l.lastExpansion.IsZero() && now.Sub(l.lastExpansion) < l.dwell {
 		return false
 	}
