@@ -78,9 +78,14 @@ func BuildRetro(in RetroInput) RetroPrompt {
 // game-physics + mode grounding (#1158: the SAME physicalModel + modePromptFragment
 // the in-game buildSystem got via #1091, so the offline analyst reasons within the
 // real mechanics and cannot hallucinate combat/respawn/init-only "calibration
-// flags"), the REAL next-game lever vocabulary (the intervention allow-list — the
+// flags"), the REAL intervention-type vocabulary (the intervention allow-list — the
 // agent has no init-time calibration surface; it only ever acts through
 // interventions), the smallest-change policy, and the JSON response contract.
+//
+// #1160 review fix: the allow-list is the agent's REACTIVE in-game vocabulary, not a
+// game-setup surface — so the analyst recommends which of these intervention TYPES to
+// ENABLE / EMPHASIZE (or de-emphasize) for the next session, not how the next game
+// opens or is paced.
 //
 // #1158 fix B: the four phantom flags this prompt previously enumerated
 // (global_difficulty_factor / pacing_profile / threshold_table / objective_variant)
@@ -88,18 +93,28 @@ func BuildRetro(in RetroInput) RetroPrompt {
 // exist in NO flagd source; global_difficulty_factor and pacing_profile DO exist but
 // only as game_coordinator (interventions domain) flags the agent writes INDIRECTLY
 // via the adjust_global_difficulty / set_pacing_profile INTERVENTIONS — there is no
-// agent-side "read at game INIT" calibration surface. So the analyst recommends
-// LEVERS from the live intervention allow-list (the agent's only acting surface),
-// framed as how the NEXT game should open / be paced. The former objective_variant
-// enum collided with the in-game objective_served enum; the retro's advisory goal
-// field is renamed session_focus to remove the collision.
+// agent-side "read at game INIT" calibration surface. So the analyst recommends from
+// the live intervention allow-list (the agent's only acting surface). The former
+// objective_variant enum collided with the in-game objective_served enum; the retro's
+// advisory goal field is renamed session_focus to remove the collision.
+//
+// #1160 review fix: the allow-list is the set of REAL-TIME REACTIVE in-game actions
+// (with the full / shadow_experimental variants it includes eliminate_player /
+// revive_player / end_game / send_controller_effect). Recommending the next game
+// "OPEN by eliminating a player" is incoherent — those are reactions, not setup. So
+// the recommendation surface is reframed: the analyst recommends which intervention
+// TYPES the agent should ENABLE or EMPHASIZE (weight up) — and which to de-emphasize
+// — for the next session, i.e. tuning the agent's reactive vocabulary and emphasis,
+// NOT the game's opening configuration. Under that framing the whole allow-list,
+// reactive actions included, reads coherently. Still advisory / recorded-only /
+// human-reviewed.
 func buildRetroSystem(mode string, allowed []string) string {
 	var b strings.Builder
 	b.WriteString(`You are the JoustMania post-game analyst. A physical movement party game has just
-ended. You receive a full session summary and must suggest how the NEXT game should
-be set up and paced to make it more fun. You are NOT controlling a live game — you
-make at most a handful of recommendations, which a human reviews. Suggestions are
-RECORDED ONLY and never auto-applied.
+ended. You receive a full session summary and must suggest how the agent should TUNE
+its in-game reactions for the NEXT session to make play more fun. You are NOT
+controlling a live game — you make at most a handful of recommendations, which a
+human reviews. Suggestions are RECORDED ONLY and never auto-applied.
 
 `)
 	// Physics + current-mode grounding (#1158), shared verbatim with the in-game
@@ -112,30 +127,35 @@ RECORDED ONLY and never auto-applied.
 	b.WriteString(`
 
 YOUR RECOMMENDATION SURFACE — the agent has NO init-time "calibration flags"; it
-only ever acts through INTERVENTIONS. So recommend how the next game should OPEN and
-be PACED using these same levers (only those the live allow-list below permits):
+only ever acts through INTERVENTIONS, and these are REAL-TIME REACTIVE in-game
+actions, not a game-setup or opening configuration. So do NOT recommend how the next
+game opens or is paced. Instead, recommend which of these intervention TYPES the
+agent should ENABLE or EMPHASIZE (weight up) — and which to de-emphasize — for the
+next session, tuning its reactive vocabulary and emphasis (only those the live
+allow-list below permits):
 `)
 	b.WriteString("  " + joinInterventions(allowed))
 	b.WriteString(`
 
-POLICY: suggest the SMALLEST change that addresses an observed problem, grounded in
-the session evidence below (who faded when, who was near death, the engagement
-trend). If the session looked healthy, return an empty suggestions list. Do not
-invent levers outside the allow-list above.
+POLICY: suggest the SMALLEST tuning change that addresses an observed problem,
+grounded in the session evidence below (who faded when, who was near death, the
+engagement trend) — e.g. enable or weight up an intervention type that would have
+helped, or de-emphasize one that over-fired. If the session looked healthy, return an
+empty suggestions list. Do not invent intervention types outside the allow-list above.
 
 RESPONSE CONTRACT — reply with EXACTLY ONE JSON object, no prose, matching:
 {
   "session_assessment": "<one short sentence: how did this game go?>",
   "suggestions": [
     {
-      "lever": "<one of the allow-list levers above>",
-      "value": "<the suggested next-game value/direction as a string>",
-      "reason": "<one short sentence tying the change to session evidence>"
+      "intervention_type": "<one of the allow-list intervention types above>",
+      "emphasis": "<one of: enable, weight_up, weight_down, disable>",
+      "reason": "<one short sentence tying the tuning change to session evidence>"
     }
   ],
-  "session_focus": "<one of: endurance, balanced, accelerate, chaos — the goal the next game should lean toward>"
+  "session_focus": "<one of: endurance, balanced, accelerate, chaos — the goal the next session should lean toward>"
 }
-If no tweak is warranted, return "suggestions": [].`)
+If no tuning is warranted, return "suggestions": [].`)
 	return b.String()
 }
 

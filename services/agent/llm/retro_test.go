@@ -35,6 +35,23 @@ func retroSnapshot() flags.Snapshot {
 	}
 }
 
+// retroFullSnapshot is retroSnapshot with the production `full` intervention
+// allow-list (#1160 review fix): it includes the REAL-TIME REACTIVE actions
+// eliminate_player / revive_player / end_game / send_controller_effect, so the golden
+// shows the reframed recommendation surface ("which intervention TYPES to enable /
+// emphasize for the next session") reading coherently with reactive actions present —
+// not the old incoherent "open the next game by eliminating a player" framing.
+func retroFullSnapshot() flags.Snapshot {
+	s := retroSnapshot()
+	s.InterventionsAllowed = []string{
+		"play_audio_cue", "send_controller_effect", "adjust_volume",
+		"adjust_music_tempo", "set_pacing_profile", "adjust_player_sensitivity",
+		"grant_shield", "adjust_global_sensitivity", "adjust_global_difficulty",
+		"eliminate_player", "revive_player", "end_game",
+	}
+	return s
+}
+
 // retroThreePlayers: two eliminations and one survivor (the winner). Mixes real
 // and never-observed signals like the in-game three-player context.
 func retroThreePlayers() gamecontext.GameContext {
@@ -172,6 +189,15 @@ func retroCases() []retroCase {
 			context:  retroMovementContext(),
 		},
 		{
+			// #1160 review fix: the production `full` allow-list, which includes the
+			// reactive actions eliminate_player / revive_player / end_game. The golden
+			// makes the reframed recommendation surface visible and coherent with those
+			// real-time actions present (not "open the next game by eliminating a player").
+			name:     "retro_full_allowlist",
+			snapshot: retroFullSnapshot(),
+			context:  retroMovementContext(),
+		},
+		{
 			// No players, nil session signals: every field renders "unknown"/[].
 			name:     "retro_empty",
 			snapshot: retroSnapshot(),
@@ -305,13 +331,49 @@ func TestRetroDeterminism(t *testing.T) {
 }
 
 // TestRetroContractKeys: the System prompt names every response-contract key, so
-// it cannot drift from the documented surface (#1158: lever/session_focus, not the
-// old phantom-flag "flag" enum).
+// it cannot drift from the documented surface (#1160: intervention_type/emphasis/
+// session_focus — the reframed tuning surface, not the old lever/value setup framing).
 func TestRetroContractKeys(t *testing.T) {
 	sys := BuildRetro(RetroInput{Snapshot: retroSnapshot(), Context: retroThreePlayers(), Now: fixedNow}).System
-	for _, key := range []string{"session_assessment", "suggestions", "lever", "value", "reason", "session_focus"} {
+	for _, key := range []string{"session_assessment", "suggestions", "intervention_type", "emphasis", "reason", "session_focus"} {
 		if !strings.Contains(sys, `"`+key+`"`) {
 			t.Errorf("system prompt missing response-contract key %q", key)
+		}
+	}
+}
+
+// TestRetroSystemReframedTuning asserts the #1160 review fix: the recommendation
+// surface frames the allow-list as intervention TYPES to ENABLE/EMPHASIZE for the
+// next session (tuning the agent's reactive vocabulary), NOT how the next game OPENS
+// or is PACED. With the production `full` allow-list (eliminate_player / revive_player
+// / end_game present) the old "open the next game by eliminating a player" framing was
+// incoherent; the reframed prose must be present and the setup framing gone.
+func TestRetroSystemReframedTuning(t *testing.T) {
+	sys := BuildRetro(RetroInput{Snapshot: retroFullSnapshot(), Context: retroMovementContext(), Now: fixedNow}).System
+	// The reframed tuning surface must be present.
+	for _, want := range []string{
+		"intervention TYPES",
+		"ENABLE or EMPHASIZE",
+		"REAL-TIME REACTIVE in-game",
+	} {
+		if !strings.Contains(sys, want) {
+			t.Errorf("retro system prompt missing reframed tuning wording %q", want)
+		}
+	}
+	// The old setup/opening framing must be gone.
+	for _, gone := range []string{
+		"how the next game should OPEN",
+		"should OPEN and\nbe PACED",
+		"next-game value/direction",
+	} {
+		if strings.Contains(sys, gone) {
+			t.Errorf("retro system prompt still uses old setup framing %q", gone)
+		}
+	}
+	// The full reactive allow-list must still be rendered verbatim (data unchanged).
+	for _, lever := range []string{"eliminate_player", "revive_player", "end_game", "send_controller_effect"} {
+		if !strings.Contains(sys, lever) {
+			t.Errorf("retro system prompt dropped reactive intervention type %q from the full allow-list", lever)
 		}
 	}
 }
