@@ -93,6 +93,13 @@ static_resources:
                           redirect:
                             path_redirect: "/victoria-metrics/"
 
+                        # Agent experiment dossier (#1183)
+                        # PRESERVE prefix - agent serves /experiments + /experiments/{id} at root
+                        - match:
+                            prefix: "/experiments"
+                          route:
+                            cluster: agent_dossier
+
                         # Chaos fault injection API
                         # PRESERVE prefix - connect-proxy handles /chaos/* paths
                         - match:
@@ -236,6 +243,20 @@ static_resources:
                     socket_address:
                       address: dashboard
                       port_value: 8080
+
+    # Agent experiment-dossier HTTP view (#1183)
+    - name: agent_dossier
+      type: STRICT_DNS
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: agent_dossier
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: agent
+                      port_value: 13134
 
     # OTEL Collector for trace export (gRPC on port 4317)
     - name: otel_collector
