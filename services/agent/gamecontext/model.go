@@ -159,9 +159,20 @@ type GameContext struct {
 	// trace. Empty when not yet observed or the game span was unsampled; an empty
 	// trace_id OR span_id means "no link" (graceful fallback, no error).
 	GameTraceSpanID string
-	Session         SessionSignals
-	Players         map[string]*PlayerSignals
-	UpdatedAt       time.Time
+	// GameplayPhaseSpanID is the hex span_id of the coordinator's gameplay_phase
+	// sub-span for this session (#1195, refines #1187). Source: the
+	// gameplay_phase_span_id datapoint label on the same game_trace_correlation
+	// gauge. gameplay_phase is the STABLE active-play window WITHIN the game trace;
+	// the agent re-parents its in-game decision chain (signal_received -> decision
+	// -> action) under THIS span instead of the game root, so a reader sees
+	// interventions nested where they actually occurred. Same trace as GameTraceID.
+	// Two-tier fallback: when empty (gameplay_phase not yet open / unsampled) the
+	// re-parent uses GameTraceSpanID (the game root, #1187 behavior); when that is
+	// also empty the span stays own-root. Never breaks span emission.
+	GameplayPhaseSpanID string
+	Session             SessionSignals
+	Players             map[string]*PlayerSignals
+	UpdatedAt           time.Time
 
 	// Timeline is a bounded, oldest-first slice of the partition's recent rolling
 	// narrative (#916): periodic state deltas, eliminations, and session phase

@@ -555,6 +555,24 @@ func (s *Store) SetGameTraceSpanID(id string) {
 	s.touchSession()
 }
 
+// SetGameplayPhaseSpanID records the coordinator's gameplay_phase sub-span span_id
+// (#1195, refines #1187) from the gameplay_phase_span_id label on the
+// game_trace_correlation signal. Mirrors SetGameTraceSpanID exactly: an empty id is
+// ignored so an unlabeled signal (or a not-yet-open gameplay_phase span) never
+// clobbers a previously observed id — the agent then keeps re-parenting under the
+// game root via GameTraceSpanID. The decision/async loops read this to re-parent the
+// in-game decision chain under gameplay_phase, with two-tier fallback to the game
+// root; an empty value there simply keeps the #1187 behavior (graceful fallback).
+func (s *Store) SetGameplayPhaseSpanID(id string) {
+	if id == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ctx.GameplayPhaseSpanID = id
+	s.touchSession()
+}
+
 // SetArm records the experiment arm ("experimental"/"control", #975) from the
 // arm datapoint label or the experiment.arm span attribute. An empty arm is
 // ignored so an unlabeled signal never clobbers a previously observed arm.
@@ -796,8 +814,9 @@ func (s *Store) EvictStale() {
 		s.ctx.GameKind = ""
 		s.ctx.ExperimentID = ""
 		s.ctx.Arm = ""
-		s.ctx.GameTraceID = ""     // drop the finished game's trace link (#1133)
-		s.ctx.GameTraceSpanID = "" // ditto, the linked span_id (#1157)
+		s.ctx.GameTraceID = ""         // drop the finished game's trace link (#1133)
+		s.ctx.GameTraceSpanID = ""     // ditto, the linked span_id (#1157)
+		s.ctx.GameplayPhaseSpanID = "" // ditto, the gameplay_phase span_id (#1195)
 		s.elimOrder = make(map[string]int)
 		s.endedAt = time.Time{}
 		s.ctx.UpdatedAt = now

@@ -124,6 +124,15 @@ class GameSession:
         # all-zero span id under the trace. Captured/cleared in lockstep with
         # game_trace_id.
         self.game_trace_span_id = ""
+        # Hex span_id of this session's gameplay_phase span (#1195). gameplay_phase
+        # is the stable active-play sub-span within the game trace; the agent
+        # re-parents its in-game decision chain under THIS span instead of the game
+        # root (#1187). Empty until the gameplay_phase span opens (base.py calls
+        # publish_gameplay_phase_span_id); carried as the gameplay_phase_span_id
+        # label on the correlation gauge alongside game_trace_span_id (same trace).
+        # Captured/cleared in lockstep with game_trace_id so retire removes the
+        # exact gauge series.
+        self.gameplay_phase_span_id = ""
 
         # Per-session loop runs in its own thread with its own GrpcClientManager.
         self.clients = GrpcClientManager()
@@ -161,15 +170,62 @@ class GameSession:
             with suppress(KeyError, ValueError):
                 gauge.remove(*labels)
 
-        # The trace-correlation gauge (#1133/#1157) carries a different label tuple
-        # (game_kind, game_id, game_trace_id, game_trace_span_id) and was only set
-        # when the span was sampled (game_trace_id non-empty), so remove it
-        # separately and only then.
+        # The trace-correlation gauge (#1133/#1157/#1195) carries a different label
+        # tuple (game_kind, game_id, game_trace_id, game_trace_span_id,
+        # gameplay_phase_span_id) and was only set when the span was sampled
+        # (game_trace_id non-empty), so remove it separately and only then. Remove
+        # with the CURRENT gameplay_phase_span_id: it is "" until the gameplay_phase
+        # span opens and is then updated in lockstep with the gauge re-emit, so this
+        # always matches the live series tuple.
         if self.game_trace_id:
             with suppress(KeyError, ValueError):
                 metrics.game_trace_correlation.remove(
-                    self.game_kind, self.game_id, self.game_trace_id, self.game_trace_span_id
+                    self.game_kind,
+                    self.game_id,
+                    self.game_trace_id,
+                    self.game_trace_span_id,
+                    self.gameplay_phase_span_id,
                 )
+
+    def publish_gameplay_phase_span_id(self, gameplay_phase_span_id: str) -> None:
+        """Re-emit the correlation gauge carrying the gameplay_phase span_id (#1195).
+
+        Called by the game (base.py) when its gameplay_phase span opens, passing
+        that span's hex span_id. gameplay_phase is the stable active-play sub-span;
+        the agent re-parents its in-game decision chain under it (a strict
+        refinement of the #1187 game-root parenting).
+
+        The gauge was already SET to 1 at game-root-span time with an EMPTY
+        gameplay_phase_span_id label (different label tuple -> different series).
+        To avoid leaving that empty-labeled series behind, REMOVE it first, then SET
+        the series carrying the populated id, and update self.gameplay_phase_span_id
+        so clear_metrics removes the live tuple at retire.
+
+        No-op when the game span was unsampled (game_trace_id empty -> the gauge was
+        never set) or the passed id is empty/invalid: the agent then keeps falling
+        back to the game root span (game_trace_span_id), so correlation is never lost.
+        """
+        if not self.game_trace_id or not gameplay_phase_span_id:
+            return
+        if gameplay_phase_span_id == self.gameplay_phase_span_id:
+            return
+        # Remove the previously-set series (empty gameplay id at first publish).
+        with suppress(KeyError, ValueError):
+            metrics.game_trace_correlation.remove(
+                self.game_kind,
+                self.game_id,
+                self.game_trace_id,
+                self.game_trace_span_id,
+                self.gameplay_phase_span_id,
+            )
+        self.gameplay_phase_span_id = gameplay_phase_span_id
+        metrics.game_trace_correlation.labels(
+            game_kind=self.game_kind,
+            game_id=self.game_id,
+            game_trace_id=self.game_trace_id,
+            game_trace_span_id=self.game_trace_span_id,
+            gameplay_phase_span_id=self.gameplay_phase_span_id,
+        ).set(1)
 
     def on_event_state_sync(self, event_type: str) -> None:
         """EventBus state-sync callback bound to THIS session's state (#775).
@@ -326,11 +382,18 @@ class GameSession:
                 # references the actual game-start span (Jaeger uiFind highlight)
                 # rather than an all-zero span id under that trace.
                 self.game_trace_span_id = trace.format_span_id(span_ctx.span_id)
+                # gameplay_phase_span_id (#1195) is empty here: the gameplay_phase
+                # span has not opened yet (it opens inside game.run()). Early
+                # correlation is preserved via game_trace_span_id; the agent's
+                # two-tier fallback uses the game root span until gameplay_phase
+                # publishes its id, at which point the gauge is re-emitted with the
+                # populated label (publish_gameplay_phase_span_id).
                 metrics.game_trace_correlation.labels(
                     game_kind=self.game_kind,
                     game_id=self.game_id,
                     game_trace_id=self.game_trace_id,
                     game_trace_span_id=self.game_trace_span_id,
+                    gameplay_phase_span_id=self.gameplay_phase_span_id,
                 ).set(1)
 
             try:
@@ -375,6 +438,12 @@ class GameSession:
                 # set_game_transaction_context carries it for flag evaluation (#975).
                 game.experiment_id = self.experiment_id
                 game.arm = self.arm
+                # Let the game publish its gameplay_phase span_id back to the
+                # correlation gauge (#1195) when that span opens, so the agent can
+                # re-parent its in-game decision chain under gameplay_phase. The
+                # game holds only this callback (not the session), mirroring how the
+                # session sets game_kind/experiment_id on the game.
+                game.on_gameplay_phase_open = self.publish_gameplay_phase_span_id
 
                 # Store reference and run game
                 self.current_game = game

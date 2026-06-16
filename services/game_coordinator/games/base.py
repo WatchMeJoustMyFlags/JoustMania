@@ -698,6 +698,12 @@ class BaseGameMode(ABC):
         self._reset_global_gauges_on_end = True
         self.experiment_id = ""
         self.arm = ""
+        # Callback the owning GameSession sets so the game can publish its
+        # gameplay_phase span_id to the trace-correlation gauge (#1195) when that
+        # span opens — letting the agent re-parent its in-game decision chain under
+        # gameplay_phase. Defaults to a no-op so a standalone game / every existing
+        # test runs unchanged.
+        self.on_gameplay_phase_open: Callable[[str], None] = lambda _span_id: None
 
         # Game state
         self.state = GameState.IDLE
@@ -2694,6 +2700,16 @@ class BaseGameMode(ABC):
                 # Store span reference and context for background tasks
                 self.gameplay_span = gameplay_span
                 self.gameplay_span_context = otel_context.get_current()
+
+                # Publish the gameplay_phase span_id to the trace-correlation gauge
+                # (#1195) so the agent re-parents its in-game decision chain under
+                # THIS span instead of the game root (#1187). gameplay_phase is the
+                # stable active-play window; a span_ctx with a zero/invalid span_id
+                # (unsampled) yields an empty hex id, which the session treats as a
+                # no-op so the agent keeps falling back to the game root span.
+                gameplay_span_ctx = gameplay_span.get_span_context()
+                if gameplay_span_ctx.span_id != 0:
+                    self.on_gameplay_phase_open(trace.format_span_id(gameplay_span_ctx.span_id))
 
                 # Create "players" parent span (collapsible group in Jaeger)
                 self._players_span = tracer.start_span(

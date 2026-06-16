@@ -270,14 +270,15 @@ func (l *Loop) runInfer(root context.Context, snapshot flags.Snapshot, backend B
 	// #1140 (Slice A): Link this outbound-call root back to the originating fire-cycle's
 	// agent.signal_received trace, so a reader of the infer trace can navigate to the
 	// signal that caused it. No-op when fireSC is invalid.
-	// #1178: also start it as a remote CHILD of the game span — the async-materialized
-	// inference is part of the game, so it lives INSIDE the game trace (not merely Linked
-	// to it). The fire-cycle Link is KEPT alongside (it navigates to the originating
-	// signal cycle); the game span is the new ROOT parent. Graceful fallback: when the
-	// game trace ids are absent/invalid gameRemoteParent returns inferCtx unchanged, so
-	// this stays its own root + fire-cycle Link exactly as before.
+	// #1195 (refining #1178): also start it as a remote CHILD of the gameplay_phase
+	// span — the async-materialized inference is part of the game's active play, so it
+	// lives INSIDE the game trace nested under gameplay_phase (not merely Linked to it).
+	// The fire-cycle Link is KEPT alongside (it navigates to the originating signal
+	// cycle); gameplay_phase is the new parent. Two-tier fallback (inGameRemoteParent):
+	// gameplay_phase span_id -> game ROOT span_id (#1187) -> own root + fire-cycle Link,
+	// so this never loses correlation.
 	callParent := inferCtx
-	if parentCtx, ok := gameRemoteParent(inferCtx, c.GameTraceID, c.GameTraceSpanID); ok {
+	if parentCtx, ok := inGameRemoteParent(inferCtx, c.GameTraceID, c.GameTraceSpanID, c.GameplayPhaseSpanID); ok {
 		callParent = parentCtx
 	}
 	callOpts := []trace.SpanStartOption{
@@ -307,11 +308,13 @@ func (l *Loop) runInfer(root context.Context, snapshot flags.Snapshot, backend B
 		contextNotePresent: notePresent,
 		contextNoteLen:     noteLen,
 		fireSC:             fireSC,
-		// #1178: carry the game-session trace ids so the apply root can be started as a
-		// remote child of the game span (the apply path runs off the loop, with no game
-		// span in its ctx). Captured from THIS game's fire-time GameContext.
-		gameTraceID:     c.GameTraceID,
-		gameTraceSpanID: c.GameTraceSpanID,
+		// #1178/#1195: carry the game-session trace ids + gameplay_phase span_id so the
+		// apply root can be started as a remote child of the gameplay_phase span (the
+		// apply path runs off the loop, with no game span in its ctx). Captured from THIS
+		// game's fire-time GameContext.
+		gameTraceID:         c.GameTraceID,
+		gameTraceSpanID:     c.GameTraceSpanID,
+		gameplayPhaseSpanID: c.GameplayPhaseSpanID,
 	})
 }
 
@@ -353,10 +356,13 @@ type asyncOutcome struct {
 	// (the production default — no span active at fire time) yields no link (graceful).
 	fireSC trace.SpanContext
 	// gameTraceID/gameTraceSpanID are THIS game's game-session trace ids, captured from the
-	// fire-time GameContext (#1178). The apply root (agent.llm.apply) is started as a remote
-	// CHILD of the game span via these ids, so the async-materialized decision/action live
-	// INSIDE the game trace. Empty/invalid => the apply root stays its own root (graceful
-	// fallback, fire-cycle Link only), exactly as before.
-	gameTraceID     string
-	gameTraceSpanID string
+	// fire-time GameContext (#1178). gameplayPhaseSpanID is the gameplay_phase sub-span id
+	// (#1195). The apply root (agent.llm.apply) is started as a remote CHILD of the
+	// gameplay_phase span via inGameRemoteParent (two-tier fallback: gameplay_phase ->
+	// game ROOT span (#1187) -> own root), so the async-materialized decision/action live
+	// INSIDE the game trace nested under active play. Empty/invalid => the apply root
+	// stays its own root (graceful fallback, fire-cycle Link only), exactly as before.
+	gameTraceID         string
+	gameTraceSpanID     string
+	gameplayPhaseSpanID string
 }

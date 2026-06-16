@@ -263,11 +263,13 @@ func TestApplyMetrics_AdoptsGameTraceID(t *testing.T) {
 	s := newTestStore()
 	const tid = "4bf92f3577b34da6a3ce929d0e0e4736"
 	const sid = "051581bf3cb55c13"
+	const gpSid = "00f067aa0ba902b7"
 	if !s.ApplyMetrics(metricsWith(metricTraceCorrelation, 1, map[string]string{
-		attrGameID:          "game-99",
-		attrGameKind:        "real",
-		attrGameTraceID:     tid,
-		attrGameTraceSpanID: sid,
+		attrGameID:              "game-99",
+		attrGameKind:            "real",
+		attrGameTraceID:         tid,
+		attrGameTraceSpanID:     sid,
+		attrGameplayPhaseSpanID: gpSid,
 	})) {
 		t.Fatal("game_trace_correlation carrying game_trace_id must apply")
 	}
@@ -280,6 +282,34 @@ func TestApplyMetrics_AdoptsGameTraceID(t *testing.T) {
 	}
 	if snap.GameTraceSpanID != sid {
 		t.Fatalf("GameTraceSpanID = %q, want %q", snap.GameTraceSpanID, sid)
+	}
+	if snap.GameplayPhaseSpanID != gpSid {
+		t.Fatalf("GameplayPhaseSpanID = %q, want %q (#1195)", snap.GameplayPhaseSpanID, gpSid)
+	}
+}
+
+// TestApplyMetrics_GameplayPhaseSpanIDAbsentLeavesEmpty verifies the #1195 two-tier
+// fallback INPUT: a correlation datapoint with the root span_id but NO
+// gameplay_phase_span_id (e.g. before the gameplay_phase span opens) leaves
+// GameplayPhaseSpanID empty while still adopting the root id — so the agent keeps
+// parenting under the game root until gameplay_phase publishes its id.
+func TestApplyMetrics_GameplayPhaseSpanIDAbsentLeavesEmpty(t *testing.T) {
+	s := newTestStore()
+	const tid = "4bf92f3577b34da6a3ce929d0e0e4736"
+	const sid = "051581bf3cb55c13"
+	if !s.ApplyMetrics(metricsWith(metricTraceCorrelation, 1, map[string]string{
+		attrGameID:          "game-101",
+		attrGameTraceID:     tid,
+		attrGameTraceSpanID: sid,
+	})) {
+		t.Fatal("correlation datapoint must apply")
+	}
+	snap := s.Snapshot()
+	if snap.GameTraceSpanID != sid {
+		t.Fatalf("GameTraceSpanID = %q, want %q (root still adopted)", snap.GameTraceSpanID, sid)
+	}
+	if snap.GameplayPhaseSpanID != "" {
+		t.Fatalf("GameplayPhaseSpanID = %q, want empty (no label -> fall back to root)", snap.GameplayPhaseSpanID)
 	}
 }
 

@@ -65,6 +65,13 @@ const (
 	// same game_trace_correlation signal (#1157). Hex string; empty when the game
 	// span was unsampled.
 	attrGameTraceSpanID = "game_trace_span_id"
+	// attrGameplayPhaseSpanID is the coordinator gameplay_phase sub-span span_id
+	// carried on the same game_trace_correlation signal (#1195). Hex string; empty
+	// until the gameplay_phase span opens (or unsampled). The agent re-parents its
+	// in-game decision chain under THIS span instead of the game root (#1187) when
+	// present, falling back to attrGameTraceSpanID otherwise. Same trace as
+	// game_trace_id.
+	attrGameplayPhaseSpanID = "gameplay_phase_span_id"
 	// Experiment attribution (#975, epic #982): finer-grained labels WITHIN a
 	// shadow game. Carried on the LOW-RATE lifecycle metrics (game_active,
 	// game_active_players, game_duration_seconds) the same way game_kind is —
@@ -102,6 +109,12 @@ type gameLabels struct {
 	// GameTraceSpanID carries the coordinator's root game-span span_id (#1157),
 	// likewise only on the game_trace_correlation gauge and likewise enrichment.
 	GameTraceSpanID string
+	// GameplayPhaseSpanID carries the coordinator's gameplay_phase sub-span span_id
+	// (#1195), likewise only on the game_trace_correlation gauge and likewise
+	// enrichment. The agent re-parents its in-game decision chain under this span
+	// (a refinement of the #1187 game-root parenting); empty -> fall back to
+	// GameTraceSpanID. Same trace as GameTraceID.
+	GameplayPhaseSpanID string
 }
 
 // gameIDOf reads the game_id datapoint label; empty when absent.
@@ -152,15 +165,24 @@ func gameTraceSpanIDOf(attrs pcommon.Map) string {
 	return ""
 }
 
+// gameplayPhaseSpanIDOf reads the gameplay_phase_span_id datapoint label (#1195); empty when absent.
+func gameplayPhaseSpanIDOf(attrs pcommon.Map) string {
+	if v, ok := attrs.Get(attrGameplayPhaseSpanID); ok {
+		return v.AsString()
+	}
+	return ""
+}
+
 // metricGameLabels resolves the game identity labels on a metric datapoint.
 func metricGameLabels(attrs pcommon.Map) gameLabels {
 	return gameLabels{
-		GameID:          gameIDOf(attrs),
-		GameKind:        gameKindOf(attrs),
-		ExperimentID:    experimentIDOf(attrs),
-		Arm:             armOf(attrs),
-		GameTraceID:     gameTraceIDOf(attrs),
-		GameTraceSpanID: gameTraceSpanIDOf(attrs),
+		GameID:              gameIDOf(attrs),
+		GameKind:            gameKindOf(attrs),
+		ExperimentID:        experimentIDOf(attrs),
+		Arm:                 armOf(attrs),
+		GameTraceID:         gameTraceIDOf(attrs),
+		GameTraceSpanID:     gameTraceSpanIDOf(attrs),
+		GameplayPhaseSpanID: gameplayPhaseSpanIDOf(attrs),
 	}
 }
 
@@ -390,6 +412,7 @@ func (s *Store) adoptGame(labels gameLabels) {
 	s.SetGameKind(labels.GameKind)
 	s.SetExperimentID(labels.ExperimentID)
 	s.SetArm(labels.Arm)
-	s.SetGameTraceID(labels.GameTraceID)         // #1133: empty on all but game_trace_correlation
-	s.SetGameTraceSpanID(labels.GameTraceSpanID) // #1157: ditto
+	s.SetGameTraceID(labels.GameTraceID)                 // #1133: empty on all but game_trace_correlation
+	s.SetGameTraceSpanID(labels.GameTraceSpanID)         // #1157: ditto
+	s.SetGameplayPhaseSpanID(labels.GameplayPhaseSpanID) // #1195: ditto
 }
