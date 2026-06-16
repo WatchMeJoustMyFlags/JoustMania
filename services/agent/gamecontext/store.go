@@ -523,6 +523,22 @@ func (s *Store) SetExperimentID(id string) {
 	s.touchSession()
 }
 
+// SetGameTraceID records the coordinator's root game-span trace_id (#1133) from
+// the game_trace_id label on the game_trace_correlation signal. An empty id is
+// ignored so an unlabeled signal never clobbers a previously observed trace id —
+// exactly like SetGameKind. The decision loop reads this to add a span Link from
+// agent.decision to the originating game trace; it is validated there, so an
+// invalid value stored here simply yields no Link (graceful fallback).
+func (s *Store) SetGameTraceID(id string) {
+	if id == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ctx.GameTraceID = id
+	s.touchSession()
+}
+
 // SetArm records the experiment arm ("experimental"/"control", #975) from the
 // arm datapoint label or the experiment.arm span attribute. An empty arm is
 // ignored so an unlabeled signal never clobbers a previously observed arm.
@@ -764,6 +780,7 @@ func (s *Store) EvictStale() {
 		s.ctx.GameKind = ""
 		s.ctx.ExperimentID = ""
 		s.ctx.Arm = ""
+		s.ctx.GameTraceID = "" // drop the finished game's trace link (#1133)
 		s.elimOrder = make(map[string]int)
 		s.endedAt = time.Time{}
 		s.ctx.UpdatedAt = now

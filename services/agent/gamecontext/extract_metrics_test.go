@@ -255,6 +255,47 @@ func TestApplyMetrics_MovementVarianceAggregateRetained(t *testing.T) {
 	}
 }
 
+// TestApplyMetrics_AdoptsGameTraceID verifies the #1133 trace-correlation signal:
+// game_trace_correlation carries game_id + game_trace_id and adopts both into the
+// context so the decision loop can link agent.decision to the originating game trace.
+func TestApplyMetrics_AdoptsGameTraceID(t *testing.T) {
+	s := newTestStore()
+	const tid = "4bf92f3577b34da6a3ce929d0e0e4736"
+	if !s.ApplyMetrics(metricsWith(metricTraceCorrelation, 1, map[string]string{
+		attrGameID:      "game-99",
+		attrGameKind:    "real",
+		attrGameTraceID: tid,
+	})) {
+		t.Fatal("game_trace_correlation carrying game_trace_id must apply")
+	}
+	snap := s.Snapshot()
+	if snap.SessionID != "game-99" {
+		t.Fatalf("SessionID = %q, want game-99 (adopted from game_id)", snap.SessionID)
+	}
+	if snap.GameTraceID != tid {
+		t.Fatalf("GameTraceID = %q, want %q", snap.GameTraceID, tid)
+	}
+}
+
+// TestApplyMetrics_TraceCorrelationWithoutTraceIDIsSafe documents the fallback:
+// a correlation datapoint missing game_trace_id still routes its game_id but leaves
+// GameTraceID empty (no link will be added) — no error.
+func TestApplyMetrics_TraceCorrelationWithoutTraceIDIsSafe(t *testing.T) {
+	s := newTestStore()
+	if !s.ApplyMetrics(metricsWith(metricTraceCorrelation, 1, map[string]string{
+		attrGameID: "game-100",
+	})) {
+		t.Fatal("correlation datapoint with only game_id must still contribute it")
+	}
+	snap := s.Snapshot()
+	if snap.SessionID != "game-100" {
+		t.Fatalf("SessionID = %q, want game-100", snap.SessionID)
+	}
+	if snap.GameTraceID != "" {
+		t.Fatalf("GameTraceID = %q, want empty (no game_trace_id label)", snap.GameTraceID)
+	}
+}
+
 func TestApplyMetrics_MissingSerialSkipped(t *testing.T) {
 	s := newTestStore()
 	if s.ApplyMetrics(metricsWith(metricAccelMagnitude, 1.2, nil)) {

@@ -908,8 +908,25 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	cost := interventionCost(d.Intervention)
 	reason, blocked := l.evaluatePermission(snapshot, c, d, now, cost)
 
-	dCtx, dSpan := l.Tracer.Start(ctx, SpanDecision,
-		trace.WithAttributes(decisionAttributes(state, d, blocked, reason, c.GameKind, c.SessionID)...))
+	// Trace correlation Phase 2 (#1133): when the game-coordinator's root game-span
+	// trace_id is known (ingested from the game_trace_correlation signal into
+	// GameContext.GameTraceID), add an OTel span LINK from this agent.decision span to
+	// that game trace. A Link (not parent-child) because the relationship is async /
+	// cross-trace: the agent's decision is its own root trace that REFERENCES the game.
+	// This complements — does not replace — the #1095 game.id attribute (still emitted
+	// via decisionAttributes). gameTraceLink returns no options when the id is absent or
+	// invalid, so the span is created exactly as before (graceful fallback, no error).
+	startOpts := []trace.SpanStartOption{
+		trace.WithAttributes(decisionAttributes(state, d, blocked, reason, c.GameKind, c.SessionID)...),
+	}
+	startOpts = append(startOpts, gameTraceLink(c.GameTraceID)...)
+	if c.GameTraceID != "" {
+		// Also stamp the originating trace_id as a span ATTRIBUTE (not only the Link
+		// attribute), so it is searchable as a span tag in Jaeger even on backends
+		// that don't surface Link attributes in search (#1133 review).
+		startOpts = append(startOpts, trace.WithAttributes(attribute.String(AttrGameTraceID, c.GameTraceID)))
+	}
+	dCtx, dSpan := l.Tracer.Start(ctx, SpanDecision, startOpts...)
 	defer dSpan.End()
 
 	// The interventions.allowed evaluation as a feature_flag.* span event
@@ -1120,6 +1137,40 @@ func (l *Loop) shouldLog() bool {
 	}
 	l.lastLog = t
 	return true
+}
+
+// gameTraceLink builds the trace-correlation span option for #1133: when gameTraceID
+// is a valid hex trace_id (ingested into GameContext from the game_trace_correlation
+// signal), it returns a single trace.WithLinks option whose Link targets a remote
+// SpanContext reconstructed from that trace_id, so the agent.decision span LINKS to the
+// originating game trace (navigable in Jaeger). The Link has no span_id — we correlate
+// to the game's TRACE, not one specific span in it — so the SpanContext carries only the
+// trace_id and is marked Remote + Sampled; it still validates (a non-zero trace_id is
+// sufficient for IsValid on a remote link target). An empty or unparseable id yields NO
+// option, so the span is created exactly as before: graceful fallback, no Link, no error.
+//
+// The trace_id is also stamped as a plain attribute on the Link; the caller additionally
+// stamps it as a span attribute (see runDecision) so it stays queryable as a span tag on
+// backends that don't surface Link attributes in search.
+func gameTraceLink(gameTraceID string) []trace.SpanStartOption {
+	if gameTraceID == "" {
+		return nil
+	}
+	tid, err := trace.TraceIDFromHex(gameTraceID)
+	if err != nil || !tid.IsValid() {
+		return nil
+	}
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    tid,
+		TraceFlags: trace.FlagsSampled,
+		Remote:     true,
+	})
+	return []trace.SpanStartOption{
+		trace.WithLinks(trace.Link{
+			SpanContext: sc,
+			Attributes:  []attribute.KeyValue{attribute.String(AttrGameTraceID, gameTraceID)},
+		}),
+	}
 }
 
 // decisionAttributes builds the complete #724 + #729 decision-span schema for

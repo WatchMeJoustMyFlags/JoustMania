@@ -28,6 +28,8 @@ import threading
 import time
 from contextlib import suppress
 
+from opentelemetry import trace
+
 from lib.feature_flags import (
     GAME_KIND_REAL as EVAL_GAME_KIND_REAL,
 )
@@ -96,6 +98,11 @@ class GameSession:
         self.game_start_time = time.time()
         self.game_state = game_coordinator_pb2.GameState.STARTING
         self.current_game = None
+        # Hex trace_id of this session's root game span (#1133). Captured once the
+        # span exists in _run_game and exposed as the game_trace_correlation gauge's
+        # game_trace_id label so the agent can link agent.decision -> this game trace.
+        # Empty until the span opens; used at retire to remove the exact gauge series.
+        self.game_trace_id = ""
 
         # Per-session loop runs in its own thread with its own GrpcClientManager.
         self.clients = GrpcClientManager()
@@ -132,6 +139,13 @@ class GameSession:
         ):
             with suppress(KeyError, ValueError):
                 gauge.remove(*labels)
+
+        # The trace-correlation gauge (#1133) carries a different label tuple
+        # (game_kind, game_id, game_trace_id) and was only set when the span was
+        # sampled (game_trace_id non-empty), so remove it separately and only then.
+        if self.game_trace_id:
+            with suppress(KeyError, ValueError):
+                metrics.game_trace_correlation.remove(self.game_kind, self.game_id, self.game_trace_id)
 
     def on_event_state_sync(self, event_type: str) -> None:
         """EventBus state-sync callback bound to THIS session's state (#775).
@@ -239,6 +253,21 @@ class GameSession:
             game_span.set_attribute("experiment.id", self.experiment_id)
             game_span.set_attribute("experiment.arm", self.arm)
             game_span.set_attribute("player.count", len(self.players))
+
+            # Trace-correlation signal (#1133): capture THIS game span's trace_id and
+            # publish it as the game_trace_correlation gauge so the agent can read it
+            # off the metric stream and link agent.decision -> this game trace. A
+            # non-recording span (sampler dropped it, or telemetry off) reports the
+            # all-zero invalid trace id; skip the gauge in that case so the agent never
+            # tries to link to an invalid trace. Set to 1 while live; removed at retire.
+            span_ctx = game_span.get_span_context()
+            if span_ctx.trace_id != 0:
+                self.game_trace_id = trace.format_trace_id(span_ctx.trace_id)
+                metrics.game_trace_correlation.labels(
+                    game_kind=self.game_kind,
+                    game_id=self.game_id,
+                    game_trace_id=self.game_trace_id,
+                ).set(1)
 
             try:
                 # Check if gRPC clients are available
