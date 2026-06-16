@@ -19,8 +19,17 @@ extensions:
           directories:
             keys: /badger/key
             values: /badger/value
+          # #1191: bound badger retention so memory/disk can't creep unbounded
+          # over a long demo under the agent experiment-loop span volume. We only
+          # ever look at recent traces in a demo/dev stack, and badger v2.19.0
+          # exposes no value-log/cache-size knob — the only retention levers are
+          # the span TTL and how often expired data is reclaimed.
           ttl:
-            spans: 168h  # 7 days
+            spans: 24h  # was 168h (7d); a demo only needs the last day of traces
+          # Run badger's value-log GC / compaction on a tighter cadence than the
+          # default so expired spans are actually reclaimed instead of piling up
+          # in the value log between infrequent maintenance cycles.
+          maintenance_interval: 5m
   jaeger_query:
     base_path: /jaeger
     storage:
