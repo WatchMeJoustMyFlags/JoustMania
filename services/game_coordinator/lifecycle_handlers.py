@@ -227,6 +227,64 @@ async def handle_soft_penalty(ctx: InterventionContext, manager: InterventionMan
             await warn(serial)
 
 
+# Auto-rubberband (#1143, #1103 Phase 3) value parsing. The value is a single
+# STRING strength selector: "off" (default / neutral, no-op) | "gentle" | "strong".
+# Unlike the per-player flags this is a GLOBAL decision the coordinator expands.
+# Any malformed/unknown value degrades to the safe default "off" (no-op).
+AUTO_RUBBERBAND_NONE_VALUES = frozenset({"", "off", "none", "0"})
+AUTO_RUBBERBAND_STRENGTHS = frozenset({"gentle", "strong"})
+
+
+def parse_auto_rubberband_value(value: object) -> str | None:
+    """Parse an auto_rubberband value into a strength (``"gentle"``/``"strong"``).
+
+    Returns the strength string for a recognized value, or ``None`` for the
+    neutral / empty / unknown forms (caller treats ``None`` as a safe no-op). A
+    malformed/unknown value is intentionally a no-op rather than a garbage
+    dispatch — the coordinator only ever expands a recognized strength.
+    """
+    text = str(value).strip().lower()
+    if text in AUTO_RUBBERBAND_NONE_VALUES:
+        return None
+    if text in AUTO_RUBBERBAND_STRENGTHS:
+        return text
+    return None  # unknown strength: safe no-op
+
+
+async def handle_auto_rubberband(ctx: InterventionContext) -> None:
+    """Expand a single auto_rubberband decision across players (#1143).
+
+    Unlike the per-player handlers (which resolve a per-serial targeting ladder),
+    this is a GLOBAL state decision: ``ctx.value`` is the strength selector
+    (``"gentle"`` / ``"strong"`` / neutral). The coordinator reads the LIVE skill
+    gap and applies a bounded, time-boxed handicap BOOST to the trailing
+    player(s) via ``game.apply_auto_rubberband`` — compressing the gap without
+    ever inverting standings or causing instant death (both bounded inside the
+    method + the downstream [0.5, 2.0] clamp).
+
+    Reverting requires no action: the per-player boosts simply stop applying when
+    their deadlines pass (``_compute_effective_thresholds`` reads them live).
+    Battery gating is handled per-player inside the method's ranking (it only ever
+    raises a player's threshold; a low-battery laggard simply gets a slightly
+    smaller benefit, never a penalty), so no extra guard is needed here.
+    """
+    game = ctx.game
+    if game is None:
+        logger.debug("auto_rubberband: no live game, ignoring")
+        return
+
+    strength = parse_auto_rubberband_value(ctx.value)
+    if strength is None:
+        return  # neutral / malformed: safe no-op
+
+    apply = getattr(game, "apply_auto_rubberband", None)
+    if not callable(apply):
+        logger.debug("auto_rubberband: game has no apply_auto_rubberband, ignoring")
+        return
+
+    await apply(strength)
+
+
 async def handle_shield_seconds(ctx: InterventionContext, manager: InterventionManager) -> None:
     """Grant per-player shields via per-serial targeting resolution (N3).
 
@@ -344,5 +402,8 @@ def register_lifecycle_handlers(manager: InterventionManager) -> None:
         "soft_penalty_action",
         lambda ctx: handle_soft_penalty(ctx, manager),
     )
+    # auto_rubberband (#1143) is a GLOBAL state decision (not per-serial), so it
+    # needs no targeting helper — register the plain handler directly.
+    manager.register_handler("auto_rubberband", handle_auto_rubberband)
     manager.register_handler("eliminate_player", handle_eliminate_player)
     manager.register_handler("revive_player", handle_revive_player)

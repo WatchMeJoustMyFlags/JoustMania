@@ -54,6 +54,7 @@ const (
 	flagGlobalDifficultyFactor    = "global_difficulty_factor" // #766 F6
 	flagPacingProfile             = "pacing_profile"           // #766 F6
 	flagTempoRamp                 = "tempo_ramp"               // #1117 (#1103 MVP action 2)
+	flagAutoRubberband            = "auto_rubberband"          // #1143 (#1103 Phase 3)
 	flagEliminatePlayer           = "eliminate_player"
 	flagRevivePlayer              = "revive_player"
 	flagAudioCue                  = "audio_cue"
@@ -70,6 +71,7 @@ const activeVariant = "active"
 const (
 	neutralNone    = "none"
 	neutralDefault = "default"
+	neutralOff     = "off" // #1143 auto_rubberband neutral variant
 )
 
 // DefaultPath is the in-container interventions file path. Override with
@@ -121,6 +123,10 @@ const (
 	// gentlest, fully-recoverable "warn" — used when a Decision carries no Value or
 	// a malformed one. Never escalates an unparseable value to a tighten.
 	defaultSoftPenalty = "warn"
+	// defaultAutoRubberband is the safe fallback auto_rubberband strength (#1143):
+	// the gentler "gentle" — used when a Decision carries no Value. A malformed
+	// value degrades to "off" via autoRubberbandOr (never escalates to "strong").
+	defaultAutoRubberband = "gentle"
 )
 
 // partial_shield bounds (#1129) — mirror BaseGameMode's clamps so the writer
@@ -389,6 +395,7 @@ var stateNeutral = map[string]string{
 	flagGlobalDifficultyFactor:    neutralDefault, // #766 F6 (neutral = 1.0 "default")
 	flagPacingProfile:             neutralNone,    // #766 F6 (neutral = "none")
 	flagTempoRamp:                 neutralNone,    // #1117 (neutral = "none")
+	flagAutoRubberband:            neutralOff,     // #1143 (neutral = "off")
 }
 
 var targetedNeutral = map[string]string{
@@ -425,6 +432,8 @@ func (w *Writer) mutate(doc *orderedDoc, d decision.Decision) error {
 		return w.setStateString(doc, flagPacingProfile, w.payloadOr(d.Value, defaultPacingProfile))
 	case decision.InterventionRampTempo: // #1117 (#1103 MVP action 2), shadow-only
 		return w.setStateString(doc, flagTempoRamp, w.tempoRampOr(d.Value, defaultTempoRamp))
+	case decision.InterventionAutoRubberband: // #1143 (#1103 Phase 3), shadow-only
+		return w.setStateString(doc, flagAutoRubberband, w.autoRubberbandOr(d.Value, defaultAutoRubberband))
 
 	// Per-player state-shaped overrides (flagd targeting if-ladder).
 	case decision.InterventionAdjustPlayerSensitivity:
@@ -656,6 +665,27 @@ func (w *Writer) softPenaltyOr(v, def string) string {
 		return def
 	}
 	return v
+}
+
+// autoRubberbandOr validates an auto_rubberband strength "gentle" | "strong"
+// (#1143) and returns it, or def when v is empty. ANY other value (including a
+// malformed one) degrades to the neutral "off" no-op rather than dispatching
+// garbage — critically, an unknown value never escalates to "strong". Defensive
+// sibling of softPenaltyOr: the game-side parser
+// (lifecycle_handlers.parse_auto_rubberband_value) independently re-validates and
+// no-ops on garbage, but validating here keeps a malformed LLM value from ever
+// reaching the flag file.
+func (w *Writer) autoRubberbandOr(v, def string) string {
+	if v == "" {
+		return def
+	}
+	t := strings.ToLower(strings.TrimSpace(v))
+	if t == "gentle" || t == "strong" || t == "off" {
+		return t
+	}
+	// Unknown strength: degrade to the safe neutral "off" no-op.
+	w.log.Warn("agent.action_bad_value", "value", v, "fallback", "off")
+	return "off"
 }
 
 // payloadOr returns v, or the default when v is empty.

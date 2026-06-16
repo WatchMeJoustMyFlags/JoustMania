@@ -79,7 +79,18 @@ const (
 	// discrete adjust_music_tempo steps. SHADOW-game-only initially: allow-listed
 	// only via the `shadow_experimental` interventions_allowed variant
 	// (services/flagd/agent.json), never the real-facing ambient/standard/full.
-	InterventionRampTempo       = "ramp_tempo"
+	InterventionRampTempo = "ramp_tempo"
+	// InterventionAutoRubberband (#1143, #1103 Phase 3) is a SINGLE global decision
+	// the COORDINATOR expands across players from the live skill gap. Value "off"
+	// (default) | "gentle" | "strong" (compression strength). The coordinator ranks
+	// alive players by headroom to their death threshold and applies a bounded,
+	// time-boxed handicap BOOST to the trailing player(s) — compressing the gap
+	// without ever inverting standings or causing instant death (bounded game-side
+	// + the [0.5,2.0] clamp). Reuses the #1107 handicap mechanism, composes by MAX
+	// with partial_shield. SHADOW-game-only initially: allow-listed only via the
+	// `shadow_experimental` interventions_allowed variant (services/flagd/agent.json),
+	// never the real-facing ambient/standard/full.
+	InterventionAutoRubberband  = "auto_rubberband"
 	InterventionEliminatePlayer = "eliminate_player"
 	InterventionRevivePlayer    = "revive_player"
 	InterventionEndGame         = "end_game"
@@ -117,6 +128,7 @@ var interventionWeights = map[string]float64{
 	InterventionAdjustGlobalDifficulty:  1, // #766 F6
 	InterventionSetPacingProfile:        1, // #766 F6
 	InterventionRampTempo:               1, // #1117 (#1103 MVP action 2)
+	InterventionAutoRubberband:          1, // #1143 (#1103 Phase 3) — MEDIUM
 	// Hard (2)
 	InterventionAdjustGlobalSensitivity: 2,
 	InterventionEliminatePlayer:         2,

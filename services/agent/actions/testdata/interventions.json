@@ -110,6 +110,15 @@
       },
       "defaultVariant": "none"
     },
+    "auto_rubberband": {
+      "state": "ENABLED",
+      "variants": {
+        "off": "off",
+        "gentle": "gentle",
+        "strong": "strong"
+      },
+      "defaultVariant": "off"
+    },
     "eliminate_player": {
       "state": "ENABLED",
       "variants": {

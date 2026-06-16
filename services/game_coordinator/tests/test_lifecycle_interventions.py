@@ -44,11 +44,13 @@ from services.game_coordinator.interventions import (
 )
 from services.game_coordinator.lifecycle_handlers import (
     ELIMINATE_REASON,
+    handle_auto_rubberband,
     handle_eliminate_player,
     handle_partial_shield,
     handle_revive_player,
     handle_shield_seconds,
     handle_soft_penalty,
+    parse_auto_rubberband_value,
     parse_partial_shield_value,
     parse_soft_penalty_value,
     register_lifecycle_handlers,
@@ -528,6 +530,61 @@ class TestRevivePlayer:
 # --------------------------------------------------------------------------- #
 # registration wiring
 # --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# auto_rubberband parser + handler (#1143)
+# --------------------------------------------------------------------------- #
+class TestParseAutoRubberbandValue:
+    def test_recognized_strengths(self):
+        assert parse_auto_rubberband_value("gentle") == "gentle"
+        assert parse_auto_rubberband_value("strong") == "strong"
+        assert parse_auto_rubberband_value(" STRONG ") == "strong"
+
+    @pytest.mark.parametrize("neutral", ["", "off", "none", "0"])
+    def test_neutral_is_none(self, neutral):
+        assert parse_auto_rubberband_value(neutral) is None
+
+    @pytest.mark.parametrize("bad", ["gentle:5", "aggressive", "1.4", "gentlexx"])
+    def test_unknown_is_none_noop(self, bad):
+        # An unknown/malformed value is a safe no-op (None), never garbage.
+        assert parse_auto_rubberband_value(bad) is None
+
+
+class TestAutoRubberbandHandler:
+    @pytest.mark.asyncio
+    async def test_expands_boost_to_laggard(self):
+        game = make_ffa_game(num_players=2)
+        # Build a clear skill gap: p1 leading (low intensity), p2 lagging (high).
+        game.players["p1"].smoothed_accel = 0.2
+        game.players["p2"].smoothed_accel = 1.5
+
+        await handle_auto_rubberband(make_ctx("auto_rubberband", "strong", game))
+
+        assert game.players["p2"].rubberband_until > time.time()
+        assert game.players["p2"].rubberband_boost > 1.0
+
+    @pytest.mark.asyncio
+    async def test_neutral_value_noop(self):
+        game = make_ffa_game(num_players=2)
+        game.players["p1"].smoothed_accel = 0.2
+        game.players["p2"].smoothed_accel = 1.5
+        await handle_auto_rubberband(make_ctx("auto_rubberband", "off", game))
+        for p in game.players.values():
+            assert p.rubberband_until == 0.0
+
+    @pytest.mark.asyncio
+    async def test_malformed_value_noop(self):
+        game = make_ffa_game(num_players=2)
+        game.players["p1"].smoothed_accel = 0.2
+        game.players["p2"].smoothed_accel = 1.5
+        await handle_auto_rubberband(make_ctx("auto_rubberband", "garbage", game))
+        for p in game.players.values():
+            assert p.rubberband_until == 0.0
+
+    @pytest.mark.asyncio
+    async def test_no_live_game_is_noop(self):
+        await handle_auto_rubberband(make_ctx("auto_rubberband", "strong", None))  # no raise
+
+
 class TestRegistration:
     def test_register_lifecycle_handlers_wires_all(self):
         mgr, _ = make_manager()
@@ -536,6 +593,7 @@ class TestRegistration:
             "shield_seconds",
             "partial_shield_seconds",
             "soft_penalty_action",
+            "auto_rubberband",
             "eliminate_player",
             "revive_player",
         ):

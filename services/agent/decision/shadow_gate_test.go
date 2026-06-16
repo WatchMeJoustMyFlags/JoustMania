@@ -210,3 +210,36 @@ func TestSoftPenaltyIsShadowOnly(t *testing.T) {
 		})
 	}
 }
+
+// TestAutoRubberbandIsShadowOnly is the load-bearing gating proof for #1143 (#1103
+// Phase 3): auto_rubberband MUST appear ONLY in the shadow_experimental variant of
+// interventions_allowed and MUST be absent from every real-facing variant
+// (ambient/standard/full). The allow-list is the enforcement gate, so absence from
+// the real variants means auto_rubberband (a real game-affecting, gap-compressing
+// intervention) is rejected for real games by construction.
+//
+// Asserted on the PRODUCTION flagd agent config only. The CI config
+// (flagd/ci/agent.json) is the live integration-test fixture owned outside this
+// change; the production agent.json is the source of truth this PR edits.
+func TestAutoRubberbandIsShadowOnly(t *testing.T) {
+	path := filepath.Join("..", "..", "flagd", "agent.json")
+	variants := readInterventionsAllowed(t, path)
+
+	shadow, ok := variants["shadow_experimental"]
+	if !ok {
+		t.Fatalf("%s: missing shadow_experimental variant", path)
+	}
+	if !contains(shadow, InterventionAutoRubberband) {
+		t.Fatalf("%s: shadow_experimental must include %q", path, InterventionAutoRubberband)
+	}
+
+	for _, realVariant := range []string{"ambient", "standard", "full"} {
+		list, ok := variants[realVariant]
+		if !ok {
+			t.Fatalf("%s: missing expected real variant %q", path, realVariant)
+		}
+		if contains(list, InterventionAutoRubberband) {
+			t.Fatalf("%s: real variant %q must NOT include %q (shadow-only)", path, realVariant, InterventionAutoRubberband)
+		}
+	}
+}

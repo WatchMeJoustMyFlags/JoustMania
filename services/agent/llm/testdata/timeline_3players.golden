@@ -75,6 +75,11 @@ Higher sensitivity level = higher bar = HARDER to die; slower tempo = lower bar
     "tighten" briefly LOWERS the death threshold (mirror of partial_shield) so the
     player is easier to die for N seconds — pressure, NOT guaranteed elimination
     (still clamped, never instant-death).
+  - auto_rubberband ("off" default | "gentle" | "strong"): ONE decision the
+    coordinator EXPANDS across players from the live skill gap — it boosts the
+    trailing player(s)' death threshold (gentle up to +20%, strong up to +40%),
+    capped so a laggard can never overtake the current leader. Use to keep a
+    lopsided game close without hand-picking who to help; never inverts standings.
   - eliminate_player: immediate and PERMANENT removal. end_game: ends the round
     now. Both are maximal, irreversible actions — last player alive wins.
 

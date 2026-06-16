@@ -242,6 +242,27 @@ INTERVENTION_SPECS: tuple[InterventionSpec, ...] = (
         value_kind="string",
         none_value="none",
     ),
+    # #1143 (#1103 Phase 3) — auto_rubberband: a SINGLE global decision the
+    # COORDINATOR expands across players from the live skill gap. STRING value
+    # "off" (default / neutral) | "gentle" | "strong" (compression strength). The
+    # handler ranks alive players by headroom to their death threshold and applies
+    # a bounded, time-boxed handicap BOOST to the trailing player(s) — compressing
+    # the gap without inverting standings or causing instant death (bounded in the
+    # method + the [0.5,2.0] clamp). Reuses the #1107 handicap mechanism, composes
+    # by MAX (alongside partial_shield). NOT player_targeted — the global value is
+    # read once and expanded. SHADOW-game-only initially: allow-listed ONLY via the
+    # `shadow_experimental` interventions_allowed variant (the load-bearing gate),
+    # never the real-facing ambient/standard/full variants.
+    InterventionSpec(
+        flag_key="auto_rubberband",
+        type_id="auto_rubberband",
+        weight=WEIGHT_MEDIUM,
+        edge_triggered=False,
+        player_targeted=False,
+        value_kind="string",
+        # "off" (and "none"/empty) means no rubberbanding (the default-safe value).
+        none_value="off",
+    ),
     InterventionSpec(
         flag_key="volume_override",
         type_id="adjust_volume",

@@ -513,6 +513,102 @@ class TestComputeEffectiveThresholds:
         _, death = game._compute_effective_thresholds(p)
         assert death == pytest.approx(death_n * 0.6)
 
+    # --- #1143: time-boxed auto_rubberband BOOST in the threshold path ------- #
+
+    def test_rubberband_active_boosts_threshold(self, game):
+        """An active rubberband boost (>= 1.0) raises the threshold via MAX."""
+        from lib.types import Sensitivity
+
+        game.sensitivity = Sensitivity.MEDIUM
+        game.music_speed = SLOW_MUSIC_SPEED
+        neutral = Player(serial="t", sensitivity_factor=1.0, handicap_factor=1.0)
+        boosted = Player(
+            serial="t",
+            sensitivity_factor=1.0,
+            handicap_factor=1.0,
+            rubberband_until=time.time() + 5.0,
+            rubberband_boost=1.4,
+        )
+        _, death_n = game._compute_effective_thresholds(neutral)
+        _, death_b = game._compute_effective_thresholds(boosted)
+        assert death_b == pytest.approx(death_n * 1.4)
+        assert death_b > death_n  # harder to die
+
+    def test_rubberband_expired_is_noop(self, game):
+        """A rubberband whose deadline has passed simply stops applying."""
+        from lib.types import Sensitivity
+
+        game.sensitivity = Sensitivity.MEDIUM
+        game.music_speed = SLOW_MUSIC_SPEED
+        plain = Player(serial="t", sensitivity_factor=1.0, handicap_factor=1.0)
+        expired = Player(
+            serial="t",
+            sensitivity_factor=1.0,
+            handicap_factor=1.0,
+            rubberband_until=time.time() - 1.0,  # already past
+            rubberband_boost=1.4,
+        )
+        assert game._compute_effective_thresholds(expired) == pytest.approx(game._compute_effective_thresholds(plain))
+
+    def test_rubberband_takes_max_with_partial_shield(self, game):
+        """Both strengthening boosts compose by MAX: a stronger partial_shield
+        boost wins over a weaker rubberband boost (and vice versa)."""
+        from lib.types import Sensitivity
+
+        game.sensitivity = Sensitivity.MEDIUM
+        game.music_speed = SLOW_MUSIC_SPEED
+        neutral = Player(serial="t", sensitivity_factor=1.0, handicap_factor=1.0)
+        both = Player(
+            serial="t",
+            sensitivity_factor=1.0,
+            handicap_factor=1.0,
+            partial_shield_until=time.time() + 5.0,
+            partial_shield_boost=1.2,
+            rubberband_until=time.time() + 5.0,
+            rubberband_boost=1.4,
+        )
+        _, death_n = game._compute_effective_thresholds(neutral)
+        _, death = game._compute_effective_thresholds(both)
+        # MAX(1.2, 1.4) = 1.4 (the stronger boost wins).
+        assert death == pytest.approx(death_n * 1.4)
+
+    def test_rubberband_soft_penalty_min_overrides(self, game):
+        """soft_penalty MIN is applied AFTER both boosts' MAX, so an active tighten
+        cuts through a rubberband boost too (pressure overrides protection)."""
+        from lib.types import Sensitivity
+
+        game.sensitivity = Sensitivity.MEDIUM
+        game.music_speed = SLOW_MUSIC_SPEED
+        neutral = Player(serial="t", sensitivity_factor=1.0, handicap_factor=1.0)
+        both = Player(
+            serial="t",
+            sensitivity_factor=1.0,
+            handicap_factor=1.0,
+            rubberband_until=time.time() + 5.0,
+            rubberband_boost=1.4,
+            soft_penalty_until=time.time() + 5.0,
+            soft_penalty_factor=0.6,
+        )
+        _, death_n = game._compute_effective_thresholds(neutral)
+        _, death = game._compute_effective_thresholds(both)
+        assert death == pytest.approx(death_n * 0.6)
+
+    def test_rubberband_clamped_not_immune(self, game):
+        """Even a maxed boost is clamped to 2.0 — never immune, never infinite."""
+        from lib.types import Sensitivity
+
+        game.sensitivity = Sensitivity.MEDIUM
+        game.music_speed = SLOW_MUSIC_SPEED
+        p = Player(
+            serial="t",
+            sensitivity_factor=1.0,
+            handicap_factor=1.0,
+            rubberband_until=time.time() + 5.0,
+            rubberband_boost=2.0,
+        )
+        _, death = game._compute_effective_thresholds(p)
+        assert death > 0 and death != float("inf")
+
 
 # ========================================================================
 # grant_partial_shield primitive (#1129)
@@ -675,6 +771,130 @@ class TestSoftPenaltyPrimitives:
         await game.apply_soft_penalty("AA", 1.0, 0.9)
         assert game.players["AA"].soft_penalty_until == pytest.approx(far)
         assert game.players["AA"].soft_penalty_factor == pytest.approx(0.5)
+
+
+# ========================================================================
+# apply_auto_rubberband primitive (#1143)
+# ========================================================================
+
+
+class TestApplyAutoRubberband:
+    """Tests for BaseGameMode.apply_auto_rubberband: single decision the
+    coordinator EXPANDS across players from the live skill gap."""
+
+    @pytest.fixture
+    def game(self):
+        from lib.types import Sensitivity
+
+        mock_cm = MockControllerManagerService(num_controllers=3)
+        game = FFAGame(
+            controller_manager_client=mock_cm,
+            event_publisher=async_noop,
+            audio_client=None,
+            game_id="test_rubberband",
+        )
+        game.sensitivity = Sensitivity.MEDIUM
+        game.music_speed = SLOW_MUSIC_SPEED
+        # LEADER: low intensity => large headroom => comfortably ahead.
+        game.players["LEAD"] = Player(serial="LEAD", alive=True, smoothed_accel=0.2)
+        # LAGGARD: high intensity => small headroom => on the edge.
+        game.players["LAG"] = Player(serial="LAG", alive=True, smoothed_accel=1.5)
+        return game
+
+    @pytest.mark.asyncio
+    async def test_unknown_strength_noop(self, game):
+        assert await game.apply_auto_rubberband("off") == 0
+        assert await game.apply_auto_rubberband("aggressive") == 0
+        assert await game.apply_auto_rubberband("") == 0
+        for p in game.players.values():
+            assert p.rubberband_until == 0.0
+
+    @pytest.mark.asyncio
+    async def test_fewer_than_two_players_noop(self, game):
+        game.players = {"solo": Player(serial="solo", alive=True, smoothed_accel=1.0)}
+        assert await game.apply_auto_rubberband("strong") == 0
+
+    @pytest.mark.asyncio
+    async def test_boosts_laggard_not_leader(self, game):
+        n = await game.apply_auto_rubberband("strong")
+        assert n >= 1
+        lag = game.players["LAG"]
+        lead = game.players["LEAD"]
+        # The laggard (most behind) gets the boost.
+        assert lag.rubberband_until > time.time()
+        assert lag.rubberband_boost > 1.0
+        # The leader gets (close to) nothing — never penalized.
+        assert lead.rubberband_boost == pytest.approx(1.0) or lead.rubberband_until <= time.time()
+
+    @pytest.mark.asyncio
+    async def test_strong_boosts_more_than_gentle(self, game):
+        await game.apply_auto_rubberband("gentle")
+        gentle_boost = game.players["LAG"].rubberband_boost
+        # Fresh game so the strong boost isn't capped by extend-not-weaken.
+        game.players["LAG"].rubberband_until = 0.0
+        game.players["LAG"].rubberband_boost = 1.0
+        await game.apply_auto_rubberband("strong")
+        strong_boost = game.players["LAG"].rubberband_boost
+        assert strong_boost > gentle_boost
+
+    @pytest.mark.asyncio
+    async def test_gentle_cap_respected(self, game):
+        await game.apply_auto_rubberband("gentle")
+        # Gentle tops out at +0.2 above neutral (the laggard is the most behind).
+        assert game.players["LAG"].rubberband_boost <= 1.0 + game.RUBBERBAND_MAX_BOOST_GENTLE + 1e-9
+
+    @pytest.mark.asyncio
+    async def test_never_inverts_standings(self, game):
+        """Standings = headroom to death. The boosted laggard's resulting headroom
+        must never exceed the leader's (compression only, never overtaking)."""
+        lead = game.players["LEAD"]
+        _, lead_death_before = game._compute_effective_thresholds(lead)
+        lead_headroom = lead_death_before - lead.smoothed_accel
+
+        await game.apply_auto_rubberband("strong")
+
+        lag = game.players["LAG"]
+        _, lag_death = game._compute_effective_thresholds(lag)
+        lag_headroom = lag_death - lag.smoothed_accel
+        assert lag_headroom <= lead_headroom + 1e-6
+        # The leader (LEAD) is never penalized; its headroom is unchanged.
+        _, lead_death_after = game._compute_effective_thresholds(lead)
+        assert lead_death_after == pytest.approx(lead_death_before)
+
+    @pytest.mark.asyncio
+    async def test_never_instant_death_threshold_finite(self, game):
+        await game.apply_auto_rubberband("strong")
+        for p in game.players.values():
+            _, death = game._compute_effective_thresholds(p)
+            assert death > 0 and death != float("inf")
+
+    @pytest.mark.asyncio
+    async def test_equal_field_noop(self, game):
+        """If everyone has identical headroom there is no gap to compress."""
+        for p in game.players.values():
+            p.smoothed_accel = 0.8
+        assert await game.apply_auto_rubberband("strong") == 0
+
+    @pytest.mark.asyncio
+    async def test_seconds_capped(self, game):
+        await game.apply_auto_rubberband("strong", seconds=9999.0)
+        assert game.players["LAG"].rubberband_until <= time.time() + game.RUBBERBAND_MAX_SECONDS + 1.0
+
+    @pytest.mark.asyncio
+    async def test_nonpositive_seconds_noop(self, game):
+        assert await game.apply_auto_rubberband("strong", seconds=0.0) == 0
+        assert await game.apply_auto_rubberband("strong", seconds=-5.0) == 0
+
+    @pytest.mark.asyncio
+    async def test_extend_not_shorten_strengthen_not_weaken(self, game):
+        await game.apply_auto_rubberband("strong", seconds=30.0)
+        far = game.players["LAG"].rubberband_until
+        strong_boost = game.players["LAG"].rubberband_boost
+        # A shorter, weaker (gentle) re-arming must not reduce the active window
+        # or weaken the active boost.
+        await game.apply_auto_rubberband("gentle", seconds=1.0)
+        assert game.players["LAG"].rubberband_until == pytest.approx(far)
+        assert game.players["LAG"].rubberband_boost == pytest.approx(strong_boost)
 
 
 # ========================================================================

@@ -459,6 +459,69 @@ func TestSoftPenaltyMalformedFallsBackSafe(t *testing.T) {
 	}
 }
 
+// TestAutoRubberbandStateAndRevert verifies the #1143 auto_rubberband writer case
+// emits a session-scoped STRING state flag (flips defaultVariant to "active" with
+// the strength value) and that reverting flips back to the neutral "off" variant.
+func TestAutoRubberbandStateAndRevert(t *testing.T) {
+	w, path := newTestWriter(t)
+	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionAutoRubberband, Value: "strong"}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if v := activeValueOf(t, path, flagAutoRubberband); v != "strong" {
+		t.Fatalf("auto_rubberband value = %q, want %q", v, "strong")
+	}
+	if dv := readFlag(t, path, flagAutoRubberband)["defaultVariant"]; dv != activeVariant {
+		t.Fatalf("pre-revert defaultVariant = %v, want %q", dv, activeVariant)
+	}
+	if err := w.RevertState(flagAutoRubberband); err != nil {
+		t.Fatalf("revert: %v", err)
+	}
+	if dv := readFlag(t, path, flagAutoRubberband)["defaultVariant"]; dv != neutralOff {
+		t.Fatalf("post-revert defaultVariant = %v, want %q", dv, neutralOff)
+	}
+	assertStructurallyValid(t, path)
+}
+
+// TestAutoRubberbandDefaultValue verifies an empty Value falls back to the
+// writer's gentle default (#1143).
+func TestAutoRubberbandDefaultValue(t *testing.T) {
+	w, path := newTestWriter(t)
+	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionAutoRubberband}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if v := activeValueOf(t, path, flagAutoRubberband); v != defaultAutoRubberband {
+		t.Fatalf("default auto_rubberband value = %q, want %q", v, defaultAutoRubberband)
+	}
+}
+
+// TestAutoRubberbandMalformedFallsBackToOff verifies any unknown strength degrades
+// to the neutral "off" no-op — crucially never escalating an unknown value into a
+// compression boost (#1143).
+func TestAutoRubberbandMalformedFallsBackToOff(t *testing.T) {
+	for _, bad := range []string{"abc", "GENTLE2", "1.4", "strong:5", "aggressive"} {
+		w, path := newTestWriter(t)
+		if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionAutoRubberband, Value: bad}); err != nil {
+			t.Fatalf("apply %q: %v", bad, err)
+		}
+		if v := activeValueOf(t, path, flagAutoRubberband); v != "off" {
+			t.Fatalf("malformed %q wrote %q, want safe %q", bad, v, "off")
+		}
+		assertStructurallyValid(t, path)
+	}
+}
+
+// TestAutoRubberbandCaseInsensitive verifies recognized strengths are normalized
+// to lower case (#1143).
+func TestAutoRubberbandCaseInsensitive(t *testing.T) {
+	w, path := newTestWriter(t)
+	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionAutoRubberband, Value: "  Gentle "}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if v := activeValueOf(t, path, flagAutoRubberband); v != "gentle" {
+		t.Fatalf("normalized value = %q, want %q", v, "gentle")
+	}
+}
+
 func TestTargetedRequiresSerial(t *testing.T) {
 	w, _ := newTestWriter(t)
 	err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionAdjustPlayerSensitivity})
