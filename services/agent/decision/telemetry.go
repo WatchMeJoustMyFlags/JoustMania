@@ -501,6 +501,16 @@ const AttrDecisionInterventionID = "decision.intervention_id"
 // without changing verdict math, fitness computation, promotion gating, or the loop's
 // control flow.
 const (
+	// SpanExperiment is the long-lived experiment ROOT span (#1188, epic #1181 PR2):
+	// one span per experiment, started when the experiment becomes RUNNING and ended on
+	// its terminal transition (concluded/discarded/promoted/aborted/done). It is the
+	// trace root the per-experiment ANALYSIS spans (experiment.fitness/evaluate/verdict,
+	// agent.llm.retro, agent.game.summary, code_improvement.promote) re-parent under for
+	// an experiment-bound game, so the whole hypothesis-test narrative is ONE trace.
+	// Carries experiment.id / flag_key / objective / target_n / arms. It outlives the
+	// game spans it analyzes (the analysis runs "in between" games), which is why the
+	// analysis spans can be its CHILDREN. Observability only.
+	SpanExperiment = "agent.experiment"
 	// SpanExperimentFitness wraps the per-shadow-game fitness scalar computation in
 	// onGameEnd: the gameFitnessFunc that scores one finished experiment game into the
 	// [0,1] sample the cohort aggregator folds. Carries experiment.id / arm / game.id /
@@ -530,8 +540,17 @@ const (
 	AttrExperimentStatus = "experiment.status"
 	// AttrExperimentObjective is the experiment's fitness objective
 	// (endurance/balanced/accelerate) the per-game fitness was scored against,
-	// recorded on experiment.fitness.
+	// recorded on experiment.fitness. It is also stamped on the agent.experiment ROOT
+	// span (#1188).
 	AttrExperimentObjective = "experiment.objective"
+	// AttrExperimentFlagKey / AttrExperimentTargetN / AttrExperimentArms are the
+	// agent.experiment ROOT span's identifying attributes (#1188): the flag/candidate
+	// under test, the per-arm target sample size, and the comma-joined arm names. They
+	// describe the experiment as a whole (not a single game), so they live only on the
+	// root span.
+	AttrExperimentFlagKey = "experiment.flag_key"
+	AttrExperimentTargetN = "experiment.target_n"
+	AttrExperimentArms    = "experiment.arms"
 	// AttrVerdictOutcome / AttrVerdictDelta / AttrVerdictSignificant carry the rolling
 	// paired-difference verdict the registry computed: the outcome label
 	// ("inconclusive"/"promote"/"discard"), the experimental-minus-control delta, and

@@ -921,6 +921,15 @@ func main() {
 			objResolver.Set(func(flagKey string) string {
 				return objectiveForFlag(reg, flagKey)
 			})
+			// #1188: give the per-game retro + summary spans access to the experiment's
+			// long-lived agent.experiment ROOT span by experiment_id, so an
+			// EXPERIMENT-bound game's agent.llm.retro / agent.game.summary re-parent under
+			// the experiment (joining its trace) instead of standing as own-root spans. The
+			// registry's ExperimentSpanContext is a clean read accessor; a non-experiment
+			// game (empty experiment_id) or a torn-down experiment yields ok=false, so those
+			// spans keep their pre-#1188 game-linked own-root behavior — graceful.
+			retro.SetExperimentParent(reg.ExperimentSpanContext)
+			summaries.SetExperimentParent(reg.ExperimentSpanContext)
 		}
 	}
 

@@ -163,6 +163,20 @@ type RetroCoordinator struct {
 	// via SetFitnessLookup; not safe to call concurrently with OnGameEnd.
 	fitnessLookup func(gameID string) (float64, bool)
 
+	// experimentParent resolves the long-lived agent.experiment ROOT span's SpanContext
+	// by experiment_id (#1188), reading the registry's ExperimentSpanContext accessor.
+	// When wired and the finished game is experiment-bound (GameContext.ExperimentID set)
+	// AND the experiment still has a live root span, the agent.llm.retro span is started
+	// as a remote CHILD of the experiment span instead of an own-root span — so the
+	// retro joins the experiment's trace. This is sound even though the retro is ASYNC
+	// (post-#1179, the infer goroutine ends the span seconds later): the experiment span
+	// OUTLIVES its games (the registry ends it only at the terminal transition, well
+	// after the per-game retro), so the parent is alive when the retro starts. A nil
+	// lookup (the default / tests), a non-experiment game, or a torn-down experiment
+	// (ok=false) falls back to the pre-#1188 game-LINKED own-root span — unchanged.
+	// Injected via SetExperimentParent; not safe to call concurrently with OnGameEnd.
+	experimentParent func(experimentID string) (trace.SpanContext, bool)
+
 	// inferWG tracks every in-flight retro inference goroutine (#1179). OnGameEnd is
 	// a lifecycle hook and MUST NOT block on the 2-10s network call, so the
 	// infer+decode+capture runs in its own goroutine; this wait group lets graceful
@@ -231,6 +245,19 @@ func (rc *RetroCoordinator) SetResolver(r *Resolver) { rc.resolver = r }
 // construction.
 func (rc *RetroCoordinator) SetFitnessLookup(f func(gameID string) (float64, bool)) {
 	rc.fitnessLookup = f
+}
+
+// SetExperimentParent injects the experiment ROOT-span SpanContext lookup seam
+// (#1188): a func that returns the agent.experiment span's SpanContext for an
+// experiment_id (reading the registry's ExperimentSpanContext) and whether one is
+// available. When wired and the finished game is experiment-bound with a live root
+// span, the agent.llm.retro span is re-parented as a remote CHILD of the experiment
+// span (joining the experiment's trace) instead of the pre-#1188 game-linked own-root
+// span. A nil lookup (the default), a non-experiment game, or a torn-down experiment
+// falls back to the existing behavior. Not safe to call concurrently with OnGameEnd —
+// set it during construction.
+func (rc *RetroCoordinator) SetExperimentParent(f func(experimentID string) (trace.SpanContext, bool)) {
+	rc.experimentParent = f
 }
 
 // SetRootContext injects the agent's root context (#1179). The async retro inference
@@ -369,7 +396,14 @@ func (rc *RetroCoordinator) OnGameEnd(c gamecontext.GameContext) {
 			trace.WithAttributes(attribute.String(AttrGameTraceID, c.GameTraceID)))
 	}
 
-	spanCtx, span := rc.Tracer.Start(context.Background(), SpanLLMRetro, startOpts...)
+	// #1188: for an experiment-bound game, re-parent the retro under the experiment
+	// ROOT span — the retro is "in between" games and the experiment outlives them, so
+	// it joins the experiment's trace as a child. The game Link above is RETAINED so the
+	// retro stays navigable to its originating game too. A non-experiment game / unwired
+	// lookup / torn-down experiment yields an invalid SpanContext, so retroParentCtx
+	// returns context.Background(): the pre-#1188 game-linked own-root span, unchanged.
+	parent := rc.retroParentCtx(c.ExperimentID)
+	spanCtx, span := rc.Tracer.Start(parent, SpanLLMRetro, startOpts...)
 
 	rc.Log.Info("agent.llm.retro_captured",
 		"session_id", c.SessionID,
@@ -752,6 +786,29 @@ func (rc *RetroCoordinator) experimentAttributes(c gamecontext.GameContext) []at
 		}
 	}
 	return out
+}
+
+// retroParentCtx returns the context the agent.llm.retro span is started from (#1188):
+// a context whose remote parent is the experiment ROOT span for an experiment-bound
+// game with a live root span, else plain context.Background() (the pre-#1188 own-root
+// behavior). It reads the SpanContext via the injected experimentParent seam and installs
+// it with gamecontext.RemoteParentFromSpanContext.
+//
+// GRACEFUL FALLBACK: an empty experiment_id (non-experiment game), a nil seam (the
+// default / tests), or ok=false (the experiment has no live root span — torn down, or
+// tracer disabled) all yield context.Background(), so the retro span is byte-identical
+// to before #1188 and emission is never broken.
+func (rc *RetroCoordinator) retroParentCtx(experimentID string) context.Context {
+	base := context.Background()
+	if experimentID == "" || rc.experimentParent == nil {
+		return base
+	}
+	sc, ok := rc.experimentParent(experimentID)
+	if !ok {
+		return base
+	}
+	ctx, _ := gamecontext.RemoteParentFromSpanContext(base, sc)
+	return ctx
 }
 
 // compile-time guard: RetroCoordinator.OnGameEnd matches the store hook signature.

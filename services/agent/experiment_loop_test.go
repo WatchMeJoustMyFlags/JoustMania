@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/goleak"
 
 	"github.com/joustmania/agent/experiment"
@@ -166,6 +167,23 @@ func buildLoopForTest(
 	fitness gameFitnessFunc,
 ) *experimentLoop {
 	t.Helper()
+	return buildLoopForTestWithTracer(t, spawner, resolveConfig, realDef, github, fitness, nil)
+}
+
+// buildLoopForTestWithTracer is buildLoopForTest with an injectable root-span tracer for
+// the registry (#1188): passing the SAME recording tracer the loop uses lets a test
+// assert the analysis spans re-parent under the registry's agent.experiment ROOT span. A
+// nil tracer leaves the registry on its default (no-op) tracer — the pre-#1188 shape.
+func buildLoopForTestWithTracer(
+	t *testing.T,
+	spawner experiment.ShadowSpawner,
+	resolveConfig promote.ConfigResolver,
+	realDef promote.RealDefaultWriter,
+	github promote.GitHubClient,
+	fitness gameFitnessFunc,
+	tracer trace.Tracer,
+) *experimentLoop {
+	t.Helper()
 	log := testLogger()
 	gamePath := newGameFileForLoop(t)
 	journalRoot := t.TempDir()
@@ -192,6 +210,7 @@ func buildLoopForTest(
 		Promoter:       promo,
 		Targeting:      targeting,
 		Log:            log,
+		Tracer:         tracer,
 	})
 
 	return &experimentLoop{
