@@ -10,6 +10,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	otelmetric "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/joustmania/agent/gamecontext"
 )
 
 // newInterventionID returns a fresh dispatch-unique id used to tie an intervention's
@@ -131,7 +133,7 @@ func (l *Loop) AwaitEffects() { l.effectWG.Wait() }
 // follow-up runs in its own goroutine. Without a context provider (the re-validation
 // source, same as the #917 async path) there is no way to read the game's future
 // signals, so it no-ops — an un-wired Loop is behavior-unchanged.
-func (l *Loop) scheduleEffectSample(d Decision, baselineVals map[string]float64, thresholds FitnessThresholds) string {
+func (l *Loop) scheduleEffectSample(decisionCtx context.Context, c gamecontext.GameContext, d Decision, baselineVals map[string]float64, thresholds FitnessThresholds) string {
 	// No re-validation source => cannot read the future context => nothing to measure.
 	if l.ctxProvider == nil {
 		return ""
@@ -186,6 +188,18 @@ func (l *Loop) scheduleEffectSample(d Decision, baselineVals map[string]float64,
 		thresholds:   thresholds,
 		dispatchedAt: dispatchedAt,
 		window:       window,
+		// Hub-and-spoke correlation (#1174): capture the game-session trace ids from the
+		// GameContext in scope at schedule time, so the deferred effect span can Link back
+		// to the game hub via the SHARED gameTraceLink primitive (same as decision/retro).
+		// nil-safe: empty ids => no Link.
+		gameTraceID:     c.GameTraceID,
+		gameTraceSpanID: c.GameTraceSpanID,
+		// Capture the CAUSING agent.decision span's SpanContext while it is still live
+		// (decisionCtx is the decision span's context — it calls schedule). The effect
+		// span (emitted seconds later on its own root) Links to it with link.kind=decision
+		// so decision->effect is navigable, mirroring fireCycleLink. Invalid SpanContext
+		// (no-op tracer / no active span) => no Link.
+		decisionSC: trace.SpanContextFromContext(decisionCtx),
 	}
 
 	l.effectWG.Add(1)
@@ -234,6 +248,14 @@ type pendingEffect struct {
 	thresholds   FitnessThresholds
 	dispatchedAt time.Time
 	window       time.Duration
+	// gameTraceID/gameTraceSpanID are the game-session trace ids captured at schedule
+	// time (#1174), used to Link the effect span back to the game hub. Empty => no Link.
+	gameTraceID     string
+	gameTraceSpanID string
+	// decisionSC is the SpanContext of the agent.decision span that caused this effect,
+	// captured live at schedule time (#1174). The effect root Links to it with
+	// link.kind=decision. Invalid => no Link.
+	decisionSC trace.SpanContext
 }
 
 // emitEffectSample is the follow-up half (#918): it re-reads the game's CURRENT signals
@@ -249,18 +271,38 @@ func (l *Loop) emitEffectSample(ctx context.Context, s pendingEffect) {
 
 	// One backdated root span (to dispatch time) parents the per-objective effect spans,
 	// so a Jaeger trace shows the dispatch->follow-up arc, mirroring the #917 apply root.
-	rootCtx, root := l.Tracer.Start(ctx, SpanInterventionEffect,
+	//
+	// Hub-and-spoke correlation (#1174): the effect span carries the game.id query axis
+	// AND TWO navigation Links — (a) gameTraceLink to the game-session trace (the hub),
+	// so "what did the agent learn for game X" lists this span among the spokes; (b)
+	// decisionLink to the CAUSING agent.decision span, so the named "no clue what it
+	// relates to" gap is closed. The decision trace_id is ALSO stamped as a plain
+	// attribute (AttrDecisionInterventionID joins decision<->effect by tag; the link
+	// trace_id makes the decision trace itself greppable). Both Links are nil-safe.
+	startOpts := []trace.SpanStartOption{
 		trace.WithTimestamp(s.dispatchedAt),
 		trace.WithSpanKind(trace.SpanKindInternal),
 		trace.WithAttributes(
 			attribute.String(AttrSessionID, l.gameID),
 			attribute.String(AttrGameID, l.gameID),
 			attribute.String(AttrEffectInterventionID, s.id),
+			// Stamp the SAME key the decision span uses (#1174 consistency) so one tag
+			// joins decision<->effect even on backends that don't surface Link attrs.
+			attribute.String(AttrDecisionInterventionID, s.id),
 			attribute.String(AttrEffectIntervention, s.intervention),
 			attribute.String(AttrEffectObjective, s.objective),
 			attribute.Float64(AttrEffectWindowSeconds, windowSeconds),
 		),
-	)
+	}
+	startOpts = append(startOpts, gameTraceLink(s.gameTraceID, s.gameTraceSpanID)...)
+	if s.gameTraceID != "" {
+		startOpts = append(startOpts, trace.WithAttributes(attribute.String(AttrGameTraceID, s.gameTraceID)))
+	}
+	if s.gameTraceSpanID != "" {
+		startOpts = append(startOpts, trace.WithAttributes(attribute.String(AttrGameTraceSpanID, s.gameTraceSpanID)))
+	}
+	startOpts = append(startOpts, decisionLink(s.decisionSC)...)
+	rootCtx, root := l.Tracer.Start(ctx, SpanInterventionEffect, startOpts...)
 	defer root.End()
 
 	if !ok {
@@ -282,7 +324,11 @@ func (l *Loop) emitEffectSample(ctx context.Context, s pendingEffect) {
 		_, span := l.Tracer.Start(rootCtx, SpanInterventionEffect,
 			trace.WithSpanKind(trace.SpanKindInternal),
 			trace.WithAttributes(
+				// game.id + the intervention id on the per-signal child too (#1174), so a
+				// child span found in isolation is still attributable to its game + cause.
+				attribute.String(AttrGameID, l.gameID),
 				attribute.String(AttrEffectInterventionID, s.id),
+				attribute.String(AttrDecisionInterventionID, s.id),
 				attribute.String(AttrEffectIntervention, s.intervention),
 				attribute.String(AttrEffectObjective, s.objective),
 				attribute.String(AttrEffectSignal, key),

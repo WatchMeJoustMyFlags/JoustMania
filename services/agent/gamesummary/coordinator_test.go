@@ -75,6 +75,54 @@ func TestCoordinator_WritesFileAndSpan(t *testing.T) {
 	}
 }
 
+// TestCoordinator_LinksToGameTrace: when the game-session trace ids are present on the
+// ending GameContext (#1133), the agent.game.summary span Links back to the game-session
+// trace (the hub, #1174). nil-safe: with no ids, no Link is added.
+func TestCoordinator_LinksToGameTrace(t *testing.T) {
+	const (
+		gameTrace  = "4bf92f3577b34da6a3ce929d0e0e4736"
+		gameSpanID = "051581bf3cb55c13"
+	)
+
+	t.Run("present", func(t *testing.T) {
+		c, sr, _ := recordingCoordinator(t)
+		snap := representativeGame(t)
+		snap.GameTraceID = gameTrace
+		snap.GameTraceSpanID = gameSpanID
+		c.OnGameEnd(snap)
+
+		spans := spansByName(sr.Ended(), SpanGameSummary)
+		if len(spans) != 1 {
+			t.Fatalf("agent.game.summary spans = %d, want 1", len(spans))
+		}
+		links := spans[0].Links()
+		if len(links) != 1 {
+			t.Fatalf("agent.game.summary links = %d, want 1 (the game-trace hub Link)", len(links))
+		}
+		if got := links[0].SpanContext.TraceID().String(); got != gameTrace {
+			t.Errorf("link trace_id = %s, want %s", got, gameTrace)
+		}
+		if got := links[0].SpanContext.SpanID().String(); got != gameSpanID {
+			t.Errorf("link span_id = %s, want %s", got, gameSpanID)
+		}
+		if !links[0].SpanContext.IsValid() {
+			t.Error("game-trace Link must target a valid SpanContext")
+		}
+	})
+
+	t.Run("absent", func(t *testing.T) {
+		c, sr, _ := recordingCoordinator(t)
+		c.OnGameEnd(representativeGame(t)) // no trace ids set
+		spans := spansByName(sr.Ended(), SpanGameSummary)
+		if len(spans) != 1 {
+			t.Fatalf("agent.game.summary spans = %d, want 1", len(spans))
+		}
+		if n := len(spans[0].Links()); n != 0 {
+			t.Errorf("agent.game.summary links = %d, want 0 (no ids => no Link)", n)
+		}
+	})
+}
+
 // TestCoordinator_RunsForShadowGames: the builder runs for synthetic (shadow)
 // games too (#928 — both real AND shadow).
 func TestCoordinator_RunsForShadowGames(t *testing.T) {

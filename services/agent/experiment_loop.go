@@ -738,6 +738,11 @@ func (e *experimentLoop) scoreGameFitness(gc gamecontext.GameContext, objective 
 	if objective != "" {
 		attrs = append(attrs, attribute.String(decision.AttrExperimentObjective, objective))
 	}
+	// #1174 consistency: stamp the game trace_id as a SEARCHABLE attribute too (retro
+	// has both the Link and the attr; this span only had the Link). Empty => skip.
+	if gc.GameTraceID != "" {
+		attrs = append(attrs, attribute.String(decision.AttrGameTraceID, gc.GameTraceID))
+	}
 	opts := append([]trace.SpanStartOption{trace.WithAttributes(attrs...)}, gameLink...)
 	_, span := e.tracer.Start(context.Background(), decision.SpanExperimentFitness, opts...)
 	defer span.End()
@@ -765,6 +770,10 @@ func (e *experimentLoop) concludeWithSpan(gc gamecontext.GameContext, fitness, d
 	if gc.Arm != "" {
 		attrs = append(attrs, attribute.String(decision.AttrExperimentArm, gc.Arm))
 	}
+	// #1174 consistency: stamp the game trace_id as a searchable attribute too. Empty => skip.
+	if gc.GameTraceID != "" {
+		attrs = append(attrs, attribute.String(decision.AttrGameTraceID, gc.GameTraceID))
+	}
 	opts := append([]trace.SpanStartOption{trace.WithAttributes(attrs...)}, gameLink...)
 	ctx, span := e.tracer.Start(context.Background(), decision.SpanExperimentEvaluate, opts...)
 	defer span.End()
@@ -776,7 +785,7 @@ func (e *experimentLoop) concludeWithSpan(gc gamecontext.GameContext, fitness, d
 	// registry computed, when the conclusion produced one. We READ it back via
 	// CompactView — the registry owns the math; this span only surfaces the result.
 	if err == nil {
-		e.recordVerdictSpan(ctx, gc.ExperimentID)
+		e.recordVerdictSpan(ctx, gc)
 	}
 	return status, err
 }
@@ -787,18 +796,26 @@ func (e *experimentLoop) concludeWithSpan(gc gamecontext.GameContext, fitness, d
 // computes nothing. The span is emitted only when a verdict is actually present
 // (a conclusion that has not yet produced one adds no empty span). The ctx is the
 // experiment.evaluate span's context, so the verdict span nests under it.
-func (e *experimentLoop) recordVerdictSpan(ctx context.Context, experimentID string) {
-	cv, ok := e.registry.CompactView(experimentID)
+func (e *experimentLoop) recordVerdictSpan(ctx context.Context, gc gamecontext.GameContext) {
+	cv, ok := e.registry.CompactView(gc.ExperimentID)
 	if !ok || cv.Verdict == nil {
 		return
 	}
 	v := cv.Verdict
-	_, span := e.tracer.Start(ctx, decision.SpanExperimentVerdict, trace.WithAttributes(
-		attribute.String(decision.AttrExperimentID, experimentID),
+	attrs := []attribute.KeyValue{
+		attribute.String(decision.AttrExperimentID, gc.ExperimentID),
+		// #1174 consistency: stamp game.id + experiment.arm directly on the verdict span
+		// (it previously carried neither) so the verdict is queryable by game and arm
+		// like the sibling experiment spans, and findable for "everything for game X".
+		attribute.String(decision.AttrGameID, gc.SessionID),
 		attribute.String(decision.AttrVerdictOutcome, v.Outcome),
 		attribute.Float64(decision.AttrVerdictDelta, v.Delta),
 		attribute.Bool(decision.AttrVerdictSignificant, v.Significant),
-	))
+	}
+	if gc.Arm != "" {
+		attrs = append(attrs, attribute.String(decision.AttrExperimentArm, gc.Arm))
+	}
+	_, span := e.tracer.Start(ctx, decision.SpanExperimentVerdict, trace.WithAttributes(attrs...))
 	span.End()
 }
 

@@ -79,6 +79,13 @@ func TestAsyncContinuity_ProductionPathAnchored(t *testing.T) {
 		t.Errorf("anchor span %s = %v (ok=%v), want g1", AttrGameID, v.AsString(), ok)
 	}
 
+	// #1174: the outbound-call span carries game.id so it is findable by game.
+	if calls := spansByName(sr.Ended(), SpanLLMInferCall); len(calls) == 1 {
+		if v, ok := attrValue(calls[0], AttrGameID); !ok || v.AsString() != "g1" {
+			t.Errorf("%s %s = %v (ok=%v), want g1", SpanLLMInferCall, AttrGameID, v.AsString(), ok)
+		}
+	}
+
 	for _, name := range []string{SpanLLMInferCall, SpanLLMApply} {
 		spans := spansByName(sr.Ended(), name)
 		if len(spans) != 1 {

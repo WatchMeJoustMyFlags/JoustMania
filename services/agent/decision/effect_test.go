@@ -114,6 +114,15 @@ func shieldDecision() Decision {
 	return Decision{Intervention: "grant_shield", ObjectiveServed: ObjectiveEndurance, Reason: "test"}
 }
 
+// schedule is the test wrapper for scheduleEffectSample (#1174 added a leading
+// context + GameContext for hub/decision correlation). It passes a background context
+// (no live decision span) and an EMPTY GameContext (no game-trace ids), so existing
+// behavior assertions are unchanged. Correlation-specific tests call
+// scheduleEffectSample directly with a populated context/GameContext.
+func (l *Loop) schedule(d Decision, baseline map[string]float64, th FitnessThresholds) string {
+	return l.scheduleEffectSample(context.Background(), gamecontext.GameContext{}, d, baseline, th)
+}
+
 // ---- baseline stamp + delta emission ----
 
 func TestEffect_DeltaEmittedAfterWindow(t *testing.T) {
@@ -125,7 +134,7 @@ func TestEffect_DeltaEmittedAfterWindow(t *testing.T) {
 
 	l, sr, reader, sched := effectLoop(t, provider, gameID)
 
-	id := l.scheduleEffectSample(shieldDecision(), enduranceBaseline(), defaultFit())
+	id := l.schedule(shieldDecision(), enduranceBaseline(), defaultFit())
 	if id == "" {
 		t.Fatal("scheduleEffectSample returned empty id; expected a scheduled sample")
 	}
@@ -208,7 +217,7 @@ func TestEffect_AbortedWhenGameEvicted(t *testing.T) {
 
 	l, sr, reader, sched := effectLoop(t, provider, gameID)
 
-	id := l.scheduleEffectSample(shieldDecision(), enduranceBaseline(), defaultFit())
+	id := l.schedule(shieldDecision(), enduranceBaseline(), defaultFit())
 	if id == "" {
 		t.Fatal("expected a scheduled sample")
 	}
@@ -259,7 +268,7 @@ func TestEffect_ShutdownCancelsSamplerNoLeak(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	l.SetRootContext(ctx)
 
-	id := l.scheduleEffectSample(shieldDecision(), enduranceBaseline(), defaultFit())
+	id := l.schedule(shieldDecision(), enduranceBaseline(), defaultFit())
 	if id == "" {
 		t.Fatal("expected a scheduled sample")
 	}
@@ -295,7 +304,7 @@ func TestEffect_PendingSetBounded(t *testing.T) {
 
 	scheduled := 0
 	for i := 0; i < maxPendingEffects+10; i++ {
-		if l.scheduleEffectSample(shieldDecision(), enduranceBaseline(), defaultFit()) != "" {
+		if l.schedule(shieldDecision(), enduranceBaseline(), defaultFit()) != "" {
 			scheduled++
 		}
 	}
@@ -308,7 +317,7 @@ func TestEffect_PendingSetBounded(t *testing.T) {
 
 func TestEffect_NoProviderNoSchedule(t *testing.T) {
 	l := NewLoop(&settableFlags{snap: permissiveEffectSnapshot()}, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if id := l.scheduleEffectSample(shieldDecision(), enduranceBaseline(), defaultFit()); id != "" {
+	if id := l.schedule(shieldDecision(), enduranceBaseline(), defaultFit()); id != "" {
 		t.Errorf("expected no schedule without a context provider, got id %q", id)
 	}
 }
@@ -316,7 +325,7 @@ func TestEffect_NoProviderNoSchedule(t *testing.T) {
 func TestEffect_NoBaselineNoSchedule(t *testing.T) {
 	provider := newFakeContextProvider()
 	l, _, _, _ := effectLoop(t, provider, "g")
-	if id := l.scheduleEffectSample(shieldDecision(), nil, defaultFit()); id != "" {
+	if id := l.schedule(shieldDecision(), nil, defaultFit()); id != "" {
 		t.Errorf("expected no schedule with an empty baseline, got id %q", id)
 	}
 }
