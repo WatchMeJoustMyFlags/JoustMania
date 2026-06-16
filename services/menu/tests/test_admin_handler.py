@@ -493,6 +493,10 @@ class TestHandleForceStartFlagd:
         ready = {f"s{i}" for i in range(16)}
         mock_state_manager.ready_controllers = set(ready)
         mock_state_manager.connected_controllers = ready | {"ghost"}
+        # The all-ready gate is False while the ghost lingers (ready != connected).
+        # Pin it explicitly so this test fails the instant force-start regresses to
+        # honoring that gate (a default MagicMock is truthy and would mask it).
+        mock_state_manager.all_ready = MagicMock(return_value=False)
         handler._publish_event = AsyncMock()
         handler.exit = AsyncMock()
 
