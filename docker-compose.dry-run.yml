@@ -86,16 +86,26 @@ services:
   # (768 MiB container / limiter 600/150) the collector OOM-killed (exit 137)
   # within ~2 min and refused/dropped agent spans. We keep ALL spans (no sampling)
   # and instead raise the ceiling ONLY for this experiment-heavy stack so the
-  # Pi/prod base stays lean (experiments default off there). Raise the container
-  # to 1536 MiB AND set the env-substituted limiter (config.yaml memory_limiter)
-  # to 1200/300 so the limiter sheds NEAR the 1.5 GiB ceiling (~80% / ~25%) rather
-  # than backpressuring at 600 — without this matching limiter bump the bigger
-  # container would be wasted. Merges onto the base collector by service name.
+  # Pi/prod base stays lean (experiments default off there).
+  #
+  # #1173: verification #8 found the OOM was driven by the filelog/logs pipeline
+  # (all container stdout), not traces; it peaked at ~1.3 GiB, so 1536 MiB /
+  # 1200/300 was provisioned for that. #1176 (heartbeat log demotion) + #1177
+  # (2s traces batch) cut the log volume so far the collector now steady-states
+  # at ~85 MiB / ~6% of 1.5 GiB (verification #9) — heavily over-provisioned.
+  # Reduced to a 1024 MiB ceiling with the limiter at 800/200 (sheds ~78% / ~20%
+  # near the ceiling). Still well above the lean 768 MiB base for sustained-load
+  # headroom (verification #9 couldn't hold a continuous 5-min window, so keep a
+  # buffer); combined with the filelog max_concurrent_files cap (config.yaml) the
+  # receiver stays bounded even if log volume regrows.
+  #
+  # PRIOR (#1167): raised to 1536 MiB / 1200/300 to shed near the 1.5 GiB ceiling.
+  # Merges onto the base collector by service name.
   otel-collector:
     environment:
-      - OTEL_MEMLIMIT_MIB=1200
-      - OTEL_MEMSPIKE_MIB=300
+      - OTEL_MEMLIMIT_MIB=800
+      - OTEL_MEMSPIKE_MIB=200
     deploy:
       resources:
         limits:
-          memory: 1536m
+          memory: 1024m
