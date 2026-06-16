@@ -469,6 +469,96 @@ class TestGameSessionLoop:
     @patch("services.game_coordinator.game_session.metrics")
     @patch("services.game_coordinator.game_session.GameFactory")
     @patch("services.game_coordinator.game_session.tracer")
+    async def test_shadow_experiment_game_span_is_child_of_injected_parent(
+        self, mock_tracer_mod, mock_factory, mock_metrics
+    ):
+        """#1182: a SHADOW + experiment-bound game whose spawn carried the agent's
+        experiment traceparent starts its game span as a CHILD of that remote parent
+        (causal parent-child), so it nests under the long-lived experiment span. The
+        parent context is a real, NON-empty Context containing the experiment span."""
+        from opentelemetry import trace as ot_trace
+        from opentelemetry.context import Context
+
+        exp_trace_id = 0x9999AAAABBBBCCCCDDDDEEEEFFFF0000
+        exp_span_id = 0x1122334455667788
+        parent_ctx = MockSpanContext(trace_id=exp_trace_id, span_id=exp_span_id)
+
+        session = _make_session(game_kind=GAME_KIND_SHADOW, experiment_id="exp-1", arm="experimental")
+        session.experiment_parent_span_context = parent_ctx
+        mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
+        mock_game = MagicMock()
+        mock_game.run = AsyncMock()
+        mock_factory.create_game.return_value = mock_game
+
+        await session._run_game_loop_async()
+
+        _, kwargs = mock_tracer_mod.start_as_current_span.call_args
+        ctx = kwargs["context"]
+        # NOT own-root: a non-empty Context carrying the experiment span as parent.
+        assert isinstance(ctx, Context)
+        assert len(ctx) > 0, "shadow+experiment game must be parented, not own-rooted"
+        parent_span = ot_trace.get_current_span(ctx)
+        sc = parent_span.get_span_context()
+        assert sc.trace_id == exp_trace_id
+        assert sc.span_id == exp_span_id
+
+    @pytest.mark.asyncio
+    @patch("services.game_coordinator.game_session.metrics")
+    @patch("services.game_coordinator.game_session.GameFactory")
+    @patch("services.game_coordinator.game_session.tracer")
+    async def test_real_game_stays_own_root_even_with_parent_context(self, mock_tracer_mod, mock_factory, mock_metrics):
+        """#1182 real-game protection: a PRIMARY (real) game is own-rooted (#1157/#1164)
+        even if an experiment parent context and experiment_id are erroneously present.
+        The strict shadow+experiment gate keeps the real-game trace structure UNCHANGED."""
+        from opentelemetry.context import Context
+
+        parent_ctx = MockSpanContext(trace_id=0x9999AAAABBBBCCCCDDDDEEEEFFFF0000, span_id=0x1122334455667788)
+        # Real (primary) kind. The servicer zeroes experiment_id for a real game; even
+        # if a parent context leaked through, the kind gate alone must keep it own-root.
+        session = _make_session(game_kind=GAME_KIND_PRIMARY, experiment_id="exp-1")
+        session.experiment_parent_span_context = parent_ctx
+        mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
+        mock_game = MagicMock()
+        mock_game.run = AsyncMock()
+        mock_factory.create_game.return_value = mock_game
+
+        await session._run_game_loop_async()
+
+        _, kwargs = mock_tracer_mod.start_as_current_span.call_args
+        ctx = kwargs["context"]
+        assert isinstance(ctx, Context)
+        assert len(ctx) == 0, "real game must stay own-rooted (#1157/#1164), never parented"
+
+    @pytest.mark.asyncio
+    @patch("services.game_coordinator.game_session.metrics")
+    @patch("services.game_coordinator.game_session.GameFactory")
+    @patch("services.game_coordinator.game_session.tracer")
+    async def test_shadow_experiment_game_own_root_when_no_parent(self, mock_tracer_mod, mock_factory, mock_metrics):
+        """#1182 graceful: a shadow + experiment game with NO injected parent
+        (telemetry off, or no traceparent on the spawn) stays own-rooted — the
+        own-root #1164 path is preserved when there is nothing valid to parent under.
+        Covers both None and an invalid (trace_id==0) parent context."""
+        from opentelemetry.context import Context
+
+        for parent_ctx in (None, MockSpanContext(trace_id=0, span_id=0)):
+            session = _make_session(game_kind=GAME_KIND_SHADOW, experiment_id="exp-1", arm="experimental")
+            session.experiment_parent_span_context = parent_ctx
+            mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
+            mock_game = MagicMock()
+            mock_game.run = AsyncMock()
+            mock_factory.create_game.return_value = mock_game
+
+            await session._run_game_loop_async()
+
+            _, kwargs = mock_tracer_mod.start_as_current_span.call_args
+            ctx = kwargs["context"]
+            assert isinstance(ctx, Context)
+            assert len(ctx) == 0, "shadow+experiment with no valid parent must stay own-rooted"
+
+    @pytest.mark.asyncio
+    @patch("services.game_coordinator.game_session.metrics")
+    @patch("services.game_coordinator.game_session.GameFactory")
+    @patch("services.game_coordinator.game_session.tracer")
     async def test_shadow_loop_does_not_reset_players_alive(self, mock_tracer_mod, mock_factory, mock_metrics):
         """A shadow session ending must not reset the global players_alive gauge."""
         session = _make_session(game_kind=GAME_KIND_SHADOW)

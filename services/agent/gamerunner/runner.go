@@ -185,6 +185,16 @@ type Spec struct {
 	ExperimentID string
 	Arm          string
 
+	// ExperimentSpanContext is the SpanContext of the agent's long-lived
+	// EXPERIMENT root span (#1182, epic #1181). When set (Valid), an
+	// experiment-bound shadow spawn injects it as the OUTGOING traceparent on the
+	// StreamGameEvents start call, so the coordinator's game-lifecycle span is
+	// created as a CHILD of the experiment span (causal parent-child) rather than
+	// its own root. The zero (invalid) value — a real game, an unbound shadow
+	// game, or an experiment with no recordable root span — injects nothing, so
+	// the game stays own-rooted exactly as before (graceful).
+	ExperimentSpanContext trace.SpanContext
+
 	// Seed is the deterministic RNG seed for paired CRN shadow games (#1003).
 	// When set (non-zero), it is threaded onto StartGameConfig.rng_seed so the
 	// game-coordinator constructs the game's per-instance RNG from it — the two

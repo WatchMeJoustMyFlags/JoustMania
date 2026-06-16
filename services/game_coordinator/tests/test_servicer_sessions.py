@@ -1102,6 +1102,23 @@ class TestExperimentSpawnBinding:
         assert session.arm == ""
 
     @pytest.mark.asyncio
+    async def test_shadow_experiment_threads_parent_span_context(self, servicer):
+        """#1182: the inbound (experiment-traceparent) SpanContext is threaded onto
+        the shadow+experiment session as experiment_parent_span_context so the game
+        span can be created as a CHILD of the experiment span. Uses a span with a
+        VALID (non-zero) trace_id, mirroring an injected experiment traceparent."""
+        with _NO_THREAD:
+            ok, gid = await servicer._start_game_from_config(
+                _experiment_config(serials=("a1", "a2"), experiment_id="exp_abc123", arm="experimental"),
+                _ValidParentSpan(),
+            )
+        assert ok is True
+        session = servicer.sessions[gid]
+        # The parent context is captured from the inbound span's SpanContext.
+        assert session.experiment_parent_span_context is not None
+        assert session.experiment_parent_span_context.trace_id == _VALID_PARENT_TRACE_ID
+
+    @pytest.mark.asyncio
     @patch("services.game_coordinator.servicer.metrics")
     async def test_bound_experiment_labels_live_gauges(self, mock_metrics, servicer):
         """The spawn binding feeds the per-live-game GAUGE labels (#975) so an
@@ -1181,6 +1198,17 @@ class _MockSpanContext:
     span_id = 0
 
 
+_VALID_PARENT_TRACE_ID = 0x9999AAAABBBBCCCCDDDDEEEEFFFF0000
+
+
+class _ValidParentSpanContext:
+    """A VALID (non-zero) SpanContext standing in for an injected experiment
+    traceparent (#1182), so the servicer captures it as the game-span parent."""
+
+    trace_id = _VALID_PARENT_TRACE_ID
+    span_id = 0x1122334455667788
+
+
 class _MockSpan:
     """Minimal span supporting set_attribute + context-manager protocol."""
 
@@ -1201,3 +1229,11 @@ class _MockSpan:
 
     def __exit__(self, *args):
         return False
+
+
+class _ValidParentSpan(_MockSpan):
+    """A _MockSpan whose SpanContext is VALID (non-zero trace_id), simulating an
+    inbound experiment traceparent (#1182)."""
+
+    def get_span_context(self):
+        return _ValidParentSpanContext()

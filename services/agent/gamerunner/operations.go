@@ -8,7 +8,11 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 
 	mockpb "github.com/joustmania/agent/gen/controller_manager_mock"
 	gcpb "github.com/joustmania/agent/gen/game_coordinator"
@@ -218,6 +222,12 @@ func (r *Runner) startAndCapture(
 	ctx context.Context, cl *clients, spec Spec, serials []string,
 ) (grpc.ServerStreamingClient[gcpb.GameEvent], string, error) {
 	cfg := buildStartConfig(spec, serials)
+	// Spawn-traceparent propagation (#1182, epic #1181): for an experiment-bound
+	// shadow spawn carrying a valid experiment SpanContext, inject it as the
+	// OUTGOING traceparent so the coordinator's game-lifecycle span is created as
+	// a CHILD of the experiment span. A real game / unbound shadow game (invalid
+	// SpanContext) injects nothing and stays own-rooted.
+	ctx = injectExperimentTraceparent(ctx, spec.ExperimentSpanContext)
 	stream, err := cl.coord.StreamGameEvents(ctx, &gcpb.StreamEventsRequest{StartConfig: cfg})
 	if err != nil {
 		return nil, "", fmt.Errorf("StreamGameEvents: %w", err)
@@ -245,6 +255,43 @@ func (r *Runner) startAndCapture(
 			return stream, id, nil
 		}
 	}
+}
+
+// injectExperimentTraceparent injects the experiment ROOT span context (#1182,
+// epic #1181) as the W3C traceparent on the outgoing gRPC metadata, so the
+// coordinator's server interceptor extracts it and parents the spawned game's
+// lifecycle span under the experiment span (causal parent-child, not a Link).
+//
+// It is deliberately TARGETED rather than a blanket client stats-handler: only
+// an experiment-bound spawn carrying a VALID SpanContext propagates a parent. A
+// real game or an unbound shadow game has the zero (invalid) SpanContext and
+// injects NOTHING — the coordinator then sees no incoming traceparent and keeps
+// the game own-rooted (#1157/#1164). This is the single cross-service hop that
+// stitches the experiment trace together, so it is explicit and gated here.
+//
+// The SpanContext is wrapped as a REMOTE parent (NonRecordingSpan) and run
+// through the globally-configured TextMapPropagator into a metadata carrier,
+// which is merged onto any existing outgoing metadata on ctx.
+func injectExperimentTraceparent(ctx context.Context, sc trace.SpanContext) context.Context {
+	if !sc.IsValid() {
+		return ctx
+	}
+	carrier := propagation.MapCarrier{}
+	parentCtx := trace.ContextWithRemoteSpanContext(ctx, sc)
+	otel.GetTextMapPropagator().Inject(parentCtx, carrier)
+	if len(carrier) == 0 {
+		// No propagator configured (e.g. telemetry off): nothing to inject, so the
+		// game stays own-rooted exactly as before.
+		return ctx
+	}
+	md := metadata.MD{}
+	if existing, ok := metadata.FromOutgoingContext(ctx); ok {
+		md = existing.Copy()
+	}
+	for k, v := range carrier {
+		md.Set(k, v)
+	}
+	return metadata.NewOutgoingContext(ctx, md)
 }
 
 // startRejectedInProgress reports whether a game_start_error event's data is the

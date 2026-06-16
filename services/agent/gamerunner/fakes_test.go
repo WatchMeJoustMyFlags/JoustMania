@@ -10,6 +10,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/test/bufconn"
 
 	mockpb "github.com/joustmania/agent/gen/controller_manager_mock"
@@ -127,11 +128,15 @@ type fakeCoord struct {
 	listGames      func() (*gcpb.ListGamesResponse, error)
 	forceEndSignal chan *gcpb.GameEvent
 	startConfig    *gcpb.StartGameConfig // captured from the last StreamGameEvents
+	streamMetadata metadata.MD           // incoming metadata from the last StreamGameEvents
 }
 
 func (c *fakeCoord) StreamGameEvents(req *gcpb.StreamEventsRequest, stream grpc.ServerStreamingServer[gcpb.GameEvent]) error {
 	c.mu.Lock()
 	c.startConfig = req.GetStartConfig()
+	if md, ok := metadata.FromIncomingContext(stream.Context()); ok {
+		c.streamMetadata = md.Copy()
+	}
 	c.mu.Unlock()
 	for _, ev := range c.events {
 		ev.GameId = c.gameID
@@ -193,6 +198,14 @@ func (c *fakeCoord) capturedStartConfig() *gcpb.StartGameConfig {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.startConfig
+}
+
+// capturedMetadata returns the incoming metadata from the last StreamGameEvents
+// call (nil until one arrives).
+func (c *fakeCoord) capturedMetadata() metadata.MD {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.streamMetadata
 }
 
 // testHarness wires fake servers over bufconn and injects a dialer into a Runner.
