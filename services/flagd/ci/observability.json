@@ -10,7 +10,24 @@
         "realtime": 100,
         "normal": 1000
       },
-      "defaultVariant": "normal"
+      "defaultVariant": "normal",
+      "targeting": {
+        "if": [
+          {
+            "in": [
+              {
+                "var": "service"
+              },
+              [
+                "controller-manager-service",
+                "game-coordinator-service"
+              ]
+            ]
+          },
+          "realtime",
+          null
+        ]
+      }
     },
     "grpc_rpc_spans": {
       "state": "ENABLED",
