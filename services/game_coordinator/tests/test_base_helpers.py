@@ -341,6 +341,146 @@ class TestComputeEffectiveThresholds:
         assert warn_c == pytest.approx(warn_n)
         assert death_c == pytest.approx(death_n)
 
+    # --- #1129: time-boxed partial_shield boost in the threshold path ---- #
+
+    def test_partial_shield_active_boosts_threshold(self, game):
+        """An active partial shield raises the threshold via its boost."""
+        from lib.types import Sensitivity
+
+        game.sensitivity = Sensitivity.MEDIUM
+        game.music_speed = SLOW_MUSIC_SPEED
+        neutral = Player(serial="t", sensitivity_factor=1.0, handicap_factor=1.0)
+        shielded = Player(
+            serial="t",
+            sensitivity_factor=1.0,
+            handicap_factor=1.0,
+            partial_shield_until=time.time() + 5.0,
+            partial_shield_boost=2.0,
+        )
+        _, death_n = game._compute_effective_thresholds(neutral)
+        _, death_s = game._compute_effective_thresholds(shielded)
+        assert death_s == pytest.approx(death_n * 2.0)
+
+    def test_partial_shield_expired_is_noop(self, game):
+        """A partial shield whose deadline has passed leaves thresholds at the
+        standing handicap (no reset task needed — it simply stops applying)."""
+        from lib.types import Sensitivity
+
+        game.sensitivity = Sensitivity.MEDIUM
+        game.music_speed = SLOW_MUSIC_SPEED
+        plain = Player(serial="t", sensitivity_factor=1.0, handicap_factor=1.0)
+        expired = Player(
+            serial="t",
+            sensitivity_factor=1.0,
+            handicap_factor=1.0,
+            partial_shield_until=time.time() - 1.0,  # already past
+            partial_shield_boost=2.0,
+        )
+        assert game._compute_effective_thresholds(expired) == pytest.approx(game._compute_effective_thresholds(plain))
+
+    def test_partial_shield_takes_max_with_standing_handicap(self, game):
+        """While active, the effective handicap is max(handicap_factor, boost):
+        a partial shield never WEAKENS a standing set_player_handicap delta."""
+        from lib.types import Sensitivity
+
+        game.sensitivity = Sensitivity.MEDIUM
+        game.music_speed = SLOW_MUSIC_SPEED
+        # Standing handicap 1.8 (help), weaker shield boost 1.2 -> max keeps 1.8.
+        p = Player(
+            serial="t",
+            sensitivity_factor=1.0,
+            handicap_factor=1.8,
+            partial_shield_until=time.time() + 5.0,
+            partial_shield_boost=1.2,
+        )
+        ref = Player(serial="t", sensitivity_factor=1.0, handicap_factor=1.8)
+        assert game._compute_effective_thresholds(p) == pytest.approx(game._compute_effective_thresholds(ref))
+
+    def test_partial_shield_clamped_not_immune(self, game):
+        """Even a maxed boost is clamped to 2.0 — never immune (the point vs
+        grant_shield): the boosted death threshold stays finite."""
+        from lib.types import Sensitivity
+
+        game.sensitivity = Sensitivity.MEDIUM
+        game.music_speed = SLOW_MUSIC_SPEED
+        p = Player(
+            serial="t",
+            sensitivity_factor=1.0,
+            handicap_factor=1.0,
+            partial_shield_until=time.time() + 5.0,
+            partial_shield_boost=2.0,
+        )
+        _, death = game._compute_effective_thresholds(p)
+        assert death > 0 and death != float("inf")
+
+
+# ========================================================================
+# grant_partial_shield primitive (#1129)
+# ========================================================================
+
+
+class TestGrantPartialShield:
+    """Tests for the BaseGameMode.grant_partial_shield time-boxed primitive."""
+
+    @pytest.fixture
+    def game(self):
+        mock_cm = MockControllerManagerService(num_controllers=2)
+        game = FFAGame(
+            controller_manager_client=mock_cm,
+            event_publisher=async_noop,
+            audio_client=None,
+            game_id="test_partial_shield",
+        )
+        game.players["AA"] = Player(serial="AA", alive=True)
+        return game
+
+    @pytest.mark.asyncio
+    async def test_arms_boost_and_deadline(self, game):
+        ok = await game.grant_partial_shield("AA", 5.0, 1.8)
+        assert ok is True
+        p = game.players["AA"]
+        assert p.partial_shield_boost == pytest.approx(1.8)
+        assert p.partial_shield_until > time.time()
+
+    @pytest.mark.asyncio
+    async def test_default_boost_when_omitted(self, game):
+        await game.grant_partial_shield("AA", 5.0)
+        assert game.players["AA"].partial_shield_boost == pytest.approx(game.PARTIAL_SHIELD_DEFAULT_BOOST)
+
+    @pytest.mark.asyncio
+    async def test_boost_clamped_to_band(self, game):
+        await game.grant_partial_shield("AA", 5.0, 9.0)
+        assert game.players["AA"].partial_shield_boost == pytest.approx(game.PARTIAL_SHIELD_BOOST_MAX)
+        await game.grant_partial_shield("AA", 5.0, 0.1)
+        # extend-not-shorten / strengthen-not-weaken keeps the higher (max) boost.
+        assert game.players["AA"].partial_shield_boost == pytest.approx(game.PARTIAL_SHIELD_BOOST_MAX)
+
+    @pytest.mark.asyncio
+    async def test_seconds_capped(self, game):
+        await game.grant_partial_shield("AA", 9999.0)
+        assert game.players["AA"].partial_shield_until <= time.time() + game.PARTIAL_SHIELD_MAX_SECONDS + 1.0
+
+    @pytest.mark.asyncio
+    async def test_nonpositive_seconds_noop(self, game):
+        assert await game.grant_partial_shield("AA", 0.0) is False
+        assert await game.grant_partial_shield("AA", -3.0) is False
+        assert game.players["AA"].partial_shield_until == 0.0
+
+    @pytest.mark.asyncio
+    async def test_unknown_or_dead_player_noop(self, game):
+        assert await game.grant_partial_shield("ZZ", 5.0) is False
+        game.players["AA"].alive = False
+        assert await game.grant_partial_shield("AA", 5.0) is False
+
+    @pytest.mark.asyncio
+    async def test_extend_not_shorten(self, game):
+        await game.grant_partial_shield("AA", 30.0, 2.0)
+        far = game.players["AA"].partial_shield_until
+        # A shorter, weaker re-arming must not reduce the active window/boost.
+        await game.grant_partial_shield("AA", 1.0, 1.1)
+        assert game.players["AA"].partial_shield_until == pytest.approx(far)
+        assert game.players["AA"].partial_shield_boost == pytest.approx(2.0)
+
 
 # ========================================================================
 # _process_controller_state (player name capture)

@@ -539,6 +539,18 @@ class Player:
     # _compute_effective_thresholds. 1.0 = neutral (no effect). Shadow-game-only
     # initially via the interventions_allowed allow-list gate.
     handicap_factor: float = 1.0
+    # Time-boxed partial shield (#1129, #1103 Phase 2). When ``partial_shield_until``
+    # is in the future, ``partial_shield_boost`` acts as a TEMPORARY handicap
+    # override that COMPOSES with ``handicap_factor`` by taking the MAX of the two
+    # (so a standing set_player_handicap is never weakened, only strengthened for
+    # the window) — see ``_compute_effective_thresholds``. A large boost (~2.0)
+    # makes the player MUCH harder to eliminate but NOT immune (vs grant_shield's
+    # total grace_until immunity): the combined factor is still clamped [0.5, 2.0].
+    # On expiry the boost simply stops applying (no reset task needed) and the
+    # effective handicap falls back to the standing ``handicap_factor``. 0.0 / past
+    # deadline = inactive (no effect). Shadow-game-only via the allow-list gate.
+    partial_shield_until: float = 0.0
+    partial_shield_boost: float = 1.0
     # Per-player countdown span (created before countdown, ended after)
     _countdown_span: trace.Span | None = None
     # Health tracking (#571: controller health on player_lifecycle spans)
@@ -1533,7 +1545,18 @@ class BaseGameMode(ABC):
         # >1.0 raises the threshold (harder to die / "help"); <1.0 lowers it
         # (easier / "rein in"). At the neutral 1.0 this is a no-op, preserving the
         # prior behavior exactly.
-        handicap = max(0.5, min(2.0, player.handicap_factor))
+        # A time-boxed partial shield (#1129) takes the MAX with the standing
+        # handicap (it can only ever STRENGTHEN protection for its window, never
+        # weaken a standing set_player_handicap delta). Precedence: while the
+        # deadline is in the future the effective handicap is
+        # max(handicap_factor, partial_shield_boost); once it expires the boost
+        # silently drops out and the standing handicap_factor resumes. Still
+        # clamped [0.5, 2.0] below, so even a ~2.0 boost is "much harder to die",
+        # never truly immune (the deliberate distinction from grant_shield).
+        effective_handicap = player.handicap_factor
+        if time.time() < player.partial_shield_until:
+            effective_handicap = max(effective_handicap, player.partial_shield_boost)
+        handicap = max(0.5, min(2.0, effective_handicap))
         return warn * handicap, death * handicap
 
     def _record_player_analytics(
@@ -1935,6 +1958,93 @@ class BaseGameMode(ABC):
             player.span.add_event("shield_granted", attributes={"shield_seconds": seconds})
 
         # Visible pulse effect so the shield is observable on the controller.
+        if self.gameplay_stream:
+            from proto import controller_manager_pb2
+
+            trace_parent, trace_state = inject_trace_context(player.span)
+            effect_cmd = controller_manager_pb2.GameplayStreamControl(
+                game_effect=controller_manager_pb2.GameEffectCommand(
+                    serial=serial,
+                    effect=controller_manager_pb2.GAME_EFFECT_PULSE,
+                    trace_parent=trace_parent,
+                    trace_state=trace_state,
+                )
+            )
+            await self.gameplay_stream.write(effect_cmd)
+
+        return True
+
+    # Partial-shield defaults (#1129, #1103 Phase 2). Boost is clamped to the same
+    # upper bound as handicap_factor so a partial shield is "much harder to die"
+    # but never immune; seconds are capped so a single arming can't last forever.
+    PARTIAL_SHIELD_DEFAULT_BOOST = 2.0
+    PARTIAL_SHIELD_BOOST_MIN = 1.0
+    PARTIAL_SHIELD_BOOST_MAX = 2.0
+    PARTIAL_SHIELD_MAX_SECONDS = 30.0
+
+    async def grant_partial_shield(self, serial: str, seconds: float, boost: float | None = None) -> bool:
+        """
+        Grant a time-boxed PARTIAL shield to a player (#1129, #1103 Phase 2).
+
+        Unlike :meth:`grant_shield` (total immunity via ``grace_until`` that skips
+        the death check entirely), a partial shield only raises the player's
+        effective death/warning threshold for ``seconds`` by applying a temporary
+        ``handicap`` boost — making them MUCH harder to eliminate but NOT immune: a
+        genuinely huge spike can still exceed the (still-finite) boosted threshold.
+        It reuses the #1107 per-player handicap mechanism: while the deadline is in
+        the future, ``_compute_effective_thresholds`` takes ``max(handicap_factor,
+        partial_shield_boost)`` (so it never weakens a standing set_player_handicap
+        delta, only strengthens it for the window), still clamped [0.5, 2.0].
+
+        Time-box semantics mirror ``grant_shield``: extend-not-shorten on the
+        deadline. A new arming only ever lengthens an active window (and never
+        lowers an active boost); a shorter/weaker request is a no-op extension. On
+        expiry the boost silently drops out — no reset task needed — and the
+        standing ``handicap_factor`` resumes.
+
+        Args:
+            serial: Controller serial number.
+            seconds: Shield duration in seconds. Non-positive is a no-op (False);
+                capped at ``PARTIAL_SHIELD_MAX_SECONDS``.
+            boost: Handicap boost while active; clamped
+                [``PARTIAL_SHIELD_BOOST_MIN``, ``PARTIAL_SHIELD_BOOST_MAX``].
+                Defaults to ``PARTIAL_SHIELD_DEFAULT_BOOST`` (~2.0).
+
+        Returns:
+            True if a partial shield was armed/extended, False if the player is
+            unknown/dead or the duration was non-positive.
+        """
+        if seconds <= 0:
+            return False
+
+        player = self.players.get(serial)
+        if not player or not player.alive:
+            return False
+
+        seconds = min(seconds, self.PARTIAL_SHIELD_MAX_SECONDS)
+        if boost is None:
+            boost = self.PARTIAL_SHIELD_DEFAULT_BOOST
+        boost = max(self.PARTIAL_SHIELD_BOOST_MIN, min(self.PARTIAL_SHIELD_BOOST_MAX, boost))
+
+        new_until = time.time() + seconds
+        # Extend-not-shorten / strengthen-not-weaken: keep whichever active window
+        # is longer and whichever active boost is higher, so repeated arming never
+        # reduces in-flight protection.
+        if time.time() < player.partial_shield_until:
+            new_until = max(new_until, player.partial_shield_until)
+            boost = max(boost, player.partial_shield_boost)
+        player.partial_shield_until = new_until
+        player.partial_shield_boost = boost
+        logger.info(f"Partial shield armed for {serial}: boost={boost:.2f} for {seconds:.1f}s (until={new_until:.2f})")
+
+        if player.span:
+            player.span.add_event(
+                "partial_shield_armed",
+                attributes={"partial_shield_seconds": seconds, "partial_shield_boost": boost},
+            )
+
+        # Visible pulse effect so the partial shield is observable (same mechanism
+        # as grant_shield's pulse).
         if self.gameplay_stream:
             from proto import controller_manager_pb2
 

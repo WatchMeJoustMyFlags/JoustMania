@@ -138,3 +138,39 @@ func TestRampTempoIsShadowOnly(t *testing.T) {
 		})
 	}
 }
+
+// TestPartialShieldIsShadowOnly is the load-bearing gating proof for #1129 (#1103
+// Phase 2): partial_shield MUST appear ONLY in the shadow_experimental variant of
+// interventions_allowed and MUST be absent from every real-facing variant
+// (ambient/standard/full). The allow-list is the enforcement gate, so absence from
+// the real variants means partial_shield is rejected for real games by
+// construction. Asserted on BOTH the production and CI flagd agent configs.
+func TestPartialShieldIsShadowOnly(t *testing.T) {
+	paths := []string{
+		filepath.Join("..", "..", "flagd", "agent.json"),
+		filepath.Join("..", "..", "flagd", "ci", "agent.json"),
+	}
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			variants := readInterventionsAllowed(t, path)
+
+			shadow, ok := variants["shadow_experimental"]
+			if !ok {
+				t.Fatalf("%s: missing shadow_experimental variant", path)
+			}
+			if !contains(shadow, InterventionPartialShield) {
+				t.Fatalf("%s: shadow_experimental must include %q", path, InterventionPartialShield)
+			}
+
+			for _, realVariant := range []string{"ambient", "standard", "full"} {
+				list, ok := variants[realVariant]
+				if !ok {
+					t.Fatalf("%s: missing expected real variant %q", path, realVariant)
+				}
+				if contains(list, InterventionPartialShield) {
+					t.Fatalf("%s: real variant %q must NOT include %q (shadow-only)", path, realVariant, InterventionPartialShield)
+				}
+			}
+		})
+	}
+}

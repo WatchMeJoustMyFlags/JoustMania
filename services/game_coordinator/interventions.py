@@ -208,6 +208,22 @@ INTERVENTION_SPECS: tuple[InterventionSpec, ...] = (
         none_value=0,
     ),
     InterventionSpec(
+        flag_key="partial_shield_seconds",
+        type_id="partial_shield",
+        weight=WEIGHT_MEDIUM,
+        edge_triggered=False,
+        player_targeted=True,
+        # STRING value "<seconds>" or "<seconds>:<boost>" (#1129, #1103 Phase 2):
+        # a TIME-BOXED handicap boost (much harder to die, but NOT immune — vs
+        # grant_shield's total grace_until immunity). The handler parses both
+        # forms; malformed values are a safe no-op. "0" (and "none"/empty) means
+        # no partial shield. SHADOW-game-only initially: allow-listed ONLY via the
+        # `shadow_experimental` interventions_allowed variant (the load-bearing
+        # gate), never the real-facing ambient/standard/full variants.
+        value_kind="string",
+        none_value="0",
+    ),
+    InterventionSpec(
         flag_key="volume_override",
         type_id="adjust_volume",
         weight=WEIGHT_SOFT,
@@ -1241,13 +1257,13 @@ class InterventionManager:
     def resolve_player_targets(
         self,
         flag_key: str,
-        default: float,
+        default,
         game: object,
         *,
         value_kind: str = "float",
         battery_gate: bool = True,
         game_id: str = "",
-    ) -> dict[str, float]:
+    ) -> dict:
         """Evaluate a per-player targeted flag for every active player serial.
 
         For each active serial in ``game.players`` the flag is evaluated with an
@@ -1269,7 +1285,9 @@ class InterventionManager:
             default: Neutral value returned for serials with no targeting match
                 (e.g. 1.0 for sensitivity factor, 0 for shield seconds).
             game: Live game whose ``players`` dict supplies the active serials.
-            value_kind: ``"float"`` or ``"int"`` (flag value type).
+            value_kind: ``"float"``, ``"int"`` or ``"string"`` (flag value type).
+                ``"string"`` (#1129 partial_shield) returns raw per-serial strings
+                for the handler to parse; float/int return coerced numbers.
             battery_gate: If True, drop serials below the battery threshold.
             game_id: Owning session's game id, added as ``gameId`` to the context
                 (#838). Empty string adds no ``gameId`` (legacy primary path).
@@ -1278,7 +1296,7 @@ class InterventionManager:
             ``{serial: value}`` for every active serial that should be acted on.
             Battery-gated serials are omitted entirely.
         """
-        result: dict[str, float] = {}
+        result: dict = {}
         client = self._interventions_client
         serials = _active_player_serials(game)
         threshold = self._battery_threshold() if battery_gate else None
@@ -1290,12 +1308,15 @@ class InterventionManager:
                     continue  # battery guard: skip low-battery controllers
 
             if client is None:
-                value: float = default
+                value = default
             else:
                 ctx = self._session_context(game_id, targeting_key=serial)
                 try:
                     if value_kind == "int":
                         value = float(client.get_integer_value(flag_key, int(default), ctx))
+                    elif value_kind == "string":
+                        # Raw string returned for the handler to parse (#1129).
+                        value = str(client.get_string_value(flag_key, str(default), ctx))
                     else:
                         value = float(client.get_float_value(flag_key, float(default), ctx))
                 except Exception as e:  # one bad serial must not drop the rest

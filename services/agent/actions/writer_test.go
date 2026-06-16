@@ -335,6 +335,62 @@ func TestSetPlayerHandicapDefaultValue(t *testing.T) {
 	}
 }
 
+// TestPartialShieldTargeted verifies the #1129 partial_shield writer case emits
+// the partial_shield_seconds flag as a per-serial targeted STRING state flag with
+// the neutral "none" fall-through, preserving the "<seconds>:<boost>" value.
+func TestPartialShieldTargeted(t *testing.T) {
+	w, path := newTestWriter(t)
+	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionPartialShield, TargetSerial: "AA", Value: "8:1.8"}); err != nil {
+		t.Fatalf("apply AA: %v", err)
+	}
+	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionPartialShield, TargetSerial: "BB", Value: "5"}); err != nil {
+		t.Fatalf("apply BB: %v", err)
+	}
+
+	assertTargetingResolves(t, path, flagPartialShieldSeconds, "AA", "agent_AA")
+	assertTargetingResolves(t, path, flagPartialShieldSeconds, "BB", "agent_BB")
+	assertTargetingResolves(t, path, flagPartialShieldSeconds, "ZZ", neutralNone)
+
+	variants := readFlag(t, path, flagPartialShieldSeconds)["variants"].(map[string]any)
+	if variants["agent_AA"].(string) != "8:1.8" {
+		t.Fatalf("agent_AA value = %v, want 8:1.8", variants["agent_AA"])
+	}
+	// Bare "<seconds>" form is preserved verbatim (boost defaults game-side).
+	if variants["agent_BB"].(string) != "5" {
+		t.Fatalf("agent_BB value = %v, want 5", variants["agent_BB"])
+	}
+	assertStructurallyValid(t, path)
+}
+
+// TestPartialShieldDefaultValue verifies an empty Value falls back to the writer's
+// safe default directive.
+func TestPartialShieldDefaultValue(t *testing.T) {
+	w, path := newTestWriter(t)
+	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionPartialShield, TargetSerial: "AA"}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if v := readFlag(t, path, flagPartialShieldSeconds)["variants"].(map[string]any)["agent_AA"].(string); v != defaultPartialShield {
+		t.Fatalf("default partial_shield value = %v, want %v", v, defaultPartialShield)
+	}
+}
+
+// TestPartialShieldMalformedFallsBackSafe verifies malformed directives degrade to
+// the safe default (never a garbage flag value): non-numeric, out-of-band boost,
+// non-positive seconds, and too-many fields all fall back.
+func TestPartialShieldMalformedFallsBackSafe(t *testing.T) {
+	for _, bad := range []string{"abc", "0", "-3", "5:9", "5:0.2", "5:2:1", "5:abc"} {
+		w, path := newTestWriter(t)
+		if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionPartialShield, TargetSerial: "AA", Value: bad}); err != nil {
+			t.Fatalf("apply %q: %v", bad, err)
+		}
+		v := readFlag(t, path, flagPartialShieldSeconds)["variants"].(map[string]any)["agent_AA"].(string)
+		if v != defaultPartialShield {
+			t.Fatalf("malformed %q wrote %q, want safe default %q", bad, v, defaultPartialShield)
+		}
+		assertStructurallyValid(t, path)
+	}
+}
+
 func TestTargetedRequiresSerial(t *testing.T) {
 	w, _ := newTestWriter(t)
 	err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionAdjustPlayerSensitivity})

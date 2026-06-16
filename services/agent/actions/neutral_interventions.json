@@ -46,6 +46,17 @@
       "defaultVariant": "none",
       "targeting": {}
     },
+    "partial_shield_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "none": "0",
+        "short": "3:2.0",
+        "default": "5:2.0",
+        "long": "10:2.0"
+      },
+      "defaultVariant": "none",
+      "targeting": {}
+    },
     "volume_override": {
       "state": "ENABLED",
       "variants": {
