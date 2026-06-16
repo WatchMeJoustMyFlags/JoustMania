@@ -176,6 +176,107 @@ class TestRenameController:
         assert servicer.name_manager.get_name("unknown_serial") == "Player 1"
 
 
+class TestGetConnectedControllers:
+    """Tests for GetConnectedControllers RPC (#1153 live-roster query)."""
+
+    @pytest.fixture
+    def servicer_components(self):
+        """Create mock components for servicer testing."""
+        with (
+            patch("services.controller_manager.servicer.create_backend") as mock_create_backend,
+            patch("services.controller_manager.servicer.DiscoveryLoop") as mock_discovery_loop,
+        ):
+            mock_backend = MockBackend()
+            mock_create_backend.return_value = mock_backend
+
+            mock_loop = MagicMock()
+            mock_loop.start = MagicMock()
+            mock_loop.stop = MagicMock()
+            mock_loop.wait_stopped = AsyncMock()
+            mock_loop.drain_health_counters = MagicMock(return_value=(0, 0, 0))
+            mock_discovery_loop.return_value = mock_loop
+
+            from services.controller_manager.servicer import ControllerManagerServicer
+
+            servicer = ControllerManagerServicer()
+            yield servicer, mock_backend
+
+    @pytest.mark.asyncio
+    async def test_returns_live_roster(self, servicer_components):
+        """Returns the current tracked controllers, not a stale cache."""
+        from lib.controller_constants import ControllerInfoKey
+
+        servicer, _ = servicer_components
+        servicer.tracked_controllers["s1"] = {
+            ControllerInfoKey.BATTERY: 80,
+            ControllerInfoKey.NAME: "Player 1",
+        }
+        servicer.tracked_controllers["s2"] = {
+            ControllerInfoKey.BATTERY: 50,
+            ControllerInfoKey.NAME: "Player 2",
+        }
+
+        request = controller_manager_pb2.GetConnectedControllersRequest()
+        response = await servicer.GetConnectedControllers(request, MockGrpcContext())
+
+        assert set(response.connected_serials) == {"s1", "s2"}
+        by_serial = {c.serial: c for c in response.controllers}
+        assert by_serial["s1"].name == "Player 1"
+        assert by_serial["s1"].battery == 80
+        assert by_serial["s2"].battery == 50
+
+    @pytest.mark.asyncio
+    async def test_empty_when_no_controllers(self, servicer_components):
+        """Returns an empty roster when nothing is connected."""
+        servicer, _ = servicer_components
+
+        response = await servicer.GetConnectedControllers(
+            controller_manager_pb2.GetConnectedControllersRequest(), MockGrpcContext()
+        )
+
+        assert list(response.connected_serials) == []
+        assert list(response.controllers) == []
+
+    @pytest.mark.asyncio
+    async def test_reflects_live_disconnect(self, servicer_components):
+        """A controller removed from tracked_controllers (missed disconnect
+        reconciled at the backend) is absent from the live roster — this is the
+        #551 ghost the menu cannot see via event-piggybacked serials alone."""
+        from lib.controller_constants import ControllerInfoKey
+
+        servicer, _ = servicer_components
+        servicer.tracked_controllers["s1"] = {ControllerInfoKey.BATTERY: 80}
+        servicer.tracked_controllers["ghost"] = {ControllerInfoKey.BATTERY: 80}
+
+        # Backend drops the ghost (it actually disconnected).
+        del servicer.tracked_controllers["ghost"]
+
+        response = await servicer.GetConnectedControllers(
+            controller_manager_pb2.GetConnectedControllersRequest(), MockGrpcContext()
+        )
+
+        assert set(response.connected_serials) == {"s1"}
+        assert "ghost" not in response.connected_serials
+
+    @pytest.mark.asyncio
+    async def test_excludes_reserved_controllers(self, servicer_components):
+        """Reserved controllers (#777) are excluded, mirroring the stream roster."""
+        from lib.controller_constants import ControllerInfoKey
+
+        servicer, _ = servicer_components
+        servicer.tracked_controllers["s1"] = {ControllerInfoKey.BATTERY: 80}
+        servicer.tracked_controllers["reserved1"] = {
+            ControllerInfoKey.BATTERY: 80,
+            ControllerInfoKey.RESERVED: True,
+        }
+
+        response = await servicer.GetConnectedControllers(
+            controller_manager_pb2.GetConnectedControllersRequest(), MockGrpcContext()
+        )
+
+        assert set(response.connected_serials) == {"s1"}
+
+
 class TestServicerInitialization:
     """Tests for servicer initialization."""
 

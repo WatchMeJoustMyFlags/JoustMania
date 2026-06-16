@@ -669,6 +669,52 @@ class AdminModeHandler:
             except Exception as e:
                 logger.error(f"Error changing game mode: {e}", exc_info=True)
 
+    async def _prune_ghosts_with_live_roster(self, controllers: list[str], admin_serial: str, span) -> list[str]:
+        """Drop ghost controllers from ``controllers`` using the CM live roster.
+
+        Queries the controller manager's authoritative ``GetConnectedControllers``
+        RPC (#1153) and removes any serial the backend no longer reports as
+        connected — the residual #551 ghost window where a DISCONNECT was missed
+        and no later event reconciled the menu's view.
+
+        Fail-soft: on any RPC error (or a missing channel), the original list is
+        returned unchanged so force-start is never blocked by a reconcile failure.
+        The admin serial is always preserved even if it is somehow absent from the
+        live roster, so the operator triggering the start is never pruned.
+        """
+        if self.controller_channel is None or not controllers:
+            return controllers
+
+        from proto import controller_manager_pb2, controller_manager_pb2_grpc
+
+        try:
+            stub = controller_manager_pb2_grpc.ControllerManagerServiceStub(self.controller_channel)
+            response = await stub.GetConnectedControllers(controller_manager_pb2.GetConnectedControllersRequest())
+        except Exception as e:
+            logger.warning(f"Live roster query failed, using menu roster as-is: {e}")
+            span.set_attribute("force_start.roster_reconciled", False)
+            return controllers
+
+        live_serials = set(response.connected_serials)
+
+        pruned = [s for s in controllers if s in live_serials]
+        ghosts = [s for s in controllers if s not in live_serials]
+
+        if ghosts:
+            logger.warning(f"Force-start: pruning {len(ghosts)} ghost controller(s) via live roster: {ghosts}")
+            for _ in ghosts:
+                self.metrics.ghost_controllers_pruned_total.inc()
+
+        span.set_attribute("force_start.roster_reconciled", True)
+        span.set_attribute("force_start.ghosts_pruned", len(ghosts))
+
+        # Never drop the admin controller that triggered the start, even if the
+        # live roster somehow omits it (avoids starting with an empty roster).
+        if admin_serial and admin_serial not in pruned:
+            pruned.append(admin_serial)
+
+        return pruned
+
     async def handle_force_start(self, serial: str) -> None:
         """
         Force start the game from admin mode.
@@ -706,6 +752,13 @@ class AdminModeHandler:
                     controllers = list(self._ready_controllers)
                     if serial not in controllers:
                         controllers.append(serial)
+
+                # #1153/#551: prune ghost controllers against the controller
+                # manager's authoritative live roster before starting. Closes the
+                # window where a DISCONNECT was missed (gRPC GOAWAY) and no later
+                # event arrived, so the menu still tracks a phantom controller.
+                # Fail-soft: on any RPC error, keep the menu-derived roster.
+                controllers = await self._prune_ghosts_with_live_roster(controllers, serial, span)
 
                 span.set_attribute("controller.count", len(controllers))
 

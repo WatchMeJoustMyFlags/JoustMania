@@ -520,6 +520,108 @@ class TestHandleForceStartFlagd:
         assert "ghost" not in roster
 
 
+def _patch_live_roster(serials):
+    """Patch the controller-manager stub so GetConnectedControllers returns
+    a response whose connected_serials is ``serials``."""
+    response = MagicMock()
+    response.connected_serials = list(serials)
+    stub = MagicMock()
+    stub.GetConnectedControllers = AsyncMock(return_value=response)
+    return patch(
+        "proto.controller_manager_pb2_grpc.ControllerManagerServiceStub",
+        return_value=stub,
+    )
+
+
+class TestForceStartLiveRosterReconcile:
+    """#1153/#551: force-start prunes ghosts against the CM live-roster RPC."""
+
+    @pytest.mark.asyncio
+    async def test_force_all_prunes_ghost_via_live_roster(self, handler, mock_state_manager):
+        """force_all_start=True uses the full connected set, which still contains
+        a ghost after a missed DISCONNECT. The live-roster RPC returns the real
+        backend set (no ghost) so force-start launches without it (#1153)."""
+        mock_state_manager.current_game_mode.name = "JoustFFA"
+        real = {f"s{i}" for i in range(16)}
+        mock_state_manager.connected_controllers = real | {"ghost"}
+        mock_state_manager.ready_controllers = set(real)
+        handler._publish_event = AsyncMock()
+        handler.exit = AsyncMock()
+
+        mock_gs_client = MagicMock()
+        mock_gs_client.get_boolean_value = MagicMock(return_value=True)  # force_all_start
+
+        with (
+            patch("services.menu.handlers.admin.asyncio.sleep", new_callable=AsyncMock),
+            patch("lib.feature_flags.get_flag_client", return_value=mock_gs_client),
+            _patch_live_roster(real),  # backend's authoritative roster: no ghost
+        ):
+            await handler.handle_force_start("s0")
+
+        handler.callbacks.start_game.assert_awaited_once()
+        roster = handler.callbacks.start_game.await_args.args[2]
+        assert "ghost" not in roster
+        assert set(roster) == real
+        # One ghost pruned -> the metric was incremented.
+        handler.metrics.ghost_controllers_pruned_total.inc.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_force_start_fail_soft_on_rpc_error(self, handler, mock_state_manager):
+        """If the live-roster RPC errors, force-start keeps the menu roster and
+        still launches (must never be blocked by a reconcile failure)."""
+        mock_state_manager.current_game_mode.name = "JoustFFA"
+        real = {f"s{i}" for i in range(16)}
+        mock_state_manager.connected_controllers = real | {"ghost"}
+        mock_state_manager.ready_controllers = set(real)
+        handler._publish_event = AsyncMock()
+        handler.exit = AsyncMock()
+
+        mock_gs_client = MagicMock()
+        mock_gs_client.get_boolean_value = MagicMock(return_value=True)
+
+        failing_stub = MagicMock()
+        failing_stub.GetConnectedControllers = AsyncMock(side_effect=RuntimeError("RPC down"))
+
+        with (
+            patch("services.menu.handlers.admin.asyncio.sleep", new_callable=AsyncMock),
+            patch("lib.feature_flags.get_flag_client", return_value=mock_gs_client),
+            patch(
+                "proto.controller_manager_pb2_grpc.ControllerManagerServiceStub",
+                return_value=failing_stub,
+            ),
+        ):
+            await handler.handle_force_start("s0")
+
+        # Fail-soft: the game still starts with the menu-derived roster (ghost incl.).
+        handler.callbacks.start_game.assert_awaited_once()
+        roster = handler.callbacks.start_game.await_args.args[2]
+        assert set(roster) == real | {"ghost"}
+
+    @pytest.mark.asyncio
+    async def test_admin_serial_preserved_when_absent_from_roster(self, handler, mock_state_manager):
+        """The admin controller that triggered the start is never pruned, even if
+        the live roster omits it (avoids starting with an empty roster)."""
+        mock_state_manager.current_game_mode.name = "JoustFFA"
+        mock_state_manager.connected_controllers = {"admin", "ghost"}
+        mock_state_manager.ready_controllers = {"admin", "ghost"}
+        handler._publish_event = AsyncMock()
+        handler.exit = AsyncMock()
+
+        mock_gs_client = MagicMock()
+        mock_gs_client.get_boolean_value = MagicMock(return_value=True)
+
+        with (
+            patch("services.menu.handlers.admin.asyncio.sleep", new_callable=AsyncMock),
+            patch("lib.feature_flags.get_flag_client", return_value=mock_gs_client),
+            _patch_live_roster(set()),  # backend reports nothing connected
+        ):
+            await handler.handle_force_start("admin")
+
+        roster = handler.callbacks.start_game.await_args.args[2]
+        assert "admin" in roster
+        assert "ghost" not in roster
+
+
 # ============================================================================
 # Tier 1 — Core Lifecycle
 # ============================================================================

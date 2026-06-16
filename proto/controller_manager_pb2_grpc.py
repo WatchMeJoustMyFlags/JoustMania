@@ -50,6 +50,11 @@ class ControllerManagerServiceStub:
                 request_serializer=controller__manager__pb2.RenameControllerRequest.SerializeToString,
                 response_deserializer=controller__manager__pb2.RenameControllerResponse.FromString,
                 _registered_method=True)
+        self.GetConnectedControllers = channel.unary_unary(
+                '/joustmania.controller_manager.ControllerManagerService/GetConnectedControllers',
+                request_serializer=controller__manager__pb2.GetConnectedControllersRequest.SerializeToString,
+                response_deserializer=controller__manager__pb2.GetConnectedControllersResponse.FromString,
+                _registered_method=True)
 
 
 class ControllerManagerServiceServicer:
@@ -79,6 +84,16 @@ class ControllerManagerServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetConnectedControllers(self, request, context):
+        """Query the controller manager's authoritative live roster on demand (#1153).
+        Unlike the event-piggybacked connected_serials (only refreshed on the next
+        CONNECT/DISCONNECT), this returns the current connected set synchronously so
+        a client (the menu) can reconcile ghosts after a missed disconnect.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_ControllerManagerServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -96,6 +111,11 @@ def add_ControllerManagerServiceServicer_to_server(servicer, server):
                     servicer.RenameController,
                     request_deserializer=controller__manager__pb2.RenameControllerRequest.FromString,
                     response_serializer=controller__manager__pb2.RenameControllerResponse.SerializeToString,
+            ),
+            'GetConnectedControllers': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetConnectedControllers,
+                    request_deserializer=controller__manager__pb2.GetConnectedControllersRequest.FromString,
+                    response_serializer=controller__manager__pb2.GetConnectedControllersResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -180,6 +200,33 @@ class ControllerManagerService:
             '/joustmania.controller_manager.ControllerManagerService/RenameController',
             controller__manager__pb2.RenameControllerRequest.SerializeToString,
             controller__manager__pb2.RenameControllerResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetConnectedControllers(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/joustmania.controller_manager.ControllerManagerService/GetConnectedControllers',
+            controller__manager__pb2.GetConnectedControllersRequest.SerializeToString,
+            controller__manager__pb2.GetConnectedControllersResponse.FromString,
             options,
             channel_credentials,
             insecure,
