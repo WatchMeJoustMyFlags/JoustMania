@@ -185,13 +185,130 @@ interventions.
   [ACT runbook](agent-act-runbook.md) — `AGENT_INTERVENTIONS_ENABLED=true` +
   `enabled=on` + a permitting `interventions_allowed` variant), a permitted
   decision rewrites `interventions.json` and the coordinator applies it,
-  incrementing `game_interventions_total`. Shadow-only nudges like
-  `set_player_handicap` / `player_handicap_factor` (#1107) demonstrate a
-  per-player difficulty lever the agent can pull without touching the real game.
+  incrementing `agent_interventions_applied_total` (agent side) and
+  `game_interventions_total` (coordinator side). The dedicated **Act 2b** below
+  drives interventions all the way to *applied*.
 - **Drive it deterministically**: `tools/demo/demo_driver.py` plays scripted
   mock-controller movement engineered to trip a specific rule on cue — so the
   agent decides something *on demand* instead of you hoping it does. (It drives a
   real, menu-started game, not a shadow.)
+
+### Act 2b — Interventions APPLYING (not just blocked)
+
+This is the act that shows the agent **doing**, not just deciding. Until #1127 it
+could not: the `interventions_allowed` allow-list silently resolved to `none`, so
+every decision blocked `not_allowed` and **nothing ever dispatched**. The fix
+matters for the demo, so it is worth narrating.
+
+> **The #1127 fix (the reason this act now works).** `interventions_allowed` was
+> a top-level **LIST** flag (each variant an array of action ids). flagd's RPC
+> resolver hits the known list/object **TYPE_MISMATCH** trap (same class as
+> #894/#903) and silently fails closed to the default — the agent read an empty
+> allow-list and blocked **every** intervention. #1127 reshaped the variants to
+> **comma-separated STRING** values (`"play_audio_cue,send_controller_effect,…"`),
+> which the agent, coordinator, and menu all parse identically. The allow-list now
+> actually resolves, so a permitted decision **dispatches** (`blocked=false`)
+> instead of blocking `not_allowed`.
+
+**Open all three gates, then the widest allow-list.** Gates 1+2 are the ACT path
+(see the [ACT runbook](agent-act-runbook.md)); the third is the allow-list this
+act widens:
+
+```bash
+# Gate 1 (sink) — env, read at startup, so this recreates the agent.
+# Gate 2 (kill-switch enabled=on) + mode are handled by the enable script.
+AGENT_INTERVENTIONS_ENABLED=true \
+  docker compose \
+    -f docker-compose.yml -f docker-compose.override.yml \
+    -f docker-compose.ci.yml -f docker-compose.dry-run.yml \
+    --profile agent --profile dashboard up -d agent
+
+# confirm the real sink is wired (not NoopActions):
+docker compose logs agent | grep 'Agent intervention writes enabled' | tail -1
+
+# Gates 2 + mode on (live flip, ~1 s, no restart):
+./scripts/agent-dryrun-enable.sh on
+```
+
+Then widen the allow-list to the **superset** so the new shadow-only levers are
+permitted. Set `interventions_allowed` to `shadow_experimental` in the
+`services/flagd/ci/agent.json` flag dir the demo stack serves (**not** the base
+`services/flagd/agent.json` — see the flag-edit gotcha in act 3):
+
+```json
+"interventions_allowed": {
+  "state": "ENABLED",
+  "variants": { "...": "..." },
+  "defaultVariant": "shadow_experimental"
+}
+```
+
+flagd hot-reloads within ~1 s; the **next** `agent.decision` span tags
+`interventions.allowed=play_audio_cue,…,set_player_handicap,ramp_tempo,partial_shield`
+(the full string, post-#1127) instead of `none`, and a permitted decision now
+carries `decision.blocked=false` and completes its `agent.action` span.
+
+**Drive a decision on cue** with `tools/demo/demo_driver.py` (scripted mock
+movement trips a rule deterministically), or push synthetic metrics per the agent
+README *Local smoke test*.
+
+**The variant ladder** — each `interventions_allowed` variant is a superset of the
+one above it (verbatim from `services/flagd/agent.json`):
+
+| Variant | Adds (cumulative) | Use |
+|---------|-------------------|-----|
+| `none` | *(empty — nothing dispatches)* | the soft brake (act 3): loop runs + traces, every decision blocks `not_allowed` |
+| `probe` | `noop` only | full ACT path without touching the game (see ACT runbook → Probe mode) |
+| `ambient` *(base default)* | `play_audio_cue`, `send_controller_effect`, `adjust_volume` | safe nudges — sound/LED/volume, nothing gameplay-altering |
+| `standard` | + `adjust_music_tempo`, `set_pacing_profile`, `adjust_player_sensitivity`, `grant_shield` | real-facing pacing/difficulty + the shield grace-extension |
+| `full` | + `adjust_global_sensitivity`, `adjust_global_difficulty`, `eliminate_player`, `revive_player`, `end_game` | the heavy/global + lifecycle levers |
+| `shadow_experimental` | + `set_player_handicap` (#1107), `ramp_tempo` (#1122), `partial_shield` (#1132) | the demo variant — adds the three **shadow-only experimental** levers on top of `full` |
+
+> The three `shadow_experimental`-only interventions are **shadow-game-gated in
+> the coordinator** as well as allow-list-gated: even with `shadow_experimental`
+> set, the coordinator rejects them on a **real** game (`block_reason` on
+> `game_interventions_total`). They only take effect on **shadow** substrate — by
+> design, so the agent can experiment with per-player difficulty without touching
+> a real party.
+
+**What each lever does on stage** (so you can narrate the trace):
+
+| Intervention | What it does | Bounds / notes |
+|--------------|--------------|----------------|
+| `grant_shield` | Extends the target's `grace_until` → **total** temporary invulnerability (death check skipped); fires a visible pulse. Real-facing (in `standard`+). | seconds > 0; **extend-only** (never shortens); writes only the agent's `grace_until`, never the admin `invincible_until` (#817). Weight: medium. |
+| `set_player_handicap` | Per-player multiplicative `player_handicap_factor` on the death threshold. `>1.0` = harder to die (help); `<1.0` = easier. Composes with sensitivity. **Shadow-only.** | clamped **`[0.5, 2.0]`**, neutral `1.0`. Player-targeted (battery-gated). Weight: medium. |
+| `ramp_tempo` | Scheduled music-tempo **curve** `"<target>:<seconds>:<curve>"` (e.g. `1.3:8:linear`); the 100 ms music loop interpolates toward target. **Only drives live pacing when `tempo_schedule_mode=agent`** (default `rule`). **Shadow-only.** | target clamped to `[1.0, 1.3]`; seconds `> 0`, capped **60 s**; curve in the valid set. Weight: medium. |
+| `partial_shield` | Per-player **time-boxed** handicap boost — raises the death threshold hard for a window (much harder to die, **not** immune; a big spike can still kill). Distinct from `grant_shield`'s total grace. **Shadow-only.** | seconds capped **30 s**, boost `[1.0, 2.0]` (default 2.0); **extend-and-strengthen-only**; never weakens a standing handicap. Weight: medium. |
+
+**Mind the gates that still apply** (so demo expectations are right — a blocked
+decision here is *correct behaviour*, not a bug):
+
+- **Mode-capability / shadow gate** — `set_player_handicap`/`ramp_tempo`/`partial_shield`
+  only apply on **shadow** games; on a real game they block in the coordinator.
+- **Battery gate** — player-targeted interventions (`grant_shield`,
+  `set_player_handicap`, `partial_shield`, `adjust_player_sensitivity`) block when
+  the target controller is below `policy.battery_threshold`
+  (`decision.block_reason=battery_threshold`).
+- **Weighted rate-limit** — the per-**game** budget is
+  `policy.max_interventions_per_minute` (default 2/min); hard interventions cost 2,
+  medium 1, soft 0.5. Exhaust it and the next decision blocks `rate_limit`. Raise
+  to `aggressive` (4) for a busy demo. (The coordinator's separate global backstop,
+  `policy.coordinator_backstop_per_minute`, only trips on a runaway agent — see the
+  [ACT runbook → rate-limit ownership](agent-act-runbook.md#rate-limit-ownership--defense-in-depth-contract-919).)
+
+**Watch it dispatch** — Jaeger and the metrics:
+
+- Jaeger: `agent.action` spans **without** `decision.blocked` are real dispatches.
+  Filter by action, e.g. `agent.action` + tag `{"decision.action":"grant_shield"}`,
+  and the per-game join `{"game.id":"game_<id>"}`. The
+  [trace-viz guide](agent-trace-viz.md#bonus--what-action-was-taken-agentaction)
+  has the click-ready deep links.
+- Prometheus (`http://localhost/prometheus/`): applied dispatches split by action
+  via `sum by (action) (rate(agent_interventions_applied_total[5m]))`, and the
+  applied-vs-blocked split via `agent_decisions_total{blocked="false"}` /
+  `{blocked="true"}`. The Grafana **Agent Operations — Fleet** dashboard
+  ([`agent-operations.json`](../services/grafana/dashboards/agent-operations.json))
+  shows both live.
 
 ### Act 3 — Live flag flips via flagd (the control plane is live)
 
@@ -207,7 +324,9 @@ with no restart. Show the control plane reacting live:
   ```
 - **Soften instead of stop** — set `interventions_allowed` to `none` in the agent
   flagd domain: the loop still runs and traces, but every decision is blocked
-  `not_allowed` (visible as `decision.blocked=true`). See the
+  `not_allowed` (visible as `decision.blocked=true`). This is the bottom rung of
+  the variant ladder in [Act 2b](#act-2b--interventions-applying-not-just-blocked);
+  flipping back to `shadow_experimental` re-opens dispatch live. See the
   [ACT runbook](agent-act-runbook.md#demo-flow--drive-behavior-live-and-watch-the-trace-change)
   for objective / fitness / rate-limit live flips that each change the **next**
   `agent.decision` span.
