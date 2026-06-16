@@ -5,26 +5,45 @@ is **unchanged** — `spikeSurvivalRatio` stays observability-only until #1125 c
 
 ## TL;DR
 
+**Methodology + pipeline VALIDATED; discriminator separation NOT yet established.**
+The query helper, feature computation, window discovery, and sanity-check
+machinery all work end-to-end against the live stack. But the headline "CV
+separates erratic from steady" claim is **not yet evidence**: on the unlabeled
+mock data currently available, the cohorts are defined BY CV quartiles and then
+scored on CV, so the ≈1.7 "separation" is **circular / self-fulfilling**, not a
+discriminator result. The absolute `k` and the discriminator choice must be
+**re-derived on ELIMINATION-LABELED real-hardware games** (the #1017 data path)
+before #1125 binds anything to gating.
+
 - The per-player, per-game acceleration series **already exists** in the live
   Prometheus/VM stack as `game_player_accel_magnitude{game_id, serial}` at the
   native ~0.5 s otel push resolution, covering full game windows. No new
   instrumentation is needed to calibrate #1125 — only an **offline** query.
-- The legacy `std/peak <= 0.30` check (#1120) is scale-invariant and does not
-  discriminate; the recorded distribution confirms it sits far below 0.30 and
-  barely moves between steady and erratic players.
-- The **coefficient of variation (CV = std / mean)** is the discriminator that
-  actually separates erratic movers from steady players in the recorded data
-  (Cohen-d-like separation ≈ 1.2–1.8 across resolutions), while spike-rate did
-  not separate on this dataset.
-- **Recommended survivor bound: `k ≈ 0.015` on CV** (a player with CV above ~0.015
-  is "erratic"). This is the survivor p75 derived from the real distribution, not
-  an arbitrary constant.
-- **Caveat (must read before binding):** the data currently available is
-  predominantly **mock-substrate** (synthetic uniform movement), exactly the
-  substrate #1125 warns cannot finalize this calibration. The pipeline, the
-  discriminator choice (CV over std/peak and spike-rate), and the sanity-check
-  methodology are validated here; the **absolute k must be re-derived from
-  real-hardware games** (the #1017 data path) before #1125 binds it into fitness.
+  (Pipeline validated.)
+- **SOUND finding (independent of the circularity):** the legacy `std/peak <= 0.30`
+  check (#1120) does **not** bite — the recorded distribution sits an order of
+  magnitude below 0.30 (p75 = 0, max ≈ 0.12) and barely moves between players.
+  This directly validates the #1120 scale-invariance failure mode and does not
+  depend on any CV cohorting.
+- **SOUND finding (independent of the circularity):** with an **absolute std
+  floor** defining "steady" (NOT a CV split), **0 / 1739 steady players are
+  flagged** at the candidate bound. The "spares-steady" property is real because
+  the steady cohort is defined by an absolute floor, not by the discriminator
+  under test.
+- **NOT yet established:** that CV (or any feature) actually *separates* erratic
+  from steady movers. The ≈1.2–1.8 "separation" was measured against cohorts
+  that were themselves cut from CV quartiles — a reviewer reproduced ≈1.81 on a
+  smooth, featureless smear with no real structure. This is a property of the
+  circular labeling, not of the data.
+- **Provisional only:** `k ≈ 0.015` on CV is the survivor p75 *of a circular
+  split*. Treat it as a placeholder shape for the eventual real-data derivation,
+  **not** a defensible bound.
+- **Must read before binding:** the data currently available is predominantly
+  **mock-substrate** (synthetic uniform movement), exactly the substrate #1125
+  warns cannot finalize this calibration. Re-derive the discriminator choice AND
+  the absolute `k` on real-hardware, elimination-labeled games (#1017) before
+  #1125 binds it into fitness. Deliverable here: **pipeline + methodology
+  validated, k provisional.**
 
 ## Endpoint / retention finding
 
@@ -67,33 +86,59 @@ Game windows are discovered automatically from the same series
 
 - 467 game windows (mostly 300 s shadow games), 1868 player records, **129 movers**
   (players with std ≥ 0.01 g; the other ~1739 are flat synthetic/idle controllers).
-- Discriminator comparison on the mover cohort (internal CV-quartile split, since
-  most mock games have no eliminations):
 
-| discriminator | survivor p75 | erratic median | separation |
+- **CIRCULAR — do NOT read as discriminator evidence.** Because the mock games
+  carry no eliminations, the script falls back to an **internal CV-quartile split**:
+  it cuts the "survivor" and "erratic" cohorts BY CV quartile and then scores CV
+  against those very cohorts. Any feature correlated with CV will look like it
+  "separates" — a reviewer reproduced ≈1.81 separation from a smooth, featureless
+  smear. The numbers below are reported for transparency, not as proof CV
+  discriminates:
+
+| discriminator | survivor p75 | erratic median | "separation" (self-fulfilling) |
 |---|---|---|---|
-| **cv** | **0.0126** | 0.0745 | **+1.76** |
-| spike_rate_per_min | 0.197 | 0.000 | −0.32 (no separation on this data) |
+| cv | 0.0126 | 0.0745 | +1.76 (circular: cohorts cut from CV quartiles) |
+| spike_rate_per_min | 0.197 | 0.000 | −0.32 |
 
-- **Sanity check at k = 0.0126 (CV):**
-  - steady players flagged: **0 / 1739** (flag rate 0.0) → *spares steady*
-  - top-quartile movers flagged: **32 / 32** (flag rate 1.0) → *bites erratic*
-- Resolution stability: re-running at step 0.5 s vs 1.0 s gives k = 0.0152 vs
-  0.0137 (both CV, separation ≈ 1.2–1.8). The recommendation is robust to query
-  resolution.
-- Legacy `std/peak` distribution (p75 = 0.0, max = 0.119) sits an order of
-  magnitude below the 0.30 bound across the whole population — direct confirmation
-  of the #1120 "ratio never bites" failure mode.
+- **SOUND — independent of the circularity. Sanity check at k = 0.0126 (CV):**
+  - steady players flagged: **0 / 1739** (flag rate 0.0) → *spares steady*.
+    "Steady" here is defined by an **absolute std floor** (`std < 0.01 g`), NOT by
+    CV, so this 0/1739 result is genuine: at this bound the metric does not fire on
+    near-stationary controllers. This is the one survivor-side property that holds
+    regardless of the cohorting.
+  - top-quartile movers flagged: 32 / 32 → reported, but "erratic" here is the
+    CV-defined top quartile, so this side is circular and is NOT evidence the
+    metric catches genuinely erratic play.
+- Resolution note: re-running at step 0.5 s vs 1.0 s gives k = 0.0152 vs 0.0137.
+  The *value* is stable across resolution, but stability of a circular estimate
+  does not make it a discriminator bound — it stays provisional.
+- **SOUND — independent of the circularity.** Legacy `std/peak` distribution
+  (p75 = 0.0, max = 0.119) sits an order of magnitude below the 0.30 bound across
+  the whole population — direct confirmation of the #1120 "ratio never bites"
+  failure mode. This needs no CV cohorting and stands on its own.
 
-## Recommended metric for #1125
+## Candidate metric for #1125 (provisional — not yet a recommendation)
 
-Bind the balanced spike-survival sub-check on **CV (`std / mean`)**, not `std/peak`:
-a player "survives spikes" when their whole-game `CV ≤ k`. Use **`k ≈ 0.015`** as the
-starting survivor bound, re-derived from real-hardware games before going gating.
+The legacy `std/peak` ratio is ruled OUT (it never bites — sound finding above).
+CV (`std / mean`) is the **leading candidate** to replace it, because it is
+non-scale-invariant (a flag that scales movement intensity changes mean and std
+together but reshapes burstiness, moving CV) — so unlike `std/peak` it *can* in
+principle produce arm-to-arm separation.
 
-This is non-scale-invariant (a flag that scales movement intensity changes mean and
-std together but reshapes burstiness, moving CV) so it can produce arm-to-arm
-separation that `std/peak` could not.
+But **#1125 must not bind CV (or any feature) yet.** This doc does **not**
+establish that CV separates erratic from steady movers: the ≈1.7 separation came
+from a CV-quartile split scored on CV (circular, see Evidence). Before #1125 picks
+a discriminator and a bound:
+
+1. Re-run on **elimination-labeled real-hardware games** (#1017) so cohorts are
+   defined by actual outcomes, not by the feature under test.
+2. Re-derive the discriminator choice (CV vs spike-rate vs others) from that
+   real, labeled separation.
+3. Re-derive the absolute bound `k` from the real survivor/eliminated gap. The
+   provisional `k ≈ 0.015` shown here is a placeholder shape, not a defensible
+   value.
+
+Until then the deliverable is: **pipeline + methodology validated, k provisional.**
 
 ## How to reproduce
 

@@ -7,6 +7,16 @@ emits a recommended threshold (`k`) for a spike-survival metric, the per-player
 feature distribution, and a sanity check that the metric BITES for erratic players
 (high std/peak) without firing on steady ones.
 
+MOCK-SUBSTRATE CAVEAT (read before trusting any number this prints): on synthetic
+/ mock movement (the data predominantly available today) the results are NOT real
+calibration. With no elimination labels the recommender falls back to an internal
+CV-quartile split — it cuts the "erratic" and "survivor" cohorts BY CV and then
+scores CV against them, so the reported "separation" is CIRCULAR / self-fulfilling,
+not evidence that any feature discriminates. Only the absolute-std-floor
+"spares-steady" result and the std/peak "never bites" result are sound on mock
+data; the discriminator choice and the absolute `k` must be re-derived on
+elimination-labeled real-hardware games (#1017) before #1125 binds anything.
+
 Why this exists
 ---------------
 The earlier `std/peak <= 0.30` attempt (#1120) was scale-invariant: spiky players

@@ -26,6 +26,12 @@ features for every player in the game:
 
 No-player-identity (#23): everything is keyed by ``(game_id, serial)`` and scoped to
 a single game window. Nothing is persisted or correlated across sessions.
+
+MOCK-SUBSTRATE CAVEAT: the features here are only as meaningful as the underlying
+movement. On synthetic / mock controllers (the data predominantly available today)
+these features describe an artificial smear, not real play, so they are NOT real
+calibration — any downstream "separation" derived from them must be treated as
+provisional until recomputed on elimination-labeled real-hardware games (#1017).
 """
 
 from __future__ import annotations
@@ -175,6 +181,10 @@ def discover_game_windows(
 
     A "window" is the first..last timestamp at which the game emitted accel samples.
     Games shorter than min_duration_s (e.g. single-scrape shadow probes) are dropped.
+
+    Assumption: all samples sharing a game_id belong to one contiguous game and are
+    stitched into a single first..last window. A reused game_id (or a gap-separated
+    re-run under the same id) would be merged into one oversized window.
     """
     start = now - lookback_s
     # count_over_time collapses each series to presence; group by game_id below.
