@@ -389,21 +389,25 @@ def test_cohort_loop_spawns_paired_games_that_conclude_with_fitness(
         "experiment was never declared"
     )
 
-    # At least one shadow game concludes with a fitness number (the per-game
-    # observable the verdict consumes).
-    assert _poll_log_contains(LOG_GAME_CONCLUDED, CONCLUDE_TIMEOUT), (
-        "no shadow game ever concluded; log tail:\n" + _agent_logs()[-4000:]
-    )
-    logs = _agent_logs()
-    assert "fitness=" in logs, "expected a fitness= field on a game_concluded line"
+    # Poll until BOTH CRN arms (#1003) have a concluded game carrying fitness —
+    # proving the loop spawns PAIRED games (a control + an experimental) off the
+    # seeded experiment, not a single arm. Polling (not a one-shot snapshot)
+    # absorbs the lag between the first arm concluding and its sibling: the two
+    # games of a pair finish a few seconds apart.
+    def _both_arms_concluded() -> bool:
+        log = _agent_logs()
+        return (
+            LOG_GAME_CONCLUDED in log
+            and "fitness=" in log
+            and "arm=control" in log
+            and "arm=experimental" in log
+        )
 
-    # CRN pairing (#1003): both arms appear, proving the loop spawns PAIRED games
-    # (a control + an experimental) off the seeded experiment, not a single arm.
-    assert "arm=control" in logs and "arm=experimental" in logs, (
-        "expected both CRN arms (control + experimental) among the concluded "
-        "games; log tail:\n" + logs[-4000:]
+    assert poll_until(_both_arms_concluded, timeout=CONCLUDE_TIMEOUT, interval=1.0), (
+        "did not observe both CRN arms (control + experimental) conclude with "
+        "fitness; log tail:\n" + _agent_logs()[-4000:]
     )
-    assert "panic:" not in logs, "agent panicked during the cohort loop"
+    assert "panic:" not in _agent_logs(), "agent panicked during the cohort loop"
 
 
 # The full verdict + teardown SOAK cannot complete RELIABLY in the shared
