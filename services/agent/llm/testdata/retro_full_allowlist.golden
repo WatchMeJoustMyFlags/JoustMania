@@ -46,7 +46,7 @@ game opens or is paced. Instead, recommend which of these intervention TYPES the
 agent should ENABLE or EMPHASIZE (weight up) — and which to de-emphasize — for the
 next session, tuning its reactive vocabulary and emphasis (only those the live
 allow-list below permits):
-  play_audio_cue, send_controller_effect, adjust_volume, adjust_music_tempo, set_pacing_profile, adjust_player_sensitivity, grant_shield
+  play_audio_cue, send_controller_effect, adjust_volume, adjust_music_tempo, set_pacing_profile, adjust_player_sensitivity, grant_shield, adjust_global_sensitivity, adjust_global_difficulty, eliminate_player, revive_player, end_game
 
 POLICY: suggest the SMALLEST tuning change that addresses an observed problem,
 grounded in the session evidence below (who faded when, who was near death, the
@@ -77,18 +77,29 @@ Outcome:
   winner: AA:11
 
 Recent events (oldest first; age relative to captured_at):
-  (none)
+  -150s phase: start
+  -140s state: active_players=3 mean_intensity=0.80
+  -90s elimination: BB:22 (#1)
+  -40s state: active_players=2 mean_intensity=0.45
+  +0s phase: end
+
+Game speed (tempo over the game; oldest first):
+  speed: ▁▃▅▆█
+
+Engagement trend (room; offset_seconds: active / mean_intensity; oldest first):
+  +10s: active=3 mean_intensity=0.80
+  +110s: active=2 mean_intensity=0.45
 
 Player arcs (sorted by serial; offsets relative to game start; "unknown" = never observed):
-  AA:11: outcome=survivor survival_seconds=unknown elimination_offset_seconds=unknown
-    movement=unknown activity=unknown
-    near_death_ratio=unknown near_death_offset_seconds=unknown
+  AA:11: outcome=survivor survival_seconds=150.00 elimination_offset_seconds=unknown
+    movement=▃▅▆██ activity=active
+    near_death_ratio=0.96 near_death_offset_seconds=130.00
     final_intensity=1.25 final_skill=0.80
-  BB:22: outcome=eliminated #1 survival_seconds=unknown elimination_offset_seconds=unknown
-    movement=unknown activity=unknown
-    near_death_ratio=unknown near_death_offset_seconds=unknown
+  BB:22: outcome=eliminated #1 survival_seconds=60.00 elimination_offset_seconds=60.00
+    movement=▄▂__ activity=idle
+    near_death_ratio=0.53 near_death_offset_seconds=10.00
     final_intensity=0.10 final_skill=0.30
-  CC:33: outcome=eliminated #2 survival_seconds=unknown elimination_offset_seconds=unknown
-    movement=unknown activity=unknown
-    near_death_ratio=unknown near_death_offset_seconds=unknown
+  CC:33: outcome=eliminated #2 survival_seconds=150.00 elimination_offset_seconds=unknown
+    movement=▆▇█ activity=active
+    near_death_ratio=1.14 near_death_offset_seconds=58.00
     final_intensity=unknown final_skill=unknown
