@@ -12,10 +12,18 @@
 # Usage:
 #   scripts/replay-prompt.sh <system-prompt-file> <user-prompt-file>
 #
-# How to get the two files, from a captured span in Jaeger:
+# How to get the two files, from a captured span in Jaeger (#1168: the span carries
+# only a fingerprint of the system prompt, not its text — the full text is on a log):
 #   1. Open http://localhost:8080/jaeger/ and find a span named `agent.llm.prompt`.
-#   2. Copy the `llm.prompt.system` attribute value into a file, e.g. system.txt.
-#   3. Copy the `llm.prompt.user`   attribute value into a file, e.g. user.txt.
+#   2. Copy the `llm.prompt.user` attribute value into a file, e.g. user.txt.
+#   3. Read the span's `llm.prompt.system_sha256` attribute (a 16-hex fingerprint).
+#      The FULL system text is NOT on the span — it is emitted once per distinct
+#      fingerprint on the `agent.llm.system_prompt` log line. Pull it out by hash:
+#        docker logs joustmania-agent 2>&1 \
+#          | grep agent.llm.system_prompt | grep <system_sha256> | tail -1
+#      and copy that line's `system` field value into a file, e.g. system.txt.
+#      (The system prompt is also deterministically reconstructable from the
+#      span's prompt_variant + mode + interventions.allowed.)
 #   4. Run:  scripts/replay-prompt.sh system.txt user.txt
 #   5. Eyeball the printed response: does it parse as a single JSON object with
 #      the contract fields (intervention, target_serial, value, reason,
@@ -27,9 +35,10 @@
 # `claude` CLI headless path is the current candidate).
 #
 # It ALSO replays post-game `agent.llm.retro` spans (#844) identically: copy the
-# `llm.retro.system` / `llm.retro.user` attribute values out of an
-# `agent.llm.retro` span (instead of llm.prompt.system/user) into the two files
-# and run the same way.
+# `llm.retro.user` attribute value out of an `agent.llm.retro` span (instead of
+# llm.prompt.user) into user.txt, and pull the system text from the
+# `agent.llm.system_prompt` log line keyed by the span's `llm.retro.system_sha256`
+# (instead of llm.prompt.system_sha256) into system.txt; then run the same way.
 
 set -euo pipefail
 
@@ -37,10 +46,14 @@ usage() {
 	cat >&2 <<'EOF'
 usage: replay-prompt.sh <system-prompt-file> <user-prompt-file>
 
-  <system-prompt-file>  file holding the captured llm.prompt.system attribute
+  <system-prompt-file>  file holding the `system` field from the
+                        `agent.llm.system_prompt` log line keyed by the span's
+                        llm.prompt.system_sha256 (the span has only the hash)
   <user-prompt-file>    file holding the captured llm.prompt.user attribute
 
-Copy both attribute values out of an `agent.llm.prompt` span in Jaeger.
+Copy llm.prompt.user out of an `agent.llm.prompt` span in Jaeger; resolve the
+system text from the `agent.llm.system_prompt` log line by the span's
+llm.prompt.system_sha256 hash.
 EOF
 	exit 2
 }

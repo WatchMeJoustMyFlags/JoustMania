@@ -11,8 +11,8 @@ import (
 // blockHeader labels the cross-game context section in the prompt. It is a fixed,
 // greppable marker (#929 acceptance: "each LLM call includes the last N game
 // summaries as a narrative context block") so the block is findable in a captured
-// prompt and in a Jaeger llm.prompt.system attribute by name, independent of how
-// many games it holds.
+// prompt and in the `agent.llm.system_prompt` reference log's `system` field by
+// name, independent of how many games it holds.
 const blockHeader = "PRIOR GAMES (most recent last; cross-game memory):"
 
 // emptyMarker is rendered when the window is empty (no games have ended yet, or N

@@ -740,18 +740,27 @@ The span carries the full prompt plus its attribution (single builder
 | `agent.prompt_variant` | resolved prompt variant |
 | `agent.objectives` | sorted `k=v` weights |
 | `interventions.allowed` | the allow-list summary |
-| `llm.prompt.system` / `llm.prompt.user` | the **full** prompt text (uncapped) |
+| `llm.prompt.system_sha256` | 16-hex **fingerprint** of the system prompt (#1168) — NOT the text; the full text is on the `agent.llm.system_prompt` log line |
+| `llm.prompt.user` | the user prompt text, capped at 32 KiB (a `...[truncated]` marker is appended if it exceeds the cap) |
 | `llm.prompt.bytes` | `len(system)+len(user)` |
 | `inference.configured` | the `model` flag |
 | `inference.used` | `"rules"` (the rules engine decided) |
 | `inference.fallback_reason` | `"no_backend_available"` |
 
 The companion log line `agent.llm.prompt_captured` carries only metadata
-(`session_id`, `variant`, `model`, `bytes`, `fallback_reason`) — the prompt text
-lives on the span alone. **View in Jaeger:** open `http://localhost:8080/jaeger/`,
-service `agent`, operation `agent.llm.prompt`. To replay a captured prompt against
-a real model, copy `llm.prompt.system` / `llm.prompt.user` into two files and run
-`scripts/replay-prompt.sh`. See
+(`session_id`, `variant`, `model`, `bytes`, `fallback_reason`). The **user** prompt
+text lives on the span; the **system** prompt text does **not** — to keep the traces
+pipeline bounded (#1168) the span carries only its 16-hex `llm.prompt.system_sha256`
+fingerprint, and the full system text is emitted **once per distinct fingerprint** on
+the dedicated `agent.llm.system_prompt` log line (fields `{system_sha256,
+prompt_variant, mode, interventions_allowed, system}`). The system prompt is also
+deterministically reconstructable from `(prompt_variant, mode, interventions_allowed)`.
+
+**View in Jaeger:** open `http://localhost:8080/jaeger/`, service `agent`, operation
+`agent.llm.prompt`. To replay a captured prompt against a real model: take the span's
+`llm.prompt.system_sha256`, find the matching `agent.llm.system_prompt` log line by
+that hash (grep the agent logs), copy its `system` field into one file and the span's
+`llm.prompt.user` value into another, then run `scripts/replay-prompt.sh`. See
 [docs/research/739-prompt-capture.md](../../docs/research/739-prompt-capture.md)
 for the response contract and the forward path (#741 backend, #742 auth).
 
@@ -786,7 +795,8 @@ The span carries the full retro prompt plus attribution (single builder
 | `agent.objectives` | sorted `k=v` weights |
 | `interventions.allowed` | the allow-list summary |
 | `session.id` | the finished session's id |
-| `llm.retro.system` / `llm.retro.user` | the **full** retro prompt text (uncapped) |
+| `llm.retro.system_sha256` | 16-hex **fingerprint** of the retro system prompt (#1168) — NOT the text; the full text is on the `agent.llm.system_prompt` log line |
+| `llm.retro.user` | the retro user prompt text, capped at 32 KiB (a `...[truncated]` marker is appended if it exceeds the cap) |
 | `llm.retro.bytes` | `len(system)+len(user)` |
 | `inference.configured` | the `model` flag |
 | `inference.used` | **`"none"`** (divergence — see below) |
@@ -800,8 +810,9 @@ value. The companion log line `agent.llm.retro_captured` carries only metadata
 (`session_id`, `model`, `bytes`, `fallback_reason`). The suggestion contract maps
 to the **calibration surface** (#766: `global_difficulty_factor`,
 `pacing_profile`, `threshold_table`, `objective_variant`), and `replay-prompt.sh`
-replays an `agent.llm.retro` span identically (copy `llm.retro.system` /
-`llm.retro.user`). See
+replays an `agent.llm.retro` span identically — the system text comes from the
+`agent.llm.system_prompt` log line keyed by the span's `llm.retro.system_sha256`,
+the user text from the span's `llm.retro.user`. See
 [docs/research/844-post-game-retro.md](../../docs/research/844-post-game-retro.md).
 
 #### `fitness.evaluated` (#731)
