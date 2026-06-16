@@ -211,11 +211,12 @@ const (
 	AttrSessionID = "session.id"
 	AttrGameID    = "game.id"
 	// AttrGameTraceID is the hex trace_id of the originating game-coordinator trace
-	// (#1133, Phase 2 of #1088). Carried as an attribute on the OTel Link the
-	// agent.decision span adds to that game trace (gameTraceLink) — so even a backend
-	// that does not render Links keeps the correlation id queryable on the span, and a
-	// reader sees WHICH trace the link points at. Empty/absent when no valid game
-	// trace_id was ingested (graceful fallback: no link is added at all).
+	// (#1133, Phase 2 of #1088). Stamped in TWO places when a valid game trace_id is
+	// ingested: (1) as an attribute on the OTel Link the agent.decision span adds to
+	// that game trace (gameTraceLink), and (2) as a plain attribute on the decision
+	// span itself — so it is searchable as a span tag in Jaeger even on backends that
+	// don't surface Link attributes in search. Empty/absent when no valid game
+	// trace_id was ingested (graceful fallback: no link and no attribute are added).
 	AttrGameTraceID = "game.trace_id"
 	// AttrEnabled is the existence-layer kill switch (agent.enabled). Lifted from
 	// the cycle's LayerState onto every decision span (including the disabled

@@ -920,6 +920,12 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 		trace.WithAttributes(decisionAttributes(state, d, blocked, reason, c.GameKind, c.SessionID)...),
 	}
 	startOpts = append(startOpts, gameTraceLink(c.GameTraceID)...)
+	if c.GameTraceID != "" {
+		// Also stamp the originating trace_id as a span ATTRIBUTE (not only the Link
+		// attribute), so it is searchable as a span tag in Jaeger even on backends
+		// that don't surface Link attributes in search (#1133 review).
+		startOpts = append(startOpts, trace.WithAttributes(attribute.String(AttrGameTraceID, c.GameTraceID)))
+	}
 	dCtx, dSpan := l.Tracer.Start(ctx, SpanDecision, startOpts...)
 	defer dSpan.End()
 
@@ -1143,8 +1149,9 @@ func (l *Loop) shouldLog() bool {
 // sufficient for IsValid on a remote link target). An empty or unparseable id yields NO
 // option, so the span is created exactly as before: graceful fallback, no Link, no error.
 //
-// The trace_id is also stamped as a plain attribute on the Link so backends that do not
-// render Links keep the correlation id queryable.
+// The trace_id is also stamped as a plain attribute on the Link; the caller additionally
+// stamps it as a span attribute (see runDecision) so it stays queryable as a span tag on
+// backends that don't surface Link attributes in search.
 func gameTraceLink(gameTraceID string) []trace.SpanStartOption {
 	if gameTraceID == "" {
 		return nil
