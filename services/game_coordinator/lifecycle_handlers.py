@@ -44,6 +44,82 @@ ELIMINATE_ACCEL = 0.0
 # Neutral shield value (no shield). Matches shield_seconds none variant.
 SHIELD_NONE = 0.0
 
+# Partial-shield (#1129, #1103 Phase 2) value parsing. Value is a STRING
+# "<seconds>" or "<seconds>:<boost>"; bounds mirror BaseGameMode's clamps so a
+# malformed value degrades to a safe no-op rather than dispatching garbage.
+PARTIAL_SHIELD_NONE_VALUES = frozenset({"", "0", "0.0", "none", "off"})
+PARTIAL_SHIELD_DEFAULT_BOOST = 2.0
+PARTIAL_SHIELD_BOOST_MIN = 1.0
+PARTIAL_SHIELD_BOOST_MAX = 2.0
+PARTIAL_SHIELD_MAX_SECONDS = 30.0
+
+
+def parse_partial_shield_value(value: object) -> tuple[float, float] | None:
+    """Parse a partial_shield value into ``(seconds, boost)`` or ``None``.
+
+    Accepts ``"<seconds>"`` or ``"<seconds>:<boost>"``. Returns ``None`` for the
+    neutral / empty / malformed forms (caller treats ``None`` as a safe no-op):
+    non-numeric fields, seconds <= 0, or boost outside a sane band. Bounds are
+    clamped (seconds capped at ``PARTIAL_SHIELD_MAX_SECONDS``, boost to
+    [``PARTIAL_SHIELD_BOOST_MIN``, ``PARTIAL_SHIELD_BOOST_MAX``]) so the resolved
+    pair is always safe to pass to ``grant_partial_shield``.
+    """
+    text = str(value).strip().lower()
+    if text in PARTIAL_SHIELD_NONE_VALUES:
+        return None
+    parts = text.split(":")
+    if len(parts) > 2:
+        return None
+    try:
+        seconds = float(parts[0])
+        boost = float(parts[1]) if len(parts) == 2 else PARTIAL_SHIELD_DEFAULT_BOOST
+    except ValueError:
+        return None
+    if seconds <= 0:
+        return None
+    seconds = min(seconds, PARTIAL_SHIELD_MAX_SECONDS)
+    boost = max(PARTIAL_SHIELD_BOOST_MIN, min(PARTIAL_SHIELD_BOOST_MAX, boost))
+    return seconds, boost
+
+
+async def handle_partial_shield(ctx: InterventionContext, manager: InterventionManager) -> None:
+    """Arm per-player TIME-BOXED partial shields via per-serial targeting (#1129).
+
+    Mirrors :func:`handle_shield_seconds`: resolves the STRING flag once per active
+    serial via the manager's reusable ``resolve_player_targets`` helper, parses
+    each value with :func:`parse_partial_shield_value` (malformed / neutral -> safe
+    skip), and arms a time-boxed handicap boost via ``game.grant_partial_shield``.
+    Unlike ``grant_shield`` (total grace_until immunity), this only raises the
+    player's death threshold for the window — much harder to die, NOT immune.
+    Reverting to none requires no action: the boost simply stops applying when its
+    deadline passes (``_compute_effective_thresholds`` reads it live each frame).
+    """
+    game = ctx.game
+    if game is None:
+        logger.debug("partial_shield: no live game, ignoring")
+        return
+
+    values = manager.resolve_player_targets(
+        flag_key=ctx.spec.flag_key,
+        default="0",
+        game=game,
+        value_kind="string",
+        battery_gate=True,
+        game_id=ctx.game_id,
+    )
+
+    grant = getattr(game, "grant_partial_shield", None)
+    if not callable(grant):
+        logger.debug("partial_shield: game has no grant_partial_shield, ignoring")
+        return
+
+    for serial, raw in values.items():
+        parsed = parse_partial_shield_value(raw)
+        if parsed is None:
+            continue  # neutral / malformed: safe no-op for this serial
+        seconds, boost = parsed
+        await grant(serial, seconds, boost)
+
 
 async def handle_shield_seconds(ctx: InterventionContext, manager: InterventionManager) -> None:
     """Grant per-player shields via per-serial targeting resolution (N3).
@@ -151,6 +227,11 @@ def register_lifecycle_handlers(manager: InterventionManager) -> None:
     manager.register_handler(
         "shield_seconds",
         lambda ctx: handle_shield_seconds(ctx, manager),
+    )
+    # partial_shield (#1129) also needs the manager for the targeting helper.
+    manager.register_handler(
+        "partial_shield_seconds",
+        lambda ctx: handle_partial_shield(ctx, manager),
     )
     manager.register_handler("eliminate_player", handle_eliminate_player)
     manager.register_handler("revive_player", handle_revive_player)

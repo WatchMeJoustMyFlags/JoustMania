@@ -272,6 +272,9 @@ const genericModeFragment = `GAME MODE — not specified this cycle: reason only
 //     die; slower tempo = lower bar = easier to die.
 //   - grant_shield extends grace_until by shield_seconds (3/5/10s variants);
 //     while shielded the per-frame death check is skipped entirely.
+//   - partial_shield (#1129) instead raises the player's death threshold by up to
+//     ~2x via a time-boxed handicap for N seconds — much harder to die but NOT
+//     immune (clamped, finite threshold), the softer sibling of grant_shield.
 //   - eliminate_player is immediate + permanent (FFA); end_game ends the round;
 //     win = last player alive.
 //
@@ -298,6 +301,10 @@ Higher sensitivity level = higher bar = HARDER to die; slower tempo = lower bar
   - grant_shield: extends a player's grace window by ~3s (short) / 5s (default) /
     10s (long); during it they CANNOT be eliminated, then the EMA re-primes. Use
     to save a player about to be unfairly eliminated.
+  - partial_shield ("<seconds>" or "<seconds>:<boost>", boost 1.0-2.0 default
+    2.0): makes a player MUCH harder to eliminate (raises their death threshold by
+    up to ~2x via a time-boxed handicap) for N seconds, but NOT immune — a huge
+    spike can still kill them. A softer, less binary alternative to grant_shield.
   - eliminate_player: immediate and PERMANENT removal. end_game: ends the round
     now. Both are maximal, irreversible actions — last player alive wins.`
 

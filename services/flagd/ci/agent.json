@@ -82,7 +82,7 @@
         "ambient": "play_audio_cue,send_controller_effect,adjust_volume",
         "standard": "play_audio_cue,send_controller_effect,adjust_volume,adjust_music_tempo,set_pacing_profile,adjust_player_sensitivity,grant_shield",
         "full": "play_audio_cue,send_controller_effect,adjust_volume,adjust_music_tempo,set_pacing_profile,adjust_player_sensitivity,grant_shield,adjust_global_sensitivity,adjust_global_difficulty,eliminate_player,revive_player,end_game",
-        "shadow_experimental": "play_audio_cue,send_controller_effect,adjust_volume,adjust_music_tempo,set_pacing_profile,adjust_player_sensitivity,grant_shield,adjust_global_sensitivity,adjust_global_difficulty,eliminate_player,revive_player,end_game,set_player_handicap,ramp_tempo"
+        "shadow_experimental": "play_audio_cue,send_controller_effect,adjust_volume,adjust_music_tempo,set_pacing_profile,adjust_player_sensitivity,grant_shield,adjust_global_sensitivity,adjust_global_difficulty,eliminate_player,revive_player,end_game,set_player_handicap,ramp_tempo,partial_shield"
       },
       "defaultVariant": "ambient"
     },

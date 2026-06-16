@@ -48,6 +48,7 @@ const (
 	flagPlayerSensitivityFactor   = "player_sensitivity_factor"
 	flagPlayerHandicapFactor      = "player_handicap_factor" // #1107 (#1103 MVP action 1)
 	flagShieldSeconds             = "shield_seconds"
+	flagPartialShieldSeconds      = "partial_shield_seconds" // #1129 (#1103 Phase 2)
 	flagVolumeOverride            = "volume_override"
 	flagGlobalDifficultyFactor    = "global_difficulty_factor" // #766 F6
 	flagPacingProfile             = "pacing_profile"           // #766 F6
@@ -111,6 +112,18 @@ const (
 	// fast tempo over 8s, linear — used when a Decision carries no Value or a
 	// malformed one. Matches interventions.json "ramp_up".
 	defaultTempoRamp = "1.3:8:linear"
+	// defaultPartialShield is the safe fallback partial_shield directive (#1129):
+	// 5 seconds at the default ~2.0 boost — used when a Decision carries no Value
+	// or a malformed one. "<seconds>:<boost>" with boost at the [1.0,2.0] max.
+	defaultPartialShield = "5:2.0"
+)
+
+// partial_shield bounds (#1129) — mirror BaseGameMode's clamps so the writer
+// never emits a directive the game side would reject.
+const (
+	partialShieldMaxSeconds = 30.0
+	partialShieldBoostMin   = 1.0
+	partialShieldBoostMax   = 2.0
 )
 
 // tempoRampMaxSeconds bounds a single ramp's duration (mirrors base.py
@@ -405,6 +418,8 @@ func (w *Writer) mutate(doc *orderedDoc, d decision.Decision) error {
 		return w.setTargeted(doc, flagPlayerHandicapFactor, neutralDefault, d.TargetSerial, w.numOr(d.Value, defaultPlayerHandicap))
 	case decision.InterventionGrantShield:
 		return w.setTargeted(doc, flagShieldSeconds, neutralNone, d.TargetSerial, w.numOr(d.Value, defaultShieldSeconds))
+	case decision.InterventionPartialShield: // #1129 (#1103 Phase 2), shadow-only
+		return w.setTargetedString(doc, flagPartialShieldSeconds, neutralNone, d.TargetSerial, w.partialShieldOr(d.Value, defaultPartialShield))
 
 	// Probe-mode synthetic intervention: no game effect, but a dispatched success
 	// so probe mode (AGENT_PROBE_DECISIONS + the `probe` interventions_allowed
@@ -512,6 +527,77 @@ func (w *Writer) setTargeted(doc *orderedDoc, flagKey, neutral, serial string, v
 	return doc.putFlag(flagKey, f)
 }
 
+// setTargetedString writes a per-player STRING state-shaped flag via a flagd
+// targeting if-ladder keyed on targetingKey=serial (#1129 partial_shield). It is
+// the string sibling of setTargeted: each driven serial gets its own
+// "agent_<serial>" variant carrying a STRING value, the if-ladder maps serial ->
+// that variant, and unmatched serials fall through to the neutral defaultVariant.
+// Existing per-serial variants/branches are preserved (merge, not clobber).
+func (w *Writer) setTargetedString(doc *orderedDoc, flagKey, neutral, serial, value string) error {
+	if serial == "" {
+		return fmt.Errorf("targeted intervention on %q requires a target serial", flagKey)
+	}
+	f, err := doc.flag(flagKey)
+	if err != nil {
+		return err
+	}
+
+	variants := map[string]string{}
+	if _, err := f.get("variants", &variants); err != nil {
+		return err
+	}
+	variants[serialVariant(serial)] = value
+	if err := f.set("variants", variants); err != nil {
+		return err
+	}
+
+	names := make([]string, 0, len(variants))
+	for name := range variants {
+		names = append(names, name)
+	}
+	ladder := buildTargetingNames(names, neutral)
+	if ladder == nil {
+		f.delete("targeting")
+	} else if err := f.set("targeting", ladder); err != nil {
+		return err
+	}
+	if err := f.set("defaultVariant", neutral); err != nil {
+		return err
+	}
+	return doc.putFlag(flagKey, f)
+}
+
+// partialShieldOr validates a partial_shield directive "<seconds>" or
+// "<seconds>:<boost>" (#1129) and returns it, or def when v is empty/malformed/
+// out-of-bounds. Defensive sibling of tempoRampOr: the game-side parser
+// (lifecycle_handlers.parse_partial_shield_value) independently re-validates and
+// no-ops on garbage, but validating here keeps a malformed LLM value from ever
+// reaching the flag file. Bounds mirror the game side: seconds > 0 (capped),
+// boost in [1.0, 2.0] (default 2.0 when omitted).
+func (w *Writer) partialShieldOr(v, def string) string {
+	if v == "" {
+		return def
+	}
+	parts := strings.Split(strings.TrimSpace(v), ":")
+	if len(parts) < 1 || len(parts) > 2 {
+		w.log.Warn("agent.action_bad_value", "value", v, "fallback", def)
+		return def
+	}
+	seconds, serr := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
+	if serr != nil || seconds <= 0 || seconds > partialShieldMaxSeconds {
+		w.log.Warn("agent.action_bad_value", "value", v, "fallback", def)
+		return def
+	}
+	if len(parts) == 2 {
+		boost, berr := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+		if berr != nil || boost < partialShieldBoostMin || boost > partialShieldBoostMax {
+			w.log.Warn("agent.action_bad_value", "value", v, "fallback", def)
+			return def
+		}
+	}
+	return v
+}
+
 // payloadOr returns v, or the default when v is empty.
 func (w *Writer) payloadOr(v, def string) string {
 	if v == "" {
@@ -597,8 +683,20 @@ func serialVariant(serial string) string { return "agent_" + serial }
 // so unmatched serials evaluate to defaultVariant anyway — explicit neutral
 // keeps the ladder self-describing.
 func buildTargeting(variants map[string]float64, neutral string) map[string]any {
-	serials := make([]string, 0)
+	names := make([]string, 0, len(variants))
 	for name := range variants {
+		names = append(names, name)
+	}
+	return buildTargetingNames(names, neutral)
+}
+
+// buildTargetingNames is the value-type-agnostic core of buildTargeting: it
+// renders the deterministic if-ladder from the set of "agent_<serial>" variant
+// NAMES (value type irrelevant — the ladder maps serial -> variant name). Used by
+// both setTargeted (float) and setTargetedString (string, #1129).
+func buildTargetingNames(variantNames []string, neutral string) map[string]any {
+	serials := make([]string, 0)
+	for _, name := range variantNames {
 		if s, ok := agentSerial(name); ok {
 			serials = append(serials, s)
 		}

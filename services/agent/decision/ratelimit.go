@@ -52,8 +52,15 @@ const (
 	// "rein in"). SHADOW-game-only initially: allow-listed only via the
 	// `shadow_experimental` interventions_allowed variant (services/flagd/agent.json),
 	// never the real-facing ambient/standard/full variants.
-	InterventionSetPlayerHandicap       = "set_player_handicap"
-	InterventionGrantShield             = "grant_shield"
+	InterventionSetPlayerHandicap = "set_player_handicap"
+	InterventionGrantShield       = "grant_shield"
+	// InterventionPartialShield (#1129, #1103 Phase 2) is a per-player TIME-BOXED
+	// handicap boost ("<seconds>" or "<seconds>:<boost>") — much harder to die for
+	// N seconds but NOT immune (vs grant_shield's total grace_until immunity). It
+	// reuses the #1107 handicap mechanism. SHADOW-game-only initially: allow-listed
+	// only via the `shadow_experimental` interventions_allowed variant
+	// (services/flagd/agent.json), never the real-facing ambient/standard/full.
+	InterventionPartialShield           = "partial_shield"
 	InterventionAdjustGlobalSensitivity = "adjust_global_sensitivity"
 	InterventionAdjustGlobalDifficulty  = "adjust_global_difficulty"
 	InterventionSetPacingProfile        = "set_pacing_profile"
@@ -96,6 +103,7 @@ var interventionWeights = map[string]float64{
 	InterventionAdjustPlayerSensitivity: 1,
 	InterventionSetPlayerHandicap:       1, // #1107 (#1103 MVP action 1)
 	InterventionGrantShield:             1,
+	InterventionPartialShield:           1, // #1129 (#1103 Phase 2) — MEDIUM
 	InterventionAdjustGlobalDifficulty:  1, // #766 F6
 	InterventionSetPacingProfile:        1, // #766 F6
 	InterventionRampTempo:               1, // #1117 (#1103 MVP action 2)
