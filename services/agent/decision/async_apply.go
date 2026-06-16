@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/joustmania/agent/flags"
@@ -172,17 +174,36 @@ func (l *Loop) emitAsyncInferSpan(ctx context.Context, out asyncOutcome) ([]Deci
 	defer span.End(trace.WithTimestamp(out.end))
 
 	if out.timedOut {
-		span.SetAttributes(attribute.String(AttrLLMInferError, "latency budget exceeded"))
+		// #1206: surface the timeout as span STATUS=Error (not just an attribute) so the
+		// fail-open degrade-to-rules path is visible in Jaeger's error view. inferErr
+		// carries the deadline error when present; otherwise record the budget cause.
+		const timeoutMsg = "latency budget exceeded"
+		span.SetAttributes(attribute.String(AttrLLMInferError, timeoutMsg))
+		if out.inferErr != nil {
+			span.RecordError(out.inferErr)
+			span.SetAttributes(semconv.ErrorType(out.inferErr))
+		}
+		span.SetStatus(codes.Error, timeoutMsg)
 		return nil, FallbackUnparseable
 	}
 	if out.inferErr != nil {
+		// #1206: transport/infer failure is an ERROR on the span, mirroring litellm's
+		// otel.status_code=ERROR. Control flow unchanged — still degrades to rules.
 		span.SetAttributes(attribute.String(AttrLLMInferError, out.inferErr.Error()))
+		span.RecordError(out.inferErr)
+		span.SetAttributes(semconv.ErrorType(out.inferErr))
+		span.SetStatus(codes.Error, out.inferErr.Error())
 		l.Log.Warn("agent.llm.infer_failed", "session_id", l.gameID, "tier", out.backend.Name(), "error", out.inferErr)
 		return nil, FallbackUnparseable
 	}
 	resp, err := llm.Decode(out.raw)
 	if err != nil {
+		// #1206: an unparseable response is an ERROR on the span, not just parse_ok=false.
+		// Control flow unchanged — still degrades to rules (FallbackUnparseable).
 		span.SetAttributes(attribute.String(AttrLLMInferError, err.Error()))
+		span.RecordError(err)
+		span.SetAttributes(semconv.ErrorType(err))
+		span.SetStatus(codes.Error, err.Error())
 		l.Log.Warn("agent.llm.unparseable", "session_id", l.gameID, "tier", out.backend.Name(), "error", err)
 		return nil, FallbackUnparseable
 	}
