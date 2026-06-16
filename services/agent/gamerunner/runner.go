@@ -451,7 +451,7 @@ func (r *Runner) StartExperimentGame(startCtx, driveCtx context.Context, spec Sp
 		terminal, _, outcome := r.awaitTerminal(driveCtx, cl, stream, gameID)
 		finalOutcome = outcome
 		stopDrive()
-		r.log.Info("experiment shadow game finished",
+		r.log.Debug("experiment shadow game finished",
 			"game_id", gameID, "run_id", spec.RunID, "experiment_id", spec.ExperimentID,
 			"arm", spec.Arm, "outcome", outcome, "terminal_event", terminal)
 	}()
@@ -492,7 +492,7 @@ func (r *Runner) run(ctx context.Context, cl *clients, spec Spec, span trace.Spa
 		return result, err
 	}
 	result.GameID = gameID
-	r.log.Info("shadow game started", "run_id", spec.RunID, "game_id", gameID, "mode", spec.GameName)
+	r.log.Debug("shadow game started", "run_id", spec.RunID, "game_id", gameID, "mode", spec.GameName)
 
 	// (d) Drive the game to its win condition in the background while (e) we
 	// await the terminal event on the stream.

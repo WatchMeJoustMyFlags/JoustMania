@@ -117,7 +117,7 @@ func (s *shadowSpawner) Spawn(ctx context.Context, experimentID, arm string, see
 		}
 		return "", fmt.Errorf("shadow spawn for experiment %s arm %s: %w", experimentID, arm, err)
 	}
-	s.log.Info("experiment: shadow game spawned",
+	s.log.Debug("experiment: shadow game spawned",
 		"experiment_id", experimentID, "arm", arm, "seed", seed, "game_id", gameID, "run_id", runID)
 	return gameID, nil
 }
