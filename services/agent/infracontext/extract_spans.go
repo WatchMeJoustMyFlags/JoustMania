@@ -24,6 +24,7 @@ const (
 	AttrActiveControllers = "bluetooth.active_controllers"
 	AttrTargetBackend     = "bluetooth.target_backend"
 	AttrRolloutCount      = "bluetooth.rollout_count"
+	AttrRolloutStrategy   = "bluetooth.rollout_strategy"
 
 	// Per-sample event attributes. AttrDroppedEventsPct and AttrMovementUpdateHz
 	// are reused at the per-serial scope.
@@ -107,6 +108,9 @@ func windowFromAttrs(attrs pcommon.Map) WindowSignals {
 	}
 	if v, ok := intAttr(attrs, AttrRolloutCount); ok {
 		w.RolloutCount = v
+	}
+	if v, ok := attrs.Get(AttrRolloutStrategy); ok {
+		w.RolloutStrategy = v.AsString()
 	}
 	return w
 }

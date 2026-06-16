@@ -70,6 +70,25 @@ class RolloutRouter:
             logger.debug("RolloutRouter.current_target failed; reporting off", exc_info=True)
             return "", 0
 
+    def current_strategy(self) -> str:
+        """Return the active rollout ``strategy`` string for telemetry.
+
+        One of ``"off"`` | ``"immediate"`` | ``"progressive"`` (or any future
+        value flagd returns). Degrades to ``""`` on any evaluation error so a
+        flagd outage never breaks span emission; callers treat ``""`` as "no
+        strategy observed" and fall back to their default behavior.
+        """
+        try:
+            from openfeature.evaluation_context import EvaluationContext
+
+            from lib.feature_flags import get_flag_client
+
+            client = get_flag_client(_DOMAIN)
+            return client.get_string_value("strategy", "off", EvaluationContext())
+        except Exception:
+            logger.debug("RolloutRouter.current_strategy failed; reporting empty", exc_info=True)
+            return ""
+
     def target_for(self, serial: str, all_serials: list[str]) -> str | None:
         """Return the rollout target adapter_type for ``serial``, or None.
 

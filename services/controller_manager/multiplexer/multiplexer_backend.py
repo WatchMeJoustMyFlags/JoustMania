@@ -314,6 +314,16 @@ class MultiplexerBackend(ControllerBackend):
         """
         return self._rollout_router.current_target()
 
+    def rollout_strategy(self) -> str:
+        """Active rollout ``strategy`` string for telemetry.
+
+        Public seam for the bluetooth-health span so the agent can see whether
+        the controller-manager is routing ``immediate`` / ``progressive`` /
+        ``off``. Delegates to the RolloutRouter, which degrades to ``""`` on any
+        flag error.
+        """
+        return self._rollout_router.current_strategy()
+
     def _cleanup_stale_state(self, seen: dict[str, ControllerIOAdapter]) -> None:
         """Remove centralized state for controllers no longer present."""
         stale = set(self._led_colors.keys()) - set(seen.keys())

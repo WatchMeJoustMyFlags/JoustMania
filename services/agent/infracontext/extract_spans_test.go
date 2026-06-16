@@ -64,11 +64,18 @@ func TestApplySpans_FullHealthSpan(t *testing.T) {
 		{serial: "A", hz: 60, droppedPct: 0.0, adapter: "python"},
 		{serial: "B", hz: 55, droppedPct: 0.2, adapter: "rust"},
 	}, false)
+	// strategy attribute (#829) — set directly; healthSpan has no slot for it.
+	td.ResourceSpans().At(0).ScopeSpans().At(0).Spans().At(0).
+		Attributes().PutStr(AttrRolloutStrategy, "progressive")
 
 	if !s.ApplySpans(td) {
 		t.Fatal("expected health span to be recognized")
 	}
 	snap := s.Snapshot()
+
+	if snap.Window.RolloutStrategy != "progressive" {
+		t.Fatalf("rollout_strategy = %q, want progressive", snap.Window.RolloutStrategy)
+	}
 
 	if snap.Window.EventGapMs == nil || *snap.Window.EventGapMs != 42.5 {
 		t.Fatalf("event_gap_ms = %v, want 42.5", snap.Window.EventGapMs)
@@ -121,6 +128,11 @@ func TestApplySpans_PartialAttrs(t *testing.T) {
 	}
 	if snap.Window.MovementUpdateHz != nil {
 		t.Fatalf("movement_update_hz = %v, want nil (absent)", snap.Window.MovementUpdateHz)
+	}
+	// Graceful default (#829): an older controller-manager omits the strategy
+	// attribute → empty string, which the loop treats as "behave as before".
+	if snap.Window.RolloutStrategy != "" {
+		t.Fatalf("rollout_strategy = %q, want empty (absent)", snap.Window.RolloutStrategy)
 	}
 	if snap.Window.ActiveControllers != nil {
 		t.Fatalf("active_controllers = %v, want nil (absent)", snap.Window.ActiveControllers)

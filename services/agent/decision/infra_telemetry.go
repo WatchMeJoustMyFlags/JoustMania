@@ -53,6 +53,12 @@ const (
 	AttrBluetoothActiveControllers = "bluetooth.active_controllers"
 	AttrBluetoothTargetBackend     = "bluetooth.target_backend"
 	AttrBluetoothRolloutCount      = "bluetooth.rollout_count"
+	// AttrBluetoothRolloutStrategy is the observed controller-manager rollout
+	// strategy ("off"/"immediate"/"progressive"), surfaced on the decision span so
+	// a Jaeger consumer can see WHY an immediate-strategy cycle observed only
+	// (action="none") instead of climbing the ladder (#829). Present-but-empty when
+	// the producing controller-manager omits it (older than #829).
+	AttrBluetoothRolloutStrategy = "bluetooth.rollout_strategy"
 )
 
 // infraDecisionAttrs is the input bundle for the single span-attribute builder.
@@ -112,6 +118,9 @@ func infraDecisionAttributes(in infraDecisionAttrs) []attribute.KeyValue {
 		// Window context that always exists on an active-rollout cycle.
 		attribute.String(AttrBluetoothTargetBackend, in.snap.Window.TargetBackend),
 		attribute.Int(AttrBluetoothRolloutCount, in.snap.Window.RolloutCount),
+		// Observed strategy (present-but-empty when omitted by an older producer)
+		// so a consumer can see why an immediate cycle observed only (#829).
+		attribute.String(AttrBluetoothRolloutStrategy, in.snap.Window.RolloutStrategy),
 	}
 	// Optional window signals: recorded only when observed (a missing signal
 	// contributes no attribute rather than a fabricated zero).
