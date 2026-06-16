@@ -45,9 +45,12 @@ log rather than sleeping a wall clock.
 DETERMINISM / BOUNDED RUNTIME
 -----------------------------
 Per the issue ("small N, short tick, assert KEY observable transitions, not a
-long soak") the agent env drives the verdict gates DOWN (min-N/min-pairs small,
-target-N small, 2 players, fast tick) so the loop reaches a terminal verdict in
-well under a minute of game time, observed via tiered bounded polls. With
+long soak") the loop is driven DOWN via the LIVE agent.json tuning flags
+(verdict min-N/min-pairs=1, fast tick, a small games-budget backstop) plus a
+small seed target-N, so it reaches a terminal verdict in well under a minute of
+game time, observed via tiered bounded polls. The games-budget backstop
+(experiment_max_games) guarantees teardown even if the paired arms never both
+reach target N. With
 synthetic mock games producing tiny, noisy deltas the verdict is expected to be
 inconclusive (#1042 practical-significance floor) — we assert the loop REACHES
 a verdict and TEARS DOWN, not any particular outcome.
@@ -178,8 +181,15 @@ def _agent_env() -> dict:
     """Environment for the agent container bring-up.
 
     INFERENCE-ABSENT: backend=stub (no network client constructed).
-    BOUNDED LOOP: small N + fast tick + 2-player mock games so declare ->
-    conclude -> torn_down completes within CONCLUDE_TIMEOUT.
+    BOUNDED LOOP: a small seed target_n + a fast tick so declare -> conclude ->
+    torn_down completes within CONCLUDE_TIMEOUT.
+
+    IMPORTANT — only env vars EXPLICITLY listed in the agent service's compose
+    ``environment:`` block reach the container; compose silently drops the rest.
+    So every var set here must be one the agent service passes through
+    (docker-compose.yml / docker-compose.dry-run.yml). The verdict gates and the
+    games budget are NOT in that passthrough — they are driven instead via the
+    LIVE agent.json flags in ``_TUNING`` (which take precedence anyway, #1044).
     """
     env = dict(os.environ)
     env.update(
@@ -198,19 +208,12 @@ def _agent_env() -> dict:
             ),
             "AGENT_EXPERIMENT_SEED_OBJECTIVE": "balanced",
             # --- drive the loop SMALL + FAST so it terminates quickly ---
+            # Both of these ARE in the agent compose passthrough. The bounded
+            # verdict-N/min-pairs/tick/budget knobs are NOT (compose would drop
+            # them) — they are set via the authoritative LIVE flags in _TUNING.
             "AGENT_EXPERIMENT_SEED_TARGET_N": "2",
             "AGENT_EXPERIMENT_TICK_SECONDS": "3",
             "AGENT_EXPERIMENT_DYNAMIC_ENABLED": "false",
-            # Verdict gates as the env BOOTSTRAP FLOOR only. The authoritative
-            # bound is the LIVE agent.json flag (#1044 — flag wins over env when
-            # present, and it IS present in services/flagd/ci/agent.json), driven
-            # down to 1 by _enable_experiments_live/_TUNING. These env values keep
-            # behavior correct even if a future agent.json drops the flags.
-            "AGENT_VERDICT_MIN_N": "2",
-            "AGENT_VERDICT_MIN_PAIRS": "1",
-            # cheap, fast-concluding shadow games (2 players => one kill ends it)
-            "SHADOW_GAME_PLAYERS": "2",
-            "AGENT_VALIDATION_GAME_TIMEOUT_SECONDS": "30",
             # keep logs greppable
             "LOG_LEVEL": "info",
         }
