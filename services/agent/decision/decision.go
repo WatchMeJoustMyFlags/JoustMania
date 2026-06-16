@@ -660,11 +660,20 @@ func (l *Loop) startSignalReceivedSpan(ctx context.Context, c gamecontext.GameCo
 			attribute.String(AttrGameID, c.SessionID),
 		),
 	}
-	// Hub-and-spoke correlation (#1174): this cycle-root span is the parent of the whole
-	// sync decision->action subtree AND the #1140 async fire anchor (both call this shared
-	// helper). Linking it to the game-session trace pulls that ENTIRE subtree onto the hub
-	// in one change. Stamp the game trace_id as a searchable attribute too. nil-safe.
-	startOpts = append(startOpts, gameTraceLink(c.GameTraceID, c.GameTraceSpanID)...)
+	// In-game re-parenting (#1178, refining #1174): the agent's in-game decisions/actions
+	// ARE part of the game — they happen within the game span's duration and shape it — so
+	// this cycle-root span is started as a remote CHILD of the game span instead of LINKED
+	// to it. Because it is the parent of the whole sync decision->action subtree AND the
+	// #1140 async fire anchor (both call this shared helper), that whole subtree is pulled
+	// INSIDE the game trace in one change. The game span is remote (we hold only its
+	// SpanContext from the #1133 correlation gauge); a remote child can be started under it
+	// regardless of its liveness, and inherits the game trace's sampling fate. Graceful
+	// fallback: when the game trace ids are absent/invalid (correlation gauge not yet
+	// ingested) gameRemoteParent returns ctx unchanged + ok=false, so this stays an own-root
+	// span exactly as before. The game trace ids are still stamped as searchable attributes.
+	if parentCtx, ok := gameRemoteParent(ctx, c.GameTraceID, c.GameTraceSpanID); ok {
+		ctx = parentCtx
+	}
 	if c.GameTraceID != "" {
 		startOpts = append(startOpts, trace.WithAttributes(attribute.String(AttrGameTraceID, c.GameTraceID)))
 	}
@@ -1200,6 +1209,20 @@ func gameTraceLink(gameTraceID, gameTraceSpanID string) []trace.SpanStartOption 
 	return gamecontext.TraceLink(gameTraceID, gameTraceSpanID, AttrGameTraceID, AttrGameTraceSpanID)
 }
 
+// gameRemoteParent is the #1178 sibling of gameTraceLink: instead of LINKING a span to
+// the game trace it returns a context that makes the span a remote CHILD of the game
+// span. When BOTH gameTraceID and gameTraceSpanID are valid hex ids it installs the SAME
+// remote game SpanContext gameTraceLink targets as the remote parent of ctx and returns
+// ok=true; a span started from the returned ctx joins the game trace under the game span
+// (regardless of the game span's liveness — the remote-parent rule is liveness-free) and
+// inherits the game trace's sampling fate. When either id is empty/unparseable/all-zero
+// it returns the UNCHANGED ctx and ok=false, so the caller starts the span exactly as
+// before (own root): graceful fallback, never breaking span emission. Delegates to the
+// single primitive in gamecontext so the SpanContext construction is shared with the Link.
+func gameRemoteParent(ctx context.Context, gameTraceID, gameTraceSpanID string) (context.Context, bool) {
+	return gamecontext.RemoteParent(ctx, gameTraceID, gameTraceSpanID)
+}
+
 // GameTraceLink is the exported entry point to the gameTraceLink primitive so other
 // agent packages (e.g. the experiment loop, #1140 Slice C) can build the SAME
 // game-trace-correlation span Link the agent.decision / agent.llm.retro spans use,
@@ -1223,10 +1246,6 @@ const (
 	attrLinkKind      = "link.kind"
 	attrLinkTraceID   = "link.trace_id"
 	linkKindFireCycle = "fire_cycle"
-	// linkKindDecision labels the #1174 Link from an agent.intervention.effect span back
-	// to the agent.decision span that caused it, so a reader on the effect span can
-	// navigate to the originating decision (the named "no clue what it relates to" gap).
-	linkKindDecision = "decision"
 )
 
 // fireCycleLink builds the #1140 (Slice A) trace-continuity span option: when the
@@ -1247,29 +1266,6 @@ func fireCycleLink(sc trace.SpanContext) []trace.SpanStartOption {
 			SpanContext: sc,
 			Attributes: []attribute.KeyValue{
 				attribute.String(attrLinkKind, linkKindFireCycle),
-				attribute.String(attrLinkTraceID, sc.TraceID().String()),
-			},
-		}),
-	}
-}
-
-// decisionLink builds the #1174 Link from an agent.intervention.effect span back to its
-// CAUSING agent.decision span. The effect span is emitted on its own backdated root
-// seconds after the decision (the follow-up window), so a Link — not parent-child — is
-// the correct relationship, mirroring fireCycleLink. When the captured decision
-// SpanContext is valid it returns one trace.WithLinks option carrying
-// link.kind=decision plus the decision trace_id as a queryable attribute; an
-// invalid/zero SpanContext (no-op tracer / no active decision span) yields NO option —
-// graceful fallback, no Link, no error.
-func decisionLink(sc trace.SpanContext) []trace.SpanStartOption {
-	if !sc.IsValid() {
-		return nil
-	}
-	return []trace.SpanStartOption{
-		trace.WithLinks(trace.Link{
-			SpanContext: sc,
-			Attributes: []attribute.KeyValue{
-				attribute.String(attrLinkKind, linkKindDecision),
 				attribute.String(attrLinkTraceID, sc.TraceID().String()),
 			},
 		}),

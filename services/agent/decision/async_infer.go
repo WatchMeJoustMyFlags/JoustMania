@@ -267,22 +267,31 @@ func (l *Loop) runInfer(root context.Context, snapshot flags.Snapshot, backend B
 	// carries only the request model — no gen_ai attribution duplication; the apply-time
 	// agent.llm.infer keeps owning that. Default-safe: with a no-op tracer/propagator
 	// this is a no-op and no header is written.
-	// #1140 (Slice A): Link this otherwise parent-less outbound-call root back to the
-	// originating fire-cycle's agent.signal_received trace, so a reader of the infer
-	// trace can navigate to the signal that caused it. No-op when fireSC is invalid.
+	// #1140 (Slice A): Link this outbound-call root back to the originating fire-cycle's
+	// agent.signal_received trace, so a reader of the infer trace can navigate to the
+	// signal that caused it. No-op when fireSC is invalid.
+	// #1178: also start it as a remote CHILD of the game span — the async-materialized
+	// inference is part of the game, so it lives INSIDE the game trace (not merely Linked
+	// to it). The fire-cycle Link is KEPT alongside (it navigates to the originating
+	// signal cycle); the game span is the new ROOT parent. Graceful fallback: when the
+	// game trace ids are absent/invalid gameRemoteParent returns inferCtx unchanged, so
+	// this stays its own root + fire-cycle Link exactly as before.
+	callParent := inferCtx
+	if parentCtx, ok := gameRemoteParent(inferCtx, c.GameTraceID, c.GameTraceSpanID); ok {
+		callParent = parentCtx
+	}
 	callOpts := []trace.SpanStartOption{
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(
 			attribute.String("gen_ai.request.model", backend.Name()),
 			// game.id + session.id (#1174): make the outbound-call span findable by game,
-			// so the LLM call for game X is a queryable spoke (it already Links to the
-			// fire cycle, which Links to the hub). c is THIS game's GameContext.
+			// so the LLM call for game X is a queryable spoke. c is THIS game's GameContext.
 			attribute.String(AttrGameID, c.SessionID),
 			attribute.String(AttrSessionID, c.SessionID),
 		),
 	}
 	callOpts = append(callOpts, fireCycleLink(fireSC)...)
-	callCtx, callSpan := l.Tracer.Start(inferCtx, SpanLLMInferCall, callOpts...)
+	callCtx, callSpan := l.Tracer.Start(callParent, SpanLLMInferCall, callOpts...)
 	raw, inferErr := backend.Infer(callCtx, prompt)
 	callSpan.End()
 	end := now()
@@ -298,6 +307,11 @@ func (l *Loop) runInfer(root context.Context, snapshot flags.Snapshot, backend B
 		contextNotePresent: notePresent,
 		contextNoteLen:     noteLen,
 		fireSC:             fireSC,
+		// #1178: carry the game-session trace ids so the apply root can be started as a
+		// remote child of the game span (the apply path runs off the loop, with no game
+		// span in its ctx). Captured from THIS game's fire-time GameContext.
+		gameTraceID:     c.GameTraceID,
+		gameTraceSpanID: c.GameTraceSpanID,
 	})
 }
 
@@ -338,4 +352,11 @@ type asyncOutcome struct {
 	// the agent.llm.apply root back to the originating agent.signal_received trace. Invalid
 	// (the production default — no span active at fire time) yields no link (graceful).
 	fireSC trace.SpanContext
+	// gameTraceID/gameTraceSpanID are THIS game's game-session trace ids, captured from the
+	// fire-time GameContext (#1178). The apply root (agent.llm.apply) is started as a remote
+	// CHILD of the game span via these ids, so the async-materialized decision/action live
+	// INSIDE the game trace. Empty/invalid => the apply root stays its own root (graceful
+	// fallback, fire-cycle Link only), exactly as before.
+	gameTraceID     string
+	gameTraceSpanID string
 }
