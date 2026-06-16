@@ -74,7 +74,25 @@ const (
 	// least one shadow slot to make progress). Unset/non-positive ⇒
 	// defaultDynamicMaxConcurrent.
 	envDynamicMaxConcurrent = "AGENT_EXPERIMENT_DYNAMIC_MAX_CONCURRENT"
+
+	// envProposerEnabled is the opt-in for the retro-seeded THESIS proposer (#1184,
+	// epic #1181 incr. 4): the seam that turns post-game retro suggestions (#1179)
+	// into candidate experiment theses, closing the game→retro→thesis→experiment loop.
+	// Default false ⇒ recorded retro suggestions are NEVER turned into experiments,
+	// byte-identical to pre-#1184 declaration behavior. Subordinate to
+	// AGENT_EXPERIMENTS_ENABLED + the agent.json kill-switch (it is only consulted from
+	// allocateIfEnabled, which self-aborts when either is off) and, like the #995
+	// declarer, it reuses the SAME bounded flag selection + Gate + Registry caps — it
+	// adds ONLY the thesis provenance, never a new write surface.
+	envProposerEnabled = "AGENT_EXPERIMENT_PROPOSER_ENABLED"
 )
+
+// proposerEnabled reports whether the retro-seeded thesis proposer opt-in is on
+// (#1184). Distinct, default-off env gate — independent of (and subordinate to) the
+// experiment-loop opt-in and the kill-switch, mirroring dynamicEnabled().
+func proposerEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv(envProposerEnabled)), "true")
+}
 
 // defaultDynamicMaxConcurrent is the default ceiling on simultaneously-live
 // dynamically-declared experiments (#995). A small value keeps the autonomous
@@ -157,6 +175,16 @@ type experimentLoop struct {
 	// off→on flip starts dynamic declaration with no restart. nil only in tests that
 	// do not wire it.
 	dynamic *dynamicDeclarer
+
+	// proposer is the retro-seeded THESIS proposer (#1184): it consumes the post-game
+	// retro's structured suggestions (#1179) and turns the oldest into a candidate
+	// experiment whose thesis is seeded from the retro's reasoning, closing the
+	// game→retro→thesis→experiment loop. It DELEGATES flag/value selection to e.dynamic
+	// (the proven #995 selector), adding only the thesis provenance + objective bias.
+	// Whether it actually declares each tick is gated by proposerEnabled() (default
+	// OFF, #1184). nil only in tests that do not wire it. The retro coordinator feeds it
+	// via Record (wired in main.go).
+	proposer *experiment.ThesisProposer
 
 	// configOverride, when non-nil, supplies the live ExperimentConfig instead of
 	// reading e.flags.Experiment — the injectable seam tests use to drive the
@@ -312,6 +340,11 @@ func buildExperimentLoop(
 		fitness:        defaultGameFitness,
 		completedGrace: completedGrace(),
 		dynamic:        newDynamicDeclarerFromEnv(gameFlagPath, nil),
+		// #1184: the retro-seeded thesis proposer is ALWAYS built (like the #995
+		// declarer) so the retro coordinator can Record into it unconditionally; whether
+		// it actually DECLARES is gated by proposerEnabled() (default OFF) in
+		// declareFromRetroIfEnabled. Backlog is bounded (DefaultMaxRetroBacklog).
+		proposer: experiment.NewThesisProposer(0),
 	}
 	// Build the M7-7 Validator (#935) over the LIVE seams (#965): the shadow
 	// SyntheticRunner drives real shadow games via the spawner; the FitnessMeasurer +
@@ -490,6 +523,13 @@ func (e *experimentLoop) allocateIfEnabled(ctx context.Context) {
 	// backstop and the per-flag dedup. This runs BEFORE AllocateAndSpawn so a
 	// freshly-Started experiment can accrue games on the same tick.
 	e.declareDynamicIfEnabled(ctx, cfg)
+	// Retro-seeded thesis proposal (#1184): close the game→retro→thesis→experiment
+	// loop. When the proposer opt-in is on (default OFF), turn the oldest recorded
+	// retro suggestion into a candidate experiment whose thesis is seeded from the
+	// retro's reasoning. It runs AFTER dynamic declaration (so a retro-seeded
+	// experiment is the marginal one when both are enabled) and BEFORE AllocateAndSpawn
+	// (so a freshly-declared experiment accrues games this tick).
+	e.declareFromRetroIfEnabled(ctx, cfg)
 	if n := e.registry.AllocateAndSpawn(ctx); n > 0 {
 		e.log.Debug("experiment: spawned shadow games this tick", "count", n,
 			"in_flight", e.registry.TotalInFlight(), "capacity", e.registry.Capacity())
@@ -584,6 +624,71 @@ func (e *experimentLoop) declareDynamicIfEnabled(ctx context.Context, cfg flags.
 	}
 	e.log.Info("experiment: dynamic declarer declared a new experiment (#995)",
 		"flag_key", intent.FlagKey, "value", intent.ExperimentalValue, "objective", intent.Objective)
+}
+
+// declareFromRetroIfEnabled lets the retro-seeded THESIS proposer (#1184) declare
+// ONE fresh experiment per call when:
+//   - the proposer is wired (proposer != nil) AND opted-in (proposerEnabled(), the
+//     default-OFF #1184 gate), AND
+//   - the dynamic selector is wired (the proposer DELEGATES flag/value choice to it —
+//     it adds only the thesis provenance, no new selection surface), AND
+//   - the live experiment count is below the SAME concurrent-experiment backstop the
+//     dynamic declarer obeys (clamped to shadow capacity), AND
+//   - there is a recorded retro suggestion AND the selector finds a declarable flag.
+//
+// It is a NO-OP when not opted in, so declaration is byte-identical for everyone who
+// has not flipped AGENT_EXPERIMENT_PROPOSER_ENABLED on. Reached only from
+// allocateIfEnabled, which already confirmed experiments_enabled + the kill-switch —
+// so the proposer is subordinate to the SAME gates as every other declaration. At
+// most ONE experiment is declared per call (one retro suggestion drained per tick),
+// keeping the rate bounded.
+//
+// CONCURRENCY: it holds the dynamic declarer's mutex around the whole
+// budget-check → select → declare sequence (the proposer delegates to e.dynamic.Declare,
+// which mutates the shared round-robin cursor), mirroring declareDynamicIfEnabled so a
+// retro declare and a dynamic declare can never race the cursor or over-declare past
+// the budget. The ThesisProposer's own backlog mutex is separate and never held across
+// a registry call.
+func (e *experimentLoop) declareFromRetroIfEnabled(ctx context.Context, cfg flags.ExperimentConfig) {
+	if e.proposer == nil || e.dynamic == nil {
+		return // proposer/selector not wired (test path): declaration unchanged.
+	}
+	if !proposerEnabled() {
+		return // default-OFF #1184 opt-in: no retro-seeded experiments.
+	}
+	// Serialize with the dynamic declarer (shared cursor + the same over-declaration
+	// budget window) — see declareDynamicIfEnabled's CONCURRENCY note.
+	e.dynamic.mu.Lock()
+	defer e.dynamic.mu.Unlock()
+
+	budget := cfg.DynamicMaxConcurrent
+	if budget <= 0 {
+		budget = e.expDefaults.DynamicMaxConcurrent
+	}
+	if capacity := e.registry.Capacity(); capacity > 0 && budget > capacity {
+		budget = capacity
+	}
+	if e.registry.LiveCount() >= budget {
+		return
+	}
+	// Adapt the #995 dynamic declarer to the proposer's FlagSelector: its Declare takes
+	// the main-package activeFlags defined type, so a one-line closure bridges it to the
+	// proposer's map[string]struct{} selector signature.
+	intent, ok := e.proposer.Propose(
+		func(active map[string]struct{}) (experiment.Intent, bool) { return e.dynamic.Declare(active) },
+		e.registry.ActiveFlags(),
+	)
+	if !ok {
+		return // no recorded suggestion, or nothing declarable this tick.
+	}
+	if err := e.declareAndStart(ctx, intent); err != nil {
+		e.log.Warn("experiment: retro-seeded declare/start failed (#1184)",
+			"flag_key", intent.FlagKey, "objective", intent.Objective, "error", err)
+		return
+	}
+	e.log.Info("experiment: retro-seeded thesis proposer declared a new experiment (#1184)",
+		"flag_key", intent.FlagKey, "value", intent.ExperimentalValue, "objective", intent.Objective,
+		"thesis", intent.Hypothesis, "backlog_remaining", e.proposer.Backlog())
 }
 
 // ensureStarted runs the deferred ONE-TIME bootstrap the FIRST time the loop

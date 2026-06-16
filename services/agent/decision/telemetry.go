@@ -551,6 +551,12 @@ const (
 	AttrExperimentFlagKey = "experiment.flag_key"
 	AttrExperimentTargetN = "experiment.target_n"
 	AttrExperimentArms    = "experiment.arms"
+	// AttrExperimentThesis is the experiment's explicit human-readable THESIS (#1184):
+	// the immutable Intent.Hypothesis — what idea is being tested + its expected
+	// effect. Stamped on the agent.experiment ROOT span (#1188/#1190) so a human reading
+	// the trace sees the experiment's WHY, not just the flag/value mechanics. It is the
+	// same string the durable journal persists and the dossier surfaces as `thesis`.
+	AttrExperimentThesis = "experiment.thesis"
 	// AttrVerdictOutcome / AttrVerdictDelta / AttrVerdictSignificant carry the rolling
 	// paired-difference verdict the registry computed: the outcome label
 	// ("inconclusive"/"promote"/"discard"), the experimental-minus-control delta, and

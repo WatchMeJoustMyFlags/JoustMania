@@ -635,6 +635,13 @@ func (r *Registry) startSpanLocked(e *entry, intent journal.Intent) {
 	attrs := []attribute.KeyValue{
 		attribute.String(decision.AttrExperimentID, e.id),
 	}
+	// #1184: stamp the explicit THESIS (the immutable Intent.Hypothesis — what idea +
+	// expected effect) on the root span so the trace carries the experiment's WHY, not
+	// just the flag/value mechanics. Same string the journal persists + the dossier
+	// surfaces. Guarded so a thesis-less (legacy/test) intent adds no empty attr.
+	if intent.Hypothesis != "" {
+		attrs = append(attrs, attribute.String(decision.AttrExperimentThesis, intent.Hypothesis))
+	}
 	if intent.FlagKey != "" {
 		attrs = append(attrs, attribute.String(decision.AttrExperimentFlagKey, intent.FlagKey))
 	}

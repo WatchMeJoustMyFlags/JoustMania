@@ -931,6 +931,23 @@ func main() {
 			retro.SetExperimentParent(reg.ExperimentSpanContext)
 			summaries.SetExperimentParent(reg.ExperimentSpanContext)
 		}
+		// #1184: close the game→retro→thesis→experiment loop. Forward each decoded
+		// post-game retro suggestion (#1179) into the experiment loop's retro-seeded
+		// THESIS proposer, so the next experiment's thesis is seeded from the retro's
+		// reasoning. This wiring is purely additive — the suggestion is still recorded
+		// on the retro span — and the proposer only ACTS on the backlog when its
+		// opt-in (AGENT_EXPERIMENT_PROPOSER_ENABLED, default OFF) is on, so feeding it
+		// here changes autonomous behavior for nobody who has not opted in.
+		if expLoop.proposer != nil {
+			proposer := expLoop.proposer
+			retro.SetSuggestionSink(func(s llm.RetroSuggestion) {
+				proposer.Record(experiment.RetroSuggestion{
+					InterventionType: s.InterventionType,
+					Emphasis:         s.Emphasis,
+					Reason:           s.Reason,
+				})
+			})
+		}
 	}
 
 	// GameContext multiplexer (#845 PR B): one Store partition per game_id, plus the

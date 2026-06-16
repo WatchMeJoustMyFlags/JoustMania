@@ -323,3 +323,54 @@ func TestRetro_CaptureOnlyWhenNoBackend(t *testing.T) {
 		t.Errorf("retro.suggestion events = %d, want 0 on capture-only", n)
 	}
 }
+
+// TestRetro_ForwardsSuggestionToSink (#1184): each decoded retro suggestion is
+// forwarded to the SetSuggestionSink consumer (the retro→thesis-proposer seam),
+// IN ADDITION to the span event — closing the game→retro→thesis loop.
+func TestRetro_ForwardsSuggestionToSink(t *testing.T) {
+	reply := `{
+	  "session_assessment": "close finish",
+	  "suggestions": [
+	    {"intervention_type": "grant_shield", "emphasis": "weight_up", "reason": "fast early dropouts"},
+	    {"intervention_type": "adjust_global_difficulty", "emphasis": "weight_down", "reason": "too chaotic"}
+	  ],
+	  "session_focus": "endurance"
+	}`
+	rc, _ := recordingRetro(t, retroFlagSnapshot())
+	rc.SetResolver(reachableRetroResolver(t, "gemma4:latest",
+		func(context.Context, llm.Prompt) (string, error) { return reply, nil }))
+
+	var got []llm.RetroSuggestion
+	rc.SetSuggestionSink(func(s llm.RetroSuggestion) { got = append(got, s) })
+
+	rc.OnGameEnd(endedSession())
+	rc.AwaitInflight()
+
+	if len(got) != 2 {
+		t.Fatalf("sink received %d suggestions, want 2", len(got))
+	}
+	if got[0].InterventionType != "grant_shield" || got[0].Emphasis != "weight_up" || got[0].Reason != "fast early dropouts" {
+		t.Errorf("first forwarded suggestion = %+v", got[0])
+	}
+	if got[1].InterventionType != "adjust_global_difficulty" || got[1].Emphasis != "weight_down" {
+		t.Errorf("second forwarded suggestion = %+v", got[1])
+	}
+}
+
+// TestRetro_NilSinkIsSafe (#1184): with no sink wired (the default), a decoded retro
+// is recorded-only and does not panic — the suggestion forwarding is purely additive.
+func TestRetro_NilSinkIsSafe(t *testing.T) {
+	reply := `{"session_assessment":"ok","suggestions":[{"intervention_type":"grant_shield","emphasis":"enable","reason":"x"}],"session_focus":"balanced"}`
+	rc, sr := recordingRetro(t, retroFlagSnapshot())
+	rc.SetResolver(reachableRetroResolver(t, "gemma4:latest",
+		func(context.Context, llm.Prompt) (string, error) { return reply, nil }))
+
+	rc.OnGameEnd(endedSession())
+	rc.AwaitInflight()
+
+	// The span still carries the suggestion event (recorded-only path).
+	span := spansByName(sr.Ended(), SpanLLMRetro)[0]
+	if evs := eventsByName(span, SpanLLMRetroSuggestion); len(evs) != 1 {
+		t.Fatalf("retro.suggestion events = %d, want 1", len(evs))
+	}
+}
