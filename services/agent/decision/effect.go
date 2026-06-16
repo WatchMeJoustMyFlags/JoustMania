@@ -188,17 +188,17 @@ func (l *Loop) scheduleEffectSample(decisionCtx context.Context, c gamecontext.G
 		thresholds:   thresholds,
 		dispatchedAt: dispatchedAt,
 		window:       window,
-		// Hub-and-spoke correlation (#1174): capture the game-session trace ids from the
-		// GameContext in scope at schedule time, so the deferred effect span can Link back
-		// to the game hub via the SHARED gameTraceLink primitive (same as decision/retro).
-		// nil-safe: empty ids => no Link.
+		// Capture the game-session trace ids from the GameContext in scope at schedule
+		// time (#1133), stamped as searchable attributes on the deferred effect span.
+		// nil-safe: empty ids => no attribute.
 		gameTraceID:     c.GameTraceID,
 		gameTraceSpanID: c.GameTraceSpanID,
 		// Capture the CAUSING agent.decision span's SpanContext while it is still live
-		// (decisionCtx is the decision span's context — it calls schedule). The effect
-		// span (emitted seconds later on its own root) Links to it with link.kind=decision
-		// so decision->effect is navigable, mirroring fireCycleLink. Invalid SpanContext
-		// (no-op tracer / no active span) => no Link.
+		// (decisionCtx is the decision span's context — it calls schedule). #1178: the effect
+		// span (emitted seconds later) is started as a remote CHILD of this decision span, so
+		// decision->effect is structural (nested) and lands inside the game trace transitively
+		// (the decision is itself under the game span). Invalid SpanContext (no-op tracer /
+		// no active span) => no remote parent => the effect span stays its own root.
 		decisionSC: trace.SpanContextFromContext(decisionCtx),
 	}
 
@@ -249,12 +249,12 @@ type pendingEffect struct {
 	dispatchedAt time.Time
 	window       time.Duration
 	// gameTraceID/gameTraceSpanID are the game-session trace ids captured at schedule
-	// time (#1174), used to Link the effect span back to the game hub. Empty => no Link.
+	// time (#1133), stamped as searchable attributes on the effect span. Empty => no attr.
 	gameTraceID     string
 	gameTraceSpanID string
 	// decisionSC is the SpanContext of the agent.decision span that caused this effect,
-	// captured live at schedule time (#1174). The effect root Links to it with
-	// link.kind=decision. Invalid => no Link.
+	// captured live at schedule time (#1178). The effect root is started as a remote CHILD
+	// of it (nested under the decision in the game trace). Invalid => effect stays own-root.
 	decisionSC trace.SpanContext
 }
 
@@ -272,13 +272,18 @@ func (l *Loop) emitEffectSample(ctx context.Context, s pendingEffect) {
 	// One backdated root span (to dispatch time) parents the per-objective effect spans,
 	// so a Jaeger trace shows the dispatch->follow-up arc, mirroring the #917 apply root.
 	//
-	// Hub-and-spoke correlation (#1174): the effect span carries the game.id query axis
-	// AND TWO navigation Links — (a) gameTraceLink to the game-session trace (the hub),
-	// so "what did the agent learn for game X" lists this span among the spokes; (b)
-	// decisionLink to the CAUSING agent.decision span, so the named "no clue what it
-	// relates to" gap is closed. The decision trace_id is ALSO stamped as a plain
-	// attribute (AttrDecisionInterventionID joins decision<->effect by tag; the link
-	// trace_id makes the decision trace itself greppable). Both Links are nil-safe.
+	// In-game re-parenting (#1178, refining #1174): the effect measurement is part of the
+	// game (it measures what an in-game decision did), so the effect span is started as a
+	// remote CHILD of its CAUSING agent.decision span instead of LINKED to the game trace.
+	// The decision span is itself (transitively) under the game span — its cycle root
+	// agent.signal_received was re-parented under the game span — so the effect lands INSIDE
+	// the game trace, nested under the decision that caused it: the "no clue what it relates
+	// to" gap is closed structurally. The separate game-trace Link is DROPPED (it is now
+	// transitive); the standalone decisionLink is likewise dropped (the decision is now the
+	// PARENT, so a Link to it would be a self-link). game.id stays the query axis, and the
+	// game trace ids stay as searchable span attributes. Graceful fallback: an invalid
+	// decisionSC (no-op tracer / no active decision span) yields no remote parent, so the
+	// effect span stays its own root exactly as the nil-safe decisionLink did before.
 	startOpts := []trace.SpanStartOption{
 		trace.WithTimestamp(s.dispatchedAt),
 		trace.WithSpanKind(trace.SpanKindInternal),
@@ -294,15 +299,17 @@ func (l *Loop) emitEffectSample(ctx context.Context, s pendingEffect) {
 			attribute.Float64(AttrEffectWindowSeconds, windowSeconds),
 		),
 	}
-	startOpts = append(startOpts, gameTraceLink(s.gameTraceID, s.gameTraceSpanID)...)
 	if s.gameTraceID != "" {
 		startOpts = append(startOpts, trace.WithAttributes(attribute.String(AttrGameTraceID, s.gameTraceID)))
 	}
 	if s.gameTraceSpanID != "" {
 		startOpts = append(startOpts, trace.WithAttributes(attribute.String(AttrGameTraceSpanID, s.gameTraceSpanID)))
 	}
-	startOpts = append(startOpts, decisionLink(s.decisionSC)...)
-	rootCtx, root := l.Tracer.Start(ctx, SpanInterventionEffect, startOpts...)
+	effectParent := ctx
+	if s.decisionSC.IsValid() {
+		effectParent = trace.ContextWithRemoteSpanContext(ctx, s.decisionSC)
+	}
+	rootCtx, root := l.Tracer.Start(effectParent, SpanInterventionEffect, startOpts...)
 	defer root.End()
 
 	if !ok {

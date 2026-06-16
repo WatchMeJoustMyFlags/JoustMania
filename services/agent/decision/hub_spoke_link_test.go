@@ -11,10 +11,13 @@ import (
 	"github.com/joustmania/agent/gamecontext"
 )
 
-// hub_spoke_link_test.go covers the #1174 hub-and-spoke correlation additions: every
-// agent per-game span carries the game.id query axis AND a Link back to the
-// game-session trace (the hub). The intervention.effect span additionally Links to its
-// CAUSING agent.decision span (link.kind=decision). All Links are nil-safe.
+// hub_spoke_link_test.go covers the #1178 in-game re-parenting (refining #1174): the
+// agent's per-game IN-GAME spans become remote CHILDREN of the game span instead of
+// Links to the game trace. agent.signal_received re-parents under the game span (pulling
+// its whole sync subtree + the async fire anchor into the game trace); the
+// agent.intervention.effect span re-parents under its CAUSING agent.decision span. Every
+// span keeps the game.id query axis. All re-parenting is graceful: absent/invalid ids ->
+// own-root span exactly as before.
 
 const (
 	hubGameTrace  = "4bf92f3577b34da6a3ce929d0e0e4736" // valid 16-byte hex trace id
@@ -29,19 +32,6 @@ func gameTraceCtx(gameID string) gamecontext.GameContext {
 		GameTraceID:     hubGameTrace,
 		GameTraceSpanID: hubGameSpanID,
 	}
-}
-
-// linkByKind returns the Link on the span whose link.kind attribute equals kind, and
-// whether one was found.
-func linkByKind(links []sdktrace.Link, kind string) (sdktrace.Link, bool) {
-	for _, lk := range links {
-		for _, kv := range lk.Attributes {
-			if string(kv.Key) == attrLinkKind && kv.Value.AsString() == kind {
-				return lk, true
-			}
-		}
-	}
-	return sdktrace.Link{}, false
 }
 
 // rootEffectSpan returns the root agent.intervention.effect span (the one carrying the
@@ -59,12 +49,13 @@ func rootEffectSpan(spans []sdktrace.ReadOnlySpan) sdktrace.ReadOnlySpan {
 	return nil
 }
 
-// TestEffectSpan_LinksToGameTraceAndDecision: when both the game-trace ids AND a live
-// decision span are in scope at schedule time, the emitted intervention.effect root
-// carries (a) the game.id attribute, (b) a game-trace Link (to the hub), and (c) a
-// decision Link (link.kind=decision) to the causing decision span. The per-signal
-// child carries game.id + the intervention id.
-func TestEffectSpan_LinksToGameTraceAndDecision(t *testing.T) {
+// TestEffectSpan_ChildOfDecision: when a live decision span is in scope at schedule time,
+// the emitted intervention.effect root is a remote CHILD of that decision span — its
+// Parent is the decision SpanContext and it lives in the decision's trace — and it carries
+// NO standalone Links (the game-trace Link is dropped, the decision is now the parent).
+// game.id stays the query axis; the game trace ids stay as searchable attributes. The
+// per-signal child carries game.id + the intervention id.
+func TestEffectSpan_ChildOfDecision(t *testing.T) {
 	provider := newFakeContextProvider()
 	const gameID = "game_hub01"
 	provider.set(gameID, durationContext(gameID, 90))
@@ -92,35 +83,27 @@ func TestEffectSpan_LinksToGameTraceAndDecision(t *testing.T) {
 		t.Errorf("effect root game.id = %q (present=%v), want %q", v.AsString(), ok, gameID)
 	}
 
-	// (b) game-trace Link to the hub.
-	wantTID, _ := trace.TraceIDFromHex(hubGameTrace)
-	wantSID, _ := trace.SpanIDFromHex(hubGameSpanID)
-	var sawGameLink bool
-	for _, lk := range root.Links() {
-		if lk.SpanContext.TraceID() == wantTID && lk.SpanContext.SpanID() == wantSID {
-			sawGameLink = true
-		}
+	// (b) the effect root is a remote CHILD of the causing decision span.
+	if root.Parent().TraceID() != decisionSpan.SpanContext().TraceID() {
+		t.Errorf("effect root trace_id = %s, want decision trace %s",
+			root.Parent().TraceID(), decisionSpan.SpanContext().TraceID())
 	}
-	if !sawGameLink {
-		t.Errorf("effect root missing game-trace Link to %s/%s; links=%v", wantTID, wantSID, root.Links())
+	if root.Parent().SpanID() != decisionSpan.SpanContext().SpanID() {
+		t.Errorf("effect root parent span_id = %s, want decision span %s",
+			root.Parent().SpanID(), decisionSpan.SpanContext().SpanID())
 	}
-	// Searchable game.trace_id attribute too.
-	if v, ok := attrValue(root, AttrGameTraceID); !ok || v.AsString() != hubGameTrace {
-		t.Errorf("effect root game.trace_id = %q (present=%v), want %q", v.AsString(), ok, hubGameTrace)
+	if root.SpanContext().TraceID() != decisionSpan.SpanContext().TraceID() {
+		t.Errorf("effect root must share the decision trace; got %s want %s",
+			root.SpanContext().TraceID(), decisionSpan.SpanContext().TraceID())
 	}
 
-	// (c) decision Link (link.kind=decision) targeting the causing decision span.
-	decLink, ok := linkByKind(root.Links(), linkKindDecision)
-	if !ok {
-		t.Fatal("effect root missing link.kind=decision Link to the causing decision span")
+	// (c) no standalone Links: the game-trace Link is dropped, the decision is the parent.
+	if n := len(root.Links()); n != 0 {
+		t.Errorf("effect root links = %d, want 0 (re-parented, not Linked); links=%v", n, root.Links())
 	}
-	if decLink.SpanContext.TraceID() != decisionSpan.SpanContext().TraceID() {
-		t.Errorf("decision Link trace_id = %s, want %s",
-			decLink.SpanContext.TraceID(), decisionSpan.SpanContext().TraceID())
-	}
-	if decLink.SpanContext.SpanID() != decisionSpan.SpanContext().SpanID() {
-		t.Errorf("decision Link span_id = %s, want %s",
-			decLink.SpanContext.SpanID(), decisionSpan.SpanContext().SpanID())
+	// Searchable game.trace_id attribute is still stamped.
+	if v, ok := attrValue(root, AttrGameTraceID); !ok || v.AsString() != hubGameTrace {
+		t.Errorf("effect root game.trace_id = %q (present=%v), want %q", v.AsString(), ok, hubGameTrace)
 	}
 
 	// per-signal child carries game.id + the intervention id (both keys).
@@ -145,18 +128,18 @@ func TestEffectSpan_LinksToGameTraceAndDecision(t *testing.T) {
 	}
 }
 
-// TestEffectSpan_NoLinksWhenIdsAbsent: with an empty GameContext and no live decision
-// span, the effect span carries NO game-trace Link and NO decision Link (graceful
-// nil-safe fallback) — exactly the pre-#1174 shape.
-func TestEffectSpan_NoLinksWhenIdsAbsent(t *testing.T) {
+// TestEffectSpan_OwnRootWhenDecisionAbsent: with no live decision span in scope (and an
+// empty GameContext) the effect span is its own root — no parent, no Links — exactly the
+// graceful fallback the nil-safe Link produced before.
+func TestEffectSpan_OwnRootWhenDecisionAbsent(t *testing.T) {
 	provider := newFakeContextProvider()
 	const gameID = "game_nolink"
 	provider.set(gameID, durationContext(gameID, 90))
 
 	l, sr, _, sched := effectLoop(t, provider, gameID)
 
-	// background ctx => invalid SpanContext => no decision Link; empty GameContext => no
-	// game-trace Link.
+	// background ctx => invalid decision SpanContext => no remote parent; empty
+	// GameContext => no game trace ids.
 	id := l.scheduleEffectSample(context.Background(), gamecontext.GameContext{}, shieldDecision(), enduranceBaseline(), defaultFit())
 	if id == "" {
 		t.Fatal("expected a scheduled sample")
@@ -168,6 +151,9 @@ func TestEffectSpan_NoLinksWhenIdsAbsent(t *testing.T) {
 	if root == nil {
 		t.Fatal("no root agent.intervention.effect span")
 	}
+	if root.Parent().IsValid() {
+		t.Errorf("effect root must be own-root when no decision span in scope; parent=%v", root.Parent())
+	}
 	if n := len(root.Links()); n != 0 {
 		t.Errorf("effect root links = %d, want 0 (no ids => no Links); links=%v", n, root.Links())
 	}
@@ -176,10 +162,12 @@ func TestEffectSpan_NoLinksWhenIdsAbsent(t *testing.T) {
 	}
 }
 
-// TestSignalReceived_LinksToGameTrace: the cycle-root agent.signal_received span carries
-// a game-trace Link + the searchable game.trace_id attr when the ids are present, and
-// none when absent (nil-safe).
-func TestSignalReceived_LinksToGameTrace(t *testing.T) {
+// TestSignalReceived_ChildOfGameSpan: the cycle-root agent.signal_received span is a
+// remote CHILD of the game span when the game trace ids are present (its Parent is the
+// game span, it lives in the game trace), and an OWN-ROOT span (no parent) when they are
+// absent. The searchable game.trace_id attr rides along when present. The whole sync
+// decision->action subtree is therefore pulled into the game trace.
+func TestSignalReceived_ChildOfGameSpan(t *testing.T) {
 	t.Run("present", func(t *testing.T) {
 		l, sr, _ := meteredTestLoop(t)
 		l.Rules = fakeRules{out: []Decision{{Intervention: "noop", Reason: "x"}}}
@@ -190,14 +178,23 @@ func TestSignalReceived_LinksToGameTrace(t *testing.T) {
 
 		root := spansByName(sr.Ended(), SignalReceived)[0]
 		wantTID, _ := trace.TraceIDFromHex(hubGameTrace)
-		var sawLink bool
-		for _, lk := range root.Links() {
-			if lk.SpanContext.TraceID() == wantTID {
-				sawLink = true
-			}
+		wantSID, _ := trace.SpanIDFromHex(hubGameSpanID)
+		if root.Parent().TraceID() != wantTID {
+			t.Errorf("signal_received parent trace_id = %s, want game trace %s", root.Parent().TraceID(), wantTID)
 		}
-		if !sawLink {
-			t.Errorf("signal_received missing game-trace Link; links=%v", root.Links())
+		if root.Parent().SpanID() != wantSID {
+			t.Errorf("signal_received parent span_id = %s, want game span %s", root.Parent().SpanID(), wantSID)
+		}
+		if root.SpanContext().TraceID() != wantTID {
+			t.Errorf("signal_received must live in the game trace; got %s want %s", root.SpanContext().TraceID(), wantTID)
+		}
+		if !root.Parent().IsRemote() {
+			t.Error("signal_received parent must be the REMOTE game span")
+		}
+		// The decision span (sync subtree) shares the game trace as a consequence.
+		dec := spansByName(sr.Ended(), SpanDecision)[0]
+		if dec.SpanContext().TraceID() != wantTID {
+			t.Errorf("agent.decision must be pulled into the game trace; got %s want %s", dec.SpanContext().TraceID(), wantTID)
 		}
 		if v, ok := attrValue(root, AttrGameTraceID); !ok || v.AsString() != hubGameTrace {
 			t.Errorf("signal_received game.trace_id = %q (present=%v), want %q", v.AsString(), ok, hubGameTrace)
@@ -213,22 +210,55 @@ func TestSignalReceived_LinksToGameTrace(t *testing.T) {
 			EvalTrigger{Signal: "metrics", T0: time.Now(), RPCService: "svc"})
 
 		root := spansByName(sr.Ended(), SignalReceived)[0]
+		if root.Parent().IsValid() {
+			t.Errorf("signal_received must be own-root when no game ids; parent=%v", root.Parent())
+		}
 		if n := len(root.Links()); n != 0 {
 			t.Errorf("signal_received links = %d, want 0 (no ids); links=%v", n, root.Links())
 		}
 	})
 }
 
-// TestDecisionLink_Direct unit-tests the helper in isolation: a valid SpanContext yields
-// one Link option carrying link.kind=decision; an invalid/zero SpanContext yields nil.
-func TestDecisionLink_Direct(t *testing.T) {
-	if got := decisionLink(trace.SpanContext{}); got != nil {
-		t.Errorf("decisionLink(zero) = %v, want nil", got)
-	}
-	tid, _ := trace.TraceIDFromHex(hubGameTrace)
-	sid, _ := trace.SpanIDFromHex(hubGameSpanID)
-	sc := trace.NewSpanContext(trace.SpanContextConfig{TraceID: tid, SpanID: sid, TraceFlags: trace.FlagsSampled})
-	if got := decisionLink(sc); len(got) != 1 {
-		t.Errorf("decisionLink(valid) = %d options, want 1", len(got))
+// TestGameRemoteParent_Direct unit-tests the helper in isolation: a valid (trace,span)
+// pair installs a remote parent (ok=true, a span started from the ctx becomes a child);
+// any empty/invalid id returns the unchanged ctx + ok=false (graceful fallback, own root).
+func TestGameRemoteParent_Direct(t *testing.T) {
+	base := context.Background()
+
+	for _, tc := range []struct {
+		name            string
+		traceID, spanID string
+		wantOK          bool
+	}{
+		{"valid", hubGameTrace, hubGameSpanID, true},
+		{"empty trace", "", hubGameSpanID, false},
+		{"empty span", hubGameTrace, "", false},
+		{"invalid trace", "zzzz", hubGameSpanID, false},
+		{"invalid span", hubGameTrace, "zz", false},
+		{"all-zero trace", "00000000000000000000000000000000", hubGameSpanID, false},
+		{"all-zero span", hubGameTrace, "0000000000000000", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, ok := gameRemoteParent(base, tc.traceID, tc.spanID)
+			if ok != tc.wantOK {
+				t.Fatalf("gameRemoteParent ok = %v, want %v", ok, tc.wantOK)
+			}
+			if !tc.wantOK {
+				if ctx != base {
+					t.Error("invalid ids must return the unchanged ctx")
+				}
+				return
+			}
+			// ok=true: a span started from ctx is a remote child of the game span.
+			wantTID, _ := trace.TraceIDFromHex(tc.traceID)
+			wantSID, _ := trace.SpanIDFromHex(tc.spanID)
+			sc := trace.SpanContextFromContext(ctx)
+			if sc.TraceID() != wantTID || sc.SpanID() != wantSID {
+				t.Errorf("remote parent = %s/%s, want %s/%s", sc.TraceID(), sc.SpanID(), wantTID, wantSID)
+			}
+			if !sc.IsRemote() {
+				t.Error("remote parent SpanContext must be marked Remote")
+			}
+		})
 	}
 }
