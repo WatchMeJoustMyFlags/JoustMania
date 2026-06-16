@@ -108,3 +108,10 @@ ghost_controllers_pruned_total = Counter(
     "menu_ghost_controllers_pruned_total",
     "Total ghost controllers pruned via reconciliation with backend",
 )
+
+# #1153: force-start fell back to the menu-derived roster because the
+# controller-manager live-roster RPC was unreachable/errored (degraded reconcile).
+force_start_reconcile_failed_total = Counter(
+    "menu_force_start_reconcile_failed_total",
+    "Total force-starts that used the stale menu roster after the live-roster RPC failed",
+)

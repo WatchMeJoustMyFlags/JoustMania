@@ -693,6 +693,7 @@ class AdminModeHandler:
         except Exception as e:
             logger.warning(f"Live roster query failed, using menu roster as-is: {e}")
             span.set_attribute("force_start.roster_reconciled", False)
+            self.metrics.force_start_reconcile_failed_total.inc()
             return controllers
 
         live_serials = set(response.connected_serials)

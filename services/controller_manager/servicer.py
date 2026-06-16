@@ -585,19 +585,18 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         # This method has no await points, but a snapshot keeps it robust.
         tracked_snapshot = dict(self.tracked_controllers)
 
-        controllers = []
-        serials = []
-        for serial, info in tracked_snapshot.items():
-            if info.get(ControllerInfoKey.RESERVED, False):
-                continue
-            serials.append(serial)
-            controllers.append(
-                controller_manager_pb2.ConnectedController(
-                    serial=serial,
-                    name=info.get(ControllerInfoKey.NAME, ""),
-                    battery=info.get(ControllerInfoKey.BATTERY, 0),
-                )
+        # visible_serials() is the canonical "what button-stream consumers (the
+        # menu) may see" filter (excludes reserved controllers, #777). Reuse it
+        # so the RPC and the stream roster never silently diverge.
+        serials = visible_serials(tracked_snapshot)
+        controllers = [
+            controller_manager_pb2.ConnectedController(
+                serial=serial,
+                name=tracked_snapshot[serial].get(ControllerInfoKey.NAME, ""),
+                battery=tracked_snapshot[serial].get(ControllerInfoKey.BATTERY, 0),
             )
+            for serial in serials
+        ]
 
         span.set_attribute("controller.count", len(serials))
         logger.debug(f"GetConnectedControllers: {len(serials)} connected")

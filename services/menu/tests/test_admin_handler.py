@@ -596,6 +596,8 @@ class TestForceStartLiveRosterReconcile:
         handler.callbacks.start_game.assert_awaited_once()
         roster = handler.callbacks.start_game.await_args.args[2]
         assert set(roster) == real | {"ghost"}
+        # The degraded-reconcile counter is incremented so the dashboard sees it.
+        handler.metrics.force_start_reconcile_failed_total.inc.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_admin_serial_preserved_when_absent_from_roster(self, handler, mock_state_manager):
