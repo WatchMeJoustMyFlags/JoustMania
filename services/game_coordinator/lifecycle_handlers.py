@@ -264,9 +264,9 @@ async def handle_auto_rubberband(ctx: InterventionContext) -> None:
 
     Reverting requires no action: the per-player boosts simply stop applying when
     their deadlines pass (``_compute_effective_thresholds`` reads them live).
-    Battery gating is handled per-player inside the method's ranking (it only ever
-    raises a player's threshold; a low-battery laggard simply gets a slightly
-    smaller benefit, never a penalty), so no extra guard is needed here.
+    No battery guard is needed: rubberband only ever RAISES a player's threshold
+    (it is benefit-only). A low-battery laggard simply receives a smaller benefit
+    and is never penalized, so there is nothing to gate on battery here.
     """
     game = ctx.game
     if game is None:
