@@ -830,6 +830,12 @@ services:
       # Free local default: where the gateway reaches Ollama. Defaults to the
       # HOST machine's Ollama via host.docker.internal (extra_hosts below).
       # Repoint to a LAN Jetson (#738) without editing config.yaml.
+      # ENV-SPECIFIC (#1208): host.docker.internal is correct on Docker Desktop
+      # and Linux-with-host-gateway, but on WSL2 it can resolve to the Docker NAT
+      # gateway (172.17.0.1) rather than the host running Ollama -> connection
+      # REFUSED on the warmup ping. On WSL2, set OLLAMA_BASE_URL to the WSL host's
+      # IP, e.g. `export OLLAMA_BASE_URL=http://192.168.x.x:11434`. See
+      # services/litellm/config.yaml for the full per-environment matrix.
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       # OPTIONAL cloud layer. Leave empty to run Ollama-only; the `claude` route
       # then errors on use and falls back to local (config.yaml fallbacks). The
