@@ -856,6 +856,22 @@ services:
       - OTEL_ENDPOINT=http://otel-collector:4317
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - OTEL_RESOURCE_ATTRIBUTES=service.namespace=infrastructure,host.name=${JOUSTMANIA_HOST:-joustmania}
+      # Inbound W3C trace-context propagation (#1205, epic #1140 disjoint-roots).
+      # The agent injects a `traceparent` header on EVERY outbound inference call
+      # (services/agent/inference/openai.go; the sync/async/retro paths each wrap the
+      # call in a recording client span first so the header carries a live trace-id).
+      # LiteLLM's otel callback extracts that header and parents its "Received Proxy
+      # Server Request" SERVER span UNDER it by default (user_api_key_auth.py ->
+      # create_litellm_proxy_request_started_span -> get_traceparent_from_header), so
+      # the gateway gen_ai span shares ONE trace with the decision that caused it
+      # (decision -> agent.llm.infer.call -> litellm -> ollama). The ONLY switch that
+      # silently re-orphans it — turning every proxy span into its own ROOT regardless
+      # of the inbound header (the verification #11 symptom: a litellm trace whose
+      # `services` set is {litellm} only, top span references:[]) — is
+      # OTEL_IGNORE_CONTEXT_PROPAGATION. Pin it OFF explicitly so a stray env on a
+      # fleet host can never re-break the stitch. (This is INBOUND only; forwarding
+      # traceparent DOWNSTREAM to Ollama is a separate, unrelated knob, left off.)
+      - OTEL_IGNORE_CONTEXT_PROPAGATION=false
     volumes:
       - ./services/litellm/config.yaml:/etc/litellm/config.yaml:ro
     # Reach the HOST machine's Ollama (same mechanism the agent uses, #1048).
