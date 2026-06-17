@@ -8,6 +8,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	otelmetric "go.opentelemetry.io/otel/metric"
 	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
 	"go.opentelemetry.io/otel/trace"
@@ -540,6 +541,13 @@ func (rc *RetroCoordinator) runRetroInfer(ctx context.Context, span trace.Span, 
 			attribute.Bool(AttrLLMRetroParseOK, false),
 			attribute.String(AttrLLMInferError, inferErr.Error()),
 		)
+		// #1206: surface the failure as span STATUS=Error (mirroring litellm's
+		// otel.status_code=ERROR) so a timed-out/failed retro is visible in Jaeger's
+		// error view, not just as parse_ok=false. Fail-open is unchanged — the span
+		// still ends cleanly and the game-end transition is unaffected.
+		span.RecordError(inferErr)
+		span.SetAttributes(semconv.ErrorType(inferErr))
+		span.SetStatus(codes.Error, inferErr.Error())
 		rc.Log.Warn(SpanLLMRetroFailed,
 			"session_id", sessionID,
 			"latency_ms", latencyMs,
@@ -560,6 +568,11 @@ func (rc *RetroCoordinator) runRetroInfer(ctx context.Context, span trace.Span, 
 			attribute.Bool(AttrLLMRetroParseOK, false),
 			attribute.String(AttrLLMInferError, decodeErr.Error()),
 		)
+		// #1206: an unparseable retro reply is an ERROR on the span, not just
+		// parse_ok=false. Fail-open is unchanged — the span still ends cleanly.
+		span.RecordError(decodeErr)
+		span.SetAttributes(semconv.ErrorType(decodeErr))
+		span.SetStatus(codes.Error, decodeErr.Error())
 		rc.Log.Warn(SpanLLMRetroFailed,
 			"session_id", sessionID,
 			"latency_ms", latencyMs,

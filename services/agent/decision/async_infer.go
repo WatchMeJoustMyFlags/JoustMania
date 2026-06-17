@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/joustmania/agent/flags"
@@ -294,6 +296,15 @@ func (l *Loop) runInfer(root context.Context, snapshot flags.Snapshot, backend B
 	callOpts = append(callOpts, fireCycleLink(fireSC)...)
 	callCtx, callSpan := l.Tracer.Start(callParent, SpanLLMInferCall, callOpts...)
 	raw, inferErr := backend.Infer(callCtx, prompt)
+	// #1206: stamp the outbound-call span (the span active when the transport error /
+	// "context deadline exceeded" actually occurs) with STATUS=Error, mirroring
+	// litellm's otel.status_code=ERROR. Fail-open is unchanged — applyAsyncResult still
+	// degrades to rules; this only makes the failed call observable in Jaeger.
+	if inferErr != nil {
+		callSpan.RecordError(inferErr)
+		callSpan.SetAttributes(semconv.ErrorType(inferErr))
+		callSpan.SetStatus(codes.Error, inferErr.Error())
+	}
 	callSpan.End()
 	end := now()
 
