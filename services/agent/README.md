@@ -367,7 +367,8 @@ observed count returns to 0; a later failure can then trigger a fresh rollback.
 | rollback in flight (settling) | `> 0` | — | none | `none` |
 | at stable default      | `0` | — | none (nothing to roll back) | `none` |
 
-**Dry-run** (`AGENT_ROLLOUT_ENABLED=false`): the rollback is **decided and
+**Dry-run** (`rollout_enabled` flag `off` — flagd flag, #1213; the fail-closed
+default): the rollback is **decided and
 spanned** (`remediation.action="rollback"`, **`rollout.dry_run=true`**) but the
 `DryRunRolloutWriter`'s `SetControllerCount("none")` is a no-op —
 decided-but-not-applied, consistent with dry-run expansion. The `rollout.dry_run`
@@ -395,7 +396,7 @@ attribute builder** (`infraDecisionAttributes`), so **every** decision span — 
 | `fitness.passing` | bool | yes | did the Bluetooth fitness check pass this cycle |
 | `fitness.violations` | string | yes (**empty when passing**, never absent) | the failing checks, e.g. `movement_update_hz[AA:BB] 8.3<10` |
 | `remediation.action` | string | yes | `none \| expand \| rollback \| recommended_only` |
-| `rollout.dry_run` | bool | yes | did the actuator only **rehearse** this decision (no write to `rollout.json`) rather than apply it — `true` for the dry-run actuator (`AGENT_ROLLOUT_ENABLED=false`, the compose default) and when there is no actuator; `false` for the real `RolloutWriter`. Lets a trace tell a rehearsed `expand`/`rollback` apart from a real one. |
+| `rollout.dry_run` | bool | yes | did the actuator only **rehearse** this decision (no write to `rollout.json`) rather than apply it — `true` when the `rollout_enabled` flag is `off` (flagd flag, #1213; the fail-closed default, re-read per cycle) and when there is no actuator; `false` when `rollout_enabled` is `on` and the real `RolloutWriter` applies. Lets a trace tell a rehearsed `expand`/`rollback` apart from a real one. |
 
 plus the observed `bluetooth.*` window signals (`target_backend` + `rollout_count`
 always; `event_gap_ms` / `dropped_events_pct` / `movement_update_hz` /
@@ -507,10 +508,12 @@ The two decision hooks:
 - **Rules engine** (#726) — `ObjectiveRules`, the objective-weighted decision
   logic below. Active by default; its objectives are driven live by the flag.
 - **Action sink** (#730) — applies permitted intents via OpenFeature/flagd.
-  **No-op by default**: with `AGENT_INTERVENTIONS_ENABLED=true` the real
-  `actions.Writer` is wired in and dispatched decisions are written to the
-  flagd `interventions` domain (see **Action sink** below); otherwise decisions
-  are traced and discarded.
+  **No-op by default**: the gated sink consults the live `interventions_enabled`
+  flag (flagd flag, #1213; re-read per `Apply`). With it `on` the real
+  `actions.Writer` is dispatched and decisions are written to the flagd
+  `interventions` domain (see **Action sink** below); `off`/undefined/flagd-
+  unreachable is **fail-closed** — decisions are traced and discarded. Flip the
+  flag in flagd, no restart.
 
 The flags wrapper lives in [`flags/`](flags/) and uses the OpenFeature Go SDK
 with the flagd **RPC** resolver against flagd's gRPC evaluation port. Flag keys
@@ -1048,8 +1051,8 @@ variant (`["noop"]`) in [`services/flagd/agent.json`](../flagd/agent.json):
 
 `noop` is a **harmless no-op in the action sink**: the `Writer` recognizes it and
 returns success **without writing any flag** (`actions/writer.go`,
-`InterventionNoop`). So with the `probe` variant + `AGENT_INTERVENTIONS_ENABLED=true`
-+ `enabled=on`, a probe decision flows through allow-list, battery, and rate-limit
+`InterventionNoop`). So with the `probe` variant + `interventions_enabled=on`
+(flagd flag, #1213) + `enabled=on`, a probe decision flows through allow-list, battery, and rate-limit
 gates, reaches the real `Writer`, and completes the `agent.action` span — all
 without touching the game. Revert by flipping `interventions_allowed` back to
 `ambient` (or `none`).

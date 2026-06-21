@@ -523,7 +523,7 @@ def evaluate(scenario: Scenario, obs: Observations) -> ScenarioResult:
             # decided but never acted, while we expected an allowed dispatch
             res.reasons.append(
                 "NOTE: agent.decision spans present but no agent.action — decisions were made but "
-                "not dispatched (act gates closed: AGENT_INTERVENTIONS_ENABLED / agent.json enabled)"
+                "not dispatched (act gates closed: agent.json interventions_enabled / enabled flags)"
             )
             res.where.append("docs/agent-act-runbook.md: open the act gates to see agent.action")
 

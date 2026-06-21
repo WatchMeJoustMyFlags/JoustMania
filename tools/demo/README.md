@@ -70,8 +70,9 @@ make dry-run
 ./scripts/agent-killswitch.sh on    # the agent loop is inert until you do this
 
 # (Optional) to see the agent ACT, not just decide — see docs/agent-act-runbook.md:
-#   AGENT_INTERVENTIONS_ENABLED=true on the agent container (restart), and
-#   widen interventions_allowed if you want a difficulty intervention to dispatch.
+#   flip interventions_enabled -> on in services/flagd/agent.json (flagd flag, #1213;
+#   re-read at use-time, no agent restart), and widen interventions_allowed if you
+#   want a difficulty intervention to dispatch.
 
 # 2. Fire a scenario.
 cd services/game_coordinator

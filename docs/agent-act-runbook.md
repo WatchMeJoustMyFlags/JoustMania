@@ -18,12 +18,13 @@ must both be open for an intervention to reach the game:
 
 | Gate | Where | Stock value | Act value | Restart? |
 |------|-------|-------------|-----------|----------|
-| **1. Sink** `AGENT_INTERVENTIONS_ENABLED` | compose env on the `agent` container | `false` (NoopActions — discards) | `true` (real `actions.Writer`) | **Yes** — restart `agent` |
+| **1. Sink** `interventions_enabled` | `services/flagd/agent.json` flag set (#1213) | `off` (discards — decision recorded, not written) | `on` (real `actions.Writer` writes) | **No** — flagd flag flip, re-read at use-time |
 | **2. Kill switch** `enabled` | `services/flagd/agent.json` flag domain | `off` | `on` | **No** — flagd hot-reload (<100 ms) |
 
-Both gates are also the **safe defaults** when their backing config is missing
-(flagd unreachable → `enabled=false`; env unset → NoopActions), so the agent
-always comes up **inert**.
+Both gates are also the **safe defaults** when their backing config is missing —
+**fail-closed**: flagd unreachable or the flag undefined resolves to `off` for
+both `enabled` and `interventions_enabled`, so the agent always comes up
+**inert** (#1213).
 
 The kill switch is a **flag flip** — instant, no restart. That is the demo
 panic button.
@@ -41,9 +42,10 @@ With `docker compose up`, the agent:
 - **Traces**: emits the `agent.signal_received → agent.decision → agent.action`
   audit trace whenever the engine returns ≥ 1 decision (idle cycles cost no
   spans).
-- **Dispatches nothing**: the action sink is `NoopActions`
-  (`AGENT_INTERVENTIONS_ENABLED` unset), so even a permitted, fitting decision is
-  discarded. And `enabled=off` short-circuits the loop before any rule runs,
+- **Dispatches nothing**: the sink gate `interventions_enabled` is `off`
+  (fail-closed default), so a fully-permitted, fitting decision is recorded and
+  spanned but **not written** to `interventions.json`. And `enabled=off`
+  short-circuits the loop before any rule runs,
   emitting only a throttled `agent.disabled` kill-switch trace.
 
 So the **whole OBSERVE/DECIDE/trace pipeline runs**, visible end to end in
@@ -54,21 +56,33 @@ the reason this runbook exists.
 
 ## Going live — open both gates
 
-### Step 1 — Swap in the real action sink (env, requires restart)
+### Step 1 — Open the sink gate (flag, no restart)
 
-`AGENT_INTERVENTIONS_ENABLED=true` swaps `NoopActions` for `actions.Writer`,
-which applies decisions by rewriting `services/flagd/interventions.json` in place
-(the game coordinator watches that file and converges on its contents — there is
-no gRPC from the agent to the game services). This env is read **once at
-startup**, so it requires an agent restart:
+Flipping `interventions_enabled` to `on` lets the gated sink dispatch through the
+real `actions.Writer`, which applies decisions by rewriting
+`services/flagd/interventions.json` in place (the game coordinator watches that
+file and converges on its contents — there is no gRPC from the agent to the game
+services). As of #1213 this is a **flagd flag** in the `agent` flag set, re-read
+**at use-time** (per `Apply`, never cached at startup), so flipping it takes
+effect on the next decision with **no agent restart**. It is **fail-closed**:
+`off`, undefined, or flagd unreachable → the decision is recorded and spanned but
+**not written**.
 
-```bash
-AGENT_INTERVENTIONS_ENABLED=true docker compose up -d agent
-# or set it in your .env / compose override, then:
-docker compose up -d --no-deps agent
+Edit `interventions_enabled` in `services/flagd/agent.json` — change its
+`defaultVariant` from `off` to `on` (or flip the same flag in the live flagd flag
+set):
+
+```json
+"interventions_enabled": {
+  "state": "ENABLED",
+  "variants": { "on": true, "off": false },
+  "defaultVariant": "on"
+}
 ```
 
-Confirm from the agent log:
+Save. flagd's file-watch fires within **~100 ms–1 s**; no restart. The next
+`Apply` reads `on` and writes through the real `Writer`. Confirm from the agent
+log:
 
 ```
 Agent intervention writes enabled (#730) path=/etc/flagd/interventions.json
@@ -208,7 +222,7 @@ can verify the trace pipeline without a live game. See the agent README →
   `agent.signal_received → agent.decision` spans still emit — OBSERVE→DECIDE and the
   span schema are fully exercised; only `agent.action` is withheld.
 - **Full path**: flip `interventions_allowed` to the **`probe`** variant
-  (`["noop"]`) in `agent.json`, plus `AGENT_INTERVENTIONS_ENABLED=true` and
+  (`["noop"]`) in `agent.json`, plus `interventions_enabled=on` and
   `enabled=on`. `noop` is a harmless no-op in the `Writer` (returns success
   without writing any flag), so the decision flows through every gate, reaches
   the real sink, and completes the `agent.action` span — all without changing the
@@ -278,10 +292,11 @@ Cross-reference: [agent README → Span schema (#724)](../services/agent/README.
 
 Walk the two gates plus the permission layer, in order:
 
-1. **Sink gate** — is `AGENT_INTERVENTIONS_ENABLED=true` on the `agent`
-   container, and was the container **restarted** since? The startup log must
-   show `Agent intervention writes enabled (#730)`. Without it the sink is
-   `NoopActions` and discards everything (no error, no write).
+1. **Sink gate** — is `interventions_enabled` `on` in `agent.json` (the live
+   flagd flag, #1213)? It is re-read **per `Apply`**, so a flip takes effect with
+   no restart; `off`/undefined/flagd-unreachable is **fail-closed** and discards
+   everything (decision recorded, no write — no error). The first enabled write
+   logs `Agent intervention writes enabled (#730)`.
 2. **Kill switch** — is `enabled` `on` in `agent.json`? If `off`, the loop
    short-circuits and you'll see `agent.disabled` traces (`agent.enabled=false`),
    not `agent.decision`.
@@ -332,7 +347,7 @@ The agent repairs corruption on its own:
    the file. If it no longer parses, the agent **restores the last-known-good
    snapshot** (the bytes it read at the top of that write cycle, which parsed)
    in place, and the `Apply` records `result=error`.
-2. **Startup self-heal** — on agent start (when `AGENT_INTERVENTIONS_ENABLED=true`),
+2. **Startup self-heal** — on agent start (when `interventions_enabled` is `on`),
    the agent validates the file and, if it is missing or unparseable, writes a
    **neutral document** (every flag at its neutral `defaultVariant`, empty
    targeting, no agent-driven variants — embedded in the agent binary, so it is
