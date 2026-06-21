@@ -218,8 +218,9 @@ func (w *RolloutWriter) DryRun() bool { return false }
 
 // DryRunRolloutWriter satisfies the same actuator seam as RolloutWriter but
 // NEVER writes the rollout file: SetControllerCount logs the would-be flip and
-// returns nil. It is the disabled-mode (AGENT_ROLLOUT_ENABLED=false) actuator —
-// the loop still decides and spans the expansion (remediation.action="expand"),
+// returns nil. It is the disabled-mode actuator (the LIVE rollout_enabled flag off,
+// #1213; GatedRolloutActuator delegates here when the gate is off) — the loop still
+// decides and spans the expansion (remediation.action="expand"),
 // it just is not applied. The ladder helpers delegate to the real package
 // functions, so the value↔variant mapping stays single-sourced.
 type DryRunRolloutWriter struct {

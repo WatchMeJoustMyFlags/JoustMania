@@ -513,6 +513,22 @@
         "wide": 8
       },
       "defaultVariant": "default"
+    },
+    "interventions_enabled": {
+      "state": "ENABLED",
+      "variants": {
+        "off": false,
+        "on": true
+      },
+      "defaultVariant": "off"
+    },
+    "rollout_enabled": {
+      "state": "ENABLED",
+      "variants": {
+        "off": false,
+        "on": true
+      },
+      "defaultVariant": "off"
     }
   }
 }

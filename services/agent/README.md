@@ -304,9 +304,9 @@ failure sets the span status to error and records the error.
 
 **Env gates:**
 
-| Env | Default | Effect |
+| Env / flag | Default | Effect |
 |-----|---------|--------|
-| `AGENT_ROLLOUT_ENABLED` | `false` | `true` → real `RolloutWriter` applies flips (`rollout.dry_run=false`). `false` → **dry-run**: the loop still decides and spans expansions (`remediation.action="expand"`, `rollout.controller_count` set, **`rollout.dry_run=true`**) but does **not** write `rollout.json` (decided-but-not-applied; logged `agent.rollout_dry_run`). |
+| `rollout_enabled` (**flagd flag**, `agent.json`) | `off` | **#1213: migrated from the `AGENT_ROLLOUT_ENABLED` env var to a LIVE flag**, read per `SetControllerCount`/`DryRun` (never cached at startup). `on` → real `RolloutWriter` applies flips (`rollout.dry_run=false`). `off` (or flagd unreachable — **fail-closed**) → **dry-run**: the loop still decides and spans expansions (`remediation.action="expand"`, `rollout.controller_count` set, **`rollout.dry_run=true`**) but does **not** write `rollout.json` (decided-but-not-applied; logged `agent.rollout_dry_run`). Flip the flag in flagd, no restart. |
 | `ROLLOUT_FLAG_PATH` | `/etc/flagd/rollout.json` | rollout flag file path (read for `remediation_allowed`, written on expand/rollback) |
 | `AGENT_ROLLOUT_DWELL_SECONDS` | `15` | per-stage dwell before re-expansion |
 | `AGENT_ROLLOUT_COOLDOWN_SECONDS` | `30` | post-rollback cooldown: re-expansion is suppressed this long after a rollback |
@@ -937,7 +937,7 @@ All configuration is via environment variables:
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | set in compose | Self-telemetry export (decision audit traces → collector → Jaeger); no-op when unset |
 | `OTEL_SERVICE_NAME` | `agent` | Service identity; also drives the self-ingestion skip |
 | `AGENT_PROBE_DECISIONS` | _unset_ | `true` enables the demo/verification probe: a synthetic `noop` decision (and thus a full audit trace) at most every 5 s. Never for production sessions. See [Probe mode](#probe-mode-agent_probe_decisions) |
-| `AGENT_INTERVENTIONS_ENABLED` | `false` | `true` swaps the no-op action sink for the real intervention **Writer** (#730). Default off keeps the scaffold inert |
+| `interventions_enabled` (**flagd flag**, `agent.json`) | `off` | **#1213: migrated from the `AGENT_INTERVENTIONS_ENABLED` env var to a LIVE flag**, read per `Apply` against the live `Flags` (never cached at startup). `on` → the gated action sink writes a fully-permitted decision to the interventions file via the real **Writer** (#730); `off` (or flagd unreachable — **fail-closed**) → the decision is still recorded/spanned but **not** written (inert scaffold). Distinct from the `enabled` kill switch (gates whether the loop **decides**) and `interventions_allowed` (gates **which** intervention types may dispatch); this gates whether a permitted decision is **applied**. Flip the flag in flagd, no restart. |
 | `INTERVENTIONS_FLAG_PATH` | `/etc/flagd/interventions.json` | Path of the flagd interventions file the Writer rewrites (must be the bind-mounted file flagd watches) |
 | `AGENT_GAME_SUMMARY_DIR` | `/var/lib/joustmania/agent/summaries` | Directory the M7-1 game narrative builder (#928) writes one JSON game summary per game into (real **and** shadow), created if missing; atomic temp+rename so a reader never sees a partial file |
 | `AGENT_EXPERIMENTS_ENABLED` | `false` | **Bootstrap default for the live `experiments_enabled` flag** gating the #991 experiment cohort loop (epic #982). When on, the `experiment.Registry` (built with the real spawner/targeting/verdict/promoter seams) runs the declare→spawn→conclude→verdict→(gated)promote loop. Since #1044 the loop is always built + run and self-gates on the live flag; **default off ⇒ the loop is behaviorally inert — no shadow spawns, no targeting writes, no promotions (the only residual work is one ~30 s no-op tick).** Promotion still routes through the existing `code_improvement` gates + kill-switch |
@@ -1174,8 +1174,10 @@ A run gets an `agent.shadow_game.run` span with `run_id`, `mode`, `game_id`,
 
 ### Trigger (env, one-shot)
 
-The trigger is intentionally minimal — one env-gated path, mirroring
-`AGENT_INTERVENTIONS_ENABLED` / `AGENT_ROLLOUT_ENABLED`. When
+The trigger is intentionally minimal — one env-gated path. It mirrors the
+original env-gate shape the actuation gates used before **#1213** migrated those
+two to LIVE `agent.json` flags (`interventions_enabled` / `rollout_enabled`);
+`AGENT_SHADOW_GAME` is a one-shot startup trigger, so it stays an env var. When
 `AGENT_SHADOW_GAME=true`, the agent sweeps orphans then runs ONE shadow game at
 startup, then continues its normal observe loop.
 

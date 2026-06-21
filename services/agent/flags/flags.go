@@ -159,6 +159,23 @@ const (
 	keyVerdictMinPairs             = "verdict_min_pairs"
 	keyExperimentMaxGames          = "experiment_max_games"
 	keyExperimentShadowConcurrency = "experiment_shadow_effective_concurrency"
+
+	// Runtime SAFETY gates migrated from env to agent.json flags (#1213). These
+	// were the AGENT_INTERVENTIONS_ENABLED / AGENT_ROLLOUT_ENABLED env masters read
+	// ONCE at startup in main.go to select which action sink / rollout actuator was
+	// wired (#730/#734). Migrating them to flags makes the gate hot-reloadable —
+	// flip it in flagd and the agent stops/starts ACTUATING with no restart.
+	//
+	// They are SAFETY gates, not tuning knobs: unlike the #1215 game-cap migration
+	// (fail-OPEN to a default), these MUST fail CLOSED. When flagd is undefined or
+	// unreachable the gate resolves to the NOT-ACTING state (off), matching the
+	// fail-closed env default (`:-false` in docker-compose.yml) — see DefaultInterventionsEnabled
+	// / DefaultRolloutEnabled and the per-USE wiring (not cached-at-init, #1217).
+	//
+	// Read via the TYPED bool getter (boolFlag/BooleanValue), NOT ObjectValue — a
+	// flag read via ObjectValue silently TYPE_MISMATCHes to its default (#903/#1127).
+	keyInterventionsEnabled = "interventions_enabled"
+	keyRolloutEnabled       = "rollout_enabled"
 )
 
 // Safe defaults applied when flagd is unreachable or a flag is undefined.
@@ -338,6 +355,25 @@ const (
 	// agent.disabled span are emitted (decision.throttle_seconds; was decision.go
 	// throttleInterval = 1s).
 	DefaultDecisionThrottleSeconds = 1.0
+
+	// Runtime SAFETY-gate defaults (#1213), mirroring the services/flagd/agent.json
+	// interventions_enabled / rollout_enabled defaultVariants AND the fail-closed
+	// env default these replace (AGENT_INTERVENTIONS_ENABLED / AGENT_ROLLOUT_ENABLED,
+	// both `:-false` in docker-compose.yml). These defaults are deliberately the SAFE
+	// state, applied when flagd is undefined or UNREACHABLE (#1177): a missing/down
+	// control plane must NOT actuate — the agent does not write interventions.json /
+	// does not flip the rollout stage. Fail CLOSED, never fail open to acting.
+
+	// DefaultInterventionsEnabled is fail-closed OFF: when flagd is unreachable the
+	// agent's ActionSink does NOT write interventions.json — a decided, fully-gated
+	// intervention is RECORDED/spanned but never applied (the no-op sink behavior the
+	// old AGENT_INTERVENTIONS_ENABLED=false produced).
+	DefaultInterventionsEnabled = false
+	// DefaultRolloutEnabled is fail-closed OFF: when flagd is unreachable the rollout
+	// actuator is a DRY-RUN — the infra loop still decides+spans the expansion
+	// (rollout.dry_run=true) but never flips current_controller_count in rollout.json
+	// (the old AGENT_ROLLOUT_ENABLED=false behavior).
+	DefaultRolloutEnabled = false
 )
 
 // defaultObjectives is the fallback objectives weighting. Returned as a fresh
@@ -835,6 +871,34 @@ func (f *Flags) BluetoothFitness(ctx context.Context) BluetoothFitness {
 		MaxDroppedEventsPct: f.floatFlag(ctx, keyBluetoothMaxDroppedEventsPct, DefaultBluetoothMaxDroppedEventsPct),
 		MinMovementUpdateHz: f.floatFlag(ctx, keyBluetoothMinMovementUpdateHz, DefaultBluetoothMinMovementUpdateHz),
 	}
+}
+
+// InterventionsEnabled resolves the runtime intervention-actuation gate (#1213,
+// interventions_enabled). It is the migrated AGENT_INTERVENTIONS_ENABLED env
+// master: when true the agent's ActionSink WRITES decisions to interventions.json;
+// when false (or flagd unreachable) it records/spans the decision but applies
+// nothing. Read at USE-TIME (per Apply), NOT cached at startup — flipping the flag
+// in flagd starts/stops actuation with no restart, and a flagd outage at any moment
+// FAILS CLOSED (DefaultInterventionsEnabled=false) so the agent never writes when it
+// cannot confirm the gate is on (#1177). Distinct from the `enabled` kill switch
+// (which gates whether the loop DECIDES) and from interventions_allowed (which gates
+// WHICH intervention types may dispatch): this gates whether a fully-permitted
+// decision is actually APPLIED to disk.
+func (f *Flags) InterventionsEnabled(ctx context.Context) bool {
+	return f.boolFlag(ctx, keyInterventionsEnabled, DefaultInterventionsEnabled)
+}
+
+// RolloutEnabled resolves the runtime rollout-actuation gate (#1213,
+// rollout_enabled). It is the migrated AGENT_ROLLOUT_ENABLED env master: when true
+// the infra loop's actuator FLIPS current_controller_count in rollout.json; when
+// false (or flagd unreachable) it is a DRY-RUN — the loop decides+spans the
+// expansion (rollout.dry_run=true) but writes nothing. Read at USE-TIME (per
+// SetControllerCount / DryRun call), NOT cached at startup — flipping the flag in
+// flagd starts/stops applying with no restart, and a flagd outage at any moment
+// FAILS CLOSED (DefaultRolloutEnabled=false) so the agent never flips the rollout
+// stage when it cannot confirm the gate is on (#1177).
+func (f *Flags) RolloutEnabled(ctx context.Context) bool {
+	return f.boolFlag(ctx, keyRolloutEnabled, DefaultRolloutEnabled)
 }
 
 // stringFlag resolves a string flag, falling back to def on any error.

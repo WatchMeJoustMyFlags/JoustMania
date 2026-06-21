@@ -135,33 +135,34 @@ func parseLevel(s string) slog.Level {
 	}
 }
 
-// actionSink returns the intervention Writer when AGENT_INTERVENTIONS_ENABLED is
-// true, or nil to leave the loop's default NoopActions in place (scaffold stays
-// inert). Returning decision.ActionSink keeps main()'s wiring to one line and
-// makes the gate unit-testable.
-func actionSink(logger *slog.Logger) decision.ActionSink {
-	if !strings.EqualFold(getEnv("AGENT_INTERVENTIONS_ENABLED", ""), "true") {
-		return nil
-	}
-	logger.Warn("Agent intervention writes enabled (#730)",
+// actionSink returns the intervention sink for every per-game loop, gated by the
+// LIVE interventions_enabled flag (#1213, migrated from AGENT_INTERVENTIONS_ENABLED).
+// It ALWAYS returns a non-nil GatedActionSink wrapping the real Writer: the gate is
+// re-read on EVERY Apply against agentFlags, so flipping interventions_enabled in
+// flagd starts/stops actuation with no restart, and a flagd outage FAILS CLOSED
+// (DefaultInterventionsEnabled=false ⇒ the wrapped Writer is never called, the
+// decision is recorded/spanned but not written). This REPLACES the old startup-time
+// env gate that selected Writer-or-nil ONCE and could neither react to a flip nor
+// fail safe on a boot-time flagd outage (#1217). Returning decision.ActionSink keeps
+// main()'s wiring to one line and makes the gate unit-testable.
+func actionSink(gate actions.InterventionGate, logger *slog.Logger) decision.ActionSink {
+	logger.Info("Agent intervention writes gated by LIVE interventions_enabled flag (#1213; default fail-closed off)",
 		"path", getEnv("INTERVENTIONS_FLAG_PATH", actions.DefaultPath))
-	return actions.NewWriterFromEnv(logger)
+	return actions.NewGatedActionSink(gate, actions.NewWriterFromEnv(logger), logger)
 }
 
-// rolloutActuator returns the rollout write seam for the infra loop (#734). When
-// AGENT_ROLLOUT_ENABLED=true it is the real RolloutWriter (flips
-// current_controller_count in ROLLOUT_FLAG_PATH); otherwise it is a dry-run
-// actuator that decides+spans expansions but never writes the file. Mirrors the
-// actionSink env-gate shape, but always returns a non-nil actuator so the loop
-// reports disabled expansions as decided-but-not-applied.
-func rolloutActuator(logger *slog.Logger) decision.RolloutActuator {
-	if strings.EqualFold(getEnv("AGENT_ROLLOUT_ENABLED", ""), "true") {
-		logger.Warn("Agent rollout expansion enabled (#734)",
-			"path", getEnv("ROLLOUT_FLAG_PATH", actions.DefaultRolloutPath))
-		return actions.NewRolloutWriterFromEnv(logger)
-	}
-	logger.Info("Agent rollout expansion disabled (dry-run; decisions spanned, not applied)")
-	return actions.NewDryRunRolloutWriter(logger)
+// rolloutActuator returns the rollout write seam for the infra loop (#734), gated by
+// the LIVE rollout_enabled flag (#1213, migrated from AGENT_ROLLOUT_ENABLED). It
+// ALWAYS returns a non-nil GatedRolloutActuator wrapping the real RolloutWriter: the
+// gate is re-read on every SetControllerCount / DryRun against agentFlags, so
+// flipping rollout_enabled in flagd starts/stops applying with no restart, and a
+// flagd outage FAILS CLOSED (DefaultRolloutEnabled=false ⇒ dry-run: the loop
+// decides+spans the expansion but writes nothing). This REPLACES the old startup-time
+// env gate that selected RolloutWriter-or-DryRun ONCE (#1217).
+func rolloutActuator(rootCtx context.Context, gate actions.RolloutGate, logger *slog.Logger) decision.RolloutActuator {
+	logger.Info("Agent rollout expansion gated by LIVE rollout_enabled flag (#1213; default fail-closed dry-run)",
+		"path", getEnv("ROLLOUT_FLAG_PATH", actions.DefaultRolloutPath))
+	return actions.NewGatedRolloutActuator(rootCtx, gate, actions.NewRolloutWriterFromEnv(logger), logger)
 }
 
 // buildPromoter constructs the M7-8 code-improvement Promoter (#936) with the
@@ -521,7 +522,12 @@ func main() {
 	//     read-modify-write of the flagd interventions file under its own mutex,
 	//     keyed by the decision's target), so one Writer is closed over by every loop.
 	//   - SHARED flag source (agentFlags) and tracer: stateless / concurrency-safe.
-	sharedSink := actionSink(logger) // nil leaves the loop's default NoopActions in place
+	// SHARED gated action sink (#1213): one GatedActionSink wrapping the real Writer,
+	// closed over by every per-game loop. The interventions_enabled gate is re-read
+	// per Apply against the live agentFlags, so the gate is hot-reloadable and
+	// fail-closed on a flagd outage (the old AGENT_INTERVENTIONS_ENABLED env master,
+	// migrated). The Writer holds no per-game state, so sharing is safe.
+	sharedSink := actionSink(agentFlags, logger)
 	// Shared GLOBAL LLM request budget (#847, the gate's third layer). Constructed
 	// ONCE here and injected into every per-game Loop below, so all concurrent
 	// games draw down a SINGLE per-minute request cap (llm.max_requests_per_minute)
@@ -715,10 +721,12 @@ func main() {
 			// the rules engine. Each loop gets its own probe clock.
 			loop.Rules = decision.NewProbeRules(probeInterval, nil)
 		}
-		// Action sink (#730): when AGENT_INTERVENTIONS_ENABLED=true, decisions are
-		// applied by rewriting the flagd interventions file (INTERVENTIONS_FLAG_PATH).
-		// Default (nil sink) keeps the scaffold inert (NoopActions discards decisions).
-		// The one Writer is safe to share across loops (no per-game state).
+		// Action sink (#730/#1213): the shared GatedActionSink applies decisions by
+		// rewriting the flagd interventions file (INTERVENTIONS_FLAG_PATH) ONLY when the
+		// LIVE interventions_enabled flag is on; otherwise it discards them (NoopActions
+		// behavior) — gate read per Apply, fail-closed on a flagd outage. The one sink is
+		// safe to share across loops (no per-game state). The nil guard is defensive: a
+		// nil sink would leave the loop's default NoopActions in place.
 		if sharedSink != nil {
 			loop.Actions = sharedSink
 		}
@@ -741,9 +749,12 @@ func main() {
 	// cannot keep the infra loop live on its own). On any evaluation error the
 	// accessor falls back to the flagd-schema defaults.
 	bluetoothFitness := decision.NewFlagBluetoothFitness(agentFlags)
-	// Rollout actuator (#734): real RolloutWriter when AGENT_ROLLOUT_ENABLED=true,
-	// else a dry-run actuator (decides+spans but does not write rollout.json).
-	infraLoop := decision.NewInfraLoop(logger, rolloutDwell(), bluetoothFitness, rolloutActuator(logger))
+	// Rollout actuator (#734/#1213): a GatedRolloutActuator wrapping the real
+	// RolloutWriter — it flips current_controller_count in rollout.json ONLY when the
+	// LIVE rollout_enabled flag is on, else it dry-runs (decides+spans but does not
+	// write). Gate read per SetControllerCount/DryRun against agentFlags, fail-closed
+	// (dry-run) on a flagd outage. ctx is the agent's long-lived context.
+	infraLoop := decision.NewInfraLoop(logger, rolloutDwell(), bluetoothFitness, rolloutActuator(ctx, agentFlags, logger))
 	// Auto-remediation gate (#736): remediation_allowed lives in the ROLLOUT flagd
 	// domain (rollout.json), so the loop reads it directly from that file (the agent
 	// already owns the path). When false, fitness failures are RECOMMENDED only (span,

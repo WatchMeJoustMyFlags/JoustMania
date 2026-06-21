@@ -12,9 +12,11 @@ import (
 // single, minimal trigger path for phase 4 (see PR notes for the flagd-nonce
 // alternative): when AGENT_SHADOW_GAME=true the agent runs ONE shadow game at
 // startup using the SHADOW_GAME_* spec, then continues its normal loop. It
-// keeps the PR self-contained in services/agent (no flagd-schema change) and
-// mirrors the existing AGENT_INTERVENTIONS_ENABLED / AGENT_ROLLOUT_ENABLED
-// env-gate shape.
+// keeps the PR self-contained in services/agent (no flagd-schema change). It
+// mirrors the original env-gate shape the interventions/rollout actuation gates
+// used before #1213 migrated those two to LIVE agent.json flags
+// (interventions_enabled / rollout_enabled); AGENT_SHADOW_GAME remains a one-shot
+// startup trigger, so it stays an env var.
 const (
 	envEnabled     = "AGENT_SHADOW_GAME"
 	envMode        = "SHADOW_GAME_MODE"

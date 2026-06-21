@@ -695,10 +695,12 @@ services:
       # tests use, so writers and the served files never desync. The per-domain
       # *_FLAG_PATH overrides below still win when set (explicit escape hatch).
       - FLAGD_FLAG_DIR=/etc/flagd
-      # Action sink (#730): when enabled the agent applies decisions by rewriting
-      # the flagd interventions file in place (bind-mounted below). Default off so
-      # the scaffold stays inert.
-      - AGENT_INTERVENTIONS_ENABLED=${AGENT_INTERVENTIONS_ENABLED:-false}
+      # Action sink (#730/#1213): when the LIVE `interventions_enabled` flag
+      # (agent.json) is on the agent applies decisions by rewriting the flagd
+      # interventions file in place (bind-mounted below). The gate is a flagd flag now
+      # (migrated from AGENT_INTERVENTIONS_ENABLED, #1213) — read per Apply, fail-closed
+      # off (default variant) so the scaffold stays inert and a flagd outage never
+      # writes. Flip the flag, no restart needed.
       - INTERVENTIONS_FLAG_PATH=/etc/flagd/interventions.json
       # Demo/verification only: emit a synthetic `noop` decision (full audit
       # trace) every ~5s. Off by default; never for production sessions. With the
@@ -706,11 +708,13 @@ services:
       # (not_allowed) — flip that flag to the `probe` variant to dispatch. See
       # docs/agent-act-runbook.md.
       - AGENT_PROBE_DECISIONS=${AGENT_PROBE_DECISIONS:-}
-      # Progressive rollout expansion (#734): when enabled the agent advances the
-      # Bluetooth backend rollout controller-by-controller by rewriting the flagd
-      # rollout file in place (current_controller_count). Default off → the loop
-      # decides and spans expansions but does not apply them (dry-run).
-      - AGENT_ROLLOUT_ENABLED=${AGENT_ROLLOUT_ENABLED:-false}
+      # Progressive rollout expansion (#734/#1213): when the LIVE `rollout_enabled`
+      # flag (agent.json) is on the agent advances the Bluetooth backend rollout
+      # controller-by-controller by rewriting the flagd rollout file in place
+      # (current_controller_count). The gate is a flagd flag now (migrated from
+      # AGENT_ROLLOUT_ENABLED, #1213) — read per SetControllerCount, fail-closed off
+      # (default variant) → the loop decides and spans expansions but does not apply
+      # them (dry-run), and a flagd outage stays dry-run. Flip the flag, no restart.
       - ROLLOUT_FLAG_PATH=/etc/flagd/rollout.json
       # Auto-remediation / rollback (#736): on fitness failure during an active
       # rollout the agent rolls current_controller_count back to "none", gated on

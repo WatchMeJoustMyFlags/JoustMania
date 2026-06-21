@@ -456,28 +456,32 @@ async def test_permission_layer_blocks_disallowed_intervention(flag_files, docke
 
 
 def test_agent_interventions_disabled_by_default():
-    """Writer gate: the agent ActionSink is gated by AGENT_INTERVENTIONS_ENABLED
-    and defaults OFF, so it never mutates interventions.json in the integration
-    compose.
+    """Writer gate: the agent ActionSink is gated by the LIVE ``interventions_enabled``
+    flagd flag (#1213, migrated from the AGENT_INTERVENTIONS_ENABLED env var) and the
+    flag defaults OFF, so the agent never mutates interventions.json by default.
 
-    The agent's decision loop cannot be driven deterministically from this
-    harness (it lives in the ``agent`` compose profile and is not started for
-    integration tests), so per the PR plan this scenario is covered by the Go
-    unit tests (services/agent/actions/writer_test.go) for the actual no-write
-    behavior. Here we assert the compose default keeps the gate OFF, which is
-    the property that makes those unit tests load-bearing for the e2e contract.
+    The agent's decision loop cannot be driven deterministically from this harness
+    (it lives in the ``agent`` compose profile and is not started for integration
+    tests), so per the PR plan the no-write behavior is covered by the Go unit tests
+    (services/agent/actions/gated_test.go + action_sink_test.go). Here we assert the
+    flagd flag default keeps the gate OFF (fail-closed), which is the property that
+    makes those unit tests load-bearing for the e2e contract. We check BOTH the base
+    and CI flag configs since flagd serves ci/agent.json in CI (#801).
     """
-    compose_path = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "../../docker-compose.yml")
+    flagd_dir = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "../../services/flagd")
     )
-    with open(compose_path) as fh:
-        compose_text = fh.read()
-
-    assert "AGENT_INTERVENTIONS_ENABLED" in compose_text, (
-        "agent service should reference the AGENT_INTERVENTIONS_ENABLED gate"
-    )
-    # The gate must default to false (env default ``:-false`` or explicit false).
-    assert (
-        "AGENT_INTERVENTIONS_ENABLED:-false" in compose_text
-        or "AGENT_INTERVENTIONS_ENABLED=false" in compose_text
-    ), "AGENT_INTERVENTIONS_ENABLED must default to false in docker-compose.yml"
+    for rel in ("agent.json", "ci/agent.json"):
+        with open(os.path.join(flagd_dir, rel)) as fh:
+            flags = json.load(fh)["flags"]
+        assert "interventions_enabled" in flags, (
+            f"{rel} should define the interventions_enabled safety gate (#1213)"
+        )
+        # The gate must FAIL CLOSED: the default variant resolves to false.
+        flag = flags["interventions_enabled"]
+        default_variant = flag["defaultVariant"]
+        assert flag["variants"][default_variant] is False, (
+            f"interventions_enabled in {rel} must default OFF (fail-closed); "
+            f"defaultVariant {default_variant!r} resolves to "
+            f"{flag['variants'][default_variant]!r}"
+        )

@@ -786,3 +786,66 @@ func TestExperiment_FlagOverridesEnvDefault(t *testing.T) {
 		}
 	})
 }
+
+// TestInterventionsEnabled covers the #1213 intervention safety gate: a configured
+// value resolves via the TYPED bool getter, and the gate FAILS CLOSED (off) when the
+// flag is UNDEFINED (no value) or flagd is UNREACHABLE (error). A safety gate must
+// resolve to the not-acting state when the control plane cannot confirm it is on.
+func TestInterventionsEnabled(t *testing.T) {
+	t.Run("configured on resolves", func(t *testing.T) {
+		ev := stubEvaluator{booleans: map[string]bool{keyInterventionsEnabled: true}}
+		if !New(ev, nil).InterventionsEnabled(context.Background()) {
+			t.Fatal("interventions_enabled=true must resolve true")
+		}
+	})
+	t.Run("undefined flag fails closed (off)", func(t *testing.T) {
+		// No value set for the key -> stub returns the passed default
+		// (DefaultInterventionsEnabled=false). This is the fail-closed safe state.
+		ev := stubEvaluator{}
+		if New(ev, nil).InterventionsEnabled(context.Background()) {
+			t.Fatal("an UNDEFINED interventions_enabled flag must fail closed to false (#1177)")
+		}
+	})
+	t.Run("flagd unreachable fails closed (off)", func(t *testing.T) {
+		ev := stubEvaluator{errs: map[string]error{keyInterventionsEnabled: errors.New("flagd unreachable")}}
+		if New(ev, nil).InterventionsEnabled(context.Background()) {
+			t.Fatal("an UNREACHABLE flagd must fail closed to false (#1177)")
+		}
+	})
+}
+
+// TestRolloutEnabled covers the #1213 rollout safety gate: a configured value
+// resolves via the TYPED bool getter, and the gate FAILS CLOSED (off ⇒ dry-run) when
+// the flag is UNDEFINED or flagd is UNREACHABLE.
+func TestRolloutEnabled(t *testing.T) {
+	t.Run("configured on resolves", func(t *testing.T) {
+		ev := stubEvaluator{booleans: map[string]bool{keyRolloutEnabled: true}}
+		if !New(ev, nil).RolloutEnabled(context.Background()) {
+			t.Fatal("rollout_enabled=true must resolve true")
+		}
+	})
+	t.Run("undefined flag fails closed (off)", func(t *testing.T) {
+		ev := stubEvaluator{}
+		if New(ev, nil).RolloutEnabled(context.Background()) {
+			t.Fatal("an UNDEFINED rollout_enabled flag must fail closed to false (#1177)")
+		}
+	})
+	t.Run("flagd unreachable fails closed (off)", func(t *testing.T) {
+		ev := stubEvaluator{errs: map[string]error{keyRolloutEnabled: errors.New("flagd unreachable")}}
+		if New(ev, nil).RolloutEnabled(context.Background()) {
+			t.Fatal("an UNREACHABLE flagd must fail closed to false (#1177)")
+		}
+	})
+}
+
+// TestSafetyGateDefaultsAreFailClosed pins the package-level safe defaults: both
+// safety gates default OFF (the not-acting state), matching the fail-closed env
+// default (AGENT_*_ENABLED `:-false`) they replace.
+func TestSafetyGateDefaultsAreFailClosed(t *testing.T) {
+	if DefaultInterventionsEnabled {
+		t.Error("DefaultInterventionsEnabled must be false (fail-closed)")
+	}
+	if DefaultRolloutEnabled {
+		t.Error("DefaultRolloutEnabled must be false (fail-closed)")
+	}
+}
