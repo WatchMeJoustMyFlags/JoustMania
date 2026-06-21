@@ -65,11 +65,11 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
       - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
-      # The cohort soak owns this whole coordinator: let the agent run its paired
-      # arms concurrently without tripping the total ceiling. Mirrors the CI
-      # shadow caps but on a registry NOTHING else touches.
-      - GAME_MAX_CONCURRENT_GAMES=8
-      - GAME_MAX_SHADOW_GAMES=4
+      # Concurrency caps (max_concurrent_games / max_shadow_games) are now governed
+      # by the `game` flagd flags this coordinator resolves over the network (#1215),
+      # not env vars. The cohort soak only runs ~2 paired arms, comfortably under the
+      # mounted flag dir's ceiling. To give this dedicated coordinator a higher private
+      # ceiling, target the `game` flags per-registry (see #920), not env overrides.
     depends_on:
       flagd:
         condition: service_started
