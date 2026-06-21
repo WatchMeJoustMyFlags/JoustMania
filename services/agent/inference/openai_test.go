@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // sampleCompletion is a realistic OpenAI-compatible /chat/completions response body.
@@ -281,6 +282,66 @@ func TestInfer_InjectsTraceparentWithinActiveSpan(t *testing.T) {
 	// span so the gateway span will nest under THIS trace, not an orphan.
 	if !strings.Contains(gotTraceparent, wantTraceID) {
 		t.Errorf("traceparent %q does not carry active trace-id %q", gotTraceparent, wantTraceID)
+	}
+}
+
+// TestInfer_TraceparentExtractsAsRemoteParent is the #1205 (epic #1140) two-sided
+// stitch contract: it is not enough that openai.go WRITES a traceparent — the header
+// the agent puts on the wire must, when EXTRACTED by a W3C TraceContextTextMapPropagator
+// (exactly what the litellm gateway does in get_traceparent_from_header /
+// _get_span_context), yield a VALID, REMOTE span context that carries the agent's active
+// trace-id. That is the precise condition under which litellm parents its "Received Proxy
+// Server Request" SERVER span UNDER the agent's trace instead of starting a new ROOT (the
+// verification #11 disjoint-trace symptom). This test stands in for the gateway extractor
+// so the contract is guarded in agent CI, with no live stack.
+func TestInfer_TraceparentExtractsAsRemoteParent(t *testing.T) {
+	withTraceContextPropagator(t)
+
+	// Capture the exact headers the production HTTP client puts on the wire.
+	var wireHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wireHeaders = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, sampleCompletion)
+	}))
+	defer srv.Close()
+
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.AlwaysSample()))
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+	ctx, span := tp.Tracer("test").Start(context.Background(), "agent.llm.infer.call")
+	defer span.End()
+	wantTraceID := span.SpanContext().TraceID().String()
+
+	b := newMockBackend(srv, "", "phi4-mini")
+	if _, err := b.Infer(ctx, llm.Prompt{System: "s", User: "u"}); err != nil {
+		t.Fatalf("Infer error: %v", err)
+	}
+	if wireHeaders == nil {
+		t.Fatal("server never observed the request headers")
+	}
+
+	// Replay the gateway's extraction over the wire headers. The agent must have sent a
+	// usable header under one of the case-insensitive W3C names (Go canonicalizes to
+	// "Traceparent"; litellm reads case-insensitively via Starlette). HeaderCarrier.Get
+	// is canonicalizing too, so this mirrors a correct extractor.
+	extracted := propagation.TraceContext{}.Extract(
+		context.Background(), propagation.HeaderCarrier(wireHeaders),
+	)
+	remoteSC := trace.SpanContextFromContext(extracted)
+
+	if !remoteSC.IsValid() {
+		t.Fatalf("gateway-side Extract yielded no valid parent from headers %v; "+
+			"litellm would start a ROOT span (the #1205 disjoint-trace break)", wireHeaders)
+	}
+	if !remoteSC.IsRemote() {
+		t.Error("extracted parent is not marked Remote; litellm would not treat it as an inbound remote parent")
+	}
+	if got := remoteSC.TraceID().String(); got != wantTraceID {
+		t.Errorf("extracted remote trace-id = %q, want the agent's active trace-id %q "+
+			"(the gateway span would land in a DIFFERENT trace)", got, wantTraceID)
+	}
+	if !remoteSC.IsSampled() {
+		t.Error("extracted parent is not sampled; the gateway child span may be dropped, orphaning the rich gen_ai error data")
 	}
 }
 
