@@ -48,6 +48,23 @@ const (
 	// cycle like the other gate flags so the budget can be tuned live on stage.
 	keyLLMLatencyBudget = "llm.latency_budget_seconds"
 
+	// In-game rules-first async upgrade (#1207). Default behavior for mode="llm" is
+	// now RULES-FIRST/immediate; the in-game LLM is demoted to an explicit,
+	// length-gated async UPGRADE layered UNDER mode="llm" (no third mode). Read every
+	// cycle like the other gate flags so the switch and the estimate parameters can be
+	// tuned live on stage. The two numeric flags MUST use the TYPED getters — a numeric
+	// flag read via ObjectValue silently TYPE_MISMATCHes to its default (see the gotcha
+	// at llmGate).
+	//
+	//	keyLLMInGameAsyncUpgrade — master switch (bool, default off). When off, mode="llm"
+	//	    short-circuits to rules every in-game cycle: no async LLM is ever fired in game.
+	//	keyLLMSecondsPerPlayer   — per-player time budget for the length estimate (number).
+	//	keyLLMStyleFactor        — "balanced<->aggressive" knob scaling the expected length
+	//	    (number), shifting how often the LLM upgrade gets to weigh in.
+	keyLLMInGameAsyncUpgrade = "llm.in_game_async_upgrade"
+	keyLLMSecondsPerPlayer   = "llm.seconds_per_player"
+	keyLLMStyleFactor        = "llm.style_factor"
+
 	// M7-2 rolling game context window (#929). How many recent game summaries the
 	// agent injects into EVERY llm prompt as the cross-game narrative context block.
 	// Read EVERY cycle (never cached) on the decision hot path — exactly like the
@@ -184,6 +201,28 @@ const (
 	// healthy backend to answer, short enough that a hung tier degrades to rules
 	// within one decision interval.
 	DefaultLLMLatencyBudgetSeconds = 8.0
+
+	// In-game rules-first async upgrade defaults (#1207), mirroring the
+	// services/flagd/agent.json defaultVariants. Applied when flagd is unreachable or a
+	// flag is undefined.
+
+	// DefaultLLMInGameAsyncUpgrade is the master-switch default: OFF. A fresh
+	// deployment or an unreachable flagd keeps mode="llm" RULES-FIRST in game and never
+	// fires the async LLM upgrade — the operator opts in by setting the flag. This is
+	// fail-closed to the immediate, deterministic rules path.
+	DefaultLLMInGameAsyncUpgrade = false
+	// DefaultLLMSecondsPerPlayer is the per-player time budget for the length estimate
+	// (llm.seconds_per_player). expected_seconds = ActivePlayerCount × seconds_per_player
+	// × style_factor; the async LLM upgrade fires only when expected_seconds is at least
+	// the latency budget (default 8s). At 3s/player the cross-over is ~3 players at
+	// style_factor 1.0, so a 2p/6s shadow stays rules-only while an 8p endurance game
+	// earns the upgrade.
+	DefaultLLMSecondsPerPlayer = 3.0
+	// DefaultLLMStyleFactor scales the expected length (llm.style_factor), the
+	// "balanced<->aggressive" knob: >1 lengthens the estimate so the LLM weighs in on
+	// shorter games, <1 shortens it so only longer games qualify. 1.0 is neutral.
+	DefaultLLMStyleFactor = 1.0
+
 	// DefaultLLMContextGames is the M7-2 cross-game context window size (#929): how
 	// many recent game summaries to inject into every llm prompt when flagd is
 	// unreachable or the flag is undefined. 3 mirrors the agent.json defaultVariant
@@ -384,6 +423,22 @@ type LLMGate struct {
 	// past this. Default 8s. A non-positive value falls back to the default (never
 	// "no budget", which would let a hung call leak the inference goroutine forever).
 	LatencyBudget time.Duration
+
+	// InGameAsyncUpgrade is the #1207 master switch (llm.in_game_async_upgrade). When
+	// false (the default), mode="llm" is RULES-FIRST in game: every in-game cycle
+	// short-circuits to the deterministic rules engine and no async LLM is fired. When
+	// true, the cycle additionally evaluates the length gate below and fires the async
+	// LLM upgrade only on a game long enough to absorb the latency.
+	InGameAsyncUpgrade bool
+	// SecondsPerPlayer is the per-player time budget for the length estimate
+	// (llm.seconds_per_player): expected_seconds = ActivePlayerCount × SecondsPerPlayer
+	// × StyleFactor. The async LLM upgrade fires only when expected_seconds ≥
+	// LatencyBudget, so short games stay rules-only and the latency race never bites.
+	SecondsPerPlayer float64
+	// StyleFactor scales the expected length (llm.style_factor) — the
+	// "balanced<->aggressive" knob. >1 lets the LLM weigh in on shorter games; <1
+	// reserves it for longer ones. Default 1.0 (neutral).
+	StyleFactor float64
 }
 
 // EligibleFor reports whether the given game kind may use the llm path. An empty
@@ -901,6 +956,14 @@ func (f *Flags) llmGate(ctx context.Context) LLMGate {
 		// durationFlag floors a non-positive value at the default, so a misconfigured
 		// budget can never disable the timeout and leak an inference goroutine (#917).
 		LatencyBudget: f.durationFlag(ctx, keyLLMLatencyBudget, DefaultLLMLatencyBudgetSeconds),
+		// #1207 rules-first async upgrade. The master switch reads via the bool getter;
+		// the two estimate parameters read via the float getter (the flagd numeric-flag
+		// gotcha above — a numeric flag read through ObjectValue silently TYPE_MISMATCHes
+		// to its default). All three fail closed: switch off, defaults that keep short
+		// games rules-only, so a down control plane reverts to immediate rules.
+		InGameAsyncUpgrade: f.boolFlag(ctx, keyLLMInGameAsyncUpgrade, DefaultLLMInGameAsyncUpgrade),
+		SecondsPerPlayer:   f.floatFlag(ctx, keyLLMSecondsPerPlayer, DefaultLLMSecondsPerPlayer),
+		StyleFactor:        f.floatFlag(ctx, keyLLMStyleFactor, DefaultLLMStyleFactor),
 	}
 }
 

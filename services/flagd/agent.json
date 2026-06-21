@@ -160,6 +160,32 @@
       },
       "defaultVariant": "default"
     },
+    "llm.in_game_async_upgrade": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "off"
+    },
+    "llm.seconds_per_player": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 3,
+        "fast": 2,
+        "slow": 5
+      },
+      "defaultVariant": "default"
+    },
+    "llm.style_factor": {
+      "state": "ENABLED",
+      "variants": {
+        "balanced": 1.0,
+        "conservative": 0.75,
+        "aggressive": 1.5
+      },
+      "defaultVariant": "balanced"
+    },
     "prompt.context_note": {
       "state": "ENABLED",
       "variants": {
