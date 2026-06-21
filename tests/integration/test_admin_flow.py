@@ -26,8 +26,9 @@ Mechanics (verified against the live code):
   them so no mutation leaks between tests or into the repo.
 - Force start publishes a menu ``game_requested`` event (source
   ``admin_force_start``); the coordinator then emits ``game_started``.
-- The 3s real-play trigger-hold is shortened to 0.6s in CI via
-  ADMIN_FORCE_START_SECONDS (docker-compose.ci.yml) so a ~1.5s hold suffices.
+- The 3s real-play trigger-hold is shortened to 0.6s in CI via the
+  ``force_all_start_seconds`` game flag (services/flagd/ci/game.json), read at
+  use time against live flagd, so a ~1.5s hold suffices.
 
 The surviving controller-cycled surface after the #815 rationalization (PR
 #1010) is sensitivity / num_teams / force_all_start, plus agent_control

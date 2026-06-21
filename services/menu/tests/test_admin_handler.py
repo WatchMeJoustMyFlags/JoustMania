@@ -1689,3 +1689,36 @@ class TestCycleFeedbackIsBaselineTransition:
         assert attrs["old_variant"] == "medium"
         assert attrs["new_variant"] == "slow"
         mock_state_manager.interventions_client.get_integer_value.assert_not_called()
+
+
+class TestForceStartThresholdFlag:
+    """The trigger-hold force-start threshold reads from the game.json
+    ``force_all_start_seconds`` flag (#1215), migrated from the
+    ADMIN_FORCE_START_SECONDS env var. Read at USE TIME (not cached at
+    ``__init__``) so it resolves against live flagd once a user holds the
+    trigger, rather than fail-open before flagd is reachable (#1177).
+    """
+
+    def _build(self, mock_tracer, mock_callbacks, mock_metrics):
+        return AdminModeHandler(
+            controller_channel=MagicMock(),
+            tracer=mock_tracer,
+            callbacks=mock_callbacks,
+            metrics=mock_metrics,
+        )
+
+    def test_threshold_read_from_flag(self, mock_tracer, mock_callbacks, mock_metrics):
+        handler = self._build(mock_tracer, mock_callbacks, mock_metrics)
+        with patch("services.menu.handlers.admin.read_float_flag", return_value=0.6) as mock_read:
+            assert handler._force_start_threshold() == 0.6
+        mock_read.assert_called_once_with("game", "force_all_start_seconds", 3.0)
+
+    def test_threshold_fails_open_to_default(self, mock_tracer, mock_callbacks, mock_metrics):
+        """When flagd is unreachable/undefined (#1177), read_float_flag
+        returns the supplied 3.0 default — the real-play hold duration."""
+        handler = self._build(mock_tracer, mock_callbacks, mock_metrics)
+        with patch(
+            "services.menu.handlers.admin.read_float_flag",
+            side_effect=lambda _domain, _key, default, _game_id=None: default,
+        ):
+            assert handler._force_start_threshold() == 3.0

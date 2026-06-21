@@ -17,7 +17,6 @@ behavior with GAME_MAX_CONCURRENT_GAMES raised above 1.
 """
 
 import asyncio
-import os
 import sys
 from pathlib import Path
 from unittest.mock import ANY, patch
@@ -41,6 +40,29 @@ from services.game_coordinator.servicer import GameCoordinatorServicer
 # session's EventBus (publish GAME_STARTED) rather than mutating state directly,
 # so they are agnostic to the servicer's internal structure.
 _NO_THREAD = patch.object(game_session_mod.GameSession, "start_thread", lambda _self: None)
+
+
+def _caps(*, concurrent: int | None = None, shadow: int | None = None):
+    """Patch the game-flag-backed session caps for the duration of a test (#1215).
+
+    The total/shadow ceilings moved from ``GAME_MAX_CONCURRENT_GAMES`` /
+    ``GAME_MAX_SHADOW_GAMES`` env vars to the ``max_concurrent_games`` /
+    ``max_shadow_games`` game flags, read via ``lib.feature_flags.read_int_flag``
+    inside ``servicer._max_concurrent_games`` / ``_max_shadow_games`` (which import
+    it lazily). Patching ``read_int_flag`` exercises the real clamp logic while
+    pinning the resolved flag value, exactly as the old env-dict patch did for the
+    env read.
+    """
+    import lib.feature_flags as ff
+
+    def _fake_read_int_flag(_domain, flag_key, default, _game_id=None):
+        if flag_key == "max_concurrent_games" and concurrent is not None:
+            return concurrent
+        if flag_key == "max_shadow_games" and shadow is not None:
+            return shadow
+        return default
+
+    return patch.object(ff, "read_int_flag", _fake_read_int_flag)
 
 
 async def _start_running(servicer, config):
@@ -297,7 +319,7 @@ class TestMultiSession:
     @pytest.fixture
     def cap_two(self):
         """Raise the concurrent-games cap to 2 for the duration of a test."""
-        with patch.dict(os.environ, {"GAME_MAX_CONCURRENT_GAMES": "2"}):
+        with _caps(concurrent=2):
             yield
 
     @pytest.mark.asyncio
@@ -466,7 +488,7 @@ class TestConcurrentShadowGames:
         """3 shadow games all reach RUNNING at the same time (no single-game guard
         among shadows). This is the core #1018 behavior — effective concurrency
         was 1 under #998's backpressure; now N shadows coexist."""
-        with patch.dict(os.environ, {"GAME_MAX_SHADOW_GAMES": "4", "GAME_MAX_CONCURRENT_GAMES": "8"}):
+        with _caps(concurrent=8, shadow=4):
             gids = []
             for i in range(3):
                 gid, session = await _start_running(servicer, _shadow_config(serials=(f"a{i}", f"b{i}")))
@@ -482,7 +504,7 @@ class TestConcurrentShadowGames:
     @pytest.mark.asyncio
     async def test_shadow_cap_rejects_beyond_limit(self, servicer):
         """A shadow start beyond GAME_MAX_SHADOW_GAMES is rejected (backpressure)."""
-        with _NO_THREAD, patch.dict(os.environ, {"GAME_MAX_SHADOW_GAMES": "2", "GAME_MAX_CONCURRENT_GAMES": "8"}):
+        with _NO_THREAD, _caps(concurrent=8, shadow=2):
             ok1, _ = await servicer._start_game_from_config(_shadow_config(serials=("a1", "a2")), _MockSpan())
             ok2, _ = await servicer._start_game_from_config(_shadow_config(serials=("b1", "b2")), _MockSpan())
             ok3, error = await servicer._start_game_from_config(_shadow_config(serials=("c1", "c2")), _MockSpan())
@@ -495,7 +517,7 @@ class TestConcurrentShadowGames:
     async def test_second_real_game_rejected_while_shadows_run(self, servicer):
         """The single-game guard is REAL-only: two real games can't coexist even
         though many shadows can. The second MENU start is rejected."""
-        with _NO_THREAD, patch.dict(os.environ, {"GAME_MAX_SHADOW_GAMES": "4", "GAME_MAX_CONCURRENT_GAMES": "8"}):
+        with _NO_THREAD, _caps(concurrent=8, shadow=4):
             ok1, gid1 = await servicer._start_game_from_config(_config(serials=("r1", "r2")), _MockSpan())
             # Shadows are fine alongside the real game.
             oks, _ = await servicer._start_game_from_config(_shadow_config(serials=("s1", "s2")), _MockSpan())
@@ -512,7 +534,7 @@ class TestConcurrentShadowGames:
         """Real-vs-shadow policy: the real game takes precedence. An incoming real
         game preempts ALL live shadows so it gets the resources (#837), regardless
         of how many shadows were running concurrently (#1018)."""
-        with patch.dict(os.environ, {"GAME_MAX_SHADOW_GAMES": "4", "GAME_MAX_CONCURRENT_GAMES": "8"}):
+        with _caps(concurrent=8, shadow=4):
             shadow_gids = []
             for i in range(3):
                 gid, _ = await _start_running(servicer, _shadow_config(serials=(f"s{i}", f"t{i}")))
@@ -532,7 +554,7 @@ class TestConcurrentShadowGames:
     async def test_concurrent_shadows_isolated_event_streams(self, servicer):
         """Two concurrent shadows do not cross-contaminate: each bus delivers only
         its own game's events (independent scoring/death/effect dispatch)."""
-        with patch.dict(os.environ, {"GAME_MAX_SHADOW_GAMES": "4", "GAME_MAX_CONCURRENT_GAMES": "8"}):
+        with _caps(concurrent=8, shadow=4):
             gid1, s1 = await _start_running(servicer, _shadow_config(serials=("a1", "a2")))
             gid2, s2 = await _start_running(servicer, _shadow_config(serials=("b1", "b2")))
 
@@ -560,8 +582,62 @@ class TestConcurrentShadowGames:
         higher (the total ceiling is the hard runaway safety net)."""
         from services.game_coordinator.servicer import _max_shadow_games
 
-        with patch.dict(os.environ, {"GAME_MAX_SHADOW_GAMES": "50", "GAME_MAX_CONCURRENT_GAMES": "3"}):
+        with _caps(concurrent=3, shadow=50):
             assert _max_shadow_games() == 3
+
+
+class TestSessionCapFlags:
+    """The total/shadow session caps read from game.json flags (#1215).
+
+    Migrated from the GAME_MAX_CONCURRENT_GAMES / GAME_MAX_SHADOW_GAMES env vars to
+    the ``max_concurrent_games`` / ``max_shadow_games`` game flags. These tests pin
+    the flag-read path AND the fail-open-to-default behaviour when flagd is
+    unreachable/undefined at startup (``read_int_flag`` returns the supplied
+    hardcoded default)."""
+
+    def test_concurrent_reads_max_concurrent_games_flag(self):
+        from services.game_coordinator.servicer import _max_concurrent_games
+
+        with _caps(concurrent=12):
+            assert _max_concurrent_games() == 12
+
+    def test_concurrent_floors_at_one(self):
+        """A nonsensical sub-1 flag value is floored to 1."""
+        from services.game_coordinator.servicer import _max_concurrent_games
+
+        with _caps(concurrent=0):
+            assert _max_concurrent_games() == 1
+
+    def test_shadow_reads_max_shadow_games_flag(self):
+        from services.game_coordinator.servicer import _max_shadow_games
+
+        with _caps(concurrent=8, shadow=2):
+            assert _max_shadow_games() == 2
+
+    def test_concurrent_fails_open_to_default(self):
+        """When the flag read yields its default (flagd unreachable/undefined at
+        startup, #1177), the env-era default DEFAULT_MAX_CONCURRENT_GAMES holds."""
+        from services.game_coordinator.servicer import (
+            DEFAULT_MAX_CONCURRENT_GAMES,
+            _max_concurrent_games,
+        )
+
+        # read_int_flag returns its `default` arg on any failure; simulate that by
+        # echoing the caller-supplied default back unchanged.
+        with patch("lib.feature_flags.read_int_flag", lambda _d, _k, default, _game_id=None: default):
+            assert _max_concurrent_games() == DEFAULT_MAX_CONCURRENT_GAMES
+
+    def test_shadow_fails_open_to_default(self):
+        """Shadow cap fails open to DEFAULT_MAX_SHADOW_GAMES (clamped to the total
+        ceiling, which also falls open to its own default)."""
+        from services.game_coordinator.servicer import (
+            DEFAULT_MAX_CONCURRENT_GAMES,
+            DEFAULT_MAX_SHADOW_GAMES,
+            _max_shadow_games,
+        )
+
+        with patch("lib.feature_flags.read_int_flag", lambda _d, _k, default, _game_id=None: default):
+            assert _max_shadow_games() == min(DEFAULT_MAX_SHADOW_GAMES, DEFAULT_MAX_CONCURRENT_GAMES)
 
 
 class TestGameIdRouting:
@@ -580,7 +656,7 @@ class TestGameIdRouting:
 
     @pytest.fixture
     def cap_two(self):
-        with patch.dict(os.environ, {"GAME_MAX_CONCURRENT_GAMES": "2"}):
+        with _caps(concurrent=2):
             yield
 
     @pytest.mark.asyncio
@@ -781,7 +857,7 @@ class TestShadowGameGovernance:
 
     @pytest.fixture
     def cap_two(self):
-        with patch.dict(os.environ, {"GAME_MAX_CONCURRENT_GAMES": "2"}):
+        with _caps(concurrent=2):
             yield
 
     @pytest.fixture
@@ -821,7 +897,7 @@ class TestShadowGameGovernance:
         fills the ceiling and the real game must preempt to win the slot.
         """
         # Total ceiling pinned to 1; a live shadow occupies the only slot.
-        with _NO_THREAD, patch.dict(os.environ, {"GAME_MAX_CONCURRENT_GAMES": "1"}):
+        with _NO_THREAD, _caps(concurrent=1):
             ok, _ = await servicer._start_game_from_config(_shadow_config(serials=("s1", "s2")), _MockSpan())
             assert ok is True
 
@@ -835,7 +911,7 @@ class TestShadowGameGovernance:
             return await real_preempt()
 
         servicer._preempt_shadow_sessions = flaky_preempt
-        with _NO_THREAD, patch.dict(os.environ, {"GAME_MAX_CONCURRENT_GAMES": "1"}):
+        with _NO_THREAD, _caps(concurrent=1):
             ok, gid = await servicer._start_game_from_config(_config(serials=("r1", "r2")), _MockSpan())
 
         assert ok is True, f"real game lost the admission race: {gid}"
