@@ -769,6 +769,28 @@ func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, c gamecontex
 				// means this cycle emits no synchronous decision span — the async apply
 				// trace carries it.
 				if l.asyncEnabled() {
+					// #1207: RULES-FIRST in game. mode="llm" no longer fires the async LLM
+					// every admitted cycle — it does so only as an explicit, length-gated
+					// UPGRADE. The upgrade gate (master switch llm.in_game_async_upgrade +
+					// the derived length estimate) is evaluated BEFORE firing: when it fails,
+					// this cycle decides IMMEDIATELY via the deterministic rules engine and no
+					// async LLM is launched. This inverts the #917 default — short real games
+					// (the only place the latency race ever bit, since shadow games are
+					// rules-only via eligibility) now get an instant rules decision instead of
+					// deferring a beat to an async result that may land after the game moved on.
+					//
+					// LATE-LLM = SEPARATE INTERVENTION (reverses reason fork (B) in
+					// async_infer.go:24-49 for the *upgrade* case): on a game long enough to
+					// pass the gate we DO fire async, and when that result lands after rules
+					// already acted it dispatches through the SAME runDecision chain as its OWN
+					// intervention. A double-fire-within-context is INTENDED here and is bounded
+					// by policy.max_interventions_per_minute (the rate limiter), with the
+					// per-game inflight CAS preventing two concurrent Infers. The gate's length
+					// estimate ensures we only opt into that double-fire on games whose duration
+					// can absorb the extra intervention.
+					if !l.shouldUpgradeToAsyncLLM(snapshot, c) {
+						return l.Rules.Evaluate(ctx, c)
+					}
 					// #1140 (Slice A): an async-fire cycle is NOT idle — a decision was
 					// dispatched (just asynchronously). It therefore deserves a trace
 					// presence, and that presence is the ANCHOR the later agent.llm.infer.call
@@ -876,6 +898,44 @@ func (l *Loop) gateLLM(ctx context.Context, snapshot flags.Snapshot, c gameconte
 	// the allow() call above. This is the ONLY path that does not return a reason.
 	l.lastLLMAttempt = t
 	return ""
+}
+
+// shouldUpgradeToAsyncLLM reports whether an admitted mode="llm" cycle should be
+// UPGRADED from the rules-first default to firing the async LLM (#1207). It is the
+// in-game upgrade gate, evaluated AFTER the #847 call gate has already admitted the
+// cycle and a reachable backend has been resolved. Two conditions, both required:
+//
+//  1. master switch — llm.in_game_async_upgrade must be on. When off, mode="llm" is
+//     rules-first in game and never fires the async LLM, regardless of game length.
+//  2. length gate — the derived expected game length must be at least the existing
+//     latency budget: only a game long enough to absorb a 2-10s async result (and the
+//     late-LLM intervention it may dispatch) earns the upgrade. A 2p/6s shadow-sized
+//     game stays rules-only; an 8p endurance game fires the LLM.
+//
+// On either failure the caller decides immediately via the rules engine. The shadow/
+// real distinction is emergent: short games self-gate to rules without a static table.
+func (l *Loop) shouldUpgradeToAsyncLLM(snapshot flags.Snapshot, c gamecontext.GameContext) bool {
+	if !snapshot.LLMGate.InGameAsyncUpgrade {
+		return false
+	}
+	expected := expectedGameSeconds(c, snapshot.LLMGate.SecondsPerPlayer, snapshot.LLMGate.StyleFactor)
+	return expected >= snapshot.LLMGate.LatencyBudget.Seconds()
+}
+
+// expectedGameSeconds derives the expected remaining game length (#1207) from the
+// active player count and the two tunable estimate parameters:
+//
+//	expected_seconds = ActivePlayerCount × secondsPerPlayer × styleFactor
+//
+// ActivePlayerCount comes from Session.ActivePlayerCount (the live game_active_players
+// signal); when it has not been observed yet (nil) it falls back to the number of
+// known players in the context, so a fresh game still produces a usable estimate.
+func expectedGameSeconds(c gamecontext.GameContext, secondsPerPlayer, styleFactor float64) float64 {
+	players := len(c.Players)
+	if c.Session.ActivePlayerCount != nil {
+		players = *c.Session.ActivePlayerCount
+	}
+	return float64(players) * secondsPerPlayer * styleFactor
 }
 
 // resolveBackend walks the inference fallback chain (#741) for an ADMITTED llm

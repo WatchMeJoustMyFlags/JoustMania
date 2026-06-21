@@ -149,9 +149,19 @@ func asyncLoop(t *testing.T, snap flags.Snapshot, resolver *Resolver, provider *
 
 // asyncSnapshot is an llm-mode snapshot whose #847 gate always admits, with a short
 // latency budget for the timeout test and a permissive allow-list + rate budget.
+//
+// #1207: the rules-first default means the async LLM only fires when the upgrade gate
+// passes, so these async-fire tests turn the master switch ON and set the estimate
+// parameters generously (per-player seconds well above the 5s budget) so even a
+// single-player activeContext clears the length gate and the existing fire path is
+// still exercised. The dedicated gate test (upgrade_gate_test.go) covers the
+// switch-off / short-game NEGATIVE paths.
 func asyncSnapshot() flags.Snapshot {
 	s := llmDecideSnapshot()
 	s.LLMGate.LatencyBudget = 5 * time.Second
+	s.LLMGate.InGameAsyncUpgrade = true
+	s.LLMGate.SecondsPerPlayer = 10
+	s.LLMGate.StyleFactor = 1.0
 	return s
 }
 
