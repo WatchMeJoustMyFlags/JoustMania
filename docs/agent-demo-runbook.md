@@ -182,8 +182,8 @@ interventions.
   the same span schema, so the demo arc is identical either way (the fallback to
   rules is itself a talking point — see act 3 / failure modes).
 - **Interventions**: with the ACT path open (see the
-  [ACT runbook](agent-act-runbook.md) — `AGENT_INTERVENTIONS_ENABLED=true` +
-  `enabled=on` + a permitting `interventions_allowed` variant), a permitted
+  [ACT runbook](agent-act-runbook.md) — `interventions_enabled=on` (flagd flag,
+  #1213) + `enabled=on` + a permitting `interventions_allowed` variant), a permitted
   decision rewrites `interventions.json` and the coordinator applies it,
   incrementing `agent_interventions_applied_total` (agent side) and
   `game_interventions_total` (coordinator side). The dedicated **Act 2b** below
@@ -215,15 +215,14 @@ matters for the demo, so it is worth narrating.
 act widens:
 
 ```bash
-# Gate 1 (sink) — env, read at startup, so this recreates the agent.
+# Gate 1 (sink) — flagd flag `interventions_enabled`, re-read at use-time (#1213),
+#   so flipping it takes effect on the next decision with NO agent restart.
 # Gate 2 (kill-switch enabled=on) + mode are handled by the enable script.
-AGENT_INTERVENTIONS_ENABLED=true \
-  docker compose \
-    -f docker-compose.yml -f docker-compose.override.yml \
-    -f docker-compose.ci.yml -f docker-compose.dry-run.yml \
-    --profile agent --profile dashboard up -d agent
+# Flip interventions_enabled -> on in services/flagd/agent.json (or the live flag):
+#   "interventions_enabled": { "defaultVariant": "on" }
+# flagd hot-reloads within ~100 ms-1 s; the next Apply writes through the real sink.
 
-# confirm the real sink is wired (not NoopActions):
+# confirm the real sink is wired (writes enabled):
 docker compose logs agent | grep 'Agent intervention writes enabled' | tail -1
 
 # Gates 2 + mode on (live flip, ~1 s, no restart):

@@ -37,9 +37,9 @@ const (
 	// back the rollout); the infra-domain parallel to AttrDecisionAction.
 	AttrRemediationAction = "remediation.action"
 	// AttrRolloutDryRun is whether the actuator only REHEARSED the decision (true)
-	// rather than applying it to rollout.json (false). True for the dry-run
-	// actuator (AGENT_ROLLOUT_ENABLED=false, the compose default) and for a nil
-	// actuator (the loop never writes); false for the real RolloutWriter. Present
+	// rather than applying it to rollout.json (false). True when the LIVE
+	// rollout_enabled flag is off (#1213; the default + fail-closed state) and for a
+	// nil actuator (the loop never writes); false when the gate is on. Present
 	// on EVERY decision span so a Jaeger consumer can tell a rehearsed
 	// expand/rollback apart from an applied one — they were otherwise identical.
 	AttrRolloutDryRun = "rollout.dry_run"

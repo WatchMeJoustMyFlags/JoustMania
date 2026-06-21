@@ -304,9 +304,9 @@ failure sets the span status to error and records the error.
 
 **Env gates:**
 
-| Env | Default | Effect |
+| Env / flag | Default | Effect |
 |-----|---------|--------|
-| `AGENT_ROLLOUT_ENABLED` | `false` | `true` → real `RolloutWriter` applies flips (`rollout.dry_run=false`). `false` → **dry-run**: the loop still decides and spans expansions (`remediation.action="expand"`, `rollout.controller_count` set, **`rollout.dry_run=true`**) but does **not** write `rollout.json` (decided-but-not-applied; logged `agent.rollout_dry_run`). |
+| `rollout_enabled` (**flagd flag**, `agent.json`) | `off` | **#1213: migrated from the `AGENT_ROLLOUT_ENABLED` env var to a LIVE flag**, read per `SetControllerCount`/`DryRun` (never cached at startup). `on` → real `RolloutWriter` applies flips (`rollout.dry_run=false`). `off` (or flagd unreachable — **fail-closed**) → **dry-run**: the loop still decides and spans expansions (`remediation.action="expand"`, `rollout.controller_count` set, **`rollout.dry_run=true`**) but does **not** write `rollout.json` (decided-but-not-applied; logged `agent.rollout_dry_run`). Flip the flag in flagd, no restart. |
 | `ROLLOUT_FLAG_PATH` | `/etc/flagd/rollout.json` | rollout flag file path (read for `remediation_allowed`, written on expand/rollback) |
 | `AGENT_ROLLOUT_DWELL_SECONDS` | `15` | per-stage dwell before re-expansion |
 | `AGENT_ROLLOUT_COOLDOWN_SECONDS` | `30` | post-rollback cooldown: re-expansion is suppressed this long after a rollback |
@@ -367,7 +367,8 @@ observed count returns to 0; a later failure can then trigger a fresh rollback.
 | rollback in flight (settling) | `> 0` | — | none | `none` |
 | at stable default      | `0` | — | none (nothing to roll back) | `none` |
 
-**Dry-run** (`AGENT_ROLLOUT_ENABLED=false`): the rollback is **decided and
+**Dry-run** (`rollout_enabled` flag `off` — flagd flag, #1213; the fail-closed
+default): the rollback is **decided and
 spanned** (`remediation.action="rollback"`, **`rollout.dry_run=true`**) but the
 `DryRunRolloutWriter`'s `SetControllerCount("none")` is a no-op —
 decided-but-not-applied, consistent with dry-run expansion. The `rollout.dry_run`
@@ -395,7 +396,7 @@ attribute builder** (`infraDecisionAttributes`), so **every** decision span — 
 | `fitness.passing` | bool | yes | did the Bluetooth fitness check pass this cycle |
 | `fitness.violations` | string | yes (**empty when passing**, never absent) | the failing checks, e.g. `movement_update_hz[AA:BB] 8.3<10` |
 | `remediation.action` | string | yes | `none \| expand \| rollback \| recommended_only` |
-| `rollout.dry_run` | bool | yes | did the actuator only **rehearse** this decision (no write to `rollout.json`) rather than apply it — `true` for the dry-run actuator (`AGENT_ROLLOUT_ENABLED=false`, the compose default) and when there is no actuator; `false` for the real `RolloutWriter`. Lets a trace tell a rehearsed `expand`/`rollback` apart from a real one. |
+| `rollout.dry_run` | bool | yes | did the actuator only **rehearse** this decision (no write to `rollout.json`) rather than apply it — `true` when the `rollout_enabled` flag is `off` (flagd flag, #1213; the fail-closed default, re-read per cycle) and when there is no actuator; `false` when `rollout_enabled` is `on` and the real `RolloutWriter` applies. Lets a trace tell a rehearsed `expand`/`rollback` apart from a real one. |
 
 plus the observed `bluetooth.*` window signals (`target_backend` + `rollout_count`
 always; `event_gap_ms` / `dropped_events_pct` / `movement_update_hz` /
@@ -507,10 +508,12 @@ The two decision hooks:
 - **Rules engine** (#726) — `ObjectiveRules`, the objective-weighted decision
   logic below. Active by default; its objectives are driven live by the flag.
 - **Action sink** (#730) — applies permitted intents via OpenFeature/flagd.
-  **No-op by default**: with `AGENT_INTERVENTIONS_ENABLED=true` the real
-  `actions.Writer` is wired in and dispatched decisions are written to the
-  flagd `interventions` domain (see **Action sink** below); otherwise decisions
-  are traced and discarded.
+  **No-op by default**: the gated sink consults the live `interventions_enabled`
+  flag (flagd flag, #1213; re-read per `Apply`). With it `on` the real
+  `actions.Writer` is dispatched and decisions are written to the flagd
+  `interventions` domain (see **Action sink** below); `off`/undefined/flagd-
+  unreachable is **fail-closed** — decisions are traced and discarded. Flip the
+  flag in flagd, no restart.
 
 The flags wrapper lives in [`flags/`](flags/) and uses the OpenFeature Go SDK
 with the flagd **RPC** resolver against flagd's gRPC evaluation port. Flag keys
@@ -937,7 +940,7 @@ All configuration is via environment variables:
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | set in compose | Self-telemetry export (decision audit traces → collector → Jaeger); no-op when unset |
 | `OTEL_SERVICE_NAME` | `agent` | Service identity; also drives the self-ingestion skip |
 | `AGENT_PROBE_DECISIONS` | _unset_ | `true` enables the demo/verification probe: a synthetic `noop` decision (and thus a full audit trace) at most every 5 s. Never for production sessions. See [Probe mode](#probe-mode-agent_probe_decisions) |
-| `AGENT_INTERVENTIONS_ENABLED` | `false` | `true` swaps the no-op action sink for the real intervention **Writer** (#730). Default off keeps the scaffold inert |
+| `interventions_enabled` (**flagd flag**, `agent.json`) | `off` | **#1213: migrated from the `AGENT_INTERVENTIONS_ENABLED` env var to a LIVE flag**, read per `Apply` against the live `Flags` (never cached at startup). `on` → the gated action sink writes a fully-permitted decision to the interventions file via the real **Writer** (#730); `off` (or flagd unreachable — **fail-closed**) → the decision is still recorded/spanned but **not** written (inert scaffold). Distinct from the `enabled` kill switch (gates whether the loop **decides**) and `interventions_allowed` (gates **which** intervention types may dispatch); this gates whether a permitted decision is **applied**. Flip the flag in flagd, no restart. |
 | `INTERVENTIONS_FLAG_PATH` | `/etc/flagd/interventions.json` | Path of the flagd interventions file the Writer rewrites (must be the bind-mounted file flagd watches) |
 | `AGENT_GAME_SUMMARY_DIR` | `/var/lib/joustmania/agent/summaries` | Directory the M7-1 game narrative builder (#928) writes one JSON game summary per game into (real **and** shadow), created if missing; atomic temp+rename so a reader never sees a partial file |
 | `AGENT_EXPERIMENTS_ENABLED` | `false` | **Bootstrap default for the live `experiments_enabled` flag** gating the #991 experiment cohort loop (epic #982). When on, the `experiment.Registry` (built with the real spawner/targeting/verdict/promoter seams) runs the declare→spawn→conclude→verdict→(gated)promote loop. Since #1044 the loop is always built + run and self-gates on the live flag; **default off ⇒ the loop is behaviorally inert — no shadow spawns, no targeting writes, no promotions (the only residual work is one ~30 s no-op tick).** Promotion still routes through the existing `code_improvement` gates + kill-switch |
@@ -1048,8 +1051,8 @@ variant (`["noop"]`) in [`services/flagd/agent.json`](../flagd/agent.json):
 
 `noop` is a **harmless no-op in the action sink**: the `Writer` recognizes it and
 returns success **without writing any flag** (`actions/writer.go`,
-`InterventionNoop`). So with the `probe` variant + `AGENT_INTERVENTIONS_ENABLED=true`
-+ `enabled=on`, a probe decision flows through allow-list, battery, and rate-limit
+`InterventionNoop`). So with the `probe` variant + `interventions_enabled=on`
+(flagd flag, #1213) + `enabled=on`, a probe decision flows through allow-list, battery, and rate-limit
 gates, reaches the real `Writer`, and completes the `agent.action` span — all
 without touching the game. Revert by flipping `interventions_allowed` back to
 `ambient` (or `none`).
@@ -1174,8 +1177,10 @@ A run gets an `agent.shadow_game.run` span with `run_id`, `mode`, `game_id`,
 
 ### Trigger (env, one-shot)
 
-The trigger is intentionally minimal — one env-gated path, mirroring
-`AGENT_INTERVENTIONS_ENABLED` / `AGENT_ROLLOUT_ENABLED`. When
+The trigger is intentionally minimal — one env-gated path. It mirrors the
+original env-gate shape the actuation gates used before **#1213** migrated those
+two to LIVE `agent.json` flags (`interventions_enabled` / `rollout_enabled`);
+`AGENT_SHADOW_GAME` is a one-shot startup trigger, so it stays an env var. When
 `AGENT_SHADOW_GAME=true`, the agent sweeps orphans then runs ONE shadow game at
 startup, then continues its normal observe loop.
 

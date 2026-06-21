@@ -423,7 +423,8 @@ Where to watch the agent react
 Prerequisites for the agent to ACT (see docs/agent-act-runbook.md)
 ------------------------------------------------------------------
   The agent only DECIDES (and traces) unless both gates are open:
-    1. AGENT_INTERVENTIONS_ENABLED=true on the agent container (restart) — real sink
+    1. agent.json `interventions_enabled` = on (flagd flag, #1213; re-read at
+       use-time, no agent restart)                               — real sink
     2. agent.json `enabled` = on   (flag flip, hot-reload)        — kill switch
   And the permission layer (`interventions_allowed`) must include the rule's
   intervention. To SEE a *blocked* decision, run --scenario blocked_battery with the

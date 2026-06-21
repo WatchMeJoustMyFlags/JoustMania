@@ -556,7 +556,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Interventions the agent actually dispatched through the action sink, per minute, split by action. Counts only decisions that passed EVERY gate (kill-switch, allow-list, battery, rate-limit) and reached the real Writer — so a bar here is an intervention that took effect, not merely a permitted decision. Empty until interventions APPLY: needs the ACT sink (AGENT_INTERVENTIONS_ENABLED=true) plus a permitting interventions_allowed variant (the demo uses shadow_experimental; see docs/agent-demo-runbook.md Act 2b and the #1127 allow-list fix). Source: agent_interventions_applied_total{action} (#790). Validated live: grant_shield series present.",
+      "description": "Interventions the agent actually dispatched through the action sink, per minute, split by action. Counts only decisions that passed EVERY gate (kill-switch, allow-list, battery, rate-limit) and reached the real Writer — so a bar here is an intervention that took effect, not merely a permitted decision. Empty until interventions APPLY: needs the interventions_enabled flagd flag ON (#1213) plus a permitting interventions_allowed variant (the demo uses shadow_experimental; see docs/agent-demo-runbook.md Act 2b and the #1127 allow-list fix). Source: agent_interventions_applied_total{action} (#790). Validated live: grant_shield series present.",
       "fieldConfig": {
         "defaults": {
           "color": {

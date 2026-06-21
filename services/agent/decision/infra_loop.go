@@ -211,9 +211,10 @@ type InfraLoop struct {
 //
 // rollout may be nil, in which case the loop NEVER expands (every active-rollout
 // cycle records remediation.action="none"); it still gates, evaluates fitness,
-// and emits the observe span. When AGENT_ROLLOUT_ENABLED is off, main.go passes a
-// dry-run actuator (real ladder, no-op write) instead, so the disabled path is
-// recorded as decided-but-not-applied rather than not-decided.
+// and emits the observe span. main.go always passes a GatedRolloutActuator (#1213):
+// it dry-runs (real ladder, no-op write) whenever the LIVE rollout_enabled flag is
+// off or flagd is unreachable, so the disabled path is recorded as
+// decided-but-not-applied rather than not-decided.
 func NewInfraLoop(log *slog.Logger, dwell time.Duration, fitness BluetoothFitnessSource, rollout RolloutActuator) *InfraLoop {
 	if log == nil {
 		log = slog.Default()
