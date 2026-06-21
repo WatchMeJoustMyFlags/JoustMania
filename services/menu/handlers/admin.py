@@ -156,13 +156,6 @@ class AdminModeHandler:
         # Trigger hold tracking for force start
         self._trigger_press_time: float | None = None
         self._trigger_hold_task: asyncio.Task | None = None
-        # Hold duration (seconds) before a trigger-hold force-starts the game.
-        # Defaults to 3s for real play; CI overrides via the ``force_all_start_seconds``
-        # game flag to a short hold so integration tests don't sleep for the full
-        # duration (#1215). Read with the typed float getter; fail-open to 3.0 if
-        # flagd is unreachable/undefined at startup (#1177) or hits the #1127
-        # TYPE_MISMATCH trap.
-        self._force_start_threshold = read_float_flag("game", "force_all_start_seconds", 3.0)
 
     # ControllerHandler protocol methods
 
@@ -477,6 +470,21 @@ class AdminModeHandler:
             # Fallback if StateManager not set
             await self.exit()
 
+    def _force_start_threshold(self) -> float:
+        """Hold duration (seconds) before a trigger-hold force-starts the game.
+
+        Read at USE TIME, not cached at ``__init__`` — by the time a user holds
+        the trigger to force-start, flagd is up and resolves correctly. A read at
+        startup would fail-open before flagd is reachable (#1177) and never pick
+        up the CI override.
+
+        Defaults to 3s for real play; CI overrides via the ``force_all_start_seconds``
+        game flag to a short hold so integration tests don't sleep for the full
+        duration (#1215). Read with the typed float getter; fail-open to 3.0 if
+        flagd is unreachable/undefined (#1177) or hits the #1127 TYPE_MISMATCH trap.
+        """
+        return read_float_flag("game", "force_all_start_seconds", 3.0)
+
     async def _start_trigger_hold_tracking(self, serial: str) -> None:
         """
         Start tracking trigger hold for force start.
@@ -496,10 +504,15 @@ class AdminModeHandler:
         # Start the dimming effect
         await self.start_force_start_effect(serial)
 
+        # Read the hold threshold at use time (flagd is up once a user holds the
+        # trigger), not cached at __init__ where it would fail-open before flagd
+        # is reachable (#1177).
+        threshold = self._force_start_threshold()
+
         # Create task to fire force start after threshold
         async def trigger_hold_timer():
             try:
-                await asyncio.sleep(self._force_start_threshold)
+                await asyncio.sleep(threshold)
                 # If we get here, trigger was held long enough
                 if self.active and serial == self.controller_serial:
                     logger.info(f"Trigger hold completed, triggering force start for {serial}")
