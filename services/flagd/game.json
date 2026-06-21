@@ -11,6 +11,26 @@
       },
       "defaultVariant": "block"
     },
+    "max_concurrent_games": {
+      "state": "ENABLED",
+      "variants": {
+        "four": 4,
+        "eight": 8,
+        "twelve": 12,
+        "sixteen": 16
+      },
+      "defaultVariant": "eight"
+    },
+    "max_shadow_games": {
+      "state": "ENABLED",
+      "variants": {
+        "one": 1,
+        "two": 2,
+        "four": 4,
+        "eight": 8
+      },
+      "defaultVariant": "four"
+    },
     "tempo_schedule_mode": {
       "state": "ENABLED",
       "variants": {
@@ -120,6 +140,15 @@
         "off": false
       },
       "defaultVariant": "off"
+    },
+    "force_all_start_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "instant": 0.5,
+        "default": 3.0,
+        "long": 5.0
+      },
+      "defaultVariant": "default"
     },
     "countdown_phase_duration_ms": {
       "state": "ENABLED",

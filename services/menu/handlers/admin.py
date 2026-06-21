@@ -22,7 +22,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import time
 from typing import TYPE_CHECKING, Protocol
 
@@ -30,6 +29,7 @@ from opentelemetry import trace
 
 from lib.colors import Colors
 from lib.controller_constants import ButtonTrackingKey
+from lib.feature_flags import read_float_flag
 from lib.telemetry import SpanAttr
 from lib.types import Sound
 from services.menu.handlers.base import ButtonDebouncer, ControllerState
@@ -157,9 +157,12 @@ class AdminModeHandler:
         self._trigger_press_time: float | None = None
         self._trigger_hold_task: asyncio.Task | None = None
         # Hold duration (seconds) before a trigger-hold force-starts the game.
-        # Defaults to 3s for real play; CI overrides via ADMIN_FORCE_START_SECONDS
-        # to a short hold so integration tests don't sleep for the full duration.
-        self._force_start_threshold = float(os.environ.get("ADMIN_FORCE_START_SECONDS", "3.0"))
+        # Defaults to 3s for real play; CI overrides via the ``force_all_start_seconds``
+        # game flag to a short hold so integration tests don't sleep for the full
+        # duration (#1215). Read with the typed float getter; fail-open to 3.0 if
+        # flagd is unreachable/undefined at startup (#1177) or hits the #1127
+        # TYPE_MISMATCH trap.
+        self._force_start_threshold = read_float_flag("game", "force_all_start_seconds", 3.0)
 
     # ControllerHandler protocol methods
 

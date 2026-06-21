@@ -40,7 +40,6 @@ safety net, not the single-game guard.
 
 import asyncio
 import logging
-import os
 import threading
 import time
 import uuid
@@ -71,16 +70,19 @@ DEFAULT_MAX_CONCURRENT_GAMES = 8
 
 
 def _max_concurrent_games() -> int:
-    """Read the TOTAL concurrent-games ceiling from the environment.
+    """Read the TOTAL concurrent-games ceiling from the ``game`` flagd domain.
 
     Bounds primary + shadow sessions together so a misconfigured agent cannot
     register unbounded sessions. The single-game guard for REAL games and the
-    shadow concurrency cap are enforced separately (see ``_admit_session_locked``)."""
-    raw = os.getenv("GAME_MAX_CONCURRENT_GAMES", str(DEFAULT_MAX_CONCURRENT_GAMES))
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        return DEFAULT_MAX_CONCURRENT_GAMES
+    shadow concurrency cap are enforced separately (see ``_admit_session_locked``).
+
+    Read from the ``max_concurrent_games`` game flag with the typed int getter
+    (#1215). Fail-open: on any error (flagd unreachable/undefined at startup, the
+    #1127 TYPE_MISMATCH trap, etc.) ``read_int_flag`` returns the hardcoded
+    ``DEFAULT_MAX_CONCURRENT_GAMES`` default so the coordinator never crashes."""
+    from lib.feature_flags import read_int_flag
+
+    value = read_int_flag("game", "max_concurrent_games", DEFAULT_MAX_CONCURRENT_GAMES)
     return max(1, value)
 
 
@@ -96,17 +98,20 @@ DEFAULT_MAX_SHADOW_GAMES = 4
 
 
 def _max_shadow_games() -> int:
-    """Read the concurrent-shadow cap from the environment (default 4).
+    """Read the concurrent-shadow cap from the ``game`` flagd domain (default 4).
 
     This is the number of shadow sessions allowed to run CONCURRENTLY. It is
     independent of the real-game single-game guard (a real game preempts shadows
     and owns the primary slot). Clamped to the total ceiling so it can never
-    exceed ``_max_concurrent_games()``."""
-    raw = os.getenv("GAME_MAX_SHADOW_GAMES", str(DEFAULT_MAX_SHADOW_GAMES))
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        value = DEFAULT_MAX_SHADOW_GAMES
+    exceed ``_max_concurrent_games()``.
+
+    Read from the ``max_shadow_games`` game flag with the typed int getter
+    (#1215). Fail-open: on any error ``read_int_flag`` returns the hardcoded
+    ``DEFAULT_MAX_SHADOW_GAMES`` default. The clamp to ``_max_concurrent_games()``
+    is preserved unchanged."""
+    from lib.feature_flags import read_int_flag
+
+    value = read_int_flag("game", "max_shadow_games", DEFAULT_MAX_SHADOW_GAMES)
     return max(1, min(value, _max_concurrent_games()))
 
 

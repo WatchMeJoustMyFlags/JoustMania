@@ -57,13 +57,13 @@ services:
     environment: !override
       OTEL_SERVICE_NAME: game-coordinator-service
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
-      # Pin the total concurrent-games ceiling for the integration suite (#779).
-      # Since #1018 (option b) the coordinator runs shadow games CONCURRENTLY:
-      # the single-game guard is REAL-only and shadows run up to
-      # GAME_MAX_SHADOW_GAMES (default 4), bounded by this total ceiling (default
-      # 8). The suite pins 4 to keep multiple live sessions on one stack
-      # deterministic for the concurrent/shadow-isolation tests.
-      GAME_MAX_CONCURRENT_GAMES: "4"
+      # The total concurrent-games ceiling is pinned for the integration suite
+      # (#779) via the `max_concurrent_games` game flag (defaultVariant "four" in
+      # services/flagd/ci/game.json), NOT an env var (#1215). Since #1018 (option
+      # b) the coordinator runs shadow games CONCURRENTLY: the single-game guard
+      # is REAL-only and shadows run up to `max_shadow_games` (default 4), bounded
+      # by this total ceiling. The CI flag pins 4 to keep multiple live sessions on
+      # one stack deterministic for the concurrent/shadow-isolation tests.
 
   # Menu - writes game.json/user.json via FlagConfigWriter (game selection, admin
   # settings). Point it at the SAME CI flag directory flagd serves (#959) so a
@@ -84,10 +84,10 @@ services:
     # hack is gone and the prod-like (nonroot) admin write path is exercised in CI.
     volumes: !override
       - ./services/flagd/ci:/etc/flagd
-    environment:
-      # Shorten the admin trigger-hold force-start window for integration tests
-      # so they don't have to sleep the full 3s real-play hold (#823).
-      - ADMIN_FORCE_START_SECONDS=0.6
+    # The admin trigger-hold force-start window is shortened for integration tests
+    # (so they don't sleep the full 3s real-play hold, #823) via the
+    # `force_all_start_seconds` game flag (defaultVariant "ci" = 0.6s in
+    # services/flagd/ci/game.json), NOT an env var (#1215).
 
   # Pairing Daemon - Requires hardware, excluded from CI
   pairing-daemon:
