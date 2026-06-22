@@ -252,55 +252,110 @@ func TestVerdict_DefaultsOnNonPositiveConfig(t *testing.T) {
 }
 
 func TestVerdictFromEnv(t *testing.T) {
+	// minN / minPairs stay env-derived (the registry's bootstrap default the live
+	// verdict_min_n / verdict_min_pairs flags fall back to).
 	t.Setenv(minNEnv, "5")
-	t.Setenv(effectEnv, "0.8")
 	v := NewVerdictFromEnv()
 	if v.minN != 5 {
 		t.Fatalf("env minN = %d, want 5", v.minN)
 	}
-	if v.effectThreshold != 0.8 {
-		t.Fatalf("env effectThreshold = %v, want 0.8", v.effectThreshold)
+	// The four migrated float knobs (#1214) are NO LONGER read from env — they are LIVE
+	// agent.json flags. NewVerdictFromEnv seeds them from the Default* constants (the
+	// fail-open fallback); the live flag value arrives later via SetFloatThresholds.
+	if v.effectThreshold != DefaultEffectThreshold {
+		t.Fatalf("effectThreshold = %v, want default %v (no longer env-read)", v.effectThreshold, DefaultEffectThreshold)
 	}
 
 	// Invalid / empty values fall back to defaults.
 	t.Setenv(minNEnv, "not-a-number")
-	t.Setenv(effectEnv, "")
 	v2 := NewVerdictFromEnv()
 	if v2.minN != DefaultMinNPerArm || v2.effectThreshold != DefaultEffectThreshold {
 		t.Fatalf("invalid env should fall back to defaults, got minN=%d threshold=%v", v2.minN, v2.effectThreshold)
 	}
 }
 
-// TestVerdictFromEnv_Floors (#1042): the practical-significance floor and SD floor are
-// configurable via AGENT_VERDICT_MIN_RAW_EFFECT / AGENT_VERDICT_SD_FLOOR, with
-// fallback to defaults on unset/invalid values.
+// TestVerdictFromEnv_Floors (#1214) — the practical-significance floor, SD floor,
+// effect threshold and anchor margin are NO LONGER env-read: NewVerdictFromEnv seeds
+// them from the Default* constants (the flags' fail-open fallback). This asserts the
+// construction defaults; the live-flag override is covered by TestVerdict_SetFloatThresholds.
 func TestVerdictFromEnv_Floors(t *testing.T) {
-	t.Setenv(minRawEffEnv, "0.05")
-	t.Setenv(sdFloorEnv, "0.001")
+	// Even with the legacy env vars set, the four floats default to the code constants
+	// (env is ignored now — the values come from flags via SetFloatThresholds).
+	t.Setenv("AGENT_VERDICT_MIN_RAW_EFFECT", "0.05")
+	t.Setenv("AGENT_VERDICT_SD_FLOOR", "0.001")
 	v := NewVerdictFromEnv()
-	if v.minRawEffect != 0.05 {
-		t.Fatalf("env minRawEffect = %v, want 0.05", v.minRawEffect)
+	if v.minRawEffect != DefaultMinRawEffect {
+		t.Fatalf("minRawEffect = %v, want default %v (env no longer read, #1214)", v.minRawEffect, DefaultMinRawEffect)
 	}
-	if v.sdFloor != 0.001 {
-		t.Fatalf("env sdFloor = %v, want 0.001", v.sdFloor)
+	if v.sdFloor != DefaultSDFloor {
+		t.Fatalf("sdFloor = %v, want default %v (env no longer read, #1214)", v.sdFloor, DefaultSDFloor)
 	}
-	// The default gate must be built WITH the resolved sdFloor so the two-arm path is
-	// floored too.
+	// The default gate is built WITH the default sdFloor so the two-arm path is floored.
 	g, ok := v.stat.(effectSizeGate)
 	if !ok {
 		t.Fatalf("default stat should be effectSizeGate, got %T", v.stat)
 	}
-	if g.sdFloor != 0.001 {
-		t.Fatalf("two-arm gate sdFloor = %v, want 0.001 (must inherit the env SD floor)", g.sdFloor)
+	if g.sdFloor != DefaultSDFloor {
+		t.Fatalf("two-arm gate sdFloor = %v, want default %v", g.sdFloor, DefaultSDFloor)
+	}
+}
+
+// TestVerdict_SetFloatThresholds (#1214) is the live-tuning acceptance for the four
+// migrated float verdict knobs: SetFloatThresholds updates effectThreshold /
+// minRawEffect / sdFloor / anchorMargin (and keeps the two-arm gate's sdFloor in sync),
+// while a non-positive value per knob is IGNORED (keeps the current value) — the same
+// fail-safe floor SetThresholds uses for min_n/min_pairs.
+func TestVerdict_SetFloatThresholds(t *testing.T) {
+	v := NewVerdictFromEnv()
+
+	v.SetFloatThresholds(0.8, 0.05, 0.001, 0.03)
+	if v.effectThreshold != 0.8 {
+		t.Fatalf("effectThreshold = %v, want 0.8 after SetFloatThresholds", v.effectThreshold)
+	}
+	if v.minRawEffect != 0.05 {
+		t.Fatalf("minRawEffect = %v, want 0.05 after SetFloatThresholds", v.minRawEffect)
+	}
+	if v.sdFloor != 0.001 {
+		t.Fatalf("sdFloor = %v, want 0.001 after SetFloatThresholds", v.sdFloor)
+	}
+	if v.anchorMargin != 0.03 {
+		t.Fatalf("anchorMargin = %v, want 0.03 after SetFloatThresholds", v.anchorMargin)
+	}
+	// The two-arm gate's floor must track the live verdict_sd_floor value.
+	if g, ok := v.stat.(effectSizeGate); !ok || g.sdFloor != 0.001 {
+		t.Fatalf("two-arm gate sdFloor not synced to live value: %+v (ok=%v)", v.stat, ok)
 	}
 
-	// Invalid / non-positive fall back to defaults.
-	t.Setenv(minRawEffEnv, "garbage")
-	t.Setenv(sdFloorEnv, "-1")
-	v2 := NewVerdictFromEnv()
-	if v2.minRawEffect != DefaultMinRawEffect || v2.sdFloor != DefaultSDFloor {
-		t.Fatalf("invalid floor env should fall back to defaults, got rawEffect=%v sdFloor=%v",
-			v2.minRawEffect, v2.sdFloor)
+	// Non-positive values per knob are ignored (keep the current value).
+	v.SetFloatThresholds(0, -1, 0, -2)
+	if v.effectThreshold != 0.8 || v.minRawEffect != 0.05 || v.sdFloor != 0.001 || v.anchorMargin != 0.03 {
+		t.Fatalf("non-positive SetFloatThresholds must keep current values, got eff=%v raw=%v sd=%v anchor=%v",
+			v.effectThreshold, v.minRawEffect, v.sdFloor, v.anchorMargin)
+	}
+}
+
+// TestVerdict_SetFloatThresholds_DrivesVerdict (#1214) proves the live float knob
+// actually drives the verdict outcome: a borderline standardized effect that PROMOTEs
+// under the default effect threshold flips to INCONCLUSIVE once SetFloatThresholds
+// raises verdict_effect_threshold above it — the flag value drives the gate.
+func TestVerdict_SetFloatThresholds_DrivesVerdict(t *testing.T) {
+	v := NewVerdict(8, DefaultEffectThreshold, nil)
+	// Arms with a clear, practically-significant separation: a medium-ish Cohen's d that
+	// clears the 0.5 default threshold (promote) but not a raised 2.0 threshold.
+	exp := armFrom(spread(12, 0.70, 0.10)...)
+	ctl := armFrom(spread(12, 0.50, 0.10)...)
+
+	got, ok := v.Evaluate(summaryWith(exp, ctl))
+	if !ok || got.Outcome != CohortOutcomePromote {
+		t.Fatalf("with default threshold expected PROMOTE, got outcome=%v ok=%v reason=%q", got.Outcome, ok, got.Reason)
+	}
+
+	// Raise the live effect threshold above the observed effect: the SAME data now reads
+	// as within-noise ⇒ INCONCLUSIVE. The flag value drove the verdict.
+	v.SetFloatThresholds(2.0, 0, 0, 0)
+	got2, ok2 := v.Evaluate(summaryWith(exp, ctl))
+	if !ok2 || got2.Outcome != OutcomeInconclusive {
+		t.Fatalf("after raising effect threshold expected INCONCLUSIVE, got outcome=%v ok=%v reason=%q", got2.Outcome, ok2, got2.Reason)
 	}
 }
 

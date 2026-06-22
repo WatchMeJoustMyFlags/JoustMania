@@ -696,6 +696,11 @@ func TestExperiment_FlagOverridesEnvDefault(t *testing.T) {
 		VerdictMinPairs:            5,
 		MaxGames:                   50,
 		ShadowEffectiveConcurrency: 4,
+		// #1214 verdict-tuning float defaults (the verdict's Default* constants).
+		VerdictEffectThreshold: 0.5,
+		VerdictMinRawEffect:    0.02,
+		VerdictSDFloor:         0.0001,
+		VerdictAnchorMargin:    0.02,
 	}
 
 	t.Run("flags present override every env default", func(t *testing.T) {
@@ -704,7 +709,14 @@ func TestExperiment_FlagOverridesEnvDefault(t *testing.T) {
 				keyExperimentsEnabled:       true,
 				keyExperimentDynamicEnabled: true,
 			},
-			floats: map[string]float64{keyExperimentTickSeconds: 10},
+			floats: map[string]float64{
+				keyExperimentTickSeconds: 10,
+				// #1214 verdict-tuning float knobs, read via the TYPED float getter.
+				keyVerdictEffectThreshold: 0.8,
+				keyVerdictMinRawEffect:    0.05,
+				keyVerdictSDFloor:         0.001,
+				keyVerdictAnchorMargin:    0.03,
+			},
 			ints: map[string]int64{
 				keyExperimentDynamicMaxConcur:  6,
 				keyVerdictMinN:                 16,
@@ -723,6 +735,10 @@ func TestExperiment_FlagOverridesEnvDefault(t *testing.T) {
 			VerdictMinPairs:            10,
 			MaxGames:                   100,
 			ShadowEffectiveConcurrency: 8,
+			VerdictEffectThreshold:     0.8,
+			VerdictMinRawEffect:        0.05,
+			VerdictSDFloor:             0.001,
+			VerdictAnchorMargin:        0.03,
 		}
 		if got != want {
 			t.Fatalf("Experiment with flags present = %+v, want %+v", got, want)
@@ -741,9 +757,29 @@ func TestExperiment_FlagOverridesEnvDefault(t *testing.T) {
 			VerdictMinPairs:            def.VerdictMinPairs,
 			MaxGames:                   def.MaxGames,
 			ShadowEffectiveConcurrency: def.ShadowEffectiveConcurrency,
+			VerdictEffectThreshold:     def.VerdictEffectThreshold,
+			VerdictMinRawEffect:        def.VerdictMinRawEffect,
+			VerdictSDFloor:             def.VerdictSDFloor,
+			VerdictAnchorMargin:        def.VerdictAnchorMargin,
 		}
 		if got != want {
 			t.Fatalf("Experiment with flags absent = %+v, want env defaults %+v", got, want)
+		}
+	})
+
+	t.Run("verdict float flags fail open to defaults on flagd error (#1214)", func(t *testing.T) {
+		errAll := map[string]error{
+			keyVerdictEffectThreshold: errors.New("down"),
+			keyVerdictMinRawEffect:    errors.New("down"),
+			keyVerdictSDFloor:         errors.New("down"),
+			keyVerdictAnchorMargin:    errors.New("down"),
+		}
+		got := New(stubEvaluator{errs: errAll}, nil).Experiment(context.Background(), def)
+		if got.VerdictEffectThreshold != def.VerdictEffectThreshold ||
+			got.VerdictMinRawEffect != def.VerdictMinRawEffect ||
+			got.VerdictSDFloor != def.VerdictSDFloor ||
+			got.VerdictAnchorMargin != def.VerdictAnchorMargin {
+			t.Fatalf("verdict float flags under flagd error did not fail open to defaults: %+v", got)
 		}
 	})
 
