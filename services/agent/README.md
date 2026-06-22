@@ -948,10 +948,11 @@ All configuration is via environment variables:
 | `AGENT_SHADOW_EFFECTIVE_CONCURRENCY` | `4` | **Effective** in-flight shadow-spawn concurrency, bounding how many concurrent shadow starts the registry holds at once. Since #1018 (option b) the game-coordinator runs shadow games **concurrently** (the single-game guard is REAL-only; shadows run in parallel up to `GAME_MAX_SHADOW_GAMES`), so the registry can keep several in flight without each being a doomed "Game already in progress" start. Default 4 makes #1003's same-tick atomic pair reservation activate (it needs >= 2 to reserve BOTH arms in one tick). Clamped to `AGENT_MAX_SHADOW_GAMES`. A coordinator-at-capacity rejection (cap full) is still treated as **backpressure** (release + retry next tick), not a spawn failure |
 | `AGENT_EXPERIMENT_TICK_SECONDS` | `30` | Cadence of the registry's `AllocateAndSpawn` (refills free shadow capacity) |
 | `AGENT_EXPERIMENT_DIR` | `/var/lib/joustmania/agent/experiments` | Durable experiment journal root (intent/events/summary per experiment); the registry rehydrates from it on startup |
-| `AGENT_VERDICT_MIN_N` | `8` | #979 min games per arm before a conclusive verdict (else inconclusive) |
-| `AGENT_VERDICT_EFFECT_THRESHOLD` | `0.5` | #979 minimum \|Cohen's d\| for a promote/discard verdict |
-| `AGENT_VERDICT_MIN_RAW_EFFECT` | `0.02` | #1042 practical-significance floor: minimum RAW effect (\|mean_d\| paired / \|mean_exp − mean_ctl\| two-arm) for a promote/discard. Below it ⇒ inconclusive regardless of how large the standardized d_z / Cohen's d is — stops near-deterministic shadow games promoting on a trivially-tiny but perfectly-consistent delta. 0.02 = 2% of the ~0..1 fitness range |
-| `AGENT_VERDICT_SD_FLOOR` | `0.0001` | #1042 minimum-SD floor (defense in depth): floors the d_z / Cohen's d denominator so the standardized stat stays finite when the spread collapses toward 0 (sd→0). 1e-4 is two orders below any real-play spread, so it never distorts a real-noise verdict |
+| `AGENT_VERDICT_MIN_N` | `8` | #979 min games per arm before a conclusive verdict (else inconclusive). **Bootstrap default for the live `verdict_min_n` flag** (#1044) |
+| `verdict_effect_threshold` (flag) | `0.5` | #979 minimum \|Cohen's d\| for a promote/discard verdict. **Migrated to a live `agent.json` flag (#1214)** — no longer an env var; the `0.5` default is the fail-open fallback (`DefaultEffectThreshold`) |
+| `verdict_min_raw_effect` (flag) | `0.02` | #1042 practical-significance floor: minimum RAW effect (\|mean_d\| paired / \|mean_exp − mean_ctl\| two-arm) for a promote/discard. Below it ⇒ inconclusive regardless of how large the standardized d_z / Cohen's d is — stops near-deterministic shadow games promoting on a trivially-tiny but perfectly-consistent delta. 0.02 = 2% of the ~0..1 fitness range. **Migrated to a live `agent.json` flag (#1214)** — fail-open fallback `DefaultMinRawEffect` |
+| `verdict_sd_floor` (flag) | `0.0001` | #1042 minimum-SD floor (defense in depth): floors the d_z / Cohen's d denominator so the standardized stat stays finite when the spread collapses toward 0 (sd→0). 1e-4 is two orders below any real-play spread, so it never distorts a real-noise verdict. **Migrated to a live `agent.json` flag (#1214)** — fail-open fallback `DefaultSDFloor` |
+| `verdict_anchor_margin` (flag) | `0.02` | #992 recent-real regression margin: a PROMOTE is downgraded to inconclusive only when the experimental arm regresses below the recent-real baseline by MORE than this. Mirrors the #1042 raw-effect floor. **Migrated to a live `agent.json` flag (#1214)** — fail-open fallback `DefaultAnchorMargin` |
 | `AGENT_EXPERIMENT_SEED_FLAG` | _unset_ | When set (and the loop is enabled), declares ONE env-seeded experiment at startup on this game.json flag — the simplest declaration trigger for the demo. Paired with `AGENT_EXPERIMENT_SEED_VALUE` / `_OBJECTIVE` / `_TARGET_N` / `_HYPOTHESIS` |
 | `AGENT_EXPERIMENT_SEED_VALUE` | _unset_ | The seed experiment's experimental value. Parsed as a number when it parses as a float, else bool for `true`/`false`, else a JSON object/array when the text begins with `{`/`[` and parses as valid JSON (#1090 — lets an object-valued FFA lever such as `windows` or `thresholds` be seeded), else the raw string. Its JSON kind must match the flag's existing variants (the Gate's type guard rejects a mistyped seed at the targeting write) |
 | `AGENT_EXPERIMENT_SEED_OBJECTIVE` | `balanced` | The seed experiment's fitness objective (`endurance` / `balanced` / `accelerate` / `chaos`) |
@@ -976,6 +977,10 @@ All configuration is via environment variables:
 > | `experiment_max_games` | `AGENT_EXPERIMENT_MAX_GAMES` |
 > | `verdict_min_n` | `AGENT_VERDICT_MIN_N` |
 > | `verdict_min_pairs` | `AGENT_VERDICT_MIN_PAIRS` |
+> | `verdict_effect_threshold` (#1214) | _none — `DefaultEffectThreshold` (0.5)_ |
+> | `verdict_min_raw_effect` (#1214) | _none — `DefaultMinRawEffect` (0.02)_ |
+> | `verdict_sd_floor` (#1214) | _none — `DefaultSDFloor` (1e-4)_ |
+> | `verdict_anchor_margin` (#1214) | _none — `DefaultAnchorMargin` (0.02)_ |
 >
 > **Startup-gate inversion:** the loop + dynamic declarer are now **always built and
 > run**; they self-gate each tick on the live `experiments_enabled` /
@@ -993,9 +998,19 @@ All configuration is via environment variables:
 > declarer knobs `AGENT_EXPERIMENT_DYNAMIC_CANDIDATES` / `_DENYLIST` — a top-level
 > flagd **LIST** flag hits a `get_object_value` `TYPE_MISMATCH` (only the in-process
 > resolver reads list flags; the agent uses the RPC resolver), so a list flag here
-> would be silently broken. `AGENT_VERDICT_EFFECT_THRESHOLD` and the #1042
-> practical-significance floors (`AGENT_VERDICT_MIN_RAW_EFFECT`,
-> `AGENT_VERDICT_SD_FLOOR`) also stay env for now (not part of this migration).
+> would be silently broken.
+>
+> **#1214 — verdict-tuning cluster completed.** The four remaining verdict knobs
+> (`verdict_effect_threshold`, `verdict_min_raw_effect`, `verdict_sd_floor`,
+> `verdict_anchor_margin`) are now live `agent.json` flags too, finishing the cluster
+> `verdict_min_n` / `verdict_min_pairs` started in #1044. These four were migrated
+> **fully** — their `AGENT_VERDICT_EFFECT_THRESHOLD` / `_MIN_RAW_EFFECT` / `_SD_FLOOR` /
+> `_ANCHOR_MARGIN` env vars are **removed**; the verdict's `Default*` constants are the
+> fail-open fallback the flag resolves to when flagd is undefined/unreachable. They are
+> read via the **typed float getter** (never `ObjectValue` — the #903/#1127
+> TYPE_MISMATCH trap) and live-mirrored onto the verdict each tick via the registry's
+> `Reconfigure` → `Verdict.SetThresholds` / `SetFloatThresholds`, exactly the
+> `verdict_min_n` / `verdict_min_pairs` seam.
 
 > The Go agent uses the flagd **RPC** resolver (gRPC evaluation port `8013`),
 > not the in-process sync port `8015` that the Python services use.

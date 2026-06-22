@@ -160,6 +160,25 @@ const (
 	keyExperimentMaxGames          = "experiment_max_games"
 	keyExperimentShadowConcurrency = "experiment_shadow_effective_concurrency"
 
+	// Verdict-tuning float knobs migrated from env to agent.json flags (#1214),
+	// finishing the cluster verdict_min_n / verdict_min_pairs started in #1044. These
+	// were the AGENT_VERDICT_EFFECT_THRESHOLD / _MIN_RAW_EFFECT / _SD_FLOOR /
+	// _ANCHOR_MARGIN env knobs read ONCE at startup by experiment.NewVerdictFromEnv.
+	// Migrating them makes each numeric verdict gate hot-reloadable — flip it in flagd
+	// and the NEXT verdict evaluation uses the new threshold with no restart, exactly
+	// like the min_n/min_pairs siblings (live-mirrored onto the Verdict via the
+	// registry's Reconfigure → Verdict.SetThresholds, #1044/#1051).
+	//
+	// They are TUNING knobs, not safety gates: each FAILS OPEN to the current code
+	// default (the same numeric value the env var defaulted to) when flagd is
+	// undefined/unreachable — matching the min_n/min_pairs behavior. They are read via
+	// the TYPED float getter (floatFlag/FloatValue), NEVER ObjectValue — a numeric flag
+	// read via ObjectValue silently TYPE_MISMATCHes to its default (#903/#1127).
+	keyVerdictEffectThreshold = "verdict_effect_threshold"
+	keyVerdictMinRawEffect    = "verdict_min_raw_effect"
+	keyVerdictSDFloor         = "verdict_sd_floor"
+	keyVerdictAnchorMargin    = "verdict_anchor_margin"
+
 	// Runtime SAFETY gates migrated from env to agent.json flags (#1213). These
 	// were the AGENT_INTERVENTIONS_ENABLED / AGENT_ROLLOUT_ENABLED env masters read
 	// ONCE at startup in main.go to select which action sink / rollout actuator was
@@ -681,6 +700,18 @@ type ExperimentDefaults struct {
 	MaxGames int
 	// ShadowEffectiveConcurrency is AGENT_SHADOW_EFFECTIVE_CONCURRENCY.
 	ShadowEffectiveConcurrency int
+	// VerdictEffectThreshold is the verdict's standardized-effect gate
+	// (#1214; was AGENT_VERDICT_EFFECT_THRESHOLD, default 0.5).
+	VerdictEffectThreshold float64
+	// VerdictMinRawEffect is the practical-significance floor (#1042)
+	// (#1214; was AGENT_VERDICT_MIN_RAW_EFFECT, default 0.02).
+	VerdictMinRawEffect float64
+	// VerdictSDFloor is the minimum-SD denominator floor (#1042)
+	// (#1214; was AGENT_VERDICT_SD_FLOOR, default 1e-4).
+	VerdictSDFloor float64
+	// VerdictAnchorMargin is the recent-real regression margin (#992)
+	// (#1214; was AGENT_VERDICT_ANCHOR_MARGIN, default 0.02).
+	VerdictAnchorMargin float64
 }
 
 // ExperimentConfig is the LIVE-resolved experiment runtime configuration (#1044),
@@ -710,9 +741,22 @@ type ExperimentConfig struct {
 	// ShadowEffectiveConcurrency is the in-flight shadow-spawn concurrency cap
 	// (experiment_shadow_effective_concurrency).
 	ShadowEffectiveConcurrency int
+	// VerdictEffectThreshold is the live standardized-effect gate (verdict_effect_threshold,
+	// #1214): the minimum |Cohen's d| / |d_z| for a promote/discard verdict.
+	VerdictEffectThreshold float64
+	// VerdictMinRawEffect is the live practical-significance floor (verdict_min_raw_effect,
+	// #1214): the minimum RAW effect magnitude a promote/discard requires (#1042).
+	VerdictMinRawEffect float64
+	// VerdictSDFloor is the live minimum-SD denominator floor (verdict_sd_floor, #1214):
+	// floors the d_z / Cohen's d denominator so the standardized stat stays finite (#1042).
+	VerdictSDFloor float64
+	// VerdictAnchorMargin is the live recent-real regression margin (verdict_anchor_margin,
+	// #1214): a PROMOTE is downgraded only when the experimental arm regresses below the
+	// recent-real baseline by MORE than this (#992).
+	VerdictAnchorMargin float64
 }
 
-// Experiment evaluates the eight migrated experiment runtime knobs (#1044) for one
+// Experiment evaluates the migrated experiment runtime knobs (#1044, #1214) for one
 // experiment tick. Read LIVE (never cached) so a hot-reload of any knob takes
 // effect on the next tick. Each flag falls back to the matching ExperimentDefaults
 // field (the env-derived bootstrap default) on any evaluation error or flag
@@ -730,6 +774,13 @@ func (f *Flags) Experiment(ctx context.Context, def ExperimentDefaults) Experime
 		VerdictMinPairs:            f.intFlag(ctx, keyVerdictMinPairs, def.VerdictMinPairs),
 		MaxGames:                   f.intFlag(ctx, keyExperimentMaxGames, def.MaxGames),
 		ShadowEffectiveConcurrency: f.intFlag(ctx, keyExperimentShadowConcurrency, def.ShadowEffectiveConcurrency),
+		// Verdict-tuning float knobs (#1214). Typed float getter (the flagd numeric-flag
+		// gotcha — see llmGate); fail-OPEN to the env-derived default (the verdict's code
+		// default) on any error/absence, exactly like the min_n/min_pairs siblings above.
+		VerdictEffectThreshold: f.floatFlag(ctx, keyVerdictEffectThreshold, def.VerdictEffectThreshold),
+		VerdictMinRawEffect:    f.floatFlag(ctx, keyVerdictMinRawEffect, def.VerdictMinRawEffect),
+		VerdictSDFloor:         f.floatFlag(ctx, keyVerdictSDFloor, def.VerdictSDFloor),
+		VerdictAnchorMargin:    f.floatFlag(ctx, keyVerdictAnchorMargin, def.VerdictAnchorMargin),
 	}
 }
 

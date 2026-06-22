@@ -1639,6 +1639,23 @@ func (r *Registry) Reconfigure(effectiveConcurrency, maxGames, minN, minPairs in
 	}
 }
 
+// ReconfigureVerdictFloats live-mirrors the four migrated FLOAT verdict knobs (#1214)
+// onto the verdict so a hot-reload of verdict_effect_threshold / verdict_min_raw_effect
+// / verdict_sd_floor / verdict_anchor_margin takes effect on the NEXT verdict with no
+// restart — the float analog of the minN/minPairs mirroring in Reconfigure. The
+// experiment loop calls it each tick from the live agent.json flags, alongside
+// Reconfigure; the env-derived value is the bootstrap default the flag falls back to.
+// These knobs are verdict-only (the registry itself reads none of them), so unlike
+// minN this method only forwards to the verdict — it touches no registry state and
+// takes no registry lock. SetFloatThresholds ignores a non-positive value per knob, so
+// a transient flagd hiccup never loosens a gate. A non-*Verdict CohortStat (a custom
+// test seam) is left untouched.
+func (r *Registry) ReconfigureVerdictFloats(effectThreshold, minRawEffect, sdFloor, anchorMargin float64) {
+	if v, ok := r.verdict.(*Verdict); ok {
+		v.SetFloatThresholds(effectThreshold, minRawEffect, sdFloor, anchorMargin)
+	}
+}
+
 // Live returns the ids of experiments that may be allocated shadow capacity —
 // i.e. those in RUNNING (targeting written, ready to accrue games), sorted. A
 // PROPOSED experiment occupies a registry slot but is not yet spawnable, so it is

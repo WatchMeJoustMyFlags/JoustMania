@@ -471,6 +471,10 @@ func (e *experimentLoop) config(ctx context.Context) flags.ExperimentConfig {
 			VerdictMinPairs:            e.expDefaults.VerdictMinPairs,
 			MaxGames:                   e.expDefaults.MaxGames,
 			ShadowEffectiveConcurrency: e.expDefaults.ShadowEffectiveConcurrency,
+			VerdictEffectThreshold:     e.expDefaults.VerdictEffectThreshold,
+			VerdictMinRawEffect:        e.expDefaults.VerdictMinRawEffect,
+			VerdictSDFloor:             e.expDefaults.VerdictSDFloor,
+			VerdictAnchorMargin:        e.expDefaults.VerdictAnchorMargin,
 		}
 	}
 	return e.flags.Experiment(ctx, e.expDefaults)
@@ -517,6 +521,12 @@ func (e *experimentLoop) allocateIfEnabled(ctx context.Context) {
 	// concurrency / games-budget / min-N takes effect on THIS tick's allocation +
 	// verdict evaluation.
 	e.registry.Reconfigure(cfg.ShadowEffectiveConcurrency, cfg.MaxGames, cfg.VerdictMinN, cfg.VerdictMinPairs)
+	// #1214: mirror the four migrated FLOAT verdict knobs onto the verdict the same way,
+	// so a hot-reloaded verdict_effect_threshold / verdict_min_raw_effect /
+	// verdict_sd_floor / verdict_anchor_margin takes effect on THIS tick's verdict
+	// evaluations. Verdict-only (the registry reads none of them), so it is a separate
+	// forward to the verdict alongside Reconfigure.
+	e.registry.ReconfigureVerdictFloats(cfg.VerdictEffectThreshold, cfg.VerdictMinRawEffect, cfg.VerdictSDFloor, cfg.VerdictAnchorMargin)
 	// Heuristic dynamic declaration (#995): both gates are on (checked above) and the
 	// declarer is opted-in (live experiment_dynamic_enabled, #1044), so let the agent
 	// CHOOSE a fresh experiment to declare — bounded by the LIVE concurrent-experiment
@@ -1265,6 +1275,15 @@ func experimentDefaultsFromEnv() flags.ExperimentDefaults {
 		VerdictMinPairs:            experiment.MinPairsFromEnv(),
 		MaxGames:                   experiment.MaxGamesPerExperimentFromEnv(),
 		ShadowEffectiveConcurrency: experiment.EffectiveConcurrencyFromEnv(),
+		// Verdict-tuning float knobs (#1214): the BOOTSTRAP default each live agent.json
+		// flag (verdict_effect_threshold / verdict_min_raw_effect / verdict_sd_floor /
+		// verdict_anchor_margin) falls back to. These four were migrated FULLY to flags
+		// (no AGENT_VERDICT_* env any more), so the bootstrap default is the verdict's own
+		// Default* constant — the same fail-open value the verdict was constructed with.
+		VerdictEffectThreshold: experiment.DefaultEffectThreshold,
+		VerdictMinRawEffect:    experiment.DefaultMinRawEffect,
+		VerdictSDFloor:         experiment.DefaultSDFloor,
+		VerdictAnchorMargin:    experiment.DefaultAnchorMargin,
 	}
 }
 

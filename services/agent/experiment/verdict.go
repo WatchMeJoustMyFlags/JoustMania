@@ -56,7 +56,8 @@ const (
 	// DefaultEffectThreshold is the minimum |Cohen's d| (standardized mean
 	// difference) for a promote/discard verdict. 0.5 ≈ Cohen's "medium" effect.
 	// Below this magnitude (with N met) the arms are within-noise ⇒ INCONCLUSIVE.
-	// Tune via AGENT_VERDICT_EFFECT_THRESHOLD.
+	// Tune via the verdict_effect_threshold agent.json flag (#1214); this is the
+	// fail-open fallback when flagd is undefined/unreachable.
 	DefaultEffectThreshold = 0.5
 
 	// DefaultMinPairs is the minimum number of COMPLETED Common-Random-Numbers pairs
@@ -81,8 +82,9 @@ const (
 	// VALUE 0.02 = 2% of the ~0..1 fitness range. Rationale: a fitness change smaller
 	// than 2% of the achievable range is below what we'd act on for a party game — it is
 	// in the don't-care band — while every genuinely meaningful effect in practice (and
-	// in the test suite, deltas ≥0.05) clears it comfortably. Tune via
-	// AGENT_VERDICT_MIN_RAW_EFFECT.
+	// in the test suite, deltas ≥0.05) clears it comfortably. Tune via the
+	// verdict_min_raw_effect agent.json flag (#1214); this is the fail-open fallback
+	// when flagd is undefined/unreachable.
 	DefaultMinRawEffect = 0.02
 
 	// DefaultSDFloor is the minimum-standard-deviation floor (#1042, defense in depth):
@@ -94,19 +96,22 @@ const (
 	// VALUE 1e-4: two orders of magnitude below any real-play spread (real per-game
 	// fitness noise is ~0.01+), so it never distorts a real-noise verdict — it only bites
 	// in the degenerate sd→0 regime, where the raw-effect floor is the real gate anyway.
-	// Tune via AGENT_VERDICT_SD_FLOOR.
+	// Tune via the verdict_sd_floor agent.json flag (#1214); this is the fail-open
+	// fallback when flagd is undefined/unreachable.
 	DefaultSDFloor = 1e-4
 )
 
 const (
-	minNEnv      = "AGENT_VERDICT_MIN_N"
-	effectEnv    = "AGENT_VERDICT_EFFECT_THRESHOLD"
-	minPairsEnv  = "AGENT_VERDICT_MIN_PAIRS"
-	minRawEffEnv = "AGENT_VERDICT_MIN_RAW_EFFECT"
-	sdFloorEnv   = "AGENT_VERDICT_SD_FLOOR"
-	// anchorMarginEnv tunes the recent-real regression margin (#992). Falls back to
-	// DefaultAnchorMargin (which mirrors the #1042 raw-effect floor).
-	anchorMarginEnv = "AGENT_VERDICT_ANCHOR_MARGIN"
+	// minNEnv / minPairsEnv stay env-derived (the registry reads them via
+	// MinNFromEnv/MinPairsFromEnv as the BOOTSTRAP DEFAULT the live verdict_min_n /
+	// verdict_min_pairs agent.json flags fall back to, #1044). The other four verdict
+	// knobs (effect threshold, min raw effect, sd floor, anchor margin) were migrated
+	// fully to agent.json flags in #1214 — their env consts are GONE; the verdict's
+	// Default* constants are the fail-open fallback the flags resolve to, and the live
+	// values flow in via the registry's Reconfigure → SetThresholds (mirroring the
+	// min_n/min_pairs seam).
+	minNEnv     = "AGENT_VERDICT_MIN_N"
+	minPairsEnv = "AGENT_VERDICT_MIN_PAIRS"
 )
 
 // DefaultAnchorMargin is the recent-real regression margin (#992): a PROMOTE
@@ -115,7 +120,9 @@ const (
 // (the #1042 practical-significance floor) on purpose — the same "don't act on a
 // fitness change smaller than ~2% of the [0,1] range" don't-care band applies to
 // the secondary cross-check, so a shadow-winner that is within noise of recent
-// real play is NOT treated as a regression. Tune via AGENT_VERDICT_ANCHOR_MARGIN.
+// real play is NOT treated as a regression. Tune via the verdict_anchor_margin
+// agent.json flag (#1214); this is the fail-open fallback when flagd is
+// undefined/unreachable.
 const DefaultAnchorMargin = DefaultMinRawEffect
 
 // RecentRealBaseline is the injected secondary-anchor accessor (#992): given the
@@ -194,11 +201,15 @@ func (g effectSizeGate) Effect(experimental, control journal.Welford) (float64, 
 // FitnessMeasurer and decision loop already use), so a positive effect means the
 // experimental arm beat control.
 type Verdict struct {
-	// mu guards the live-tunable thresholds (minN / minPairs) so SetThresholds
-	// (#1044, called from the experiment loop's tick goroutine) and Evaluate (called
-	// under the registry lock from a ConcludeGame goroutine) never race. The other
-	// fields (effectThreshold / stat) are construction-immutable and read without the
-	// lock.
+	// mu guards EVERY live-tunable threshold so SetThresholds (#1044/#1214, called from
+	// the experiment loop's tick goroutine via the registry's Reconfigure) and Evaluate
+	// (called under the registry lock from a ConcludeGame goroutine) never race. Since
+	// #1214 this covers not just minN / minPairs but the four migrated float knobs
+	// (effectThreshold / minRawEffect / sdFloor / anchorMargin) too — they became LIVE
+	// agent.json flags (verdict_effect_threshold / verdict_min_raw_effect /
+	// verdict_sd_floor / verdict_anchor_margin), so they are now read under the lock and
+	// hot-reloaded the same way min_n/min_pairs were. recentRealBaseline / stat stay
+	// construction-immutable (stat's sdFloor is kept in sync on a live update below).
 	mu sync.RWMutex
 	// minN is the minimum Count both arms must reach for a conclusive TWO-ARM verdict
 	// (the fallback path). Live-tunable via SetThresholds (#1044, verdict_min_n).
@@ -209,17 +220,22 @@ type Verdict struct {
 	minPairs int
 	// effectThreshold is the minimum |effect| for a promote/discard verdict. It gates
 	// both the two-arm Cohen's d and the paired d_z (both are standardized effects).
+	// Live-tunable via SetThresholds (#1214, verdict_effect_threshold); read under mu.
 	effectThreshold float64
 	// minRawEffect is the PRACTICAL-significance floor (#1042): the minimum RAW effect
 	// magnitude (|mean_d| paired / |mean_exp − mean_ctl| two-arm) a promote/discard
 	// requires, on top of the standardized effectThreshold. Below it ⇒ INCONCLUSIVE no
-	// matter how large the standardized effect is. Construction-immutable.
+	// matter how large the standardized effect is. Live-tunable via SetThresholds
+	// (#1214, verdict_min_raw_effect); read under mu.
 	minRawEffect float64
 	// sdFloor is the minimum-SD floor (#1042) applied to the d_z denominator in the
-	// paired path (the two-arm path's floor lives in effectSizeGate.sdFloor).
-	// Construction-immutable.
+	// paired path (the two-arm path's floor lives in effectSizeGate.sdFloor, kept in
+	// sync on a live update). Live-tunable via SetThresholds (#1214, verdict_sd_floor);
+	// read under mu.
 	sdFloor float64
-	// stat is the swappable comparison strategy (default effectSizeGate).
+	// stat is the swappable comparison strategy (default effectSizeGate). The default
+	// gate's sdFloor is kept in sync with v.sdFloor on a live update (SetThresholds), so
+	// the two-arm path tracks the verdict_sd_floor flag too.
 	stat CohortStat
 	// recentRealBaseline is the SECONDARY-ANCHOR accessor (#992): the recent-real
 	// fitness baseline for an objective. nil ⇒ the anchor is absent (the verdict is
@@ -227,7 +243,8 @@ type Verdict struct {
 	// PROMOTE: a shadow-winner that would regress vs recent real play is downgraded to
 	// INCONCLUSIVE. Construction-immutable; wired via WithRecentRealBaseline.
 	recentRealBaseline RecentRealBaseline
-	// anchorMargin is the recent-real regression margin (#992). Construction-immutable.
+	// anchorMargin is the recent-real regression margin (#992). Live-tunable via
+	// SetThresholds (#1214, verdict_anchor_margin); read under mu.
 	anchorMargin float64
 }
 
@@ -265,6 +282,38 @@ func (v *Verdict) SetThresholds(minN, minPairs int) {
 	}
 	if minPairs > 0 {
 		v.minPairs = minPairs
+	}
+}
+
+// SetFloatThresholds live-updates the four migrated float verdict knobs (#1214) so a
+// hot-reload of verdict_effect_threshold / verdict_min_raw_effect / verdict_sd_floor
+// / verdict_anchor_margin takes effect on the NEXT Evaluate with no restart — the
+// float analog of SetThresholds (mirroring the min_n/min_pairs seam). A non-positive
+// value is IGNORED per knob (keeps the current value), the same fail-safe floor the
+// constructor uses: a transient flagd hiccup that resolves a knob to 0 must not
+// silently loosen the gate. The verdict_sd_floor update is also propagated into the
+// default two-arm stat (effectSizeGate.sdFloor) so the two-arm path tracks the flag
+// too; a caller-supplied custom stat is left untouched (it owns its own denominator).
+// It is safe to call concurrently with Evaluate; both take v.mu.
+func (v *Verdict) SetFloatThresholds(effectThreshold, minRawEffect, sdFloor, anchorMargin float64) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if effectThreshold > 0 {
+		v.effectThreshold = effectThreshold
+	}
+	if minRawEffect > 0 {
+		v.minRawEffect = minRawEffect
+	}
+	if sdFloor > 0 {
+		v.sdFloor = sdFloor
+		// Keep the default two-arm gate's floor in sync (it lives in a separate struct).
+		// Only the default effectSizeGate is rebuilt; a custom CohortStat owns its own.
+		if _, ok := v.stat.(effectSizeGate); ok {
+			v.stat = effectSizeGate{sdFloor: sdFloor}
+		}
+	}
+	if anchorMargin > 0 {
+		v.anchorMargin = anchorMargin
 	}
 }
 
@@ -359,30 +408,26 @@ func MinPairsFromEnv() int {
 	return DefaultMinPairs
 }
 
-// NewVerdictFromEnv builds a Verdict from AGENT_VERDICT_MIN_N /
-// AGENT_VERDICT_MIN_PAIRS / AGENT_VERDICT_EFFECT_THRESHOLD, falling back to the
-// defaults on an unset, empty, or invalid value. The default Cohen's d strategy is
-// used for the two-arm fallback path.
+// NewVerdictFromEnv builds the default Verdict for the experiment loop. The min-N /
+// min-pairs gates are seeded from AGENT_VERDICT_MIN_N / AGENT_VERDICT_MIN_PAIRS (the
+// registry's bootstrap defaults), and the four float knobs — effect threshold, min
+// raw effect, sd floor, anchor margin — are seeded from their Default* constants.
+//
+// Since #1214 those four floats are NO LONGER read from env: they are LIVE agent.json
+// flags (verdict_effect_threshold / verdict_min_raw_effect / verdict_sd_floor /
+// verdict_anchor_margin). The constants here are the FAIL-OPEN fallback (the value the
+// flag resolves to when flagd is undefined/unreachable); the live flag values are
+// applied on the first — and every — experiment tick via the registry's Reconfigure →
+// Verdict.SetThresholds / SetFloatThresholds, exactly the seam the min_n/min_pairs
+// siblings use. The anchor margin starts at DefaultAnchorMargin and is re-seeded by
+// WithRecentRealBaseline before the live flag takes over. The default Cohen's d
+// strategy is used for the two-arm fallback path.
 func NewVerdictFromEnv() *Verdict {
 	minN := MinNFromEnv()
 	minPairs := MinPairsFromEnv()
-	threshold := floatFromEnv(effectEnv, DefaultEffectThreshold)
-	minRawEffect := floatFromEnv(minRawEffEnv, DefaultMinRawEffect)
-	sdFloor := floatFromEnv(sdFloorEnv, DefaultSDFloor)
-	// stat=nil so NewVerdictWithFloors builds the default gate WITH the resolved sdFloor.
-	return NewVerdictWithFloors(minN, minPairs, threshold, minRawEffect, sdFloor, nil)
-}
-
-// floatFromEnv resolves a positive float knob from env, falling back to def on an
-// unset, empty, non-numeric, or non-positive value (the same fail-safe convention
-// MinNFromEnv / the effectThreshold parse use).
-func floatFromEnv(key string, def float64) float64 {
-	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
-			return f
-		}
-	}
-	return def
+	// stat=nil so NewVerdictWithFloors builds the default gate WITH the default sdFloor;
+	// the live verdict_sd_floor flag is applied later via SetFloatThresholds.
+	return NewVerdictWithFloors(minN, minPairs, DefaultEffectThreshold, DefaultMinRawEffect, DefaultSDFloor, nil)
 }
 
 // Evaluate computes the current verdict for an experiment from its rolling
@@ -408,12 +453,20 @@ func floatFromEnv(key string, def float64) float64 {
 // so the registry leaves any prior verdict untouched rather than overwriting it
 // with a vacuous one.
 func (v *Verdict) Evaluate(s journal.Summary) (journal.Verdict, bool) {
-	// Snapshot the live-tunable gates ONCE under the lock (#1044) so a concurrent
-	// SetThresholds cannot tear them mid-evaluation; the rest of the method uses the
-	// locals.
+	// Snapshot the live-tunable gates ONCE under the lock (#1044/#1214) so a concurrent
+	// SetThresholds / SetFloatThresholds cannot tear them mid-evaluation; the rest of the
+	// method (and the paired/anchor helpers, which take the snapshot as args) use the
+	// locals. Since #1214 the four float knobs and the comparison strategy are snapshot
+	// here too — they became LIVE flags, so a hot-reload between two Evaluate calls is
+	// honored, but a SINGLE evaluation always sees one coherent set.
 	v.mu.RLock()
 	minN := v.minN
 	minPairs := v.minPairs
+	effectThreshold := v.effectThreshold
+	minRawEffect := v.minRawEffect
+	sdFloor := v.sdFloor
+	anchorMargin := v.anchorMargin
+	stat := v.stat
 	v.mu.RUnlock()
 
 	// PAIRED PATH (#1004): when seed-matched (experimental, control) pairs have
@@ -433,7 +486,7 @@ func (v *Verdict) Evaluate(s journal.Summary) (journal.Verdict, bool) {
 		if a, ok := s.Arms[ArmExperimental]; ok && a != nil {
 			expMean = a.Welford.Mean
 		}
-		return v.evaluatePaired(*s.PairDiff, minPairs, s.Objective, expMean)
+		return v.evaluatePaired(*s.PairDiff, minPairs, effectThreshold, minRawEffect, sdFloor, anchorMargin, s.Objective, expMean)
 	}
 
 	expStat, expOK := s.Arms[ArmExperimental]
@@ -460,8 +513,9 @@ func (v *Verdict) Evaluate(s journal.Summary) (journal.Verdict, bool) {
 		}, true
 	}
 
-	// Effect-size gate: compute the standardized effect via the swappable strategy.
-	effect, ok := v.stat.Effect(exp, ctl)
+	// Effect-size gate: compute the standardized effect via the swappable strategy
+	// (snapshot above so a live verdict_sd_floor change can't swap it mid-evaluation).
+	effect, ok := stat.Effect(exp, ctl)
 	if !ok {
 		// Variance undefined / degenerate (e.g. zero-spread arms) — N is met but we
 		// cannot standardize the difference, so treat it as no signal.
@@ -476,34 +530,34 @@ func (v *Verdict) Evaluate(s journal.Summary) (journal.Verdict, bool) {
 	// PRACTICAL-significance floor (#1042): even a large standardized effect must be
 	// backed by a raw mean difference worth acting on. A tiny-but-consistent delta
 	// (near-deterministic arms ⇒ huge Cohen's d on a meaningless gap) is INCONCLUSIVE.
-	if math.Abs(effect) >= v.effectThreshold && math.Abs(delta) < v.minRawEffect {
+	if math.Abs(effect) >= effectThreshold && math.Abs(delta) < minRawEffect {
 		return journal.Verdict{
 			Outcome:     OutcomeInconclusive,
 			Delta:       delta,
 			Significant: false,
 			Reason: fmt.Sprintf("not practically significant: |delta|=%.4f < min_raw_effect=%.4f (effect=%.3f, n=%d/%d)",
-				math.Abs(delta), v.minRawEffect, effect, exp.Count, ctl.Count),
+				math.Abs(delta), minRawEffect, effect, exp.Count, ctl.Count),
 		}, true
 	}
 
 	switch {
-	case effect >= v.effectThreshold:
+	case effect >= effectThreshold:
 		promote := journal.Verdict{
 			Outcome:     CohortOutcomePromote,
 			Delta:       delta,
 			Significant: true,
 			Reason: fmt.Sprintf("experimental better: effect=%.3f >= threshold=%.2f, |delta|=%.4f >= min_raw=%.4f (n=%d/%d)",
-				effect, v.effectThreshold, math.Abs(delta), v.minRawEffect, exp.Count, ctl.Count),
+				effect, effectThreshold, math.Abs(delta), minRawEffect, exp.Count, ctl.Count),
 		}
 		// SECONDARY anchor (#992): gate the promote against recent real play.
-		return v.applyRecentRealAnchor(promote, s.Objective, exp.Mean), true
-	case effect <= -v.effectThreshold:
+		return v.applyRecentRealAnchor(promote, anchorMargin, s.Objective, exp.Mean), true
+	case effect <= -effectThreshold:
 		return journal.Verdict{
 			Outcome:     CohortOutcomeDiscard,
 			Delta:       delta,
 			Significant: true,
 			Reason: fmt.Sprintf("experimental worse: effect=%.3f <= -threshold=%.2f, |delta|=%.4f >= min_raw=%.4f (n=%d/%d)",
-				effect, v.effectThreshold, math.Abs(delta), v.minRawEffect, exp.Count, ctl.Count),
+				effect, effectThreshold, math.Abs(delta), minRawEffect, exp.Count, ctl.Count),
 		}, true
 	default:
 		return journal.Verdict{
@@ -511,7 +565,7 @@ func (v *Verdict) Evaluate(s journal.Summary) (journal.Verdict, bool) {
 			Delta:       delta,
 			Significant: false,
 			Reason: fmt.Sprintf("within noise: |effect|=%.3f < threshold=%.2f (n=%d/%d)",
-				math.Abs(effect), v.effectThreshold, exp.Count, ctl.Count),
+				math.Abs(effect), effectThreshold, exp.Count, ctl.Count),
 		}, true
 	}
 }
@@ -541,7 +595,10 @@ func (v *Verdict) Evaluate(s journal.Summary) (journal.Verdict, bool) {
 // experimentalValue is the experimental arm's mean fitness (the value a promotion
 // would make the real default) — exp.Mean in the two-arm path, the experimental
 // arm mean in the paired path. objective selects the per-objective baseline.
-func (v *Verdict) applyRecentRealAnchor(verdict journal.Verdict, objective string, experimentalValue float64) journal.Verdict {
+// anchorMargin is the live regression margin snapshotted by Evaluate under v.mu
+// (#1214, verdict_anchor_margin), passed in rather than re-read off v so the whole
+// evaluation sees one coherent set of thresholds.
+func (v *Verdict) applyRecentRealAnchor(verdict journal.Verdict, anchorMargin float64, objective string, experimentalValue float64) journal.Verdict {
 	if verdict.Outcome != CohortOutcomePromote {
 		return verdict // anchor gates promotion only; discard/inconclusive unaffected.
 	}
@@ -558,18 +615,18 @@ func (v *Verdict) applyRecentRealAnchor(verdict journal.Verdict, objective strin
 	// Regression test: the experimental value must not fall below recent real play by
 	// more than the margin. margin mirrors the #1042 practical-significance floor, so a
 	// shadow winner within noise of recent real play is NOT treated as a regression.
-	if experimentalValue < baseline-v.anchorMargin {
+	if experimentalValue < baseline-anchorMargin {
 		return journal.Verdict{
 			Outcome:     OutcomeInconclusive,
 			Delta:       verdict.Delta,
 			Significant: false,
 			Reason: fmt.Sprintf("promote gated by recent-real regression: experimental=%.4f < recent_real=%.4f - margin=%.4f (objective=%q); %s",
-				experimentalValue, baseline, v.anchorMargin, objective, verdict.Reason),
+				experimentalValue, baseline, anchorMargin, objective, verdict.Reason),
 		}
 	}
 	// Anchor cleared — annotate the promote reason so the cross-check is observable.
 	verdict.Reason += fmt.Sprintf(" | recent-real anchor: held (experimental=%.4f >= recent_real=%.4f - margin=%.4f)",
-		experimentalValue, baseline, v.anchorMargin)
+		experimentalValue, baseline, anchorMargin)
 	return verdict
 }
 
@@ -590,7 +647,11 @@ func (v *Verdict) applyRecentRealAnchor(verdict journal.Verdict, objective strin
 // Delta carries mean(d) (the average per-pair fitness improvement) for the audit
 // trail. The bool is always true: a non-nil non-empty PairDiff is a meaningful
 // (possibly interim) verdict the registry should record.
-func (v *Verdict) evaluatePaired(pd journal.Welford, minPairs int, objective string, experimentalMean float64) (journal.Verdict, bool) {
+// effectThreshold / minRawEffect / sdFloor / anchorMargin are the live float knobs
+// (#1214, verdict_effect_threshold / verdict_min_raw_effect / verdict_sd_floor /
+// verdict_anchor_margin) snapshotted by Evaluate under v.mu and passed in, so the
+// paired path and the two-arm path see one coherent threshold set per evaluation.
+func (v *Verdict) evaluatePaired(pd journal.Welford, minPairs int, effectThreshold, minRawEffect, sdFloor, anchorMargin float64, objective string, experimentalMean float64) (journal.Verdict, bool) {
 	meanD := pd.Mean
 
 	if pd.Count < minPairs {
@@ -621,8 +682,8 @@ func (v *Verdict) evaluatePaired(pd journal.Welford, minPairs int, objective str
 	// the raw-effect floor below is now the gate that keeps a zero-spread no-op
 	// inconclusive, so a zero-spread set with a meaningful meanD can legitimately
 	// conclude (floored d_z is large AND |meanD| clears the practical floor).
-	if v.sdFloor > 0 && sdD < v.sdFloor {
-		sdD = v.sdFloor
+	if sdFloor > 0 && sdD < sdFloor {
+		sdD = sdFloor
 	}
 	if sdD == 0 {
 		// Only reachable if the SD floor was disabled (sdFloor<=0) AND the spread is
@@ -642,34 +703,34 @@ func (v *Verdict) evaluatePaired(pd journal.Welford, minPairs int, objective str
 	// a huge d_z on near-deterministic shadow games (the dry-run's d_z=-34 on a ~0.0004
 	// fitness gap). Require |meanD| to clear the minimum meaningful delta before
 	// promote/discard, regardless of d_z magnitude — otherwise INCONCLUSIVE.
-	if math.Abs(dz) >= v.effectThreshold && math.Abs(meanD) < v.minRawEffect {
+	if math.Abs(dz) >= effectThreshold && math.Abs(meanD) < minRawEffect {
 		return journal.Verdict{
 			Outcome:     OutcomeInconclusive,
 			Delta:       meanD,
 			Significant: false,
 			Reason: fmt.Sprintf("paired not practically significant: |mean_d|=%.4f < min_raw_effect=%.4f (d_z=%.3f, pairs=%d)",
-				math.Abs(meanD), v.minRawEffect, dz, pd.Count),
+				math.Abs(meanD), minRawEffect, dz, pd.Count),
 		}, true
 	}
 
 	switch {
-	case dz >= v.effectThreshold:
+	case dz >= effectThreshold:
 		promote := journal.Verdict{
 			Outcome:     CohortOutcomePromote,
 			Delta:       meanD,
 			Significant: true,
 			Reason: fmt.Sprintf("paired: experimental better: d_z=%.3f >= threshold=%.2f, |mean_d|=%.4f >= min_raw=%.4f (pairs=%d)",
-				dz, v.effectThreshold, math.Abs(meanD), v.minRawEffect, pd.Count),
+				dz, effectThreshold, math.Abs(meanD), minRawEffect, pd.Count),
 		}
 		// SECONDARY anchor (#992): gate the paired promote against recent real play.
-		return v.applyRecentRealAnchor(promote, objective, experimentalMean), true
-	case dz <= -v.effectThreshold:
+		return v.applyRecentRealAnchor(promote, anchorMargin, objective, experimentalMean), true
+	case dz <= -effectThreshold:
 		return journal.Verdict{
 			Outcome:     CohortOutcomeDiscard,
 			Delta:       meanD,
 			Significant: true,
 			Reason: fmt.Sprintf("paired: experimental worse: d_z=%.3f <= -threshold=%.2f, |mean_d|=%.4f >= min_raw=%.4f (pairs=%d)",
-				dz, v.effectThreshold, math.Abs(meanD), v.minRawEffect, pd.Count),
+				dz, effectThreshold, math.Abs(meanD), minRawEffect, pd.Count),
 		}, true
 	default:
 		return journal.Verdict{
@@ -677,7 +738,7 @@ func (v *Verdict) evaluatePaired(pd journal.Welford, minPairs int, objective str
 			Delta:       meanD,
 			Significant: false,
 			Reason: fmt.Sprintf("paired within noise: |d_z|=%.3f < threshold=%.2f (pairs=%d)",
-				math.Abs(dz), v.effectThreshold, pd.Count),
+				math.Abs(dz), effectThreshold, pd.Count),
 		}, true
 	}
 }

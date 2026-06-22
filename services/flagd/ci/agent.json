@@ -496,6 +496,42 @@
       },
       "defaultVariant": "default"
     },
+    "verdict_effect_threshold": {
+      "state": "ENABLED",
+      "variants": {
+        "small": 0.2,
+        "default": 0.5,
+        "large": 0.8
+      },
+      "defaultVariant": "default"
+    },
+    "verdict_min_raw_effect": {
+      "state": "ENABLED",
+      "variants": {
+        "loose": 0.01,
+        "default": 0.02,
+        "strict": 0.05
+      },
+      "defaultVariant": "default"
+    },
+    "verdict_sd_floor": {
+      "state": "ENABLED",
+      "variants": {
+        "tight": 0.00001,
+        "default": 0.0001,
+        "loose": 0.001
+      },
+      "defaultVariant": "default"
+    },
+    "verdict_anchor_margin": {
+      "state": "ENABLED",
+      "variants": {
+        "loose": 0.01,
+        "default": 0.02,
+        "strict": 0.05
+      },
+      "defaultVariant": "default"
+    },
     "experiment_max_games": {
       "state": "ENABLED",
       "variants": {
