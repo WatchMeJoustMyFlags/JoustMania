@@ -1082,23 +1082,24 @@ func (f *Flags) llmGate(ctx context.Context) LLMGate {
 	}
 }
 
-// eligibleGameKinds resolves the llm.eligible_game_kinds array into []string. The
-// flag's variants are JSON arrays, surfaced as []any of strings (same shape as
-// interventions_allowed). On any error or unparseable shape it falls back to the
-// default ["real"] — fail-closed to shadow-games-rules-only, NOT to empty, which
-// would disable llm entirely.
+// eligibleGameKinds resolves the llm.eligible_game_kinds allow-list into []string.
+// The flag is a STRING flag whose variants are comma-separated game kinds (e.g.
+// "real,shadow"); `none` is the empty string. It is deliberately NOT a LIST/array
+// flag: array-valued variants are rejected by flagd's JSON schema
+// (`got array, want boolean`), so the whole flag fails to load and the agent
+// silently falls back to the default — exactly the #1221 bug (same class as the
+// interventions_allowed #1127 fix). A STRING flag is read cleanly by the RPC
+// resolver, so the live variant is honored. On a resolution error it falls back to
+// the default ["real"] — fail-closed to shadow-games-rules-only, NOT to empty,
+// which would disable llm entirely. The empty string (`none` variant) is a valid
+// intentional state and yields an empty list (llm disabled), distinct from an error.
 func (f *Flags) eligibleGameKinds(ctx context.Context) []string {
-	raw, err := f.client.ObjectValue(ctx, keyLLMEligibleGameKinds, defaultLLMEligibleGameKinds(), openfeature.EvaluationContext{})
+	raw, err := f.client.StringValue(ctx, keyLLMEligibleGameKinds, "real", openfeature.EvaluationContext{})
 	if err != nil {
 		f.log.Debug("flags.llm.eligible_game_kinds fell back to default", "error", err)
 		return defaultLLMEligibleGameKinds()
 	}
-	list, ok := toStringSlice(raw)
-	if !ok {
-		f.log.Warn("flags.llm.eligible_game_kinds had unexpected shape, using default", "value", raw)
-		return defaultLLMEligibleGameKinds()
-	}
-	return list
+	return parseCSVList(raw)
 }
 
 // toFloatMap coerces an OpenFeature object value into map[string]float64.
@@ -1139,26 +1140,5 @@ func toFloat(v any) (float64, bool) {
 		return float64(n), true
 	default:
 		return 0, false
-	}
-}
-
-// toStringSlice coerces an OpenFeature object value into []string. Accepts an
-// already-typed []string and the []any flagd shape with string leaves.
-func toStringSlice(raw any) ([]string, bool) {
-	switch s := raw.(type) {
-	case []string:
-		return append([]string(nil), s...), true
-	case []any:
-		out := make([]string, 0, len(s))
-		for _, v := range s {
-			str, ok := v.(string)
-			if !ok {
-				return nil, false
-			}
-			out = append(out, str)
-		}
-		return out, true
-	default:
-		return nil, false
 	}
 }

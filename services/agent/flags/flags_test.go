@@ -345,16 +345,15 @@ func TestInterventionsAllowed_StringFlag(t *testing.T) {
 }
 
 // TestEvaluate_LLMGate_FlagdShape: the three #847 gate flags resolve through the
-// typed getters into the LLMGate struct. eligible_game_kinds is an array object,
+// typed getters into the LLMGate struct. eligible_game_kinds is a comma-separated
+// STRING (#1221: array variants are schema-rejected by flagd),
 // min_decision_interval_seconds is float seconds -> Duration, max_requests_per_minute
 // is an int.
 func TestEvaluate_LLMGate_FlagdShape(t *testing.T) {
 	stub := stubEvaluator{
-		objects: map[string]any{
-			keyLLMEligibleGameKinds: []any{"real", "shadow"},
-		},
-		floats: map[string]float64{keyLLMMinDecisionInterval: 30, keyLLMLatencyBudget: 4},
-		ints:   map[string]int64{keyLLMMaxRequestsPerMin: 12},
+		strings: map[string]string{keyLLMEligibleGameKinds: "real,shadow"},
+		floats:  map[string]float64{keyLLMMinDecisionInterval: 30, keyLLMLatencyBudget: 4},
+		ints:    map[string]int64{keyLLMMaxRequestsPerMin: 12},
 	}
 	got := New(stub, nil).Evaluate(context.Background()).LLMGate
 	if !reflect.DeepEqual(got.EligibleGameKinds, []string{"real", "shadow"}) {
@@ -402,16 +401,17 @@ func TestEvaluate_LLMGate_NonPositiveLatencyBudgetFallsBack(t *testing.T) {
 	}
 }
 
-// TestEvaluate_LLMGate_BadEligibilityShapeFallsBack: an unparseable
-// eligible_game_kinds value falls back to ["real"], NOT empty (fail-closed to
+// TestEvaluate_LLMGate_UnreadableEligibilityFallsBack: when eligible_game_kinds
+// cannot be resolved (a flagd read error — e.g. the #1221 schema rejection of the
+// old array variants), the gate falls back to ["real"], NOT empty (fail-closed to
 // shadow-rules-only, not to llm-disabled).
-func TestEvaluate_LLMGate_BadEligibilityShapeFallsBack(t *testing.T) {
-	stub := stubEvaluator{objects: map[string]any{
-		keyLLMEligibleGameKinds: map[string]any{"unexpected": true},
+func TestEvaluate_LLMGate_UnreadableEligibilityFallsBack(t *testing.T) {
+	stub := stubEvaluator{errs: map[string]error{
+		keyLLMEligibleGameKinds: errors.New("flagd schema rejection"),
 	}}
 	got := New(stub, nil).Evaluate(context.Background()).LLMGate
 	if !reflect.DeepEqual(got.EligibleGameKinds, []string{"real"}) {
-		t.Errorf("EligibleGameKinds = %v, want default [real] on bad shape", got.EligibleGameKinds)
+		t.Errorf("EligibleGameKinds = %v, want default [real] on read error", got.EligibleGameKinds)
 	}
 }
 
