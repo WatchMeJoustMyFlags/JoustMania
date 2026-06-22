@@ -117,9 +117,9 @@
     "llm.eligible_game_kinds": {
       "state": "ENABLED",
       "variants": {
-        "none": [],
-        "real_only": ["real"],
-        "real_and_shadow": ["real", "shadow"]
+        "none": "",
+        "real_only": "real",
+        "real_and_shadow": "real,shadow"
       },
       "defaultVariant": "real_only"
     },
@@ -517,7 +517,7 @@
     "verdict_sd_floor": {
       "state": "ENABLED",
       "variants": {
-        "tight": 0.00001,
+        "tight": 1e-05,
         "default": 0.0001,
         "loose": 0.001
       },
