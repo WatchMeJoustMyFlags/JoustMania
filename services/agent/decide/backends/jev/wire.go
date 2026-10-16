@@ -257,11 +257,17 @@ type jevAnswer struct {
 	Noul          *float64           `json:"noul"`
 }
 
-// renormalizeTolerance: Jev's probabilities are floats rounded to two decimals
-// (observed on jev-1.13.0), so with many options their sum can miss 1 by a few
-// hundredths; a sum this close to 1 is rescaled before decide.Validate's
-// tighter check. A sum further off is left for Validate to reject.
-const renormalizeTolerance = 5e-2
+// renormalizeTolerance is the minimum rescale tolerance. Jev's probabilities
+// are floats rounded to two decimals (observed on jev-1.13.0), so over n options
+// their sum can miss 1 by up to n*roundingSlack; a sum within
+// max(renormalizeTolerance, n*roundingSlack) of 1 is rescaled before
+// decide.Validate's tighter check. A sum further off is left for Validate to
+// reject. Rescaling is safe because toAnswer first requires every option to be
+// present (no missing mass is silently redistributed).
+const (
+	renormalizeTolerance = 5e-2
+	roundingSlack        = 5e-3
+)
 
 // exactSumTolerance: a sum this close to 1 is left as is (no float noise from
 // rescaling an already normalized distribution).
@@ -329,6 +335,9 @@ func toAnswer(q decide.Question, ja jevAnswer) (decide.Answer, *float64, error) 
 		if ja.Type != typeChoice || ja.Choice == nil || ja.Confidence == nil {
 			return a, nil, fmt.Errorf("want a choice answer with choice and confidence, got type %q", clip(ja.Type, 32))
 		}
+		if err := coversOptions(q, ja.Probabilities); err != nil {
+			return a, nil, err
+		}
 		a.Choice = *ja.Choice
 		a.Probabilities = renormalize(ja.Probabilities)
 		a.Confidence = *ja.Confidence
@@ -374,17 +383,36 @@ func actingConfidence(choice string, probs map[string]float64) float64 {
 	return math.Max(0, math.Min(1, c))
 }
 
-// renormalize rescales a distribution whose sum is within renormalizeTolerance
-// of 1; anything else is left for decide.Validate to reject.
+// coversOptions requires a choice answer's probabilities to cover exactly q's
+// options. Jev documents "every option mapped to its probability"; a missing
+// option would otherwise read as p=0 (decide.Validate allows omitted options),
+// and a missing noop would turn ffa.intervention's acting confidence
+// 1 - p(noop) into a false 1.0.
+func coversOptions(q decide.Question, probs map[string]float64) error {
+	if len(probs) != len(q.Options) {
+		return fmt.Errorf("probabilities cover %d options, want all %d", len(probs), len(q.Options))
+	}
+	for _, o := range q.Options {
+		if _, ok := probs[o]; !ok {
+			return fmt.Errorf("no probability for option %q", clip(o, 64))
+		}
+	}
+	return nil
+}
+
+// renormalize rescales a distribution whose sum is within
+// max(renormalizeTolerance, n*roundingSlack) of 1; anything else is left for
+// decide.Validate to reject.
 func renormalize(in map[string]float64) map[string]float64 {
 	if len(in) == 0 {
 		return in
 	}
+	tolerance := math.Max(renormalizeTolerance, float64(len(in))*roundingSlack)
 	var sum float64
 	for _, p := range in {
 		sum += p
 	}
-	if !isFinite(sum) || sum <= 0 || math.Abs(sum-1) <= exactSumTolerance || math.Abs(sum-1) > renormalizeTolerance {
+	if !isFinite(sum) || sum <= 0 || math.Abs(sum-1) <= exactSumTolerance || math.Abs(sum-1) > tolerance {
 		return in
 	}
 	out := make(map[string]float64, len(in))

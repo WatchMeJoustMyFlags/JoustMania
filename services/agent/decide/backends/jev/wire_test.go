@@ -63,6 +63,17 @@ func TestRenormalize(t *testing.T) {
 	if got := renormalize(exact); got["a"] != 0.77 {
 		t.Errorf("exact sum must be untouched: %v", got)
 	}
+	// 17 options rounded to 2 decimals can miss 1 by up to 0.085: rescaled.
+	wide := map[string]float64{}
+	for i := 0; i < 17; i++ {
+		wide[string(rune('a'+i))] = 0.0635 // sum 1.0795
+	}
+	if got := renormalize(wide); math.Abs(got["a"]*17-1) > 1e-12 {
+		t.Errorf("17-option rounding miss not rescaled: %v", got["a"])
+	}
+	if got := renormalize(map[string]float64{"a": 0.5, "b": 0.44}); got["a"] != 0.5 {
+		t.Errorf("2 options: 0.06 off exceeds max(0.05, 2*0.005), must be left for Validate: %v", got)
+	}
 	if got := renormalize(nil); got != nil {
 		t.Errorf("nil = %v", got)
 	}
@@ -197,5 +208,21 @@ func TestNativeConfidenceJSON(t *testing.T) {
 	}
 	if nativeConfidenceJSON(nil) != "" {
 		t.Error("empty map must render empty")
+	}
+}
+
+func TestScrub(t *testing.T) {
+	for _, in := range []string{
+		`{"detail":"bad key apikey_AbC123-xyz_456"}`,
+		`{"detail":"sk-abcdef123456"}`,
+		`Authorization: Bearer abc.def-123`,
+	} {
+		out := scrub(in)
+		if !strings.Contains(out, "[redacted]") || strings.Contains(out, "AbC123") || strings.Contains(out, "abcdef123456") || strings.Contains(out, "abc.def-123") {
+			t.Errorf("scrub(%q) = %q", in, out)
+		}
+	}
+	if got := scrub("apikey_ab"); got != "apikey_ab" {
+		t.Errorf("too short to be a key: %q", got)
 	}
 }

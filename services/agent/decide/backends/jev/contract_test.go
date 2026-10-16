@@ -182,6 +182,25 @@ var responseContracts = []responseContract{
 		body: mutated(func(m map[string]any) { answer(m, "ffa.magnitude")["type"] = "noul" })},
 	{name: "missing confidence", req: testRequest, errType: "invalid_output", isInvalid: true,
 		body: mutated(func(m map[string]any) { delete(answer(m, "ffa.target"), "confidence") })},
+	// Review probe (#1261): options missing from probabilities must not read as
+	// p=0 (a missing noop would make the acting confidence a false 1.0).
+	{name: "probabilities miss options", req: testRequest, errType: "invalid_output", isInvalid: true,
+		body: mutated(func(m map[string]any) {
+			a := answer(m, "ffa.intervention")
+			a["choice"] = "grant_shield"
+			a["confidence"] = 0.1
+			a["probabilities"] = map[string]any{"grant_shield": 0.5, "eliminate_player": 0.46}
+		})},
+	{name: "probabilities miss noop only", req: testRequest, errType: "invalid_output", isInvalid: true,
+		body: mutated(func(m map[string]any) {
+			delete(answer(m, "ffa.intervention")["probabilities"].(map[string]any), "noop")
+		})},
+	{name: "probability for an unknown option", req: testRequest, errType: "invalid_output", isInvalid: true,
+		body: mutated(func(m map[string]any) {
+			p := answer(m, "ffa.target")["probabilities"].(map[string]any)
+			delete(p, "MOCK0002")
+			p["MOCK9999"] = 0.02
+		})},
 	{name: "no answers", req: testRequest, errType: "no_answers", isInvalid: true,
 		body: mutated(func(m map[string]any) { m["answers"] = map[string]any{} })},
 	{name: "noul out of range", req: noulRequest, errType: "invalid_output", isInvalid: true,

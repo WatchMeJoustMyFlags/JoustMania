@@ -233,8 +233,9 @@ func (b *Backend) finish(ctx context.Context, span trace.Span, start time.Time, 
 	metrics.RecordDuration(ctx, mc, errType, duration)
 }
 
-// secretPattern matches credential-looking substrings ("sk-...", "Bearer ...").
-var secretPattern = regexp.MustCompile(`(?i)(sk-[a-z0-9_\-]{6,}|bearer\s+[a-z0-9._\-]+)`)
+// secretPattern matches credential-looking substrings ("sk-...", TypeSafe's
+// "apikey_...", "Bearer ...").
+var secretPattern = regexp.MustCompile(`(?i)(sk-[a-z0-9_\-]{6,}|apikey_[a-z0-9_\-]{6,}|bearer\s+[a-z0-9._\-]+)`)
 
 // scrub redacts credential-looking substrings from vendor error text. The
 // result is still untrusted: callers must not record error strings verbatim on

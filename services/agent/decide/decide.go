@@ -13,6 +13,10 @@
 // Answer.Noul. Its Confidence is backend-defined like every other; the jev
 // backend uses |2p-1| (TypeSafe's documented choice formula for two outcomes).
 //
+// Only the routing answer's confidence (ffa.intervention, what the router
+// gates on) is required to follow the "acting is right" semantics below; other
+// answers (target, magnitude, noul) may carry backend-native confidence.
+//
 // Confidence is the backend's confidence that ACTING on the answer is right. Its
 // derivation is backend-defined (the rules adapter uses 1 - p(noop) for an
 // intervention, a model may report its own), but it is always in [0,1] and is

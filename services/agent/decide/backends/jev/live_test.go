@@ -94,7 +94,7 @@ func TestLiveErrors(t *testing.T) {
 			req, _ := http.NewRequest(http.MethodPost, DefaultBaseURL+wirePath, strings.NewReader(tc.body))
 			setAuth(req.Header, tc.key)
 			req.Header.Set("Content-Type", "application/json")
-			resp, err := http.DefaultClient.Do(req)
+			resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
 			if err != nil {
 				t.Fatal(err)
 			}

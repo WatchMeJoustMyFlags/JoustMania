@@ -23,7 +23,7 @@ The request id comes back only as the `x-typesafe-request-id` header; it becomes
 
 | our question (`decide`) | Jev primitive | criteria we send | answer mapping |
 |---|---|---|---|
-| `choice` | `choice` | ordered `{option: description}` (`criteria.go`): lever effects for `ffa.intervention`, one sentence per player for `ffa.target` (status, signals and their rank among the alive players, computed in code), `null` otherwise | `choice`, `probabilities` (rescaled if the sum is within 0.05 of 1) |
+| `choice` | `choice` | ordered `{option: description}` (`criteria.go`): lever effects for `ffa.intervention`, one sentence per player for `ffa.target` (status, signals and their rank among the alive players, computed in code), `null` otherwise | `choice`, `probabilities`: these must cover every option exactly, otherwise the answer is invalid. They are rescaled when the sum is within max(0.05, n·0.005) of 1 |
 | `score` | `score` | a 5-level ladder, lowest to highest setting; for `ffa.magnitude` each level lists the value it resolves to per allowed numeric lever, and the end levels say what that value does | Jev's `score` s in [0, 4] maps to `lo + s/4 * (hi - lo)` of `Question.Range` |
 | `noul` (new kind, #1229) | `noul` | none | `Answer.Noul` = P(yes) |
 
@@ -32,9 +32,13 @@ kind, elapsed seconds, the alive serials, the players and the narrative. Never
 `Request.Context`, and not the digest or game id. Non-finite readings are
 dropped (Jev rejects them with a 400).
 
-Choice options keep `Question.Options` order on the wire. The docs say Jev 1.13
-leans toward the first option, and our first options are `noop` and `none`, the
-conservative ones.
+Choice options keep `Question.Options` order on the wire, and the first
+options are `noop` and `none`.
+
+**Known bias, chosen to fail safe.** The jev-1.13 jaggedness doc says the model
+leans toward the first option of a choice. We put `noop` (and `none`) first
+on purpose, so any order bias pushes toward doing nothing, never toward
+acting. #1262 measures how big the bias is.
 
 ### Confidence
 
