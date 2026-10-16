@@ -13,6 +13,13 @@ services:
     ports:
       - "8013:8013"  # flagd RPC evaluation port (gRPC)
 
+  # Flag service - Expose the HTTP API so integration tests can write flags and
+  # read /state directly (#1408). Test/dev only; the host path in production is
+  # envoy's /flags/ route (C-015).
+  flag-service:
+    ports:
+      - "8070:8070"
+
   # Controller Manager - Expose ports for testing
   controller-manager:
     expose:

@@ -75,18 +75,70 @@ services:
     restart: "no"
     logging: *default-logging
 
-  # flagd for feature flag evaluation
+  # Flag service (epic #1407, UC-053, docs/specs/services.md §7): holds the
+  # runtime flag state in memory and serves it to flagd as ONE flagd.sync.v1
+  # gRPC sync source; every flag carries its metadata.flagSetId, so clients keep
+  # their flagSetId selectors. It loads the flag files read-only at start and
+  # never writes them (C-030, C-033). Migration (architecture note §12): only
+  # the sets in FLAG_SERVICE_SETS are served by it; the others stay on flagd's
+  # file: sources until their writers move (#1411, #1412, #1415, #1420).
+  # Writers: HTTP/JSON on 8070 (envoy /flags/ from the host, C-015). flagd: 50064.
+  flag-service:
+    image: ghcr.io/watchmejoustmyflags/joustmania/flag-service:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: services/flag-service/Dockerfile
+    container_name: joustmania-flag-service
+    expose:
+      - "50064"  # flagd.sync.v1 gRPC (flagd only)
+      - "8070"   # HTTP/JSON write/read API + /healthz
+    environment:
+      - FLAG_SERVICE_SETS=system,observability
+      - FLAG_SERVICE_BASELINE_DIR=/etc/flagd
+      # Admin settings persisted on request (D10, re-review N4). One state file
+      # per stack: the ci, dry-run and decide-e2e stacks override the name.
+      - FLAG_SERVICE_STATE_FILE=/var/lib/flag-service/admin.json
+      - OTEL_SERVICE_NAME=flag-service
+      - OTEL_SERVICE_NAMESPACE=infrastructure
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
+      - SERVICE_VERSION=${IMAGE_TAG:-dev}
+    volumes:
+      # Read-only from the start: the service never writes the flag files.
+      - ./services/flagd:/etc/flagd:ro
+      - flag-service-state:/var/lib/flag-service
+    healthcheck:
+      test: ["CMD", "/flag-service", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 2s
+    networks:
+      - joustmania
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 64m
+          cpus: '0.25'
+    logging: *default-logging
+
+  # flagd for feature flag evaluation. The sets the flag service serves come
+  # over ONE gRPC sync source (grpc://flag-service:50064); the others are still
+  # file: sources (architecture note §12). flagd exits when a gRPC source is
+  # unreachable at its own start, so it starts only once the flag service is
+  # healthy, and restarts with it (restart: true; `scripts/flags.sh restart`).
+  # No readyz health check: in v0.16.0 readyz never turns true with a gRPC
+  # source (flagd #1985), so dependents keep condition: service_started.
   flagd:
     image: ghcr.io/open-feature/flagd:v0.16.0
     container_name: joustmania-flagd
     command:
       - "start"
       - "--uri"
-      - "file:/etc/flagd/system.json"
+      - "grpc://flag-service:50064"
       - "--uri"
       - "file:/etc/flagd/controller.json"
-      - "--uri"
-      - "file:/etc/flagd/observability.json"
       - "--uri"
       - "file:/etc/flagd/game.json"
       - "--uri"
@@ -108,6 +160,10 @@ services:
       # Mount directory (not individual files) so inotify detects edits
       # (editors do atomic save via temp+rename, which changes the inode)
       - ./services/flagd:/etc/flagd
+    depends_on:
+      flag-service:
+        condition: service_healthy
+        restart: true
     ports:
       # Sync port exposed on host for pairing-daemon (network_mode: host)
       - "8015:8015"
@@ -409,6 +465,8 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
       - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
       - SERVICE_VERSION=${IMAGE_TAG:-dev}
+      # Game lifecycle reported to the flag service (FR-125, #1410)
+      - FLAG_SERVICE_URL=http://flag-service:8070
     depends_on:
       flagd:
         condition: service_started
@@ -846,6 +904,9 @@ networks:
     name: joustmania-network
 
 volumes:
+  # Flag service admin state (D10): only admin values written with persist.
+  flag-service-state:
+  prometheus-data:
   victoria-metrics-data:
   grafana-data:
   loki-data:

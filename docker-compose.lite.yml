@@ -48,18 +48,52 @@ services:
     volumes:
       - ./services/flagd:/etc/flagd
     restart: "no"
-  # flagd for feature flag evaluation
+  # Flag service (epic #1407): runtime flags in memory, served to flagd as ONE
+  # gRPC sync source for the sets in FLAG_SERVICE_SETS (the rest stay file:
+  # sources during the migration). Same contract as docker-compose.yml; no OTel
+  # export here (no collector in lite). Memory limit 64 MiB (NFR-051).
+  flag-service:
+    image: ghcr.io/watchmejoustmyflags/joustmania/flag-service:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: services/flag-service/Dockerfile
+    container_name: joustmania-flag-service
+    expose:
+      - "50064"
+      - "8070"
+    environment:
+      - FLAG_SERVICE_SETS=system,observability
+      - FLAG_SERVICE_BASELINE_DIR=/etc/flagd
+      - FLAG_SERVICE_STATE_FILE=/var/lib/flag-service/admin.json
+    volumes:
+      - ./services/flagd:/etc/flagd:ro
+      - flag-service-state:/var/lib/flag-service
+    healthcheck:
+      test: ["CMD", "/flag-service", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 2s
+    networks:
+      - joustmania
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 64m
+          cpus: '0.25'
+
+  # flagd for feature flag evaluation. Served sets come over the flag service's
+  # gRPC sync source; flagd starts after it is healthy and restarts with it.
   flagd:
     image: ghcr.io/open-feature/flagd:v0.16.0
     container_name: joustmania-flagd
     command:
       - "start"
       - "--uri"
-      - "file:/etc/flagd/system.json"
+      - "grpc://flag-service:50064"
       - "--uri"
       - "file:/etc/flagd/controller.json"
-      - "--uri"
-      - "file:/etc/flagd/observability.json"
       - "--uri"
       - "file:/etc/flagd/game.json"
       - "--uri"
@@ -79,6 +113,10 @@ services:
       - ./services/flagd/agent.json:/etc/flagd/agent.json
       - ./services/flagd/interventions.json:/etc/flagd/interventions.json
       - ./services/flagd/rollout.json:/etc/flagd/rollout.json
+    depends_on:
+      flag-service:
+        condition: service_healthy
+        restart: true
     expose:
       - "8013"
       - "8015"
@@ -207,6 +245,7 @@ services:
       - "50053"
     environment:
       - OTEL_SDK_DISABLED=true
+      - FLAG_SERVICE_URL=http://flag-service:8070
     depends_on:
       flagd:
         condition: service_started
@@ -340,4 +379,5 @@ networks:
     name: joustmania-network
 
 volumes:
+  flag-service-state:
   controller-names:

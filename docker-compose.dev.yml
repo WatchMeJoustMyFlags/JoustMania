@@ -15,6 +15,13 @@
 #   docker compose restart game-coordinator
 
 services:
+  # Flag service (Go, no source mount): always built from this checkout, never
+  # pulled. The flag semantics every other service sees come from it, so a
+  # pulled :latest that lags the checkout would test old behaviour; `compose
+  # pull` skips a pull_policy=build service (#1407).
+  flag-service:
+    pull_policy: build
+
   controller-manager:
     volumes:
       - ./services/controller_manager:/app/services/controller_manager

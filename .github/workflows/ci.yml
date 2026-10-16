@@ -61,6 +61,8 @@ jobs:
       rust: ${{ steps.f.outputs.rust }}
       agent: ${{ steps.f.outputs.agent }}
       agent_tests: ${{ steps.f.outputs.agent_tests }}
+      flag_service: ${{ steps.f.outputs.flag_service }}
+      flag_service_tests: ${{ steps.f.outputs.flag_service_tests }}
       dockerfiles: ${{ steps.f.outputs.dockerfiles }}
       specs: ${{ steps.f.outputs.specs }}
       spec_code: ${{ steps.f.outputs.spec_code }}
@@ -112,6 +114,15 @@ jobs:
             agent_tests:
               - 'services/agent/**'
               - 'services/flagd/**'
+            # Flag service (epic #1407): the image ...
+            flag_service:
+              - 'services/flag-service/**'
+            # ... and its tests, which also read the baseline flag files and
+            # docs/specs/flags.md (registry sync test).
+            flag_service_tests:
+              - 'services/flag-service/**'
+              - 'services/flagd/**'
+              - 'docs/specs/flags.md'
             dockerfiles:
               - '**/Dockerfile'
               - '.hadolint.yaml'
@@ -249,6 +260,7 @@ jobs:
           CH_PYTHON_HID: ${{ steps.f.outputs.python_hid }}
           CH_CONNECT_PROXY: ${{ steps.f.outputs.connect_proxy }}
           CH_AGENT: ${{ steps.f.outputs.agent }}
+          CH_FLAG_SERVICE: ${{ steps.f.outputs.flag_service }}
           CH_DASHBOARD: ${{ steps.f.outputs.dashboard }}
           CH_RUST: ${{ steps.f.outputs.rust }}
           CH_OTEL_COLLECTOR: ${{ steps.f.outputs.otel_collector }}
@@ -288,6 +300,7 @@ jobs:
           }
           maybe_extra "$CH_CONNECT_PROXY"  connect-proxy  services/connect-proxy/Dockerfile . connect-proxy
           maybe_extra "$CH_AGENT"          agent          services/agent/Dockerfile         . agent
+          maybe_extra "$CH_FLAG_SERVICE"   flag-service   services/flag-service/Dockerfile  . flag-service
           maybe_extra "$CH_DASHBOARD"      dashboard      services/dashboard/Dockerfile     . dashboard
           maybe_extra "$CH_RUST"           rust-hid       services/rust-hid/Dockerfile      . rust-hid
           maybe_extra "$CH_PYTHON_HID"     python-hid     services/python_hid/Dockerfile    . python-hid
@@ -298,7 +311,7 @@ jobs:
             echo "docker_extra=$(printf '%s\n' "${extra[@]}" | jq -sc .)" >> "$GITHUB_OUTPUT"
           fi
 
-          # retag matrix: the 10 release.yml images NOT built this run — on main
+          # retag matrix: the 11 release.yml images NOT built this run — on main
           # pushes they still need a :<sha> tag for release tagging
           retag=()
           maybe_retag() {
@@ -314,6 +327,7 @@ jobs:
           maybe_retag "$CH_RUST"               rust-hid
           maybe_retag "$CH_PYTHON_HID"         python-hid
           maybe_retag "$CH_OTEL_COLLECTOR"     otel-collector
+          maybe_retag "$CH_FLAG_SERVICE"       flag-service
           echo "retag=$(json_array "${retag[@]}")" >> "$GITHUB_OUTPUT"
 
   # Build and test shared packages (proto, lib)
@@ -512,6 +526,30 @@ jobs:
         working-directory: services/agent
         run: |
           go mod tidy
+          go test -v -race ./...
+          go vet ./...
+
+  # Go flag service tests (epic #1407, UC-053)
+  flag-service-tests:
+    name: Flag Service Tests
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.flag_service_tests == 'true' || needs.changes.outputs.run_all_checks == 'true'
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache-dependency-path: services/flag-service/go.sum
+
+      - name: Run tests
+        working-directory: services/flag-service
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
           go test -v -race ./...
           go vet ./...
 
@@ -803,7 +841,8 @@ jobs:
           # Read-only: the publish job (docker-build-extra) owns the agent scope.
           cache-from: type=gha,scope=agent
 
-      # Fast path: pull latest images, overlay current source (agent: HEAD build above).
+      # Fast path: pull latest images, overlay current source (agent: HEAD build above;
+      # flag-service: built at HEAD by compose, pull_policy build in docker-compose.dev.yml).
       # PYTEST_EXTRA="--reruns 1" (#925): tolerate a single integration flake so
       # one flake no longer skips image publish. Generic — reruns ANY failure
       # once, never quarantines a test by name.
@@ -998,6 +1037,7 @@ jobs:
       - service-checks
       - rust-checks
       - agent-tests
+      - flag-service-tests
       - script-tests
       - telemetry-contract
       - flagd-contract

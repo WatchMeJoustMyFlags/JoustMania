@@ -35,6 +35,12 @@
 # copy on; we do NOT mutate the committed flag here so the default stays safe.
 
 services:
+  # Flag service: the dry-run/demo stack keeps its own admin state file, apart
+  # from the CI one it layers on (re-review N4: one state file per stack).
+  flag-service:
+    environment:
+      - FLAG_SERVICE_STATE_FILE=/var/lib/flag-service/admin-dry-run.json
+
   agent:
     profiles:
       - agent

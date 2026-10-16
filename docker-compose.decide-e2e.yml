@@ -55,6 +55,11 @@ services:
       retries: 10
       start_period: 1s
 
+  # Flag service: its own admin state file for this stack (re-review N4).
+  flag-service:
+    environment:
+      - FLAG_SERVICE_STATE_FILE=/var/lib/flag-service/admin-decide-e2e.json
+
   agent:
     # Serve/write the SAME flag dir flagd serves in ci-mode (the
     # docker-compose.dry-run.yml #999 fix): the agent's interventions.json writes
