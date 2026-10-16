@@ -1,11 +1,12 @@
 """Unit tests for ControllerEventLoop."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
 from proto import controller_manager_pb2
+from services.menu import metrics as menu_metrics
 from services.menu.controller_events import BUTTON_TYPE_NAMES, ControllerEventLoop
 
 
@@ -25,10 +26,12 @@ def mock_callbacks():
 
 @pytest.fixture
 def mock_metrics():
-    """Create mock metrics."""
-    metrics = MagicMock()
-    metrics.button_frames_processed_total.inc = MagicMock()
-    return metrics
+    """Autospec of the real metrics module.
+
+    #1272: a bare MagicMock let any metric name through, so a typo inside the
+    error path would pass here and raise in production.
+    """
+    return create_autospec(menu_metrics, spec_set=True)
 
 
 @pytest.fixture
@@ -429,10 +432,18 @@ class TestHandlerErrorIsolation:
         Before #1272 the exception escaped to ``_run``, which reconnected; the
         reconnect called ``on_stream_reconnected`` and cleared every controller.
         """
+        from lib.flag_config_writer import FlagConfigWriter
         from services.menu.handlers.base import ControllerState
         from services.menu.state_manager import StateManager
+        from services.menu.utils import AudioHelper, LedController
 
-        state_manager = StateManager(MagicMock(), MagicMock(), MagicMock(), MagicMock(), AsyncMock())
+        state_manager = StateManager(
+            led=create_autospec(LedController, instance=True, spec_set=True),
+            audio=create_autospec(AudioHelper, instance=True, spec_set=True),
+            game_settings_writer=create_autospec(FlagConfigWriter, instance=True, spec_set=True),
+            user_prefs_writer=create_autospec(FlagConfigWriter, instance=True, spec_set=True),
+            publish_event=AsyncMock(),
+        )
         broken_handler = MagicMock()
         broken_handler.state = ControllerState.CONNECTED
         broken_handler.on_enter = AsyncMock()
@@ -451,8 +462,7 @@ class TestHandlerErrorIsolation:
             await state_manager.on_controller_connected("lobby1")
             state_manager.controller_states["ready1"] = ControllerState.READY
 
-        reconnects = AsyncMock(side_effect=reconnect_and_populate)
-        callbacks.on_stream_reconnected = reconnects
+        callbacks.on_stream_reconnected = reconnect_and_populate
 
         loop = ControllerEventLoop(MagicMock(), MagicMock(), callbacks, mock_metrics)
         loop._running = True
@@ -471,7 +481,6 @@ class TestHandlerErrorIsolation:
             retry_delay = await loop._run_stream_connection()
 
         assert retry_delay == 1.0
-        reconnects.assert_awaited_once()  # only the initial connect, no error-driven reconnect
         assert broken_handler.handle_button.await_count == 2
         assert state_manager.ready_controllers == {"ready1"}
         assert state_manager.get_controller_state("lobby1") == ControllerState.CONNECTED

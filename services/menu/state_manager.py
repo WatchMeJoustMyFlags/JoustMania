@@ -311,8 +311,10 @@ class StateManager:
         Delegates to the servicer callback so the controller SELECT path lands in
         the same state as admin Cross / web ``select_game`` (the coordinator start
         path reads the servicer's ``current_selection``). Without a callback
-        (standalone use), updates the local mode, persists ``current_game`` and
-        publishes ``selection_changed`` directly.
+        (test-only: production always wires the servicer callback in
+        ``MenuServicer.__init__``), updates the local mode, persists
+        ``current_game`` and publishes ``selection_changed`` directly. Keep this
+        fallback in step with ``MenuServicer.select_game_mode``.
 
         Args:
             game_mode: Games enum value to select
