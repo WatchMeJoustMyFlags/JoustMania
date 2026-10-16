@@ -77,7 +77,11 @@ func TestRunShadowGame_PatternGameEndsWithWinner(t *testing.T) {
 	t.Run("UC-046/main archetype passed, no scripted drive, replay record built", func(t *testing.T) {
 		a := testArchetype(t)
 		mock := patternMock(a, map[int]uint64{0: 900, 1: 600, 2: 300}, -1)
-		coord := &fakeCoord{gameID: "game_pat_1", events: []*gcpb.GameEvent{ev("game_starting"), ev("game_ended")}}
+		// The winner event names slot 0; slot 1 died last and ties it on frames.
+		mock = patternMock(a, map[int]uint64{0: 900, 1: 900, 2: 300}, -1)
+		winnerEv := ev("game_winner")
+		winnerEv.Data = map[string]string{"serial": "MOCK0000"}
+		coord := &fakeCoord{gameID: "game_pat_1", events: []*gcpb.GameEvent{ev("game_starting"), winnerEv, ev("game_ended")}}
 		h := newHarness(t, mock, coord)
 		defer h.stop()
 		tracker := patterngame.NewTracker()
@@ -116,7 +120,7 @@ func TestRunShadowGame_PatternGameEndsWithWinner(t *testing.T) {
 			t.Errorf("outcome/winner = %s/%d, want winner/0", rec.Outcome, rec.WinnerSlot)
 		}
 		if fmt.Sprint(rec.EliminationOrder) != "[2 1]" {
-			t.Errorf("elimination order = %v, want [2 1] (fewest frames died first, BR-014)", rec.EliminationOrder)
+			t.Errorf("elimination order = %v, want [2 1] (winner from game_winner, BR-014)", rec.EliminationOrder)
 		}
 		if !rec.Exact() {
 			t.Errorf("non-exact %v, want exact", rec.NonExactReasons)

@@ -531,11 +531,12 @@ func (r *Runner) StartExperimentGame(startCtx, driveCtx context.Context, spec Sp
 
 		defer cl.close()
 		abortCh, _, _ := r.registerPattern(spec, gameID, serials)
+		winner := &winnerWatcher{}
 		defer func() {
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), r.cfg.RPCTimeout)
 			slots := r.removeControllers(cleanupCtx, cl, serials)
 			cancel()
-			if rec, ok := r.finishPattern(spec, gameID, finalOutcome, slots); ok && r.onPattern != nil {
+			if rec, ok := r.finishPattern(spec, gameID, finalOutcome, winner.get(), slots); ok && r.onPattern != nil {
 				r.onPattern(rec)
 			}
 		}()
@@ -546,7 +547,7 @@ func (r *Runner) StartExperimentGame(startCtx, driveCtx context.Context, spec Sp
 			go r.driveGame(runDrive, cl, serials)
 		}
 
-		terminal, _, outcome := r.awaitTerminal(driveCtx, cl, stream, gameID, spec.gameTimeout(r.cfg.GameTimeout, r.capUnit), abortCh)
+		terminal, _, outcome := r.awaitTerminal(driveCtx, cl, stream, gameID, spec.gameTimeout(r.cfg.GameTimeout, r.capUnit), abortCh, winner.observe)
 		finalOutcome = outcome
 		stopDrive()
 		r.log.Debug("experiment shadow game finished",
@@ -576,6 +577,7 @@ func (r *Runner) run(ctx context.Context, cl *clients, spec Spec, span trace.Spa
 	// ALWAYS remove the reserved controllers, success or failure. Uses a fresh
 	// context so cleanup still runs if ctx was cancelled (timeout / shutdown).
 	gameID := ""
+	winner := &winnerWatcher{}
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), r.cfg.RPCTimeout)
 		defer cancel()
@@ -583,7 +585,7 @@ func (r *Runner) run(ctx context.Context, cl *clients, spec Spec, span trace.Spa
 		span.AddEvent("controllers_removed", trace.WithAttributes(
 			attribute.Int("shadow_game.removed_count", len(serials)),
 		))
-		if rec, ok := r.finishPattern(spec, gameID, result.Outcome, slots); ok {
+		if rec, ok := r.finishPattern(spec, gameID, result.Outcome, winner.get(), slots); ok {
 			result.Pattern = &rec
 			addPatternEndedEvent(span, rec)
 			if r.onPattern != nil {
@@ -614,7 +616,7 @@ func (r *Runner) run(ctx context.Context, cl *clients, spec Spec, span trace.Spa
 	}
 
 	// (e) Await a terminal event; force-end on timeout.
-	terminal, eventsSeen, outcome := r.awaitTerminal(ctx, cl, stream, gameID, spec.gameTimeout(r.cfg.GameTimeout, r.capUnit), abortCh)
+	terminal, eventsSeen, outcome := r.awaitTerminal(ctx, cl, stream, gameID, spec.gameTimeout(r.cfg.GameTimeout, r.capUnit), abortCh, winner.observe)
 	result.EventsSeen = eventsSeen
 	result.TerminalEvent = terminal
 	result.Outcome = outcome

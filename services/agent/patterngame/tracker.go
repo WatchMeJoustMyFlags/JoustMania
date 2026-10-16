@@ -81,38 +81,39 @@ func (r Record) DecisionSequence() []string {
 }
 
 // EliminationOrder is UC-046 BR-014. An FFA player stops receiving frames when the
-// coordinator drops it from the alive filter, so the slot with the fewest delivered
-// frames died first. With a winner, the slot with the most frames is the winner and
-// is left out; otherwise every slot within rate frames (one second) of the highest
-// count is a survivor and is left out. Ties break by slot index.
-func EliminationOrder(slots []SlotRecord, winnerDeclared bool, rate int) (order []int, winner int) {
-	sorted := append([]SlotRecord(nil), slots...)
+// coordinator drops it from the alive filter, so among the dead the slot with the
+// fewest delivered frames died first. The winner comes from the coordinator's
+// game_winner event (winnerSlot), not from frame counts: the coordinator ends the
+// game on the last death without updating the filter, so the last player to die
+// keeps receiving frames as long as the winner. Without a winner (timeout, abort,
+// error) every slot within rate frames (one second) of the highest count is a
+// survivor. Survivors and the winner are not part of the order. Ties break by slot.
+func EliminationOrder(slots []SlotRecord, winnerSlot int, rate int) []int {
+	sorted := make([]SlotRecord, 0, len(slots))
+	for _, s := range slots {
+		if s.Slot != winnerSlot {
+			sorted = append(sorted, s)
+		}
+	}
 	sort.SliceStable(sorted, func(i, j int) bool {
 		if sorted[i].FramesDelivered != sorted[j].FramesDelivered {
 			return sorted[i].FramesDelivered < sorted[j].FramesDelivered
 		}
 		return sorted[i].Slot < sorted[j].Slot
 	})
-	winner = -1
-	n := len(sorted)
-	if n == 0 {
-		return nil, winner
-	}
-	if winnerDeclared {
-		winner = sorted[n-1].Slot
-		sorted = sorted[:n-1]
-	} else {
-		top := sorted[n-1].FramesDelivered
-		cut := n
+	if winnerSlot < 0 && len(sorted) > 0 {
+		top := sorted[len(sorted)-1].FramesDelivered
+		cut := len(sorted)
 		for cut > 0 && top-sorted[cut-1].FramesDelivered <= uint64(rate) {
 			cut--
 		}
 		sorted = sorted[:cut]
 	}
+	var order []int
 	for _, s := range sorted {
 		order = append(order, s.Slot)
 	}
-	return order, winner
+	return order
 }
 
 type liveGame struct {
@@ -236,7 +237,7 @@ func (t *Tracker) CheckConcurrency(gameID string) {
 // Finish removes the game and builds its replay record from the controllers' slot
 // records. Frame overruns add their non-exact reason; a timeout alone does not
 // (UC-046 BR-008, BR-013).
-func (t *Tracker) Finish(gameID, outcome string, slots []SlotRecord) (Record, bool) {
+func (t *Tracker) Finish(gameID, outcome, winnerSerial string, slots []SlotRecord) (Record, bool) {
 	t.CheckConcurrency(gameID)
 	t.mu.Lock()
 	g, ok := t.games[gameID]
@@ -254,7 +255,13 @@ func (t *Tracker) Finish(gameID, outcome string, slots []SlotRecord) (Record, bo
 			g.reasons[ReasonFrameOverrun] = struct{}{}
 		}
 	}
-	order, winner := EliminationOrder(sorted, outcome == OutcomeWinner, g.info.Archetype.StreamRateHz)
+	winner := -1
+	if outcome == OutcomeWinner {
+		if slot, ok := g.slotOf[winnerSerial]; ok {
+			winner = slot
+		}
+	}
+	order := EliminationOrder(sorted, winner, g.info.Archetype.StreamRateHz)
 	reasons := make([]string, 0, len(g.reasons))
 	for r := range g.reasons {
 		reasons = append(reasons, r)

@@ -285,7 +285,10 @@ func TestTracker(t *testing.T) {
 			t.Errorf("non-player target slot = %d", slot)
 		}
 		obs.MarkNonExact(ReasonRemoteBackend)
-		rec, _ := tr.Finish("g", OutcomeWinner, slots(400, 300, 200, 100))
+		rec, _ := tr.Finish("g", OutcomeWinner, "S0", slots(400, 300, 200, 100))
+		if fmt.Sprint(rec.EliminationOrder) != "[3 2 1]" || rec.WinnerSlot != 0 {
+			t.Errorf("order/winner = %v/%d", rec.EliminationOrder, rec.WinnerSlot)
+		}
 		if fmt.Sprint(rec.DecisionSequence()) != "[send_controller_effect:2 adjust_music_tempo:-1]" {
 			t.Errorf("decisions = %v", rec.DecisionSequence())
 		}
@@ -300,14 +303,14 @@ func TestTracker(t *testing.T) {
 		tr := NewTracker()
 		tr.Register(info("g1"))
 		tr.Register(info("g2"))
-		r1, _ := tr.Finish("g1", OutcomeWinner, nil)
+		r1, _ := tr.Finish("g1", OutcomeWinner, "", nil)
 		if fmt.Sprint(r1.NonExactReasons) != "[concurrent_game]" {
 			t.Errorf("g1 reasons = %v", r1.NonExactReasons)
 		}
 		tr2 := NewTracker()
 		tr2.SetConcurrencyProbe(func(string) bool { return true })
 		tr2.Register(info("g3"))
-		r3, _ := tr2.Finish("g3", OutcomeWinner, nil)
+		r3, _ := tr2.Finish("g3", OutcomeWinner, "", nil)
 		if fmt.Sprint(r3.NonExactReasons) != "[concurrent_game]" {
 			t.Errorf("probe reasons = %v", r3.NonExactReasons)
 		}
@@ -317,7 +320,7 @@ func TestTracker(t *testing.T) {
 		tr.Register(info("g"))
 		s := slots(400, 300, 200, 100)
 		s[1].FrameOverruns = 1
-		rec, _ := tr.Finish("g", OutcomeWinner, s)
+		rec, _ := tr.Finish("g", OutcomeWinner, "", s)
 		if fmt.Sprint(rec.NonExactReasons) != "[frame_overrun]" {
 			t.Errorf("reasons = %v", rec.NonExactReasons)
 		}
@@ -330,7 +333,7 @@ func TestTracker(t *testing.T) {
 		tr.Register(in)
 		tr.Abort("g", ReasonKillSwitch)
 		tr.Abort("unknown", ReasonKillSwitch)
-		rec, _ := tr.Finish("g", OutcomeAborted, nil)
+		rec, _ := tr.Finish("g", OutcomeAborted, "", nil)
 		if called != 1 || fmt.Sprint(rec.NonExactReasons) != "[kill_switch]" {
 			t.Errorf("called=%d reasons=%v", called, rec.NonExactReasons)
 		}
@@ -338,7 +341,7 @@ func TestTracker(t *testing.T) {
 	t.Run("UC-046/BR-013 a timeout alone stays exact", func(t *testing.T) {
 		tr := NewTracker()
 		tr.Register(info("g"))
-		rec, _ := tr.Finish("g", OutcomeTimeout, slots(9000, 120, 8995, 300))
+		rec, _ := tr.Finish("g", OutcomeTimeout, "", slots(9000, 120, 8995, 300))
 		if !rec.Exact() {
 			t.Errorf("timeout non-exact: %v", rec.NonExactReasons)
 		}
@@ -346,14 +349,17 @@ func TestTracker(t *testing.T) {
 			t.Errorf("order/winner = %v/%d, want [1 3]/-1", rec.EliminationOrder, rec.WinnerSlot)
 		}
 	})
-	t.Run("UC-046/BR-014 elimination order by delivered frames, ties by slot", func(t *testing.T) {
-		order, winner := EliminationOrder(slots(500, 100, 100, 300), true, 30)
-		if fmt.Sprint(order) != "[1 2 3]" || winner != 0 {
-			t.Errorf("order/winner = %v/%d", order, winner)
+	t.Run("UC-046/BR-014 elimination order by delivered frames, winner from game_winner", func(t *testing.T) {
+		if order := EliminationOrder(slots(500, 100, 100, 300), 0, 30); fmt.Sprint(order) != "[1 2 3]" {
+			t.Errorf("order = %v", order)
 		}
-		order, winner = EliminationOrder(nil, true, 30)
-		if order != nil || winner != -1 {
-			t.Errorf("empty = %v/%d", order, winner)
+		// The last player to die is never dropped from the stream filter, so it ties
+		// with the winner on frames; the winner event decides, not the slot index.
+		if order := EliminationOrder(slots(701, 701, 323), 1, 30); fmt.Sprint(order) != "[2 0]" {
+			t.Errorf("tied last death: order = %v, want [2 0]", order)
+		}
+		if order := EliminationOrder(nil, -1, 30); order != nil {
+			t.Errorf("empty = %v", order)
 		}
 	})
 	t.Run("UC-046/A1 selection parsing", func(t *testing.T) {

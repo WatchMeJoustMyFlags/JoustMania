@@ -210,11 +210,35 @@ func (r *Runner) registerPattern(spec Spec, gameID string, serials []string) (<-
 }
 
 // finishPattern turns the removed controllers' records into the game's replay record.
-func (r *Runner) finishPattern(spec Spec, gameID string, outcome Outcome, slots []patterngame.SlotRecord) (patterngame.Record, bool) {
+func (r *Runner) finishPattern(spec Spec, gameID string, outcome Outcome, winnerSerial string, slots []patterngame.SlotRecord) (patterngame.Record, bool) {
 	if !spec.IsPattern() || r.tracker == nil || gameID == "" {
 		return patterngame.Record{}, false
 	}
-	return r.tracker.Finish(gameID, patternOutcome(outcome), slots)
+	return r.tracker.Finish(gameID, patternOutcome(outcome), winnerSerial, slots)
+}
+
+// eventGameWinner carries the winner's serial in data["serial"] (games/ffa.py).
+const eventGameWinner = "game_winner"
+
+// winnerWatcher records the winner serial from the event stream (UC-046 BR-014).
+type winnerWatcher struct {
+	mu     sync.Mutex
+	serial string
+}
+
+func (w *winnerWatcher) observe(ev *gcpb.GameEvent) {
+	if ev.GetEventType() != eventGameWinner {
+		return
+	}
+	w.mu.Lock()
+	w.serial = ev.GetData()["serial"]
+	w.mu.Unlock()
+}
+
+func (w *winnerWatcher) get() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.serial
 }
 
 // PatternGameAttributes are the attributes of experiment.pattern_game (telemetry.md §9).
@@ -503,6 +527,7 @@ func (r *Runner) awaitTerminal(
 	gameID string,
 	timeout time.Duration,
 	abort <-chan struct{},
+	onEvent func(*gcpb.GameEvent),
 ) (terminal string, eventsSeen int, outcome Outcome) {
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
@@ -578,6 +603,9 @@ func (r *Runner) awaitTerminal(
 				return terminal, eventsSeen, OutcomeError
 			}
 			eventsSeen++
+			if onEvent != nil {
+				onEvent(res.event)
+			}
 			et := res.event.GetEventType()
 			if _, isTerminal := terminalEvents[et]; isTerminal {
 				terminal = et

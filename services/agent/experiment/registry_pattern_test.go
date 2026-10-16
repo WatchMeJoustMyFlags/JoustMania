@@ -251,7 +251,7 @@ func TestRegistryPatternKillSwitch(t *testing.T) {
 		if aborted != 1 {
 			t.Fatalf("abort hook called %d times", aborted)
 		}
-		rec, _ := tracker.Finish(gid, patterngame.OutcomeAborted, nil)
+		rec, _ := tracker.Finish(gid, patterngame.OutcomeAborted, "", nil)
 		if fmt.Sprint(rec.NonExactReasons) != "[kill_switch]" {
 			t.Errorf("reasons = %v", rec.NonExactReasons)
 		}
