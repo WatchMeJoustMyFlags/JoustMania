@@ -272,7 +272,8 @@ func (l *Loop) rulesDecide(ctx context.Context, snapshot flags.Snapshot, c gamec
 // either fires the remote call asynchronously and returns no decision (the async
 // path owns this context), returns nothing because a call is in flight or the
 // per-game cadence (decision.min_interval_ms) has not elapsed (the remote backend
-// owns the decision; rules do not also act), or falls back to rules synchronously
+// owns the decision; rules do not also act) or the allow-list is empty (nothing
+// could act, #1298), or falls back to rules synchronously
 // when the backend cannot be called at all (unknown/unavailable backend, async not
 // wired, game kind not eligible, global budget exhausted).
 func (l *Loop) decideRemote(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext, trig EvalTrigger) ([]Decision, *decideRecord) {
@@ -308,6 +309,10 @@ func (l *Loop) decideRemote(ctx context.Context, snapshot flags.Snapshot, c game
 		l.Log.Debug("agent.decide.cadence_wait", "session_id", c.SessionID, "backend", requested,
 			"min_interval", snapshot.Decision.MinInterval)
 		return nil, nil
+	case DecideGateNoInterventions:
+		// Nothing is allowed, so neither the backend nor rules could act: no call,
+		// no rules run, not a fallback (#1298). The gated counter says why.
+		return nil, nil
 	default:
 		return l.rulesDecide(ctx, snapshot, c, requested, gate)
 	}
@@ -320,8 +325,39 @@ func (l *Loop) decideRemote(ctx context.Context, snapshot flags.Snapshot, c game
 // remote decide cycle held back by decision.min_interval_ms.
 const DecideGateInterval = "decide_interval"
 
+// DecideGateNoInterventions is the agent_llm_gated_total reason for a remote
+// decide cycle skipped because the allow-list is empty (#1298): the only
+// ffa.intervention option would be noop, so a paid call could not change anything.
+const DecideGateNoInterventions = "no_interventions_allowed"
+
+// hasAllowedInterventions reports whether allowed offers at least one
+// intervention besides noop, filtered exactly like the ffa.intervention options
+// (decide.FFAQuestions: empty ids and noop dropped). It is the single seam for
+// "is there anything a remote decide call could choose" (later also: every
+// allowed intervention currently unusable).
+func hasAllowedInterventions(allowed []string) bool {
+	for _, a := range allowed {
+		if a != "" && a != decide.OptionNoop {
+			return true
+		}
+	}
+	return false
+}
+
+// noteNoInterventions records the empty-allow-list state for this game and logs
+// at debug level only when it changes, not once per 10-60 Hz cycle. The caller
+// holds llmGate.
+func (l *Loop) noteNoInterventions(c gamecontext.GameContext, skipping bool) {
+	if l.skippingNoInterventions == skipping {
+		return
+	}
+	l.skippingNoInterventions = skipping
+	l.Log.Debug("agent.decide.no_interventions_allowed", "session_id", c.SessionID, "skipping", skipping)
+}
+
 // gateRemoteDecide is the call gate for remote decide calls: eligibility
-// (llm.eligible_game_kinds, so shadow games stay rules-only), the per-game cadence
+// (llm.eligible_game_kinds, so shadow games stay rules-only), a non-empty
+// allow-list (hasAllowedInterventions, #1298), the per-game cadence
 // decision.min_interval_ms, and the GLOBAL per-minute budget
 // llm.max_requests_per_minute shared with the post-game retro (the spend bound).
 // Cadence and budget are charged only on admission, and only after the caller
@@ -333,6 +369,13 @@ func (l *Loop) gateRemoteDecide(ctx context.Context, snapshot flags.Snapshot, c 
 	}
 	l.llmGate.Lock()
 	defer l.llmGate.Unlock()
+	// Before cadence and budget: an empty allow-list charges neither.
+	if !hasAllowedInterventions(snapshot.InterventionsAllowed) {
+		l.noteNoInterventions(c, true)
+		l.recordGated(ctx, DecideGateNoInterventions)
+		return DecideGateNoInterventions
+	}
+	l.noteNoInterventions(c, false)
 	t := l.nowOrDefault()()
 	if iv := snapshot.Decision.MinInterval; iv > 0 && !l.lastDecideAttempt.IsZero() && t.Sub(l.lastDecideAttempt) < iv {
 		l.recordGated(ctx, DecideGateInterval)

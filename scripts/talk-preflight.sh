@@ -10,7 +10,9 @@
 #   1. the stack containers are running (and healthy where they have a check)
 #   2. the flag file the helper scripts edit is the one flagd and the agent mount
 #   3. the stage baseline of the decision.* + safety flags (defaultVariant),
-#      and the interventions.json next to it back at its neutral variants
+#      and the interventions.json next to it back at its neutral variants; WARN
+#      when decision.backend is remote but interventions_allowed resolves to
+#      nothing (none / noop only): the agent then makes no remote call (#1298)
 #   4. the agent container env (presence only; key values are never printed):
 #      JEV_API_KEY (Jev, the main in-game backend) and ANTHROPIC_API_KEY (Claude:
 #      in-game backup + post-game summary) present, AGENT_INFERENCE_BACKEND=claude
@@ -181,6 +183,24 @@ for key, want in BASELINE.items():
         print(f"PASS  {key} = {shown(flag)}")
     else:
         print(f"FAIL  {key} = {shown(flag)}, stage baseline is {want}")
+
+
+
+def variant_value(key):
+    flag = flags.get(key) or {}
+    return flag.get("variants", {}).get(flag.get("defaultVariant"))
+
+
+# A remote backend with nothing allowed never calls out (#1298: the agent skips
+# the call when noop would be the only option), so the demo would show nothing.
+backend_value = variant_value("decision.backend")
+allowed_value = variant_value("interventions_allowed")
+if isinstance(backend_value, str) and backend_value not in ("", "rules") and isinstance(allowed_value, str):
+    usable = {a.strip() for a in allowed_value.split(",")} - {"", "noop"}
+    if not usable:
+        print(f"WARN  decision.backend = {backend_value} but interventions_allowed = "
+              f"{shown(flags['interventions_allowed'])} allows no intervention: the agent makes no remote "
+              "decide call, so nothing triggers (set interventions_allowed to ambient)")
 
 jev_model = flags.get("decision.jev.model")
 if jev_model is not None:
