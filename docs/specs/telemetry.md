@@ -1,6 +1,6 @@
 # Telemetry
 
-> Technical spec. Part of the [spec tree](../README.md). State: `main` @ 226cb2d3 (2026-10-16, includes PRs #1256, #1257, #1259, #1261, #1265, #1297, #1303, #1307, #1309, #1312, #1315, #1324, #1308 (#1258 pattern games), #1332 (#1325 span parents), #1378 (validator spans removed), #1351 (#1326 budget), #1333 (#1327 one `player_death` event), #1375 (rollout dry run), #1376 (deaths counter, input lag), #1377 (quiet-cycle fallbacks) and #1387 (`audio.silent`)). The metric catalog (§6.2) and the span-event inventory were generated from the code at 84c3ba15 by script; remaining `file:line` references were re-based to 84c3ba15 and then to 226cb2d3.
+> Technical spec. Part of the [spec tree](../README.md). State: `main` @ 45c6d0a6 (2026-10-16, includes PRs #1256, #1257, #1259, #1261, #1265, #1297, #1303, #1307, #1309, #1312, #1315, #1324, #1308 (#1258 pattern games), #1332 (#1325 span parents), #1378 (validator spans removed), #1351 (#1326 budget), #1333 (#1327 one `player_death` event), #1375 (rollout dry run), #1376 (deaths counter, input lag), #1377 (quiet-cycle fallbacks) and #1387 (`audio.silent`)). The metric catalog (§6.2) and the span-event inventory were generated from the code at 84c3ba15 by script; remaining `file:line` references were re-based to 84c3ba15 and then to 45c6d0a6.
 > Telemetry is the agent's only view of the game (C-001), so span names, attribute keys, metric names and the
 > log lines below are a **contract**: the agent, the dashboard SPA, Grafana, alerts and integration tests match
 > on them. Change a name here first.
@@ -48,12 +48,12 @@ Service identities (`OTEL_SERVICE_NAME` / namespace): `controller-manager-servic
 | game id | `game.id` (agent also `session.id`) | label `game_id` on per-game and per-player metrics; the game-wide gauges of §6 (tempo, thresholds, sensitivity, mode, loop rate) have none (#1336) | `game_<12 hex>`; the agent partitions all signals by it |
 | game kind | coordinator: `game.kind` = `primary` / `shadow`; agent: `game.kind` = `real` / `shadow` | coordinator label `game_kind` = `primary` / `shadow` | **Two vocabularies under one key** (#1249). Flags use `real` / `shadow`; the agent normalises `primary → real` at ingest (`services/agent/gamecontext/gamekind.go`). |
 | experiment, arm | `experiment.id`, `experiment.arm` | `experiment_id`, `arm` on per-game gauges only (never on cumulative counters) | |
-| trace context | `game.trace_id`, `game.trace_span_id`, Links | gauge `game_trace_correlation{game_trace_id, game_trace_span_id, gameplay_phase_span_id, game_cycle_span_id}` = 1 while live; the two phase ids are empty until their span opens and the gauge is re-emitted when each is published (UC-041 BR-004) | metric-carried because observable gauges cannot carry exemplars (`services/game_coordinator/metrics.py:44-97`) |
+| trace context | `game.trace_id`, `game.trace_span_id`, Links | gauge `game_trace_correlation{game_trace_id, game_trace_span_id, gameplay_phase_span_id, game_cycle_span_id}` = 1 while live; the two phase ids are empty until their span opens and the gauge is re-emitted when each is published (UC-041 BR-004) | metric-carried because observable gauges cannot carry exemplars (`services/game_coordinator/metrics.py:47-100`) |
 | serial | `player.serial`, `controller.serial` | `serial` | `player.serial` is ONE key on both sides (#1295): the coordinator's player spans and intervention events, and the agent's targeted `agent.decision` / `agent.action`, so one Jaeger search `player.serial=<serial>` finds both |
 | intervention | `intervention.id`, `decision.intervention_id` | | joins decision and effect |
 | W3C propagation | menu events carry `_traceparent` / `_tracestate`; the agent injects traceparent into shadow-game spawns and model calls | | |
 
-**Traceability:** FR-041, FR-043 / UC-035, UC-041 / `lib/feature_flags.py:63-64`, `services/game_coordinator/game_session.py:55-56,351-360`, `services/agent/gamecontext/` / `services/agent/gamecontext/*_test.go`.
+**Traceability:** FR-041, FR-043 / UC-035, UC-041 / `lib/feature_flags.py:63-64`, `services/game_coordinator/game_session.py:56-57,386-395`, `services/agent/gamecontext/` / `services/agent/gamecontext/*_test.go`.
 
 ## 3. Spans
 
