@@ -400,18 +400,26 @@ func TestCanary_ServerErrors(t *testing.T) {
 	})
 
 	t.Run("UC-052/main backend without a variant is 500", func(t *testing.T) {
-		useFlagFile(t, `{"flags": {"bluetooth_backend": {"state": "ENABLED", "variants": {"python": "python"}, "defaultVariant": "python"}}}`)
+		const content = `{"flags": {"bluetooth_backend": {"state": "ENABLED", "variants": {"python": "python"}, "defaultVariant": "python"}}}`
+		path := useFlagFile(t, content)
 		srv := newCanaryServer(t)
 		if status, _ := doRequest(t, http.MethodPost, srv.URL+"/canary/rust"); status != http.StatusInternalServerError {
 			t.Errorf("status = %d, want 500", status)
 		}
+		if data, _ := os.ReadFile(path); !bytes.Equal(data, []byte(content)) {
+			t.Errorf("flag file changed: %s", data)
+		}
 	})
 
 	t.Run("UC-052/main fractional canary without a stable counterpart is 500", func(t *testing.T) {
-		useFlagFile(t, `{"flags": {"bluetooth_backend": {"state": "ENABLED", "variants": {"rust": "rust", "unstable": "unstable"}, "defaultVariant": "rust"}}}`)
+		const content = `{"flags": {"bluetooth_backend": {"state": "ENABLED", "variants": {"rust": "rust", "unstable": "unstable"}, "defaultVariant": "rust"}}}`
+		path := useFlagFile(t, content)
 		srv := newCanaryServer(t)
 		if status, _ := doRequest(t, http.MethodPost, srv.URL+"/canary/rust?fraction=50"); status != http.StatusInternalServerError {
 			t.Errorf("status = %d, want 500", status)
+		}
+		if data, _ := os.ReadFile(path); !bytes.Equal(data, []byte(content)) {
+			t.Errorf("flag file changed: %s", data)
 		}
 	})
 

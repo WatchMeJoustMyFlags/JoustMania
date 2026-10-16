@@ -46,11 +46,15 @@ CORS is enabled for all origins to allow browser requests from the dashboard.
 services/connect-proxy/
 ├── Dockerfile    # Three-stage: buf proto gen, Go build, alpine runtime
 ├── main.go       # Proxy handlers, gRPC client setup, HTTP server
+├── canary.go     # /canary/* handlers (bluetooth_backend rewrite)
+├── canary_test.go
 ├── go.mod
 └── go.sum
 ```
 
 Proto Go bindings are generated at Docker build time from `proto/` using `buf generate`.
+
+The unit tests (`canary_test.go`) need those bindings, so they run inside the image build (`go vet` + `go test` in the builder stage). Run only that part from the repo root with `docker build --target builder -f services/connect-proxy/Dockerfile .`.
 
 ## See Also
 
