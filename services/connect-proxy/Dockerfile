@@ -34,9 +34,6 @@ RUN mv gen/github.com/joustmania/connect-proxy/gen/* gen/ && \
 # Stage 2: Build the Go binary
 FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
 
-# Build arguments for cross-compilation
-ARG TARGETARCH
-
 # Install git for go mod (needed for some dependencies)
 RUN apk add --no-cache git
 
@@ -54,6 +51,14 @@ COPY services/connect-proxy/*.go ./
 
 # Download dependencies (after proto files are in place)
 RUN go mod tidy && go mod download
+
+# Run the unit tests (canary handlers, #1364). The generated proto packages
+# only exist inside this build, so the image build is where they can run.
+RUN go vet ./... && go test ./...
+
+# Build arguments for cross-compilation. Declared after the test step so the
+# test layer does not depend on TARGETARCH and runs once in multi-arch builds.
+ARG TARGETARCH
 
 # Build the binary (cross-compile for target architecture)
 RUN CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}" go build -ldflags="-s -w" -o /connect-proxy .
