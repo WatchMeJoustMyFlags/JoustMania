@@ -1,0 +1,163 @@
+{
+  "data": [
+    {
+      "traceID": "9999000000000007",
+      "spans": [
+        {
+          "traceID": "9999000000000007",
+          "spanID": "sg",
+          "operationName": "gameplay_phase",
+          "references": [],
+          "startTime": 1760000000000000,
+          "duration": 60000000,
+          "tags": [],
+          "logs": [],
+          "processID": "p2",
+          "warnings": null,
+          "flags": 1
+        },
+        {
+          "traceID": "9999000000000007",
+          "spanID": "ss",
+          "operationName": "agent.signal_received",
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "traceID": "9999000000000007",
+              "spanID": "sg"
+            }
+          ],
+          "startTime": 1760000020000000,
+          "duration": 9000,
+          "tags": [
+            {
+              "key": "gen_ai.agent.name",
+              "type": "string",
+              "value": "joustmania-agent"
+            },
+            {
+              "key": "game.kind",
+              "type": "string",
+              "value": "shadow"
+            },
+            {
+              "key": "game.id",
+              "type": "string",
+              "value": "game_00000000c3d4"
+            },
+            {
+              "key": "session.id",
+              "type": "string",
+              "value": "game_00000000c3d4"
+            },
+            {
+              "key": "gen_ai.conversation.id",
+              "type": "string",
+              "value": "game_00000000c3d4"
+            }
+          ],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        },
+        {
+          "traceID": "9999000000000007",
+          "spanID": "SH1",
+          "operationName": "agent.decide",
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "traceID": "9999000000000007",
+              "spanID": "ss"
+            }
+          ],
+          "startTime": 1760000020000100,
+          "duration": 400,
+          "tags": [
+            {
+              "key": "gen_ai.agent.name",
+              "type": "string",
+              "value": "joustmania-agent"
+            },
+            {
+              "key": "game.kind",
+              "type": "string",
+              "value": "shadow"
+            },
+            {
+              "key": "game.id",
+              "type": "string",
+              "value": "game_00000000c3d4"
+            },
+            {
+              "key": "session.id",
+              "type": "string",
+              "value": "game_00000000c3d4"
+            },
+            {
+              "key": "gen_ai.conversation.id",
+              "type": "string",
+              "value": "game_00000000c3d4"
+            },
+            {
+              "key": "decide.backend",
+              "type": "string",
+              "value": "rules"
+            },
+            {
+              "key": "decide.backend.requested",
+              "type": "string",
+              "value": "claude"
+            },
+            {
+              "key": "decide.fallback_reason",
+              "type": "string",
+              "value": "not_eligible"
+            },
+            {
+              "key": "decide.latency_ms",
+              "type": "int64",
+              "value": 0
+            },
+            {
+              "key": "decide.outcome",
+              "type": "string",
+              "value": "fallback"
+            },
+            {
+              "key": "gen_ai.request.model",
+              "type": "string",
+              "value": "claude-sonnet-5-5"
+            },
+            {
+              "key": "decide.confidence",
+              "type": "float64",
+              "value": 0.5
+            },
+            {
+              "key": "decide.answers",
+              "type": "string",
+              "value": "[{\"question_id\": \"ffa.intervention\", \"choice\": \"noop\", \"score\": 0, \"confidence\": 0.5}, {\"question_id\": \"ffa.target\", \"choice\": \"none\", \"score\": 0, \"confidence\": 0.5}]"
+            }
+          ],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        }
+      ],
+      "processes": {
+        "p1": {
+          "serviceName": "agent",
+          "tags": []
+        },
+        "p2": {
+          "serviceName": "game-coordinator",
+          "tags": []
+        }
+      },
+      "warnings": null
+    }
+  ]
+}

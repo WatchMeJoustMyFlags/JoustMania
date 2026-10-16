@@ -72,9 +72,21 @@
             <span id="agent-freshness" class="experiments-freshness" hidden></span>
             <a href="/jaeger/search?service=agent&operation=agent.decision&limit=50" target="_blank" rel="noreferrer" class="external-link">Full decision trace in Jaeger &#8599;</a>
           </div>
+          <!-- agent.decide feed (#1233): backend, model, confidence, outcome, why -->
+          <section class="agent-panel decide-panel">
+            <div class="decide-panel-head">
+              <h4 class="agent-panel-title">Decisions <span class="decide-panel-sub">agent.decide &middot; from Jaeger</span></h4>
+              <span id="decide-freshness" class="experiments-freshness" hidden></span>
+              <a href="/jaeger/search?service=agent&operation=agent.decide&limit=50" target="_blank" rel="noreferrer" class="external-link">agent.decide in Jaeger &#8599;</a>
+            </div>
+            <div id="decide-strip"></div>
+            <div id="decide-feed" class="decide-feed">
+              <div class="loading">Loading agent.decide spans&hellip;</div>
+            </div>
+          </section>
           <div class="agent-layout">
             <section class="agent-panel agent-panel-feed">
-              <h4 class="agent-panel-title">Decision feed</h4>
+              <h4 class="agent-panel-title">Activity feed</h4>
               <div id="agent-feed" class="agent-feed">
                 <div class="loading">Loading agent activity&hellip;</div>
               </div>

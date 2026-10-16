@@ -10,7 +10,9 @@ import { Controls } from "./components/Controls.js";
 import { ExperimentsView } from "./components/ExperimentsView.js";
 import { fetchExperiments } from "./experiments.js";
 import { AgentView } from "./components/AgentView.js";
-import { fetchAgentView } from "./agent.js";
+import { DecideStore, fetchAgentView, fetchDecideFeed } from "./agent.js";
+import { createPoller } from "./poller.js";
+import type { Poller } from "./poller.js";
 import type { GameplayData } from "./gen/controller_manager_pb.js";
 
 // Poll cadence for the agent experiment view (Loki query). Matches the slow,
@@ -23,6 +25,15 @@ const EXPERIMENTS_POLL_MS = 5000;
 // still well under the agent's signal rate — this is an observability tail, not
 // a live stream.
 const AGENT_POLL_MS = 2000;
+
+// Poll cadence for the agent.decide feed (#1233, Jaeger query). Faster than the
+// Loki view: a live decision.backend switch must show on the very next decision,
+// and the remote cadence (decision.min_interval_ms) is 1.5-3s. Errors and slow
+// responses back off (doubling) to DECIDE_MAX_BACKOFF_MS; each request is aborted
+// after DECIDE_TIMEOUT_MS so a struggling Jaeger is not piled onto.
+const DECIDE_POLL_MS = 1500;
+const DECIDE_MAX_BACKOFF_MS = 10_000;
+const DECIDE_TIMEOUT_MS = 4000;
 
 // State
 interface AppState {
@@ -63,7 +74,11 @@ async function init() {
     onModeChange: handleModeChange,
   });
   experimentsView = new ExperimentsView("experiments-grid", "experiments-freshness");
-  agentView = new AgentView("agent-feed", "agent-flags", "agent-overlay", "agent-freshness");
+  agentView = new AgentView("agent-feed", "agent-flags", "agent-overlay", "agent-freshness", {
+    strip: "decide-strip",
+    feed: "decide-feed",
+    freshness: "decide-freshness",
+  });
 
   // Set up tab navigation
   setupTabs();
@@ -80,8 +95,17 @@ async function init() {
   // Start polling the agent decision/flag/intervention telemetry (Loki + VM)
   startAgentPolling();
 
+  // Start polling the agent.decide spans (Jaeger), independently of Loki
+  startDecidePolling();
+
   console.log("Dashboard initialized");
 }
+
+// The tab currently shown (setupTabs keeps it current). Pollers that only feed
+// one tab check it so a hidden tab costs no queries.
+let activeTab =
+  (document.querySelector(".tab-btn.active") as HTMLElement | null)?.dataset.tab ?? "";
+let decidePoller: Poller | null = null;
 
 // Tab navigation
 function setupTabs() {
@@ -104,6 +128,9 @@ function setupTabs() {
           panel.classList.add("active");
         }
       });
+
+      activeTab = tabId;
+      if (tabId === "agent") decidePoller?.poke();
 
       console.log(`Switched to tab: ${tabId}`);
     });
@@ -253,6 +280,40 @@ function startAgentPolling() {
   });
 
   tick();
+}
+
+// Poll the agent.decide spans from Jaeger (#1233). Only while the Agent tab is
+// shown AND the page is visible; one chain at most (see poller.ts), incremental
+// query window (DecideStore), per-request timeout and backoff. Independent of the
+// Loki poll so either backend being down leaves the other panel live.
+function startDecidePolling() {
+  const store = new DecideStore();
+  decidePoller = createPoller({
+    baseMs: DECIDE_POLL_MS,
+    maxMs: DECIDE_MAX_BACKOFF_MS,
+    timeoutMs: DECIDE_TIMEOUT_MS,
+    isActive: () => activeTab === "agent" && !document.hidden,
+    run: async (signal) => {
+      const feed = await fetchDecideFeed(store.queryStartMs(), signal);
+      store.merge(feed.rows);
+      agentView.renderDecide(store.feed());
+    },
+    onError: (error) => {
+      console.error("Decide feed poll error:", error);
+      if (!agentView.decideHasRendered) {
+        agentView.setDecideError("Could not reach Jaeger for agent.decide spans.");
+      }
+    },
+  });
+
+  setInterval(() => agentView.updateDecideFreshness(), 1000);
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) decidePoller?.stop();
+    else decidePoller?.poke();
+  });
+
+  decidePoller.poke();
 }
 
 // Handle game events
