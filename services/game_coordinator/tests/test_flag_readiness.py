@@ -46,8 +46,8 @@ def _patched(statuses, ready_after_wait, waits=None):
     return (
         patch.object(flag_readiness, "init_flag_domain"),
         patch.object(
-            flag_readiness.api.provider_registry,
-            "get_provider_status",
+            flag_readiness,
+            "provider_status",
             side_effect=lambda d: statuses.get(d, ProviderStatus.READY),
         ),
         patch.object(flag_readiness, "wait_for_provider_ready", side_effect=_wait),
@@ -288,3 +288,93 @@ async def test_force_end_during_the_wait_creates_no_orphan_game(mock_tracer_mod,
     mock_factory.create_game.assert_not_called()
     assert session.current_game is None
     assert session.game_state == game_coordinator_pb2.GameState.ENDED
+
+
+# --------------------------------------------------------------------------- #
+# Real OpenFeature providers, real wait: no status mocks (#1329 re-review).
+# Unique domain names keep the coordinator's real domains untouched.
+# --------------------------------------------------------------------------- #
+import time  # noqa: E402
+
+from openfeature import api  # noqa: E402
+from openfeature.provider import ProviderEventDetails  # noqa: E402
+from openfeature.provider.in_memory_provider import InMemoryProvider  # noqa: E402
+
+
+class _SlowInitProvider(InMemoryProvider):
+    """NOT_READY until ``initialize`` returns."""
+
+    def __init__(self, delay: float):
+        super().__init__({})
+        self.delay = delay
+
+    def initialize(self, evaluation_context):
+        time.sleep(self.delay)
+
+
+def _real(domain, provider, event=None):
+    api.set_provider(provider, domain=domain)
+    if event == "stale":
+        provider.emit_provider_stale(ProviderEventDetails(message="flagd gone"))
+    elif event == "error":
+        provider.emit_provider_error(ProviderEventDetails(message="flagd error"))
+    return domain
+
+
+async def _run_real(domains, deadline):
+    span = _span()
+    with (
+        patch.object(flag_readiness, "init_flag_domain"),
+        patch("services.game_coordinator.runtime_config.refresh_runtime_config") as refresh,
+    ):
+        t0 = time.monotonic()
+        not_ready = await await_flag_providers_ready(span, domains=domains, deadline_seconds=deadline)
+        elapsed = time.monotonic() - t0
+    return span, refresh, not_ready, elapsed
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-010", flow="A5", br=["BR-004"])
+async def test_real_ready_provider_no_wait_no_refresh():
+    """UC-010 BR-004: a real READY provider -> no wait, no refresh, no fallback event."""
+    d = _real("real_ready_1329", InMemoryProvider({}))
+    span, refresh, not_ready, elapsed = await _run_real((d,), 3.0)
+    assert not_ready == [] and elapsed < 0.5
+    refresh.assert_not_called()
+    assert _events(span, "feature_flag.providers_not_ready") == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event", ["stale", "error"])
+@pytest.mark.uc("UC-010", flow="A5", steps=[3], br=["BR-004"])
+async def test_real_stale_or_error_provider_is_not_waited_on(event):
+    """UC-010 A5 step 3: a real STALE / ERROR provider adds no wait, no refresh and no code_defaults label."""
+    d = _real(f"real_{event}_1329", InMemoryProvider({}), event)
+    span, refresh, not_ready, elapsed = await _run_real((d,), 3.0)
+    assert not_ready == [] and elapsed < 0.5
+    refresh.assert_not_called()
+    assert _events(span, "feature_flag.providers_not_ready") == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-010", flow="A5", steps=[1, 2], br=["BR-004"])
+async def test_real_slow_init_provider_is_awaited_then_refreshed():
+    """UC-010 A5 steps 1-2: a real NOT_READY provider is awaited until READY, then the config is re-read."""
+    d = _real("real_slow_1329", _SlowInitProvider(delay=0.3))
+    span, refresh, not_ready, elapsed = await _run_real((d,), 3.0)
+    assert not_ready == []
+    assert 0.2 < elapsed < 2.5
+    refresh.assert_called_once()
+    assert _events(span, "feature_flag.providers_not_ready") == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-010", flow="A5", steps=[3], br=["BR-004"])
+async def test_real_never_ready_provider_times_out_with_fallback():
+    """UC-010 A5 step 3: a real provider still initializing at the deadline is recorded as code_defaults."""
+    d = _real("real_never_1329", _SlowInitProvider(delay=1.5))
+    span, refresh, not_ready, elapsed = await _run_real((d,), 0.2)
+    assert not_ready == [d]
+    (event,) = _events(span, "feature_flag.providers_not_ready")
+    assert event["feature_flag.domains"] == [d]
+    assert event["feature_flag.fallback"] == "code_defaults"

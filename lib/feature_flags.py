@@ -199,6 +199,16 @@ def _readiness_client(domain: str):
     return client
 
 
+def provider_status(domain: str):
+    """The OpenFeature ProviderStatus of a domain's provider (#1329).
+
+    Goes through the domain's client: ``api.provider_registry.get_provider_status``
+    takes a provider OBJECT and returns NOT_READY for anything it does not know,
+    so passing it a domain string always read NOT_READY.
+    """
+    return _readiness_client(domain).get_provider_status()
+
+
 async def wait_for_provider_ready(domain: str, deadline_seconds: float = 5.0) -> bool:
     """Wait for a domain's provider to reach READY status.
 
@@ -225,8 +235,7 @@ async def wait_for_provider_ready(domain: str, deadline_seconds: float = 5.0) ->
     from openfeature.provider import ProviderEvent, ProviderStatus
 
     # Already ready?
-    status = api.provider_registry.get_provider_status(domain)
-    if status == ProviderStatus.READY:
+    if provider_status(domain) == ProviderStatus.READY:
         logger.debug(f"Domain '{domain}' provider already READY")
         return True
 

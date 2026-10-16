@@ -20,11 +20,10 @@ import contextvars
 import logging
 import time
 
-from openfeature import api
 from openfeature.provider import ProviderStatus
 from opentelemetry import trace
 
-from lib.feature_flags import init_flag_domain, wait_for_provider_ready
+from lib.feature_flags import init_flag_domain, provider_status, wait_for_provider_ready
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +38,7 @@ FLAG_PROVIDER_READY_TIMEOUT_S = 5.0
 
 
 def _not_ready(domain: str) -> bool:
-    return api.provider_registry.get_provider_status(domain) == ProviderStatus.NOT_READY
+    return provider_status(domain) == ProviderStatus.NOT_READY
 
 
 async def await_flag_providers_ready(

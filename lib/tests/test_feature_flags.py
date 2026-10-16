@@ -788,6 +788,7 @@ class _FakeClient:
     """Records PROVIDER_READY handlers; ``fire_from_thread`` runs them on a foreign thread."""
 
     def __init__(self, ready_on_add: bool = False):
+        self.status = ProviderStatus.NOT_READY
         self.handlers = []
         self.removed = []
         self.ready_on_add = ready_on_add
@@ -797,6 +798,9 @@ class _FakeClient:
         self.handlers.append(handler)
         if self.ready_on_add:  # the SDK runs a handler immediately when already READY
             handler(None)
+
+    def get_provider_status(self):
+        return self.status
 
     def remove_handler(self, event, handler):
         assert event == ProviderEvent.PROVIDER_READY
@@ -827,8 +831,9 @@ def _fresh_readiness_clients():
 
 
 def _patch_provider(status, client):
+    client.status = status
     return (
-        patch.object(ff_module.api.provider_registry, "get_provider_status", return_value=status),
+        patch.dict(ff_module._readiness_clients, clear=True),
         patch.object(ff_module.api, "get_client", return_value=client),
     )
 
@@ -916,10 +921,68 @@ async def test_one_client_per_domain_across_waits():
     """UC-010 BR-004: repeated waits reuse the domain's client, so SDK handler maps do not grow per wait."""
     client = _FakeClient()
     with (
-        patch.object(ff_module.api.provider_registry, "get_provider_status", return_value=ProviderStatus.NOT_READY),
         patch.object(ff_module.api, "get_client", return_value=client) as get_client,
     ):
         await wait_for_provider_ready("system", deadline_seconds=0.01)
         await wait_for_provider_ready("system", deadline_seconds=0.01)
     get_client.assert_called_once_with(domain="system")
     assert client.removed == client.handlers
+
+
+# --- Real OpenFeature providers (no status mocks): the status lookup by domain must work (#1329) ---
+import time  # noqa: E402
+
+from openfeature.provider import ProviderEventDetails  # noqa: E402
+from openfeature.provider.in_memory_provider import InMemoryProvider  # noqa: E402
+
+from lib.feature_flags import provider_status  # noqa: E402
+
+
+class _SlowInitProvider(InMemoryProvider):
+    """Stays NOT_READY until ``initialize`` returns (after ``delay`` seconds)."""
+
+    def __init__(self, delay: float):
+        super().__init__({})
+        self.delay = delay
+
+    def initialize(self, evaluation_context):
+        time.sleep(self.delay)
+
+
+def _register(domain, provider):
+    from openfeature import api
+
+    api.set_provider(provider, domain=domain)
+
+
+@pytest.mark.uc("UC-010", flow="A5", br=["BR-004"])
+def test_provider_status_reads_real_ready_stale_error():
+    """UC-010 BR-004: provider_status(domain) reflects the real provider (READY / STALE / ERROR), not NOT_READY."""
+    ready = InMemoryProvider({})
+    _register("rs_ready_1329", ready)
+    assert provider_status("rs_ready_1329") == ProviderStatus.READY
+
+    stale = InMemoryProvider({})
+    _register("rs_stale_1329", stale)
+    stale.emit_provider_stale(ProviderEventDetails(message="flagd gone"))
+    assert provider_status("rs_stale_1329") == ProviderStatus.STALE
+
+    err = InMemoryProvider({})
+    _register("rs_error_1329", err)
+    err.emit_provider_error(ProviderEventDetails(message="flagd error"))
+    assert provider_status("rs_error_1329") == ProviderStatus.ERROR
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-010", flow="A5", br=["BR-004"])
+async def test_wait_real_provider_ready_fast_path_and_slow_init():
+    """UC-010 A5: a READY provider returns at once; a slow-initializing one is awaited until its READY."""
+    _register("rw_ready_1329", InMemoryProvider({}))
+    t0 = time.monotonic()
+    assert await wait_for_provider_ready("rw_ready_1329", deadline_seconds=2.0) is True
+    assert time.monotonic() - t0 < 0.5
+
+    _register("rw_slow_1329", _SlowInitProvider(delay=0.3))
+    assert provider_status("rw_slow_1329") == ProviderStatus.NOT_READY
+    assert await wait_for_provider_ready("rw_slow_1329", deadline_seconds=3.0) is True
+    assert provider_status("rw_slow_1329") == ProviderStatus.READY
