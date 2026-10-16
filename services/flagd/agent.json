@@ -561,7 +561,8 @@
     "decision.jev.base_url": {
       "state": "ENABLED",
       "variants": {
-        "default": "https://api.typesafe.ai/v1"
+        "default": "https://api.typesafe.ai/v1",
+        "blackhole": "https://192.0.2.1/v1"
       },
       "defaultVariant": "default"
     },
