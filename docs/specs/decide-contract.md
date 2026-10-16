@@ -49,7 +49,7 @@ Notes on `noul` (TypeSafe Jev's yes/no primitive, #1229): backward compatible (`
 choice / score answers). Support per backend: **jev** answers natively; **rules** answers 0.5 at confidence
 0; **claude** and **openai** reject a request containing a noul before any network I/O with an error
 wrapping `ErrInvalid` (`llmio.Supported`, `decide/llmio/llmio.go:Supported`), which the loop records as
-`fallback_reason=invalid_answer`. No FFA question asks a noul yet.
+`fallback_reason=invalid_answer`. No caller-level FFA question is a noul; the Jev backend asks the internal `jev.gate` noul every stage-1 round (§3.1).
 
 ### 1.2 State
 
@@ -402,7 +402,7 @@ an empty value means `rules`.
 
 `scripts/agent-backend.sh` flips `defaultVariant`s in `services/flagd/ci/agent.json`
 (override with `AGENT_FLAG_FILE`): `status`, `{rules|claude|openai|jev} [model]`,
-`threshold {low|default|strict}`, `capture {on|off}`, `effort {…}`. flagd reloads the
+`threshold {low|gate|default|strict}`, `capture {on|off}`, `effort {…}`. flagd reloads the
 file on change; the script states "~1 s" (`scripts/agent-backend.sh`). See NFR-014.
 
 ## 11. From decision to game effect
