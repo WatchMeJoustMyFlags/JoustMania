@@ -3,7 +3,7 @@
 > Technical spec. Part of the [spec tree](../README.md). Realises FR-044 to FR-054
 > in [requirements.md](../requirements.md) and [UC-040](../use_cases/UC-040.md),
 > [UC-044](../use_cases/UC-044.md), [UC-045](../use_cases/UC-045.md).
-> State: `main` @ 2fdfbfd1 (2026-10-16, includes PRs #1257, #1261, #1265, #1284, #1286 (the Jev gate and most-likely-level magnitude of #1281) and #1288 (per-backend act threshold)). Code references use `file:Symbol` where practical, because line numbers rot. Planned or in-flight items carry their issue / PR number and are marked **Planned** / **In flight**.
+> State: `main` @ 84c3ba15 (2026-10-16, includes PRs #1257, #1261, #1265, #1284, #1286 (the Jev gate and most-likely-level magnitude of #1281), #1288 (per-backend act threshold), #1297 (#1295 decision target), #1303 (#1298 no-interventions gate), #1306 (#1299), #1312 (#1301 feedback), #1315 (#1310/#1313) and #1308 (#1258 pattern games)). Code references use `file:Symbol` where practical, because line numbers rot. Planned or in-flight items carry their issue / PR number and are marked **Planned** / **In flight**.
 
 The agent answers "should I intervene in this game, how, and on whom" through one
 contract, independent of who answers: the in-process **rules** engine or a remote
@@ -34,7 +34,7 @@ Defined in `decide/decide.go`.
 | `State` | `GameID`, `GameKind`, `Digest`, `Narrative`, `Players` (sorted by serial), `ElapsedSeconds` | `decide.go:State` |
 | `Request` | `State`, `Questions`, `Context` (`json:"-"`) | Only in-process backends (rules) may read `Context`; remote backends must not; never logged with `%v` (`decide.go:Request`). |
 | `Response` | `Answers`, `Backend`, `Rationale` | Rationale is untrusted text, truncated (`decide.go:Response`). |
-| `Backend` | `Name() string`, `Decide(ctx, Request) (Response, error)` | Must honour `ctx` cancellation; the caller validates (`decide.go:Backend`). Optional `Available() bool`; false means `backend_unavailable` (`decision/decide_registry.go:24-37,101-103`). |
+| `Backend` | `Name() string`, `Decide(ctx, Request) (Response, error)` | Must honour `ctx` cancellation; the caller validates (`decide.go:Backend`). Optional `Available() bool`; false means `backend_unavailable` (`decision/decide_registry.go:availability`, `DecideRegistry.Resolve`). |
 
 ### 1.1 Question kinds
 
@@ -76,7 +76,7 @@ reflected. Entity: [DECIDE_PLAYER_STATE](../entity_model.md#decide_player_state)
 
 | ID | Kind | Options / range | Source of options |
 |---|---|---|---|
-| `ffa.intervention` | choice | `noop` + every intervention in the **live** `interventions_allowed` list (deduped, sorted) | `ffa.go:FFAQuestions`, `interventionOptions`; `decision/decide_hook.go:172-180` |
+| `ffa.intervention` | choice | `noop` + every intervention in the **live** `interventions_allowed` list (deduped, sorted) | `ffa.go:FFAQuestions`, `interventionOptions`; `decision/decide_hook.go:buildDecideRequest` |
 | `ffa.target` | choice | `none` + alive serials (sorted) | `ffa.go:FFAQuestions` |
 | `ffa.magnitude` | score | [0, 1], normalised over the chosen intervention's bounds | `ffa.go:FFAQuestions`, `magnitudeText` |
 
@@ -236,7 +236,7 @@ and rules decide on the **current** context.
   sum within 1e-3 of 1; p(choice) > 0 and ≥ max(p) − tolerance; score 0.
 - Score: finite, within the inclusive range, no choice / probabilities.
 
-### 4.3 Cross-question consistency, `decision/decide_hook.go:545-609`
+### 4.3 Cross-question consistency, `decision/decide_hook.go:mapAnswers`
 
 Failure here is outcome `invalid` with `decide.invalid_reason`, **no action and no
 rules fallback**.
@@ -250,7 +250,7 @@ rules fallback**.
 
 Player-scoped interventions: `send_controller_effect`, `eliminate_player`,
 `revive_player`, `adjust_player_sensitivity`, `set_player_handicap`, `grant_shield`,
-`partial_shield`, `soft_penalty` (`decide_hook.go:548-557`).
+`partial_shield`, `soft_penalty` (`decide_hook.go:playerTargetedInterventions`).
 
 ### 4.4 Re-validation when a remote answer lands
 
@@ -268,7 +268,7 @@ Order on landing (`decision/decide_hook.go:Loop.runDecideRemote`, `decideRemoteA
 
 ### 4.5 Permission chain (both paths)
 
-`decision/decision.go:801-848`, using the **live** flag snapshot:
+`decision/decision.go:evaluatePermission`, using the **live** flag snapshot:
 
 1. `interventions_allowed` membership → blocked `not_allowed`
 2. `policy.battery_threshold` (player-targeted only; unknown battery does not block) → `battery_threshold`
@@ -316,7 +316,7 @@ decision repeats the verdict as `decide.blocked` / `decide.block_reason` (§6, #
 - **Remote:** the model reports `confidence` per answer.
 - **Routing (remote path only)** uses the `ffa.intervention` confidence against the
   **effective threshold** for the backend that answered (`flags.DecisionBackend.ActThreshold`,
-  `flags/decision_backend.go:190`; #1287):
+  `flags/decision_backend.go:DecisionBackend.ActThreshold`; #1287):
   - backend `jev`: `decision.jev.act_confidence_threshold` (default variant `gate` 0.6; variants
     inherit −1 / gate 0.6 / default 0.8 / strict 0.95). Jev's confidence is the calibrated gate p_yes (§3.1),
     not a self-report, so it has its own bar. The `inherit` sentinel (−1), and NaN or any other value outside
@@ -324,7 +324,7 @@ decision repeats the verdict as `decide.blocked` / `decide.block_reason` (§6, #
   - every other backend (claude, openai): the global `decision.act_confidence_threshold` (default 0.8,
     variants low 0.5 / gate 0.6 / strict 0.95; NaN or out of range → default).
 
-  Both flags are read **live at landing** (`decide_hook.go:453,532`), so flipping either mid-flight applies to
+  Both flags are read **live at landing** (`decide_hook.go:runDecideRemote`, `decideRemoteApply`), so flipping either mid-flight applies to
   the in-flight answer: ≥ threshold → `act`; < threshold → `held` (no action). The span records the effective
   threshold and its source (§12). The rules path does not route by confidence.
 - `held` answers are not queued anywhere on `main` (the epic #1225 body proposed a
@@ -332,7 +332,7 @@ decision repeats the verdict as `decide.blocked` / `decide.block_reason` (§6, #
 
 ## 6. Outcomes
 
-`decide.outcome` on the `agent.decide` span (`decide_hook.go:95-112`):
+`decide.outcome` on the `agent.decide` span (`decide_hook.go:110-127`):
 
 | Outcome | Meaning |
 |---|---|
@@ -352,10 +352,10 @@ So a rules decision blocked by the allow-list reads `outcome=act`, `decide.block
 
 `decide.discarded_reason`: `stale_context`, `game_ended`, `target_gone`,
 `kill_switch`, `backend_changed`, `shutdown` (`decision/telemetry.go:57-65`;
-`decide_hook.go:339-349`).
+`decide_hook.go:502-512`).
 
 Outcomes are recorded **only as span attributes**; no metric counts them (the
-dashboard Agent tab reads them from Jaeger, `services/dashboard/src/agent.ts:396-492`).
+dashboard Agent tab reads them from Jaeger, `services/dashboard/src/agent.ts:455-560`).
 
 ## 7. Fallback reasons
 
@@ -374,6 +374,22 @@ dashboard Agent tab reads them from Jaeger, `services/dashboard/src/agent.ts:396
 
 There is no separate `rate_limited` reason: HTTP 429 is `error`, with
 `error.type="429"` on the `chat {model}` span.
+
+The reason is recorded as `decide.fallback_reason` with `decide.outcome=fallback` on the `agent.decide`
+span. Every same-cycle fallback is counted in `agent_llm_gated_total{reason}` on every cycle, decided or
+not (`unknown_backend`, `backend_unavailable` and `async_not_wired` since #1377). When the rules emit no decision
+in that cycle (#1350, `decision/decision.go:OnEvaluate`, `decide_hook.go:emitQuietFallback`):
+
+- the three **configuration** fallbacks (`unknown_backend`, `backend_unavailable`, `async_not_wired`;
+  `decide_hook.go:isConfigFallback`) still emit an `agent.decide` span (`decide.outcome=fallback`,
+  `decide.fallback_reason`, `decide.backend=rules`) under its own `agent.signal_received` root, throttled per
+  reason to one per `decision.throttle_seconds` window;
+- `llm_not_eligible` and `llm_budget_exhausted` stay counter-only, so quiet shadow games do not flood Jaeger;
+- the log line `agent.decide.backend_misconfigured` fires on state changes only: WARN (`state=entered`,
+  `reason`) when a game enters a configuration fallback or its reason changes, INFO (`state=cleared`,
+  `previous_reason`) when it clears.
+
+A decided cycle gets its `agent.decide` span every time, unthrottled.
 
 **Not fallbacks** (rules stay quiet that cycle, no decision): the per-game cadence
 gate (`decide_interval`, counted in `agent_llm_gated_total{reason}`), a remote
@@ -421,14 +437,14 @@ the kill switch `enabled` and the shared LLM budget (NFR-011).
 
 | Knob | Default | Scope | Source |
 |---|---|---|---|
-| `decision.claude.timeout_ms` | 5000 ms (variants fast 1500 / tight 2500 / default 5000 / patient 8000, PR #1257) | per call | `flags/decision_backend.go:30,99-106,176` |
-| `decision.openai.timeout_ms` / `decision.jev.timeout_ms` | 2500 ms (variants 1500 / 2500 / 5000) | per call | `flags/decision_backend.go:33,37,181,188` |
-| `decision.min_interval_ms` | 3000 ms (1500 / 10000; 0 disables) | per game, from admission | `decision_backend.go:28,60-76,220-227` |
+| `decision.claude.timeout_ms` | 5000 ms (variants fast 1500 / tight 2500 / default 5000 / patient 8000, PR #1257) | per call | `flags/decision_backend.go:30,109-116,214` |
+| `decision.openai.timeout_ms` / `decision.jev.timeout_ms` | 2500 ms (variants 1500 / 2500 / 5000) | per call | `flags/decision_backend.go:33,37,219,226` |
+| `decision.min_interval_ms` | 3000 ms (1500 / 10000; 0 disables) | per game, from admission | `decision_backend.go:28,70-86,279-286` |
 | `llm.max_requests_per_minute` | 6 (conservative 3 / aggressive 12 / `stage` 30, PR #1257) | **global**, shared by in-game decisions, the retro and the proposer (PR #1284) | `flags/flags.go:43`; `decision/llmbudget.go:22-67` |
-| `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` (env) | unset | read once at startup; a positive value replaces the flag | `main.go:335-354` |
-| `llm.eligible_game_kinds` | `real` | which game kinds may call a remote backend; read by in-game decisions, the retro and the proposer | `flags/flags.go:42,904-922` |
+| `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` (env) | unset | read once at startup; a positive value replaces the flag | `main.go:llmBudgetOverride` |
+| `llm.eligible_game_kinds` | `real` | which game kinds may call a remote backend; read by in-game decisions, the retro and the proposer | `flags/flags.go:llmGate` |
 | `policy.max_interventions_per_minute` | 2, weighted (soft 0.5, medium 1, hard 2, unknown 1); admitted in rank order with a 1.0 reserve against nudges (§4.5, #1326); talk stage `aggressive` 4 | per game | `decision/ratelimit.go`, `decision/budget.go` |
-| `policy.coordinator_backstop_per_minute` | 60 | global, enforced in the game coordinator | `services/game_coordinator/interventions.py:100-107,1403-1425` |
+| `policy.coordinator_backstop_per_minute` | 60 | global, enforced in the game coordinator | `services/game_coordinator/interventions.py:DEFAULT_COORDINATOR_BACKSTOP_BUDGET`, `_refresh_budget` |
 | Rules engine cadence | evaluate ≤ 1/s, ≤ 2 decisions per evaluation | per game | `decision/rules.go:15-26` |
 | Shared HTTP client backstop | 30 s | process | `decide_backends.go:56-62` |
 
@@ -438,7 +454,7 @@ where the LLM was a length-gated async upgrade
 #1234, which removed the LiteLLM gateway and the legacy in-game LLM path) removed it from the code; none of
 those flags exist on `main`. `remoteDecideAdmitted` is always true **by design** (#1231, comment updated in
 PR #1257): the cadence, the global budget and the per-game in-flight guard are the gates
-(`decide_hook.go:307-315`).
+(`decide_hook.go:remoteDecideAdmitted`).
 
 ### 8.1 Measured latencies (cited)
 
@@ -460,15 +476,15 @@ No p50 / p95 from production `agent.decide` spans has been published yet (#1231)
 
 | Change while a remote call is in flight | Effect | Evidence |
 |---|---|---|
-| `enabled` → off | HTTP call is **not** cancelled; on landing the live flags are re-read and the answer is `discarded/kill_switch`; the rules fallback is suppressed too | `decide_hook.go:339-360,439-445`; `TestRemote_KillSwitchAtLanding`, `TestRemote_KillSwitchSuppressesTimeoutFallback`; e2e `tests/integration/test_decide_backend_e2e.py::test_kill_switch_discards_inflight_answer` |
-| `decision.backend` changed | `discarded/backend_changed` | `decide_hook.go:446-449`; `TestRemote_BackendChangedMidFlight` |
-| `decision.act_confidence_threshold` / `decision.jev.act_confidence_threshold` changed | the effective threshold for the answering backend is re-read at landing (§5); the answer is `act` or `held` against the new value | `decide_hook.go:453`; `TestRemote_ThresholdRaisedMidFlight`, `TestThreshold_JevRaisedMidFlightAppliesAtLanding`, `TestThreshold_JevInheritFlippedMidFlightAppliesAtLanding` |
+| `enabled` → off | HTTP call is **not** cancelled; on landing the live flags are re-read and the answer is `discarded/kill_switch`; the rules fallback is suppressed too | `decide_hook.go:runDecideRemote` (landing re-read); `TestRemote_KillSwitchAtLanding`, `TestRemote_KillSwitchSuppressesTimeoutFallback`; e2e `tests/integration/test_decide_backend_e2e.py::test_kill_switch_discards_inflight_answer` |
+| `decision.backend` changed | `discarded/backend_changed` | `decide_hook.go:runDecideRemote`; `TestRemote_BackendChangedMidFlight` |
+| `decision.act_confidence_threshold` / `decision.jev.act_confidence_threshold` changed | the effective threshold for the answering backend is re-read at landing (§5); the answer is `act` or `held` against the new value | `decide_hook.go:runDecideRemote`; `TestRemote_ThresholdRaisedMidFlight`, `TestThreshold_JevRaisedMidFlightAppliesAtLanding`, `TestThreshold_JevInheritFlippedMidFlightAppliesAtLanding` |
 | `interventions_allowed` narrowed (including to `none`) | outcome stays `act`; the permission chain blocks `not_allowed` (`decide.blocked=true`, `decide.block_reason=not_allowed`); the next cycle makes no new call (§7.1) | `TestRemote_AllowListAtLanding`, `TestRemote_BlockedDecisionNamesTargetAndDecideBlocked`, `TestRemote_NoInterventionsAllowed`, `TestRemote_NoInterventionsAllowedAtLanding` |
-| `interventions_enabled` → off | not checked by the decide hook; the gated sink writes nothing | `actions/gated.go:31-67` |
-| agent shutdown | `discarded/shutdown` | `decide_hook.go:397-402` |
+| `interventions_enabled` → off | not checked by the decide hook; the gated sink writes nothing | `actions/gated.go:GatedActionSink.Apply` |
+| agent shutdown | `discarded/shutdown` | `decide_hook.go:runDecideRemote` (shutdown check first) |
 
 With `enabled` off no new remote call fires: `OnEvaluate` short-circuits and emits a
-throttled `agent.disabled` span (`decision/decision.go:465-476`).
+throttled `agent.disabled` span (`decision/decision.go:OnEvaluate`).
 
 ## 10. Live backend switch
 
@@ -486,7 +502,7 @@ file on change; the script states "~1 s" (`scripts/agent-backend.sh`). See NFR-0
 ## 11. From decision to game effect
 
 The action sink writes `services/flagd/interventions.json`
-(`actions/writer.go:406-554`), gated by `interventions_enabled`. The game coordinator
+(`actions/writer.go:mutate`), gated by `interventions_enabled`. The game coordinator
 watches flagd and applies the result (`services/game_coordinator/interventions.py`).
 Full flag shapes: [flags.md § interventions](flags.md#5-interventions).
 
@@ -582,7 +598,7 @@ Full names in [telemetry.md](telemetry.md#4-agent). Summary:
   Event `gen_ai.evaluation.result` (`gen_ai.evaluation.name=act_confidence_threshold`,
   score value, label `pass`/`fail`, explanation `confidence 0.720 >= threshold 0.600
   (decision.jev.act_confidence_threshold)` naming the flag the threshold came from) when routed
-  (`decide_hook.go:44-127,622-706`).
+  (`decide_hook.go:emitDecideSpan`, `setDecideAttributes`).
 - **`decide.answers`** is the JSON array of `decide.Answer` values (capped at the span-JSON size limit, with a
   truncation marker), one object per question:
   `{"question_id": "ffa.intervention", "choice": "grant_shield", "probabilities": {"noop": 0.3, "grant_shield": 0.7}, "score": 0, "confidence": 0.7}`,
@@ -600,17 +616,19 @@ Full names in [telemetry.md](telemetry.md#4-agent). Summary:
   when known), [telemetry.md §4.3](telemetry.md#43-decision-attributes) (#1295).
 - Metrics: `gen_ai.client.operation.duration`, `gen_ai.client.token.usage`,
   `agent_llm_gated_total{reason}` (decide path reasons: `llm_not_eligible`, `llm_budget_exhausted`,
-  `decide_interval`, `no_interventions_allowed`), `agent_decisions_total`, `agent_interventions_applied_total`.
+  `unknown_backend`, `backend_unavailable`, `async_not_wired` (#1377), `decide_interval`, `no_interventions_allowed`), `agent_decisions_total`, `agent_interventions_applied_total`.
 
 Known gap: `agent_interventions_applied_total` also counts applies that the gated sink
-turned into no-ops while `interventions_enabled` is off (`actions/gated.go:60-65`).
+turned into no-ops while `interventions_enabled` is off (`actions/gated.go:GatedActionSink.Apply`).
 
 ## 13. Changing this contract
 
 A new question kind, outcome, fallback reason, discarded reason, span attribute or
 default changes this file first (see [CONTRIBUTING](../CONTRIBUTING.md#spec-driven-development-aiup)).
-The contract tests live in `decide/*_test.go`, `decide/backends/*/contract_test.go`
-and `decision/decide_hook_test.go` (per-backend threshold: `decision/decide_hook_threshold_test.go`).
+The contract tests live in `decide/*_test.go`, the backend tests `decide/backends/claude/claude_test.go`,
+`decide/backends/openai/openai_test.go` and `decide/backends/jev/contract_test.go` (only jev has a dedicated
+`contract_test.go`; jev also has `stages_test.go` and `wire_test.go`), and `decision/decide_hook_test.go`
+(per-backend threshold: `decision/decide_hook_threshold_test.go`; empty allow-list: `decision/decide_no_allowed_test.go`).
 
 **Traceability:** FR-044, FR-045, FR-046, FR-047, FR-048, FR-049, FR-050, FR-051, FR-052, FR-053, FR-054 / UC-040, UC-044, UC-045 /
 `services/agent/decide/`, `services/agent/decision/decide_hook.go`, `decide_registry.go`, `decide_rules.go`, `decision.go`, `services/agent/decide_backends.go`, `services/agent/actions/`, `services/game_coordinator/interventions.py` /

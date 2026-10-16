@@ -1,6 +1,6 @@
 # Services
 
-> Technical spec. Part of the [spec tree](../README.md). State: `main` @ 2fdfbfd1 (2026-10-16, includes PRs #1256, #1257, #1259, #1261, #1265, #1266, #1282, #1284, #1286, #1288).
+> Technical spec. Part of the [spec tree](../README.md). State: `main` @ 84c3ba15 (2026-10-16, includes PRs #1256, #1257, #1259, #1261, #1265, #1266, #1282, #1284, #1286, #1288, #1296, #1297, #1303, #1306, #1307, #1309, #1312, #1315, #1324 and #1308 (#1258 pattern games)).
 > RPC tables are **generated from `proto/*.proto`**; regenerate them when a `.proto` changes (and remember the
 > forwarding method in `services/connect-proxy/main.go` for browser-reachable RPCs).
 
@@ -32,10 +32,12 @@ flowchart LR
     flagd[(flagd)] -.flags.-> cm & gc & menu & audio & pd & agent & rhid
 ```
 
-Dependencies (start-up, from `depends_on` and code): audio, controller-manager, python-hid, rust-hid and flagd
-have no application dependencies; the game coordinator calls the controller manager and audio; the menu calls
-the controller manager, the game coordinator and audio; the agent depends only on flagd (and calls the game
-coordinator and the mock control API to run shadow games, the named exception in C-005).
+Dependencies (start-up, from `depends_on` and code): audio, python-hid, rust-hid and flagd have no application
+dependencies; the controller manager waits for flagd and for rust-hid and python-hid to be healthy (compose
+`depends_on`) and talks to both HID adapters over gRPC; the game coordinator calls the controller manager and
+audio, and the menu calls the controller manager, the game coordinator and audio (code only: in compose the
+coordinator and the menu wait only for flagd, the menu also for `flag-dir-init`); the agent depends only on flagd
+(and calls the game coordinator and the mock control API to run shadow games, the named exception in C-005).
 
 ## 2. Service catalog
 
@@ -52,14 +54,15 @@ coordinator and the mock control API to run shadow games, the named exception in
 | connect-proxy | Go | 8080 HTTP | no | Connect (browser) ↔ gRPC bridge; `/canary/*`, `/chaos/*` flag-file endpoints | `services/connect-proxy/` |
 | dashboard | TypeScript | 8080 HTTP (static-web-server) | no | SPA: controllers, Agent, Experiments, Metrics, Traces tabs; follows the newest live shadow game when no real game is live (`ListGames`, `GetGameState`, `StreamGameEvents(game_id)`; UC-070 BR-005) | `services/dashboard/` |
 | envoy | config | 80 HTTP; 9901 admin | **80** | Single entry point / reverse proxy | `services/envoy/envoy.yaml` |
-| flagd | binary v0.16.0 | 8013 RPC eval, 8014 mgmt, 8015 sync | 8015 (8013 via override) | Serve the flag files | `docker-compose.yml:75-118` |
+| flagd | binary v0.16.0 | 8013 RPC eval, 8014 mgmt, 8015 sync | 8015 (8013 via override) | Serve the flag files | `docker-compose.yml:79-122` |
 | otel-collector | custom contrib build | 4317 / 4318 OTLP, 8889 Prometheus exporter | 4317, 8889 | Receive OTLP + container logs + host metrics; export to Jaeger, VictoriaMetrics, Prometheus, Loki, agent | `services/otel-collector/config.yaml` |
-| jaeger | 2.19.0 | 16686 UI, 4317 OTLP | no | Trace store (badger, bounded TTL) | `services/jaeger/config.yaml` |
-| victoria-metrics | v1.144.0 | 8428 | no | Metric store (remote write, 7 d) | `docker-compose.yml:502-530` |
+| jaeger | 2.19.0 | 16686 UI, 4317 / 4318 OTLP | no | Trace store (badger, bounded TTL) | `services/jaeger/config.yaml` |
+| victoria-metrics | v1.144.0 | 8428 | no | Metric store (remote write, 7 d) | `docker-compose.yml:514-542` |
 | prometheus | v3.12.0 | 9090 | no | Alert rules; scrapes the collector every 500 ms | `services/prometheus/` |
 | grafana | 13.0.2 | 3000 | no | Dashboards | `services/grafana/` |
 | loki | 3.7.2 | 3100 | no | Logs | `services/loki/config.yaml` |
-| flag-dir-init | busybox | none | no | One-shot: make the flag dir group-writable for the nonroot menu | `docker-compose.yml:61-72` |
+| flag-dir-init | busybox | none | no | One-shot: make the flag dir group-writable for the nonroot menu | `docker-compose.yml:65-76` |
+| agent-game-coordinator | Python (game-coordinator image) | 50053 gRPC, 8000 (`expose` only) | no | **Test-only** (profile `agent`, #1163): a dedicated game coordinator for the agent's experiment cohort-loop soak, so the suite's per-test `coordinator_idle` quiesce never wipes the agent's shadow games. Service name `agent-game-coordinator-service`; the overlay points the agent at it with `GAME_COORDINATOR_ADDR=agent-game-coordinator:50053`; shares flagd and the controller manager | `docker-compose.agent-coordinator.yml` (layered on `docker-compose.dry-run.yml` by `tests/integration/test_experiment_cohort_loop.py`) |
 
 Compose variants: `docker-compose.yml` (full), `.override.yml` (auto-loaded dev ports), `.lite.yml` (no
 observability; still runs rust-hid and the pairing daemon, so the Pi reads real controllers, #1318), `.ci.yml` (CI flag dir, profiles), `.ci-rust.yml`, `.dev.yml` (source mounts), `.dry-run.yml`
@@ -160,7 +163,7 @@ services (`services/agent/receiver.go`); they are not JoustMania protos.
 ### Browser-reachable RPCs (connect-proxy)
 
 All four `ControllerManagerService` RPCs, all four `GameCoordinatorService` RPCs and all four `MenuService`
-RPCs are forwarded under `/joustmania` (`services/connect-proxy/main.go:170-414`). Audio, HID, pairing and mock
+RPCs are forwarded under `/joustmania` (`services/connect-proxy/main.go`, the `ControllerManagerProxy`, `GameCoordinatorProxy` and `MenuProxy` methods). Audio, HID, pairing and mock
 RPCs are not.
 
 **Traceability:** C-014 / UC-002, UC-003, UC-010, UC-027, UC-031 / `proto/*.proto`, `services/connect-proxy/main.go` / `tests/integration/`.
@@ -194,15 +197,16 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 | Endpoint | Served by | Reachable via envoy | Purpose | Source |
 |---|---|---|---|---|
 | `/` | dashboard | yes | SPA | `services/envoy/envoy.yaml:121-123` |
+| `/` | connect-proxy, only when `/app/static` exists in its container (not mounted in the stock compose files) | no (envoy sends `/` to the dashboard) | Static dashboard files (`http.FileServer`) | `services/connect-proxy/main.go` (`main`, "Serve static files for dashboard") |
 | `/joustmania/*` | connect-proxy | yes (3600 s timeout) | Connect RPCs | `envoy.yaml:37-39` |
 | `/chaos/{poll-drop,accel-spike,led-failure,disconnect}`, `/chaos/reset`, `/chaos/status` | connect-proxy | yes | Fault injection via `chaos_fault_type` | `services/connect-proxy/chaos.go:37-44` |
 | `/canary/{python,rust}`, `/canary/rollback`, `/canary/status` | connect-proxy | **no** (falls through to the dashboard, D-B3) | Manual backend canary via `bluetooth_backend` | `services/connect-proxy/canary.go:13-16` |
-| `/experiments`, `/experiments/{id}` | agent :13134 | yes | Experiment dossier (JSON / HTML) | `services/agent/dossier.go:456-490` |
-| `/healthz` | agent :13134 | no | Liveness | `services/agent/server.go:172-184` |
+| `/experiments`, `/experiments/{id}` | agent :13134 | yes | Experiment dossier (JSON / HTML) | `services/agent/dossier.go` (`handleList`, mux registration) |
+| `/healthz` | agent :13134 | no | Liveness | `services/agent/server.go:startHealthServer` |
 | `/health` | connect-proxy; envoy direct 200 | yes | Liveness | `services/connect-proxy/main.go:129` |
 | `/jaeger/`, `/grafana/`, `/prometheus/`, `/loki/`, `/victoria-metrics/` | observability services | yes | UIs and APIs | `envoy.yaml:45-89` |
-| `/metrics` | controller-manager :8000 | no | prometheus_client pull (pipeline comparison) | `services/controller_manager/server.py:94-97` |
-| `/healthz` | pairing-daemon :8002 | host network | Liveness | `services/pairing_daemon/psmove_pairing/daemon.py:92` |
+| `/metrics` | controller-manager :8000 | no | prometheus_client pull (pipeline comparison) | `services/controller_manager/server.py` (`start_http_server`) |
+| `/healthz` | pairing-daemon :8002 | host network | Liveness | `services/pairing_daemon/psmove_pairing/daemon.py` (health status for `/healthz`) |
 
 **Traceability:** FR-059, FR-070, FR-073, FR-084, FR-085 / UC-035, UC-052 / `services/envoy/envoy.yaml`, `services/connect-proxy/`, `services/agent/dossier.go`.
 
@@ -219,8 +223,8 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 
 ### game-coordinator
 
-- Sessions: one primary (menu origin) + shadows; caps `max_concurrent_games` (8), `max_shadow_games` (4), `shadow_policy` (block); real starts preempt shadows (`servicer.py:66-136,332-525`). Game ids `game_<12 hex>`.
-- Registry `_GAME_CLASSES` (`game_factory.py:56-67`), 10 modes. Death detection in `games/base.py` (UC-030).
+- Sessions: one primary (menu origin) + shadows; caps `max_concurrent_games` (8), `max_shadow_games` (4), `shadow_policy` (block); real starts preempt shadows (`servicer.py`: `_max_concurrent_games`, `_max_shadow_games`, `_shadow_policy`, `_preempt_shadow_sessions`, `_admit_session_locked`). Game ids `game_<12 hex>`.
+- Registry `_GAME_CLASSES` (`game_factory.py:_GAME_CLASSES`), 10 modes. Death detection in `games/base.py` (UC-030).
 - `InterventionManager` watches `interventions.json`, evaluates each flag per live session with `{targetingKey=serial, gameId}`, enforces allow-list → mode matrix → battery → global backstop, applies via difficulty / lifecycle handlers and emits `agent_intervention` + `game_interventions_total`. The `end_game` intervention ends only the session whose `game_id` it carries, through the same path as `ForceEndGame` with that `game_id` (UC-040 BR-011); per-player grant flags apply once per decision, per player (UC-040 BR-012).
 
 ### menu
@@ -236,7 +240,7 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 
 ### agent
 
-- Environment: see `docker-compose.yml:685-783`. Gates moved to live flags: `interventions_enabled`, `rollout_enabled` (#1213), experiment and verdict knobs (#1044, #1214). Still env: API keys, `AGENT_INFERENCE_*`, `AGENT_LLM_MAX_REQUESTS_PER_MINUTE`, `AGENT_PROBE_DECISIONS`, rollout dwell / cooldown, experiment seed and dynamic candidate lists, and every promotion gate (`AGENT_CODE_IMPROVEMENT_ENABLED`, `AGENT_AUTONOMOUS_ENABLED`, `GITHUB_*`), which compose does not pass through (D-A6). Env→flag audit: #1194.
+- Environment: see `docker-compose.yml:697-795`. Gates moved to live flags: `interventions_enabled`, `rollout_enabled` (#1213), experiment and verdict knobs (#1044, #1214). Still env: API keys, `AGENT_INFERENCE_*`, `AGENT_LLM_MAX_REQUESTS_PER_MINUTE`, `AGENT_PROBE_DECISIONS`, rollout dwell / cooldown, experiment seed and dynamic candidate lists, and every promotion gate (`AGENT_CODE_IMPROVEMENT_ENABLED`, `AGENT_AUTONOMOUS_ENABLED`, `GITHUB_*`), which compose does not pass through (D-A6). Env→flag audit: #1194.
 - Writes: `interventions.json` (action sink), `rollout.json` (`current_controller_count`), `game.json` (experiment targeting; autonomous real default when enabled). Never `agent.json` (code guard in `experiment/gate.go`; the mount is read-write).
 - Persistent volume `agent-experiments` for the experiment journal and autonomous-revert snapshots.
 - Pattern games (#1258, UC-046): the one-shot runner reads `SHADOW_GAME_ARCHETYPE` and `SHADOW_GAME_SEED`; for a pattern game the runner sends no `SimulateMovement` / `SimulateDeath` and force-ends the game at the pinned safety cap `experiment.max_game_seconds` (outcome `timeout`).

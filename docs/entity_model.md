@@ -5,7 +5,7 @@
 >
 > JoustMania has no database: these entities live in protobuf messages, in-memory service state, flag
 > files and the agent's experiment journal. "Primary Key" therefore means the natural identifier.
-> Source of each entity is given in its description. State: `main` @ 81c9ecea (includes PRs #1257, #1261, #1265).
+> Source of each entity is given in its description. State: `main` @ 84c3ba15 (includes PRs #1257, #1261, #1265, #1295, #1308, #1312, #1315; consistency pass of the 2026-10-16 audit, epic #1369).
 
 ## Entity Relationship Diagram
 
@@ -45,19 +45,23 @@ erDiagram
 
 ### CONTROLLER
 
-A physical or mock PS Move controller tracked by the controller manager (`proto/controller_manager.proto` `ControllerState`, `services/controller_manager/name_manager.py`).
+A physical or mock PS Move controller tracked by the controller manager (`proto/controller_manager.proto` `ControllerState`, `proto/controller_manager_mock.proto` `MockControllerInfo`, `services/controller_manager/name_manager.py`). `adapter` is internal controller-manager state, not a proto field.
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
-| serial | Bluetooth MAC address, or `MOCK0001`-style id for mock controllers | String | 17 | Primary Key, Format: MAC or MOCK%04d |
+| serial | Bluetooth MAC address, or `MOCK0000`-style id for mock controllers | String | 17 | Primary Key, Format: MAC or MOCK%04d |
 | name | Human-readable name, deterministic default (adjective + noun) or user-assigned | String | 50 | Not Null |
+| move_num | Index of the controller in the controller manager's list | Integer | 3 | Not Null, Min: 0 |
+| team | Proto team field; the controller manager sets it to 0 at discovery and nothing updates it (team membership lives on PLAYER) | Integer | 2 | Not Null, Min: 0, Max: 0 |
 | battery | Battery level in percent (raw 0..5 mapped ×20; charging = 100; unknown = 50) | Integer | 3 | Not Null, Min: 0, Max: 100 |
 | accel | Last acceleration vector in g (x, y, z) | Decimal | 6,3 | Not Null |
 | gyro | Last gyroscope vector | Decimal | 6,3 | Not Null |
 | color | Current LED colour (r, g, b) | Integer | 3 | Not Null, Min: 0, Max: 255 |
+| buttons | Pressed state of trigger, move, cross, circle, square, triangle, ps, select and start (one boolean field each in the proto) | Boolean | 1 | Not Null |
 | rssi | Signal strength in dBm (controller manager always reports 0; RSSI comes from the pairing daemon metric) | Integer | 4 | Optional, Min: -100, Max: 0 |
 | adapter | I/O adapter currently routing this controller | String | 10 | Not Null, Values: python, rust, mock, unstable |
 | reserved | Mock controller reserved for a shadow game (hidden from the lobby roster) | Boolean | 1 | Not Null |
+| tag | Owner tag of a mock controller (e.g. `agent:` prefix); the agent's orphan sweep removes reserved controllers whose tag has its prefix and no live game references them (`services/agent/gamerunner/sweep.go` `SweepOrphans`) | String | 60 | Optional, mock controllers only |
 | pattern_archetype | Archetype installed on this mock controller | String | 40 | Optional, Foreign Key (MOTION_ARCHETYPE.archetype_id) |
 | pattern_slot | Slot of the installed archetype this controller plays (its index in the reservation order) | Integer | 1 | Optional, Min: 0, Max: 7 |
 
@@ -98,7 +102,7 @@ One running or finished game in the game coordinator (`services/game_coordinator
 | origin | Who asked for the start | String | 30 | Not Null, Values: GAME_ORIGIN_UNSPECIFIED, GAME_ORIGIN_MENU, GAME_ORIGIN_AGENT |
 | game_kind_telemetry | Kind as emitted on coordinator spans and metrics (`game.kind`, `game_kind`) | String | 7 | Not Null, Values: primary, shadow |
 | game_kind_flags | Kind in the flag evaluation context and on agent spans | String | 6 | Not Null, Values: real, shadow |
-| state | Session state (proto `GameState`) | String | 8 | Not Null, Values: IDLE, STARTING, RUNNING, ENDING, ENDED |
+| state | Session state (proto `GameState`); a session is created in STARTING; IDLE is only what the servicer reports when no session exists | String | 8 | Not Null, Values: STARTING, RUNNING, ENDED |
 | sensitivity | Baseline sensitivity index | Integer | 1 | Not Null, Min: 0, Max: 4 |
 | experiment_id | Experiment the shadow game belongs to | String | 50 | Optional, Foreign Key (EXPERIMENT.experiment_id) |
 | arm | Arm of the experiment | String | 12 | Optional, Values: experimental, control |
@@ -112,9 +116,10 @@ One running or finished game in the game coordinator (`services/game_coordinator
 | start_time | Start timestamp (ms) | DateTime | - | Not Null |
 
 **Constraints:**
-- Two `game_kind` vocabularies exist (see #1249). The coordinator emits `primary` for the menu-started real game and `shadow` otherwise; the flag context and the agent use `real` / `shadow`. The coordinator bridges `primary → real` for flag evaluation (`game_session.py:283-292`) and the agent normalises at ingest (`services/agent/gamecontext/gamekind.go`). An empty or unknown kind is **not** real.
+- Two `game_kind` vocabularies exist (see #1249). The coordinator emits `primary` for the menu-started real game and `shadow` otherwise; the flag context and the agent use `real` / `shadow`. The coordinator bridges `primary → real` for flag evaluation (`game_session.py` `_eval_game_kind`) and the agent normalises at ingest (`services/agent/gamecontext/gamekind.go`). An empty or unknown kind is **not** real.
 - Only `GAME_ORIGIN_MENU` may claim the primary slot; at most one primary session; at most `max_concurrent_games` sessions and `max_shadow_games` shadows; `experiment_id`, `arm` and `rng_seed` are honoured only for shadow sessions.
-- The proto state `ENDING` is never set on a session; `RUNNING` begins at `game_started`, which base modes publish before the countdown (D-G4).
+- Session state transitions (`services/game_coordinator/game_session.py`): created as `STARTING` → `RUNNING` on `game_started` (which base modes publish before the countdown, D-G4) → `ENDED` on any game-ending event, a force end or an error. A `STARTING` session can go straight to `ENDED`. The proto values `IDLE` and `ENDING` are never set on a session: `IDLE` is the servicer's answer when no (primary) session exists (`services/game_coordinator/servicer.py` `game_state`, `GetGameState`), and `ENDING` is unused at session level.
+- Each game mode also has its own lifecycle, `GameState` in `services/game_coordinator/games/base.py` (`idle` → `starting` → `running` → `ending` → `ended`); `ending` is set by the modes' `_end_game_impl` (FFA, Teams, Traitor, Zombies, Swapper, Tournament, Fight Club, NonStop) and is reported on the `game.state` span attribute. Tournament (`TournamentState`: waiting, fighting, bye, champion, eliminated) and Fight Club (`FightState`: in_line, defender, fighter, face_off) add per-player sub-states.
 
 ### PLAYER
 
@@ -124,7 +129,9 @@ A controller's participation in one game (`proto/game_coordinator.proto` `Player
 |---|---|---|---|---|
 | serial | Controller played | String | 17 | Primary Key, Foreign Key (CONTROLLER.serial) |
 | game_id | Game | String | 17 | Primary Key, Foreign Key (GAME_SESSION.game_id) |
-| team | Team index; 0 in modes without teams, -1 only in Tournament | Integer | 2 | Not Null, Min: -1, Max: 7 |
+| name | Display name copied from the controller (`player.name` on spans); empty until the controller reported one | String | 50 | Optional |
+| color | Current player colour (r, g, b): team colour in team modes, white by default | Integer | 3 | Not Null, Min: 0, Max: 255 |
+| team | Team index; 0 in modes without teams, -1 only in Tournament (the proto comment "-1 if no teams" on `PlayerInfo.team` is stale) | Integer | 2 | Not Null, Min: -1, Max: 7 |
 | alive | Still in the game (zombies stay alive when converted) | Boolean | 1 | Not Null |
 | score | Mode score; NonStop computes max(0, base − deaths × penalty) only at game end, so it is 0 during play; `ListGames` always reports 0 | Integer | 5 | Optional, Min: 0 |
 | sensitivity_factor | Agent per-player factor (divides thresholds) | Decimal | 4,2 | Not Null, Min: 0.5, Max: 2.0 |
@@ -133,7 +140,7 @@ A controller's participation in one game (`proto/game_coordinator.proto` `Player
 | invincible_until | No-death deadline from match / round start (Tournament, Fight Club) | DateTime | - | Optional |
 | smoothed_accel | EMA of acceleration magnitude in g | Decimal | 6,3 | Not Null, Min: 0 |
 
-**Constraints:** the player cannot die while `now < max(grace_until, invincible_until)`. Effective thresholds are divided by `clamp(sensitivity_factor × global_difficulty_factor, 0.5, 2.0)` and multiplied by `clamp(handicap, 0.5, 2.0)`.
+**Constraints:** the player cannot die while `now < max(grace_until, invincible_until)`. In the base path (`games/base.py` `_compute_effective_thresholds`), effective thresholds are divided by `clamp(sensitivity_factor × global_difficulty_factor, 0.5, 2.0)` and multiplied by `clamp(min(max(handicap_factor, active partial_shield boost, rubberband_boost), soft_penalty_factor), 0.5, 2.0)`. Exception: Werewolf werewolves and Zombies zombies use a fixed role threshold table per sensitivity (`game.werewolf.thresholds`, `game.zombie.thresholds`; `werewolf.py` / `zombie.py` `_compute_effective_thresholds`), so tempo and the per-player and global factors do not apply to them. Fight Club runs its own death detection (D-G9, #1347).
 
 ### DECIDE_PLAYER_STATE
 
@@ -165,7 +172,8 @@ A colour team in team modes (`services/game_coordinator/games/teams_base.py`).
 | index | Team number within the game | Integer | 1 | Primary Key, Min: 0, Max: 7 |
 | name | Colour name (e.g. Pink, Magenta) | String | 20 | Not Null |
 | color | RGB colour | Integer | 3 | Not Null, Min: 0, Max: 255 |
-| secret | Hidden team for traitors (Traitor mode only) | Boolean | 1 | Not Null |
+
+**Constraints:** a team has no secret flag. Hidden roles are per player: in Traitor each player carries `is_traitor` and `secret_team`, the team index the player wins with (the visible team for loyal players, another team for traitors; `services/game_coordinator/games/traitor.py` `TraitorPlayer`); in Werewolf the role is the player's `is_werewolf`.
 
 ### GAME_EVENT
 
@@ -221,7 +229,7 @@ One agent decision cycle for a game (`services/agent/decision/decision.go`, `dec
 |---|---|---|---|---|
 | decision_id | Correlates decision and effect (`intervention.id`) | String | 40 | Primary Key |
 | game_id | Game decided for | String | 17 | Not Null, Foreign Key (GAME_SESSION.game_id) |
-| backend_requested | `decision.backend` at fire time | String | 10 | Not Null, Values: rules, claude, openai, jev |
+| backend_requested | `decision.backend` at fire time (`decide.backend.requested`); empty counts as `rules`, an unknown name is kept verbatim and decided by rules with `fallback_reason=unknown_backend` | String | 20 | Not Null, Values: rules, claude, openai, jev, or an unknown name |
 | backend | Backend that actually decided | String | 10 | Not Null, Values: rules, claude, openai, jev |
 | outcome | Decide outcome | String | 10 | Not Null, Values: act, held, noop, invalid, fallback, discarded |
 | fallback_reason | Why rules decided instead | String | 22 | Optional, Values: unknown_backend, backend_unavailable, async_not_wired, llm_not_eligible, llm_budget_exhausted, timeout, invalid_answer, error |
@@ -229,7 +237,7 @@ One agent decision cycle for a game (`services/agent/decision/decision.go`, `dec
 | confidence | Routing confidence of `ffa.intervention` | Decimal | 4,3 | Optional, Min: 0, Max: 1 |
 | act_confidence_threshold | Effective threshold read at landing (the answering backend's own, else the global) | Decimal | 4,3 | Optional, Min: 0, Max: 1 |
 | act_confidence_threshold_source | Flag the threshold came from | String | 6 | Optional, Values: jev, global |
-| blocked | Permission chain blocked the decision | Boolean | 1 | Not Null |
+| blocked | Permission chain blocked the decision (`decide.blocked`); absent when the decision never reached the permission chain | Boolean | 1 | Optional |
 | block_reason | Permission block | String | 18 | Optional, Values: not_allowed, battery_threshold, rate_limit |
 | state_digest | SHA-256 of the canonical state | String | 64 | Not Null |
 | latency_ms | Decide latency | Integer | 6 | Not Null, Min: 0 |
@@ -291,7 +299,7 @@ A hypothesis about one `game.json` flag value, tested in shadow games (`services
 | target_n | Games per arm | Integer | 4 | Not Null, Min: 1 |
 | status | Lifecycle | String | 10 | Not Null, Values: proposed, running, concluded, promoting, done, discarded, aborted |
 
-**Constraints:** the `chaos` objective is rejected. All running experiments are aborted when `enabled` or `experiments_enabled` is off.
+**Constraints:** the `chaos` objective is rejected. All running experiments are aborted when `enabled` or `experiments_enabled` is off. Status transitions (`services/agent/experiment/registry.go` `Status`): `proposed` → `running` → `concluded` → `promoting` → `done`, or `concluded` → `discarded`; `running` → `aborted` on the kill switch, a capacity reclaim or an error. `done`, `discarded` and `aborted` are terminal.
 
 ### ARM
 
@@ -313,11 +321,11 @@ The conclusion of an experiment (`services/agent/experiment/verdict.go`).
 |---|---|---|---|---|
 | experiment_id | Experiment | String | 50 | Primary Key, Foreign Key (EXPERIMENT.experiment_id) |
 | outcome | Result | String | 12 | Not Null, Values: promote, discard, inconclusive |
-| effect_size | Cohen's d (experimental vs control) | Decimal | 6,3 | Not Null |
-| delta | Raw mean difference | Decimal | 8,5 | Not Null |
-| significant | Passed effect threshold and raw-effect floor | Boolean | 1 | Not Null |
+| delta | Raw mean difference (experimental − control) | Decimal | 8,5 | Not Null |
+| significant | Passed the effect threshold and the raw-effect floor | Boolean | 1 | Not Null |
+| reason | Short explanation; the only place the standardized effect (d_z or Cohen's d) appears | String | 200 | Optional |
 
-**Constraints:** requires `verdict_min_n` games per arm and `verdict_min_pairs` pairs; the recent-real baseline anchor can only downgrade `promote` to `inconclusive`.
+**Constraints:** persisted as `journal.Verdict` (`services/agent/experiment/journal/record.go`); there is no effect-size field. Paired path as soon as one seed-sharing pair has completed (always the case for the agent's paired experiments): d_z over the pair differences (`Summary.PairDiff`), conclusive only once `verdict_min_pairs` pairs completed. Unpaired fallback only when no pair completed: two-arm Cohen's d, conclusive only with `verdict_min_n` games per arm (`verdict_min_n` also raises the target N and bounds the give-up guard in `registry.go`). The standard-deviation floor and the raw-effect floor apply to both (`services/agent/experiment/verdict.go`). The recent-real baseline anchor can only downgrade `promote` to `inconclusive`.
 
 ### PROMOTION
 
@@ -407,7 +415,7 @@ The archetype an experiment's pair runs, pinned in the experiment journal when t
 
 ### TRACE_CORRELATION
 
-The identifiers that tie a game's telemetry together (`services/game_coordinator/metrics.py:81-85` `game_trace_correlation`; [telemetry.md](specs/telemetry.md)).
+The identifiers that tie a game's telemetry together (`services/game_coordinator/metrics.py:89-100` `game_trace_correlation`; [telemetry.md](specs/telemetry.md)).
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
