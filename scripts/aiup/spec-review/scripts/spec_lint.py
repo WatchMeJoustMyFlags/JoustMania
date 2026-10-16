@@ -129,6 +129,11 @@ FILE_BP = re.compile(r"^(BP-\d{3,})-")
 ID_FIELDS = ("**Use Case ID:**", "**Use-Case-ID:**")
 NAME_FIELDS = ("**Use Case Name:**", "**Use-Case-Name:**")
 REQUIREMENTS_FIELDS = ("**Requirements:**", "**Anforderungen:**")
+# JoustMania patch: FRs a use case will cover but that are still Open. They
+# count as covered for FR_UNCOVERED, but never feed the derived requirement
+# status (REQ_STATUS_DRIFT, trace matrix), so a Planned FR does not cap or
+# raise the use case's status.
+PLANNED_FIELDS = ("**Planned:**",)
 PRIMARY_ACTOR_FIELDS = ("**Primary Actor:**", "**Primary Actors:**",
                         "**Primärer Akteur:**", "**Primäre Akteure:**")
 SECONDARY_ACTOR_FIELDS = ("**Secondary Actors:**", "**Secondary Actor:**",
@@ -269,6 +274,7 @@ class Spec:
         self.title = None
         self.status = ""
         self.requirements = []   # (line, id)
+        self.planned = []        # (line, id), JoustMania patch
         self.actors = []         # (line, name, "primary" or "secondary")
         self.actor_line = 1
         self.rules = {}          # rule id -> {"line", "name", "text"}
@@ -299,6 +305,10 @@ class Spec:
                     name = re.sub(r"\([^)]*\)", " ", name).strip(" *_`")
                     if normalize(name) not in NO_ACTOR:
                         self.actors.append((number, name, kind))
+            value = field_value(line, PLANNED_FIELDS)
+            if value is not None:   # JoustMania patch
+                self.planned += [(number, rid)
+                                 for rid in REQ_ID.findall(value)]
             value = field_value(line, REQUIREMENTS_FIELDS)
             if value is not None:
                 self.requirements += [(number, rid)
@@ -583,7 +593,8 @@ def check_traceability(project, specs, requirements):
     for uid, spec in specs.items():
         if spec.requirements:
             uses_field = True
-        for number, rid in spec.requirements:
+        # JoustMania patch: Planned FRs are covered and must resolve, too.
+        for number, rid in spec.requirements + spec.planned:
             if not spec.obsolete:
                 referenced.add(rid)
             if project.requirements_path and rid not in requirements:
@@ -1612,6 +1623,40 @@ def write_fixture(root, files):
             handle.write(content)
 
 
+def self_test_planned(validator, bpmn, failures):
+    """JoustMania patch: a **Planned:** FR is covered, but derives no status."""
+    files = dict(CLEAN)
+    files["requirements.md"] = CLEAN["requirements.md"] + (
+        "| FR-004 | Cancel Room   | As a clerk, I want to cancel rooms so "
+        "that rooms are free again. | High | Open |\n")
+    files["use_cases/UC-002-reserve-room.md"] = spec_text(
+        "UC-002", "Reserve Room",
+        "\n**Requirements:** [FR-002](../requirements.md)\n"
+        "**Planned:** [FR-004, FR-099](../requirements.md)\n",
+        "\n### BR-001: Guest Age\n\nThe guest age rule UC-001 BR-001 "
+        "applies to every reservation.\n", status="Done")
+    files["requirements.md"] = files["requirements.md"].replace(
+        "| High     | Open   |\n| FR-003", "| High     | Verified |\n| FR-003")
+    with tempfile.TemporaryDirectory() as root:
+        write_fixture(root, files)
+        found = lint(root, validator, bpmn)
+        if any(f.code == "FR_UNCOVERED" and f.element == "FR-004"
+               for f in found):
+            failures.append("planned: FR-004 under **Planned:** reported "
+                            "as FR_UNCOVERED")
+        if any(f.code == "REQ_STATUS_DRIFT" and f.element == "FR-004"
+               for f in found):
+            failures.append("planned: FR-004 status derived from a "
+                            "**Planned:** use case")
+        if not any(f.code == "DANGLING_REF" and "FR-099" in f.message
+                   for f in found):
+            failures.append("planned: no DANGLING_REF for FR-099")
+        drift = [f.element for f in found if f.code == "REQ_STATUS_DRIFT"]
+        if drift:
+            failures.append("planned: unexpected REQ_STATUS_DRIFT "
+                            + str(drift))
+
+
 def self_test():
     failures = []
     validator = load_sibling("*use-case-spec/scripts/validate_use_case.py",
@@ -1770,6 +1815,8 @@ def self_test():
                                  read_baseline(baseline), root, True)
         if "BASELINE_STALE" not in {f.code for f in kept}:
             failures.append("baseline: fixed finding not reported as stale")
+
+    self_test_planned(validator, bpmn, failures)   # JoustMania patch
 
     if failures:
         for failure in failures:

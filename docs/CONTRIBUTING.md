@@ -160,9 +160,11 @@ The `Spec Gate` job in `ci.yml` (#1263, required through `CI Complete`) has two 
 
 1. **Spec lint** (runs when `docs/**`, `.github/**` or `scripts/aiup/**` change):
    `scripts/aiup/spec-review/scripts/spec_lint.py`, the `spec-review` skill's linter,
-   vendored from the AIUP marketplace (Apache-2.0, see `scripts/aiup/NOTICE`; one
-   local patch reads the requirement Status column by its header because our tables
-   have a Notes column after it). It checks `docs/` across files. Errors always fail
+   vendored from the AIUP marketplace (Apache-2.0, see `scripts/aiup/NOTICE`; two
+   local patches: the requirement Status column is read by its header because our
+   tables have a Notes column after it, and FRs on a use case's `**Planned:**` line
+   count as covered for `FR_UNCOVERED` without feeding the derived status checked by
+   `REQ_STATUS_DRIFT`). It checks `docs/` across files. Errors always fail
    (`DUPLICATE_ID`, `SPEC_MISSING`, `NOT_IN_DIAGRAM`, `DANGLING_REF`, and use case
    files the AIUP format cannot parse). Warnings (`REQ_STATUS_DRIFT`, `FLOW_TERMINATION`,
    `WEAK_WORD`, ...) fail only when they are new: the existing ones are accepted in
