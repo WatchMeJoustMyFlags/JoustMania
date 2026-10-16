@@ -172,10 +172,11 @@ type Loop struct {
 	// mu guards the log-throttle state and lastLayer below.
 	mu      sync.Mutex
 	lastLog time.Time
-	// lastQuietFallback throttles the agent.decide span of a same-cycle fallback
-	// on which the rules emitted nothing (emitQuietFallback). Its own timestamp,
-	// so the evaluate log line does not use up the window.
-	lastQuietFallback time.Time
+	// lastQuietFallback throttles, per fallback reason, the agent.decide span of a
+	// configuration fallback on which the rules emitted nothing (emitQuietFallback).
+	// Its own timestamps, so the evaluate log line does not use up the window and
+	// one reason does not hide another. Lazily allocated; guarded by mu.
+	lastQuietFallback map[string]*time.Time
 	now               func() time.Time
 	// throttle bounds how often the evaluate log line and agent.disabled span are
 	// emitted. The STATIC fallback value, set via SetThrottle; a zero value means
@@ -211,6 +212,11 @@ type Loop struct {
 	// gated because the allow-list is empty (#1298). Guarded by llmGate; it only
 	// drives the log-on-state-change debug line.
 	skippingNoInterventions bool
+	// misconfiguredReason is the configuration fallback reason (unknown_backend,
+	// backend_unavailable, async_not_wired) this game's remote decide cycles are
+	// currently in, "" when none. Guarded by llmGate; it only drives the
+	// log-on-state-change lines of noteMisconfigured.
+	misconfiguredReason string
 	// budget is the GLOBAL per-minute LLM request cap shared across ALL loops and
 	// the post-game retro (#847): llm.max_requests_per_minute bounds remote decide
 	// calls and retro calls together. It is injected via SetLLMBudget from the one instance main.go
@@ -574,9 +580,10 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 	// arriving but nothing fires" distinguishable from "metrics aren't arriving".
 	if len(decisions) == 0 {
 		l.recordEvaluation(ctx, trig.Signal, "idle")
-		// A same-cycle fallback is still recorded when the rules then emit nothing
-		// (UC-040 A3, decide contract §7), throttled; otherwise no decision, no trace.
-		if decideRec != nil && decideRec.fallbackReason != "" {
+		// A configuration fallback is still recorded when the rules then emit
+		// nothing (UC-040 A3, decide contract §7), throttled; otherwise no
+		// decision, no trace.
+		if decideRec != nil && isConfigFallback(decideRec.fallbackReason) {
 			l.emitQuietFallback(ctx, decideRec, c, trig)
 		}
 		l.setLastLayer(state)
@@ -697,6 +704,7 @@ func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, c gamecontex
 	// state so its "entering" debug line fires again on a later remote cycle (#1298).
 	l.llmGate.Lock()
 	l.noteNoInterventions(c, false)
+	l.noteMisconfigured(c, flags.DecisionBackendRules, "")
 	l.llmGate.Unlock()
 	return l.rulesDecide(ctx, snapshot, c, flags.DecisionBackendRules, "")
 }

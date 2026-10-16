@@ -92,8 +92,8 @@ func TestRemote_SameCycleFallbackObservableWhenRulesQuiet(t *testing.T) {
 			if g := gatedByReason(t, reader)[tc.reason]; g != cycles {
 				t.Fatalf("agent_llm_gated_total{reason=%s} = %d, want %d (every cycle counted)", tc.reason, g, cycles)
 			}
-			if n := logs.count("agent.decide.fallback"); n != 1 {
-				t.Fatalf("fallback warnings = %d, want 1 (throttled)", n)
+			if n := logs.count("level=WARN msg=agent.decide.backend_misconfigured"); n != 1 {
+				t.Fatalf("misconfigured warnings = %d, want 1 (on entering the state, not per cycle)", n)
 			}
 
 			// After the throttle window the fallback is recorded again.
@@ -101,6 +101,9 @@ func TestRemote_SameCycleFallbackObservableWhenRulesQuiet(t *testing.T) {
 			h.loop.OnEvaluate(context.Background(), quietContext(), testTrigger())
 			if n := len(spansByName(h.sr.Ended(), SpanDecide)); n != 2 {
 				t.Fatalf("agent.decide spans after the window = %d, want 2", n)
+			}
+			if n := logs.count("level=WARN msg=agent.decide.backend_misconfigured"); n != 1 {
+				t.Fatalf("misconfigured warnings = %d, want still 1 (no new transition)", n)
 			}
 		})
 	}
@@ -139,7 +142,71 @@ func TestRules_QuietCycleStaysSpanFree(t *testing.T) {
 	if g := gatedByReason(t, reader); len(g) != 0 {
 		t.Fatalf("gated = %v, want none", g)
 	}
-	if n := logs.count("agent.decide.fallback"); n != 0 {
-		t.Fatalf("fallback warnings = %d, want 0", n)
+	if n := logs.count("agent.decide.backend_misconfigured"); n != 0 {
+		t.Fatalf("misconfigured logs = %d, want 0", n)
+	}
+}
+
+// llm_not_eligible and llm_budget_exhausted are normal operation (shadow games,
+// spend cap): on a quiet cycle they stay counter-only, no span, no warning.
+// UC: UC-040 A3
+func TestRemote_QuietGateFallbackIsCounterOnly(t *testing.T) {
+	t.Run("UC-040/A3 llm_not_eligible on a quiet shadow game", func(t *testing.T) {
+		h, reader, logs := quietFallbackHarness(t, newFakeDecideBackend(nil))
+		c := quietContext()
+		c.GameKind = "shadow"
+		for i := 0; i < 3; i++ {
+			h.loop.OnEvaluate(context.Background(), c, testTrigger())
+			advance(h.clock, 6*time.Second)
+		}
+		if n := len(spansByName(h.sr.Ended(), SpanDecide)); n != 0 {
+			t.Fatalf("agent.decide spans = %d, want 0", n)
+		}
+		if g := gatedByReason(t, reader)[FallbackNotEligible]; g != 3 {
+			t.Fatalf("gated[%s] = %d, want 3", FallbackNotEligible, g)
+		}
+		if n := logs.count("agent.decide.backend_misconfigured"); n != 0 {
+			t.Fatalf("misconfigured logs = %d, want 0", n)
+		}
+	})
+}
+
+// Each configuration reason has its own throttle window, so one reason does not
+// hide another; the WARN fires on each change of reason and an INFO when the
+// configuration is fixed.
+// UC: UC-040 A3
+func TestRemote_QuietConfigFallbackPerReasonAndTransitions(t *testing.T) {
+	be := newFakeDecideBackend(nil)
+	be.available = false
+	h, _, logs := quietFallbackHarness(t, be)
+
+	h.loop.OnEvaluate(context.Background(), quietContext(), testTrigger()) // backend_unavailable
+	advance(h.clock, time.Second)
+	be.available = true
+	h.loop.SetContextProvider(nil)
+	h.loop.OnEvaluate(context.Background(), quietContext(), testTrigger()) // async_not_wired, same window
+
+	ds := spansByName(h.sr.Ended(), SpanDecide)
+	if len(ds) != 2 {
+		t.Fatalf("agent.decide spans = %d, want 2 (one per reason inside one window)", len(ds))
+	}
+	if a, b := strAttr(t, ds[0], AttrDecideFallbackReason), strAttr(t, ds[1], AttrDecideFallbackReason); a != DecideFallbackUnavailable || b != DecideFallbackNotWired {
+		t.Fatalf("reasons = %q, %q; want backend_unavailable, async_not_wired", a, b)
+	}
+	if n := logs.count("level=WARN msg=agent.decide.backend_misconfigured"); n != 2 {
+		t.Fatalf("misconfigured warnings = %d, want 2 (one per reason change)", n)
+	}
+
+	// Configuration fixed: back to rules. One INFO, no further warnings.
+	h.flags.mutate(func(s *flags.Snapshot) { s.Decision.Backend = flags.DecisionBackendRules })
+	advance(h.clock, time.Second)
+	h.loop.OnEvaluate(context.Background(), quietContext(), testTrigger())
+	advance(h.clock, time.Second)
+	h.loop.OnEvaluate(context.Background(), quietContext(), testTrigger())
+	if n := logs.count("level=INFO msg=agent.decide.backend_misconfigured"); n != 1 {
+		t.Fatalf("cleared logs = %d, want 1", n)
+	}
+	if n := logs.count("level=WARN msg=agent.decide.backend_misconfigured"); n != 2 {
+		t.Fatalf("misconfigured warnings = %d, want still 2", n)
 	}
 }

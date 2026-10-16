@@ -759,10 +759,15 @@ async def test_openai_low_confidence_held(
             )
 
             await _assert_nothing_applied(collector, flag_before)
-            # Every decide span of this game is held: no act slipped through.
+            # Every openai answer of this game is held: no act slipped through.
+            # Rules-fallback spans (decide.backend=rules, e.g. llm_budget_exhausted
+            # carried over from an earlier case) are not answers from the backend
+            # under test, so they are left out; _assert_nothing_applied above
+            # already covers anything a fallback could have applied.
             outcomes = {
                 _span_tags(s).get("decide.outcome")
                 for s, _ in jaeger_decide_spans(game_id, since)
+                if _span_tags(s).get("decide.backend") == "openai"
             }
             assert outcomes == {"held"}, outcomes
     finally:
