@@ -1,0 +1,61 @@
+# Decide-backend e2e overlay (#1230, epic #1225). TEST-ONLY.
+#
+# Layered by tests/integration/test_decide_backend_e2e.py ON TOP of the suite's
+# session stack (docker-compose.yml + override + ci) under `--profile agent`:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.override.yml \
+#     -f docker-compose.ci.yml -f docker-compose.decide-e2e.yml \
+#     --profile agent up -d --wait fake-openai agent
+#
+# No production stack loads this file: it adds a scriptable fake
+# OpenAI-compatible endpoint (fake-openai) and hands the agent a DUMMY
+# DECISION_OPENAI_API_KEY so the `openai` decision backend is available. The
+# test points the agent at the fake through the decision.openai.base_url /
+# decision.openai.model flags (ci/agent.json, restored after every test).
+
+services:
+  # Scriptable fake for the agent's `openai` decision backend
+  # (tests/integration/fake_openai/server.py, stdlib only). The host-side test
+  # scripts each answer (valid / garbage / hold, confidence, intervention) via
+  # its control API on host port 18089, and reads Jaeger through its /_jaeger/
+  # relay (the integration stack publishes no Jaeger host port).
+  fake-openai:
+    profiles:
+      - agent
+    image: python:3.14-alpine
+    container_name: joustmania-fake-openai
+    command: ["python", "-u", "/app/server.py"]
+    volumes:
+      - ./tests/integration/fake_openai:/app:ro
+    environment:
+      - FAKE_OPENAI_PORT=8080
+      - FAKE_OPENAI_API_KEY=fake-decide-e2e-key
+      - JAEGER_QUERY_URL=http://jaeger:16686
+    ports:
+      - "18089:8080"
+    networks:
+      - joustmania
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+      start_period: 1s
+
+  agent:
+    # Serve/write the SAME flag dir flagd serves in ci-mode (the
+    # docker-compose.dry-run.yml #999 fix): the agent's interventions.json writes
+    # must land in the file flagd watches. !override replaces the base mount.
+    volumes: !override
+      - ./services/flagd/ci:/etc/flagd
+      - agent-experiments:/var/lib/joustmania/agent/experiments
+    environment:
+      # Dummy key, matched by fake-openai (FAKE_OPENAI_API_KEY). Never a real key.
+      - DECISION_OPENAI_API_KEY=fake-decide-e2e-key
+      # Lift the shared per-minute remote-call budget (llm.max_requests_per_minute,
+      # 6/min by default) for the test run: across several back-to-back games the
+      # default would exhaust and turn calls into budget_exhausted rules fallbacks.
+      - AGENT_LLM_MAX_REQUESTS_PER_MINUTE=600
+    depends_on:
+      fake-openai:
+        condition: service_healthy

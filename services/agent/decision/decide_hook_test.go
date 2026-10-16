@@ -595,6 +595,20 @@ func TestRemote_InvalidAnswerFallsBackToRules(t *testing.T) {
 	assertRulesFallback(t, h, span, DecideFallbackInvalidAnswer, DecideFallbackInvalidAnswer)
 }
 
+// TestRemote_BackendInvalidErrorIsInvalidAnswer (#1230): the real remote
+// backends validate their own output (llmio.Parse) and return an ERROR wrapping
+// decide.ErrInvalid for garbage model output. That is an invalid answer, not a
+// transport error, so fallback_reason must be invalid_answer, as it is when a
+// backend returns an invalid Response without an error.
+func TestRemote_BackendInvalidErrorIsInvalidAnswer(t *testing.T) {
+	be := newFakeDecideBackend(func(decide.Request) (decide.Response, error) {
+		return decide.Response{}, fmt.Errorf("openai: %w", fmt.Errorf("%w: malformed model output", decide.ErrInvalid))
+	})
+	h := newRemoteHarness(t, remoteSnapshot(time.Second), be)
+	span := h.run(t)
+	assertRulesFallback(t, h, span, DecideFallbackInvalidAnswer, DecideFallbackInvalidAnswer)
+}
+
 func TestRemote_UnknownOrUnavailableFallsBackSynchronously(t *testing.T) {
 	unavailable := newFakeDecideBackend(nil)
 	unavailable.available = false
@@ -847,6 +861,10 @@ func TestRemote_KillSwitchAtLanding(t *testing.T) {
 		h.flags.mutate(func(s *flags.Snapshot) { s.Enabled = false })
 	})
 	assertDiscarded(t, h, span, DecideDiscardKillSwitch)
+	// The discarded answer's confidence is still reported (#1230), not 0.
+	if v, _ := attrValue(span, AttrDecideConfidence); v.AsFloat64() != 0.95 {
+		t.Fatalf("decide.confidence = %v, want the discarded answer's 0.95", v.AsFloat64())
+	}
 }
 
 func TestRemote_KillSwitchSuppressesTimeoutFallback(t *testing.T) {

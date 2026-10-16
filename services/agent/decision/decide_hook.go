@@ -403,6 +403,12 @@ func (l *Loop) runDecideRemote(root context.Context, fired flags.Snapshot, backe
 	switch {
 	case timedOut:
 		rec.fallbackReason, rec.err = DecideFallbackTimeout, err
+	case errors.Is(err, decide.ErrInvalid):
+		// The remote backends validate their own output (llmio.Parse runs
+		// decide.Validate) and return an error wrapping decide.ErrInvalid for a
+		// malformed or invalid answer: that is an invalid answer, not a
+		// transport error (#1230).
+		rec.fallbackReason, rec.err = DecideFallbackInvalidAnswer, err
 	case err != nil:
 		rec.fallbackReason, rec.err = DecideFallbackError, err
 	default:
@@ -410,6 +416,12 @@ func (l *Loop) runDecideRemote(root context.Context, fired flags.Snapshot, backe
 			rec.fallbackReason, rec.err = DecideFallbackInvalidAnswer, verr
 		} else {
 			rec.resp, rec.hasResp = resp, true
+			// Record the answer's confidence even when the live re-read below
+			// discards it (kill switch, backend change), so the span reports
+			// what the backend answered rather than 0.
+			if iv, found := resp.Find(decide.QuestionFFAIntervention); found {
+				rec.confidence = iv.Confidence
+			}
 		}
 	}
 	if rec.fallbackReason != "" {
