@@ -323,7 +323,7 @@ with no restart. Show the control plane reacting live:
   ```
 - **Swap the decision backend** (#1232) — flip who makes the `agent.decide` call
   live, same `ci/` flag dir, no restart. Unknown variants are refused with the
-  valid list; the write is atomic (temp file + rename):
+  valid list:
   ```bash
   ./scripts/agent-backend.sh                  # show backend / model / threshold / capture
   ./scripts/agent-backend.sh claude sonnet    # backend + decision.claude.model

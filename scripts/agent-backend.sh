@@ -18,8 +18,8 @@
 #   ./scripts/agent-backend.sh capture on            # decision.capture_content -> on
 #
 # Only defaultVariant is edited; an unknown variant is refused with the list of
-# valid ones read from the file. The write is atomic (temp file in the same dir
-# + rename), so flagd never reads a half-written file.
+# valid ones read from the file. The write is in place (same inode), like
+# agent-killswitch.sh; see write_in_place() for why.
 #
 # After flipping, flagd hot-reloads the file and the change takes effect LIVE
 # (~1 s): the agent reads the decision.* flags at use time, every cycle, so no
@@ -61,9 +61,7 @@ esac
 
 python3 - "${FLAG_FILE}" "$@" <<'PY'
 import json
-import os
 import sys
-import tempfile
 
 path, args = sys.argv[1], sys.argv[2:]
 action = args[0] if args else "status"
@@ -105,25 +103,11 @@ def set_variant(key, variant):
     return show(variants[variant])
 
 
-def write_atomic():
-    # Temp file in the SAME dir + os.replace: flagd sees either the old or the new
-    # file, never a truncated one. Keep the original mode (mkstemp creates 0600,
-    # which the nonroot flagd container could not read).
-    directory = os.path.dirname(os.path.abspath(path))
-    mode = os.stat(path).st_mode & 0o777
-    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".agent-backend-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as fh:
-            json.dump(data, fh, indent=2)
-            fh.write("\n")
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.chmod(tmp, mode)
-        os.replace(tmp, path)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise
+def write_in_place():
+    # In place on purpose: works with directory AND single-file bind mounts (a rename leaves a file mount pinned to the old inode); flagd stat-polls the mtime, so a torn read recovers on the next poll.
+    payload = json.dumps(data, indent=2) + "\n"
+    with open(path, "w") as fh:
+        fh.write(payload)
 
 
 if action == "status":
@@ -148,11 +132,11 @@ if action == "status":
 
 if action == "threshold":
     value = set_variant("decision.act_confidence_threshold", args[1])
-    write_atomic()
+    write_in_place()
     print(f"agent act threshold -> {args[1]} ({value})  ({path})")
 elif action == "capture":
     value = set_variant("decision.capture_content", args[1])
-    write_atomic()
+    write_in_place()
     print(f"agent content capture -> {args[1]}  ({path})")
 else:
     backend, model = action, (args[1] if len(args) > 1 else None)
@@ -163,6 +147,6 @@ else:
     if model is not None:
         value = set_variant(f"decision.{backend}.model", model)
         msg += f"  model -> {model} ({value})"
-    write_atomic()
+    write_in_place()
     print(f"{msg}  ({path})")
 PY

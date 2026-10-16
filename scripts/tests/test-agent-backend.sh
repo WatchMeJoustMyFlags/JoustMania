@@ -5,7 +5,8 @@
 # flags from the epic #1225 spec (AGENT_FLAG_FILE override), never the real
 # services/flagd/ci/agent.json.
 #
-# Usage: ./scripts/tests/test-agent-backend.sh
+# Runs as part of `make lint` (needs only bash + python3), or directly:
+#   ./scripts/tests/test-agent-backend.sh
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -56,7 +57,6 @@ fixture() {
   }
 }
 JSON
-  chmod 664 "${AGENT_FLAG_FILE}"
 }
 
 pass=0
@@ -132,12 +132,16 @@ else
   not_ok "refused flips leave the file untouched"
 fi
 
-# --- atomic write keeps mode, leaves no temp files, only defaultVariant changes
+# --- in-place write (same inode: single-file bind mounts) + only defaultVariant changes
 fixture
+inode_before="$(stat -c %i "${AGENT_FLAG_FILE}")"
 "${HELPER}" claude opus >/dev/null
-mode="$(stat -c %a "${AGENT_FLAG_FILE}")"
-if [[ "${mode}" == "664" ]]; then ok "file mode preserved"; else not_ok "file mode preserved (got ${mode})"; fi
-if compgen -G "${WORK}/.agent-backend-*" >/dev/null; then not_ok "no temp files left"; else ok "no temp files left"; fi
+inode_after="$(stat -c %i "${AGENT_FLAG_FILE}")"
+if [[ "${inode_before}" == "${inode_after}" ]]; then
+  ok "write is in place (same inode)"
+else
+  not_ok "write is in place (inode ${inode_before} -> ${inode_after})"
+fi
 cp "${AGENT_FLAG_FILE}" "${WORK}/after.json"
 fixture
 diff_out="$(python3 - "${AGENT_FLAG_FILE}" "${WORK}/after.json" <<'PY'
