@@ -70,8 +70,9 @@ const (
 	// unavailable (and the decision falls back to rules).
 	DefaultDecisionOpenAIModel = ""
 	// DefaultDecisionOpenAIReasoningEffort lets the openai backend pick the
-	// reasoning_effort from the model id (backends/openai shapeFor). Any other
-	// value (none, minimal, low, ...) is sent verbatim to reasoning models.
+	// reasoning_effort from the model id (backends/openai shapeFor); "omit"
+	// never sends the field; any other value (none, minimal, low, ...) is sent
+	// verbatim to reasoning models.
 	DefaultDecisionOpenAIReasoningEffort = "auto"
 	// DefaultDecisionJevBaseURL / DefaultDecisionJevModel are empty until we have
 	// a jev endpoint.

@@ -640,7 +640,8 @@
         "auto": "auto",
         "none": "none",
         "minimal": "minimal",
-        "low": "low"
+        "low": "low",
+        "omit": "omit"
       },
       "defaultVariant": "auto"
     },

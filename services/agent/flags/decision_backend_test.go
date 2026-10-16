@@ -108,6 +108,13 @@ func TestDecisionBackend_DefaultsOnError(t *testing.T) {
 	}
 }
 
+func TestDecisionBackend_ReasoningEffortOmit(t *testing.T) {
+	stub := stubEvaluator{strings: map[string]string{keyDecisionOpenAIReasoningEffort: " OMIT "}}
+	if got := New(stub, nil).DecisionBackend(context.Background()).OpenAI.ReasoningEffort; got != "omit" {
+		t.Fatalf("ReasoningEffort = %q, want omit", got)
+	}
+}
+
 func TestDecisionBackend_ZeroValueIsRules(t *testing.T) {
 	if !(DecisionBackend{}).IsRules() {
 		t.Fatal("a zero-value DecisionBackend (hand-built snapshot) must count as rules")

@@ -581,6 +581,15 @@ func TestShapeFor(t *testing.T) {
 	if s := shapeFor("openai", "gpt-4.1-mini", ""); !s.maxCompletionTokens || s.temperature == nil || s.reasoningEffort != "" {
 		t.Errorf("gpt-4.1 shape = %+v", s)
 	}
+	if s := shapeFor("openai", "GPT-5", ""); s.temperature != nil || s.reasoningEffort != "minimal" {
+		t.Errorf("upper-case GPT-5 shape = %+v, want reasoning + minimal", s)
+	}
+	if s := shapeFor("openai", "GPT-6-Mini", ""); s.temperature != nil || s.reasoningEffort != "low" {
+		t.Errorf("upper-case GPT-6 shape = %+v, want reasoning + low", s)
+	}
+	if s := shapeFor("openai", "gpt-5-pro", "omit"); !s.maxCompletionTokens || s.temperature != nil || s.reasoningEffort != "" {
+		t.Errorf("omit shape = %+v, want reasoning shape without reasoning_effort", s)
+	}
 	if s := shapeFor("groq", "gpt-5-oss", "minimal"); s.maxCompletionTokens || s.temperature == nil || s.reasoningEffort != "" {
 		t.Errorf("non-openai shape = %+v", s)
 	}
@@ -628,6 +637,8 @@ func TestReasoningEffortFor(t *testing.T) {
 		{"gpt-5.1", "none", "none"},
 		{"gpt-5", "low", "low"},
 		{"o4-mini", "minimal", "minimal"},
+		{"o1-mini", "omit", ""},
+		{"gpt-5-pro", "omit", ""},
 	}
 	for _, c := range cases {
 		if got := reasoningEffortFor(c.model, c.effort); got != c.want {
@@ -648,6 +659,8 @@ func TestDecide_ReasoningEffortFlag(t *testing.T) {
 		{"gpt-6", "auto", "low"},
 		{"gpt-5-mini", "", "minimal"},
 		{"gpt-4.1-mini", "low", nil},
+		{"gpt-5-pro", " OMIT ", nil},
+		{"GPT-5", "auto", "minimal"},
 	}
 	for _, c := range cases {
 		api := newFakeAPI(t, fixed(200, completion("stop", answerJSON, nil)))
@@ -659,7 +672,7 @@ func TestDecide_ReasoningEffortFlag(t *testing.T) {
 		got, ok := api.body(0)["reasoning_effort"]
 		if c.want == nil {
 			if ok {
-				t.Errorf("%s: non-reasoning model got reasoning_effort %v", c.model, got)
+				t.Errorf("%s effort %q: got reasoning_effort %v, want the field omitted", c.model, c.effort, got)
 			}
 			continue
 		}

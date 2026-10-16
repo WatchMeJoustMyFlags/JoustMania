@@ -119,8 +119,9 @@ type Config struct {
 	CaptureContent bool
 	// ReasoningEffort is the reasoning_effort for reasoning models
 	// (decision.openai.reasoning_effort): "" or "auto" picks it from the model
-	// id (reasoningEffortFor); any other value (none, minimal, low, ...) is
-	// sent verbatim. Non-reasoning models never get reasoning_effort.
+	// id (reasoningEffortFor); "omit" never sends the field; any other value
+	// (none, minimal, low, ...) is sent verbatim. Non-reasoning models never
+	// get reasoning_effort.
 	ReasoningEffort string
 }
 
@@ -372,14 +373,23 @@ func isReasoningModel(model string) bool {
 // reasoningEffortFor pick the effort from the model id.
 const ReasoningEffortAuto = "auto"
 
-// reasoningEffortFor is the reasoning_effort sent to a reasoning model. An
-// explicit effort (anything but "" / auto) is sent verbatim; auto picks the
+// ReasoningEffortOmit never sends reasoning_effort: the escape hatch for
+// reasoning models that reject every low effort (o1-mini, o1-preview,
+// gpt-5-pro), which then run at their own default effort.
+const ReasoningEffortOmit = "omit"
+
+// reasoningEffortFor is the reasoning_effort sent to a reasoning model ("" =
+// omit the field). omit sends nothing; any other explicit effort (anything but
+// "" / auto) is sent verbatim; auto picks the
 // lowest effort each family is known to accept, to fit the 2.5s budget:
 // "minimal" for the original gpt-5 family, "low" for every other reasoning
 // model ("low" is accepted by every OpenAI reasoning model so far). A
 // rejected value is a 400 and the decision falls back to rules; set the flag
 // explicitly for a model the heuristic gets wrong.
 func reasoningEffortFor(model, effort string) string {
+	if effort == ReasoningEffortOmit {
+		return ""
+	}
 	if effort != "" && effort != ReasoningEffortAuto {
 		return effort
 	}
@@ -397,6 +407,9 @@ func reasoningEffortFor(model, effort string) string {
 // 400 and a rules fallback, never a bad act.
 func shapeFor(provider, model, effort string) requestShape {
 	zero := 0.0
+	// Model ids are matched case-insensitively ("GPT-5" is a reasoning model);
+	// the id sent on the wire keeps its original case.
+	model = strings.ToLower(model)
 	if provider != string(genaiconv.ProviderNameOpenAI) {
 		return requestShape{temperature: &zero}
 	}

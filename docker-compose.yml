@@ -743,7 +743,9 @@ services:
       # ./scripts/agent-backend.sh). Keys go straight to the agent, which calls
       # the vendor directly: there is no gateway. Read once at agent startup;
       # an empty key makes that backend unavailable and the decision falls
-      # back to rules. Never put keys in a flag file.
+      # back to rules. Never put keys in a flag file or the tracked .env: export
+      # them in the shell or use the git-ignored .env.local
+      # (docker compose --env-file .env --env-file .env.local up).
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - DECISION_OPENAI_API_KEY=${DECISION_OPENAI_API_KEY:-}
       - JEV_API_KEY=${JEV_API_KEY:-}
