@@ -560,7 +560,9 @@ class TestCoordinatorBlocksInFFA:
         """UC-040 A20: revive_player passes the allow-list (the `full` variant offers
         it), but the capability matrix denies it in a real FFA game: the dead player
         stays dead, agent_intervention is published with blocked=true and
-        mode_unsupported, no backstop budget is used and no agent cue is sent."""
+        mode_unsupported, no backstop budget is used and no agent cue is sent.
+        Unlike test_interventions.py::test_mode_matrix_blocks_revive_in_ffa (a FakeGame
+        named "FFA"), this drives the real FFAGame and the registered revive handler."""
         game = make_ffa_game(num_players=2)
         game.players["p1"].alive = False
         mgr, events = make_manager(game=game)

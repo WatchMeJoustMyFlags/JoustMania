@@ -1103,6 +1103,11 @@ func TestRemote_BudgetExhaustedFallsBackToRules(t *testing.T) {
 		// cancels the effect sampler the dispatched rules decision schedules).
 		state := h.loop.OnEvaluate(context.Background(), remoteContext(), testTrigger())
 
+		// No call was launched: the in-flight claim is released (a launched call
+		// would hold it until its goroutine ends), and the backend saw nothing.
+		if h.loop.inflight.Load() {
+			t.Fatal("in-flight slot still claimed: a remote call was launched")
+		}
 		if n := be.callCount(); n != 0 {
 			t.Fatalf("backend calls = %d, want 0 (budget exhausted)", n)
 		}

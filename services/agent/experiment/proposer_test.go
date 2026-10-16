@@ -117,7 +117,7 @@ func experimentVariantValue(t *testing.T, path, flagKey string) (string, bool) {
 	return string(v), ok
 }
 
-// UC: UC-042 main BR-003
+// UC: UC-042 main
 func TestProposeOnce_ValidProposalWritesShadowExperiment(t *testing.T) {
 	backend := &fakeProposerBackend{
 		response: `{"flag":"death_grace_period_seconds","value":0.75,"rationale":"longer grace may extend sessions"}`,

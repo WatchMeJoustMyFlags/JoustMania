@@ -1,8 +1,10 @@
 package actions
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
+	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,7 +36,7 @@ func (r oneDecision) Evaluate(context.Context, gamecontext.GameContext) []decisi
 // meteredLoop builds a loop over the real gated sink and Writer. The loop's
 // counters bind to the global meter provider at construction, so the test points
 // the global at a manual reader for the loop's lifetime and restores it after.
-func meteredLoop(t *testing.T, snap flags.Snapshot, rules decision.RulesEngine, gateOn bool) (*decision.Loop, string, *metric.ManualReader) {
+func meteredLoop(t *testing.T, snap flags.Snapshot, rules decision.RulesEngine, gateOn bool) (*decision.Loop, string, *metric.ManualReader, *writerSpy) {
 	t.Helper()
 	reader := metric.NewManualReader()
 	prev := otel.GetMeterProvider()
@@ -44,8 +46,31 @@ func meteredLoop(t *testing.T, snap flags.Snapshot, rules decision.RulesEngine, 
 	w, path := newTestWriter(t)
 	l := decision.NewLoop(staticFlags(snap), discardLogger())
 	l.Rules = rules
-	l.Actions = NewGatedActionSink(staticGate(gateOn), w, discardLogger())
-	return l, path, reader
+	spy := &writerSpy{inner: w}
+	l.Actions = NewGatedActionSink(staticGate(gateOn), spy, discardLogger())
+	return l, path, reader, spy
+}
+
+// writerSpy wraps the real Writer and records each call and its returned error, so
+// a test can tell "the Writer ran and succeeded" from "the gate skipped it".
+type writerSpy struct {
+	inner *Writer
+	mu    sync.Mutex
+	errs  []error
+}
+
+func (s *writerSpy) Apply(ctx context.Context, d decision.Decision) error {
+	err := s.inner.Apply(ctx, d)
+	s.mu.Lock()
+	s.errs = append(s.errs, err)
+	s.mu.Unlock()
+	return err
+}
+
+func (s *writerSpy) calls() []error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]error(nil), s.errs...)
 }
 
 // appliedTotal reads agent_interventions_applied_total{action}.
@@ -74,13 +99,20 @@ func appliedTotal(t *testing.T, reader *metric.ManualReader, action string) int6
 	return 0
 }
 
-func assertFlagsUnchanged(t *testing.T, path string, before map[string]json.RawMessage) {
+func readFile(t *testing.T, path string) []byte {
 	t.Helper()
-	after := readAllFlagsRaw(t, path)
-	for key, raw := range before {
-		if string(after[key]) != string(raw) {
-			t.Fatalf("flag %q changed:\n before=%s\n after =%s", key, raw, after[key])
-		}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return b
+}
+
+// assertFileUnchanged checks interventions.json is byte-identical to before.
+func assertFileUnchanged(t *testing.T, path string, before []byte) {
+	t.Helper()
+	if after := readFile(t, path); !bytes.Equal(after, before) {
+		t.Fatalf("interventions.json changed:\n before=%s\n after =%s", before, after)
 	}
 }
 
@@ -100,18 +132,21 @@ func TestDecideLoop_ActuationGateOff(t *testing.T) {
 			InterventionsAllowed: []string{decision.InterventionPlayAudioCue},
 			Policy:               flags.Policy{MaxInterventionsPerMinute: 100},
 		}
-		l, path, reader := meteredLoop(t, snap,
+		l, path, reader, spy := meteredLoop(t, snap,
 			oneDecision{Intervention: decision.InterventionPlayAudioCue, Reason: "cue"}, false)
-		before := readAllFlagsRaw(t, path)
+		before := readFile(t, path)
 
 		state := l.OnEvaluate(context.Background(), gamecontext.GameContext{SessionID: "s-1"}, testTrigger())
 
 		if len(state.Outcomes) != 1 || !state.Outcomes[0].Dispatched {
 			t.Fatalf("outcomes = %+v, want one dispatched decision", state.Outcomes)
 		}
-		assertFlagsUnchanged(t, path, before)
+		assertFileUnchanged(t, path, before)
 		if n := appliedTotal(t, reader, decision.InterventionPlayAudioCue); n != 1 {
 			t.Fatalf("agent_interventions_applied_total{action=play_audio_cue} = %d, want 1 (D-A9)", n)
+		}
+		if calls := spy.calls(); len(calls) != 0 {
+			t.Fatalf("Writer calls = %d, want 0 (the gate must skip the Writer)", len(calls))
 		}
 	})
 }
@@ -128,8 +163,8 @@ func TestDecideLoop_ProbeMode(t *testing.T) {
 			InterventionsAllowed: []string{decision.InterventionNoop}, // the `probe` variant
 			Policy:               flags.Policy{MaxInterventionsPerMinute: 100},
 		}
-		l, path, reader := meteredLoop(t, snap, decision.NewProbeRules(5*time.Second, nil), true)
-		before := readAllFlagsRaw(t, path)
+		l, path, reader, spy := meteredLoop(t, snap, decision.NewProbeRules(5*time.Second, nil), true)
+		before := readFile(t, path)
 
 		state := l.OnEvaluate(context.Background(), gamecontext.GameContext{SessionID: "s-1"}, testTrigger())
 
@@ -139,9 +174,14 @@ func TestDecideLoop_ProbeMode(t *testing.T) {
 		if o := state.Outcomes[0]; o.Intervention != decision.InterventionNoop || !o.Dispatched {
 			t.Fatalf("outcome = %+v, want a dispatched noop (not blocked)", o)
 		}
-		assertFlagsUnchanged(t, path, before)
+		assertFileUnchanged(t, path, before)
 		if n := appliedTotal(t, reader, decision.InterventionNoop); n != 1 {
 			t.Fatalf("agent_interventions_applied_total{action=noop} = %d, want 1 (a successful write)", n)
+		}
+		// The Writer itself ran (gate on) and accepted the noop as a successful
+		// write; without this the test could not tell it from a gate skip.
+		if calls := spy.calls(); len(calls) != 1 || calls[0] != nil {
+			t.Fatalf("Writer calls = %v, want exactly one returning nil", calls)
 		}
 	})
 }

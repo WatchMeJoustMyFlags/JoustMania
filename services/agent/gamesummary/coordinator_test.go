@@ -127,7 +127,7 @@ func TestCoordinator_LinksToGameTrace(t *testing.T) {
 
 // TestCoordinator_RunsForShadowGames: the builder runs for synthetic (shadow)
 // games too (#928 — both real AND shadow).
-// UC: UC-042 main
+// UC: UC-042 A1
 func TestCoordinator_RunsForShadowGames(t *testing.T) {
 	c, sr, _ := recordingCoordinator(t)
 	c.OnGameEnd(gamecontext.GameContext{
