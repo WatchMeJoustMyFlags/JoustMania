@@ -9,8 +9,10 @@
 # Checks:
 #   1. the stack containers are running (and healthy where they have a check)
 #   2. the flag file the helper scripts edit is the one flagd and the agent mount
-#   3. the stage baseline of the decision.* + safety flags (defaultVariant),
-#      and the interventions.json next to it back at its neutral variants; WARN
+#   3. the stage baseline of the decision.* + safety flags (defaultVariant, from
+#      scripts/talk-baseline.json; interventions_allowed=standard, #1301), at
+#      least one perceptible intervention in the resolved allow-list, and the
+#      interventions.json next to it back at its neutral variants; WARN
 #      when decision.backend is remote but interventions_allowed resolves to
 #      nothing (none / noop only): the agent then makes no remote call (#1298)
 #   4. the agent container env (presence only; key values are never printed):
@@ -18,6 +20,8 @@
 #      in-game backup + post-game summary) present, AGENT_INFERENCE_BACKEND=claude
 #      (the closing summary beat), and the shared LLM budget >= 30/min (the
 #      AGENT_LLM_MAX_REQUESTS_PER_MINUTE override, else the flag's value)
+#   4b. the agent's audio cue (defaultAudioCue in services/agent/actions/writer.go)
+#      resolves to a file in the RUNNING audio container (UC-070 BR-004)
 #   5. Jaeger reachable and holding agent.decide spans from the last N minutes
 #   6. the dashboard reachable through envoy
 #   7. the clock: local time vs the HTTP Date header of a reachable host
@@ -32,6 +36,7 @@
 #   TALK_BASE_URL        envoy entry point (default http://localhost)
 #   TALK_EXPECT_BACKEND  expected decision.backend variant (default rules: the
 #                        session starts on the floor, beat 2 flips to jev)
+#   TALK_BASELINE_FILE   stage baseline (default scripts/talk-baseline.json)
 #   TALK_CLOCK_URLS      space-separated URLs whose Date header is the time
 #                        reference (default: api.anthropic.com, cloudflare, google)
 #   TALK_MAX_SKEW        allowed clock skew in seconds (default 60)
@@ -43,6 +48,8 @@ FLAG_FILE="${AGENT_FLAG_FILE:-${REPO_ROOT}/services/flagd/ci/agent.json}"
 BASE_URL="${TALK_BASE_URL:-http://localhost}"
 BASE_URL="${BASE_URL%/}"
 EXPECT_BACKEND="${TALK_EXPECT_BACKEND:-rules}"
+BASELINE_FILE="${TALK_BASELINE_FILE:-${SCRIPT_DIR}/talk-baseline.json}"
+WRITER_GO="${REPO_ROOT}/services/agent/actions/writer.go"
 CLOCK_URLS="${TALK_CLOCK_URLS:-https://api.anthropic.com https://www.cloudflare.com https://www.google.com}"
 MAX_SKEW="${TALK_MAX_SKEW:-60}"
 MINUTES=15
@@ -134,12 +141,12 @@ fi
 section "stage baseline flags ($(basename "${FLAG_FILE}"))"
 if [[ -f "${FLAG_FILE}" ]]; then
   # The python prints the result lines itself (PASS/WARN/FAIL prefix); count them.
-  flag_out="$(python3 - "${FLAG_FILE}" "${EXPECT_BACKEND}" <<'PY'
+  flag_out="$(python3 - "${FLAG_FILE}" "${EXPECT_BACKEND}" "${BASELINE_FILE}" <<'PY'
 import json
 import os
 import sys
 
-path, expect_backend = sys.argv[1], sys.argv[2]
+path, expect_backend, baseline_path = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
     with open(path) as fh:
         flags = json.load(fh).get("flags", {})
@@ -147,25 +154,19 @@ except (OSError, ValueError) as exc:
     print(f"FAIL  cannot parse {path}: {exc}")
     sys.exit(0)
 
-# flag key -> expected defaultVariant for the start of the talk.
-BASELINE = {
-    "enabled": "on",
-    "interventions_enabled": "on",
-    "interventions_allowed": "ambient",
-    "rollout_enabled": "off",
-    "experiments_enabled": "off",
-    "decision.backend": expect_backend,
-    "decision.act_confidence_threshold": "default",
-    # Jev's own bar (#1287): the calibrated gate p_yes acts at 0.6.
-    "decision.jev.act_confidence_threshold": "gate",
-    "decision.capture_content": "on",
-    "decision.min_interval_ms": "default",
-    "decision.claude.model": "haiku",
-    # Claude backup: 5000 ms covers Haiku's ~3 s warm latency (patient = 8000).
-    "decision.claude.timeout_ms": "default",
-    "decision.jev.timeout_ms": "default",
-    "llm.eligible_game_kinds": "real_only",
-}
+# flag key -> expected defaultVariant for the start of the talk: the stage
+# baseline shared with talk-stage.sh (UC-070 BR-003). Jev's own bar (#1287) is
+# the calibrated gate 0.6; the Claude timeout default 5000 ms covers Haiku.
+try:
+    with open(baseline_path) as fh:
+        stage = json.load(fh)
+except (OSError, ValueError) as exc:
+    print(f"FAIL  cannot read the stage baseline {baseline_path}: {exc}")
+    sys.exit(0)
+BASELINE = dict(stage["checked"])
+BASELINE["decision.backend"] = expect_backend
+PERCEPTIBLE = stage.get("perceptible_interventions", [])
+RESET_HINT = "reset: ./scripts/talk-stage.sh reset"
 
 
 def shown(flag):
@@ -181,8 +182,25 @@ for key, want in BASELINE.items():
         print(f"FAIL  {key}: state {flag.get('state')}")
     elif flag.get("defaultVariant") == want:
         print(f"PASS  {key} = {shown(flag)}")
+    elif key == "interventions_allowed" and flag.get("defaultVariant") in ("none", "probe"):
+        print(f"FAIL  {key} = {shown(flag)}: nothing can act on stage (left behind by an interrupted "
+              f"permissions beat?), stage baseline is {want} ({RESET_HINT})")
     else:
-        print(f"FAIL  {key} = {shown(flag)}, stage baseline is {want}")
+        print(f"FAIL  {key} = {shown(flag)}, stage baseline is {want} ({RESET_HINT})")
+
+# The audience must be able to perceive an act (UC-070 BR-004, #1301): the
+# resolved allow-list holds at least one perceptible intervention.
+allowed_flag = flags.get("interventions_allowed")
+if allowed_flag is not None:
+    resolved = allowed_flag.get("variants", {}).get(allowed_flag.get("defaultVariant")) or ""
+    allowed = [t.strip() for t in str(resolved).split(",") if t.strip()]
+    perceptible = [t for t in allowed if t in PERCEPTIBLE]
+    if perceptible:
+        print(f"PASS  perceptible interventions allowed: {', '.join(perceptible)}")
+    else:
+        print(f"FAIL  interventions_allowed = {allowed_flag.get('defaultVariant')} allows nothing the audience "
+              f"can perceive ({', '.join(allowed) or 'nothing'}); needs one of {', '.join(PERCEPTIBLE)} "
+              f"({RESET_HINT})")
 
 
 def variant_value(key):
@@ -312,6 +330,22 @@ except (OSError, ValueError, KeyError, TypeError):
         warn "LLM budget: llm.max_requests_per_minute = ${budget_variant:-?} (${budget_value:-?}/min) and no env override: a remote-decide game wants 15-20/min plus the summary; set the flag to stage (30)"
       fi
     fi
+  fi
+fi
+
+# --- 4b. audio cue resolves in the running audio service -------------------
+section "audio cue (agent writer default -> running audio container)"
+cue="$(sed -nE 's/^[[:space:]]*defaultAudioCue[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "${WRITER_GO}" 2>/dev/null | head -1)"
+if [[ -z "${cue}" ]]; then
+  cue="agent_cue"
+  info "defaultAudioCue not found in ${WRITER_GO}; checking ${cue}"
+fi
+if [[ "${docker_ok}" -eq 1 ]]; then
+  # The running image, not the checkout: a stale image is exactly the trap.
+  if cue_out="$(docker exec joustmania-audio python -m services.audio.sound_catalog "${cue}" 2>&1)"; then
+    pass "audio cue ${cue_out}"
+  else
+    fail "audio cue '${cue}' does not resolve in joustmania-audio: ${cue_out:-no output} (play_audio_cue would play nothing; an image older than #1301 has no alias)"
   fi
 fi
 

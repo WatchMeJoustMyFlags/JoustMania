@@ -23,6 +23,11 @@ SECRET="sk-test-DO-NOT-PRINT-123"
 cat >"${WORK}/bin/docker" <<'SH'
 #!/usr/bin/env bash
 [[ "$1" == "info" ]] && exit 0
+if [[ "$1" == "exec" ]]; then
+  # docker exec joustmania-audio python -m services.audio.sound_catalog <cue>
+  if [[ -n "${STUB_CUE_FAIL:-}" ]]; then echo "${@: -1}: not in the sound registry"; exit 1; fi
+  echo "${@: -1}: Joust/sounds/beep_loud.ogg"; exit 0
+fi
 if [[ "$1" == "inspect" ]]; then
   [[ -n "${STUB_MISSING:-}" && "$4" == "${STUB_MISSING}" ]] && exit 1
   fmt="$3"
@@ -87,7 +92,14 @@ onoff = {"on": True, "off": False}
 flags = {
     "enabled": f(onoff, "on"),
     "interventions_enabled": f(onoff, "on"),
-    "interventions_allowed": f({"none": "", "probe": "noop", "ambient": "play_audio_cue"}, "ambient"),
+    "interventions_allowed": f({
+        "none": "",
+        "probe": "noop",
+        "ambient": "play_audio_cue,send_controller_effect,adjust_volume",
+        "standard": "play_audio_cue,send_controller_effect,adjust_volume,adjust_music_tempo,"
+                    "set_pacing_profile,adjust_player_sensitivity,grant_shield",
+        "quiet": "send_controller_effect,adjust_volume",
+    }, "standard"),
     "rollout_enabled": f(onoff, "off"),
     "experiments_enabled": f(onoff, "off"),
     "decision.backend": f({"rules": "rules", "claude": "claude"}, "rules"),
@@ -142,6 +154,9 @@ check "interventions neutral" "PASS  interventions.json at neutral variants"
 check "jaeger newest span summarised" "newest: backend=claude outcome=held"
 check "vendor variant listed" "decision.openai.model variants available: vendor"
 check "clock in sync" "PASS  clock skew 0s"
+check "stage allow-list is standard" "PASS  interventions_allowed = standard"
+check "perceptible interventions listed" "PASS  perceptible interventions allowed: play_audio_cue, adjust_music_tempo, grant_shield"
+check "audio cue resolves in the audio container" "PASS  audio cue agent_cue: Joust/sounds/beep_loud.ogg"
 if has "${SECRET}"; then not_ok "key value never printed"; else ok "key value never printed"; fi
 
 # --- drift from the stage baseline -----------------------------------------
@@ -220,6 +235,33 @@ check "applied interventions warn" "WARN  interventions.json not neutral: shield
 fixture
 STUB_MISSING=joustmania-agent run_preflight
 check "missing container named" "FAIL  joustmania-agent: container not found, cannot check its flag mount"
+
+# --- stage permission baseline and perceptibility (UC-070 BR-003/BR-004, #1301)
+fixture interventions_allowed=none
+STUB_BUDGET=30 run_preflight
+if [[ "${RC}" -eq 1 ]]; then ok "allow-list none exits 1"; else not_ok "allow-list none exits 1 (rc=${RC})"; fi
+check "allow-list none fails loudly" "FAIL  interventions_allowed = none (\"\"): nothing can act on stage"
+check "allow-list none names the reset" "reset: ./scripts/talk-stage.sh reset"
+check "none allows nothing perceptible" "FAIL  interventions_allowed = none allows nothing the audience can perceive (nothing)"
+
+fixture interventions_allowed=probe
+STUB_BUDGET=30 run_preflight
+check "allow-list probe fails loudly" "FAIL  interventions_allowed = probe (\"noop\"): nothing can act on stage"
+
+fixture interventions_allowed=ambient
+STUB_BUDGET=30 run_preflight
+if [[ "${RC}" -eq 1 ]]; then ok "ambient is off the stage baseline"; else not_ok "ambient is off the stage baseline (rc=${RC})"; fi
+check "ambient fails the baseline" "stage baseline is standard (reset: ./scripts/talk-stage.sh reset)"
+check "ambient still has the audible cue" "PASS  perceptible interventions allowed: play_audio_cue"
+
+fixture interventions_allowed=quiet
+STUB_BUDGET=30 run_preflight
+check "no perceptible intervention fails" "FAIL  interventions_allowed = quiet allows nothing the audience can perceive (send_controller_effect, adjust_volume)"
+
+fixture
+STUB_BUDGET=30 STUB_CUE_FAIL=1 run_preflight
+if [[ "${RC}" -eq 1 ]]; then ok "unresolved audio cue exits 1"; else not_ok "unresolved audio cue exits 1 (rc=${RC})"; fi
+check "unresolved audio cue fails" "FAIL  audio cue 'agent_cue' does not resolve in joustmania-audio"
 
 # --- usage -----------------------------------------------------------------
 run_preflight --minutes abc
