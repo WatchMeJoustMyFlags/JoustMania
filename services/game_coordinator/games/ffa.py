@@ -175,21 +175,19 @@ class FFAGame(BaseGameMode):
         return [Phase(name="color_assignment", execute=self._assign_ffa_colors)]
 
     def _winner_serial(self) -> str | None:
-        """The winner's serial, or None (tie, force-ended, or still several alive).
+        """The winner's serial from the game's outcome, or None (tie, force-ended, ...).
 
-        A force-ended game has no winner even if one player was left (UC-020 BR-003).
+        A game force-ended while it ran has no winner even if one player was left;
+        a win already latched survives a later force-end (UC-020 BR-003).
         """
-        if self.force_ended:
-            return None
-        alive_players = [p for p in self.players.values() if p.alive]
-        return alive_players[0].serial if len(alive_players) == 1 else None
+        return self._game_outcome_attributes().get("game.winner")
 
     def _natural_game_outcome(self) -> dict:
         """``winner`` (one alive) or ``tie`` (none alive) per UC-020 BR-001 / BR-003."""
-        winner_serial = self._winner_serial()
-        if winner_serial is not None:
-            return {"game.outcome": "winner", "game.winner": winner_serial}
-        if not any(p.alive for p in self.players.values()):
+        alive_players = [p for p in self.players.values() if p.alive]
+        if len(alive_players) == 1:
+            return {"game.outcome": "winner", "game.winner": alive_players[0].serial}
+        if not alive_players:
             return {"game.outcome": "tie"}
         # Several alive without a force-end: the loop stopped for another reason
         # (e.g. the gameplay stream ended). No winner is claimed.
@@ -217,8 +215,9 @@ class FFAGame(BaseGameMode):
                         "game_duration": time.time() - self.start_time if self.start_time else 0,
                         "winner": serial == winner_serial,
                     }
-                    if self.force_ended:
-                        end_attrs.update(self._game_outcome_attributes())
+                    outcome = self._game_outcome_attributes()
+                    if outcome["game.outcome"] == "force_ended":
+                        end_attrs.update(outcome)
 
                     # Add analytics summary to span
                     if player.analytics is not None:
@@ -305,8 +304,8 @@ class FFAGame(BaseGameMode):
             "duration": time.time() - self.start_time if self.start_time else 0,
             "outcome": outcome["game.outcome"],
         }
-        if self.force_ended:
-            ended_data["reason"] = self.force_end_reason
+        if "game.end_reason" in outcome:
+            ended_data["reason"] = outcome["game.end_reason"]
         await self.event_publisher(GameEvent.GAME_ENDED, ended_data)
 
         logger.info("Game ended")

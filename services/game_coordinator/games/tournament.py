@@ -789,6 +789,8 @@ class TournamentGame(BaseGameMode):
         """
         from services.game_coordinator.games.base import GameState
 
+        # The session game root span carries the outcome (#1328).
+        self._capture_game_root_span()
         with tracer.start_as_current_span("tournament_game") as game_span:
             self.game_span = game_span
             game_span.set_attribute("game.id", self.game_id)
@@ -839,10 +841,12 @@ class TournamentGame(BaseGameMode):
                 # Tournament gameplay (bracket matches instead of standard game loop)
                 with tracer.start_as_current_span("gameplay_phase"):
                     await self._gameplay_loop()
+                self._latch_game_outcome()
 
                 # End game
-                with tracer.start_as_current_span("teardown_phase"):
+                with tracer.start_as_current_span("teardown_phase") as teardown_span:
                     await self._end_game_impl()
+                    self._record_game_outcome(teardown_span)
 
                 game_span.set_status(Status(StatusCode.OK))
 
@@ -852,6 +856,7 @@ class TournamentGame(BaseGameMode):
                 game_span.set_status(Status(StatusCode.ERROR, str(e)))
                 raise
             finally:
+                self._record_force_ended_outcome_if_unrecorded()
                 force_ended = not self.running
                 self.running = False
                 await self._stop_game_music()

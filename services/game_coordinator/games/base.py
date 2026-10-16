@@ -731,6 +731,11 @@ class BaseGameMode(ABC):
         # Set by force_end(): the reason the game was stopped from outside, or
         # None for a game that ended on its own win condition (#1328).
         self.force_end_reason: str | None = None
+        # The outcome, frozen once the game loop ends (win condition met, or the
+        # loop stopped). A force-end that lands later (e.g. during the winner
+        # rainbow) must not turn a real win into force_ended (#1328).
+        self._latched_outcome: dict | None = None
+        self._outcome_recorded = False
         # The game root span (current when run() starts); the outcome lands on it.
         self._game_root_span: trace.Span | None = None
         self.gameplay_stream = None  # Phase 46: Bidirectional stream for feedback commands
@@ -1477,6 +1482,7 @@ class BaseGameMode(ABC):
 
                         # Process controllers and check for game over
                         if await self._process_gameplay_update(gameplay_update):
+                            self._latch_game_outcome()
                             logger.info("Win condition met, keeping game active for 1 second to show winner")
                             await asyncio.sleep(1.0)
                             return
@@ -2704,22 +2710,57 @@ class BaseGameMode(ABC):
         """
         return {"game.outcome": "completed"}
 
+    def _latch_game_outcome(self) -> None:
+        """Freeze the outcome when the game loop ends (first call wins, #1328).
+
+        Called when the win condition is met and again when the loop exits, so a
+        force-end that arrives afterwards (winner rainbow, teardown) cannot
+        rewrite a ``winner`` / ``tie`` / ``completed`` outcome.
+        """
+        if self._latched_outcome is None:
+            self._latched_outcome = self._game_outcome_attributes()
+
     def _game_outcome_attributes(self) -> dict:
         """The game's end-of-game outcome (UC-020 BR-003, #1328).
 
-        ``force_ended`` (with ``game.end_reason``) takes precedence over any natural
-        outcome: a force-ended game did not reach its win condition.
+        The latched outcome wins once the loop ended. Before that, ``force_ended``
+        (with ``game.end_reason``) takes precedence over any natural outcome: a
+        game force-ended while its loop ran did not reach its win condition.
         """
+        if self._latched_outcome is not None:
+            return dict(self._latched_outcome)
         if self.force_ended:
             return {"game.outcome": "force_ended", "game.end_reason": self.force_end_reason}
         return self._natural_game_outcome()
 
-    def _record_game_outcome(self, teardown_span: trace.Span) -> None:
-        """Put the outcome on the game root span and a ``game.outcome`` teardown event."""
+    def _capture_game_root_span(self) -> None:
+        """Remember the current span (the session's game root) for the outcome.
+
+        Called at the start of ``run()`` by the base and by modes that override it.
+        """
+        self._game_root_span = trace.get_current_span()
+
+    def _record_game_outcome(self, teardown_span: trace.Span | None) -> None:
+        """Put the outcome on the game root span and a ``game.outcome`` teardown event.
+
+        Records once per game; later calls are no-ops. ``teardown_span`` is None
+        when a mode's run() returns before its teardown (force-ended during the
+        intro or countdown).
+        """
+        if self._outcome_recorded:
+            return
+        self._outcome_recorded = True
+        self._latch_game_outcome()
         attrs = self._game_outcome_attributes()
         if self._game_root_span is not None:
             self._game_root_span.set_attributes(attrs)
-        teardown_span.add_event("game.outcome", attributes=attrs)
+        if teardown_span is not None:
+            teardown_span.add_event("game.outcome", attributes=attrs)
+
+    def _record_force_ended_outcome_if_unrecorded(self) -> None:
+        """For run() overrides: a game force-ended before its teardown still records force_ended."""
+        if self.force_ended:
+            self._record_game_outcome(None)
 
     # ========================================================================
     # Task Tracking and Lifecycle Hooks
@@ -2792,7 +2833,7 @@ class BaseGameMode(ABC):
             self.state = GameState.STARTING
             self.running = True  # Set early to allow force_end during countdown
             current_span = trace.get_current_span()
-            self._game_root_span = current_span
+            self._capture_game_root_span()
             current_span.add_event(
                 "game.state_changed",
                 {
@@ -2952,6 +2993,7 @@ class BaseGameMode(ABC):
                 try:
                     await self._game_loop()
                 finally:
+                    self._latch_game_outcome()
                     # Stop music loop
                     if self.music_loop_task:
                         self.music_loop_task.cancel()

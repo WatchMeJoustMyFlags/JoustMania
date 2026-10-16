@@ -223,3 +223,81 @@ class TestRunRecordsOutcome:
         assert (ended["outcome"], ended["reason"]) == ("force_ended", "dry_run_2")
         assert events.get_events_of_type(GameEvent.GAME_WINNER) == []
         assert not any(a["winner"] for a in events.get_events_of_type(GameEvent.PLAYER_ANALYTICS))
+
+
+class TestWinLatchedBeforeForceEnd:
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="main", steps=[6, 7], br=["BR-003"])
+    async def test_force_end_during_winner_rainbow_keeps_the_win(self):
+        """UC-020 BR-003: game_winner, victory, THEN force_end during the rainbow -> outcome stays winner."""
+        game, events = _ffa_game(3, dead=2)
+        # The loop met the win condition: game_winner is published and the outcome latched.
+        assert await game._check_win_condition() is True
+        game._latch_game_outcome()
+        spans = {s: p.span for s, p in game.players.items()}
+        root, teardown = _autospec_span(), _autospec_span()
+        game._game_root_span = root
+        game._close_all_player_spans()
+
+        async def _rainbow_interrupted_by_preemption():
+            game.force_end("preempted_by_real_game")
+            return False
+
+        game._wait_for_rainbow_effect = _rainbow_interrupted_by_preemption
+        await game._end_game_impl()
+        game._record_game_outcome(teardown)
+
+        assert events.get_events_of_type(GameEvent.GAME_WINNER) == [{"serial": "p2"}]
+        assert [n for n, _ in _end_events_by_player(spans)["p2"]] == ["victory"]
+        (ended,) = events.get_events_of_type(GameEvent.GAME_ENDED)
+        assert ended["outcome"] == "winner"
+        assert "reason" not in ended
+        assert _root_attrs(root) == {"game.outcome": "winner", "game.winner": "p2"}
+
+    @pytest.mark.uc("UC-020", flow="A4", br=["BR-003"])
+    def test_force_end_before_the_loop_ended_is_force_ended(self):
+        """UC-020 BR-003: without a latched outcome, a force-end still wins over a lone survivor."""
+        game, _ = _ffa_game(3, dead=2)
+        game.force_end("operator_stop")
+        game._latch_game_outcome()
+        assert game._game_outcome_attributes()["game.outcome"] == "force_ended"
+
+    @pytest.mark.uc("UC-020", flow="A4", br=["BR-003"])
+    def test_outcome_is_recorded_once(self):
+        """UC-020 BR-003: the outcome lands on the root span once, even if recorded again."""
+        game, _ = _ffa_game(2)
+        root = _autospec_span()
+        game._game_root_span = root
+        game._record_game_outcome(_autospec_span())
+        game.force_end("late")
+        game._record_game_outcome(_autospec_span())
+        game._record_force_ended_outcome_if_unrecorded()
+        assert root.set_attributes.call_count == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="main", steps=[6, 7], br=["BR-001", "BR-003"])
+    async def test_run_win_then_force_end_keeps_winner(self):
+        """UC-020 BR-003 (real run()): win condition met, then a preempting force_end -> game_ended winner."""
+        events = EventCollector()
+        game = FFAGame(
+            controller_manager_client=MockControllerManagerService(
+                num_controllers=3, death_schedule={0.3: 1, 0.6: 2}, infinite=True
+            ),
+            event_publisher=events.publish,
+            audio_client=None,
+            game_id="test_run_win_then_force_end",
+            initial_players=[type("P", (), {"serial": f"mock_controller_{i}"})() for i in range(3)],
+        )
+        task = asyncio.create_task(game.run())
+        for _ in range(300):  # up to 15 s for the win
+            if events.get_events_of_type(GameEvent.GAME_WINNER):
+                break
+            await asyncio.sleep(0.05)
+        assert events.get_events_of_type(GameEvent.GAME_WINNER), "no winner"
+
+        game.force_end("preempted_by_real_game")  # lands in the post-win hold / rainbow
+        await asyncio.wait_for(task, timeout=15)
+
+        (ended,) = events.get_events_of_type(GameEvent.GAME_ENDED)
+        assert ended["outcome"] == "winner"
+        assert "reason" not in ended
