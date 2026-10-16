@@ -94,7 +94,7 @@ Player arcs (sorted by serial; offsets relative to game start; "unknown" = never
     movement=unknown activity=unknown
     near_death_ratio=unknown near_death_offset_seconds=unknown
     final_intensity=0.10 final_skill=0.30
-  CC:33: outcome=eliminated #2 survival_seconds=150.00 elimination_offset_seconds=unknown
+  CC:33: outcome=eliminated #2 survival_seconds=unknown elimination_offset_seconds=unknown
     movement=unknown activity=unknown
     near_death_ratio=unknown near_death_offset_seconds=unknown
     final_intensity=unknown final_skill=unknown

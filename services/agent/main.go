@@ -900,13 +900,8 @@ func main() {
 	// starts it with no restart. The real-default promotion path stays
 	// behind ALL of #961's gates (the promoter built above + the kill-switch via the
 	// ConfigResolver).
-	expLoop := buildExperimentLoop(agentFlags, promoter, fitnessStore, getEnv("GAME_FLAG_PATH", experiment.DefaultGamePath), logger)
+	expLoop := buildExperimentLoop(agentFlags, promoter, fitnessStore, getEnv("GAME_FLAG_PATH", experiment.DefaultGamePath), sharedContextWindow, logger)
 	if expLoop != nil {
-		// UC-042 BR-006: finished pattern games feed their per-slot rows (keyed by
-		// archetype, never by serial) into the cross-game window.
-		expLoop.recordPatternEndsInto(sharedContextWindow.RecordPattern)
-		// UC-042 BR-005: a concluded experiment's linked shadow history is evicted.
-		expLoop.registry.SetTerminalHook(sharedContextWindow.Forget)
 		// Bind the spawner's background game-drive goroutines to the agent's root
 		// context so shutdown cancels in-flight shadow games (no goroutine leak).
 		expLoop.spawner.SetRootContext(ctx)

@@ -77,6 +77,12 @@ type PlayerSignals struct {
 	activePreferred  bool
 }
 
+// InterventionCount is one intervention type's per-game tally.
+type InterventionCount struct {
+	Dispatched int
+	Blocked    int
+}
+
 // SessionSignals is the per-game (session) view the agent reasons over.
 type SessionSignals struct {
 	// DurationSeconds is the elapsed game time in seconds since the game was
@@ -102,6 +108,12 @@ type SessionSignals struct {
 	// EliminationSequence is the ordered list of eliminated serials,
 	// first eliminated first. Derived from the elimination sources below.
 	EliminationSequence []string
+
+	// InterventionCounts tallies this game's agent interventions by type
+	// (dispatched / blocked). Unlike the 64-entry Timeline it is unbounded per game,
+	// so game-end aggregates count every intervention (#1368). nil until the first
+	// intervention; reset at game start.
+	InterventionCounts map[string]InterventionCount
 
 	// GameActive indicates a game is in progress.
 	// Source: game_active == 1 (live).

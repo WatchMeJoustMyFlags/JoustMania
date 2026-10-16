@@ -372,3 +372,16 @@ func TestBuildSummary_MovementSeries(t *testing.T) {
 		t.Errorf("BB:22 should have crossed the threshold; ratio=%v", bb.NearDeathRatio)
 	}
 }
+
+// UC: UC-042 BR-005
+func TestBuildSummary_CarriesExperimentLink(t *testing.T) {
+	got := BuildSummary(gamecontext.GameContext{
+		SessionID:    "game_shadow_link",
+		GameKind:     gamecontext.GameKindShadow,
+		ExperimentID: "exp-7f3a",
+		Arm:          "treatment",
+	}, BuildOptions{})
+	if got.ExperimentID != "exp-7f3a" || got.Arm != "treatment" {
+		t.Errorf("UC-042/BR-005: experiment link = %q/%q, want exp-7f3a/treatment", got.ExperimentID, got.Arm)
+	}
+}

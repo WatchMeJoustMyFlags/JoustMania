@@ -215,7 +215,6 @@ func (r *Registry) RecordPatternEnd(rec patterngame.Record) {
 		ParamsDigest:     rec.Archetype.Digest,
 		RngSeed:          rec.Seed,
 		FlagDigest:       rec.FlagDigest,
-		SlotSerials:      rec.Serials,
 		Outcome:          rec.Outcome,
 		EliminationOrder: rec.EliminationOrder,
 		WinnerSlot:       &winner,

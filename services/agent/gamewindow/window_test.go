@@ -1,11 +1,14 @@
 package gamewindow
 
 import (
+	"io"
+	"log/slog"
 	"reflect"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/joustmania/agent/gamecontext"
 	"github.com/joustmania/agent/gamesummary"
@@ -37,6 +40,7 @@ func realGame() gamesummary.Summary {
 		DurationSeconds:   f64(92),
 		PlayerCount:       4,
 		EliminationCount:  3,
+		SurvivorCount:     1,
 		InterventionCount: 3,
 		PlayerArcs: []gamesummary.PlayerArc{
 			{Serial: s[0], Eliminated: true, EliminationOrder: 1, NearDeathRatio: f64(1.2)},
@@ -143,29 +147,59 @@ var allowedStrings = map[string]bool{
 	"ShadowGame.Arm":             true,
 }
 
-// UC: UC-042 BR-004 BR-006
-func TestWindow_TypesHoldNoPerControllerIdentity(t *testing.T) {
-	var walk func(t *testing.T, typ reflect.Type)
-	walk = func(t *testing.T, typ reflect.Type) {
-		for typ.Kind() == reflect.Pointer || typ.Kind() == reflect.Slice {
-			typ = typ.Elem()
+// identityViolations walks typ and returns every field path that could carry a
+// serial or a name: a string at any depth (through pointers, slices, arrays and
+// map keys or values) that is not allowlisted, any map, and any interface.
+func identityViolations(typ reflect.Type, path string, seen map[reflect.Type]bool) []string {
+	var out []string
+	switch typ.Kind() {
+	case reflect.Pointer, reflect.Slice, reflect.Array:
+		return identityViolations(typ.Elem(), path, seen)
+	case reflect.Map:
+		out = append(out, path+" (map)")
+		out = append(out, identityViolations(typ.Key(), path, seen)...)
+		return append(out, identityViolations(typ.Elem(), path, seen)...)
+	case reflect.Interface:
+		return []string{path + " (interface)"}
+	case reflect.String:
+		if !allowedStrings[path] {
+			return []string{path + " (string)"}
 		}
-		if typ.Kind() != reflect.Struct {
-			return
+		return nil
+	case reflect.Struct:
+		if seen[typ] {
+			return nil
 		}
+		seen[typ] = true
 		for i := 0; i < typ.NumField(); i++ {
 			f := typ.Field(i)
-			name := typ.Name() + "." + f.Name
-			if f.Type.Kind() == reflect.String && !allowedStrings[name] {
-				t.Errorf("UC-042/BR-004: unexpected string field %s could carry a serial or name", name)
-			}
-			if f.Type.Kind() == reflect.Map {
-				t.Errorf("UC-042/BR-004: map field %s could be keyed by serial", name)
-			}
-			walk(t, f.Type)
+			out = append(out, identityViolations(f.Type, typ.Name()+"."+f.Name, seen)...)
 		}
 	}
-	walk(t, reflect.TypeOf(Window{}))
+	return out
+}
+
+// UC: UC-042 BR-004 BR-006
+func TestWindow_TypesHoldNoPerControllerIdentity(t *testing.T) {
+	t.Run("UC-042/BR-004 window types", func(t *testing.T) {
+		for _, v := range identityViolations(reflect.TypeOf(Window{}), "Window", map[reflect.Type]bool{}) {
+			t.Errorf("UC-042/BR-004: field %s could carry a serial or a name", v)
+		}
+	})
+	t.Run("UC-042/BR-004 guard catches wrapped strings", func(t *testing.T) {
+		type mutant struct {
+			Serials []string
+			Owner   *string
+			Fixed   [2]string
+			Any     any
+			ByID    map[int]int
+			Nested  []struct{ Name *string }
+		}
+		got := identityViolations(reflect.TypeOf(mutant{}), "mutant", map[reflect.Type]bool{})
+		if len(got) != 6 {
+			t.Errorf("guard found %d violations, want 6: %v", len(got), got)
+		}
+	})
 }
 
 // UC: UC-042 BR-004
@@ -213,7 +247,14 @@ func TestWindow_AggregatesComputed(t *testing.T) {
 			{"no players", nil, OutcomeUnknown},
 		}
 		for _, tc := range cases {
-			got := FromSummary(gamesummary.Summary{GameKind: gamecontext.GameKindReal, PlayerArcs: tc.arcs, PlayerCount: len(tc.arcs)})
+			survivors := 0
+			for _, a := range tc.arcs {
+				if !a.Eliminated {
+					survivors++
+				}
+			}
+			got := FromSummary(gamesummary.Summary{GameKind: gamecontext.GameKindReal, PlayerArcs: tc.arcs,
+				PlayerCount: len(tc.arcs), SurvivorCount: survivors, EliminationCount: len(tc.arcs) - survivors})
 			if got.Outcome != tc.want {
 				t.Errorf("%s: outcome = %q, want %q", tc.name, got.Outcome, tc.want)
 			}
@@ -451,4 +492,61 @@ func TestWindow_ConcurrentRecordAndSnapshot(t *testing.T) {
 	if s.Len() != RetentionCap {
 		t.Errorf("Len = %d, want %d", s.Len(), RetentionCap)
 	}
+}
+
+// UC: UC-042 BR-004
+func TestWindow_AggregatesSurviveTimelineOverflow(t *testing.T) {
+	// Regression (#1421 review): eliminations and interventions early in a game fall
+	// out of the 64-entry timeline once later intensity changes add state deltas. The
+	// aggregates must still count them, from the session's unbounded truth.
+	clock := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	store := gamecontext.NewStore(time.Hour, time.Hour, func() time.Time { return clock })
+	window := NewStore()
+	coord := gamesummary.NewCoordinator(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	coord.SetObserver(window)
+	store.OnGameEnd = coord.OnGameEnd
+
+	store.SetGameKind(gamecontext.GameKindReal)
+	store.SetGameActive(true)
+	store.AdoptSessionID("game_overflow")
+	for _, serial := range realisticSerials {
+		store.SetPlayerIntensity(serial, 0.5)
+	}
+	for i := 0; i < 3; i++ {
+		clock = clock.Add(time.Second)
+		store.SetEliminationOrder(realisticSerials[i], i+1)
+		store.AppendInterventionEvent("speed_up", "", false)
+	}
+	store.AppendInterventionEvent("grant_shield", realisticSerials[3], true)
+	for i := 0; i < 100; i++ {
+		clock = clock.Add(100 * time.Millisecond)
+		store.SetPlayerIntensity(realisticSerials[3], 0.5+float64(i)/1000)
+	}
+	for _, e := range store.Snapshot().Timeline {
+		if e.Kind == gamecontext.EventElimination && e.Serial == realisticSerials[0] {
+			t.Fatal("test setup: the first elimination is still on the timeline; the ring did not overflow")
+		}
+	}
+	clock = clock.Add(time.Second)
+	store.SetGameActive(false)
+
+	w := window.SnapshotFor(gamecontext.GameKindReal, "")
+	if len(w.Games) != 1 {
+		t.Fatalf("window holds %d games, want 1", len(w.Games))
+	}
+	g := w.Games[0]
+	if g.PlayerCount != 4 || g.Outcome != OutcomeWinner || g.DeathRate == nil || *g.DeathRate != 0.75 {
+		t.Errorf("UC-042/BR-004: players=%d outcome=%q death_rate=%v, want 4 / winner / 0.75",
+			g.PlayerCount, g.Outcome, g.DeathRate)
+	}
+	want := []InterventionAggregate{
+		{Type: "grant_shield", Blocked: 1},
+		{Type: "speed_up", Dispatched: 3},
+	}
+	if len(g.Interventions) != 2 ||
+		g.Interventions[0].Type != want[0].Type || g.Interventions[0].Blocked != 1 || g.Interventions[0].Dispatched != 0 ||
+		g.Interventions[1].Type != want[1].Type || g.Interventions[1].Dispatched != 3 || g.Interventions[1].Blocked != 0 {
+		t.Errorf("UC-042/BR-004: interventions = %+v, want %+v", g.Interventions, want)
+	}
+	assertNoSerial(t, Render(w), realisticSerials)
 }

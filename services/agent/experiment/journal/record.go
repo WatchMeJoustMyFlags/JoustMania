@@ -138,7 +138,6 @@ type PatternFacts struct {
 	RngSeed      uint64 `json:"rng_seed,omitempty"`
 	FlagDigest   string `json:"flag_digest,omitempty"`
 	// pattern_game_ended
-	SlotSerials      []string   `json:"slot_serials,omitempty"`
 	Outcome          string     `json:"outcome,omitempty"`
 	Censored         *bool      `json:"censored,omitempty"`
 	OrderSource      string     `json:"order_source,omitempty"`

@@ -289,8 +289,8 @@ func FromSummary(s gamesummary.Summary) GameAggregate {
 		Mode:            s.GameMode,
 		PlayerCount:     s.PlayerCount,
 		DurationSeconds: copyFloat(s.DurationSeconds),
-		Outcome:         outcomeOf(s.PlayerArcs),
-		Interventions:   aggregateInterventions(s.Interventions),
+		Outcome:         outcomeOf(s.PlayerCount, s.SurvivorCount),
+		Interventions:   aggregateInterventions(s.Interventions, s.InterventionsByType),
 	}
 	if s.PlayerCount > 0 {
 		rate := float64(s.EliminationCount) / float64(s.PlayerCount)
@@ -300,15 +300,12 @@ func FromSummary(s gamesummary.Summary) GameAggregate {
 	return agg
 }
 
-func outcomeOf(arcs []gamesummary.PlayerArc) string {
-	if len(arcs) == 0 {
+// outcomeOf derives the outcome type from the summary's survivor count, which
+// comes from the session's unbounded elimination sequence (not the 64-entry
+// timeline).
+func outcomeOf(players, survivors int) string {
+	if players == 0 {
 		return OutcomeUnknown
-	}
-	survivors := 0
-	for _, a := range arcs {
-		if !a.Eliminated {
-			survivors++
-		}
 	}
 	switch survivors {
 	case 0:
@@ -338,7 +335,11 @@ func nearDeathRate(arcs []gamesummary.PlayerArc) *float64 {
 	return &rate
 }
 
-func aggregateInterventions(ivs []gamesummary.InterventionOutcome) []InterventionAggregate {
+// aggregateInterventions builds the per-type intervention aggregates. Counts come
+// from the whole-game tally when present (the timeline is a 64-entry ring and can
+// lose early interventions); the mean effects come from the interventions still on
+// the timeline, the only ones with a measured before/after window.
+func aggregateInterventions(ivs []gamesummary.InterventionOutcome, tally []gamesummary.InterventionTypeCount) []InterventionAggregate {
 	type acc struct {
 		agg                     InterventionAggregate
 		intensitySum, activeSum float64
@@ -366,6 +367,19 @@ func aggregateInterventions(ivs []gamesummary.InterventionOutcome) []Interventio
 		if iv.Effect.ActivePlayersDelta != nil {
 			a.activeSum += float64(*iv.Effect.ActivePlayersDelta)
 			a.activeN++
+		}
+	}
+	if len(tally) > 0 {
+		for _, a := range byType {
+			a.agg.Dispatched, a.agg.Blocked = 0, 0
+		}
+		for _, t := range tally {
+			a := byType[t.Type]
+			if a == nil {
+				a = &acc{agg: InterventionAggregate{Type: t.Type}}
+				byType[t.Type] = a
+			}
+			a.agg.Dispatched, a.agg.Blocked = t.Dispatched, t.Blocked
 		}
 	}
 	out := make([]InterventionAggregate, 0, len(byType))

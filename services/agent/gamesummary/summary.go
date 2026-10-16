@@ -72,11 +72,21 @@ type Summary struct {
 
 	// PlayerCount is the number of players the game saw (len of arcs).
 	PlayerCount int `json:"player_count"`
-	// EliminationCount is the number of eliminations recorded.
+	// EliminationCount is the number of eliminated players. It comes from the
+	// session's unbounded EliminationSequence (plus any timeline-only elimination),
+	// not from the 64-entry timeline alone, whose early eliminations can be evicted
+	// by later state deltas (#1368).
 	EliminationCount int `json:"elimination_count"`
-	// InterventionCount is the number of agent interventions the timeline captured
-	// (dispatched + blocked).
+	// SurvivorCount is PlayerCount - EliminationCount.
+	SurvivorCount int `json:"survivor_count"`
+	// InterventionCount is the number of agent interventions this game (dispatched +
+	// blocked), from the session's unbounded per-type tally when present, else from
+	// the timeline.
 	InterventionCount int `json:"intervention_count"`
+	// InterventionsByType is the per-type dispatched / blocked tally of the whole
+	// game (from SessionSignals.InterventionCounts), sorted by type. Empty when the
+	// tally was never populated.
+	InterventionsByType []InterventionTypeCount `json:"interventions_by_type,omitempty"`
 
 	// PlayerArcs is the per-player trajectory list, sorted by serial for a stable
 	// file. Each carries elimination/survival/final-state (#928 "player arcs").
@@ -98,6 +108,13 @@ type Summary struct {
 	// Interventions is the list of agent interventions that fired and their outcome
 	// + best-effort before/after effect (#928 "intervention outcomes").
 	Interventions []InterventionOutcome `json:"interventions"`
+}
+
+// InterventionTypeCount is one intervention type's whole-game tally.
+type InterventionTypeCount struct {
+	Type       string `json:"type"`
+	Dispatched int    `json:"dispatched"`
+	Blocked    int    `json:"blocked"`
 }
 
 // PlayerArc is one player's trajectory through the game (#928 player arcs). All
@@ -244,26 +261,55 @@ func BuildSummary(c gamecontext.GameContext, opts BuildOptions) Summary {
 	interventions := buildInterventions(c.Timeline, anchor)
 	arcs := buildPlayerArcs(c, elims, anchor, lastAt)
 	dom := detectDominance(arcs)
+	eliminated := 0
+	for _, a := range arcs {
+		if a.Eliminated {
+			eliminated++
+		}
+	}
+	byType := interventionsByType(c.Session.InterventionCounts)
+	interventionCount := len(interventions)
+	if len(byType) > 0 {
+		interventionCount = 0
+		for _, t := range byType {
+			interventionCount += t.Dispatched + t.Blocked
+		}
+	}
 
 	return Summary{
-		SchemaVersion:     SchemaVersion,
-		GameID:            c.SessionID,
-		GameKind:          c.GameKind,
-		ExperimentID:      c.ExperimentID,
-		Arm:               c.Arm,
-		GameMode:          deref(c.Session.GameMode),
-		GeneratedAt:       opts.Now,
-		DurationSeconds:   c.Session.DurationSeconds,
-		PlayerCount:       len(arcs),
-		EliminationCount:  len(elims),
-		InterventionCount: len(interventions),
-		PlayerArcs:        arcs,
-		EliminationSpread: elims,
-		EngagementTrend:   trend,
-		SpeedSparkline:    gamecontext.RenderSpeedTrack(c.SpeedTrack),
-		Dominance:         dom,
-		Interventions:     interventions,
+		SchemaVersion:       SchemaVersion,
+		GameID:              c.SessionID,
+		GameKind:            c.GameKind,
+		ExperimentID:        c.ExperimentID,
+		Arm:                 c.Arm,
+		GameMode:            deref(c.Session.GameMode),
+		GeneratedAt:         opts.Now,
+		DurationSeconds:     c.Session.DurationSeconds,
+		PlayerCount:         len(arcs),
+		EliminationCount:    eliminated,
+		SurvivorCount:       len(arcs) - eliminated,
+		InterventionCount:   interventionCount,
+		InterventionsByType: byType,
+		PlayerArcs:          arcs,
+		EliminationSpread:   elims,
+		EngagementTrend:     trend,
+		SpeedSparkline:      gamecontext.RenderSpeedTrack(c.SpeedTrack),
+		Dominance:           dom,
+		Interventions:       interventions,
 	}
+}
+
+// interventionsByType flattens the session's per-type tally into a sorted slice.
+func interventionsByType(counts map[string]gamecontext.InterventionCount) []InterventionTypeCount {
+	if len(counts) == 0 {
+		return nil
+	}
+	out := make([]InterventionTypeCount, 0, len(counts))
+	for typ, c := range counts {
+		out = append(out, InterventionTypeCount{Type: typ, Dispatched: c.Dispatched, Blocked: c.Blocked})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Type < out[j].Type })
+	return out
 }
 
 // timelineBounds returns the first and last event timestamps in the timeline, or
@@ -410,6 +456,13 @@ func buildPlayerArcs(c gamecontext.GameContext, elims []EliminationEvent, anchor
 	for _, e := range elims {
 		elimBySerial[e.Serial] = e
 	}
+	// The session's EliminationSequence is the unbounded per-game truth (#1368): the
+	// 64-entry timeline can lose early eliminations to later state deltas, so it
+	// decides who was eliminated and in which order; the timeline only adds offsets.
+	seqOrder := make(map[string]int, len(c.Session.EliminationSequence))
+	for i, serial := range c.Session.EliminationSequence {
+		seqOrder[serial] = i + 1
+	}
 
 	// The set of serials the game saw is the union of live players and any serial
 	// that only ever appears as an elimination target (a player evicted before the
@@ -420,6 +473,9 @@ func buildPlayerArcs(c gamecontext.GameContext, elims []EliminationEvent, anchor
 	}
 	for _, e := range elims {
 		serials[e.Serial] = struct{}{}
+	}
+	for serial := range seqOrder {
+		serials[serial] = struct{}{}
 	}
 
 	gameSpan := offset(lastAt, anchor) // full game length in seconds (0 if no timeline)
@@ -445,14 +501,24 @@ func buildPlayerArcs(c gamecontext.GameContext, elims []EliminationEvent, anchor
 				}
 			}
 		}
-		if elim, ok := elimBySerial[serial]; ok {
+		elim, inTimeline := elimBySerial[serial]
+		order, inSeq := seqOrder[serial]
+		switch {
+		case inTimeline:
 			arc.Eliminated = true
 			arc.EliminationOrder = elim.Order
+			if inSeq {
+				arc.EliminationOrder = order
+			}
 			off := elim.OffsetSeconds
 			arc.EliminationOffsetSeconds = &off
 			surv := off // survival == time from start to elimination
 			arc.SurvivalSeconds = &surv
-		} else if !lastAt.IsZero() {
+		case inSeq:
+			// Eliminated, but the timeline entry was evicted: no offset is known.
+			arc.Eliminated = true
+			arc.EliminationOrder = order
+		case !lastAt.IsZero():
 			// Survivor: lasted the whole observed game.
 			surv := gameSpan
 			arc.SurvivalSeconds = &surv
