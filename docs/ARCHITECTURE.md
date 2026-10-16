@@ -82,8 +82,8 @@ JoustMania is a party game system for PS Move controllers, built as a collection
 | `PlayControllerEffect` | Unary | Trigger visual effect (flash, pulse, rainbow) |
 
 **Backends**:
-- `python` - Delegates to python-hid gRPC service (port 50059)
-- `rust` - Delegates to rust-hid gRPC service (port 50058)
+- `rust` - Delegates to rust-hid gRPC service (port 50058); the default (#1371)
+- `python` - Delegates to python-hid gRPC service (port 50059); opt-in, needs the `python-hid` compose profile
 - `mock` - Simulated controllers (testing)
 
 **Special Features**:

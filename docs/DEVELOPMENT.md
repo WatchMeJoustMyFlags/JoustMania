@@ -103,6 +103,12 @@ docker compose up -d
 > ```
 > Or set `IMAGE_TAG=latest` in your local `.env` (don't commit this change).
 
+> **Controller backend:** the stack reads real PS Move controllers through `rust-hid`, the default
+> Bluetooth backend (`backend=rust` in `services/flagd/controller.json`). `python-hid` is opt-in only:
+> `docker compose --profile python-hid up -d` (or `COMPOSE_PROFILES=python-hid`) plus a `backend` variant
+> naming `python`. See [controller-backends.md](architecture/controller-backends.md#python-hid-is-opt-in-1371).
+> Without hardware, use `make up-mock` (`backend=mock`).
+
 ### 4. Verify Services
 
 ```bash

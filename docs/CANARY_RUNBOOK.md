@@ -66,13 +66,16 @@ Key source files:
    docker compose ps
    ```
 
-2. **rust-hid and python-hid services deployed and healthy** -- the default
-   `backend` flag is `"python,rust"`, which creates both adapters
-   inside `MultiplexerBackend`. The `bluetooth_backend` flag then
-   controls which adapter handles each serial. If you changed
-   `backend` from the default, ensure it includes both `python` and
-   `rust`, then restart controller-manager (it is read once at startup):
+2. **rust-hid and python-hid services deployed and healthy** -- since #1371
+   the default `backend` flag is `"rust"` and python-hid is opt-in. A canary
+   between the two backends needs both adapters inside `MultiplexerBackend`:
+   start python-hid with its compose profile, set the `backend` flag to
+   `python_rust`, and restart controller-manager (the flag is read once at
+   startup). The `bluetooth_backend` flag then controls which adapter handles
+   each serial (default `rust`):
    ```bash
+   COMPOSE_PROFILES=python-hid docker compose up -d python-hid
+   # services/flagd/controller.json: "backend" defaultVariant -> "python_rust"
    docker compose restart controller-manager
    ```
 
@@ -132,10 +135,11 @@ rate(controller_discovery_full_enumerate_total[5m])
 
 Write down these values. They are your comparison baseline.
 
-### Confirm routing flag is defaulting to python
+### Confirm routing flag is defaulting to the stable backend
 
 ```promql
-# All routing decisions should show adapter="python"
+# All routing decisions should show the bluetooth_backend default
+# (adapter="rust" since #1371; adapter="python" if you set the default to python for this canary)
 controller_routing_decisions_total
 ```
 

@@ -142,47 +142,74 @@ This would make ~10% of controllers experience poll drops, ~5% appear disconnect
 The `backend` flag (in the `controller` domain) accepts comma-separated values to run multiple adapters simultaneously:
 
 ```json
-"backend": { "defaultVariant": "mock,bluetooth" }
+"backend": { "defaultVariant": "mock_rust" }
 ```
 
-This creates a `MultiplexerBackend` with both a `MockAdapter` and a `PythonHidAdapter`, allowing real and simulated controllers in the same session. Valid combinations:
+This creates a `MultiplexerBackend` with both a `MockAdapter` and a `RustServiceAdapter`, allowing real and simulated controllers in the same session. A `MockAdapter` (zero controllers) is always added, so `rust` and `mock,rust` load the same adapters. Valid combinations:
 - `mock` — mock only
-- `python` — python-hid only
-- `rust` — rust-hid only
-- `python,rust` — python-hid + rust-hid (default)
-- `mock,python` — mock + python-hid
+- `rust` — rust-hid (+ mock) **(default, #1371)**
 - `mock,rust` — mock + rust-hid
+- `python` — python-hid (+ mock) *(opt-in)*
+- `mock,python` — mock + python-hid *(opt-in)*
+- `python,rust` / `mock,python,rust` — python-hid + rust-hid side by side *(opt-in)*
+
+### python-hid is opt-in (#1371)
+
+rust-hid is the default Bluetooth backend everywhere (UC-002 BR-003). The Python backend is slower and gets no new work; it stays selectable only until it is removed after the talk, together with the infra rollout loop (`UnstableAdapter`, the rollout router, `rollout.json`, agent remediation).
+
+- The `python-hid` compose service carries the `python-hid` profile, so it starts only when you opt in. The controller manager no longer waits for it (`depends_on` with `required: false`).
+- To run a variant that names `python`, start the stack with the profile **and** select the variant:
+
+  ```bash
+  COMPOSE_PROFILES=python-hid docker compose up -d     # or: docker compose --profile python-hid up -d
+  # then set controller.json "backend" defaultVariant to python / mock_python / python_rust, and restart controller-manager
+  ```
+
+- `python_rust` and `mock_python_rust` stay as opt-in variants: they are the only way to run both HID services side by side, which the remaining rollout loop (UC-050 to UC-052) and the backend-comparison dashboard need until both are removed after the talk. They are no longer a default anywhere.
+- `bluetooth_backend=unstable` routes through the `UnstableAdapter`, which wraps the python adapter, so it also needs a `python` backend variant.
 
 ## Backend Selection
 
 ### Priority
 
-1. **OpenFeature flag** (`backend` in the `controller` domain) — runtime-switchable via flagd
-2. **Default** — `python,rust` (both adapters loaded)
+1. **OpenFeature flag** (`backend` in the `controller` domain), read once at controller-manager startup
+2. **Default** — `rust` (rust-hid + the auto-injected mock)
 
 ### Fallback
 
-If the flagd flag is empty or flagd is unavailable, the system defaults to the `python,rust` backend configuration.
+If the flagd flag is empty or flagd is unavailable, the controller manager falls back to `rust` (`backend_factory.py`).
 
 ## Configuration (flagd)
 
 | Flag | Domain | Values | Default | Description |
 |------|--------|--------|---------|-------------|
-| `backend` | controller | `mock`, `python`, `rust`, comma-separated | `python,rust` | Select backend(s) |
-| `bluetooth_backend` | controller | `python`, `rust`, `unstable` | `python` | Per-serial Bluetooth adapter routing (canary rollout target) |
+| `backend` | controller | `mock`, `python`, `rust`, comma-separated | `rust` | Select backend(s); `python` variants are opt-in |
+| `bluetooth_backend` | controller | `python`, `rust`, `unstable` | `rust` | Per-serial Bluetooth adapter routing (canary rollout target); also selects the pairing daemon's backend (below) |
 | `chaos_fault_type` | controller | `none`, `poll_drop`, `accel_spike`, `led_failure`, `disconnect` | `none` | Fault injection (use fractional targeting) |
 
 ## Docker Compose Integration
 
-### Production (docker-compose.yml)
+### Production (docker-compose.yml) and the Pi lite stack (docker-compose.lite.yml)
 
-```yaml
-controller-manager:
-  dockerfile: services/controller_manager/Dockerfile
-  privileged: true  # Bluetooth access
-  devices:
-    - /dev/bus/usb  # USB pairing
-```
+Both stacks start `rust-hid` (privileged, host PID namespace, `/dev:/dev:rslave` for hidraw hot-plug, gRPC 50058) and make the controller manager and the pairing daemon wait until it is healthy. `python-hid` exists only in `docker-compose.yml`, behind the `python-hid` profile.
+
+| | full (`docker-compose.yml`) | lite (`docker-compose.lite.yml`) |
+|---|---|---|
+| rust-hid | always | always (#1318) |
+| python-hid | `--profile python-hid` | not shipped |
+| controller-manager → rust-hid | `RUST_HID_HOST=rust-hid` | `RUST_HID_HOST=rust-hid` |
+| pairing-daemon → rust-hid | host network, `localhost:50058` (published port) | bridge network, `rust-hid:50058` |
+
+### Pairing daemon backend (UC-001 BR-003, #1320)
+
+The pairing daemon resolves `bluetooth_backend` once per USB poll and maps every variant:
+
+| `bluetooth_backend` | Pairing backend |
+|---|---|
+| `rust` (default) | `RustServiceBackend` → rust-hid PairingService |
+| `python` | `HidapiBackend` (in-process hidapi) |
+| `unstable` | `HidapiBackend` (`unstable` wraps the python I/O path; pairing has nothing to inject) |
+| anything else, or flagd down | `RustServiceBackend` (warning logged) |
 
 ### Mock Mode
 
