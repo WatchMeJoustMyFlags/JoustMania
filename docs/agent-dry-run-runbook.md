@@ -73,8 +73,10 @@ real-default change.
 
 2. **Agent master kill-switch** — `agent.json` `enabled` flag = `on`.
    Read live from flagd each cycle. When `off` (the fail-closed default) the
-   loop short-circuits before any work and emits a throttled
-   `kill-switch: agent disabled` span. Hot-reloaded — no restart needed for the
+   decision loop short-circuits before any work and emits a throttled
+   `agent.disabled` span (`services/agent/decision/telemetry.go` `SpanDisabled`);
+   the experiment loop aborts running experiments with the teardown reason
+   `kill-switch: agent disabled`. Hot-reloaded — no restart needed for the
    flag flip itself, but the agent re-reads it each cycle.
    *Flipped together with gate 1 by `./scripts/agent-dryrun-enable.sh on` —
    never default-on.*

@@ -20,23 +20,51 @@ the "Today" notes call out where the code has not caught up yet.
   admin mode ([`services/menu/handlers/admin.py`](../services/menu/handlers/admin.py)).
 - **Agent** decides *how to nudge the experience while the game runs*: bounded
   overrides, factors, and shields. These are written to the `interventions.json`
-  domain only ([`services/agent/actions/writer.go`](../services/agent/actions/writer.go))
+  domain (the gated tier-2 and rollout writes are listed under the invariants below) ([`services/agent/actions/writer.go`](../services/agent/actions/writer.go))
   and are live-evaluated by the game coordinator's `InterventionManager`
   ([`services/game_coordinator/interventions.py`](../services/game_coordinator/interventions.py)).
 
-Two invariants follow and are **load-bearing**:
+Two invariants follow and are **load-bearing**. Both were amended (spec
+consistency pass, epic #1260, D-A3) to match the northstar's tier 2 and the code:
+the agent has three narrow, gated writes beyond `interventions.json`.
 
-1. **The agent never persists into `game.json` or `user.json`.** Its entire write
-   surface is `interventions.json`. Baselines are the human's record; agent deltas
-   are ephemeral and disappear when the game ends.
-2. **The write surfaces are disjoint by file.** The menu writes `game.json` /
-   `user.json`; the agent writes `interventions.json`. Both use in-place
+1. **The agent never persists a human baseline it was not allowed to change.**
+   Its in-game write surface is `interventions.json`; those deltas are ephemeral
+   and disappear when the game ends. It never writes `user.json` or `agent.json`.
+   Two exceptions write `game.json`, and both are tier 2 ([NORTHSTAR](NORTHSTAR.md)):
+   - **Shadow-scoped experiment targeting** (`experiment.Writer`): it only adds a
+     variant plus a `game_kind != "real"` targeting rule, and
+     [`experiment/gate.go`](../services/agent/experiment/gate.go) rejects any write
+     that would change what a real game resolves (FR-062). The human baseline is
+     untouched for real games.
+   - **Gated autonomous promotion** (`promote/realdefault.go`): in
+     `code_improvement.mode=autonomous`, and only when `AGENT_CODE_IMPROVEMENT_ENABLED`,
+     `AGENT_AUTONOMOUS_ENABLED` and `AGENT_REAL_DEFAULT_FLAG_PATH` are set and
+     `enabled` is on, a shadow-validated winner becomes the real `defaultVariant`,
+     with a snapshot for automatic revert on degradation (FR-065). The stock stack
+     passes none of these env gates (D-A6), so this write is off by default.
+
+   The agent also writes `rollout.json` (`current_controller_count`, through
+   `actions/rollout_writer.go`) for the infrastructure rollout, gated by
+   `rollout_enabled` and `remediation_allowed` (FR-071, FR-072). That file is
+   infrastructure state, not a human game setting.
+2. **The write surfaces are disjoint by file, except `game.json`.** The menu writes
+   `game.json` / `user.json` (and the single `agent.json` key
+   `interventions_allowed`); the agent writes `interventions.json`, `rollout.json`
+   and the two `game.json` writes above. All writers use in-place
    read-modify-write (no temp+rename — `os.replace()` raises `EBUSY` on the docker
-   bind mounts flagd watches via inotify; see the writer header comments in both
-   files). There is **no cross-service lock**; the agent has only a process-local
-   mutex ([`writer.go:127`](../services/agent/actions/writer.go) `mu sync.Mutex`).
-   Concurrency is safe **only because the files never overlap** — this invariant
-   must not be broken by giving either actor a write into the other's file.
+   bind mounts flagd watches via inotify; see the writer header comments). There is
+   **no cross-service lock**; the agent has only process-local mutexes
+   ([`writer.go:127`](../services/agent/actions/writer.go) `mu sync.Mutex`).
+   Concurrency is safe for every file except `game.json` because those files have
+   one writer each.
+
+   **Known risk (missing lock).** The menu (admin mode) and the agent (experiment
+   targeting, autonomous promotion) both read-modify-write `game.json` with no
+   shared lock, so a write that interleaves with the other can be lost (last
+   writer wins). It is narrow in practice (admin edits are rare, experiment writes
+   happen at declare / abort / promote time) but not prevented. No other file may
+   gain a second writer.
 
 The contested ground is therefore not the *files* (disjoint) but the *runtime
 state* the two write paths converge on inside the game object (sensitivity, grace
@@ -46,24 +74,25 @@ periods). Sections 4–5 define those compositions precisely.
 
 | Domain (`services/flagd/*.json`) | Owner | Writer | Read by | Lifetime |
 |---|---|---|---|---|
-| `game.json` | Human admin | Menu admin mode → `FlagConfigWriter` | Menu builds `StartGameConfig` at start; coordinator freezes at init | Per-deployment (persists across games) |
+| `game.json` | Human admin | Menu admin mode → `FlagConfigWriter`; agent: shadow-scoped experiment targeting, gated autonomous promotion (§1, no shared lock) | Menu builds `StartGameConfig` at start; coordinator freezes at init | Per-deployment (persists across games) |
 | `user.json` | Human admin | Menu admin mode → `FlagConfigWriter` | Menu / audio (volumes, voice, instructions) | Per-deployment |
 | `interventions.json` | Agent | Agent ActionSink → `writer.go` | Coordinator `InterventionManager`, live | Ephemeral (cleared/neutral between games) |
+| `rollout.json` | Operator (human) for the ladder; agent for `current_controller_count` | Agent `actions/rollout_writer.go` (gated by `rollout_enabled`, `remediation_allowed`) | Controller manager rollout router, agent infra loop | Per-deployment |
 | `agent.json` | Operator (human) | Hand-edited / deploy config **and** menu admin mode → `FlagConfigWriter` (`interventions_allowed` only, #819) | Agent + coordinator policy gates | Per-deployment |
 
 `agent.json` holds the agent's own governor — `enabled`, `decision.backend`, `objectives`,
 `interventions_allowed`, and the `policy.*` budgets. As of #819, **menu admin mode
 may write the single `interventions_allowed` key** (the on-device kill-switch);
 every other key in `agent.json` is still hand-edited / deploy config only. The
-**agent process never writes `agent.json`** — that invariant is unchanged, so the
-write surfaces stay disjoint (menu writes `game.json` / `user.json` and the one
-agent-policy key; the agent writes `interventions.json` only). The human owns
+**agent process never writes `agent.json`** — that invariant is unchanged (menu
+writes `game.json` / `user.json` and the one agent-policy key; the agent writes
+`interventions.json`, `rollout.json` and the gated `game.json` writes of §1). The human owns
 agent policy; the agent cannot persist its own governor (§1, §6.2).
 
 > **How the agent-never-writes-`agent.json` invariant is enforced.** It rests on
 > **code discipline, not a container-mount restriction.** The agent bind-mounts
 > the whole flag directory `./services/flagd:/etc/flagd` **read-write** (it
-> legitimately writes `interventions.json`, and `game.json` experiment targeting),
+> legitimately writes `interventions.json`, `rollout.json` and `game.json`),
 > so the filesystem does *not* protect `agent.json`. Two code-level guards do: (1)
 > the agent's experiment `Writer` is constructed with **hardcoded target paths**
 > that never point at `agent.json`, and (2)

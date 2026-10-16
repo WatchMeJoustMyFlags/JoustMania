@@ -943,9 +943,15 @@ All configuration is via environment variables:
 > it cleanly (`AbortAll` strips targeting and frees capacity — in-flight shadow games
 > conclude/release normally). The master `enabled` kill-switch still wins: a disabled
 > agent does nothing regardless of these flags. **`agent.json` is human-owned** — the
-> agent has **no** write path to it (its only flagd write is `experiment.Writer`,
-> hardcoded to `game.json` + the `:ro` mount backstop), so it can never enable its own
-> experiments.
+> agent has **no** write path to it, so it can never enable its own experiments. The
+> agent writes three flagd files: `interventions.json` (in-game interventions,
+> `actions/writer.go`), `rollout.json` (`current_controller_count`,
+> `actions/rollout_writer.go`) and `game.json` (shadow-scoped experiment targeting via
+> `experiment.Writer`, plus the real default on gated autonomous promotion). It never
+> writes `agent.json`; that is guarded in code (hardcoded writer paths and the
+> `agent.json` path / symlink rejection in `experiment/gate.go`), not by the mount:
+> the agent bind-mounts `./services/flagd:/etc/flagd` read-write (`docker-compose.yml`)
+> and there is no `:ro` mount.
 >
 > **Stays env (NOT migrated):** `AGENT_EXPERIMENT_DIR` (filesystem concern), the
 > one-shot `AGENT_EXPERIMENT_SEED_*` (startup seed), and the two **list-valued**
@@ -1033,8 +1039,10 @@ change:
    (gated) promote. Default `false` ⇒ no Registry, no shadow spawns, no
    targeting writes, no promotions.
 2. **Master kill-switch** — `agent.json` `enabled` = `on` (read live each
-   cycle; `off` is the fail-closed default). When `off` the loop short-circuits
-   with a throttled `kill-switch: agent disabled` span. Flip the **dry-run** copy
+   cycle; `off` is the fail-closed default). When `off` the decision loop
+   short-circuits with a throttled `agent.disabled` span (`decision/telemetry.go`
+   `SpanDisabled`), and the experiment loop aborts running experiments with the
+   teardown reason `kill-switch: agent disabled`. Flip the **dry-run** copy
    with `./scripts/agent-killswitch.sh on` — production default stays `off`.
 3. **`code_improvement.*` promotion gates** — separate flags that gate the
    **real-default promotion** action only (still subject to the invariant gate +

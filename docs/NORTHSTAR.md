@@ -41,7 +41,9 @@ The agent observes only through OTel, but it may *write* code proposals at tier 
 
 These are what make this a northstar rather than a feature list:
 
-- **OTel only.** The agent's view of the game is spans and metrics, nothing else.
+- **OTel only.** The agent's view of the game is spans and metrics, nothing else,
+  except the shadow-game driver's own `StreamGameEvents` stream and `ListGames`
+  used for controller hygiene (the named exceptions under "No control plane" below).
 - **Flags only.** Every change the agent makes to the game is an OpenFeature
   flag change.
 - **Shadow gate always for persistent changes.** Tier 2 changes never reach
@@ -66,7 +68,8 @@ engine is the offline floor.
 
 - **Promotion** flips the real default flag only in the gated `autonomous`
   mode. By default (`code_improvement.mode`: `issue`, then `pr`) a human
-  reviews the promotion.
+  reviews the promotion, once `AGENT_CODE_IMPROVEMENT_ENABLED` / `GITHUB_*` are
+  set (D-A6); the stock stack only records them.
 - **Live rollback** exists in gated form: autonomous promotion watches real
   games and reverts on degradation.
 - **Decision backends** are selected by the `decision.backend` flag (epic #1225):
