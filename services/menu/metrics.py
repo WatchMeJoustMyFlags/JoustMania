@@ -115,3 +115,12 @@ force_start_reconcile_failed_total = Counter(
     "menu_force_start_reconcile_failed_total",
     "Total force-starts that used the stale menu roster after the live-roster RPC failed",
 )
+
+# #1272: a callback raised while handling one button-stream event. The event is
+# dropped and logged; the stream stays up (previously the exception tore the
+# stream down and the reconnect cleared every controller's lobby state).
+button_event_errors_total = Counter(
+    "menu_button_event_errors_total",
+    "Total button-stream events whose menu handler raised (event dropped, stream kept)",
+    ["event_type"],
+)

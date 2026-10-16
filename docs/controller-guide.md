@@ -20,15 +20,20 @@ Navigate the game menu using physical controller buttons:
 
 | Button | Action |
 |--------|--------|
-| **MOVE** | Cycle through available games |
+| **SELECT** | Cycle to the next game mode (announced by voice, except Zombies and NonStop, #1276; kept for the next game) |
 | **TRIGGER** | Start selected game / Mark ready |
 
-Available games cycle in order:
+Any player in the lobby can press SELECT. Available games cycle in this order, wrapping around:
 1. Joust FFA
 2. Joust Teams
-3. Tournament
-4. Werewolf
-5. Nonstop Joust
+3. Joust Random Teams
+4. Traitor
+5. Werewolf
+6. Zombies
+7. Swapper
+8. Fight Club
+9. Tournament
+10. NonStop Joust
 
 ## Admin Mode
 

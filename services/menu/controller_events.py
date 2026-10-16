@@ -26,6 +26,12 @@ BUTTON_TYPE_NAMES = {
     controller_manager_pb2.BUTTON_START: "start",
 }
 
+# Low-cardinality labels for the button_event_errors_total metric
+_EVENT_TYPE_NAMES = {
+    controller_manager_pb2.EVENT_CONNECT: "connect",
+    controller_manager_pb2.EVENT_DISCONNECT: "disconnect",
+}
+
 
 class ControllerEventCallbacks(Protocol):
     """Protocol for controller event callbacks."""
@@ -197,7 +203,7 @@ class ControllerEventLoop:
         async for event in stream:
             if not self._running:
                 return 1.0
-            await self._dispatch_event(event)
+            await self._dispatch_event_safely(event)
 
         if self._running:
             logger.warning("Button event stream ended, reconnecting...")
@@ -278,6 +284,25 @@ class ControllerEventLoop:
 
         if ghosts:
             logger.info(f"Reconciliation pruned {len(ghosts)} ghost controller(s): {ghosts}")
+
+    async def _dispatch_event_safely(self, event) -> None:
+        """
+        Dispatch one event, isolating handler failures from the stream (#1272).
+
+        A bug in one handler must not escape to ``_run``: that path treats any
+        exception as a connection error, reconnects, and the reconnect clears
+        every controller's lobby state (un-readying the lobby). Instead the
+        event is dropped, logged with a traceback and counted.
+
+        Args:
+            event: ButtonEvent from the stream
+        """
+        try:
+            await self._dispatch_event(event)
+        except Exception:
+            event_type = _EVENT_TYPE_NAMES.get(event.event_type, "button")
+            logger.exception(f"Error handling {event_type} event from {event.serial}; event dropped, stream kept")
+            self._metrics.button_event_errors_total.labels(event_type=event_type).inc()
 
     async def _dispatch_event(self, event) -> None:
         """

@@ -108,3 +108,32 @@ class TestMenuServicerRPCs:
 
         assert response.success is True
         assert menu_servicer.state == menu_pb2.MenuState.STOPPED
+
+
+class TestLobbySelectButton:
+    """UC-011 A2 / FR-011 (#1272): SELECT in the lobby through the real servicer wiring."""
+
+    @pytest.mark.asyncio
+    async def test_select_updates_the_selection_the_start_path_reads(self, menu_servicer):
+        """SELECT cycles the mode the coordinator start path reads and persists it."""
+        from unittest.mock import AsyncMock
+
+        from lib.types import Games
+        from services.menu.handlers.base import ControllerState
+        from services.menu.utils.settings import get_next_game_mode
+
+        menu_servicer.state = menu_pb2.MenuState.RUNNING
+        menu_servicer.audio.play_game_mode_voice = AsyncMock()
+        menu_servicer.user_prefs_writer.update_default_variant = MagicMock(return_value=True)
+        await menu_servicer.on_connect("serial1")
+        menu_servicer.state_manager.controller_states["ready1"] = ControllerState.READY
+        expected = get_next_game_mode(Games.JoustFFA, forward=True)
+
+        await menu_servicer.on_button("serial1", "select", True)
+
+        assert menu_servicer.current_selection == expected
+        assert menu_servicer.state_manager.current_game_mode == expected
+        menu_servicer.user_prefs_writer.update_default_variant.assert_called_once_with("current_game", expected.name)
+        menu_servicer.audio.play_game_mode_voice.assert_awaited_once_with(expected.name)
+        # The lobby is untouched: the other player is still ready.
+        assert menu_servicer.state_manager.ready_controllers == {"ready1"}
