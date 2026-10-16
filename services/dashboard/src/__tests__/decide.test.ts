@@ -16,6 +16,7 @@ import {
   DecideStore,
   DECIDE_OVERLAP_MS,
   confidenceBar,
+  decisionTargetLabel,
   decideQueryParams,
   decideQueryStartMs,
   fetchDecideFeed,
@@ -217,7 +218,9 @@ describe("rendering + escaping", () => {
       intervention: evil,
       target: evil,
       outcomeReason: evil,
-      decisions: [{ spanId: "z", action: evil, blocked: true, reason: evil }],
+      decisions: [
+        { spanId: "z", action: evil, blocked: true, reason: evil, targetSerial: evil, targetName: evil + "n" },
+      ],
     };
     const html = renderDecideRow(row);
     expect(html).not.toContain("<script>");
@@ -550,5 +553,52 @@ describe("clock skew: browser clock hours off the agent/Jaeger clock", () => {
     expect(feed.rows.map((r) => r.spanId)).toEqual(["D2", "D1", "R1"]);
     expect(renderDecideRow(feed.rows[0])).toContain("decide-outcome-noop");
     expect(feed.current?.backend).toBe("claude");
+  });
+});
+
+describe("UC-040 main: the Decisions row names the targeted player (#1295)", () => {
+  /** The rules fixture with player.serial / player.name on its decision spans. */
+  function withTargets(serial: string, name: string): JaegerTracesResponse {
+    const f = JSON.parse(JSON.stringify(rulesFixture)) as JaegerTracesResponse;
+    for (const span of f.data?.[0]?.spans ?? []) {
+      if (span.operationName !== "agent.decision") continue;
+      const action = (span.tags ?? []).find((t) => t.key === "decision.action")?.value;
+      if (action !== "grant_shield") continue;
+      span.tags = [...(span.tags ?? []), { key: "player.serial", type: "string", value: serial }];
+      if (name) span.tags.push({ key: "player.name", type: "string", value: name });
+    }
+    return f;
+  }
+
+  it("UC-040 main: reads player.serial and player.name off agent.decision", () => {
+    const [row] = parseDecideTraces(withTargets("MOCK0002", "Calm Lion")).rows;
+    const shield = row.decisions.find((d) => d.action === "grant_shield");
+    expect(shield?.targetSerial).toBe("MOCK0002");
+    expect(shield?.targetName).toBe("Calm Lion");
+    // A session-scoped decision carries no target.
+    const other = row.decisions.find((d) => d.action !== "grant_shield");
+    expect(other?.targetSerial).toBe("");
+    expect(other?.targetName).toBe("");
+  });
+
+  it("UC-040 main: shows the name, with the serial as the tooltip", () => {
+    const html = renderDecideRow(parseDecideTraces(withTargets("MOCK0002", "Calm Lion")).rows[0]);
+    expect(html).toMatch(/agent\.decision: grant_shield <span class="decide-arrow">→<\/span> <span class="decide-target" title="MOCK0002">Calm Lion<\/span> · allowed/);
+  });
+
+  it("UC-040 main: falls back to the serial when no name is known", () => {
+    const html = renderDecideRow(parseDecideTraces(withTargets("MOCK0002", "")).rows[0]);
+    expect(html).toContain('<span class="decide-target">MOCK0002</span> · allowed');
+    expect(decisionTargetLabel({ targetSerial: "MOCK0002", targetName: "" })).toBe("MOCK0002");
+    expect(decisionTargetLabel({ targetSerial: "", targetName: "" })).toBe("");
+  });
+
+  it("UC-040 A10: a blocked targeted decision still names its target", () => {
+    const f = withTargets("MOCK0004", "Calm Lion");
+    for (const span of f.data?.[0]?.spans ?? []) {
+      for (const t of span.tags ?? []) if (t.key === "decision.blocked") t.value = true;
+    }
+    const html = renderDecideRow(parseDecideTraces(f).rows[0]);
+    expect(html).toMatch(/grant_shield <span class="decide-arrow">→<\/span> <span class="decide-target" title="MOCK0004">Calm Lion<\/span> · blocked/);
   });
 });

@@ -306,6 +306,20 @@ const (
 // in Jaeger. Present only on dispatched (applied) decisions that schedule a follow-up.
 const AttrDecisionInterventionID = "decision.intervention_id"
 
+// Targeted-player attributes on agent.decision and agent.action (#1295). Present
+// only when the decision targets one player (Decision.TargetSerial non-empty),
+// blocked or applied. AttrPlayerSerial is EXACTLY the key the game coordinator
+// puts on its player spans, so one Jaeger search (player.serial=MOCK0004) finds
+// the game's player span and every agent decision aimed at that player.
+// AttrPlayerName is the player's display name as the controller manager reports
+// it on controller_info{serial,name} (the same name the coordinator's
+// "player: {name}"
+// span carries); absent when the agent has not seen a name for the serial.
+const (
+	AttrPlayerSerial = "player.serial"
+	AttrPlayerName   = "player.name"
+)
+
 // Experiment / cohort lifecycle spans (#1140 Slice C). Before this the entire
 // "learn from games" loop (experiment_loop.go) was LOG-ONLY — the retro/experiment
 // phase was invisible in traces. These spans make that loop an actual trace, in the

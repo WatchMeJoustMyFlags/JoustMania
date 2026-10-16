@@ -45,7 +45,7 @@ from dataclasses import replace
 from lib.feature_flags import read_object_flag_variant
 from lib.types import Sensitivity
 
-from .games.base import parse_ramp_tempo_value, resolve_music_windows
+from .games.base import parse_ramp_tempo_value, player_identity_attributes, resolve_music_windows
 from .interventions import InterventionContext, InterventionManager
 
 logger = logging.getLogger(__name__)
@@ -144,6 +144,20 @@ async def handle_global_sensitivity_override(ctx: InterventionContext) -> None:
     game.apply_sensitivity_override(sensitivity)
 
 
+def _record_factor_event(player: object, serial: str, event: str, key: str, value: float) -> None:
+    """Record a changed per-player factor on the player's span (#1295).
+
+    Only a CHANGED value is recorded (the handler re-applies the whole per-serial
+    map on every flag change), with ``player.serial`` / ``player.name`` so "who got
+    it" is visible on the span where it happened. No span (headless / closed) = no
+    event.
+    """
+    span = getattr(player, "span", None)
+    if span is None:
+        return
+    span.add_event(event, attributes={key: value, **player_identity_attributes(serial, getattr(player, "name", ""))})
+
+
 async def handle_player_sensitivity_factor(ctx: InterventionContext, manager: InterventionManager) -> None:
     """Apply per-player sensitivity factors via per-serial targeting resolution.
 
@@ -174,8 +188,11 @@ async def handle_player_sensitivity_factor(ctx: InterventionContext, manager: In
         if player is None:
             continue
         clamped = max(SENSITIVITY_FACTOR_MIN, min(SENSITIVITY_FACTOR_MAX, factor))
+        previous = player.sensitivity_factor
         player.sensitivity_factor = clamped
         logger.info(f"player_sensitivity_factor: {serial} -> {clamped:.2f}")
+        if clamped != previous:
+            _record_factor_event(player, serial, "sensitivity_factor_applied", "sensitivity_factor", clamped)
 
 
 async def handle_player_handicap_factor(ctx: InterventionContext, manager: InterventionManager) -> None:
@@ -216,8 +233,11 @@ async def handle_player_handicap_factor(ctx: InterventionContext, manager: Inter
         if player is None:
             continue
         clamped = max(HANDICAP_FACTOR_MIN, min(HANDICAP_FACTOR_MAX, factor))
+        previous = player.handicap_factor
         player.handicap_factor = clamped
         logger.info(f"player_handicap_factor: {serial} -> {clamped:.2f}")
+        if clamped != previous:
+            _record_factor_event(player, serial, "handicap_factor_applied", "handicap_factor", clamped)
 
 
 async def handle_global_difficulty_factor(ctx: InterventionContext) -> None:

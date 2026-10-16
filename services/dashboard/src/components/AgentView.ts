@@ -30,7 +30,7 @@ import type {
   FlagPanel,
   InterventionOverlay,
 } from "../agent.js";
-import { confidenceBar, jaegerTraceUrl } from "../agent.js";
+import { confidenceBar, decisionTargetLabel, jaegerTraceUrl } from "../agent.js";
 
 /**
  * After this many ms without a successful poll, a kept-on-screen view is flagged
@@ -505,12 +505,18 @@ export function renderDecideRow(row: DecideRow, isNew = false): string {
   const decisions =
     row.decisions.length > 0
       ? `<div class="decide-decisions">${row.decisions
-          .map(
-            (d) =>
-              `<span class="decide-decision ${d.blocked ? "decide-decision-blocked" : "decide-decision-allowed"}"${
-                d.reason ? ` title="${escapeHtml(d.reason)}"` : ""
-              }>agent.decision: ${escapeHtml(d.action || "?")} · ${d.blocked ? "blocked" : "allowed"}</span>`,
-          )
+          .map((d) => {
+            // #1295: name the targeted player (display name, else serial).
+            const target = decisionTargetLabel(d);
+            const targetHtml = target
+              ? ` <span class="decide-arrow">→</span> <span class="decide-target"${
+                  d.targetName && d.targetSerial ? ` title="${escapeHtml(d.targetSerial)}"` : ""
+                }>${escapeHtml(target)}</span>`
+              : "";
+            return `<span class="decide-decision ${d.blocked ? "decide-decision-blocked" : "decide-decision-allowed"}"${
+              d.reason ? ` title="${escapeHtml(d.reason)}"` : ""
+            }>agent.decision: ${escapeHtml(d.action || "?")}${targetHtml} · ${d.blocked ? "blocked" : "allowed"}</span>`;
+          })
           .join("")}</div>`
       : "";
   return `

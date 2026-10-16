@@ -96,6 +96,14 @@ const (
 	// It accompanies outcome=discarded, and can also appear with outcome=fallback
 	// when the rules fallback itself found the game gone or ended.
 	AttrDecideDiscardedReason = "decide.discarded_reason"
+	// AttrDecideBlocked / AttrDecideBlockReason (#1295) report what the permission
+	// chain did with the decision the answers describe (the cycle's first emitted
+	// decision): blocked true/false, and the BlockReason when blocked. Present
+	// exactly when that decision went through the permission chain (outcome act, or
+	// a rules fallback that emitted a decision); decide.outcome stays the routing
+	// outcome.
+	AttrDecideBlocked     = "decide.blocked"
+	AttrDecideBlockReason = "decide.block_reason"
 )
 
 // decide.outcome values.
@@ -173,6 +181,24 @@ type decideRecord struct {
 	err             error
 	invalidReason   string
 	discardedReason string
+	// permissionKnown is true when the decision the answers describe went through
+	// the permission chain; blocked / blockReason are its result (#1295).
+	permissionKnown bool
+	blocked         bool
+	blockReason     BlockReason
+}
+
+// notePermission records what the permission chain did with the first decision
+// run since state held `before` outcomes (the decision the answers describe).
+// Nothing is recorded when no decision ran.
+func (rec *decideRecord) notePermission(state *LayerState, before int) {
+	if len(state.Outcomes) <= before {
+		return
+	}
+	first := state.Outcomes[before]
+	rec.permissionKnown = true
+	rec.blocked = !first.Dispatched
+	rec.blockReason = first.BlockReason
 }
 
 // buildDecideRequest builds the FFA decide request for c. withContext attaches
@@ -226,11 +252,17 @@ func (l *Loop) rulesDecide(ctx context.Context, snapshot flags.Snapshot, c gamec
 		outcome:        DecideOutcomeAct,
 		threshold:      snapshot.Decision.ActConfidenceThreshold,
 	}
-	if fallbackReason != "" {
-		rec.outcome = DecideOutcomeFallback
-	}
-	if iv, ok := resp.Find(decide.QuestionFFAIntervention); ok {
+	iv, hasIV := resp.Find(decide.QuestionFFAIntervention)
+	if hasIV {
 		rec.confidence = iv.Confidence
+	}
+	switch {
+	case fallbackReason != "":
+		rec.outcome = DecideOutcomeFallback
+	case len(out) == 0 || (hasIV && iv.Choice == decide.OptionNoop):
+		// #1295: a noop choice never reads act (the rules answers mirror the
+		// emitted decision, so this is "no decision this ranking").
+		rec.outcome = DecideOutcomeNoop
 	}
 	return out, rec
 }
@@ -506,9 +538,11 @@ func (l *Loop) decideRemoteFallback(ctx context.Context, snapshot flags.Snapshot
 		decisions = l.Rules.Evaluate(ctx, current)
 	}
 	now := l.nowOrDefault()
+	before := len(state.Outcomes)
 	for _, d := range decisions {
 		l.runDecision(ctx, snapshot, current, d, now(), state)
 	}
+	rec.notePermission(state, before)
 }
 
 // decideRemoteApply maps a validated remote answer to a Decision and routes it by
@@ -550,6 +584,7 @@ func (l *Loop) decideRemoteApply(ctx context.Context, snapshot flags.Snapshot, c
 	}
 	before := len(state.Outcomes)
 	l.runDecision(ctx, snapshot, current, d, l.nowOrDefault()(), state)
+	rec.notePermission(state, before)
 	if len(state.Outcomes) > before && state.Outcomes[len(state.Outcomes)-1].Dispatched {
 		// A dispatched remote difficulty intervention invalidates the variance
 		// baseline exactly like a rules one: arm the rules engine's cooldown.
@@ -693,6 +728,12 @@ func (l *Loop) setDecideAttributes(span trace.Span, rec *decideRecord, c gamecon
 	}
 	if rec.discardedReason != "" {
 		attrs = append(attrs, attribute.String(AttrDecideDiscardedReason, rec.discardedReason))
+	}
+	if rec.permissionKnown {
+		attrs = append(attrs, attribute.Bool(AttrDecideBlocked, rec.blocked))
+		if rec.blocked {
+			attrs = append(attrs, attribute.String(AttrDecideBlockReason, string(rec.blockReason)))
+		}
 	}
 	if rec.err != nil {
 		attrs = append(attrs, semconv.ErrorTypeKey.String(decideErrorType(rec)))

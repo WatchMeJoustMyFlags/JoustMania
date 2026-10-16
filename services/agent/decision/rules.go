@@ -150,7 +150,11 @@ func (r *ObjectiveRules) evaluate(c gamecontext.GameContext, build func() decide
 	if build == nil {
 		return out, decide.Request{}, decide.Response{}, true
 	}
-	req := build()
+	// #1295: the rules-path answers describe the decision Evaluate actually emits
+	// (out[0] == ranked[0]): the questions are widened to the engine's own ranked
+	// interventions and targets, so the allow-list (applied afterwards by the
+	// permission chain) cannot filter the answers into a different choice.
+	req := emissionRequest(build(), ranked)
 	return out, req, answerFromRanked(ranked, req, true), true
 }
 

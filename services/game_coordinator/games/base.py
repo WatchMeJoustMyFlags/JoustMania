@@ -500,6 +500,20 @@ DEATH_GRACE_PERIOD = 2.0  # seconds of invincibility after respawn (respawn mode
 logger.info(f"base.py loaded: WARNING_DURATION={WARNING_DURATION}s")
 
 
+def player_identity_attributes(serial: str, name: str = "") -> dict[str, str]:
+    """Span-event attributes naming the player an intervention was applied to (#1295).
+
+    ``player.serial`` is the same key the player span carries (and the agent puts on
+    its targeted ``agent.decision`` spans), so one Jaeger search finds both sides;
+    ``player.name`` is the display name (e.g. "Calm Lion") and is omitted until the
+    controller reported one.
+    """
+    attrs = {"player.serial": serial}
+    if name:
+        attrs["player.name"] = name
+    return attrs
+
+
 @dataclass
 class Player:
     """Represents a player in the game."""
@@ -2008,7 +2022,10 @@ class BaseGameMode(ABC):
         logger.info(f"Shield granted to {serial} for {seconds:.1f}s (grace_until={new_grace:.2f})")
 
         if player.span:
-            player.span.add_event("shield_granted", attributes={"shield_seconds": seconds})
+            player.span.add_event(
+                "shield_granted",
+                attributes={"shield_seconds": seconds, **player_identity_attributes(serial, player.name)},
+            )
 
         # Visible pulse effect so the shield is observable on the controller.
         if self.gameplay_stream:
@@ -2093,7 +2110,11 @@ class BaseGameMode(ABC):
         if player.span:
             player.span.add_event(
                 "partial_shield_armed",
-                attributes={"partial_shield_seconds": seconds, "partial_shield_boost": boost},
+                attributes={
+                    "partial_shield_seconds": seconds,
+                    "partial_shield_boost": boost,
+                    **player_identity_attributes(serial, player.name),
+                },
             )
 
         # Visible pulse effect so the partial shield is observable (same mechanism
@@ -2204,7 +2225,11 @@ class BaseGameMode(ABC):
         if player.span:
             player.span.add_event(
                 "soft_penalty_tighten",
-                attributes={"soft_penalty_seconds": seconds, "soft_penalty_factor": factor},
+                attributes={
+                    "soft_penalty_seconds": seconds,
+                    "soft_penalty_factor": factor,
+                    **player_identity_attributes(serial, player.name),
+                },
             )
 
         # Visible warning feedback so the tighten is observable to the player
@@ -2341,6 +2366,7 @@ class BaseGameMode(ABC):
                         "rubberband_strength": strength,
                         "rubberband_boost": boost,
                         "rubberband_seconds": seconds,
+                        **player_identity_attributes(p.serial, p.name),
                     },
                 )
 
@@ -2407,7 +2433,10 @@ class BaseGameMode(ABC):
         self._set_players_alive_aggregate(alive_count)
 
         if player.span:
-            player.span.add_event("player_revived", attributes={"spawn_grace": grace})
+            player.span.add_event(
+                "player_revived",
+                attributes={"spawn_grace": grace, **player_identity_attributes(serial, player.name)},
+            )
 
         if self.gameplay_stream:
             from proto import controller_manager_pb2
@@ -2491,6 +2520,7 @@ class BaseGameMode(ABC):
                     "music_speed": self.music_speed,
                     "alive_remaining": alive_count_before - 1,
                     "death.reason": reason,
+                    **player_identity_attributes(serial, player.name),
                 },
             )
 

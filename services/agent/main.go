@@ -651,6 +651,9 @@ func main() {
 		loop.SetInterventionRecorder(func(intervention, serial string, blocked bool) {
 			mux.AppendInterventionEvent(gameID, intervention, serial, blocked)
 		})
+		// Targeted-player display names (#1295): player.name on agent.decision /
+		// agent.action comes from the Multiplexer's controller_info view.
+		loop.SetPlayerNameResolver(mux.PlayerName)
 		// Shared decision-backend registry (#1226): decision.backend selects who decides.
 		loop.SetDecideRegistry(decideBackends)
 		// The objective-weighted rules engine (#726) is the active default, built

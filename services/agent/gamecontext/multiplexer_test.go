@@ -472,3 +472,39 @@ func TestMux_TimelineIsolation(t *testing.T) {
 		t.Errorf("game-B timeline disturbed by game-A eviction: ok=%v timeline=%v", okB, b2.Timeline)
 	}
 }
+
+// UC: UC-041 main
+// UC: UC-040 main
+func TestMux_PlayerNameFromControllerInfo(t *testing.T) {
+	t.Run("UC-041/main controller_info maps serial to display name", func(t *testing.T) {
+		clk := &muxClock{t: time.Unix(2000, 0)}
+		mux := newTestMux(clk, time.Hour, time.Hour, nil, nil)
+		md := pmetric.NewMetrics()
+		addGauge(md, metricControllerInfo, 1, map[string]string{attrSerial: "MOCK0004", attrName: "Calm Lion"})
+		addGauge(md, metricControllerInfo, 1, map[string]string{attrSerial: "MOCK0005"}) // no name: ignored
+		if touched := mux.ApplyMetrics(md); len(touched) != 0 {
+			t.Fatalf("controller_info touched partitions %v; it is identity only, never a trigger", touched)
+		}
+		if got := mux.PlayerName("MOCK0004"); got != "Calm Lion" {
+			t.Fatalf("PlayerName(MOCK0004) = %q, want Calm Lion", got)
+		}
+		if got := mux.PlayerName("MOCK0005"); got != "" {
+			t.Fatalf("PlayerName(MOCK0005) = %q, want empty (no name label)", got)
+		}
+		if got := mux.Partitions(); len(got) != 0 {
+			t.Fatalf("controller_info created partitions %v", got)
+		}
+	})
+	t.Run("UC-040/main a renamed controller reports its latest name", func(t *testing.T) {
+		clk := &muxClock{t: time.Unix(2000, 0)}
+		mux := newTestMux(clk, time.Hour, time.Hour, nil, nil)
+		for _, name := range []string{"Calm Lion", "Kim"} {
+			md := pmetric.NewMetrics()
+			addGauge(md, metricControllerInfo, 1, map[string]string{attrSerial: "MOCK0004", attrName: name})
+			mux.ApplyMetrics(md)
+		}
+		if got := mux.PlayerName("MOCK0004"); got != "Kim" {
+			t.Fatalf("PlayerName = %q, want the latest name Kim", got)
+		}
+	})
+}

@@ -272,6 +272,11 @@ type Loop struct {
 	// trace + metrics Export-handler goroutines that drive runDecision.
 	interventionRecorder func(intervention, serial string, blocked bool)
 
+	// playerName resolves a serial to the player's display name for the
+	// player.name attribute on targeted decisions (#1295), injected via
+	// SetPlayerNameResolver. Nil (the default) leaves player.name off.
+	playerName func(serial string) string
+
 	// decideBackends is the SHARED decision-backend registry (#1226), injected via
 	// SetDecideRegistry. It maps decision.backend to a factory for the remote
 	// backends; rules is the built-in floor and needs no entry. Nil = no remote
@@ -353,6 +358,31 @@ func (l *Loop) budgetCap(flagValue int) int {
 // OnEvaluate.
 func (l *Loop) SetInterventionRecorder(rec func(intervention, serial string, blocked bool)) {
 	l.interventionRecorder = rec
+}
+
+// SetPlayerNameResolver injects the serial -> display-name lookup (#1295) used to
+// stamp player.name on agent.decision / agent.action when a decision targets a
+// player. main.go wires the Multiplexer's controller_info view. A nil resolver,
+// or one returning "", leaves player.name off. Set at construction, before the
+// loop serves.
+func (l *Loop) SetPlayerNameResolver(resolve func(serial string) string) {
+	l.playerName = resolve
+}
+
+// targetAttributes is the targeted-player view of a decision (#1295):
+// player.serial (the game coordinator's own key) and, when known, player.name.
+// Empty for a session-scoped decision.
+func (l *Loop) targetAttributes(serial string) []attribute.KeyValue {
+	if serial == "" {
+		return nil
+	}
+	attrs := []attribute.KeyValue{attribute.String(AttrPlayerSerial, serial)}
+	if l.playerName != nil {
+		if name := l.playerName(serial); name != "" {
+			attrs = append(attrs, attribute.String(AttrPlayerName, name))
+		}
+	}
+	return attrs
 }
 
 // recordIntervention feeds one decision's outcome into the per-game timeline via
@@ -540,13 +570,19 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 	// #1226: the decide-contract record of this cycle's rules ranking (the answers
 	// from the SAME ranking that produced these decisions), as an agent.decide
 	// sibling of the agent.decision spans. Nil when the engine has no decide seam.
+	// #1295: the span is emitted AFTER the decisions ran (it is backdated to the
+	// ranking, so the timeline is unchanged) so it can report what the permission
+	// chain did with the decision its answers describe (decide.blocked).
 	if decideRec != nil {
-		l.emitDecideSpan(rootCtx, decideRec, c)
-		state.DecideBackend = decideRec.used
+		state.DecideBackend = decideRec.used // rides every agent.decision span
 	}
-
+	before := len(state.Outcomes)
 	for _, d := range decisions {
 		l.runDecision(rootCtx, snapshot, c, d, now(), &state)
+	}
+	if decideRec != nil {
+		decideRec.notePermission(&state, before)
+		l.emitDecideSpan(rootCtx, decideRec, c)
 	}
 
 	l.setLastLayer(state)
@@ -666,8 +702,11 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	// This complements — does not replace — the #1095 game.id attribute (still emitted
 	// via decisionAttributes). gameTraceLink returns no options when the id is absent or
 	// invalid, so the span is created exactly as before (graceful fallback, no error).
+	target := l.targetAttributes(d.TargetSerial)
 	startOpts := []trace.SpanStartOption{
 		trace.WithAttributes(decisionAttributes(state, d, blocked, reason, c.GameKind, c.SessionID)...),
+		// player.serial / player.name of a targeted decision, blocked or applied (#1295).
+		trace.WithAttributes(target...),
 	}
 	startOpts = append(startOpts, gameTraceLink(c.GameTraceID, c.GameTraceSpanID)...)
 	if c.GameTraceID != "" {
@@ -703,7 +742,7 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 		// it carries the same game.id as its parent decision span for correlation.
 		attribute.String(AttrSessionID, c.SessionID),
 		attribute.String(AttrGameID, c.SessionID),
-	))
+	), trace.WithAttributes(target...))
 	defer aSpan.End()
 
 	// Count EVERY decision the engine returned (#790), applied or blocked, before
