@@ -21,6 +21,7 @@ repo metric-testing convention (.claude/rules/development.md).
 import sys
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from openfeature.flag_evaluation import FlagEvaluationDetails
@@ -34,14 +35,17 @@ sys.path.insert(0, str(test_dir))
 
 from conftest import MockControllerManagerService, async_noop
 
+from lib.types import GameEvent
 from proto import controller_manager_pb2
 from services.game_coordinator.games.base import Player
 from services.game_coordinator.games.ffa import FFAGame
 from services.game_coordinator.games.nonstop_joust import NonstopJoustGame
 from services.game_coordinator.interventions import (
+    BLOCK_MODE_UNSUPPORTED,
     INTERVENTION_SPECS,
     InterventionContext,
     InterventionManager,
+    SessionView,
 )
 from services.game_coordinator.lifecycle_handlers import (
     ELIMINATE_REASON,
@@ -531,6 +535,51 @@ class TestRevivePlayer:
         await handle_revive_player(make_ctx("revive_player", "", None, payload="p1"))  # no raise
         # Handler no-ops with empty serial.
         await handle_revive_player(make_ctx("revive_player", "", game, payload=""))  # no raise
+
+
+# --------------------------------------------------------------------------- #
+# Coordinator-side block in a real FFA game (UC-040 A20)
+# --------------------------------------------------------------------------- #
+class _AllowingAgentStub(_AgentStub):
+    """Agent-domain stub whose interventions_allowed lists ``allowed``."""
+
+    def __init__(self, allowed, threshold=20):
+        super().__init__(threshold)
+        self._allowed = allowed
+
+    def get_string_value(self, key, default, _ctx=None):
+        if key == "interventions_allowed":
+            return ",".join(self._allowed)
+        return default
+
+
+class TestCoordinatorBlocksInFFA:
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A20", br=["BR-004"])
+    async def test_revive_player_in_real_ffa_is_mode_unsupported(self):
+        """UC-040 A20: revive_player passes the allow-list (the `full` variant offers
+        it), but the capability matrix denies it in a real FFA game: the dead player
+        stays dead, agent_intervention is published with blocked=true and
+        mode_unsupported, no backstop budget is used and no agent cue is sent."""
+        game = make_ffa_game(num_players=2)
+        game.players["p1"].alive = False
+        mgr, events = make_manager(game=game)
+        mgr._agent_client = _AllowingAgentStub(["revive_player"])
+        register_lifecycle_handlers(mgr)
+        assert "revive_player" in mgr._allowed_types()  # the block is not membership
+
+        session = SessionView(game_id="", game=game, publish=mgr._publish)
+        with patch("services.game_coordinator.metrics.interventions_total"):
+            await mgr._enforce_and_dispatch(_spec("revive_player"), "1:p1", "p1", "p1", session)
+
+        assert game.players["p1"].alive is False
+        assert game.gameplay_stream.writes == []  # no respawn effect, no magenta cue
+        published = [d for et, d in events if et == GameEvent.AGENT_INTERVENTION]
+        assert len(published) == 1
+        assert published[0]["type"] == "revive_player"
+        assert published[0]["blocked"] == "true"
+        assert published[0]["block_reason"] == BLOCK_MODE_UNSUPPORTED
+        assert mgr._rate_limiter.current_weight() == pytest.approx(0.0)
 
 
 # --------------------------------------------------------------------------- #

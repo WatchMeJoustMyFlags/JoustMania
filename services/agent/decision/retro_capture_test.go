@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
@@ -61,6 +62,7 @@ func endedSession() gamecontext.GameContext {
 
 // TestRetroCapture_EmitsSpan: a normal game end emits exactly one agent.llm.retro
 // span with non-empty prompt text.
+// UC: UC-042 main
 func TestRetroCapture_EmitsSpan(t *testing.T) {
 	rc, sr := recordingRetro(t, retroFlagSnapshot())
 	rc.OnGameEnd(endedSession())
@@ -132,10 +134,16 @@ func slotsLeft(b *llmBudget, now time.Time, limit int) int {
 // TestRetroCapture_DrawsFromGlobalBudget: a retro that calls the backend is one
 // LLM request and draws from the SAME shared budget the remote decide gate uses
 // (#847 acceptance #7). When the budget is exhausted, the retro is GATED: no call,
-// no agent.llm.retro span.
+// no agent.llm.retro span, only agent_llm_gated_total{reason=llm_budget_exhausted}
+// and the agent.llm.retro_gated log.
+// UC: UC-042 A2 BR-001
 func TestRetroCapture_DrawsFromGlobalBudget(t *testing.T) {
 	be := &countingText{}
 	rc, sr, budget, now := budgetedRetro(t, 1, be)
+	reader := metric.NewManualReader()
+	rc.llmGated = newLLMGatedCounter(metric.NewMeterProvider(metric.WithReader(reader)))
+	logs := &syncBuffer{}
+	rc.Log = slog.New(slog.NewTextHandler(logs, nil))
 
 	// Pre-spend the single budget slot, mimicking a remote decide call this minute.
 	if !budget.allow(now, 1) {
@@ -150,10 +158,17 @@ func TestRetroCapture_DrawsFromGlobalBudget(t *testing.T) {
 	if be.count() != 0 {
 		t.Errorf("Infer calls = %d, want 0 (gated)", be.count())
 	}
+	if g := gatedByReason(t, reader)[FallbackBudgetExhausted]; g != 1 {
+		t.Errorf("agent_llm_gated_total{reason=%s} = %d, want 1", FallbackBudgetExhausted, g)
+	}
+	if n := logs.count("agent.llm.retro_gated"); n != 1 {
+		t.Errorf("agent.llm.retro_gated logs = %d, want 1", n)
+	}
 }
 
 // TestRetroCapture_RealGameCallsAndCharges: a real game end with a backend wired
 // calls the backend once and consumes one budget slot.
+// UC: UC-042 main BR-001
 func TestRetroCapture_RealGameCallsAndCharges(t *testing.T) {
 	be := &countingText{}
 	rc, sr, budget, now := budgetedRetro(t, 2, be)
@@ -174,9 +189,12 @@ func TestRetroCapture_RealGameCallsAndCharges(t *testing.T) {
 // TestRetroCapture_ShadowGameNoCallNoCharge (#1234): a shadow game end (not in
 // llm.eligible_game_kinds) is capture-only even with a backend wired — no call, no
 // budget slot — so shadow retros cannot starve real-game remote decide calls.
+// UC: UC-042 A1
 func TestRetroCapture_ShadowGameNoCallNoCharge(t *testing.T) {
 	be := &countingText{}
 	rc, sr, budget, now := budgetedRetro(t, 2, be)
+	reader := metric.NewManualReader()
+	rc.llmGated = newLLMGatedCounter(metric.NewMeterProvider(metric.WithReader(reader)))
 	c := endedSession()
 	c.GameKind = "shadow"
 
@@ -201,10 +219,14 @@ func TestRetroCapture_ShadowGameNoCallNoCharge(t *testing.T) {
 			t.Errorf("%s = %q (present=%v), want %q", key, v.AsString(), ok, want)
 		}
 	}
+	if g := gatedByReason(t, reader)[FallbackNotEligible]; g != 1 {
+		t.Errorf("agent_llm_gated_total{reason=%s} = %d, want 1", FallbackNotEligible, g)
+	}
 }
 
 // TestRetroCapture_StubNoCharge (#1234): with no backend (the stub default) the
 // retro is capture-only and charges no budget slot.
+// UC: UC-042 A2
 func TestRetroCapture_StubNoCharge(t *testing.T) {
 	rc, sr, budget, now := budgetedRetro(t, 2, nil)
 
@@ -508,6 +530,7 @@ func TestRetroCapture_ExperimentFitnessOmittedWhenUnavailable(t *testing.T) {
 
 // TestRetroCapture_StubDefaultCaptureOnly: with NO backend wired (the stub default),
 // the retro is capture-only: no model, used = "none", fallback = no_backend_available.
+// UC: UC-042 A2
 func TestRetroCapture_StubDefaultCaptureOnly(t *testing.T) {
 	rc, sr := recordingRetro(t, retroFlagSnapshot()) // no SetBackend
 	rc.OnGameEnd(endedSession())
@@ -529,6 +552,7 @@ func TestRetroCapture_StubDefaultCaptureOnly(t *testing.T) {
 // TestRetroCapture_KillSwitchOffNoCallNoCharge (#1270, FR-042 / UC-045): with the
 // agent `enabled` kill switch off, a real game end with a backend wired is
 // capture-only: no model call, no budget slot, and the skip reason on the span.
+// UC: UC-042 A5
 func TestRetroCapture_KillSwitchOffNoCallNoCharge(t *testing.T) {
 	be := &countingText{}
 	rc, sr, budget, now := budgetedRetro(t, 2, be)
