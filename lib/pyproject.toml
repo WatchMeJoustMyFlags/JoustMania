@@ -63,3 +63,6 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 asyncio_mode = "auto"
+markers = [
+    "uc(id, flow=, br=, steps=, tc=): traceability tag to a use-case flow / business rule (see .claude/skills/README.md)",
+]

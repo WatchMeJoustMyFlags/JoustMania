@@ -46,6 +46,9 @@ packages = ["psmove_pairing"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+markers = [
+    "uc(id, flow=, br=, steps=, tc=): traceability tag to a use-case flow / business rule (see .claude/skills/README.md)",
+]
 
 # ruff - Linting configuration
 [tool.ruff]
