@@ -18,9 +18,10 @@ import (
 // (BR-010), concludes when every archetype is used (A6), and journals the pin, each
 // game's archetype and each game's replay record.
 
-// PatternPinner resolves the experiment.mock_archetypes selection at an
-// experiment's first spawn (UC-046 step 2). Production reads the live agent flags;
-// nil means no pattern games ever (today's noise).
+// PatternPinner resolves the experiment.mock_archetypes selection in an
+// experiment's first allocation pass (UC-046 step 2). Production reads the live
+// agent flags and always wires one (experiments are archetype-only); nil is a
+// test-only seam for the allocation mechanics.
 type PatternPinner interface {
 	Pin(ctx context.Context) patterngame.Pin
 }
