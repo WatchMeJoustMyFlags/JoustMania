@@ -6,6 +6,24 @@ Provides thread-safe event publishing and async streaming for game events:
 - State synchronization callbacks
 - OpenTelemetry span event recording
 
+Threading model (#1300): one bus is used from SEVERAL event loops. The
+persistent primary bus outlives every game; each game runs on its own
+``asyncio.new_event_loop()`` in a thread (game_session.py) and publishes from
+there, while the servicer's main loop subscribes (StreamGameEvents), publishes
+GAME_START / ``game_force_ended`` and intervention events. So the bus holds no
+loop-bound primitive of its own:
+
+- ``_subscribers`` is guarded by a ``threading.Lock``. Nothing awaits while it
+  is held, so it never blocks a loop for longer than a dict copy. (An
+  ``asyncio.Lock`` binds to the first loop that has to wait for it; once that
+  loop was a game loop that then closed, every later contended publish raised
+  "bound to a different event loop" until the coordinator restarted.)
+- Each subscriber queue belongs to the loop that subscribed. A publish from
+  that loop delivers directly; a publish from any other loop hands the event to
+  the subscriber's loop with ``call_soon_threadsafe`` (``asyncio.Queue`` is not
+  thread-safe: a cross-thread ``put_nowait`` wakes the reader's future from the
+  wrong thread).
+
 Usage:
     from services.game_coordinator.event_bus import EventBus
 
@@ -24,6 +42,7 @@ Usage:
 
 import asyncio
 import logging
+import threading
 import time
 from collections.abc import Callable
 
@@ -53,11 +72,15 @@ class EventBus:
         Args:
             state_sync_callback: Optional callback(event_type) called on each publish.
                                  Used to sync game state (e.g., game_started -> RUNNING).
-                                 Called while holding the state lock.
+                                 Called while holding the bus lock, on the
+                                 publisher's thread; it must not block.
         """
-        self._subscribers: dict[str, asyncio.Queue] = {}
-        # Single asyncio.Lock for all _subscribers access (subscribe, unsubscribe, publish)
-        self._event_lock = asyncio.Lock()
+        # subscriber_id -> (queue, the loop that owns the queue).
+        self._subscribers: dict[str, tuple[asyncio.Queue, asyncio.AbstractEventLoop]] = {}
+        # Guards _subscribers and the state-sync call. A threading.Lock, not an
+        # asyncio.Lock: the bus is used from several event loops (#1300). Never
+        # await while holding it.
+        self._event_lock = threading.Lock()
         self._state_sync_callback = state_sync_callback
         # game_id stamped onto every published GameEvent (#776). MUTABLE because
         # the persistent primary bus outlives sessions: the primary session sets
@@ -83,8 +106,9 @@ class EventBus:
             Queue that will receive GameEvent messages
         """
         event_queue: asyncio.Queue = asyncio.Queue(maxsize=max_queue_size)
-        async with self._event_lock:
-            self._subscribers[subscriber_id] = event_queue
+        owner_loop = asyncio.get_running_loop()
+        with self._event_lock:
+            self._subscribers[subscriber_id] = (event_queue, owner_loop)
             metrics.event_bus_active_subscribers.set(len(self._subscribers))
         logger.info(f"New event subscriber: {subscriber_id}")
         return event_queue
@@ -99,7 +123,7 @@ class EventBus:
         Returns:
             True if subscriber was found and removed, False otherwise
         """
-        async with self._event_lock:
+        with self._event_lock:
             if subscriber_id in self._subscribers:
                 del self._subscribers[subscriber_id]
                 metrics.event_bus_active_subscribers.set(len(self._subscribers))
@@ -115,8 +139,8 @@ class EventBus:
             event_type: Type of event (e.g., "game_started", "player_death")
             data: Event data as string key-value pairs
         """
-        # Subscriber snapshot and state sync under single async lock
-        async with self._event_lock:
+        # Subscriber snapshot and state sync under the bus lock (no awaits inside)
+        with self._event_lock:
             # Call state sync callback if provided
             if self._state_sync_callback:
                 self._state_sync_callback(event_type)
@@ -155,17 +179,42 @@ class EventBus:
             game_id=self.current_game_id,
         )
 
-        # Publish to all subscribers (put_nowait is thread-safe for asyncio.Queue)
-        for sub_id, event_queue in subscribers_snapshot.items():
+        # Deliver on each subscriber's own loop: directly when it is this loop,
+        # otherwise via call_soon_threadsafe (asyncio.Queue is not thread-safe).
+        current_loop = asyncio.get_running_loop()
+        for sub_id, (event_queue, owner_loop) in subscribers_snapshot.items():
+            if owner_loop is current_loop:
+                self._deliver(sub_id, event_queue, event)
+                continue
             try:
-                event_queue.put_nowait(event)
-                logger.debug(f"Published {event_type} to subscriber {sub_id}")
-            except asyncio.QueueFull:
-                metrics.event_bus_publish_drops_total.labels(event_type=event_type).inc()
-                logger.warning(f"Subscriber {sub_id} queue full, skipping event")
-            except Exception as e:
+                owner_loop.call_soon_threadsafe(self._deliver, sub_id, event_queue, event)
+            except RuntimeError as e:
+                # The subscriber's loop is closed: nobody can read that queue
+                # again, so drop the subscriber instead of failing every publish.
                 metrics.event_bus_publish_errors_total.labels(event_type=event_type).inc()
-                logger.error(f"Error publishing to subscriber {sub_id}: {e}")
+                logger.warning(f"Subscriber {sub_id} loop is closed ({e}); removing it")
+                self._discard_subscriber(sub_id, event_queue)
+
+    def _deliver(self, sub_id: str, event_queue: asyncio.Queue, event) -> None:
+        """Put one event on a subscriber queue. Runs on the queue's own loop."""
+        event_type = event.event_type
+        try:
+            event_queue.put_nowait(event)
+            logger.debug(f"Published {event_type} to subscriber {sub_id}")
+        except asyncio.QueueFull:
+            metrics.event_bus_publish_drops_total.labels(event_type=event_type).inc()
+            logger.warning(f"Subscriber {sub_id} queue full, skipping event")
+        except Exception as e:
+            metrics.event_bus_publish_errors_total.labels(event_type=event_type).inc()
+            logger.error(f"Error publishing to subscriber {sub_id}: {e}")
+
+    def _discard_subscriber(self, sub_id: str, event_queue: asyncio.Queue) -> None:
+        """Remove a subscriber if it still owns ``event_queue`` (it may have re-subscribed)."""
+        with self._event_lock:
+            entry = self._subscribers.get(sub_id)
+            if entry is not None and entry[0] is event_queue:
+                del self._subscribers[sub_id]
+                metrics.event_bus_active_subscribers.set(len(self._subscribers))
 
     async def get_subscriber_ids(self) -> list[str]:
         """
@@ -174,5 +223,5 @@ class EventBus:
         Returns:
             List of subscriber IDs
         """
-        async with self._event_lock:
+        with self._event_lock:
             return list(self._subscribers.keys())
