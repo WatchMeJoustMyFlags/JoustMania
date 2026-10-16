@@ -212,6 +212,7 @@ async def _wait_default_variant_changes(
 
 
 @pytest.mark.asyncio
+@pytest.mark.uc("UC-012", flow="main", steps=[1, 2])
 async def test_combo_entry_lights_admin_white(docker_compose, menu_client, mock_client):
     """Holding the four face buttons enters admin mode: the controller LED
     settles to admin white (255,255,255)."""
@@ -232,6 +233,7 @@ async def test_combo_entry_lights_admin_white(docker_compose, menu_client, mock_
 
 
 @pytest.mark.asyncio
+@pytest.mark.uc("UC-012", flow="main", steps=[7, 8])
 async def test_ps_exit_restores_lobby_color(docker_compose, menu_client, mock_client):
     """PS while in admin mode exits: the LED leaves admin white and returns to
     the (dim) lobby color the controller had before entering."""
@@ -260,6 +262,7 @@ async def test_ps_exit_restores_lobby_color(docker_compose, menu_client, mock_cl
 
 
 @pytest.mark.asyncio
+@pytest.mark.uc("UC-012", flow="main", steps=[1])
 async def test_partial_combo_does_not_enter_admin(
     docker_compose, menu_client, mock_client
 ):
@@ -291,6 +294,7 @@ async def test_partial_combo_does_not_enter_admin(
 
 
 @pytest.mark.asyncio
+@pytest.mark.uc("UC-012", flow="A1")
 async def test_sensitivity_change_persists(
     docker_compose, menu_client, mock_client, admin_flags
 ):
@@ -326,6 +330,7 @@ async def test_sensitivity_change_persists(
 
 
 @pytest.mark.asyncio
+@pytest.mark.uc("UC-012", flow="main", steps=[3, 4, 5])
 async def test_option_cycle_and_value_change_persists(
     docker_compose, menu_client, mock_client, admin_flags
 ):
@@ -367,6 +372,7 @@ async def test_option_cycle_and_value_change_persists(
 
 
 @pytest.mark.asyncio
+@pytest.mark.uc("UC-014", flow="main", steps=[1, 2, 3, 5])
 async def test_force_start_requests_game(
     docker_compose, menu_client, mock_client, admin_flags
 ):
@@ -461,6 +467,8 @@ async def test_force_start_requests_game(
 
 
 @pytest.mark.asyncio
+@pytest.mark.uc("UC-011", flow="main", steps=[1, 2])
+@pytest.mark.uc("UC-014", flow="main", steps=[5])
 async def test_force_start_respects_selected_game_mode(
     docker_compose, menu_client, mock_client, admin_flags
 ):
