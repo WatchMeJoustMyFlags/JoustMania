@@ -15,14 +15,15 @@ agent rule. On top of that it adds three things the bare driver does not have:
 
   1. A data-driven SCENARIO MATRIX — each scenario carries its setup (players,
      pattern, flags to flip, interventions_allowed level) and its EXPECTED agent
-     behavior (which rule fires, which intervention, allowed-vs-blocked, mode).
+     behavior (which rule fires, which intervention, allowed-vs-blocked, decision backend).
   2. OBSERVATION COLLECTION from the live stack — after driving each scenario it
-     queries ``docker logs joustmania-agent`` for the decision/intervention/mode
+     queries ``docker logs joustmania-agent`` for the decision/intervention/backend
      lines and Prometheus (via envoy ``/prometheus/``) for the relevant counters,
      optionally Jaeger for the decision span chain.
   3. A PASS/ANOMALY REPORT — per-scenario verdict (did the expected behavior
      happen?) plus a summary that FLAGS gaps (expected-but-didn't-fire, a missing
-     or zero metric, a broken span chain, mode=rules when llm was expected, …),
+     or zero metric, a broken span chain, decision_backend=rules when a remote
+     backend was expected, …),
      and prints WHERE to look for each anomaly. Exits non-zero on a hard anomaly
      when ``--fail-on-anomaly`` is given.
 
@@ -75,7 +76,7 @@ from tools.demo import demo_driver as dd  # noqa: E402
 #
 # Two sources, both already exposed by `make dry-run`:
 #   * agent logs:  `docker logs joustmania-agent` (slog text handler). The agent
-#                  emits `agent.evaluate mode=…`, `agent.decision_blocked
+#                  emits `agent.evaluate decision_backend=…`, `agent.decision_blocked
 #                  intervention=… reason=…`, experiment lifecycle lines, etc.
 #   * Prometheus:  the envoy ingress at http://localhost:8080/prometheus/ proxies
 #                  to Prometheus (which scrapes VM). The instant-query API is
@@ -249,7 +250,7 @@ class Expectation:
     rule: str                          # human label, e.g. "R3 skill gap"
     interventions: tuple[str, ...]     # interventions the agent should DECIDE
     allowed: bool                      # at the scenario's permission level, allowed or blocked?
-    mode: str = "rules"                # expected inference mode (rules unless llm wired)
+    backend: str = "rules"             # expected decision.backend (rules unless a remote backend is flipped on)
     expect_decision: bool = True       # some edge cases expect the agent to do NOTHING
     block_reason: str = ""             # when blocked, the expected reason (not_allowed, low_battery, …)
 
@@ -393,7 +394,7 @@ ANOMALY = "ANOMALY"
 ERROR = "ERROR"  # collection itself failed; can't judge
 
 # slog line signatures emitted by the agent (services/agent/decision/decision.go).
-_RE_EVALUATE = re.compile(r"agent\.evaluate.*?mode=(\w+)")
+_RE_EVALUATE = re.compile(r"agent\.evaluate.*?decision_backend=(\w+)")
 _RE_BLOCKED = re.compile(r"agent\.decision_blocked.*?intervention=(\S+).*?reason=(\S+)", re.DOTALL)
 
 
@@ -426,22 +427,21 @@ def evaluate(scenario: Scenario, obs: Observations) -> ScenarioResult:
         res.where.append(f"docker logs {AGENT_CONTAINER}; check the stack is up (make dry-run)")
         return res
 
-    # 1. Mode check: the decision loop logged its mode at least once.
-    modes = set(_RE_EVALUATE.findall(obs.agent_log))
-    if not modes:
+    # 1. Backend check: the decision loop logged its decision backend at least once.
+    backends = set(_RE_EVALUATE.findall(obs.agent_log))
+    if not backends:
         res.verdict = ANOMALY
         res.reasons.append(
             "no `agent.evaluate` line found — the decision loop did not run "
             "(killswitch off? agent down? no telemetry reaching it?)"
         )
         res.where.append(f"docker logs {AGENT_CONTAINER} | grep agent.evaluate; ./scripts/agent-killswitch.sh on")
-    elif exp.mode not in modes:
+    elif exp.backend not in backends:
         res.verdict = ANOMALY
         res.reasons.append(
-            f"expected mode={exp.mode} but agent ran mode(s)={sorted(modes)} "
-            f"(LLM backend unreachable falls back to rules — expected unless wired)"
+            f"expected decision_backend={exp.backend} but agent ran decision_backend(s)={sorted(backends)}"
         )
-        res.where.append("agent.json `mode` flag; AGENT_INFERENCE_BACKEND on the agent container")
+        res.where.append("agent.json `decision.backend` flag (./scripts/agent-backend.sh status)")
 
     # 2. Did the decision loop produce evaluations at all (metric heartbeat)?
     evals = obs.metrics.get("sum(agent_evaluations_total)")
@@ -613,7 +613,7 @@ def print_matrix() -> None:
         print(f"      players:     {sc.players}   duration: {sc.duration}s   flags: "
               f"{[f'{d}.{k}={v}' for d, k, v in sc.flags]}")
         print(f"      expect:      {exp.rule} -> {verb} "
-              f"interventions={list(exp.interventions) or '(none)'} mode={exp.mode}\n")
+              f"interventions={list(exp.interventions) or '(none)'} backend={exp.backend}\n")
 
 
 def print_report(results: list[ScenarioResult]) -> int:

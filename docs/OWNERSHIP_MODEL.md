@@ -51,7 +51,7 @@ periods). Sections 4–5 define those compositions precisely.
 | `interventions.json` | Agent | Agent ActionSink → `writer.go` | Coordinator `InterventionManager`, live | Ephemeral (cleared/neutral between games) |
 | `agent.json` | Operator (human) | Hand-edited / deploy config **and** menu admin mode → `FlagConfigWriter` (`interventions_allowed` only, #819) | Agent + coordinator policy gates | Per-deployment |
 
-`agent.json` holds the agent's own governor — `enabled`, `mode`, `objectives`,
+`agent.json` holds the agent's own governor — `enabled`, `decision.backend`, `objectives`,
 `interventions_allowed`, and the `policy.*` budgets. As of #819, **menu admin mode
 may write the single `interventions_allowed` key** (the on-device kill-switch);
 every other key in `agent.json` is still hand-edited / deploy config only. The

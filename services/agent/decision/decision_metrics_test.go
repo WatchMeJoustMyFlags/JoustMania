@@ -101,7 +101,6 @@ func appliedByAction(t *testing.T, reader *metric.ManualReader) map[string]int64
 func permissiveSnap() flags.Snapshot {
 	return flags.Snapshot{
 		Enabled:              true,
-		Mode:                 "rules",
 		InterventionsAllowed: []string{"grant_shield"},
 		Policy:               flags.Policy{MaxInterventionsPerMinute: 100},
 	}
@@ -143,7 +142,6 @@ func TestDecisionsCounter_BlockReasons(t *testing.T) {
 			// grant_shield NOT in the allow-list -> ReasonNotAllowed.
 			snap: flags.Snapshot{
 				Enabled:              true,
-				Mode:                 "rules",
 				InterventionsAllowed: []string{"noop"},
 				Policy:               flags.Policy{MaxInterventionsPerMinute: 100},
 			},
@@ -156,7 +154,6 @@ func TestDecisionsCounter_BlockReasons(t *testing.T) {
 			// Player-targeted, allowed, but target battery below threshold.
 			snap: flags.Snapshot{
 				Enabled:              true,
-				Mode:                 "rules",
 				InterventionsAllowed: []string{"grant_shield"},
 				Policy:               flags.Policy{MaxInterventionsPerMinute: 100, BatteryThreshold: 50},
 			},
@@ -174,7 +171,6 @@ func TestDecisionsCounter_BlockReasons(t *testing.T) {
 			// Allowed, no battery gate, but the per-minute budget is 0 -> exhausted.
 			snap: flags.Snapshot{
 				Enabled:              true,
-				Mode:                 "rules",
 				InterventionsAllowed: []string{"grant_shield"},
 				Policy:               flags.Policy{MaxInterventionsPerMinute: 0},
 			},

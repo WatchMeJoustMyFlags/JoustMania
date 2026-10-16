@@ -129,7 +129,7 @@ For each scenario it: snapshots the flags it flips, flips them (e.g.
 pattern against a real game, then **collects observations** and **restores the
 flags** (idempotent — leaves stack state as it found it):
 
-- **agent logs** — `docker logs joustmania-agent` for `agent.evaluate mode=…` and
+- **agent logs** — `docker logs joustmania-agent` for `agent.evaluate decision_backend=…` and
   `agent.decision_blocked intervention=… reason=…`
 - **Prometheus** (via envoy `/prometheus/`) — `agent_evaluations_total`,
   `game_interventions_total{type,blocked}`
@@ -137,8 +137,8 @@ flags** (idempotent — leaves stack state as it found it):
   agent.action` decision span chain
 
 The report flags gaps: a rule that didn't fire, a zero/missing counter, an
-allowed intervention that was blocked (or vice-versa), `mode=rules` when `llm` was
-expected, a broken span chain — and prints where to look for each. `--fail-on-anomaly`
+allowed intervention that was blocked (or vice-versa), `decision_backend=rules` when
+a remote backend was expected, a broken span chain — and prints where to look for each. `--fail-on-anomaly`
 exits non-zero on any hard anomaly (for a smoke-test gate).
 
 | Scenario group | Scenarios | Covers |

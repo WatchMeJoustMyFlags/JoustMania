@@ -51,7 +51,6 @@ func newTestLoop(t *testing.T) (*Loop, *tracetest.SpanRecorder, *settableFlags) 
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	fl := &settableFlags{snap: flags.Snapshot{
 		Enabled: true,
-		Mode:    "rules",
 		InterventionsAllowed: []string{
 			"noop", "grant_shield", "play_audio_cue",
 			"eliminate_player", "adjust_music_tempo",
@@ -103,7 +102,6 @@ func TestOnEvaluate_NoDecisionsNoSpans(t *testing.T) {
 func TestOnEvaluate_EmitsFullHierarchy(t *testing.T) {
 	l, sr, fl := newTestLoop(t)
 	fl.snap.InterventionsAllowed = []string{"noop"}
-	fl.snap.Capability = flags.Capability{Model: "phi4-mini", PromptVariant: "conservative"}
 	sink := &fakeSink{}
 	l.Rules = fakeRules{out: []Decision{{Intervention: "noop", Reason: "test"}}}
 	l.Actions = sink
@@ -145,18 +143,11 @@ func TestOnEvaluate_EmitsFullHierarchy(t *testing.T) {
 	}
 
 	// Full #724 + #729 schema on the decision span: cycle-level flags lifted from
-	// the LayerState plus the per-decision outcome. inference.configured is the
-	// capability model flag; inference.used is the rules engine that actually ran.
+	// the LayerState plus the per-decision outcome.
 	want := map[string]string{
 		AttrEnabled:              "true",
-		AttrMode:                 DefaultMode,
 		AttrObjectives:           DefaultObjectives,
-		AttrModel:                "phi4-mini",
-		AttrPromptVariant:        "conservative",
 		AttrInterventionsAllowed: "noop",
-		AttrInferenceConfigured:  "phi4-mini",
-		AttrInferenceUsed:        InferenceRules,
-		AttrInferenceFallback:    "",
 		AttrDecisionAction:       "noop",
 		AttrDecisionReason:       "test",
 		AttrDecisionObjective:    DefaultObjectives,

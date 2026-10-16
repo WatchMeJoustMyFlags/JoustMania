@@ -9,13 +9,9 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
-	"time"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
-
-	"github.com/joustmania/agent/flags"
-	"github.com/joustmania/agent/gamecontext"
 )
 
 // TestSystemPromptSHA_Stable: the fingerprint is the first systemPromptSHALen hex
@@ -68,31 +64,16 @@ func TestSystemPromptReference_EmitsOncePerFingerprint(t *testing.T) {
 
 	const sysA = "system prompt A"
 	hashA := systemPromptSHA(sysA)
-	if !ref.emit(log, hashA, "balanced", "llm", "noop", sysA) {
+	if !ref.emit(log, hashA, "retro", "noop", sysA) {
 		t.Fatal("first sight of a hash must emit")
 	}
-	if ref.emit(log, hashA, "balanced", "llm", "noop", sysA) {
+	if ref.emit(log, hashA, "retro", "noop", sysA) {
 		t.Error("second sight of the SAME hash must NOT re-emit")
 	}
-	const sysB = "system prompt B (different variant rendered)"
-	if !ref.emit(log, systemPromptSHA(sysB), "aggressive", "llm", "noop", sysB) {
+	const sysB = "system prompt B (different allow-list rendered)"
+	if !ref.emit(log, systemPromptSHA(sysB), "retro", "noop", sysB) {
 		t.Error("a NEW hash must emit (system prompt changed)")
 	}
-}
-
-// recordingLoopWithLog mirrors recordingLoop but threads a capturing JSON logger so
-// the test can read the agent.llm.system_prompt reference line back.
-func recordingLoopWithLog(t *testing.T, snap flags.Snapshot, buf *bytes.Buffer) (*Loop, *tracetest.SpanRecorder) {
-	t.Helper()
-	sr := tracetest.NewSpanRecorder()
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
-	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
-	l := NewLoop(&settableFlags{snap: snap}, slog.New(slog.NewJSONHandler(buf, nil)))
-	l.Tracer = tp.Tracer("test")
-	l.Rules = fakeRules{out: nil}
-	l.Actions = &fakeSink{}
-	l.SetLLMBudget(NewLLMBudget())
-	return l, sr
 }
 
 // systemRefLines returns every agent.llm.system_prompt reference log line captured
@@ -113,54 +94,6 @@ func systemRefLines(t *testing.T, buf *bytes.Buffer) []map[string]any {
 		}
 	}
 	return out
-}
-
-// TestLLMCapture_ReferenceLogCarriesFullSystemOncePerFingerprint: the in-game
-// capture path emits the full System text on the reference LOG exactly once per
-// fingerprint, and the span carries the matching hash (not the text).
-func TestLLMCapture_ReferenceLogCarriesFullSystemOncePerFingerprint(t *testing.T) {
-	resetSystemPromptRef()
-	t.Cleanup(resetSystemPromptRef)
-
-	var buf bytes.Buffer
-	l, sr := recordingLoopWithLog(t, llmSnapshot(), &buf)
-	clock := time.Unix(1000, 0)
-	l.now = func() time.Time { return clock }
-
-	// Two cycles, same snapshot -> same system prompt -> one reference line. Advance
-	// past the 1s throttle so BOTH cycles actually build+emit a capture span.
-	l.OnEvaluate(context.Background(), gamecontext.GameContext{SessionID: "s1", GameKind: "real"}, testTrigger())
-	clock = clock.Add(2 * time.Second)
-	l.OnEvaluate(context.Background(), gamecontext.GameContext{SessionID: "s1", GameKind: "real"}, testTrigger())
-
-	caps := spansByName(sr.Ended(), SpanLLMPrompt)
-	if len(caps) != 2 {
-		t.Fatalf("agent.llm.prompt spans = %d, want 2 (throttle elapsed between cycles)", len(caps))
-	}
-
-	refs := systemRefLines(t, &buf)
-	if len(refs) != 1 {
-		t.Fatalf("agent.llm.system_prompt reference lines = %d, want 1 (once per fingerprint)", len(refs))
-	}
-	ref := refs[0]
-	// The reference carries the FULL system text + the determinants + the hash.
-	full, _ := ref["system"].(string)
-	if full == "" || !strings.Contains(full, "RESPONSE CONTRACT") {
-		t.Errorf("reference line must carry the full system text, got %q", full)
-	}
-	refHash, _ := ref["system_sha256"].(string)
-	if refHash == "" || systemPromptSHA(full) != refHash {
-		t.Errorf("reference hash %q must match sha of its own system text", refHash)
-	}
-	// The span's fingerprint matches the reference's hash, and the span does NOT carry
-	// the large physics/allow-list system text.
-	spanHash, ok := attrValue(caps[0], AttrLLMPromptSystemSHA)
-	if !ok || spanHash.AsString() != refHash {
-		t.Errorf("span hash %q must match reference hash %q", spanHash.AsString(), refHash)
-	}
-	if _, ok := attrValue(caps[0], "llm.prompt.system"); ok {
-		t.Error("span must NOT carry the full system text (only the fingerprint)")
-	}
 }
 
 // TestRetroCapture_ReferenceLogCarriesFullSystemOnce: the retro path also emits the

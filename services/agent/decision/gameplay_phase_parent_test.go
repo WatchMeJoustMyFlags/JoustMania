@@ -33,13 +33,6 @@ func gameplayPhaseCtx(gameID string) gamecontext.GameContext {
 	return c
 }
 
-// gameplayPhaseAsyncCtx is the async-path analog (activeContext + all three ids).
-func gameplayPhaseAsyncCtx(gameID, serial string) gamecontext.GameContext {
-	c := activeGameTraceContext(gameID, serial) // sets GameTraceID + GameTraceSpanID
-	c.GameplayPhaseSpanID = hubGameplayPhaseSpanID
-	return c
-}
-
 // TestSignalReceived_ChildOfGameplayPhaseSpan: the sync cycle-root agent.signal_received
 // span (and thus the whole sync decision->action subtree) parents under the gameplay_phase
 // span when its id is present — NOT the game root span.
@@ -108,69 +101,6 @@ func TestSignalReceived_OwnRootWhenBothAbsent(t *testing.T) {
 	root := spansByName(sr.Ended(), SignalReceived)[0]
 	if root.Parent().IsValid() {
 		t.Errorf("signal_received must be own-root when no ids; parent=%v", root.Parent())
-	}
-}
-
-// TestAsync_InferAndApplyChildrenOfGameplayPhaseSpan: the async infer.call + apply spans
-// parent under the gameplay_phase span when present (not the game root), KEEPING the
-// fire-cycle Link alongside.
-func TestAsync_InferAndApplyChildrenOfGameplayPhaseSpan(t *testing.T) {
-	be := &injectingBackend{name: "phi4-mini", response: validShieldResponse}
-	provider := newFakeContextProvider()
-	provider.set("g1", gameplayPhaseAsyncCtx("g1", "AAAA"))
-	l, sr, _ := asyncLoop(t, asyncSnapshot(), resolverWith(be), provider, "g1", nil)
-
-	l.OnEvaluate(context.Background(), gameplayPhaseAsyncCtx("g1", "AAAA"), testTrigger())
-	l.AwaitInflight()
-
-	wantTID, _ := trace.TraceIDFromHex(hubGameTrace)
-	wantSID, _ := trace.SpanIDFromHex(hubGameplayPhaseSpanID)
-	rootSID, _ := trace.SpanIDFromHex(hubGameSpanID)
-
-	for _, name := range []string{SpanLLMInferCall, SpanLLMApply} {
-		spans := spansByName(sr.Ended(), name)
-		if len(spans) != 1 {
-			t.Fatalf("%s spans = %d, want 1", name, len(spans))
-		}
-		s := spans[0]
-		if s.Parent().SpanID() != wantSID {
-			t.Errorf("%s parent span_id = %s, want gameplay_phase %s", name, s.Parent().SpanID(), wantSID)
-		}
-		if s.Parent().SpanID() == rootSID {
-			t.Errorf("%s parented under the GAME ROOT span; want gameplay_phase", name)
-		}
-		if s.Parent().TraceID() != wantTID {
-			t.Errorf("%s parent trace_id = %s, want game trace %s", name, s.Parent().TraceID(), wantTID)
-		}
-		if !s.Parent().IsRemote() {
-			t.Errorf("%s parent must be the REMOTE gameplay_phase span", name)
-		}
-		if _, ok := linkToFireCycle(s.Links()); !ok {
-			t.Errorf("%s must keep its fire_cycle Link alongside the gameplay_phase parent", name)
-		}
-	}
-}
-
-// TestAsync_FallsBackToGameRootWhenGameplayPhaseAbsent: tier 2 for the async path — with
-// only the game root id, the async spans parent under the game ROOT (#1187 behavior).
-func TestAsync_FallsBackToGameRootWhenGameplayPhaseAbsent(t *testing.T) {
-	be := &injectingBackend{name: "phi4-mini", response: validShieldResponse}
-	provider := newFakeContextProvider()
-	provider.set("g1", activeGameTraceContext("g1", "AAAA")) // no gameplay_phase id
-	l, sr, _ := asyncLoop(t, asyncSnapshot(), resolverWith(be), provider, "g1", nil)
-
-	l.OnEvaluate(context.Background(), activeGameTraceContext("g1", "AAAA"), testTrigger())
-	l.AwaitInflight()
-
-	wantSID, _ := trace.SpanIDFromHex(hubGameSpanID)
-	for _, name := range []string{SpanLLMInferCall, SpanLLMApply} {
-		spans := spansByName(sr.Ended(), name)
-		if len(spans) != 1 {
-			t.Fatalf("%s spans = %d, want 1", name, len(spans))
-		}
-		if spans[0].Parent().SpanID() != wantSID {
-			t.Errorf("%s parent span_id = %s, want game ROOT %s (fallback)", name, spans[0].Parent().SpanID(), wantSID)
-		}
 	}
 }
 

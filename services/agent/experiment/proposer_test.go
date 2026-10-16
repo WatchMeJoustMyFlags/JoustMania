@@ -219,8 +219,8 @@ func TestProposeOnce_TypeMismatchBlockedByGate(t *testing.T) {
 }
 
 func TestProposeOnce_NoBackendDegradesToNothing(t *testing.T) {
-	// The sentinel-stub case: Backend.Infer errors (no real Ollama/cloud transport
-	// until #738/#742). The Proposer degrades to NO proposal, NO error to the caller.
+	// The sentinel-stub case: Backend.Infer errors (no text backend configured,
+	// AGENT_INFERENCE_BACKEND=stub). The Proposer degrades to NO proposal, NO error.
 	backend := &fakeProposerBackend{err: errors.New("inference not implemented")}
 	p, path, rec, _ := proposerWithRecorder(t, backend)
 

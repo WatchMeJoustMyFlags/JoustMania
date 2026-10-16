@@ -11,14 +11,6 @@
       },
       "defaultVariant": "off"
     },
-    "mode": {
-      "state": "ENABLED",
-      "variants": {
-        "rules": "rules",
-        "llm": "llm"
-      },
-      "defaultVariant": "rules"
-    },
     "objectives": {
       "state": "ENABLED",
       "variants": {
@@ -54,25 +46,6 @@
         }
       },
       "defaultVariant": "balanced_focused"
-    },
-    "model": {
-      "state": "ENABLED",
-      "variants": {
-        "phi4-mini": "phi4-mini",
-        "gemma3_4b": "gemma3:4b",
-        "claude": "claude",
-        "copilot": "copilot"
-      },
-      "defaultVariant": "phi4-mini"
-    },
-    "prompt_variant": {
-      "state": "ENABLED",
-      "variants": {
-        "conservative": "conservative",
-        "aggressive": "aggressive",
-        "balanced": "balanced"
-      },
-      "defaultVariant": "conservative"
     },
     "interventions_allowed": {
       "state": "ENABLED",
@@ -123,15 +96,6 @@
       },
       "defaultVariant": "real_only"
     },
-    "llm.min_decision_interval_seconds": {
-      "state": "ENABLED",
-      "variants": {
-        "fast": 5,
-        "default": 10,
-        "slow": 30
-      },
-      "defaultVariant": "default"
-    },
     "llm.max_requests_per_minute": {
       "state": "ENABLED",
       "variants": {
@@ -140,59 +104,6 @@
         "aggressive": 12
       },
       "defaultVariant": "default"
-    },
-    "llm.latency_budget_seconds": {
-      "state": "ENABLED",
-      "variants": {
-        "tight": 4,
-        "default": 8,
-        "patient": 12
-      },
-      "defaultVariant": "default"
-    },
-    "llm.context_games": {
-      "state": "ENABLED",
-      "variants": {
-        "off": 0,
-        "default": 3,
-        "wide": 5,
-        "max": 10
-      },
-      "defaultVariant": "default"
-    },
-    "llm.in_game_async_upgrade": {
-      "state": "ENABLED",
-      "variants": {
-        "on": true,
-        "off": false
-      },
-      "defaultVariant": "off"
-    },
-    "llm.seconds_per_player": {
-      "state": "ENABLED",
-      "variants": {
-        "default": 3,
-        "fast": 2,
-        "slow": 5
-      },
-      "defaultVariant": "default"
-    },
-    "llm.style_factor": {
-      "state": "ENABLED",
-      "variants": {
-        "balanced": 1.0,
-        "conservative": 0.75,
-        "aggressive": 1.5
-      },
-      "defaultVariant": "balanced"
-    },
-    "prompt.context_note": {
-      "state": "ENABLED",
-      "variants": {
-        "empty": "",
-        "example": "Tonight's crowd skews younger and very energetic; lean toward higher-energy pacing."
-      },
-      "defaultVariant": "empty"
     },
     "policy.coordinator_backstop_per_minute": {
       "state": "ENABLED",
@@ -413,8 +324,7 @@
       "state": "ENABLED",
       "variants": {
         "stub": "stub",
-        "ollama": "ollama",
-        "cloud": "cloud"
+        "claude": "claude"
       },
       "defaultVariant": "stub"
     },

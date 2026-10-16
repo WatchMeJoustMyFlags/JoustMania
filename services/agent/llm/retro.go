@@ -42,7 +42,7 @@ import (
 type RetroPrompt struct {
 	System string // role + calibration surface + policy + response contract
 	User   string // serialized full-session summary
-	Model  string // capability model flag (attribution only)
+	Model  string // model that serves the retro (attribution only; set by the caller)
 }
 
 // RetroInput is everything BuildRetro needs to render a RetroPrompt at game end.
@@ -72,7 +72,6 @@ func BuildRetro(in RetroInput) RetroPrompt {
 	return RetroPrompt{
 		System: buildRetroSystem(mode, in.Snapshot.InterventionsAllowed),
 		User:   buildRetroUser(in.Context, in.Summary, in.Now),
-		Model:  in.Snapshot.Capability.Model,
 	}
 }
 

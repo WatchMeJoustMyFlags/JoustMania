@@ -29,7 +29,6 @@ func meteredTestLoop(t *testing.T) (*Loop, *tracetest.SpanRecorder, *metric.Manu
 
 	fl := &settableFlags{snap: flags.Snapshot{
 		Enabled:              true,
-		Mode:                 "rules",
 		InterventionsAllowed: []string{"noop", "grant_shield"},
 		Policy:               flags.Policy{MaxInterventionsPerMinute: 100},
 	}}

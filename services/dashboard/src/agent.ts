@@ -32,19 +32,18 @@
  * Loki. The agent DOES emit a useful subset as slog lines we can fold here:
  *
  *   agent.evaluate         one per evaluated cycle — carries the RESOLVED effective
- *                          flag values (mode, model, prompt_variant, and the three
- *                          policy numbers). This is our flag-panel source.
+ *                          flag values (decision_backend and the three policy
+ *                          numbers). This is our flag-panel source.
  *   agent.decision_blocked blocked decision — intervention, target_serial, reason
  *                          (the BlockReason), decision_reason, allowed.
- *   agent.llm.discarded    async LLM result dropped at apply time — reason, tier.
  *   agent.rollout_expand / agent.rollout_rollback(_recommended) — rollout activity.
  *
  * GAP (documented, not faked): the allowed-path decision detail (action +
  * objective_served) and the boolean agent.json flags (enabled,
  * experiments_enabled, experiment_dynamic_enabled, interventions_allowed list,
  * verdict_*) are span-only / flagd-only and not present in the agent's stdout
- * logs. The decision feed therefore renders the blocked decisions and discards
- * with full detail and the allowed cycles as liveness, and deep-links to Jaeger
+ * logs. The decision feed therefore renders the blocked decisions with full
+ * detail and the allowed cycles as liveness, and deep-links to Jaeger
  * for the full per-decision audit. The flag panel surfaces the resolved values the
  * agent.evaluate line DOES carry, and links to Jaeger/Grafana for the rest. When a
  * flag-state read endpoint or a flagd evaluation route lands (#505), the flag panel
@@ -64,7 +63,7 @@ const BASE_URL = import.meta.env.DEV ? "" : globalThis.location.origin;
  * by the experiments tab) don't crowd out the limit.
  */
 const AGENT_LOG_QUERY =
-  '{service_name="agent"} |~ "agent\\\\.(evaluate|decision_blocked|llm\\\\.discarded|rollout_)"';
+  '{service_name="agent"} |~ "agent\\\\.(evaluate|decision_blocked|rollout_)"';
 
 /** How far back to look for agent activity (decision feed window). */
 const LOOKBACK_SECONDS = 10 * 60; // 10 minutes
@@ -92,8 +91,8 @@ const APPLIED_QUERY = 'sum(agent_intervention_writes_total) by (result)';
 export interface DecisionFeedRow {
   /** Epoch ms of the log line. */
   tsMs: number;
-  /** "evaluate" | "blocked" | "discarded" | "rollout" — drives the row style. */
-  kind: "evaluate" | "blocked" | "discarded" | "rollout";
+  /** "evaluate" | "blocked" | "rollout" — drives the row style. */
+  kind: "evaluate" | "blocked" | "rollout";
   /** The raw agent.* message (e.g. "agent.decision_blocked"). */
   msg: string;
   /** Short human label for the signal/cycle. */
@@ -102,7 +101,7 @@ export interface DecisionFeedRow {
   action: string;
   /** Whether this decision was blocked. */
   blocked: boolean;
-  /** Block/discard reason, when known. */
+  /** Block / rollout reason, when known. */
   reason: string;
   /** Game/session id this row belongs to, when known. */
   sessionId: string;
@@ -112,10 +111,8 @@ export interface DecisionFeedRow {
 export interface FlagPanel {
   /** Epoch ms of the agent.evaluate line these values came from. */
   tsMs: number;
-  /** Inference mode: "rules" | "llm". */
-  mode: string;
-  model: string;
-  promptVariant: string;
+  /** Requested decision.backend: "rules" | "claude" | "openai" | "jev". */
+  decisionBackend: string;
   batteryThreshold: string;
   varianceWindow: string;
   maxPerMinute: string;
@@ -174,7 +171,6 @@ export interface VmQueryResponse {
 function classify(msg: string): DecisionFeedRow["kind"] | null {
   if (msg === "agent.evaluate") return "evaluate";
   if (msg === "agent.decision_blocked") return "blocked";
-  if (msg === "agent.llm.discarded") return "discarded";
   if (msg.startsWith("agent.rollout_")) return "rollout";
   return null;
 }
@@ -214,9 +210,7 @@ export function aggregateAgentLogs(
       if (!flags || tsMs >= flags.tsMs) {
         flags = {
           tsMs,
-          mode: fields["mode"] ?? "",
-          model: fields["model"] ?? "",
-          promptVariant: fields["prompt_variant"] ?? "",
+          decisionBackend: fields["decision_backend"] ?? "",
           batteryThreshold: fields["battery_threshold"] ?? "",
           varianceWindow: fields["variance_window"] ?? "",
           maxPerMinute: fields["max_per_minute"] ?? "",
@@ -239,9 +233,6 @@ export function aggregateAgentLogs(
       totalBlocked += 1;
       if (action) blockedByAction.set(action, (blockedByAction.get(action) ?? 0) + 1);
       if (reason) blockedByReason.set(reason, (blockedByReason.get(reason) ?? 0) + 1);
-    } else if (kind === "discarded") {
-      // Async LLM result dropped at apply time — a different kind of "not applied".
-      reason = fields["reason"] ?? "";
     } else if (kind === "rollout") {
       reason = fields["reason"] ?? "";
     }
@@ -276,8 +267,6 @@ function feedSignal(msg: string): string {
   switch (msg) {
     case "agent.decision_blocked":
       return "decision blocked";
-    case "agent.llm.discarded":
-      return "llm result discarded";
     case "agent.rollout_expand":
       return "rollout expand";
     case "agent.rollout_rollback":

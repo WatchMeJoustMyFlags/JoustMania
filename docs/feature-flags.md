@@ -321,7 +321,6 @@ Controls whether the autonomous agent runs.
 | Flag | Type | Values | Default | Description |
 |------|------|--------|---------|-------------|
 | `enabled` | boolean | true, false | false (off) | Master switch for the agent |
-| `mode` | string | `rules`, `llm` | — | Decision engine: deterministic rules vs. LLM |
 
 #### Layer 2 — Objective
 
@@ -332,14 +331,19 @@ accelerate, chaos}`.
 |------|------|--------|-------------|
 | `objectives` | object | preset names `endurance_focused`, `balanced_focused`, `accelerate_focused`, `chaos_focused`, `mixed` | Weight preset over `{endurance, balanced, accelerate, chaos}` |
 
-#### Layer 3 — Capability
+#### Layer 3 — Decision backend
 
-Constrains the agent's reasoning model and prompt style.
+Selects who answers the in-game decide contract (epic #1225). The legacy
+`mode`, `model` and `prompt_variant` flags were removed in #1234; see
+[agent-inference.md](agent-inference.md).
 
 | Flag | Type | Values | Description |
 |------|------|--------|-------------|
-| `model` | string | `phi4-mini`, `gemma3:4b`, `claude`, `copilot` | Model backing the agent |
-| `prompt_variant` | string | `conservative`, `aggressive`, `balanced` | Prompt style |
+| `decision.backend` | string | `rules`, `claude`, `openai`, `jev` | Who decides; `rules` is the default and the fallback floor |
+| `decision.act_confidence_threshold` | number | 0..1 | Below it a remote answer is held, not acted on |
+| `decision.<backend>.model` / `.timeout_ms` | string / int | per backend | Model and per-call budget of a remote backend |
+| `llm.eligible_game_kinds` | string | `real`, `real,shadow`, `""` | Game kinds that may call a remote backend |
+| `llm.max_requests_per_minute` | int | 3, 6, 12 | Global per-minute cap on remote decide calls and post-game retros |
 
 #### Layer 4 — Permission
 

@@ -69,5 +69,7 @@ engine is the offline floor.
   reviews the promotion.
 - **Live rollback** exists in gated form: autonomous promotion watches real
   games and reverts on degradation.
-- **Decision backends** are still selected by the `mode` / `model` flags with
-  local-model defaults. The single flag-selected decision contract is epic #1225.
+- **Decision backends** are selected by the `decision.backend` flag (epic #1225):
+  `rules` by default, `claude` / `openai` / `jev` called directly, rules on any
+  failure. The post-game retro and the experiment proposer call Claude directly
+  when `AGENT_INFERENCE_BACKEND=claude`. There is no gateway (#1234).

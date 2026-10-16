@@ -10,10 +10,9 @@
 // switch live, and runs decide.Validate on the Response (Decide also
 // validates, via llmio.Parse).
 //
-// Transport: plain net/http (no SDK, CGO-free, no new deps), the same shape as
-// inference/openai.go: Bearer auth, W3C traceparent injected from the chat
-// span, a bounded body read, no retries (inside a ~2.5s in-game budget the
-// rules backend is the retry).
+// Transport: plain net/http (no SDK, CGO-free, no new deps): Bearer auth, W3C
+// traceparent injected from the chat span, a bounded body read, no retries
+// (inside a ~2.5s in-game budget the rules backend is the retry).
 //
 // Structured output: response_format json_schema (strict, llmio.AnswerSchema).
 // Some OpenAI-compatible vendors reject json_schema with a 400; Decide then

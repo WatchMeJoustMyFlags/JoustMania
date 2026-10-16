@@ -58,19 +58,20 @@ chose and why"). Verified keys/values from live span data:
 | What did it decide? | `decision.action`, `decision.reason` | `grant_shield` / `shield the weakest player (skill 0.62) while the field shrinks` |
 | Was it allowed to act? | `decision.blocked`, `decision.block_reason` | `true` / `not_allowed` |
 | Which goal was it serving? | `decision.objective_served` | `balanced` |
-| Which backend actually ran? | `inference.used`, `inference.configured`, `inference.fallback_reason` | `rules` / `phi4-mini` / `llm_not_eligible` |
-| What were the flags in effect? | `agent.enabled`, `agent.mode`, `agent.model`, `agent.prompt_variant`, `agent.objectives`, `interventions.allowed` | `true` / `llm` / `phi4-mini` / `conservative` / `accelerate=0.1,balanced=0.7,…` / `none` |
+| Which backend actually ran? | `decide.backend` (and, on the sibling `agent.decide` span, `decide.backend.requested`, `decide.fallback_reason`) | `rules` / `claude` / `llm_not_eligible` |
+| What were the flags in effect? | `agent.enabled`, `agent.objectives`, `interventions.allowed`, `policy.*` | `true` / `accelerate=0.1,balanced=0.7,…` / `none` |
 | Did the move pass fitness? | `fitness.evaluated` (JSON array of `metric=value`) | `["balanced.skill_gap=0.318…","balanced.spike_survival_ratio=1",…]` |
 | **Which game is this?** (#1095 join) | `game.id` (alias `session.id`), `game.kind` | `game_8c812a3d9063` / `shadow` |
 
-**Inference attribution** (`inference.configured` / `inference.used` /
-`inference.fallback_reason`) is the "is the LLM actually driving this?" trio. On
-the current stack live decisions resolve to `inference.used=rules` with
-`fallback_reason=llm_not_eligible` — the LLM path is exercised on the
-**`agent.llm.retro`** span instead (post-game analyst), which carries the
-`gen_ai.*` attributes: `gen_ai.request.model=phi4-mini`,
-`gen_ai.operation.name=chat`, `gen_ai.output.type=json`, plus
-`inference.used`/`inference.fallback_reason`. See act (c) below.
+**Backend attribution** is the "is a model actually driving this?" question.
+Every decided cycle has an **`agent.decide`** span with `decide.backend`,
+`decide.backend.requested`, `decide.fallback_reason`, `decide.confidence` and
+`decide.outcome`; a remote backend's call is its `chat {model}` child span with
+the `gen_ai.*` attributes. (The `agent.mode` / `agent.model` /
+`inference.*` attributes on `agent.decision` were removed with the legacy
+mode/model path in #1234.) The post-game **`agent.llm.retro`** span carries
+`gen_ai.request.model` and `inference.used` (`claude`, or `none` when the retro
+is capture-only). See act (c) below.
 
 **`game.id` is the universal join key (#1095):** it appears on *every* agent
 span — `signal_received`, `decision`, `action`, `llm.retro`, and
@@ -119,30 +120,23 @@ in the dropdown. Until then, the operation field will be empty — keep this as 
 "run it live" act rather than a pre-canned trace. *(See the noted follow-up in
 §4.)*
 
-### (c) Inference attribution — is the LLM actually driving?
+### (c) Backend attribution — is a model actually driving?
 
-The live LLM path is the post-game analyst span, which carries `gen_ai.*`:
-
-```
-http://localhost/jaeger/search?service=agent&operation=agent.llm.retro&lookback=2d&limit=20&tags=%7B%22gen_ai.request.model%22%3A%22phi4-mini%22%7D
-```
-
-Manual: **Service** `agent` · **Operation** `agent.llm.retro` · **Tags**
-`{"gen_ai.request.model":"phi4-mini"}`. **Validated live: 10 results.**
-
-To show the **decision-time** attribution trio instead (which backend a live
-decision used), filter decisions by `inference.configured`:
+Decisions a remote backend made:
 
 ```
-http://localhost/jaeger/search?service=agent&operation=agent.decision&lookback=2d&limit=20&tags=%7B%22inference.configured%22%3A%22phi4-mini%22%7D
+http://localhost/jaeger/search?service=agent&operation=agent.decide&lookback=2d&limit=20&tags=%7B%22decide.backend%22%3A%22claude%22%7D
 ```
 
-Manual tags: `{"inference.configured":"phi4-mini"}`. **Validated live: 10
-results.** Expand a span and read `inference.used` / `inference.fallback_reason`
-to narrate "configured for phi4-mini, fell back to rules because
-`llm_not_eligible`." To find any decision that *did* run the model, filter
-`{"inference.used":"llm"}` — **0 on the current stack** (all live decisions
-resolve to `rules`), so this needs a live run with the LLM path eligible.
+Manual: **Service** `agent` · **Operation** `agent.decide` · **Tags**
+`{"decide.backend":"claude"}`. Expand one and its `chat {model}` child to read
+the model, tokens, confidence and rationale. To narrate a fallback, filter
+`{"decide.backend.requested":"claude","decide.backend":"rules"}` and read
+`decide.fallback_reason` (`timeout`, `llm_not_eligible`, ...).
+
+The post-game analyst is `agent.llm.retro`; with
+`AGENT_INFERENCE_BACKEND=claude` it carries `inference.used=claude` and a `chat`
+child span.
 
 ### (d) All activity for one game — the #1095 join
 
@@ -241,7 +235,7 @@ code — they are browser/OS/Jaeger-UI knobs to set up before the talk.
   Bookmark act (a), click the top result, expand `agent.decision`, and present
   from there.
 - **Which attributes to read aloud / point at**, in priority order:
-  `decision.action` → `decision.reason` → `inference.used` →
+  `decision.action` → `decision.reason` → `decide.backend` →
   `decision.blocked`/`decision.block_reason` → `game.id`. Those five tell the
   whole story; everything else is supporting detail.
 - **Two-window arrangement:** left = flagd / flag-flip surface (or the terminal
@@ -263,7 +257,7 @@ code — they are browser/OS/Jaeger-UI knobs to set up before the talk.
 ## 4. Attribute legibility review (projector readability)
 
 Reviewed against the live values. Names use dot-namespacing
-(`decision.*`, `inference.*`, `agent.*`) which reads well grouped in Jaeger's
+(`decision.*`, `decide.*`, `agent.*`) which reads well grouped in Jaeger's
 tag table. Verdicts below — **no code is changed here**; cryptic items are noted
 as follow-ups for the span-schema owners.
 
@@ -273,8 +267,8 @@ as follow-ups for the span-schema owners.
 | `decision.reason` | Yes | Full sentence — the single best line to read aloud. |
 | `decision.blocked` / `decision.block_reason` | Yes | Clear boolean + short reason (`not_allowed`). |
 | `decision.objective_served` | Yes | `balanced` etc. is legible. |
-| `inference.used` / `inference.configured` | Yes | `rules` vs `phi4-mini` contrast lands instantly. |
-| `inference.fallback_reason` | Mostly | `llm_not_eligible` is jargon — fine for a technical audience, narrate it. |
+| `decide.backend` / `decide.backend.requested` | Yes | `rules` vs `claude` contrast lands instantly. |
+| `decide.fallback_reason` | Mostly | `llm_not_eligible` is jargon — fine for a technical audience, narrate it. |
 | `game.id` / `session.id` | Adequate | `game_8c812a3d9063` is a long hex tail; readable but not memorable. **It is duplicated as both `game.id` and `session.id` with identical values** — visually redundant in the tag table. |
 | `agent.objectives` | Borderline | `accelerate=0.1,balanced=0.7,chaos=0.1,endurance=0.1` is a dense single string; wraps awkwardly at large zoom. |
 | `fitness.evaluated` | **Cryptic on a projector** | A JSON-array-as-string of `metric=value` pairs with full float precision (`0.6014032183343321`). Unreadable from a distance; expand only if asked. |

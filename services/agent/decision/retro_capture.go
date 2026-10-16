@@ -2,6 +2,7 @@ package decision
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -13,18 +14,18 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
 	"github.com/joustmania/agent/gamesummary"
 	"github.com/joustmania/agent/llm"
 )
 
-// retro_capture.go is the POST-GAME counterpart of llm_capture.go (#844). When a
-// game ends (the gamecontext.Store fires its OnGameEnd hook on the GameActive
-// true->false transition), the RetroCoordinator builds the retrospective prompt
-// the agent WOULD send to an offline analyst and records it on a dedicated
-// `agent.llm.retro` span, exactly once per session. Like the #739 in-game
-// capture, no backend is called yet — this is capture-first.
+// retro_capture.go is the POST-GAME retrospective (#844, #1179). When a game ends
+// (the gamecontext.Store fires its OnGameEnd hook on the GameActive true->false
+// transition), the RetroCoordinator builds the retrospective prompt for an offline
+// analyst and records it on a dedicated `agent.llm.retro` span, exactly once per
+// session. When a TextBackend is wired (AGENT_INFERENCE_BACKEND=claude, #1234) it
+// also calls the model asynchronously and stamps the decoded conclusion on the
+// same span; without one the span is capture-only.
 //
 // STRUCTURAL GUARANTEE: the coordinator never touches gate.ShouldEvaluate, the
 // decision Loop, or the per-game intervention rate limiter. A retrospective
@@ -32,27 +33,27 @@ import (
 // — there is simply no code path from here to it.
 //
 // LLM BUDGET (#847): a retrospective IS one LLM request, so it MUST draw from the
-// same GLOBAL llm.max_requests_per_minute budget the in-game gate uses (#844 +
+// same GLOBAL llm.max_requests_per_minute budget the remote decide gate uses (#844 +
 // #847 acceptance #7). The coordinator therefore takes the one shared *llmBudget
 // (injected via SetLLMBudget from main.go, the same instance every per-game Loop
 // holds). When the budget is exhausted at game end the retro is GATED: it records
 // agent_llm_gated_total{reason=llm_budget_exhausted} and captures nothing — a
-// retrospective cannot blow the global LLM cap. NOTE the retro is intentionally
-// NOT subject to the eligibility or cadence layers: it is a once-per-session,
-// game-kind-agnostic offline analysis, so only the global budget bounds it.
+// retrospective cannot blow the global LLM cap. Only a retro that actually calls
+// the text backend is charged (#1234): a stub retro is capture-only, and a game
+// kind outside llm.eligible_game_kinds (shadow games by default) is capture-only
+// too, so shadow-game retros never starve real-game remote decide calls. The
+// retro is not subject to the per-game cadence: it runs once per session.
 
 // SpanLLMRetro is the post-game retrospective capture span (#844): emitted once
 // per session at game end, carrying the prompt the agent would send to an offline
-// LLM analyst. Named distinctly from agent.llm.prompt so retro captures are
-// trivially greppable in Jaeger by name.
+// LLM analyst. Trivially greppable in Jaeger by name.
 const SpanLLMRetro = "agent.llm.retro"
 
-// Custom attribute keys of the agent.llm.retro span (#844). They mirror the
-// agent.llm.prompt keys (telemetry.go) but in the retro namespace so the two
-// capture kinds never collide in a single trace view.
+// Custom attribute keys of the agent.llm.retro span (#844), in the llm.retro.*
+// namespace.
 const (
 	// AttrLLMRetroSystemSHA is the FINGERPRINT of the retrospective System prompt
-	// (#1168), the retro-namespace counterpart of AttrLLMPromptSystemSHA: the short
+	// (#1168): the short
 	// hex SHA-256 of the full system text, stamped INSTEAD of the text. The retro
 	// system prompt is large and effectively constant (it got the physics model in
 	// #1160), so shipping its full text per retro span was part of the #1167
@@ -110,6 +111,24 @@ const (
 // constant — distinct from the in-game llmModeValue.
 const retroModeValue = "retro"
 
+// genAIOutputTypeJSON is gen_ai.output.type=json: the RESPONSE CONTRACT asks for a
+// single JSON object.
+var genAIOutputTypeJSON = semconv.GenAIOutputTypeKey.String("json")
+
+// DefaultRetroTimeout bounds one retro inference call when SetTimeout was not
+// called. A retro is off the game's hot path, so the budget is generous; it still
+// guarantees a hung call cannot leak its goroutine or pin the span open.
+const DefaultRetroTimeout = 120 * time.Second
+
+// TextBackend is the retro's inference seam (#1234): send System+User text, get
+// the model's raw reply. *inference.Claude satisfies it. Name and Model are
+// recorded as inference.used / inference.configured on the retro span.
+type TextBackend interface {
+	Name() string
+	Model() string
+	Infer(ctx context.Context, prompt llm.Prompt) (string, error)
+}
+
 // retroDedupeWindow bounds the per-session dedupe memory: the SessionIDs of the
 // most recently captured retros are retained so a repeated game-end for any of
 // them is suppressed. With multiple concurrent games ending (#845 PR B), ends
@@ -141,16 +160,15 @@ type RetroCoordinator struct {
 	// ungated by the global cap (used by tests / single-purpose wiring that does not
 	// share a budget — capture proceeds as before #847). Injected via SetLLMBudget.
 	budget *llmBudget
-	// resolver is the SHARED inference fallback-chain resolver (#741/#964), injected
-	// via SetResolver — the SAME instance every per-game Loop holds (#1080). When a
-	// real inference backend is configured (AGENT_INFERENCE_BACKEND=openai), the retro
-	// resolves against it (gemma4 @ AGENT_INFERENCE_BASE_URL) so retro attribution
-	// targets the configured model/tier and only degrades when it is genuinely
-	// unreachable — instead of always hitting the unreachable phi4-mini legacy tier.
-	// A nil resolver (tests / stub-default wiring without one) preserves the pre-#1080
-	// behavior: model = the agent.model flag, used = "none", fallback =
-	// no_backend_available, exactly as before.
-	resolver *Resolver
+	// budgetOverride, when > 0, replaces llm.max_requests_per_minute as the cap
+	// (AGENT_LLM_MAX_REQUESTS_PER_MINUTE), like Loop.budgetOverride.
+	budgetOverride int
+	// backend is the text backend the retro calls (#1234), injected via SetBackend.
+	// Nil (the stub default, tests) keeps the retro capture-only: the span records
+	// inference.used=none / fallback no_backend_available and ends at once.
+	backend TextBackend
+	// timeout bounds one retro inference call; not positive = DefaultRetroTimeout.
+	timeout time.Duration
 	// llmGated counts gated retro captures (agent_llm_gated_total{reason=...}),
 	// sharing the in-game counter name. Defaults to a no-op so tests need not wire it.
 	llmGated otelmetric.Int64Counter
@@ -239,14 +257,33 @@ func NewRetroCoordinator(flagSource FlagSource, log *slog.Logger) *RetroCoordina
 // to call concurrently with OnGameEnd — set it during construction.
 func (rc *RetroCoordinator) SetLLMBudget(b *llmBudget) { rc.budget = b }
 
-// SetResolver injects the SHARED inference fallback-chain resolver (#1080), the same
-// instance every per-game Loop holds (SetResolver on the Loop). The retro then routes
-// its inference attribution through the SAME configured backend the decision loop and
-// proposer use: when AGENT_INFERENCE_BACKEND=openai the resolver's configured tier
-// (AGENT_INFERENCE_MODEL @ AGENT_INFERENCE_BASE_URL) is the canonical path, so retro
-// no longer reports the unreachable phi4-mini legacy tier. Not safe to call
-// concurrently with OnGameEnd — set it during construction.
-func (rc *RetroCoordinator) SetResolver(r *Resolver) { rc.resolver = r }
+// SetBackend injects the text backend the retro calls (#1234). nil keeps the retro
+// capture-only. Not safe to call concurrently with OnGameEnd — set it during
+// construction.
+func (rc *RetroCoordinator) SetBackend(b TextBackend) { rc.backend = b }
+
+// SetLLMBudgetOverride sets a per-minute cap that REPLACES the
+// llm.max_requests_per_minute flag value for the retro's budget check, mirroring
+// Loop.SetLLMBudgetOverride (AGENT_LLM_MAX_REQUESTS_PER_MINUTE, #964). A
+// non-positive value is ignored. Set during construction.
+func (rc *RetroCoordinator) SetLLMBudgetOverride(maxPerMinute int) {
+	if maxPerMinute > 0 {
+		rc.budgetOverride = maxPerMinute
+	}
+}
+
+// budgetCap returns the per-minute cap for this retro: the override when set,
+// else the live flag value.
+func (rc *RetroCoordinator) budgetCap(flagValue int) int {
+	if rc.budgetOverride > 0 {
+		return rc.budgetOverride
+	}
+	return flagValue
+}
+
+// SetTimeout sets the per-call retro inference deadline (AGENT_INFERENCE_TIMEOUT_SECONDS
+// in main.go). A non-positive value keeps DefaultRetroTimeout. Set during construction.
+func (rc *RetroCoordinator) SetTimeout(d time.Duration) { rc.timeout = d }
 
 // SetFitnessLookup injects the recorded-fitness lookup seam (#1100): a func that
 // returns a finished game's settled objective fitness by game_id (reading the #965
@@ -321,15 +358,28 @@ func (rc *RetroCoordinator) OnGameEnd(c gamecontext.GameContext) {
 	// game end, so the retro span is a standalone root (intentional — it is not a
 	// child of any Export). The flag source falls back to safe defaults if flagd is
 	// unreachable, identical to the in-game path. Evaluated up front so the budget
-	// gate below reads the same live llm.max_requests_per_minute the capture would.
+	// gate below reads the live llm.max_requests_per_minute.
 	snapshot := rc.Flags.Evaluate(context.Background())
 
-	// Global LLM budget gate (#847 acceptance #7): a retrospective is one LLM
-	// request, so it must fit the shared per-minute cap the in-game gate honors.
-	// When a budget is wired and exhausted, the retro is GATED — record the gated
-	// metric and capture nothing (no prompt build, no span). A nil budget (tests /
-	// unshared wiring) skips this check, preserving pre-#847 behavior.
-	if rc.budget != nil && !rc.budget.allow(now(), snapshot.LLMGate.MaxRequestsPerMinute) {
+	// Model-call gate (#847, #1234). Only a retro that will actually call the text
+	// backend counts as an LLM request:
+	//   - no backend (the stub default): capture-only, no budget slot charged;
+	//   - game kind not in llm.eligible_game_kinds (default real, so shadow games):
+	//     capture-only with fallback llm_not_eligible, no call, no budget slot — so
+	//     shadow-game retros can never starve real-game remote decide calls of the
+	//     shared budget;
+	//   - otherwise one slot from the shared llm.max_requests_per_minute budget (or
+	//     the AGENT_LLM_MAX_REQUESTS_PER_MINUTE override, as on the decide path).
+	//     When it is exhausted the retro is GATED: record the gated metric and
+	//     capture nothing (no prompt build, no span). A nil budget (tests / unshared
+	//     wiring) skips this check.
+	eligible := snapshot.LLMGate.EligibleFor(c.GameKind)
+	if rc.backend != nil && !eligible {
+		rc.llmGated.Add(context.Background(), 1,
+			otelmetric.WithAttributes(attribute.String("reason", FallbackNotEligible)))
+	}
+	callBackend := rc.backend != nil && eligible
+	if callBackend && rc.budget != nil && !rc.budget.allow(now(), rc.budgetCap(snapshot.LLMGate.MaxRequestsPerMinute)) {
 		rc.llmGated.Add(context.Background(), 1,
 			otelmetric.WithAttributes(attribute.String("reason", FallbackBudgetExhausted)))
 		rc.Log.Info("agent.llm.retro_gated",
@@ -362,25 +412,17 @@ func (rc *RetroCoordinator) OnGameEnd(c gamecontext.GameContext) {
 		Now:      retroNow,
 	})
 
-	// #1080: resolve the inference attribution through the SAME shared resolver the
-	// decision loop and proposer use, so a configured backend (gemma4) is reported as
-	// the model/tier — not the agent.model flag's unreachable phi4-mini legacy tier.
-	// retroInference falls back to the flag-only "none"/no_backend_available attribution
-	// when no resolver is wired (the pre-#1080 default), keeping that path identical.
-	attr := rc.retroInference(snapshot.Capability.Model)
-	// Attribute the prompt to the model that WOULD serve (the configured backend when
-	// one is wired), overriding the flag-derived BuildRetro model so the span's
-	// gen_ai.request.model and the log line both name the configured model.
+	// Inference attribution (#1234): the wired backend's model and name, or
+	// used=none / no_backend_available when the retro is capture-only.
+	attr := rc.retroInference(callBackend)
 	prompt.Model = attr.configured
 
 	// #1168: the retro span carries only the System-prompt fingerprint; emit the full
 	// text once per distinct fingerprint on the shared agent.llm.system_prompt
-	// reference log (the same singleton the in-game capture uses) so the hash stays
-	// resolvable to its text without paying per span (the #1167 OOM). The retro system
-	// prompt is its own variant of the constant text, so it hashes distinctly from the
-	// in-game one and is emitted once on its own first sight.
+	// reference log so the hash stays resolvable to its text without paying per span
+	// (the #1167 OOM).
 	systemPromptRef.emit(rc.Log, systemPromptSHA(prompt.System),
-		snapshot.Capability.PromptVariant, retroModeValue, allowedSummary(snapshot.InterventionsAllowed), prompt.System)
+		retroModeValue, allowedSummary(snapshot.InterventionsAllowed), prompt.System)
 
 	attrs := retroPromptAttributes(retroPromptAttrs{
 		prompt:     prompt,
@@ -433,11 +475,10 @@ func (rc *RetroCoordinator) OnGameEnd(c gamecontext.GameContext) {
 		"fallback_reason", attr.fallback,
 	)
 
-	// #1179: actually CALL the model. When a real backend resolved, ask it for the
+	// #1179: actually CALL the model. When a backend is wired, ask it for the
 	// post-game conclusion and stamp the decoded assessment/suggestions/focus on the
-	// SAME span — which now ends AFTER the response (real latency), not at 10µs. When
-	// no backend resolved (chain unreachable / no resolver wired), keep the pre-#1179
-	// capture-only behavior: end the span now with fallback=no_backend_available.
+	// SAME span — which ends AFTER the response. Without one, keep the capture-only
+	// behavior: end the span now with fallback=no_backend_available.
 	if attr.backend == nil {
 		span.End()
 		return
@@ -448,22 +489,12 @@ func (rc *RetroCoordinator) OnGameEnd(c gamecontext.GameContext) {
 	// goroutine (mirroring the in-game runInfer/applyAsyncResult split) and return
 	// immediately; the span ends inside the goroutine once the response lands. Tracked
 	// on inferWG so shutdown/tests can join it (AwaitInflight).
-	budget := retroLatencyBudget(snapshot)
+	budget := rc.timeout
+	if budget <= 0 {
+		budget = DefaultRetroTimeout
+	}
 	rc.inferWG.Add(1)
 	go rc.runRetroInfer(spanCtx, span, attr.backend, prompt, c.SessionID, budget)
-}
-
-// retroLatencyBudget is the wall-clock cap for one retro inference call (#1179),
-// reusing the SAME llm.latency_budget_seconds flag the in-game async path uses so a
-// retro can never outlive the configured budget. A non-positive value (a hand-built
-// test snapshot) floors at the default — a retro must never run without a deadline, or
-// a hung Infer would leak its goroutine and pin the span open forever.
-func retroLatencyBudget(snapshot flags.Snapshot) time.Duration {
-	budget := snapshot.LLMGate.LatencyBudget
-	if budget <= 0 {
-		budget = time.Duration(flags.DefaultLLMLatencyBudgetSeconds * float64(time.Second))
-	}
-	return budget
 }
 
 // runRetroInfer is the body of the fired retro goroutine (#1179): it calls Infer under
@@ -471,11 +502,13 @@ func retroLatencyBudget(snapshot flags.Snapshot) time.Duration {
 // on the agent.llm.retro span, and ends the span. It runs OFF the game-end hook, so it
 // may take seconds without blocking the lifecycle transition.
 //
-// FAIL-OPEN: it is total and never panics out — a flagd/backend/timeout/decode failure
-// stamps the error on the span (parse_ok=false + llm.infer.error) and emits a WARN log,
+// FAIL-OPEN: it is total and never panics out — a backend/timeout/decode failure
+// stamps a low-cardinality error type on the span (parse_ok=false + llm.infer.error +
+// error.type; never the error text, which may echo vendor bodies, #1242) and emits a
+// WARN log,
 // but the span always ends cleanly. OnGameEnd has already returned by the time this
 // runs, so nothing here can break the game-end transition.
-func (rc *RetroCoordinator) runRetroInfer(ctx context.Context, span trace.Span, backend Backend, prompt llm.RetroPrompt, sessionID string, budget time.Duration) {
+func (rc *RetroCoordinator) runRetroInfer(ctx context.Context, span trace.Span, backend TextBackend, prompt llm.RetroPrompt, sessionID string, budget time.Duration) {
 	defer rc.inferWG.Done()
 	defer span.End()
 
@@ -486,10 +519,8 @@ func (rc *RetroCoordinator) runRetroInfer(ctx context.Context, span trace.Span, 
 
 	// inferCtx MUST stay derived from ctx (the live retro span context), NOT from
 	// rootCtx: #1112 requires the outbound-call client span below to be parented under
-	// THIS retro span ("one trace" through the litellm gateway), and that parenting flows
-	// through ctx. WithTimeout(ctx, budget) gives us the span parent plus the latency
-	// budget. (The sibling in-game path async_infer.go:232 derives from root directly
-	// because it carries no span-parent-from-ctx constraint — do not copy that here.)
+	// THIS retro span (one trace from the retro to the model call), and that parenting
+	// flows through ctx. WithTimeout(ctx, budget) gives us the span parent plus the latency
 	inferCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 
@@ -510,49 +541,27 @@ func (rc *RetroCoordinator) runRetroInfer(ctx context.Context, span trace.Span, 
 		}()
 	}
 
-	// Wrap the outbound call in a short-lived client span (mirroring async_infer.go's
-	// SpanLLMInferCall) so callCtx carries an active, sampled span for the #1112
-	// traceparent injector to read — restoring "one trace" through the litellm gateway.
-	callCtx, callSpan := rc.Tracer.Start(inferCtx, SpanLLMInferCall,
-		trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(
-			attribute.String("gen_ai.request.model", backend.Name()),
-			attribute.String(AttrGameID, sessionID),
-			attribute.String(AttrSessionID, sessionID),
-		),
-	)
+	// The backend's own GenAI `chat {model}` CLIENT span nests directly under the
+	// retro span via inferCtx.
 	start := now()
 	// The retro prompt's System/User map onto the inference Prompt's System/User;
 	// Model rides for attribution (already stamped on the span). The retro has no
 	// in-game Variant.
-	raw, inferErr := backend.Infer(callCtx, llm.Prompt{
+	raw, inferErr := backend.Infer(inferCtx, llm.Prompt{
 		System: prompt.System,
 		User:   prompt.User,
 		Model:  prompt.Model,
 	})
-	callSpan.End()
 	latencyMs := now().Sub(start).Milliseconds()
 
 	span.SetAttributes(attribute.Int64(AttrLLMRetroLatencyMs, latencyMs))
 
 	// Transport / timeout failure: stamp the error, log loudly, end (fail-open).
 	if inferErr != nil {
-		span.SetAttributes(
-			attribute.Bool(AttrLLMRetroParseOK, false),
-			attribute.String(AttrLLMInferError, inferErr.Error()),
-		)
-		// #1206: surface the failure as span STATUS=Error (mirroring litellm's
-		// otel.status_code=ERROR) so a timed-out/failed retro is visible in Jaeger's
-		// error view, not just as parse_ok=false. Fail-open is unchanged — the span
-		// still ends cleanly and the game-end transition is unaffected.
-		span.RecordError(inferErr)
-		span.SetAttributes(semconv.ErrorType(inferErr))
-		span.SetStatus(codes.Error, inferErr.Error())
-		rc.Log.Warn(SpanLLMRetroFailed,
-			"session_id", sessionID,
-			"latency_ms", latencyMs,
-			"error", inferErr.Error(),
-		)
+		// #1206: surface the failure as span STATUS=Error so a timed-out/failed retro
+		// is visible in Jaeger's error view. #1242: only the error TYPE reaches the
+		// span and the log; the error text can echo vendor response bodies.
+		rc.failRetro(span, sessionID, latencyMs, inferErrorType(inferErr))
 		return
 	}
 
@@ -564,20 +573,9 @@ func (rc *RetroCoordinator) runRetroInfer(ctx context.Context, span trace.Span, 
 
 	resp, decodeErr := llm.DecodeRetro(raw)
 	if decodeErr != nil {
-		span.SetAttributes(
-			attribute.Bool(AttrLLMRetroParseOK, false),
-			attribute.String(AttrLLMInferError, decodeErr.Error()),
-		)
 		// #1206: an unparseable retro reply is an ERROR on the span, not just
-		// parse_ok=false. Fail-open is unchanged — the span still ends cleanly.
-		span.RecordError(decodeErr)
-		span.SetAttributes(semconv.ErrorType(decodeErr))
-		span.SetStatus(codes.Error, decodeErr.Error())
-		rc.Log.Warn(SpanLLMRetroFailed,
-			"session_id", sessionID,
-			"latency_ms", latencyMs,
-			"error", decodeErr.Error(),
-		)
+		// parse_ok=false. The raw reply is on the reference log above.
+		rc.failRetro(span, sessionID, latencyMs, retroInvalidOutput)
 		return
 	}
 
@@ -606,68 +604,76 @@ func (rc *RetroCoordinator) runRetroInfer(ctx context.Context, span trace.Span, 
 	}
 }
 
+// inferErrorType is the low-cardinality type of a TextBackend error: the
+// backend's own classification when it offers one (inference.Error implements
+// ErrorType), "timeout" / "canceled" for context errors, else "_OTHER". Never the
+// error text (#1242).
+func inferErrorType(err error) string {
+	var typed interface{ ErrorType() string }
+	switch {
+	case errors.As(err, &typed):
+		return typed.ErrorType()
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	}
+	return semconv.ErrorTypeOther.Value.AsString()
+}
+
+// retroInvalidOutput is the error type of a reply that did not decode.
+const retroInvalidOutput = "invalid_output"
+
+// failRetro stamps a failed retro inference on the span (parse_ok=false, the error
+// type as llm.infer.error and error.type, status Error) and logs it. Only the
+// low-cardinality type is recorded (#1242).
+func (rc *RetroCoordinator) failRetro(span trace.Span, sessionID string, latencyMs int64, errType string) {
+	span.SetAttributes(
+		attribute.Bool(AttrLLMRetroParseOK, false),
+		attribute.String(AttrLLMInferError, errType),
+		semconv.ErrorTypeKey.String(errType),
+	)
+	span.SetStatus(codes.Error, errType)
+	rc.Log.Warn(SpanLLMRetroFailed,
+		"session_id", sessionID,
+		"latency_ms", latencyMs,
+		"error_type", errType,
+	)
+}
+
 // retroAttribution is the inference attribution for one retro capture: the
-// configured model (gen_ai.request.model / inference.configured), the tier that
-// WOULD serve (inference.used), and any degradation reason (#1080).
+// configured model (gen_ai.request.model / inference.configured), the backend that
+// serves (inference.used), any degradation reason, and the backend to call.
 type retroAttribution struct {
 	configured string
 	used       string
 	fallback   string
-	// backend is the LIVE resolved Backend the retro should actually call Infer on
-	// (#1179) — the same instance the resolver handed back, surfaced here instead of
-	// discarded. Nil when the whole chain was unreachable (or no resolver is wired):
-	// the retro then stays capture-only with fallback=no_backend_available.
-	backend Backend
+	backend    TextBackend
 }
 
-// retroInference computes the retro span/log inference attribution (#1080), routing
-// through the SHARED resolver so it matches the decision loop's configured backend.
-//
-//   - No resolver wired (tests / stub-default without one): preserve the pre-#1080
-//     attribution exactly — configured = the agent.model flag, used = "none"
-//     (DefaultInference: a retro has no rules fallback, see the DIVERGENCE note on
-//     retroPromptAttributes), fallback = no_backend_available.
-//   - Resolver wired: configured = the configured inference model when one is set
-//     (AGENT_INFERENCE_MODEL), else the flag. used/fallback come from resolving the
-//     SAME availability cache the decision loop reads:
-//   - configured tier reachable -> used = the tier, fallback = "" (a real backend
-//     WOULD serve the retro — no degradation);
-//   - a lower legacy tier serves -> used = that tier, fallback = endpoint_unreachable;
-//   - whole chain unreachable    -> used = "none" (DefaultInference, NOT "rules":
-//     the retro DIVERGENCE — no rules fallback at game end), fallback =
-//     no_backend_available — byte-identical to the legacy stub path.
-func (rc *RetroCoordinator) retroInference(flagModel string) retroAttribution {
-	if rc.resolver == nil {
+// retroInference computes the retro span/log inference attribution (#1234):
+//   - no backend wired (the stub default): configured="", used="none"
+//     (DefaultInference: a retro has no rules fallback), fallback=no_backend_available;
+//   - backend wired but the game kind is not eligible: configured=its model,
+//     used="none", fallback=llm_not_eligible;
+//   - backend wired and called: configured=its model, used=its name, fallback="".
+func (rc *RetroCoordinator) retroInference(callBackend bool) retroAttribution {
+	if rc.backend == nil {
+		return retroAttribution{used: DefaultInference, fallback: FallbackNoBackend}
+	}
+	if !callBackend {
+		// A backend is wired but this game kind is not eligible (shadow games by
+		// default): capture-only, attributed to the model that would have served.
 		return retroAttribution{
-			configured: flagModel,
+			configured: rc.backend.Model(),
 			used:       DefaultInference,
-			fallback:   FallbackNoBackend,
+			fallback:   FallbackNotEligible,
 		}
 	}
-	configured := rc.resolver.ConfiguredModel()
-	if configured == "" {
-		configured = flagModel
-	}
-	res := rc.resolver.ResolveConfigured(flagModel)
-	// A nil Backend means the whole chain was unreachable and the decision loop would
-	// fall back to rules; the retro has no rules fallback, so it reports used="none"
-	// (the DIVERGENCE) with the chain's no_backend_available reason — identical to the
-	// pre-#1080 stub attribution. The nil backend is surfaced (#1179) so OnGameEnd keeps
-	// the capture-only path with no_backend_available.
-	if res.Backend == nil {
-		return retroAttribution{
-			configured: configured,
-			used:       DefaultInference,
-			fallback:   res.FallbackReason,
-		}
-	}
-	// #1179: surface the LIVE Backend so OnGameEnd can actually call Infer on it,
-	// instead of resolving the attribution and discarding the resolved tier.
 	return retroAttribution{
-		configured: configured,
-		used:       res.Used,
-		fallback:   res.FallbackReason,
-		backend:    res.Backend,
+		configured: rc.backend.Model(),
+		used:       rc.backend.Name(),
+		backend:    rc.backend,
 	}
 }
 
@@ -700,10 +706,7 @@ type retroPromptAttrs struct {
 	gameKind   string
 	objectives map[string]float64
 	allowed    []string
-	// configured/used/fallback are the #1080 inference attribution resolved through
-	// the shared resolver: the configured backend model, the tier that WOULD serve,
-	// and any degradation reason. They replace the formerly hard-coded
-	// model-flag/"none"/no_backend_available trio.
+	// configured/used/fallback are the inference attribution (retroInference).
 	configured string
 	used       string
 	fallback   string
@@ -723,23 +726,14 @@ type retroPromptAttrs struct {
 //   - llm.retro.system_sha256 = the System-prompt FINGERPRINT (#1168), NOT the text
 //   - llm.retro.user        = the User prompt text (capped at maxUserPromptBytes)
 //   - llm.retro.bytes       = len(system)+len(user) (full size; system TEXT not emitted)
-//   - inference.configured  = the configured backend model (#1080), or the model flag
-//   - inference.used        = the tier that WOULD serve, or "none" (see DIVERGENCE)
-//   - inference.fallback_reason = "" when the configured backend is reachable, else
-//     endpoint_unreachable / no_backend_available
+//   - inference.configured  = the text backend's model ("" when capture-only)
+//   - inference.used        = the text backend's name, or "none" (see DIVERGENCE)
+//   - inference.fallback_reason = "" when a backend is wired, else no_backend_available
 //
-// #1080: configured/used/fallback are resolved through the SHARED resolver (the same
-// one the decision loop uses), so when AGENT_INFERENCE_BACKEND=openai the retro names
-// the configured model (gemma4) instead of the agent.model flag's unreachable
-// phi4-mini legacy tier. With no resolver wired the legacy flag-only attribution is
-// preserved exactly (see retroInference).
-//
-// DIVERGENCE from the in-game capture: when nothing is reachable, inference.used is
-// "none", NOT "rules". The in-game path falls back to the rules engine, so "rules" is
-// the honest answer for "what decided this cycle". A retrospective has NO rules
-// fallback — nothing runs in place of the offline analyst at game end, so claiming
-// "rules" would be a lie. "none" (DefaultInference) is the honest value: no inference
-// of any kind ran. A reachable configured backend (#1080) reports used=<that tier>.
+// DIVERGENCE from the in-game decision path: without a backend, inference.used is
+// "none", NOT "rules". A retrospective has NO rules fallback — nothing runs in place
+// of the offline analyst at game end, so claiming "rules" would be a lie. "none"
+// (DefaultInference) is the honest value: no inference of any kind ran.
 func retroPromptAttributes(in retroPromptAttrs) []attribute.KeyValue {
 	system := in.prompt.System
 	user := in.prompt.User
@@ -748,13 +742,13 @@ func retroPromptAttributes(in retroPromptAttrs) []attribute.KeyValue {
 		semconv.GenAIOperationNameChat,
 		semconv.GenAIRequestModel(in.prompt.Model),
 		genAIOutputTypeJSON,
-		// Agent attribution (same vocabulary as the in-game capture / decision span).
+		// Agent attribution (same vocabulary as the decision span).
 		attribute.String(AttrMode, retroModeValue),
 		attribute.String(AttrGameKind, in.gameKind),
 		attribute.String(AttrObjectives, summarizeObjectives(in.objectives)),
 		attribute.String(AttrInterventionsAllowed, allowedSummary(in.allowed)),
 		// session.id + game.id (#1088): the post-game retro span is attributable to the
-		// finished game like the in-game agent.llm.prompt span, so a Jaeger query by
+		// finished game like the in-game decision spans, so a Jaeger query by
 		// game.id surfaces the retrospective alongside the game's in-play decisions.
 		// game.id IS the SessionID (= the real game_id since #845 PR A).
 		attribute.String(AttrSessionID, in.sessionID),
@@ -766,10 +760,8 @@ func retroPromptAttributes(in retroPromptAttrs) []attribute.KeyValue {
 		attribute.String(AttrLLMRetroSystemSHA, systemPromptSHA(system)),
 		attribute.String(AttrLLMRetroUser, capUserPrompt(user)),
 		attribute.Int(AttrLLMRetroBytes, len(system)+len(user)),
-		// Inference attribution (#1080): resolved through the shared resolver so the
-		// configured backend (gemma4) is named when one is wired; used is the tier that
-		// WOULD serve (or "none" when nothing is reachable — the retro DIVERGENCE), and
-		// fallback is empty when the configured backend is reachable.
+		// Inference attribution (#1234): the text backend's model and name, or
+		// "none" / no_backend_available when capture-only (the retro DIVERGENCE).
 		attribute.String(AttrInferenceConfigured, in.configured),
 		attribute.String(AttrInferenceUsed, in.used),
 		attribute.String(AttrInferenceFallback, in.fallback),

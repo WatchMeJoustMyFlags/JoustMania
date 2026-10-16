@@ -202,7 +202,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Why the LLM tier was skipped on a decision cycle, broken down by gate reason: llm_not_eligible (cycle didn't qualify for an LLM call), llm_interval (rate-spacing gate), llm_budget_exhausted (per-window LLM budget spent), no_backend_available (no LLM backend wired). When all bars are llm_* the agent is running purely on the rules engine. Source: agent_llm_gated_total (#847).",
+      "description": "Why a remote decision backend (decision.backend != rules) or a post-game retro was not called, broken down by gate reason: llm_not_eligible (game kind not in llm.eligible_game_kinds, e.g. shadow games), decide_interval (decision.min_interval_ms cadence), llm_budget_exhausted (llm.max_requests_per_minute spent). Empty while decision.backend=rules. Source: agent_llm_gated_total (#847, #1234).",
       "fieldConfig": {
         "defaults": {
           "color": {

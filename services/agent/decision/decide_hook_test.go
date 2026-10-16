@@ -108,7 +108,6 @@ func decideRecordingLoop(t *testing.T, snap flags.Snapshot) (*Loop, *tracetest.S
 func rulesSnapshot() flags.Snapshot {
 	return flags.Snapshot{
 		Enabled:              true,
-		Mode:                 "rules",
 		InterventionsAllowed: allInterventions(),
 		Policy:               flags.Policy{MaxInterventionsPerMinute: 100},
 		Decision: flags.DecisionBackend{
@@ -314,8 +313,6 @@ func remoteContext() gamecontext.GameContext {
 
 func remoteSnapshot(timeout time.Duration) flags.Snapshot {
 	s := rulesSnapshot()
-	s.Mode = "llm" // ignored while decision.backend != rules
-	s.Capability = flags.Capability{Model: "phi4-mini"}
 	s.InterventionsAllowed = []string{"noop", "grant_shield", "adjust_music_tempo", "play_audio_cue", "adjust_global_sensitivity"}
 	s.LLMGate = flags.LLMGate{EligibleGameKinds: []string{"real"}, MaxRequestsPerMinute: 100}
 	s.Decision = flags.DecisionBackend{
@@ -992,7 +989,9 @@ func TestRemote_SpanParentAndFireCycleLink(t *testing.T) {
 
 // TestRemote_RealCadenceFlag drives the remote path through the real flags
 // wrapper (in-memory OpenFeature provider): decision.min_interval_ms gates the
-// second call, llm.min_decision_interval_seconds is NOT consulted.
+// second call. llm.min_decision_interval_seconds is a key REMOVED in #1234; it is
+// kept in the provider deliberately, set huge, to prove a stale flag left in a
+// deployment's agent.json has no effect.
 func TestRemote_RealCadenceFlag(t *testing.T) {
 	str := func(v string) memprovider.InMemoryFlag {
 		return memprovider.InMemoryFlag{State: memprovider.Enabled, DefaultVariant: "v", Variants: map[string]any{"v": v}}
@@ -1005,7 +1004,7 @@ func TestRemote_RealCadenceFlag(t *testing.T) {
 		"interventions_allowed":             str("noop,grant_shield,adjust_music_tempo"),
 		"llm.eligible_game_kinds":           str("real"),
 		"llm.max_requests_per_minute":       num(100),
-		"llm.min_decision_interval_seconds": num(3600.0), // must be ignored
+		"llm.min_decision_interval_seconds": num(3600.0), // removed key (#1234): must be ignored
 		"decision.backend":                  str("claude"),
 		"decision.min_interval_ms":          num(1500),
 	})

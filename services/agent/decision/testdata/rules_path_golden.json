@@ -1,0 +1,1278 @@
+[
+  {
+    "name": "endurance",
+    "steps": [
+      {
+        "step": 0,
+        "outcomes": [
+          {
+            "Intervention": "adjust_music_tempo",
+            "TargetSerial": "",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 1
+          },
+          {
+            "Intervention": "play_audio_cue",
+            "TargetSerial": "",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 0.5
+          }
+        ]
+      },
+      {
+        "step": 1,
+        "outcomes": [
+          {
+            "Intervention": "adjust_music_tempo",
+            "TargetSerial": "",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 1
+          },
+          {
+            "Intervention": "play_audio_cue",
+            "TargetSerial": "",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 0.5
+          }
+        ]
+      },
+      {
+        "step": 2,
+        "outcomes": [
+          {
+            "Intervention": "adjust_music_tempo",
+            "TargetSerial": "",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 1
+          },
+          {
+            "Intervention": "play_audio_cue",
+            "TargetSerial": "",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 0.5
+          }
+        ]
+      },
+      {
+        "step": 3,
+        "outcomes": [
+          {
+            "Intervention": "adjust_music_tempo",
+            "TargetSerial": "",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 1
+          },
+          {
+            "Intervention": "play_audio_cue",
+            "TargetSerial": "",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 0.5
+          }
+        ]
+      },
+      {
+        "step": 4,
+        "outcomes": [
+          {
+            "Intervention": "adjust_music_tempo",
+            "TargetSerial": "",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 1
+          },
+          {
+            "Intervention": "play_audio_cue",
+            "TargetSerial": "",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 0.5
+          }
+        ]
+      },
+      {
+        "step": 5,
+        "outcomes": [
+          {
+            "Intervention": "adjust_music_tempo",
+            "TargetSerial": "",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 1
+          },
+          {
+            "Intervention": "play_audio_cue",
+            "TargetSerial": "",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 0.5
+          }
+        ]
+      },
+      {
+        "step": 6,
+        "outcomes": [
+          {
+            "Intervention": "adjust_music_tempo",
+            "TargetSerial": "",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 1
+          },
+          {
+            "Intervention": "play_audio_cue",
+            "TargetSerial": "",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 0.5
+          }
+        ]
+      },
+      {
+        "step": 7,
+        "outcomes": [
+          {
+            "Intervention": "adjust_music_tempo",
+            "TargetSerial": "",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 1
+          },
+          {
+            "Intervention": "play_audio_cue",
+            "TargetSerial": "",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 0.5
+          }
+        ]
+      }
+    ],
+    "applied": [
+      {
+        "Intervention": "adjust_music_tempo",
+        "TargetSerial": "",
+        "Value": "",
+        "Reason": "session at 20s of 120s endurance target with 1 eliminations: slow the tempo",
+        "ObjectiveServed": "endurance",
+        "Fitness": {
+          "eliminations": 1,
+          "min_session_seconds": 120,
+          "session_duration": 20
+        },
+        "Objectives": {
+          "endurance": 1
+        }
+      },
+      {
+        "Intervention": "play_audio_cue",
+        "TargetSerial": "",
+        "Value": "",
+        "Reason": "calming cue while the field shrinks early in the session",
+        "ObjectiveServed": "endurance",
+        "Fitness": {
+          "min_session_seconds": 120,
+          "session_duration": 20
+        },
+        "Objectives": {
+          "endurance": 1
+        }
+      },
+      {
+        "Intervention": "adjust_music_tempo",
+        "TargetSerial": "",
+        "Value": "",
+        "Reason": "session at 20s of 120s endurance target with 1 eliminations: slow the tempo",
+        "ObjectiveServed": "endurance",
+        "Fitness": {
+          "eliminations": 1,
+          "min_session_seconds": 120,
+          "session_duration": 20
+        },
+        "Objectives": {
+          "endurance": 1
+        }
+      },
+      {
+        "Intervention": "play_audio_cue",
+        "TargetSerial": "",
+        "Value": "",
+        "Reason": "calming cue while the field shrinks early in the session",
+        "ObjectiveServed": "endurance",
+        "Fitness": {
+          "min_session_seconds": 120,
+          "session_duration": 20
+        },
+        "Objectives": {
+          "endurance": 1
+        }
+      },
+      {
+        "Intervention": "adjust_music_tempo",
+        "TargetSerial": "",
+        "Value": "",
+        "Reason": "session at 20s of 120s endurance target with 1 eliminations: slow the tempo",
+        "ObjectiveServed": "endurance",
+        "Fitness": {
+          "eliminations": 1,
+          "min_session_seconds": 120,
+          "session_duration": 20
+        },
+        "Objectives": {
+          "endurance": 1
+        }
+      },
+      {
+        "Intervention": "play_audio_cue",
+        "TargetSerial": "",
+        "Value": "",
+        "Reason": "calming cue while the field shrinks early in the session",
+        "ObjectiveServed": "endurance",
+        "Fitness": {
+          "min_session_seconds": 120,
+          "session_duration": 20
+        },
+        "Objectives": {
+          "endurance": 1
+        }
+      },
+      {
+        "Intervention": "adjust_music_tempo",
+        "TargetSerial": "",
+        "Value": "",
+        "Reason": "session at 20s of 120s endurance target with 1 eliminations: slow the tempo",
+        "ObjectiveServed": "endurance",
+        "Fitness": {
+          "eliminations": 1,
+          "min_session_seconds": 120,
+          "session_duration": 20
+        },
+        "Objectives": {
+          "endurance": 1
+        }
+      },
+      {
+        "Intervention": "play_audio_cue",
+        "TargetSerial": "",
+        "Value": "",
+        "Reason": "calming cue while the field shrinks early in the session",
+        "ObjectiveServed": "endurance",
+        "Fitness": {
+          "min_session_seconds": 120,
+          "session_duration": 20
+        },
+        "Objectives": {
+          "endurance": 1
+        }
+      }
+    ]
+  },
+  {
+    "name": "balanced",
+    "steps": [
+      {
+        "step": 0,
+        "outcomes": [
+          {
+            "Intervention": "adjust_player_sensitivity",
+            "TargetSerial": "STRONG",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 1
+          },
+          {
+            "Intervention": "grant_shield",
+            "TargetSerial": "WEAK",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 1
+          }
+        ]
+      },
+      {
+        "step": 1,
+        "outcomes": [
+          {
+            "Intervention": "adjust_player_sensitivity",
+            "TargetSerial": "STRONG",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 1
+          },
+          {
+            "Intervention": "grant_shield",
+            "TargetSerial": "WEAK",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 1
+          }
+        ]
+      },
+      {
+        "step": 2,
+        "outcomes": [
+          {
+            "Intervention": "adjust_player_sensitivity",
+            "TargetSerial": "STRONG",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 1
+          },
+          {
+            "Intervention": "grant_shield",
+            "TargetSerial": "WEAK",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 1
+          }
+        ]
+      },
+      {
+        "step": 3,
+        "outcomes": [
+          {
+            "Intervention": "adjust_player_sensitivity",
+            "TargetSerial": "STRONG",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 1
+          },
+          {
+            "Intervention": "grant_shield",
+            "TargetSerial": "WEAK",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 1
+          }
+        ]
+      },
+      {
+        "step": 4,
+        "outcomes": [
+          {
+            "Intervention": "adjust_player_sensitivity",
+            "TargetSerial": "STRONG",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 1
+          },
+          {
+            "Intervention": "grant_shield",
+            "TargetSerial": "WEAK",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 1
+          }
+        ]
+      },
+      {
+        "step": 5,
+        "outcomes": [
+          {
+            "Intervention": "adjust_player_sensitivity",
+            "TargetSerial": "STRONG",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 1
+          },
+          {
+            "Intervention": "grant_shield",
+            "TargetSerial": "WEAK",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 1
+          }
+        ]
+      },
+      {
+        "step": 6,
+        "outcomes": [
+          {
+            "Intervention": "adjust_player_sensitivity",
+            "TargetSerial": "STRONG",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 1
+          },
+          {
+            "Intervention": "grant_shield",
+            "TargetSerial": "WEAK",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 1
+          }
+        ]
+      },
+      {
+        "step": 7,
+        "outcomes": [
+          {
+            "Intervention": "adjust_player_sensitivity",
+            "TargetSerial": "STRONG",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 1
+          },
+          {
+            "Intervention": "grant_shield",
+            "TargetSerial": "WEAK",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 1
+          }
+        ]
+      }
+    ],
+    "applied": [
+      {
+        "Intervention": "adjust_player_sensitivity",
+        "TargetSerial": "STRONG",
+        "Value": "",
+        "Reason": "skill gap 0.70 exceeds 0.40: handicap the outlier",
+        "ObjectiveServed": "balanced",
+        "Fitness": {
+          "max_skill_gap": 0.4,
+          "outlier_skill": 0.9,
+          "skill_gap": 0.7
+        },
+        "Objectives": {
+          "balanced": 1
+        }
+      },
+      {
+        "Intervention": "grant_shield",
+        "TargetSerial": "WEAK",
+        "Value": "",
+        "Reason": "shield the weakest player (skill 0.20) while the field shrinks",
+        "ObjectiveServed": "balanced",
+        "Fitness": {
+          "active_players": 3,
+          "weakest_skill": 0.2
+        },
+        "Objectives": {
+          "balanced": 1
+        }
+      },
+      {
+        "Intervention": "adjust_player_sensitivity",
+        "TargetSerial": "STRONG",
+        "Value": "",
+        "Reason": "skill gap 0.70 exceeds 0.40: handicap the outlier",
+        "ObjectiveServed": "balanced",
+        "Fitness": {
+          "max_skill_gap": 0.4,
+          "outlier_skill": 0.9,
+          "skill_gap": 0.7
+        },
+        "Objectives": {
+          "balanced": 1
+        }
+      },
+      {
+        "Intervention": "grant_shield",
+        "TargetSerial": "WEAK",
+        "Value": "",
+        "Reason": "shield the weakest player (skill 0.20) while the field shrinks",
+        "ObjectiveServed": "balanced",
+        "Fitness": {
+          "active_players": 3,
+          "weakest_skill": 0.2
+        },
+        "Objectives": {
+          "balanced": 1
+        }
+      },
+      {
+        "Intervention": "adjust_player_sensitivity",
+        "TargetSerial": "STRONG",
+        "Value": "",
+        "Reason": "skill gap 0.70 exceeds 0.40: handicap the outlier",
+        "ObjectiveServed": "balanced",
+        "Fitness": {
+          "max_skill_gap": 0.4,
+          "outlier_skill": 0.9,
+          "skill_gap": 0.7
+        },
+        "Objectives": {
+          "balanced": 1
+        }
+      },
+      {
+        "Intervention": "grant_shield",
+        "TargetSerial": "WEAK",
+        "Value": "",
+        "Reason": "shield the weakest player (skill 0.20) while the field shrinks",
+        "ObjectiveServed": "balanced",
+        "Fitness": {
+          "active_players": 3,
+          "weakest_skill": 0.2
+        },
+        "Objectives": {
+          "balanced": 1
+        }
+      }
+    ]
+  },
+  {
+    "name": "accelerate",
+    "steps": [
+      {
+        "step": 0,
+        "outcomes": [
+          {
+            "Intervention": "adjust_music_tempo",
+            "TargetSerial": "",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 1
+          },
+          {
+            "Intervention": "eliminate_player",
+            "TargetSerial": "A",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 2
+          }
+        ]
+      },
+      {
+        "step": 1,
+        "outcomes": [
+          {
+            "Intervention": "adjust_music_tempo",
+            "TargetSerial": "",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 1
+          },
+          {
+            "Intervention": "eliminate_player",
+            "TargetSerial": "A",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 2
+          }
+        ]
+      },
+      {
+        "step": 2,
+        "outcomes": [
+          {
+            "Intervention": "adjust_music_tempo",
+            "TargetSerial": "",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 1
+          },
+          {
+            "Intervention": "eliminate_player",
+            "TargetSerial": "A",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 2
+          }
+        ]
+      },
+      {
+        "step": 3,
+        "outcomes": [
+          {
+            "Intervention": "adjust_music_tempo",
+            "TargetSerial": "",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 1
+          },
+          {
+            "Intervention": "eliminate_player",
+            "TargetSerial": "A",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 2
+          }
+        ]
+      },
+      {
+        "step": 4,
+        "outcomes": [
+          {
+            "Intervention": "adjust_music_tempo",
+            "TargetSerial": "",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 1
+          },
+          {
+            "Intervention": "eliminate_player",
+            "TargetSerial": "A",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 2
+          }
+        ]
+      },
+      {
+        "step": 5,
+        "outcomes": [
+          {
+            "Intervention": "adjust_music_tempo",
+            "TargetSerial": "",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 1
+          },
+          {
+            "Intervention": "eliminate_player",
+            "TargetSerial": "A",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 2
+          }
+        ]
+      },
+      {
+        "step": 6,
+        "outcomes": [
+          {
+            "Intervention": "adjust_music_tempo",
+            "TargetSerial": "",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 1
+          },
+          {
+            "Intervention": "eliminate_player",
+            "TargetSerial": "A",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 2
+          }
+        ]
+      },
+      {
+        "step": 7,
+        "outcomes": [
+          {
+            "Intervention": "adjust_music_tempo",
+            "TargetSerial": "",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 1
+          },
+          {
+            "Intervention": "eliminate_player",
+            "TargetSerial": "A",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 2
+          }
+        ]
+      }
+    ],
+    "applied": [
+      {
+        "Intervention": "adjust_music_tempo",
+        "TargetSerial": "",
+        "Value": "",
+        "Reason": "session at 100s past the 60s accelerate target: speed up",
+        "ObjectiveServed": "accelerate",
+        "Fitness": {
+          "session_duration": 100,
+          "target_session_seconds": 60
+        },
+        "Objectives": {
+          "accelerate": 1
+        }
+      },
+      {
+        "Intervention": "eliminate_player",
+        "TargetSerial": "A",
+        "Value": "",
+        "Reason": "session 1.5x past target: eliminate the least active player (0.20g)",
+        "ObjectiveServed": "accelerate",
+        "Fitness": {
+          "lowest_intensity": 0.2,
+          "session_duration": 100,
+          "target_session_seconds": 60
+        },
+        "Objectives": {
+          "accelerate": 1
+        }
+      },
+      {
+        "Intervention": "adjust_music_tempo",
+        "TargetSerial": "",
+        "Value": "",
+        "Reason": "session at 100s past the 60s accelerate target: speed up",
+        "ObjectiveServed": "accelerate",
+        "Fitness": {
+          "session_duration": 100,
+          "target_session_seconds": 60
+        },
+        "Objectives": {
+          "accelerate": 1
+        }
+      },
+      {
+        "Intervention": "eliminate_player",
+        "TargetSerial": "A",
+        "Value": "",
+        "Reason": "session 1.5x past target: eliminate the least active player (0.20g)",
+        "ObjectiveServed": "accelerate",
+        "Fitness": {
+          "lowest_intensity": 0.2,
+          "session_duration": 100,
+          "target_session_seconds": 60
+        },
+        "Objectives": {
+          "accelerate": 1
+        }
+      }
+    ]
+  },
+  {
+    "name": "chaos random",
+    "steps": [
+      {
+        "step": 0,
+        "outcomes": [
+          {
+            "Intervention": "send_controller_effect",
+            "TargetSerial": "A",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 0.5
+          }
+        ]
+      },
+      {
+        "step": 1,
+        "outcomes": [
+          {
+            "Intervention": "send_controller_effect",
+            "TargetSerial": "C",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 0.5
+          }
+        ]
+      },
+      {
+        "step": 2,
+        "outcomes": [
+          {
+            "Intervention": "send_controller_effect",
+            "TargetSerial": "A",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 0.5
+          }
+        ]
+      },
+      {
+        "step": 3,
+        "outcomes": [
+          {
+            "Intervention": "send_controller_effect",
+            "TargetSerial": "C",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 0.5
+          }
+        ]
+      },
+      {
+        "step": 4,
+        "outcomes": [
+          {
+            "Intervention": "send_controller_effect",
+            "TargetSerial": "A",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 0.5
+          }
+        ]
+      },
+      {
+        "step": 5,
+        "outcomes": [
+          {
+            "Intervention": "send_controller_effect",
+            "TargetSerial": "C",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 0.5
+          }
+        ]
+      },
+      {
+        "step": 6,
+        "outcomes": null
+      },
+      {
+        "step": 7,
+        "outcomes": [
+          {
+            "Intervention": "send_controller_effect",
+            "TargetSerial": "D",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 0.5
+          }
+        ]
+      }
+    ],
+    "applied": [
+      {
+        "Intervention": "send_controller_effect",
+        "TargetSerial": "A",
+        "Value": "",
+        "Reason": "chaos: random controller effect",
+        "ObjectiveServed": "chaos",
+        "Fitness": {
+          "chaos_roll": 0.6764556596678251
+        },
+        "Objectives": {
+          "chaos": 1
+        }
+      },
+      {
+        "Intervention": "send_controller_effect",
+        "TargetSerial": "C",
+        "Value": "",
+        "Reason": "chaos: random controller effect",
+        "ObjectiveServed": "chaos",
+        "Fitness": {
+          "chaos_roll": 0.5085473976760264
+        },
+        "Objectives": {
+          "chaos": 1
+        }
+      },
+      {
+        "Intervention": "send_controller_effect",
+        "TargetSerial": "A",
+        "Value": "",
+        "Reason": "chaos: random controller effect",
+        "ObjectiveServed": "chaos",
+        "Fitness": {
+          "chaos_roll": 0.797802349388613
+        },
+        "Objectives": {
+          "chaos": 1
+        }
+      },
+      {
+        "Intervention": "send_controller_effect",
+        "TargetSerial": "C",
+        "Value": "",
+        "Reason": "chaos: random controller effect",
+        "ObjectiveServed": "chaos",
+        "Fitness": {
+          "chaos_roll": 0.8192750264193612
+        },
+        "Objectives": {
+          "chaos": 1
+        }
+      },
+      {
+        "Intervention": "send_controller_effect",
+        "TargetSerial": "A",
+        "Value": "",
+        "Reason": "chaos: random controller effect",
+        "ObjectiveServed": "chaos",
+        "Fitness": {
+          "chaos_roll": 0.9730458047755973
+        },
+        "Objectives": {
+          "chaos": 1
+        }
+      },
+      {
+        "Intervention": "send_controller_effect",
+        "TargetSerial": "C",
+        "Value": "",
+        "Reason": "chaos: random controller effect",
+        "ObjectiveServed": "chaos",
+        "Fitness": {
+          "chaos_roll": 0.6047654075331631
+        },
+        "Objectives": {
+          "chaos": 1
+        }
+      },
+      {
+        "Intervention": "send_controller_effect",
+        "TargetSerial": "D",
+        "Value": "",
+        "Reason": "chaos: random controller effect",
+        "ObjectiveServed": "chaos",
+        "Fitness": {
+          "chaos_roll": 0.6974917552729882
+        },
+        "Objectives": {
+          "chaos": 1
+        }
+      }
+    ]
+  },
+  {
+    "name": "chaos statue",
+    "steps": [
+      {
+        "step": 0,
+        "outcomes": [
+          {
+            "Intervention": "send_controller_effect",
+            "TargetSerial": "S",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 0.5
+          },
+          {
+            "Intervention": "send_controller_effect",
+            "TargetSerial": "S",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 0.5
+          }
+        ]
+      },
+      {
+        "step": 1,
+        "outcomes": [
+          {
+            "Intervention": "send_controller_effect",
+            "TargetSerial": "S",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 0.5
+          },
+          {
+            "Intervention": "send_controller_effect",
+            "TargetSerial": "S",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 0.5
+          }
+        ]
+      },
+      {
+        "step": 2,
+        "outcomes": [
+          {
+            "Intervention": "send_controller_effect",
+            "TargetSerial": "S",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 0.5
+          },
+          {
+            "Intervention": "send_controller_effect",
+            "TargetSerial": "S",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 0.5
+          }
+        ]
+      },
+      {
+        "step": 3,
+        "outcomes": [
+          {
+            "Intervention": "send_controller_effect",
+            "TargetSerial": "S",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 0.5
+          },
+          {
+            "Intervention": "send_controller_effect",
+            "TargetSerial": "S",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 0.5
+          }
+        ]
+      },
+      {
+        "step": 4,
+        "outcomes": [
+          {
+            "Intervention": "send_controller_effect",
+            "TargetSerial": "S",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 0.5
+          },
+          {
+            "Intervention": "send_controller_effect",
+            "TargetSerial": "S",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 0.5
+          }
+        ]
+      },
+      {
+        "step": 5,
+        "outcomes": [
+          {
+            "Intervention": "send_controller_effect",
+            "TargetSerial": "S",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 0.5
+          },
+          {
+            "Intervention": "send_controller_effect",
+            "TargetSerial": "S",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 0.5
+          }
+        ]
+      },
+      {
+        "step": 6,
+        "outcomes": [
+          {
+            "Intervention": "send_controller_effect",
+            "TargetSerial": "S",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 0.5
+          }
+        ]
+      },
+      {
+        "step": 7,
+        "outcomes": [
+          {
+            "Intervention": "send_controller_effect",
+            "TargetSerial": "S",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 0.5
+          },
+          {
+            "Intervention": "send_controller_effect",
+            "TargetSerial": "T",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 0.5
+          }
+        ]
+      }
+    ],
+    "applied": [
+      {
+        "Intervention": "send_controller_effect",
+        "TargetSerial": "S",
+        "Value": "",
+        "Reason": "near-zero movement variance (0.010): nudge the statue",
+        "ObjectiveServed": "chaos",
+        "Fitness": {
+          "movement_variance": 0.01,
+          "variance_epsilon": 0.05
+        },
+        "Objectives": {
+          "chaos": 1
+        }
+      },
+      {
+        "Intervention": "send_controller_effect",
+        "TargetSerial": "S",
+        "Value": "",
+        "Reason": "chaos: random controller effect",
+        "ObjectiveServed": "chaos",
+        "Fitness": {
+          "chaos_roll": 0.6764556596678251
+        },
+        "Objectives": {
+          "chaos": 1
+        }
+      },
+      {
+        "Intervention": "send_controller_effect",
+        "TargetSerial": "S",
+        "Value": "",
+        "Reason": "near-zero movement variance (0.010): nudge the statue",
+        "ObjectiveServed": "chaos",
+        "Fitness": {
+          "movement_variance": 0.01,
+          "variance_epsilon": 0.05
+        },
+        "Objectives": {
+          "chaos": 1
+        }
+      },
+      {
+        "Intervention": "send_controller_effect",
+        "TargetSerial": "S",
+        "Value": "",
+        "Reason": "chaos: random controller effect",
+        "ObjectiveServed": "chaos",
+        "Fitness": {
+          "chaos_roll": 0.5085473976760264
+        },
+        "Objectives": {
+          "chaos": 1
+        }
+      },
+      {
+        "Intervention": "send_controller_effect",
+        "TargetSerial": "S",
+        "Value": "",
+        "Reason": "near-zero movement variance (0.010): nudge the statue",
+        "ObjectiveServed": "chaos",
+        "Fitness": {
+          "movement_variance": 0.01,
+          "variance_epsilon": 0.05
+        },
+        "Objectives": {
+          "chaos": 1
+        }
+      },
+      {
+        "Intervention": "send_controller_effect",
+        "TargetSerial": "S",
+        "Value": "",
+        "Reason": "chaos: random controller effect",
+        "ObjectiveServed": "chaos",
+        "Fitness": {
+          "chaos_roll": 0.797802349388613
+        },
+        "Objectives": {
+          "chaos": 1
+        }
+      },
+      {
+        "Intervention": "send_controller_effect",
+        "TargetSerial": "S",
+        "Value": "",
+        "Reason": "near-zero movement variance (0.010): nudge the statue",
+        "ObjectiveServed": "chaos",
+        "Fitness": {
+          "movement_variance": 0.01,
+          "variance_epsilon": 0.05
+        },
+        "Objectives": {
+          "chaos": 1
+        }
+      },
+      {
+        "Intervention": "send_controller_effect",
+        "TargetSerial": "S",
+        "Value": "",
+        "Reason": "chaos: random controller effect",
+        "ObjectiveServed": "chaos",
+        "Fitness": {
+          "chaos_roll": 0.8192750264193612
+        },
+        "Objectives": {
+          "chaos": 1
+        }
+      },
+      {
+        "Intervention": "send_controller_effect",
+        "TargetSerial": "S",
+        "Value": "",
+        "Reason": "near-zero movement variance (0.010): nudge the statue",
+        "ObjectiveServed": "chaos",
+        "Fitness": {
+          "movement_variance": 0.01,
+          "variance_epsilon": 0.05
+        },
+        "Objectives": {
+          "chaos": 1
+        }
+      },
+      {
+        "Intervention": "send_controller_effect",
+        "TargetSerial": "S",
+        "Value": "",
+        "Reason": "chaos: random controller effect",
+        "ObjectiveServed": "chaos",
+        "Fitness": {
+          "chaos_roll": 0.9730458047755973
+        },
+        "Objectives": {
+          "chaos": 1
+        }
+      },
+      {
+        "Intervention": "send_controller_effect",
+        "TargetSerial": "S",
+        "Value": "",
+        "Reason": "near-zero movement variance (0.010): nudge the statue",
+        "ObjectiveServed": "chaos",
+        "Fitness": {
+          "movement_variance": 0.01,
+          "variance_epsilon": 0.05
+        },
+        "Objectives": {
+          "chaos": 1
+        }
+      },
+      {
+        "Intervention": "send_controller_effect",
+        "TargetSerial": "S",
+        "Value": "",
+        "Reason": "chaos: random controller effect",
+        "ObjectiveServed": "chaos",
+        "Fitness": {
+          "chaos_roll": 0.6047654075331631
+        },
+        "Objectives": {
+          "chaos": 1
+        }
+      }
+    ]
+  },
+  {
+    "name": "no candidates",
+    "steps": [
+      {
+        "step": 0,
+        "outcomes": null
+      },
+      {
+        "step": 1,
+        "outcomes": null
+      },
+      {
+        "step": 2,
+        "outcomes": null
+      },
+      {
+        "step": 3,
+        "outcomes": null
+      },
+      {
+        "step": 4,
+        "outcomes": null
+      },
+      {
+        "step": 5,
+        "outcomes": null
+      },
+      {
+        "step": 6,
+        "outcomes": null
+      },
+      {
+        "step": 7,
+        "outcomes": null
+      }
+    ],
+    "applied": null
+  }
+]

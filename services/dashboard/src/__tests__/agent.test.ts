@@ -4,11 +4,10 @@
  * Exercise aggregateAgentLogs (decision feed + flag panel + Loki-derived blocked
  * tallies) and parseAppliedCounts (VictoriaMetrics applied count) in isolation —
  * no Loki / VM / DOM. Covers the agent.* log shapes the agent really emits
- * (services/agent/decision/decision.go, async_apply.go):
+ * (services/agent/decision/decision.go):
  *   - agent.evaluate feeds the flag panel (newest wins) and never floods the feed
  *   - agent.decision_blocked folds into blocked-by-action and blocked-by-reason
- *   - agent.llm.discarded and agent.rollout_* appear in the feed but don't count
- *     as blocked
+ *   - agent.rollout_* appears in the feed but doesn't count as blocked
  *   - the feed is newest-first
  *   - VM applied-count summing across namespaced jobs, and the empty/unavailable
  *     path returning nulls
@@ -40,9 +39,7 @@ describe("aggregateAgentLogs — flag panel", () => {
       line({
         msg: "agent.evaluate",
         session_id: "game_aaa",
-        mode: "rules",
-        model: "none",
-        prompt_variant: "v1",
+        decision_backend: "rules",
         battery_threshold: "20",
         variance_window: "5",
         max_per_minute: "12",
@@ -51,9 +48,7 @@ describe("aggregateAgentLogs — flag panel", () => {
       line({
         msg: "agent.evaluate",
         session_id: "game_aaa",
-        mode: "llm",
-        model: "claude",
-        prompt_variant: "v2",
+        decision_backend: "claude",
         battery_threshold: "30",
         variance_window: "8",
         max_per_minute: "20",
@@ -62,23 +57,22 @@ describe("aggregateAgentLogs — flag panel", () => {
     ]);
     expect(out.flags).not.toBeNull();
     // Newest (second) line wins.
-    expect(out.flags?.mode).toBe("llm");
-    expect(out.flags?.model).toBe("claude");
+    expect(out.flags?.decisionBackend).toBe("claude");
     expect(out.flags?.maxPerMinute).toBe("20");
     expect(out.flags?.gameMode).toBe("Zombies");
   });
 
   it("newest wins regardless of input order", () => {
-    const newer = line({ msg: "agent.evaluate", mode: "llm" }, 2000);
-    const older = line({ msg: "agent.evaluate", mode: "rules" }, 1000);
+    const newer = line({ msg: "agent.evaluate", decision_backend: "claude" }, 2000);
+    const older = line({ msg: "agent.evaluate", decision_backend: "rules" }, 1000);
     // Feed older AFTER newer to prove it's ts-driven, not order-driven.
-    expect(aggregateAgentLogs([newer, older]).flags?.mode).toBe("llm");
+    expect(aggregateAgentLogs([newer, older]).flags?.decisionBackend).toBe("claude");
   });
 
   it("agent.evaluate never appears in the decision feed", () => {
     const out = aggregateAgentLogs([
-      line({ msg: "agent.evaluate", mode: "rules" }),
-      line({ msg: "agent.evaluate", mode: "rules" }),
+      line({ msg: "agent.evaluate", decision_backend: "rules" }),
+      line({ msg: "agent.evaluate", decision_backend: "rules" }),
     ]);
     expect(out.feed).toHaveLength(0);
     expect(out.flags).not.toBeNull();
@@ -116,25 +110,21 @@ describe("aggregateAgentLogs — blocked tallies", () => {
     expect(fwd.overlay.blockedByAction).toEqual(rev.overlay.blockedByAction);
   });
 
-  it("discarded and rollout lines are NOT counted as blocked", () => {
-    const out = aggregateAgentLogs([
-      line({ msg: "agent.llm.discarded", session_id: "game_a", reason: "timeout" }),
-      line({ msg: "agent.rollout_expand", reason: "stable" }),
-    ]);
+  it("rollout lines are NOT counted as blocked", () => {
+    const out = aggregateAgentLogs([line({ msg: "agent.rollout_expand", reason: "stable" })]);
     expect(out.overlay.totalBlocked).toBe(0);
-    expect(out.feed).toHaveLength(2);
+    expect(out.feed).toHaveLength(1);
   });
 });
 
 describe("aggregateAgentLogs — decision feed", () => {
-  it("includes blocked / discarded / rollout rows with the right kind", () => {
+  it("includes blocked / rollout rows with the right kind", () => {
     const out = aggregateAgentLogs([
       line({ msg: "agent.decision_blocked", intervention: "grant_shield", reason: "rate_limit", session_id: "game_z" }),
-      line({ msg: "agent.llm.discarded", reason: "stale_context" }),
       line({ msg: "agent.rollout_rollback", reason: "regression" }),
     ]);
     const kinds = out.feed.map((r) => r.kind).sort();
-    expect(kinds).toEqual(["blocked", "discarded", "rollout"]);
+    expect(kinds).toEqual(["blocked", "rollout"]);
     const blocked = out.feed.find((r) => r.kind === "blocked");
     expect(blocked?.blocked).toBe(true);
     expect(blocked?.action).toBe("grant_shield");
@@ -154,7 +144,7 @@ describe("aggregateAgentLogs — decision feed", () => {
   it("ignores unrelated agent.* messages", () => {
     const out = aggregateAgentLogs([
       line({ msg: "agent.game.summary_written", session_id: "game_a" }),
-      line({ msg: "agent.llm.prompt_captured" }),
+      line({ msg: "agent.llm.retro_captured" }),
     ]);
     expect(out.feed).toHaveLength(0);
     expect(out.overlay.totalBlocked).toBe(0);

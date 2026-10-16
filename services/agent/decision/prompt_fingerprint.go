@@ -8,16 +8,15 @@ import (
 )
 
 // prompt_fingerprint.go is the #1168 root-cause fix for the #1167 traces-pipeline
-// collector OOM. The agent.llm.prompt (#739) and agent.llm.retro (#844) spans used
-// to carry the FULL, UNCAPPED System prompt text on EVERY emission. That text is
-// LARGE (physics model #1091, mode fragment, impact magnitudes #1102, allow-list;
-// retro got physics in #1160) and effectively CONSTANT for a given prompt_variant +
-// mode + interventions_allowed (the cross-game PRIOR-GAMES block #929 and operator
-// note #930 do vary it — see below), so shipping it per span (4 shadow games/tick)
-// is redundant bulk that drove span size, not span count, into the collector OOM.
+// collector OOM. The agent.llm.retro (#844) span (and the in-game agent.llm.prompt
+// span retired in #1234) used to carry the FULL, UNCAPPED System prompt text on
+// EVERY emission. That text is LARGE (physics model #1091, mode fragment,
+// allow-list) and effectively CONSTANT for a given mode + interventions_allowed, so
+// shipping it per span is redundant bulk that drove span size into the collector
+// OOM.
 //
 // The fix replaces the full System TEXT on the span with a short FINGERPRINT
-// (llm.prompt.system_sha256 / llm.retro.system_sha256) and emits the full System
+// (llm.retro.system_sha256) and emits the full System
 // text exactly ONCE per distinct fingerprint on a dedicated LOG line, so any span's
 // hash is resolvable back to the exact text without paying per span.
 //
@@ -47,9 +46,9 @@ const userPromptTruncatedMarker = "\n...[truncated]"
 
 // SpanLLMSystemPromptRef is the message of the once-per-fingerprint reference LOG
 // line (#1168). It is deliberately a LOG, not a span (the OOM is the traces
-// pipeline — see file header). It carries {system_sha256, prompt_variant, mode,
-// interventions_allowed, system} so any span's llm.prompt.system_sha256 /
-// llm.retro.system_sha256 is resolvable to the exact full text. The name mirrors
+// pipeline — see file header). It carries {system_sha256, mode,
+// interventions_allowed, system} so any span's llm.retro.system_sha256 is
+// resolvable to the exact full text. The name mirrors
 // the issue's suggested agent.llm.system_prompt reference.
 const SpanLLMSystemPromptRef = "agent.llm.system_prompt"
 
@@ -93,7 +92,7 @@ func capUserPrompt(user string) string {
 type systemPromptReference struct {
 	// seen maps a system-prompt fingerprint -> struct{} once it has been logged.
 	// sync.Map suits the write-once-then-read-mostly access pattern across the
-	// concurrent per-game Loops (#845) and the retro coordinator that share it.
+	// concurrent game-end retros that share it.
 	seen sync.Map
 }
 
@@ -101,10 +100,10 @@ type systemPromptReference struct {
 // sees a given fingerprint, and is a no-op on every subsequent sight of the same
 // fingerprint. It returns true when it actually emitted (first sight), which the
 // tests use to assert the once-per-fingerprint semantics. The log carries the hash,
-// the low-cardinality determinants (variant / mode / allow-list summary) and the
+// the low-cardinality determinants (mode / allow-list summary) and the
 // full text, so a hash on any span is resolvable to its text. A nil log uses
 // slog.Default so the reference is never silently dropped.
-func (r *systemPromptReference) emit(log *slog.Logger, hash, variant, mode, allowed, system string) bool {
+func (r *systemPromptReference) emit(log *slog.Logger, hash, mode, allowed, system string) bool {
 	if _, loaded := r.seen.LoadOrStore(hash, struct{}{}); loaded {
 		return false // already emitted this fingerprint
 	}
@@ -113,7 +112,6 @@ func (r *systemPromptReference) emit(log *slog.Logger, hash, variant, mode, allo
 	}
 	log.Info(SpanLLMSystemPromptRef,
 		"system_sha256", hash,
-		"prompt_variant", variant,
 		"mode", mode,
 		"interventions_allowed", allowed,
 		"system", system,
@@ -121,10 +119,9 @@ func (r *systemPromptReference) emit(log *slog.Logger, hash, variant, mode, allo
 	return true
 }
 
-// systemPromptRef is the process-lifetime singleton shared by the decision-capture
-// (llm_capture.go) and retro-capture (retro_capture.go) paths, so a system prompt
-// rendered by either path is logged once for the whole process — not once per Loop
-// (there is one Loop per concurrent game, #845) and not once per path. Tests reset
+// systemPromptRef is the process-lifetime singleton used by the retro capture
+// (retro_capture.go), so a system prompt is logged once for the whole process — not
+// once per concurrent game-end. Tests reset
 // it via resetSystemPromptRef.
 var systemPromptRef = &systemPromptReference{}
 

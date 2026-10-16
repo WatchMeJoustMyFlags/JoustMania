@@ -128,7 +128,7 @@ func NewCoordinator(w *Writer, log *slog.Logger) *Coordinator {
 
 // SetObserver wires the M7-2 rolling-window observer (#929): main.go constructs
 // ONE gamewindow.Store (the global cross-game memory, shared across all per-game
-// loops like the LLM budget/resolver) and registers it here, so the window
+// loops like the LLM budget) and registers it here, so the window
 // advances on every game end. Optional and additive — a coordinator with no
 // observer is exactly the M7-1 behavior. Set during construction, before the
 // store fires OnGameEnd, so the field read in OnGameEnd needs no lock.

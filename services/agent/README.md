@@ -117,8 +117,8 @@ grace.
 Decision spans are independently attributable per game. The root
 `agent.signal_received` span carries both `session.id` and the `game.id` alias
 (`session.id` **is** the real `game_id` since PR A's early adoption); the
-decision / `agent.disabled` / `agent.llm.prompt` spans carry `game.kind` (and the
-prompt-capture span carries `game.id` too). So a Jaeger query by `game.id` is
+decision / `agent.disabled` / `agent.decide` spans carry `game.kind` and
+`game.id`. So a Jaeger query by `game.id` is
 symmetrical with the coordinator's own `game.id`-tagged spans, and two concurrent
 games' traces never blur together.
 
@@ -452,9 +452,6 @@ model**, applied in order:
    - `enabled` (bool): the kill switch. When `false` the loop short-circuits
      immediately, before any rules run or spans are emitted. This is also the
      safe default when flagd is unreachable, so the agent comes up inert.
-   - `mode` (string): selects the decision path. `rules` runs the deterministic
-     rules engine; `llm` is reserved for M4 and currently logs a note (including
-     the capability selection) and falls back to rules.
 2. **Objective** (steers the rules) —
    - `objectives` (object → `map[string]float64`): per-session goal weights. The
      loop publishes the per-cycle value into the rules engine through a
@@ -467,10 +464,12 @@ model**, applied in order:
      functions against the live game context each cycle and amplifies the
      candidates serving a *failing* objective. See **[Fitness functions
      (#731)](#fitness-functions-731)** below.
-3. **Capability** (selects the model/prompt for the M4 LLM path) —
-   - `model` (string, default `phi4-mini`) and `prompt_variant` (string, default
-     `conservative`). Evaluated and **recorded** every cycle; not consumed until
-     the M4 LLM path lands. They are passed along the `llm` path stub.
+3. **Decision backend** (who decides, epic #1225) —
+   - `decision.backend` (string, default `rules`): `rules` runs the deterministic
+     rules engine; `claude` / `openai` / `jev` hand the decision to that remote
+     backend, with the rules engine as the fallback. See **Decision backends**
+     below and [docs/agent-inference.md](../../docs/agent-inference.md). The
+     legacy `mode` / `model` / `prompt_variant` flags were removed in #1234.
 4. **Permission** (constrains which actions dispatch, and how fast) — applied to
    each candidate decision in this order, blocking with an attributed reason:
    - `interventions_allowed` (string of comma-separated ids → `[]string`): the
@@ -550,7 +549,7 @@ per second. The weighted per-minute budget is enforced downstream by the loop
 `adjust_global_sensitivity`, `adjust_global_difficulty`, and
 `set_pacing_profile`. They require judgment the deterministic ruleset cannot
 encode (who deserves a revive; when reshaping the whole session's difficulty
-or pacing is socially right) and are reserved for the M4 LLM path. They remain
+or pacing is socially right) and are reserved for a remote decision backend. They remain
 reachable today via the permission layer for manual/operator dispatch — they
 are intentionally unreached by `rules_decide`, not dead code.
 
@@ -682,17 +681,12 @@ decision in the cycle):
 | Attribute | Source | Today | Real value arrives with |
 |-----------|--------|-------|-------------------------|
 | `agent.enabled` | existence flag `enabled` | live bool | — |
-| `agent.mode` | existence flag `mode` | `"rules"` | LLM backend (M4) |
 | `agent.objectives` | objective flag `objectives` | sorted `k=v` weights / `"unset"` | — |
-| `agent.model` | capability flag `model` | live (e.g. `"phi4-mini"`) | consumed by M4 |
-| `agent.prompt_variant` | capability flag `prompt_variant` | live | consumed by M4 |
+| `decide.backend` | the backend that decided this cycle (only when the decide hook ran) | `"rules"` / `"claude"` / ... | — |
 | `interventions.allowed` | permission flag `interventions_allowed` | `"none"` / `a,b,c` | — |
 | `policy.battery_threshold` | policy flag | live int | — |
 | `policy.movement_variance_window` | policy flag | live int | — |
 | `policy.max_interventions_per_minute` | policy flag | live int | — |
-| `inference.configured` | the `model` flag value | live (e.g. `"phi4-mini"`) | — |
-| `inference.used` | the engine that ran | `"rules"` | `"llm"` once M4 lands |
-| `inference.fallback_reason` | why `llm` fell back | `"no_backend_available"` when `mode=llm`, else `""` | #741 `resolve_backend()` supplies the real reason / empties |
 | `fitness.evaluated` (cycle) | `LayerState.FitnessEvaluated` — dotted per-objective thresholds + results (#731) | live (e.g. `endurance.session_progress=0.5`) | — |
 | `gen_ai.agent.name` | agent identity | `"joustmania-agent"` | — |
 
@@ -706,9 +700,11 @@ decision in the cycle):
 | `decision.block_reason` | `not_allowed` / `battery_threshold` / `rate_limit` (only when blocked) | — |
 | `fitness.evaluated` (per-decision fallback) | the cycle-level evaluation (above) is authoritative; only Probe/Noop engines fall back to the rule's own `Decision.Fitness` | — |
 
-The attribution attaches where **both** the rules and (future M4) LLM paths
-converge (`decisionAttributes`, fed by the shared `LayerState`), so it is
-path-agnostic — it works for the LLM path automatically once M4 lands.
+The attribution attaches where the rules and remote decide paths converge
+(`decisionAttributes`, fed by the shared `LayerState`). The full decide record
+(requested backend, fallback reason, answers, confidence, outcome) is on the
+`agent.decide` span. #1234 removed `agent.mode`, `agent.model`,
+`agent.prompt_variant` and `inference.*` from this span.
 
 #### Kill-switch trace (`agent.disabled`)
 
@@ -716,72 +712,24 @@ When the existence layer reports the agent **off** (`enabled=false`) the loop
 short-circuits before any rules run, but still emits a **throttled** kill-switch
 trace so "agent off" is visible in Jaeger: a root `agent.signal_received` with a
 single `agent.disabled` child (no `agent.action` child — nothing was decided)
-carrying the same cycle-level flag attribution above (`agent.enabled=false`, the
-capability and permission flags that were in effect). Throttled to one per second
+carrying the same cycle-level flag attribution above (`agent.enabled=false` and
+the permission flags that were in effect). Throttled to one per second
 so a disabled agent under heavy signal load does not flood the trace backend.
 
-#### LLM prompt capture (M4 spike, #739)
-
-When `agent.mode = "llm"` the loop has no inference backend yet, so it **captures
-the prompt it would send** and falls back to the rules engine. Because the
-`agent.decision` spans are lazy (emitted only when a decision is produced), the
-prompt is recorded on a **dedicated** span, `agent.llm.prompt`, that emits on
-every llm cycle regardless of whether a decision was made — greppable in Jaeger
-by name. It is **throttled** on the same `decision.throttle_seconds` slot as the
-evaluate log and `agent.disabled` (default 1s), so a steady-state llm agent emits
-at most one capture per interval.
-
-The span carries the full prompt plus its attribution (single builder
-`llmPromptAttributes`, schema-complete every emission):
-
-| Attribute | Value |
-|-----------|-------|
-| `gen_ai.operation.name` | `"chat"` |
-| `gen_ai.request.model` | the `model` capability flag |
-| `gen_ai.output.type` | `"json"` |
-| `agent.mode` | `"llm"` |
-| `agent.prompt_variant` | resolved prompt variant |
-| `agent.objectives` | sorted `k=v` weights |
-| `interventions.allowed` | the allow-list summary |
-| `llm.prompt.system_sha256` | 16-hex **fingerprint** of the system prompt (#1168) — NOT the text; the full text is on the `agent.llm.system_prompt` log line |
-| `llm.prompt.user` | the user prompt text, capped at 32 KiB (a `...[truncated]` marker is appended if it exceeds the cap) |
-| `llm.prompt.bytes` | `len(system)+len(user)` |
-| `inference.configured` | the `model` flag |
-| `inference.used` | `"rules"` (the rules engine decided) |
-| `inference.fallback_reason` | `"no_backend_available"` |
-
-The companion log line `agent.llm.prompt_captured` carries only metadata
-(`session_id`, `variant`, `model`, `bytes`, `fallback_reason`). The **user** prompt
-text lives on the span; the **system** prompt text does **not** — to keep the traces
-pipeline bounded (#1168) the span carries only its 16-hex `llm.prompt.system_sha256`
-fingerprint, and the full system text is emitted **once per distinct fingerprint** on
-the dedicated `agent.llm.system_prompt` log line (fields `{system_sha256,
-prompt_variant, mode, interventions_allowed, system}`). The system prompt is also
-deterministically reconstructable from `(prompt_variant, mode, interventions_allowed)`.
-
-**View in Jaeger:** open `http://localhost:8080/jaeger/`, service `agent`, operation
-`agent.llm.prompt`. To replay a captured prompt against a real model: take the span's
-`llm.prompt.system_sha256`, find the matching `agent.llm.system_prompt` log line by
-that hash (grep the agent logs), copy its `system` field into one file and the span's
-`llm.prompt.user` value into another, then run `scripts/replay-prompt.sh`. See
-[docs/research/739-prompt-capture.md](../../docs/research/739-prompt-capture.md)
-for the response contract and the forward path (#741 backend, #742 auth).
-
-> **Real inference backend (#1048/#1049):** the OpenAI-compatible `Backend.Infer`
-> (`inference/openai.go`) is driven by `AGENT_INFERENCE_*` env. By default it is a
-> `stub` (or Ollama-direct). To route through the optional **LiteLLM gateway** —
-> one endpoint, Ollama default + optional Anthropic, with fallback chains and
-> gateway-side key custody — see
-> [docs/agent-inference-gateway.md](../../docs/agent-inference-gateway.md).
+The in-game LLM prompt capture (`agent.llm.prompt`, #739) and the async
+`agent.llm.apply` / `agent.llm.infer` spans were retired with the legacy
+`mode=llm` path in #1234; remote decisions are recorded on `agent.decide`.
 
 #### Post-game retrospective capture (M4, #844)
 
 When a game **ends** (the `GameActive` true→false transition fires the store's
 `OnGameEnd` hook with a pre-reset snapshot), the `decision.RetroCoordinator`
-builds the prompt the agent would send to an **offline analyst** asking for
-calibration tweaks for the next game, and records it on a dedicated
-**`agent.llm.retro`** span — **capture-first**, exactly like #739, no backend
-called yet. It emits **exactly once per session** (dedup on `SessionID`) and is
+builds the prompt for an **offline analyst** asking for tuning suggestions for
+the next game and records it on a dedicated **`agent.llm.retro`** span. With
+`AGENT_INFERENCE_BACKEND=claude` (and `ANTHROPIC_API_KEY`) it also calls Claude
+directly, asynchronously, and stamps the decoded assessment / suggestions on the
+same span (#1179, #1234); with the stub default it is capture-only. It emits
+**exactly once per session** (dedup on `SessionID`) and is
 structurally isolated from the decision loop: it never touches the gate, the loop,
 or the rate limiter, so a retrospective **cannot consume the in-game intervention
 budget**.
@@ -792,7 +740,7 @@ The span carries the full retro prompt plus attribution (single builder
 | Attribute | Value |
 |-----------|-------|
 | `gen_ai.operation.name` | `"chat"` |
-| `gen_ai.request.model` | the `model` capability flag |
+| `gen_ai.request.model` | the text backend's model (`""` when capture-only) |
 | `gen_ai.output.type` | `"json"` |
 | `agent.mode` | `"retro"` |
 | `agent.objectives` | sorted `k=v` weights |
@@ -801,15 +749,16 @@ The span carries the full retro prompt plus attribution (single builder
 | `llm.retro.system_sha256` | 16-hex **fingerprint** of the retro system prompt (#1168) — NOT the text; the full text is on the `agent.llm.system_prompt` log line |
 | `llm.retro.user` | the retro user prompt text, capped at 32 KiB (a `...[truncated]` marker is appended if it exceeds the cap) |
 | `llm.retro.bytes` | `len(system)+len(user)` |
-| `inference.configured` | the `model` flag |
-| `inference.used` | **`"none"`** (divergence — see below) |
-| `inference.fallback_reason` | `"no_backend_available"` |
+| `inference.configured` | the text backend's model (`""` when capture-only) |
+| `inference.used` | `"claude"`, or **`"none"`** when capture-only (see below) |
+| `inference.fallback_reason` | `""`, or `"no_backend_available"` when capture-only |
 
-**Divergence from the in-game capture:** `inference.used` is `"none"`, **not**
-`"rules"`. The in-game path falls back to the rules engine, so `"rules"` is the
-honest "what decided this cycle". A retrospective has **no** rules fallback —
-nothing runs in place of the analyst at game end — so `"none"` is the honest
-value. The companion log line `agent.llm.retro_captured` carries only metadata
+**Divergence from the in-game path:** a capture-only retro reports
+`inference.used="none"`, **not** `"rules"`. A retrospective has **no** rules
+fallback — nothing runs in place of the analyst at game end — so `"none"` is
+the honest value. A failed call records `llm.retro.parse_ok=false` and only the
+error **type** (`llm.infer.error`, `error.type`, span status), never the error
+text (#1242). The companion log line `agent.llm.retro_captured` carries only metadata
 (`session_id`, `model`, `bytes`, `fallback_reason`). The suggestion contract maps
 to the **calibration surface** (#766: `global_difficulty_factor`,
 `pacing_profile`, `threshold_table`, `objective_variant`), and `replay-prompt.sh`
@@ -939,6 +888,11 @@ All configuration is via environment variables:
 | `LOG_LEVEL` | `info` | Log verbosity |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | set in compose | Self-telemetry export (decision audit traces → collector → Jaeger); no-op when unset |
 | `OTEL_SERVICE_NAME` | `agent` | Service identity; also drives the self-ingestion skip |
+| `AGENT_INFERENCE_BACKEND` | `stub` | Text backend for the post-game retro and the shadow-experiment proposer (#1234): `claude` calls the Anthropic API directly (needs `ANTHROPIC_API_KEY`, else stays on the stub); anything else is the stub. Not used for in-game decisions (`decision.backend`). Retros call the model only for game kinds in `llm.eligible_game_kinds`. The `code_improvement.engine` flag is recorded on the propose span only and selects nothing. See [docs/agent-inference.md](../../docs/agent-inference.md) |
+| `AGENT_INFERENCE_MODEL` | `claude-opus-5-5` | Model of the `claude` text backend |
+| `AGENT_INFERENCE_EFFORT` | `medium` | `output_config.effort` of the `claude` text backend (not sent to Claude Haiku 4.5) |
+| `AGENT_INFERENCE_TIMEOUT_SECONDS` | `120` | Per-call deadline of the text backend, also the retro's deadline |
+| `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` | _unset_ | Overrides the `llm.max_requests_per_minute` flag as the per-minute cap on remote decide calls and retros (#964) |
 | `AGENT_PROBE_DECISIONS` | _unset_ | `true` enables the demo/verification probe: a synthetic `noop` decision (and thus a full audit trace) at most every 5 s. Never for production sessions. See [Probe mode](#probe-mode-agent_probe_decisions) |
 | `interventions_enabled` (**flagd flag**, `agent.json`) | `off` | **#1213: migrated from the `AGENT_INTERVENTIONS_ENABLED` env var to a LIVE flag**, read per `Apply` against the live `Flags` (never cached at startup). `on` → the gated action sink writes a fully-permitted decision to the interventions file via the real **Writer** (#730); `off` (or flagd unreachable — **fail-closed**) → the decision is still recorded/spanned but **not** written (inert scaffold). Distinct from the `enabled` kill switch (gates whether the loop **decides**) and `interventions_allowed` (gates **which** intervention types may dispatch); this gates whether a permitted decision is **applied**. Flip the flag in flagd, no restart. |
 | `INTERVENTIONS_FLAG_PATH` | `/etc/flagd/interventions.json` | Path of the flagd interventions file the Writer rewrites (must be the bind-mounted file flagd watches) |

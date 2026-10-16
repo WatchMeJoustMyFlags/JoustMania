@@ -1,5 +1,9 @@
 # M4 prompt-capture spike (#739)
 
+> **Historical.** This note predates #1234, which removed the LiteLLM gateway,
+> the Ollama/Jetson inference tiers and the in-game `mode` / `model` /
+> `prompt_variant` path. Current state: [agent-inference.md](../agent-inference.md).
+
 The agent does not call an LLM yet. This spike makes the agent build — and record
 on telemetry — the exact prompt it *would* send to a backend on every `llm`-mode
 decision cycle, so we can replay those prompts against a real model offline and

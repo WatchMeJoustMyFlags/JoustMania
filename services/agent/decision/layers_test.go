@@ -33,14 +33,12 @@ func loopWithClock(snap flags.Snapshot, out []Decision, clock *time.Time) (*Loop
 	return l, actions
 }
 
-// --- Capability layer ---
+// --- Policy recorded on the LayerState ---
 
-func TestOnEvaluate_CapabilityRecordedAndPassed(t *testing.T) {
+func TestOnEvaluate_PolicyRecorded(t *testing.T) {
 	snap := flags.Snapshot{
-		Enabled:    true,
-		Mode:       "llm",
-		Capability: flags.Capability{Model: "claude", PromptVariant: "aggressive"},
-		Policy:     flags.Policy{MaxInterventionsPerMinute: 2, MovementVarianceWindow: 15},
+		Enabled: true,
+		Policy:  flags.Policy{MaxInterventionsPerMinute: 2, MovementVarianceWindow: 15},
 	}
 	loop := NewLoop(fakeFlags{snap: snap}, nil)
 	loop.Rules = &fixedRules{}
@@ -48,9 +46,6 @@ func TestOnEvaluate_CapabilityRecordedAndPassed(t *testing.T) {
 
 	state := loop.OnEvaluate(context.Background(), gamecontext.GameContext{}, testTrigger())
 
-	if state.Model != "claude" || state.PromptVariant != "aggressive" {
-		t.Errorf("capability not recorded: model=%q prompt=%q", state.Model, state.PromptVariant)
-	}
 	// The variance window is recorded in the LayerState (it reaches the #726
 	// engine through its PolicySource, and #731 reads it from the snapshot).
 	if state.PolicyMovementVarianceWin != 15 {
@@ -81,7 +76,6 @@ func TestOnEvaluate_BatteryThreshold(t *testing.T) {
 			clock := time.Now()
 			snap := flags.Snapshot{
 				Enabled:              true,
-				Mode:                 "rules",
 				InterventionsAllowed: []string{"send_controller_effect"},
 				Policy: flags.Policy{
 					BatteryThreshold:          tc.threshold,
@@ -122,7 +116,6 @@ func TestOnEvaluate_BatteryThresholdSessionScopedUnaffected(t *testing.T) {
 	clock := time.Now()
 	snap := flags.Snapshot{
 		Enabled:              true,
-		Mode:                 "rules",
 		InterventionsAllowed: []string{"end_game"},
 		Policy:               flags.Policy{BatteryThreshold: 50, MaxInterventionsPerMinute: 10},
 	}
@@ -144,7 +137,6 @@ func TestOnEvaluate_RateLimitWeightedBudgetExhaustion(t *testing.T) {
 	// a further soft must block (2.5 > 2).
 	snap := flags.Snapshot{
 		Enabled: true,
-		Mode:    "rules",
 		InterventionsAllowed: []string{
 			"play_audio_cue", "grant_shield", "eliminate_player",
 		},
@@ -186,7 +178,6 @@ func TestOnEvaluate_RateLimitWindowSlides(t *testing.T) {
 	clock := time.Now()
 	snap := flags.Snapshot{
 		Enabled:              true,
-		Mode:                 "rules",
 		InterventionsAllowed: []string{"eliminate_player"},
 		Policy:               flags.Policy{MaxInterventionsPerMinute: 2},
 	}
@@ -238,7 +229,6 @@ func TestOnEvaluate_BlockedReasonAttribution(t *testing.T) {
 	clock := time.Now()
 	snap := flags.Snapshot{
 		Enabled:              true,
-		Mode:                 "rules",
 		InterventionsAllowed: []string{"send_controller_effect", "grant_shield"},
 		Policy:               flags.Policy{BatteryThreshold: 20, MaxInterventionsPerMinute: 1},
 	}
@@ -281,9 +271,7 @@ func TestOnEvaluate_FullLayerStateSnapshot(t *testing.T) {
 	objectives := map[string]float64{"endurance": 0.7, "chaos": 0.3}
 	snap := flags.Snapshot{
 		Enabled:              true,
-		Mode:                 "rules",
 		Objectives:           objectives,
-		Capability:           flags.Capability{Model: "gemma3:4b", PromptVariant: "balanced"},
 		InterventionsAllowed: []string{"play_audio_cue"},
 		Policy: flags.Policy{
 			BatteryThreshold:          25,
@@ -295,14 +283,11 @@ func TestOnEvaluate_FullLayerStateSnapshot(t *testing.T) {
 
 	state := loop.OnEvaluate(context.Background(), gamecontext.GameContext{}, testTrigger())
 
-	if !state.Enabled || state.Mode != "rules" {
-		t.Errorf("existence layer: enabled=%v mode=%q", state.Enabled, state.Mode)
+	if !state.Enabled {
+		t.Errorf("existence layer: enabled=%v", state.Enabled)
 	}
 	if !reflect.DeepEqual(state.Objectives, objectives) {
 		t.Errorf("objective layer: %v", state.Objectives)
-	}
-	if state.Model != "gemma3:4b" || state.PromptVariant != "balanced" {
-		t.Errorf("capability layer: model=%q prompt=%q", state.Model, state.PromptVariant)
 	}
 	if !reflect.DeepEqual(state.InterventionsAllowed, []string{"play_audio_cue"}) {
 		t.Errorf("permission layer allow-list: %v", state.InterventionsAllowed)
@@ -323,9 +308,7 @@ func TestOnEvaluate_FullLayerStateSnapshot(t *testing.T) {
 
 func TestOnEvaluate_DisabledRecordsLayerState(t *testing.T) {
 	snap := flags.Snapshot{
-		Enabled:    false,
-		Mode:       "rules",
-		Capability: flags.Capability{Model: "phi4-mini", PromptVariant: "conservative"},
+		Enabled: false,
 	}
 	loop := NewLoop(fakeFlags{snap: snap}, nil)
 	loop.Rules = &fixedRules{out: []Decision{{Intervention: "play_audio_cue"}}}
@@ -337,8 +320,8 @@ func TestOnEvaluate_DisabledRecordsLayerState(t *testing.T) {
 	if state.Enabled {
 		t.Errorf("disabled state should record Enabled=false")
 	}
-	if state.Model != "phi4-mini" {
-		t.Errorf("disabled state should still record capability, got %q", state.Model)
+	if !reflect.DeepEqual(state.Objectives, snap.Objectives) {
+		t.Errorf("disabled state should still record the evaluated flags, objectives=%v", state.Objectives)
 	}
 	if len(state.Outcomes) != 0 || actions.called {
 		t.Errorf("disabled loop must not produce outcomes or dispatch")

@@ -28,60 +28,19 @@ import (
 // Flag keys as defined in services/flagd/agent.json (flagSetId "agent").
 const (
 	keyEnabled                   = "enabled"
-	keyMode                      = "mode"
 	keyObjectives                = "objectives"
-	keyModel                     = "model"
-	keyPromptVariant             = "prompt_variant"
 	keyInterventionsAllowed      = "interventions_allowed"
 	keyBatteryThreshold          = "policy.battery_threshold"
 	keyMovementVarianceWindow    = "policy.movement_variance_window"
 	keyMaxInterventionsPerMinute = "policy.max_interventions_per_minute"
 
-	// LLM call gate (#847). The three-layer, flag-controlled gate in FRONT of
-	// every LLM decision attempt (#739), so the llm path can never burn tokens
-	// uncontrolled. All three are read EVERY cycle (never cached) so tightening
-	// the budget mid-session takes effect on the very next decision.
-	keyLLMEligibleGameKinds   = "llm.eligible_game_kinds"
-	keyLLMMinDecisionInterval = "llm.min_decision_interval_seconds"
-	keyLLMMaxRequestsPerMin   = "llm.max_requests_per_minute"
-	// keyLLMLatencyBudget bounds a single async inference call (#917). Read every
-	// cycle like the other gate flags so the budget can be tuned live on stage.
-	keyLLMLatencyBudget = "llm.latency_budget_seconds"
-
-	// In-game rules-first async upgrade (#1207). Default behavior for mode="llm" is
-	// now RULES-FIRST/immediate; the in-game LLM is demoted to an explicit,
-	// length-gated async UPGRADE layered UNDER mode="llm" (no third mode). Read every
-	// cycle like the other gate flags so the switch and the estimate parameters can be
-	// tuned live on stage. The two numeric flags MUST use the TYPED getters — a numeric
-	// flag read via ObjectValue silently TYPE_MISMATCHes to its default (see the gotcha
-	// at llmGate).
-	//
-	//	keyLLMInGameAsyncUpgrade — master switch (bool, default off). When off, mode="llm"
-	//	    short-circuits to rules every in-game cycle: no async LLM is ever fired in game.
-	//	keyLLMSecondsPerPlayer   — per-player time budget for the length estimate (number).
-	//	keyLLMStyleFactor        — "balanced<->aggressive" knob scaling the expected length
-	//	    (number), shifting how often the LLM upgrade gets to weigh in.
-	keyLLMInGameAsyncUpgrade = "llm.in_game_async_upgrade"
-	keyLLMSecondsPerPlayer   = "llm.seconds_per_player"
-	keyLLMStyleFactor        = "llm.style_factor"
-
-	// M7-2 rolling game context window (#929). How many recent game summaries the
-	// agent injects into EVERY llm prompt as the cross-game narrative context block.
-	// Read EVERY cycle (never cached) on the decision hot path — exactly like the
-	// #847 gate flags above — so retuning N on stage takes effect on the very next
-	// llm call with no restart. The decision path clamps the value to
-	// [0, gamewindow.RetentionCap].
-	keyLLMContextGames = "llm.context_games"
-
-	// M7-3 operator prompt context note (#930). A FREE-TEXT note an operator appends
-	// to the agent's system prompt at runtime via flagd, with no redeploy. Flat key
-	// matching the repo convention (mode, llm.context_games, policy.battery_threshold);
-	// the "agent." in the issue title is the flagd DOMAIN, not part of the key. Read
-	// EVERY cycle like context_games above (never cached) so changing the note on stage
-	// takes effect on the very next llm call. The decision path VALIDATES + length-bounds
-	// the value (llm.ValidateContextNote) before it reaches the model; an invalid/empty/
-	// oversized value injects nothing. Default empty = no operator section.
-	keyPromptContextNote = "prompt.context_note"
+	// LLM call gate (#847): the flag-controlled gate in FRONT of every remote
+	// decide call (#1226) and post-game retro. Both are read EVERY cycle (never
+	// cached) so tightening the budget mid-session takes effect on the very next
+	// decision. #1234 retired the legacy in-game mode=llm path and its other gate
+	// flags (cadence, latency budget, rules-first upgrade, context window, note).
+	keyLLMEligibleGameKinds = "llm.eligible_game_kinds"
+	keyLLMMaxRequestsPerMin = "llm.max_requests_per_minute"
 
 	// Fitness thresholds (#731). The game-objective fitness flags.
 	keyEnduranceMinSessionSeconds  = "fitness.endurance.min_session_seconds"
@@ -202,12 +161,6 @@ const (
 	// DefaultEnabled is fail-closed: a missing control plane means the agent
 	// stays off and dispatches no interventions.
 	DefaultEnabled = false
-	// DefaultMode falls back to the deterministic rules path.
-	DefaultMode = "rules"
-	// DefaultModel is the capability-layer LLM model selection (M4 path).
-	DefaultModel = "phi4-mini"
-	// DefaultPromptVariant is the capability-layer prompt selection (M4 path).
-	DefaultPromptVariant = "conservative"
 	// DefaultBatteryThreshold (percent): player-targeted interventions are
 	// blocked when the target controller's battery is below this.
 	DefaultBatteryThreshold = 20
@@ -217,58 +170,13 @@ const (
 	// DefaultMaxInterventionsPerMinute is the weighted per-minute budget.
 	DefaultMaxInterventionsPerMinute = 2
 
-	// LLM call-gate defaults (#847), mirroring the services/flagd/agent.json
-	// defaultVariants. These are the fail-closed safe values when flagd is
-	// unreachable: a missing control plane gates the llm path conservatively
-	// rather than letting it fire uncontrolled.
+	// LLM call-gate default (#847), mirroring the services/flagd/agent.json
+	// defaultVariant: the fail-closed safe value when flagd is unreachable.
 
-	// DefaultLLMMinDecisionIntervalSeconds is the per-game cadence floor: at most
-	// one LLM attempt per game per this interval (llm.min_decision_interval_seconds).
-	DefaultLLMMinDecisionIntervalSeconds = 10.0
 	// DefaultLLMMaxRequestsPerMinute is the GLOBAL per-minute request cap across
-	// ALL games combined (llm.max_requests_per_minute). Each admitted LLM attempt
-	// is one request; defaults to 6/min total regardless of game count.
+	// ALL games combined plus the retro (llm.max_requests_per_minute). Each
+	// admitted remote decide call or retro is one request; defaults to 6/min total.
 	DefaultLLMMaxRequestsPerMinute = 6
-	// DefaultLLMLatencyBudgetSeconds bounds a single async inference call (#917):
-	// an in-flight result not produced within this many seconds is dropped outright
-	// (context deadline) and the cycle's deterministic rules fallback decides
-	// instead, so "the system always decides" holds without the loop ever blocking.
-	// 8s sits inside the 2-10s inference envelope from the issue — long enough for a
-	// healthy backend to answer, short enough that a hung tier degrades to rules
-	// within one decision interval.
-	DefaultLLMLatencyBudgetSeconds = 8.0
-
-	// In-game rules-first async upgrade defaults (#1207), mirroring the
-	// services/flagd/agent.json defaultVariants. Applied when flagd is unreachable or a
-	// flag is undefined.
-
-	// DefaultLLMInGameAsyncUpgrade is the master-switch default: OFF. A fresh
-	// deployment or an unreachable flagd keeps mode="llm" RULES-FIRST in game and never
-	// fires the async LLM upgrade — the operator opts in by setting the flag. This is
-	// fail-closed to the immediate, deterministic rules path.
-	DefaultLLMInGameAsyncUpgrade = false
-	// DefaultLLMSecondsPerPlayer is the per-player time budget for the length estimate
-	// (llm.seconds_per_player). expected_seconds = ActivePlayerCount × seconds_per_player
-	// × style_factor; the async LLM upgrade fires only when expected_seconds is at least
-	// the latency budget (default 8s). At 3s/player the cross-over is ~3 players at
-	// style_factor 1.0, so a 2p/6s shadow stays rules-only while an 8p endurance game
-	// earns the upgrade.
-	DefaultLLMSecondsPerPlayer = 3.0
-	// DefaultLLMStyleFactor scales the expected length (llm.style_factor), the
-	// "balanced<->aggressive" knob: >1 lengthens the estimate so the LLM weighs in on
-	// shorter games, <1 shortens it so only longer games qualify. 1.0 is neutral.
-	DefaultLLMStyleFactor = 1.0
-
-	// DefaultLLMContextGames is the M7-2 cross-game context window size (#929): how
-	// many recent game summaries to inject into every llm prompt when flagd is
-	// unreachable or the flag is undefined. 3 mirrors the agent.json defaultVariant
-	// — a few games of memory, well under gamewindow.RetentionCap.
-	DefaultLLMContextGames = 3
-	// DefaultPromptContextNote is the M7-3 operator note default (#930): EMPTY, so a
-	// fresh deployment or an unreachable flagd injects NO operator-context section and
-	// the prompt is exactly the hardcoded base. The operator opts in by setting the
-	// flag; absence is the safe no-op (fail-closed to "no note").
-	DefaultPromptContextNote = ""
 
 	// Fitness threshold defaults (#731), mirroring the services/flagd/agent.json
 	// defaultVariants. Applied when flagd is unreachable or a flag is undefined.
@@ -326,12 +234,9 @@ const (
 	// code_improvement.* defaultVariants. Applied when flagd is unreachable or a
 	// flag is undefined.
 
-	// DefaultCodeImprovementEngine selects the propose-stage inference backend
-	// (code_improvement.engine). "stub" is the only meaningful value today — the
-	// production endpointBackend.Infer is a sentinel until a real Ollama/cloud
-	// transport lands (#738/#742), so a non-stub value still degrades to
-	// no-proposal. Fail-safe: a missing control plane keeps the agent on the
-	// inert stub rather than dialing a backend it cannot reach.
+	// DefaultCodeImprovementEngine is code_improvement.engine, recorded on the
+	// propose span. The propose-stage backend itself is chosen by
+	// AGENT_INFERENCE_BACKEND (stub | claude, #1234).
 	DefaultCodeImprovementEngine = "stub"
 	// DefaultCodeImprovementMinIntervalSeconds is the propose cadence floor
 	// (code_improvement.min_interval_seconds): at most one experiment proposal per
@@ -422,16 +327,6 @@ type Evaluator interface {
 	ObjectValue(ctx context.Context, flag string, defaultValue any, evalCtx openfeature.EvaluationContext, options ...openfeature.Option) (any, error)
 }
 
-// Capability is the capability layer: which LLM model and prompt the agent
-// would use on the M4 llm path. Evaluated and recorded every cycle but not yet
-// consumed (the llm path is still a fallback stub).
-type Capability struct {
-	// Model is the LLM model selection, e.g. "phi4-mini".
-	Model string
-	// PromptVariant is the prompt template selection, e.g. "conservative".
-	PromptVariant string
-}
-
 // Policy is the policy half of the permission layer: the numeric constraints
 // applied to decisions after the interventions_allowed allow-list gate.
 type Policy struct {
@@ -445,58 +340,27 @@ type Policy struct {
 	MaxInterventionsPerMinute int
 }
 
-// LLMGate is the three-layer call gate in FRONT of every LLM decision attempt
-// (#847), evaluated EVERY cycle (never cached) so a mid-session tightening takes
-// effect on the next decision. The gate sits before the #739 prompt build/capture:
-// when it denies, the cycle records the layer's fallback_reason and does NOT burn
-// the (future) backend or even build the prompt. Layers are checked in order:
+// LLMGate is the call gate in FRONT of every remote decide call and retro (#847,
+// #1226), evaluated EVERY cycle (never cached) so a mid-session tightening takes
+// effect on the next decision:
 //
-//	Eligibility — which game kinds may use llm at all (EligibleGameKinds)
-//	Cadence     — per-game floor between llm attempts (MinDecisionInterval)
-//	Budget      — global per-minute request cap across all games (MaxRequestsPerMinute)
+//	Eligibility — which game kinds may call a remote decide backend (EligibleGameKinds)
+//	Budget      — global per-minute request cap across all games and the retro
+//	              (MaxRequestsPerMinute)
 //
-// Eligibility lives in the snapshot but is enforced against GameContext.GameKind;
-// cadence is per-game state on the Loop; the budget is one shared limiter across
-// all loops (see decision/loopset.go + main.go wiring).
+// The per-game cadence is decision.min_interval_ms (DecisionBackend.MinInterval).
 type LLMGate struct {
-	// EligibleGameKinds is the set of GameContext.GameKind values that may use the
-	// llm path. A kind not in this list gates with llm_not_eligible. Default
-	// ["real"] keeps shadow games rules-only (#838).
+	// EligibleGameKinds is the set of GameContext.GameKind values that may call a
+	// remote decide backend. A kind not in this list falls back to rules with
+	// llm_not_eligible. Default ["real"] keeps shadow games rules-only (#838).
 	EligibleGameKinds []string
-	// MinDecisionInterval is the per-game cadence floor: at most one LLM attempt
-	// per game per interval. A cycle within the interval of the game's last
-	// attempt gates with llm_interval. Default 10s.
-	MinDecisionInterval time.Duration
-	// MaxRequestsPerMinute is the GLOBAL request budget across all games combined.
-	// Each admitted attempt is one request; an attempt that would exceed the cap
-	// gates with llm_budget_exhausted. Default 6/min.
+	// MaxRequestsPerMinute is the GLOBAL request budget across all games combined
+	// and the retro. An attempt that would exceed the cap gates with
+	// llm_budget_exhausted. Default 6/min.
 	MaxRequestsPerMinute int
-	// LatencyBudget bounds a single async inference call (#917): the maximum wall
-	// time an in-flight Infer may take before its result is dropped outright and the
-	// cycle's deterministic rules fallback decides instead. Captured at FIRE time and
-	// applied via context.WithTimeout, so a slow/hung tier never holds an apply open
-	// past this. Default 8s. A non-positive value falls back to the default (never
-	// "no budget", which would let a hung call leak the inference goroutine forever).
-	LatencyBudget time.Duration
-
-	// InGameAsyncUpgrade is the #1207 master switch (llm.in_game_async_upgrade). When
-	// false (the default), mode="llm" is RULES-FIRST in game: every in-game cycle
-	// short-circuits to the deterministic rules engine and no async LLM is fired. When
-	// true, the cycle additionally evaluates the length gate below and fires the async
-	// LLM upgrade only on a game long enough to absorb the latency.
-	InGameAsyncUpgrade bool
-	// SecondsPerPlayer is the per-player time budget for the length estimate
-	// (llm.seconds_per_player): expected_seconds = ActivePlayerCount × SecondsPerPlayer
-	// × StyleFactor. The async LLM upgrade fires only when expected_seconds ≥
-	// LatencyBudget, so short games stay rules-only and the latency race never bites.
-	SecondsPerPlayer float64
-	// StyleFactor scales the expected length (llm.style_factor) — the
-	// "balanced<->aggressive" knob. >1 lets the LLM weigh in on shorter games; <1
-	// reserves it for longer ones. Default 1.0 (neutral).
-	StyleFactor float64
 }
 
-// EligibleFor reports whether the given game kind may use the llm path. An empty
+// EligibleFor reports whether the given game kind may call a remote decide backend. An empty
 // eligibility list admits nothing (every kind gated) — the safe reading of an
 // explicitly-empty allow-list, symmetrical with InterventionsAllowed.
 func (g LLMGate) EligibleFor(gameKind string) bool {
@@ -628,9 +492,9 @@ func (f *Flags) Validation(ctx context.Context) ValidationConfig {
 // and maps them, the same "package owns logic, caller owns flagd" split the
 // Gate/Writer/Validator use).
 type CodeImprovementConfig struct {
-	// Engine is code_improvement.engine — the flag-selectable propose backend
-	// (default "stub"). main.go uses it to select the backend; today every value
-	// resolves to the inert stub until a real transport lands (#738/#742).
+	// Engine is code_improvement.engine (default "stub"). It is recorded on the
+	// propose span only; the propose backend itself is selected by the
+	// AGENT_INFERENCE_BACKEND env (stub | claude, #1234).
 	Engine string
 	// MinInterval is code_improvement.min_interval_seconds as a Duration (default
 	// 300s): the propose cadence floor. <= 0 in the flag falls back to the default
@@ -810,34 +674,16 @@ func (f *Flags) durationFlag(ctx context.Context, key string, def float64) time.
 type Snapshot struct {
 	// Enabled is the kill switch. When false the decision loop short-circuits.
 	Enabled bool
-	// Mode selects the decision path ("rules" or "llm").
-	Mode string
 	// Objectives weights the session goals the rules engine optimizes for.
 	Objectives map[string]float64
-	// Capability is the capability-layer model/prompt selection.
-	Capability Capability
 	// InterventionsAllowed is the permission gate: only decisions whose
 	// intervention appears here may be dispatched. Empty means dispatch nothing.
 	InterventionsAllowed []string
 	// Policy holds the numeric permission-layer constraints.
 	Policy Policy
-	// LLMGate holds the three-layer LLM call gate (#847): eligibility, per-game
-	// cadence, and the global per-minute request budget.
+	// LLMGate holds the LLM call gate (#847): eligibility and the global
+	// per-minute request budget.
 	LLMGate LLMGate
-	// ContextGames is the M7-2 rolling context-window size (#929, llm.context_games):
-	// how many recent game summaries to inject into this cycle's llm prompt as the
-	// cross-game narrative context block. Read every cycle so retuning N is live; the
-	// decision path clamps it to [0, gamewindow.RetentionCap] before assembling the
-	// block. A non-positive value injects no prior games (the block renders the
-	// explicit "(no prior games)" marker).
-	ContextGames int
-	// PromptContextNote is the M7-3 RAW operator note (#930, prompt.context_note): the
-	// free-text value an operator set live to append to the system prompt. Read every
-	// cycle so a runtime change is honored on the next llm call. It is the UNVALIDATED
-	// raw flag value — the decision path runs llm.ValidateContextNote on it (length
-	// bound + control-char/empty rejection) before injecting, so an invalid/oversized
-	// note never reaches the model. Empty when unset or flagd-unreachable.
-	PromptContextNote string
 	// Fitness holds the per-objective fitness thresholds (#731).
 	Fitness Fitness
 	// BluetoothFitness holds the infrastructure fitness thresholds (#735).
@@ -878,13 +724,8 @@ func New(client Evaluator, log *slog.Logger) *Flags {
 // Each flag falls back to its safe default on any evaluation error.
 func (f *Flags) Evaluate(ctx context.Context) Snapshot {
 	return Snapshot{
-		Enabled:    f.enabled(ctx),
-		Mode:       f.mode(ctx),
-		Objectives: f.objectives(ctx),
-		Capability: Capability{
-			Model:         f.stringFlag(ctx, keyModel, DefaultModel),
-			PromptVariant: f.stringFlag(ctx, keyPromptVariant, DefaultPromptVariant),
-		},
+		Enabled:              f.enabled(ctx),
+		Objectives:           f.objectives(ctx),
 		InterventionsAllowed: f.interventionsAllowed(ctx),
 		Policy: Policy{
 			BatteryThreshold:          f.intFlag(ctx, keyBatteryThreshold, DefaultBatteryThreshold),
@@ -892,17 +733,6 @@ func (f *Flags) Evaluate(ctx context.Context) Snapshot {
 			MaxInterventionsPerMinute: f.intFlag(ctx, keyMaxInterventionsPerMinute, DefaultMaxInterventionsPerMinute),
 		},
 		LLMGate: f.llmGate(ctx),
-		// M7-2 (#929): the cross-game context-window size, read every cycle so a
-		// runtime change to llm.context_games is honored on the next llm call. Uses the
-		// typed intFlag getter (the flagd numeric-flag gotcha: a numeric flag read via
-		// ObjectValue resolves as a silent TYPE_MISMATCH default — see llmGate).
-		ContextGames: f.intFlag(ctx, keyLLMContextGames, DefaultLLMContextGames),
-		// M7-3 (#930): the raw operator note, read every cycle (live) via the string
-		// getter so a runtime change to prompt.context_note is honored on the next llm
-		// call. Validation/length-bounding happens on the decision side
-		// (llm.ValidateContextNote), not here — this snapshot carries the raw value and
-		// fails safe to "" (no note) on any flagd error.
-		PromptContextNote: f.stringFlag(ctx, keyPromptContextNote, DefaultPromptContextNote),
 		Fitness: Fitness{
 			EnduranceMinSessionSeconds:     f.intFlag(ctx, keyEnduranceMinSessionSeconds, DefaultEnduranceMinSessionSeconds),
 			BalancedMaxSkillGap:            f.floatFlag(ctx, keyBalancedMaxSkillGap, DefaultBalancedMaxSkillGap),
@@ -996,15 +826,6 @@ func (f *Flags) enabled(ctx context.Context) bool {
 	return v
 }
 
-func (f *Flags) mode(ctx context.Context) string {
-	v, err := f.client.StringValue(ctx, keyMode, DefaultMode, openfeature.EvaluationContext{})
-	if err != nil {
-		f.log.Debug("flags.mode fell back to default", "error", err, "default", DefaultMode)
-		return DefaultMode
-	}
-	return v
-}
-
 // objectives resolves the objectives object into map[string]float64. flagd
 // returns object flags as map[string]any with numeric leaves typed as float64;
 // any unparseable shape falls back to the default weighting.
@@ -1071,19 +892,7 @@ func parseCSVList(raw string) []string {
 func (f *Flags) llmGate(ctx context.Context) LLMGate {
 	return LLMGate{
 		EligibleGameKinds:    f.eligibleGameKinds(ctx),
-		MinDecisionInterval:  f.durationFlag(ctx, keyLLMMinDecisionInterval, DefaultLLMMinDecisionIntervalSeconds),
 		MaxRequestsPerMinute: f.intFlag(ctx, keyLLMMaxRequestsPerMin, DefaultLLMMaxRequestsPerMinute),
-		// durationFlag floors a non-positive value at the default, so a misconfigured
-		// budget can never disable the timeout and leak an inference goroutine (#917).
-		LatencyBudget: f.durationFlag(ctx, keyLLMLatencyBudget, DefaultLLMLatencyBudgetSeconds),
-		// #1207 rules-first async upgrade. The master switch reads via the bool getter;
-		// the two estimate parameters read via the float getter (the flagd numeric-flag
-		// gotcha above — a numeric flag read through ObjectValue silently TYPE_MISMATCHes
-		// to its default). All three fail closed: switch off, defaults that keep short
-		// games rules-only, so a down control plane reverts to immediate rules.
-		InGameAsyncUpgrade: f.boolFlag(ctx, keyLLMInGameAsyncUpgrade, DefaultLLMInGameAsyncUpgrade),
-		SecondsPerPlayer:   f.floatFlag(ctx, keyLLMSecondsPerPlayer, DefaultLLMSecondsPerPlayer),
-		StyleFactor:        f.floatFlag(ctx, keyLLMStyleFactor, DefaultLLMStyleFactor),
 	}
 }
 

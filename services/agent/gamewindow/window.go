@@ -19,10 +19,9 @@
 //     game ends, with no disk round-trip and no staleness window.
 //   - HOW MANY summaries to inject (N) is NOT this package's concern: it retains a
 //     fixed cap (RetentionCap) and hands back the last N on demand (Recent(n)).
-//     N is read live from an OpenFeature flag on the decision path (see
-//     flags.Snapshot.ContextGames + decision/llm_decide.go), so retuning N takes
-//     effect on the next llm call with no redeploy. Render renders whatever slice
-//     it is given.
+//     The shadow-experiment proposer renders the whole retained window (#1234
+//     retired the in-game llm.context_games consumer). Render renders whatever
+//     slice it is given.
 //
 // Out of scope (later M7 issues): WHICH context is injected via flags (#930 M7-3
 // toggles the window/timeline/etc. on and off — M7-2 just builds + injects this
@@ -47,9 +46,9 @@ const RetentionCap = 20
 // Store is the global rolling window of recent game summaries (#929). It is a
 // fixed-capacity ring retaining the last RetentionCap summaries in arrival
 // (game-end) order, oldest-first. Safe for concurrent use: Record (game-end
-// writes, possibly two concurrent games) and Recent/Len (llm-path reads) are all
+// writes, possibly two concurrent games) and Recent/Len (proposer reads) are all
 // mutex-guarded, because the window is GLOBAL — one Store shared across every
-// per-game decision loop, exactly like the shared LLM budget/resolver (#847/#741).
+// per-game decision loop, exactly like the shared LLM budget (#847).
 type Store struct {
 	mu sync.Mutex
 	// summaries holds the retained window, oldest-first, len <= RetentionCap. A plain
@@ -89,7 +88,7 @@ func (s *Store) Record(summary gamesummary.Summary) {
 }
 
 // Recent returns a COPY of the last n retained summaries, newest-LAST (oldest of
-// the returned window first), for the llm path to render. n is clamped to
+// the returned window first), for the proposer to render. n is clamped to
 // [0, len]: a non-positive n returns an empty (non-nil) slice (the caller renders
 // the explicit "(no prior games)" marker), and an n past the retained count
 // returns everything held. The returned slice is a fresh copy, so a caller can

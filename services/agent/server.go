@@ -25,9 +25,8 @@ import (
 // Everything here is the part of main() that SPAWNS or STOPS goroutines:
 //   - the gRPC OTLP receiver (GracefulStop on shutdown),
 //   - the health HTTP server (Shutdown on shutdown),
-//   - the per-game decision LoopSet (AwaitInflight joins fired #917 goroutines),
-//   - the GameContext multiplexer + its eviction ticker loop,
-//   - the shared inference resolver's background probe ticker (stopped via ctx).
+//   - the per-game decision LoopSet (AwaitInflight joins in-flight remote decide calls),
+//   - the GameContext multiplexer + its eviction ticker loop.
 //
 // The env-gated construction (flagd, OTEL, action sink, promoter, shadow game,
 // proposer, ...) deliberately stays in main(): it is wiring, not a goroutine the
@@ -47,11 +46,6 @@ type serverComponents struct {
 	// are joined on shutdown via AwaitInflight so no retro outlives the process. May be
 	// nil (tests that do not exercise the retro path).
 	retro *decision.RetroCoordinator
-
-	// resolver is the shared inference resolver whose background probe ticker is
-	// started by run and stopped when ctx is cancelled. It may be nil (tests that
-	// do not exercise the inference path).
-	resolver *decision.Resolver
 
 	// evictInterval is the eviction ticker cadence. main() hot-reloads it from the
 	// lifecycle holder via evictIntervalSrc; tests pass a fixed value.
@@ -95,27 +89,20 @@ func (c *serverComponents) effectiveEvictInterval() time.Duration {
 // run is the agent's server orchestration loop, extracted from main() so the
 // start -> cancel -> drain path is testable (#923). It:
 //
-//  1. starts the shared inference resolver's background probe ticker (bounded by ctx),
-//  2. registers the OTLP trace + metrics receivers on a fresh gRPC server,
-//  3. starts the health HTTP server,
-//  4. runs the eviction ticker loop (evict stale partitions + drop their loops),
-//  5. optionally fires the shadow game,
-//  6. on ctx cancellation, GracefulStops the gRPC server, joins in-flight async
-//     inference goroutines (#917), and shuts the health server down,
-//  7. blocks on grpcServer.Serve and returns its error once the server has stopped.
+//  1. registers the OTLP trace + metrics receivers on a fresh gRPC server,
+//  2. starts the health HTTP server,
+//  3. runs the eviction ticker loop (evict stale partitions + drop their loops),
+//  4. optionally fires the shadow game,
+//  5. on ctx cancellation, GracefulStops the gRPC server, joins in-flight async
+//     goroutines (remote decide calls, effect samplers, retros), and shuts the
+//     health server down,
+//  6. blocks on grpcServer.Serve and returns its error once the server has stopped.
 //
 // Every goroutine it spawns terminates on ctx cancellation: the eviction loop
-// selects on ctx.Done(), the resolver ticker selects on ctx.Done(), and the
-// shutdown goroutine is unblocked by ctx.Done() and then GracefulStop returns
+// selects on ctx.Done(), and the shutdown goroutine is unblocked by ctx.Done() and then GracefulStop returns
 // (unblocking Serve), so run returns and no goroutine outlives it. This is what the
 // goleak-based shutdown test asserts.
 func (c *serverComponents) run(ctx context.Context) error {
-	if c.resolver != nil {
-		// Background probe ticker; stops when ctx is cancelled (resolver.Start's loop
-		// selects on ctx.Done()).
-		c.resolver.Start(ctx)
-	}
-
 	grpcServer := grpc.NewServer()
 	ptraceotlp.RegisterGRPCServer(grpcServer, &traceReceiver{pipe: c.pipe})
 	pmetricotlp.RegisterGRPCServer(grpcServer, &metricsReceiver{pipe: c.pipe})

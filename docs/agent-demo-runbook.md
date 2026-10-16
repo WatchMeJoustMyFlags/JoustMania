@@ -2,7 +2,7 @@
 
 The operator playbook for the **live stage demo** of the agentic control stack:
 the experiment cohort loop declaring + concluding experiments, the agent making
-decisions (rules / LLM), live interventions, the dashboards, and live flag flips
+decisions (rules engine or a remote decision backend), live interventions, the dashboards, and live flag flips
 via flagd.
 
 This runbook is the **glue** between the focused runbooks — it does not duplicate
@@ -13,13 +13,12 @@ them. Read the linked one when you need the detail:
   demo.**
 - [`agent-act-runbook.md`](agent-act-runbook.md) — the live-intervention ACT path
   (two gates, the kill-switch panic button, blocked vs applied interventions).
-- [`agent-ollama-host-runbook.md`](agent-ollama-host-runbook.md) — reaching a
-  **host** Ollama for real inference (the `0.0.0.0` + WSL-gateway foot-guns).
-- [`agent-inference-gateway.md`](agent-inference-gateway.md) — the optional
-  LiteLLM gateway (provider routing + cloud fallback).
+- [`agent-inference.md`](agent-inference.md) — which model the agent calls for
+  what: the `decision.backend` flag in game, the Claude text backend for the
+  retro and the proposer.
 
 > **Do a full dry-rehearsal of every step in this runbook on the demo hardware
-> before the talk.** Several steps (model cold-start, host-Ollama networking,
+> before the talk.** Several steps (venue WiFi to the model API, API keys,
 > controller pairing) are environment-specific and only fail on stage.
 
 ---
@@ -29,13 +28,12 @@ them. Read the linked one when you need the detail:
 ### Prerequisites
 
 - **Docker + Docker Compose** on the demo host. That alone runs the entire
-  stack with mock controllers and the **stub** inference backend (decisions on
-  `mode=rules`) — no LLM, no hardware required. This is the safe fallback the
-  whole demo can run on.
-- *(Optional, for real inference)* an **Ollama** reachable from the agent
-  container with a model pulled (`ollama pull phi4-mini`). Reaching a *host*
-  Ollama is the #1 live foot-gun — see step *Point at real inference* and the
-  [host-Ollama runbook](agent-ollama-host-runbook.md).
+  stack with mock controllers and the **rules** decision backend (the default
+  `decision.backend=rules`) — no LLM, no key, no hardware required. This is the
+  safe fallback the whole demo can run on.
+- *(Optional, for a remote model)* an API key for the backend you want to show
+  (`ANTHROPIC_API_KEY`, `DECISION_OPENAI_API_KEY`) and internet access from the
+  demo host. See *Switch to a remote decision backend* below.
 - *(Optional, real PS Move controllers)* a Bluetooth adapter; the demo runs on
   **mock controllers** by default (the `make dry-run` / `up-mock` flagd `ci/`
   dir sets controller `backend=mock`), so hardware is not on the critical path.
@@ -60,14 +58,12 @@ off→on flip starts it with **no agent restart**):
 ```
 
 `agent-dryrun-enable.sh on` flips, **in the `services/flagd/ci/` flag dir only**
-(never the production defaults), three flags in one step:
+(never the production defaults), two flags in one step:
 
 - `enabled` → `on` — the master kill-switch.
 - `experiments_enabled` → `on` — the LIVE experiment-loop gate (post-#1044; this
   flag **overrides** the `AGENT_EXPERIMENTS_ENABLED` env, which is dead config
   for this purpose).
-- `mode` → `llm` — **only when `AGENT_INFERENCE_BACKEND=openai` is set** (see
-  next section); otherwise `mode` is left on `rules` (correct for the stub).
 
 `make dry-run` prints these exact steps and the observability URLs on
 completion. The full gating-chain rationale and the "why a plain `up` produces a
@@ -78,39 +74,30 @@ dead run" table live in the [dry-run runbook](agent-dry-run-runbook.md).
 > (`docker-compose.dry-run.yml`). It is a **real FFA difficulty lever** (#1090),
 > so the verdict is meaningful, not cosmetic.
 
-### Point at real inference (optional, makes `mode=llm` real)
+### Switch to a remote decision backend (optional)
 
-The stub backend decides on `mode=rules`. To exercise the **LLM** decision path,
-configure an OpenAI-compatible backend **before** running the enable script (the
-script only flips `mode → llm` when it sees `AGENT_INFERENCE_BACKEND=openai`):
+In-game decisions come from the `decision.backend` flag: `rules` (default),
+`claude`, `openai` or `jev`. The agent calls the vendor directly (no gateway).
+Export the key **before** the agent starts (keys are read at process start), then
+flip the flag live:
 
 ```bash
-# Ollama-direct (simplest). Recreate the agent with the backend env set
-# (the AGENT_INFERENCE_* vars are read at process start, so this recreate IS
-# required to pick them up):
-AGENT_INFERENCE_BACKEND=openai \
-AGENT_INFERENCE_BASE_URL=http://host.docker.internal:11434/v1 \
-AGENT_INFERENCE_MODEL=phi4-mini \
-  docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile agent up -d agent
+export ANTHROPIC_API_KEY=sk-ant-...      # or DECISION_OPENAI_API_KEY for openai
+docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile agent up -d agent
 
-# then flip the gates (this run also flips mode -> llm because the env is set).
-# The gate + mode flips take effect live (~1 s) — no further restart needed:
-AGENT_INFERENCE_BACKEND=openai ./scripts/agent-dryrun-enable.sh on
+./scripts/agent-backend.sh claude haiku   # live, ~1 s, no restart
+./scripts/agent-backend.sh status
+./scripts/agent-backend.sh rules          # back to the floor
 ```
 
-- The `agent.json` `model` flag selects the route; variants are `phi4-mini`
-  (default), `gemma3_4b`, `claude`, `copilot`. The agent sends that value as the
-  OpenAI `model` param.
-- **Reaching a host Ollama is the most common live foot-gun.** Ollama must bind
-  `0.0.0.0` (not its `127.0.0.1` default), and under **WSL2 with Ollama on
-  Windows** the container must dial the **WSL default-route gateway IP**, *not*
-  `host.docker.internal`. Full checklist:
-  [`agent-ollama-host-runbook.md`](agent-ollama-host-runbook.md).
-- For provider routing + cloud fallback (`claude → phi4-mini`), use the optional
-  LiteLLM gateway instead — see
-  [`agent-inference-gateway.md`](agent-inference-gateway.md). The gateway owns
-  the LLM fallback chain; the agent always keeps its own terminal "no backend →
-  rules" rung, so a gateway/Ollama outage is **never** an agent outage.
+- Shadow games stay on rules (`llm.eligible_game_kinds` defaults to `real`), so
+  remote decisions show up in **real** (menu-started) games.
+- If the backend errors, times out or has no key, the rules engine decides and
+  the `agent.decide` span records `decide.fallback_reason`, so a bad network is
+  **never** an agent outage.
+- The post-game retro and the experiment proposer can also call Claude:
+  `AGENT_INFERENCE_BACKEND=claude` (agent restart). See
+  [`agent-inference.md`](agent-inference.md).
 
 ### Observability URLs
 
@@ -128,17 +115,15 @@ The whole stack is proxied through envoy on port **80**:
 - [ ] `make dry-run` came up clean: `docker compose ... ps` shows all services
       healthy (give audio + agent a few seconds to pass their health checks).
 - [ ] **Gates on**: `./scripts/agent-dryrun-enable.sh status` shows
-      `enabled = on`, `experiments_enabled = on`, and `mode = llm` (real
-      inference) or `rules` (stub) — whichever you intend to show.
+      `enabled = on`, `experiments_enabled = on`, and the `decision.backend`
+      you intend to show.
 - [ ] **Loop live** since the enable flip (the gate flip takes effect within ~1 s,
       self-gated per-tick since #1044 — no restart needed): the log shows live
       `experiment.*` activity, **not** `kill-switch: agent disabled`.
-- [ ] **Inference reachable** (only if showing `mode=llm`): a throwaway curl from
-      inside the agent network returns 200 + your model
-      (`docker run --rm curlimages/curl -s http://<host>:11434/api/tags`), and
-      the agent log shows `mode=llm`, not `no_backend_available`. Warm the model
-      once so the first on-stage decision isn't a 30–100 s cold start (see
-      failure modes).
+- [ ] **Remote backend reachable** (only if showing one): the agent log line
+      `Decision backends registered` shows the key as set, and after
+      `./scripts/agent-backend.sh claude` an `agent.decide` span in Jaeger has
+      `decide.backend=claude` (not a `decide.fallback_reason`).
 - [ ] **Dashboards load**: `http://localhost/` Agent + Experiments tabs render;
       Grafana **Agent Operations — Fleet** and **Performance Experiment** open.
 - [ ] **Known-good flag state**: gates set as above; production
@@ -170,17 +155,17 @@ arms across **shadow** games, scores them, and reaches a **verdict**
 ### Act 2 — The agent making decisions + interventions
 
 The agent OBSERVEs the live game via OTLP telemetry, DECIDEs each cycle (rules
-engine, or the LLM when `mode=llm`), and — on the ACT path — applies bounded
-interventions.
+engine, or the remote backend selected by `decision.backend`), and — on the ACT
+path — applies bounded interventions.
 
 - **Watch it on**: the dashboard **Agent** tab (live Jaeger-polled decision
   feed) and Jaeger's `agent.decision` spans. Each decision span carries the whole
   `LayerState`: which flags were in effect, which objective was served, the chosen
   action + why, and whether it was permitted.
-- **`mode=rules` vs `mode=llm`**: with real inference configured, decisions show
-  `mode=llm` and the configured model; the stub shows `mode=rules`. Both produce
-  the same span schema, so the demo arc is identical either way (the fallback to
-  rules is itself a talking point — see act 3 / failure modes).
+- **rules vs a remote backend**: every decision has an `agent.decide` span with
+  `decide.backend`, the model, the confidence and the outcome (act / held /
+  fallback). The span schema is the same either way, so the demo arc is identical
+  (the fallback to rules is itself a talking point — see failure modes).
 - **Interventions**: with the ACT path open (see the
   [ACT runbook](agent-act-runbook.md) — `interventions_enabled=on` (flagd flag,
   #1213) + `enabled=on` + a permitting `interventions_allowed` variant), a permitted
@@ -217,7 +202,7 @@ act widens:
 ```bash
 # Gate 1 (sink) — flagd flag `interventions_enabled`, re-read at use-time (#1213),
 #   so flipping it takes effect on the next decision with NO agent restart.
-# Gate 2 (kill-switch enabled=on) + mode are handled by the enable script.
+# Gate 2 (kill-switch enabled=on) is handled by the enable script.
 # Flip interventions_enabled -> on in services/flagd/agent.json (or the live flag):
 #   "interventions_enabled": { "defaultVariant": "on" }
 # flagd hot-reloads within ~100 ms-1 s; the next Apply writes through the real sink.
@@ -225,7 +210,7 @@ act widens:
 # confirm the real sink is wired (writes enabled):
 docker compose logs agent | grep 'Agent intervention writes enabled' | tail -1
 
-# Gates 2 + mode on (live flip, ~1 s, no restart):
+# Gate 2 on (live flip, ~1 s, no restart):
 ./scripts/agent-dryrun-enable.sh on
 ```
 
@@ -359,36 +344,29 @@ check → fix*. The recurring theme: the agent **fails safe** (degrades to rules
 inert) rather than crashing, so the symptom is usually "nothing happened," not an
 error.
 
-### A. Inference unreachable → `mode=rules` / `no_backend_available`
+### A. Remote backend not deciding → `decide.fallback_reason`
 
-- **Symptom**: you expect `mode=llm` but agent decisions log `mode=rules` with
-  `no_backend_available`; the LLM is never called.
+- **Symptom**: `decision.backend` is `claude` / `openai`, but the `agent.decide`
+  spans show `decide.backend=rules` with a `decide.fallback_reason`.
 - **Check**:
   ```bash
-  docker compose logs agent | grep -E 'agent\.evaluate|no_backend_available' | tail
-  # prove the network path from inside the agent's network:
-  docker run --rm curlimages/curl -s http://<host>:11434/api/tags
+  docker compose logs agent | grep 'Decision backends registered' | tail -1
+  ./scripts/agent-backend.sh status
   ```
-- **Fix**: Ollama must bind **`0.0.0.0`** (not `127.0.0.1`), and under **WSL2 +
-  Windows-Ollama** point `AGENT_INFERENCE_BASE_URL` at the **WSL default-route
-  gateway IP** (`ip route show default | awk '{print $3}'`), *not*
-  `host.docker.internal`. If the curl returns 200 but the agent still says
-  `no_backend_available`, it's a **model** mismatch — `AGENT_INFERENCE_MODEL`
-  must match a tag from `/api/tags` exactly (e.g. `phi4-mini`). Full checklist:
-  [`agent-ollama-host-runbook.md`](agent-ollama-host-runbook.md).
+  `backend_unavailable` = no key or model (export the key, recreate the agent);
+  `llm_not_eligible` = a shadow game (expected; use a real game); `timeout` /
+  an HTTP status in `error.type` on the child `chat` span = network or vendor
+  trouble.
 - **Talking point**: this degradation is *by design* — the demo keeps running on
-  the rules engine. A flaky LLM never takes the game down.
+  the rules engine. A flaky model API never takes the game down.
 
-### B. Cold-start latency (~30–100 s on the first decision)
+### B. Slow remote answers
 
-- **Symptom**: real inference is reachable, but the **first** `mode=llm` decision
-  hangs for tens of seconds (the model is loading into memory).
-- **Check**: agent log shows a long gap before the first `agent.llm.*` span;
-  subsequent decisions are fast.
-- **Fix**: **warm the model before the talk** and keep it resident —
-  `OLLAMA_KEEP_ALIVE` (e.g. `OLLAMA_KEEP_ALIVE=30m` or `-1` to never unload) on
-  the Ollama host, plus one throwaway inference request during setup so the first
-  on-stage decision is hot.
+- **Symptom**: `decide.outcome=fallback` with `decide.fallback_reason=timeout`
+  on most cycles.
+- **Fix**: raise `decision.claude.timeout_ms` / `decision.openai.timeout_ms`, or
+  pick a faster model (`./scripts/agent-backend.sh claude haiku`). Bad venue WiFi
+  is exactly the case the rules floor exists for.
 
 ### C. Experiments idle after the first one concludes
 
@@ -437,7 +415,8 @@ error.
   ACT path hot-reloads the flag, and since #1044 the loop is always built and
   self-gates each tick on the live `experiments_enabled` flag — an off→on flip
   starts it with no agent restart. A restart/recreate is only needed when you
-  set/change the `AGENT_INFERENCE_*` env vars, which are read at process start.)
+  set/change API keys or the `AGENT_INFERENCE_*` env vars, which are read at
+  process start.)
 
 ### F. Flag changes not taking effect (flagd `ci/` vs base dir)
 
@@ -473,10 +452,10 @@ error.
 If the agent / inference path is wedged on stage and a restart doesn't clear it,
 **fall back to the rules engine** — it needs no LLM, no network, no hardware:
 
-- The stack with mock controllers + `mode=rules` is the always-available baseline.
-  Re-run `make dry-run` + `agent-dryrun-enable.sh on` (without an inference
-  backend) and demo acts 1–3 on rules. The decision arc and span schema are
-  identical; only `mode=rules` vs `mode=llm` differs.
+- The stack with mock controllers + `decision.backend=rules` is the
+  always-available baseline (`./scripts/agent-backend.sh rules`). Re-run
+  `make dry-run` + `agent-dryrun-enable.sh on` and demo acts 1–3 on rules. The
+  decision arc and span schema are identical; only `decide.backend` differs.
 - If the whole live demo is unrecoverable, switch to **pre-captured Jaeger traces
   / dashboard screenshots** and narrate the architecture from them. Keep a recent
   set captured during your dry-rehearsal for exactly this.
@@ -493,11 +472,11 @@ docker compose \
   -f docker-compose.ci.yml -f docker-compose.dry-run.yml \
   --profile agent --profile dashboard down
 
-./scripts/agent-dryrun-enable.sh off    # restore enabled / experiments_enabled / mode -> off / off / rules (ci dir)
+./scripts/agent-dryrun-enable.sh off    # restore enabled / experiments_enabled -> off / off (ci dir)
+./scripts/agent-backend.sh rules        # decision.backend back to the rules floor (ci dir)
 ```
 
 `agent-dryrun-enable.sh off` only resets the `services/flagd/ci/` dir; the
 production `services/flagd/agent.json` defaults were never touched. Confirm with
-`./scripts/agent-dryrun-enable.sh status`. If you brought up the optional LiteLLM
-gateway, add its compose file to the `down` and unset the inference env you set on
-the host.
+`./scripts/agent-dryrun-enable.sh status`. Unset any API keys you exported on the
+host.

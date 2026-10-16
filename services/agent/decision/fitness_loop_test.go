@@ -78,7 +78,6 @@ func firingCtx() gamecontext.GameContext {
 func enduranceFlags() flags.Snapshot {
 	return flags.Snapshot{
 		Enabled:              true,
-		Mode:                 "rules",
 		Objectives:           map[string]float64{ObjectiveEndurance: 1.0},
 		InterventionsAllowed: []string{"adjust_music_tempo", "play_audio_cue"},
 		Policy:               flags.Policy{MaxInterventionsPerMinute: 100},

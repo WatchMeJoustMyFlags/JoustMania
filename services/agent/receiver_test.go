@@ -226,7 +226,6 @@ func TestReceiver_PerGameBudgetIndependence(t *testing.T) {
 		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 		fl := flags.Snapshot{
 			Enabled:              true,
-			Mode:                 "rules",
 			InterventionsAllowed: []string{"grant_shield"},
 			Policy:               flags.Policy{MaxInterventionsPerMinute: 2},
 		}

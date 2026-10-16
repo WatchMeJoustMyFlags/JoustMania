@@ -12,10 +12,10 @@
 //	Existence:  enabled    kill switch; false short-circuits the whole loop
 //	                       (a throttled agent.disabled span still records the
 //	                       evaluated flags so "agent off" is visible in traces)
-//	            mode       selects the "rules" vs "llm" decision path
 //	Objective:  objectives session-goal weights driven into the rules engine via
 //	                       a LiveObjectives source (#726 engine reads it each cycle)
-//	Capability: model, prompt_variant   recorded for the M4 LLM path
+//	Backend:    decision.backend  who decides: the rules engine (default) or a
+//	                       remote decide backend (decide_hook.go, #1226)
 //	Permission: interventions_allowed   allow-list gate (#727)
 //	            policy.battery_threshold blocks player-targeted interventions when
 //	                                     the target's battery is below threshold
@@ -50,8 +50,6 @@ import (
 
 	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
-	"github.com/joustmania/agent/gamesummary"
-	"github.com/joustmania/agent/llm"
 )
 
 // Decision is a single intervention the rules engine wants applied.
@@ -106,19 +104,6 @@ type ActionSink interface {
 // *flags.Flags satisfies it; tests supply a fake.
 type FlagSource interface {
 	Evaluate(ctx context.Context) flags.Snapshot
-}
-
-// ContextWindow is the M7-2 rolling cross-game context source (#929): on the llm
-// decision path the loop pulls the last N recent game summaries from it and renders
-// them into the prompt's narrative context block. *gamewindow.Store satisfies it
-// (one shared instance across all loops — the window is GLOBAL cross-session
-// memory, like the LLM budget/resolver). It returns the last n summaries
-// oldest-first (Store.Recent's contract); the loop clamps n to the window's
-// retention cap. Nil (the construction default, rules-only deployments, and most
-// tests) means no cross-game block is injected and context_games is 0 — purely
-// additive over the #739 path.
-type ContextWindow interface {
-	Recent(n int) []gamesummary.Summary
 }
 
 // objectivePublisher is the optional seam the loop uses to push the per-cycle
@@ -203,48 +188,32 @@ type Loop struct {
 	// (span attribution) and tests can read the per-cycle layer snapshot.
 	lastLayer LayerState
 
-	// --- LLM call gate (#847) ---
-	// llmGate guards the per-game cadence state of the gate. It is separate from mu
-	// because the cadence read-modify-write happens inside decide(), which mu does
-	// not span; the lighter lock avoids holding the loop's main mutex across the
-	// budget check and rules evaluation.
+	// --- remote decide call gate (#847, #1226) ---
+	// llmGate guards the per-game cadence state of the remote decide gate
+	// (lastDecideAttempt). It is separate from mu because the cadence
+	// read-modify-write happens inside decide(), which mu does not span.
 	llmGate sync.Mutex
-	// lastLLMAttempt is the time this game's most recent LLM attempt was ADMITTED
-	// by the gate (passed eligibility + cadence + budget). The per-game cadence
-	// layer compares the next cycle against it. Per-Loop = per-game (#845): each
-	// game has its own cadence clock. Zero value = no attempt yet (first eligible
-	// cycle always passes cadence).
-	lastLLMAttempt time.Time
 	// lastDecideAttempt is the time this game's most recent remote decide call was
-	// admitted (#1226): the decision.min_interval_ms cadence clock, guarded by
-	// llmGate like lastLLMAttempt.
+	// admitted (#1226): the decision.min_interval_ms cadence clock.
 	lastDecideAttempt time.Time
-	// budget is the GLOBAL per-minute LLM request cap shared across ALL loops
-	// (#847). It is injected via SetLLMBudget from the one instance main.go
+	// budget is the GLOBAL per-minute LLM request cap shared across ALL loops and
+	// the post-game retro (#847): llm.max_requests_per_minute bounds remote decide
+	// calls and retro calls together. It is injected via SetLLMBudget from the one instance main.go
 	// constructs and closes over in the Loop factory, so concurrent games draw down
-	// a single budget. Nil until injected; a nil budget gates every llm attempt
-	// with llm_budget_exhausted (fail-closed: no shared cap means no llm).
+	// a single budget. Nil until injected; a nil budget gates every remote decide
+	// call with llm_budget_exhausted (fail-closed: no shared cap means no LLM).
 	budget *llmBudget
 	// budgetOverride, when > 0, replaces the per-cycle llm.max_requests_per_minute
 	// flag value as the budget cap (#964). It exists for LIVE inference operation
-	// (AGENT_LLM_MAX_REQUESTS_PER_MINUTE): under the eval-cycle rate the flag default
-	// (6/min) exhausts the budget almost immediately, gating the llm path with
-	// llm_budget_exhausted even when a backend is reachable. An operator can raise the
+	// (AGENT_LLM_MAX_REQUESTS_PER_MINUTE): a busy demo can exhaust the flag default
+	// (6/min), gating remote decide calls with llm_budget_exhausted even when a
+	// backend is reachable. An operator can raise the
 	// cap for a live dry-run via one env knob without editing flagd. Zero (the default,
 	// and every existing test) means "no override" → the flag value governs exactly as
 	// before, so the default-off path is unchanged. Set at construction, before serving.
 	budgetOverride int
 
-	// resolver is the SHARED inference fallback-chain resolver (#741), injected via
-	// SetResolver from the one instance main.go constructs (one availability cache
-	// for the whole agent, like budget). On a gate-ADMITTED llm cycle the loop calls
-	// resolver.resolve(model) to determine WHICH tier would serve, recording it as
-	// inference.used and any degradation as inference.fallback_reason. Nil until
-	// injected; a nil resolver means the cycle reports inference.used="rules" with
-	// FallbackNoBackend (no resolver = no llm tier known = rules decides), preserving
-	// the pre-#741 admitted-but-no-backend contract.
-	resolver *Resolver
-	// llmGated counts gated llm cycles (agent_llm_gated_total{reason=...}). Defaults
+	// llmGated counts gated remote decide cycles (agent_llm_gated_total{reason=...}). Defaults
 	// to a no-op so a Loop built without metrics wiring still works.
 	llmGated otelmetric.Int64Counter
 
@@ -266,11 +235,11 @@ type Loop struct {
 	// no-op so a Loop built without metrics wiring still works.
 	interventionsApplied otelmetric.Int64Counter
 
-	// asyncInferState is the per-Loop async-inference machinery (#917): the pile-up
-	// guard, the in-flight wait group, this loop's game id, the re-validation context
-	// provider, and the agent root context. Embedded so the async surface lives in one
-	// place (see async_infer.go). A nil ctxProvider keeps decide() on the synchronous
-	// #739 path, so a Loop not wired for async is behavior-unchanged.
+	// asyncInferState is the per-Loop async machinery (see async_state.go): the
+	// pile-up guard, the in-flight wait group, this loop's game id, the
+	// re-validation context provider, and the agent root context. The remote decide
+	// path runs on it; a nil ctxProvider makes a remote backend fall back to rules
+	// (decide.fallback_reason=async_not_wired).
 	asyncInferState
 
 	// effectSampler is the per-Loop intervention-effect MEASUREMENT machinery (#918):
@@ -280,15 +249,6 @@ type Loop struct {
 	// to re-read the game's CURRENT signals at +window. Inert without a context provider,
 	// so a Loop not wired for effect measurement is behavior-unchanged.
 	effectSampler
-
-	// contextWindow is the SHARED M7-2 rolling cross-game context source (#929),
-	// injected via SetContextWindow from the one gamewindow.Store main.go constructs
-	// (global cross-session memory, like budget/resolver). On a gate-admitted llm
-	// cycle llmDecide pulls Recent(N) from it, renders the narrative context block,
-	// and records context_games on the inference span. Nil = no cross-game block
-	// (rules-only / unwired / tests): the prompt carries no PRIOR GAMES section and
-	// context_games is 0.
-	contextWindow ContextWindow
 
 	// interventionRecorder is the PER-GAME seam into the #916 rolling narrative
 	// timeline (#945): runDecision calls it with each decision's outcome (the
@@ -351,15 +311,15 @@ func NewLoop(flagSource FlagSource, log *slog.Logger) *Loop {
 // SetLLMBudget injects the GLOBAL per-minute LLM request budget (#847). main.go
 // constructs ONE budget and calls this on every Loop the factory builds, so all
 // per-game loops share a single budget instance and 4 concurrent games can never
-// collectively exceed llm.max_requests_per_minute. Not safe to call concurrently
+// collectively exceed llm.max_requests_per_minute with remote decide calls. Not safe to call concurrently
 // with OnEvaluate — set it during construction, before the loop serves.
 func (l *Loop) SetLLMBudget(b *llmBudget) { l.budget = b }
 
 // SetLLMBudgetOverride sets a per-minute LLM request cap that REPLACES the live
 // llm.max_requests_per_minute flag value (#964). main.go passes
 // AGENT_LLM_MAX_REQUESTS_PER_MINUTE when an operator wants a higher live cap for a
-// real-inference dry-run (the flag default of 6/min exhausts under the eval-cycle
-// rate, gating the llm path with llm_budget_exhausted even with a reachable backend).
+// live run (the flag default of 6/min can gate remote decide calls with
+// llm_budget_exhausted even with a reachable backend).
 // A non-positive value is ignored (the flag governs), so the default-off path is
 // unchanged. Set during construction, before the loop serves.
 func (l *Loop) SetLLMBudgetOverride(maxPerMinute int) {
@@ -379,24 +339,6 @@ func (l *Loop) budgetCap(flagValue int) int {
 	}
 	return flagValue
 }
-
-// SetResolver injects the SHARED inference fallback-chain resolver (#741). main.go
-// constructs ONE Resolver (one availability cache + one background probe ticker for
-// the whole agent) and calls this on every Loop the factory builds, so all per-game
-// loops resolve against the same availability picture — mirroring SetLLMBudget. Not
-// safe to call concurrently with OnEvaluate — set it during construction, before
-// the loop serves.
-func (l *Loop) SetResolver(r *Resolver) { l.resolver = r }
-
-// SetContextWindow injects the SHARED M7-2 rolling cross-game context source
-// (#929). main.go constructs ONE gamewindow.Store (global cross-session memory, one
-// window shared across every per-game loop — like the budget/resolver) and calls
-// this on every Loop the factory builds, so each loop's llm path renders the SAME
-// recent-games window. A nil window (the construction default, rules-only
-// deployments, and most tests) means no cross-game block is injected and
-// context_games is 0 — purely additive over the #739 path. Not safe to call
-// concurrently with OnEvaluate — set it during construction, before the loop serves.
-func (l *Loop) SetContextWindow(w ContextWindow) { l.contextWindow = w }
 
 // SetInterventionRecorder installs the PER-GAME seam that feeds each decision's
 // dispatched/blocked outcome into the #916 rolling narrative timeline (#945).
@@ -522,17 +464,6 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 
 	snapshot := l.Flags.Evaluate(ctx)
 	state := newLayerState(snapshot)
-	// #1080 attribution: report inference.configured as the model of the configured
-	// inference backend (AGENT_INFERENCE_MODEL) when one is wired, not the stale
-	// agent.model flag. The resolver is the single source of truth (ConfiguredModel);
-	// empty (stub default, no real backend) leaves the flag-seeded value untouched, so
-	// the default path is byte-identical.
-	if l.resolver != nil {
-		if cfg := l.resolver.ConfiguredModel(); cfg != "" {
-			state.ConfiguredModel = cfg
-		}
-	}
-
 	// Existence layer: enabled=false short-circuits before any rules evaluation.
 	// This is the safe default when flagd is unreachable. The disabled state is
 	// still recorded AND emitted as a throttled agent.disabled span so a Jaeger
@@ -558,41 +489,27 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 		pub.SetFitness(fitnessThresholds(snapshot.Fitness))
 	}
 
-	// A single throttle decision per cycle drives BOTH the evaluate log and the
-	// llm-mode prompt-capture span/log, so they share one throttle slot rather
-	// than racing for it (an evaluate-log shouldLog() would otherwise consume the
-	// slot before decide() could capture). emit==true at most once per throttle
-	// interval.
-	emit := l.shouldLog()
-	if emit {
+	// The evaluate log line is throttled to at most one per throttle interval.
+	if l.shouldLog() {
 		l.Log.Info("agent.evaluate",
 			"session_id", c.SessionID,
 			"player_count", len(c.Players),
 			"game_mode", derefStr(c.Session.GameMode),
 			"duration", derefFloat(c.Session.DurationSeconds),
-			"mode", snapshot.Mode,
-			"model", snapshot.Capability.Model,
-			"prompt_variant", snapshot.Capability.PromptVariant,
+			"decision_backend", requestedBackend(snapshot),
 			"battery_threshold", snapshot.Policy.BatteryThreshold,
 			"variance_window", snapshot.Policy.MovementVarianceWindow,
 			"max_per_minute", snapshot.Policy.MaxInterventionsPerMinute,
 		)
 	}
 
-	decisions, decideRec := l.decide(ctx, snapshot, c, trig, emit, &state)
+	decisions, decideRec := l.decide(ctx, snapshot, c, trig)
 
 	// Lift the cycle-level fitness evaluation the engine just computed onto the
 	// LayerState so it rides the decision span as fitness.evaluated (#731). Read
 	// after decide so it reflects this cycle's thresholds and live context. This
 	// happens even on an empty-decision cycle so a future cycle-scoped consumer
 	// still sees the evaluation, but it only reaches a span when a decision emits.
-	//
-	// TODO(#739/real-backend): LastFitness is written only inside the rules engine's
-	// Evaluate. On an llm cycle that the backend decided (decide ran llmDecide, not
-	// rules), this reads the PRIOR rules cycle's stale evaluation. Harmless today
-	// (pure-llm sessions never populate it, and there is no real backend), but once a
-	// tier actually decides, a mixed llm/rules sequence would attach stale fitness to
-	// the llm decision span — guard it on "rules ran this cycle" when wiring #917.
 	if rd, ok := l.Rules.(fitnessReader); ok {
 		if vals := rd.LastFitness().Evaluated(); len(vals) > 0 {
 			state.FitnessEvaluated = vals
@@ -703,354 +620,32 @@ func (l *Loop) startSignalReceivedSpan(ctx context.Context, c gamecontext.GameCo
 	return l.Tracer.Start(ctx, SignalReceived, startOpts...)
 }
 
-// decide selects the decision path from snapshot.Mode and runs it. The "rules"
-// path (and any unrecognized mode) goes straight to the deterministic engine. The
-// "llm" path is gated, resolved, and — when a tier is reachable — actually CALLED
-// (#847 + #741 + #739):
-//
-//  1. The LLM call gate (#847) runs FIRST: the cycle must pass the three-layer gate
-//     (eligibility -> cadence -> budget). On DENY it records the gate fallback_reason
-//     on the LayerState, increments agent_llm_gated_total, and does NOT build/capture
-//     a prompt or resolve a tier (no token burn) — inference.used stays "rules".
-//  2. On ADMIT, resolve_backend (#741) picks WHICH tier would serve and sets
-//     inference.used / fallback_reason (the configured tier, a degraded lower tier
-//     with endpoint_unreachable, or rules with no_backend_available when the whole
-//     chain is down). The prompt is captured on the throttled agent.llm.prompt span
-//     (emit gates it).
-//  3. When resolve_backend returns a REACHABLE non-rules tier, the cycle FIRES the
-//     inference ASYNCHRONOUSLY (#917, when async is wired): fireInferAsync launches
-//     Infer in its own goroutine and decide() returns nil immediately, so the loop
-//     never blocks on the 2-10s call. The model's decision is re-validated against the
-//     CURRENT context and applied (or discarded with a reason) on its own
-//     agent.llm.apply trace; on timeout/error/unparseable the rules engine decides in
-//     that async path, so the system ALWAYS provides a safe deterministic answer. The
-//     pile-up guard skips firing a second concurrent Infer per game (FallbackInflight,
-//     falls back to rules this cycle). When async is NOT wired (no context provider),
-//     it keeps the synchronous #739 call via llmDecide for behavior-compatibility.
-//
-// emit is this cycle's shared throttle decision (from OnEvaluate); the prompt
-// capture span/log only fire when it is true.
-//
-// #1226: decision.backend comes first. Any value other than rules hands the
-// decision to that remote backend (decideRemote, see decide_hook.go) and the legacy
-// mode / model flags are IGNORED. With decision.backend=rules (the default) and
-// mode=rules the rules engine runs through rulesDecide, which returns Evaluate's
-// decisions unchanged plus the agent.decide record from the same ranking. The
-// legacy mode=llm path below is untouched.
-func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext, trig EvalTrigger, emit bool, state *LayerState) ([]Decision, *decideRecord) {
+// decide runs this cycle's decision path. decision.backend selects it (#1226):
+// rules (the default) runs the rules engine through rulesDecide, which returns
+// Evaluate's decisions unchanged plus the agent.decide record from the same
+// ranking; any other value hands the decision to that remote backend
+// (decideRemote, see decide_hook.go), which falls back to rules when it cannot
+// decide. The legacy mode=llm path (#739/#741/#847/#917/#1207) was retired in #1234.
+func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext, trig EvalTrigger) ([]Decision, *decideRecord) {
 	if !snapshot.Decision.IsRules() {
 		return l.decideRemote(ctx, snapshot, c, trig)
 	}
-	if snapshot.Mode != "llm" {
-		return l.rulesDecide(ctx, snapshot, c, flags.DecisionBackendRules, "")
-	}
-	return l.decideLegacy(ctx, snapshot, c, trig, emit, state), nil
+	return l.rulesDecide(ctx, snapshot, c, flags.DecisionBackendRules, "")
 }
 
-// decideLegacy is the pre-#1226 mode=llm path (#847 gate, #741 resolver, #917
-// async inference, #1207 rules-first upgrade), unchanged.
-func (l *Loop) decideLegacy(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext, trig EvalTrigger, emit bool, state *LayerState) []Decision {
-	if snapshot.Mode == "llm" {
-		// Resolve the gate BEFORE any prompt work so a gated cycle never serializes
-		// a prompt it will not send. The reason rides the decision span (#729) via
-		// state.LLMFallbackReason regardless of whether emit fired this cycle, so a
-		// gated cycle is attributable even when the throttled capture span is silent.
-		reason := l.gateLLM(ctx, snapshot, c)
-		if reason != "" {
-			// Gate DENIED (#847): keep the gate's behavior EXACTLY — inference.used
-			// stays "rules" (the newLayerState default) and inference.fallback_reason
-			// carries the gate reason. resolve_backend (#741) does NOT run: there is no
-			// point resolving a tier for an attempt that will not be made, and we must
-			// not override the gate's attribution. No prompt capture, no tier consumed.
-			state.LLMFallbackReason = reason
-		} else {
-			// Gate ADMITTED: now (and only now) resolve WHICH inference tier would serve
-			// this decision (#741). The resolver reads its cached availability — cheap,
-			// no network on the hot path. The resolved tier becomes inference.used and
-			// any degradation becomes inference.fallback_reason:
-			//   - configured tier reachable -> used=<tier>,        fallback=""
-			//   - a lower tier serves        -> used=<lower tier>,  fallback=endpoint_unreachable
-			//   - whole chain unreachable    -> used="rules",       fallback=no_backend_available
-			// Until #739 a "reachable" tier does not actually decide — the rules engine
-			// below still produces the Decision — so inference.used honestly reflects WHO
-			// #739 WILL call, with fallback="" meaning "this is the tier #739 would use".
-			res := l.resolveBackend(snapshot.Capability.Model)
-			state.InferenceUsed = res.Used
-			state.LLMFallbackReason = res.FallbackReason
-			// Only an ADMITTED attempt captures the prompt; the capture is still
-			// throttle-gated by emit so steady-state load emits at most one span per
-			// interval, exactly as before #847.
-			if emit {
-				l.captureLLMPrompt(ctx, snapshot, c)
-			}
-			// #739: a non-nil Backend means resolve_backend found a REACHABLE non-rules
-			// tier — so actually CALL it instead of falling back to rules (the #741
-			// behavior was "resolve but always run rules"; this is the milestone payoff).
-			// A nil Backend (whole chain unreachable, the dev default) keeps the #741
-			// fallback: drop through to the rules engine below with used="rules" /
-			// no_backend_available already set above.
-			if res.Backend != nil {
-				// #917: the inference call is now ASYNCHRONOUS. A real Infer takes 2-10s,
-				// so calling it synchronously here would block this per-game Export-handler
-				// goroutine for seconds. Instead fire it in its own goroutine and return
-				// from decide() PROMPTLY; when the result lands it is re-validated against
-				// the CURRENT context and applied (or discarded with a reason) on its own
-				// agent.llm.apply trace — see async_infer.go / async_apply.go.
-				//
-				// THE DESIGN FORK (#917, resolved here — see async_infer.go's header):
-				// an admitted+reachable cycle decides NOTHING synchronously. The single
-				// decision for THIS context is produced by the async path: the model's
-				// (re-validated + applied) or, on timeout/error/unparseable, the rules
-				// engine IN THE ASYNC COMPLETION PATH for that same context. The loop never
-				// blocks; the system always decides (just a beat later). Returning nil here
-				// means this cycle emits no synchronous decision span — the async apply
-				// trace carries it.
-				if l.asyncEnabled() {
-					// #1207: RULES-FIRST in game. mode="llm" no longer fires the async LLM
-					// every admitted cycle — it does so only as an explicit, length-gated
-					// UPGRADE. The upgrade gate (master switch llm.in_game_async_upgrade +
-					// the derived length estimate) is evaluated BEFORE firing: when it fails,
-					// this cycle decides IMMEDIATELY via the deterministic rules engine and no
-					// async LLM is launched. This inverts the #917 default — short real games
-					// (the only place the latency race ever bit, since shadow games are
-					// rules-only via eligibility) now get an instant rules decision instead of
-					// deferring a beat to an async result that may land after the game moved on.
-					//
-					// LATE-LLM = SEPARATE INTERVENTION (reverses reason fork (B) in
-					// async_infer.go:24-49 for the *upgrade* case): on a game long enough to
-					// pass the gate we DO fire async, and when that result lands after rules
-					// already acted it dispatches through the SAME runDecision chain as its OWN
-					// intervention. A double-fire-within-context is INTENDED here and is bounded
-					// by policy.max_interventions_per_minute (the rate limiter), with the
-					// per-game inflight CAS preventing two concurrent Infers. The gate's length
-					// estimate ensures we only opt into that double-fire on games whose duration
-					// can absorb the extra intervention.
-					if !l.shouldUpgradeToAsyncLLM(snapshot, c) {
-						return l.Rules.Evaluate(ctx, c)
-					}
-					// #1140 (Slice A): an async-fire cycle is NOT idle — a decision was
-					// dispatched (just asynchronously). It therefore deserves a trace
-					// presence, and that presence is the ANCHOR the later agent.llm.infer.call
-					// and agent.llm.apply roots Link back to. fireInferAsync creates that anchor
-					// agent.signal_received span at fire time and threads its SpanContext into the
-					// async job (see async_infer.go). The original Slice A captured
-					// trace.SpanContextFromContext(ctx) here, but in production ctx carries NO
-					// active span: there is no otelgrpc interceptor, and OnEvaluate creates the
-					// agent.signal_received root only on the SYNC decided path (len(decisions)>0,
-					// AFTER decide() returns) — an async-fire cycle returns nil from decide(), so
-					// OnEvaluate hits the idle-return and creates no span at all. The captured
-					// SpanContext was thus always invalid in production → the Links were a
-					// permanent no-op and the fire cycle had zero trace presence. The anchor lives
-					// only on a cycle that actually dispatches async inference (created AFTER the
-					// pile-up guard claim), so the sync-decided and true-idle paths are untouched —
-					// no new span spam on idle ticks.
-					if l.fireInferAsync(ctx, snapshot, res.Backend, c, trig) {
-						// Fired: defer entirely to the async apply path. No sync decision.
-						return nil
-					}
-					// Pile-up guard tripped — a call is already in flight for this game
-					// (the previous cycle's Infer outran this interval). Do NOT launch a
-					// second Infer; fall through to the rules engine so this cycle still
-					// gets a deterministic decision. inference.used stays the resolved tier
-					// (an attempt IS in flight); record that a fire was skipped.
-					state.LLMFallbackReason = FallbackInflight
-					return l.Rules.Evaluate(ctx, c)
-				}
-
-				// Async not wired (no context provider injected): keep the synchronous
-				// #739 path so an un-wired Loop is behavior-unchanged. The call blocks the
-				// handler, but the fakes/sentinel backend return immediately in that case.
-				decisions, fallback := l.llmDecide(ctx, res.Backend, snapshot, c)
-				if fallback == "" {
-					// The model answered usably (a valid decision, or a contract-following
-					// noop that yields zero decisions). inference.used stays the called
-					// tier; return the LLM's decisions, which flow through the SAME
-					// runDecision/evaluatePermission chain as rules decisions (so the
-					// allow-list, battery, and rate-limit gates apply identically).
-					return decisions
-				}
-				// Unparseable/invalid/errored: NEVER dispatch untrusted output. Record the
-				// reason (inference.used stays the called tier — it answered, just unusably)
-				// and fall through to the deterministic rules engine below.
-				state.LLMFallbackReason = fallback
-			}
-		}
-	}
-	return l.Rules.Evaluate(ctx, c)
-}
-
-// gateLLM runs the three-layer LLM call gate (#847) for this cycle and returns the
-// fallback_reason: "" when the gate ADMITS the attempt (the cycle may capture the
-// prompt and, until a backend exists, falls back to rules with
-// no_backend_available), or the specific gate reason when DENIED. Layers are
-// checked in this exact order — eligibility, then cadence, then budget — so the
-// cheapest, most-decisive check short-circuits first and a denied attempt never
-// charges a later layer (e.g. an ineligible shadow game never touches the global
-// budget). Every denial increments agent_llm_gated_total{reason=...}.
-//
-// Cadence and budget are charged ONLY on admission: lastLLMAttempt advances and a
-// budget slot is consumed exactly when the attempt passes all three layers, so a
-// cycle blocked by a later layer does not perturb an earlier layer's state.
-func (l *Loop) gateLLM(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext) string {
-	now := l.now
-	if now == nil {
-		now = time.Now
-	}
-
-	// Layer 1 — Eligibility: which game kinds may use llm at all. A kind not in
-	// llm.eligible_game_kinds (default ["real"], so shadow games are rules-only,
-	// #838) is gated here and never considers cadence or budget.
-	if !snapshot.LLMGate.EligibleFor(c.GameKind) {
-		l.recordGated(ctx, FallbackNotEligible)
-		return FallbackNotEligible
-	}
-
-	// Layers 2 & 3 are charged together under llmGate so the cadence read and the
-	// lastLLMAttempt write are atomic with respect to concurrent Export handlers
-	// for THIS game (per-game state), and so an admitted attempt advances cadence
-	// and consumes a budget slot as one unit.
-	l.llmGate.Lock()
-	defer l.llmGate.Unlock()
-
-	// Layer 2 — Cadence (per game): at most one attempt per game per
-	// llm.min_decision_interval_seconds. A zero lastLLMAttempt (no prior attempt)
-	// always passes. A non-positive interval disables the cadence floor.
-	t := now()
-	interval := snapshot.LLMGate.MinDecisionInterval
-	if interval > 0 && !l.lastLLMAttempt.IsZero() && t.Sub(l.lastLLMAttempt) < interval {
-		l.recordGated(ctx, FallbackInterval)
-		return FallbackInterval
-	}
-
-	// Layer 3 — Global budget: one shared cap across ALL games. A nil budget
-	// (never injected) fails closed — no shared cap means no llm. The budget is
-	// charged here, last, so an attempt blocked by cadence above never draws it
-	// down.
-	if l.budget == nil || !l.budget.allow(t, l.budgetCap(snapshot.LLMGate.MaxRequestsPerMinute)) {
-		l.recordGated(ctx, FallbackBudgetExhausted)
-		return FallbackBudgetExhausted
-	}
-
-	// Admitted: advance this game's cadence clock. The budget slot was consumed by
-	// the allow() call above. This is the ONLY path that does not return a reason.
-	l.lastLLMAttempt = t
-	return ""
-}
-
-// shouldUpgradeToAsyncLLM reports whether an admitted mode="llm" cycle should be
-// UPGRADED from the rules-first default to firing the async LLM (#1207). It is the
-// in-game upgrade gate, evaluated AFTER the #847 call gate has already admitted the
-// cycle and a reachable backend has been resolved. Two conditions, both required:
-//
-//  1. master switch — llm.in_game_async_upgrade must be on. When off, mode="llm" is
-//     rules-first in game and never fires the async LLM, regardless of game length.
-//  2. length gate — the derived expected game length must be at least the existing
-//     latency budget: only a game long enough to absorb a 2-10s async result (and the
-//     late-LLM intervention it may dispatch) earns the upgrade. A 2p/6s shadow-sized
-//     game stays rules-only; an 8p endurance game fires the LLM.
-//
-// On either failure the caller decides immediately via the rules engine. The shadow/
-// real distinction is emergent: short games self-gate to rules without a static table.
-func (l *Loop) shouldUpgradeToAsyncLLM(snapshot flags.Snapshot, c gamecontext.GameContext) bool {
-	if !snapshot.LLMGate.InGameAsyncUpgrade {
-		return false
-	}
-	expected := expectedGameSeconds(c, snapshot.LLMGate.SecondsPerPlayer, snapshot.LLMGate.StyleFactor)
-	return expected >= snapshot.LLMGate.LatencyBudget.Seconds()
-}
-
-// expectedGameSeconds derives the expected remaining game length (#1207) from the
-// active player count and the two tunable estimate parameters:
-//
-//	expected_seconds = ActivePlayerCount × secondsPerPlayer × styleFactor
-//
-// ActivePlayerCount comes from Session.ActivePlayerCount (the live game_active_players
-// signal); when it has not been observed yet (nil) it falls back to the number of
-// known players in the context, so a fresh game still produces a usable estimate.
-func expectedGameSeconds(c gamecontext.GameContext, secondsPerPlayer, styleFactor float64) float64 {
-	players := len(c.Players)
-	if c.Session.ActivePlayerCount != nil {
-		players = *c.Session.ActivePlayerCount
-	}
-	return float64(players) * secondsPerPlayer * styleFactor
-}
-
-// resolveBackend walks the inference fallback chain (#741) for an ADMITTED llm
-// cycle and returns the resolved tier plus any degradation reason. A nil resolver
-// (never injected) fails to the honest default: inference.used="rules" with
-// no_backend_available — no resolver means no llm tier is known, so the rules
-// engine decides, exactly the admitted-but-no-backend contract that held before
-// #741. With a resolver it delegates to resolver.resolve, which reads the cached
-// availability (no probe on the hot path).
-func (l *Loop) resolveBackend(configuredModel string) Resolution {
-	if l.resolver == nil {
-		return Resolution{Used: InferenceRules, FallbackReason: FallbackNoBackend}
-	}
-	return l.resolver.resolve(configuredModel)
-}
-
-// recordGated increments the agent_llm_gated_total counter for one gated llm cycle,
-// labeled by the fallback reason (#847 acceptance #6). The counter is never nil
+// recordGated increments the agent_llm_gated_total counter for one gated remote
+// decide cycle, labeled by the gate reason (#847). The counter is never nil
 // (NewLoop seeds a no-op), so this is always safe to call.
 func (l *Loop) recordGated(ctx context.Context, reason string) {
 	l.llmGated.Add(ctx, 1, otelmetric.WithAttributes(attribute.String("reason", reason)))
 }
 
-// captureLLMPrompt builds the prompt the agent would send this cycle and records
-// it on the agent.llm.prompt span, then logs an agent.llm.prompt_captured line
-// (metadata only — the full prompt text lives on the span, never in the log).
-// The caller gates this on the cycle's shared throttle decision, so a
-// steady-state llm agent emits at most one capture per throttle interval and the
-// prompt is built ONLY when it will actually be emitted (no serialization cost
-// on throttled-out cycles).
-func (l *Loop) captureLLMPrompt(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext) {
-	now := l.now
-	if now == nil {
-		now = time.Now
+// nowOrDefault returns the loop's injected clock, or time.Now when unset.
+func (l *Loop) nowOrDefault() func() time.Time {
+	if l.now != nil {
+		return l.now
 	}
-	// M7-2 (#929): inject the SAME cross-game context block the real inference path
-	// (llmDecide) would, so a captured prompt matches what the agent would actually
-	// send, and record the injected count on this capture span too (cheap — the block
-	// was already rendered for the prompt). Nil window -> empty block, count 0.
-	contextBlock, contextCount := l.renderContextBlock(snapshot)
-	// M7-3 (#930): inject the SAME validated operator note the real inference path would,
-	// so a captured prompt matches what the agent would actually send, and record the
-	// present+len view on this capture span too. Rejected/unset note -> "" / false / 0.
-	contextNote, notePresent, noteLen := resolveContextNote(snapshot)
-	prompt := llm.Build(llm.BuildInput{
-		Snapshot:     snapshot,
-		Context:      c,
-		Now:          now(),
-		ContextBlock: contextBlock,
-		ContextNote:  contextNote,
-	})
-	attrs := llmPromptAttributes(llmPromptAttrs{
-		prompt:     prompt,
-		objectives: snapshot.Objectives,
-		allowed:    snapshot.InterventionsAllowed,
-		gameKind:   c.GameKind,
-		gameID:     c.SessionID,
-	})
-	attrs = append(attrs,
-		attribute.Int(AttrLLMContextGames, contextCount),
-		attribute.Bool(AttrLLMContextNotePresent, notePresent),
-		attribute.Int(AttrLLMContextNoteLen, noteLen),
-	)
-	// #1168: the span carries only the System-prompt fingerprint; emit the full text
-	// once per distinct fingerprint on the agent.llm.system_prompt reference log so
-	// the hash stays resolvable to its text without paying per span (the #1167 OOM).
-	systemPromptRef.emit(l.Log, systemPromptSHA(prompt.System),
-		prompt.Variant, llmModeValue, allowedSummary(snapshot.InterventionsAllowed), prompt.System)
-	_, span := l.Tracer.Start(ctx, SpanLLMPrompt, trace.WithAttributes(attrs...))
-	span.End()
-
-	l.Log.Debug("agent.llm.prompt_captured",
-		"session_id", c.SessionID,
-		"variant", prompt.Variant,
-		"model", prompt.Model,
-		"bytes", len(prompt.System)+len(prompt.User),
-		"fallback_reason", FallbackNoBackend,
-	)
+	return time.Now
 }
 
 // runDecision emits one agent.decision span (full #724 schema) and its
@@ -1363,8 +958,8 @@ func GameTraceLink(gameTraceID, gameTraceSpanID string) []trace.SpanStartOption 
 
 // attrLinkKind labels a span Link with what the link points at, so a reader who lands
 // on the link target knows WHY it is there. #1140 (Slice A) stamps it
-// linkKindFireCycle on the agent.llm.infer.call + agent.llm.apply Links so a reader of
-// either async trace knows the link navigates back to the originating fire cycle's
+// linkKindFireCycle on the async agent.decide root's Link so a reader of the async
+// trace knows the link navigates back to the originating fire cycle's
 // agent.signal_received trace. Defined locally here (not in telemetry.go) to keep the
 // new attribute owned by Slice A.
 const (
@@ -1375,8 +970,8 @@ const (
 
 // fireCycleLink builds the #1140 (Slice A) trace-continuity span option: when the
 // captured fire-cycle SpanContext is valid, it returns a single trace.WithLinks option
-// whose Link targets that SpanContext — so the agent.llm.infer.call and agent.llm.apply
-// spans (each on their own parent-less root, by the #917 non-blocking design) LINK back
+// whose Link targets that SpanContext — so the async agent.decide root (its own
+// root by the non-blocking design) LINKs back
 // to the fire cycle's originating agent.signal_received trace and are navigable in
 // Jaeger as one logical decision. The Link carries link.kind=fire_cycle plus the fire
 // trace_id as queryable attributes. An invalid/zero SpanContext (the production default,
@@ -1400,7 +995,7 @@ func fireCycleLink(sc trace.SpanContext) []trace.SpanStartOption {
 // decisionAttributes builds the complete #724 + #729 decision-span schema for
 // one decision. It lifts every evaluated flag from the cycle's LayerState
 // verbatim (cycle-level: existence/capability/permission/policy), the
-// path-agnostic inference attribution, and the per-decision outcome (action,
+// per-decision outcome (action,
 // reason, objective served, fitness, blocked + reason). Every span carries every
 // attribute; subsystems that do not exist yet contribute explicit placeholder
 // values (see telemetry.go). The block reason (#728) is carried only when a
@@ -1453,55 +1048,16 @@ func decisionAttributes(state *LayerState, d Decision, blocked bool, reason Bloc
 }
 
 // layerStateAttributes lifts the cycle's evaluated flag set from the LayerState
-// onto a span verbatim — the heart of #729. It is path-agnostic (rules and the
-// M4 llm path converge on the same LayerState) and used by both the live
-// decision span and the disabled kill-switch span. Inference attribution is
-// derived from the mode: configured = the capability model flag, used = the tier
-// resolve_backend resolved (#741, rules on the rules path), fallback_reason set
-// only when mode=llm degraded.
+// onto a span verbatim — the heart of #729. It is used by both the live decision
+// span and the disabled kill-switch span. #1234 removed the legacy capability /
+// inference attribution (agent.mode, agent.model, agent.prompt_variant,
+// inference.*): decide.backend says who decided.
 func layerStateAttributes(state *LayerState) []attribute.KeyValue {
-	mode := state.Mode
-	if mode == "" {
-		mode = DefaultMode
-	}
-	// Inference attribution (#741 makes used/fallback HONEST). On the llm path:
-	//   - inference.used is the tier resolve_backend resolved this cycle
-	//     (state.InferenceUsed): a real tier when the gate admitted and a tier was
-	//     reachable, or "rules" when the gate denied / the whole chain was unreachable.
-	//     The newLayerState default is already "rules", so a gate-denied cycle (where
-	//     the loop never overwrote it) correctly reports rules — matching #847's "used
-	//     stays rules when gated" contract WITHOUT a special case here.
-	//   - inference.fallback_reason is the PER-CYCLE reason: a #847 gate reason
-	//     (llm_not_eligible / llm_interval / llm_budget_exhausted) when gated, the #741
-	//     resolve reason (endpoint_unreachable when a lower tier serves) when admitted-
-	//     and-degraded, or no_backend_available when admitted but nothing was reachable.
-	//     An empty reason on an admitted, configured-tier-reachable cycle is correct and
-	//     left empty (configured == used, no degradation) — we no longer force
-	//     no_backend_available, because a reachable tier has no fallback.
-	// mode=rules has no fallback reason and reports used=rules, unchanged.
-	var inferenceUsed, fallback string
-	if mode == "llm" {
-		inferenceUsed = state.InferenceUsed
-		if inferenceUsed == "" {
-			inferenceUsed = InferenceRules
-		}
-		fallback = state.LLMFallbackReason
-	} else {
-		inferenceUsed, fallback = inferenceAttribution(mode)
-	}
 	attrs := []attribute.KeyValue{
 		// Existence layer.
 		attribute.Bool(AttrEnabled, state.Enabled),
-		attribute.String(AttrMode, mode),
 		// Objective layer (cycle-wide weights as evaluated this cycle).
 		attribute.String(AttrObjectives, summarizeObjectives(state.Objectives)),
-		// Capability layer.
-		attribute.String(AttrModel, state.Model),
-		attribute.String(AttrPromptVariant, state.PromptVariant),
-		// Inference attribution (path-agnostic).
-		attribute.String(AttrInferenceConfigured, state.ConfiguredModel),
-		attribute.String(AttrInferenceUsed, inferenceUsed),
-		attribute.String(AttrInferenceFallback, fallback),
 		// Permission layer.
 		attribute.String(AttrInterventionsAllowed, allowedSummary(state.InterventionsAllowed)),
 		attribute.Int(AttrPolicyBatteryThreshold, state.PolicyBatteryThreshold),
@@ -1520,21 +1076,6 @@ func layerStateAttributes(state *LayerState) []attribute.KeyValue {
 		attrs = append(attrs, attribute.StringSlice(AttrFitnessEvaluated, renderFitness(state.FitnessEvaluated)))
 	}
 	return attrs
-}
-
-// inferenceAttribution maps a NON-llm decision mode to the inference.used /
-// inference.fallback_reason pair: rules (and any unknown mode) run the rules
-// engine with no fallback reason. Since #741 wired resolve_backend, the llm path
-// no longer flows through here — layerStateAttributes reads the per-cycle resolved
-// tier (state.InferenceUsed) and reason (state.LLMFallbackReason) directly — so
-// this helper handles only the rules/unknown branch. It is retained (rather than
-// inlined) so the rules-path attribution has a single named source, and the
-// mode=="llm" guard stays defensive in case a caller routes an llm mode here.
-func inferenceAttribution(mode string) (used, fallbackReason string) {
-	if mode == "llm" {
-		return InferenceRules, FallbackNoBackend
-	}
-	return InferenceRules, ""
 }
 
 // summarizeObjectives renders the objective weights as a stable sorted "k=v"
@@ -1581,7 +1122,7 @@ func allowedSummary(allowed []string) string {
 type disabledFlags struct{}
 
 func (disabledFlags) Evaluate(context.Context) flags.Snapshot {
-	return flags.Snapshot{Enabled: flags.DefaultEnabled, Mode: flags.DefaultMode}
+	return flags.Snapshot{Enabled: flags.DefaultEnabled}
 }
 
 // fitnessThresholds converts the flag-layer fitness snapshot into the engine's
