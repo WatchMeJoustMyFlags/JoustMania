@@ -2147,7 +2147,9 @@ class BaseGameMode(ABC):
         duration_ms = int(round(remaining_s * 1000))
         until = time.time() + remaining_s
         kind = "partial" if partial else "full"
-        self._shield_feedback_until[serial] = until
+        # Keep the latest end of any running shield: a shorter partial grant after
+        # a longer full one must not hide the full one from _end_shield_feedback.
+        self._shield_feedback_until[serial] = max(self._shield_feedback_until.get(serial, 0.0), until)
         if player.span:
             with contextlib.suppress(Exception):
                 player.span.add_event(

@@ -243,6 +243,26 @@ class TestUC040ShieldFeedbackEnds:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A17", br=["BR-010"])
+    async def test_shorter_partial_does_not_hide_a_running_full_shield(self, game):
+        """UC-040 A17: a short partial grant after a long full one must not drop the full one from the clear."""
+        clock = [1000.0]
+        with (
+            patch("services.game_coordinator.games.base.time.time", side_effect=lambda: clock[0]),
+            patch.object(game, "_play_sound", new_callable=AsyncMock),
+        ):
+            await game.grant_shield("p1", 10.0)
+            await game.grant_partial_shield("p1", 1.0)
+            sent = [(serial, effect) for serial, effect, _ in game.gameplay_stream.effects()]
+            assert sent == [("p1", SHIELD), ("p1", PARTIAL)]
+            game.gameplay_stream.writes.clear()
+
+            clock[0] += 5.0  # partial expired, full still running
+            await game._end_shield_feedback()
+
+        assert game.gameplay_stream.effects() == [("p1", SHIELD, 0)]
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A17", br=["BR-010"])
     async def test_game_end_without_shields_sends_nothing(self, game):
         """UC-040 A17: nothing to end, nothing sent."""
         await game._end_shield_feedback()
