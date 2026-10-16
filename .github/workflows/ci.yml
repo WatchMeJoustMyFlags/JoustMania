@@ -123,12 +123,14 @@ jobs:
               - 'Makefile'
               # self-test edits to this job
               - '.github/workflows/ci.yml'
-            # Telemetry contract (#1357): producers (services/lib), the agent
-            # extractors, dashboards and alerts all live under these paths.
+            # Telemetry contract (#1357) and infra config tests (#1365):
+            # producers, agent extractors, dashboards, alerts, envoy and the
+            # collector config, plus the compose file (image tags, host ports).
             telemetry:
               - 'services/**'
               - 'lib/**'
               - 'tests/contract/**'
+              - 'docker-compose.yml'
             proto_pkg:
               - 'proto/**'
               - '**/pyproject.toml'
@@ -496,8 +498,10 @@ jobs:
 
   # Telemetry producer/consumer contract (#1357): static scan of Python/Go/Rust
   # metric and span producers vs the agent extractors, Grafana dashboards and
-  # Prometheus alerts, plus `promtool check rules` (docker, the Prometheus image
-  # tag docker-compose.yml runs). Runs in ~15 s, no service build.
+  # Prometheus alerts, plus `promtool check rules`. Infra config tests (#1365):
+  # envoy routing (+ `envoy --mode validate`), `promtool test rules` for the key
+  # alerts, collector best-effort fan-out. Docker images are the compose tags.
+  # Runs in ~30 s, no service build.
   telemetry-contract:
     name: Telemetry Contract
     runs-on: ubuntu-latest
