@@ -66,7 +66,12 @@ export class ControllerCard {
     return this.serial.slice(-4);
   }
 
-  update(data: GameplayData, shield: ShieldState | null = null, nowMs: number = Date.now()) {
+  update(
+    data: GameplayData,
+    shield: ShieldState | null = null,
+    nowMs: number = Date.now(),
+    alive: boolean | undefined = undefined,
+  ) {
     // Update LED color: the colour last written to the LED (shield fade included, #1301)
     this.updateLedColor(data.color);
 
@@ -79,8 +84,10 @@ export class ControllerCard {
     // Update accelerometer visualization
     this.updateAccelerometer(data.accel);
 
-    // Update status based on team (team -1 = admin, team 0 = dead)
-    this.updateStatus(data.team);
+    // Update status: a followed shadow game's roster says alive/dead (UC-070
+    // BR-005); otherwise the team (team -1 = admin, team 0 = dead)
+    if (alive === undefined) this.updateStatus(data.team);
+    else this.updateStatus(alive ? 1 : 0, true);
   }
 
   private updateLedColor(color: RGB | undefined) {
@@ -130,7 +137,7 @@ export class ControllerCard {
     this.accelDot.style.transform = `translate(calc(-50% + ${x}px), calc(-50% + ${y}px))`;
   }
 
-  private updateStatus(team: number) {
+  private updateStatus(team: number, fromRoster = false) {
     this.element.classList.remove("alive", "dead", "admin");
     this.statusBadge.classList.remove("connected", "alive", "dead", "admin");
 
@@ -148,7 +155,7 @@ export class ControllerCard {
       // Alive
       this.element.classList.add("alive");
       this.statusBadge.classList.add("alive");
-      this.statusBadge.textContent = team > 0 ? `Team ${team}` : "Alive";
+      this.statusBadge.textContent = team > 0 && !fromRoster ? `Team ${team}` : "Alive";
     }
   }
 

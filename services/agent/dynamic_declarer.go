@@ -76,10 +76,26 @@ const (
 // would block the very shadow games the experiment needs to accrue samples).
 // Overridable via AGENT_EXPERIMENT_DYNAMIC_DENYLIST; bypassed entirely when an
 // explicit candidate list is configured.
+//
+// #1316 widened it to the platform plumbing, lobby/admin and ceremony timing flags:
+// they are not game tuning, an experiment on them measures nothing about play, and
+// in the talk's screen-only fallback (UC-070 A9) the audience sees the experiment
+// names. UC-070 BR-008.
 var defaultDynamicDenylist = map[string]struct{}{
 	// shadow_policy (#837): gates whether shadow games may start at all — tuning it
 	// to "block" would starve the declarer's own experiments. Pure agent plumbing.
 	"shadow_policy": {},
+	// Session capacity (#1018): how many games may run at once, not how one plays.
+	"max_concurrent_games": {},
+	"max_shadow_games":     {},
+	// Tempo-schedule source selection (#1109): which writer drives the tempo, plumbing.
+	"tempo_schedule_mode": {},
+	// Lobby / admin start controls: when the menu force-starts, not the game itself.
+	"force_all_start":         {},
+	"force_all_start_seconds": {},
+	// Ceremony timing around the game (countdown, winner animation).
+	"countdown_phase_duration_ms": {},
+	"winner_rainbow_duration_ms":  {},
 }
 
 // dynamicEnabled reports whether the heuristic dynamic declarer opt-in is on.

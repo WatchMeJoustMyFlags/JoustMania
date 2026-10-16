@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Self-contained tests for scripts/talk-preflight.sh (#743).
+# Self-contained tests for scripts/talk-preflight.sh (#743, #1316 UC-070 BR-006, A9).
 #
 # Runs the preflight against a temp flag file with `docker`, `curl` and
 # `timedatectl` stubbed on PATH, so no stack, network or daemon is needed.
@@ -50,6 +50,10 @@ for a in "$@"; do
   case "${a}" in
     *jaeger/api/traces*)
       echo '{"data":[{"spans":[{"operationName":"agent.decide","startTime":2,"tags":[{"key":"decide.backend","value":"claude"},{"key":"decide.outcome","value":"held"}]}]}]}'
+      exit 0 ;;
+    *GetConnectedControllers*)
+      [[ -n "${STUB_CM_DOWN:-}" ]] && exit 22
+      echo "${STUB_CONTROLLERS:-{\"connectedSerials\":[\"00:06:f7:aa:bb:01\",\"00:06:f7:aa:bb:02\",\"MOCK0001\"]\}}"
       exit 0 ;;
     -sSI) echo "date: $(date -u -d "@$(( $(date +%s) - ${STUB_SKEW:-0} ))" '+%a, %d %b %Y %H:%M:%S GMT')"; exit 0 ;;
   esac
@@ -105,6 +109,8 @@ flags = {
     }, "standard"),
     "rollout_enabled": f(onoff, "off"),
     "experiments_enabled": f(onoff, "off"),
+    "experiment_dynamic_enabled": f(onoff, "off"),
+    "experiment_tick_seconds": f({"fast": 10, "default": 30, "slow": 60}, "default"),
     "decision.backend": f({"rules": "rules", "claude": "claude"}, "rules"),
     "decision.act_confidence_threshold": f({"default": 0.8, "strict": 0.95}, "default"),
     "decision.jev.act_confidence_threshold": f({"inherit": -1.0, "gate": 0.6, "strict": 0.95}, "gate"),
@@ -115,7 +121,8 @@ flags = {
     "decision.jev.timeout_ms": f({"fast": 1500, "default": 2500, "patient": 5000}, "default"),
     "decision.jev.model": f({"latest": "jev-latest", "pinned": "jev-1.13.0"}, "latest"),
     "decision.jev.base_url": f({"default": "https://api.typesafe.ai/v1", "blackhole": "https://192.0.2.1/v1"}, "default"),
-    "llm.eligible_game_kinds": f({"real_only": "real"}, "real_only"),
+    "llm.eligible_game_kinds": f({"none": "", "real_only": "real", "real_and_shadow": "real,shadow"}, "real_only"),
+    "experiment.mock_archetypes": f({"all": "calm_long,slow_cascade,quick_cascade", "quick_cascade": "quick_cascade"}, "all"),
     "decision.openai.model": f({"unset": "", "vendor": "m"}, "unset"),
     "decision.openai.base_url": f({"default": "https://api.openai.com/v1"}, "default"),
     "llm.max_requests_per_minute": f({"default": 6, "stage": 30}, "stage"),
@@ -311,6 +318,67 @@ fixture
 STUB_BUDGET=30 STUB_AUDIO_DOWN=1 run_preflight
 check "stopped audio container is named, not an old image" "FAIL  audio cue 'agent_cue' not checked: audio container not running (joustmania-audio: exited)"
 if has "older than #1301"; then not_ok "stopped container does not blame the image"; else ok "stopped container does not blame the image"; fi
+
+# --- real controllers paired (UC-070 BR-006, #1316) -------------------------
+fixture
+STUB_BUDGET=30 run_preflight
+check "two real controllers pass, the mock is not counted" "PASS  2 real controller(s) connected (need 2): 00:06:f7:aa:bb:01 00:06:f7:aa:bb:02"
+
+fixture
+STUB_BUDGET=30 STUB_CONTROLLERS='{"connectedSerials":["00:06:f7:aa:bb:01","MOCK0001","mock_controller_0"]}' run_preflight
+if [[ "${RC}" -eq 1 ]]; then ok "one real controller exits 1"; else not_ok "one real controller exits 1 (rc=${RC})"; fi
+check "too few real controllers fail (mocks not counted)" "FAIL  1 real controller(s) connected, need 2 (2 mock not counted)"
+check "the failure names the fallback" "talk-stage.sh fallback on"
+
+fixture
+STUB_BUDGET=30 TALK_MIN_CONTROLLERS=1 STUB_CONTROLLERS='{"connectedSerials":["00:06:f7:aa:bb:01"]}' run_preflight
+check "TALK_MIN_CONTROLLERS honoured" "PASS  1 real controller(s) connected (need 1)"
+STUB_BUDGET=30 TALK_MIN_CONTROLLERS=4 run_preflight
+check "TALK_MIN_CONTROLLERS raises the bar" "FAIL  2 real controller(s) connected, need 4"
+STUB_BUDGET=30 TALK_MIN_CONTROLLERS=two run_preflight
+check "non-numeric TALK_MIN_CONTROLLERS fails" "FAIL  TALK_MIN_CONTROLLERS=two is not a number"
+
+fixture
+STUB_BUDGET=30 STUB_CONTROLLERS='{}' run_preflight
+check "an empty roster fails" "FAIL  0 real controller(s) connected, need 2"
+
+fixture
+STUB_BUDGET=30 STUB_CM_DOWN=1 run_preflight
+if [[ "${RC}" -eq 1 ]]; then ok "controller-manager down exits 1"; else not_ok "controller-manager down exits 1 (rc=${RC})"; fi
+check "controller-manager down degrades to a named FAIL" "FAIL  controller-manager not reachable at http://localhost (GetConnectedControllers)"
+check "controller-manager down names the containers, not a pairing fix" "check the containers section; the fallback needs controller-manager as well"
+if grep -q "FAIL  controller-manager not reachable.*fallback on" <<<"${OUT}"; then not_ok "controller-manager down does not suggest fallback on"; else ok "controller-manager down does not suggest fallback on"; fi
+
+# --- screen-only fallback on (UC-070 A9, BR-006, BR-007) --------------------
+fixture llm.eligible_game_kinds=real_and_shadow experiments_enabled=on experiment_dynamic_enabled=on experiment_tick_seconds=fast
+STUB_BUDGET=30 STUB_CONTROLLERS='{"connectedSerials":["MOCK0001"]}' run_preflight
+if [[ "${RC}" -eq 0 ]]; then ok "fallback on + no real controllers exits 0"; else not_ok "fallback on + no real controllers exits 0 (rc=${RC}): $(grep FAIL <<<"${OUT}")"; fi
+check "fallback on is announced" "WARN  screen-only fallback is ON"
+check "fallback names its cost bound" "cost bounded by llm.max_requests_per_minute"
+check "fallback variant accepted" "PASS  llm.eligible_game_kinds = real_and_shadow"
+check "fallback experiment loop accepted" "PASS  experiments_enabled = on"
+check "fallback dynamic declarer accepted" "PASS  experiment_dynamic_enabled = on"
+check "fallback fast tick accepted" "PASS  experiment_tick_seconds = fast"
+check "too few real controllers only warn in fallback" "WARN  0 real controller(s) connected, need 2 (1 mock not counted) (fallback on"
+check "calm_long in the selection" "PASS  experiment.mock_archetypes = all includes calm_long"
+STUB_BUDGET=30 STUB_CM_DOWN=1 run_preflight
+if [[ "${RC}" -eq 0 ]]; then ok "fallback on + controller-manager down exits 0"; else not_ok "fallback on + controller-manager down exits 0 (rc=${RC})"; fi
+check "controller-manager down only warns in fallback" "WARN  controller-manager not reachable"
+check "fallback warning says the shadow games need controller-manager" "the fallback's shadow games need controller-manager too"
+
+fixture llm.eligible_game_kinds=real_and_shadow experiments_enabled=on experiment_dynamic_enabled=on experiment_tick_seconds=fast experiment.mock_archetypes=quick_cascade
+STUB_BUDGET=30 run_preflight
+check "fallback without calm_long warns" "WARN  experiment.mock_archetypes = quick_cascade (quick_cascade) has no calm_long"
+
+fixture llm.eligible_game_kinds=real_and_shadow
+STUB_BUDGET=30 run_preflight
+if [[ "${RC}" -eq 1 ]]; then ok "half-applied fallback exits 1"; else not_ok "half-applied fallback exits 1 (rc=${RC})"; fi
+check "half-applied fallback names the command" "FAIL  experiments_enabled = off (false), stage baseline is on (fallback: ./scripts/talk-stage.sh fallback on"
+
+fixture experiments_enabled=on
+STUB_BUDGET=30 run_preflight
+check "experiments on without the fallback fails the stage baseline" "FAIL  experiments_enabled = on (true), stage baseline is off (reset: ./scripts/talk-stage.sh reset)"
+if has "screen-only fallback is ON"; then not_ok "no fallback without real_and_shadow"; else ok "no fallback without real_and_shadow"; fi
 
 # --- usage -----------------------------------------------------------------
 run_preflight --minutes abc
