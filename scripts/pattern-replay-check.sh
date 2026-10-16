@@ -11,7 +11,15 @@
 #
 # Usage:
 #   scripts/pattern-replay-check.sh <archetype> [seed]
+#   scripts/pattern-replay-check.sh --against <record.json>
 #   scripts/pattern-replay-check.sh --compare <record-a.json> <record-b.json>
+#
+# --against replays one recorded game (UC-046 step 9): the record is a saved
+# PATTERN_REPLAY_RECORD JSON or one `pattern_game_ended` line of an experiment's
+# journal (events.jsonl). It runs the recorded archetype and seed once and compares.
+# An experiment arm whose resolved flags differ from the base flags (the arm under
+# test) has a different flag digest, so it reports "not comparable"; the control
+# arm and one-shot games are comparable.
 #
 # Each run starts a throwaway agent container (`docker compose run`) with
 # AGENT_SHADOW_GAME=true, SHADOW_GAME_ARCHETYPE and SHADOW_GAME_SEED, waits for the
@@ -26,6 +34,41 @@
 # Exit codes: 0 identical, 1 the replay differs, 2 not comparable (non-exact or a
 # digest differs), 3 usage or run error.
 set -euo pipefail
+
+# normalize <file>: print a replay record from a record or a journal event.
+normalize() {
+  python3 - "$1" <<'PY'
+import json, sys
+
+text = open(sys.argv[1]).read()
+try:
+    doc = json.loads(text)
+except ValueError:
+    # A journal (JSON lines): use the last pattern_game_ended event.
+    events = [json.loads(line) for line in text.splitlines() if line.strip()]
+    ended = [e for e in events if e.get("kind") == "pattern_game_ended"]
+    if not ended:
+        sys.exit("no pattern_game_ended event in " + sys.argv[1])
+    doc = ended[-1]
+if doc.get("kind") == "pattern_game_ended":
+    p = doc.get("pattern") or {}
+    doc = {
+        "game_id": doc.get("game_id", ""),
+        "archetype": p.get("archetype", ""),
+        "params_digest": p.get("params_digest", ""),
+        "rng_seed": str(p.get("rng_seed", "")),
+        "flag_digest": p.get("flag_digest", ""),
+        "outcome": p.get("outcome", ""),
+        "elimination_order": p.get("elimination_order") or [],
+        "winner_slot": p.get("winner_slot", -1),
+        "signal_checkpoints": p.get("signal_checkpoints") or [],
+        "replay_exact": bool(p.get("replay_exact")),
+        "non_exact_reasons": p.get("non_exact_reasons") or [],
+        "decisions": p.get("decisions") or [],
+    }
+print(json.dumps(doc))
+PY
+}
 
 compare() {
   python3 - "$1" "$2" <<'PY'
@@ -43,6 +86,8 @@ for side, rec in (("first", a), ("second", b)):
 for key in ("archetype", "params_digest", "flag_digest"):
     if a.get(key) != b.get(key):
         bail(2, f"not comparable: {key} differs ({a.get(key)} vs {b.get(key)})")
+if a.get("flag_digest") in ("", "unavailable"):
+    bail(2, "not comparable: the flag digest is unavailable")
 
 ca, cb = a.get("signal_checkpoints") or [], b.get("signal_checkpoints") or []
 if len(ca) != len(cb):
@@ -94,10 +139,26 @@ run_once() {
 main() {
   if [[ "${1:-}" == "--compare" ]]; then
     [[ $# -eq 3 ]] || { echo "usage: $0 --compare <record-a.json> <record-b.json>" >&2; exit 3; }
-    compare "$2" "$3"
+    WORK_DIR="$(mktemp -d)"
+    trap 'rm -rf "${WORK_DIR}"' EXIT
+    normalize "$2" >"${WORK_DIR}/a.json" && normalize "$3" >"${WORK_DIR}/b.json" || exit 3
+    compare "${WORK_DIR}/a.json" "${WORK_DIR}/b.json"
     return
   fi
-  [[ $# -ge 1 && $# -le 2 && -n "$1" ]] || { echo "usage: $0 <archetype> [seed]" >&2; exit 3; }
+  if [[ "${1:-}" == "--against" ]]; then
+    [[ $# -eq 2 ]] || { echo "usage: $0 --against <record.json>" >&2; exit 3; }
+    WORK_DIR="$(mktemp -d)"
+    trap 'rm -rf "${WORK_DIR}"' EXIT
+    normalize "$2" >"${WORK_DIR}/recorded.json" || exit 3
+    local archetype seed
+    archetype="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["archetype"])' "${WORK_DIR}/recorded.json")"
+    seed="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["rng_seed"])' "${WORK_DIR}/recorded.json")"
+    [[ -n "${archetype}" ]] || { echo "record has no archetype" >&2; exit 3; }
+    run_once "${archetype}" "${seed}" "${WORK_DIR}/replay.json" replay || exit 3
+    compare "${WORK_DIR}/recorded.json" "${WORK_DIR}/replay.json"
+    return
+  fi
+  [[ $# -ge 1 && $# -le 2 && -n "$1" ]] || { echo "usage: $0 <archetype> [seed] | --against <record> | --compare <a> <b>" >&2; exit 3; }
   local archetype="$1" seed="${2:-}"
   WORK_DIR="$(mktemp -d)"
   trap 'rm -rf "${WORK_DIR}"' EXIT

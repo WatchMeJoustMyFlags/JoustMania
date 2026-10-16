@@ -74,6 +74,21 @@ if ! grep -q "SHADOW_GAME_ARCHETYPE=slow_cascade" "${WORK}/compose-args" || ! gr
   fails=$((fails + 1))
 fi
 
+# --against: a journal pattern_game_ended line is replayed with its archetype and seed.
+cat >"${WORK}/journal.jsonl" <<'JSON'
+{"seq":1,"kind":"game_assigned","game_id":"g"}
+{"seq":9,"kind":"pattern_game_ended","game_id":"g","pattern":{"archetype":"slow_cascade","params_digest":"abc","rng_seed":7,"flag_digest":"fd","outcome":"winner","elimination_order":[2,1],"winner_slot":0,"signal_checkpoints":[["a","b","c"],["d","e"],["f"]],"replay_exact":true,"decisions":["send_controller_effect:2"]}}
+JSON
+: >"${WORK}/compose-args"
+expect "against journal event" 0 "identical" -- env PATH="${WORK}/bin:${PATH}" "${CHECK}" --against "${WORK}/journal.jsonl"
+if ! grep -q "SHADOW_GAME_SEED=7" "${WORK}/compose-args"; then
+  echo "FAIL against: recorded seed not passed to the one-shot runner"
+  fails=$((fails + 1))
+fi
+expect "compare journal vs record" 0 "identical" -- "${CHECK}" --compare "${WORK}/journal.jsonl" "${WORK}/a.json"
+record "${WORK}/u.json" e true "[2,1]" unavailable
+expect "unavailable digest" 2 "unavailable" -- "${CHECK}" --compare "${WORK}/u.json" "${WORK}/u.json"
+
 if ((fails > 0)); then
   echo "${fails} test(s) failed"
   exit 1
