@@ -11,7 +11,6 @@ Built with TypeScript and Vite, served in production by [static-web-server](http
 ## Features
 
 - **Controller grid** -- live LED color, battery level, and accelerometer dot visualization for each connected controller
-- **Acceleration waveform** -- canvas-based 10-second scrolling waveform with warning/danger threshold lines
 - **Game controls** -- mode selector dropdown, start/stop buttons
 - **Game event log** -- recent events (game start, player deaths, winner) in the status bar
 - **Embedded observability** -- tabbed Grafana dashboard and Jaeger trace views via iframes
@@ -51,12 +50,11 @@ services/dashboard/
     ├── style.css
     ├── client.ts         # Connect protocol client (fetch-based)
     ├── components/
-    │   ├── AccelWaveform.ts   # Canvas waveform with ring buffer
     │   ├── ControllerCard.ts  # Single controller card (LED, battery, accel dot)
     │   ├── ControllerGrid.ts  # Grid layout managing controller cards
     │   ├── Controls.ts        # Game mode selector and start/stop buttons
     │   └── GameStatus.ts      # Status bar (state, counts, event log)
-    └── gen/                   # Generated proto TypeScript types
+    └── gen/                   # Hand-written TS mirrors of the proto messages the client uses
 ```
 
 ## See Also

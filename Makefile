@@ -34,7 +34,7 @@ help:
 	@echo ""
 	@echo "Protos:"
 	@echo "  make protos          - Generate Python protobuf files"
-	@echo "  make protos-all      - Generate all protobuf files (Python, TS, Go)"
+	@echo "  make protos-all      - Generate all protobuf files (Python, Go)"
 	@echo ""
 	@echo "Direct docker compose commands:"
 	@echo "  docker compose up -d              # Start services"
@@ -169,11 +169,6 @@ protos:
 	@echo "Generating Python protobuf files..."
 	bash proto/generate_proto.sh
 
-.PHONY: protos-ts
-protos-ts:
-	@echo "Generating TypeScript protobuf files..."
-	cd proto && buf generate --template buf.gen.yaml
-
 .PHONY: protos-go
 protos-go:
 	@echo "Generating Go protobuf files..."
@@ -200,7 +195,7 @@ protos-agent:
 	@echo "✓ Agent Go stubs generated"
 
 .PHONY: protos-all
-protos-all: protos protos-ts protos-go protos-agent
+protos-all: protos protos-go protos-agent
 	@echo "✓ All protobuf files generated"
 
 .PHONY: clean-protos

@@ -28,7 +28,7 @@
       "groupName": "openfeature (python)"
     },
     {
-      "description": "protobuf/gRPC toolchain: generated code is COMMITTED (proto/*_pb2.py, services/agent/gen, dashboard gen). Regenerate via `make protos-all` + `make protos-agent` when grpcio-tools/protobuf move; `ci-validate-protos` gates drift.",
+      "description": "protobuf/gRPC toolchain: generated code is COMMITTED (proto/*_pb2.py, services/agent/gen). Regenerate via `make protos-all` + `make protos-agent` when grpcio-tools/protobuf move; `ci-validate-protos` gates drift.",
       "matchPackageNames": [
         "protobuf",
         "grpcio",
