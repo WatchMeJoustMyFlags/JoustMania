@@ -51,6 +51,17 @@ type RolloutActuator interface {
 	DryRun() bool
 }
 
+// RolloutApplier is optionally implemented by an actuator whose dry-run state is
+// read LIVE (actions.GatedRolloutActuator reads rollout_enabled per call). A
+// separate DryRun() then SetControllerCount() reads the gate twice, so a flag
+// flip in between could make the loop commit state for a write that never
+// happened (or skip it for one that did). ApplyControllerCount does the gate read
+// and the write together and reports which one happened: applied=true means the
+// flip reached rollout.json, false means it was a dry run.
+type RolloutApplier interface {
+	ApplyControllerCount(variant string) (applied bool, err error)
+}
+
 // RemediationSource resolves the `remediation_allowed` gate that decides
 // whether the loop may auto-roll-back (write the rollout file) or may only
 // RECOMMEND a rollback (span only). It is the infra-domain parallel to the
@@ -204,6 +215,15 @@ type InfraLoop struct {
 	// (the reset is already in flight) and do NOT re-write. Cleared when the
 	// observed RolloutCount reaches 0 — the failure episode is over.
 	rollbackInFlight bool
+
+	// Dry-run pacing (rollout_enabled off). A dry run writes nothing, so it must
+	// NOT touch lastWritten / lastExpansion / rollbackInFlight / cooldownUntil:
+	// the observed stage never moves, so that state would never be reconciled and
+	// a later real expand or rollback would be blocked until restart (UC-045 A4).
+	// These two fields only pace the rehearsed decisions so a long dry run records
+	// one would-be expansion per dwell and one would-be rollback per cooldown.
+	dryRunLastExpansion time.Time
+	dryRunCooldownUntil time.Time
 }
 
 // NewInfraLoop builds the progressive-rollout loop (#734). log nil → slog.Default.
@@ -332,6 +352,13 @@ func (l *InfraLoop) OnInfraEvaluate(ctx context.Context, snap infracontext.Infra
 		return
 	}
 
+	// Whether this cycle is a rehearsal (rollout_enabled off). Read before taking
+	// mu: GatedRolloutActuator resolves a flag here. Decisions are paced against
+	// the dry-run fields when true; the write result (applyLocked) is what decides
+	// which state is committed, so a gate flip mid-cycle cannot commit a write that
+	// never landed. Every active-rollout span carries it, so it is read each cycle.
+	dryRun := l.rollout == nil || l.rollout.DryRun()
+
 	// (4) Decide.
 	l.mu.Lock()
 	action := RemediationNone
@@ -362,12 +389,17 @@ func (l *InfraLoop) OnInfraEvaluate(ctx context.Context, snap infracontext.Infra
 	case fit.Evaluated && fit.Passing:
 		// Fitness passes → climb the ladder if eligible (PR E expansion).
 		if l.rollout != nil {
-			if variant, value, ok := l.rollout.NextStage(stage); ok && l.shouldExpandLocked(now, stage) {
+			if variant, value, ok := l.rollout.NextStage(stage); ok && l.shouldExpandLocked(now, stage, dryRun) {
 				action = RemediationExpand
 				expandedTo = value
 				wroteVariant = variant
-				writeErr = l.rollout.SetControllerCount(variant)
-				if writeErr == nil {
+				dryRun, writeErr = l.applyLocked(variant, dryRun)
+				switch {
+				case writeErr != nil:
+					// nothing committed: the next eligible cycle retries
+				case dryRun:
+					l.dryRunLastExpansion = now
+				default:
 					l.lastExpansion = now
 					l.lastWritten = value
 				}
@@ -386,6 +418,10 @@ func (l *InfraLoop) OnInfraEvaluate(ctx context.Context, snap infracontext.Infra
 			// Re-emitting "rollback" would lie (no write this cycle), so record "none"
 			// with the violations while the controller-manager catches up.
 			action = RemediationNone
+		case dryRun && now.Before(l.dryRunCooldownUntil):
+			// A rehearsed rollback was recorded within the last cooldown. Record
+			// "none" instead of re-rehearsing every cycle.
+			action = RemediationNone
 		case l.remediation != nil && l.remediation.RemediationAllowed() && l.rollout != nil:
 			// Allowed + active stage → roll the whole rollout back to "none".
 			// target_backend is deliberately left untouched (operator intent for the
@@ -393,8 +429,15 @@ func (l *InfraLoop) OnInfraEvaluate(ctx context.Context, snap infracontext.Infra
 			// immediately re-expand into the same failure once fitness recovers.
 			action = RemediationRollback
 			wroteVariant = rolloutStageNoneVariant
-			writeErr = l.rollout.SetControllerCount(rolloutStageNoneVariant)
-			if writeErr == nil {
+			dryRun, writeErr = l.applyLocked(rolloutStageNoneVariant, dryRun)
+			switch {
+			case writeErr != nil:
+				// nothing committed: the next failing cycle retries
+			case dryRun:
+				// Rehearsal: nothing was written, so the stage will not return to 0.
+				// Do not mark it in flight or start the real cooldown (UC-045 A4).
+				l.dryRunCooldownUntil = now.Add(l.cooldown)
+			default:
 				l.rollbackInFlight = true
 				l.cooldownUntil = now.Add(l.cooldown)
 				// Reset the reconcile anchor: the rollout was reset to none(0), so the
@@ -409,7 +452,19 @@ func (l *InfraLoop) OnInfraEvaluate(ctx context.Context, snap infracontext.Infra
 	l.mu.Unlock()
 
 	// (5) Span: every ACTIVE-rollout cycle is audited.
-	l.emitDecisionSpan(ctx, now, snap, fit, target, stage, action, expandedTo, wroteVariant, writeErr)
+	l.emitDecisionSpan(ctx, now, snap, fit, target, stage, action, expandedTo, wroteVariant, dryRun, writeErr)
+}
+
+// applyLocked writes variant through the actuator and reports whether this cycle
+// was a dry run (nothing reached rollout.json). An actuator implementing
+// RolloutApplier answers from the same gate read as the write; any other actuator
+// is taken at its pre-cycle DryRun() answer. Caller holds mu.
+func (l *InfraLoop) applyLocked(variant string, dryRun bool) (bool, error) {
+	if a, ok := l.rollout.(RolloutApplier); ok {
+		applied, err := a.ApplyControllerCount(variant)
+		return !applied, err
+	}
+	return dryRun, l.rollout.SetControllerCount(variant)
 }
 
 // shouldExpandLocked is the expansion guard: the observation must have caught up
@@ -429,16 +484,32 @@ func (l *InfraLoop) OnInfraEvaluate(ctx context.Context, snap infracontext.Infra
 //     the first expansion is not delayed.
 //   - holdExpansion: PR F's post-rollback cooldown — true while now is before
 //     cooldownUntil, blocking re-expansion for a window after a rollback.
-func (l *InfraLoop) shouldExpandLocked(now time.Time, observedStage int) bool {
+//
+// In a dry run (dryRun=true) the reconcile and hold checks still apply, since a
+// real write may be in flight from before the gate went off, and the dwell is
+// measured from the later of the last real and the last rehearsed expansion. A
+// rehearsed rollback's cooldown holds rehearsed AND real expansions (see below).
+func (l *InfraLoop) shouldExpandLocked(now time.Time, observedStage int, dryRun bool) bool {
 	if observedStage < l.lastWritten {
 		// The observation has not yet caught up to the stage we already wrote — the
 		// last expansion is still in flight. Acting now would re-write the same stage.
 		return false
 	}
-	if !l.lastExpansion.IsZero() && now.Sub(l.lastExpansion) < l.dwell {
+	last := l.lastExpansion
+	if dryRun && l.dryRunLastExpansion.After(last) {
+		last = l.dryRunLastExpansion
+	}
+	if !last.IsZero() && now.Sub(last) < l.dwell {
 		return false
 	}
 	if l.holdExpansion != nil && l.holdExpansion(now) {
+		return false
+	}
+	// A rehearsed rollback's cooldown holds expansion in both modes. Holding a
+	// REAL expansion right after rollout_enabled is turned back on is the
+	// conservative choice: the rehearsal said the stage was unhealthy, and the
+	// cooldown only ever delays an expansion, never a rollback.
+	if now.Before(l.dryRunCooldownUntil) {
 		return false
 	}
 	return true
@@ -459,6 +530,7 @@ func (l *InfraLoop) emitDecisionSpan(
 	action string,
 	expandedTo int,
 	wroteVariant string,
+	dryRun bool,
 	writeErr error,
 ) {
 	// Single builder: EVERY emission path lands the full attribute schema (#737).
@@ -472,7 +544,7 @@ func (l *InfraLoop) emitDecisionSpan(
 		target:     target,
 		action:     action,
 		expandedTo: expandedTo,
-		dryRun:     l.rollout == nil || l.rollout.DryRun(),
+		dryRun:     dryRun,
 	})
 
 	_, span := l.tracer.Start(ctx, SpanInfraDecision,
@@ -497,11 +569,11 @@ func (l *InfraLoop) emitDecisionSpan(
 	case RemediationExpand:
 		l.log.Info("agent.rollout_expand",
 			"target", target, "from_stage", stage, "to_stage", expandedTo,
-			"to_variant", wroteVariant)
+			"to_variant", wroteVariant, "dry_run", dryRun)
 	case RemediationRollback:
 		l.log.Warn("agent.rollout_rollback",
 			"target", target, "from_stage", stage, "to_variant", wroteVariant,
-			"violations", fit.ViolationsString())
+			"violations", fit.ViolationsString(), "dry_run", dryRun)
 	case RemediationRecommendedOnly:
 		l.log.Warn("agent.rollout_rollback_recommended",
 			"target", target, "stage", stage, "violations", fit.ViolationsString(),

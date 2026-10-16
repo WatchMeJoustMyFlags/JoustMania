@@ -116,6 +116,23 @@ func (a *GatedRolloutActuator) SetControllerCount(variant string) error {
 	return a.writer.SetControllerCount(variant)
 }
 
+// ApplyControllerCount is SetControllerCount with the outcome reported: applied is
+// true only when the LIVE gate was on and the real writer ran. The gate is read
+// ONCE, so the InfraLoop commits its in-memory rollout state (lastWritten,
+// rollbackInFlight, cooldown) only for a write that actually happened, even if
+// rollout_enabled flips between the loop's DryRun() read and this call (UC-045 A4).
+func (a *GatedRolloutActuator) ApplyControllerCount(variant string) (applied bool, err error) {
+	if !a.gate.RolloutEnabled(a.rootCtx) {
+		return false, a.dry.SetControllerCount(variant)
+	}
+	return true, a.writer.SetControllerCount(variant)
+}
+
+// Compile-time check: the InfraLoop uses ApplyControllerCount only through this
+// optional interface, so a signature drift would silently fall back to the
+// two-read DryRun()+SetControllerCount path.
+var _ decision.RolloutApplier = (*GatedRolloutActuator)(nil)
+
 // NextStage / StageVariantForValue delegate to the wrapped writer so the
 // value↔variant ladder mapping is single-sourced regardless of the gate.
 func (a *GatedRolloutActuator) NextStage(current int) (variant string, value int, ok bool) {
