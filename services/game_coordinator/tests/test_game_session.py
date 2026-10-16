@@ -581,7 +581,7 @@ class TestGameSessionLoop:
     @pytest.mark.asyncio
     @patch("services.game_coordinator.game_session.GameFactory")
     @patch("services.game_coordinator.game_session.tracer")
-    async def test_loop_tags_game_with_kind_and_gauge_flag(self, mock_tracer_mod, mock_factory):
+    async def test_loop_tags_game_with_kind(self, mock_tracer_mod, mock_factory):
         """The game instance is tagged so its end-cleanup is per-session."""
         session = _make_session(game_kind=GAME_KIND_SHADOW)
         mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
@@ -592,8 +592,6 @@ class TestGameSessionLoop:
         await session._run_game_loop_async()
 
         assert mock_game.game_kind == GAME_KIND_SHADOW
-        # Shadow session must NOT reset global gauges on end.
-        assert mock_game._reset_global_gauges_on_end is False
 
 
 class TestGameDurationGaugeLive:
@@ -865,6 +863,73 @@ class TestGameSessionClearMetrics:
         session.clear_metrics()
 
         mock_metrics.game_trace_correlation.remove.assert_not_called()
+
+    @pytest.mark.uc("UC-041", flow="main", steps=[5])
+    def test_mode_gauge_is_per_game_and_removed_at_retire(self, monkeypatch):
+        """FR-041: game_current_mode is one series per game (mode, game_kind,
+        game_id); retire removes this game's mode and game-state series only."""
+        from services.game_coordinator import metrics
+
+        for gauge in (metrics.current_game_mode, metrics.music_tempo):
+            monkeypatch.setattr(gauge, "_instrument_initialized", True)
+            monkeypatch.setattr(gauge, "_values", {})
+            monkeypatch.setattr(gauge, "_metrics", {})
+        real = _make_session(game_kind=GAME_KIND_PRIMARY)
+        shadow = _make_session(game_kind=GAME_KIND_SHADOW)
+        shadow.game_id = "game_shadow1"
+        for session in (real, shadow):
+            session.publish_game_mode("FFA")
+            metrics.music_tempo.labels(game_kind=session.game_kind, game_id=session.game_id).set(1.0)
+
+        modes = {dict(k)["game_id"]: (dict(k), v) for k, v in metrics.current_game_mode._values.items()}
+        assert modes["game_abc123"] == ({"mode": "FFA", "game_kind": GAME_KIND_PRIMARY, "game_id": "game_abc123"}, 1)
+        assert modes["game_shadow1"][0]["game_kind"] == GAME_KIND_SHADOW
+
+        shadow.clear_metrics()
+
+        remaining_modes = {dict(k)["game_id"] for k in metrics.current_game_mode._values}
+        remaining_tempo = {dict(k)["game_id"] for k in metrics.music_tempo._values}
+        assert remaining_modes == {"game_abc123"}
+        assert remaining_tempo == {"game_abc123"}
+
+
+class TestGameModeGaugeVocabulary:
+    """game_current_mode carries the SAME mode as the game.mode span attribute
+    (the built game's get_game_name()), never the menu enum name in game_name, so
+    the agent's GameMode does not flip between vocabularies (#1336 review)."""
+
+    @pytest.mark.uc("UC-041", flow="main", steps=[5])
+    @pytest.mark.asyncio
+    @patch("services.game_coordinator.game_session.GameFactory")
+    @patch("services.game_coordinator.game_session.tracer")
+    async def test_mode_label_matches_span_game_mode_and_goes_at_loop_end(
+        self, mock_tracer_mod, mock_factory, monkeypatch
+    ):
+        from services.game_coordinator import metrics
+        from services.game_coordinator.games.ffa import FFAGame
+
+        monkeypatch.setattr(metrics.current_game_mode, "_instrument_initialized", True)
+        monkeypatch.setattr(metrics.current_game_mode, "_values", {})
+        monkeypatch.setattr(metrics.current_game_mode, "_metrics", {})
+        session = _make_session()
+        session.game_name = "JoustFFA"  # menu enum name, as the menu sends it
+        mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
+        seen_during_run = []
+
+        async def run():
+            seen_during_run.extend(dict(k)["mode"] for k in metrics.current_game_mode._values)
+
+        mock_game = MagicMock()
+        # The span attribute game.mode is BaseGameMode.get_game_name() (base.py).
+        mock_game.get_game_name = lambda: FFAGame.get_game_name(mock_game)
+        mock_game.run = run
+        mock_factory.create_game.return_value = mock_game
+
+        await session._run_game_loop_async()
+
+        assert seen_during_run == ["FFA"]
+        # Natural end: the series is gone without waiting for retire.
+        assert metrics.current_game_mode._values == {}
 
 
 class TestPublishGameplayPhaseSpanID:

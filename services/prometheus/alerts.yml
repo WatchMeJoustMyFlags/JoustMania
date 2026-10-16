@@ -50,13 +50,14 @@ groups:
           description: "Memory usage is {{$value | humanize1024}}B (>500MB threshold)."
 
       - alert: LowGameLoopHz
-        expr: game_actual_update_frequency_hz < 55
+        # Primary (real) game only: shadow games on a loaded Pi dip below 55 Hz by design.
+        expr: game_actual_update_frequency_hz{game_kind="primary"} < 55
         for: 30s
         labels:
           severity: warning
         annotations:
           summary: "Game loop running below target Hz"
-          description: "Game loop is running at {{$value}}Hz (target is 60Hz)."
+          description: "Game {{$labels.game_id}} ({{$labels.game_kind}}) loop is running at {{$value}}Hz (target is 60Hz)."
 
       - alert: HighGRPCLatency
         expr: histogram_quantile(0.99, sum by(job, le) (rate(grpc_request_duration_seconds_bucket[5m]))) > 0.1

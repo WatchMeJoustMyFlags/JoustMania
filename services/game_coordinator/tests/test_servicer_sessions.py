@@ -414,55 +414,41 @@ class TestMultiSession:
         assert servicer.sessions[gid2].game_kind == "primary"
         assert servicer._primary_game_id == gid2
 
-    def test_shadow_end_clears_only_its_serials_and_keeps_global_gauges(self):
+    def test_shadow_end_clears_only_its_serials_and_game_state_series(self):
         """Cross-wipe fix: a shadow session's cleanup is targeted, not global.
 
-        ``clear_session_player_analytics`` for a shadow session must remove ONLY
-        the shadow's serials (via the targeted ``clear_player_analytics``) and
-        must NOT reset the global single-game gauges (music_tempo etc.), so the
-        live primary game's dashboard survives a shadow game ending.
+        ``clear_session_player_analytics`` for a shadow session removes ONLY the
+        shadow's serials and the shadow's own (game_kind, game_id) game-state
+        series (FR-041), so the live primary game's series survive.
         """
         from services.game_coordinator import metrics
 
         with (
             patch.object(metrics, "clear_player_analytics") as mock_clear,
-            patch.object(metrics, "music_tempo") as mock_tempo,
-            patch.object(metrics, "game_sensitivity") as mock_sens,
-            patch.object(metrics, "effective_warning_threshold") as mock_warn,
-            patch.object(metrics, "effective_death_threshold") as mock_death,
+            patch.object(metrics, "clear_game_state_gauges") as mock_state,
         ):
             metrics.clear_session_player_analytics(
-                ["shadow_p1", "shadow_p2"], game_id="shadow_game", reset_global_gauges=False
+                ["shadow_p1", "shadow_p2"], game_id="shadow_game", game_kind="shadow"
             )
 
             # Targeted per-serial cleanup for exactly the shadow's serials.
             mock_clear.assert_any_call("shadow_p1", "shadow_game")
             mock_clear.assert_any_call("shadow_p2", "shadow_game")
             assert mock_clear.call_count == 2
-            # Global single-game gauges untouched by the shadow end.
-            mock_tempo.set.assert_not_called()
-            mock_sens.set.assert_not_called()
-            mock_warn.set.assert_not_called()
-            mock_death.set.assert_not_called()
+            mock_state.assert_called_once_with("shadow", "shadow_game")
 
-    def test_primary_end_resets_global_gauges(self):
-        """The primary session's cleanup DOES reset the single-game gauges."""
+    def test_primary_end_removes_its_game_state_series(self):
+        """The primary session's cleanup removes its own game-state series."""
         from services.game_coordinator import metrics
 
         with (
             patch.object(metrics, "clear_player_analytics") as mock_clear,
-            patch.object(metrics, "music_tempo") as mock_tempo,
-            patch.object(metrics, "game_sensitivity") as mock_sens,
-            patch.object(metrics, "effective_warning_threshold") as mock_warn,
-            patch.object(metrics, "effective_death_threshold") as mock_death,
+            patch.object(metrics, "clear_game_state_gauges") as mock_state,
         ):
-            metrics.clear_session_player_analytics(["primary_p1"], game_id="primary_game", reset_global_gauges=True)
+            metrics.clear_session_player_analytics(["primary_p1"], game_id="primary_game", game_kind="primary")
 
             mock_clear.assert_called_once_with("primary_p1", "primary_game")
-            mock_tempo.set.assert_called_once_with(0)
-            mock_sens.set.assert_called_once_with(0)
-            mock_warn.set.assert_called_once_with(0)
-            mock_death.set.assert_called_once_with(0)
+            mock_state.assert_called_once_with("primary", "primary_game")
 
 
 @pytest.mark.nfr("NFR-018")
@@ -1322,3 +1308,107 @@ class _ValidParentSpan(_MockSpan):
 
     def get_span_context(self):
         return _ValidParentSpanContext()
+
+
+class _HoldGame:
+    """Minimal built game: runs until force_end() or finish() (same event loop)."""
+
+    def __init__(self):
+        self._done = asyncio.Event()
+
+    def get_game_name(self):
+        return "FFA"
+
+    async def run(self):
+        await self._done.wait()
+
+    def force_end(self, reason=""):
+        self._done.set()
+
+    finish = force_end
+
+
+class TestGameModeSeriesLifecycle:
+    """game_current_mode (mode, game_kind, game_id) exists while the game runs and
+    is gone after force-end, natural end and retire (FR-041, #1336)."""
+
+    @pytest.fixture
+    def harness(self, monkeypatch):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from services.game_coordinator import metrics
+
+        gauge = metrics.current_game_mode
+        monkeypatch.setattr(gauge, "_instrument_initialized", True)
+        monkeypatch.setattr(gauge, "_values", {})
+        monkeypatch.setattr(gauge, "_metrics", {})
+        games, tasks = [], []
+
+        def create_game(**_kwargs):
+            games.append(_HoldGame())
+            return games[-1]
+
+        def start_in_loop(session):
+            # Run the real session loop as a task on this loop instead of a thread.
+            clients = MagicMock()
+            clients.connect = AsyncMock()
+            clients.close = AsyncMock()
+            clients.is_connected = True
+            session.clients = clients
+            session.game_running = True
+            tasks.append(asyncio.get_running_loop().create_task(session._run_game_loop_async()))
+
+        monkeypatch.setattr(game_session_mod.GameFactory, "create_game", staticmethod(create_game))
+        monkeypatch.setattr(game_session_mod.GameSession, "start_thread", start_in_loop)
+        return gauge, games, tasks
+
+    @staticmethod
+    async def _wait_for(predicate):
+        for _ in range(200):
+            if predicate():
+                return
+            await asyncio.sleep(0.005)
+        raise AssertionError("condition not reached")
+
+    @pytest.mark.uc("UC-041", flow="main", steps=[5])
+    @pytest.mark.asyncio
+    async def test_mode_series_live_then_gone_after_force_end_and_retire(self, harness):
+        gauge, _games, tasks = harness
+        servicer = GameCoordinatorServicer()
+        ok, game_id = await servicer._start_game_from_config(_config(game_name="JoustFFA"), _MockSpan())
+        assert ok, game_id
+        await self._wait_for(lambda: gauge._values)
+        assert {dict(k)["mode"]: dict(k)["game_id"] for k in gauge._values} == {"FFA": game_id}
+
+        resp = await servicer.ForceEndGame(
+            game_coordinator_pb2.ForceEndGameRequest(game_id=game_id, reason="test"), MockGrpcContext()
+        )
+        assert resp.success is True
+        await asyncio.gather(*tasks)
+        assert game_id not in servicer.sessions  # force-end retires eagerly
+        assert gauge._values == {}
+
+    @pytest.mark.uc("UC-041", flow="main", steps=[5])
+    @pytest.mark.asyncio
+    async def test_mode_series_gone_after_natural_end_before_retire(self, harness):
+        gauge, games, tasks = harness
+        servicer = GameCoordinatorServicer()
+        ok, game_id = await servicer._start_game_from_config(_config(), _MockSpan())
+        assert ok, game_id
+        await self._wait_for(lambda: gauge._values)
+
+        games[0].finish()
+        await asyncio.gather(*tasks)
+        # Natural end: still registered (retired lazily on the next start) but
+        # the mode series is already gone.
+        assert game_id in servicer.sessions
+        assert gauge._values == {}
+
+        # Retire (via the next start's sweep) is an idempotent backstop.
+        ok2, game_id2 = await servicer._start_game_from_config(_config(serials=("b1", "b2")), _MockSpan())
+        assert ok2, game_id2
+        assert game_id not in servicer.sessions
+        await self._wait_for(lambda: gauge._values)
+        assert {dict(k)["game_id"] for k in gauge._values} == {game_id2}
+        games[1].finish()
+        await asyncio.gather(*tasks)

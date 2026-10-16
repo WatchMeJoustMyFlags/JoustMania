@@ -526,7 +526,7 @@
             "uid": "prometheus"
           },
           "expr": "game_actual_update_frequency_hz",
-          "legendFormat": "actual Hz",
+          "legendFormat": "{{game_kind}} {{game_id}}",
           "refId": "A"
         }
       ],

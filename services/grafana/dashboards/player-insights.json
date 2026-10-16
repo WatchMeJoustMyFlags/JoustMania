@@ -194,7 +194,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "game_effective_death_threshold",
+          "expr": "max(game_effective_death_threshold{game_kind=\"primary\"})",
           "legendFormat": "Death Threshold",
           "refId": "A"
         }
@@ -269,7 +269,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "(game_effective_death_threshold / 2.5) * 100",
+          "expr": "(max(game_effective_death_threshold{game_kind=\"primary\"}) / 2.5) * 100",
           "legendFormat": "Speed",
           "refId": "A"
         }
@@ -383,7 +383,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "game_effective_death_threshold",
+          "expr": "max(game_effective_death_threshold{game_kind=\"primary\"})",
           "legendFormat": "Death",
           "refId": "A"
         },
@@ -392,7 +392,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "game_effective_warning_threshold",
+          "expr": "max(game_effective_warning_threshold{game_kind=\"primary\"})",
           "legendFormat": "Warning",
           "refId": "B"
         }
@@ -685,7 +685,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "game_effective_warning_threshold",
+          "expr": "max(game_effective_warning_threshold{game_kind=\"primary\"})",
           "legendFormat": "Warning",
           "refId": "B",
           "instant": false,
@@ -696,7 +696,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "game_effective_death_threshold",
+          "expr": "max(game_effective_death_threshold{game_kind=\"primary\"})",
           "legendFormat": "Death",
           "refId": "C",
           "instant": false,

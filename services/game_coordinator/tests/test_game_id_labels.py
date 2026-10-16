@@ -188,3 +188,135 @@ class TestCleanupRemovesGameIdScopedSeries:
         mock_accel.remove.assert_called_once_with("AA:BB:CC", GAME_ID)
         mock_skill.remove.assert_called_once_with("AA:BB:CC", GAME_ID)
         mock_var_agg.remove.assert_called_once_with("AA:BB:CC", GAME_ID)
+
+
+# ---------------------------------------------------------------------------
+# Game-wide state gauges carry game_kind + game_id (FR-041, UC-041 step 5).
+#
+# music_tempo, game_sensitivity, effective_*_threshold, actual_update_frequency_hz
+# and current_game_mode used to be single unlabeled series: a concurrent real game
+# and shadow game overwrote each other, and the agent attributed the last write to
+# whichever game it had selected. Each game now writes its own series and removes
+# it when it ends.
+# ---------------------------------------------------------------------------
+
+GAME_STATE_GAUGES = (
+    metrics.music_tempo,
+    metrics.game_sensitivity,
+    metrics.effective_warning_threshold,
+    metrics.effective_death_threshold,
+    metrics.actual_update_frequency_hz,
+)
+
+
+@pytest.fixture
+def live_gauges(monkeypatch):
+    """Make the real game-state gauges record values (metrics are off in tests)."""
+    for gauge in (*GAME_STATE_GAUGES, metrics.current_game_mode):
+        monkeypatch.setattr(gauge, "_instrument_initialized", True)
+        monkeypatch.setattr(gauge, "_values", {})
+        monkeypatch.setattr(gauge, "_metrics", {})
+
+
+def _series_by_game(gauge) -> dict[str, tuple[str, float]]:
+    """Map game_id -> (game_kind, value) for every live series of ``gauge``."""
+    out = {}
+    for key, value in gauge._values.items():
+        labels = dict(key)
+        out[labels["game_id"]] = (labels["game_kind"], value)
+    return out
+
+
+def _make_ffa(game_id: str, game_kind: str) -> FFAGame:
+    game = FFAGame(
+        controller_manager_client=MockControllerManagerService(num_controllers=2, death_schedule={}, max_duration=10.0),
+        event_publisher=EventCollector().publish,
+        audio_client=None,
+        game_id=game_id,
+    )
+    game.game_kind = game_kind
+    return game
+
+
+class TestGameStateGaugesPerGame:
+    @pytest.mark.uc("UC-041", flow="main", steps=[5])
+    def test_game_state_gauges_declare_game_kind_and_game_id(self):
+        for gauge in GAME_STATE_GAUGES:
+            assert gauge.labelnames == ["game_kind", "game_id"], gauge.name
+        assert metrics.current_game_mode.labelnames == ["mode", "game_kind", "game_id"]
+
+    @pytest.mark.uc("UC-041", flow="main", steps=[5])
+    def test_concurrent_games_do_not_overwrite_each_other(self, live_gauges):
+        real = _make_ffa("game_real", "primary")
+        shadow = _make_ffa("game_shadow", "shadow")
+        real.music_speed = 1.0
+        shadow.music_speed = 1.3
+
+        for game in (real, shadow):
+            game._emit_sensitivity_metric()
+            game._emit_music_tempo_metric()
+            game._emit_threshold_metrics()
+
+        tempo = _series_by_game(metrics.music_tempo)
+        assert tempo == {"game_real": ("primary", 1.0), "game_shadow": ("shadow", 1.3)}
+        death = _series_by_game(metrics.effective_death_threshold)
+        assert set(death) == {"game_real", "game_shadow"}
+        # Slow vs fast tempo interpolate to different thresholds; both survive.
+        assert death["game_real"][1] != death["game_shadow"][1]
+        assert set(_series_by_game(metrics.effective_warning_threshold)) == {"game_real", "game_shadow"}
+        assert set(_series_by_game(metrics.game_sensitivity)) == {"game_real", "game_shadow"}
+
+    @pytest.mark.uc("UC-041", flow="main", steps=[5])
+    def test_game_end_removes_only_that_games_series(self, live_gauges):
+        real = _make_ffa("game_real", "primary")
+        shadow = _make_ffa("game_shadow", "shadow")
+        for game in (real, shadow):
+            game._emit_sensitivity_metric()
+            game._emit_music_tempo_metric()
+            game._emit_threshold_metrics()
+            metrics.actual_update_frequency_hz.labels(game_kind=game.game_kind, game_id=game.game_id).set(30)
+
+        # The shadow ends first: its series go, the real game's stay.
+        metrics.clear_session_player_analytics(list(shadow.players), game_id="game_shadow", game_kind="shadow")
+        for gauge in GAME_STATE_GAUGES:
+            assert set(_series_by_game(gauge)) == {"game_real"}, gauge.name
+
+        metrics.clear_session_player_analytics(list(real.players), game_id="game_real", game_kind="primary")
+        for gauge in GAME_STATE_GAUGES:
+            assert _series_by_game(gauge) == {}, gauge.name
+
+    @pytest.mark.uc("UC-041", flow="main", steps=[5])
+    @pytest.mark.asyncio
+    async def test_game_that_raises_removes_its_own_series(self, live_gauges):
+        """run()'s finally removes this game's game-state series even on error,
+        and leaves a concurrent game's series alone."""
+        other = _make_ffa("game_other", "shadow")
+        other._emit_sensitivity_metric()
+        other._emit_music_tempo_metric()
+
+        game = FFAGame(
+            controller_manager_client=MockControllerManagerService(
+                num_controllers=2, death_schedule={}, max_duration=10.0
+            ),
+            event_publisher=EventCollector().publish,
+            audio_client=None,
+            game_id="game_boom",
+            initial_players=[game_coordinator_pb2.Player(serial="p1"), game_coordinator_pb2.Player(serial="p2")],
+        )
+        game.music_speed = 1.0
+        game._emit_music_tempo_metric()
+
+        sensitivity_seen = []
+
+        async def boom():
+            sensitivity_seen.extend(_series_by_game(metrics.game_sensitivity))
+            raise RuntimeError("boom")
+
+        # Fails right after the init phase emitted game_sensitivity.
+        game._initialize_players = boom
+        with pytest.raises(RuntimeError, match="boom"):
+            await game.run()
+
+        assert "game_boom" in sensitivity_seen  # was set before the failure
+        for gauge in (metrics.music_tempo, metrics.game_sensitivity):
+            assert set(_series_by_game(gauge)) == {"game_other"}, gauge.name

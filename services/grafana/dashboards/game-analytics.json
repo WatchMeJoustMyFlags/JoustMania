@@ -697,7 +697,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "game_music_tempo",
+          "expr": "max(game_music_tempo{game_kind=\"primary\"}) or vector(0)",
           "legendFormat": "Music Tempo",
           "refId": "A"
         }
@@ -781,7 +781,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "game_sensitivity",
+          "expr": "max(game_sensitivity{game_kind=\"primary\"})",
           "legendFormat": "Sensitivity",
           "refId": "A"
         }
@@ -903,7 +903,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "game_effective_warning_threshold",
+          "expr": "max(game_effective_warning_threshold{game_kind=\"primary\"})",
           "legendFormat": "Warning",
           "refId": "A"
         },
@@ -912,7 +912,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "game_effective_death_threshold",
+          "expr": "max(game_effective_death_threshold{game_kind=\"primary\"})",
           "legendFormat": "Death",
           "refId": "B"
         }
@@ -1003,7 +1003,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "game_music_tempo",
+          "expr": "max(game_music_tempo{game_kind=\"primary\"})",
           "legendFormat": "Music Tempo (1.0=Slow, 1.3=Fast)",
           "refId": "A"
         }
