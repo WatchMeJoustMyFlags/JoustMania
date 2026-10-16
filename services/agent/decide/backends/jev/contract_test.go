@@ -433,6 +433,7 @@ func checkRouting(t *testing.T, iv decide.Answer, best string, pYes float64) {
 // ONE call, answers noop at confidence 0.7 and target none / magnitude at the
 // low end (the rules adapter's noop convention), every option covered. Jev's
 // real stage-1 answers are on the span.
+// UC: UC-040 A13
 func TestContract_NoopRound(t *testing.T) {
 	api := newScriptedAPI(t, ok(noopStage1(t)))
 	resp, err := api.backend(fixtureModel, false).Decide(context.Background(), testRequest())
@@ -482,6 +483,7 @@ func TestContract_NoopRound(t *testing.T) {
 // and strength CONDITIONED on it (alive players only, the lever's half-ladders).
 // Two chat spans under the caller's span, one per stage. The grant_shield
 // subtest replays the shield details fixture after a mutated stage 1.
+// UC: UC-040 A13
 func TestContract_ActRound(t *testing.T) {
 	api := newScriptedAPI(t, ok(loadFixture(t, fxIntervention)), ok(loadFixture(t, fxGateDetails)))
 	ctx, parent := otel.Tracer("test").Start(context.Background(), "agent.decide")
@@ -561,6 +563,7 @@ func TestContract_ActRound(t *testing.T) {
 // call. The acting confidence is p_yes, which the decision hook then compares
 // with decision.jev.act_confidence_threshold (#1287).
 // Spec: decide-contract.md §3.1, UC-040 A13, FR-047.
+// UC: UC-040 A13
 func TestContract_GateThreshold(t *testing.T) {
 	for _, c := range []struct {
 		pYes  float64
@@ -625,6 +628,7 @@ func TestContract_SessionInterventions(t *testing.T) {
 // falls back to rules) instead of returning the intervention without its
 // target or magnitude. Transport failures stay non-ErrInvalid
 // (fallback_reason=error), invalid answers wrap ErrInvalid (invalid_answer).
+// UC: UC-040 A13
 func TestContract_DetailsFailure(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -662,6 +666,7 @@ func TestContract_DetailsFailure(t *testing.T) {
 
 // TestContract_SharedDeadline: both stages share one Config.Timeout; a slow
 // stage 2 times out at the round's deadline, not a fresh one.
+// UC: UC-040 A13
 func TestContract_SharedDeadline(t *testing.T) {
 	api := newScriptedAPI(t,
 		fakeReply{status: 200, body: actingIntervention(t, "grant_shield"), delay: 150 * time.Millisecond},
@@ -712,6 +717,7 @@ func balanceDetails(t *testing.T, target string, level float64) []byte {
 // help) the direction comes from the chosen target in Go; Jev only picks the
 // strength. The struggling target never gets a handicap-side value, the
 // calmest never a help-side one, and the neutral 1.0 is never applied.
+// UC: UC-040 A13
 func TestContract_TwoWayLever(t *testing.T) {
 	t.Run("recorded", func(t *testing.T) {
 		api := newScriptedAPI(t, ok(actingIntervention(t, "adjust_player_sensitivity")), ok(loadFixture(t, fxBalance)))

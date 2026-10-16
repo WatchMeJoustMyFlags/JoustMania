@@ -574,6 +574,7 @@ func TestFinishReasonMapping(t *testing.T) {
 
 // TestDecide_NoulUnsupported: a noul question (#1229) is rejected before any
 // network I/O with an error wrapping decide.ErrInvalid.
+// UC: UC-040 A12
 func TestDecide_NoulUnsupported(t *testing.T) {
 	api := newFakeAPI(t, 200, message("end_turn", textBlock(answerJSON)), 0)
 	req := testRequest()

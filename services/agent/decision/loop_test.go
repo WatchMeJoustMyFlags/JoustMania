@@ -276,6 +276,7 @@ func TestOnEvaluate_ApplyErrorRecorded(t *testing.T) {
 	}
 }
 
+// UC: UC-040 A21
 func TestProbeRules_RateLimited(t *testing.T) {
 	clock := time.Unix(1000, 0)
 	p := NewProbeRules(5*time.Second, func() time.Time { return clock })

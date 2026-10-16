@@ -61,6 +61,7 @@ func eventAttr(ev sdktrace.Event, key string) (string, bool) {
 // analyst reply, the retro span carries the decoded assessment / focus / suggestion
 // count, one retro.suggestion event per suggestion, parse_ok=true, a latency, and the
 // raw-response fingerprint.
+// UC: UC-042 main
 func TestRetro_CapturesConclusionOnSuccess(t *testing.T) {
 	resetRetroResponseRef()
 	reply := `{
@@ -302,6 +303,7 @@ func TestRetro_RootContextCancellationUnblocksInfer(t *testing.T) {
 // TestRetro_CaptureOnlyWhenNoBackend: with no backend wired, the retro
 // stays capture-only — the span ends synchronously, carries no conclusion, no
 // parse_ok, and reports no_backend_available.
+// UC: UC-042 A2
 func TestRetro_CaptureOnlyWhenNoBackend(t *testing.T) {
 	resetRetroResponseRef()
 	rc, sr := recordingRetro(t, retroFlagSnapshot()) // no SetBackend -> nil backend
@@ -331,6 +333,7 @@ func TestRetro_CaptureOnlyWhenNoBackend(t *testing.T) {
 // TestRetro_ForwardsSuggestionToSink (#1184): each decoded retro suggestion is
 // forwarded to the SetSuggestionSink consumer (the retro→thesis-proposer seam),
 // IN ADDITION to the span event — closing the game→retro→thesis loop.
+// UC: UC-042 A3
 func TestRetro_ForwardsSuggestionToSink(t *testing.T) {
 	reply := `{
 	  "session_assessment": "close finish",

@@ -865,6 +865,7 @@ func TestScrubErrorBody(t *testing.T) {
 
 // TestDecide_NoulUnsupported: a noul question (#1229) is rejected before any
 // network I/O with an error wrapping decide.ErrInvalid.
+// UC: UC-040 A12
 func TestDecide_NoulUnsupported(t *testing.T) {
 	api := newFakeAPI(t, fixed(200, completion("stop", answerJSON, nil)))
 	req := testRequest()

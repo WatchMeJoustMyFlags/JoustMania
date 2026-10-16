@@ -81,6 +81,7 @@ func TestRecentReturnsFreshCopy(t *testing.T) {
 	}
 }
 
+// UC: UC-042 main
 func TestEvictionPastRetentionCap(t *testing.T) {
 	s := NewStore()
 	// Record one past the cap: the oldest must be evicted and the length capped.

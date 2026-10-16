@@ -189,6 +189,7 @@ func TestDescribeCandidates(t *testing.T) {
 // question (argmax rule, full option coverage), chooses the intervention iff
 // p_yes > 0.5, and carries the acting confidence p_yes (1 - p_yes for noop).
 // Spec: decide-contract.md §3.1, UC-040 A13, FR-046, FR-047.
+// UC: UC-040 A13
 func TestGateAnswer(t *testing.T) {
 	req := testRequest()
 	orig := req.Questions[0]

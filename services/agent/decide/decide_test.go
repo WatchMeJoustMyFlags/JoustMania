@@ -399,6 +399,7 @@ func TestResponse_Find(t *testing.T) {
 
 // TestValidate_Noul covers the KindNoul question (#1229): Text only, answered
 // with a finite P(yes) in [0,1] and nothing else.
+// UC: UC-040 A12
 func TestValidate_Noul(t *testing.T) {
 	req := Request{Questions: []Question{{ID: "yn", Kind: KindNoul, Text: "Is the game close?"}}}
 	cases := []struct {
