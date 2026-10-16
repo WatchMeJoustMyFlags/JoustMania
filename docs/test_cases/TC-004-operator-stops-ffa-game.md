@@ -39,5 +39,5 @@
 
 ## Automation
 
-- **Partly automated**: in `tests/integration/test_concurrent_games.py`, `test_shadow_game_isolated_from_menu` force-ends a shadow game by game id while a menu game runs on untouched (step 4 for a headless game, plus UC-027's game-id scoping); `test_two_concurrent_headless_games` and `test_headless_natural_end_then_restart` show that a new game starts after an ended one (step 7, headless). None of them asserts the reason on `game_force_ended` or the absence of `game_winner` (step 5, Validation 1).
+- **Partly automated**: in `tests/integration/test_concurrent_games.py`, `test_shadow_game_isolated_from_menu` force-ends a shadow game by game id while a menu game runs on untouched (step 4 for a headless game, plus UC-027's game-id scoping); `test_headless_natural_end_then_restart` shows that a new game starts after an ended one (step 7, headless); `test_two_concurrent_headless_games` force-ends one of two headless games by id (step 4, headless). None of them asserts the reason on `game_force_ended` or the absence of `game_winner` (step 5, Validation 1).
 - Gaps (planned, #1360): no test starts the game from the dashboard path (UC-010 A5), checks the unknown-id and no-game failures (UC-027 A1, A2) end to end, or asserts the menu restores the lobby after a force end of a menu game.

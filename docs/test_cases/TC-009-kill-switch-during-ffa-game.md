@@ -27,8 +27,8 @@
 | 2    | Start FFA                 | A `JoustFFA` game starts; the agent sends its first decide call, which the fake holds               | -                                          | [UC-040](../use_cases/UC-040.md)    |
 | 3    | Verify call in flight     | The fake's request log holds a request for this game id                                             | -                                          | -                                   |
 | 4    | Turn the agent off        | Operator sets `enabled` off; flagd serves it while the call is held                                 | `enabled` = `off`                          | [UC-045](../use_cases/UC-045.md)    |
-| 5    | Verify discarded          | The late answer lands: `decide.outcome=discarded`, `decide.discarded_reason=kill_switch`; no `agent.decision`, no write, no `agent_intervention` | - | [UC-040](../use_cases/UC-040.md) |
-| 6    | Verify the agent is quiet | The agent records `agent.disabled` spans instead of decisions                                       | 10 s window                                | [UC-045](../use_cases/UC-045.md)    |
+| 5    | Verify discarded          | The late answer lands: `decide.outcome=discarded`, `decide.discarded_reason=kill_switch`; no `act` outcome, nothing written, no `agent_intervention` | - | [UC-040](../use_cases/UC-040.md) |
+| 6    | Verify the agent is quiet | The agent records an `agent.disabled` span for the game instead of a decision                       | -                                          | [UC-045](../use_cases/UC-045.md)    |
 | 7    | Turn the agent on         | Operator sets `enabled` on; the next cycle records `agent.decide` spans again                       | `enabled` = `on`                           | [UC-045](../use_cases/UC-045.md)    |
 
 ## Validation
