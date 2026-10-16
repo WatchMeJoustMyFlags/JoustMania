@@ -185,17 +185,33 @@ def init_flag_domain(domain: str) -> None:
         logger.error(f"Failed to initialize domain '{domain}': {e}")
 
 
+# One OpenFeature client per domain for readiness waits: the SDK keys client
+# handlers by client object, so a fresh client per wait would leave one
+# ``_client_handlers`` entry behind for every wait (#1329).
+_readiness_clients: dict = {}
+
+
+def _readiness_client(domain: str):
+    client = _readiness_clients.get(domain)
+    if client is None:
+        client = api.get_client(domain=domain)
+        _readiness_clients[domain] = client
+    return client
+
+
 async def wait_for_provider_ready(domain: str, deadline_seconds: float = 5.0) -> bool:
     """Wait for a domain's provider to reach READY status.
 
-    Uses an asyncio.Event set by the PROVIDER_READY handler. The provider runs
-    that handler on ITS OWN thread (the flagd sync thread), and asyncio.Event is
-    not thread-safe, so the handler wakes the waiter through
-    ``loop.call_soon_threadsafe`` on the waiting coroutine's loop (#1329, #1250).
-    If the provider is already READY when the handler is added, the SDK runs the
-    handler immediately on the calling thread; that path goes through the same
-    call. The handler is removed once the wait ends, so repeated waits do not
-    pile up handlers.
+    Uses an asyncio.Event set by the PROVIDER_READY handler. The SDK runs that
+    handler on whichever thread emits the event: the background thread that
+    ``api.set_provider`` starts to initialize the provider (first READY), or the
+    flagd connector's watcher thread (READY again after a reconnect). When the
+    provider is already READY as the handler is added, ``add_handler`` runs it at
+    once on the calling thread. None of these is guaranteed to be the waiting
+    coroutine's event-loop thread, and asyncio.Event is not thread-safe, so the
+    handler wakes the waiter through ``loop.call_soon_threadsafe`` (#1329, #1250).
+    The handler is removed once the wait ends, so repeated waits do not pile up
+    handlers.
 
     Returns True if ready within deadline, False otherwise.
 
@@ -223,7 +239,7 @@ async def wait_for_provider_ready(domain: str, deadline_seconds: float = 5.0) ->
         with contextlib.suppress(RuntimeError):
             loop.call_soon_threadsafe(ready_event.set)
 
-    client = api.get_client(domain=domain)
+    client = _readiness_client(domain)
     client.add_handler(ProviderEvent.PROVIDER_READY, _on_ready)
 
     try:

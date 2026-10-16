@@ -819,6 +819,13 @@ class _FakeClient:
             raise errors[0]
 
 
+@pytest.fixture(autouse=True)
+def _fresh_readiness_clients():
+    """Each test starts without cached readiness clients."""
+    with patch.dict(ff_module._readiness_clients, clear=True):
+        yield
+
+
 def _patch_provider(status, client):
     return (
         patch.object(ff_module.api.provider_registry, "get_provider_status", return_value=status),
@@ -901,3 +908,18 @@ def test_late_ready_after_loop_closed_does_not_raise():
         finally:
             loop.close()
     client.fire_from_thread()  # handler captured the closed loop; must not raise
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-010", flow="A5", br=["BR-004"])
+async def test_one_client_per_domain_across_waits():
+    """UC-010 BR-004: repeated waits reuse the domain's client, so SDK handler maps do not grow per wait."""
+    client = _FakeClient()
+    with (
+        patch.object(ff_module.api.provider_registry, "get_provider_status", return_value=ProviderStatus.NOT_READY),
+        patch.object(ff_module.api, "get_client", return_value=client) as get_client,
+    ):
+        await wait_for_provider_ready("system", deadline_seconds=0.01)
+        await wait_for_provider_ready("system", deadline_seconds=0.01)
+    get_client.assert_called_once_with(domain="system")
+    assert client.removed == client.handlers

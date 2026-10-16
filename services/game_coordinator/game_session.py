@@ -508,7 +508,16 @@ class GameSession:
                 # UC-010 A5 / BR-004 (#1329): no game reads its start flags from a
                 # provider that is not READY yet: wait (bounded), else record the
                 # code-default fallback on this root span.
+                admitted = self.game_running
                 await await_flag_providers_ready(game_span)
+
+                # A force-end during the wait (game_running flipped to False) retired
+                # this session: do not create and run an orphan game behind its back
+                # (#1329).
+                if admitted and not self.game_running:
+                    logger.info(f"Game {self.game_id} was force-ended while waiting for flag providers")
+                    await self.clients.close()
+                    return
 
                 # Create game instance using factory
                 try:

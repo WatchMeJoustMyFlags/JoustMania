@@ -69,7 +69,7 @@ connect-proxy: `otelhttp` server spans (`/health` filtered) and `otelgrpc` clien
 
 ### 3.2 game-coordinator
 
-Flag-provider readiness at game admission (#1329, UC-010 A5 / BR-004): the game root span carries `feature_flag.providers_wait_ms`, the time spent waiting for the coordinator's flag providers (`system`, `controller`, `game`, `agent`, `user`, `interventions`) to be READY before the game was created. When that bounded wait (5 s) runs out, the root span gets the event `feature_flag.providers_not_ready` (attrs `feature_flag.domains`, the domains still not READY; `feature_flag.wait_seconds`; `feature_flag.fallback` = `code_defaults`). Flag reads of those domains then fall back to code defaults and show as `ProviderNotReadyError` exceptions on the span where they were read.
+Flag-provider readiness at game admission (#1329, UC-010 A5 / BR-004): the game root span carries `feature_flag.providers_wait_ms`, the time spent waiting for the coordinator's NOT_READY flag providers (`system`, `controller`, `game`, `agent`, `user`, `interventions`; STALE / ERROR are not waited on) to be READY before the game was created. When that bounded wait (5 s) runs out, the root span gets the event `feature_flag.providers_not_ready` (attrs `feature_flag.domains`, the domains still not READY; `feature_flag.wait_seconds`; `feature_flag.fallback` = `code_defaults`). Flag reads of those domains then fall back to code defaults and show as `ProviderNotReadyError` exceptions on the span where they were read.
 
 | Span | Notes | Source |
 |---|---|---|
