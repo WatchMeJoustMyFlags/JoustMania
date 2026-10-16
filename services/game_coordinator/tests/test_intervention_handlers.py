@@ -11,6 +11,7 @@ conftest; the intervention metric is patched per the repo convention.
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from openfeature.flag_evaluation import FlagEvaluationDetails
 
 from lib.types import GameEvent
 from proto import controller_manager_pb2
@@ -36,6 +37,10 @@ class FakeFlagClient:
 
     def get_string_value(self, key, default, _ctx=None):
         return str(self.values.get(key, default))
+
+    def get_string_details(self, key, default, _ctx=None):
+        # The manager reads edge flags via details to see errors (#1299).
+        return FlagEvaluationDetails(flag_key=key, value=self.get_string_value(key, default, _ctx))
 
     def get_integer_value(self, key, default, _ctx=None):
         return int(self.values.get(key, default))

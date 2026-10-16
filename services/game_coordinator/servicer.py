@@ -167,9 +167,9 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         # (primary + every shadow), each carrying its game_id (-> gameId context),
         # its running BaseGameMode, and its own EventBus publish, so a
         # gameId-targeted intervention applies only to the matching session and
-        # publishes on that session's stream. Un-targeted interventions resolve
-        # to the default (no-op) for shadow games and the configured value for
-        # the primary, so they still touch only the primary (today's semantics).
+        # publishes on that session's stream. An un-targeted intervention (the
+        # agent writes no gameId targeting) resolves to the same value for every
+        # live session, primary and shadow alike (decide-contract §11, #1269).
         self.intervention_manager = InterventionManager(
             event_publisher=self.primary_event_bus.publish,
             get_sessions=self.get_intervention_sessions,
@@ -265,8 +265,8 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         Sessions with no constructed game yet (STARTING before the game thread
         built the instance) are skipped — there is nothing to apply to. This
         includes the primary and every shadow session uniformly, so a
-        gameId-targeted intervention reaches the matching shadow and an
-        un-targeted one resolves to the default (no-op) for shadows.
+        gameId-targeted intervention reaches the matching session and an
+        un-targeted one resolves to the same value for every live session.
         """
         views: list[SessionView] = []
         with self._sessions_lock:
@@ -427,6 +427,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 gid for gid, sess in self.sessions.items() if sess.game_state == game_coordinator_pb2.GameState.ENDED
             ]:
                 ended_session = self.sessions.pop(ended_id, None)
+                self.intervention_manager.forget_session(ended_id)
                 if ended_session is not None:
                     # Mirror _retire_session: drop this session's game_id-labeled
                     # gauge series so naturally-ended shadows don't leak series
@@ -603,6 +604,11 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 if not is_real or attempt == 1:
                     return False, "Game already in progress"
                 logger.warning("Real game lost the admission race to a late shadow; preempting again (#837)")
+            # Seed this game's edge-intervention baseline from the current flag
+            # values BEFORE it runs: a value already present belongs to an
+            # earlier game and is consumed, so it can never replay into this one
+            # (UC-040 BR-006, #1299). Real and shadow sessions alike.
+            self._prime_intervention_baseline(game_id)
             # Update lifecycle metrics for this session's kind (#775) + experiment
             # attribution (#975). experiment_id/arm are "" for a non-experiment
             # game; #976's spawn binding sets them on the session.
@@ -669,11 +675,26 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             self._retire_session(session.game_id)
         return success, error
 
+    def _prime_intervention_baseline(self, game_id: str) -> None:
+        """Prime the InterventionManager's edge baseline for a new game (#1299).
+
+        Never fails a start. If priming raises, the manager's fallback primes the
+        session the first time it is evaluated live, recording current edge
+        values as consumed (``_UNKNOWN`` on a flagd read error), so a stale value
+        is never replayed; at worst one fresh write made before that first
+        evaluation is not applied.
+        """
+        try:
+            self.intervention_manager.prime_session(game_id)
+        except Exception as e:
+            logger.error(f"Failed to prime intervention baseline for {game_id}: {e}")
+
     def _retire_session(self, game_id: str) -> None:
         """Remove a finished session from the registry and free the primary slot
         if it owned it, so a new primary can start."""
         with self._sessions_lock:
             session = self.sessions.pop(game_id, None)
+            self.intervention_manager.forget_session(game_id)
             if session is not None:
                 # Remove this session's game_id-labeled gauge series so the
                 # zeroed-but-persistent series don't accumulate as shadows churn

@@ -501,9 +501,17 @@ gameId}` and supports gameId-scoped rules (#838,
 therefore resolves for every live session. Design follow-up: #920. Logged as a
 discrepancy in [specs-inventory.md](../specs-inventory.md#4-discrepancies-found).
 
+Edge flags apply once per nonce and only in the game during which the nonce changed.
+The coordinator seeds each game's nonce baseline from the current flag values when
+the game is admitted (`InterventionManager.prime_session`, real and shadow alike), so
+a value left over from an earlier game, or from before a coordinator restart, is
+consumed and never replayed. Edge flags are read with their evaluation details: a
+flagd error read never moves the baseline, and a baseline that could not be read
+at game start adopts the next good value without firing (fail closed) ([UC-040 BR-006](../use_cases/UC-040.md#br-006-an-edge-intervention-fires-only-in-the-game-that-saw-it-change), #1299).
+
 The coordinator re-checks independently before any handler runs
-(`interventions.py:1190-1222`): allow-list membership → mode capability deny matrix
-(`interventions.py:355-383`) → battery guard → global backstop. Its block reasons are
+(`InterventionManager._enforce_and_dispatch` → `_check_chain` in `interventions.py`): allow-list membership → mode capability deny matrix
+(`MODE_CAPABILITY_DENY` in `interventions.py`) → battery guard → global backstop. Its block reasons are
 `not_allowed`, `rate_limited`, `low_battery`, `mode_unsupported`, `no_game`, plus
 `handler_error`. Every outcome emits `game_interventions_total{type,objective,blocked,block_reason}`
 and an `agent_intervention` game event. An applied player-targeted intervention is also recorded as an event on

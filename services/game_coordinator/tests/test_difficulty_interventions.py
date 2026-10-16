@@ -23,6 +23,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from openfeature.flag_evaluation import FlagEvaluationDetails
 
 # Setup paths for imports
 test_dir = Path(__file__).parent
@@ -550,6 +551,10 @@ class _ScalarFlagClient:
 
     def get_string_value(self, key, default, _ctx=None):
         return str(self.values.get(key, default))
+
+    def get_string_details(self, key, default, _ctx=None):
+        # The manager reads edge flags via details to see errors (#1299).
+        return FlagEvaluationDetails(flag_key=key, value=self.get_string_value(key, default, _ctx))
 
 
 class _AllowAllAgent:
