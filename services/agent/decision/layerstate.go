@@ -78,6 +78,11 @@ type LayerState struct {
 	Dispatched int
 	Blocked    int
 	Outcomes   []DecisionOutcome
+
+	// budgetHeld is set once a decision of this cycle that could fit an empty
+	// window was refused by the rate limit: every lower-ranked decision of the
+	// cycle is then refused without charge (UC-040 BR-014, budget.go).
+	budgetHeld bool
 }
 
 // newLayerState seeds a LayerState from the evaluated flag snapshot. Outcomes

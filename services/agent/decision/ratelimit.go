@@ -160,9 +160,20 @@ const rateWindow = time.Minute
 // trailing one-minute window would exceed the budget, then blocks (does not
 // queue) further ones. Older entries are pruned on each call, so the budget
 // replenishes as time passes. Safe for concurrent use.
+//
+// It also tracks the budget STATE (gen) for UC-040 A21 / BR-014 (#1326): gen
+// moves whenever an intervention is admitted or one leaves the window, so a
+// refusal that repeats while gen is unchanged is known in advance and need not
+// be re-emitted as a span.
 type rateLimiter struct {
 	mu      sync.Mutex
 	entries []rateEntry
+	// gen is the budget-state generation: bumped on every admit and on every
+	// prune that drops an entry.
+	gen uint64
+	// refused maps a refused decision key to the gen it was last reported at.
+	// Bounded by interventions x targets of one game (one limiter per game).
+	refused map[string]uint64
 }
 
 type rateEntry struct {
@@ -175,16 +186,41 @@ type rateEntry struct {
 // would exceed the budget, nothing is recorded and false is returned (blocked).
 // A budget <= 0 admits nothing (fully closed). cost is the intervention's weight.
 func (r *rateLimiter) allow(now time.Time, cost, budget float64) bool {
+	return r.admit(now, cost, budget, 0)
+}
+
+// admit is allow with a reserve (UC-040 BR-015): the intervention fits only when
+// reserve stays free after charging it (used + cost + reserve <= budget).
+func (r *rateLimiter) admit(now time.Time, cost, budget, reserve float64) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.prune(now)
 	if budget <= 0 {
 		return false
 	}
-	if r.used()+cost > budget {
+	if r.used()+cost+reserve > budget {
 		return false
 	}
 	r.entries = append(r.entries, rateEntry{at: now, weight: cost})
+	r.gen++
+	return true
+}
+
+// firstRefusal reports whether a rate_limit refusal of key at time now is the
+// first since the budget last changed (UC-040 A21). It returns true (and
+// remembers the current budget state for key) the first time; false for a
+// repeat while nothing was admitted and nothing left the window since.
+func (r *rateLimiter) firstRefusal(key string, now time.Time) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.prune(now)
+	if g, seen := r.refused[key]; seen && g == r.gen {
+		return false
+	}
+	if r.refused == nil {
+		r.refused = make(map[string]uint64)
+	}
+	r.refused[key] = r.gen
 	return true
 }
 
@@ -198,8 +234,8 @@ func (r *rateLimiter) used() float64 {
 	return sum
 }
 
-// prune drops entries older than the trailing window ending at now. Caller holds
-// r.mu.
+// prune drops entries older than the trailing window ending at now, bumping gen
+// when it drops any (the budget changed). Caller holds r.mu.
 func (r *rateLimiter) prune(now time.Time) {
 	cutoff := now.Add(-rateWindow)
 	kept := r.entries[:0]
@@ -207,6 +243,9 @@ func (r *rateLimiter) prune(now time.Time) {
 		if e.at.After(cutoff) {
 			kept = append(kept, e)
 		}
+	}
+	if len(kept) != len(r.entries) {
+		r.gen++
 	}
 	r.entries = kept
 }

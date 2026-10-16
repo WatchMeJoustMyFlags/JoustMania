@@ -715,7 +715,13 @@ func (l *Loop) nowOrDefault() func() time.Time {
 func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext, d Decision, now time.Time, state *LayerState) {
 	allowed := snapshot.InterventionsAllowed
 	cost := interventionCost(d.Intervention)
-	reason, blocked := l.evaluatePermission(snapshot, c, d, now, cost)
+	reason, blocked := l.evaluatePermission(snapshot, c, d, now, cost, state)
+	if blocked && reason == ReasonRateLimit && l.repeatRefusal(d, now) {
+		// UC-040 A21: the budget already refused this decision and has not
+		// changed since; count it, but emit no span, warning or timeline entry.
+		l.recordRepeatRefusal(ctx, d, cost, state)
+		return
+	}
 
 	// Trace correlation Phase 2 (#1133): when the game-coordinator's root game-span
 	// trace_id is known (ingested from the game_trace_correlation signal into
@@ -873,7 +879,7 @@ func (l *Loop) emitDisabledSpan(ctx context.Context, snapshot flags.Snapshot, c 
 // battery gates AND fits the budget — so the budget is spent on decisions the
 // agent actually dispatches, the unification chosen over #726's
 // charge-every-emitted-decision model now that the loop can see permissions.
-func (l *Loop) evaluatePermission(snapshot flags.Snapshot, c gamecontext.GameContext, d Decision, now time.Time, cost float64) (BlockReason, bool) {
+func (l *Loop) evaluatePermission(snapshot flags.Snapshot, c gamecontext.GameContext, d Decision, now time.Time, cost float64, state *LayerState) (BlockReason, bool) {
 	// 1. Allow-list gate (#727): not in interventions_allowed.
 	if !snapshot.Permits(d.Intervention) {
 		return ReasonNotAllowed, true
@@ -887,8 +893,9 @@ func (l *Loop) evaluatePermission(snapshot flags.Snapshot, c gamecontext.GameCon
 	}
 	// 3. Weighted rate limit: block when the per-minute budget is exhausted. The
 	// limiter charges the cost only when it admits, so blocked decisions above do
-	// not draw down the budget.
-	if !l.limiter.allow(now, cost, float64(snapshot.Policy.MaxInterventionsPerMinute)) {
+	// not draw down the budget. Budget-aware (UC-040 BR-014/BR-015, budget.go):
+	// rank order is kept within a cycle and nudges leave a protective reserve.
+	if l.budgetRefuses(snapshot, d, now, cost, state) {
 		return ReasonRateLimit, true
 	}
 	return "", false
