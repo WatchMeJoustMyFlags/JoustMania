@@ -562,12 +562,14 @@ per player whose variant or value changed and is not neutral, with `target` = th
 serial. An error read never moves that player's baseline; an unknown baseline, or a player
 with no baseline entry, adopts the next good value without firing (#1323). Two grants to one
 player within one flagd poll (1 s) collapse to the later one. Per-serial **level** flags
-(`player_sensitivity_factor`, `player_handicap_factor`) keep the whole-map change key: the
-handler re-applies every player's factor, which is idempotent ([UC-040 BR-012](../use_cases/UC-040.md#br-012-a-per-player-grant-applies-once-per-decision), #1313).
-`prime_session` also seeds each level flag's change key for the new game's players, so a
-level left over from an earlier game is not applied; when the key becomes empty
-(every player neutral again) the coordinator runs the flag's revert handler, which sets
-every player's factor back to 1.0 without the permission chain ([UC-040 BR-017](../use_cases/UC-040.md#br-017-per-player-levels-belong-to-one-game), A22, #1317).
+(`player_sensitivity_factor`, `player_handicap_factor`) keep a whole-map change key (the
+non-neutral `(serial, level)` pairs of the alive, battery-eligible players), seeded at
+`prime_session` for the new game's players. On a change the coordinator dispatches only
+the players whose level differs from the last read in this game, as a `{serial: level}`
+value the handler applies, so a level left over from an earlier game is never applied.
+When the key becomes empty (every player neutral again) it runs the flag's revert handler
+instead, which sets those players' factors back to 1.0 without the permission chain
+([UC-040 BR-017](../use_cases/UC-040.md#br-017-per-player-levels-belong-to-one-game), A22, #1317).
 
 Per-player entries are pruned when their game retires ([UC-040 BR-016](../use_cases/UC-040.md#br-016-per-player-entries-live-only-as-long-as-their-game), A23, #1323).
 The `Writer` records the game id of its last per-player write per serial. The agent's

@@ -26,7 +26,7 @@ func (g fakeGate) RolloutEnabled(context.Context) bool       { return bool(g) }
 // gone — the gate moved into the sink and is read live.
 func TestActionSinkIsLiveGated(t *testing.T) {
 	t.Setenv("INTERVENTIONS_FLAG_PATH", "/tmp/does-not-matter.json")
-	sink := actionSink(fakeGate(true), discardLogger())
+	sink := actionSink(fakeGate(true), actions.NewWriterFromEnv(discardLogger()), discardLogger())
 	if _, ok := sink.(*actions.GatedActionSink); !ok {
 		t.Fatalf("expected *actions.GatedActionSink from the live-gated wiring, got %T", sink)
 	}
@@ -37,7 +37,7 @@ func TestActionSinkIsLiveGated(t *testing.T) {
 // nothing — exactly the inert-scaffold behavior the old env default produced.
 func TestActionSinkGateOffSuppressesApply(t *testing.T) {
 	t.Setenv("INTERVENTIONS_FLAG_PATH", "/tmp/does-not-matter.json")
-	sink := actionSink(fakeGate(false), discardLogger())
+	sink := actionSink(fakeGate(false), actions.NewWriterFromEnv(discardLogger()), discardLogger())
 	// A bad path would error on a real write; the gate-off path must short-circuit
 	// BEFORE the writer is ever called, so Apply returns nil without touching disk.
 	if err := sink.Apply(context.Background(), decision.Decision{Intervention: "audio_cue"}); err != nil {

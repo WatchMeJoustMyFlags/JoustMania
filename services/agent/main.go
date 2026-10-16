@@ -146,10 +146,13 @@ func parseLevel(s string) slog.Level {
 // env gate that selected Writer-or-nil ONCE and could neither react to a flip nor
 // fail safe on a boot-time flagd outage (#1217). Returning decision.ActionSink keeps
 // main()'s wiring to one line and makes the gate unit-testable.
-func actionSink(gate actions.InterventionGate, logger *slog.Logger) decision.ActionSink {
+//
+// writer is the one shared interventions Writer; main() also hands it to the
+// per-player prune (UC-040 BR-016, #1323) and the startup self-heal.
+func actionSink(gate actions.InterventionGate, writer *actions.Writer, logger *slog.Logger) decision.ActionSink {
 	logger.Info("Agent intervention writes gated by LIVE interventions_enabled flag (#1213; default fail-closed off)",
 		"path", getEnv("INTERVENTIONS_FLAG_PATH", actions.DefaultPath))
-	return actions.NewGatedActionSink(gate, actions.NewWriterFromEnv(logger), logger)
+	return actions.NewGatedActionSink(gate, writer, logger)
 }
 
 // rolloutActuator returns the rollout write seam for the infra loop (#734), gated by
@@ -535,7 +538,13 @@ func main() {
 	// per Apply against the live agentFlags, so the gate is hot-reloadable and
 	// fail-closed on a flagd outage (the old AGENT_INTERVENTIONS_ENABLED env master,
 	// migrated). The Writer holds no per-game state, so sharing is safe.
-	sharedSink := actionSink(agentFlags, logger)
+	sharedWriter := actions.NewWriterFromEnv(logger)
+	sharedSink := actionSink(agentFlags, sharedWriter, logger)
+	// Per-player prune (UC-040 A23 / BR-016, #1323): removes a game's per-player
+	// entries from the interventions file when it ends or its partition retires,
+	// and once after startup, so the file stays bounded by the live games. Not
+	// gated by interventions_enabled: it only moves values toward neutral.
+	pruner := newTargetedPruner(sharedWriter, lifecycleHolder.PlayerTTL, logger)
 	// Shared GLOBAL LLM request budget (#847). Constructed ONCE here and injected
 	// into every per-game Loop and the retro below, so all remote decide calls and
 	// retros draw down a SINGLE per-minute request cap (llm.max_requests_per_minute).
@@ -555,12 +564,10 @@ func main() {
 	// document before the first decision cycle. A corrupt file would otherwise make
 	// flagd reject the whole flag set, silently defaulting every intervention. The
 	// heal is best-effort: a failure logs and the agent still starts.
-	if writer, ok := sharedSink.(*actions.Writer); ok {
-		if healed, err := writer.HealIfCorrupt(ctx); err != nil {
-			slog.Error("Interventions file startup self-heal failed (continuing)", "error", err)
-		} else if healed {
-			slog.Warn("Interventions file was corrupt at startup; restored neutral document (#924)")
-		}
+	if healed, err := sharedWriter.HealIfCorrupt(ctx); err != nil {
+		slog.Error("Interventions file startup self-heal failed (continuing)", "error", err)
+	} else if healed {
+		slog.Warn("Interventions file was corrupt at startup; restored neutral document (#924)")
 	}
 	// Proposer/retro text backend (#1234): the direct Claude client, or nil for the
 	// stub default (the proposer proposes nothing, the retro is capture-only). It is
@@ -980,10 +987,11 @@ func main() {
 		if expLoop != nil {
 			experimentOnGameEnd = expLoop.onGameEnd
 		}
-		s.OnGameEnd = chainGameEnd(experimentOnGameEnd, retro.OnGameEnd, summaries.OnGameEnd, proposeOnGameEnd)
+		s.OnGameEnd = chainGameEnd(experimentOnGameEnd, retro.OnGameEnd, summaries.OnGameEnd, proposeOnGameEnd, pruner.OnGameEnd)
 		return s
 	})
 	mux.SetOwnService(ownService)
+	pruner.parts = mux
 	// UC-046 A8: a pattern game is non-exact when any other game is live.
 	patterngame.Default.SetConcurrencyProbe(otherGameLive(mux))
 
@@ -1025,6 +1033,7 @@ func main() {
 		retro:            retro,
 		evictInterval:    lifecycleHolder.EvictInterval(),
 		evictIntervalSrc: lifecycleHolder.EvictInterval,
+		pruner:           pruner,
 		shadow:           shadow,
 		experiments:      experiments,
 		// Read-only experiment-dossier HTTP view (#1183): serves GET /experiments[/{id}]

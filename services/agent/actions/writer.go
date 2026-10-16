@@ -183,6 +183,12 @@ type Writer struct {
 	// written). Same no-op-until-wired semantics as writes.
 	corruption otelmetric.Int64Counter
 
+	// owners maps a serial to the game its last per-player write was for
+	// (Decision.GameID), so a game's entries can be pruned when it retires
+	// (UC-040 BR-016, #1323). Guarded by mu; lost on restart, when pruning falls
+	// back to liveness.
+	owners map[string]string
+
 	mu sync.Mutex
 }
 
@@ -200,6 +206,7 @@ func NewWriter(path string, log *slog.Logger) *Writer {
 		path:       path,
 		log:        log,
 		nonce:      newNonceGen(),
+		owners:     map[string]string{},
 		writes:     newWritesCounter(mp),
 		corruption: newCorruptionCounter(mp),
 	}
@@ -290,6 +297,14 @@ func (w *Writer) recordCorruption(ctx context.Context, phase string) {
 // and the original parse error is returned. This keeps flagd from ingesting a
 // poisoned file and falling all interventions back to defaults silently (#924).
 func (w *Writer) edit(fn func(*orderedDoc) error) error {
+	return w.editIfChanged(func(doc *orderedDoc) (bool, error) { return true, fn(doc) })
+}
+
+// editIfChanged is edit for a mutation that may be a no-op: fn reports whether it
+// changed the document, and an unchanged document is not written (no mtime bump,
+// so no flagd reload, UC-040 BR-016). A changed one is written in place and
+// validated exactly like edit.
+func (w *Writer) editIfChanged(fn func(*orderedDoc) (bool, error)) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -301,8 +316,12 @@ func (w *Writer) edit(fn func(*orderedDoc) error) error {
 	if err != nil {
 		return err
 	}
-	if err := fn(doc); err != nil {
+	changed, err := fn(doc)
+	if err != nil {
 		return err
+	}
+	if !changed {
+		return nil
 	}
 	out, err := doc.marshal()
 	if err != nil {
@@ -364,29 +383,15 @@ func (w *Writer) RevertState(flagKey string) error {
 // if-ladder (levels and grants). Every variant of the player (agent_<serial>
 // or agent_<serial>#<nonce>) and its ladder branch are dropped; once no agent-driven serials remain the
 // targeting block is removed entirely. Unmatched serials fall through to the
-// neutral defaultVariant. Safe for concurrent use.
+// neutral defaultVariant. Nothing is written when the player has no entry. The
+// game-retire prunes (PruneGame / PruneExcept, UC-040 BR-016) use the same
+// removal for many serials and all five flags in one write. Safe for concurrent use.
 func (w *Writer) RevertTargeted(flagKey, serial string) error {
-	neutral, ok := targetedNeutral[flagKey]
-	if !ok {
+	if _, ok := targetedNeutral[flagKey]; !ok {
 		return fmt.Errorf("RevertTargeted: %q is not a per-player state flag", flagKey)
 	}
-	return w.edit(func(doc *orderedDoc) error {
-		f, err := doc.flag(flagKey)
-		if err != nil {
-			return err
-		}
-		variants := map[string]any{}
-		if _, err := f.get("variants", &variants); err != nil {
-			return err
-		}
-		dropSerialVariants(variants, serial)
-		if err := f.set("variants", variants); err != nil {
-			return err
-		}
-		if err := setLadder(f, variantNames(variants), neutral); err != nil {
-			return err
-		}
-		return doc.putFlag(flagKey, f)
+	return w.editIfChanged(func(doc *orderedDoc) (bool, error) {
+		return dropSerialFromFlag(doc, flagKey, map[string]bool{serial: true})
 	})
 }
 
@@ -425,9 +430,10 @@ func (w *Writer) mutate(doc *orderedDoc, d decision.Decision) error {
 		return w.setEdge(doc, flagRevivePlayer, d.TargetSerial)
 	case decision.InterventionEndGame:
 		// Addressed to the deciding game (UC-040 BR-011, #1310). An un-addressed
-		// end_game would end the real game whichever loop decided it, so refuse.
-		if d.GameID == "" {
-			return fmt.Errorf("end_game requires the deciding game's id")
+		// end_game would end the real game whichever loop decided it, and the
+		// fallback partition's "session-<n>" names no game (#1323), so refuse both.
+		if err := validateGameID(d.GameID); err != nil {
+			return err
 		}
 		return w.setEdge(doc, flagEndGame, d.GameID)
 
@@ -448,6 +454,31 @@ func (w *Writer) mutate(doc *orderedDoc, d decision.Decision) error {
 		return w.setStateString(doc, flagAutoRubberband, w.autoRubberbandOr(d.Value, defaultAutoRubberband))
 
 	// Per-player state-shaped overrides (flagd targeting if-ladder).
+	case decision.InterventionAdjustPlayerSensitivity, decision.InterventionSetPlayerHandicap,
+		decision.InterventionGrantShield, decision.InterventionPartialShield, decision.InterventionSoftPenalty:
+		if err := w.mutatePerPlayer(doc, d); err != nil {
+			return err
+		}
+		// Remember the game this serial was written for so its entry is pruned
+		// when that game retires (UC-040 BR-016, #1323).
+		w.recordOwner(d.TargetSerial, d.GameID)
+		return nil
+
+	// Probe-mode synthetic intervention: no game effect, but a dispatched success
+	// so probe mode (AGENT_PROBE_DECISIONS + the `probe` interventions_allowed
+	// variant) exercises the full ACT path, including the agent.action span,
+	// without rewriting any flag.
+	case decision.InterventionNoop:
+		return nil
+
+	default:
+		return fmt.Errorf("unknown intervention %q", d.Intervention)
+	}
+}
+
+// mutatePerPlayer applies one per-player level or grant decision.
+func (w *Writer) mutatePerPlayer(doc *orderedDoc, d decision.Decision) error {
+	switch d.Intervention {
 	case decision.InterventionAdjustPlayerSensitivity:
 		return w.setTargeted(doc, flagPlayerSensitivityFactor, neutralDefault, d.TargetSerial, w.numOr(d.Value, defaultPlayerSensitivity))
 	case decision.InterventionSetPlayerHandicap: // #1107 (#1103 MVP action 1), shadow-only
@@ -459,16 +490,8 @@ func (w *Writer) mutate(doc *orderedDoc, d decision.Decision) error {
 		return w.setGrant(doc, flagPartialShieldSeconds, neutralNone, d.TargetSerial, w.partialShieldOr(d.Value, defaultPartialShield))
 	case decision.InterventionSoftPenalty: // #1134 (#1103 Phase 3), shadow-only
 		return w.setGrant(doc, flagSoftPenaltyAction, neutralNone, d.TargetSerial, w.softPenaltyOr(d.Value, defaultSoftPenalty))
-
-	// Probe-mode synthetic intervention: no game effect, but a dispatched success
-	// so probe mode (AGENT_PROBE_DECISIONS + the `probe` interventions_allowed
-	// variant) exercises the full ACT path, including the agent.action span,
-	// without rewriting any flag.
-	case decision.InterventionNoop:
-		return nil
-
 	default:
-		return fmt.Errorf("unknown intervention %q", d.Intervention)
+		return fmt.Errorf("unknown per-player intervention %q", d.Intervention)
 	}
 }
 

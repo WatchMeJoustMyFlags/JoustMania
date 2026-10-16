@@ -903,9 +903,12 @@ class InterventionManager:
         """
         for session in self._live_sessions():
             self._prime_edge_bucket(session)
-            self._prime_grant_bucket(session.game_id, _active_player_serials(session.game))
+            serials = _active_player_serials(session.game)
+            self._prime_grant_bucket(session.game_id, serials)
+            if session.game is not None:
+                self._prime_level_bucket(session.game_id, serials)
             for spec in INTERVENTION_SPECS:
-                if spec.edge_triggered or spec.per_serial_grant:
+                if spec.edge_triggered or spec.per_serial_grant or _is_level_spec(spec):
                     continue
                 try:
                     raw = self._read_flag(spec, session)
@@ -930,13 +933,19 @@ class InterventionManager:
         the same way for ``serials``, the players of the new game: a grant still
         in the flag belongs to an earlier decision (UC-040 BR-012, #1313).
 
-        Other state-shaped flags are not primed: their contract is "the game
+        Per-player level flags (sensitivity / handicap factor) are primed too:
+        a level still in the flag was decided for an earlier game, so the new
+        game does not inherit it (UC-040 BR-017, #1317/#1269).
+
+        Session-scoped state flags are not primed: their contract is "the game
         converges on the current value", so a still-set state value applies to a
-        new game.
+        new game (not game-scoped yet, #1269).
         """
+        serials = list(serials)
         session = SessionView(game_id=game_id, game=None, publish=self._publish)
         self._prime_edge_bucket(session)
         self._prime_grant_bucket(game_id, serials)
+        self._prime_level_bucket(game_id, serials)
         with self._lock:
             self._pending_primed.add(game_id)
 
@@ -1106,7 +1115,9 @@ class InterventionManager:
             "treating current edge values and per-player grants as consumed (#1299, #1313)"
         )
         self._prime_edge_bucket(session)
-        self._prime_grant_bucket(session.game_id, _active_player_serials(session.game))
+        serials = _active_player_serials(session.game)
+        self._prime_grant_bucket(session.game_id, serials)
+        self._prime_level_bucket(session.game_id, serials)
 
     async def _evaluate_one(self, spec: InterventionSpec, session: "SessionView") -> None:
         # Player-targeted state flags are driven entirely through flagd's
@@ -1220,6 +1231,13 @@ class InterventionManager:
 
         With no live game there are no serials to target, so this is a no-op
         (and the baseline is reset to empty so a later game picks up the flag).
+
+        The baseline is seeded at game start (``prime_session``), and only the
+        players whose level changed since the last read in this game are
+        dispatched (as a ``{serial: level}`` value), so a level left over from
+        an earlier game is never applied (UC-040 BR-017). When every player is
+        neutral again, the flag's revert handler resets the changed players'
+        factors to neutral (UC-040 A22, #1317).
         """
         game = session.game
         if game is None:
@@ -1258,19 +1276,87 @@ class InterventionManager:
             if bucket is None:
                 return  # session retired mid-pass
             last = bucket.get(spec.flag_key)
-            changed = change_key != last
             bucket[spec.flag_key] = change_key
+        if change_key == last:
+            return
+
+        # Apply only the players whose level changed in this game (UC-040
+        # BR-017): a level still in the flag from an earlier game is part of the
+        # primed baseline and is never applied, even when another player's level
+        # changes. Players missing from ``resolved`` (dead or battery-gated) are
+        # left as they are.
+        last_levels = dict(last) if isinstance(last, tuple) else {}
+        changed = {
+            serial: value
+            for serial, value in resolved.items()
+            if not _same_value(value, last_levels.get(serial, default))
+        }
         if not changed:
             return
         if not active:
-            # All serials reverted to neutral: nothing to apply (shields/factors
-            # simply expire / reset to default). No enforced intervention.
+            # Every player is neutral again (reverted or pruned): reset the
+            # changed players' factors to neutral (UC-040 A22, #1317). Before,
+            # this transition dispatched nothing and the last factor stayed for
+            # the whole game. Restoring neutral is a revert, not an enforced
+            # intervention.
+            await self._run_revert(spec, changed, session)
             return
 
         # Per-serial battery gating already happened in resolve_player_targets;
         # the chain-level target is None (fan-out), so the chain's single-target
-        # battery check is a no-op here.
-        await self._enforce_and_dispatch(spec, default, "", None, session)
+        # battery check is a no-op here. The handler applies ``changed``.
+        await self._enforce_and_dispatch(spec, changed, "", None, session)
+
+    async def _run_revert(self, spec: InterventionSpec, value: object, session: "SessionView") -> None:
+        """Run ``spec``'s revert handler for ``session``, if one is registered.
+
+        Reverts restore a default; they bypass the permission chain and the
+        backstop, and a failing revert handler is logged, never raised.
+        """
+        revert = self._revert_handlers.get(spec.flag_key)
+        if revert is None:
+            return
+        ctx = InterventionContext(
+            spec=spec,
+            value=value,
+            payload="",
+            target_serial=None,
+            game=session.game,
+            objective=self._dominant_objective(),
+            game_id=session.game_id,
+        )
+        try:
+            await revert(ctx)
+        except Exception as e:
+            logger.error(f"InterventionManager: revert handler for {spec.flag_key} raised: {e}")
+
+    def _level_change_key(self, spec: InterventionSpec, game_id: str, serials) -> tuple:
+        """Change key of a per-player LEVEL flag: the sorted ``(serial, value)``
+        pairs that are not neutral, resolved like :meth:`_evaluate_targeted_state`."""
+        resolved = self._resolve_serials(
+            spec.flag_key,
+            _spec_default(spec),
+            serials,
+            value_kind=spec.value_kind if spec.value_kind in ("int", "float", "string") else "float",
+            battery_gate=True,
+            game_id=game_id,
+        )
+        return tuple(sorted((s, v) for s, v in resolved.items() if not _is_none_value(spec, v)))
+
+    def _prime_level_bucket(self, game_id: str, serials) -> None:
+        """Record each per-player LEVEL flag's change key for ``game_id``'s
+        players without applying it (UC-040 BR-017, #1317/#1269). A level still
+        in the flag when the game starts was decided for an earlier game; the
+        new game's players start neutral and keep it that way until a level
+        changes during this game.
+        """
+        serials = list(serials)
+        for spec in INTERVENTION_SPECS:
+            if not _is_level_spec(spec):
+                continue
+            key = self._level_change_key(spec, game_id, serials)
+            with self._lock:
+                self._state_bucket(game_id)[spec.flag_key] = key
 
     async def _evaluate_targeted_grant(self, spec: InterventionSpec, session: "SessionView") -> None:
         """Change-detect a per-serial GRANT flag and dispatch only new grants.
@@ -1284,8 +1370,9 @@ class InterventionManager:
         intervention is dispatched per changed, non-neutral serial with
         ``target`` = that serial, so the battery guard and the backstop apply
         per grant. Fail closed: an error read never moves that serial's
-        baseline, and an ``_UNKNOWN`` baseline adopts the next good read without
-        firing.
+        baseline, and an ``_UNKNOWN`` or missing baseline adopts the next good
+        read without firing. A serial pruned by the agent (UC-040 BR-016)
+        resolves to the neutral variant, which is a change but never fires.
         """
         game = session.game
         if game is None:
@@ -1297,13 +1384,19 @@ class InterventionManager:
             if bucket is None:
                 return  # session retired mid-pass
             baseline = bucket.get(spec.flag_key)
-            if not isinstance(baseline, dict):
+            primed = isinstance(baseline, dict)
+            if not primed:
                 baseline = {}
                 bucket[spec.flag_key] = baseline
+            # Once the bucket is primed, a serial with no baseline entry (e.g.
+            # revived after the fallback prime, which records alive players
+            # only) adopts its current grant like ``_UNKNOWN``: it may predate
+            # this game (UC-040 A19, #1323).
+            missing = _UNKNOWN if primed else None
             for serial, grant in reads.items():
                 if grant is _UNKNOWN:
                     continue  # never move the baseline on an error read
-                last = baseline.get(serial)
+                last = baseline.get(serial, missing)
                 baseline[serial] = grant
                 if last is _UNKNOWN or grant == last:
                     continue
@@ -1643,9 +1736,29 @@ class InterventionManager:
             ``{serial: value}`` for every active serial that should be acted on.
             Battery-gated serials are omitted entirely.
         """
+        return self._resolve_serials(
+            flag_key,
+            default,
+            _active_player_serials(game),
+            value_kind=value_kind,
+            battery_gate=battery_gate,
+            game_id=game_id,
+        )
+
+    def _resolve_serials(
+        self,
+        flag_key: str,
+        default,
+        serials,
+        *,
+        value_kind: str = "float",
+        battery_gate: bool = True,
+        game_id: str = "",
+    ) -> dict:
+        """Core of :meth:`resolve_player_targets` for an explicit serial list
+        (``prime_session`` has serials before the game object exists)."""
         result: dict = {}
         client = self._interventions_client
-        serials = _active_player_serials(game)
         threshold = self._battery_threshold() if battery_gate else None
 
         for serial in serials:
@@ -1797,6 +1910,19 @@ def _is_none_value(spec: InterventionSpec, value: object) -> bool:
     if isinstance(none_val, (int, float)) and isinstance(value, (int, float)):
         return abs(float(value) - float(none_val)) < 1e-9
     return value == none_val
+
+
+def _same_value(a: object, b: object) -> bool:
+    """Equal values, comparing numbers with a float tolerance."""
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return abs(float(a) - float(b)) < 1e-9
+    return a == b
+
+
+def _is_level_spec(spec: InterventionSpec) -> bool:
+    """True for a per-player LEVEL flag (player_sensitivity_factor,
+    player_handicap_factor): player-targeted state, not edge, not a grant."""
+    return spec.player_targeted and not spec.edge_triggered and not spec.per_serial_grant
 
 
 def _spec_default(spec: InterventionSpec) -> object:
