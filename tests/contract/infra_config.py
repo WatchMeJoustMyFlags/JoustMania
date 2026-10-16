@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -88,3 +89,24 @@ def resolve_route(path: str) -> dict:
             upstream = action["prefix_rewrite"] + path[len(match["prefix"]) :]
         return {"cluster": action["cluster"], "upstream_path": upstream}
     raise AssertionError(f"no envoy route matches {path}")
+
+
+_PORT_IN_TEXT_RE = re.compile(r"(?:localhost|127\.0\.0\.1|0\.0\.0\.0)?:(\d{2,5})\b")
+
+
+def compose_container_ports(service: str) -> set[int]:
+    """Container ports compose shows for ``service``: ``expose``, the container side of
+    ``ports``, ``:PORT`` in environment values (e.g. ``AGENT_HEALTH_ADDR=:13134``) and
+    the port the healthcheck probes."""
+    svc = compose_services()[service]
+    ports = {int(p) for p in svc.get("expose") or []}
+    ports |= {int(str(p).rsplit(":", 1)[-1]) for p in svc.get("ports") or []}
+    env = svc.get("environment") or []
+    env_values = (
+        env.values() if isinstance(env, dict) else [e.split("=", 1)[-1] for e in env]
+    )
+    texts = [str(v) for v in env_values]
+    texts.append(" ".join(map(str, (svc.get("healthcheck") or {}).get("test") or [])))
+    for text in texts:
+        ports |= {int(p) for p in _PORT_IN_TEXT_RE.findall(text)}
+    return ports

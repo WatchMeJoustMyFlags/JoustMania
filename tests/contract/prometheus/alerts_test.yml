@@ -5,8 +5,8 @@
 #     -v $PWD/tests/contract/prometheus:/tests:ro prom/prometheus:<compose tag> \
 #     test rules /tests/alerts_test.yml
 #
-# Not covered here on purpose: HighInputLatency and LowGameLoopHz (being changed
-# by #1376 / #1379 / #1353), GameCrashRate and ServiceUpdatePending (dead, #1275).
+# Not covered here on purpose: LowGameLoopHz (being changed by #1379 / #1353),
+# GameCrashRate and ServiceUpdatePending (dead, #1275).
 rule_files:
   - /rules/alerts.yml
 
@@ -179,3 +179,35 @@ tests:
             exp_annotations:
               summary: "Agent interventions file was corrupt and self-healed"
               description: "The agent detected a poisoned interventions.json and self-healed it (1 event(s) in 5m). flagd would otherwise reject the whole flag set and silently default every intervention. See docs/agent-act-runbook.md → Recovery."
+
+  # HighInputLatency: P95 controller sample age > 50 ms for 2m (live since #1376).
+  # MOCK0001's samples all land in the 50-100 ms bucket; MOCK0002's under 10 ms.
+  - interval: 30s
+    input_series:
+      - series: 'controller_input_lag_seconds_bucket{serial="MOCK0001",le="0.05"}'
+        values: '0x20'
+      - series: 'controller_input_lag_seconds_bucket{serial="MOCK0001",le="0.1"}'
+        values: '0+30x20'
+      - series: 'controller_input_lag_seconds_bucket{serial="MOCK0001",le="+Inf"}'
+        values: '0+30x20'
+      - series: 'controller_input_lag_seconds_bucket{serial="MOCK0002",le="0.01"}'
+        values: '0+30x20'
+      - series: 'controller_input_lag_seconds_bucket{serial="MOCK0002",le="0.05"}'
+        values: '0+30x20'
+      - series: 'controller_input_lag_seconds_bucket{serial="MOCK0002",le="0.1"}'
+        values: '0+30x20'
+      - series: 'controller_input_lag_seconds_bucket{serial="MOCK0002",le="+Inf"}'
+        values: '0+30x20'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: HighInputLatency
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: HighInputLatency
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              serial: MOCK0001
+            exp_annotations:
+              summary: "High input latency detected"
+              description: "P95 age of controller samples sent on the gameplay stream is 0.0975s (>50ms threshold): the poll loop or a backend is stalling, or Bluetooth congestion is delaying frames."

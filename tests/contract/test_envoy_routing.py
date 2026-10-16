@@ -22,6 +22,7 @@ DOCUMENTED_ROUTES = {
     "/victoria-metrics/api/v1/query": ("victoria_metrics", "/api/v1/query"),
     "/experiments": ("agent_dossier", "/experiments"),  # UC-035 A1
     "/experiments/exp-1": ("agent_dossier", "/experiments/exp-1"),
+    "/chaos/faults": ("connect_proxy", "/chaos/faults"),  # fault injection API (FR-073)
     "/joustmania.menu.MenuService/StreamMenuEvents": (
         "connect_proxy",
         "/joustmania.menu.MenuService/StreamMenuEvents",
@@ -36,24 +37,13 @@ DOCUMENTED_REDIRECTS = {
     "/victoria-metrics": "/victoria-metrics/",
 }
 
-# Compose service -> container port each envoy cluster must reach.
-CLUSTER_UPSTREAMS = {
-    "dashboard": ("dashboard", 8080),
-    "grafana": ("grafana", 3000),
-    "prometheus": ("prometheus", 9090),
-    "jaeger": ("jaeger", 16686),
-    "loki": ("loki", 3100),
-    "victoria_metrics": ("victoria-metrics", 8428),
-    "agent_dossier": ("agent", 13134),
-    "connect_proxy": ("connect-proxy", 8080),
-}
-
 # UC-035 BR-001: host ports other than envoy :80, for the host-networked pairing daemon.
 BR001_HOST_PORT_EXCEPTIONS = {
     "flagd": {"8015:8015"},
     "rust-hid": {"50058:50058"},
-    # Not named in UC-035 BR-001 yet: OTLP for the host-networked pairing daemon
-    # and the collector's Prometheus exporter. Neither is a UI.
+    # OTLP for the host-networked pairing daemon and the collector's Prometheus
+    # exporter; neither is a UI. Being added to UC-035 BR-001 in the docs
+    # follow-up of the AIUP spec sync (epic #1369).
     "otel-collector": {"4317:4317", "8889:8889"},
 }
 
@@ -122,12 +112,17 @@ def test_catch_all_dashboard_route_is_last():
 
 
 def test_every_cluster_points_at_a_compose_service_port():
+    """Every envoy cluster (UI routes, /chaos/, the tracing exporter) targets a compose
+    service on a port that service actually exposes, listens on or is probed on."""
     clusters = ic.envoy_clusters()
     services = ic.compose_services()
-    for name, (host, port) in CLUSTER_UPSTREAMS.items():
-        assert clusters[name] == (host, port), name
+    assert len(clusters) >= 9
+    for name, (host, port) in clusters.items():
         assert host in services, (
             f"cluster {name} targets unknown compose service {host}"
+        )
+        assert port in ic.compose_container_ports(host), (
+            f"cluster {name} -> {host}:{port}, but compose shows {sorted(ic.compose_container_ports(host))}"
         )
 
 

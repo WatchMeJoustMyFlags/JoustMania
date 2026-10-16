@@ -36,6 +36,13 @@ def _reset_telemetry_state():
 class TestDisableTelemetry:
     """Tests for disable_telemetry_for_tests."""
 
+    @pytest.fixture(autouse=True)
+    def _restore_otel_env(self, monkeypatch):
+        """disable_telemetry_for_tests() writes OTEL_* into os.environ; undo it after
+        each test so it cannot leak into later tests or their subprocesses (#1365)."""
+        for key in ("OTEL_SDK_DISABLED", "OTEL_TRACES_EXPORTER", "OTEL_METRICS_EXPORTER"):
+            monkeypatch.delenv(key, raising=False)
+
     def test_sets_test_mode(self):
         telemetry_module._test_mode = False
         telemetry_module._initialized = False

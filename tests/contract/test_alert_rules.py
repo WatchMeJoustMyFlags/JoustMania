@@ -18,7 +18,8 @@ ALERT_TESTS_DIR = ic.REPO_ROOT / "tests" / "contract" / "prometheus"
 @pytest.mark.uc("UC-035", flow="A2")
 def test_key_alerts_fire_and_stay_quiet_as_specified():
     """UC-035 A2: controller disconnected / low battery, frame consistency, gRPC errors,
-    intervention handler errors, flag fallbacks and agent write failures / file corruption
+    intervention handler errors, flag fallbacks, agent write failures / file corruption
+    and high input latency
     fire on their condition and stay quiet otherwise."""
     if not ic.docker_available():
         pytest.skip("docker not available")
