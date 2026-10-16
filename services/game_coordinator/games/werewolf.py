@@ -398,7 +398,12 @@ class WerewolfGame(BaseGameMode):
 
         return False
 
-    async def _kill_player_impl(self, serial: str, accel_mag: float):
+    def _player_death_event_attributes(self, serial: str) -> dict:
+        """Werewolf attributes on the base kill path's player_death event (#1327)."""
+        player = self.players[serial]
+        return {"is_werewolf": player.is_werewolf, "was_revealed": player.revealed}
+
+    async def _kill_player_impl(self, serial: str, accel_mag: float):  # noqa: ARG002
         """
         Handle player death.
 
@@ -416,16 +421,10 @@ class WerewolfGame(BaseGameMode):
             f"Player died: {serial} ({'werewolf' if wolf_player.is_werewolf else 'human'}), {alive_count} remaining"
         )
 
+        # End the lifecycle span. The player_death event (with is_werewolf /
+        # was_revealed, via _player_death_event_attributes) was recorded by the
+        # base kill path (#1327).
         if player.span:
-            player.span.add_event(
-                "player_death",
-                attributes={
-                    "accel_magnitude": accel_mag,
-                    "is_werewolf": wolf_player.is_werewolf,
-                    "was_revealed": wolf_player.revealed,
-                    "alive_count": alive_count,
-                },
-            )
             player.span.set_status(Status(StatusCode.OK))
             player.span.end()
             player.span = None  # Mark as closed to prevent double-ending

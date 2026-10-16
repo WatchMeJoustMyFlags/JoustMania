@@ -312,6 +312,12 @@ class TeamsGameBase(BaseGameMode):
         await self.event_publisher(GameEvent.COUNTDOWN_END, {})
         logger.info("Team countdown complete")
 
+    def _player_death_event_attributes(self, serial: str) -> dict:
+        """Team attributes on the base kill path's player_death event (#1327)."""
+        player = self.players[serial]
+        teammates_alive = any(p.alive and p.team == player.team for s, p in self.players.items() if s != serial)
+        return {"team": player.team, "team_eliminated": not teammates_alive}
+
     def _get_alive_teams(self) -> set[int]:
         """
         Get set of teams that still have alive players.
@@ -364,7 +370,7 @@ class TeamsGameBase(BaseGameMode):
 
         return False
 
-    async def _kill_player_impl(self, serial: str, accel_mag: float):
+    async def _kill_player_impl(self, serial: str, accel_mag: float):  # noqa: ARG002
         """
         Handle player death with team elimination detection.
 
@@ -386,17 +392,9 @@ class TeamsGameBase(BaseGameMode):
             f"Player died: {serial} (Team {player.team}), {alive_count} players remaining on {len(alive_teams)} teams"
         )
 
-        # Add death event to player's lifecycle span and end it
+        # End the lifecycle span. The player_death event (with team_eliminated, via
+        # _player_death_event_attributes) was recorded by the base kill path (#1327).
         if player.span:
-            player.span.add_event(
-                "player_death",
-                attributes={
-                    "accel_magnitude": accel_mag,
-                    "sensitivity": self.sensitivity.name,
-                    "alive_count": alive_count,
-                    "team_eliminated": team_eliminated,
-                },
-            )
             player.span.set_status(Status(StatusCode.OK))
             player.span.end()
             player.span = None  # Mark as closed to prevent double-ending

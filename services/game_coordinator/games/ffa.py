@@ -113,7 +113,7 @@ class FFAGame(BaseGameMode):
 
         return False
 
-    async def _kill_player_impl(self, serial: str, accel_mag: float):
+    async def _kill_player_impl(self, serial: str, accel_mag: float):  # noqa: ARG002
         """
         Kill a player permanently (end their lifecycle span).
 
@@ -131,16 +131,9 @@ class FFAGame(BaseGameMode):
         # order from the coordinator itself rather than inferring it.
         await self.event_publisher(GameEvent.PLAYER_DEATH, {"serial": serial, "alive_remaining": str(alive_count)})
 
-        # Add death event to player's lifecycle span and end it
+        # End the lifecycle span. The player_death SPAN event was already recorded by
+        # the base kill path (_kill_player); emitting another here doubled it (#1327).
         if player.span:
-            player.span.add_event(
-                "player_death",
-                attributes={
-                    "accel_magnitude": accel_mag,
-                    "sensitivity": self.sensitivity.name,
-                    "alive_count": alive_count,
-                },
-            )
             player.span.set_status(Status(StatusCode.OK))
             player.span.end()
             player.span = None  # Mark as closed to prevent double-ending

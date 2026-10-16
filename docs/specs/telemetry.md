@@ -80,6 +80,13 @@ connect-proxy: `otelhttp` server spans (`/health` filtered) and `otelgrpc` clien
 | `music_tempo_change`, `music_tempo_ramp` | attrs `old_tempo`, `new_tempo`, `dead_count` | `games/base.py:3184,3235` |
 | `controller_poll_degraded`, `controller_led_degraded` | per player | `games/base.py:1737,1768` |
 
+**`player_death` span event: exactly one per death (#1327).** Every death that reaches the base kill path (`BaseGameMode._kill_player`) records exactly one `player_death` event on that player's lifecycle span, in every mode. Before #1327 FFA, Teams / Random Teams, Traitor, Werewolf and NonStop also emitted a second, poorer `player_death` from their `_kill_player_impl`, so each death showed twice in Jaeger (dry run #2). The one event carries:
+
+- always: `player.serial`, `player.name` (once the controller reported one), `death.reason` (`motion` for a threshold death, `agent_intervention` for `eliminate_player`), `accel_magnitude` (0.0 for a non-motion death), `alive_remaining` (alive players after this death), `sensitivity`, `sensitivity_factor`, `music_speed`;
+- mode extras, added through `_player_death_event_attributes()` and computed as if the player were already out: Teams / Random Teams `team`, `team_eliminated`; Traitor `team_eliminated` (secret team), `is_traitor`, `visible_team`, `secret_team`; Werewolf `is_werewolf`, `was_revealed`; NonStop `kills`, `deaths` (including this death), `score`.
+
+A mode's `_kill_player_impl` never adds its own `player_death` span event. Mode-specific outcome events stay separate (`zombie_killed`, `team_swap_out`, `match_death`, `round_lost`). This span event is a different channel from the event-bus `player_death` in §5. Consumers that count or order eliminations from spans (the agent's span ingest, §4.4) can count one event as one death.
+
 ### 3.3 controller-manager, menu, pairing daemon
 
 | Service | Spans | Source |

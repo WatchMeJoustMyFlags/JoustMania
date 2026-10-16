@@ -2552,6 +2552,17 @@ class BaseGameMode(ABC):
         logger.info(f"revive_player: {serial} revived (generic re-entry, grace {grace:.1f}s)")
         return True
 
+    def _player_death_event_attributes(self, serial: str) -> dict:  # noqa: ARG002
+        """Mode-specific attributes for the base kill path's ``player_death`` span event.
+
+        Called by ``_kill_player`` BEFORE ``_kill_player_impl`` (which may end the
+        player span), so values describe the state *after* this death as if the
+        player were already out. The base attributes (``player.serial``,
+        ``player.name``, ``death.reason``, ``alive_remaining``, ...) win on a key
+        clash. Default: no extra attributes (#1327).
+        """
+        return {}
+
     async def _kill_player(self, serial: str, accel_mag: float, reason: str = "motion"):
         """
         Kill a player (template method calling subclass implementation).
@@ -2597,7 +2608,9 @@ class BaseGameMode(ABC):
         player_ctx = trace.set_span_in_context(player.span) if player.span else None
         await self._play_sound(Sound.SFX_EXPLOSION, priority=2, parent_context=player_ctx)
 
-        # Add death event to player's lifecycle span (Phase 3: Per-Player Sensitivity)
+        # The ONE player_death span event per death, for every mode (#1327): modes
+        # add their own attributes through _player_death_event_attributes() and
+        # must not emit a second player_death from _kill_player_impl().
         if player.span:
             player.span.add_event(
                 "player_death",
@@ -2608,6 +2621,7 @@ class BaseGameMode(ABC):
                     "music_speed": self.music_speed,
                     "alive_remaining": alive_count_before - 1,
                     "death.reason": reason,
+                    **self._player_death_event_attributes(serial),
                     **player_identity_attributes(serial, player.name),
                 },
             )
