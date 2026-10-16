@@ -112,10 +112,9 @@ func (g *flippingGate) RolloutEnabled(context.Context) bool {
 	return v
 }
 
-// UC: UC-045 A4
-//
 // ApplyControllerCount reads the gate once and reports what actually happened, so
 // the InfraLoop never commits state for a write that was only rehearsed.
+// UC: UC-045 A4
 func TestGatedRolloutActuator_ApplyReportsOutcome(t *testing.T) {
 	w, path := newTestRolloutWriter(t)
 	before := defaultVariantOf(t, path, flagCurrentControllerCount)
@@ -137,11 +136,10 @@ func TestGatedRolloutActuator_ApplyReportsOutcome(t *testing.T) {
 	}
 }
 
-// UC: UC-045 A4
-//
 // End to end with the real gated actuator and rollout.json: a dry run at a
 // stationary stage, then rollout_enabled on, then the loop expands for real
 // without an agent restart.
+// UC: UC-045 A4
 func TestGatedRolloutActuator_LoopResumesAfterDryRun(t *testing.T) {
 	w, path := newTestRolloutWriter(t)
 	gate := &flippingGate{answers: []bool{false}}

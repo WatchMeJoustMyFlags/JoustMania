@@ -270,7 +270,6 @@ func TestInfraNarrative_RecommendedOnlyStalls(t *testing.T) {
 // controller-manager never moves the stage. An earlier version advanced the stage
 // between cycles, which cannot happen in a real dry run and hid the stale-state
 // bug (UC-045 A4): only the first rehearsed expansion was ever recorded.
-//
 // UC: UC-050 A3
 func TestInfraNarrative_DryRunTagsEverySpan(t *testing.T) {
 	clock := time.Unix(1000, 0)

@@ -25,14 +25,15 @@ func (r *toggleRollout) SetControllerCount(variant string) error {
 	return r.fakeRollout.SetControllerCount(variant)
 }
 
-// UC: UC-045 A4 UC-050 A3 UC-070 A1
-//
 // A dry run (rollout_enabled off) must not commit state that only a real write
 // commits. The observed stage stays where it is during a dry run (nothing was
 // written), so the regression is only visible with a STATIONARY stage: before the
 // fix, the first rehearsed expansion set lastWritten=1, every later cycle at the
 // observed stage 0 was suppressed as "still in flight", and turning
 // rollout_enabled back on never expanded until the agent restarted.
+// UC: UC-045 A4
+// UC: UC-050 A3
+// UC: UC-070 A1
 func TestInfraLoop_DryRunExpandThenEnableResumes(t *testing.T) {
 	clock := time.Unix(1000, 0)
 	rollout := &toggleRollout{}
@@ -74,11 +75,12 @@ func TestInfraLoop_DryRunExpandThenEnableResumes(t *testing.T) {
 	}
 }
 
-// UC: UC-045 A4 UC-051 UC-070 A1
-//
 // A rehearsed rollback must not set rollbackInFlight / the cooldown: the stage
 // never returns to 0 in a dry run, so before the fix the in-flight flag was never
 // cleared and no real rollback followed after rollout_enabled was turned on.
+// UC: UC-045 A4
+// UC: UC-051 main
+// UC: UC-070 A1
 func TestInfraLoop_DryRunRollbackThenEnableRollsBack(t *testing.T) {
 	clock := time.Unix(1000, 0)
 	rollout := &toggleRollout{}
@@ -119,10 +121,9 @@ func TestInfraLoop_DryRunRollbackThenEnableRollsBack(t *testing.T) {
 	}
 }
 
-// UC: UC-045 A4
-//
 // A dry-run rollback is re-recorded once its rehearsal cooldown has elapsed, so a
 // long dry-run failure stays visible without logging every cycle.
+// UC: UC-045 A4
 func TestInfraLoop_DryRunRollbackRepeatsAfterCooldown(t *testing.T) {
 	clock := time.Unix(1000, 0)
 	rollout := &toggleRollout{}
@@ -146,11 +147,10 @@ func TestInfraLoop_DryRunRollbackRepeatsAfterCooldown(t *testing.T) {
 	}
 }
 
-// UC: UC-045 A4
-//
 // The other direction: a real in-flight expansion is not forgotten when the gate
 // is turned off. The reconcile anchor from the real write still applies, so the
 // dry run does not rehearse re-writing a stage that is already in flight.
+// UC: UC-045 A4
 func TestInfraLoop_RealWriteStateSurvivesDryRun(t *testing.T) {
 	clock := time.Unix(1000, 0)
 	rollout := &toggleRollout{}
