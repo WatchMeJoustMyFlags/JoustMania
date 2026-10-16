@@ -104,8 +104,8 @@ jobs:
               - 'proto/psmove_hid.proto'
             agent:
               - 'services/agent/**'
-            # Agent unit tests also read shipped flag files
-            # (rollout_fixture_test.go, decide_bounds_test.go). Kept separate
+            # Agent tests that read shipped flag files (e.g.
+            # rollout_fixture_test.go, decide_bounds_test.go). Kept separate
             # from `agent` so a flag edit does not rebuild the agent image.
             agent_tests:
               - 'services/agent/**'
