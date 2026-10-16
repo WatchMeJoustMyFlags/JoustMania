@@ -34,8 +34,8 @@ const (
 // at all, and an unlabeled signal from a SHADOW game must never make that game
 // look real. Empty keeps today's fail-safes: Store.SetGameKind ignores it (an
 // unlabeled signal never clobbers an observed kind) and LLMGate.EligibleFor("")
-// is false (unknown games stay rules-only). Consumers that want a real-by-default
-// reading (the experiment baseline's gameKindOrDefault) apply it themselves.
+// is false (unknown games stay rules-only). The experiment baseline applies the
+// same rule: an empty kind never seeds the recent-real baseline.
 //
 // Any other value is passed through unchanged, so an unrecognised label matches
 // neither "real" nor "shadow" and fails closed for eligibility.

@@ -18,6 +18,7 @@ to 4 are the source of truth, and code and tests follow from them. Change the sp
 |---|---|
 | [requirements.md](requirements.md) | Every functional requirement (FR), measurable quality (NFR) and constraint (C), with status |
 | [entity_model.md](entity_model.md) | Domain entities: controller, game session, player, flag, decision, intervention, experiment, rollout |
+| [glossary.md](glossary.md) | Shared vocabulary: game kinds, decision outcomes, confidence, gates, stages, shadow, experiment, kill switch, and the words to avoid |
 
 ## 3. How it behaves: use cases
 

@@ -3,7 +3,7 @@
 > Technical spec. Part of the [spec tree](../README.md). Realises FR-044 to FR-054
 > in [requirements.md](../requirements.md) and [UC-040](../use_cases/UC-040.md),
 > [UC-044](../use_cases/UC-044.md), [UC-045](../use_cases/UC-045.md).
-> State: `main` @ 81c9ecea (2026-10-16, includes PRs #1257, #1261 and #1265) plus the Jev gate and most-likely-level magnitude of #1281. Code references use `file:Symbol` where practical, because line numbers rot. Planned or in-flight items carry their issue / PR number and are marked **Planned** / **In flight**.
+> State: `main` @ 2fdfbfd1 (2026-10-16, includes PRs #1257, #1261, #1265, #1284, #1286 (the Jev gate and most-likely-level magnitude of #1281) and #1288 (per-backend act threshold)). Code references use `file:Symbol` where practical, because line numbers rot. Planned or in-flight items carry their issue / PR number and are marked **Planned** / **In flight**.
 
 The agent answers "should I intervene in this game, how, and on whom" through one
 contract, independent of who answers: the in-process **rules** engine or a remote
@@ -356,9 +356,9 @@ fire.
 | `decision.claude.timeout_ms` | 5000 ms (variants fast 1500 / tight 2500 / default 5000 / patient 8000, PR #1257) | per call | `flags/decision_backend.go:30,99-106,176` |
 | `decision.openai.timeout_ms` / `decision.jev.timeout_ms` | 2500 ms (variants 1500 / 2500 / 5000) | per call | `flags/decision_backend.go:33,37,181,188` |
 | `decision.min_interval_ms` | 3000 ms (1500 / 10000; 0 disables) | per game, from admission | `decision_backend.go:28,60-76,220-227` |
-| `llm.max_requests_per_minute` | 6 (conservative 3 / aggressive 12 / `stage` 30, PR #1257) | **global**, shared with the post-game retro | `flags/flags.go:43`; `decision/llmbudget.go:22-67` |
+| `llm.max_requests_per_minute` | 6 (conservative 3 / aggressive 12 / `stage` 30, PR #1257) | **global**, shared by in-game decisions, the retro and the proposer (PR #1284) | `flags/flags.go:43`; `decision/llmbudget.go:22-67` |
 | `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` (env) | unset | read once at startup; a positive value replaces the flag | `main.go:335-354` |
-| `llm.eligible_game_kinds` | `real` | which game kinds may call a remote backend | `flags/flags.go:42,904-922` |
+| `llm.eligible_game_kinds` | `real` | which game kinds may call a remote backend; read by in-game decisions, the retro and the proposer | `flags/flags.go:42,904-922` |
 | `policy.max_interventions_per_minute` | 2, weighted (soft 0.5, medium 1, hard 2, unknown 1) | per game | `decision/ratelimit.go:106-140` |
 | `policy.coordinator_backstop_per_minute` | 60 | global, enforced in the game coordinator | `services/game_coordinator/interventions.py:100-107,1403-1425` |
 | Rules engine cadence | evaluate ≤ 1/s, ≤ 2 decisions per evaluation | per game | `decision/rules.go:15-26` |

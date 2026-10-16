@@ -31,7 +31,7 @@ an invalid answer, or the game is not eligible, the rules engine decides and the
 | `decision.openai.base_url`, `.model`, `.timeout_ms`, `.reasoning_effort` | any hosted OpenAI-compatible endpoint |
 | `decision.jev.base_url`, `.model`, `.timeout_ms` | Jev, TypeSafe's System One API (`latest` = `jev-latest`, `pinned` = `jev-1.13.0`) |
 | `llm.eligible_game_kinds` | game kinds that may call a remote backend (default `real`: shadow games stay on rules) |
-| `llm.max_requests_per_minute` | global per-minute cap across all remote decide calls and retros |
+| `llm.max_requests_per_minute` | global per-minute cap, shared by in-game decisions, the retro and the proposer |
 
 Keys come from the agent's environment: `ANTHROPIC_API_KEY`,
 `DECISION_OPENAI_API_KEY`, `JEV_API_KEY`. A backend without its key is
