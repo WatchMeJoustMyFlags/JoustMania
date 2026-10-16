@@ -106,10 +106,9 @@ func TestRemote_SameCycleFallbackObservableWhenRulesQuiet(t *testing.T) {
 	}
 }
 
-// UC: UC-040 A3
-//
 // The decided-cycle fallback span (rules emitted a decision) is unchanged and not
 // throttled: every decided cycle still carries its own agent.decide span.
+// UC: UC-040 A3
 func TestRemote_SameCycleFallbackDecidedCycleUnthrottled(t *testing.T) {
 	h, reader, _ := quietFallbackHarness(t, nil)
 	for i := 0; i < 2; i++ {
@@ -127,10 +126,9 @@ func TestRemote_SameCycleFallbackDecidedCycleUnthrottled(t *testing.T) {
 	}
 }
 
-// UC: UC-040 main
-//
 // The default rules path is untouched: a quiet rules cycle emits no span, no
 // gated metric and no fallback warning.
+// UC: UC-040 main
 func TestRules_QuietCycleStaysSpanFree(t *testing.T) {
 	h, reader, logs := quietFallbackHarness(t, nil)
 	h.flags.mutate(func(s *flags.Snapshot) { s.Decision.Backend = flags.DecisionBackendRules })
