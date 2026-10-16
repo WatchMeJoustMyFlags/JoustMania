@@ -336,7 +336,10 @@ def test_known_gaps_are_still_gaps(python_metrics, produced, consumer_queries, d
 # --------------------------------------------------------------------------- #
 # (c) promtool check rules
 # --------------------------------------------------------------------------- #
-PROMETHEUS_IMAGE = "prom/prometheus:v3.12.0"  # same tag as docker-compose.yml
+def _prometheus_image() -> str:
+    """The Prometheus image docker-compose.yml runs, so promtool matches the stack."""
+    compose = ti.yaml.safe_load((ti.REPO_ROOT / "docker-compose.yml").read_text())
+    return compose["services"]["prometheus"]["image"]
 
 
 def _docker_available() -> bool:
@@ -359,7 +362,7 @@ def run_promtool(*args: str) -> subprocess.CompletedProcess:
             "promtool",
             "-v",
             f"{rules_dir}:/rules:ro",
-            PROMETHEUS_IMAGE,
+            _prometheus_image(),
             *args,
         ],
         capture_output=True,
