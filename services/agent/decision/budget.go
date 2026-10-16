@@ -29,19 +29,19 @@ import (
 // intervention, the cost of grant_shield and adjust_player_sensitivity.
 var protectiveReserve = interventionCost(InterventionGrantShield)
 
-// budgetRefuses is step 3 of the permission chain: it reports whether the
-// weighted per-game budget refuses d (charging cost when it admits). state
-// carries the cycle's hold (BR-014): once a decision that could fit an empty
-// window is refused, every lower-ranked decision of the same cycle is refused
-// without asking the limiter.
-func (l *Loop) budgetRefuses(snapshot flags.Snapshot, d Decision, now time.Time, cost float64, state *LayerState) bool {
+// admitOrHold is step 3 of the permission chain. It CHARGES the budget when it
+// admits d (returning true) and, when it refuses, may SET the cycle's hold on
+// state (BR-014): once a decision that could fit an empty window is refused,
+// every lower-ranked decision of the same cycle is refused without asking the
+// limiter. It is not a pure check.
+func (l *Loop) admitOrHold(snapshot flags.Snapshot, d Decision, now time.Time, cost float64, state *LayerState) bool {
 	if state != nil && state.budgetHeld {
-		return true
+		return false
 	}
 	budget := float64(snapshot.Policy.MaxInterventionsPerMinute)
-	reserve := nudgeReserve(d, snapshot.Objectives)
+	reserve := nudgeReserve(d, snapshot)
 	if l.limiter.admit(now, cost, budget, reserve) {
-		return false
+		return true
 	}
 	// A nudge refused for the reserve does not hold the cycle: a lower-ranked
 	// protective intervention may still use the reserve. A decision costing more
@@ -49,25 +49,40 @@ func (l *Loop) budgetRefuses(snapshot flags.Snapshot, d Decision, now time.Time,
 	if state != nil && reserve == 0 && cost <= budget {
 		state.budgetHeld = true
 	}
-	return true
+	return false
+}
+
+// protectiveInterventions are the medium-cost interventions the nudge reserve
+// keeps room for (BR-015).
+var protectiveInterventions = []string{
+	InterventionGrantShield,
+	InterventionPartialShield,
+	InterventionAdjustPlayerSensitivity,
+	InterventionSetPlayerHandicap,
 }
 
 // nudgeReserve is the budget d must leave free (BR-015): protectiveReserve for a
 // send_controller_effect, unless chaos is the strictly dominant objective in the
-// decision's weights (else the objectives flag, else the engine defaults); 0 for
-// every other intervention.
-func nudgeReserve(d Decision, flagObjectives map[string]float64) float64 {
+// decision's weights (else the objectives flag, else the engine defaults) or the
+// allow-list permits no protective intervention (then nothing could use the
+// reserve, e.g. the shipped `ambient`); 0 for every other intervention.
+func nudgeReserve(d Decision, snapshot flags.Snapshot) float64 {
 	if d.Intervention != InterventionSendControllerEffect {
 		return 0
 	}
 	weights := d.Objectives
 	if len(weights) == 0 {
-		weights = flagObjectives
+		weights = snapshot.Objectives
 	}
 	if objectiveDominant(normalizedWeights(weights), ObjectiveChaos) {
 		return 0
 	}
-	return protectiveReserve
+	for _, p := range protectiveInterventions {
+		if snapshot.Permits(p) {
+			return protectiveReserve
+		}
+	}
+	return 0
 }
 
 // objectiveDominant reports whether name is the strict argmax of weights. A tie

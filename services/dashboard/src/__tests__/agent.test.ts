@@ -13,7 +13,7 @@
  *     path returning nulls
  */
 import { describe, it, expect } from "vitest";
-import { aggregateAgentLogs, parseAppliedCounts } from "../agent.js";
+import { aggregateAgentLogs, parseAppliedCounts, parseBlockedCounts } from "../agent.js";
 import type { VmQueryResponse } from "../agent.js";
 
 /** Build a synthetic slog TextHandler line from key→value pairs. */
@@ -186,5 +186,48 @@ describe("parseAppliedCounts", () => {
     };
     // The one ok series had a non-finite value, so ok stays null.
     expect(parseAppliedCounts(body)).toEqual({ appliedOk: null, appliedError: null });
+  });
+});
+
+describe("UC-040 A21 parseBlockedCounts (blocked tallies from agent_decisions_total)", () => {
+  const vm = (series: [Record<string, string>, string][]): VmQueryResponse => ({
+    status: "success",
+    data: {
+      resultType: "vector",
+      result: series.map(([metric, v]) => ({ metric, value: [1700, v] as [number, string] })),
+    },
+  });
+
+  it("counts repeated rate_limit refusals the Loki lines no longer carry", () => {
+    const out = parseBlockedCounts(vm([
+      [{ action: "grant_shield", block_reason: "rate_limit" }, "48.6"],
+      [{ action: "send_controller_effect", block_reason: "rate_limit" }, "12"],
+      [{ action: "end_game", block_reason: "not_allowed" }, "1"],
+    ]));
+    expect(out).toEqual({
+      blockedByAction: [
+        { action: "grant_shield", blocked: 49 },
+        { action: "send_controller_effect", blocked: 12 },
+        { action: "end_game", blocked: 1 },
+      ],
+      blockedByReason: [
+        { reason: "rate_limit", count: 61 },
+        { reason: "not_allowed", count: 1 },
+      ],
+      totalBlocked: 62,
+    });
+  });
+
+  it("drops zero and non-finite series", () => {
+    const out = parseBlockedCounts(vm([
+      [{ action: "grant_shield", block_reason: "rate_limit" }, "0.2"],
+      [{ action: "play_audio_cue", block_reason: "rate_limit" }, "NaN"],
+    ]));
+    expect(out).toEqual({ blockedByAction: [], blockedByReason: [], totalBlocked: 0 });
+  });
+
+  it("returns null without samples so the Loki fold is kept", () => {
+    expect(parseBlockedCounts(vm([]))).toBeNull();
+    expect(parseBlockedCounts({ status: "error" })).toBeNull();
   });
 });

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
 )
 
@@ -76,15 +77,18 @@ func equalStrings(a, b []string) bool {
 
 // UC: UC-040 A20 BR-014
 func TestScarceBudgetGoesToTheTopDecision(t *testing.T) {
-	t.Run("UC-040/A20 a cheaper lower-ranked nudge does not take the half slot the top shield waits for", func(t *testing.T) {
-		l, sink, clock, _ := budgetLoop(t, 2, budgetShield("WEAK"), budgetNudge("S"))
+	t.Run("UC-040/A20 a cheaper lower-ranked decision does not take the half slot the top shield waits for", func(t *testing.T) {
+		// play_audio_cue costs 0.5 and has no reserve (BR-015 applies to nudges
+		// only), so only the rank-order hold (BR-014) refuses it here.
+		cue := Decision{Intervention: InterventionPlayAudioCue, ObjectiveServed: ObjectiveEndurance}
+		l, sink, clock, _ := budgetLoop(t, 2, budgetShield("WEAK"), cue)
 		// 1.5 of 2 already spent 30 s ago: 0.5 free, the shield (1.0) does not fit.
 		l.limiter.allow(clock.Add(-30*time.Second), 1.5, 2)
 
 		st := l.OnEvaluate(context.Background(), budgetCtx(), testTrigger())
-		want := []string{"grant_shield/WEAK:rate_limit", "send_controller_effect/S:rate_limit"}
+		want := []string{"grant_shield/WEAK:rate_limit", "play_audio_cue/:rate_limit"}
 		if got := outcomeSummary(st); !equalStrings(got, want) {
-			t.Fatalf("outcomes = %v, want %v (the nudge must not spend the budget ahead of the shield)", got, want)
+			t.Fatalf("outcomes = %v, want %v (the cue must not spend the budget ahead of the shield)", got, want)
 		}
 		if n := len(sink.decisions()); n != 0 {
 			t.Fatalf("applied %d decisions, want none", n)
@@ -182,23 +186,45 @@ func TestShieldBeatsStatueNudge(t *testing.T) {
 		}
 	})
 
-	t.Run("UC-040/A20 nudgeReserve follows the weights", func(t *testing.T) {
+	t.Run("UC-040/A20 nudgeReserve follows the weights and the allow-list", func(t *testing.T) {
+		standard := flags.Snapshot{InterventionsAllowed: []string{
+			InterventionPlayAudioCue, InterventionSendControllerEffect, InterventionGrantShield, InterventionAdjustPlayerSensitivity,
+		}}
+		chaosFlag := standard
+		chaosFlag.Objectives = map[string]float64{ObjectiveChaos: 1}
+		ambient := flags.Snapshot{InterventionsAllowed: []string{
+			InterventionPlayAudioCue, InterventionSendControllerEffect, InterventionAdjustVolume,
+		}}
+		handicapOnly := flags.Snapshot{InterventionsAllowed: []string{InterventionSendControllerEffect, InterventionSetPlayerHandicap}}
+		bare := Decision{Intervention: InterventionSendControllerEffect}
 		cases := []struct {
 			name string
 			d    Decision
-			flag map[string]float64
+			snap flags.Snapshot
 			want float64
 		}{
-			{"shield never reserves", budgetShield("W"), nil, 0},
-			{"nudge under balanced_focused", budgetNudge("S"), nil, protectiveReserve},
-			{"nudge, flag weights when the decision has none", Decision{Intervention: InterventionSendControllerEffect}, map[string]float64{ObjectiveChaos: 1}, 0},
-			{"nudge, engine default weights", Decision{Intervention: InterventionSendControllerEffect}, nil, protectiveReserve},
-			{"nudge, chaos tie is not dominance", Decision{Intervention: InterventionSendControllerEffect, Objectives: map[string]float64{ObjectiveChaos: 0.5, ObjectiveBalanced: 0.5}}, nil, protectiveReserve},
+			{"shield never reserves", budgetShield("W"), standard, 0},
+			{"nudge under balanced_focused", budgetNudge("S"), standard, protectiveReserve},
+			{"nudge, flag weights when the decision has none", bare, chaosFlag, 0},
+			{"nudge, engine default weights", bare, standard, protectiveReserve},
+			{"nudge, chaos tie is not dominance", Decision{Intervention: InterventionSendControllerEffect, Objectives: map[string]float64{ObjectiveChaos: 0.5, ObjectiveBalanced: 0.5}}, standard, protectiveReserve},
+			{"nudge, nothing protective allowed (ambient)", budgetNudge("S"), ambient, 0},
+			{"nudge, a handicap is protective too", budgetNudge("S"), handicapOnly, protectiveReserve},
 		}
 		for _, tc := range cases {
-			if got := nudgeReserve(tc.d, tc.flag); got != tc.want {
+			if got := nudgeReserve(tc.d, tc.snap); got != tc.want {
 				t.Errorf("%s: nudgeReserve = %v, want %v", tc.name, got, tc.want)
 			}
+		}
+	})
+
+	t.Run("UC-040/A20 ambient allow-list: nudges use the whole budget", func(t *testing.T) {
+		l, _, _, _ := budgetLoop(t, 2, budgetNudge("S1"), budgetNudge("S2"), budgetNudge("S3"), budgetNudge("S4"))
+		fl := l.Flags.(*settableFlags)
+		fl.snap.InterventionsAllowed = []string{InterventionPlayAudioCue, InterventionSendControllerEffect, InterventionAdjustVolume}
+		st := l.OnEvaluate(context.Background(), budgetCtx(), testTrigger())
+		if st.Dispatched != 4 {
+			t.Fatalf("outcomes = %v, want all four nudges dispatched (no shield could use a reserve)", outcomeSummary(st))
 		}
 	})
 

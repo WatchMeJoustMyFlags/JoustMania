@@ -281,11 +281,14 @@ Budget-aware admission (#1326, UC-040 A20/A21, BR-014/BR-015; `decision/budget.g
   `rate_limit` without charge. A decision costing more than the whole budget never fits and does not end
   admission. When the budget covers every decision, admission is unchanged.
 - `send_controller_effect` is admitted only if one medium cost (1.0) stays free after it, unless `chaos` is
-  the strictly dominant objective weight (protective reserve for `grant_shield` / `adjust_player_sensitivity`).
+  the strictly dominant objective weight or the allow-list permits no protective intervention
+  (`grant_shield`, `partial_shield`, `adjust_player_sensitivity`, `set_player_handicap`). `play_audio_cue`
+  and `adjust_volume` (also 0.5) keep no reserve (accepted, UC-040 BR-015).
 - A `rate_limit` refusal is emitted in full (`agent.decision` + `agent.action`, warning, timeline) once per
   budget state per (intervention, target); the state changes when an intervention is admitted or one leaves
   the 60 s window. Repeats in between only count in `agent_decisions_total` and log
-  `agent.decision_rate_limit_repeat` at debug level. `agent.decide` still reports `decide.blocked`.
+  `agent.decision_rate_limit_repeat` at debug level. `agent.decide` still reports `decide.blocked`. The
+  dashboard's blocked tallies read `agent_decisions_total` for that reason (`services/dashboard/src/agent.ts`).
 
 Blocked decisions are recorded on the `agent.decision` span
 (`decision.blocked=true`, `decision.block_reason`) and never applied. The `agent.decide` span of the same

@@ -895,7 +895,8 @@ func (l *Loop) evaluatePermission(snapshot flags.Snapshot, c gamecontext.GameCon
 	// limiter charges the cost only when it admits, so blocked decisions above do
 	// not draw down the budget. Budget-aware (UC-040 BR-014/BR-015, budget.go):
 	// rank order is kept within a cycle and nudges leave a protective reserve.
-	if l.budgetRefuses(snapshot, d, now, cost, state) {
+	// admitOrHold charges the budget on admit and may set the cycle's hold.
+	if !l.admitOrHold(snapshot, d, now, cost, state) {
 		return ReasonRateLimit, true
 	}
 	return "", false
