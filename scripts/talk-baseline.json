@@ -4,6 +4,7 @@
     "enabled": "on",
     "interventions_enabled": "on",
     "interventions_allowed": "standard",
+    "policy.max_interventions_per_minute": "aggressive",
     "rollout_enabled": "off",
     "experiments_enabled": "off",
     "decision.backend": "rules",

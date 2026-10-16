@@ -286,16 +286,7 @@ func accelerateCandidates(c gamecontext.GameContext, fit FitnessThresholds, weig
 // accelerateDominant reports whether accelerate is the strict argmax of the
 // weights. A tie is NOT dominance — a tie must never silently end a game.
 func accelerateDominant(weights map[string]float64) bool {
-	acc, ok := weights[ObjectiveAccelerate]
-	if !ok {
-		return false
-	}
-	for name, w := range weights {
-		if name != ObjectiveAccelerate && w >= acc {
-			return false
-		}
-	}
-	return true
+	return objectiveDominant(weights, ObjectiveAccelerate)
 }
 
 // chaosCandidates implements R8 (rumble a "statue" player whose movement

@@ -576,6 +576,14 @@ are intentionally unreached by `rules_decide`, not dead code.
   (the engine could not see permissions). The engine now only caps emission at
   2 decisions per evaluation; `cd.cost` survives as a deterministic
   cheaper-first tie-break.
+  **Scarce budget (#1326, UC-040 BR-014/BR-015, `decision/budget.go`):** the
+  loop admits a cycle's decisions in rank order and stops at the first one
+  that does not fit (lower-ranked ones are blocked `rate_limit` without
+  charge, so a 0.5 nudge cannot take the half slot a 1.0 shield is waiting
+  for); `send_controller_effect` must leave 1.0 free for a protective
+  intervention unless `chaos` strictly dominates the weights; and a refusal
+  that repeats while the budget is unchanged emits no new `agent.decision`
+  span (counter + debug log only). The ranking itself is unchanged.
 
 **Configuration seam (#726/#727/#731):** objectives, policy, and fitness
 thresholds come from the `ObjectivesSource` / `PolicySource` / `FitnessSource`

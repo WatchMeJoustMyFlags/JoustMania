@@ -119,6 +119,7 @@ flags = {
     "decision.openai.model": f({"unset": "", "vendor": "m"}, "unset"),
     "decision.openai.base_url": f({"default": "https://api.openai.com/v1"}, "default"),
     "llm.max_requests_per_minute": f({"default": 6, "stage": 30}, "stage"),
+    "policy.max_interventions_per_minute": f({"conservative": 1, "default": 2, "aggressive": 4}, "aggressive"),
 }
 for key, variant in overrides.items():
     flags[key]["defaultVariant"] = variant
@@ -163,13 +164,14 @@ check "audio cue resolves in the audio container" "PASS  audio cue agent_cue: Jo
 if has "${SECRET}"; then not_ok "key value never printed"; else ok "key value never printed"; fi
 
 # --- drift from the stage baseline -----------------------------------------
-fixture enabled=off decision.act_confidence_threshold=strict decision.jev.act_confidence_threshold=inherit
+fixture enabled=off decision.act_confidence_threshold=strict decision.jev.act_confidence_threshold=inherit policy.max_interventions_per_minute=default
 before="$(cat "${AGENT_FLAG_FILE}")"
 run_preflight
 if [[ "${RC}" -eq 1 ]]; then ok "drift exits 1"; else not_ok "drift exits 1 (rc=${RC})"; fi
 check "kill switch off fails" "FAIL  enabled = off (false), stage baseline is on"
 check "strict threshold fails" "FAIL  decision.act_confidence_threshold = strict (0.95), stage baseline is default"
 check "jev threshold inherit fails" "FAIL  decision.jev.act_confidence_threshold = inherit (-1.0), stage baseline is gate"
+check "shipped intervention budget fails (#1326)" "FAIL  policy.max_interventions_per_minute = default (2), stage baseline is aggressive"
 check "unset env falls back to the stage flag" "PASS  LLM budget: llm.max_requests_per_minute = stage (30/min"
 if [[ "$(cat "${AGENT_FLAG_FILE}")" == "${before}" ]]; then ok "flag file untouched"; else not_ok "flag file untouched"; fi
 

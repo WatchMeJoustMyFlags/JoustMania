@@ -12,7 +12,8 @@
  * raw slog lines client-side. This module reuses that exact path for the decision
  * feed and the intervention "blocked" counts, and adds ONE more already-routed
  * datasource — VictoriaMetrics at `/victoria-metrics/...` (envoy.yaml) — for the
- * applied-intervention count, which is only emitted as a metric (see below).
+ * applied-intervention count, which is only emitted as a metric (see below), and
+ * for the exact blocked tallies (BLOCKED_QUERY; the Loki fold is their fallback).
  *
  * LOKI LABEL CONTRACT — `service_name="agent"`
  * --------------------------------------------
@@ -86,6 +87,18 @@ const MAX_FEED_ROWS = 80;
  * unreachable the overlay still renders the Loki-derived blocked counts.
  */
 const APPLIED_QUERY = 'sum(agent_intervention_writes_total) by (result)';
+
+/**
+ * VictoriaMetrics query for the blocked decisions of the feed window, by action
+ * and reason (UC-040 A21, #1326). The agent logs a `rate_limit` refusal that
+ * repeats while its budget is unchanged only at debug level (no
+ * agent.decision_blocked line), so the Loki fold undercounts; the counter
+ * `agent_decisions_total{blocked="true"}` counts every refusal. The overlay's
+ * blocked tallies come from here and fall back to the Loki fold only when VM is
+ * unreachable or has no samples.
+ */
+const BLOCKED_QUERY =
+  `sum by (action, block_reason) (increase(agent_decisions_total{blocked="true"}[${LOOKBACK_SECONDS}s]))`;
 
 /** One row in the rolling decision feed. */
 export interface DecisionFeedRow {
@@ -316,6 +329,49 @@ export function parseAppliedCounts(body: VmQueryResponse): {
   return { appliedOk: ok, appliedError: err };
 }
 
+/** The blocked tallies of the intervention overlay. */
+type BlockedTallies = Pick<InterventionOverlay, "blockedByAction" | "blockedByReason" | "totalBlocked">;
+
+/**
+ * Parse the BLOCKED_QUERY response into the overlay's blocked tallies. `increase`
+ * extrapolates, so each series is rounded to a whole count. Returns null when the
+ * response is empty or malformed, so the caller keeps the Loki fold.
+ */
+export function parseBlockedCounts(body: VmQueryResponse): BlockedTallies | null {
+  const results = body.data?.result;
+  if (!results || results.length === 0) return null;
+  const byAction = new Map<string, number>();
+  const byReason = new Map<string, number>();
+  let total = 0;
+  for (const series of results) {
+    const n = Math.round(Number.parseFloat(series.value?.[1] ?? ""));
+    if (!Number.isFinite(n) || n <= 0) continue;
+    const action = series.metric["action"] ?? "";
+    const reason = series.metric["block_reason"] ?? "";
+    total += n;
+    if (action) byAction.set(action, (byAction.get(action) ?? 0) + n);
+    if (reason) byReason.set(reason, (byReason.get(reason) ?? 0) + n);
+  }
+  return {
+    blockedByAction: toSortedTallies(byAction),
+    blockedByReason: toSortedReasons(byReason),
+    totalBlocked: total,
+  };
+}
+
+/** Best-effort VM read of the blocked tallies; null (never throws) on any failure. */
+async function fetchBlockedCounts(): Promise<BlockedTallies | null> {
+  try {
+    const params = new URLSearchParams({ query: BLOCKED_QUERY });
+    const url = `${BASE_URL}/victoria-metrics/api/v1/query?${params.toString()}`;
+    const response = await fetch(url, { headers: { Accept: "application/json" } });
+    if (!response.ok) return null;
+    return parseBlockedCounts((await response.json()) as VmQueryResponse);
+  } catch {
+    return null;
+  }
+}
+
 /** Query Loki for the agent's recent decision/flag log lines. */
 async function fetchAgentLogs(): Promise<{ line: string; tsMs: number }[]> {
   const endNs = BigInt(Date.now()) * 1_000_000n;
@@ -376,9 +432,10 @@ async function fetchAppliedCounts(): Promise<{
  * unreachable; the VictoriaMetrics applied-count is best-effort and never throws.
  */
 export async function fetchAgentView(): Promise<AgentView> {
-  const [lines, applied] = await Promise.all([
+  const [lines, applied, blocked] = await Promise.all([
     fetchAgentLogs(),
     fetchAppliedCounts(),
+    fetchBlockedCounts(),
   ]);
   const folded = aggregateAgentLogs(lines);
   return {
@@ -386,6 +443,8 @@ export async function fetchAgentView(): Promise<AgentView> {
     flags: folded.flags,
     overlay: {
       ...folded.overlay,
+      // Exact counter tallies when VM answers (UC-040 A21); else the Loki fold.
+      ...(blocked ?? {}),
       appliedOk: applied.appliedOk,
       appliedError: applied.appliedError,
     },

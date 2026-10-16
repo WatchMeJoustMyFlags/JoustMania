@@ -496,7 +496,7 @@ bar), `decision.act_confidence_threshold=default` (0.8, claude/openai),
 Jev's `gate`), capture `on`, `min_interval_ms`, claude model `haiku`, both
 timeouts `default`, `llm.eligible_game_kinds=real_only`, `enabled=on`,
 `interventions_enabled=on`, **`interventions_allowed=standard`**,
-`experiments_enabled=off`, `rollout_enabled=off`, plus `decision.jev.base_url`,
+**`policy.max_interventions_per_minute=aggressive`** (4), `experiments_enabled=off`, `rollout_enabled=off`, plus `decision.jev.base_url`,
 `decision.openai.base_url` / `.model` / `.reasoning_effort` back to their
 shipped variants and `llm.max_requests_per_minute=stage`. It sets every flag in
 the `interventions.json` next to `$AF` back to its neutral variant and drops
@@ -512,8 +512,19 @@ barely audible); `standard` adds `grant_shield` and `adjust_music_tempo`, which
 the audience sees on the dashboard tile and hears in the music (#1301). The
 stage baseline lives in the helper; the shipped flag files keep `ambient`.
 
+**Why `aggressive` (4) and not the shipped 2 per minute (#1326):** the
+intervention budget is per game and weighted (nudge 0.5, shield / tempo /
+handicap 1). At 2 the beats run back to back about a minute apart and each one
+wants a visible act (a shield or a tempo change). Nudges may spend 1.0 of the
+2 (the reserve keeps the other 1.0 for a shield or handicap, UC-040 BR-015),
+so only one visible act a minute is guaranteed and a beat often lands on a
+full budget: its act row shows `rate_limit`. At 4 there is room for a visible
+act per beat plus the ambient nudges, and the coordinator backstop (60 per
+minute) stays far away. The shipped default stays 2.
+
 `talk-preflight.sh` checks exactly this baseline (`enabled=on`,
-`interventions_enabled=on`, `interventions_allowed=standard`, FAIL naming
+`interventions_enabled=on`, `interventions_allowed=standard`,
+`policy.max_interventions_per_minute=aggressive`, FAIL naming
 an interrupted permissions beat for `none` / `probe`,
 `rollout_enabled=off`, `experiments_enabled=off`, `decision.backend=rules`,
 both thresholds (`default` and Jev's `gate`), capture `on`, `min_interval_ms`

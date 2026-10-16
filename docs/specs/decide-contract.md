@@ -274,6 +274,22 @@ Order on landing (`decision/decide_hook.go:Loop.runDecideRemote`, `decideRemoteA
 2. `policy.battery_threshold` (player-targeted only; unknown battery does not block) → `battery_threshold`
 3. weighted per-game rate limit `policy.max_interventions_per_minute` → `rate_limit` (budget charged only on admit)
 
+Budget-aware admission (#1326, UC-040 A20/A21, BR-014/BR-015; `decision/budget.go`, `decision/ratelimit.go`):
+
+- A cycle's decisions reach the rate limit in rank order. The first decision that passes steps 1-2 but does
+  not fit the remaining budget ends admission for the cycle: every lower-ranked decision is blocked
+  `rate_limit` without charge. A decision costing more than the whole budget never fits and does not end
+  admission. When the budget covers every decision, admission is unchanged.
+- `send_controller_effect` is admitted only if one medium cost (1.0) stays free after it, unless `chaos` is
+  the strictly dominant objective weight or the allow-list permits no protective intervention
+  (`grant_shield`, `partial_shield`, `adjust_player_sensitivity`, `set_player_handicap`). `play_audio_cue`
+  and `adjust_volume` (also 0.5) keep no reserve (accepted, UC-040 BR-015).
+- A `rate_limit` refusal is emitted in full (`agent.decision` + `agent.action`, warning, timeline) once per
+  budget state per (intervention, target); the state changes when an intervention is admitted or one leaves
+  the 60 s window. Repeats in between only count in `agent_decisions_total` and log
+  `agent.decision_rate_limit_repeat` at debug level. `agent.decide` still reports `decide.blocked`. The
+  dashboard's blocked tallies read `agent_decisions_total` for that reason (`services/dashboard/src/agent.ts`).
+
 Blocked decisions are recorded on the `agent.decision` span
 (`decision.blocked=true`, `decision.block_reason`) and never applied. The `agent.decide` span of the same
 decision repeats the verdict as `decide.blocked` / `decide.block_reason` (§6, #1295).
@@ -411,7 +427,7 @@ the kill switch `enabled` and the shared LLM budget (NFR-011).
 | `llm.max_requests_per_minute` | 6 (conservative 3 / aggressive 12 / `stage` 30, PR #1257) | **global**, shared by in-game decisions, the retro and the proposer (PR #1284) | `flags/flags.go:43`; `decision/llmbudget.go:22-67` |
 | `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` (env) | unset | read once at startup; a positive value replaces the flag | `main.go:335-354` |
 | `llm.eligible_game_kinds` | `real` | which game kinds may call a remote backend; read by in-game decisions, the retro and the proposer | `flags/flags.go:42,904-922` |
-| `policy.max_interventions_per_minute` | 2, weighted (soft 0.5, medium 1, hard 2, unknown 1) | per game | `decision/ratelimit.go:106-140` |
+| `policy.max_interventions_per_minute` | 2, weighted (soft 0.5, medium 1, hard 2, unknown 1); admitted in rank order with a 1.0 reserve against nudges (§4.5, #1326); talk stage `aggressive` 4 | per game | `decision/ratelimit.go`, `decision/budget.go` |
 | `policy.coordinator_backstop_per_minute` | 60 | global, enforced in the game coordinator | `services/game_coordinator/interventions.py:100-107,1403-1425` |
 | Rules engine cadence | evaluate ≤ 1/s, ≤ 2 decisions per evaluation | per game | `decision/rules.go:15-26` |
 | Shared HTTP client backstop | 30 s | process | `decide_backends.go:56-62` |
