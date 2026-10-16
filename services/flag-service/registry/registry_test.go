@@ -1,0 +1,304 @@
+package registry
+
+import (
+	"encoding/json"
+	"net/http"
+	"os"
+	"path/filepath"
+	"reflect"
+	"regexp"
+	"runtime"
+	"sort"
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/joustmania/flag-service/baseline"
+	"github.com/joustmania/flag-service/fserr"
+)
+
+func root(t *testing.T) string {
+	t.Helper()
+	_, file, _, _ := runtime.Caller(0)
+	return filepath.Join(filepath.Dir(file), "..")
+}
+
+func loadReal(t *testing.T, flagDir string) *Registry {
+	t.Helper()
+	b, err := baseline.Load(filepath.Join(root(t), "..", "flagd", flagDir), baseline.DefaultFiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := LoadFile(filepath.Join(root(t), "registry.yaml"), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+// UC: UC-053 BR-001
+func TestRegistryLoadsAgainstBothBaselines(t *testing.T) {
+	for _, dir := range []string{"", "ci"} {
+		t.Run("UC-053/BR-001 registry.yaml validates against services/flagd/"+dir, func(t *testing.T) {
+			if n := len(loadReal(t, dir).Policies()); n < 50 {
+				t.Fatalf("only %d policies", n)
+			}
+		})
+	}
+}
+
+// flags.md §13 row, parsed.
+type mdRow struct {
+	set, key, kind, bounds string
+	scopes                 []string
+	persist                bool
+}
+
+var backticked = regexp.MustCompile("`([^`]+)`")
+
+// parseFlagsMD reads the §13 registry tables of docs/specs/flags.md.
+func parseFlagsMD(t *testing.T) []mdRow {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(root(t), "..", "..", "docs", "specs", "flags.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	start := strings.Index(text, "## 13. Mutable-flag registry")
+	if start < 0 {
+		t.Fatal("flags.md has no §13")
+	}
+	text = text[start:]
+	if end := strings.Index(text[3:], "\n## "); end > 0 {
+		text = text[:end+3]
+	}
+	var rows []mdRow
+	section := ""
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(line, "### 13.") {
+			section = ""
+			// A heading naming one set ("### 13.2 `agent`") sets it; a heading
+			// naming several ("### 13.4 `user`, `controller`, `rollout`") means
+			// the table carries a Set column.
+			if m := backticked.FindAllStringSubmatch(line, -1); len(m) == 1 {
+				section = m[0][1]
+			}
+			continue
+		}
+		if !strings.HasPrefix(line, "| ") || strings.HasPrefix(line, "|---") || strings.HasPrefix(line, "| Key") || strings.HasPrefix(line, "| Set") {
+			continue
+		}
+		cells := strings.Split(strings.Trim(line, "|"), "|")
+		for i := range cells {
+			cells[i] = strings.TrimSpace(cells[i])
+		}
+		set := section
+		if set == "" { // 13.4 / 13.5 tables carry a Set column
+			set, cells = cells[0], cells[1:]
+		}
+		if len(cells) < 5 {
+			continue
+		}
+		keys := backticked.FindAllStringSubmatch(cells[0], -1)
+		if len(keys) == 0 {
+			continue // "every flag the experiment catalog allows", "the flag of a promoted experiment"
+		}
+		scopes := strings.Split(cells[2], " or ")
+		for _, k := range keys {
+			rows = append(rows, mdRow{
+				set: set, key: k[1], kind: cells[1], scopes: scopes, bounds: cells[3],
+				persist: strings.HasPrefix(cells[4], "**yes**"),
+			})
+		}
+	}
+	return rows
+}
+
+var rangeRe = regexp.MustCompile(`^(int )?(-?[0-9.]+) to (-?[0-9.]+)$`)
+
+func checkBounds(t *testing.T, row mdRow, p *Policy) {
+	t.Helper()
+	b := p.Bounds
+	text := row.bounds
+	switch {
+	case strings.HasPrefix(text, "declared variants"):
+		if len(b.Variants) > 0 || b.Range != nil || b.Pattern != nil || b.FreeString || b.Payload != nil {
+			t.Errorf("%s: flags.md says declared variants, registry %+v", row.key, b)
+		}
+		if strings.Contains(text, "fraction 1 to 100") && !reflect.DeepEqual(b.Fraction, []int{1, 100}) {
+			t.Errorf("%s: fraction bounds %v", row.key, b.Fraction)
+		}
+	case text == "free string":
+		if !b.FreeString {
+			t.Errorf("%s: flags.md says free string", row.key)
+		}
+	case strings.HasPrefix(text, "payload"):
+		if b.Payload == nil {
+			t.Errorf("%s: flags.md gives a payload schema", row.key)
+		}
+	case strings.Contains(text, "<"):
+		if b.Pattern == nil {
+			t.Errorf("%s: flags.md gives a format (%s), registry has no pattern", row.key, text)
+		}
+	case rangeRe.MatchString(text):
+		m := rangeRe.FindStringSubmatch(text)
+		lo, _ := strconv.ParseFloat(m[2], 64)
+		hi, _ := strconv.ParseFloat(m[3], 64)
+		if !reflect.DeepEqual(b.Range, []float64{lo, hi}) || b.Integer != (m[1] != "") {
+			t.Errorf("%s: flags.md %q, registry range %v integer %v", row.key, text, b.Range, b.Integer)
+		}
+	default:
+		var want []string
+		for _, m := range backticked.FindAllStringSubmatch(text, -1) {
+			want = append(want, m[1])
+		}
+		got := append([]string(nil), b.Variants...)
+		sort.Strings(want)
+		sort.Strings(got)
+		if len(want) == 0 || !reflect.DeepEqual(want, got) {
+			t.Errorf("%s: flags.md bounds %q, registry variants %v", row.key, text, b.Variants)
+		}
+	}
+}
+
+// UC: UC-053 BR-001
+func TestRegistryMatchesFlagsMD(t *testing.T) {
+	t.Run("UC-053/BR-001 registry.yaml and flags.md §13 declare the same flags, kinds, scopes, bounds and persist", func(t *testing.T) {
+		reg := loadReal(t, "ci")
+		rows := parseFlagsMD(t)
+		if len(rows) < 40 {
+			t.Fatalf("parsed only %d rows from flags.md §13", len(rows))
+		}
+		seen := map[string]bool{}
+		for _, row := range rows {
+			p := reg.Get(row.set, row.key)
+			if p == nil {
+				t.Errorf("flags.md §13 lists %s/%s; registry.yaml has no row", row.set, row.key)
+				continue
+			}
+			seen[row.set+"/"+row.key] = true
+			if p.Kind != row.kind {
+				t.Errorf("%s: kind %s in registry, %s in flags.md", row.key, p.Kind, row.kind)
+			}
+			if !reflect.DeepEqual(p.Scopes, row.scopes) {
+				t.Errorf("%s: scopes %v in registry, %v in flags.md", row.key, p.Scopes, row.scopes)
+			}
+			if p.Persist != row.persist {
+				t.Errorf("%s: persist %v in registry, %v in flags.md", row.key, p.Persist, row.persist)
+			}
+			checkBounds(t, row, p)
+		}
+		for _, p := range reg.Policies() {
+			if !seen[p.Set+"/"+p.Key] {
+				t.Errorf("registry.yaml has %s/%s; flags.md §13 does not list it", p.Set, p.Key)
+			}
+		}
+	})
+}
+
+func testPolicy(bounds Bounds) (*Policy, *baseline.Flag) {
+	return &Policy{Set: "s", Key: "k", Kind: KindState, Scopes: []string{ScopeGame}, Bounds: bounds},
+		&baseline.Flag{Variants: map[string]json.RawMessage{"none": json.RawMessage("0"), "short": json.RawMessage("3"), "label": json.RawMessage(`"calm"`)}, DefaultVariant: "none"}
+}
+
+// UC: UC-053 A5
+func TestCheckValue(t *testing.T) {
+	cases := []struct {
+		name    string
+		bounds  Bounds
+		variant string
+		value   string
+		want    string // variant chosen, "" for a free value, "!reason" for a rejection
+	}{
+		{"UC-053/A5 declared variant", Bounds{}, "short", "", "short"},
+		{"UC-053/A5 undeclared variant", Bounds{}, "long", "", "!" + fserr.OutOfBounds},
+		{"UC-053/A5 variant outside the subset", Bounds{Variants: []string{"short"}}, "none", "", "!" + fserr.OutOfBounds},
+		{"UC-053/A5 value equal to a declared variant", Bounds{}, "", "3", "short"},
+		{"UC-053/A5 free value without a bound", Bounds{}, "", "4", "!" + fserr.OutOfBounds},
+		{"UC-053/A5 value in range", Bounds{Range: []float64{1, 10}}, "", "5.5", ""},
+		{"UC-053/A5 value below range", Bounds{Range: []float64{1, 10}}, "", "0.5", "!" + fserr.OutOfBounds},
+		{"UC-053/A5 integer range rejects a fraction", Bounds{Range: []float64{1, 10}, Integer: true}, "", "5.5", "!" + fserr.OutOfBounds},
+		{"UC-053/A5 integer range accepts an int", Bounds{Range: []float64{1, 10}, Integer: true}, "", "7", ""},
+		{"UC-053/A5 range rejects a string", Bounds{Range: []float64{1, 10}}, "", `"5"`, "!" + fserr.OutOfBounds},
+		{"UC-053/A5 pattern match", Bounds{Pattern: [][]string{{"float 1.0 1.3", "float 1 30", "enum linear|ease"}}}, "", `"1.2:8:ease"`, ""},
+		{"UC-053/A5 pattern out of range segment", Bounds{Pattern: [][]string{{"float 1.0 1.3", "float 1 30", "enum linear|ease"}}}, "", `"1.5:8:ease"`, "!" + fserr.OutOfBounds},
+		{"UC-053/A5 pattern alternative", Bounds{Pattern: [][]string{{"enum warn|tighten"}, {"enum tighten", "float 1 10", "float 0.1 1.0"}}}, "", `"tighten:5:0.5"`, ""},
+		{"UC-053/A5 pattern wrong arity", Bounds{Pattern: [][]string{{"enum warn|tighten"}}}, "", `"warn:1"`, "!" + fserr.OutOfBounds},
+		{"UC-053/A5 free string", Bounds{FreeString: true}, "", `"http://fake:8080/v1"`, ""},
+		{"UC-053/A5 free string too long", Bounds{FreeString: true}, "", `"` + strings.Repeat("x", MaxFreeString+1) + `"`, "!" + fserr.OutOfBounds},
+		{"UC-053/A5 string value equal to a declared variant", Bounds{FreeString: true}, "", `"calm"`, "label"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p, f := testPolicy(c.bounds)
+			var value json.RawMessage
+			if c.value != "" {
+				value = json.RawMessage(c.value)
+			}
+			got, err := CheckValue(p, f, c.variant, value)
+			if strings.HasPrefix(c.want, "!") {
+				if err == nil || err.Reason != c.want[1:] || err.Status != http.StatusUnprocessableEntity {
+					t.Fatalf("want rejection %s, got %+v %v", c.want, got, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected rejection %v", err)
+			}
+			if got.Variant != c.want {
+				t.Fatalf("variant %q, want %q", got.Variant, c.want)
+			}
+		})
+	}
+}
+
+// UC: UC-053 A4
+func TestPayloadCheck(t *testing.T) {
+	inGame := func(s string) bool { return s == "MOCK0001" }
+	p := &Policy{Key: "controller_effect", Kind: KindEvent, Scopes: []string{ScopeGame},
+		Bounds: Bounds{Payload: map[string]string{"serial": "serial_or_empty", "effect": "enum rumble|pulse"}}}
+	cases := []struct {
+		name    string
+		payload map[string]any
+		reason  string
+	}{
+		{"UC-053/A4 valid targeted effect", map[string]any{"serial": "MOCK0001", "effect": "rumble"}, ""},
+		{"UC-053/A4 valid broadcast effect", map[string]any{"effect": "pulse"}, ""},
+		{"UC-053/A4 unknown field", map[string]any{"effect": "pulse", "extra": "x"}, fserr.OutOfBounds},
+		{"UC-053/A4 serial not in game", map[string]any{"serial": "MOCK0002", "effect": "pulse"}, fserr.SerialNotInGame},
+		{"UC-053/A4 effect not allowed", map[string]any{"effect": "explode"}, fserr.OutOfBounds},
+		{"UC-053/A4 non-string field", map[string]any{"effect": 3}, fserr.OutOfBounds},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := PayloadCheck(p, c.payload, inGame)
+			if (err == nil) != (c.reason == "") || (err != nil && err.Reason != c.reason) {
+				t.Fatalf("got %v, want %q", err, c.reason)
+			}
+		})
+	}
+}
+
+func TestParseRejectsBadRows(t *testing.T) {
+	b, err := baseline.Load(filepath.Join(root(t), "..", "flagd", "ci"), baseline.DefaultFiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := map[string]string{
+		"unknown flag":            `flags: [{set: agent, key: nope, kind: overlay, scope: [stack]}]`,
+		"wrong set":               `flags: [{set: game, key: enabled, kind: overlay, scope: [stack]}]`,
+		"unknown kind":            `flags: [{set: agent, key: enabled, kind: weird, scope: [stack]}]`,
+		"unknown scope":           `flags: [{set: agent, key: enabled, kind: overlay, scope: [world]}]`,
+		"persist on a game flag":  `flags: [{set: interventions, key: volume_override, kind: state, scope: [game], persist: true}]`,
+		"event without payload":   `flags: [{set: interventions, key: end_game, kind: event, scope: [game]}]`,
+		"undeclared variant":      `flags: [{set: agent, key: enabled, kind: overlay, scope: [stack], bounds: {variants: [maybe]}}]`,
+		"unknown field":           `flags: [{set: agent, key: enabled, kind: overlay, scope: [stack], owner: agent}]`,
+		"duplicate row":           `flags: [{set: agent, key: enabled, kind: overlay, scope: [stack]}, {set: agent, key: enabled, kind: overlay, scope: [stack]}]`,
+		"fraction without bounds": `flags: [{set: controller, key: bluetooth_backend, kind: overlay, scope: [fraction]}]`,
+	}
+	for name, doc := range bad {
+		if _, err := Parse([]byte(doc), b); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

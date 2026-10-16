@@ -304,7 +304,7 @@ they go on the write span and are never checked. Writers use a 500 ms deadline a
 | `GET /{flagSetId}/{flagName}` | one flag's effective state (same fields), plus the rendered flagd JSON | 200 |
 | `PUT /{flagSetId}/{flagName}` | set a value in a scope (state, level, grant, overlay, experiment arm, fraction) | 200 `WriteResult` |
 | `POST /{flagSetId}/{flagName}` | append one event to a game's event list (registry kind `event` only) | 200 `WriteResult` with `seq` |
-| `DELETE /{flagSetId}/{flagName}` | clear the value in the scope given by query parameters (`game_id`, `serial`, `experiment_id`, `arm`, `game_kind=real`); no scope = the stack overlay; a persisted value returns to the baseline and is removed from the state file | 204 |
+| `DELETE /{flagSetId}/{flagName}` | clear the value in the scope given by query parameters (`game_id`, `serial`, `experiment_id`, `arm`, `game_kind=real`, `fraction=true`); no scope = the in-memory stack overlay; `?persist=true` clears the persisted admin value instead (it returns to the baseline and leaves the state file). The persisted admin value is a layer under the in-memory overlay: clearing a stage or test overlay shows the host's setting again | 204 |
 | `DELETE /{flagSetId}?writer=stage` | clear every stack overlay of that writer label in the set (talk reset) | 204 |
 | `PUT /games/{gameId}` | register a game | 200 (`already_registered` on a repeat) |
 | `DELETE /games/{gameId}` | end a game: drop its scope and every value written for it | 204 |

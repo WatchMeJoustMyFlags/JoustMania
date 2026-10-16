@@ -1,0 +1,308 @@
+package api
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+
+	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+
+	"github.com/joustmania/flag-service/baseline"
+	"github.com/joustmania/flag-service/registry"
+	"github.com/joustmania/flag-service/state"
+	"github.com/joustmania/flag-service/syncserver"
+	"github.com/joustmania/flag-service/telemetry"
+)
+
+type env struct {
+	t      *testing.T
+	srv    *httptest.Server
+	st     *state.State
+	spans  *tracetest.SpanRecorder
+	reader *sdkmetric.ManualReader
+}
+
+func newEnv(t *testing.T, stream bool) *env {
+	t.Helper()
+	_, file, _, _ := runtime.Caller(0)
+	root := filepath.Join(filepath.Dir(file), "..")
+	base, err := baseline.Load(filepath.Join(root, "..", "flagd", "ci"), baseline.DefaultFiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err := registry.LoadFile(filepath.Join(root, "registry.yaml"), base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, _, err := state.New(base, reg, state.Options{Epoch: "e1", Served: base.Order, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stream {
+		sub, _ := st.Subscribe("")
+		t.Cleanup(sub.Close)
+	}
+	spans := tracetest.NewSpanRecorder()
+	reader := sdkmetric.NewManualReader()
+	metrics, err := telemetry.NewMetrics(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("t"), st.Stats)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &API{State: st, Metrics: metrics, Tracer: sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("t"), Links: &syncserver.Links{}}
+	srv := httptest.NewServer(a.Handler())
+	t.Cleanup(srv.Close)
+	return &env{t: t, srv: srv, st: st, spans: spans, reader: reader}
+}
+
+func (e *env) do(method, path string, body any) (int, map[string]any) {
+	e.t.Helper()
+	var rd io.Reader
+	if body != nil {
+		if s, ok := body.(string); ok {
+			rd = strings.NewReader(s)
+		} else {
+			raw, _ := json.Marshal(body)
+			rd = bytes.NewReader(raw)
+		}
+	}
+	req, _ := http.NewRequest(method, e.srv.URL+path, rd)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	out := map[string]any{}
+	raw, _ := io.ReadAll(resp.Body)
+	_ = json.Unmarshal(raw, &out)
+	return resp.StatusCode, out
+}
+
+func (e *env) writeSpan(flag string) map[attribute.Key]attribute.Value {
+	e.t.Helper()
+	for i := len(e.spans.Ended()) - 1; i >= 0; i-- {
+		s := e.spans.Ended()[i]
+		if s.Name() != telemetry.SpanWrite {
+			continue
+		}
+		attrs := map[attribute.Key]attribute.Value{}
+		for _, kv := range s.Attributes() {
+			attrs[kv.Key] = kv.Value
+		}
+		if attrs["feature_flag.key"].AsString() == flag {
+			return attrs
+		}
+	}
+	e.t.Fatalf("no %s span for %s", telemetry.SpanWrite, flag)
+	return nil
+}
+
+func (e *env) writes(result, reason string) int64 {
+	e.t.Helper()
+	var rm metricdata.ResourceMetrics
+	_ = e.reader.Collect(context.Background(), &rm)
+	var n int64
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "flagservice_writes_total" {
+				continue
+			}
+			for _, dp := range m.Data.(metricdata.Sum[int64]).DataPoints {
+				r, _ := dp.Attributes.Value("result")
+				why, _ := dp.Attributes.Value("reason")
+				if r.AsString() == result && why.AsString() == reason {
+					n += dp.Value
+				}
+			}
+		}
+	}
+	return n
+}
+
+// UC: UC-053 main BR-005
+func TestWriteAudit(t *testing.T) {
+	t.Run("UC-053/main an accepted write returns a WriteResult, a span and a counted ok", func(t *testing.T) {
+		e := newEnv(t, true)
+		e.do("PUT", "/games/game_a", map[string]any{"coordinator_instance": "c/1", "game_kind": "shadow", "serials": []string{"MOCK0001"}})
+		status, body := e.do("PUT", "/interventions/shield_seconds", map[string]any{
+			"value": 5, "scope": map[string]any{"game_id": "game_a", "serial": "MOCK0001"},
+			"writer": "agent", "decision_id": "dec_7", "reason": "grant_shield",
+		})
+		if status != 200 || body["epoch"] != "e1" || body["snapshot_version"] == nil || !strings.HasPrefix(body["variant"].(string), "re1_") {
+			t.Fatalf("%d %v", status, body)
+		}
+		attrs := e.writeSpan("shield_seconds")
+		want := map[attribute.Key]string{
+			"feature_flag.set.id": "interventions", "flagservice.op": "set", "flagservice.kind": "grant",
+			"flagservice.scope": "game+serial", "flagservice.result": "ok", "flagservice.writer": "agent",
+			"game.id": "game_a", "game.kind": "shadow", "player.serial": "MOCK0001", "decision.intervention_id": "dec_7",
+			"feature_flag.result.value": "5",
+		}
+		for k, v := range want {
+			if attrs[k].AsString() != v {
+				t.Errorf("%s = %q, want %q", k, attrs[k].AsString(), v)
+			}
+		}
+		if e.writes("ok", "ok") != 1 {
+			t.Fatal("flagservice_writes_total{result=ok} not counted")
+		}
+	})
+	t.Run("UC-053/A5 a rejected write is a span and a counted rejection with its reason", func(t *testing.T) {
+		e := newEnv(t, true)
+		status, body := e.do("PUT", "/system/idle.enabled", map[string]any{"variant": "off", "writer": "stage"})
+		if status != http.StatusUnprocessableEntity || body["error"] != "flag_read_only" || body["detail"] == "" {
+			t.Fatalf("%d %v", status, body)
+		}
+		attrs := e.writeSpan("idle.enabled")
+		if attrs["flagservice.result"].AsString() != "rejected" || attrs["flagservice.reason"].AsString() != "flag_read_only" {
+			t.Fatalf("span %v", attrs)
+		}
+		if e.writes("rejected", "flag_read_only") != 1 {
+			t.Fatal("rejection not counted")
+		}
+	})
+}
+
+// UC: UC-053 A5 A6 A7
+func TestHTTPStatuses(t *testing.T) {
+	e := newEnv(t, true)
+	e.do("PUT", "/games/game_a", map[string]any{"coordinator_instance": "c/1", "serials": []string{"S1"}})
+	cases := []struct {
+		name, method, path string
+		body               any
+		status             int
+		reason             string
+	}{
+		{"UC-053/A5 bad JSON", "PUT", "/agent/enabled", "{", 400, "malformed"},
+		{"UC-053/A5 unknown body field", "PUT", "/agent/enabled", map[string]any{"variant": "on", "owner": "x"}, 400, "malformed"},
+		{"UC-053/A5 empty body", "PUT", "/agent/enabled", "", 400, "malformed"},
+		{"UC-053/A5 unknown set", "PUT", "/nope/x", map[string]any{"variant": "a"}, 404, "unknown_flag_set"},
+		{"UC-053/A5 unknown flag", "GET", "/agent/nope", nil, 404, "unknown_flag"},
+		{"UC-053/A6 game not live", "POST", "/interventions/end_game", map[string]any{"scope": map[string]any{"game_id": "game_zz"}}, 409, "game_not_live"},
+		{"UC-053/A5 serial not in game", "POST", "/interventions/eliminate_player", map[string]any{"scope": map[string]any{"game_id": "game_a"}, "payload": map[string]any{"serial": "S9"}}, 422, "serial_not_in_game"},
+		{"UC-053/A5 DELETE needs a writer for a set reset", "DELETE", "/agent", nil, 400, "malformed"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			status, body := e.do(c.method, c.path, c.body)
+			if status != c.status || body["error"] != c.reason {
+				t.Fatalf("%d %v, want %d %s", status, body, c.status, c.reason)
+			}
+		})
+	}
+	t.Run("UC-053/A7 no stream: flag writes 503, the lifecycle is exempt", func(t *testing.T) {
+		e := newEnv(t, false)
+		if s, b := e.do("PUT", "/agent/enabled", map[string]any{"variant": "on"}); s != 503 || b["error"] != "no_sync_stream" {
+			t.Fatalf("%d %v", s, b)
+		}
+		if s, _ := e.do("PUT", "/games/g1", map[string]any{"coordinator_instance": "c/1"}); s != 200 {
+			t.Fatalf("register without a stream: %d", s)
+		}
+		if s, _ := e.do("PUT", "/coordinators/c%2F1/games", map[string]any{"games": []any{}}); s != 200 {
+			t.Fatalf("reconcile without a stream: %d", s)
+		}
+		if s, _ := e.do("DELETE", "/games/g1", nil); s != 204 {
+			t.Fatalf("end without a stream: %d", s)
+		}
+	})
+}
+
+// UC: UC-053 main A4 A10 BR-003
+func TestLifecycleAndEvents(t *testing.T) {
+	e := newEnv(t, true)
+	instance := "coord-host/3f2a"
+	path := "/coordinators/" + url.PathEscape(instance) + "/games"
+	t.Run("UC-053/A10 the reconcile path carries an instance id with a slash", func(t *testing.T) {
+		status, body := e.do("PUT", path, map[string]any{"games": []any{
+			map[string]any{"game_id": "game_1", "game_kind": "real", "serials": []string{"S1", "S2"}},
+		}})
+		if status != 200 || body["coordinator_instance"] != instance {
+			t.Fatalf("%d %v", status, body)
+		}
+		g := e.st.Game("game_1")
+		if g == nil || g.CoordinatorInstance != instance {
+			t.Fatalf("game %+v", g)
+		}
+	})
+	t.Run("UC-053/A4 POST appends and returns the seq", func(t *testing.T) {
+		for want := 1.0; want <= 2; want++ {
+			status, body := e.do("POST", "/interventions/eliminate_player", map[string]any{
+				"scope": map[string]any{"game_id": "game_1"}, "payload": map[string]any{"serial": "S1"},
+			})
+			if status != 200 || body["seq"] != want {
+				t.Fatalf("%d %v", status, body)
+			}
+		}
+		if attrs := e.writeSpan("eliminate_player"); attrs["flagservice.op"].AsString() != "append" || attrs["flagservice.seq"].AsInt64() != 2 {
+			t.Fatalf("span %v", attrs)
+		}
+	})
+	t.Run("UC-053/main GET shows the event list; DELETE /games drops it", func(t *testing.T) {
+		status, body := e.do("GET", "/interventions/eliminate_player", nil)
+		if status != 200 || body["events"] == nil || body["rendered"] == nil {
+			t.Fatalf("%d %v", status, body)
+		}
+		if s, _ := e.do("DELETE", "/games/game_1", nil); s != 204 {
+			t.Fatal(s)
+		}
+		_, body = e.do("GET", "/interventions/eliminate_player", nil)
+		if body["events"] != nil {
+			t.Fatalf("events left after the game ended: %v", body["events"])
+		}
+		_, games := e.do("GET", "/games", nil)
+		if len(games["games"].([]any)) != 0 {
+			t.Fatalf("games %v", games)
+		}
+	})
+	t.Run("UC-053/main a repeat registration says already_registered; a body id must match the path", func(t *testing.T) {
+		e.do("PUT", "/games/game_2", map[string]any{"coordinator_instance": "c/1"})
+		if _, b := e.do("PUT", "/games/game_2", map[string]any{"coordinator_instance": "c/1"}); b["status"] != "already_registered" {
+			t.Fatalf("%v", b)
+		}
+		if s, _ := e.do("PUT", "/games/game_2", map[string]any{"coordinator_instance": "c/1", "game_id": "other"}); s != 400 {
+			t.Fatalf("mismatched id: %d", s)
+		}
+	})
+}
+
+// UC: UC-053 main
+func TestReadEndpoints(t *testing.T) {
+	e := newEnv(t, true)
+	t.Run("UC-053/main GET /, /state, /{set}, /healthz", func(t *testing.T) {
+		if s, b := e.do("GET", "/", nil); s != 200 || len(b["flag_sets"].([]any)) != 8 {
+			t.Fatalf("%d %v", s, b)
+		}
+		if s, b := e.do("GET", "/state", nil); s != 200 || b["epoch"] != "e1" || b["sync_streams"] != 1.0 {
+			t.Fatalf("%d %v", s, b)
+		}
+		s, b := e.do("GET", "/agent", nil)
+		if s != 200 || b["flag_set"] != "agent" || len(b["flags"].([]any)) == 0 {
+			t.Fatalf("%d", s)
+		}
+		if s, b := e.do("GET", "/healthz", nil); s != 200 || b["status"] != "ok" {
+			t.Fatalf("%d %v", s, b)
+		}
+	})
+	t.Run("UC-053/A1 a stage reset clears that writer's overlays", func(t *testing.T) {
+		e.do("PUT", "/agent/decision.backend", map[string]any{"variant": "jev", "writer": "stage"})
+		if s, _ := e.do("DELETE", "/agent?writer=stage", nil); s != 204 {
+			t.Fatal(s)
+		}
+		_, b := e.do("GET", "/agent/decision.backend", nil)
+		if b["effective_default"] != "rules" {
+			t.Fatalf("%v", b["effective_default"])
+		}
+	})
+}

@@ -287,6 +287,9 @@ func matchVariant(p *Policy, flag *baseline.Flag, value json.RawMessage) string 
 }
 
 func checkRange(p *Policy, value json.RawMessage) *fserr.Error {
+	if len(value) == 0 || value[0] == '"' {
+		return fserr.Unprocessable(fserr.OutOfBounds, "%s takes a number, got %s", p.Key, value)
+	}
 	var n json.Number
 	dec := json.NewDecoder(bytes.NewReader(value))
 	dec.UseNumber()
