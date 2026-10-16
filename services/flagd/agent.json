@@ -455,11 +455,11 @@
     "experiment.mock_archetypes": {
       "state": "ENABLED",
       "variants": {
-        "none": "",
-        "slow_cascade": "slow_cascade",
-        "all": "calm_long,slow_cascade,jittery_novices,close_race,late_burst"
+        "all": "calm_long,slow_cascade,jittery_novices,close_race,late_burst,quick_cascade",
+        "quick_cascade": "quick_cascade",
+        "slow_cascade": "slow_cascade"
       },
-      "defaultVariant": "none"
+      "defaultVariant": "all"
     },
     "experiment.mock_archetype": {
       "state": "ENABLED",
@@ -539,6 +539,21 @@
           "players": 4,
           "stream_rate_hz": 15,
           "base": 1.0
+        },
+        "quick_cascade": {
+          "players": 3,
+          "stream_rate_hz": 30,
+          "base": 1.0,
+          "drift": 0.02,
+          "amp": 0.05,
+          "period_s": 3.0,
+          "phase": 0.0,
+          "burst_h": 0.0,
+          "burst_period_s": 0.0,
+          "d_base": 0.0,
+          "d_drift": 0.03,
+          "d_amp": 0.0,
+          "d_phase": 0.25
         }
       },
       "defaultVariant": "off",

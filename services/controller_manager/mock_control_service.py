@@ -511,7 +511,18 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
     # ------------------------------------------------------------------
 
     def _add_pattern_controllers(self, request):
-        """AddControllers with an archetype: validate, reserve one controller per player, install."""
+        """AddControllers with an archetype: validate, reserve one controller per player, install.
+
+        Pattern controllers are always reserved (hidden from the lobby, UC-046
+        Post-F-2), whatever request.reserved says.
+        """
+        try:
+            return self._install_pattern(request)
+        except Exception as e:
+            logger.error(f"AddControllers (archetype) error: {e}", exc_info=True)
+            return controller_manager_mock_pb2.AddControllersResponse(success=False, error=str(e))
+
+    def _install_pattern(self, request):
         with tracer.start_as_current_span("controller.mock.pattern_install") as span:
             span.set_attribute("pattern.archetype", request.archetype)
             span.set_attribute("mock.tag", request.tag)
@@ -523,15 +534,13 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
                 return controller_manager_mock_pb2.AddControllersResponse(success=False, error=error)
             span.set_attribute("pattern.stream_rate_hz", archetype.stream_rate_hz)
             span.set_attribute("pattern.players", archetype.players)
-            span.set_attribute("pattern.params", archetype.canonical_json())
+            # The agent's own canonical JSON (its params digest is computed over it).
+            span.set_attribute("pattern.params", request.archetype_params)
             if request.count != archetype.players:
                 error = f"count {request.count} != players {archetype.players} of {archetype.name}"
                 span.set_status(Status(StatusCode.ERROR, error))
                 return controller_manager_mock_pb2.AddControllersResponse(success=False, error=error)
-            serials = [
-                self.backend.add_controller(reserved=request.reserved, tag=request.tag)
-                for _ in range(archetype.players)
-            ]
+            serials = [self.backend.add_controller(reserved=True, tag=request.tag) for _ in range(archetype.players)]
             self.backend.install_pattern(serials, archetype)
             for slot, serial in enumerate(serials):
                 span.add_event("pattern.slot", {"pattern.slot_index": slot, "controller.serial": serial})

@@ -216,10 +216,10 @@ class TestUC046ArchetypeFlags:
         assert prod == ci
         assert prod["targeting"] == {"if": [{"var": "archetype"}, {"var": "archetype"}, "off"]}
         selection = self._flag(FLAG_FILES[0], "experiment.mock_archetypes")
-        assert selection["defaultVariant"] == "none"
-        assert selection["variants"]["none"] == ""
-        for name in selection["variants"]["all"].split(","):
-            assert name in prod["variants"]
+        # Experiments are archetype-only: the default selects every shipped archetype.
+        assert selection["defaultVariant"] == "all"
+        assert "none" not in selection["variants"]
+        assert sorted(selection["variants"]["all"].split(",")) == sorted(n for n in prod["variants"] if n != "off")
         cap = self._flag(FLAG_FILES[0], "experiment.max_game_seconds")
         assert cap["variants"][cap["defaultVariant"]] == 300
 

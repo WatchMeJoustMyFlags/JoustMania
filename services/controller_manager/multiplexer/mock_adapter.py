@@ -138,6 +138,9 @@ class MockAdapter(ControllerIOAdapter):
         # collapsing two distinct players to one serial and aborting FFA with
         # "Need at least 2 players, got 1".
         self._next_serial = 0
+        # Serials carrying a motion pattern (UC-046): lets the gameplay send path
+        # skip pattern work entirely for every other controller.
+        self.pattern_serials: set[str] = set()
         logger.info(f"MockAdapter initialized with {num_controllers} controllers")
 
     @property
@@ -294,6 +297,7 @@ class MockAdapter(ControllerIOAdapter):
         for slot, serial in enumerate(serials):
             controller = self.controllers[serial]
             controller["pattern"] = PatternRuntime(archetype=archetype, slot=slot)
+            self.pattern_serials.add(serial)
             controller["held_accel"] = None
 
     def has_pattern(self, serial: str) -> bool:
@@ -429,6 +433,7 @@ class MockAdapter(ControllerIOAdapter):
 
     def close(self, serial: str) -> None:
         """Remove a controller."""
+        self.pattern_serials.discard(serial)
         if serial in self.controllers:
             del self.controllers[serial]
             logger.info(f"Mock: Closed controller {serial}")
@@ -436,6 +441,7 @@ class MockAdapter(ControllerIOAdapter):
     def close_all(self) -> None:
         """Remove all controllers."""
         self.controllers.clear()
+        self.pattern_serials.clear()
 
     # -- Extra methods for MockControllerService --
 
@@ -478,6 +484,7 @@ class MockAdapter(ControllerIOAdapter):
 
     def remove_controller(self, serial: str) -> bool:
         """Remove a mock controller."""
+        self.pattern_serials.discard(serial)
         if serial in self.controllers:
             del self.controllers[serial]
             logger.info(f"Mock: Removed controller {serial}")

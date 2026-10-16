@@ -424,6 +424,13 @@ class MultiplexerBackend(ControllerBackend):
 
     # -- Motion patterns (UC-046, #1258): only the MockAdapter implements them --
 
+    def pattern_serials(self) -> set[str]:
+        """Serials that carry a motion pattern, across adapters (cheap per-frame check)."""
+        out: set[str] = set()
+        for adapter in self._adapters:
+            out |= getattr(adapter, "pattern_serials", set())
+        return out
+
     def pattern_frame(self, serial: str, subscriber_id: str, explicit: bool) -> dict | None:
         """Route a delivered-frame pattern evaluation to the owning adapter."""
         frame = getattr(self._serial_to_adapter.get(serial), "pattern_frame", None)

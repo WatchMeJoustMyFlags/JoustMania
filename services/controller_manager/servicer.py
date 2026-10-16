@@ -387,6 +387,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         # carries f(k / r), evaluated here (once per delivered frame) rather than in
         # the 100 Hz poll, so game time follows delivered frames, not polls.
         pattern_frame = getattr(self.backend, "pattern_frame", None)
+        pattern_serials = self._pattern_serials() if pattern_frame is not None else set()
         # No dict copy needed — _build_gameplay_update is synchronous (no await
         # points), so no dict mutation can happen during iteration.
         for serial, info in self.tracked_controllers.items():
@@ -395,7 +396,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
 
             full_state = self.state_cache_manager.build_or_get_cached_state(serial, info)
             accel = full_state.accel
-            if pattern_frame is not None:
+            if serial in pattern_serials:
                 # Evaluated BEFORE consume_death so an active latch is delivered first (BR-012).
                 explicit = current_filter is not None and serial in current_filter
                 pattern_accel = pattern_frame(serial, subscriber_id, explicit)
@@ -445,6 +446,13 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             timestamp=int(time.time() * 1000),
             disconnects=disconnect_events,
         )
+
+    def _pattern_serials(self) -> set:
+        """Serials with a motion pattern; empty for backends without patterns."""
+        serials = getattr(self.backend, "pattern_serials", None)
+        if serials is None:
+            return set()
+        return serials() if callable(serials) else serials
 
     def _pattern_stream_rate(self, current_filter: set | None) -> int | None:
         """Pinned rate when the stream's explicit filter names a pattern controller."""
@@ -519,7 +527,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             while not context.cancelled():
                 try:
                     # UC-046 FR-103: a stream naming pattern controllers runs at the
-                    # set's pinned stream_rate_hz and ignores the flag override.
+                    # archetype's pinned stream_rate_hz and ignores the flag override.
                     pattern_hz = self._pattern_stream_rate(current_filter)
                     if pattern_hz is not None:
                         if pattern_hz != current_hz:
