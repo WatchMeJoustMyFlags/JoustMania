@@ -103,3 +103,39 @@ func TestRecordFinalizedRealFitness_SkipsMissingSignalObjective(t *testing.T) {
 		t.Fatalf("a signal-less real game must not fabricate a fitness sample, got %d", store.Len())
 	}
 }
+
+// TestOnGameEnd_PrimaryLabelledGameSeedsRealBaseline (#1249): a menu game the
+// coordinator labels game_kind="primary" — ingested through the gamecontext Store —
+// counts as REAL for the experiment baseline.
+func TestOnGameEnd_PrimaryLabelledGameSeedsRealBaseline(t *testing.T) {
+	ingest := gamecontext.NewStore(time.Hour, time.Hour, func() time.Time { return time.Unix(1000, 0) })
+	ingest.SetGameKind("primary") // the coordinator's telemetry label
+	kind := ingest.Snapshot().GameKind
+	if kind != experiment.GameKindReal {
+		t.Fatalf("ingested GameKind = %q, want real", kind)
+	}
+
+	store := experiment.NewFitnessStore(0)
+	loop := loopWithStore(store)
+	gc := realEnduranceGC("game_primary1", 600)
+	gc.GameKind = kind
+	loop.onGameEnd(gc)
+	if got := store.RecentReal(decision.ObjectiveEndurance, 8); len(got) != 1 || got[0].GameID != "game_primary1" {
+		t.Fatalf("primary-labelled game must seed the real baseline, got %+v", got)
+	}
+
+	// Defense in depth: a raw (un-normalised) "primary" kind is still real.
+	raw := realEnduranceGC("game_primary_raw", 600)
+	raw.GameKind = "primary"
+	loop.onGameEnd(raw)
+	if _, ok := store.Get("game_primary_raw"); !ok {
+		t.Fatal("a raw primary-kind game must be recorded as real")
+	}
+}
+
+// TestGameKindConstantsAgree pins the gamecontext and experiment "real" constants.
+func TestGameKindConstantsAgree(t *testing.T) {
+	if gamecontext.GameKindReal != experiment.GameKindReal {
+		t.Fatalf("gamecontext.GameKindReal %q != experiment.GameKindReal %q", gamecontext.GameKindReal, experiment.GameKindReal)
+	}
+}

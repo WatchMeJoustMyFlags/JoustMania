@@ -44,7 +44,7 @@ func spanGameLabels(attrs pcommon.Map) gameLabels {
 		labels.GameID = v.AsString()
 	}
 	if v, ok := attrs.Get(spanAttrGameKind); ok {
-		labels.GameKind = v.AsString()
+		labels.GameKind = NormalizeGameKind(v.AsString()) // "primary" -> "real" (#1249)
 	}
 	if v, ok := attrs.Get(spanAttrExperimentID); ok {
 		labels.ExperimentID = v.AsString()

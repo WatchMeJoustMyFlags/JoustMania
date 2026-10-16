@@ -1029,17 +1029,20 @@ func (e *experimentLoop) recordFinalizedRealFitness(gc gamecontext.GameContext, 
 	}
 }
 
-// gameKindOrDefault returns the game's kind label, defaulting an empty label to
-// "real": the coordinator labels a player-facing game "real" but an older/edge
+// gameKindOrDefault returns the game's kind label in the flag-evaluation
+// vocabulary (gamecontext.NormalizeGameKind: telemetry "primary" -> "real",
+// #1249), defaulting an empty label to "real": the coordinator labels a
+// player-facing game "primary" (normalised to "real" at ingest) but an older/edge
 // datapoint may omit the label, and the conservative default for the baseline is to
 // treat an unlabeled, non-experiment game as real (it has no ExperimentID and was
 // not agent-spawned). An agent shadow game ALWAYS carries an ExperimentID, so it is
 // never mislabeled real by this default.
 func gameKindOrDefault(gc gamecontext.GameContext) string {
-	if gc.GameKind == "" {
+	kind := gamecontext.NormalizeGameKind(gc.GameKind)
+	if kind == "" {
 		return experiment.GameKindReal
 	}
-	return gc.GameKind
+	return kind
 }
 
 // onGameTerminal is the #1014 terminal-outcome backstop, invoked by a spawned
