@@ -177,6 +177,7 @@ class TestWindowComputation:
 
 
 class TestSpanEmission:
+    @pytest.mark.uc("UC-050", flow="main", steps=[2])
     @patch("services.controller_manager.metrics.controller_bluetooth_movement_update_hz")
     @patch("services.controller_manager.metrics.controller_bluetooth_dropped_events_ratio")
     @patch("services.controller_manager.metrics.controller_bluetooth_dropped_events_ratio_window")
@@ -288,6 +289,7 @@ class TestUpdateControllerStatesWiring:
         assert loop._hw_drops["AA"] == 1  # the None
 
 
+@pytest.mark.uc("UC-051", flow="main", steps=[1])
 class TestUnstableAdapterDegradationEndToEnd:
     """Drive a real UnstableAdapter through the accumulator; all 3 thresholds break."""
 

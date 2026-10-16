@@ -436,6 +436,7 @@ def test_inference_absent_degrades_to_rules(agent_experiment_stack):
     assert "panic:" not in _agent_logs(), "agent panicked on the rules path"
 
 
+@pytest.mark.uc("UC-043", flow="main", steps=[2, 3, 4])
 def test_cohort_loop_spawns_paired_games_that_conclude_with_fitness(
     agent_experiment_stack,
 ):
@@ -488,6 +489,7 @@ def test_cohort_loop_spawns_paired_games_that_conclude_with_fitness(
 # time and the soak terminates deterministically within CONCLUDE_TIMEOUT. So this
 # is now a HARD assertion (no xfail): a regression that breaks declare -> verdict
 # -> teardown fails CI.
+@pytest.mark.uc("UC-043", flow="main", steps=[5, 8])
 def test_cohort_loop_runs_to_verdict_and_terminates(agent_experiment_stack):
     """The FULL cohort loop reaches a terminal verdict and TEARS DOWN:
     declared -> paired games conclude -> verdict -> experiment.concluded ->

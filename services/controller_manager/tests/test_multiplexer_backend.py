@@ -800,6 +800,7 @@ class TestResolveAdapterForSerial:
     """Tests for three-way precedence in _resolve_adapter_for_serial."""
 
     @pytest.mark.uc("UC-002", flow="main", steps=[3])
+    @pytest.mark.uc("UC-052", flow="main", steps=[3])
     def test_explicit_targeting_match_wins(self):
         """A TARGETING_MATCH on bluetooth_backend routes to that adapter."""
         a1 = _make_adapter("python")
@@ -834,6 +835,7 @@ class TestResolveAdapterForSerial:
         assert method == "default"
 
     @pytest.mark.uc("UC-002", flow="main", steps=[3])
+    @pytest.mark.uc("UC-050", flow="main", steps=[6])
     def test_rollout_beats_default_when_no_explicit_targeting(self):
         """Rollout target wins over the flag default variant."""
         a_py = _make_adapter("python")
@@ -854,6 +856,8 @@ class TestResolveAdapterForSerial:
         assert method == "rollout"
 
     @pytest.mark.uc("UC-002", flow="main", steps=[3])
+    @pytest.mark.uc("UC-050", flow="A4")
+    @pytest.mark.uc("UC-052", br=["BR-001"])
     def test_explicit_targeting_beats_rollout(self):
         """Explicit TARGETING_MATCH takes precedence over an active rollout."""
         a_py = _make_adapter("python")

@@ -246,6 +246,7 @@ def game_flags(docker_compose):
 # =============================================================================
 
 
+@pytest.mark.uc("UC-043", flow="main", br=["BR-001"], steps=[1])
 @pytest.mark.asyncio
 async def test_experiment_reaches_shadow_never_real(game_flags, docker_compose):
     """A written shadow-scoped experiment resolves the EXPERIMENTAL value for a

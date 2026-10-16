@@ -952,6 +952,7 @@ class TestShadowGameGovernance:
 
     # -- Resource gate ------------------------------------------------------
 
+    @pytest.mark.uc("UC-043", flow="A2")
     @pytest.mark.asyncio
     @pytest.mark.nfr("NFR-018")
     async def test_gate_blocks_shadow_while_real_running(self, servicer, cap_two, policy_block):
@@ -990,6 +991,7 @@ class TestShadowGameGovernance:
 
     # -- Preemption ---------------------------------------------------------
 
+    @pytest.mark.uc("UC-043", flow="A2")
     @pytest.mark.asyncio
     @pytest.mark.nfr("NFR-018")
     async def test_real_start_preempts_live_shadow(self, servicer, cap_two, policy_allow):
@@ -1018,6 +1020,7 @@ class TestShadowGameGovernance:
         assert force_ended, f"expected game_force_ended, saw {[e.event_type for e in events]}"
         assert force_ended[0].data["reason"] == "preempted_by_real_game"
 
+    @pytest.mark.uc("UC-043", flow="A2")
     @pytest.mark.asyncio
     @pytest.mark.nfr("NFR-018")
     async def test_real_start_preempts_even_when_policy_block(self, servicer, cap_two, policy_block):
@@ -1098,6 +1101,7 @@ class TestExperimentSpawnBinding:
     def servicer(self):
         return GameCoordinatorServicer()
 
+    @pytest.mark.uc("UC-043", flow="main", br=["BR-001"], steps=[3])
     @pytest.mark.asyncio
     async def test_shadow_start_binds_experiment_and_arm(self, servicer):
         """A shadow start carrying (experiment_id, arm) binds them on the session
@@ -1153,6 +1157,7 @@ class TestExperimentSpawnBinding:
         assert session.experiment_id == ""
         assert session.arm == ""
 
+    @pytest.mark.uc("UC-043", br=["BR-001"])
     @pytest.mark.asyncio
     async def test_real_start_drops_experiment_fields_invariant(self, servicer):
         """HARD INVARIANT (#982): a menu-origin (real/primary) start that
@@ -1174,6 +1179,30 @@ class TestExperimentSpawnBinding:
         # The invariant: the real game dropped the experiment fields entirely.
         assert session.experiment_id == ""
         assert session.arm == ""
+
+    @pytest.mark.uc("UC-043", br=["BR-001"])
+    @pytest.mark.asyncio
+    async def test_rng_seed_applies_to_shadow_and_is_dropped_for_real(self, servicer):
+        """UC-043 BR-001: the paired CRN ``rng_seed`` seeds a shadow session, and a
+        menu-origin (real) start that carries one gets entropy (0) instead."""
+        shadow_config = _experiment_config(serials=("a1", "a2"))
+        shadow_config.rng_seed = 424242
+        real_config = _experiment_config(
+            serials=("b1", "b2"),
+            origin=game_coordinator_pb2.GAME_ORIGIN_MENU,
+            experiment_id="exp_should_not_apply",
+        )
+        real_config.rng_seed = 424242
+        with _NO_THREAD:
+            ok_shadow, shadow_gid = await servicer._start_game_from_config(shadow_config, _MockSpan())
+            assert ok_shadow is True
+            assert servicer.sessions[shadow_gid].game_kind == "shadow"
+            assert servicer.sessions[shadow_gid].rng_seed == 424242
+            # The real start preempts the shadow game (UC-043 A2); check it alone.
+            ok_real, real_gid = await servicer._start_game_from_config(real_config, _MockSpan())
+        assert ok_real is True
+        assert servicer.sessions[real_gid].game_kind == "primary"
+        assert servicer.sessions[real_gid].rng_seed == 0
 
     @pytest.mark.asyncio
     async def test_shadow_experiment_threads_parent_span_context(self, servicer):

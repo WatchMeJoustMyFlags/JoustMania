@@ -157,6 +157,7 @@ func TestPerGameSpans_CarryGameID(t *testing.T) {
 
 // TestDisabledSpan_EmittedWithFlagAttribution: the kill switch (enabled=false)
 // still emits a trace showing "agent off" with the flags in effect (#729 §4).
+// UC: UC-045 main
 func TestDisabledSpan_EmittedWithFlagAttribution(t *testing.T) {
 	snap := flags.Snapshot{
 		Enabled: false,
@@ -191,6 +192,7 @@ func TestDisabledSpan_EmittedWithFlagAttribution(t *testing.T) {
 
 // TestDisabledSpan_Throttled: a disabled agent under heavy signal load emits at
 // most one kill-switch trace per throttle interval, not one per export.
+// UC: UC-045 main
 func TestDisabledSpan_Throttled(t *testing.T) {
 	snap := flags.Snapshot{Enabled: false}
 	l, sr := recordingLoop(t, snap, nil)

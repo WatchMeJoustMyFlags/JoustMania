@@ -37,6 +37,7 @@ func TestDecisionBackend_DefaultsWhenMissing(t *testing.T) {
 	}
 }
 
+// UC: UC-044 main
 func TestDecisionBackend_FlagdShape(t *testing.T) {
 	stub := stubEvaluator{
 		booleans: map[string]bool{keyDecisionCaptureContent: true},
@@ -99,6 +100,7 @@ func TestDecisionBackend_BadValuesFallBack(t *testing.T) {
 // (#1287): its own value applies to jev only, "inherit" and out-of-range values
 // fall back to the global flag, and claude/openai/rules always use the global.
 // Spec: flags.md (decision.jev.act_confidence_threshold), decide-contract.md §5, FR-047.
+// UC: UC-044 A3
 func TestDecisionBackend_JevThreshold(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -232,6 +234,7 @@ func TestDecisionBackend_FlagFilesMatchDefaults(t *testing.T) {
 // flag files that points at TEST-NET-1 (RFC 5737, never routed) over https, so
 // the TLS handshake fails before any request header (the bearer key) is sent.
 // The default stays DefaultDecisionJevBaseURL.
+// UC: UC-070 main
 func TestDecisionBackend_JevBlackholeVariant(t *testing.T) {
 	for _, path := range []string{
 		filepath.Join("..", "..", "flagd", "agent.json"),
@@ -267,6 +270,7 @@ func TestDecisionBackend_JevBlackholeVariant(t *testing.T) {
 // global remote-call budget (#1231): llm.max_requests_per_minute has a "stage"
 // variant of 30 in both flag files, while the default stays
 // DefaultLLMMaxRequestsPerMinute.
+// UC: UC-070 A4
 func TestDecisionBackend_StageBudgetVariant(t *testing.T) {
 	for _, path := range []string{
 		filepath.Join("..", "..", "flagd", "agent.json"),

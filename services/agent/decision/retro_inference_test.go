@@ -62,6 +62,7 @@ func eventAttr(ev sdktrace.Event, key string) (string, bool) {
 // count, one retro.suggestion event per suggestion, parse_ok=true, a latency, and the
 // raw-response fingerprint.
 // UC: UC-042 main
+// UC: UC-070 main
 func TestRetro_CapturesConclusionOnSuccess(t *testing.T) {
 	resetRetroResponseRef()
 	reply := `{
@@ -304,6 +305,7 @@ func TestRetro_RootContextCancellationUnblocksInfer(t *testing.T) {
 // stays capture-only — the span ends synchronously, carries no conclusion, no
 // parse_ok, and reports no_backend_available.
 // UC: UC-042 A2
+// UC: UC-070 A5
 func TestRetro_CaptureOnlyWhenNoBackend(t *testing.T) {
 	resetRetroResponseRef()
 	rc, sr := recordingRetro(t, retroFlagSnapshot()) // no SetBackend -> nil backend

@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 test_dir = Path(__file__).parent
 service_dir = test_dir.parent
 project_root = service_dir.parent.parent
@@ -49,6 +51,7 @@ class TestStrategyOff:
         assert _run("A", ALL, strategy="off", count=99) is None
 
 
+@pytest.mark.uc("UC-050", flow="A1")
 class TestStrategyImmediate:
     def test_immediate_targets_every_serial(self):
         assert _run("A", ALL, strategy="immediate", target="unstable") == "unstable"
@@ -58,6 +61,7 @@ class TestStrategyImmediate:
         assert _run("A", ALL, strategy="immediate", target="") is None
 
 
+@pytest.mark.uc("UC-050", flow="main", steps=[6])
 class TestStrategyProgressive:
     def test_count_zero_returns_none(self):
         assert _run("A", ALL, strategy="progressive", count=0) is None

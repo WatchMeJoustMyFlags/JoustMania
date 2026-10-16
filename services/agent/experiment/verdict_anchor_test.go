@@ -57,6 +57,7 @@ func TestVerdict_Anchor_RecentRealAtOrBelowExperimental_PromoteStands(t *testing
 	}
 }
 
+// UC: UC-043 main
 func TestVerdict_Anchor_ExperimentalRegressesVsRecentReal_DowngradedToInconclusive(t *testing.T) {
 	// Recent-real baseline 0.95 >> experimental 0.80 (by far more than the margin) ⇒
 	// the shadow winner is WORSE than recent real play ⇒ PROMOTE is downgraded.

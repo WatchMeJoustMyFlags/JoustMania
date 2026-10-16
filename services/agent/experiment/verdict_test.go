@@ -47,6 +47,7 @@ func spread(n int, mean, halfWidth float64) []float64 {
 	return out
 }
 
+// UC: UC-043 main
 func TestVerdict_UnderPowered_Inconclusive(t *testing.T) {
 	v := NewVerdict(8, 0.5, nil)
 	// Experimental arm has only 3 samples (< min-N 8) but a HUGE delta vs control.
@@ -66,6 +67,7 @@ func TestVerdict_UnderPowered_Inconclusive(t *testing.T) {
 	}
 }
 
+// UC: UC-043 main
 func TestVerdict_ClearWin_Promote(t *testing.T) {
 	v := NewVerdict(8, 0.5, nil)
 	// Both arms meet N; experimental mean far above control with tight spread →
@@ -88,6 +90,7 @@ func TestVerdict_ClearWin_Promote(t *testing.T) {
 	}
 }
 
+// UC: UC-043 A3
 func TestVerdict_ClearLoss_Discard(t *testing.T) {
 	v := NewVerdict(8, 0.5, nil)
 	// Experimental far BELOW control → large negative effect → DISCARD.
@@ -362,6 +365,7 @@ func TestVerdict_SetFloatThresholds_DrivesVerdict(t *testing.T) {
 // TestVerdict_TwoArm_TinyDelta_NotPractical (#1042) is the two-arm analog of the
 // dry-run bug: N met, a large standardized Cohen's d (tight spread), but a raw mean
 // delta FAR below the practical-significance floor ⇒ INCONCLUSIVE, not promote.
+// UC: UC-043 main
 func TestVerdict_TwoArm_TinyDelta_NotPractical(t *testing.T) {
 	v := NewVerdict(8, 0.5, nil)
 	// Means differ by only 0.005 (< 0.02 floor) but the spread is tiny (±0.0005), so

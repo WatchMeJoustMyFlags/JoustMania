@@ -215,6 +215,7 @@ func TestDeclarePersistsIntentAndIsProposed(t *testing.T) {
 // fitness function, so an experiment on it could only ever fold the worst-case 0
 // and run to inconclusive (wasting its whole #1001 budget). It must be rejected at
 // declaration — never minted, never persisted.
+// UC: UC-043 BR-002
 func TestDeclareRejectsNonExperimentableObjective(t *testing.T) {
 	r := newTestRegistry(t, RegistryConfig{Root: t.TempDir()})
 
@@ -290,6 +291,7 @@ func TestAllocationEqualShareNeverExceedsCap(t *testing.T) {
 
 // Arm assignment → game_assigned journal event recorded with the right
 // (experiment_id, arm); the ShadowSpawner seam is called.
+// UC: UC-043 main
 func TestArmAssignmentRecordsJournalEventAndCallsSpawner(t *testing.T) {
 	root := t.TempDir()
 	spawner := &fakeSpawner{}
@@ -353,6 +355,7 @@ func TestArmAssignmentRecordsJournalEventAndCallsSpawner(t *testing.T) {
 
 // Game conclusion → game_concluded recorded + CohortVerdict seam called; status
 // transitions on the (stubbed) verdict.
+// UC: UC-043 main
 func TestConcludeGameRecordsAndTransitionsOnVerdict(t *testing.T) {
 	root := t.TempDir()
 	spawner := &fakeSpawner{}
@@ -436,6 +439,7 @@ func TestConcludeGameRecordsAndTransitionsOnVerdict(t *testing.T) {
 
 // Rehydrate: drop the in-memory registry, rebuild from the journal → same live
 // experiments / status.
+// UC: UC-043 main
 func TestRehydrateRebuildsLiveExperiments(t *testing.T) {
 	root := t.TempDir()
 	clock := fixedClock()
@@ -525,6 +529,7 @@ func TestRehydrateSkipsTerminalExperiments(t *testing.T) {
 }
 
 // Kill-switch → experiments ABORTED, capacity freed, targeting torn down.
+// UC: UC-043 A1
 func TestKillSwitchAbortsAllAndFreesCapacity(t *testing.T) {
 	spawner := &fakeSpawner{}
 	targeting := &fakeTargeting{}
@@ -611,6 +616,7 @@ func TestSpawnFailureReleasesReservation(t *testing.T) {
 
 // Start without a TargetingWriter is fine; with one, Apply is called for the
 // experiment.
+// UC: UC-043 main
 func TestStartWritesTargeting(t *testing.T) {
 	targeting := &fakeTargeting{}
 	r := newTestRegistry(t, RegistryConfig{MaxShadowGames: 2, Targeting: targeting})
@@ -989,6 +995,7 @@ func drainToTerminal(t *testing.T, r *Registry, spawner *fakeSpawner, id string,
 // (a) GAMES BUDGET: with a verdict that never concludes, the experiment MUST stop
 // at the configured max-games budget instead of spawning forever. This is the
 // direct #1001 regression: the dry run hit 235 games with no bound.
+// UC: UC-043 A3
 func TestTerminationGamesBudget(t *testing.T) {
 	root := t.TempDir()
 	spawner := &fakeSpawner{}
@@ -1032,6 +1039,7 @@ func TestTerminationGamesBudget(t *testing.T) {
 // score fitness=0 ⇒ both arms zero-variance ⇒ undefined effect ⇒ permanent
 // inconclusive. The experiment MUST terminate via the degenerate-variance guard
 // once both arms pass target N — not loop forever (the exact #997/#1001 case).
+// UC: UC-043 A3
 func TestTerminationAllZeroFitnessDegenerate(t *testing.T) {
 	root := t.TempDir()
 	spawner := &fakeSpawner{}
@@ -1420,4 +1428,181 @@ func TestReconfigure_LiveCaps(t *testing.T) {
 	if reg.EffectiveCapacity() != 20 {
 		t.Fatalf("Reconfigure did not clamp EffectiveCapacity to maxCap: got %d, want 20", reg.EffectiveCapacity())
 	}
+}
+
+// concludeByArm refills capacity and concludes every newly spawned game for id
+// with the next fitness from its arm's sequence, until the experiment is
+// terminal or a sequence runs out. It returns the terminal status and the
+// number of games concluded.
+func concludeByArm(t *testing.T, r *Registry, spawner *fakeSpawner, id string, fitness map[string][]float64) (Status, int) {
+	t.Helper()
+	ctx := context.Background()
+	done := map[string]bool{}
+	used := map[string]int{}
+	concluded := 0
+	for {
+		r.AllocateAndSpawn(ctx)
+		spawner.mu.Lock()
+		pending := make([]spawnCall, 0, len(spawner.calls))
+		for _, c := range spawner.calls {
+			if c.experimentID == id && !done[c.gameID] {
+				pending = append(pending, c)
+			}
+		}
+		spawner.mu.Unlock()
+		if len(pending) == 0 {
+			st, _ := r.Status(id)
+			t.Fatalf("no games to conclude but experiment still %s", st)
+		}
+		for _, c := range pending {
+			seq := fitness[c.arm]
+			if used[c.arm] >= len(seq) {
+				st, _ := r.Status(id)
+				return st, concluded
+			}
+			st, err := r.ConcludeGame(ctx, c.gameID, seq[used[c.arm]], 60)
+			if err != nil {
+				t.Fatalf("ConcludeGame(%s): %v", c.gameID, err)
+			}
+			used[c.arm]++
+			done[c.gameID] = true
+			concluded++
+			if st.IsTerminal() {
+				return st, concluded
+			}
+		}
+	}
+}
+
+// journalNotes returns every event note in the experiment's journal.
+func journalNotes(t *testing.T, root, id string) string {
+	t.Helper()
+	jrnl, err := journal.Load(root, id)
+	if err != nil {
+		t.Fatalf("journal.Load: %v", err)
+	}
+	events, err := jrnl.Events()
+	if err != nil {
+		t.Fatalf("journal events: %v", err)
+	}
+	var notes []string
+	for _, e := range events {
+		notes = append(notes, e.Note)
+	}
+	return strings.Join(notes, "\n")
+}
+
+// UC-043 A3 step 1 + main step 5: a significant discard verdict concludes the
+// experiment at once, without promotion. The paired d_z path is gated by
+// verdict_min_pairs only, so it concludes after min-pairs completed pairs even
+// though every arm is far below verdict_min_n and the games budget.
+//
+// UC: UC-043 main A3
+func TestConcludeSignificantDiscardImmediately(t *testing.T) {
+	t.Run("UC-043/A3 significant discard concludes at min pairs, before min N and max games", func(t *testing.T) {
+		root := t.TempDir()
+		spawner := &fakeSpawner{}
+		promoter := &fakePromoter{}
+		targeting := &fakeTargeting{}
+		const minPairs = 3
+		r := newTestRegistry(t, RegistryConfig{
+			Root:                  root,
+			MaxShadowGames:        2,
+			MaxGamesPerExperiment: 50,
+			VerdictMinN:           8,
+			Spawner:               spawner,
+			Promoter:              promoter,
+			// Real verdict: min N 8 per arm, min pairs 3, effect threshold 0.5.
+			Verdict:   NewVerdictWithPairs(8, minPairs, 0.5, nil),
+			Targeting: targeting,
+		})
+		ctx := context.Background()
+		id, err := r.Declare(sampleIntent())
+		if err != nil {
+			t.Fatalf("Declare: %v", err)
+		}
+		if err := r.Start(ctx, id); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+
+		// The experimental arm is consistently much worse than its seed-matched
+		// control game: d ≈ -0.6 per pair with a small spread.
+		st, concluded := concludeByArm(t, r, spawner, id, map[string][]float64{
+			ArmExperimental: {0.20, 0.22, 0.18, 0.21, 0.19, 0.20, 0.20, 0.20, 0.20, 0.20},
+			ArmControl:      {0.80, 0.81, 0.79, 0.80, 0.80, 0.80, 0.80, 0.80, 0.80, 0.80},
+		})
+		if st != StatusDiscarded {
+			t.Fatalf("status = %s after %d games, want discarded", st, concluded)
+		}
+		if concluded != 2*minPairs {
+			t.Fatalf("concluded %d games, want %d (immediately at %d completed pairs)", concluded, 2*minPairs, minPairs)
+		}
+		if promoter.count() != 0 {
+			t.Fatalf("promoter called %d times, want 0 for a discard", promoter.count())
+		}
+		if got := targeting.strippedIDs(); len(got) != 1 || got[0] != id {
+			t.Fatalf("stripped = %v, want [%s] (teardown)", got, id)
+		}
+		if notes := journalNotes(t, root, id); !strings.Contains(notes, "experiment concluded: "+CohortOutcomeDiscard) {
+			t.Fatalf("journal has no discard conclusion; notes:\n%s", notes)
+		}
+	})
+}
+
+// UC-043 A3 step 2: an experiment that is fully powered (every arm past target
+// N) but still within noise concludes as a final inconclusive, without
+// promotion, long before the games budget. Unlike the degenerate guard, the
+// arms here have real spread.
+//
+// UC: UC-043 A3
+func TestTerminationInconclusivePastTargetN(t *testing.T) {
+	t.Run("UC-043/A3 every arm past target N and still inconclusive gives up", func(t *testing.T) {
+		root := t.TempDir()
+		spawner := &fakeSpawner{}
+		promoter := &fakePromoter{}
+		targeting := &fakeTargeting{}
+		r := newTestRegistry(t, RegistryConfig{
+			Root:                  root,
+			MaxShadowGames:        2,
+			MaxGamesPerExperiment: 1000, // the budget must not be the stopper
+			VerdictMinN:           3,
+			Spawner:               spawner,
+			Promoter:              promoter,
+			// min pairs 5 > target 3: the paired verdict stays under-powered.
+			Verdict:   NewVerdictWithPairs(3, 5, 0.5, nil),
+			Targeting: targeting,
+		})
+		ctx := context.Background()
+		in := sampleIntent()
+		in.TargetNPerArm = 3
+		id, err := r.Declare(in)
+		if err != nil {
+			t.Fatalf("Declare: %v", err)
+		}
+		if err := r.Start(ctx, id); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+
+		// Per-pair differences -0.2, +0.2, 0: spread in both arms, no effect.
+		st, concluded := concludeByArm(t, r, spawner, id, map[string][]float64{
+			ArmExperimental: {0.4, 0.6, 0.5, 0.5, 0.5, 0.5},
+			ArmControl:      {0.6, 0.4, 0.5, 0.5, 0.5, 0.5},
+		})
+		if st != StatusDiscarded {
+			t.Fatalf("status = %s after %d games, want discarded (final inconclusive)", st, concluded)
+		}
+		if concluded != 6 {
+			t.Fatalf("concluded %d games, want 6 (both arms at target N=3)", concluded)
+		}
+		if promoter.count() != 0 {
+			t.Fatalf("promoter called %d times, want 0", promoter.count())
+		}
+		notes := journalNotes(t, root, id)
+		if !strings.Contains(notes, "inconclusive past target N=3") {
+			t.Fatalf("journal lacks the inconclusive-past-target reason; notes:\n%s", notes)
+		}
+		if strings.Contains(notes, "degenerate variance") {
+			t.Fatalf("arms with spread must not take the degenerate-variance guard; notes:\n%s", notes)
+		}
+	})
 }

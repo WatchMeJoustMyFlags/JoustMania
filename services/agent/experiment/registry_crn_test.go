@@ -60,6 +60,7 @@ func (s *crnSpawner) snapshot() []spawnCall {
 // With room for both arms (effective cap 2), one AllocateAndSpawn reserves and
 // spawns a WHOLE pair: both arms carry the SAME seed (CRN), and that seed is the
 // pure pairSeed(id, 0). A second pair (after concluding the first) uses pairIndex 1.
+// UC: UC-043 main
 func TestPairedArmsShareSeed(t *testing.T) {
 	spawner := &crnSpawner{}
 	r := newTestRegistry(t, RegistryConfig{

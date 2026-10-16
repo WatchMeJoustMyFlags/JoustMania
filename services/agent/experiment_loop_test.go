@@ -292,6 +292,7 @@ func concludeCohort(t *testing.T, loop *experimentLoop, spawner *recordingSpawne
 // kill-switch state irrelevant for issue mode) routes through the #961 Promoter and
 // opens an ISSUE — it NEVER performs a real-default write. With the autonomous path
 // (the only real-player-affecting one) OFF, recordingRealDefault stays at zero.
+// UC: UC-043 main BR-003
 func TestExperimentLoop_EndToEnd_SafeDefault_NoRealWrite(t *testing.T) {
 	spawner := &recordingSpawner{}
 	realDef := &recordingRealDefault{}
@@ -336,6 +337,7 @@ func TestExperimentLoop_EndToEnd_SafeDefault_NoRealWrite(t *testing.T) {
 // rail permits a real-player write), a promote verdict DOES route a real-default
 // write through the #961 Promoter. This proves the gate opens only when every
 // condition holds — and that the loop wires the real Promoter, not a stub.
+// UC: UC-043 main
 func TestExperimentLoop_EndToEnd_Autonomous_RealWriteGated(t *testing.T) {
 	spawner := &recordingSpawner{}
 	realDef := &recordingRealDefault{}
@@ -473,6 +475,63 @@ func TestExperimentLoop_OnGameTerminal_ReleasesErroredGame(t *testing.T) {
 			t.Fatalf("arm %q folded a sample (count=%d) on an errored game; release must be non-counting", arm, a.Count)
 		}
 	}
+}
+
+// A real game preempting a running shadow game force-ends it (the coordinator
+// side is covered by test_servicer_sessions.py); the agent then releases the
+// preempted game without a fitness sample so it neither biases the arm nor
+// leaks the in-flight slot.
+//
+// UC: UC-043 A2
+func TestExperimentLoop_OnGameTerminal_ReleasesPreemptedGame(t *testing.T) {
+	t.Run("UC-043/A2 a force-ended (preempted) shadow game is released without a sample", func(t *testing.T) {
+		spawner := &recordingSpawner{}
+		resolve := func(context.Context) promote.Config { return promote.Config{Mode: promote.ModeIssue} }
+		loop := buildLoopForTest(t, spawner, resolve, &recordingRealDefault{}, &recordingGitHub{}, armFitness())
+		ctx := context.Background()
+
+		id, err := loop.registry.Declare(experiment.Intent{
+			Hypothesis: "h", FlagKey: "death_grace_period_seconds",
+			ExperimentalValue: 0.5, Objective: "balanced", TargetNPerArm: 3,
+		})
+		if err != nil {
+			t.Fatalf("Declare: %v", err)
+		}
+		if err := loop.registry.Start(ctx, id); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if n := loop.registry.AllocateAndSpawn(ctx); n == 0 {
+			t.Fatal("expected a spawn")
+		}
+		recs := spawner.drain()
+		if len(recs) == 0 {
+			t.Fatal("spawner recorded no game")
+		}
+		gameID := recs[0].gameID
+
+		loop.onGameTerminal(gameID, gamerunner.OutcomeForceEnded)
+		if gameStillBound(loop, id, gameID) {
+			t.Fatal("a force-ended game kept its binding (slot leak)")
+		}
+		cv, _ := loop.registry.CompactView(id)
+		for arm, a := range cv.Arms {
+			if a.Count != 0 {
+				t.Fatalf("arm %q folded a sample (count=%d) from a preempted game", arm, a.Count)
+			}
+		}
+		released := false
+		for _, ev := range cv.RecentTail {
+			if ev.GameID == gameID && ev.Kind == journal.KindGameReleased {
+				released = true
+			}
+		}
+		if !released {
+			t.Fatal("no game_released journal event for the preempted game")
+		}
+		if st, _ := loop.registry.Status(id); st.IsTerminal() {
+			t.Fatalf("experiment status = %s; a preempted game must not end the experiment (continues at step 2)", st)
+		}
+	})
 }
 
 // gameStillBound reports whether gameID is still an in-flight binding of the
