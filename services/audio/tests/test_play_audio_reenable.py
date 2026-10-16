@@ -6,6 +6,7 @@ AudioManager; only the hardware edges are replaced (SoundChannel.play would open
 a miniaudio device, MusicPlayer spawns an ALSA subprocess).
 """
 
+import threading
 from pathlib import Path
 from unittest.mock import create_autospec, patch
 
@@ -52,11 +53,12 @@ def muted_start_servicer(monkeypatch):
 
     with (
         patch.object(AudioServiceServicer, "_load_play_audio_flag", return_value=False),
-        patch.object(servicer_module, "MusicPlayer", side_effect=_fake_music_player),
+        patch.object(servicer_module, "MusicPlayer", side_effect=_fake_music_player) as music_player_cls,
         patch.object(SoundChannel, "play", autospec=True, return_value=True) as channel_play,
     ):
         svc = AudioServiceServicer()
         svc.channel_play = channel_play
+        svc.music_player_cls = music_player_cls
         yield svc
 
 
@@ -145,3 +147,61 @@ class TestPlayAudioReenableAfterMutedStart:
         flag_client.play_audio = True
         muted_start_servicer._on_flags_changed(None)
         assert muted_start_servicer.audio_manager.channels is channels
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-031", flow="A1")
+    async def test_failed_hardware_open_stays_muted_and_retries(
+        self, muted_start_servicer, flag_client, mock_grpc_context
+    ):
+        """UC-031 A1: if opening the hardware fails, the service stays muted and the next call retries."""
+        fake_player_factory = muted_start_servicer.music_player_cls.side_effect
+        muted_start_servicer.music_player_cls.side_effect = [RuntimeError("no ALSA device"), fake_player_factory()]
+        flag_client.play_audio = True
+        request = audio_pb2.PlaySoundRequest(file_path="beep_loud", volume=1.0, priority=2)
+
+        first = await muted_start_servicer.PlaySound(request, mock_grpc_context)
+        assert first.success is True  # muted requests still succeed
+        assert muted_start_servicer.audio_enabled is False
+        assert muted_start_servicer.audio_manager.silent is True
+        muted_start_servicer.channel_play.assert_not_called()
+
+        second = await muted_start_servicer.PlaySound(request, mock_grpc_context)
+        assert second.success is True
+        assert muted_start_servicer.audio_enabled is True
+        assert muted_start_servicer.audio_manager.silent is False
+        muted_start_servicer.channel_play.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-031", flow="A1")
+    async def test_use_time_unmute_opens_hardware_off_the_event_loop(
+        self, muted_start_servicer, flag_client, mock_grpc_context
+    ):
+        """UC-031 A1: the music player spawn on a use-time unmute runs in a worker thread, not on the RPC loop."""
+        fake_player_factory = muted_start_servicer.music_player_cls.side_effect
+        spawn_threads: list[int] = []
+
+        def _recording_factory(*args, **kwargs):
+            spawn_threads.append(threading.get_ident())
+            return fake_player_factory(*args, **kwargs)
+
+        muted_start_servicer.music_player_cls.side_effect = _recording_factory
+        flag_client.play_audio = True
+
+        request = audio_pb2.PlaySoundRequest(file_path="beep_loud", volume=1.0, priority=2)
+        await muted_start_servicer.PlaySound(request, mock_grpc_context)
+
+        assert len(spawn_threads) == 1
+        assert spawn_threads[0] != threading.get_ident()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-031", flow="A1")
+    async def test_unreadable_flag_keeps_last_known_value(self, muted_start_servicer, mock_grpc_context):
+        """UC-031 A1: when flagd cannot be read, the last known play_audio value stays in force."""
+        request = audio_pb2.PlaySoundRequest(file_path="beep_loud", volume=1.0, priority=2)
+        with patch("lib.feature_flags.get_flag_client", side_effect=Exception("flagd unavailable")):
+            response = await muted_start_servicer.PlaySound(request, mock_grpc_context)
+
+        assert response.success is True
+        assert muted_start_servicer.audio_enabled is False
+        assert muted_start_servicer.audio_manager.silent is True
+        muted_start_servicer.channel_play.assert_not_called()

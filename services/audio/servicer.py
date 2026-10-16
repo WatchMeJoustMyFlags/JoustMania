@@ -522,8 +522,10 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
     def _on_flags_changed(self, _event_details):
         """Handle flag configuration changes from flagd.
 
-        Re-reads play_audio and menu_voice flags. If play_audio is toggled off,
-        stops any currently playing music immediately.
+        Re-reads play_audio and menu_voice flags. play_audio off stops any
+        currently playing music immediately; play_audio on opens the audio
+        hardware if the service started muted (#1352). Runs on the OpenFeature
+        event thread, so opening the hardware here never blocks the RPC loop.
         """
         try:
             from lib.feature_flags import get_flag_client
@@ -558,18 +560,37 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
             return self.audio_enabled
 
     def _apply_play_audio(self, enabled: bool) -> None:
-        """Apply a play_audio value: off stops the music, on opens the hardware if the service started muted."""
+        """Apply a play_audio value: off stops the music, on opens the hardware if the service started muted.
+
+        ``audio_enabled`` turns True only once the hardware is open: if opening it
+        fails, the service stays muted and the next use-time read retries (#1352).
+        """
         if enabled == self.audio_enabled:
             return
-        logger.info("play_audio flag changed: %s -> %s", self.audio_enabled, enabled)
-        self.audio_enabled = enabled
         if not enabled:
+            logger.info("play_audio flag changed: True -> False")
+            self.audio_enabled = False
             self.audio_manager.stop_music()
             return
         try:
             self.audio_manager.enable_hardware()
         except Exception as e:
-            logger.error("Could not open audio hardware after play_audio was enabled: %s", e, exc_info=True)
+            logger.error("Could not open audio hardware for play_audio (will retry): %s", e, exc_info=True)
+            return
+        logger.info("play_audio flag changed: False -> True")
+        self.audio_enabled = True
+
+    async def _refresh_play_audio(self) -> None:
+        """Re-read play_audio at use time and apply it (#1352).
+
+        Opening the hardware spawns the music player process (seconds on a Pi on
+        the first start), so that path runs in a worker thread, off the event loop.
+        """
+        enabled = self._read_play_audio_flag()
+        if enabled and not self.audio_enabled and self.audio_manager.silent:
+            await asyncio.to_thread(self._apply_play_audio, enabled)
+        else:
+            self._apply_play_audio(enabled)
 
     def _build_sound_registry(self):
         """
@@ -705,10 +726,13 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         span.set_attribute("audio.file", resolved_path)
 
         # Check if audio is disabled via settings (read at use time, #1352)
-        self._apply_play_audio(self._read_play_audio_flag())
+        await self._refresh_play_audio()
         if not self.audio_enabled:
             span.set_attribute("audio.muted", True)
             return audio_pb2.PlaySoundResponse(success=True, error="")  # Silently succeed
+        if self.audio_manager.silent:
+            # Enabled, but the hardware is not open: nothing will be heard.
+            span.set_attribute("audio.silent", True)
 
         success = self.audio_manager.play_sound(
             file_path=resolved_path, volume=request.volume or 1.0, priority=request.priority
@@ -728,7 +752,7 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         span.set_attribute("audio.pattern", request.file_pattern)
 
         # Check if audio is disabled via settings (read at use time, #1352)
-        self._apply_play_audio(self._read_play_audio_flag())
+        await self._refresh_play_audio()
         if not self.audio_enabled:
             span.set_attribute("audio.muted", True)
             return audio_pb2.PlayMusicResponse(track_id="muted", success=True, error="")
