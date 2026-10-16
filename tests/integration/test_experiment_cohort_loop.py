@@ -148,7 +148,9 @@ LOG_PROMOTE_FAILED = "experiment.promote_failed"  # promote attempted, sink unav
 # Polling budgets (seconds). Generous worst-case bounds under CI load, NOT paid
 # waits — each poll returns as soon as the line appears.
 DECLARE_TIMEOUT = 60.0
-CONCLUDE_TIMEOUT = 180.0
+# Experiments are archetype-only and run one game at a time (UC-046 BR-010): the
+# pinned quick_cascade pair is two sequential ~30 s games plus spawn ticks.
+CONCLUDE_TIMEOUT = 300.0
 
 
 # LIVE numeric tuning flags (#1044). These take PRECEDENCE over the AGENT_*
@@ -173,6 +175,12 @@ _TUNING = {
     # absolute games-budget backstop (#1001): guarantees termination even if the
     # paired arms never both reach target N — a hard bound well under CONCLUDE_TIMEOUT.
     "experiment_max_games": 6,
+    # UC-046: every experiment runs on archetypes. The default selection `all`
+    # includes calm_long, which only ends at the 300 s cap; pin the fast
+    # quick_cascade archetype (one pair, then the experiment concludes, A6) and a
+    # short safety cap so the soak stays well inside CONCLUDE_TIMEOUT.
+    "experiment.mock_archetypes": "quick_cascade",
+    "experiment.max_game_seconds": 90,
 }
 
 
