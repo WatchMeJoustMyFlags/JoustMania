@@ -128,6 +128,11 @@ func (a *GatedRolloutActuator) ApplyControllerCount(variant string) (applied boo
 	return true, a.writer.SetControllerCount(variant)
 }
 
+// Compile-time check: the InfraLoop uses ApplyControllerCount only through this
+// optional interface, so a signature drift would silently fall back to the
+// two-read DryRun()+SetControllerCount path.
+var _ decision.RolloutApplier = (*GatedRolloutActuator)(nil)
+
 // NextStage / StageVariantForValue delegate to the wrapped writer so the
 // value↔variant ladder mapping is single-sourced regardless of the gate.
 func (a *GatedRolloutActuator) NextStage(current int) (variant string, value int, ok bool) {

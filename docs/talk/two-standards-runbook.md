@@ -392,9 +392,12 @@ Expected in Jaeger (`agent.infrastructure.decision`):
 Variant for the permissions story: with `remediation_allowed=off` the span says
 `remediation.action=recommended_only` and nothing is written.
 
-Reset (and restart the agent: the post-rollback cooldown and the last written
-stage live in memory, so a restart starts the next run from a clean slate. A
-dry run with `rollout_enabled` off no longer leaves stale state behind):
+A dry run (`rollout_enabled` off) keeps no rollout state, so flipping it back
+on resumes without a restart.
+
+Reset after a real run (and restart the agent: the post-rollback cooldown and the
+last written stage live in memory, and the manual `rollout.json` reset below does
+not clear them):
 
 ```bash
 setflag "$RF" strategy off; setflag "$RF" target_backend python

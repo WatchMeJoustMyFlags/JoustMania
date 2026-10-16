@@ -352,6 +352,13 @@ func (l *InfraLoop) OnInfraEvaluate(ctx context.Context, snap infracontext.Infra
 		return
 	}
 
+	// Whether this cycle is a rehearsal (rollout_enabled off). Read before taking
+	// mu: GatedRolloutActuator resolves a flag here. Decisions are paced against
+	// the dry-run fields when true; the write result (applyLocked) is what decides
+	// which state is committed, so a gate flip mid-cycle cannot commit a write that
+	// never landed. Every active-rollout span carries it, so it is read each cycle.
+	dryRun := l.rollout == nil || l.rollout.DryRun()
+
 	// (4) Decide.
 	l.mu.Lock()
 	action := RemediationNone
@@ -375,11 +382,6 @@ func (l *InfraLoop) OnInfraEvaluate(ctx context.Context, snap infracontext.Infra
 	// progressive ladder unchanged — no regression.
 	immediate := snap.Window.RolloutStrategy == rolloutStrategyImmediate
 
-	// Whether this cycle is a rehearsal. Decisions are paced against the dry-run
-	// fields when true; the write result (applyLocked) is what decides which state
-	// is committed, so a gate flip mid-cycle cannot commit a write that never landed.
-	dryRun := l.rollout == nil || l.rollout.DryRun()
-
 	switch {
 	case immediate:
 		// Observe-only: action remains RemediationNone, no write, no ladder climb.
@@ -394,6 +396,7 @@ func (l *InfraLoop) OnInfraEvaluate(ctx context.Context, snap infracontext.Infra
 				dryRun, writeErr = l.applyLocked(variant, dryRun)
 				switch {
 				case writeErr != nil:
+					// nothing committed: the next eligible cycle retries
 				case dryRun:
 					l.dryRunLastExpansion = now
 				default:
@@ -429,6 +432,7 @@ func (l *InfraLoop) OnInfraEvaluate(ctx context.Context, snap infracontext.Infra
 			dryRun, writeErr = l.applyLocked(rolloutStageNoneVariant, dryRun)
 			switch {
 			case writeErr != nil:
+				// nothing committed: the next failing cycle retries
 			case dryRun:
 				// Rehearsal: nothing was written, so the stage will not return to 0.
 				// Do not mark it in flight or start the real cooldown (UC-045 A4).
@@ -482,10 +486,9 @@ func (l *InfraLoop) applyLocked(variant string, dryRun bool) (bool, error) {
 //     cooldownUntil, blocking re-expansion for a window after a rollback.
 //
 // In a dry run (dryRun=true) the reconcile and hold checks still apply, since a
-// real write may be in flight from before the gate went off. The dwell is
-// measured from the later of the last real and the last rehearsed expansion, and
-// a rehearsed rollback's cooldown also holds rehearsed expansions. None of the
-// dry-run pacing affects a real cycle.
+// real write may be in flight from before the gate went off, and the dwell is
+// measured from the later of the last real and the last rehearsed expansion. A
+// rehearsed rollback's cooldown holds rehearsed AND real expansions (see below).
 func (l *InfraLoop) shouldExpandLocked(now time.Time, observedStage int, dryRun bool) bool {
 	if observedStage < l.lastWritten {
 		// The observation has not yet caught up to the stage we already wrote — the
@@ -502,7 +505,11 @@ func (l *InfraLoop) shouldExpandLocked(now time.Time, observedStage int, dryRun 
 	if l.holdExpansion != nil && l.holdExpansion(now) {
 		return false
 	}
-	if dryRun && now.Before(l.dryRunCooldownUntil) {
+	// A rehearsed rollback's cooldown holds expansion in both modes. Holding a
+	// REAL expansion right after rollout_enabled is turned back on is the
+	// conservative choice: the rehearsal said the stage was unhealthy, and the
+	// cooldown only ever delays an expansion, never a rollback.
+	if now.Before(l.dryRunCooldownUntil) {
 		return false
 	}
 	return true
@@ -562,11 +569,11 @@ func (l *InfraLoop) emitDecisionSpan(
 	case RemediationExpand:
 		l.log.Info("agent.rollout_expand",
 			"target", target, "from_stage", stage, "to_stage", expandedTo,
-			"to_variant", wroteVariant)
+			"to_variant", wroteVariant, "dry_run", dryRun)
 	case RemediationRollback:
 		l.log.Warn("agent.rollout_rollback",
 			"target", target, "from_stage", stage, "to_variant", wroteVariant,
-			"violations", fit.ViolationsString())
+			"violations", fit.ViolationsString(), "dry_run", dryRun)
 	case RemediationRecommendedOnly:
 		l.log.Warn("agent.rollout_rollback_recommended",
 			"target", target, "stage", stage, "violations", fit.ViolationsString(),
