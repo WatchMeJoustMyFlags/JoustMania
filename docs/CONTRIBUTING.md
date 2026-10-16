@@ -89,8 +89,9 @@ are where docs drifted from code in the past.
      flow `An`), reference the FR IDs it fulfils.
    - New or changed flag, span, attribute, metric, RPC, decide question or
      outcome: edit the row in `docs/specs/*.md` *first*; the code must match it.
-3. **Implement and test.** Tests should name the spec ID they cover (in a
+3. **Implement and test.** New tests should name the spec ID they cover (in a
    docstring, test name or comment), e.g. `# UC-040 A2: remote timeout → rules`.
+   Existing tests are not retrofitted.
 4. **Close the loop.** When the code ships, move the status forward
    (`Open` → `Implemented` → `Verified` once an automated test covers it) and
    update the "Traceability" line of the technical spec section with the code
@@ -100,12 +101,35 @@ are where docs drifted from code in the past.
 The spec PR can precede the code PR (useful for review of intent), but a code PR
 that changes behaviour without a spec change is incomplete.
 
+**Fixing a logged discrepancy.** A `D-*` row in
+[specs-inventory.md](specs-inventory.md#4-discrepancies-found) records a place where the code is wrong
+against the spec. The fixing PR updates the status of the affected requirement and marks the row
+`Resolved by #N`; the spec text itself already describes the target.
+
+**Hotfixes** may merge code first; the spec follow-up PR lands within 3 days and the gap is logged in
+the inventory until then.
+
+### Status vocabularies
+
+Requirements use the AIUP requirement statuses (`Open`, `In Progress`, `Implemented`, `Verified`,
+`Deferred`, `Rejected`); use cases use the use-case statuses, which map as follows: `Draft` / `Review` /
+`Approved` = requirement `Open` or `In Progress`, `Implemented` = `Implemented`, `Tested` / `Done` =
+`Verified`, `Obsolete` = `Rejected`.
+
+### Identifiers in use cases (documented deviation)
+
+The `use-case-spec` skill asks for flows without implementation details. JoustMania's use cases
+deliberately name flags, span names and event types in their steps and business rules, because those
+identifiers are the contract the agent, the dashboard and the tests depend on, and naming them keeps
+traceability cheap. Every use case also ends with a "Code / tests" line.
+
 ### Pure refactors and non-behavioural changes
 
 No spec change is needed when observable behaviour is unchanged: the same RPCs,
 messages, flags (keys, variants, defaults), spans, attributes, metrics, log lines
 that tests or dashboards rely on, and the same decision outcomes. Typical cases:
-internal refactors, test-only changes, dependency bumps, CI changes, typo fixes.
+internal refactors, test-only changes, dependency bumps, CI-only changes, typo fixes.
+Bot PRs (Renovate, release-please, `chore(deps)`) are exempt from the "Spec changes" section.
 Write `Spec changes: none: <reason>` in the PR body
 (e.g. `none: refactor, no behaviour change`). If you are unsure whether
 something is observable, it probably is: update the spec.

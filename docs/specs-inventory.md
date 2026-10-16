@@ -1,7 +1,7 @@
 # Specs inventory
 
 > Snapshot of every Markdown document on `main` @ 2d162b33 (2026-10-16) when the AIUP spec tree was
-> introduced (epic #1260), updated for PRs #1257, #1259 and #1261 (merged the same day, `main` @ 354f36c5): what it covers, whether it is still true, and where its content now lives.
+> introduced (epic #1260), updated for PRs #1256, #1257, #1259, #1261 and #1265 (merged the same day, `main` @ 81c9ecea): what it covers, whether it is still true, and where its content now lives.
 > Followed by the **discrepancies found** between docs and code. Index: [README.md](README.md).
 
 **Status legend.** *current*: matches the code (minor drift at most). *stale*: contains claims the code on
@@ -52,6 +52,7 @@ banner pointing at their replacement; nothing was deleted.
 | `agent-demo-runbook.md` | 482 | Three-act demo operator playbook | current (one stale line) | Same stale log grep (D-A7); tells you to edit base `agent.json` while the demo serves `ci/`. | guide; UC-070 |
 | `agent-dry-run-runbook.md` | 159 | Experiment loop dry run | stale (minor) | Seeded flag is `windows`, not `death_grace_period_seconds`; omits the env gates on promotion (D-A6). | guide; UC-043 |
 | `agent-inference.md` | 95 | Who calls which model | current | Matches #1234 (PR #1252) / #1244; does not say the #1207 length gate is retired, nor the backend role split (C-018). | decide contract; UC-042, UC-044 |
+| `talk/two-standards-runbook.md` | n/a (PR #1256, merged after the snapshot) | Talk operator runbook: setup, timing, beat table, pre-flight, reset, failure modes | current | Added by PR #1256; beats map to UC-070. | guide; UC-070 |
 | `agent-trace-viz.md` | 307 | Agent trace on stage | stale (minor) | `agent.span_received` retired (#1053); `agent.signal_received` is a remote child of `gameplay_phase`, not a root (D-T2). | telemetry §agent; guide |
 | `design/agent-experiment-cohorts.md` | 389 | Cohort framework design (#982) | historical | Says "no implementation" but shipped (`services/agent/experiment/`). | ENT (Experiment, Arm), UC-043; history |
 | `research/722-intervention-surface.md` | 576 | Intervention vocabulary research | historical | Allow-list format and limiter location changed (#1127, #919). | ENT (Intervention), flags; history |
@@ -62,6 +63,8 @@ banner pointing at their replacement; nothing was deleted.
 | `research/spike-survival-calibration-1125.md` | 153 | Offline fitness calibration | historical | Self-declared offline evidence (#1125 open). | history |
 
 ## 3. Service, tool and test docs
+
+`scripts/talk-preflight.sh` (PR #1256) is a read-only pre-flight check, not a doc; it is FR-093 and is consumed by UC-070.
 
 | Doc | Lines | Covers | Status | Evidence | Target |
 |---|---|---|---|---|---|
@@ -118,8 +121,8 @@ spec PRs. Verified against `main` @ 2d162b33; "verified by reading" means not ru
 | ID | Doc claim | Code | Kind |
 |---|---|---|---|
 | D-G1 | "13 game modes" incl. Commander, Ninja, Random (ARCHITECTURE, proto README, GC README) | 10 registered in `_GAME_CLASSES` (`services/game_coordinator/game_factory.py:56-67`); the three are enum names only. A raw start of one publishes `game_start` then `game_error "not implemented"`. | stale doc |
-| D-G2 | `lib/types.py` `minimum_players` per mode (Traitor/Zombies 4, Teams 3, ...) | Never enforced; the only gate is ≥ 2 players (`services/game_coordinator/servicer.py:574`, `games/base.py:2641`, `services/menu/state_manager.py:289`). | likely bug |
-| D-G3 | Werewolf, Zombie, Fight Club and Tournament behave like other modes for music tempo | They override `run()` and never start `_music_loop`, `_warmup_ema` or `set_game_transaction_context`; tempo stays at 1.0 and the slow threshold table applies all game (`werewolf.py:513`, `zombie.py:582`, `fight_club.py:571`, `tournament.py:784`). Verified by reading. | likely bug |
+| D-G2 | `lib/types.py` `minimum_players` per mode (Traitor/Zombies 4, Teams 3, ...) | Never enforced; the only gate is ≥ 2 players (`services/game_coordinator/servicer.py:574`, `games/base.py:2641`, `services/menu/state_manager.py:289`). | likely bug (issue #1277) |
+| D-G3 | Werewolf, Zombie, Fight Club and Tournament behave like other modes for music tempo | They override `run()` and never start `_music_loop`, `_warmup_ema` or `set_game_transaction_context`; tempo stays at 1.0 and the slow threshold table applies all game (`werewolf.py:513`, `zombie.py:582`, `fight_club.py:571`, `tournament.py:784`). Verified by reading. | likely bug (issue #1273) |
 | D-G4 | Proto `GameState.ENDING`, "STARTING = countdown in progress" | Session state is never set to ENDING; it becomes RUNNING on `game_started`, which base modes publish **before** the countdown (`games/base.py:2693` vs `:2747`; `game_session.py:225-239`). | stale doc / semantics |
 | D-G5 | Events `game_end`, `score_update`, `player_death` (FFA), `team_victory` | Published names are `game_ended`, `team_winner`; `score_update` never published; `player_death` published only by NonStop (FFA/Teams record it as a span event). | stale doc |
 | D-G6 | Zombie duration "~3 min for 4 players" (`zombie.py:60-62` docstring) | Formula `((n*3)/16)*60` gives 45 s for 4 players, 135 s for 12 (`zombie.py:71`). | stale comment or bug |
@@ -133,36 +136,37 @@ spec PRs. Verified against `main` @ 2d162b33; "verified by reading" means not ru
 
 | ID | Doc claim | Code | Kind |
 |---|---|---|---|
-| D-M1 | MOVE cycles games in the lobby (controller-guide) | SELECT is wired to cycle (`services/menu/handlers/connected.py:59-62`), but calls `self._state_manager.settings`, which does not exist (`connected.py:116,123`; `state_manager.py:57-81`); unit tests mask it with a MagicMock. Working paths: admin Cross, `ProcessInput`. | **likely bug** (+ stale doc) |
+| D-M1 | MOVE cycles games in the lobby (controller-guide) | SELECT is wired to cycle (`services/menu/handlers/connected.py:59-62`), but calls `self._state_manager.settings`, which does not exist (`connected.py:116,123`; `state_manager.py:57-81`); unit tests mask it with a MagicMock. Working paths: admin Cross, `ProcessInput`. | **likely bug** (+ stale doc) (issue #1272) |
 | D-M2 | `menu_auto_start` equals StartMenu | The boot path sets RUNNING and FFA only: no lobby music, no idle monitor, no `menu_started`, ignores `current_game` (`services/menu/server.py:94-98`). | likely bug |
 | D-M3 | Admin: Trigger/Cross change values, 3 or 8 options, 3 sensitivity levels, option colours | Select/Start change values, Cross cycles mode, Trigger hold force-starts; 4 options (sensitivity, num_teams, force_all_start, agent_control); 5 sensitivity levels (`admin.py:8-16,133-144,920-927`). | stale doc |
 | D-M4 | Admin timeout "60 s of inactivity" | 60 s from entry, never extended (`admin.py:346,359-374`); exit always returns to CONNECTED (un-readies). | stale doc |
 | D-M5 | `admin_action` menu event | Never published. Auto-start publishes no `game_requested` (only force start does). | stale doc |
 | D-M6 | #818 truthful display via `_effective_variant` (OWNERSHIP_MODEL §6) | Defined, never called; admin feedback shows the on-disk baseline (`admin.py:1196`). | likely bug |
 | D-M7 | Controller states DISCONNECTED → CONNECTED → READY | Menu states CONNECTED, READY, ADMIN, IDLE; disconnected controllers are removed (`services/menu/handlers/base.py:68-75`). | stale doc |
-| D-M8 | Zombies / NonStop announced and coloured in the lobby | Voice and colour maps use keys `Zombie`, `NonstopJoust`; enum names are `Zombies`, `NonStop` → no announcement, orange like FFA (`services/menu/utils/audio.py:38-51`, `utils/led.py:14-27`). | likely bug |
-| D-M9 | Dashboard mode selector starts the chosen mode | `start_game` web command ignores `mode`; the selector offers Commander / Ninja and omits Traitor, Fight Club, NonStop (`services/dashboard/src/index.html:19-28`; `services/menu/servicer.py:459-460`). | likely bug |
+| D-M8 | Zombies / NonStop announced and coloured in the lobby | Voice and colour maps use keys `Zombie`, `NonstopJoust`; enum names are `Zombies`, `NonStop` → no announcement, orange like FFA (`services/menu/utils/audio.py:38-51`, `utils/led.py:14-27`). | likely bug (issue #1276) |
+| D-M9 | Dashboard mode selector starts the chosen mode | `start_game` web command ignores `mode`; the selector offers Commander / Ninja and omits Traitor, Fight Club, NonStop (`services/dashboard/src/index.html:19-28`; `services/menu/servicer.py:459-460`). | likely bug (issue #1278) |
 
 ### 4.5 Controllers, pairing, LEDs (D-C)
 
 | ID | Doc claim | Code | Kind |
 |---|---|---|---|
-| D-C1 | 1000 Hz poll → 60 Hz active / 10 Hz idle stream | HID ≈ 1 kHz; CM loop fixed 100 Hz; stream 60 Hz by flag (30 Hz fallback); no idle stream; the EMA lives in the game coordinator. | stale doc |
-| D-C2 | Chaos wrapping only when chaos is configured | `_is_chaos_enabled()` returns true whenever the flag evaluates, ignoring the value, so real adapters are always wrapped (`services/controller_manager/backend_factory.py:89-100`); faults still gated by `chaos_fault_type=none`. | likely bug |
-| D-C3 | LED colours, 50 % dim, orange warning, 1 s countdown phases, 2 s rainbow, battery tiers (controller-feedback, led-feedback, menu README) | `lib/colors.py`, `DIM_FACTOR=0.3`, white warning flash, 750 ms phases, 3000 ms rainbow, 5 battery tiers (`services/controller_manager/feedback_manager.py`). Low-battery effect has no producer. | stale doc |
+| D-C1 | 1000 Hz poll → 60 Hz active / 10 Hz idle stream (`.claude/rules/architecture.md`, ARCHITECTURE, `services/controller_manager/README.md:147-157`, and the stale docstrings `services/controller_manager/discovery_loop.py:242,466`) | HID ≈ 1 kHz; CM loop fixed 100 Hz; stream 60 Hz by flag (30 Hz fallback); no idle stream; the EMA lives in the game coordinator. | stale doc |
+| D-C2 | Chaos wrapping only when chaos is configured | `_is_chaos_enabled()` returns true whenever the flag evaluates, ignoring the value, so real adapters are always wrapped (`services/controller_manager/backend_factory.py:89-100`); faults still gated by `chaos_fault_type=none`. | likely bug (issue #1274) |
+| D-C3 | LED colours, 50 % dim, orange warning, 1 s countdown phases, 2 s rainbow, battery tiers (controller-feedback, led-feedback, menu README) | `lib/colors.py`, `DIM_FACTOR = 0.3` (`services/menu/utils/led.py:33`), white warning flash, 750 ms phases, 3000 ms rainbow, 5 battery tiers (`services/controller_manager/feedback_manager.py`). Low-battery effect has no producer. | stale doc |
 | D-C4 | Pairing daemon is a host systemd service; LED feedback during pairing | Compose container (`docker-compose.yml:277-315`); no LED writes in `psmove_pairing/`. | stale doc |
 | D-C5 | RSSI metric `controller_rssi_dbm`, weak-signal LED | `bluetooth_device_rssi_dbm` from the pairing daemon; CM hardcodes rssi 0 (`state_cache.py:226`); `lib/hci_rssi.py` is dead code. | stale doc |
 | D-C6 | Pairing backend flag values `hidapi` / `rust` | Flag values are `python` / `rust` / `unstable`; anything but `rust` falls back to hidapi (`psmove_pairing/config.py:65-77`). | vocabulary mismatch |
+| D-C7 | `SimulateMovement` sets a persistent acceleration (`tools/demo/demo_driver.py:32`) | The next mock poll (100 Hz) overwrites it with noise, so scripted motion lasts about 10 ms; demo scenarios and the shadow-game runner drive mostly noise; only `SimulateDeath` is reliable (`services/controller_manager/multiplexer/mock_adapter.py:159-168`). | likely bug (issue #1279) |
 
 ### 4.6 Agent (D-A)
 
 | ID | Doc claim | Code | Kind |
 |---|---|---|---|
-| D-A1 | Startup self-heal of a corrupt `interventions.json` (#924; agent-act-runbook) | Never runs: `services/agent/main.go:547` type-asserts `*actions.Writer` but the sink is a `GatedActionSink` (`main.go:148-152`). Validate-after-write still works. | **bug** |
-| D-A2 | Interventions affect only the deciding game (coordinator docstring `interventions.py:555-561`) | The writer emits no `gameId` targeting, so an un-targeted state flip resolves for every live session, including the real game when a shadow loop decided (`services/agent/actions/writer.go:405-466`). Needs a runtime check; design issue #920. | **likely bug** (FR-069) |
+| D-A1 | Startup self-heal of a corrupt `interventions.json` (#924; agent-act-runbook) | Never runs: `services/agent/main.go:547` type-asserts `*actions.Writer` but the sink is a `GatedActionSink` (`main.go:148-152`). Validate-after-write still works. | **bug** (issue #1271) |
+| D-A2 | **Canonical statement.** Interventions affect only the deciding game (coordinator docstring `interventions.py:555-561`) | The writer emits no `gameId` targeting, so an un-targeted state flip resolves for every live session, including the real game when a shadow loop decided (`services/agent/actions/writer.go:405-466`). Needs a runtime check; design issue #920. | **likely bug** (FR-069) (issue #1269) |
 | D-A3 | OWNERSHIP_MODEL invariants 1 and 2: agent never writes `game.json`; write surfaces disjoint | Experiment writer adds shadow-scoped targeting to `game.json`; the autonomous promoter writes the real default; menu and agent share `game.json` without a lock. The `:ro` agent.json mount in comments does not exist (`docker-compose.yml:788`). | stale doc + design gap |
 | D-A4 | `AGENT_EXPERIMENTS_ENABLED` gates the experiment registry (agent README:1031) | Loop always built; live flag `experiments_enabled` governs, env is a fallback when flagd is unreachable (`services/agent/experiment_loop.go:497-516,1265-1273`). | stale doc |
-| D-A5 | The experiment proposer obeys the kill switch | M7-4 proposer checks neither `enabled`, `experiments_enabled` nor the LLM budget (`services/agent/main.go:796-810`); with `AGENT_INFERENCE_BACKEND=claude` it calls Claude and writes shadow-scoped `game.json` targeting while the agent is off. | **likely bug** |
+| D-A5 | The experiment proposer obeys the kill switch | M7-4 proposer checks neither `enabled`, `experiments_enabled` nor the LLM budget (`services/agent/main.go:796-810`); with `AGENT_INFERENCE_BACKEND=claude` it calls Claude and writes shadow-scoped `game.json` targeting while the agent is off. | **likely bug** (issue #1270) |
 | D-A6 | Promotion governed by `code_improvement.*` flags | Also env-gated (`AGENT_CODE_IMPROVEMENT_ENABLED`, `AGENT_AUTONOMOUS_ENABLED`, `GITHUB_*`, ...; `services/agent/promote/realdefault.go:117-124`), none passed through compose, so the stock stack only records no-op promotions. Issue mode needs `target=github` at startup. | stale doc + gap |
 | D-A7 | Log line `Agent intervention writes enabled (#730)` (act / demo runbooks) | Now `Agent intervention writes gated by LIVE interventions_enabled flag ...` (`main.go:149`). | stale doc |
 | D-A8 | tools/demo README edits base `services/flagd/agent.json` | `make dry-run` serves `services/flagd/ci/`. | stale doc |
@@ -177,7 +181,7 @@ spec PRs. Verified against `main` @ 2d162b33; "verified by reading" means not ru
 |---|---|---|---|
 | D-K1 | `Noul` dropped as unknown (old `decide.go:37-38` comment) | Real Jev primitive (#1229). | **Resolved by PR #1261** (`decide.KindNoul`, `Answer.Noul`) |
 | D-K2 | `fallback_reason=unavailable` / `invalid` (jev README, #1229 comments) | `backend_unavailable` / `invalid_answer` (`decision/decide_registry.go:46,54`). | **Resolved by PR #1261** (README rewritten; #1229 comments still use the old words) |
-| D-K3 | Epic #1225 body: decide span child of `agent.decision`; outcomes act / shadow / fallback; rules confidence = top-1 margin; held answers queued | Sibling (rules) / parent (remote); outcomes act, held, noop, invalid, fallback, discarded; 1 − p(noop); held does nothing. | stale issue text |
+| D-K3 | Epic #1225 body: decide span child of `agent.decision`; outcomes act / shadow / fallback; rules confidence = top-1 margin; held answers queued | Sibling (rules) / parent (remote); outcomes act, held, noop, invalid, fallback, discarded; rules confidence = 1 − p(noop) when an intervention is chosen, p(noop) when noop is chosen; held does nothing. | stale issue text |
 | D-K4 | #1231 body cites the #1207 length gate (8 s) | The gate was removed from the code by PR #1252 (the change for issue #1234: LiteLLM gateway and legacy in-game LLM path removal); `remoteDecideAdmitted` is always true by design (`services/agent/decision/decide_hook.go:307-315`, comment updated in PR #1257). | stale issue text |
 | D-K6 | Shipped defaults made remote Claude decisions time out: 2500 ms timeout vs 3.4 to 5.5 s measured (#1231) | `decision.claude.timeout_ms` default 5000 ms, `stage` budget variant, leaner output; warm ≈ 2.7 to 3.0 s. | **Resolved by PR #1257** |
 | D-K5 | Agent README: `enabled=false` stops "before any spans are emitted" | A throttled `agent.disabled` span is emitted (`decision/decision.go:472-476`). | stale doc |
@@ -186,7 +190,7 @@ spec PRs. Verified against `main` @ 2d162b33; "verified by reading" means not ru
 
 | ID | Finding | Kind |
 |---|---|---|
-| D-F1 | `game_instructions` has no reader: the admin toggle has no effect. | likely bug |
+| D-F1 | `game_instructions` has no reader: the admin toggle has no effect. | likely bug (issue #1277) |
 | D-F2 | feature-flags.md misses ~30 flags and says agent lifecycle flags need a restart (hot-reloaded since #927). | stale doc |
 | D-F3 | `code_improvement.validation_games`, `fitness_improvement_threshold`, `revert_on_degradation` have no production reader (#964). | gap |
 | D-F4 | `policy.movement_variance_window` is read and logged but the rules engine uses a static 10 s (`decision/config.go:125`). | likely bug |
@@ -199,7 +203,7 @@ spec PRs. Verified against `main` @ 2d162b33; "verified by reading" means not ru
 |---|---|---|---|
 | D-T1 | Each service exposes `/metrics`; "Jaeger exporter" | OTLP push to the collector; only controller-manager also runs a prometheus_client endpoint on 8000. | stale doc |
 | D-T2 | `agent.signal_received` is a trace root; `agent.span_received` exists (agent-trace-viz) | Remote child of the coordinator's `gameplay_phase` (#1195); `agent.span_received` retired (#1053). | stale doc |
-| D-T3 | Alerts `GameCrashRate`, `ServiceUpdatePending` | Use `games_force_ended_total` and `joustmania_service_update_pending`, which no code defines: they can never fire (`services/prometheus/alerts.yml:89-100`). | bug |
+| D-T3 | Alerts `GameCrashRate`, `ServiceUpdatePending` | Use `games_force_ended_total` and `joustmania_service_update_pending`, which no code defines: they can never fire (`services/prometheus/alerts.yml:89-100`). | bug (issue #1275) |
 | D-T4 | Span names `player_{serial}_lifecycle`, `ffa_game_loop`, `GrpcInstrumentor*` (DISTRIBUTED_TRACING, PER_PLAYER_TRACING) | `player_lifecycle` (renamed `player: {name}`), `team_lifecycle`, custom interceptors. | stale doc |
 | D-T5 | Metrics `game_loop_latency_ms`, `game_configured_update_frequency_hz`, `game_loop_iterations_total`, `config_changes_total` | Not defined; nearest are `game_loop_jitter_ms`, `game_current_update_frequency_hz`, `game_config_changes_total`. | stale doc |
 | D-T6 | Naming rules in `.claude/rules/development.md` | Violations: gauge `active_controllers_total`; `games_*`, `bluetooth_*`, `event_bus_*` lack a service prefix; `audio_sounds_played_total` / `audio_playback_errors_total` emitted by audio **and** game-coordinator with different labels; five histograms without `_seconds` / `_bytes`; span examples do not exist. | convention drift |

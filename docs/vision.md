@@ -21,7 +21,7 @@ through flags.
 | Stakeholder | What they want from JoustMania |
 |---|---|
 | **Player** | Pair a controller, join the lobby, play a fair, fast, loud game with friends without touching a screen. |
-| **Game host / admin** | Pick the game mode and calibrate it (sensitivity, teams, timers) from a controller, start games, and pull the plug on the agent from the device if needed. |
+| **Game host / admin** | Pick the game mode and calibrate it (sensitivity, number of teams, force-all-start, and the agent's allowed interventions) from a controller, start games, and pull the plug on the agent from the device if needed. |
 | **Operator** | Run the stack on a Pi (or a laptop with mock controllers), see what is happening in traces, metrics, logs and dashboards, and roll infrastructure changes forward and back safely. |
 | **Presenter** | Demonstrate "Two Standards Walk Into an Agent" live: flip flags on stage and show the effect in the game and in Jaeger within seconds, with a safe fallback when the venue WiFi fails. |
 | **Agent** (system actor) | Observe games through OTel, decide bounded in-game interventions, run shadow experiments, and propose or promote improvements, all through OpenFeature flags. |
@@ -57,8 +57,7 @@ no human in the loop. The authoritative statement of that goal, its loop
 
 **Why NORTHSTAR.md stays a separate file instead of becoming a section here.**
 It is a short, deliberately opinionated document that agent work is required to
-read first (it is linked from `CLAUDE.md`), it is referenced by in-flight work
-(the talk runbook PR #1256 adds a link to it), and it changes at a different
+read first (it is linked from `CLAUDE.md`), the talk runbook links to it (PR #1256), and it changes at a different
 rhythm from the product vision: the northstar moves when the maintainer re-scopes
 the agent; this vision moves when the product changes. Folding it in would break
 those links and mix two change rhythms. This document therefore *summarises and
@@ -95,12 +94,11 @@ open standards are enough to build, observe and govern an autonomous agent:
   interventions are allowed, kill switch) is a flag the presenter can flip on
   stage.
 
-Decision backends have fixed roles (maintainer decision, epic #1225; C-018): **Jev** decides in-game
-interventions, **Claude** writes the post-game retro / summary and proposes experiments and is the in-game
-backup by a manual flag flip, and the **rules** engine is the automatic floor.
+Decision backends have fixed roles: Jev decides in game, Claude reviews and proposes after the game and is
+the manual in-game backup, and the rules engine is the automatic floor. The canonical statement is
+[C-018](requirements.md#constraints).
 
-The demo arc (issue #743; the runbook itself is in flight in PR #1256 as
-`docs/talk/two-standards-runbook.md`): observe a live game → switch the decision
+The demo arc (issue #743; runbook: [docs/talk/two-standards-runbook.md](talk/two-standards-runbook.md), PR #1256): observe a live game → switch the decision
 backend live (Jev as primary, Claude as backup, OpenAI-compatible, rules) → narrow permissions and
 hit the kill switch → optional infrastructure rollout and automatic rollback →
 pull the network and show the rules fallback. See [UC-070](use_cases/UC-070.md).
