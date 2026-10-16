@@ -144,3 +144,42 @@ def test_hard_class_specs_are_the_cued_set():
         "revive_player",
         "end_game",
     }
+
+
+class _RecordingAudio:
+    """Stands in for ``audio_pb2_grpc.AudioServiceStub``: records PlaySound requests."""
+
+    def __init__(self):
+        self.sounds: list[str] = []
+
+    async def PlaySound(self, request):  # noqa: N802 - gRPC stub name
+        self.sounds.append(request.file_path)
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-031", flow="main", br=["BR-002"])
+async def test_intervention_cue_is_an_led_pulse_not_a_sound():
+    """UC-031 BR-002: agent_intervention_cue pulses the LEDs of a real game and plays no sound."""
+    from proto import controller_manager_pb2
+    from services.game_coordinator.games.base import Player
+    from services.game_coordinator.games.ffa import FFAGame
+    from services.game_coordinator.tests.conftest import MockControllerManagerService, async_noop
+
+    audio = _RecordingAudio()
+    stream = FakeStream()
+    game = FFAGame(
+        controller_manager_client=MockControllerManagerService(num_controllers=2),
+        event_publisher=async_noop,
+        audio_client=audio,
+        game_id="test_cue_br002",
+    )
+    game.gameplay_stream = stream
+    for serial in ("A", "B"):
+        game.players[serial] = Player(serial=serial, alive=True, color=(0, 255, 0))
+    mgr = _manager({"agent_intervention_cue": True})
+
+    await mgr._emit_agent_cue(_spec("end_game"), None, game)
+
+    assert {c.game_effect.serial for c in stream.writes} == {"A", "B"}
+    assert all(c.game_effect.effect == controller_manager_pb2.GAME_EFFECT_PULSE for c in stream.writes)
+    assert audio.sounds == []

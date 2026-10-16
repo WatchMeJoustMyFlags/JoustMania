@@ -26,6 +26,7 @@ class TestPlaySound:
         assert response.error == ""
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-031", flow="A1")
     async def test_play_sound_audio_disabled(self, servicer, mock_grpc_context):
         servicer.audio_enabled = False
         servicer.audio_manager.play_sound = MagicMock()
@@ -35,6 +36,7 @@ class TestPlaySound:
         servicer.audio_manager.play_sound.assert_not_called()
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-031", flow="main", steps=[4])
     async def test_play_sound_resolves_vox_path(self, servicer, mock_grpc_context):
         servicer.audio_manager.play_sound = MagicMock(return_value=True)
         # "congratulations" is in the registry as a vox sound
@@ -47,6 +49,7 @@ class TestPlaySound:
         assert "congratulations" in resolved_path
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-031", flow="main", steps=[4])
     async def test_play_sound_voice_selection(self, servicer, mock_grpc_context):
         servicer.menu_voice = "aaron"
         servicer.audio_manager.play_sound = MagicMock(return_value=True)
@@ -94,6 +97,7 @@ class TestPlayMusic:
         assert response.track_id == "track-123"
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-031", flow="A1")
     async def test_play_music_audio_disabled(self, servicer, mock_grpc_context):
         servicer.audio_enabled = False
         request = audio_pb2.PlayMusicRequest(file_pattern="Joust/music/*.ogg", loop=True, tempo=1.0)
@@ -244,6 +248,7 @@ class TestOnFlagsChanged:
     def servicer(self, mock_audio_servicer):
         return mock_audio_servicer
 
+    @pytest.mark.uc("UC-031", flow="A1")
     def test_disables_audio_and_stops_music(self, servicer):
         servicer.audio_enabled = True
         servicer.audio_manager.stop_music = MagicMock(return_value=True)
@@ -276,6 +281,7 @@ class TestOnFlagsChanged:
         assert servicer.audio_manager.silent is False
         assert len(servicer.audio_manager.channels) == servicer.audio_manager.MAX_CHANNELS
 
+    @pytest.mark.uc("UC-031", flow="A4")
     def test_changes_menu_voice(self, servicer):
         servicer.menu_voice = "ivy"
         mock_client = MagicMock()
@@ -287,6 +293,7 @@ class TestOnFlagsChanged:
 
         assert servicer.menu_voice == "aaron"
 
+    @pytest.mark.uc("UC-031", flow="A4")
     def test_rejects_invalid_voice(self, servicer):
         servicer.menu_voice = "ivy"
         mock_client = MagicMock()

@@ -10,9 +10,10 @@ import asyncio
 import sys
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, create_autospec, patch
 
 import pytest
+from opentelemetry.trace import INVALID_SPAN_CONTEXT, Span
 
 test_dir = Path(__file__).parent
 sys.path.insert(0, str(test_dir.parent.parent.parent))
@@ -287,3 +288,44 @@ class TestUC040ShieldFeedbackEnds:
 
         source = inspect.getsource(BaseGameMode)
         assert source.index("await self._end_shield_feedback()") < source.index("await self._end_game_impl()")
+
+
+def _span_events(span, name: str) -> list[dict]:
+    """Attributes of every ``add_event(name, attributes=...)`` call on an autospec'd span."""
+    return [c.kwargs.get("attributes", {}) for c in span.add_event.call_args_list if c.args and c.args[0] == name]
+
+
+class TestUC040ShieldSpanEvents:
+    """UC-040 A16: the span events a shield grant records on the player span (#1362)."""
+
+    @pytest.fixture
+    def span(self, game):
+        span = create_autospec(Span, instance=True)
+        span.get_span_context.return_value = INVALID_SPAN_CONTEXT  # trace-context injection formats its ids
+        game.players["p1"].span = span
+        return span
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A16")
+    async def test_full_shield_records_shield_granted_and_shield_feedback(self, game, span):
+        """UC-040 A16: grant_shield records shield_granted and shield_feedback (kind full, shield_up sound)."""
+        assert await game.grant_shield("p1", 3.0) is True
+
+        assert _span_events(span, "shield_granted")[0]["shield_seconds"] == 3.0
+        feedback = _span_events(span, "shield_feedback")
+        assert len(feedback) == 1
+        assert feedback[0]["shield.kind"] == "full"
+        assert feedback[0]["shield.sound"] == Sound.SFX_SHIELD_UP.value
+        assert 2900 <= feedback[0]["shield.duration_ms"] <= 3000
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A16")
+    async def test_partial_shield_records_partial_shield_armed_and_shield_feedback(self, game, span):
+        """UC-040 A16: grant_partial_shield records partial_shield_armed and shield_feedback (kind partial)."""
+        assert await game.grant_partial_shield("p1", 2.0) is True
+
+        assert _span_events(span, "partial_shield_armed")
+        feedback = _span_events(span, "shield_feedback")
+        assert len(feedback) == 1
+        assert feedback[0]["shield.kind"] == "partial"
+        assert feedback[0]["shield.sound"] == Sound.SFX_SHIELD_UP.value

@@ -469,6 +469,7 @@ class TestRegistration:
 
     @pytest.mark.asyncio
     @patch("services.game_coordinator.metrics.interventions_total")
+    @pytest.mark.uc("UC-031", flow="A3")
     async def test_dispatch_applies_tempo_override_via_chain(self, _metric):
         """End-to-end: a tempo-override flag change flows through the enforcement
         chain and the real handler sets game.tempo_override."""
@@ -496,6 +497,7 @@ class TestRegistration:
 
     @pytest.mark.asyncio
     @patch("services.game_coordinator.metrics.interventions_total")
+    @pytest.mark.uc("UC-031", flow="A3")
     async def test_revert_to_neutral_restores_natural_tempo_via_chain(self, _metric):
         """Acceptance (#922): apply music_tempo_override, then revert the flag to
         neutral (0) through the manager, and assert the override is cleared so the

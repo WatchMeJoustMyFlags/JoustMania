@@ -70,6 +70,7 @@ class TestComputeAccelMagnitude:
         result = BaseGameMode._compute_accel_magnitude(accel)
         assert result == 0.0
 
+    @pytest.mark.uc("UC-030", flow="main", steps=[3])
     def test_unit_z_axis(self):
         """Standing still (0,0,1) should return ~1.0g."""
         accel = controller_manager_pb2.Vector3(x=0.0, y=0.0, z=1.0)
@@ -82,6 +83,7 @@ class TestComputeAccelMagnitude:
         result = BaseGameMode._compute_accel_magnitude(accel)
         assert result == pytest.approx(1.0, abs=1e-9)
 
+    @pytest.mark.uc("UC-030", flow="main", steps=[3])
     def test_known_magnitude(self):
         """(3,4,0) should return 5.0."""
         accel = controller_manager_pb2.Vector3(x=3.0, y=4.0, z=0.0)
@@ -119,6 +121,7 @@ class TestComputeAccelMagnitude:
 class TestUpdateEma:
     """Tests for _update_ema static method."""
 
+    @pytest.mark.uc("UC-030", flow="main", steps=[4])
     def test_first_reading_primes_filter(self):
         """Uninitialized player (smoothed_accel~0) should be primed with first reading."""
         player = Player(serial="test", smoothed_accel=0.0)
@@ -126,6 +129,7 @@ class TestUpdateEma:
         assert player.smoothed_accel == pytest.approx(1.5, abs=1e-9)
         assert player.last_accel_mag == pytest.approx(1.5, abs=1e-9)
 
+    @pytest.mark.uc("UC-030", flow="main", steps=[4])
     def test_subsequent_reading_applies_ema(self):
         """After priming, EMA formula (prev*4 + new)/5 should apply."""
         player = Player(serial="test", smoothed_accel=1.0)
@@ -184,6 +188,7 @@ class TestComputeEffectiveThresholds:
             game_id="test_thresholds",
         )
 
+    @pytest.mark.uc("UC-030", flow="main", steps=[5])
     def test_slow_music_default_factor(self, game):
         """At slow music with factor=1.0, thresholds should match SLOW_* arrays."""
         from lib.types import Sensitivity
@@ -196,6 +201,7 @@ class TestComputeEffectiveThresholds:
             assert warn == pytest.approx(SLOW_WARNING[sens.value], abs=1e-9)
             assert death == pytest.approx(SLOW_MAX[sens.value], abs=1e-9)
 
+    @pytest.mark.uc("UC-030", flow="main", steps=[5])
     def test_fast_music_default_factor(self, game):
         """At fast music with factor=1.0, thresholds should match FAST_* arrays."""
         from lib.types import Sensitivity
@@ -208,6 +214,7 @@ class TestComputeEffectiveThresholds:
             assert warn == pytest.approx(FAST_WARNING[sens.value], abs=1e-9)
             assert death == pytest.approx(FAST_MAX[sens.value], abs=1e-9)
 
+    @pytest.mark.uc("UC-030", flow="main", steps=[5])
     def test_mid_music_interpolates(self, game):
         """Mid-tempo should interpolate between slow and fast thresholds."""
         from lib.types import Sensitivity
@@ -222,6 +229,7 @@ class TestComputeEffectiveThresholds:
         assert warn == pytest.approx(expected_warn, abs=1e-3)
         assert death == pytest.approx(expected_death, abs=1e-3)
 
+    @pytest.mark.uc("UC-030", flow="main", steps=[5])
     def test_high_factor_lowers_thresholds(self, game):
         """Factor > 1 should lower thresholds (easier to die)."""
         from lib.types import Sensitivity
@@ -248,6 +256,7 @@ class TestComputeEffectiveThresholds:
         assert warn_low > warn_default
         assert death_low > death_default
 
+    @pytest.mark.uc("UC-030", flow="main", steps=[5])
     def test_factor_clamped_at_minimum(self, game):
         """Factor below 0.5 should be clamped to 0.5."""
         from lib.types import Sensitivity
@@ -327,6 +336,7 @@ class TestComputeEffectiveThresholds:
         assert game._compute_effective_thresholds(above) == pytest.approx(game._compute_effective_thresholds(at_max))
         assert game._compute_effective_thresholds(below) == pytest.approx(game._compute_effective_thresholds(at_min))
 
+    @pytest.mark.uc("UC-030", flow="main", steps=[5])
     def test_handicap_composes_multiplicatively_with_sensitivity(self, game):
         """handicap and sensitivity are SEPARATE knobs that compose: a 2.0
         sensitivity (halves) and a 2.0 handicap (doubles) net to neutral."""
@@ -378,6 +388,7 @@ class TestComputeEffectiveThresholds:
         )
         assert game._compute_effective_thresholds(expired) == pytest.approx(game._compute_effective_thresholds(plain))
 
+    @pytest.mark.uc("UC-030", flow="main", steps=[5])
     def test_partial_shield_takes_max_with_standing_handicap(self, game):
         """While active, the effective handicap is max(handicap_factor, boost):
         a partial shield never WEAKENS a standing set_player_handicap delta."""
@@ -471,6 +482,7 @@ class TestComputeEffectiveThresholds:
         assert death == pytest.approx(death_n * 0.5)
         assert death > 0
 
+    @pytest.mark.uc("UC-030", flow="main", steps=[5])
     def test_soft_penalty_min_overrides_partial_shield(self, game):
         """Precedence: tighten composes by MIN AFTER partial_shield's MAX, so an
         active tighten cuts through an active partial_shield boost (pressure
