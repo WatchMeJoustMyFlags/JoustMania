@@ -42,7 +42,7 @@ banner pointing at their replacement; nothing was deleted.
 | `25-controller-setup.md` | 291 | 25 controllers on a Pi 5 | stale | `UPDATE_FREQUENCY = 30` vs 60 (`games/base.py:53`, flag default 60). | NFR-025, guide |
 | `hardware-setup-guide.md` | 582 | Pi 5 hardware, adapters, power | current (minor drift) | Daemon poll "30 s" vs flag default 10 s; `:8002/metrics` serves `/healthz` only. | guide; C-010, C-011 |
 | `CONTROLLER_CONNECTIVITY.md` | 349 | RSSI troubleshooting | stale | `controller_rssi_dbm` does not exist (real: `bluetooth_device_rssi_dbm` from the pairing daemon); no weak-signal LED; `get_all_device_rssi_values` absent (D-C5). | guide (needs rewrite); telemetry |
-| `controller-guide.md` | 115 | Player button reference | stale | Lobby game cycling is SELECT not MOVE (D-M1); 4 admin options incl. `agent_control`, 5 sensitivity levels (D-M3); `localhost:8080`. | UC-010..013 |
+| `controller-guide.md` | 115 | Player button reference | stale | 4 admin options incl. `agent_control`, 5 sensitivity levels (D-M3); `localhost:8080`. | UC-010..013 |
 | `controller-feedback.md` | 258 | LED colour reference | stale | Wrong RGB values, 50 % dim vs 0.3, orange vs white warning, wrong timings (D-C3); broken `planning/` links. | **superseded** by UC-010, UC-030 + ENT |
 | `led-feedback.md` | 249 | Lobby / admin LED states | stale | Duplicates controller-feedback.md with the same errors (D-C3, D-M3). | **superseded** by UC-010..013 |
 | `observability-quickstart.md` | 373 | Performance tooling | stale | Four metrics that do not exist, `StartGame` RPC, port 50051, `localhost:9090/metrics` (D-T5). | guide; telemetry |
@@ -136,7 +136,7 @@ spec PRs. Verified against `main` @ 2d162b33; "verified by reading" means not ru
 
 | ID | Doc claim | Code | Kind |
 |---|---|---|---|
-| D-M1 | MOVE cycles games in the lobby (controller-guide) | SELECT is wired to cycle (`services/menu/handlers/connected.py:59-62`), but calls `self._state_manager.settings`, which does not exist (`connected.py:116,123`; `state_manager.py:57-81`); unit tests mask it with a MagicMock. Working paths: admin Cross, `ProcessInput`. | **likely bug** (+ stale doc) (issue #1272) |
+| D-M1 | MOVE cycles games in the lobby (controller-guide) | SELECT is wired to cycle (`services/menu/handlers/connected.py:59-62`), but calls `self._state_manager.settings`, which does not exist (`connected.py:116,123`; `state_manager.py:57-81`); unit tests mask it with a MagicMock. Working paths: admin Cross, `ProcessInput`. | **Resolved by PR #1282** (SELECT cycles via the shared selection path; a handler error no longer drops the button stream; `controller-guide.md` says SELECT) |
 | D-M2 | `menu_auto_start` equals StartMenu | The boot path sets RUNNING and FFA only: no lobby music, no idle monitor, no `menu_started`, ignores `current_game` (`services/menu/server.py:94-98`). | likely bug |
 | D-M3 | Admin: Trigger/Cross change values, 3 or 8 options, 3 sensitivity levels, option colours | Select/Start change values, Cross cycles mode, Trigger hold force-starts; 4 options (sensitivity, num_teams, force_all_start, agent_control); 5 sensitivity levels (`admin.py:8-16,133-144,920-927`). | stale doc |
 | D-M4 | Admin timeout "60 s of inactivity" | 60 s from entry, never extended (`admin.py:346,359-374`); exit always returns to CONNECTED (un-readies). | stale doc |
