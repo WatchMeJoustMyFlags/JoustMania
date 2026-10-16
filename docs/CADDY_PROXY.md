@@ -1,3 +1,5 @@
+> **Superseded** by [docs/specs/services.md](specs/services.md#5-http-endpoints) (envoy replaced Caddy) (2026-10-16); kept for history.
+
 # Dashboard Reverse Proxy - Caddy Configuration
 
 ## Overview
