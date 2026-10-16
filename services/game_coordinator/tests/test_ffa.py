@@ -195,7 +195,7 @@ class TestFFAGameMode:
         assert len(colors) == len(game.players)
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-020", flow="main", steps=[6, 7])
+    @pytest.mark.uc("UC-020", flow="main", steps=[6])
     async def test_end_game_impl_winner_state(self, ffa_game):
         """Test that winner is correctly identified in _end_game_impl."""
         game, mock_controller_manager, event_collector = ffa_game

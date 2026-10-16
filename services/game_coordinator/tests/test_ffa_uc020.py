@@ -298,7 +298,10 @@ class TestUC020FreeForAll:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-020", flow="A3")
     async def test_agent_elimination_uses_the_games_own_kill_path(self):
-        """UC-020 A3: eliminate_player kills through FFA's death path with reason agent_intervention."""
+        """UC-020 A3 (game side only): eliminate_player uses the game's own kill path, reason agent_intervention.
+
+        The `agent_intervention` publication is asserted by test_interventions.py (manager side).
+        """
         game, events = _ffa_with_players(3)
         ctx = InterventionContext(
             spec=next(s for s in INTERVENTION_SPECS if s.flag_key == "eliminate_player"),
