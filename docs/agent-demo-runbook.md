@@ -321,6 +321,18 @@ with no restart. Show the control plane reacting live:
   ./scripts/agent-killswitch.sh off    # instant brake, no restart
   ./scripts/agent-killswitch.sh on     # resume
   ```
+- **Swap the decision backend** (#1232) — flip who makes the `agent.decide` call
+  live, same `ci/` flag dir, no restart. Unknown variants are refused with the
+  valid list:
+  ```bash
+  ./scripts/agent-backend.sh                  # show backend / model / threshold / capture
+  ./scripts/agent-backend.sh claude sonnet    # backend + decision.claude.model
+  ./scripts/agent-backend.sh rules            # back to deterministic rules
+  ./scripts/agent-backend.sh threshold strict # decision.act_confidence_threshold: low|default|strict
+  ./scripts/agent-backend.sh capture off      # GenAI content capture on|off
+  ```
+  API keys stay env-only (`ANTHROPIC_API_KEY`, `DECISION_OPENAI_API_KEY`,
+  `JEV_API_KEY`); a backend missing its key or model falls back to rules.
 - **Soften instead of stop** — set `interventions_allowed` to `none` in the agent
   flagd domain: the loop still runs and traces, but every decision is blocked
   `not_allowed` (visible as `decision.blocked=true`). This is the bottom rung of
@@ -334,7 +346,7 @@ with no restart. Show the control plane reacting live:
 
 > **Flag-edit gotcha (read before the talk):** the demo stack serves the
 > `services/flagd/ci/` flag dir. The `agent-killswitch.sh` / `agent-dryrun-enable.sh`
-> helpers already target `ci/` — *use them.* A hand-edit of the **base**
+> / `agent-backend.sh` helpers already target `ci/` — *use them.* A hand-edit of the **base**
 > `services/flagd/agent.json` will **not** take effect in the demo (flagd is
 > serving `ci/`). See failure modes → *flag changes not taking effect*.
 
