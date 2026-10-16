@@ -4,7 +4,8 @@
       "source": {
         "source": "github",
         "repo": "martinellich/aiup-marketplace"
-      }
+      },
+      "autoUpdate": false
     }
   },
   "enabledPlugins": {
