@@ -1,0 +1,15 @@
+{
+  "_fixture": "HAND-WRITTEN placeholder, NOT recorded Jev traffic. Shape ASSUMED OpenAI-compatible (see wire.go). Replace with recorded Jev traffic once the API docs arrive (#1229).",
+  "model": "jev-test-model",
+  "messages": [
+    {"role": "system", "content": "{{SYSTEM_PROMPT}}"},
+    {"role": "user", "content": "{{USER_PROMPT}}"}
+  ],
+  "response_format": {
+    "type": "json_schema",
+    "json_schema": {"name": "joustmania_decision", "strict": true, "schema": "{{ANSWER_SCHEMA}}"}
+  },
+  "max_tokens": 2048,
+  "temperature": 0,
+  "stream": false
+}
