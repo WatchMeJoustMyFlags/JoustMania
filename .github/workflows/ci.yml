@@ -549,9 +549,9 @@ jobs:
       # checkout instead, under the exact ref compose resolves, and load it
       # locally. The suite's session `compose pull` skips the profile-gated
       # agent, and the tests that start it use pull_policy "missing", so they run
-      # this HEAD build. Unconditional on the fast path: with the shared gha
-      # cache an unchanged agent is a cache hit (seconds); a Go change costs ~1.5
-      # min (amd64 only). The full-build path already builds the agent at HEAD.
+      # this HEAD build. Unconditional on the fast path; it costs ~1-1.5 min
+      # (amd64 only; `go build` has no build-cache mount, so any source change
+      # rebuilds). The full-build path already builds the agent at HEAD.
       - name: Resolve agent image ref (fast path)
         id: agent_image
         if: needs.changes.outputs.integration_deps != 'true' && needs.changes.outputs.force_full != 'true'
@@ -561,6 +561,9 @@ jobs:
           ref="$(docker compose -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.ci.yml \
             --profile agent config --format json | jq -r '.services.agent.image')"
           echo "Agent image ref: ${ref}"
+          # An unresolved ref would tag "null" and silently test the pulled
+          # :latest again (#1254), so fail loudly instead.
+          [[ -n "$ref" && "$ref" != "null" ]] || { echo "::error::could not resolve agent image ref"; exit 1; }
           echo "ref=${ref}" >> "$GITHUB_OUTPUT"
 
       - name: Build agent at HEAD (fast path)
