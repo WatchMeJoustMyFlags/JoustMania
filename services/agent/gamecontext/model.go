@@ -108,14 +108,14 @@ type SessionSignals struct {
 	GameActive *bool
 
 	// GameMode is the current game mode.
-	// Source: game_current_mode{mode} label (value != 0) (live), or span
+	// Source: game_current_mode{mode, game_id} label (value != 0) (live), or span
 	// attribute game.mode.
 	GameMode *string
 
 	// MusicTempo is the current applied game speed / music tempo — the reference
 	// frame the per-player intensity tracks must be read against (#1082): the same
 	// intensity is near-death at slow tempo and barely trying at fast tempo.
-	// Source: game_music_tempo (live; 1.0=slow .. ~1.3=fast, 0=no game). nil until
+	// Source: game_music_tempo{game_id} (live; 1.0=slow .. ~1.3=fast). nil until
 	// observed. The accelerate rules (R5/R6/R7) and adjust_music_tempo interventions
 	// ramp it over the game, so the Store also keeps a per-tick SpeedTrack.
 	MusicTempo *float64
@@ -123,9 +123,10 @@ type SessionSignals struct {
 	// DeathThreshold / WarningThreshold are the current effective (tempo-
 	// interpolated) elimination / warning thresholds in g-force (#1082).
 	// Source: game_effective_death_threshold / game_effective_warning_threshold
-	// (live). These are SESSION-level (one effective value, after the slow<->fast
-	// LERP), not per-player — the per-sensitivity tables stay internal to the
-	// coordinator. Proximity-to-death is each player's MovementIntensity read
+	// (live, one series per game_id). These are SESSION-level (one effective
+	// value, after the slow<->fast LERP), not per-player: they exclude per-player
+	// sensitivity_factor, handicap, soft_penalty and shields, and the
+	// per-sensitivity tables stay internal to the coordinator. Proximity-to-death is each player's MovementIntensity read
 	// against DeathThreshold. nil until observed.
 	DeathThreshold   *float64
 	WarningThreshold *float64

@@ -395,17 +395,20 @@ func TestApplyMetrics_NoGameLabelsLeavesIdentityUnchanged(t *testing.T) {
 	}
 }
 
-// TestApplyMetrics_GameModeNeverCarriesGameID documents the contract: the
-// primary/legacy game_current_mode signal never carries game_id, so it must not
-// adopt a session id even if one is somehow present.
-func TestApplyMetrics_GameModeNeverAdopts(t *testing.T) {
+// TestApplyMetrics_GameModeAdoptsGameID: game_current_mode is one series per
+// game (mode, game_kind, game_id; FR-041), so it adopts the game identity like
+// the other per-game lifecycle signals.
+// UC: UC-041 main
+func TestApplyMetrics_GameModeAdoptsGameID(t *testing.T) {
 	s := newTestStore()
 	s.ApplyMetrics(metricsWith(metricGameMode, 1, map[string]string{
-		"mode":     "joust",
-		attrGameID: "should-be-ignored",
+		"mode":       "joust",
+		attrGameID:   "game-1",
+		attrGameKind: "shadow",
 	}))
-	if id := s.Snapshot().SessionID; id != "" {
-		t.Fatalf("SessionID = %q, want empty (game_current_mode must not adopt game_id)", id)
+	snap := s.Snapshot()
+	if snap.SessionID != "game-1" || snap.GameKind != "shadow" {
+		t.Fatalf("identity = (%q, %q), want (game-1, shadow)", snap.SessionID, snap.GameKind)
 	}
 }
 

@@ -30,7 +30,7 @@ const (
 	metricTraceCorrelation = "game_trace_correlation"
 
 	// Game-speed / threshold reference frame (#1082). All three are SESSION-level
-	// gauges the coordinator already emits (no serial label): game_music_tempo is
+	// gauges (no serial label, one series per game_id + game_kind): game_music_tempo is
 	// the applied game speed (1.0=slow..~1.3=fast); the effective thresholds are the
 	// tempo-interpolated death/warning thresholds in g-force, so proximity-to-death
 	// reads as "intensity vs threshold AT that tempo".
@@ -94,8 +94,7 @@ const (
 // gameLabels carries the per-datapoint/per-span game identity resolved from the
 // signal's labels: the game_id / game_kind datapoint labels (metrics) or the
 // game.id / game.kind span attributes. Either field may be empty when the source
-// signal does not carry that label (legacy / primary-context signals such as
-// game_current_mode never carry game_id).
+// signal does not carry that label (e.g. controller-level signals).
 //
 // This struct is the routing key. The Multiplexer (multiplexer.go, #845 PR B)
 // selects the per-game Store partition on the resolved GameID (gameIDOf /
@@ -384,32 +383,36 @@ func (s *Store) applyDataPoint(name string, dp pmetric.NumberDataPoint) bool {
 		s.adoptGame(labels)
 		return labels.GameTraceID != "" || labels.GameID != ""
 	case metricGameMode:
-		// game_current_mode is a primary/legacy signal: it NEVER carries game_id,
-		// so it is deliberately not routed through adoptGame.
+		// game_current_mode carries mode + game_id + game_kind (FR-041): one series
+		// per live game, so the Multiplexer routes it to that game's partition.
 		if v != 0 {
 			if mv, ok := attrs.Get(attrMode); ok {
+				s.adoptGame(labels)
 				s.SetGameMode(mv.AsString())
 				return true
 			}
 		}
 
 	// --- game-speed / threshold reference frame (#1082; session-level, no serial) ---
-	// These gauges carry no game_id label (like game_current_mode), so they are not
-	// routed through adoptGame; they record onto whatever partition the multiplexer
-	// selected. v==0 is the coordinator's "no game" sentinel for tempo/thresholds, so
-	// a zero reading is skipped rather than recorded as a real 0.0 speed/threshold.
+	// These gauges carry game_id + game_kind (FR-041), so a concurrent real and
+	// shadow game land in their own partitions and never overwrite each other.
+	// v==0 is skipped: older coordinators used 0 as a "no game" sentinel, and a
+	// zero speed/threshold is never a real reading.
 	case metricMusicTempo:
 		if v != 0 {
+			s.adoptGame(labels)
 			s.SetMusicTempo(v)
 			return true
 		}
 	case metricEffectiveDeathThr:
 		if v != 0 {
+			s.adoptGame(labels)
 			s.SetDeathThreshold(v)
 			return true
 		}
 	case metricEffectiveWarnThr:
 		if v != 0 {
+			s.adoptGame(labels)
 			s.SetWarningThreshold(v)
 			return true
 		}

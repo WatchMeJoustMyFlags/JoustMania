@@ -517,3 +517,67 @@ func TestMux_PlayerNameFromControllerInfo(t *testing.T) {
 		}
 	})
 }
+
+// gameStateFor builds one export carrying a game's game-wide gauges (tempo,
+// thresholds, mode), labelled with its game_id + game_kind as the coordinator
+// emits them (FR-041).
+func gameStateFor(md pmetric.Metrics, gameID, kind, mode string, tempo, death, warn float64) {
+	labels := map[string]string{attrGameID: gameID, attrGameKind: kind}
+	addGauge(md, metricMusicTempo, tempo, labels)
+	addGauge(md, metricEffectiveDeathThr, death, labels)
+	addGauge(md, metricEffectiveWarnThr, warn, labels)
+	addGauge(md, metricGameMode, 1, map[string]string{attrGameID: gameID, attrGameKind: kind, attrMode: mode})
+}
+
+// UC: UC-041 main
+func TestMux_GameStateGaugesPerGame(t *testing.T) {
+	t.Run("UC-041/main concurrent real and shadow game-state gauges do not overwrite each other", func(t *testing.T) {
+		clk := &muxClock{t: time.Unix(2000, 0)}
+		mux := newTestMux(clk, time.Hour, time.Hour, nil, nil)
+
+		md := pmetric.NewMetrics()
+		gameStateFor(md, "game-real", "primary", "FFA", 1.0, 2.0, 1.5)
+		gameStateFor(md, "game-shadow", "shadow", "Teams", 1.3, 2.6, 1.9)
+		touched := sortedCopy(mux.ApplyMetrics(md))
+		if len(touched) != 2 || touched[0] != "game-real" || touched[1] != "game-shadow" {
+			t.Fatalf("touched = %v, want [game-real game-shadow]", touched)
+		}
+		// A later export updates only the real game; the shadow must keep its values.
+		later := pmetric.NewMetrics()
+		addGauge(later, metricMusicTempo, 1.15, map[string]string{attrGameID: "game-real", attrGameKind: "primary"})
+		mux.ApplyMetrics(later)
+
+		type want struct {
+			id, kind, mode    string
+			tempo, death, wrn float64
+		}
+		for _, w := range []want{
+			{"game-real", "real", "FFA", 1.15, 2.0, 1.5},
+			{"game-shadow", "shadow", "Teams", 1.3, 2.6, 1.9},
+		} {
+			snap, ok := mux.Snapshot(w.id)
+			if !ok {
+				t.Fatalf("no partition for %s", w.id)
+			}
+			s := snap.Session
+			if s.MusicTempo == nil || *s.MusicTempo != w.tempo {
+				t.Errorf("%s tempo = %v, want %v", w.id, s.MusicTempo, w.tempo)
+			}
+			if s.DeathThreshold == nil || *s.DeathThreshold != w.death {
+				t.Errorf("%s death threshold = %v, want %v", w.id, s.DeathThreshold, w.death)
+			}
+			if s.WarningThreshold == nil || *s.WarningThreshold != w.wrn {
+				t.Errorf("%s warning threshold = %v, want %v", w.id, s.WarningThreshold, w.wrn)
+			}
+			if s.GameMode == nil || *s.GameMode != w.mode {
+				t.Errorf("%s mode = %v, want %s", w.id, s.GameMode, w.mode)
+			}
+			if snap.SessionID != w.id || snap.GameKind != w.kind {
+				t.Errorf("%s identity = (%q, %q), want (%q, %q)", w.id, snap.SessionID, snap.GameKind, w.id, w.kind)
+			}
+		}
+		if _, ok := mux.Snapshot(FallbackGameID); ok {
+			t.Error("labelled game-state gauges must not create the fallback partition")
+		}
+	})
+}
