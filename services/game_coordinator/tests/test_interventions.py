@@ -304,7 +304,7 @@ async def test_state_flag_revert_to_none_not_dispatched():
 # Enforcement: allowed-membership
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
-@pytest.mark.uc("UC-040", flow="A20", br=["BR-004"])
+@pytest.mark.uc("UC-040", flow="A22", br=["BR-004"])
 async def test_allowed_membership_blocks():
     mgr, events = make_manager(
         interventions={"eliminate_player": "1:ctrl_a"},
@@ -319,7 +319,7 @@ async def test_allowed_membership_blocks():
 
 
 @pytest.mark.asyncio
-@pytest.mark.uc("UC-040", flow="A20", br=["BR-004"])
+@pytest.mark.uc("UC-040", flow="A22", br=["BR-004"])
 async def test_empty_allowed_blocks_everything():
     mgr, events = make_manager(interventions={"audio_cue": "1:beep"}, allowed=[])
     with patch("services.game_coordinator.metrics.interventions_total"):
@@ -337,7 +337,7 @@ async def test_empty_allowed_blocks_everything():
 # and "per-game independence" properties are covered further below.
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
-@pytest.mark.uc("UC-040", flow="A20", br=["BR-004"])
+@pytest.mark.uc("UC-040", flow="A22", br=["BR-004"])
 async def test_backstop_blocks_after_global_budget_exhausted():
     clock = Clock()
     mgr, events = make_manager(
@@ -468,7 +468,7 @@ async def test_normal_multi_session_traffic_does_not_trip_backstop():
 # Enforcement: battery guard
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
-@pytest.mark.uc("UC-040", flow="A20")
+@pytest.mark.uc("UC-040", flow="A22")
 async def test_battery_guard_blocks_low():
     mgr, events = make_manager(
         interventions={"eliminate_player": "1:ctrl_a"},
@@ -513,7 +513,7 @@ async def test_battery_guard_missing_does_not_block():
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-020", flow="A3")
-@pytest.mark.uc("UC-040", flow="A20")
+@pytest.mark.uc("UC-040", flow="A22")
 async def test_mode_matrix_blocks_revive_in_ffa():
     mgr, events = make_manager(
         interventions={"revive_player": "1:ctrl_a"},
@@ -567,7 +567,7 @@ async def test_registry_dispatch_calls_registered_handler():
 
 
 @pytest.mark.asyncio
-@pytest.mark.uc("UC-040", flow="A20")
+@pytest.mark.uc("UC-040", flow="A22")
 async def test_blocked_intervention_skips_handler():
     mgr, _ = make_manager(interventions={"audio_cue": "1:beep"}, allowed=[])
     handler = AsyncMock()
@@ -585,7 +585,7 @@ async def test_register_handler_unknown_key_raises():
 
 
 @pytest.mark.asyncio
-@pytest.mark.uc("UC-040", flow="A20")
+@pytest.mark.uc("UC-040", flow="A22")
 async def test_handler_error_records_blocked():
     mgr, events = make_manager(interventions={"audio_cue": "1:beep"})
 

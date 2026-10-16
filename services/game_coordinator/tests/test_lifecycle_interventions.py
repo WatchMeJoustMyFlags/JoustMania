@@ -538,7 +538,7 @@ class TestRevivePlayer:
 
 
 # --------------------------------------------------------------------------- #
-# Coordinator-side block in a real FFA game (UC-040 A20)
+# Coordinator-side block in a real FFA game (UC-040 A22)
 # --------------------------------------------------------------------------- #
 class _AllowingAgentStub(_AgentStub):
     """Agent-domain stub whose interventions_allowed lists ``allowed``."""
@@ -555,9 +555,9 @@ class _AllowingAgentStub(_AgentStub):
 
 class TestCoordinatorBlocksInFFA:
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A20", br=["BR-004"])
+    @pytest.mark.uc("UC-040", flow="A22", br=["BR-004"])
     async def test_revive_player_in_real_ffa_is_mode_unsupported(self):
-        """UC-040 A20: revive_player passes the allow-list (the `full` variant offers
+        """UC-040 A22: revive_player passes the allow-list (the `full` variant offers
         it), but the capability matrix denies it in a real FFA game: the dead player
         stays dead, agent_intervention is published with blocked=true and
         mode_unsupported, no backstop budget is used and no agent cue is sent.

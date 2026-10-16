@@ -155,9 +155,9 @@ func TestDecideLoop_ActuationGateOff(t *testing.T) {
 // ProbeRules; with the `probe` allow-list (noop only) its synthetic noop passes the
 // permission chain and the real Writer treats it as a successful write that
 // changes no flag, so the whole decide-and-act path runs without a game effect.
-// UC: UC-040 A21
+// UC: UC-040 A23
 func TestDecideLoop_ProbeMode(t *testing.T) {
-	t.Run("UC-040/A21 probe noop is dispatched and writes no flag", func(t *testing.T) {
+	t.Run("UC-040/A23 probe noop is dispatched and writes no flag", func(t *testing.T) {
 		snap := flags.Snapshot{
 			Enabled:              true,
 			InterventionsAllowed: []string{decision.InterventionNoop}, // the `probe` variant
