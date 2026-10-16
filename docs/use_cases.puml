@@ -1,0 +1,106 @@
+@startuml Use Cases Overview
+left to right direction
+
+actor "Player" as player
+actor "Host" as host
+actor "Operator" as operator
+actor "Presenter" as presenter
+actor "Agent" as agent
+actor "Maintainer" as maintainer
+
+rectangle "JoustMania" {
+    package "Pairing & controllers" {
+        usecase "UC-001\nPair a Controller over USB" as UC001
+        usecase "UC-002\nConnect a Controller and Join the Lobby" as UC002
+        usecase "UC-003\nPlay with Mock Controllers" as UC003
+    }
+    package "Lobby, menu & admin" {
+        usecase "UC-010\nReady Up and Start a Game" as UC010
+        usecase "UC-011\nSelect the Game Mode" as UC011
+        usecase "UC-012\nConfigure Settings in Admin Mode" as UC012
+        usecase "UC-013\nStop the Agent from the Controller" as UC013
+        usecase "UC-014\nForce-Start a Game" as UC014
+    }
+    package "Playing" {
+        usecase "UC-020\nPlay Joust Free-for-All" as UC020
+        usecase "UC-021\nPlay Team Joust" as UC021
+        usecase "UC-022\nPlay a Hidden-Role Game" as UC022
+        usecase "UC-023\nPlay Zombies" as UC023
+        usecase "UC-024\nPlay Swapper" as UC024
+        usecase "UC-025\nPlay a 1v1 Format" as UC025
+        usecase "UC-026\nPlay Non-Stop Joust" as UC026
+        usecase "UC-027\nForce-End a Game" as UC027
+        usecase "UC-030\nDetect a Player's Death" as UC030
+        usecase "UC-031\nHear Game Audio" as UC031
+    }
+    package "Observability" {
+        usecase "UC-035\nObserve the System" as UC035
+    }
+    package "Agent" {
+        usecase "UC-040\nDecide an In-Game Intervention" as UC040
+        usecase "UC-041\nObserve a Game" as UC041
+        usecase "UC-042\nReview a Game and Propose Experiments" as UC042
+        usecase "UC-043\nRun a Shadow Experiment and Promote the Winner" as UC043
+        usecase "UC-044\nSwitch the Decision Backend Live" as UC044
+        usecase "UC-045\nStop the Agent with Flags" as UC045
+    }
+    package "Infrastructure" {
+        usecase "UC-050\nRoll Out a Controller Backend Progressively" as UC050
+        usecase "UC-051\nRoll Back Automatically on Degradation" as UC051
+        usecase "UC-052\nCanary a Backend and Inject Chaos by Hand" as UC052
+    }
+    package "Talk" {
+        usecase "UC-070\nPresent the Talk Demo" as UC070
+    }
+}
+
+player --> UC001
+player --> UC002
+player --> UC010
+player --> UC020
+player --> UC021
+player --> UC022
+player --> UC023
+player --> UC024
+player --> UC025
+player --> UC026
+player --> UC030
+player --> UC031
+
+host --> UC011
+host --> UC012
+host --> UC013
+host --> UC014
+
+operator --> UC003
+operator --> UC027
+operator --> UC035
+operator --> UC044
+operator --> UC045
+operator --> UC050
+operator --> UC052
+
+agent --> UC040
+agent --> UC041
+agent --> UC042
+agent --> UC043
+agent --> UC051
+
+presenter --> UC070
+maintainer --> UC043
+
+UC010 ..> UC020 : <<include>>
+UC014 ..> UC010 : <<include>>
+UC020 ..> UC030 : <<include>>
+UC040 ..> UC041 : <<include>>
+UC043 ..> UC041 : <<include>>
+UC051 ..> UC050 : <<extend>>
+UC070 ..> UC044 : <<include>>
+UC070 ..> UC045 : <<include>>
+
+note right of maintainer
+  Reviews tier-3 proposals
+  (issue / PR) from UC-043
+end note
+
+@enduml
