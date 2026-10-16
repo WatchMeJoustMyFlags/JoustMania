@@ -58,6 +58,13 @@
           null
         ]
       }
+    },
+    "flagservice.propagation_probe": {
+      "state": "ENABLED",
+      "variants": {
+        "none": ""
+      },
+      "defaultVariant": "none"
     }
   }
 }

@@ -6,8 +6,8 @@
 
 OpenFeature flags served by flagd are the **only** control surface of the system:
 human settings, the agent's governor, the agent's own interventions and the infrastructure rollout
-are all flags (northstar constraint C-002). This catalog lists every flag on `main`: **154 flags in 8
-flag sets** (agent 67, game 31, interventions 17, controller 9, rollout 4, system 12, user 11, observability 3). Not counted: `services/flagd/controller.ci-rust.json` (1 flag, `bluetooth_backend`; loaded by nothing, §11) and the `ci/` copies (§12).
+are all flags (northstar constraint C-002). This catalog lists every flag on `main`: **155 flags in 8
+flag sets** (agent 67, game 31, interventions 17, controller 9, rollout 4, system 12, user 11, observability 4). Not counted: `services/flagd/controller.ci-rust.json` (1 flag, `bluetooth_backend`; loaded by nothing, §11) and the `ci/` copies (§12).
 
 Rule (see [CONTRIBUTING](../CONTRIBUTING.md#spec-driven-development-aiup)): a new flag, a new variant, a
 changed default or a new reader/writer updates this file in the same PR.
@@ -321,7 +321,7 @@ Venue preferences owned by the host: voice, audio on/off, volumes, the persisted
 
 ## 10. `observability`
 
-File: [`services/flagd/observability.json`](../../services/flagd/observability.json). 3 flags.
+File: [`services/flagd/observability.json`](../../services/flagd/observability.json). 4 flags.
 
 Telemetry export knobs for the Python services and rust-hid. Targeting keys on the explicit `service` context variable (`lib/otel_metrics.py:101`, `lib/telemetry.py:128`).
 
@@ -330,6 +330,7 @@ Telemetry export knobs for the Python services and rust-hid. Targeting keys on t
 | `metrics_export_interval_ms` | int | overkill=10, realtime=100, normal=1000 | `normal` = 1000 | Y(service) | all Python services: lib/otel_metrics.py:98 (ctx service=OTEL_SERVICE_NAME) <- init_metrics :146 | manual edit only | startup |
 | `grpc_rpc_spans` | bool | enabled=true, disabled=false | `enabled` = true | N | all Python gRPC services: lib/grpc_tracing.py:95 (<- :203,:262,...); rust-hid: services/rust-hid/src/feature_flags.rs:62 (<- services/rust-hid/src/grpc_tracing.rs:105) | manual edit only | live (per RPC) |
 | `otel_bsp_schedule_delay_millis` | int | fast=500, default=5000 | `default` = 5000 | Y(service) | all Python services: lib/telemetry.py:125 (<- :147) | manual edit only | startup |
+| `flagservice.propagation_probe` | string | none="" | `none` = "" | N | no service; the flag-service integration tests (`tests/integration/test_flag_service_sync.py`) and the NFR-050 measurement (#1413) | the flag service (`PUT /observability/flagservice.propagation_probe`, registry §13.5) | live |
 
 **Traceability:** FR-080 to FR-082, NFR-022 / UC-035 / `lib/otel_metrics.py`, `lib/telemetry.py`, `lib/grpc_tracing.py`, `services/rust-hid/src/feature_flags.rs` / `lib/tests/`.
 
@@ -407,6 +408,10 @@ Every value not persisted lives in memory only (architecture note §10.1).
 given. Ranges are inclusive; #1409 pins each range against the reader's own clamp before the registry ships.
 `free string` accepts any string value up to 512 characters (a declared variant name still selects that
 variant); it exists for values only a test fixture or an operator knows, such as a fake server's URL (re-review N5).
+A `variant` naming a declared variant is always within bounds (restricted to the listed variants where a list is
+given); a `value` equal to a declared variant's value selects that variant. Event payloads are checked by the
+service for shape and serials (a serial of the game); whether the player is still alive and whether a sound id
+exists in the audio catalog are checked by the game coordinator and the audio service, which hold that state.
 
 ### 13.1 `interventions` (all writes are game-scoped)
 
@@ -490,8 +495,12 @@ the flag service restarts; the durable change is the promotion PR (FR-064, C-007
 
 ### 13.5 Read-only sets
 
-`system` and `observability` have no runtime-mutable flag: they change by a file edit and a restart. Several of
-their flags are read only at process start anyway (§1.3).
+`system` has no runtime-mutable flag, and `observability` only the propagation probe below: everything else changes
+by a file edit and a restart. Several of their flags are read only at process start anyway (§1.3).
+
+| Set | Key | Kind | Scope | Bounds | Persist | Today's writer |
+|---|---|---|---|---|---|---|
+| observability | `flagservice.propagation_probe` | overlay | stack | free string | no | flag-service integration tests (#1408; NFR-050 measurement #1413); read by no service |
 
 **Traceability:** FR-018, FR-122, FR-123, FR-124, FR-126, FR-127, FR-128, C-008, C-030, C-032, C-033 / UC-053 /
 planned `services/flag-service/registry.yaml` / planned tests in #1409.
