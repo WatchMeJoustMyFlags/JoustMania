@@ -126,6 +126,11 @@ class FFAGame(BaseGameMode):
 
         alive_count = len([p for p in self.players.values() if p.alive])
 
+        # UC-020 step 5 / UC-046 BR-014: publish the death on the game event stream so
+        # observers (the agent's shadow runner, the dashboard) learn the elimination
+        # order from the coordinator itself rather than inferring it.
+        await self.event_publisher(GameEvent.PLAYER_DEATH, {"serial": serial, "alive_remaining": str(alive_count)})
+
         # Add death event to player's lifecycle span and end it
         if player.span:
             player.span.add_event(

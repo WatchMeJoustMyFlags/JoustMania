@@ -91,6 +91,20 @@ class TestFFAGameMode:
         assert player.alive is False
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-046", flow="main", steps=[8], br=["BR-014"])
+    async def test_kill_publishes_player_death_in_order(self, ffa_game):
+        """UC-046 BR-014 / UC-020 step 5: each FFA death is published as player_death, in order."""
+        game, mock_controller_manager, event_collector = ffa_game
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+
+        await game._kill_player_impl("mock_controller_2", accel_mag=5.0)
+        await game._kill_player_impl("mock_controller_0", accel_mag=5.0)
+
+        deaths = event_collector.get_events_of_type("player_death")
+        assert [d["serial"] for d in deaths] == ["mock_controller_2", "mock_controller_0"]
+        assert [d["alive_remaining"] for d in deaths] == ["3", "2"]
+
+    @pytest.mark.asyncio
     async def test_win_condition_last_player(self, ffa_game):
         """Test that win condition triggers when one player remains."""
         game, mock_controller_manager, _ = ffa_game
