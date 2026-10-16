@@ -448,3 +448,150 @@ class TestSimulateDeathConverges:
             f"sensitivity {sensitivity} {tempo} (threshold {threshold}g) must die within the {2}-frame delivery budget"
         )
         assert model.rekills == 0, "no #757 grace-expiry re-kill at any sensitivity"
+
+
+def _magnitude(accel: dict) -> float:
+    return math.sqrt(accel[AxisKey.X] ** 2 + accel[AxisKey.Y] ** 2 + accel[AxisKey.Z] ** 2)
+
+
+def _run_data_plane(adapter: MockAdapter, serial: str, seconds: float, send_hz: float = 60.0) -> list[dict]:
+    """Run the production two-loop data plane on a virtual timeline.
+
+    The discovery loop polls at 100 Hz and caches the latest frame; the send
+    loop streams the cached frame at ``send_hz`` and drains one death-latch
+    frame per send, exactly like servicer._build_gameplay_update. Returns the
+    accel of every STREAMED frame (what the game sees).
+    """
+    poll_interval = 1.0 / 100.0
+    send_interval = 1.0 / send_hz
+    elapsed = 0.0
+    next_send = 0.0
+    streamed: list[dict] = []
+    cache = adapter.poll(serial)
+    for _ in range(int(seconds / poll_interval)):
+        elapsed += poll_interval
+        cache = adapter.poll(serial)
+        if elapsed >= next_send:
+            streamed.append(cache[StateKey.ACCEL])
+            adapter.consume_death_frame(serial)
+            next_send += send_interval
+    return streamed
+
+
+class TestUC003HeldMovement:
+    """UC-003 BR-002 / A3: SimulateMovement holds its vector until changed (#1279)."""
+
+    SERIAL = "mock_controller_0"
+    WARNING_VEC = (1.2, 0.8, 0.6)  # ~1.56g, WARNING zone
+
+    def _expected(self, vec: tuple[float, float, float]) -> dict:
+        # MovementRequest fields are proto float (32-bit), hence the tolerance.
+        axes = (AxisKey.X, AxisKey.Y, AxisKey.Z)
+        return {axis: pytest.approx(value, abs=1e-6) for axis, value in zip(axes, vec, strict=True)}
+
+    def _move(self, service: MockControllerService, vec: tuple[float, float, float], serial: str = SERIAL):
+        return service.SimulateMovement(
+            controller_manager_mock_pb2.MovementRequest(serial=serial, accel_x=vec[0], accel_y=vec[1], accel_z=vec[2]),
+            None,
+        )
+
+    @pytest.mark.uc("UC-003", flow="main", steps=[4], br=["BR-002"])
+    def test_held_vector_reaches_every_streamed_frame(self):
+        """UC-003 BR-002: a SimulateMovement vector is in every 60 Hz frame while held."""
+        service, adapter = _make_service(num_controllers=1)
+        random.seed(1279)
+
+        assert self._move(service, self.WARNING_VEC).success
+
+        streamed = _run_data_plane(adapter, self.SERIAL, seconds=2.0)
+
+        assert len(streamed) >= 100  # ~2 s of 60 Hz frames, far more than "several"
+        expected = self._expected(self.WARNING_VEC)
+        assert all(frame == expected for frame in streamed)
+
+    @pytest.mark.uc("UC-003", flow="main", steps=[4], br=["BR-002"])
+    def test_new_movement_replaces_held_vector(self):
+        """UC-003 BR-002: the next SimulateMovement replaces the held vector."""
+        service, adapter = _make_service(num_controllers=1)
+
+        self._move(service, self.WARNING_VEC)
+        self._move(service, (0.0, 0.0, 1.0))
+
+        streamed = _run_data_plane(adapter, self.SERIAL, seconds=0.5)
+        assert all(frame == {AxisKey.X: 0.0, AxisKey.Y: 0.0, AxisKey.Z: 1.0} for frame in streamed)
+
+    @pytest.mark.uc("UC-003", flow="main", steps=[4], br=["BR-002"])
+    def test_unscripted_controller_stays_noisy(self):
+        """UC-003 BR-002: a controller nobody scripted reports resting noise around 1 g."""
+        service, adapter = _make_service(num_controllers=2)
+        random.seed(1279)
+        self._move(service, self.WARNING_VEC, serial="mock_controller_0")
+
+        streamed = _run_data_plane(adapter, "mock_controller_1", seconds=1.0)
+
+        z_values = [frame[AxisKey.Z] for frame in streamed]
+        assert len(set(z_values)) == len(z_values), "every unscripted frame is a fresh noise sample"
+        mean_magnitude = sum(_magnitude(f) for f in streamed) / len(streamed)
+        assert 0.9 < mean_magnitude < 1.2
+
+    @pytest.mark.uc("UC-003", flow="main", steps=[4], br=["BR-001", "BR-002"])
+    def test_death_latch_overrides_hold_then_hold_resumes(self):
+        """UC-003 BR-001/BR-002: SimulateDeath wins for its 2 frames, then the held vector resumes."""
+        service, adapter = _make_service(num_controllers=1)
+        self._move(service, self.WARNING_VEC)
+
+        resp = service.SimulateDeath(controller_manager_mock_pb2.DeathRequest(serial=self.SERIAL), None)
+        assert resp.success
+
+        streamed = _run_data_plane(adapter, self.SERIAL, seconds=0.5)
+
+        death_frames = [f for f in streamed if _magnitude(f) > 9.0]
+        assert len(death_frames) == 2, "death latch still delivers exactly its 2-frame budget (#926)"
+        assert streamed[0] == death_frames[0]
+        assert streamed[1] == death_frames[1]
+        expected = self._expected(self.WARNING_VEC)
+        assert all(frame == expected for frame in streamed[2:])
+
+    @pytest.mark.uc("UC-003", flow="main", steps=[4], br=["BR-001", "BR-002"])
+    def test_death_kills_once_with_a_held_resting_vector(self):
+        """UC-003 BR-001: with a held resting vector the death lands once and no re-kill follows (#757)."""
+        service, adapter = _make_service(num_controllers=1)
+        self._move(service, (0.2, 0.2, 1.0))  # the shadow-game runner's liveliness vector
+        model = _GameSideModel(death_threshold=_FAST_MAX[4])
+
+        for frame in _run_data_plane(adapter, self.SERIAL, seconds=0.5):
+            model.feed(frame, 0.0)  # primes the EMA on the held vector (~1.04g)
+        service.SimulateDeath(controller_manager_mock_pb2.DeathRequest(serial=self.SERIAL), None)
+        now = 1.0
+        for frame in _run_data_plane(adapter, self.SERIAL, seconds=5.0):
+            now += 1.0 / 60.0
+            model.feed(frame, now)
+            model.respawn_if_grace_started(now)
+
+        assert model.kills == 1
+        assert model.rekills == 0
+
+    @pytest.mark.uc("UC-003", flow="A3")
+    def test_reset_returns_held_controller_to_noise(self):
+        """UC-003 A3: ResetController clears the hold; the controller reports noise again."""
+        service, adapter = _make_service(num_controllers=1)
+        random.seed(1279)
+        self._move(service, self.WARNING_VEC)
+
+        resp = service.ResetController(controller_manager_mock_pb2.ResetRequest(serial=self.SERIAL), None)
+        assert resp.success
+
+        streamed = _run_data_plane(adapter, self.SERIAL, seconds=0.5)
+        z_values = [frame[AxisKey.Z] for frame in streamed]
+        assert len(set(z_values)) == len(z_values)
+        assert all(_magnitude(frame) < 1.5 for frame in streamed)
+
+    def test_simulate_movement_unknown_controller_returns_error(self):
+        """SimulateMovement on an unknown serial fails without holding anything."""
+        service, adapter = _make_service(num_controllers=0)
+
+        resp = self._move(service, self.WARNING_VEC, serial="NOPE")
+
+        assert not resp.success
+        assert "NOPE" in resp.error
+        assert adapter.controllers == {}

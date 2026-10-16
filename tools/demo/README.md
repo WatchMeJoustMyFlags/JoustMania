@@ -29,8 +29,13 @@ magnitude into a zone (`services/game_coordinator/games/analytics.py`):
 | WARNING | 1.5–2.0g | `ZONE_WARNING` (~1.7g) |
 | DANGER | > 2.0g | `ZONE_DANGER` (~2.3g) |
 
-`SimulateMovement` sets a **persistent** accel vector, so a "beat" just sets each
-controller's magnitude. From the zone history + a rolling variance window the
+`SimulateMovement` **holds** its accel vector: every mock poll, and so every 60 Hz
+gameplay frame, reports exactly that vector until the next `SimulateMovement` or
+`ResetController` (UC-003 BR-002, fixed in #1279; a `SimulateDeath` latch wins for
+its 2 frames, then the held vector resumes). So a "beat" just sets each
+controller's magnitude. A held WARNING/DANGER vector really reaches the death EMA,
+so it kills a player whose death threshold is lower (e.g. slow-music sensitivity
+0-2: 1.3/1.5/1.8g). From the zone history + a rolling variance window the
 coordinator derives `skill_level`, `movement_variance`, `movement_intensity`,
 which the rules read.
 

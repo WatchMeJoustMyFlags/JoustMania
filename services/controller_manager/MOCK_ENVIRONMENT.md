@@ -128,7 +128,10 @@ Response:
 
 ### Simulate Movement
 
-Set acceleration (for warning-level movement):
+Set acceleration (for warning-level movement). The vector is **held**: every poll
+and gameplay frame reports it until the next `SimulateMovement` or
+`ResetController` (UC-003 BR-002, #1279). A `SimulateDeath` latch overrides it for
+its 2 delivered frames, then the held vector resumes:
 
 ```bash
 grpcurl -plaintext -d '{
@@ -190,7 +193,8 @@ grpcurl -plaintext -d '{
 
 ### Reset Controller
 
-Reset to idle state (accel=0,0,1, buttons unpressed):
+Reset to idle state (buttons unpressed, death latch and held movement cleared,
+acceleration back to resting noise around 1g):
 
 ```bash
 grpcurl -plaintext -d '{

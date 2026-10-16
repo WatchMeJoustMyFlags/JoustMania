@@ -29,9 +29,16 @@ How the movement → metric → rule mapping works
 ----------------------------------------------
 The coordinator classifies each frame's acceleration magnitude into a zone
 (``analytics.py``): STILL <1.1g, ACTIVE 1.1-1.5g, WARNING 1.5-2.0g, DANGER >2.0g.
-``SimulateMovement`` sets a *persistent* accel vector (held until the next call),
-so a scenario "beat" just sets each controller's magnitude. From the zone history +
-a rolling variance window the coordinator derives:
+``SimulateMovement`` holds its accel vector on the controller: every mock poll and
+so every 60 Hz gameplay frame reports exactly that vector until the next
+``SimulateMovement`` or ``ResetController`` (UC-003 BR-002; before #1279 the next
+100 Hz poll overwrote it with noise within ~10 ms). A ``SimulateDeath`` latch wins
+for its 2 delivered frames, then the held vector resumes; controllers the driver
+never moved report resting noise (~1g). So a scenario "beat" just sets each
+controller's magnitude. Because held vectors really reach the game, a held
+WARNING/DANGER vector (~1.7g / ~2.3g) also feeds the death EMA and kills a player
+whose death threshold is lower (e.g. slow-music sensitivity 0-2: 1.3/1.5/1.8g).
+From the zone history + a rolling variance window the coordinator derives:
 
   * ``skill_level``  = 0.6·playstyle_control + 0.4·motion_smoothness  (R3/R4)
       BALANCED+steady  → ~1.0   |   CALM/AGGRESSIVE or jerky → low

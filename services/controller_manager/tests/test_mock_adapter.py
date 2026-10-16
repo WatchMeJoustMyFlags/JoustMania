@@ -365,3 +365,40 @@ class TestMockAdapterObserver:
         # Set same output again — should not generate events
         adapter.set_output("mock_controller_0", 100, 100, 100, 0)
         assert queue.empty()
+
+
+class TestMockAdapterHeldAccel:
+    """#1279: hold_accel / clear_held_accel at the adapter level."""
+
+    def test_hold_accel_persists_across_polls(self):
+        adapter = MockAdapter(num_controllers=1)
+        adapter.discover()
+        assert adapter.hold_accel("mock_controller_0", 1.0, 1.0, 1.0)
+
+        for _ in range(10):
+            state = adapter.poll("mock_controller_0")
+            assert state[StateKey.ACCEL] == {AxisKey.X: 1.0, AxisKey.Y: 1.0, AxisKey.Z: 1.0}
+
+    def test_poll_returns_a_copy_of_the_held_vector(self):
+        adapter = MockAdapter(num_controllers=1)
+        adapter.discover()
+        adapter.hold_accel("mock_controller_0", 0.5, 0.5, 1.0)
+
+        state = adapter.poll("mock_controller_0")
+        state[StateKey.ACCEL][AxisKey.X] = 99.0
+
+        assert adapter.poll("mock_controller_0")[StateKey.ACCEL][AxisKey.X] == 0.5
+
+    def test_clear_held_accel_returns_to_noise(self):
+        adapter = MockAdapter(num_controllers=1)
+        adapter.discover()
+        adapter.hold_accel("mock_controller_0", 2.0, 0.0, 0.0)
+        assert adapter.clear_held_accel("mock_controller_0")
+
+        z_values = [adapter.poll("mock_controller_0")[StateKey.ACCEL][AxisKey.Z] for _ in range(10)]
+        assert not all(z == z_values[0] for z in z_values)
+
+    def test_hold_and_clear_unknown_controller_return_false(self):
+        adapter = MockAdapter(num_controllers=0)
+        assert not adapter.hold_accel("NOPE", 1.0, 0.0, 0.0)
+        assert not adapter.clear_held_accel("NOPE")
