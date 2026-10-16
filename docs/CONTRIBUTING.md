@@ -63,8 +63,14 @@ in the same PR or in a preceding one. Start at the [docs index](README.md).
 | Use cases | [use_cases.puml](use_cases.puml), [use_cases/UC-xxx.md](use_cases/) | `use-case-diagram`, `use-case-spec` | Actor goals, main success scenario, alternative flows, business rules |
 | Technical specs | [specs/services.md](specs/services.md), [specs/flags.md](specs/flags.md), [specs/telemetry.md](specs/telemetry.md), [specs/decide-contract.md](specs/decide-contract.md) | (repo convention) | Ports, RPCs, flag catalog, span / metric / attribute names, the decision contract |
 
-The AIUP skills come from the `aiup-core` plugin (enabled at project scope in
-`.claude/settings.json`). Use them when you write or extend the corresponding
+The AIUP skills come from the `aiup-core` plugin, enabled for everyone at project
+scope in `.claude/settings.json` (#1259, marketplace `martinellich/aiup-marketplace`,
+auto-update off). It provides four skills: `requirements`, `entity-model`,
+`use-case-diagram` and `use-case-spec`. The plugin also brings the Context7 MCP
+server (`plugin:aiup-core:context7`), which stays enabled by maintainer decision;
+disable it per user if you do not want it. To opt out of the whole plugin for
+yourself, set `"enabledPlugins": {"aiup-core@aiup-marketplace": false}` in your
+git-ignored `.claude/settings.local.json`. Use the skills when you write or extend the corresponding
 artefact so the format stays uniform; the technical specs are a JoustMania
 convention on top of AIUP, because flags, telemetry names and the decide contract
 are where docs drifted from code in the past.

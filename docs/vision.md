@@ -95,9 +95,13 @@ open standards are enough to build, observe and govern an autonomous agent:
   interventions are allowed, kill switch) is a flag the presenter can flip on
   stage.
 
+Decision backends have fixed roles (maintainer decision, epic #1225; C-018): **Jev** decides in-game
+interventions, **Claude** writes the post-game retro / summary and proposes experiments and is the in-game
+backup by a manual flag flip, and the **rules** engine is the automatic floor.
+
 The demo arc (issue #743; the runbook itself is in flight in PR #1256 as
 `docs/talk/two-standards-runbook.md`): observe a live game → switch the decision
-backend live (rules / Claude / OpenAI-compatible / Jev) → narrow permissions and
+backend live (Jev as primary, Claude as backup, OpenAI-compatible, rules) → narrow permissions and
 hit the kill switch → optional infrastructure rollout and automatic rollback →
 pull the network and show the rules fallback. See [UC-070](use_cases/UC-070.md).
 

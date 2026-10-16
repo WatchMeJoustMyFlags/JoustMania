@@ -1,7 +1,7 @@
 # Specs inventory
 
 > Snapshot of every Markdown document on `main` @ 2d162b33 (2026-10-16) when the AIUP spec tree was
-> introduced (epic #1260): what it covers, whether it is still true, and where its content now lives.
+> introduced (epic #1260), updated for PRs #1257, #1259 and #1261 (merged the same day, `main` @ 354f36c5): what it covers, whether it is still true, and where its content now lives.
 > Followed by the **discrepancies found** between docs and code. Index: [README.md](README.md).
 
 **Status legend.** *current*: matches the code (minor drift at most). *stale*: contains claims the code on
@@ -51,7 +51,7 @@ banner pointing at their replacement; nothing was deleted.
 | `agent-act-runbook.md` | 406 | Taking the agent live | stale (minor) | Greps for a log line that no longer exists (D-A7); `localhost:8080`; describes the startup self-heal that never runs (D-A1). | guide; UC-040, UC-045 |
 | `agent-demo-runbook.md` | 482 | Three-act demo operator playbook | current (one stale line) | Same stale log grep (D-A7); tells you to edit base `agent.json` while the demo serves `ci/`. | guide; UC-070 |
 | `agent-dry-run-runbook.md` | 159 | Experiment loop dry run | stale (minor) | Seeded flag is `windows`, not `death_grace_period_seconds`; omits the env gates on promotion (D-A6). | guide; UC-043 |
-| `agent-inference.md` | 95 | Who calls which model | current | Matches #1234 / #1244; does not say the #1207 length gate is retired. | decide contract; UC-042, UC-044 |
+| `agent-inference.md` | 95 | Who calls which model | current | Matches #1234 (PR #1252) / #1244; does not say the #1207 length gate is retired, nor the backend role split (C-018). | decide contract; UC-042, UC-044 |
 | `agent-trace-viz.md` | 307 | Agent trace on stage | stale (minor) | `agent.span_received` retired (#1053); `agent.signal_received` is a remote child of `gameplay_phase`, not a root (D-T2). | telemetry §agent; guide |
 | `design/agent-experiment-cohorts.md` | 389 | Cohort framework design (#982) | historical | Says "no implementation" but shipped (`services/agent/experiment/`). | ENT (Experiment, Arm), UC-043; history |
 | `research/722-intervention-surface.md` | 576 | Intervention vocabulary research | historical | Allow-list format and limiter location changed (#1127, #919). | ENT (Intervention), flags; history |
@@ -66,7 +66,7 @@ banner pointing at their replacement; nothing was deleted.
 | Doc | Lines | Covers | Status | Evidence | Target |
 |---|---|---|---|---|---|
 | `services/agent/README.md` | 1260 | Agent reference | stale (several sections) | "Stub decision hooks" intro; removed `mode` flag still listed; `AGENT_EXPERIMENTS_ENABLED` called the gate (it is a fallback, D-A4); promotion env gates undocumented (D-A6); Files tree outdated. | services §agent, flags, telemetry, decide, UC-040..051; keeps code-level detail |
-| `services/agent/decide/backends/jev/README.md` | 63 | Jev backend stub | current (one stale value) | `fallback_reason=unavailable` vs `backend_unavailable` (D-K2). | decide contract |
+| `services/agent/decide/backends/jev/README.md` | 63 (on 2d162b33) | Jev backend: wire format, confidence, errors | current (rewritten by PR #1261 for the real client) | Stale `unavailable` value fixed (D-K2). | decide contract |
 | `services/audio/README.md` | 101 | Audio API | current (minor drift) | `AUDIO_ASSETS_DIR` default; WAV examples (D-AU1). | services §audio |
 | `services/connect-proxy/README.md` | 59 | Connect bridge | stale | Omits `GetConnectedControllers`, `ListGames`, `/chaos/*`, `/canary/*`. | services §connect-proxy |
 | `services/dashboard/README.md` | 65 | SPA | current (file tree stale) | Experiments tab undocumented. | services §dashboard, UC-035 |
@@ -175,10 +175,11 @@ spec PRs. Verified against `main` @ 2d162b33; "verified by reading" means not ru
 
 | ID | Doc claim | Code | Kind |
 |---|---|---|---|
-| D-K1 | `Noul` dropped as unknown (`decide.go:37-38`) | Real Jev primitive (#1229); being added in PR #1261. | planned change |
-| D-K2 | `fallback_reason=unavailable` / `invalid` (jev README, #1229 comments) | `backend_unavailable` / `invalid_answer` (`decision/decide_registry.go:46,54`). | stale doc |
+| D-K1 | `Noul` dropped as unknown (old `decide.go:37-38` comment) | Real Jev primitive (#1229). | **Resolved by PR #1261** (`decide.KindNoul`, `Answer.Noul`) |
+| D-K2 | `fallback_reason=unavailable` / `invalid` (jev README, #1229 comments) | `backend_unavailable` / `invalid_answer` (`decision/decide_registry.go:46,54`). | **Resolved by PR #1261** (README rewritten; #1229 comments still use the old words) |
 | D-K3 | Epic #1225 body: decide span child of `agent.decision`; outcomes act / shadow / fallback; rules confidence = top-1 margin; held answers queued | Sibling (rules) / parent (remote); outcomes act, held, noop, invalid, fallback, discarded; 1 − p(noop); held does nothing. | stale issue text |
-| D-K4 | #1231 body cites the #1207 length gate (8 s) | Retired in #1234 / PR #1252 (`decide_hook.go:307-313`). | stale issue text |
+| D-K4 | #1231 body cites the #1207 length gate (8 s) | The gate was removed from the code by PR #1252 (the change for issue #1234: LiteLLM gateway and legacy in-game LLM path removal); `remoteDecideAdmitted` is always true by design (`services/agent/decision/decide_hook.go:307-313`, comment updated in PR #1257). | stale issue text |
+| D-K6 | Shipped defaults made remote Claude decisions time out: 2500 ms timeout vs 3.4 to 5.5 s measured (#1231) | `decision.claude.timeout_ms` default 5000 ms, `stage` budget variant, leaner output; warm ≈ 2.7 to 3.0 s. | **Resolved by PR #1257** |
 | D-K5 | Agent README: `enabled=false` stops "before any spans are emitted" | A throttled `agent.disabled` span is emitted (`decision/decision.go:472-476`). | stale doc |
 
 ### 4.8 Flags (D-F)

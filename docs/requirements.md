@@ -3,7 +3,7 @@
 > AIUP stage 2 of 5: [vision](vision.md) → **requirements** → [entity model](entity_model.md) →
 > [use cases](use_cases.puml) → [technical specs](specs/). Index: [docs/README.md](README.md).
 >
-> State: `main` @ 2d162b33 (2026-10-16). **Status** follows the AIUP reference: `Open` (not built),
+> State: `main` @ 354f36c5 (2026-10-16, includes PRs #1257, #1259, #1261). **Status** follows the AIUP reference: `Open` (not built),
 > `In Progress` (open PR), `Implemented` (on `main`), `Verified` (on `main` and covered by an automated test
 > named in the use case or technical spec), `Deferred`, `Rejected`. Planned items carry their issue / PR number.
 > Measured values cite their source; numbers taken from code cite the file.
@@ -40,7 +40,7 @@
 | NFR-020 to NFR-029 | Platform, capacity, telemetry pipeline |
 | NFR-030 to NFR-039 | Maintainability |
 | C-001 to C-009 | Northstar constraints |
-| C-010 to C-019 | Platform constraints |
+| C-010 to C-019 | Platform constraints and product decisions |
 
 ## Functional Requirements
 
@@ -88,7 +88,7 @@
 | FR-042 | Existence kill switch | As an operator, I want the `enabled` flag to stop all agent decisions within one decision cycle so that I can switch the agent off without a restart. | High | Verified |
 | FR-043 | Decisions as audit spans | As an operator, I want every agent evaluation, decision, block and action recorded as spans linked to the game trace so that the trace is the audit log. | High | Verified |
 | FR-044 | Rules engine | As the agent, I want an in-process rules engine that ranks interventions by objective weights and fitness pressure so that I can always decide without a network. | High | Verified |
-| FR-045 | Live backend selection | As an operator, I want to select the decision backend (rules, claude, openai, jev) with the `decision.backend` flag and have it apply on the next decision so that I can switch backends live. | High | Verified |
+| FR-045 | Live backend selection | As an operator, I want to select the decision backend (rules, claude, openai, jev) with the `decision.backend` flag and have it apply on the next decision so that I can switch backends live (role split: C-018). | High | Verified |
 | FR-046 | Decision contract | As the agent, I want every backend to answer the same typed questions and have answers validated strictly so that a backend can be swapped without changing the game. | High | Verified |
 | FR-047 | Confidence routing | As an operator, I want remote answers below `decision.act_confidence_threshold` held instead of applied so that only confident decisions act. | High | Verified |
 | FR-048 | Rules fallback | As a player, I want the rules engine to decide whenever a remote backend is unavailable, slow, over budget, ineligible or returns an invalid answer so that the game never waits for a model. | High | Verified |
@@ -97,7 +97,7 @@
 | FR-051 | Actuation gate | As an operator, I want the `interventions_enabled` flag to gate every write of an intervention so that decisions can be observed without acting. | High | Implemented |
 | FR-052 | Intervention rate limits | As an operator, I want a weighted per-game intervention budget in the agent and a global backstop in the coordinator so that the agent cannot spam a game. | High | Implemented |
 | FR-053 | Apply interventions in the game | As the agent, I want the game coordinator to apply interventions written to `interventions.json` (tempo, sensitivity, difficulty, shields, eliminate, revive, end game, cues, volume) through the game's own code paths so that interventions behave like native game events. | High | Verified |
-| FR-054 | Noul question kind | As the agent, I want a `noul` (probability-of-yes) question kind so that the Jev backend can answer its native primitive. | Medium | In Progress (#1229, PR #1261) |
+| FR-054 | Noul question kind | As the agent, I want a `noul` (probability-of-yes) question kind so that the Jev backend can answer its native primitive. | Medium | Verified (PR #1261) |
 | FR-055 | Tier-3 proposals | As a maintainer, I want a promoted experiment to be proposed as a GitHub issue or PR (or a local commit) for human review so that changes needing review never apply silently. | Medium | Implemented (inert in the stock stack: env gates not passed through, see D-A6) |
 | FR-056 | Post-game retro | As the agent, I want a retrospective after each eligible game (session assessment and suggestions) recorded on a span so that I learn from real games. | Medium | Implemented |
 | FR-057 | Experiment proposer | As the agent, I want to propose a shadow experiment (flag, value, rationale) after games, at most every `code_improvement.min_interval_seconds`, so that experiments come from observed play. | Medium | Implemented |
@@ -141,8 +141,8 @@
 | NFR-005 | Countdown length | The pre-game countdown lasts 3 phases × `countdown_phase_duration_ms` (default 750 ms, 2.25 s total; 0 skips) (`services/game_coordinator/games/base.py:1081-1151`). | Usability | Medium | Implemented |
 | NFR-006 | Admin timeout | Admin mode exits 60 s after entry (`services/menu/handlers/admin.py:152-154`). | Usability | Medium | Implemented |
 | NFR-007 | Pairing cadence | The pairing daemon polls USB every `pairing.poll_interval` (default 10 s) and Bluetooth every `pairing.bt_monitor_interval` (default 5 s) (`services/flagd/system.json`; `services/pairing_daemon/psmove_pairing/config.py:14-15`). | Performance | Low | Implemented |
-| NFR-010 | Remote decision timeout | A remote decision call is abandoned after `decision.<backend>.timeout_ms` (default 2500 ms) and rules decide instead. Measured Claude latency exceeds it: Haiku 5.55 s cold / 3.43 s warm, Sonnet 3.65 s / 3.05 s (#1231 comment, 2026-10-16). PR #1257 proposes a 5000 ms Claude default. | Performance | High | Implemented (default under review in #1231) |
-| NFR-011 | Global remote-call budget | At most `llm.max_requests_per_minute` (default 6) remote model calls per minute across all games and the retro; `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` overrides at startup (`services/agent/decision/llmbudget.go:22-67`). | Performance | High | Implemented |
+| NFR-010 | Remote decision timeout | A remote decision call is abandoned after `decision.<backend>.timeout_ms` and rules decide instead: Claude 5000 ms by default (variants 1500 / 2500 / 5000 / 8000, PR #1257), OpenAI-compatible and Jev 2500 ms. Measured warm latency fits: Claude Haiku ≈ 2.7 to 3.0 s and Sonnet ≈ 2.85 s after PR #1257 (before it, Haiku 5.55 s cold / 3.43 s warm, #1231 comment); Jev 240 to 315 ms (PR #1261). | Performance | High | Implemented |
+| NFR-011 | Global remote-call budget | At most `llm.max_requests_per_minute` (default 6; variants 3 / 6 / 12 and `stage` = 30 for the talk, PR #1257) remote model calls per minute across all games and the retro; `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` overrides at startup (`services/agent/decision/llmbudget.go:22-67`). | Performance | High | Implemented |
 | NFR-012 | Per-game decision cadence | At most one remote decision per game every `decision.min_interval_ms` (default 3000 ms) and never two in flight for one game (`services/agent/decision/decide_hook.go:237-241,292-303`). | Performance | High | Verified |
 | NFR-013 | Never stall the game | No game code path waits on the agent or a model: remote decisions are asynchronous and the coordinator only reacts to flag changes. A remote failure yields a rules decision for the current context; when no backend responds, the game continues unchanged. | Availability | High | Verified |
 | NFR-014 | Flag propagation | A flag file edit reaches all live readers within ~1 s (documented claim: `scripts/agent-backend.sh`; "< 100 ms" in `lib/flag_config_writer.py:24`). Not measured. | Performance | High | Open (measurement) |
@@ -181,4 +181,5 @@
 | C-014 | gRPC between services | Services talk gRPC with protobuf definitions in `proto/`; browsers reach them through the Connect proxy. | Technical | High | Implemented |
 | C-015 | Single host port | Only envoy on host port 80 is published in the base stack (plus flagd 8015, collector 4317/8889 and rust-hid 50058 for the host-networked pairing daemon). | Operational | Medium | Implemented |
 | C-016 | Secrets out of flags | API keys come from the environment (`.env.local` or the shell), are read once at agent startup and never appear in flag files or spans. | Regulatory | High | Implemented |
+| C-018 | Decision backend roles | Maintainer decision (epic #1225): **Jev** is the primary in-game decision backend; **Claude** serves the post-game retro / summary and the experiment proposer, and is the in-game **backup** selected by a manual `decision.backend` flip; the **rules** engine is the automatic floor whenever the selected backend cannot answer. The shipped default of `decision.backend` is still `rules`, so Jev is selected per deployment (e.g. `scripts/agent-backend.sh jev`). | Business | High | Implemented |
 | C-017 | Licences | Code is MIT, audio assets CC BY-SA 4.0 (`LICENSE`). | Regulatory | Medium | Implemented |
