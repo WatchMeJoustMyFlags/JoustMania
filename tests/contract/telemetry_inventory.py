@@ -257,35 +257,73 @@ def _resolve_ref(
 
 
 _NON_RECORDING_CALLS = {
-    "remove",
-    "clear",
-    "labels",
-    "isinstance",
-    "getattr",
-    "hasattr",
-    "id",
-    "repr",
-    "str",
-    "len",
-}
+    # metric API calls that put no sample on the wire
+    "remove", "clear", "labels",
+    # introspection / formatting
+    "isinstance", "getattr", "hasattr", "id", "repr", "str", "len", "format", "print",
+    # logging (logger.<level>(...), logging.log(...))
+    "debug", "info", "warning", "warn", "error", "exception", "critical", "log",
+}  # fmt: skip
 
 
-def _escapes(node: ast.expr, parent: ast.AST) -> bool:
+def _records_on(body: list[ast.stmt], name: str) -> bool:
+    """True when ``body`` calls a recording method (not a reset) on the loop variable ``name``."""
+    for stmt in body:
+        for node in ast.walk(stmt):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in _RECORDING_METHODS
+                and not _is_reset(node)
+            ):
+                receiver = node.func.value
+                if isinstance(receiver, ast.Call) and isinstance(
+                    receiver.func, ast.Attribute
+                ):
+                    receiver = receiver.func.value  # x.labels(...).inc()
+                if isinstance(receiver, ast.Name) and receiver.id == name:
+                    return True
+    return False
+
+
+def _escapes(node: ast.expr, parents: dict[ast.AST, ast.AST]) -> bool:
     """True when a metric (or its labelled child) is handed on to be recorded elsewhere.
 
-    Covers the two indirect patterns this codebase uses: passing the metric to a
-    recording helper (``start_system_metrics_collector(cpu_counter=metrics.x)``) and
-    caching labelled children for a hot loop (``self._gauges[s] = {"x": metrics.m.labels(serial=s)}``).
+    Covers the indirect patterns this codebase uses: passing the metric to a
+    recording helper (``start_system_metrics_collector(cpu_counter=metrics.x)``),
+    caching labelled children for a hot loop (``self._gauges[s] = {"x": metrics.m.labels(serial=s)}``)
+    and iterating a tuple of metrics whose loop body records on the loop variable.
+    Logging, formatting and ``.remove()`` / ``.clear()`` are not recordings, and a
+    ``for g in (metrics.a, ...)`` loop counts only if its body records on ``g``.
     """
-    if isinstance(parent, ast.Call) and node is not parent.func:
-        return _call_name(parent.func) not in _NON_RECORDING_CALLS
+    parent = parents.get(node)
+    if parent is None:
+        return False
+    if isinstance(parent, ast.Call):
+        return (
+            node is not parent.func
+            and _call_name(parent.func) not in _NON_RECORDING_CALLS
+        )
     if isinstance(parent, ast.keyword):
-        return True
+        call = parents.get(parent)
+        return (
+            isinstance(call, ast.Call)
+            and _call_name(call.func) not in _NON_RECORDING_CALLS
+        )
     if isinstance(parent, ast.Dict):
         return any(v is node for v in parent.values)
     if isinstance(parent, (ast.Assign, ast.AnnAssign)):
         return parent.value is node
-    return isinstance(parent, (ast.Return, ast.List, ast.Tuple))
+    if isinstance(parent, ast.Return):
+        return True
+    if isinstance(parent, (ast.List, ast.Tuple)):
+        loop = parents.get(parent)
+        if isinstance(loop, (ast.For, ast.AsyncFor)) and loop.iter is parent:
+            return isinstance(loop.target, ast.Name) and _records_on(
+                loop.body, loop.target.id
+            )
+        return _escapes(parent, parents)  # a collection escapes only as a whole
+    return False
 
 
 def _is_reset(call: ast.Call) -> bool:
@@ -317,7 +355,7 @@ def _uses(
         if ref is None and isinstance(node, (ast.Attribute, ast.Name, ast.Call)):
             if not isinstance(getattr(node, "ctx", ast.Load()), (ast.Store, ast.Del)):
                 parent = parents.get(node)
-                if parent is not None and _escapes(node, parent):
+                if parent is not None and _escapes(node, parents):
                     ref = _resolve_ref(node, b, local_vars)
         if ref:
             out.append((ref, node.lineno))

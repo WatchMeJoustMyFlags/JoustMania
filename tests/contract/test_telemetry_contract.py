@@ -494,3 +494,33 @@ class Game:
     assert pm["svc_music_tempo"].recorded_at
     assert pm["svc_active_players"].recorded_at
     assert pm["svc_current_mode"].recorded_at
+
+
+def test_scanner_remove_loop_and_logging_are_not_recordings(tmp_path):
+    """M3: a metric in a ``for g in (...): g.remove(...)`` cleanup tuple; M4: a metric
+    passed to ``logger.debug``. Neither puts a sample on the wire."""
+    extra = """
+from contextlib import suppress
+
+
+def retire(labels, logger):
+    for gauge in (metrics.current_game_mode, metrics.active_players):
+        with suppress(KeyError):
+            gauge.remove(*labels)
+    logger.debug("mode gauge %r", metrics.music_tempo)
+"""
+    pm = ti.python_metrics(_fixture_tree(tmp_path, extra))
+    assert pm["svc_current_mode"].recorded_at == []
+    assert pm["svc_active_players"].recorded_at == []
+    assert pm["svc_music_tempo"].recorded_at == []
+
+
+def test_scanner_loop_that_records_on_the_loop_variable_counts(tmp_path):
+    extra = """
+
+def publish(n):
+    for gauge in (metrics.active_players,):
+        gauge.set(n)
+"""
+    pm = ti.python_metrics(_fixture_tree(tmp_path, extra))
+    assert pm["svc_active_players"].recorded_at
