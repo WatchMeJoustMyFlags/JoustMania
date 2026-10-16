@@ -124,10 +124,13 @@ controller_reconnect_total = Counter("controller_reconnect_total", "Total number
 
 active_controllers = Gauge("active_controllers_total", "Number of currently active controllers")
 
-# Input latency metrics
+# Input latency: age of the sample each gameplay frame carries, from the CM poll
+# loop picking it up to the StreamGameplayData send. Stale replays keep aging, so
+# a stalled backend shows up here. Excludes the Bluetooth/HID hop before the poll
+# (SensorData has no hardware timestamp). Feeds the HighInputLatency alert.
 controller_input_lag_seconds = Histogram(
     "controller_input_lag_seconds",
-    "Time from button press to gRPC transmission",
+    "Age of the controller sample when sent on the gameplay stream (CM poll pick-up to gRPC send)",
     ["serial"],
     buckets=[0.001, 0.005, 0.010, 0.016, 0.020, 0.030, 0.050, 0.100, 0.200],
 )

@@ -28,7 +28,7 @@ groups:
           severity: warning
         annotations:
           summary: "High input latency detected"
-          description: "P95 input latency is {{$value}}s (>50ms threshold)."
+          description: "P95 age of controller samples sent on the gameplay stream is {{$value}}s (>50ms threshold): the poll loop or a backend is stalling."
 
       # System alerts
       - alert: HighCPUUsage

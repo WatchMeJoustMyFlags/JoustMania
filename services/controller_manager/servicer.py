@@ -388,6 +388,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         # the 100 Hz poll, so game time follows delivered frames, not polls.
         pattern_frame = getattr(self.backend, "pattern_frame", None)
         pattern_serials = self._pattern_serials() if pattern_frame is not None else set()
+        now = time.time()
         # No dict copy needed — _build_gameplay_update is synchronous (no await
         # points), so no dict mutation can happen during iteration.
         for serial, info in self.tracked_controllers.items():
@@ -436,6 +437,11 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             )
             gameplay_data.append(gd)
 
+            # Pattern controllers synthesise accel per delivered frame, so the
+            # polled sample's age says nothing about what they carry.
+            if serial not in pattern_serials:
+                self._record_input_lag(serial, now)
+
         # Drain disconnect events accumulated since last frame (#580)
         disconnect_events = [
             controller_manager_pb2.DisconnectEvent(serial=s) for s in self.discovery_loop.drain_disconnects()
@@ -446,6 +452,16 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             timestamp=int(time.time() * 1000),
             disconnects=disconnect_events,
         )
+
+    def _record_input_lag(self, serial: str, now: float) -> None:
+        """Observe how old the sample in this gameplay frame is (FR-083).
+
+        Measures CM poll pick-up -> gameplay stream send. The Bluetooth/HID hop
+        before the poll is not included: SensorData has no hardware timestamp.
+        """
+        age = self.discovery_loop.sample_age_seconds(serial, now)
+        if age is not None:
+            metrics.controller_input_lag_seconds.labels(serial=serial).observe(age)
 
     def _pattern_serials(self) -> set:
         """Serials with a motion pattern; empty for backends without patterns."""

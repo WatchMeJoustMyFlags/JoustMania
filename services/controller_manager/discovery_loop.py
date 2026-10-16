@@ -659,6 +659,19 @@ class DiscoveryLoop:
                 self._hw_max_gap_ms[serial] = gap_ms
         self._hw_last_fresh_ts[serial] = now
 
+    def sample_age_seconds(self, serial: str, now: float) -> float | None:
+        """Seconds since the poll loop picked up ``serial``'s current sample.
+
+        Feeds ``controller_input_lag_seconds`` at gameplay-frame send time. A
+        stale replay keeps the old pick-up time, so a stalled backend shows as
+        growing lag. ``None`` until the first fresh frame. ``now`` must be
+        wall-clock (time.time()), matching the poll loop's timestamps.
+        """
+        picked_up = self._hw_last_fresh_ts.get(serial)
+        if picked_up is None:
+            return None
+        return max(0.0, now - picked_up)
+
     def _compute_health_window(self, window_seconds: float) -> dict:
         """Derive per-serial and window-aggregate health signals.
 
