@@ -467,12 +467,15 @@ func snapLevel(s float64, n int) (int, error) {
 // mostLikelyLevel is the level with the highest probability in probs (keys
 // "0".."n-1", Jev's per-level distribution). A tie goes to the gentler level
 // (gentler(i, j) reports whether level i is gentler than level j). probs must
-// cover exactly the n levels with finite non-negative values.
+// cover exactly the n levels with finite non-negative values that sum to 1
+// within the choice path's rescale tolerance (max(renormalizeTolerance,
+// n*roundingSlack)); an all-zero or otherwise far-off distribution is invalid,
+// as it is for a choice.
 func mostLikelyLevel(probs map[string]float64, n int, gentler func(i, j int) bool) (int, error) {
 	if len(probs) != n {
 		return 0, fmt.Errorf("level probabilities cover %d levels, want %d", len(probs), n)
 	}
-	best, pBest := -1, 0.0
+	best, pBest, sum := -1, 0.0, 0.0
 	for i := 0; i < n; i++ {
 		p, ok := probs[strconv.Itoa(i)]
 		if !ok {
@@ -481,12 +484,16 @@ func mostLikelyLevel(probs map[string]float64, n int, gentler func(i, j int) boo
 		if !isFinite(p) || p < 0 {
 			return 0, fmt.Errorf("level %d probability %v", i, p)
 		}
+		sum += p
 		switch {
 		case best < 0, p > pBest+levelTieTolerance:
 			best, pBest = i, p
 		case math.Abs(p-pBest) <= levelTieTolerance && gentler(i, best):
 			best, pBest = i, p
 		}
+	}
+	if math.Abs(sum-1) > math.Max(renormalizeTolerance, float64(n)*roundingSlack) {
+		return 0, fmt.Errorf("level probabilities sum to %v, want 1", sum)
 	}
 	return best, nil
 }

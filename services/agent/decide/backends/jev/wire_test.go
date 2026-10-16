@@ -296,6 +296,9 @@ func TestMostLikelyLevel(t *testing.T) {
 		{"missing level", levels(0.5, 0.5), lowerIsGentler, 0, true},
 		{"extra level", levels(0.2, 0.2, 0.2, 0.2, 0.1, 0.1), lowerIsGentler, 0, true},
 		{"NaN", levels(math.NaN(), 0.2, 0.2, 0.2, 0.2), lowerIsGentler, 0, true},
+		{"all zero", levels(0, 0, 0, 0, 0), lowerIsGentler, 0, true},
+		{"sum far from 1", levels(0.1, 0.1, 0.1, 0.1, 0.1), lowerIsGentler, 0, true},
+		{"rounding slack accepted", levels(0.2, 0.2, 0.2, 0.2, 0.23), lowerIsGentler, 4, false},
 	} {
 		n := 5
 		if c.name == "three-way tie" {

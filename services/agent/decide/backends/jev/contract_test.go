@@ -270,6 +270,8 @@ var responseContracts = []responseContract{
 		check: shieldSeconds(4.75)},
 	{name: "magnitude level probabilities miss a level", req: shieldDetails, chosen: "grant_shield", errType: "invalid_output", isInvalid: true,
 		body: mutated(fxDetails, shieldLevels(1.3, 0.3, 0.3, 0.4))},
+	{name: "magnitude level probabilities all zero", req: shieldDetails, chosen: "grant_shield", errType: "invalid_output", isInvalid: true,
+		body: mutated(fxDetails, shieldLevels(1.3, 0, 0, 0, 0, 0))},
 	{name: "magnitude level probability negative", req: shieldDetails, chosen: "grant_shield", errType: "invalid_output", isInvalid: true,
 		body: mutated(fxDetails, shieldLevels(1.3, 0.5, -0.1, 0.3, 0.2, 0.1))},
 	{name: "noul", body: fixture("response_noul.json"), req: noulRequest, check: func(t *testing.T, res wireResult) {

@@ -72,9 +72,10 @@ The `ffa.intervention` answer `Decide` returns is **synthesised**
 
 - the acting confidence `1 - p(noop)` equals **p_yes**, so the existing
   `decision.act_confidence_threshold` gates the gate (no change in `decision/`);
-- `decide.Validate`'s argmax rule makes the choice the intervention **iff
-  p_yes > 0.5**, else `noop` (confidence `1 - p_yes`); a closed gate makes no
-  details call;
+- `gateAnswer` makes the choice the intervention **iff p_yes > 0.5** (a strict
+  `>`: exactly 0.5 is `noop`), else `noop` (confidence `1 - p_yes`); a closed
+  gate makes no details call. `decide.Validate` only accepts the result (the
+  choice is the argmax within its 1e-3 tolerance), it does not decide it;
 - every option of the caller's question is covered.
 
 It is deliberately **not** the factorised `p_yes * q_i`, which would split the
@@ -90,8 +91,11 @@ confidence is `1 - p(noop)` of Jev's answer, as before).
 
 The static game description no longer says "Doing nothing is often right;
 intervene only when the game state clearly calls for it": with `noop` out of
-the choice it only biased the gate toward no. Restraint now comes from the
-gate's calibrated p_yes and the threshold.
+the choice it biased the gate toward no. Restraint now comes from the gate's
+calibrated p_yes and the threshold. The description is part of the state of
+**every** Jev call, so the change also shifts the details stage and a
+caller's nouls slightly (re-recorded fixtures: the `about_to_end` noul 0.62 ->
+0.60, `lopsided` 0.29 -> 0.31; the shield level distribution moved too).
 
 ### Calibration (2026-10-16, jev-1.13.0, `TestLiveGate`)
 
@@ -195,12 +199,14 @@ shield can still show `near_threshold`.
 
 ### Option order
 
-Choice options keep `Question.Options` order on the wire. Since the gate
-(#1281) the stage-1 `ffa.intervention` has no `noop`: its first option is the
-first allowed intervention (`play_audio_cue` in the `full` allow-list), so the
-first-option bias now favours that one (re-measure with `TestLiveOptionOrder`,
-which moves it last). The table below is the pre-gate measurement, when
-`noop` was first.
+Choice options keep `Question.Options` order on the wire. `none` stays first
+for `ffa.target`. Since the gate (#1281) the stage-1 `ffa.intervention` has no
+`noop`: its first option is the first allowed intervention (`play_audio_cue`
+in the `full` allow-list), so the first-option bias now favours that one
+(unmeasured; re-measure with `TestLiveOptionOrder`, which moves it last).
+`noop` is first only where `ffa.intervention` is not gated.
+
+#### Historical (pre-gate, #1265): noop first in stage 1
 
 **Known bias, chosen to fail safe.** The jev-1.13 jaggedness doc says the model
 leans toward the first option of a choice. We put `noop` first on purpose, so
@@ -213,7 +219,7 @@ same state, noop first vs noop last):
 | calm (4 alive, all safe, 18 s in) | 0.97, 0.98, 0.99, 0.98, 0.98, 0.98 | 0.97, 0.95 |
 
 The choice was noop in every run either way, so the bias is about 0.03 and does
-not suppress interventions; noop stays first (fail-safe). Jev's noop
+not suppress interventions; noop stayed first (fail-safe) until the gate removed it from stage 1. Jev's noop
 preference comes from the noop / game descriptions, not the order (see the PR
 for a neutral-noop probe).
 

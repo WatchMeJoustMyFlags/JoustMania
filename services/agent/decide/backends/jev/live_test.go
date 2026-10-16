@@ -205,7 +205,10 @@ func TestLiveOptionOrder(t *testing.T) {
 					t.Fatalf("%s %s: %v", sc.name, order, err)
 				}
 				iv, _ := resp.Find(decide.QuestionFFAIntervention)
-				gate, _ := resp.Find(GateQuestionID)
+				gate, found := resp.Find(GateQuestionID)
+				if !found || gate.Noul == nil {
+					t.Fatalf("%s %s: no gate answer", sc.name, order)
+				}
 				t.Logf("%s %s #%d: p_yes=%.2f choice=%s p(%s)=%.2f top=%v", sc.name, order, r+1, *gate.Noul, iv.Choice, moved, iv.Probabilities[moved], topProbabilities(iv.Probabilities, 3))
 			}
 		}

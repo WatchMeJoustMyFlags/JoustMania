@@ -176,7 +176,8 @@ Consequences:
 
 - **Confidence = p_yes** when acting (1 − p_yes for noop), so the unchanged `decision.act_confidence_threshold`
   routing (§5) gates the gate. Nothing in `decision/` changes.
-- **Choice = argmax_iv iff p_yes > 0.5**, else `noop` (decide.Validate's argmax rule); a closed gate makes no
+- **Choice = argmax_iv iff p_yes > 0.5**, else `noop`, decided by `gateAnswer`'s strict `>` (exactly 0.5 is
+  `noop`; `decide.Validate` only accepts the result within its 1e-3 argmax tolerance); a closed gate makes no
   details call.
 - **Full option coverage**: every option of the caller's question is in the distribution.
 - Deliberately **not** the factorised `p_yes × q_i`, which would split the acting mass again.
@@ -186,7 +187,9 @@ Consequences:
 - The gate applies when `ffa.intervention` offers `noop` and at least one intervention; otherwise stage 1 asks
   the question unchanged.
 - Jev's static game description no longer says "Doing nothing is often right; intervene only when the game
-  state clearly calls for it": it only biased the gate (near-threshold p_yes 0.48 → 0.55).
+  state clearly calls for it": it biased the gate (near-threshold p_yes 0.48 → 0.55). The description is in
+  the state of every Jev call, so the details stage and caller nouls shift slightly too (e.g. the recorded
+  `about_to_end` noul 0.62 → 0.60).
 
 **Calibration** (live, jev-1.13.0, 2026-10-16, `TestLiveGate`, shipped wording, 2 runs): calm 0.16 / 0.16,
 dragging 0.36 / 0.35, collapsing 0.67 / 0.68, near-threshold 0.72 / 0.71. None reaches the default threshold
@@ -201,7 +204,8 @@ A Jev score answer carries a probability per level. The answer is the **most lik
 goes to the **gentler** level: the value nearer the lever's neutral, else the lower level (a shorter shield,
 a slighter change). Rounding the expected score was dropped: it lands between modes (0.29 / 0.28 / 0.30 gave
 1.3 → level 1 although level 2 is the mode). Only an answer without level probabilities falls back to the
-rounded score. The level's normalized position is the answer, so `decide.ResolveMagnitude` returns exactly
+rounded score; level probabilities that miss a level, are negative or do not sum to 1 (e.g. all zero) are
+`invalid_answer`, like a choice distribution. The level's normalized position is the answer, so `decide.ResolveMagnitude` returns exactly
 that level's value. The help / rein-in direction of two-way levers is unchanged (Go decides it).
 
 ## 4. Validation

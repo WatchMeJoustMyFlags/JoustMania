@@ -34,9 +34,10 @@ package jev
 //
 //	{noop: 1 - p_yes, argmax_iv: p_yes, every other option: 0}
 //
-// so the acting confidence 1 - p(noop) equals p_yes, decide.Validate's argmax
-// rule makes the choice the intervention iff p_yes > 0.5, and every option is
-// covered. It is deliberately NOT the factorised p_yes * q_i, which would
+// so the acting confidence 1 - p(noop) equals p_yes, gateAnswer picks the
+// intervention iff p_yes > 0.5 (its own strict >; decide.Validate's argmax
+// check merely accepts that choice, within its 1e-3 tolerance), and every
+// option is covered. It is deliberately NOT the factorised p_yes * q_i, which would
 // split the acting mass again. Jev's real answers (p_yes and the distribution
 // over the interventions) are recorded on the stage-1 chat span
 // (jev.gate.p_yes, jev.stage1.choice, jev.stage1.distribution). The gate
@@ -147,7 +148,9 @@ func withoutNoop(q decide.Question) decide.Question {
 }
 
 // gateOpen is the p_yes above which the synthesised choice is the
-// intervention (decide.Validate's argmax rule at {noop: 1-p, iv: p}).
+// intervention. gateAnswer decides with a strict > (at exactly 0.5 the round
+// is noop); decide.Validate only accepts the result (the choice is the argmax
+// of {noop: 1-p, iv: p} within its 1e-3 tolerance), it does not decide it.
 const gateOpen = 0.5
 
 // gateAnswer synthesises the caller's ffa.intervention answer from the gate's
