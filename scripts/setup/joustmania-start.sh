@@ -97,5 +97,9 @@ done
 echo "Audio volume configured"
 
 # Start services (this must succeed)
-echo "Starting JoustMania..."
+# Real controllers are read through rust-hid, the default Bluetooth backend
+# (#1371); it is part of the default compose services. python-hid is opt-in
+# only: set COMPOSE_PROFILES=python-hid in .env (docker compose reads it) and
+# select a backend variant naming python in services/flagd/controller.json.
+echo "Starting JoustMania (Bluetooth backend: rust-hid${COMPOSE_PROFILES:+, profiles: ${COMPOSE_PROFILES}})..."
 exec docker compose up -d

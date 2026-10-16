@@ -21,7 +21,7 @@ flowchart LR
     menu --> audio
     gc --> cm
     gc --> audio
-    cm --> phid[python-hid]
+    cm -. opt-in profile .-> phid[python-hid]
     cm --> rhid[rust-hid]
     pd[pairing-daemon] --> rhid
     agent -->|shadow games| gc
@@ -42,8 +42,8 @@ coordinator and the mock control API to run shadow games, the named exception in
 | Service (compose name) | Language | Port(s) | Host-published | Responsibility | Source |
 |---|---|---|---|---|---|
 | controller-manager | Python | 50052 gRPC; 50062 mock control API (mock adapter only); 8000 prometheus_client | 50052, 50062 via `docker-compose.override.yml` | Discover controllers, route each to one HID adapter, stream buttons and motion, apply LEDs / rumble / effects, names, rollout routing, chaos | `services/controller_manager/` |
-| python-hid | Python | 50059 gRPC | no | HID access via hidapi: ControllerIOService only | `services/python_hid/` |
-| rust-hid | Rust | 50058 gRPC | 50058 (for the host-networked pairing daemon) | HID access: PairingService + ControllerIOService | `services/rust-hid/` |
+| python-hid | Python | 50059 gRPC | no | HID access via hidapi: ControllerIOService only. Opt-in: starts only under the `python-hid` compose profile (UC-002 BR-003, #1371) | `services/python_hid/` |
+| rust-hid | Rust | 50058 gRPC | 50058 (for the host-networked pairing daemon) | HID access: PairingService + ControllerIOService. The default Bluetooth backend; in the full and the lite stack (UC-002 BR-003) | `services/rust-hid/` |
 | pairing-daemon | Python | 8002 `/healthz` (host network) | host network | USB pairing loop, Bluetooth monitor (RSSI metrics) | `services/pairing_daemon/` |
 | game-coordinator | Python | 50053 gRPC (compose also exposes 8000, but nothing listens there: metrics are pushed over OTLP) | 50053 via override | Game sessions (primary + shadow), game modes, death detection, events, interventions consumer | `services/game_coordinator/` |
 | menu | Python | 50054 gRPC | 50054 via override | Lobby, ready state, mode selection, admin mode, flag writer for `game` / `user` / `agent.interventions_allowed` | `services/menu/` |
@@ -62,7 +62,7 @@ coordinator and the mock control API to run shadow games, the named exception in
 | flag-dir-init | busybox | none | no | One-shot: make the flag dir group-writable for the nonroot menu | `docker-compose.yml:61-72` |
 
 Compose variants: `docker-compose.yml` (full), `.override.yml` (auto-loaded dev ports), `.lite.yml` (no
-observability), `.ci.yml` (CI flag dir, profiles), `.ci-rust.yml`, `.dev.yml` (source mounts), `.dry-run.yml`
+observability; still runs rust-hid and the pairing daemon, so the Pi reads real controllers, #1318), `.ci.yml` (CI flag dir, profiles), `.ci-rust.yml`, `.dev.yml` (source mounts), `.dry-run.yml`
 (demo / experiment seed), `.decide-e2e.yml` (fake OpenAI server), `.agent-coordinator.yml`.
 
 **Traceability:** C-014, C-015, FR-085, NFR-020 / UC-035 / `docker-compose*.yml`, `services/envoy/envoy.yaml` / `tests/integration/conftest.py`.
@@ -210,7 +210,7 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 
 ### controller-manager
 
-- Backend set from the `backend` flag at **startup** (default `python,rust`; `mock` in the CI flag set); `mock` is always added with zero controllers. Per controller, one adapter wins: per-serial `bluetooth_backend` targeting, then the rollout router, then the flag default (`multiplexer/multiplexer_backend.py:235-291`).
+- Backend set from the `backend` flag at **startup** (default `rust`, also the fallback when the flag is unavailable; `mock` in the CI flag set; variants naming `python` are opt-in and need the `python-hid` profile, UC-002 BR-003); `mock` is always added with zero controllers. Per controller, one adapter wins: per-serial `bluetooth_backend` targeting, then the rollout router, then the flag default (`multiplexer/multiplexer_backend.py:235-291`).
 - Loops: state 100 Hz, discovery 1 Hz (full enumeration at most every 0.5 s, forced every 10 s), LED batch 20 Hz (send on change or 2 s keep-alive), battery metrics every 30 s, `controller.bluetooth_health` span ~1 Hz (`discovery_loop.py`).
 - Gameplay stream rate: client-requested, overridden by `game_loop.update_frequency_hz` (clamp 1..100), fallback 30 Hz.
 - Pattern games (#1258, FR-103): a stream whose explicit filter names pattern controllers runs at the archetype's pinned `stream_rate_hz` and ignores the flag override; a controller's frame index advances once per frame delivered on its owning stream (the first explicit stream that names it), in `_build_gameplay_update` next to the hook that drains the #926 death latch.
@@ -248,6 +248,6 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 
 ### pairing-daemon
 
-- Host network (raw HCI), privileged; USB poll every `pairing.poll_interval` (10 s), Bluetooth monitor every `pairing.bt_monitor_interval` (5 s); pairing backend chosen per poll from `bluetooth_backend` (`rust` → rust-hid PairingService, else in-process hidapi).
+- Host network (raw HCI), privileged; USB poll every `pairing.poll_interval` (10 s), Bluetooth monitor every `pairing.bt_monitor_interval` (5 s); pairing backend chosen per poll from `bluetooth_backend` (UC-001 BR-003: `rust` → rust-hid PairingService, `python` / `unstable` → in-process hidapi, unknown or flagd down → `rust`). In the lite stack it runs on the bridge network and reaches rust-hid as `rust-hid:50058`.
 
 **Traceability:** FR-001 to FR-008, FR-040, FR-053, FR-070 to FR-074, NFR-001 to NFR-003, NFR-018, C-011 / UC-001 to UC-003, UC-040, UC-050 to UC-052 / service directories above / `services/*/tests/`, `tests/integration/`.

@@ -8,6 +8,12 @@
 # Memory savings: ~768MB compared to full stack
 # Recommended for: Raspberry Pi 5, production deployments without monitoring
 #
+# Controllers: real PS Move controllers are read through rust-hid, the default
+# Bluetooth backend (backend=rust in services/flagd/controller.json, #1371/#1318).
+# The controller manager and the pairing daemon reach it as rust-hid:50058 on the
+# joustmania network. python-hid is not part of the lite stack (opt-in on the
+# full stack only, `docker compose --profile python-hid up -d`).
+#
 # All images use canonical GHCR names for consistency.
 # Use IMAGE_TAG environment variable to specify version (default: latest)
 
@@ -97,6 +103,9 @@ services:
       - CONTROLLER_NAMES_FILE=/app/data/controller_names.txt
       - DBUS_SYSTEM_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket
       - OTEL_SDK_DISABLED=true
+      # rust-hid: the default controller I/O backend (#1318, #1371)
+      - RUST_HID_HOST=rust-hid
+      - RUST_HID_PORT=50058
     volumes:
       - /var/run/dbus:/var/run/dbus:ro
       - /var/lib/bluetooth:/var/lib/bluetooth:ro
@@ -105,6 +114,8 @@ services:
     depends_on:
       flagd:
         condition: service_started
+      rust-hid:
+        condition: service_healthy
     restart: unless-stopped
     # Healthcheck defined in Dockerfile
 
@@ -131,8 +142,54 @@ services:
       - METRICS_PORT=8002
       - DBUS_SYSTEM_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket
       - OTEL_SDK_DISABLED=true
+      # bluetooth_backend (default rust) pairs through rust-hid's PairingService
+      # (UC-001 BR-003). Bridge network here, so the compose service name.
+      - FLAGD_HOST=flagd
+      - FLAGD_PORT=8015
+      - RUST_HID_HOST=rust-hid
+      - RUST_HID_PORT=50058
+    depends_on:
+      flagd:
+        condition: service_started
+      rust-hid:
+        condition: service_healthy
     restart: unless-stopped
     # Healthcheck defined in Dockerfile
+
+  # Rust HID Service - PS Move HID access (ControllerIOService + PairingService)
+  # via gRPC. The default Bluetooth backend (#1318, #1371). Same device access as
+  # the full stack: privileged, host PID namespace and /dev with rslave
+  # propagation, so hot-plugged hidraw nodes appear. No OTLP endpoint is set, so
+  # it exports no telemetry (the lite stack has no collector).
+  rust-hid:
+    image: ghcr.io/watchmejoustmyflags/joustmania/rust-hid:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: services/rust-hid/Dockerfile
+    container_name: joustmania-rust-hid
+    privileged: true
+    pid: "host"
+    volumes:
+      - /dev:/dev:rslave
+    networks:
+      - joustmania
+    expose:
+      - "50058"
+    environment:
+      - OTEL_SERVICE_NAME=rust-hid
+      - OTEL_SERVICE_NAMESPACE=infrastructure
+      - FLAGD_HOST=flagd
+      - RUST_LOG=info
+    depends_on:
+      flagd:
+        condition: service_started
+    restart: unless-stopped
+    # Healthcheck defined in Dockerfile (uses grpc_health_probe)
+    deploy:
+      resources:
+        limits:
+          memory: 64m
+          cpus: '0.25'
 
   # Game Coordinator Service
   game-coordinator:

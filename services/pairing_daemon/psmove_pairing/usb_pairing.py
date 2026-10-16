@@ -40,37 +40,51 @@ class PairingError(Exception):
 _ATTR_CONTROLLER_SERIAL = "controller.serial"
 _ATTR_ADAPTER_ADDRESS = "adapter.address"
 
-_KNOWN_ROUTING_VALUES = {"hidapi", "python", "rust"}
+# bluetooth_backend flag variant -> pairing backend (UC-001 BR-003, #1320).
+# The keys must match the variants in services/flagd/controller.json.
+# "unstable" is the controller manager's fault-injecting wrapper around the
+# python I/O path; pairing is a one-shot USB feature-report write, so it pairs
+# through the python (in-process hidapi) backend.
+VARIANT_TO_PAIRING_BACKEND = {
+    "python": "python",
+    "rust": "rust",
+    "unstable": "python",
+}
+
+# Unknown values and an unreachable flagd select rust-hid, the default backend
+# that every stack ships (UC-002 BR-003, #1371).
+DEFAULT_PAIRING_BACKEND = "rust"
 
 
 def _resolve_routing() -> str:
-    """Resolve the routing name from feature flags.
+    """Resolve the pairing backend name from the bluetooth_backend flag.
 
-    Reads the bluetooth_backend default variant and validates it.
-    Returns a known routing name, falling back to "hidapi" for unknown values.
+    Maps the flag variant through VARIANT_TO_PAIRING_BACKEND. Returns
+    "python" or "rust"; unknown values log a warning and fall back to
+    DEFAULT_PAIRING_BACKEND (UC-001 A3).
     """
-    routing = get_adapter_routing_default()
+    variant = get_adapter_routing_default()
 
-    if routing in _KNOWN_ROUTING_VALUES:
-        return routing
+    pairing_backend = VARIANT_TO_PAIRING_BACKEND.get(variant)
+    if pairing_backend is not None:
+        return pairing_backend
 
-    logger.warning(f"Unknown adapter routing '{routing}', falling back to hidapi")
-    return "hidapi"
+    logger.warning(f"Unknown bluetooth_backend '{variant}', falling back to {DEFAULT_PAIRING_BACKEND}")
+    return DEFAULT_PAIRING_BACKEND
 
 
 def _create_backend(name: str) -> PairingBackend:
-    """Create a backend instance by name."""
-    if name == "rust":
-        return RustServiceBackend()
-    return HidapiBackend()
+    """Create a pairing backend by name ("python" or "rust")."""
+    if name == "python":
+        return HidapiBackend()
+    return RustServiceBackend()
 
 
 def _resolve_backend() -> tuple[PairingBackend, str]:
     """Resolve the pairing backend from feature flags.
 
-    Reads the bluetooth_backend default variant:
-    - "hidapi" -> HidapiBackend (default)
-    - "rust" -> RustServiceBackend
+    - "rust" (default) -> RustServiceBackend (rust-hid PairingService)
+    - "python" / "unstable" -> HidapiBackend (in-process hidapi)
 
     Returns:
         Tuple of (backend_instance, backend_name).

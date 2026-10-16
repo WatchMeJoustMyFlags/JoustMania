@@ -3,7 +3,8 @@
 # This file is automatically loaded by docker-compose and adds
 # development-friendly settings (port exposures for testing tools).
 #
-# Base config (docker-compose.yml) already defaults to mock mode.
+# Base config (docker-compose.yml) reads real controllers through rust-hid
+# (backend=rust in services/flagd/controller.json, #1371). For mock mode: make up-mock.
 
 services:
   # flagd - Expose the RPC evaluation port so integration tests can evaluate

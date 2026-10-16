@@ -108,24 +108,23 @@ class TestCreateBackendIntegration:
             assert len(backend.adapters) == 1
             assert backend.adapters[0].adapter_type == "mock"
 
-    def test_defaults_to_python_when_flag_fails(self):
-        """Should default to python when flag evaluation fails."""
+    def test_defaults_to_rust_when_flag_fails(self):
+        """Should default to rust (rust-hid) when flag evaluation fails (#1371)."""
         with (
             patch("lib.feature_flags.get_flag_client", side_effect=Exception("flagd unavailable")),
             patch("services.controller_manager.backend_factory._create_adapter_by_name") as mock_create,
         ):
-            python_adapter = MagicMock()
-            python_adapter.adapter_type = "python"
+            rust_adapter = MagicMock()
+            rust_adapter.adapter_type = "rust"
             mock_adapter = MagicMock()
             mock_adapter.adapter_type = "mock"
-            mock_create.side_effect = [python_adapter, mock_adapter]
+            mock_create.side_effect = [rust_adapter, mock_adapter]
 
             backend = create_backend()
 
         assert backend.__class__.__name__ == "MultiplexerBackend"
         call_names = [call[0][0] for call in mock_create.call_args_list]
-        assert "python" in call_names
-        assert "mock" in call_names
+        assert call_names == ["rust", "mock"]
 
 
 class TestMultiAdapterCreation:

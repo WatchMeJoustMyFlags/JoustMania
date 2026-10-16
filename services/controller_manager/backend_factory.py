@@ -4,8 +4,11 @@ Backend Factory for Controller Manager
 Detects platform and creates appropriate backend instance.
 
 Backend selection priority:
-  1. OpenFeature "backend" flag from the controller domain (runtime-switchable via flagd)
-  2. Platform auto-detection (Linux -> python)
+  1. OpenFeature "backend" flag from the controller domain (default "rust")
+  2. Fallback when the flag is empty or flagd is unavailable: DEFAULT_BACKEND ("rust")
+
+rust-hid is the default Bluetooth backend (#1371, UC-002 BR-003). Variants naming
+"python" are opt-in and need the python-hid compose profile.
 
 Flag values are read once at startup.
 Runtime changes to these flags require a service restart to take effect.
@@ -27,11 +30,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Used when the backend flag is empty or flagd is unreachable (#1371).
+DEFAULT_BACKEND = "rust"
+
 
 def _resolve_backend_name() -> str | None:
     """Resolve backend name from OpenFeature flag.
 
-    Returns the backend name string, or None to fall through to platform detection.
+    Returns the backend name string, or None to fall back to DEFAULT_BACKEND.
     """
     try:
         from lib.feature_flags import get_flag_client
@@ -123,10 +129,10 @@ def create_backend() -> ControllerBackend:
 
     Selection priority:
         1. OpenFeature "backend" flag from controller domain
-        2. Platform auto-detection (Linux -> python)
+        2. DEFAULT_BACKEND ("rust") when the flag is empty or unavailable
 
     Creates ControllerIOAdapter instances wrapped in MultiplexerBackend.
-    Comma-separated flag values (e.g. "mock,python") create multiple
+    Comma-separated flag values (e.g. "mock,rust") create multiple
     adapters. A mock adapter is always auto-injected (with 0 controllers)
     for dynamic RPC management.
 
@@ -142,7 +148,7 @@ def create_backend() -> ControllerBackend:
 
     backend_name = _resolve_backend_name()
     if not backend_name:
-        backend_name = "python"  # Default on Linux
+        backend_name = DEFAULT_BACKEND
 
     logger.info(f"Backend selection: backend_name={backend_name!r}")
 
