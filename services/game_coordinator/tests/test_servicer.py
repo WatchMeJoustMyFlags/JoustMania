@@ -227,6 +227,7 @@ class TestForceEndGame:
         return GameCoordinatorServicer()
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-027", flow="A2")
     async def test_force_end_no_game_running(self, servicer):
         """ForceEndGame should fail gracefully when no game running."""
         request = game_coordinator_pb2.ForceEndGameRequest(reason="test")
@@ -235,6 +236,7 @@ class TestForceEndGame:
         assert "no game in progress" in response.error.lower()
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-027", flow="A2")
     async def test_force_end_idle_state(self, servicer):
         """ForceEndGame should fail when no primary session exists."""
         assert servicer.game_state == game_coordinator_pb2.GameState.IDLE
@@ -244,6 +246,7 @@ class TestForceEndGame:
         assert response.success is False
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-027", flow="main", steps=[1, 2])
     async def test_force_end_running_game(self, servicer):
         """ForceEndGame should succeed when game is running."""
         with _NO_THREAD:
@@ -262,6 +265,7 @@ class TestForceEndGame:
         mock_game.force_end.assert_called_once()
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-027", flow="main", steps=[1, 4])
     async def test_force_end_starting_game(self, servicer):
         """ForceEndGame should succeed when game is starting."""
         with _NO_THREAD:
@@ -275,6 +279,7 @@ class TestForceEndGame:
         assert servicer.game_state == game_coordinator_pb2.GameState.IDLE
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-027", flow="main", steps=[4])
     async def test_force_end_frees_primary_slot(self, servicer):
         """After force-end, a new primary game can start."""
         with _NO_THREAD:

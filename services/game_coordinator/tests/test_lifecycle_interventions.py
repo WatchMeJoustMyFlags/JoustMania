@@ -436,6 +436,7 @@ class TestSoftPenaltyHandler:
 # --------------------------------------------------------------------------- #
 class TestEliminatePlayerHandler:
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="A3")
     async def test_kills_via_kill_player_with_agent_reason(self):
         game = make_ffa_game(num_players=2)
         captured = {}

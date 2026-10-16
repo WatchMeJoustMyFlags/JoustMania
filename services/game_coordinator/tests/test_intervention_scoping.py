@@ -443,6 +443,7 @@ def _id_of_kind(servicer, real: bool) -> str:
 
 @pytest.mark.uc("UC-040", flow="A18", br=["BR-011"])
 @pytest.mark.asyncio
+@pytest.mark.uc("UC-027", flow="A3", br=["BR-001"])
 async def test_servicer_shadow_end_game_ends_shadow_session_not_the_real_game():
     """Through the servicer's real wiring: a shadow-addressed end_game retires
     the shadow session and leaves the real (primary) session running."""
@@ -464,6 +465,7 @@ async def test_servicer_shadow_end_game_ends_shadow_session_not_the_real_game():
 
 @pytest.mark.uc("UC-040", flow="A18", br=["BR-011"])
 @pytest.mark.asyncio
+@pytest.mark.uc("UC-027", flow="A3", br=["BR-001"])
 async def test_servicer_real_end_game_ends_the_real_game():
     servicer, flags, _ = await _servicer_with_games(True, False)
     mgr = servicer.intervention_manager
@@ -482,6 +484,7 @@ async def test_servicer_real_end_game_ends_the_real_game():
 
 @pytest.mark.uc("UC-040", flow="A18", br=["BR-011"])
 @pytest.mark.asyncio
+@pytest.mark.uc("UC-027", flow="A1", br=["BR-001"])
 async def test_force_end_session_never_falls_back_to_the_primary():
     """``_force_end_session`` with an unknown non-empty id is a no-op: it must
     not resolve "the current game"."""

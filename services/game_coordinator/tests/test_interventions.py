@@ -508,6 +508,7 @@ async def test_battery_guard_missing_does_not_block():
 # Enforcement: mode-capability matrix
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
+@pytest.mark.uc("UC-020", flow="A3")
 async def test_mode_matrix_blocks_revive_in_ffa():
     mgr, events = make_manager(
         interventions={"revive_player": "1:ctrl_a"},
