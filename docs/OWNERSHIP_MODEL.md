@@ -63,8 +63,8 @@ the agent has three narrow, gated writes beyond `interventions.json`.
    targeting, autonomous promotion) both read-modify-write `game.json` with no
    shared lock, so a write that interleaves with the other can be lost (last
    writer wins). It is narrow in practice (admin edits are rare, experiment writes
-   happen at declare / abort / promote time) but not prevented. No other file may
-   gain a second writer.
+   happen at declare / abort / promote time) but not prevented; tracked in #1292.
+   No other file may gain a second writer.
 
 The contested ground is therefore not the *files* (disjoint) but the *runtime
 state* the two write paths converge on inside the game object (sensitivity, grace

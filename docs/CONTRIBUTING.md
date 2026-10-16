@@ -120,7 +120,9 @@ Requirements use the AIUP requirement statuses (`Open`, `In Progress`, `Implemen
 `Verified`, `Obsolete` = `Rejected`. UC `Tested` = every main-scenario and alternative-flow step has a
 tagged test (see /coverage-check). A use case's status is never above the weakest FR on its
 `Requirements:` line; FRs that only a planned flow needs go on a separate `Planned:` line with their
-issue number, so the use case can be `Implemented` while they stay `Open`.
+issue number, so the use case can be `Implemented` while they stay `Open`. Conversely, an FR's status is
+derived from its use cases: it is `Verified` only when every use case that lists it under `Requirements:` is
+`Tested`, otherwise at most `Implemented`. NFRs are exempt from both rules; they are measured separately.
 
 ### Identifiers in use cases (documented deviation)
 
