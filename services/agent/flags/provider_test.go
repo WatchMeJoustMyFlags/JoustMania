@@ -21,27 +21,12 @@ func TestEvaluate_WithInMemoryProvider(t *testing.T) {
 			DefaultVariant: "on",
 			Variants:       map[string]any{"on": true, "off": false},
 		},
-		keyMode: {
-			State:          memprovider.Enabled,
-			DefaultVariant: "rules",
-			Variants:       map[string]any{"rules": "rules", "llm": "llm"},
-		},
 		keyObjectives: {
 			State:          memprovider.Enabled,
 			DefaultVariant: "endurance_focused",
 			Variants: map[string]any{
 				"endurance_focused": map[string]any{"endurance": 0.7, "balanced": 0.3},
 			},
-		},
-		keyModel: {
-			State:          memprovider.Enabled,
-			DefaultVariant: "claude",
-			Variants:       map[string]any{"claude": "claude", "phi4-mini": "phi4-mini"},
-		},
-		keyPromptVariant: {
-			State:          memprovider.Enabled,
-			DefaultVariant: "aggressive",
-			Variants:       map[string]any{"aggressive": "aggressive", "conservative": "conservative"},
 		},
 		keyInterventionsAllowed: {
 			State:          memprovider.Enabled,
@@ -79,18 +64,11 @@ func TestEvaluate_WithInMemoryProvider(t *testing.T) {
 	if !got.Enabled {
 		t.Errorf("Enabled = false, want true")
 	}
-	if got.Mode != "rules" {
-		t.Errorf("Mode = %q, want rules", got.Mode)
-	}
 	if !reflect.DeepEqual(got.Objectives, map[string]float64{"endurance": 0.7, "balanced": 0.3}) {
 		t.Errorf("Objectives = %v", got.Objectives)
 	}
 	if !reflect.DeepEqual(got.InterventionsAllowed, []string{"play_audio_cue", "adjust_volume"}) {
 		t.Errorf("InterventionsAllowed = %v", got.InterventionsAllowed)
-	}
-	wantCap := Capability{Model: "claude", PromptVariant: "aggressive"}
-	if got.Capability != wantCap {
-		t.Errorf("Capability = %+v, want %+v", got.Capability, wantCap)
 	}
 	wantPolicy := Policy{BatteryThreshold: 30, MovementVarianceWindow: 20, MaxInterventionsPerMinute: 4}
 	if got.Policy != wantPolicy {

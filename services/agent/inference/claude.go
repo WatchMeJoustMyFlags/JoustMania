@@ -98,6 +98,38 @@ var ErrUnavailable = errors.New("inference: claude backend unavailable (no API k
 // ErrEmptyReply is returned when the model produced no text.
 var ErrEmptyReply = errors.New("inference: claude returned no text")
 
+// Error is a failed Infer call. Type is the low-cardinality error.type (an HTTP
+// status code, "timeout", "canceled", "refusal", "max_tokens", "empty_reply",
+// "unavailable", ...) that callers may put on spans; Error() may carry vendor
+// text and belongs in logs at most, never on a span (#1242).
+type Error struct {
+	Type string
+	Err  error
+}
+
+func (e *Error) Error() string { return "inference: claude: " + e.Type + ": " + e.Err.Error() }
+
+func (e *Error) Unwrap() error { return e.Err }
+
+// ErrorType returns Type. Callers outside this package can classify an error
+// through the interface{ ErrorType() string } without importing it.
+func (e *Error) ErrorType() string { return e.Type }
+
+// ErrorType returns the low-cardinality type of an Infer error: Error.Type when err
+// wraps an *Error, else "timeout" / "canceled" for context errors, else "_OTHER".
+func ErrorType(err error) string {
+	var ie *Error
+	switch {
+	case errors.As(err, &ie):
+		return ie.Type
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	}
+	return semconv.ErrorTypeOther.Value.AsString()
+}
+
 // NewClaude builds a Claude backend. It never fails; without an API key every
 // Infer returns ErrUnavailable.
 func NewClaude(cfg Config) *Claude {
@@ -136,7 +168,7 @@ func (c *Claude) Available() bool {
 // the reply. prompt.Model is ignored: the backend's configured model is used.
 func (c *Claude) Infer(ctx context.Context, prompt llm.Prompt) (string, error) {
 	if !c.Available() {
-		return "", ErrUnavailable
+		return "", &Error{Type: "unavailable", Err: ErrUnavailable}
 	}
 	ctx, cancel := context.WithTimeout(ctx, c.cfg.Timeout)
 	defer cancel()
@@ -153,27 +185,24 @@ func (c *Claude) Infer(ctx context.Context, prompt llm.Prompt) (string, error) {
 		// can echo request details, so the error text never does (#1242).
 		errType := errorType(ctx, err)
 		fail(span, errType)
-		return "", fmt.Errorf("inference: claude: %s: %w", errType, err)
+		return "", &Error{Type: errType, Err: err}
 	}
 	c.recordResponse(span, msg)
 
 	switch msg.StopReason {
 	case anthropic.BetaStopReasonEndTurn, anthropic.BetaStopReasonStopSequence:
 	case anthropic.BetaStopReasonRefusal:
-		fail(span, "refusal")
-		return "", fmt.Errorf("inference: claude: stop_reason %s", msg.StopReason)
+		return "", stopError(span, "refusal", msg.StopReason)
 	case anthropic.BetaStopReasonMaxTokens:
-		fail(span, "max_tokens")
-		return "", fmt.Errorf("inference: claude: stop_reason %s", msg.StopReason)
+		return "", stopError(span, "max_tokens", msg.StopReason)
 	default:
-		fail(span, "stop_reason_"+string(msg.StopReason))
-		return "", fmt.Errorf("inference: claude: stop_reason %s", msg.StopReason)
+		return "", stopError(span, "stop_reason_"+string(msg.StopReason), msg.StopReason)
 	}
 
 	text := textOf(msg)
 	if strings.TrimSpace(text) == "" {
 		fail(span, "empty_reply")
-		return "", ErrEmptyReply
+		return "", &Error{Type: "empty_reply", Err: ErrEmptyReply}
 	}
 	return text, nil
 }
@@ -287,6 +316,11 @@ func (c *Claude) recordResponse(span trace.Span, m *anthropic.BetaMessage) {
 		semconv.GenAIUsageCacheReadInputTokens(int(m.Usage.CacheReadInputTokens)),
 		semconv.GenAIUsageCacheCreationInputTokens(int(m.Usage.CacheCreationInputTokens)),
 	)
+}
+
+func stopError(span trace.Span, errType string, reason anthropic.BetaStopReason) error {
+	fail(span, errType)
+	return &Error{Type: errType, Err: fmt.Errorf("stop_reason %s", reason)}
 }
 
 func fail(span trace.Span, errType string) {

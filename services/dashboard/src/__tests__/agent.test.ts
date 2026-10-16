@@ -40,9 +40,7 @@ describe("aggregateAgentLogs — flag panel", () => {
       line({
         msg: "agent.evaluate",
         session_id: "game_aaa",
-        mode: "rules",
-        model: "none",
-        prompt_variant: "v1",
+        decision_backend: "rules",
         battery_threshold: "20",
         variance_window: "5",
         max_per_minute: "12",
@@ -51,9 +49,7 @@ describe("aggregateAgentLogs — flag panel", () => {
       line({
         msg: "agent.evaluate",
         session_id: "game_aaa",
-        mode: "llm",
-        model: "claude",
-        prompt_variant: "v2",
+        decision_backend: "claude",
         battery_threshold: "30",
         variance_window: "8",
         max_per_minute: "20",
@@ -62,23 +58,22 @@ describe("aggregateAgentLogs — flag panel", () => {
     ]);
     expect(out.flags).not.toBeNull();
     // Newest (second) line wins.
-    expect(out.flags?.mode).toBe("llm");
-    expect(out.flags?.model).toBe("claude");
+    expect(out.flags?.decisionBackend).toBe("claude");
     expect(out.flags?.maxPerMinute).toBe("20");
     expect(out.flags?.gameMode).toBe("Zombies");
   });
 
   it("newest wins regardless of input order", () => {
-    const newer = line({ msg: "agent.evaluate", mode: "llm" }, 2000);
-    const older = line({ msg: "agent.evaluate", mode: "rules" }, 1000);
+    const newer = line({ msg: "agent.evaluate", decision_backend: "claude" }, 2000);
+    const older = line({ msg: "agent.evaluate", decision_backend: "rules" }, 1000);
     // Feed older AFTER newer to prove it's ts-driven, not order-driven.
-    expect(aggregateAgentLogs([newer, older]).flags?.mode).toBe("llm");
+    expect(aggregateAgentLogs([newer, older]).flags?.decisionBackend).toBe("claude");
   });
 
   it("agent.evaluate never appears in the decision feed", () => {
     const out = aggregateAgentLogs([
-      line({ msg: "agent.evaluate", mode: "rules" }),
-      line({ msg: "agent.evaluate", mode: "rules" }),
+      line({ msg: "agent.evaluate", decision_backend: "rules" }),
+      line({ msg: "agent.evaluate", decision_backend: "rules" }),
     ]);
     expect(out.feed).toHaveLength(0);
     expect(out.flags).not.toBeNull();

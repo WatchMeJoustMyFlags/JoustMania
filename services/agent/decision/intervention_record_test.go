@@ -8,40 +8,6 @@ import (
 	"github.com/joustmania/agent/gamecontext"
 )
 
-// TestAsync_RecordsDispatchedThroughApply covers the in-scope #945 async wiring: the
-// async apply path (#917) dispatches re-validated model decisions through the SAME
-// runDecision, so the per-game recorder fires there too. A fresh, applied async
-// result records a DISPATCHED intervention into the timeline, consistent with the
-// synchronous path — no separate async hook needed.
-func TestAsync_RecordsDispatchedThroughApply(t *testing.T) {
-	be := newBlockingBackend("phi4-mini", validShieldResponse)
-	provider := newFakeContextProvider()
-	provider.set("g1", activeContext("g1", "AAAA"))
-	l, _, _ := asyncLoop(t, asyncSnapshot(), resolverWith(be), provider, "g1", nil)
-	rec := &fakeRecorder{}
-	l.SetInterventionRecorder(rec.record)
-
-	l.OnEvaluate(context.Background(), activeContext("g1", "AAAA"), testTrigger())
-	close(be.release)
-	l.AwaitInflight()
-
-	hits := rec.snapshot()
-	if len(hits) != 1 {
-		t.Fatalf("recorder hits = %d, want 1 (async-applied decision recorded)", len(hits))
-	}
-	if hits[0].intervention != "grant_shield" || hits[0].blocked {
-		t.Errorf("hit = %+v, want dispatched grant_shield via async apply", hits[0])
-	}
-}
-
-// intervention_record_test.go covers the #945 wiring: the per-game recorder seam
-// (SetInterventionRecorder) feeds each decision's dispatched/blocked outcome into
-// the #916 rolling narrative timeline. These tests assert the Loop->recorder
-// contract directly (recorder is called with the right intervention/serial/blocked
-// for both outcomes, is nil-safe, isolates per game, and is race-safe); the
-// receiver-side routing into the right partition's Store is covered in
-// gamecontext/multiplexer_test.go (TestMux_AppendInterventionEvent*).
-
 // recordedIntervention is one captured recorder call.
 type recordedIntervention struct {
 	intervention string

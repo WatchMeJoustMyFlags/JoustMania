@@ -223,8 +223,8 @@ func newClient(cfg Config) anthropic.Client {
 }
 
 // traceContextMiddleware injects W3C traceparent from the request ctx (the
-// chat span), as inference/openai.go does, so a proxy or gateway configured as
-// BaseURL can nest its spans under ours. The Anthropic API ignores it.
+// chat span), as inference/claude.go does, so a proxy configured as BaseURL can
+// nest its spans under ours. The Anthropic API ignores it.
 func traceContextMiddleware(req *http.Request, next option.MiddlewareNext) (*http.Response, error) {
 	otel.GetTextMapPropagator().Inject(req.Context(), propagation.HeaderCarrier(req.Header))
 	return next(req)

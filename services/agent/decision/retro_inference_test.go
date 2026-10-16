@@ -20,15 +20,21 @@ import (
 // events, the parse-failure path (parse_ok=false + error), the no-block guarantee of
 // the lifecycle hook, and the capture-only fallback when no backend resolves.
 
-// reachableRetroResolver builds a Resolver whose configured inference tier is reachable
-// (a real loopback listener) and whose Infer delegate returns the given canned reply.
-func reachableRetroResolver(t *testing.T, model string, infer func(context.Context, llm.Prompt) (string, error)) *Resolver {
-	t.Helper()
-	addr, closeFn := listenLocal(t)
-	t.Cleanup(closeFn)
-	r := NewInferenceResolver(InferenceTier{Model: model, Addr: addr, Infer: infer}, Endpoints{}, 0)
-	r.Refresh(context.Background())
-	return r
+// fakeTextBackend is a TextBackend whose Infer is the given func (#1234: the retro
+// calls its text backend directly, no resolver).
+type fakeTextBackend struct {
+	model string
+	infer func(context.Context, llm.Prompt) (string, error)
+}
+
+func (f fakeTextBackend) Name() string  { return "claude" }
+func (f fakeTextBackend) Model() string { return f.model }
+func (f fakeTextBackend) Infer(ctx context.Context, p llm.Prompt) (string, error) {
+	return f.infer(ctx, p)
+}
+
+func fakeText(model string, infer func(context.Context, llm.Prompt) (string, error)) TextBackend {
+	return fakeTextBackend{model: model, infer: infer}
 }
 
 // eventByName returns the first span event with the given name, or false.
@@ -65,7 +71,7 @@ func TestRetro_CapturesConclusionOnSuccess(t *testing.T) {
 	  "session_focus": "endurance"
 	}`
 	rc, sr := recordingRetro(t, retroFlagSnapshot())
-	rc.SetResolver(reachableRetroResolver(t, "gemma4:latest",
+	rc.SetBackend(fakeText("claude-test",
 		func(context.Context, llm.Prompt) (string, error) { return reply, nil }))
 
 	rc.OnGameEnd(endedSession())
@@ -117,7 +123,7 @@ func TestRetro_EmitsRawResponseOncePerHash(t *testing.T) {
 	resetRetroResponseRef()
 	reply := `{"session_assessment":"ok","suggestions":[],"session_focus":"balanced"}`
 	rc, _ := recordingRetro(t, retroFlagSnapshot())
-	rc.SetResolver(reachableRetroResolver(t, "gemma4:latest",
+	rc.SetBackend(fakeText("claude-test",
 		func(context.Context, llm.Prompt) (string, error) { return reply, nil }))
 
 	rc.OnGameEnd(endedSession())
@@ -140,7 +146,7 @@ func TestRetro_EmitsRawResponseOncePerHash(t *testing.T) {
 func TestRetro_ParseFailureStampsError(t *testing.T) {
 	resetRetroResponseRef()
 	rc, sr := recordingRetro(t, retroFlagSnapshot())
-	rc.SetResolver(reachableRetroResolver(t, "gemma4:latest",
+	rc.SetBackend(fakeText("claude-test",
 		func(context.Context, llm.Prompt) (string, error) { return "not json at all", nil }))
 
 	rc.OnGameEnd(endedSession())
@@ -162,13 +168,13 @@ func TestRetro_ParseFailureStampsError(t *testing.T) {
 	}
 }
 
-// TestRetro_TransportErrorStampsError: a reachable backend whose Infer ERRORS gets
-// parse_ok=false + llm.infer.error carrying the transport error, no conclusion, span
-// still ends (fail-open).
+// TestRetro_TransportErrorStampsError: a backend whose Infer ERRORS gets
+// parse_ok=false + llm.infer.error carrying the error TYPE (never the error text,
+// #1242), no conclusion, span still ends (fail-open).
 func TestRetro_TransportErrorStampsError(t *testing.T) {
 	resetRetroResponseRef()
 	rc, sr := recordingRetro(t, retroFlagSnapshot())
-	rc.SetResolver(reachableRetroResolver(t, "gemma4:latest",
+	rc.SetBackend(fakeText("claude-test",
 		func(context.Context, llm.Prompt) (string, error) { return "", errors.New("boom") }))
 
 	rc.OnGameEnd(endedSession())
@@ -178,8 +184,8 @@ func TestRetro_TransportErrorStampsError(t *testing.T) {
 	if v, ok := attrValue(span, AttrLLMRetroParseOK); !ok || v.AsBool() {
 		t.Errorf("parse_ok = %v (present=%v), want false", v.AsBool(), ok)
 	}
-	if v, ok := attrValue(span, AttrLLMInferError); !ok || v.AsString() != "boom" {
-		t.Errorf("llm.infer.error = %q (present=%v), want \"boom\"", v.AsString(), ok)
+	if v, ok := attrValue(span, AttrLLMInferError); !ok || v.AsString() != "_OTHER" {
+		t.Errorf("llm.infer.error = %q (present=%v), want the error type _OTHER", v.AsString(), ok)
 	}
 	// No raw-response fingerprint on a transport error (there is no reply text).
 	if _, ok := attrValue(span, AttrLLMRetroResponseSHA); ok {
@@ -196,7 +202,7 @@ func TestRetro_OnGameEndDoesNotBlock(t *testing.T) {
 	var calledOnce sync.Once
 	started := make(chan struct{})
 	rc, sr := recordingRetro(t, retroFlagSnapshot())
-	rc.SetResolver(reachableRetroResolver(t, "gemma4:latest",
+	rc.SetBackend(fakeText("claude-test",
 		func(context.Context, llm.Prompt) (string, error) {
 			calledOnce.Do(func() { close(started) })
 			<-release // block until the test releases us
@@ -242,18 +248,16 @@ func TestRetro_RootContextCancellationUnblocksInfer(t *testing.T) {
 	rc, sr := recordingRetro(t, retroFlagSnapshot())
 	// A well-behaved backend: it honors ctx and returns its cancellation error rather
 	// than ignoring the deadline. It blocks indefinitely on the context otherwise.
-	rc.SetResolver(reachableRetroResolver(t, "gemma4:latest",
+	rc.SetBackend(fakeText("claude-test",
 		func(ctx context.Context, _ llm.Prompt) (string, error) {
 			startOnce.Do(func() { close(started) })
 			<-ctx.Done()
 			return "", ctx.Err()
 		}))
 
-	// A long latency budget guarantees that anything which unblocks the call within the
-	// test timeout must be the root-cancellation bridge, not the budget timeout.
-	snap := retroFlagSnapshot()
-	snap.LLMGate.LatencyBudget = 30 * time.Second
-	rc.Flags = &settableFlags{snap: snap}
+	// A long timeout guarantees that anything which unblocks the call within the
+	// test timeout must be the root-cancellation bridge, not the timeout.
+	rc.SetTimeout(30 * time.Second)
 
 	root, cancelRoot := context.WithCancel(context.Background())
 	rc.SetRootContext(root)
@@ -290,17 +294,17 @@ func TestRetro_RootContextCancellationUnblocksInfer(t *testing.T) {
 	if v, ok := attrValue(span, AttrLLMRetroParseOK); !ok || v.AsBool() {
 		t.Errorf("parse_ok = %v (present=%v), want false on cancellation", v.AsBool(), ok)
 	}
-	if v, ok := attrValue(span, AttrLLMInferError); !ok || v.AsString() == "" {
-		t.Error("llm.infer.error must be present and non-empty on a cancelled Infer")
+	if v, ok := attrValue(span, AttrLLMInferError); !ok || v.AsString() != "canceled" {
+		t.Errorf("llm.infer.error = %q (present=%v), want canceled", v.AsString(), ok)
 	}
 }
 
-// TestRetro_CaptureOnlyWhenNoBackend: with no resolver wired (nil backend), the retro
+// TestRetro_CaptureOnlyWhenNoBackend: with no backend wired, the retro
 // stays capture-only — the span ends synchronously, carries no conclusion, no
 // parse_ok, and reports no_backend_available.
 func TestRetro_CaptureOnlyWhenNoBackend(t *testing.T) {
 	resetRetroResponseRef()
-	rc, sr := recordingRetro(t, retroFlagSnapshot()) // no SetResolver -> nil backend
+	rc, sr := recordingRetro(t, retroFlagSnapshot()) // no SetBackend -> nil backend
 
 	rc.OnGameEnd(endedSession())
 	// No AwaitInflight needed: with no backend the span ends synchronously in OnGameEnd.
@@ -337,7 +341,7 @@ func TestRetro_ForwardsSuggestionToSink(t *testing.T) {
 	  "session_focus": "endurance"
 	}`
 	rc, _ := recordingRetro(t, retroFlagSnapshot())
-	rc.SetResolver(reachableRetroResolver(t, "gemma4:latest",
+	rc.SetBackend(fakeText("claude-test",
 		func(context.Context, llm.Prompt) (string, error) { return reply, nil }))
 
 	var got []llm.RetroSuggestion
@@ -362,7 +366,7 @@ func TestRetro_ForwardsSuggestionToSink(t *testing.T) {
 func TestRetro_NilSinkIsSafe(t *testing.T) {
 	reply := `{"session_assessment":"ok","suggestions":[{"intervention_type":"grant_shield","emphasis":"enable","reason":"x"}],"session_focus":"balanced"}`
 	rc, sr := recordingRetro(t, retroFlagSnapshot())
-	rc.SetResolver(reachableRetroResolver(t, "gemma4:latest",
+	rc.SetBackend(fakeText("claude-test",
 		func(context.Context, llm.Prompt) (string, error) { return reply, nil }))
 
 	rc.OnGameEnd(endedSession())

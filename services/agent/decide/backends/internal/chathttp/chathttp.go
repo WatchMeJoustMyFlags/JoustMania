@@ -44,7 +44,7 @@ var DefaultHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 // Post sends body as a JSON POST to url with the given extra headers, injects
 // W3C traceparent from ctx (the caller's chat span) via the global propagator,
-// as inference/openai.go does, and reads at most maxBody bytes of the
+// as inference/claude.go does, and reads at most maxBody bytes of the
 // response. It returns the status and body of any HTTP response (2xx or not);
 // err is set only for transport failures and an oversized body (ErrTooLarge).
 func Post(ctx context.Context, client *http.Client, url string, header http.Header, body []byte, maxBody int64) (int, []byte, error) {

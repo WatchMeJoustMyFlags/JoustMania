@@ -44,12 +44,12 @@ the agent writes the SAME ``services/flagd/ci`` dir flagd serves).
 FORCING THE INFERENCE-ABSENT PATH HERMETICALLY
 ----------------------------------------------
 ``AGENT_INFERENCE_BACKEND=stub`` (the compose default; pinned explicitly here)
-makes ``selectInferenceBackend`` return a nil delegate — NO network inference
-client is ever constructed (services/agent/main.go: only the literal value
-``openai`` activates the real HTTP client). The cohort loop declares from the
-env seed and drives synthetic mock-controller shadow games against the live
-game-coordinator; it never calls an LLM. There is therefore no dependency on an
-external Ollama/OpenAI endpoint — the test is hermetic in CI.
+makes ``selectInferenceBackend`` return no text backend — NO network inference
+client is ever constructed (services/agent/main.go: only ``claude`` with an
+``ANTHROPIC_API_KEY`` builds the direct Claude client). The cohort loop declares
+from the env seed and drives synthetic mock-controller shadow games against the
+live game-coordinator; it never calls an LLM. There is therefore no dependency on
+an external model endpoint — the test is hermetic in CI.
 
 OBSERVABLE
 ----------

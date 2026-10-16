@@ -17,8 +17,7 @@ import (
 
 // server_shutdown_test.go verifies the agent's graceful-shutdown path (#923): run()
 // owns every runtime goroutine (the OTLP gRPC receiver, the health server, the
-// per-game decision LoopSet, the eviction ticker, and the shared inference
-// resolver's background probe ticker), and on ctx cancellation each MUST terminate
+// per-game decision LoopSet and the eviction ticker), and on ctx cancellation each MUST terminate
 // without leaking a goroutine. go.uber.org/goleak makes the no-leak guarantee an
 // assertion: if any of those loops hung (e.g. the eviction loop stopped selecting
 // on ctx.Done(), or run returned before draining the shutdown goroutine), goleak
@@ -55,8 +54,7 @@ import (
 //     transitively when other tests construct the OTLP / gcp exporters; run() never
 //     starts it and cannot stop it.
 //
-// Everything run() DOES own (eviction loop, resolver probe ticker, shutdown
-// goroutine, health + gRPC servers) is spawned AFTER the baseline and is NOT in the
+// Everything run() DOES own (eviction loop, shutdown goroutine, health + gRPC servers) is spawned AFTER the baseline and is NOT in the
 // static ignore list, so the test still fails if any of those leaks.
 func leakOptions() []goleak.Option {
 	return []goleak.Option{
@@ -84,9 +82,7 @@ func freePort(t *testing.T) string {
 
 // newShutdownComponents builds a serverComponents wired with the real runtime
 // pieces whose goroutine lifecycle the shutdown test exercises: a multiplexer, a
-// LoopSet, an infra store, a pipeline, and a real inference resolver (its probe
-// ticker is the background goroutine most likely to leak if run() stopped owning
-// it). It deliberately omits flagd/OTEL — those providers spawn background
+// LoopSet, an infra store and a pipeline. It deliberately omits flagd/OTEL — those providers spawn background
 // transport goroutines outside this package's control, and run() does not own them
 // (main() does, via deferred shutdowns), so they are not part of the run() drain
 // contract this test asserts.
@@ -102,16 +98,6 @@ func newShutdownComponents(t *testing.T) *serverComponents {
 	infraStore := infracontext.NewStore(time.Hour, nil)
 	pipe := newPipeline(mux, loops, time.Hour).withInfra(infraStore, nil)
 
-	// A real resolver with endpoints that never resolve in a test (so every probe
-	// fails fast) and a short probe interval so the ticker actually fires at least
-	// once during the test, proving it stops on ctx cancellation rather than merely
-	// never having started. Its background ticker is started by run().
-	resolver := decision.NewResolver(decision.DefaultChain(decision.Endpoints{
-		Cloud:     "",
-		Jetson:    "192.0.2.1:1", // TEST-NET-1, guaranteed unroutable
-		Localhost: "127.0.0.1:0", // never a listener
-	}), 5*time.Millisecond)
-
 	return &serverComponents{
 		listenAddr:    freePort(t),
 		healthAddr:    freePort(t),
@@ -119,19 +105,18 @@ func newShutdownComponents(t *testing.T) *serverComponents {
 		pipe:          pipe,
 		mux:           mux,
 		loops:         loops,
-		resolver:      resolver,
 		evictInterval: 5 * time.Millisecond, // tick frequently so the loop is actually exercised
 	}
 }
 
 // TestRun_GracefulShutdownNoGoroutineLeak is the headline #923 assertion: start the
-// agent server core, let its goroutines run for real (the eviction ticker and the
-// resolver probe ticker both fire), then cancel the context (the SIGTERM analogue)
+// agent server core, let its goroutines run for real (the eviction ticker fires),
+// then cancel the context (the SIGTERM analogue)
 // and assert run() returns AND no goroutine leaks.
 //
 // goleak.VerifyNone runs at the END of the test body, after run() has returned, so
-// it sees the steady-state goroutine set. If the eviction loop, the resolver
-// ticker, or the shutdown goroutine had failed to terminate on ctx cancellation,
+// it sees the steady-state goroutine set. If the eviction loop or the shutdown
+// goroutine had failed to terminate on ctx cancellation,
 // goleak would report the survivor with its stack and fail — exactly the leak this
 // test is meant to catch.
 func TestRun_GracefulShutdownNoGoroutineLeak(t *testing.T) {
@@ -159,8 +144,7 @@ func TestRun_GracefulShutdownNoGoroutineLeak(t *testing.T) {
 	waitDial(t, c.listenAddr)
 
 	// Let the tickers fire a few times so we are exercising the running loops, not a
-	// just-started server. The resolver probe interval and eviction interval are both
-	// 5ms, so this is several ticks.
+	// just-started server. The eviction interval is 5ms, so this is several ticks.
 	time.Sleep(50 * time.Millisecond)
 
 	// The SIGTERM analogue: in main() signal.NotifyContext cancels ctx; here we cancel

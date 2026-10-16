@@ -21,8 +21,8 @@ import (
 // last game's retro proposed.
 //
 // This is the #960 Proposer→Intents path made CONCRETE without an inference
-// backend: #960's LLM Proposer is wired but inert (it degrades to no-proposal
-// until #738/#742 land a real Ollama/cloud transport). The ThesisProposer is the
+// backend: #960's LLM Proposer degrades to no-proposal unless a text backend is
+// configured (AGENT_INFERENCE_BACKEND=claude). The ThesisProposer is the
 // deterministic counterpart — it needs no backend, so the loop closes NOW, the
 // same way the #995 dynamic declarer delivered autonomous declaration ahead of the
 // LLM proposer.
@@ -45,7 +45,7 @@ import (
 // randomness, no map-iteration-order dependence. Safe for concurrent use (the
 // suggestion ring is mutex-guarded — the retro coordinator records from its own
 // goroutines while the loop reads from the tick goroutines, like the shared
-// Proposer/Resolver).
+// Proposer).
 
 // RetroSuggestion is the structured post-game recommendation the ThesisProposer
 // consumes (#1184). It MIRRORS llm.RetroSuggestion field-for-field rather than

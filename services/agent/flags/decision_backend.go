@@ -13,10 +13,10 @@ import (
 // so switching the backend, its model or its timeout is one flag edit with no
 // restart.
 //
-// decision.backend selects WHO answers the in-game decide contract. When it is
-// anything other than "rules", the remote backend owns the decision and the legacy
-// mode / model flags are IGNORED for in-game decisions (they keep driving the
-// legacy llm path only while decision.backend=rules).
+// decision.backend selects WHO answers the in-game decide contract: the rules
+// engine (the default and floor) or a remote backend, which then owns the
+// decision. It is the only in-game LLM route since #1234 retired the legacy
+// mode / model flags.
 //
 // Numeric flags use the TYPED getters (intFlag / floatFlag), never ObjectValue: a
 // numeric flag read via ObjectValue silently TYPE_MISMATCHes to its default
@@ -58,8 +58,7 @@ const (
 	// completions, rationale as message parts) is opt-in per the GenAI semconv.
 	DefaultDecisionCaptureContent = false
 	// DefaultDecisionMinIntervalMs is the per-game cadence of remote decide calls
-	// (decision.min_interval_ms): at most one call per game per interval. It
-	// replaces llm.min_decision_interval_seconds while decision.backend != rules;
+	// (decision.min_interval_ms): at most one call per game per interval;
 	// llm.max_requests_per_minute stays the global spend bound.
 	DefaultDecisionMinIntervalMs = 3000
 	// DefaultDecisionClaudeModel is the claude backend's model (variant "haiku").

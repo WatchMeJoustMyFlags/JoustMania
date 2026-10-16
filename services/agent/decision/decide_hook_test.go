@@ -108,7 +108,6 @@ func decideRecordingLoop(t *testing.T, snap flags.Snapshot) (*Loop, *tracetest.S
 func rulesSnapshot() flags.Snapshot {
 	return flags.Snapshot{
 		Enabled:              true,
-		Mode:                 "rules",
 		InterventionsAllowed: allInterventions(),
 		Policy:               flags.Policy{MaxInterventionsPerMinute: 100},
 		Decision: flags.DecisionBackend{
@@ -314,8 +313,6 @@ func remoteContext() gamecontext.GameContext {
 
 func remoteSnapshot(timeout time.Duration) flags.Snapshot {
 	s := rulesSnapshot()
-	s.Mode = "llm" // ignored while decision.backend != rules
-	s.Capability = flags.Capability{Model: "phi4-mini"}
 	s.InterventionsAllowed = []string{"noop", "grant_shield", "adjust_music_tempo", "play_audio_cue", "adjust_global_sensitivity"}
 	s.LLMGate = flags.LLMGate{EligibleGameKinds: []string{"real"}, MaxRequestsPerMinute: 100}
 	s.Decision = flags.DecisionBackend{

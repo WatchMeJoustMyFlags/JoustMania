@@ -223,8 +223,9 @@ func TestClaude_UnavailableWithoutKey(t *testing.T) {
 	if c.Available() {
 		t.Fatal("Available without key")
 	}
-	if _, err := c.Infer(context.Background(), llm.Prompt{User: "u"}); !errors.Is(err, ErrUnavailable) {
-		t.Fatalf("err = %v, want ErrUnavailable", err)
+	_, err := c.Infer(context.Background(), llm.Prompt{User: "u"})
+	if !errors.Is(err, ErrUnavailable) || ErrorType(err) != "unavailable" {
+		t.Fatalf("err = %v (type %q), want ErrUnavailable", err, ErrorType(err))
 	}
 	if c.Model() != DefaultModel || c.Name() != Name {
 		t.Fatalf("defaults: model %q name %q", c.Model(), c.Name())
@@ -245,6 +246,9 @@ func TestClaude_ErrorTextNeverOnSpans(t *testing.T) {
 	span := lastChatSpan(t)
 	if span.Status().Code != codes.Error || span.Status().Description != "400" {
 		t.Errorf("status = %+v, want Error/400", span.Status())
+	}
+	if ErrorType(err) != "400" {
+		t.Errorf("ErrorType = %q, want 400", ErrorType(err))
 	}
 	if spanAttrs(span)["error.type"].AsString() != "400" {
 		t.Errorf("error.type = %v", spanAttrs(span)["error.type"])
@@ -274,8 +278,9 @@ func TestClaude_StopReasonsAndEmptyAreErrors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := &fakeMessages{body: messageBody(tc.text, tc.stop)}
 			c := newTestClaude(t, f, Config{})
-			if _, err := c.Infer(context.Background(), llm.Prompt{User: "u"}); err == nil {
-				t.Fatal("want error")
+			_, err := c.Infer(context.Background(), llm.Prompt{User: "u"})
+			if err == nil || ErrorType(err) != tc.errType {
+				t.Fatalf("err = %v (type %q), want type %q", err, ErrorType(err), tc.errType)
 			}
 			if got := spanAttrs(lastChatSpan(t))["error.type"].AsString(); got != tc.errType {
 				t.Errorf("error.type = %q, want %q", got, tc.errType)

@@ -333,11 +333,11 @@ func rolloutCooldown() time.Duration {
 }
 
 // llmBudgetOverride reads the LIVE LLM per-minute request cap override from
-// AGENT_LLM_MAX_REQUESTS_PER_MINUTE (#964). The decision loop normally reads the cap
-// from the llm.max_requests_per_minute flag (default 6), which under the eval-cycle
-// rate exhausts the budget almost immediately and gates the llm path with
-// llm_budget_exhausted even when a backend is reachable. This env override lets an
-// operator raise the cap for a real-inference dry-run without editing flagd. An
+// AGENT_LLM_MAX_REQUESTS_PER_MINUTE (#964). The remote decide gate normally reads the
+// cap from the llm.max_requests_per_minute flag (default 6), which a busy demo can
+// exhaust, gating remote decisions with llm_budget_exhausted even when a backend is
+// reachable. This env override lets an operator raise the cap for a live run without
+// editing flagd. An
 // unset/empty/invalid/non-positive value returns 0 = "no override" (the flag
 // governs), so the default-off path is unchanged.
 func llmBudgetOverride() int {
@@ -420,10 +420,8 @@ func runShadowGame(ctx context.Context, logger *slog.Logger) {
 	)
 }
 
-// inferFunc is the shared inference seam shape (#1046/#1048): Infer(ctx, prompt) →
-// raw text. Both experiment.Backend (the proposer) and decision.Backend (the
-// chain) require exactly this method, so ONE value satisfies both. selectInferenceBackend
-// returns it (nil = the stub default) so main.go feeds the same backend to both seams.
+// inferFunc is the shared text-inference seam shape (#1046/#1048): Infer(ctx,
+// prompt) → raw text, the method experiment.Backend (the proposer) requires.
 type inferFunc = func(ctx context.Context, prompt llm.Prompt) (string, error)
 
 // selectInferenceBackend reads the AGENT_INFERENCE_* env (#1234) and returns the
@@ -527,18 +525,16 @@ func main() {
 	// fail-closed on a flagd outage (the old AGENT_INTERVENTIONS_ENABLED env master,
 	// migrated). The Writer holds no per-game state, so sharing is safe.
 	sharedSink := actionSink(agentFlags, logger)
-	// Shared GLOBAL LLM request budget (#847, the gate's third layer). Constructed
-	// ONCE here and injected into every per-game Loop below, so all concurrent
-	// games draw down a SINGLE per-minute request cap (llm.max_requests_per_minute)
-	// — 4 idle shadow games plus a real game can never collectively exceed it. The
-	// per-game cadence + eligibility layers live on each Loop; only the budget is
-	// shared across loops.
+	// Shared GLOBAL LLM request budget (#847). Constructed ONCE here and injected
+	// into every per-game Loop and the retro below, so all remote decide calls and
+	// retros draw down a SINGLE per-minute request cap (llm.max_requests_per_minute).
+	// The per-game cadence (decision.min_interval_ms) and eligibility
+	// (llm.eligible_game_kinds) live on each Loop; only the budget is shared.
 	sharedLLMBudget := decision.NewLLMBudget()
 	// LIVE LLM budget override (#964): AGENT_LLM_MAX_REQUESTS_PER_MINUTE raises the
-	// per-minute LLM request cap above the llm.max_requests_per_minute flag default
-	// (6/min, which exhausts under the eval-cycle rate). 0 = no override (the flag
-	// governs), so the default-off path is unchanged. Read once at startup and applied
-	// to every per-game loop below, mirroring the shared budget instance itself.
+	// per-minute cap the remote decide gate enforces above the
+	// llm.max_requests_per_minute flag default (6/min). 0 = no override (the flag
+	// governs). Read once at startup and applied to every per-game loop below.
 	llmBudgetCapOverride := llmBudgetOverride()
 	if llmBudgetCapOverride > 0 {
 		slog.Info("LLM request budget override enabled (#964)", "max_per_minute", llmBudgetCapOverride)
@@ -555,23 +551,10 @@ func main() {
 			slog.Warn("Interventions file was corrupt at startup; restored neutral document (#924)")
 		}
 	}
-	// Shared inference fallback-chain resolver (#741). Constructed ONCE here with the
-	// real network probes for the three llm tiers (cloud #742, gemma3:4b on Jetson
-	// #738, phi4-mini on localhost #739) and ONE availability cache for the whole
-	// agent, then injected into every per-game Loop below — like the global budget.
-	// In dev every endpoint is unreachable, so resolve_backend honestly degrades the
-	// whole chain to the rules engine; with a tier reachable it reports that tier as
-	// inference.used (who #739 WILL call). Start() launches the background re-probe
-	// ticker (DefaultProbeInterval) and primes the cache in the background; it
-	// stops when ctx is cancelled at shutdown.
-	// Inference backend selection (#1048, per the #1046 design). ONE OpenAI-compatible
-	// client (or nil for the stub default) feeds BOTH the decision chain (here) AND the
-	// shadow-experiment proposer (below) — Go structural typing means a single Infer
-	// implementation satisfies decision.Backend and experiment.Backend. Default = stub
-	// → nil delegate → no behavior change (the chain keeps its not-implemented sentinel
-	// and degrades to rules; the proposer keeps proposeBackend{} and proposes nothing).
-	// AGENT_INFERENCE_BACKEND=openai points it at the host Ollama (or a gateway) for a
-	// real local inference path with no key.
+	// Proposer/retro text backend (#1234): the direct Claude client, or nil for the
+	// stub default (the proposer proposes nothing, the retro is capture-only). It is
+	// NOT an in-game decision path: in-game LLM decisions go through the
+	// decision.backend registry below.
 	textBackend, inferBackendName := selectInferenceBackend(logger)
 	slog.Info("Proposer/retro inference backend selected (#1234)",
 		"backend", inferBackendName,
@@ -582,23 +565,10 @@ func main() {
 	if textBackend != nil {
 		inferDelegate = textBackend.Infer
 	}
-	legacyEndpoints := decision.Endpoints{
-		Cloud:     getEnv("AGENT_CLOUD_ENDPOINT", ""),
-		Jetson:    getEnv("AGENT_JETSON_ENDPOINT", "jetson:11434"),
-		Localhost: getEnv("AGENT_LOCALHOST_ENDPOINT", "localhost:11434"),
-	}
-	sharedResolver := decision.NewResolver(
-		decision.DefaultChainWithInfer(legacyEndpoints, nil),
-		decision.DefaultProbeInterval)
-	// The resolver's background probe ticker is started by run() (#923), which owns
-	// the agent's goroutine lifecycle, so it is stopped on ctx cancellation alongside
-	// every other runtime goroutine.
 	// Shared rolling cross-game context window (#929, M7-2). Constructed ONCE here as
-	// GLOBAL cross-session memory — one bounded ring of recent game summaries shared
-	// across every per-game loop, exactly like the budget/resolver above. The
+	// GLOBAL cross-session memory — one bounded ring of recent game summaries. The
 	// gamesummary coordinator (below) records each freshly-built Summary into it on
-	// game end, and every per-game Loop reads Recent(N) from it on the llm path to
-	// render the prompt's narrative context block (N = llm.context_games, live).
+	// game end, and the shadow-experiment proposer renders it as its narrative.
 	sharedContextWindow := gamewindow.NewStore()
 	// Intervention-effect follow-up window (#918): how long after a dispatched
 	// intervention the loop re-samples the game's fitness signals to measure the
@@ -614,8 +584,8 @@ func main() {
 			"interval", probeInterval)
 	}
 	// Forward-declared so the per-game loop factory can close over it to wire the
-	// async-inference re-validation source (#917): each loop re-fetches its game's
-	// CURRENT context from this Multiplexer when an async inference result lands. It is
+	// async re-validation source: each loop re-fetches its game's CURRENT context
+	// from this Multiplexer when a remote decide answer lands. It is
 	// assigned below (mux = ...) before any signal arrives, so the closure never sees nil.
 	var mux *gamecontext.Multiplexer
 	// Decision-backend registry (#1226, #1244): maps the decision.backend flag to a
@@ -643,25 +613,19 @@ func main() {
 		// evaluates flagd). Every per-game loop shares the one holder source.
 		loop.SetThrottleSource(lifecycleHolder.DecisionThrottle)
 		// Inject the SHARED global LLM request budget (#847) so every per-game loop
-		// references the same instance: the gate's eligibility + cadence layers are
-		// per-loop, but the budget layer is one global cap across all games.
+		// references the same instance: eligibility + cadence are per-loop, the
+		// budget is one global cap across all games and the retro.
 		loop.SetLLMBudget(sharedLLMBudget)
 		// Apply the LIVE budget override (#964): when AGENT_LLM_MAX_REQUESTS_PER_MINUTE is
-		// set it replaces the llm.max_requests_per_minute flag value as the per-minute cap,
-		// so a real-inference dry-run is not gated by llm_budget_exhausted under the eval
-		// rate. 0 (unset) is ignored — the flag governs, default-off path unchanged.
+		// set it replaces the llm.max_requests_per_minute flag value as the per-minute
+		// cap for remote decide calls. 0 (unset) is ignored — the flag governs.
 		loop.SetLLMBudgetOverride(llmBudgetCapOverride)
-		// Inject the SHARED inference resolver (#741): every per-game loop resolves the
-		// fallback chain against the same availability cache, so a gate-admitted llm
-		// cycle reports the honest inference.used tier and any degradation reason.
-		loop.SetResolver(sharedResolver)
-		// Async inference wiring (#917): make the LLM call non-blocking. On a
-		// gate-admitted, reachable-tier cycle the loop FIRES Infer in its own goroutine
-		// and returns promptly; when the result lands it re-validates against this
-		// game's CURRENT context (fetched from the Multiplexer by game_id) and applies
-		// or discards it. SetGameID tells the apply path which partition to re-read;
+		// Async wiring for the remote decide path (#1226) and the effect sampler
+		// (#918): a remote decide call runs in its own goroutine and, when the answer
+		// lands, re-validates against this game's CURRENT context (fetched from the
+		// Multiplexer by game_id). SetGameID tells it which partition to re-read;
 		// SetContextProvider is the re-validation source; SetRootContext bounds every
-		// fired goroutine to the agent's lifetime so shutdown cancels in-flight calls.
+		// goroutine to the agent's lifetime so shutdown cancels in-flight calls.
 		loop.SetGameID(gameID)
 		loop.SetContextProvider(decision.MuxContextProvider{Mux: mux})
 		loop.SetRootContext(ctx)
@@ -687,12 +651,6 @@ func main() {
 		loop.SetInterventionRecorder(func(intervention, serial string, blocked bool) {
 			mux.AppendInterventionEvent(gameID, intervention, serial, blocked)
 		})
-		// Inject the SHARED rolling cross-game context window (#929, M7-2): every
-		// per-game loop reads the SAME recent-games window, so the llm path renders the
-		// last N game summaries into the prompt's narrative context block — the agent's
-		// global cross-session memory, mirroring the shared budget/resolver. The async
-		// path (above) reads it in runInfer; the sync path (un-wired loops) in llmDecide.
-		loop.SetContextWindow(sharedContextWindow)
 		// Shared decision-backend registry (#1226): decision.backend selects who decides.
 		loop.SetDecideRegistry(decideBackends)
 		// The objective-weighted rules engine (#726) is the active default, built
@@ -769,13 +727,13 @@ func main() {
 	// budget the in-game gate uses (#847 acceptance #7): inject the one instance the
 	// per-game loops also hold, so a retro at game end cannot blow the per-minute cap.
 	retro.SetLLMBudget(sharedLLMBudget)
-	// #1080: route the retro inference attribution through the SAME shared resolver the
-	// per-game loops use (SetResolver above), so when AGENT_INFERENCE_BACKEND=openai the
-	// retro reports the configured backend (gemma4 @ AGENT_INFERENCE_BASE_URL) instead of
-	// resolving the agent.model flag's unreachable phi4-mini legacy tier. With the stub
-	// default the resolver has no configured tier and the chain is unreachable, so the
-	// retro degrades to used="none"/no_backend_available exactly as before.
-	retro.SetResolver(sharedResolver)
+	// #1234: the retro calls the proposer/retro text backend directly (Claude, or
+	// nil = capture-only with used="none"/no_backend_available for the stub default),
+	// bounded by AGENT_INFERENCE_TIMEOUT_SECONDS.
+	if textBackend != nil {
+		retro.SetBackend(textBackend)
+	}
+	retro.SetTimeout(secondsEnv("AGENT_INFERENCE_TIMEOUT_SECONDS", inference.DefaultTimeout))
 	// #1179: bound every async retro inference goroutine to the agent's root context so
 	// shutdown cancellation unblocks a well-behaved in-flight Infer (no leak), the same
 	// SetRootContext pattern the per-game loops use. The retro now actually CALLS the
@@ -796,8 +754,8 @@ func main() {
 	summaries := gamesummary.NewCoordinator(gamesummary.NewWriter(summaryDir), logger)
 	// Advance the M7-2 rolling window on every game end (#929): the coordinator
 	// Records each freshly-built Summary into the shared window BEFORE the disk write,
-	// so the cross-game context the llm path injects reflects a game the instant it
-	// ends, with no disk re-read. One observer, the same global window every loop reads.
+	// so the cross-game context the proposer renders reflects a game the instant it
+	// ends, with no disk re-read.
 	summaries.SetObserver(sharedContextWindow)
 	slog.Info("Game narrative builder enabled (#928, M7-1)", "summary_dir", summaryDir)
 	slog.Info("Rolling game context window enabled (#929, M7-2)", "retention_cap", gamewindow.RetentionCap)
@@ -808,19 +766,17 @@ func main() {
 	// by construction (#932). The Gate writes the game flagset (GAME_FLAG_PATH /
 	// game.json); the Proposer NEVER writes it directly.
 	//
-	// The Backend is the inference seam (Backend.Infer): today proposeBackend is the
-	// sentinel stub (no real Ollama/cloud transport until #738/#742), so every
-	// propose cycle degrades to NO proposal, NO error — the agent does not propose.
-	// The engine flag (agent.code_improvement.engine) selects the backend; it is
-	// read live and recorded on the span even though it only selects the stub now.
+	// The Backend is the inference seam (Backend.Infer): the Claude text backend when
+	// AGENT_INFERENCE_BACKEND=claude (#1234), else the proposeBackend stub, so every
+	// propose cycle degrades to NO proposal, NO error. The engine flag
+	// (agent.code_improvement.engine) is read live and recorded on the span.
 	// The vocab provider reads the LIVE game.json flag keys so the model is
 	// constrained to (and the decoder validates against) the actual flag surface.
 	experimentGate := experiment.NewGate(experiment.NewWriterFromEnv(logger), nil, logger)
-	// Feed the SAME inference backend (#1048) to the proposer that feeds the decision
-	// chain above: when AGENT_INFERENCE_BACKEND=openai, inferDelegate is the real
-	// OpenAI-compatible client and proposeBackendFor wraps it as an experiment.Backend;
-	// when nil (the stub default) it stays the inert proposeBackend{} so the propose
-	// path degrades to no-proposal exactly as before.
+	// Feed the SAME text backend the retro uses (#1234): when
+	// AGENT_INFERENCE_BACKEND=claude, inferDelegate is the Claude client and
+	// proposeBackendFor wraps it as an experiment.Backend; when nil (the stub default)
+	// it stays the inert proposeBackend{} so the propose path proposes nothing.
 	proposer := experiment.NewProposer(
 		proposeBackendFor(inferDelegate),
 		experimentGate,
@@ -952,8 +908,8 @@ func main() {
 	// the lifecycle TTLs/clock, skips the agent's own telemetry (otlp/agent
 	// self-ingestion loop), and wires OnGameEnd per partition so the retrospective
 	// fires per game on the right partition's state.
-	// #917 declares `var mux` earlier so the per-game loop factory's ContextProvider
-	// can close over it (the async apply path re-fetches the current context via the
+	// `var mux` is declared earlier so the per-game loop factory's ContextProvider can
+	// close over it (the remote decide path re-fetches the current context via the
 	// multiplexer); assign it here.
 	mux = gamecontext.NewMultiplexer(func(gameID string) *gamecontext.Store {
 		// Prime with the holder's current values as the static fallback, then wire the
@@ -1012,8 +968,7 @@ func main() {
 	}
 
 	// Hand the goroutine-owning runtime core to run (#923): the OTLP gRPC receiver,
-	// health server, eviction ticker, the shared resolver's probe ticker, and the
-	// graceful-shutdown path all live there so the start -> cancel -> drain sequence
+	// health server, eviction ticker, and the graceful-shutdown path all live there so the start -> cancel -> drain sequence
 	// is testable for goroutine leaks. The eviction cadence is HOT-RELOADED from the
 	// holder (#927) via evictIntervalSrc: after each tick run re-reads
 	// lifecycle.evict_interval_seconds and Resets the ticker only when it moved (a
@@ -1026,7 +981,6 @@ func main() {
 		mux:              mux,
 		loops:            loops,
 		retro:            retro,
-		resolver:         sharedResolver,
 		evictInterval:    lifecycleHolder.EvictInterval(),
 		evictIntervalSrc: lifecycleHolder.EvictInterval,
 		shadow:           shadow,
@@ -1043,20 +997,15 @@ func main() {
 	}
 }
 
-// errProposeBackendNotImplemented is the sentinel proposeBackend.Infer returns: no
-// real propose-stage inference transport exists yet (the Ollama/cloud backend is
-// hardware-/credential-blocked, #738/#742), exactly like decision.endpointBackend.
-// The Proposer treats this as "degrade to no proposal this cycle" (recorded, no
-// error), so the M7-4 propose path is fully wired and inert until a real backend
-// lands. Mirrors the #739 intervention path, which degrades to rules identically.
-var errProposeBackendNotImplemented = errors.New("code_improvement: propose backend not implemented (real Ollama/cloud transport blocked on #738/#742)")
+// errProposeBackendNotImplemented is the sentinel proposeBackend.Infer returns when
+// no text backend is configured (AGENT_INFERENCE_BACKEND=stub, the default, or
+// claude without ANTHROPIC_API_KEY). The Proposer treats this as "degrade to no
+// proposal this cycle" (recorded, no error).
+var errProposeBackendNotImplemented = errors.New("code_improvement: no propose backend configured (AGENT_INFERENCE_BACKEND=stub)")
 
-// proposeBackend is the production propose-stage inference backend selected by
-// agent.code_improvement.engine. It satisfies experiment.Backend structurally
-// (Infer(ctx, llm.Prompt) (string, error)). Today every engine value resolves to
-// this inert stub — Infer always returns the sentinel, so the agent proposes
-// nothing. When a real generative backend is wired (#738/#742) this is where the
-// engine flag would select it; until then the wiring degrades to nothing SAFELY.
+// proposeBackend is the inert propose-stage backend used when no text backend is
+// configured. It satisfies experiment.Backend structurally (Infer(ctx, llm.Prompt)
+// (string, error)); Infer always returns the sentinel, so the agent proposes nothing.
 type proposeBackend struct{}
 
 func (proposeBackend) Infer(context.Context, llm.Prompt) (string, error) {
@@ -1064,9 +1013,8 @@ func (proposeBackend) Infer(context.Context, llm.Prompt) (string, error) {
 }
 
 // inferBackend adapts a bare inferFunc into an experiment.Backend (#1048). The
-// proposer takes a Backend (an interface with one Infer method); this lets the same
-// inference delegate that feeds the decision chain feed the proposer too, with no
-// second client instance — one OpenAIBackend, both seams.
+// proposer takes a Backend (an interface with one Infer method); this lets the
+// retro's text backend feed the proposer too, with no second client instance.
 type inferBackend struct {
 	infer inferFunc
 }
@@ -1075,8 +1023,8 @@ func (b inferBackend) Infer(ctx context.Context, prompt llm.Prompt) (string, err
 	return b.infer(ctx, prompt)
 }
 
-// proposeBackendFor selects the proposer's inference backend (#1048): the real
-// OpenAI-compatible client (wrapped as an experiment.Backend) when one was selected,
+// proposeBackendFor selects the proposer's inference backend (#1048, #1234): the
+// Claude text client (wrapped as an experiment.Backend) when one was selected,
 // or the inert proposeBackend{} stub when delegate is nil (the default) — so the
 // propose path degrades to no-proposal exactly as before when inference is stubbed.
 func proposeBackendFor(delegate inferFunc) experiment.Backend {

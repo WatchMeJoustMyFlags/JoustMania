@@ -95,7 +95,6 @@ func TestLoopSet_PerGameBudgetIndependence(t *testing.T) {
 	// Budget of 2 hard interventions/min (eliminate_player costs 2).
 	snap := flags.Snapshot{
 		Enabled:              true,
-		Mode:                 "rules",
 		InterventionsAllowed: []string{"grant_shield"},
 		Policy:               flags.Policy{MaxInterventionsPerMinute: 2},
 	}
@@ -198,7 +197,6 @@ func TestLoopSet_RulesEngineIsolation(t *testing.T) {
 		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 		fl := &settableFlags{snap: flags.Snapshot{
 			Enabled:              true,
-			Mode:                 "rules",
 			Objectives:           objectivesByGame[gameID],
 			InterventionsAllowed: []string{"grant_shield"},
 			Policy:               flags.Policy{MaxInterventionsPerMinute: 100},
@@ -299,7 +297,6 @@ func TestLoopSet_ShadowVsRealAttribution(t *testing.T) {
 		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 		fl := &settableFlags{snap: flags.Snapshot{
 			Enabled:              true,
-			Mode:                 "rules",
 			InterventionsAllowed: []string{"grant_shield"},
 			Policy:               flags.Policy{MaxInterventionsPerMinute: 100},
 		}}

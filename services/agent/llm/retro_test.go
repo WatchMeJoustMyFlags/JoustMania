@@ -13,11 +13,10 @@ import (
 )
 
 // retroSnapshot is the shared flag snapshot for the retro golden scenarios. Only
-// the capability model is read by BuildRetro (no variant), so the rest is
-// representative but unused.
+// the intervention allow-list is read by BuildRetro, so the rest is representative
+// but unused.
 func retroSnapshot() flags.Snapshot {
 	return flags.Snapshot{
-		Mode: "llm",
 		Objectives: map[string]float64{
 			"balanced":  0.7,
 			"chaos":     0.1,
@@ -31,7 +30,6 @@ func retroSnapshot() flags.Snapshot {
 			"adjust_music_tempo", "set_pacing_profile", "adjust_player_sensitivity",
 			"grant_shield",
 		},
-		Capability: flags.Capability{Model: "phi4-mini"},
 	}
 }
 
@@ -227,9 +225,7 @@ func retroCases() []retroCase {
 // renderRetroGolden serializes a RetroPrompt into the golden-file layout.
 func renderRetroGolden(p RetroPrompt) string {
 	var b strings.Builder
-	b.WriteString("=== MODEL ===\n")
-	b.WriteString(p.Model)
-	b.WriteString("\n=== SYSTEM ===\n")
+	b.WriteString("=== SYSTEM ===\n")
 	b.WriteString(p.System)
 	b.WriteString("\n=== USER ===\n")
 	b.WriteString(p.User)

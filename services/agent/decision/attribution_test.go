@@ -38,9 +38,7 @@ func recordingLoop(t *testing.T, snap flags.Snapshot, out []Decision) (*Loop, *t
 func TestDecisionSpan_FullFlagSetLifted(t *testing.T) {
 	snap := flags.Snapshot{
 		Enabled:    true,
-		Mode:       "rules",
 		Objectives: map[string]float64{"endurance": 0.6, "chaos": 0.4},
-		Capability: flags.Capability{Model: "gemma3:4b", PromptVariant: "balanced"},
 		InterventionsAllowed: []string{
 			"grant_shield", "play_audio_cue",
 		},
@@ -64,13 +62,7 @@ func TestDecisionSpan_FullFlagSetLifted(t *testing.T) {
 	wantStr := map[string]string{
 		AttrEnabled:              "true",
 		AttrGameKind:             "real",
-		AttrMode:                 "rules",
 		AttrObjectives:           "chaos=0.4,endurance=0.6",
-		AttrModel:                "gemma3:4b",
-		AttrPromptVariant:        "balanced",
-		AttrInferenceConfigured:  "gemma3:4b",
-		AttrInferenceUsed:        InferenceRules,
-		AttrInferenceFallback:    "",
 		AttrInterventionsAllowed: "grant_shield,play_audio_cue",
 		AttrDecisionAction:       "grant_shield",
 		AttrDecisionReason:       "balance the field",
@@ -94,6 +86,14 @@ func TestDecisionSpan_FullFlagSetLifted(t *testing.T) {
 	if v, ok := attrValue(dec, AttrDecisionBlocked); !ok || v.AsBool() {
 		t.Errorf("decision.blocked = %v, want false", v.AsBool())
 	}
+	// #1234: the legacy mode/model/inference attribution is gone; decide.backend
+	// says who decided.
+	for _, key := range []string{"agent.mode", "agent.model", "agent.prompt_variant",
+		AttrInferenceConfigured, AttrInferenceUsed, AttrInferenceFallback} {
+		if _, ok := attrValue(dec, key); ok {
+			t.Errorf("legacy attribute %s must be absent from agent.decision (#1234)", key)
+		}
+	}
 }
 
 // TestDecisionSpan_BlockedAttribution: a blocked decision carries
@@ -101,7 +101,6 @@ func TestDecisionSpan_FullFlagSetLifted(t *testing.T) {
 func TestDecisionSpan_BlockedAttribution(t *testing.T) {
 	snap := flags.Snapshot{
 		Enabled:              true,
-		Mode:                 "rules",
 		InterventionsAllowed: []string{"play_audio_cue"}, // eliminate_player not allowed
 		Policy:               flags.Policy{MaxInterventionsPerMinute: 10},
 	}
@@ -132,7 +131,6 @@ func TestPerGameSpans_CarryGameID(t *testing.T) {
 	const gameID = "game_abc123def456"
 	snap := flags.Snapshot{
 		Enabled:              true,
-		Mode:                 "rules",
 		InterventionsAllowed: []string{"grant_shield"},
 		Policy:               flags.Policy{MaxInterventionsPerMinute: 10},
 	}
@@ -161,10 +159,8 @@ func TestPerGameSpans_CarryGameID(t *testing.T) {
 // still emits a trace showing "agent off" with the flags in effect (#729 §4).
 func TestDisabledSpan_EmittedWithFlagAttribution(t *testing.T) {
 	snap := flags.Snapshot{
-		Enabled:    false,
-		Mode:       "rules",
-		Capability: flags.Capability{Model: "phi4-mini", PromptVariant: "conservative"},
-		Policy:     flags.Policy{BatteryThreshold: 20, MaxInterventionsPerMinute: 2},
+		Enabled: false,
+		Policy:  flags.Policy{BatteryThreshold: 20, MaxInterventionsPerMinute: 2},
 	}
 	// Rules would return a decision, but the disabled path must short-circuit
 	// before they run — the span must still be emitted.
@@ -185,9 +181,6 @@ func TestDisabledSpan_EmittedWithFlagAttribution(t *testing.T) {
 	if v, ok := attrValue(d, AttrEnabled); !ok || v.AsBool() {
 		t.Error("agent.enabled must be false on the disabled span")
 	}
-	if v, ok := attrValue(d, AttrModel); !ok || v.AsString() != "phi4-mini" {
-		t.Errorf("agent.model = %q, want phi4-mini (capability still recorded)", v.AsString())
-	}
 	if v, ok := attrValue(d, AttrPolicyBatteryThreshold); !ok || v.AsInt64() != 20 {
 		t.Errorf("policy.battery_threshold = %d, want 20", v.AsInt64())
 	}
@@ -199,7 +192,7 @@ func TestDisabledSpan_EmittedWithFlagAttribution(t *testing.T) {
 // TestDisabledSpan_Throttled: a disabled agent under heavy signal load emits at
 // most one kill-switch trace per throttle interval, not one per export.
 func TestDisabledSpan_Throttled(t *testing.T) {
-	snap := flags.Snapshot{Enabled: false, Mode: "rules"}
+	snap := flags.Snapshot{Enabled: false}
 	l, sr := recordingLoop(t, snap, nil)
 
 	for i := 0; i < 20; i++ {
@@ -210,97 +203,12 @@ func TestDisabledSpan_Throttled(t *testing.T) {
 	}
 }
 
-// TestDisabledSpan_LLMModeNoFallbackReason: when the kill switch is off
-// (enabled=false) in llm mode, the disabled span reports inference.used=rules and
-// inference.fallback_reason="" — NOT a fallback reason. The disabled path
-// short-circuits before decide()/resolve_backend run, so no inference was
-// attempted and there is nothing to fall back FROM (#741). This locks the #741
-// attribution change: pre-#741 the static inferenceAttribution(mode) stamped
-// no_backend_available here even though the agent was off; now the resolved
-// LayerState (decide never ran) honestly carries an empty fallback reason.
-func TestDisabledSpan_LLMModeNoFallbackReason(t *testing.T) {
-	snap := flags.Snapshot{
-		Enabled:    false,
-		Mode:       "llm",
-		Capability: flags.Capability{Model: "claude", PromptVariant: "balanced"},
-	}
-	l, sr := recordingLoop(t, snap, []Decision{{Intervention: "play_audio_cue"}})
-
-	l.OnEvaluate(context.Background(), gamecontext.GameContext{SessionID: "s1"}, testTrigger())
-
-	disabled := spansByName(sr.Ended(), SpanDisabled)
-	if len(disabled) != 1 {
-		t.Fatalf("disabled spans = %d, want 1", len(disabled))
-	}
-	d := disabled[0]
-	if v, ok := attrValue(d, AttrMode); !ok || v.AsString() != "llm" {
-		t.Errorf("agent.mode = %q, want llm", v.AsString())
-	}
-	if v, ok := attrValue(d, AttrInferenceUsed); !ok || v.AsString() != InferenceRules {
-		t.Errorf("inference.used = %q, want %q (nothing decided; rules floor)", v.AsString(), InferenceRules)
-	}
-	if v, ok := attrValue(d, AttrInferenceFallback); !ok || v.AsString() != "" {
-		t.Errorf("inference.fallback_reason = %q, want \"\" (agent off, no inference attempted)", v.AsString())
-	}
-	if v, ok := attrValue(d, AttrInferenceConfigured); !ok || v.AsString() != "claude" {
-		t.Errorf("inference.configured = %q, want claude (capability still recorded)", v.AsString())
-	}
-}
-
-// TestInferenceAttribution_LLMFallback: mode=llm records the fallback to rules
-// with a reason; mode=rules records no fallback. Path-agnostic per #729 §5.
-func TestInferenceAttribution_LLMFallback(t *testing.T) {
-	tests := []struct {
-		name         string
-		mode         string
-		wantUsed     string
-		wantFallback string
-	}{
-		{name: "rules mode", mode: "rules", wantUsed: InferenceRules, wantFallback: ""},
-		{name: "llm mode falls back", mode: "llm", wantUsed: InferenceRules, wantFallback: FallbackNoBackend},
-		{name: "unknown mode runs rules", mode: "weird", wantUsed: InferenceRules, wantFallback: ""},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			snap := flags.Snapshot{
-				Enabled:              true,
-				Mode:                 tc.mode,
-				Capability:           flags.Capability{Model: "phi4-mini"},
-				InterventionsAllowed: []string{"play_audio_cue"},
-				Policy:               flags.Policy{MaxInterventionsPerMinute: 10},
-				// Gate-ALLOWED config (#847): the llm case asserts the unchanged
-				// no_backend_available fallback, which only holds when the gate admits —
-				// so this game kind ("") is eligible, no cadence floor, ample budget.
-				LLMGate: flags.LLMGate{
-					EligibleGameKinds:    []string{""},
-					MinDecisionInterval:  0,
-					MaxRequestsPerMinute: 100,
-				},
-			}
-			l, sr := recordingLoop(t, snap, []Decision{{Intervention: "play_audio_cue"}})
-
-			l.OnEvaluate(context.Background(), gamecontext.GameContext{}, testTrigger())
-
-			dec := spansByName(sr.Ended(), SpanDecision)[0]
-			if v, ok := attrValue(dec, AttrInferenceConfigured); !ok || v.AsString() != "phi4-mini" {
-				t.Errorf("inference.configured = %q, want phi4-mini", v.AsString())
-			}
-			if v, ok := attrValue(dec, AttrInferenceUsed); !ok || v.AsString() != tc.wantUsed {
-				t.Errorf("inference.used = %q, want %q", v.AsString(), tc.wantUsed)
-			}
-			if v, ok := attrValue(dec, AttrInferenceFallback); !ok || v.AsString() != tc.wantFallback {
-				t.Errorf("inference.fallback_reason = %q, want %q", v.AsString(), tc.wantFallback)
-			}
-		})
-	}
-}
-
 // TestFitnessHook_CycleLevel verifies the #731 hook: LayerState.FitnessEvaluated
 // is absent from the span when empty (the steady state until #731) and lifted as
 // fitness.evaluated when populated.
 func TestFitnessHook_CycleLevel(t *testing.T) {
 	// Empty: attribute absent (no "evaluated nothing" placeholder at cycle scope).
-	emptyAttrs := layerStateAttributes(&LayerState{Enabled: true, Mode: "rules"})
+	emptyAttrs := layerStateAttributes(&LayerState{Enabled: true})
 	for _, kv := range emptyAttrs {
 		if string(kv.Key) == AttrFitnessEvaluated {
 			t.Fatalf("fitness.evaluated must be absent when FitnessEvaluated is empty")
@@ -310,7 +218,6 @@ func TestFitnessHook_CycleLevel(t *testing.T) {
 	// Populated (simulating #731): lifted as a sorted k=v slice.
 	state := &LayerState{
 		Enabled:          true,
-		Mode:             "rules",
 		FitnessEvaluated: map[string]float64{"session_duration": 95, "target_session_seconds": 60},
 	}
 	var got []string

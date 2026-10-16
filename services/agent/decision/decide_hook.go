@@ -34,7 +34,6 @@ import (
 //     While a call is in flight for a game the rules engine does NOT also act for
 //     it. An error, timeout or invalid response (decide.Validate) falls back to the
 //     rules engine for the CURRENT context, recorded as decide.fallback_reason.
-//     The legacy mode / model flags are ignored while decision.backend != rules.
 //
 // Every remote call (and every rules decision) is recorded on one agent.decide
 // span: OTel GenAI semantic conventions where a name exists
@@ -281,9 +280,8 @@ const DecideGateInterval = "decide_interval"
 
 // gateRemoteDecide is the call gate for remote decide calls: eligibility
 // (llm.eligible_game_kinds, so shadow games stay rules-only), the per-game cadence
-// decision.min_interval_ms (INSTEAD of llm.min_decision_interval_seconds), and the
-// GLOBAL per-minute budget llm.max_requests_per_minute shared with the legacy llm
-// path (the spend bound). Cadence and budget are charged only on admission, and
+// decision.min_interval_ms, and the GLOBAL per-minute budget
+// llm.max_requests_per_minute shared with the post-game retro (the spend bound). Cadence and budget are charged only on admission, and
 // only after the caller won the inflight claim. It returns "" when admitted.
 func (l *Loop) gateRemoteDecide(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext) string {
 	if !snapshot.LLMGate.EligibleFor(c.GameKind) {
@@ -306,9 +304,9 @@ func (l *Loop) gateRemoteDecide(ctx context.Context, snapshot flags.Snapshot, c 
 }
 
 // remoteDecideAdmitted is the seam for a remote-decision admission gate (#1231).
-// It deliberately does NOT apply the #1207 length gate (shouldUpgradeToAsyncLLM):
-// that gate routes 6-7s games to rules almost always, so the remote backend would
-// never decide in a short FFA game. #1231 decides what (if anything) goes here.
+// It deliberately applies no game-length gate: the retired #1207 length gate routed
+// 6-7s games to rules almost always, so a remote backend would never decide in a
+// short FFA game. #1231 decides what (if anything) goes here.
 func (l *Loop) remoteDecideAdmitted(flags.Snapshot, gamecontext.GameContext) bool {
 	return true
 }

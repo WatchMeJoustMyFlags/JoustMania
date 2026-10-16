@@ -137,7 +137,6 @@ func TestMultiGameStress_BudgetIsolationAndNoBleed(t *testing.T) {
 
 		l := decision.NewLoop(staticFlags{flags.Snapshot{
 			Enabled:              true,
-			Mode:                 "rules",
 			InterventionsAllowed: []string{"grant_shield"},
 			Policy:               flags.Policy{MaxInterventionsPerMinute: perGameBudget},
 		}}, logger)

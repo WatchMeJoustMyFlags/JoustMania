@@ -222,13 +222,11 @@ export class AgentView {
     if (!flags) {
       this.flagsEl.innerHTML =
         '<div class="loading">No agent.evaluate cycle observed yet. ' +
-        "Effective mode/model/policy values appear here once the agent evaluates a game.</div>";
+        "Effective decision backend/policy values appear here once the agent evaluates a game.</div>";
       return;
     }
     const rows: [string, string][] = [
-      ["mode", flags.mode || "—"],
-      ["model", flags.model || "—"],
-      ["prompt variant", flags.promptVariant || "—"],
+      ["decision backend", flags.decisionBackend || "—"],
       ["battery threshold", flags.batteryThreshold || "—"],
       ["variance window", flags.varianceWindow || "—"],
       ["max interventions/min", flags.maxPerMinute || "—"],

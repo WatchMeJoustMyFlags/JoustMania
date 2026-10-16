@@ -14,9 +14,9 @@
 # serves — same file ./scripts/agent-killswitch.sh mutates):
 #   - `enabled`             -> on   (master kill-switch; mirrors agent-killswitch.sh)
 #   - `experiments_enabled` -> on   (the LIVE experiment-loop gate, post-#1044)
-#   - `mode`                -> llm  (ONLY when AGENT_INFERENCE_BACKEND=openai is
-#                                    set; otherwise `mode` is left untouched so
-#                                    the stub backend stays on `rules`)
+#
+# The in-game decision backend is NOT touched here: flip it with
+# ./scripts/agent-backend.sh (decision.backend, #1232).
 #
 # It NEVER touches the production services/flagd/agent.json defaults — those stay
 # fail-closed by design.
@@ -26,32 +26,28 @@
 #   ./scripts/agent-dryrun-enable.sh off    # restore fail-closed defaults
 #   ./scripts/agent-dryrun-enable.sh status
 #
-# `mode=llm` is applied on `on` only when an inference backend is configured:
-#   AGENT_INFERENCE_BACKEND=openai ./scripts/agent-dryrun-enable.sh on
-#
 # After flipping, flagd hot-reloads the file and the gate flips take effect LIVE
 # (~1 s): since #1044 the experiment loop is always built and self-gates each tick
-# on the live experiments_enabled flag (and reads `mode` live too), so an off→on
-# flip starts it with NO agent restart. A restart/recreate is only required when
-# you set/change the AGENT_INFERENCE_* env vars (read at process start):
-#   AGENT_INFERENCE_BACKEND=openai ... \
-#     docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile agent up -d agent
+# on the live experiments_enabled flag, so an off→on flip starts it with NO agent
+# restart. A restart/recreate is only required when you set/change the
+# AGENT_INFERENCE_* env vars (the proposer/retro text backend, read at process
+# start), e.g. AGENT_INFERENCE_BACKEND=claude with ANTHROPIC_API_KEY exported:
+#   docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile agent up -d agent
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 FLAG_FILE="${AGENT_FLAG_FILE:-${REPO_ROOT}/services/flagd/ci/agent.json}"
-INFERENCE_BACKEND="${AGENT_INFERENCE_BACKEND:-}"
 
 action="${1:-status}"
 
 case "${action}" in
   on|off)
-    python3 - "${FLAG_FILE}" "${action}" "${INFERENCE_BACKEND}" <<'PY'
+    python3 - "${FLAG_FILE}" "${action}" <<'PY'
 import json
 import sys
 
-path, action, backend = sys.argv[1], sys.argv[2], sys.argv[3]
+path, action = sys.argv[1], sys.argv[2]
 with open(path) as fh:
     data = json.load(fh)
 
@@ -69,15 +65,9 @@ def set_variant(name, variant):
 if action == "on":
     set_variant("enabled", "on")
     set_variant("experiments_enabled", "on")
-    if backend == "openai":
-        # Exercise the inference backend only when one is configured.
-        set_variant("mode", "llm")
-    else:
-        print("  mode -> (unchanged; set AGENT_INFERENCE_BACKEND=openai for llm)")
 else:  # off -> restore the fail-closed defaults
     set_variant("enabled", "off")
     set_variant("experiments_enabled", "off")
-    set_variant("mode", "rules")
 
 with open(path, "w") as fh:
     json.dump(data, fh, indent=2)
@@ -94,7 +84,7 @@ path = sys.argv[1]
 with open(path) as fh:
     data = json.load(fh)
 flags = data["flags"]
-for name in ("enabled", "experiments_enabled", "mode"):
+for name in ("enabled", "experiments_enabled", "decision.backend"):
     print(f"{name} = {flags[name]['defaultVariant']}")
 print(f"({path})")
 PY

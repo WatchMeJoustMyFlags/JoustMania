@@ -76,7 +76,6 @@ func effectLoop(t *testing.T, provider ContextProvider, gameID string) (*Loop, *
 func permissiveEffectSnapshot() flags.Snapshot {
 	return flags.Snapshot{
 		Enabled:              true,
-		Mode:                 flags.DefaultMode,
 		InterventionsAllowed: []string{"grant_shield"},
 		Policy:               flags.Policy{MaxInterventionsPerMinute: 100},
 		Fitness: flags.Fitness{

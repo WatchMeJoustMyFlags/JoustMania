@@ -21,7 +21,6 @@ const linkGameSpanID = "051581bf3cb55c13" // valid 8-byte hex span id
 func linkSnapshot() flags.Snapshot {
 	return flags.Snapshot{
 		Enabled:              true,
-		Mode:                 "rules",
 		InterventionsAllowed: []string{"grant_shield"},
 		Policy:               flags.Policy{MaxInterventionsPerMinute: 10},
 	}

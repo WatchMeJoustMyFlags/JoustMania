@@ -2,7 +2,6 @@ package decision
 
 import (
 	"github.com/joustmania/agent/flags"
-	"github.com/joustmania/agent/llm"
 )
 
 // BlockReason identifies which layer/policy blocked a decision. It is the
@@ -42,58 +41,17 @@ type DecisionOutcome struct {
 //
 // Layout (one field group per layer):
 //
-//	Existence:   Enabled, Mode
+//	Existence:   Enabled
 //	Objective:   Objectives
-//	Capability:  Model, PromptVariant
+//	Backend:     DecideBackend
 //	Permission:  InterventionsAllowed + the three Policy* values
 //	Outcomes:    per-decision dispatch/block results
 type LayerState struct {
 	// --- Existence layer ---
 	Enabled bool
-	Mode    string
 
 	// --- Objective layer ---
 	Objectives map[string]float64
-
-	// --- Capability layer (recorded, consumed by M4 LLM path) ---
-	Model         string
-	PromptVariant string
-
-	// ConfiguredModel is inference.configured on the decision span (#1080): the model
-	// of the configured inference backend (AGENT_INFERENCE_MODEL, e.g. gemma4:latest)
-	// when a real backend is wired, else the agent.model flag. newLayerState seeds it
-	// from the flag (Model); the loop overrides it with the resolver's configured
-	// model when AGENT_INFERENCE_BACKEND=openai, so the span reports the backend
-	// actually used instead of the stale phi4-mini flag. Distinct from Model, which
-	// stays the raw agent.model capability flag (agent.model attribute).
-	ConfiguredModel string
-
-	// LLMFallbackReason is the inference.fallback_reason this cycle's llm path
-	// resolved to (#847 + #741). It is the PER-CYCLE replacement for the static
-	// inferenceAttribution. On an llm cycle the loop sets it to, in order of
-	// precedence:
-	//   - the #847 gate reason (FallbackNotEligible / FallbackInterval /
-	//     FallbackBudgetExhausted) when the gate DENIED — resolve_backend never runs;
-	//   - the #741 resolve_backend reason when the gate ADMITTED: "" when the
-	//     configured tier is reachable, FallbackEndpointUnreachable when a LOWER tier
-	//     serves, or FallbackNoBackend when the whole chain is unreachable and rules
-	//     decided.
-	// layerStateAttributes lifts it onto the decision span. Empty on the rules path
-	// (mode!="llm"), where there is no fallback reason at all.
-	LLMFallbackReason string
-
-	// InferenceUsed is inference.used this cycle: the tier resolve_backend (#741)
-	// determined WOULD serve the decision — claude/copilot via "cloud", "gemma3:4b",
-	// "phi4-mini", or InferenceRules ("rules") when the gate denied, the chain was
-	// unreachable, or the mode is rules. Defaulted to InferenceRules by newLayerState
-	// so a cycle that never resolves a backend (rules mode, gate-denied llm) honestly
-	// reports rules. The loop overwrites it with the resolved tier ONLY on a
-	// gate-admitted llm cycle. layerStateAttributes emits it verbatim as
-	// inference.used, replacing the static inferenceAttribution(mode) value (#847's
-	// inference.used was always InferenceRules; #741 makes it honest). Until #739 a
-	// "reachable" tier does NOT actually decide — the rules engine still produces the
-	// Decision — so this reflects WHO #739 WILL call, not who decided this cycle.
-	InferenceUsed string
 
 	// --- Permission layer ---
 	InterventionsAllowed      []string
@@ -126,26 +84,8 @@ type LayerState struct {
 // are filled in as decisions are processed.
 func newLayerState(s flags.Snapshot) LayerState {
 	return LayerState{
-		Enabled:    s.Enabled,
-		Mode:       s.Mode,
-		Objectives: s.Objectives,
-		Model:      s.Capability.Model,
-		// inference.configured defaults to the agent.model flag; the loop overrides it
-		// with the configured inference model (AGENT_INFERENCE_MODEL) when a real
-		// backend is wired (#1080), so a default phi4-mini flag no longer mislabels a
-		// gemma4-configured span.
-		ConfiguredModel: s.Capability.Model,
-		// Record the EFFECTIVE prompt variant (#740), not the raw flag value: the
-		// llm path resolves an unknown/garbage prompt_variant to "conservative"
-		// before building the prompt, so the decision span's agent.prompt_variant
-		// must report the variant that ACTUALLY ran — otherwise a misconfiguration
-		// would be invisible in the audit trail. ResolveVariant is the SINGLE
-		// fallback point shared with llm.Build, so span and prompt never disagree.
-		PromptVariant: llm.ResolveVariant(s.Capability.PromptVariant),
-		// inference.used defaults to rules (#741): a cycle that never resolves a
-		// backend (rules mode, or a gate-denied llm cycle) honestly reports rules. The
-		// loop overwrites this only on a gate-admitted llm cycle with the resolved tier.
-		InferenceUsed:             InferenceRules,
+		Enabled:                   s.Enabled,
+		Objectives:                s.Objectives,
 		InterventionsAllowed:      s.InterventionsAllowed,
 		PolicyBatteryThreshold:    s.Policy.BatteryThreshold,
 		PolicyMovementVarianceWin: s.Policy.MovementVarianceWindow,

@@ -75,7 +75,6 @@ func TestOnEvaluate_PermissionGateFiltersBlocked(t *testing.T) {
 	actions := &recordingActions{}
 	snap := flags.Snapshot{
 		Enabled:              true,
-		Mode:                 "rules",
 		InterventionsAllowed: []string{"play_audio_cue", "grant_shield"},
 		Policy:               flags.Policy{MaxInterventionsPerMinute: 10},
 	}
@@ -100,7 +99,7 @@ func TestOnEvaluate_EmptyAllowListDispatchesNothing(t *testing.T) {
 	rules := &recordingRules{out: []Decision{{Intervention: "play_audio_cue"}}}
 	actions := &recordingActions{}
 	// Enabled but allow-list empty: the safe-default state. No actions dispatch.
-	loop := newFlagLoop(flags.Snapshot{Enabled: true, Mode: "rules"}, rules, actions)
+	loop := newFlagLoop(flags.Snapshot{Enabled: true}, rules, actions)
 
 	loop.OnEvaluate(context.Background(), gamecontext.GameContext{}, testTrigger())
 
@@ -115,7 +114,7 @@ func TestOnEvaluate_EmptyAllowListDispatchesNothing(t *testing.T) {
 func TestOnEvaluate_ObjectivesPassedToRules(t *testing.T) {
 	rules := &recordingRules{}
 	objectives := map[string]float64{"endurance": 0.7, "chaos": 0.3}
-	snap := flags.Snapshot{Enabled: true, Mode: "rules", Objectives: objectives}
+	snap := flags.Snapshot{Enabled: true, Objectives: objectives}
 	loop := newFlagLoop(snap, rules, &recordingActions{})
 
 	loop.OnEvaluate(context.Background(), gamecontext.GameContext{}, testTrigger())
@@ -130,7 +129,6 @@ func TestOnEvaluate_LLMModeFallsBackToRules(t *testing.T) {
 	actions := &recordingActions{}
 	snap := flags.Snapshot{
 		Enabled:              true,
-		Mode:                 "llm",
 		InterventionsAllowed: []string{"play_audio_cue"},
 		Policy:               flags.Policy{MaxInterventionsPerMinute: 10},
 	}

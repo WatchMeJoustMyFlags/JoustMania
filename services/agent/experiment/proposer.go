@@ -38,23 +38,19 @@ import (
 // (unparseable/out-of-vocab => no proposal at all); the Gate is the structural
 // backstop.
 //
-// DEGRADES TO NOTHING WITHOUT A REAL BACKEND: the production Backend
-// (decision.endpointBackend.Infer) is a sentinel stub until #738/#742 wire a real
-// Ollama/cloud transport. A backend error (the stub, a transport failure, a
-// timeout) is recorded and produces NO proposal and NO error to the caller — the
-// agent simply does not propose this cycle, exactly like the #739 llm path
-// degrades to rules. The engine is flag-selectable via agent.code_improvement.engine
-// (#931 AC); main.go reads that flag and selects the backend (today it only
-// selects the stub).
+// DEGRADES TO NOTHING WITHOUT A REAL BACKEND: main.go wires the direct Claude text
+// client (inference.Claude) when AGENT_INFERENCE_BACKEND=claude, else an inert stub.
+// A backend error (the stub, a transport failure, a timeout) is recorded and
+// produces NO proposal and NO error to the caller — the agent simply does not
+// propose this cycle. agent.code_improvement.engine is read live and recorded on
+// the span (#931 AC).
 
 // Backend is the inference seam the Proposer needs: send a constrained prompt,
 // get the model's RAW response text back. It is deliberately a NARROW local
-// interface (just Infer) rather than an import of decision.Backend — Go's
-// structural typing means decision's backends (endpointBackend, the resolver's
-// chosen tier) satisfy it for free, and keeping it local avoids an
-// experiment->decision import (decision already does not import experiment; this
-// keeps it that way). The Proposer reuses llm.Prompt as the prompt carrier so the
-// same Backend implementations the #739 path drives also drive proposals.
+// interface (just Infer) — Go's structural typing means inference.Claude satisfies
+// it for free, and keeping it local keeps this package free of the inference and
+// decision packages. The Proposer reuses llm.Prompt as the prompt carrier, the same
+// carrier the retro uses, so one text backend drives both.
 type Backend interface {
 	// Infer sends prompt to the resolved inference tier and returns the model's
 	// raw response text, decoded DEFENSIVELY by decodeProposal (unparseable/
@@ -151,7 +147,7 @@ type Result struct {
 // Proposer turns a Narrative into a shadow-scoped flag experiment and submits it
 // through the Gate. It is the M7-4 propose-side seam. Safe for concurrent use:
 // the cadence state is mutex-guarded (the agent may run per-game loops that all
-// share one Proposer, like the shared Resolver/llmBudget).
+// share one Proposer, like the shared llmBudget).
 type Proposer struct {
 	backend Backend
 	gate    *Gate
@@ -215,7 +211,7 @@ func (p *Proposer) ProposeOnce(ctx context.Context, n Narrative, cfg ProposerCon
 	// Cadence floor FIRST (cheapest gate): suppress cycles inside MinInterval with
 	// no Infer call, so proposing — an expensive LLM round-trip — happens at most
 	// occasionally, not every decision cycle (#847 gating concept; mirrors the
-	// per-game llm.min_decision_interval_seconds floor in decision.go). Charged only
+	// per-game decision.min_interval_ms floor in decide_hook.go). Charged only
 	// on admission, so a gated cycle does not advance the window.
 	now := p.clock()
 	if !p.admit(now, cfg.MinInterval) {
@@ -289,7 +285,7 @@ func (p *Proposer) ProposeOnce(ctx context.Context, n Narrative, cfg ProposerCon
 // lastAttempt) when this cycle may attempt a proposal, false when it is inside the
 // MinInterval window. A non-positive interval disables the floor (always admit). A
 // zero lastAttempt (first ever call) always admits. Mirrors the
-// llm.min_decision_interval_seconds check in decision.go, charged on admission.
+// decision.min_interval_ms check in decide_hook.go, charged on admission.
 func (p *Proposer) admit(now time.Time, interval time.Duration) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()

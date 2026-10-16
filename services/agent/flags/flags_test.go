@@ -76,9 +76,6 @@ func TestEvaluate_FlagdShape(t *testing.T) {
 	stub := stubEvaluator{
 		booleans: map[string]bool{keyEnabled: true},
 		strings: map[string]string{
-			keyMode:          "llm",
-			keyModel:         "claude",
-			keyPromptVariant: "aggressive",
 			// interventions_allowed is a STRING flag: comma-separated ids (#1127),
 			// read cleanly by the flagd RPC resolver (a LIST flag TYPE_MISMATCHes
 			// there and silently blocks every intervention).
@@ -109,16 +106,9 @@ func TestEvaluate_FlagdShape(t *testing.T) {
 	if !got.Enabled {
 		t.Errorf("Enabled = false, want true")
 	}
-	if got.Mode != "llm" {
-		t.Errorf("Mode = %q, want llm", got.Mode)
-	}
 	wantObj := map[string]float64{"endurance": 0.7, "chaos": 0.3}
 	if !reflect.DeepEqual(got.Objectives, wantObj) {
 		t.Errorf("Objectives = %v, want %v", got.Objectives, wantObj)
-	}
-	wantCap := Capability{Model: "claude", PromptVariant: "aggressive"}
-	if got.Capability != wantCap {
-		t.Errorf("Capability = %+v, want %+v", got.Capability, wantCap)
 	}
 	wantAllowed := []string{"play_audio_cue", "grant_shield"}
 	if !reflect.DeepEqual(got.InterventionsAllowed, wantAllowed) {
@@ -152,18 +142,11 @@ func TestEvaluate_DefaultsWhenMissing(t *testing.T) {
 	if got.Enabled != DefaultEnabled {
 		t.Errorf("Enabled = %v, want %v (fail-closed)", got.Enabled, DefaultEnabled)
 	}
-	if got.Mode != DefaultMode {
-		t.Errorf("Mode = %q, want %q", got.Mode, DefaultMode)
-	}
 	if !reflect.DeepEqual(got.Objectives, map[string]float64{"endurance": 1.0}) {
 		t.Errorf("Objectives = %v, want endurance:1.0", got.Objectives)
 	}
 	if len(got.InterventionsAllowed) != 0 {
 		t.Errorf("InterventionsAllowed = %v, want empty", got.InterventionsAllowed)
-	}
-	wantCap := Capability{Model: DefaultModel, PromptVariant: DefaultPromptVariant}
-	if got.Capability != wantCap {
-		t.Errorf("Capability = %+v, want defaults %+v", got.Capability, wantCap)
 	}
 	wantPolicy := Policy{
 		BatteryThreshold:          DefaultBatteryThreshold,
@@ -238,10 +221,7 @@ func TestEvaluate_DefaultsOnError(t *testing.T) {
 	boom := errors.New("flagd unreachable")
 	stub := stubEvaluator{errs: map[string]error{
 		keyEnabled:                      boom,
-		keyMode:                         boom,
 		keyObjectives:                   boom,
-		keyModel:                        boom,
-		keyPromptVariant:                boom,
 		keyInterventionsAllowed:         boom,
 		keyBatteryThreshold:             boom,
 		keyMovementVarianceWindow:       boom,
@@ -260,18 +240,11 @@ func TestEvaluate_DefaultsOnError(t *testing.T) {
 	if got.Enabled {
 		t.Errorf("Enabled = true on error, want false (fail-closed)")
 	}
-	if got.Mode != DefaultMode {
-		t.Errorf("Mode = %q, want %q", got.Mode, DefaultMode)
-	}
 	if !reflect.DeepEqual(got.Objectives, map[string]float64{"endurance": 1.0}) {
 		t.Errorf("Objectives = %v, want endurance:1.0", got.Objectives)
 	}
 	if len(got.InterventionsAllowed) != 0 {
 		t.Errorf("InterventionsAllowed = %v, want empty", got.InterventionsAllowed)
-	}
-	wantCap := Capability{Model: DefaultModel, PromptVariant: DefaultPromptVariant}
-	if got.Capability != wantCap {
-		t.Errorf("Capability = %+v on error, want defaults %+v", got.Capability, wantCap)
 	}
 	wantPolicy := Policy{
 		BatteryThreshold:          DefaultBatteryThreshold,
@@ -344,60 +317,33 @@ func TestInterventionsAllowed_StringFlag(t *testing.T) {
 	})
 }
 
-// TestEvaluate_LLMGate_FlagdShape: the three #847 gate flags resolve through the
-// typed getters into the LLMGate struct. eligible_game_kinds is a comma-separated
-// STRING (#1221: array variants are schema-rejected by flagd),
-// min_decision_interval_seconds is float seconds -> Duration, max_requests_per_minute
-// is an int.
+// TestEvaluate_LLMGate_FlagdShape: the #847 gate flags resolve through the typed
+// getters into the LLMGate struct. eligible_game_kinds is a comma-separated STRING
+// (#1221: array variants are schema-rejected by flagd), max_requests_per_minute is
+// an int.
 func TestEvaluate_LLMGate_FlagdShape(t *testing.T) {
 	stub := stubEvaluator{
 		strings: map[string]string{keyLLMEligibleGameKinds: "real,shadow"},
-		floats:  map[string]float64{keyLLMMinDecisionInterval: 30, keyLLMLatencyBudget: 4},
 		ints:    map[string]int64{keyLLMMaxRequestsPerMin: 12},
 	}
 	got := New(stub, nil).Evaluate(context.Background()).LLMGate
 	if !reflect.DeepEqual(got.EligibleGameKinds, []string{"real", "shadow"}) {
 		t.Errorf("EligibleGameKinds = %v, want [real shadow]", got.EligibleGameKinds)
 	}
-	if got.MinDecisionInterval != 30*time.Second {
-		t.Errorf("MinDecisionInterval = %v, want 30s", got.MinDecisionInterval)
-	}
 	if got.MaxRequestsPerMinute != 12 {
 		t.Errorf("MaxRequestsPerMinute = %d, want 12", got.MaxRequestsPerMinute)
-	}
-	// #917: latency budget is float seconds -> Duration, like the cadence interval.
-	if got.LatencyBudget != 4*time.Second {
-		t.Errorf("LatencyBudget = %v, want 4s", got.LatencyBudget)
 	}
 }
 
 // TestEvaluate_LLMGate_Defaults: with no flags defined, the gate falls back to the
-// fail-closed schema defaults — eligible only for ["real"], 10s cadence, 6/min.
+// fail-closed schema defaults — eligible only for ["real"], 6/min.
 func TestEvaluate_LLMGate_Defaults(t *testing.T) {
 	got := New(stubEvaluator{}, nil).Evaluate(context.Background()).LLMGate
 	if !reflect.DeepEqual(got.EligibleGameKinds, []string{"real"}) {
 		t.Errorf("EligibleGameKinds = %v, want default [real]", got.EligibleGameKinds)
 	}
-	if got.MinDecisionInterval != time.Duration(DefaultLLMMinDecisionIntervalSeconds*float64(time.Second)) {
-		t.Errorf("MinDecisionInterval = %v, want %ds", got.MinDecisionInterval, int(DefaultLLMMinDecisionIntervalSeconds))
-	}
 	if got.MaxRequestsPerMinute != DefaultLLMMaxRequestsPerMinute {
 		t.Errorf("MaxRequestsPerMinute = %d, want %d", got.MaxRequestsPerMinute, DefaultLLMMaxRequestsPerMinute)
-	}
-	// #917: latency budget defaults to the fail-safe 8s when undefined.
-	if got.LatencyBudget != time.Duration(DefaultLLMLatencyBudgetSeconds*float64(time.Second)) {
-		t.Errorf("LatencyBudget = %v, want %vs", got.LatencyBudget, DefaultLLMLatencyBudgetSeconds)
-	}
-}
-
-// TestEvaluate_LLMGate_NonPositiveLatencyBudgetFallsBack: a zero/negative latency
-// budget must NEVER disable the timeout (which would leak an inference goroutine);
-// durationFlag floors it at the safe default (#917).
-func TestEvaluate_LLMGate_NonPositiveLatencyBudgetFallsBack(t *testing.T) {
-	stub := stubEvaluator{floats: map[string]float64{keyLLMLatencyBudget: 0}}
-	got := New(stub, nil).Evaluate(context.Background()).LLMGate
-	if got.LatencyBudget != time.Duration(DefaultLLMLatencyBudgetSeconds*float64(time.Second)) {
-		t.Errorf("LatencyBudget = %v, want default %vs (non-positive floored)", got.LatencyBudget, DefaultLLMLatencyBudgetSeconds)
 	}
 }
 
@@ -462,35 +408,6 @@ func TestSnapshotPermits(t *testing.T) {
 	if empty.Permits("play_audio_cue") {
 		t.Errorf("empty allow-list permitted an intervention")
 	}
-}
-
-// TestEvaluate_PromptContextNote pins the M7-3 (#930) operator-note read: the raw
-// prompt.context_note string flag is surfaced verbatim on the snapshot (validation is
-// the decision side's job, not the flag layer's), and falls back to the empty default
-// when undefined or on a flagd error — so an unset or unreachable flag injects no note.
-func TestEvaluate_PromptContextNote(t *testing.T) {
-	t.Run("live value surfaced verbatim", func(t *testing.T) {
-		stub := stubEvaluator{strings: map[string]string{
-			keyPromptContextNote: "keep it gentle tonight",
-		}}
-		got := New(stub, nil).Evaluate(context.Background())
-		if got.PromptContextNote != "keep it gentle tonight" {
-			t.Errorf("PromptContextNote = %q, want raw flag value", got.PromptContextNote)
-		}
-	})
-	t.Run("default when undefined", func(t *testing.T) {
-		got := New(stubEvaluator{}, nil).Evaluate(context.Background())
-		if got.PromptContextNote != DefaultPromptContextNote {
-			t.Errorf("PromptContextNote = %q, want empty default", got.PromptContextNote)
-		}
-	})
-	t.Run("default on flagd error", func(t *testing.T) {
-		stub := stubEvaluator{errs: map[string]error{keyPromptContextNote: errors.New("flagd down")}}
-		got := New(stub, nil).Evaluate(context.Background())
-		if got.PromptContextNote != DefaultPromptContextNote {
-			t.Errorf("PromptContextNote on error = %q, want empty default", got.PromptContextNote)
-		}
-	})
 }
 
 // defaultLifecycle is the expected lifecycle snapshot when every flag falls back
@@ -619,11 +536,11 @@ func TestValidation(t *testing.T) {
 func TestCodeImprovement(t *testing.T) {
 	t.Run("configured values resolve", func(t *testing.T) {
 		ev := stubEvaluator{
-			strings: map[string]string{keyCodeImprovementEngine: "ollama"},
+			strings: map[string]string{keyCodeImprovementEngine: "claude"},
 			floats:  map[string]float64{keyCodeImprovementMinInterval: 60},
 		}
 		got := New(ev, nil).CodeImprovement(context.Background())
-		want := CodeImprovementConfig{Engine: "ollama", MinInterval: 60 * time.Second}
+		want := CodeImprovementConfig{Engine: "claude", MinInterval: 60 * time.Second}
 		if got != want {
 			t.Errorf("CodeImprovement = %+v, want %+v", got, want)
 		}

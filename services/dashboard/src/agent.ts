@@ -32,8 +32,8 @@
  * Loki. The agent DOES emit a useful subset as slog lines we can fold here:
  *
  *   agent.evaluate         one per evaluated cycle — carries the RESOLVED effective
- *                          flag values (mode, model, prompt_variant, and the three
- *                          policy numbers). This is our flag-panel source.
+ *                          flag values (decision_backend and the three policy
+ *                          numbers). This is our flag-panel source.
  *   agent.decision_blocked blocked decision — intervention, target_serial, reason
  *                          (the BlockReason), decision_reason, allowed.
  *   agent.llm.discarded    async LLM result dropped at apply time — reason, tier.
@@ -112,10 +112,8 @@ export interface DecisionFeedRow {
 export interface FlagPanel {
   /** Epoch ms of the agent.evaluate line these values came from. */
   tsMs: number;
-  /** Inference mode: "rules" | "llm". */
-  mode: string;
-  model: string;
-  promptVariant: string;
+  /** Requested decision.backend: "rules" | "claude" | "openai" | "jev". */
+  decisionBackend: string;
   batteryThreshold: string;
   varianceWindow: string;
   maxPerMinute: string;
@@ -214,9 +212,7 @@ export function aggregateAgentLogs(
       if (!flags || tsMs >= flags.tsMs) {
         flags = {
           tsMs,
-          mode: fields["mode"] ?? "",
-          model: fields["model"] ?? "",
-          promptVariant: fields["prompt_variant"] ?? "",
+          decisionBackend: fields["decision_backend"] ?? "",
           batteryThreshold: fields["battery_threshold"] ?? "",
           varianceWindow: fields["variance_window"] ?? "",
           maxPerMinute: fields["max_per_minute"] ?? "",
