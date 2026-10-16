@@ -101,6 +101,7 @@ func TestApply_RecordsOKResult(t *testing.T) {
 
 	err := w.Apply(context.Background(), decision.Decision{
 		Intervention: decision.InterventionEndGame,
+		GameID:       "game_abc",
 	})
 	if err != nil {
 		t.Fatalf("Apply returned error: %v", err)
@@ -124,6 +125,7 @@ func TestApply_RecordsErrorResult_OnMissingFile(t *testing.T) {
 
 	err := w.Apply(context.Background(), decision.Decision{
 		Intervention: decision.InterventionEndGame,
+		GameID:       "game_abc",
 	})
 	if err == nil {
 		t.Fatal("Apply succeeded, want error from missing file")

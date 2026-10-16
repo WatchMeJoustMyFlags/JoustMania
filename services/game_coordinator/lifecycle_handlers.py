@@ -54,6 +54,26 @@ PARTIAL_SHIELD_BOOST_MAX = 2.0
 PARTIAL_SHIELD_MAX_SECONDS = 30.0
 
 
+def _grant_values(ctx: InterventionContext, manager: InterventionManager, default: object, value_kind: str) -> dict:
+    """The per-serial values a grant handler applies (UC-040 BR-012, #1313).
+
+    The manager dispatches a grant flag once per serial whose grant changed,
+    with ``ctx.target_serial`` / ``ctx.value`` set: apply exactly that grant and
+    nobody else's. Only a direct call without a target (tests, tools) falls
+    back to resolving every active serial.
+    """
+    if ctx.target_serial:
+        return {ctx.target_serial: ctx.value}
+    return manager.resolve_player_targets(
+        flag_key=ctx.spec.flag_key,
+        default=default,
+        game=ctx.game,
+        value_kind=value_kind,
+        battery_gate=True,
+        game_id=ctx.game_id,
+    )
+
+
 def parse_partial_shield_value(value: object) -> tuple[float, float] | None:
     """Parse a partial_shield value into ``(seconds, boost)`` or ``None``.
 
@@ -99,14 +119,7 @@ async def handle_partial_shield(ctx: InterventionContext, manager: InterventionM
         logger.debug("partial_shield: no live game, ignoring")
         return
 
-    values = manager.resolve_player_targets(
-        flag_key=ctx.spec.flag_key,
-        default="0",
-        game=game,
-        value_kind="string",
-        battery_gate=True,
-        game_id=ctx.game_id,
-    )
+    values = _grant_values(ctx, manager, "0", "string")
 
     grant = getattr(game, "grant_partial_shield", None)
     if not callable(grant):
@@ -201,14 +214,7 @@ async def handle_soft_penalty(ctx: InterventionContext, manager: InterventionMan
         logger.debug("soft_penalty: no live game, ignoring")
         return
 
-    values = manager.resolve_player_targets(
-        flag_key=ctx.spec.flag_key,
-        default="none",
-        game=game,
-        value_kind="string",
-        battery_gate=True,
-        game_id=ctx.game_id,
-    )
+    values = _grant_values(ctx, manager, "none", "string")
 
     warn = getattr(game, "warn_player", None)
     tighten = getattr(game, "apply_soft_penalty", None)
@@ -288,9 +294,10 @@ async def handle_auto_rubberband(ctx: InterventionContext) -> None:
 async def handle_shield_seconds(ctx: InterventionContext, manager: InterventionManager) -> None:
     """Grant per-player shields via per-serial targeting resolution (N3).
 
-    Uses the manager's reusable ``resolve_player_targets`` helper to evaluate the
-    flag once per active serial with ``EvaluationContext(targeting_key=serial)``.
-    Serials resolving to a value > 0 get a shield of that many seconds via
+    The manager dispatches once per serial whose grant changed (UC-040 BR-012,
+    #1313), so only ``ctx.target_serial`` is shielded with ``ctx.value``
+    seconds; a direct call without a target resolves every active serial.
+    Serials with a value > 0 get a shield of that many seconds via
     ``game.grant_shield`` (extend-not-shorten, with a visible pulse). Serials at
     the neutral default (0) — or battery-gated by the helper — are skipped.
     Reverting to none requires no action: existing shields simply expire.
@@ -300,21 +307,18 @@ async def handle_shield_seconds(ctx: InterventionContext, manager: InterventionM
         logger.debug("shield_seconds: no live game, ignoring")
         return
 
-    shields = manager.resolve_player_targets(
-        flag_key=ctx.spec.flag_key,
-        default=SHIELD_NONE,
-        game=game,
-        value_kind="float",
-        battery_gate=True,
-        game_id=ctx.game_id,
-    )
+    shields = _grant_values(ctx, manager, SHIELD_NONE, "float")
 
     grant = getattr(game, "grant_shield", None)
     if not callable(grant):
         logger.debug("shield_seconds: game has no grant_shield, ignoring")
         return
 
-    for serial, seconds in shields.items():
+    for serial, raw_seconds in shields.items():
+        try:
+            seconds = float(raw_seconds)
+        except (TypeError, ValueError):
+            continue  # malformed: safe no-op for this serial
         if seconds <= SHIELD_NONE:
             continue  # neutral default: no shield for this serial
         await grant(serial, seconds)

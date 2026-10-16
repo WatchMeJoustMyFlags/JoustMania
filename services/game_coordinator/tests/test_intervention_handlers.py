@@ -291,7 +291,8 @@ async def test_end_game_delegates_to_force_end():
     mgr, _ = make_manager(interventions={"end_game": "1"}, game=game, end_game_fn=end)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
-    end.assert_awaited_once_with("agent_intervention")
+    # Legacy single-primary path: the sentinel session id is "" (= primary).
+    end.assert_awaited_once_with("", "agent_intervention")
 
 
 @pytest.mark.asyncio

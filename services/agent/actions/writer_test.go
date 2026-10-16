@@ -87,7 +87,7 @@ func TestEdgeInterventions(t *testing.T) {
 		{"controller_effect broadcast", decision.Decision{Intervention: decision.InterventionSendControllerEffect, TargetSerial: "", Value: "flash"}, flagControllerEffect, ":flash"},
 		{"eliminate", decision.Decision{Intervention: decision.InterventionEliminatePlayer, TargetSerial: "CC:DD"}, flagEliminatePlayer, "CC:DD"},
 		{"revive", decision.Decision{Intervention: decision.InterventionRevivePlayer, TargetSerial: "EE:FF"}, flagRevivePlayer, "EE:FF"},
-		{"end_game", decision.Decision{Intervention: decision.InterventionEndGame}, flagEndGame, ""},
+		{"end_game", decision.Decision{Intervention: decision.InterventionEndGame, GameID: "game_abc"}, flagEndGame, "game_abc"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -122,7 +122,7 @@ func TestEdgeNonceUniqueAcrossDispatches(t *testing.T) {
 	w, path := newTestWriter(t)
 	seen := map[string]bool{}
 	for i := 0; i < 50; i++ {
-		if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionEndGame}); err != nil {
+		if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionEndGame, GameID: "game_abc"}); err != nil {
 			t.Fatalf("apply %d: %v", i, err)
 		}
 		nonce, _ := splitNonce(activeValueOf(t, path, flagEndGame))
@@ -288,9 +288,9 @@ func TestGrantShieldTargeted(t *testing.T) {
 	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionGrantShield, TargetSerial: "AA", Value: "10"}); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	assertTargetingResolves(t, path, flagShieldSeconds, "AA", "agent_AA")
+	assertTargetingResolves(t, path, flagShieldSeconds, "AA", grantName(t, path, flagShieldSeconds, "AA"))
 	assertTargetingResolves(t, path, flagShieldSeconds, "QQ", neutralNone)
-	if v := readFlag(t, path, flagShieldSeconds)["variants"].(map[string]any)["agent_AA"].(float64); v != 10 {
+	if v := grantValue(t, path, flagShieldSeconds, "AA").(float64); v != 10 {
 		t.Fatalf("shield value = %v, want 10", v)
 	}
 }
@@ -347,17 +347,16 @@ func TestPartialShieldTargeted(t *testing.T) {
 		t.Fatalf("apply BB: %v", err)
 	}
 
-	assertTargetingResolves(t, path, flagPartialShieldSeconds, "AA", "agent_AA")
-	assertTargetingResolves(t, path, flagPartialShieldSeconds, "BB", "agent_BB")
+	assertTargetingResolves(t, path, flagPartialShieldSeconds, "AA", grantName(t, path, flagPartialShieldSeconds, "AA"))
+	assertTargetingResolves(t, path, flagPartialShieldSeconds, "BB", grantName(t, path, flagPartialShieldSeconds, "BB"))
 	assertTargetingResolves(t, path, flagPartialShieldSeconds, "ZZ", neutralNone)
 
-	variants := readFlag(t, path, flagPartialShieldSeconds)["variants"].(map[string]any)
-	if variants["agent_AA"].(string) != "8:1.8" {
-		t.Fatalf("agent_AA value = %v, want 8:1.8", variants["agent_AA"])
+	if grantValue(t, path, flagPartialShieldSeconds, "AA").(string) != "8:1.8" {
+		t.Fatalf("agent_AA value = %v, want 8:1.8", grantValue(t, path, flagPartialShieldSeconds, "AA"))
 	}
 	// Bare "<seconds>" form is preserved verbatim (boost defaults game-side).
-	if variants["agent_BB"].(string) != "5" {
-		t.Fatalf("agent_BB value = %v, want 5", variants["agent_BB"])
+	if grantValue(t, path, flagPartialShieldSeconds, "BB").(string) != "5" {
+		t.Fatalf("agent_BB value = %v, want 5", grantValue(t, path, flagPartialShieldSeconds, "BB"))
 	}
 	assertStructurallyValid(t, path)
 }
@@ -369,7 +368,7 @@ func TestPartialShieldDefaultValue(t *testing.T) {
 	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionPartialShield, TargetSerial: "AA"}); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	if v := readFlag(t, path, flagPartialShieldSeconds)["variants"].(map[string]any)["agent_AA"].(string); v != defaultPartialShield {
+	if v := grantValue(t, path, flagPartialShieldSeconds, "AA").(string); v != defaultPartialShield {
 		t.Fatalf("default partial_shield value = %v, want %v", v, defaultPartialShield)
 	}
 }
@@ -383,7 +382,7 @@ func TestPartialShieldMalformedFallsBackSafe(t *testing.T) {
 		if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionPartialShield, TargetSerial: "AA", Value: bad}); err != nil {
 			t.Fatalf("apply %q: %v", bad, err)
 		}
-		v := readFlag(t, path, flagPartialShieldSeconds)["variants"].(map[string]any)["agent_AA"].(string)
+		v := grantValue(t, path, flagPartialShieldSeconds, "AA").(string)
 		if v != defaultPartialShield {
 			t.Fatalf("malformed %q wrote %q, want safe default %q", bad, v, defaultPartialShield)
 		}
@@ -403,16 +402,15 @@ func TestSoftPenaltyTargeted(t *testing.T) {
 		t.Fatalf("apply BB: %v", err)
 	}
 
-	assertTargetingResolves(t, path, flagSoftPenaltyAction, "AA", "agent_AA")
-	assertTargetingResolves(t, path, flagSoftPenaltyAction, "BB", "agent_BB")
+	assertTargetingResolves(t, path, flagSoftPenaltyAction, "AA", grantName(t, path, flagSoftPenaltyAction, "AA"))
+	assertTargetingResolves(t, path, flagSoftPenaltyAction, "BB", grantName(t, path, flagSoftPenaltyAction, "BB"))
 	assertTargetingResolves(t, path, flagSoftPenaltyAction, "ZZ", neutralNone)
 
-	variants := readFlag(t, path, flagSoftPenaltyAction)["variants"].(map[string]any)
-	if variants["agent_AA"].(string) != "tighten:8:0.6" {
-		t.Fatalf("agent_AA value = %v, want tighten:8:0.6", variants["agent_AA"])
+	if grantValue(t, path, flagSoftPenaltyAction, "AA").(string) != "tighten:8:0.6" {
+		t.Fatalf("agent_AA value = %v, want tighten:8:0.6", grantValue(t, path, flagSoftPenaltyAction, "AA"))
 	}
-	if variants["agent_BB"].(string) != "warn" {
-		t.Fatalf("agent_BB value = %v, want warn", variants["agent_BB"])
+	if grantValue(t, path, flagSoftPenaltyAction, "BB").(string) != "warn" {
+		t.Fatalf("agent_BB value = %v, want warn", grantValue(t, path, flagSoftPenaltyAction, "BB"))
 	}
 	assertStructurallyValid(t, path)
 }
@@ -424,7 +422,7 @@ func TestSoftPenaltyDefaultValue(t *testing.T) {
 	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionSoftPenalty, TargetSerial: "AA"}); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	if v := readFlag(t, path, flagSoftPenaltyAction)["variants"].(map[string]any)["agent_AA"].(string); v != defaultSoftPenalty {
+	if v := grantValue(t, path, flagSoftPenaltyAction, "AA").(string); v != defaultSoftPenalty {
 		t.Fatalf("default soft_penalty value = %v, want %v", v, defaultSoftPenalty)
 	}
 }
@@ -436,7 +434,7 @@ func TestSoftPenaltyBareTightenPreserved(t *testing.T) {
 	if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionSoftPenalty, TargetSerial: "AA", Value: "tighten"}); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	if v := readFlag(t, path, flagSoftPenaltyAction)["variants"].(map[string]any)["agent_AA"].(string); v != "tighten" {
+	if v := grantValue(t, path, flagSoftPenaltyAction, "AA").(string); v != "tighten" {
 		t.Fatalf("bare tighten value = %v, want tighten", v)
 	}
 }
@@ -451,7 +449,7 @@ func TestSoftPenaltyMalformedFallsBackSafe(t *testing.T) {
 		if err := w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionSoftPenalty, TargetSerial: "AA", Value: bad}); err != nil {
 			t.Fatalf("apply %q: %v", bad, err)
 		}
-		v := readFlag(t, path, flagSoftPenaltyAction)["variants"].(map[string]any)["agent_AA"].(string)
+		v := grantValue(t, path, flagSoftPenaltyAction, "AA").(string)
 		if v != defaultSoftPenalty {
 			t.Fatalf("malformed %q wrote %q, want safe default %q", bad, v, defaultSoftPenalty)
 		}
@@ -606,7 +604,7 @@ func TestConcurrentApplyRaceSafe(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionEndGame})
+			_ = w.Apply(context.Background(), decision.Decision{Intervention: decision.InterventionEndGame, GameID: "game_abc"})
 		}()
 	}
 	wg.Wait()
@@ -688,4 +686,29 @@ func assertTargetingResolves(t *testing.T, path, flagKey, serial, wantVariant st
 	if got != wantVariant {
 		t.Fatalf("%s[%s] resolved to %v, want %q", flagKey, serial, got, wantVariant)
 	}
+}
+
+// grantName returns the single grant variant ("agent_<serial>#<nonce>") the
+// writer holds for serial in a per-player grant flag (UC-040 BR-012).
+func grantName(t *testing.T, path, flagKey, serial string) string {
+	t.Helper()
+	var found []string
+	for name := range readFlag(t, path, flagKey)["variants"].(map[string]any) {
+		if s, ok := agentSerial(name); ok && s == serial {
+			found = append(found, name)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("%s: variants for %s = %v, want exactly one", flagKey, serial, found)
+	}
+	if !strings.HasPrefix(found[0], "agent_"+serial+grantSep) {
+		t.Fatalf("%s: variant %q is not a grant variant agent_%s#<nonce>", flagKey, found[0], serial)
+	}
+	return found[0]
+}
+
+// grantValue returns the value of serial's grant variant.
+func grantValue(t *testing.T, path, flagKey, serial string) any {
+	t.Helper()
+	return readFlag(t, path, flagKey)["variants"].(map[string]any)[grantName(t, path, flagKey, serial)]
 }

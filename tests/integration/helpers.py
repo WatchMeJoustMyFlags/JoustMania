@@ -256,7 +256,8 @@ def wait_flag_file_restored(
             checks.append((key, EvaluationContext(), baseline))
         for vname in mflag["variants"]:
             if vname.startswith("agent_") and vname not in bflag["variants"]:
-                ctx = EvaluationContext(targeting_key=vname[len("agent_"):])
+                # Grant variants carry a per-decision nonce: agent_<serial>#<nonce> (#1313).
+                ctx = EvaluationContext(targeting_key=vname[len("agent_") :].split("#", 1)[0])
                 checks.append((key, ctx, baseline))
         for scope in mflag.get("_branches", {}).values():
             ctx = EvaluationContext(

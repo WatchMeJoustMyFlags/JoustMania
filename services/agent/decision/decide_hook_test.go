@@ -406,7 +406,8 @@ func TestRemote_ActAboveThreshold(t *testing.T) {
 	span := h.run(t)
 
 	got := h.sink.decisions()
-	want := []Decision{{Intervention: "grant_shield", TargetSerial: "A", Value: "6.5", Reason: "shield the weak player"}}
+	// GameID: the sink call is addressed to the deciding game (#1310).
+	want := []Decision{{Intervention: "grant_shield", TargetSerial: "A", Value: "6.5", Reason: "shield the weak player", GameID: "s-1"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("applied = %+v, want %+v", got, want)
 	}

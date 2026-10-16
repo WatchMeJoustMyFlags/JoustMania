@@ -83,6 +83,13 @@ type Decision struct {
 	// decision, recorded as agent.objectives. Nil/empty (the Noop/Probe/stub
 	// engines) renders the "unset" placeholder.
 	Objectives map[string]float64
+	// GameID is the game this decision was made for (the deciding loop's
+	// GameContext.SessionID). runDecision stamps it just before the ActionSink
+	// call; engines leave it empty. Today only end_game uses it: the writer
+	// addresses the end_game nonce to this game so the coordinator ends only
+	// that game (UC-040 BR-011, #1310). Other writes are not game-scoped yet
+	// (#1269).
+	GameID string `json:",omitempty"`
 }
 
 // RulesEngine turns a context snapshot into zero or more Decisions. The
@@ -808,7 +815,11 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	// hook also covers the async apply path (#917), since applyOneAsync /
 	// fallbackToRules both dispatch through runDecision.
 	l.recordIntervention(d.Intervention, d.TargetSerial, false)
-	if err := l.Actions.Apply(dCtx, d); err != nil {
+	// Address the write to the game this loop decided for (UC-040 BR-011): the
+	// sink needs it so end_game can never end another game (#1310).
+	addressed := d
+	addressed.GameID = c.SessionID
+	if err := l.Actions.Apply(dCtx, addressed); err != nil {
 		aSpan.RecordError(err)
 		// semconv.ErrorType derives the low-cardinality error class from the
 		// Go error's dynamic type, per the error.type convention.

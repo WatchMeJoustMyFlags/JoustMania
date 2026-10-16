@@ -13,8 +13,14 @@
 //     flagd targeting if-ladder keyed on targetingKey=serial.
 //   - Edge-triggered one-shots (eliminate_player, revive_player, audio_cue,
 //     controller_effect, end_game): a single variant holds "<nonce>:<payload>"
-//     (end_game is nonce-only) and defaultVariant flips to it. A fresh unique
-//     nonce per dispatch makes the reader apply exactly once on nonce change.
+//     and defaultVariant flips to it. A fresh unique nonce per dispatch makes the
+//     reader apply exactly once on nonce change. end_game's payload is the
+//     deciding game's id, so only that game ends (UC-040 BR-011, #1310).
+//   - Per-player GRANTS (shield_seconds, partial_shield_seconds,
+//     soft_penalty_action) are one-shot: each decision writes a fresh variant
+//     "agent_<serial>#<nonce>" that replaces the player's previous one, so the
+//     coordinator sees one change for one player per decision and never
+//     re-grants anyone else (UC-040 BR-012, #1313).
 //
 // The write is read-modify-write IN PLACE (no temp+rename — rename triggers
 // EBUSY on docker bind mounts while flagd holds an inotify watch; same semantics
@@ -355,8 +361,8 @@ func (w *Writer) RevertState(flagKey string) error {
 }
 
 // RevertTargeted removes one player from a per-player state flag's targeting
-// if-ladder (player_sensitivity_factor/shield_seconds). The player's variant
-// and ladder branch are dropped; once no agent-driven serials remain the
+// if-ladder (levels and grants). Every variant of the player (agent_<serial>
+// or agent_<serial>#<nonce>) and its ladder branch are dropped; once no agent-driven serials remain the
 // targeting block is removed entirely. Unmatched serials fall through to the
 // neutral defaultVariant. Safe for concurrent use.
 func (w *Writer) RevertTargeted(flagKey, serial string) error {
@@ -369,20 +375,15 @@ func (w *Writer) RevertTargeted(flagKey, serial string) error {
 		if err != nil {
 			return err
 		}
-		variants := map[string]float64{}
+		variants := map[string]any{}
 		if _, err := f.get("variants", &variants); err != nil {
 			return err
 		}
-		delete(variants, serialVariant(serial))
+		dropSerialVariants(variants, serial)
 		if err := f.set("variants", variants); err != nil {
 			return err
 		}
-		if ladder := buildTargeting(variants, neutral); ladder == nil {
-			f.delete("targeting")
-		} else if err := f.set("targeting", ladder); err != nil {
-			return err
-		}
-		if err := f.set("defaultVariant", neutral); err != nil {
+		if err := setLadder(f, variantNames(variants), neutral); err != nil {
 			return err
 		}
 		return doc.putFlag(flagKey, f)
@@ -403,7 +404,10 @@ var stateNeutral = map[string]string{
 
 var targetedNeutral = map[string]string{
 	flagPlayerSensitivityFactor: neutralDefault,
+	flagPlayerHandicapFactor:    neutralDefault,
 	flagShieldSeconds:           neutralNone,
+	flagPartialShieldSeconds:    neutralNone,
+	flagSoftPenaltyAction:       neutralNone,
 }
 
 // mutate applies one decision to the in-memory document.
@@ -420,7 +424,12 @@ func (w *Writer) mutate(doc *orderedDoc, d decision.Decision) error {
 	case decision.InterventionRevivePlayer:
 		return w.setEdge(doc, flagRevivePlayer, d.TargetSerial)
 	case decision.InterventionEndGame:
-		return w.setEdge(doc, flagEndGame, "") // nonce-only
+		// Addressed to the deciding game (UC-040 BR-011, #1310). An un-addressed
+		// end_game would end the real game whichever loop decided it, so refuse.
+		if d.GameID == "" {
+			return fmt.Errorf("end_game requires the deciding game's id")
+		}
+		return w.setEdge(doc, flagEndGame, d.GameID)
 
 	// Session-scoped state-shaped overrides.
 	case decision.InterventionAdjustMusicTempo:
@@ -443,12 +452,13 @@ func (w *Writer) mutate(doc *orderedDoc, d decision.Decision) error {
 		return w.setTargeted(doc, flagPlayerSensitivityFactor, neutralDefault, d.TargetSerial, w.numOr(d.Value, defaultPlayerSensitivity))
 	case decision.InterventionSetPlayerHandicap: // #1107 (#1103 MVP action 1), shadow-only
 		return w.setTargeted(doc, flagPlayerHandicapFactor, neutralDefault, d.TargetSerial, w.numOr(d.Value, defaultPlayerHandicap))
+	// Per-player one-shot grants: a fresh variant per decision (UC-040 BR-012).
 	case decision.InterventionGrantShield:
-		return w.setTargeted(doc, flagShieldSeconds, neutralNone, d.TargetSerial, w.numOr(d.Value, defaultShieldSeconds))
+		return w.setGrant(doc, flagShieldSeconds, neutralNone, d.TargetSerial, w.numOr(d.Value, defaultShieldSeconds))
 	case decision.InterventionPartialShield: // #1129 (#1103 Phase 2), shadow-only
-		return w.setTargetedString(doc, flagPartialShieldSeconds, neutralNone, d.TargetSerial, w.partialShieldOr(d.Value, defaultPartialShield))
+		return w.setGrant(doc, flagPartialShieldSeconds, neutralNone, d.TargetSerial, w.partialShieldOr(d.Value, defaultPartialShield))
 	case decision.InterventionSoftPenalty: // #1134 (#1103 Phase 3), shadow-only
-		return w.setTargetedString(doc, flagSoftPenaltyAction, neutralNone, d.TargetSerial, w.softPenaltyOr(d.Value, defaultSoftPenalty))
+		return w.setGrant(doc, flagSoftPenaltyAction, neutralNone, d.TargetSerial, w.softPenaltyOr(d.Value, defaultSoftPenalty))
 
 	// Probe-mode synthetic intervention: no game effect, but a dispatched success
 	// so probe mode (AGENT_PROBE_DECISIONS + the `probe` interventions_allowed
@@ -556,13 +566,15 @@ func (w *Writer) setTargeted(doc *orderedDoc, flagKey, neutral, serial string, v
 	return doc.putFlag(flagKey, f)
 }
 
-// setTargetedString writes a per-player STRING state-shaped flag via a flagd
-// targeting if-ladder keyed on targetingKey=serial (#1129 partial_shield). It is
-// the string sibling of setTargeted: each driven serial gets its own
-// "agent_<serial>" variant carrying a STRING value, the if-ladder maps serial ->
-// that variant, and unmatched serials fall through to the neutral defaultVariant.
-// Existing per-serial variants/branches are preserved (merge, not clobber).
-func (w *Writer) setTargetedString(doc *orderedDoc, flagKey, neutral, serial, value string) error {
+// setGrant writes a per-player one-shot GRANT (UC-040 BR-012, #1313): the
+// player's previous variant is replaced by a fresh "agent_<serial>#<nonce>"
+// carrying value (number or string), and the if-ladder maps the serial to it.
+// The fresh variant makes every decision a distinct change for that one player
+// (even with the same value), and replacing keeps one entry per player, so the
+// list never accumulates per-decision variants. Other players' entries are
+// untouched; the coordinator does not re-grant them because their variant did
+// not change.
+func (w *Writer) setGrant(doc *orderedDoc, flagKey, neutral, serial string, value any) error {
 	if serial == "" {
 		return fmt.Errorf("targeted intervention on %q requires a target serial", flagKey)
 	}
@@ -570,27 +582,16 @@ func (w *Writer) setTargetedString(doc *orderedDoc, flagKey, neutral, serial, va
 	if err != nil {
 		return err
 	}
-
-	variants := map[string]string{}
+	variants := map[string]any{}
 	if _, err := f.get("variants", &variants); err != nil {
 		return err
 	}
-	variants[serialVariant(serial)] = value
+	dropSerialVariants(variants, serial)
+	variants[grantVariant(serial, w.nonce.next())] = value
 	if err := f.set("variants", variants); err != nil {
 		return err
 	}
-
-	names := make([]string, 0, len(variants))
-	for name := range variants {
-		names = append(names, name)
-	}
-	ladder := buildTargetingNames(names, neutral)
-	if ladder == nil {
-		f.delete("targeting")
-	} else if err := f.set("targeting", ladder); err != nil {
-		return err
-	}
-	if err := f.set("defaultVariant", neutral); err != nil {
+	if err := setLadder(f, variantNames(variants), neutral); err != nil {
 		return err
 	}
 	return doc.putFlag(flagKey, f)
@@ -786,16 +787,24 @@ func buildTargeting(variants map[string]float64, neutral string) map[string]any 
 // buildTargetingNames is the value-type-agnostic core of buildTargeting: it
 // renders the deterministic if-ladder from the set of "agent_<serial>" variant
 // NAMES (value type irrelevant — the ladder maps serial -> variant name). Used by
-// both setTargeted (float) and setTargetedString (string, #1129).
+// by setTargeted (levels) and setGrant (grants, #1313).
 func buildTargetingNames(variantNames []string, neutral string) map[string]any {
-	serials := make([]string, 0)
-	for _, name := range variantNames {
+	// serial -> its variant name: "agent_<serial>" for a level, or the grant's
+	// "agent_<serial>#<nonce>" (one per serial, setGrant replaces).
+	names := append([]string(nil), variantNames...)
+	sort.Strings(names)
+	bySerial := map[string]string{}
+	for _, name := range names {
 		if s, ok := agentSerial(name); ok {
-			serials = append(serials, s)
+			bySerial[s] = name
 		}
 	}
-	if len(serials) == 0 {
+	if len(bySerial) == 0 {
 		return nil
+	}
+	serials := make([]string, 0, len(bySerial))
+	for s := range bySerial {
+		serials = append(serials, s)
 	}
 	sort.Strings(serials)
 
@@ -807,7 +816,7 @@ func buildTargetingNames(variantNames []string, neutral string) map[string]any {
 		expr = map[string]any{
 			"if": []any{
 				map[string]any{"===": []any{map[string]any{"var": "targetingKey"}, s}},
-				serialVariant(s),
+				bySerial[s],
 				expr,
 			},
 		}
@@ -820,11 +829,54 @@ func buildTargetingNames(variantNames []string, neutral string) map[string]any {
 	return m
 }
 
-// agentSerial extracts the serial from an "agent_<serial>" variant name.
+// agentSerial extracts the serial from an "agent_<serial>" (level) or
+// "agent_<serial>#<nonce>" (grant) variant name.
 func agentSerial(variant string) (string, bool) {
-	const p = "agent_"
-	if len(variant) > len(p) && variant[:len(p)] == p {
-		return variant[len(p):], true
+	rest, ok := strings.CutPrefix(variant, "agent_")
+	if !ok {
+		return "", false
 	}
-	return "", false
+	serial, _, _ := strings.Cut(rest, grantSep)
+	if serial == "" {
+		return "", false
+	}
+	return serial, true
+}
+
+// grantSep separates the serial from the per-decision nonce in a grant variant
+// name. Serials (controller MACs, MOCKnnnn) never contain it.
+const grantSep = "#"
+
+// grantVariant is the variant name of one per-player grant decision (#1313).
+func grantVariant(serial, nonce string) string { return serialVariant(serial) + grantSep + nonce }
+
+// dropSerialVariants removes every variant of serial (level or grant) from
+// variants.
+func dropSerialVariants(variants map[string]any, serial string) {
+	for name := range variants {
+		if s, ok := agentSerial(name); ok && s == serial {
+			delete(variants, name)
+		}
+	}
+}
+
+// variantNames lists the keys of a variants map.
+func variantNames(variants map[string]any) []string {
+	names := make([]string, 0, len(variants))
+	for name := range variants {
+		names = append(names, name)
+	}
+	return names
+}
+
+// setLadder rebuilds the serial if-ladder from the variant names (dropping the
+// targeting block when no agent-driven serials remain) and points
+// defaultVariant at neutral.
+func setLadder(f *flagObj, names []string, neutral string) error {
+	if ladder := buildTargetingNames(names, neutral); ladder == nil {
+		f.delete("targeting")
+	} else if err := f.set("targeting", ladder); err != nil {
+		return err
+	}
+	return f.set("defaultVariant", neutral)
 }
