@@ -184,7 +184,7 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 `traitor_winner`, `werewolf_intro_start` / `_end`, `werewolf_reveal`, `werewolf_winner`, `zombie_intro_start` /
 `_end`, `time_announcement`, `human_converted`, `zombie_winner`, `player_swapped`, `swapper_winner`,
 `round_start`, `round_end`, `round_timeout`, `tournament_intro`, `match_start`, `match_end`,
-`tournament_champion`, `tournament_no_winner`, `player_death` (NonStop only), `player_respawned`,
+`tournament_champion`, `tournament_no_winner`, `player_death` (NonStop and JoustFFA), `player_respawned`,
 `agent_intervention`, `player_shielded`. Defined in `lib/types.py` but never published: `player_revive`, `player_out`, `score_update`, `team_eliminated`.
 
 **Traceability:** FR-020 to FR-029 / UC-010, UC-020 to UC-027, UC-043 / `proto/game_coordinator.proto`, `services/game_coordinator/` / `tests/integration/test_full_game_lifecycle.py`, `tests/integration/test_parallel_lifecycle.py`.

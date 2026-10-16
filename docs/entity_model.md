@@ -104,10 +104,11 @@ One running or finished game in the game coordinator (`services/game_coordinator
 | arm | Arm of the experiment | String | 12 | Optional, Values: experimental, control |
 | rng_seed | Shared seed for paired (CRN) shadow games; 0 = entropy | Long | 19 | Optional, Min: 0 |
 | pattern_archetype | Archetype that drives the game's controllers (pattern game) | String | 40 | Optional, Foreign Key (MOTION_ARCHETYPE.archetype_id) |
-| pattern_outcome | How the pattern game ended (UC-046 A3, A9, BR-013) | String | 8 | Optional, Values: winner, timeout, aborted, error |
+| pattern_outcome | How the pattern game ended (UC-046 A3, A9, BR-013) | String | 8 | Optional, Values: winner, tie, timeout, aborted, error |
 | replay_exact | Whether the pattern game qualifies for replay comparison (UC-046 BR-008) | Boolean | 1 | Optional |
-| non_exact_reasons | Why a pattern game is not exact | String | 80 | Optional, Values: remote_backend, frame_overrun, concurrent_game, kill_switch |
-| flag_digest | SHA-256 of `agent.json` then `game.json` as the agent read them when it spawned the pattern game (UC-046 BR-011) | String | 64 | Optional |
+| non_exact_reasons | Why a pattern game is not exact | String | 80 | Optional, Values: remote_backend, frame_overrun, concurrent_game, kill_switch, unseeded_draws |
+| flag_digest | SHA-256 of the canonical resolved values of the flags that shape a pattern game, read when the agent spawned it (UC-046 BR-011), or `unavailable` | String | 64 | Optional |
+| censored | Whether the pattern game's length is right-censored at the safety cap (outcome `timeout`, UC-046 BR-013) | Boolean | 1 | Optional |
 | start_time | Start timestamp (ms) | DateTime | - | Not Null |
 
 **Constraints:**
