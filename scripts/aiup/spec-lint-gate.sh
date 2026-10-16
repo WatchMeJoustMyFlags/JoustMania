@@ -38,7 +38,14 @@ python3 -I "$LINT" --docs docs --strict --baseline "$BASELINE" || status=1
 
 # 3. The baseline only shrinks, unless deliberately accepted.
 if [[ -n "${BASE_REF:-}" ]]; then
-  git fetch --no-tags --depth=1 origin "$BASE_REF" >/dev/null 2>&1
+  # Only a clone that is ALREADY shallow (the CI checkout) gets a depth fetch.
+  # A depth fetch in a full clone makes it shallow, which breaks merge-bases
+  # for every worktree sharing that clone, so local runs fetch normally.
+  if [[ "$(git rev-parse --is-shallow-repository)" == "true" ]]; then
+    git fetch --no-tags --depth=1 origin "$BASE_REF" >/dev/null 2>&1
+  else
+    git fetch --no-tags origin "$BASE_REF" >/dev/null 2>&1
+  fi
   if base_json=$(git show "FETCH_HEAD:$BASELINE" 2>/dev/null); then
     base_count=$(jq '.findings | length' <<<"$base_json")
     head_count=$(jq '.findings | length' "$BASELINE")
