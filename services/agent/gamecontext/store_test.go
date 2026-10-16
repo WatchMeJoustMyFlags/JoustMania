@@ -24,6 +24,7 @@ func (c *clock) advance(d time.Duration) {
 	c.t = c.t.Add(d)
 }
 
+// UC: UC-041 A2
 func TestStore_TTLEviction(t *testing.T) {
 	clk := &clock{t: time.Unix(0, 0)}
 	s := NewStore(5*time.Second, time.Hour, clk.now)
@@ -76,6 +77,7 @@ func TestStore_SessionGraceClearsSessionKeepsPlayers(t *testing.T) {
 // so shortening it mid-session evicts a player that the construction-time TTL
 // would have retained — no restart. Driven with the fake clock and a settable
 // source (the shared LifecycleHolder.PlayerTTL in production), no flagd.
+// UC: UC-041 A2
 func TestStore_LiveTTLSourceHotReloads(t *testing.T) {
 	clk := &clock{t: time.Unix(0, 0)}
 	// Construct with a LONG static TTL (1h) so only the live source can evict.
@@ -105,6 +107,7 @@ func TestStore_LiveTTLSourceHotReloads(t *testing.T) {
 // TestStore_LiveSessionGraceSourceHotReloads verifies the live session-grace
 // source (#927): EvictStale reads lifecycle.session_grace_seconds live, so
 // shortening it mid-session resets the session sooner than the construction value.
+// UC: UC-041 A2
 func TestStore_LiveSessionGraceSourceHotReloads(t *testing.T) {
 	clk := &clock{t: time.Unix(0, 0)}
 	s := NewStore(time.Hour, time.Hour, clk.now) // long static grace

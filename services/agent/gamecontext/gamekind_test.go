@@ -2,6 +2,7 @@ package gamecontext
 
 import "testing"
 
+// UC: UC-041 main
 func TestNormalizeGameKind(t *testing.T) {
 	cases := map[string]string{
 		"primary": "real",   // coordinator telemetry label for a menu game
@@ -19,6 +20,7 @@ func TestNormalizeGameKind(t *testing.T) {
 
 // TestApplyMetrics_PrimaryGameKindNormalisedToReal: the coordinator labels a menu
 // game game_kind="primary"; the agent must record it as "real" (#1249).
+// UC: UC-041 main
 func TestApplyMetrics_PrimaryGameKindNormalisedToReal(t *testing.T) {
 	s := newTestStore()
 	s.ApplyMetrics(metricsWith(metricGameActive, 1, map[string]string{
@@ -31,6 +33,7 @@ func TestApplyMetrics_PrimaryGameKindNormalisedToReal(t *testing.T) {
 }
 
 // TestApplySpans_PrimaryGameKindNormalisedToReal: same for the game.kind span attr.
+// UC: UC-041 main
 func TestApplySpans_PrimaryGameKindNormalisedToReal(t *testing.T) {
 	s := newTestStore()
 	if !s.ApplySpans(spanWith(map[string]string{"game.id": "game_p", "game.kind": "primary"}, nil)) {

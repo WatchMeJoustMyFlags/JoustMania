@@ -20,6 +20,7 @@ func spanWith(attrs map[string]string, events []string) ptrace.Traces {
 	return td
 }
 
+// UC: UC-041 main
 func TestApplySpans_Enrichment(t *testing.T) {
 	s := newTestStore()
 	td := spanWith(map[string]string{
@@ -75,6 +76,7 @@ func TestApplySpans_GameKindAttrAloneIsRecognized(t *testing.T) {
 	}
 }
 
+// UC: UC-041 main
 func TestApplySpans_DeathEventAppendsElimination(t *testing.T) {
 	s := newTestStore()
 	td := spanWith(map[string]string{"player.serial": "A"}, []string{"player_death"})

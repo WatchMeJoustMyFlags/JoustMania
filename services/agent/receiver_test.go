@@ -79,6 +79,7 @@ func newTestReceiver(t *testing.T) (*traceReceiver, *gamecontext.Multiplexer, *i
 	return &traceReceiver{pipe: pipe}, mux, infraStore, infraLoop
 }
 
+// UC: UC-041 A1
 func TestReceiver_RoutesMixedBatchToBothStores(t *testing.T) {
 	r, mux, infraStore, infraLoop := newTestReceiver(t)
 
@@ -147,6 +148,7 @@ func TestReceiver_HealthOnlyBatchDoesNotCreatePlayers(t *testing.T) {
 	}
 }
 
+// UC: UC-041 main
 func TestReceiver_SkipsOwnServiceForBothPaths(t *testing.T) {
 	r, mux, infraStore, infraLoop := newTestReceiver(t)
 	mux.SetOwnService("agent")
@@ -302,6 +304,7 @@ func countBlockedActions(spans []sdktrace.ReadOnlySpan) int {
 // TestReceiver_PartitionsByGameID: a single trace batch carrying spans for two
 // distinct game_ids lands in two disjoint partitions through the receiver path
 // (#845 PR B) — no cross-game player bleed.
+// UC: UC-041 main
 func TestReceiver_PartitionsByGameID(t *testing.T) {
 	r, mux, _, _ := newTestReceiver(t)
 

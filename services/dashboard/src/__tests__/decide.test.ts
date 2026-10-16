@@ -55,7 +55,7 @@ function merged(...fs: unknown[]): JaegerTracesResponse {
   return { data: fs.flatMap((f) => asResp(f).data ?? []) };
 }
 
-describe("parseDecideTraces — rules path", () => {
+describe("UC-035: main step 3, parseDecideTraces — rules path", () => {
   const row = only(rulesFixture);
 
   it("reads backend, answer and confidence; no model, no threshold", () => {
@@ -78,7 +78,7 @@ describe("parseDecideTraces — rules path", () => {
   });
 });
 
-describe("parseDecideTraces — remote path", () => {
+describe("UC-035: main step 3, parseDecideTraces — remote path", () => {
   it("act: model from gen_ai.request.model, child agent.decision linked", () => {
     const row = only(actFixture);
     expect(row.backend).toBe("claude");

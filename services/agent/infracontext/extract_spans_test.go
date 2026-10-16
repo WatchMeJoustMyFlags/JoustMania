@@ -52,6 +52,7 @@ func healthSpan(name string, win map[string]float64, target string, samples []sa
 	return td
 }
 
+// UC: UC-041 A1
 func TestApplySpans_FullHealthSpan(t *testing.T) {
 	s := newTestStore()
 	td := healthSpan(SpanBluetoothHealth, map[string]float64{

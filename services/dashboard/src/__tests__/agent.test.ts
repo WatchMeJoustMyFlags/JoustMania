@@ -33,7 +33,7 @@ function line(fields: Record<string, string>, tsMs = nextTs()) {
   return { line: logfmt({ level: "INFO", ...fields }), tsMs };
 }
 
-describe("aggregateAgentLogs — flag panel", () => {
+describe("UC-035: main step 3, aggregateAgentLogs — flag panel", () => {
   it("takes the resolved values from the newest agent.evaluate line", () => {
     const out = aggregateAgentLogs([
       line({
@@ -117,7 +117,7 @@ describe("aggregateAgentLogs — blocked tallies", () => {
   });
 });
 
-describe("aggregateAgentLogs — decision feed", () => {
+describe("UC-035: main step 3, aggregateAgentLogs — decision feed", () => {
   it("includes blocked / rollout rows with the right kind", () => {
     const out = aggregateAgentLogs([
       line({ msg: "agent.decision_blocked", intervention: "grant_shield", reason: "rate_limit", session_id: "game_z" }),
@@ -151,7 +151,7 @@ describe("aggregateAgentLogs — decision feed", () => {
   });
 });
 
-describe("parseAppliedCounts", () => {
+describe("UC-035: main step 3, parseAppliedCounts", () => {
   it("sums result series across namespaced jobs", () => {
     const body: VmQueryResponse = {
       status: "success",
