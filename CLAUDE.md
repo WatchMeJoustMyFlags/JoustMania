@@ -86,6 +86,6 @@ When editing YAML config files (Docker Compose, OTEL Collector, dashboards), val
 - [Docs index](docs/README.md) - Start here: vision → requirements → use cases → specs → runbooks → research
 - [Contributing Guide](docs/CONTRIBUTING.md) - Development workflow, CI checks, code style
 - [Development Guide](docs/DEVELOPMENT.md) - Building, running, debugging services
-- [Architecture](docs/ARCHITECTURE.md) - System design and service interactions
+- [Services spec](docs/specs/services.md) - Services, ports, RPCs, dependencies (supersedes the older [ARCHITECTURE.md](docs/ARCHITECTURE.md))
 - [Ownership Model](docs/OWNERSHIP_MODEL.md) - Human/agent settings arbitration & composition rules
 - [Talk runbook](docs/talk/two-standards-runbook.md) - "Two Standards" stage demo: beats, flag flips, pre-flight (`scripts/talk-preflight.sh`)

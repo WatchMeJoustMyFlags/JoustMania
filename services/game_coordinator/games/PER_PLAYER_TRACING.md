@@ -1,4 +1,4 @@
-> **Superseded** by [docs/specs/telemetry.md](../../../docs/specs/telemetry.md#32-game-coordinator) (2026-10-16); kept for history.
+> **Superseded** by [docs/specs/telemetry.md](../../../docs/specs/telemetry.md#32-game-coordinator) for span names (2026-10-16); the how-to here is historical, use [docs/agent-trace-viz.md](../../../docs/agent-trace-viz.md) for reading traces. Kept for history.
 
 # Per-Player OpenTelemetry Tracing
 

@@ -1,6 +1,6 @@
 # Telemetry
 
-> Technical spec. Part of the [spec tree](../README.md). State: `main` @ 354f36c5 (2026-10-16, includes PRs #1257, #1259, #1261).
+> Technical spec. Part of the [spec tree](../README.md). State: `main` @ 81c9ecea (2026-10-16, includes PRs #1256, #1257, #1259, #1261, #1265).
 > Telemetry is the agent's only view of the game (C-001), so span names, attribute keys, metric names and the
 > log lines below are a **contract**: the agent, the dashboard SPA, Grafana, alerts and integration tests match
 > on them. Change a name here first.
@@ -129,7 +129,7 @@ connect-proxy: `otelhttp` server spans (`/health` filtered) and `otelgrpc` clien
 | Span | `gen_ai.*` usage |
 |---|---|
 | `chat {model}` (decide) | `gen_ai.operation.name=chat`, `gen_ai.provider.name` (`anthropic`; openai-compatible: derived from the base URL host; `jev`), `gen_ai.request.model`, `gen_ai.request.max_tokens`, `gen_ai.output.type=json`, `gen_ai.request.temperature`, `gen_ai.request.reasoning.level`, `gen_ai.response.id` / `.model` / `.finish_reasons`, `gen_ai.usage.input_tokens` / `.output_tokens` / cache / reasoning tokens, `error.type` |
-| `chat {model}` (jev) | `gen_ai.provider.name=jev`, request / response model, usage tokens, `gen_ai.response.id` from the `x-typesafe-request-id` header, plus `jev.native_confidence` (JSON map of Jev's native confidences) (PR #1261) |
+| `chat {model}` (jev) | `gen_ai.provider.name=jev`, request / response model, usage tokens, `gen_ai.response.id` from the `x-typesafe-request-id` header, plus `jev.native_confidence` (JSON map of Jev's native confidences, PR #1261) and `jev.stage` = `intervention` / `details` / `single` (one span per HTTP call of the two-stage round, PR #1265) |
 | `chat {model}` (retro / proposer) | same minus `gen_ai.output.type`; no content capture; no client metrics |
 | `agent.decide` | `gen_ai.agent.name=joustmania-agent`, `gen_ai.conversation.id=<game id>`, `gen_ai.request.model`; event `gen_ai.evaluation.result` (`gen_ai.evaluation.name=act_confidence_threshold`, score value, label `pass` / `fail`, explanation). No `gen_ai.operation.name` (semconv suggests `invoke_agent`). |
 | `agent.llm.retro` | `gen_ai.operation.name=chat`, `gen_ai.request.model` |
@@ -203,9 +203,11 @@ argument). 150 unique Python names; the main ones per service:
 |---|---|---|
 | Grafana (20 dashboards, datasource VictoriaMetrics) | agent-operations, interventions, game-quality, game-analytics, player-insights, controller-overview, backend-comparison, bluetooth-adapter, feature-flags, fleet-overview, host-metrics, presentation-chaos, ... Every referenced app metric exists; no dashboard queries Loki or Jaeger. | `services/grafana/dashboards/` |
 | Prometheus alerts | 16 alerts; `GameCrashRate` and `ServiceUpdatePending` use undefined metrics (D-T3) | `services/prometheus/alerts.yml` |
-| Dashboard SPA | Jaeger `service=agent operation=agent.decide` (tags `decide.*`, `gen_ai.request.model`, `game.id`, `game.kind`, `decision.*`); Loki agent log lines (§7); VictoriaMetrics `sum(agent_intervention_writes_total) by (result)` | `services/dashboard/src/agent.ts`, `experiments.ts` |
+| Dashboard SPA | Jaeger `service=agent operation=agent.decide` (tags `decide.*` incl. the `decide.answers` shape, `gen_ai.request.model`, `gen_ai.response.model`, `game.id`, `game.kind`, `decision.*`; a child is a chat span when its name starts with `chat ` or `gen_ai.operation.name=chat`); Loki agent log lines (§7); VictoriaMetrics `sum(agent_intervention_writes_total) by (result)` | `services/dashboard/src/agent.ts`, `experiments.ts` |
 | Agent | §4.4 | |
 | Integration tests | span names `agent.decide`, `agent.signal_received`, `agent.decision`, `chat {model}`, `agent.disabled`; `decide.*` tags; event `gen_ai.evaluation.result` | `tests/integration/test_decide_backend_e2e.py` |
+| Demo validation harness | span chain `agent.signal_received` → `agent.decision` → `agent.action` per game; Prometheus queries | `tools/demo/validation_harness.py` |
+| Talk pre-flight | Jaeger `service=agent operation=agent.decide`, tags `decide.backend`, `decide.outcome`, `decide.fallback_reason`; flag **variant names** of the stage baseline (`ambient`, `default`, `haiku`, `real_only`, ...) | `scripts/talk-preflight.sh` |
 
 79 defined metrics have no consumer (all `menu_*`, `psmove_*`, `python_hid_*`, `audio_*` and others); they are
 kept for ad-hoc analysis.
@@ -214,13 +216,22 @@ kept for ad-hoc analysis.
 
 ## 7. Log lines that are part of the contract
 
-| Consumer | Message | Emitted at |
-|---|---|---|
-| Dashboard Agent tab (Loki `{service_name="agent"}`) | `agent.evaluate`, `agent.decision_blocked`, `agent.rollout_expand`, `agent.rollout_rollback`, `agent.rollout_rollback_recommended` | `services/agent/decision/decision.go:494,723`; `decision/infra_loop.go:498-506` |
-| Dashboard Experiments tab | `experiment.game_assigned`, `experiment.game_concluded`, `experiment.concluded`, `experiment.torn_down` (+ `experiment_id`, `fitness`, `outcome`, `status`) | `services/agent/experiment/registry.go:1030,1146,1336,1481` |
-| Integration tests (`docker logs agent`) | `Proposer/retro inference backend selected`, `experiment.declared`, `experiment.game_concluded`, `experiment.concluded`, `experiment.torn_down`, `code_improvement.promoted`, `experiment.promote_failed`, absence of `panic:` | `services/agent/main.go:559`, `registry.go:560,1387`, `promote/promote.go:475`; `tests/integration/test_experiment_cohort_loop.py` |
-| Prompt resolution | `agent.llm.system_prompt`, `agent.llm.retro_response`, `agent.llm.retro_captured`, `agent.llm.retro_failed` | `decision/prompt_fingerprint.go`, `decision/retro_capture.go` |
-| Runbooks | `Agent intervention writes gated by LIVE interventions_enabled flag` | `services/agent/main.go:149` |
+Agent logs are slog logfmt; consumers match the message **and parse the listed keys**. Renaming a message or a
+key breaks them.
+
+| Message | Keys consumers parse | Consumers | Emitted at |
+|---|---|---|---|
+| `agent.evaluate` | `session_id`, `game_mode`, `decision_backend`, `battery_threshold`, `variance_window`, `max_per_minute` (also emitted: `player_count`, `duration`) | dashboard Agent tab (Loki `{service_name="agent"}`, `services/dashboard/src/agent.ts`); `tools/demo/validation_harness.py:397` (`decision_backend=`); `tests/integration/test_experiment_cohort_loop.py:133-136` (`decision_backend=rules`) | `services/agent/decision/decision.go:494-503` |
+| `agent.decision_blocked` | `intervention`, `reason` (also: `blocked`, `target_serial`, `decision_reason`, `allowed`) | dashboard Agent tab; `tools/demo/validation_harness.py:398` | `services/agent/decision/decision.go:723-729` |
+| `agent.rollout_expand`, `agent.rollout_rollback`, `agent.rollout_rollback_recommended` | message only | dashboard Agent tab | `services/agent/decision/infra_loop.go:498-506` |
+| `experiment.game_assigned` | `experiment_id`, `game_id`, `arm`, `pair_index` | dashboard Experiments tab (`services/dashboard/src/experiments.ts`) | `services/agent/experiment/registry.go:1030` |
+| `experiment.game_concluded` | `experiment_id`, `game_id`, `arm`, `fitness` | Experiments tab; `tests/integration/test_experiment_cohort_loop.py:453` (`fitness=`, `arm=control`, `arm=experimental`) | `registry.go:1146` |
+| `experiment.concluded` | `experiment_id`, `outcome` | Experiments tab; cohort-loop test | `registry.go:1336` |
+| `experiment.torn_down` | `experiment_id`, `status`, `reason` | Experiments tab; cohort-loop test | `registry.go:1481` |
+| `experiment.declared`, `code_improvement.promoted`, `experiment.promote_failed`, absence of `panic:` | message only | `tests/integration/test_experiment_cohort_loop.py` | `registry.go:560,1387`, `promote/promote.go:475` |
+| `Proposer/retro inference backend selected` | `backend` (`backend=stub` asserted) | `tests/integration/test_experiment_cohort_loop.py:131-132` | `services/agent/main.go:559` |
+| `agent.llm.system_prompt`, `agent.llm.retro_response`, `agent.llm.retro_captured`, `agent.llm.retro_failed` | prompt SHA, response | prompt resolution by hand | `decision/prompt_fingerprint.go`, `decision/retro_capture.go` |
+| `Agent intervention writes gated by LIVE interventions_enabled flag` | message only | runbooks | `services/agent/main.go:149` |
 
 Agent logs reach Loki through `filelog/docker` with `service_name` from the compose label; they carry no
 trace id (D-T9).

@@ -1,6 +1,6 @@
 # Services
 
-> Technical spec. Part of the [spec tree](../README.md). State: `main` @ 354f36c5 (2026-10-16, includes PRs #1257, #1259, #1261).
+> Technical spec. Part of the [spec tree](../README.md). State: `main` @ 81c9ecea (2026-10-16, includes PRs #1256, #1257, #1259, #1261, #1265).
 > RPC tables are **generated from `proto/*.proto`**; regenerate them when a `.proto` changes (and remember the
 > forwarding method in `services/connect-proxy/main.go` for browser-reachable RPCs).
 
@@ -45,7 +45,7 @@ coordinator and the mock control API to run shadow games, the named exception in
 | python-hid | Python | 50059 gRPC | no | HID access via hidapi: ControllerIOService only | `services/python_hid/` |
 | rust-hid | Rust | 50058 gRPC | 50058 (for the host-networked pairing daemon) | HID access: PairingService + ControllerIOService | `services/rust-hid/` |
 | pairing-daemon | Python | 8002 `/healthz` (host network) | host network | USB pairing loop, Bluetooth monitor (RSSI metrics) | `services/pairing_daemon/` |
-| game-coordinator | Python | 50053 gRPC; 8000 metrics port exposed | 50053 via override | Game sessions (primary + shadow), game modes, death detection, events, interventions consumer | `services/game_coordinator/` |
+| game-coordinator | Python | 50053 gRPC (compose also exposes 8000, but nothing listens there: metrics are pushed over OTLP) | 50053 via override | Game sessions (primary + shadow), game modes, death detection, events, interventions consumer | `services/game_coordinator/` |
 | menu | Python | 50054 gRPC | 50054 via override | Lobby, ready state, mode selection, admin mode, flag writer for `game` / `user` / `agent.interventions_allowed` | `services/menu/` |
 | audio | Python | 50056 gRPC | 50056 via override | Music with tempo (separate process, soxr), 8 effect channels (miniaudio), ALSA | `services/audio/` |
 | agent | Go | 4317 OTLP gRPC (receiver); 13134 HTTP `/healthz`, `/experiments` | no | Observe via OTLP, decide, write interventions / rollout / experiment targeting, run experiments and promotion | `services/agent/` |
@@ -172,7 +172,7 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 `_end`, `time_announcement`, `human_converted`, `zombie_winner`, `player_swapped`, `swapper_winner`,
 `round_start`, `round_end`, `round_timeout`, `tournament_intro`, `match_start`, `match_end`,
 `tournament_champion`, `tournament_no_winner`, `player_death` (NonStop only), `player_respawned`,
-`agent_intervention`. Defined but never published: `score_update`, `player_out`, `team_eliminated`.
+`agent_intervention`. Defined in `lib/types.py` but never published: `player_revive`, `player_out`, `score_update`, `team_eliminated`.
 
 **Traceability:** FR-020 to FR-029 / UC-010, UC-020 to UC-027, UC-043 / `proto/game_coordinator.proto`, `services/game_coordinator/` / `tests/integration/test_full_game_lifecycle.py`, `tests/integration/test_parallel_lifecycle.py`.
 

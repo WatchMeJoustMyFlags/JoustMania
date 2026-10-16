@@ -1,7 +1,7 @@
 # Flag catalog (OpenFeature / flagd)
 
 > Technical spec. Part of the [spec tree](../README.md). Also serves #1092 (agent-tunable flag catalog).
-> State: `main` @ 354f36c5 (2026-10-16, includes PRs #1257 and #1261). **Generated from the JSON files plus a call-site scan**, then
+> State: `main` @ 81c9ecea (2026-10-16, includes PRs #1257, #1261, #1265; #1265 changed no flags). **Generated from the JSON files plus a call-site scan**, then
 > hand-verified; every `file:line` was checked to exist. Regenerate rather than hand-edit when many rows change.
 
 OpenFeature flags served by flagd are the **only** control surface of the system:
