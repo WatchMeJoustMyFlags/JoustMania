@@ -84,7 +84,7 @@ connect-proxy: `otelhttp` server spans (`/health` filtered) and `otelgrpc` clien
 
 | Service | Spans | Source |
 |---|---|---|
-| controller-manager | `controller.discover`, `controller_connected`, `spawn_controller_process`, `controller.bluetooth_health` (~1 Hz, event `bluetooth_controller_sample`; **consumed by the agent infra loop**), `effect_player_warning`, `effect_player_death`, `effect_winner_rainbow`, `effect_countdown`, `controller.shield_effect` (attrs `controller.serial`, `shield.kind`, `effect.duration_ms`; events `shield_blink`, `shield_end` with `shield.end_reason` = expired / cancelled; UC-040 A14, A15) | `services/controller_manager/discovery_loop.py:356-767`, `feedback_manager.py:423-809` |
+| controller-manager | `controller.discover`, `controller_connected`, `spawn_controller_process`, `controller.bluetooth_health` (~1 Hz, event `bluetooth_controller_sample`; **consumed by the agent infra loop**), `effect_player_warning`, `effect_player_death`, `effect_winner_rainbow`, `effect_countdown`, `controller.shield_effect` (attrs `controller.serial`, `shield.kind`, `effect.duration_ms`; events `shield_blink`, `shield_end` with `shield.end_reason` = expired / cancelled; UC-040 A16, A17) | `services/controller_manager/discovery_loop.py:356-767`, `feedback_manager.py:423-809` |
 | menu | `menu_publish:{event_type}`, `start_game`, `stop_lobby_music`, `stop_button_monitor`, `restart_button_monitor`, `reset_lobby_state`, `restart_lobby_music`, `admin_mode_session`, `enter_admin_mode`, `exit_admin_mode`, `admin_*` (game_mode, force_start, sensitivity, battery_display, instructions, cycle_option, increase_value, decrease_value, agent_control) | `services/menu/servicer.py`, `handlers/admin.py` |
 | pairing-daemon | `bluetooth_monitor_cycle`, `pair_controller`, `process_controller`, `poll_cycle` | `services/pairing_daemon/psmove_pairing/` |
 
@@ -180,7 +180,7 @@ Published on each game's event bus (`StreamGameEvents`) and recorded as span eve
 | Group | Event types | Source |
 |---|---|---|
 | Coordinator | `game_start`, `game_start_error`, `game_error`, `game_force_ended`, `agent_intervention` | `servicer.py:631,755,780`; `game_session.py:406-540`; `interventions.py:1254` |
-| Lifecycle | `game_starting`, `players_initialized`, `countdown_start`, `countdown_end`, `game_started`, `player_revived`, `game_ended`, `game_winner`, `game_tie`, `player_analytics`, `player_shielded` (`serial`, `kind` = full / partial, `seconds`, `until_ms`; UC-040 A14) | `games/base.py`, mode files |
+| Lifecycle | `game_starting`, `players_initialized`, `countdown_start`, `countdown_end`, `game_started`, `player_revived`, `game_ended`, `game_winner`, `game_tie`, `player_analytics`, `player_shielded` (`serial`, `kind` = full / partial, `seconds`, `until_ms`; UC-040 A16) | `games/base.py`, mode files |
 | Teams | `team_winner`, `team_formation_start`, `team_formation_end` | `teams_base.py:348`, `random_teams.py:198,222` |
 | Traitor / Werewolf | `traitor_signal_start` / `_end`, `traitor_winner`, `werewolf_intro_start` / `_end`, `werewolf_reveal`, `werewolf_winner` | `traitor.py`, `werewolf.py` |
 | Zombies / Swapper | `zombie_intro_start` / `_end`, `time_announcement`, `human_converted`, `zombie_winner`, `player_swapped`, `swapper_winner` | `zombie.py`, `swapper.py` |

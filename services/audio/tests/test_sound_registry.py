@@ -259,15 +259,15 @@ def _writer_default_audio_cue() -> str:
 
 
 class TestUC040InterventionSounds:
-    """UC-040 BR-005: every sound id an intervention plays resolves in the registry."""
+    """UC-040 BR-007: every sound id an intervention plays resolves in the registry."""
 
     @pytest.fixture
     def registry(self):
         return build_sound_registry(ASSETS_DIR)
 
-    @pytest.mark.uc("UC-040", flow="A14", br=["BR-005"])
+    @pytest.mark.uc("UC-040", flow="A16", br=["BR-007"])
     def test_every_intervention_sound_id_resolves_to_a_file(self, registry):
-        """UC-040 BR-005: the writer default cue and the shield sound resolve to existing files."""
+        """UC-040 BR-007: the writer default cue and the shield sound resolve to existing files."""
         sound_ids = {
             _writer_default_audio_cue(),
             Sound.SFX_AGENT_CUE.value,
@@ -278,34 +278,34 @@ class TestUC040InterventionSounds:
             assert relative is not None, f"{sound_id!r} is not in the sound registry"
             assert (ASSETS_DIR / relative).is_file(), f"{sound_id!r} -> {relative} missing on disk"
 
-    @pytest.mark.uc("UC-040", flow="main", br=["BR-005"])
+    @pytest.mark.uc("UC-040", flow="main", br=["BR-007"])
     def test_writer_default_is_the_agent_cue_alias(self):
-        """UC-040 BR-005: the Go writer default and the Sound enum name the same alias."""
+        """UC-040 BR-007: the Go writer default and the Sound enum name the same alias."""
         assert _writer_default_audio_cue() == Sound.SFX_AGENT_CUE.value == "agent_cue"
 
-    @pytest.mark.uc("UC-040", flow="main", br=["BR-005"])
+    @pytest.mark.uc("UC-040", flow="main", br=["BR-007"])
     def test_agent_cue_plays_the_lobby_ready_ping(self, registry):
-        """UC-040 BR-005: agent_cue is the ping the lobby plays when a controller readies."""
+        """UC-040 BR-007: agent_cue is the ping the lobby plays when a controller readies."""
         assert relative_path(registry, "agent_cue") == relative_path(registry, Sound.SFX_BEEP_LOUD.value)
         assert relative_path(registry, "agent_cue") == "Joust/sounds/beep_loud.ogg"
 
-    @pytest.mark.uc("UC-040", flow="A14", br=["BR-005"])
+    @pytest.mark.uc("UC-040", flow="A16", br=["BR-007"])
     def test_shield_up_plays_commander_power_ready(self, registry):
-        """UC-040 BR-005: shield_up is an alias of an existing sting, no new asset."""
+        """UC-040 BR-007: shield_up is an alias of an existing sting, no new asset."""
         assert relative_path(registry, "shield_up") == "Commander/sounds/power_ready.ogg"
 
-    @pytest.mark.uc("UC-040", flow="main", br=["BR-005"])
+    @pytest.mark.uc("UC-040", flow="main", br=["BR-007"])
     def test_every_alias_target_is_registered(self, registry):
-        """UC-040 BR-005: an alias names a shipped, voice-independent sound effect."""
+        """UC-040 BR-007: an alias names a shipped, voice-independent sound effect."""
         from services.audio.sound_catalog import SOUND_ALIASES
 
         for alias, target in SOUND_ALIASES.items():
             assert (ASSETS_DIR / target).is_file(), f"alias {alias!r} -> {target!r} missing on disk"
             assert "/vox/" not in target, f"alias {alias!r} must name a voice-independent sound effect"
 
-    @pytest.mark.uc("UC-040", flow="main", br=["BR-005"])
+    @pytest.mark.uc("UC-040", flow="main", br=["BR-007"])
     def test_cli_exit_code_reports_resolution(self, capsys):
-        """UC-040 BR-005: the pre-flight CLI exits 0 for a resolvable id and 1 for an unknown one."""
+        """UC-040 BR-007: the pre-flight CLI exits 0 for a resolvable id and 1 for an unknown one."""
         from services.audio.sound_catalog import main
 
         assert main(["agent_cue"]) == 0

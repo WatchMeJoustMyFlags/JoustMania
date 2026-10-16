@@ -476,7 +476,7 @@ Full flag shapes: [flags.md § interventions](flags.md#5-interventions).
 
 | Intervention | Flag | Shape | Writer default |
 |---|---|---|---|
-| `play_audio_cue` | `audio_cue` | edge `<nonce>:<payload>` | `agent_cue` (an audio-registry alias of the lobby ready ping `beep_loud`; UC-040 BR-005) |
+| `play_audio_cue` | `audio_cue` | edge `<nonce>:<payload>` | `agent_cue` (an audio-registry alias of the lobby ready ping `beep_loud`; UC-040 BR-007) |
 | `send_controller_effect` | `controller_effect` | edge `<nonce>:<serial>:<effect>` | `rumble` |
 | `eliminate_player` / `revive_player` | same name | edge `<nonce>:<serial>` | |
 | `end_game` | `end_game` | edge, nonce only | |
@@ -489,7 +489,7 @@ Full flag shapes: [flags.md § interventions](flags.md#5-interventions).
 | `auto_rubberband` | `auto_rubberband` | state | `gentle` |
 | `adjust_player_sensitivity` | `player_sensitivity_factor` | per serial | 1.5 |
 | `set_player_handicap` | `player_handicap_factor` | per serial | 1.25 |
-| `grant_shield` | `shield_seconds` | per serial | 5 (feedback: sound `shield_up` + `GAME_EFFECT_SHIELD`, UC-040 A14) |
+| `grant_shield` | `shield_seconds` | per serial | 5 (feedback: sound `shield_up` + `GAME_EFFECT_SHIELD`, UC-040 A16) |
 | `partial_shield` | `partial_shield_seconds` | per serial | `5:2.0` (feedback: `shield_up` at half volume + `GAME_EFFECT_PARTIAL_SHIELD`) |
 | `soft_penalty` | `soft_penalty_action` | per serial | `warn` |
 | `noop` | (no write) | | |
@@ -521,7 +521,7 @@ that player's `player_lifecycle` span naming the player (`player.serial`, `playe
 Every payload the writer can send must be playable or visible on the stack it targets: the writer
 default sound id resolves in the audio registry (`services/audio/sound_catalog.py`, tested by
 `services/audio/tests/test_sound_registry.py`), and the audio service logs a WARNING for an id it does
-not know (UC-040 BR-005, #1301).
+not know (UC-040 BR-007, #1301).
 
 ## 12. Telemetry
 

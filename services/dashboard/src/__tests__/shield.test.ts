@@ -15,8 +15,8 @@ function shielded(serial: string, kind: string, untilMs: number) {
   };
 }
 
-describe("UC-040: A14 shield badge on the controller tile", () => {
-  it("UC-040/A14 shows a full shield with its remaining time", () => {
+describe("UC-040: A16 shield badge on the controller tile", () => {
+  it("UC-040/A16 shows a full shield with its remaining time", () => {
     const store = new ShieldStore();
     expect(store.apply(shielded("MOCK0001", "full", NOW + 5000))).toBe(true);
 
@@ -25,7 +25,7 @@ describe("UC-040: A14 shield badge on the controller tile", () => {
     expect(store.get("MOCK0002", NOW)).toBeNull();
   });
 
-  it("UC-040/A14 BR-007 shows the partial shield as the weaker badge", () => {
+  it("UC-040/A16 BR-009 shows the partial shield as the weaker badge", () => {
     const store = new ShieldStore();
     store.apply(shielded("MOCK0002", "partial", NOW + 3000));
 
@@ -34,7 +34,7 @@ describe("UC-040: A14 shield badge on the controller tile", () => {
     expect(badge?.className).toContain("shield-partial");
   });
 
-  it("UC-040/A14 BR-006 marks the last second as ending (the LED blinks)", () => {
+  it("UC-040/A16 BR-008 marks the last second as ending (the LED blinks)", () => {
     const store = new ShieldStore();
     store.apply(shielded("MOCK0001", "full", NOW + 5000));
 
@@ -44,7 +44,7 @@ describe("UC-040: A14 shield badge on the controller tile", () => {
     expect(ending?.className).toContain("shield-ending");
   });
 
-  it("UC-040/A14 BR-008 an extension replaces the shield and restarts the countdown", () => {
+  it("UC-040/A16 BR-010 an extension replaces the shield and restarts the countdown", () => {
     const store = new ShieldStore();
     store.apply(shielded("MOCK0001", "full", NOW + 2000));
     store.apply(shielded("MOCK0001", "full", NOW + 8000));
@@ -52,7 +52,7 @@ describe("UC-040: A14 shield badge on the controller tile", () => {
     expect(shieldBadge(store.get("MOCK0001", NOW + 1000), NOW + 1000)?.text).toBe("Shield 7.0s");
   });
 
-  it("UC-040/A14 the badge disappears when the protection ends", () => {
+  it("UC-040/A16 the badge disappears when the protection ends", () => {
     const store = new ShieldStore();
     store.apply(shielded("MOCK0001", "full", NOW + 5000));
 
@@ -60,7 +60,7 @@ describe("UC-040: A14 shield badge on the controller tile", () => {
     expect(shieldBadge(null, NOW)).toBeNull();
   });
 
-  it("UC-040/A14 ignores malformed events", () => {
+  it("UC-040/A16 ignores malformed events", () => {
     const store = new ShieldStore();
     expect(store.apply({ eventType: "player_shielded", data: { serial: "MOCK0001", until_ms: "soon" } })).toBe(false);
     expect(store.apply({ eventType: "game_started", data: {} })).toBe(false);
@@ -68,8 +68,8 @@ describe("UC-040: A14 shield badge on the controller tile", () => {
   });
 });
 
-describe("UC-040: A15 shield badge ends early", () => {
-  it("UC-040/A15 clears a player's badge on player_death", () => {
+describe("UC-040: A17 shield badge ends early", () => {
+  it("UC-040/A17 clears a player's badge on player_death", () => {
     const store = new ShieldStore();
     store.apply(shielded("MOCK0001", "full", NOW + 5000));
     store.apply(shielded("MOCK0002", "full", NOW + 5000));
@@ -79,7 +79,7 @@ describe("UC-040: A15 shield badge ends early", () => {
     expect(store.get("MOCK0002", NOW)).not.toBeNull();
   });
 
-  it.each(["game_ended", "game_force_ended"])("UC-040/A15 clears every badge on %s", (eventType) => {
+  it.each(["game_ended", "game_force_ended"])("UC-040/A17 clears every badge on %s", (eventType) => {
     const store = new ShieldStore();
     store.apply(shielded("MOCK0001", "full", NOW + 5000));
     store.apply(shielded("MOCK0002", "partial", NOW + 5000));
@@ -90,8 +90,8 @@ describe("UC-040: A15 shield badge ends early", () => {
   });
 });
 
-describe("UC-040: A14 live LED colour on the tile (shield fade without hardware)", () => {
-  it("UC-040/A14 BR-006 renders the shield frames the stream carries", () => {
+describe("UC-040: A16 live LED colour on the tile (shield fade without hardware)", () => {
+  it("UC-040/A16 BR-008 renders the shield frames the stream carries", () => {
     // full shield colour at t=0, ~65 % mid-fade, an off frame of the blink, then the player colour
     expect(ledColorCss({ r: 255, g: 255, b: 255 }).background).toBe("rgb(255, 255, 255)");
     expect(ledColorCss({ r: 166, g: 166, b: 166 }).background).toBe("rgb(166, 166, 166)");
@@ -99,7 +99,7 @@ describe("UC-040: A14 live LED colour on the tile (shield fade without hardware)
     expect(ledColorCss({ g: 255 }).background).toBe("rgb(0, 255, 0)");
   });
 
-  it("UC-040/A14 shows no LED before the first frame", () => {
+  it("UC-040/A16 shows no LED before the first frame", () => {
     expect(ledColorCss(undefined)).toEqual({ background: "#333", glow: "transparent" });
   });
 });

@@ -366,7 +366,7 @@ body {
   color: white;
 }
 
-/* Agent shield (#1301, UC-040 A14): the LED circle shows the live colour; the
+/* Agent shield (#1301, UC-040 A16): the LED circle shows the live colour; the
    ring and badge say it is a shield and how long it has left. */
 .controller-card.shielded {
   border-color: rgba(255, 255, 255, 0.9);

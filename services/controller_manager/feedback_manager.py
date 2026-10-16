@@ -206,7 +206,7 @@ class FeedbackManager(ControllerEffectsBase):
         self.cancellable_effects: set[int] = {
             controller_manager_pb2.GAME_EFFECT_FORCE_START_CHARGE,
             # A new base colour (lobby reset, team swap) ends the shield
-            # feedback at once (#1301, UC-040 BR-008).
+            # feedback at once (#1301, UC-040 BR-010).
             controller_manager_pb2.GAME_EFFECT_SHIELD,
             controller_manager_pb2.GAME_EFFECT_PARTIAL_SHIELD,
         }
@@ -614,7 +614,7 @@ class FeedbackManager(ControllerEffectsBase):
         partial: bool = False,
         **_kwargs,
     ) -> None:
-        """Agent shield feedback (#1301, UC-040 BR-006): fade, last-second blink, restore."""
+        """Agent shield feedback (#1301, UC-040 BR-008): fade, last-second blink, restore."""
         if duration_ms <= 0:
             # handle_game_effect routes duration 0 to end_shield_effect; keep the
             # handler safe if it is ever called directly.
@@ -632,7 +632,7 @@ class FeedbackManager(ControllerEffectsBase):
         )
 
     async def _game_effect_partial_shield(self, serial: str, restore_color: tuple | None, **kwargs) -> None:
-        """Partial shield feedback (#1301, UC-040 BR-007): slow dim breathing, then restore."""
+        """Partial shield feedback (#1301, UC-040 BR-009): slow dim breathing, then restore."""
         kwargs.pop("partial", None)
         await self._game_effect_shield(serial, restore_color, partial=True, **kwargs)
 
@@ -664,7 +664,7 @@ class FeedbackManager(ControllerEffectsBase):
                     self._shield_tasks.pop(serial, None)
 
     async def end_shield_effect(self, serial: str) -> bool:
-        """End a running shield effect now (#1301, UC-040 A15); other effects are untouched.
+        """End a running shield effect now (#1301, UC-040 A17); other effects are untouched.
 
         Cancelling the effect task runs its restore, so the controller shows its
         current base colour afterwards. Returns True if a shield was ended.
@@ -749,7 +749,7 @@ class FeedbackManager(ControllerEffectsBase):
 
             # A zero-duration shield ends a running shield and touches nothing
             # else: route it before the placeholder below re-types the active
-            # effect (#1301, UC-040 A15).
+            # effect (#1301, UC-040 A17).
             if (
                 effect in (controller_manager_pb2.GAME_EFFECT_SHIELD, controller_manager_pb2.GAME_EFFECT_PARTIAL_SHIELD)
                 and duration_ms <= 0

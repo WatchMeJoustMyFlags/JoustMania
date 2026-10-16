@@ -325,7 +325,7 @@ function handleGameEvent(event: { eventType: string; data: { [key: string]: stri
   const eventType = event.eventType;
   const data = event.data;
 
-  // Shield badges (UC-040 A14 / A15): the next controller frame re-renders them.
+  // Shield badges (UC-040 A16 / A17): the next controller frame re-renders them.
   shields.apply(event);
 
   // Update state based on event type

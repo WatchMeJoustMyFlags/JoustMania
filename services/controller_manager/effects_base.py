@@ -28,7 +28,7 @@ class ActiveEffect:
     effect_type: int  # GameEffect enum value
 
 
-# Agent shield LED schedule (#1301, UC-040 BR-006 / BR-007). Pure function of the
+# Agent shield LED schedule (#1301, UC-040 BR-008 / BR-009). Pure function of the
 # elapsed time so it is testable without a clock and identical on real and mock
 # controllers.
 SHIELD_BLINK_WINDOW_S = 1.0  # last second blinks
@@ -51,10 +51,10 @@ def shield_frame(
     Returns None once the shield is over (``elapsed_s >= total_s``): the caller
     restores the player's base colour.
 
-    - Full shield (BR-006): brightness falls linearly 100% -> 30% over the first
+    - Full shield (BR-008): brightness falls linearly 100% -> 30% over the first
       ``total_s - 1`` seconds, then the last second blinks at 4 Hz between full
       colour and off. A shield of 1 s or less blinks for its whole duration.
-    - Partial shield (BR-007): breathes at 0.5 Hz between 10% and 50% until the
+    - Partial shield (BR-009): breathes at 0.5 Hz between 10% and 50% until the
       last second, which blinks at 4 Hz between 50% and off.
     """
     if elapsed_s >= total_s:

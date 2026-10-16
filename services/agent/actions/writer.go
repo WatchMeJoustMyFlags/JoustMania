@@ -102,7 +102,7 @@ const (
 // rules engine (#726) leaves Value empty today, so these are the contract.
 const (
 	// defaultAudioCue is an audio-registry ALIAS of the lobby ready ping
-	// (services/audio/sound_catalog.py, UC-040 BR-005): the audio service resolves
+	// (services/audio/sound_catalog.py, UC-040 BR-007): the audio service resolves
 	// it, so it must stay listed there (services/audio/tests/test_sound_registry.py).
 	defaultAudioCue          = "agent_cue"
 	defaultControllerEffect  = "rumble"

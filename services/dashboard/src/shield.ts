@@ -1,5 +1,5 @@
 /**
- * Agent shield state for the controller tiles (#1301, UC-040 A14 / A15).
+ * Agent shield state for the controller tiles (#1301, UC-040 A16 / A17).
  *
  * The LED colour itself (including the shield fade and last-second blink) comes
  * live from the controller stream (`GameplayData.color`, the colour last written
@@ -21,7 +21,7 @@ export interface GameEventLike {
   data: { [key: string]: string };
 }
 
-/** Seconds of the shield that blink on the controller (UC-040 BR-006). */
+/** Seconds of the shield that blink on the controller (UC-040 BR-008). */
 export const SHIELD_BLINK_WINDOW_S = 1;
 
 export class ShieldStore {

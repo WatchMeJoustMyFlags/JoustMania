@@ -727,7 +727,7 @@ class BaseGameMode(ABC):
         self.running = False
         self.gameplay_stream = None  # Phase 46: Bidirectional stream for feedback commands
         # Shield feedback still running per serial: wall-clock end time (#1301,
-        # UC-040 A14/A15). Only a record for the game-end clear; no task.
+        # UC-040 A16/A17). Only a record for the game-end clear; no task.
         self._shield_feedback_until: dict[str, float] = {}
 
         # Settings - sensitivity is now passed via StartGameConfig.
@@ -1987,7 +1987,7 @@ class BaseGameMode(ABC):
         one. If the player is already shielded past ``now + seconds`` the existing
         (longer) grace is kept; a shorter request never shortens it.
 
-        Shield feedback (#1301, UC-040 A14): the ``shield_up`` sound, a
+        Shield feedback (#1301, UC-040 A16): the ``shield_up`` sound, a
         ``GAME_EFFECT_SHIELD`` for the remaining protection (rendered by the
         controller manager: fade, last-second blink, restore) and a
         ``player_shielded`` event. A kept (no-op) grant sends no feedback.
@@ -2031,7 +2031,7 @@ class BaseGameMode(ABC):
                 attributes={"shield_seconds": seconds, **player_identity_attributes(serial, player.name)},
             )
 
-        # Perceptible feedback for the remaining protection (#1301, UC-040 A14).
+        # Perceptible feedback for the remaining protection (#1301, UC-040 A16).
         await self._send_shield_feedback(player, new_grace - time.time(), partial=False)
 
         return True
@@ -2112,7 +2112,7 @@ class BaseGameMode(ABC):
             )
 
         # Weaker perceptible feedback, only when the arming changed the window or
-        # the boost (#1301, UC-040 A14, BR-007/BR-008).
+        # the boost (#1301, UC-040 A16, BR-009/BR-010).
         if changed:
             await self._send_shield_feedback(player, new_until - time.time(), partial=True)
 
@@ -2121,7 +2121,7 @@ class BaseGameMode(ABC):
     async def _send_shield_feedback(self, player: "Player", remaining_s: float, *, partial: bool) -> None:
         """Shield sound + controller-rendered LED effect + ``player_shielded`` event (#1301).
 
-        UC-040 A14 / BR-006..BR-008. One command per grant: the controller manager
+        UC-040 A16 / BR-008..BR-010. One command per grant: the controller manager
         renders the fade / last-second blink / restore, so nothing is streamed and
         no task is kept here. Best-effort: feedback never fails the intervention.
         """
@@ -2175,7 +2175,7 @@ class BaseGameMode(ABC):
             logger.warning(f"Shield feedback for {serial} failed (protection unaffected): {e}")
 
     async def _end_shield_feedback(self) -> None:
-        """End every shield effect still running before the end-of-game effects (#1301, UC-040 A15).
+        """End every shield effect still running before the end-of-game effects (#1301, UC-040 A17).
 
         A zero-duration SHIELD ends only a running shield on the controller (the
         controller manager never cancels another effect for it) and restores the

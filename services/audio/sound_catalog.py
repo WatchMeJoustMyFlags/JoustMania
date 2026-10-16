@@ -1,5 +1,5 @@
 """
-Sound catalog: the registry of playable sound ids (UC-040 BR-005, #1301).
+Sound catalog: the registry of playable sound ids (UC-040 BR-007, #1301).
 
 A sound id is either the stem of an ``.ogg`` file in one of the scanned asset
 directories (``<base>/vox/aaron`` and ``<base>/sounds``) or an **alias** that

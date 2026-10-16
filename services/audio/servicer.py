@@ -617,7 +617,7 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
             return resolved
         # Unknown sound id: a caller asked for something that will most likely
         # play nothing (the agent_cue gap in #1301 was invisible at DEBUG). Keep
-        # the legacy Joust-vox fallback, but say so loudly (UC-040 BR-005).
+        # the legacy Joust-vox fallback, but say so loudly (UC-040 BR-007).
         logger.warning(
             f"Unknown sound id '{lookup_name}': not in the sound registry or its aliases; "
             f"trying Joust/vox/{self.menu_voice}/{lookup_name}.ogg"
