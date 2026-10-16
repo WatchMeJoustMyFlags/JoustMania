@@ -20,6 +20,7 @@ import itertools
 from unittest.mock import patch
 
 import pytest
+from openfeature.flag_evaluation import FlagEvaluationDetails
 
 from lib.types import GameEvent
 from services.game_coordinator.difficulty_handlers import register_difficulty_handlers
@@ -70,6 +71,10 @@ class TargetingFlagClient:
 
     def get_string_value(self, key, default, ctx=None):
         return str(self._resolve(key, default, ctx))
+
+    def get_string_details(self, key, default, ctx=None):
+        # The manager reads edge flags via details to see errors (#1299).
+        return FlagEvaluationDetails(flag_key=key, value=self.get_string_value(key, default, ctx))
 
     def get_integer_value(self, key, default, ctx=None):
         return int(self._resolve(key, default, ctx))

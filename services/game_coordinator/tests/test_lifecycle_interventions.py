@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 
 import pytest
+from openfeature.flag_evaluation import FlagEvaluationDetails
 
 # Setup paths for imports
 test_dir = Path(__file__).parent
@@ -125,6 +126,10 @@ class TargetingFlagClient:
 
     def get_string_value(self, _key, default, ctx=None):
         return str(self._resolve(ctx, default))
+
+    def get_string_details(self, _key, default, ctx=None):
+        # The manager reads edge flags via details to see errors (#1299).
+        return FlagEvaluationDetails(flag_key=_key, value=self.get_string_value(_key, default, ctx))
 
 
 class _AgentStub:

@@ -51,7 +51,10 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from openfeature.evaluation_context import EvaluationContext
+from openfeature.flag_evaluation import Reason
 from openfeature.provider import ProviderEvent
+
+from lib.flag_eval_visibility import record_flag_fallback
 
 logger = logging.getLogger(__name__)
 
@@ -109,10 +112,21 @@ RATE_LIMIT_WINDOW_SECONDS = 60.0
 # Overridable via the ``policy.coordinator_backstop_per_minute`` flag.
 DEFAULT_COORDINATOR_BACKSTOP_BUDGET = 60.0
 
-# Upper bound on sessions primed at start but not yet seen live (#1299). A
-# session whose game never gets built (start error) would otherwise keep its
-# primed baseline forever; the oldest entries are dropped past this bound.
-_MAX_PENDING_PRIMED_SESSIONS = 256
+
+class _UnknownNonce:
+    """Edge baseline whose value could not be read (flagd error, #1299).
+
+    A game primed (or evaluated) while flagd returns an error must not treat the
+    next good read as a fresh trigger: the value it then sees may be the stale
+    one from an earlier game. ``_UNKNOWN`` marks "baseline not known yet"; the
+    next good read is adopted as the baseline WITHOUT firing (fail closed).
+    """
+
+    def __repr__(self) -> str:
+        return "<unknown nonce>"
+
+
+_UNKNOWN = _UnknownNonce()
 
 # Sentinel "no payload / no-op" values for edge-triggered flags.
 _EDGE_EMPTY_VALUES = {"", "none"}
@@ -584,13 +598,16 @@ class InterventionManager:
         # ``game_id -> flag_key -> value`` so each live session tracks its own
         # baseline independently (#838). The legacy single-primary path uses the
         # ``_PRIMARY_SENTINEL_GAME_ID`` ("") bucket.
-        self._last_nonce: dict[str, dict[str, str]] = {}
+        # A nonce baseline is a nonce string, or ``_UNKNOWN`` when the read
+        # failed (adopt the next good value without firing, #1299).
+        self._last_nonce: dict[str, dict[str, str | _UnknownNonce]] = {}
         self._last_state_value: dict[str, dict[str, object]] = {}
         # Sessions whose edge baseline was primed at game start (prime_session)
         # but which are not yet live (their game instance is still being built,
         # so get_sessions skips them). Pruning keeps their buckets until they are
-        # first seen live (#1299). Insertion-ordered dict used as a bounded set.
-        self._pending_primed: dict[str, None] = {}
+        # first seen live; the servicer calls forget_session when it retires a
+        # session, so a game that never gets built does not linger (#1299).
+        self._pending_primed: set[str] = set()
 
         # Global BACKSTOP limiter (#919): generous, process-global, NOT the
         # per-game governor (that is the agent's). See the defense-in-depth
@@ -856,17 +873,16 @@ class InterventionManager:
         flag already set for a specific gameId is not re-fired on first connect.
         """
         for session in self._live_sessions():
+            self._prime_edge_bucket(session)
             for spec in INTERVENTION_SPECS:
+                if spec.edge_triggered:
+                    continue
                 try:
                     raw = self._read_flag(spec, session)
                 except Exception:
                     continue
                 with self._lock:
-                    if spec.edge_triggered:
-                        nonce, _ = _split_nonce(str(raw))
-                        self._nonce_bucket(session.game_id)[spec.flag_key] = nonce
-                    else:
-                        self._state_bucket(session.game_id)[spec.flag_key] = raw
+                    self._state_bucket(session.game_id)[spec.flag_key] = raw
 
     def prime_session(self, game_id: str) -> None:
         """Seed a new game's edge-trigger baseline from the current flag values.
@@ -886,24 +902,31 @@ class InterventionManager:
         session = SessionView(game_id=game_id, game=None, publish=self._publish)
         self._prime_edge_bucket(session)
         with self._lock:
-            self._pending_primed[game_id] = None
-            while len(self._pending_primed) > _MAX_PENDING_PRIMED_SESSIONS:
-                self._pending_primed.pop(next(iter(self._pending_primed)))
+            self._pending_primed.add(game_id)
+
+    def forget_session(self, game_id: str) -> None:
+        """Drop all change-detection state for a retired session (#1299).
+
+        Called by the servicer when it retires a session, including one whose
+        game was never built, so primed-but-never-live baselines do not linger.
+        """
+        with self._lock:
+            self._pending_primed.discard(game_id)
+            self._last_nonce.pop(game_id, None)
+            self._last_state_value.pop(game_id, None)
 
     def _prime_edge_bucket(self, session: "SessionView") -> None:
         """Record every edge flag's current nonce for ``session`` (no apply).
 
-        A flag that cannot be read is skipped (logged at debug); it keeps no
-        baseline for this game, exactly as before priming existed.
+        A flag whose read fails is recorded as ``_UNKNOWN``: the next good read
+        becomes the baseline without firing, so a stale value can never look
+        fresh just because flagd was erroring at game start.
         """
         for spec in INTERVENTION_SPECS:
             if not spec.edge_triggered:
                 continue
-            try:
-                nonce, _ = _split_nonce(str(self._read_flag(spec, session)))
-            except Exception as e:
-                logger.debug(f"InterventionManager: prime read of {spec.flag_key} failed: {e}")
-                continue
+            raw = self._read_edge_value(spec, session)
+            nonce = raw if raw is _UNKNOWN else _split_nonce(raw)[0]
             with self._lock:
                 self._nonce_bucket(session.game_id)[spec.flag_key] = nonce
 
@@ -944,9 +967,8 @@ class InterventionManager:
         with self._lock:
             # A session seen live is no longer pending; a primed session not yet
             # live keeps its baseline (#1299).
-            for game_id in live_ids:
-                self._pending_primed.pop(game_id, None)
-            keep = live_ids | set(self._pending_primed) | {_PRIMARY_SENTINEL_GAME_ID}
+            self._pending_primed -= live_ids
+            keep = live_ids | self._pending_primed | {_PRIMARY_SENTINEL_GAME_ID}
             for stale in [gid for gid in self._last_nonce if gid not in keep]:
                 self._last_nonce.pop(stale, None)
             for stale in [gid for gid in self._last_state_value if gid not in keep]:
@@ -1014,10 +1036,11 @@ class InterventionManager:
         """Fail-closed fallback for a live session that was never primed (#1299).
 
         The servicer primes every session at game start (``prime_session``). If a
-        live session still has no edge baseline (not primed, or its pending entry
-        was evicted), record the current edge values as consumed instead of
-        treating them as fresh triggers. This can at worst swallow one write; it
-        can never replay a stale ``end_game`` or ``eliminate_player``.
+        live session still has no edge baseline (for example priming raised in
+        the servicer), record the current edge values as consumed instead of
+        treating them as fresh triggers (``_UNKNOWN`` where the read fails). This
+        can at worst swallow one write; it can never replay a stale ``end_game``
+        or ``eliminate_player``.
         """
         # The legacy single-primary path (sentinel id) is primed once in start()
         # and its bucket outlives games, so it never replays a stale value.
@@ -1031,9 +1054,6 @@ class InterventionManager:
             "treating current edge values as consumed (#1299)"
         )
         self._prime_edge_bucket(session)
-        with self._lock:
-            # Mark the bucket as existing even if every read failed.
-            self._nonce_bucket(session.game_id)
 
     async def _evaluate_one(self, spec: InterventionSpec, session: "SessionView") -> None:
         # Player-targeted state flags (player_sensitivity_factor, shield_seconds)
@@ -1046,10 +1066,13 @@ class InterventionManager:
             await self._evaluate_targeted_state(spec, session)
             return
 
-        raw = self._read_flag(spec, session)
-
         if spec.edge_triggered:
-            nonce, payload = _split_nonce(str(raw))
+            raw = self._read_edge_value(spec, session)
+            if raw is _UNKNOWN:
+                # Never move the baseline on an error read: the default ("")
+                # would make the consumed nonce look fresh on recovery (#1299).
+                return
+            nonce, payload = _split_nonce(raw)
             # A missing nonce is always a no-op. A payload-carrying flag with an
             # empty payload is also a no-op. ``end_game`` (payload_required=False)
             # fires on the nonce alone. The baseline is still advanced so a later
@@ -1060,13 +1083,16 @@ class InterventionManager:
             with self._lock:
                 bucket = self._nonce_bucket(session.game_id)
                 last = bucket.get(spec.flag_key)
-                changed = nonce != last
                 bucket[spec.flag_key] = nonce
+            # An unknown baseline (read failed at priming) adopts this value
+            # without firing: it may be a stale nonce from an earlier game.
+            changed = last is not _UNKNOWN and nonce != last
             if not changed or is_noop:
                 return
             target = _edge_target_serial(spec, payload)
             value = raw
         else:
+            raw = self._read_flag(spec, session)
             # State-shaped: only act on value change away from the none-value.
             with self._lock:
                 bucket = self._state_bucket(session.game_id)
@@ -1371,6 +1397,30 @@ class InterventionManager:
         # "none"); edge-triggered flags leave none_value None and default to "".
         string_default = spec.none_value if isinstance(spec.none_value, str) else ""
         return client.get_string_value(spec.flag_key, string_default, ctx)
+
+    def _read_edge_value(self, spec: InterventionSpec, session: "SessionView") -> "str | _UnknownNonce":
+        """Read an edge flag's raw ``"<nonce>:<payload>"`` or ``_UNKNOWN`` on error.
+
+        OpenFeature's value getters never raise: on a resolution error they
+        return the default (``""``), which is indistinguishable from "no
+        intervention" and would move the nonce baseline. Read the details
+        instead and report any error as ``_UNKNOWN`` (#1299).
+        """
+        client = self._interventions_client
+        if client is None:
+            return _UNKNOWN
+        ctx = self._session_context(session.game_id)
+        try:
+            details = client.get_string_details(spec.flag_key, "", ctx)
+        except Exception as e:
+            record_flag_fallback(spec.flag_key, type(e).__name__, str(e))
+            return _UNKNOWN
+        if details.error_code is not None or details.reason == Reason.ERROR:
+            error_code = getattr(details.error_code, "value", None) or str(details.error_code or "ERROR")
+            record_flag_fallback(spec.flag_key, error_code, details.error_message or "")
+            return _UNKNOWN
+        value = details.value
+        return value if isinstance(value, str) else _UNKNOWN
 
     def _state_target_serial(self, _spec: InterventionSpec) -> str | None:
         """Player-targeted state flags fan out across all active serials via
