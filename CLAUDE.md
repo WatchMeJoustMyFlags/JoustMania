@@ -15,6 +15,7 @@ Specs are the source of truth; code and tests follow from them. Start at [docs/R
 - **No spec change needed** when observable behaviour is unchanged: pure refactors (same RPCs, flags, spans, metrics, outcomes), test-only changes, dependency bumps, CI-only changes, typo fixes. Say `Spec changes: none: <reason>` in the PR body.
 - **Hotfixes** may ship code first; the spec follow-up PR must land within 3 days and the gap is logged in [docs/specs-inventory.md](docs/specs-inventory.md) until then.
 - **Bot PRs** (Renovate, release-please, `chore(deps)`) are exempt from the "Spec changes" section.
+- **Construction loop** (project skills in [.claude/skills/](.claude/skills/README.md)): work one use case at a time with `/spec-review UC-xxx` (`spec-review` and `test-case` need the AIUP marketplace switch, PR #1290; skip this step until then) → `/implement UC-xxx` → `/pytest-test` | `/go-test UC-xxx` → `/integration-test UC-xxx` → `/coverage-check UC-xxx`. New tests carry the traceability tag (`@pytest.mark.uc("UC-040", flow="A2", br=[...])`, Go `// UC: UC-040 A2` + `UC-040/A2 …` subtests); a UC is `Tested` only when every main scenario and alternative flow has a tagged test.
 - Every other PR fills the **Spec changes** section of the PR template. The "tests trace to spec IDs" checklist item applies to new tests only. Workflow details: [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md#spec-driven-development-aiup).
 
 ## Session Management

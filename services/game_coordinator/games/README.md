@@ -195,7 +195,7 @@ async def test_ffa_game_full_lifecycle(mock_controller_manager, event_collector)
 4. **Publish events via callback**
 5. **Add OpenTelemetry spans**
 6. **Create integration tests**
-7. **Register in GameCoordinator server.py**
+7. **Register:** add the mode to the `Games` enum (`lib/types.py`) and to `_GAME_CLASSES` in `services/game_coordinator/game_factory.py` (`games/__init__.py` is empty); death thresholds come from `_compute_effective_thresholds()` in `games/base.py`
 
 ### Game Mode Checklist
 
