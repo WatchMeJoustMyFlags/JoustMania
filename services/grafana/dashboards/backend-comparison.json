@@ -217,7 +217,7 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Input lag p95 split by backend type (Python vs Rust)",
+      "description": "Age of the controller sample in each gameplay frame (controller-manager poll pick-up to stream send), p50/p95 split by backend. A backend that delivers frames late or stalls shows higher lag; the Bluetooth/HID hop inside python-hid / rust-hid is not included (SensorData has no hardware timestamp).",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },

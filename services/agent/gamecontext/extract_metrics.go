@@ -19,7 +19,6 @@ const (
 	metricActivePlayers  = "game_active_players"         // live
 	metricGameActive     = "game_active"                 // live
 	metricGameMode       = "game_current_mode"           // live (coordinator emits game_current_mode; #848)
-	metricDeathsTotal    = "game_player_deaths_total"    // live
 	metricPeakAccel      = "game_player_peak_accel"      // live (whole-game aggregate + game_id carrier)
 
 	// Trace-correlation signal (#1133, Phase 2 of #1088). A dedicated low-rate
@@ -42,7 +41,7 @@ const (
 	metricMovementVariance = "game_player_movement_variance" // live (coordinator emits at ~10Hz, #730/#1015)
 	metricBatteryPct       = "controller_battery_pct"        // proposed
 	metricSkillLevel       = "game_player_skill_level"       // live (coordinator emits at ~10Hz, #730/#1015)
-	metricEliminationOrder = "game_player_elimination_order" // proposed
+	metricEliminationOrder = "game_player_elimination_order" // live (#730)
 
 	// Whole-game RETAINED movement-variance aggregate (#1024). Emitted while alive
 	// at ~1Hz; retained into the conclusion snapshot like skill_level so the
@@ -333,12 +332,6 @@ func (s *Store) applyDataPoint(name string, dp pmetric.NumberDataPoint) bool {
 	case metricConnected:
 		if serial, ok := serialOf(); ok {
 			s.SetPlayerConnected(serial, v == 1)
-			return true
-		}
-	case metricDeathsTotal:
-		if serial, ok := serialOf(); ok {
-			s.adoptGame(labels)
-			s.RecordDeathTotal(serial, v)
 			return true
 		}
 	case metricEliminationOrder:

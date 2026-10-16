@@ -121,9 +121,8 @@ func TestApplyMetrics_GameActiveSessionTransition(t *testing.T) {
 		t.Fatalf("SessionID = %q, want session-1", first)
 	}
 
-	// Record an elimination via deaths fallback (baseline then increment).
-	s.ApplyMetrics(metricsWith(metricDeathsTotal, 0, serial("A")))
-	s.ApplyMetrics(metricsWith(metricDeathsTotal, 1, serial("A")))
+	// Record an elimination via the elimination-order metric.
+	s.ApplyMetrics(metricsWith(metricEliminationOrder, 1, serial("A")))
 	if seq := s.Snapshot().Session.EliminationSequence; len(seq) != 1 {
 		t.Fatalf("elimination seq = %v, want 1 entry", seq)
 	}
@@ -163,20 +162,20 @@ func TestApplyMetrics_SessionScalars(t *testing.T) {
 	}
 }
 
-func TestApplyMetrics_DeathsBaselineThenIncrementDedupe(t *testing.T) {
+// game_player_deaths_total is an aggregate {mode,game_kind} counter (#1334):
+// it is not an elimination source and must not touch the store.
+func TestApplyMetrics_DeathsTotalIgnored(t *testing.T) {
 	s := newTestStore()
-	s.ApplyMetrics(metricsWith(metricDeathsTotal, 0, serial("A"))) // baseline
-	if len(s.Snapshot().Session.EliminationSequence) != 0 {
-		t.Fatal("baseline should not append")
+	labels := map[string]string{"mode": "FFA", "game_kind": "primary"}
+	if s.ApplyMetrics(metricsWith("game_player_deaths_total", 3, labels)) {
+		t.Fatal("game_player_deaths_total should not be ingested")
 	}
-	s.ApplyMetrics(metricsWith(metricDeathsTotal, 1, serial("A"))) // increment
-	s.ApplyMetrics(metricsWith(metricDeathsTotal, 2, serial("A"))) // again (dedupe)
-	if seq := s.Snapshot().Session.EliminationSequence; len(seq) != 1 || seq[0] != "A" {
-		t.Fatalf("elimination seq = %v, want [A] once", seq)
+	if seq := s.Snapshot().Session.EliminationSequence; len(seq) != 0 {
+		t.Fatalf("elimination seq = %v, want empty", seq)
 	}
 }
 
-func TestApplyMetrics_EliminationOrderWinsOverDeaths(t *testing.T) {
+func TestApplyMetrics_EliminationOrderSortedAndAdoptsGame(t *testing.T) {
 	s := newTestStore()
 
 	// Preferred elimination order arrives + adopts game_id.
@@ -189,13 +188,6 @@ func TestApplyMetrics_EliminationOrderWinsOverDeaths(t *testing.T) {
 	want := []string{"A", "B"}
 	if got := snap.Session.EliminationSequence; len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("elimination seq = %v, want %v (sorted by order)", got, want)
-	}
-
-	// deaths_total fallback must now be suppressed.
-	s.ApplyMetrics(metricsWith(metricDeathsTotal, 0, serial("C")))
-	s.ApplyMetrics(metricsWith(metricDeathsTotal, 5, serial("C")))
-	if got := s.Snapshot().Session.EliminationSequence; len(got) != 2 {
-		t.Fatalf("deaths fallback should be suppressed, seq = %v", got)
 	}
 }
 

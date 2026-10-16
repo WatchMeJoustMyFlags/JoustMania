@@ -52,11 +52,10 @@ type Store struct {
 	// reset on a new session and on grace exit.
 	speedTrack speedTrack
 
-	// deathCounts tracks the last game_player_deaths_total per serial, so the
-	// fallback elimination source can detect increases.
-	deathCounts map[string]float64
-	// elimOrder is the preferred elimination source (serial -> order index).
-	// When non-empty it suppresses the deaths_total fallback entirely.
+	// elimOrder is the preferred elimination source (serial -> order index),
+	// fed by game_player_elimination_order{serial,game_id}. The player_death span
+	// event is the fallback. game_player_deaths_total is an aggregate
+	// {mode,game_kind} counter with no serial, so it is not an elimination source.
 	elimOrder map[string]int
 	// disconnected marks serials whose connection dropped, for eviction.
 	disconnected map[string]bool
@@ -153,7 +152,6 @@ func NewStore(playerTTL, sessionGrace time.Duration, now func() time.Time) *Stor
 		},
 		history:       newTimeline(),
 		playerHistory: make(map[string]*playerHistory),
-		deathCounts:   make(map[string]float64),
 		elimOrder:     make(map[string]int),
 		disconnected:  make(map[string]bool),
 		playerTTL:     playerTTL,
@@ -689,30 +687,8 @@ func (s *Store) AdoptSessionID(id string) {
 	s.touchSession()
 }
 
-// RecordDeathTotal is the fallback elimination source from
-// game_player_deaths_total{serial}. The first observation per serial is a
-// baseline (no append). A subsequent increase appends the serial to the
-// elimination sequence exactly once (respawn-mode repeat deaths are not tracked
-// in this scaffold). It is ignored entirely while the preferred elimOrder source
-// is populated.
-func (s *Store) RecordDeathTotal(serial string, total float64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.elimOrder) > 0 {
-		return
-	}
-	prev, seen := s.deathCounts[serial]
-	s.deathCounts[serial] = total
-	if !seen {
-		return // baseline
-	}
-	if total > prev {
-		s.appendElimination(serial)
-	}
-}
-
-// SetEliminationOrder is the preferred elimination source (future
-// game_player_elimination_order{serial,game_id}). It records the order and
+// SetEliminationOrder is the preferred elimination source
+// (game_player_elimination_order{serial,game_id}). It records the order and
 // rebuilds EliminationSequence sorted by order.
 func (s *Store) SetEliminationOrder(serial string, order int) {
 	s.mu.Lock()
@@ -724,10 +700,9 @@ func (s *Store) SetEliminationOrder(serial string, order int) {
 	// death/span fallback path (appendElimination) narrates through
 	// EliminationSequence membership. The two never cross-check, so without the
 	// sequence guard below a serial the death/span path already narrated would get
-	// a SECOND elimination line here (#916). Latent today — the
-	// game_player_elimination_order producer is unshipped, so only the death/span
-	// path fires — but armed the moment that metric ships alongside the death/span
-	// signals, so we close it now. The reverse order is already safe: once this
+	// a SECOND elimination line here (#916). Both sources are live: the
+	// coordinator emits game_player_elimination_order next to the player_death
+	// span event, so either can arrive first. The reverse order is safe: once this
 	// method rebuilds EliminationSequence below, a later appendElimination finds the
 	// serial present and returns early. Record with the reported 1-based order so
 	// the narrative matches the rebuilt sequence.
@@ -897,7 +872,6 @@ func (s *Store) EvictStale() {
 		if s.disconnected[serial] || now.Sub(p.LastUpdate) > playerTTL {
 			delete(s.ctx.Players, serial)
 			delete(s.disconnected, serial)
-			delete(s.deathCounts, serial)
 			delete(s.playerHistory, serial) // drop the evicted player's movement ring (#1082)
 		}
 	}

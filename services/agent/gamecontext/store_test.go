@@ -48,24 +48,6 @@ func TestStore_DisconnectEviction(t *testing.T) {
 	}
 }
 
-func TestStore_EvictedDeathBaselineCleared(t *testing.T) {
-	clk := &clock{t: time.Unix(0, 0)}
-	s := NewStore(5*time.Second, time.Hour, clk.now)
-
-	s.SetPlayerIntensity("A", 1.0)
-	s.RecordDeathTotal("A", 3) // baseline at 3
-
-	clk.advance(6 * time.Second)
-	s.EvictStale() // player + death baseline cleared
-
-	// A new baseline observation; an "increase" relative to the OLD baseline
-	// must NOT fake an elimination because the baseline was cleared.
-	s.RecordDeathTotal("A", 4) // treated as fresh baseline
-	if seq := s.Snapshot().Session.EliminationSequence; len(seq) != 0 {
-		t.Fatalf("elimination seq = %v, want empty (baseline was cleared)", seq)
-	}
-}
-
 func TestStore_SessionGraceClearsSessionKeepsPlayers(t *testing.T) {
 	clk := &clock{t: time.Unix(0, 0)}
 	s := NewStore(time.Hour, 15*time.Second, clk.now)
@@ -270,7 +252,7 @@ func TestStore_ConcurrencySmoke(t *testing.T) {
 				s.SetPlayerIntensity("A", float64(j))
 				s.SetPlayerConnected("B", j%2 == 0)
 				s.SetGameActive(j%3 == 0)
-				s.RecordDeathTotal("C", float64(j))
+				s.SetEliminationOrder("C", j)
 				_ = s.Snapshot()
 				s.EvictStale()
 			}
