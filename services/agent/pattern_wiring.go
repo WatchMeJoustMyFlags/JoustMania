@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -142,7 +143,12 @@ func logReplayRecord(logger *slog.Logger, rec patterngame.Record) {
 		return
 	}
 	logger.Info("pattern_replay_record", "record", string(payload))
+	// One plain line as well, so scripts/pattern-replay-check.sh needs no log parsing.
+	_, _ = fmt.Fprintln(os.Stdout, replayRecordPrefix+string(payload))
 }
+
+// replayRecordPrefix starts the plain stdout replay-record line.
+const replayRecordPrefix = "PATTERN_REPLAY_RECORD "
 
 func nonNilInts(v []int) []int {
 	if v == nil {

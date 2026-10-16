@@ -919,3 +919,31 @@ func TestExperimentLoop_RunShutdownNoLeak(t *testing.T) {
 	}
 	_ = journal.DefaultDir // keep the journal import meaningful for the suite
 }
+
+// UC: UC-046 A3 BR-013
+func TestExperimentLoop_OnGameTerminal_TimeoutKeepsSample(t *testing.T) {
+	t.Run("UC-046/A3 a pattern game that hit the safety cap is left for the telemetry conclude path", func(t *testing.T) {
+		spawner := &recordingSpawner{}
+		resolve := func(context.Context) promote.Config { return promote.Config{Mode: promote.ModeIssue} }
+		loop := buildLoopForTest(t, spawner, resolve, &recordingRealDefault{}, &recordingGitHub{}, armFitness())
+		ctx := context.Background()
+		id, err := loop.registry.Declare(experiment.Intent{
+			Hypothesis: "h", FlagKey: "death_grace_period_seconds",
+			ExperimentalValue: 0.5, Objective: "balanced", TargetNPerArm: 3,
+		})
+		if err != nil {
+			t.Fatalf("Declare: %v", err)
+		}
+		if err := loop.registry.Start(ctx, id); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if n := loop.registry.AllocateAndSpawn(ctx); n == 0 {
+			t.Fatal("expected a spawn")
+		}
+		gameID := spawner.drain()[0].gameID
+		loop.onGameTerminal(gameID, gamerunner.OutcomeTimeout)
+		if !gameStillBound(loop, id, gameID) {
+			t.Fatal("OutcomeTimeout released the game; its fitness sample must count (BR-013)")
+		}
+	})
+}
