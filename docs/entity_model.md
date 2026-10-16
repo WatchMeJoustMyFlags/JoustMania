@@ -5,7 +5,7 @@
 >
 > JoustMania has no database: these entities live in protobuf messages, in-memory service state, flag
 > files and the agent's experiment journal. "Primary Key" therefore means the natural identifier.
-> Source of each entity is given in its description. State: `main` @ 2d162b33.
+> Source of each entity is given in its description. State: `main` @ 354f36c5 (includes PRs #1257, #1261).
 
 ## Entity Relationship Diagram
 
@@ -120,6 +120,8 @@ A controller's participation in one game (`proto/game_coordinator.proto` `Player
 | invincible_until | No-death deadline from match / round start (Tournament, Fight Club) | DateTime | - | Optional |
 | smoothed_accel | EMA of acceleration magnitude in g | Decimal | 6,3 | Not Null, Min: 0 |
 
+**In flight (PR #1265, #1262, not on `main`):** the decide state's per-player view (`decide.PlayerState`) gains a danger signal (`safe` / `elevated` / `near_threshold` at 0.60 / 0.85 of the death threshold), `intensity_rank`, `threshold_margin`, `most_headroom` / `struggling` markers and `shielded`; two-stage Jev decisions with Go-decided direction for two-way levers and no neutral acting levels.
+
 **Constraints:** the player cannot die while `now < max(grace_until, invincible_until)`. Effective thresholds are divided by `clamp(sensitivity_factor × global_difficulty_factor, 0.5, 2.0)` and multiplied by `clamp(handicap, 0.5, 2.0)`.
 
 ### TEAM
@@ -207,7 +209,7 @@ A question in a decide request (`services/agent/decide/decide.go:50-60`, FFA set
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
 | question_id | Id, unique within a request | String | 30 | Primary Key, Values: ffa.intervention, ffa.target, ffa.magnitude |
-| kind | Question kind (`noul` planned, #1229) | String | 6 | Not Null, Values: choice, score |
+| kind | Question kind; `noul` (yes/no answered with P(yes)) shipped in PR #1261, supported by jev and rules only, no FFA question uses it yet | String | 6 | Not Null, Values: choice, score, noul |
 | text | Prompt text for remote backends | String | 2000 | Not Null |
 | options | Choice options | String | 1000 | Optional |
 | range_min | Score lower bound | Decimal | 6,3 | Optional |
@@ -223,6 +225,7 @@ A backend's answer to one question (`decide.go:63-76`, validation `validate.go`)
 | choice | Chosen option (choice kind) | String | 60 | Optional |
 | probabilities | Option → probability, sum 1 ± 0.001, choice is the argmax | String | 2000 | Optional |
 | score | Value within the range (score kind) | Decimal | 6,3 | Optional |
+| noul | Probability of "yes" (noul kind only; confidence = \|2p − 1\| for jev, 0.5 at confidence 0 for rules) | Decimal | 4,3 | Optional, Min: 0, Max: 1 |
 | confidence | Confidence that acting is right | Decimal | 4,3 | Not Null, Min: 0, Max: 1 |
 
 ### INTERVENTION
