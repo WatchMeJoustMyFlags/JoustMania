@@ -49,7 +49,7 @@ A physical or mock PS Move controller tracked by the controller manager (`proto/
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
-| serial | Bluetooth MAC address, or `MOCK0001`-style id for mock controllers | String | 17 | Primary Key, Format: MAC or MOCK%04d |
+| serial | Bluetooth MAC address, or `MOCK0000`-style id for mock controllers | String | 17 | Primary Key, Format: MAC or MOCK%04d |
 | name | Human-readable name, deterministic default (adjective + noun) or user-assigned | String | 50 | Not Null |
 | move_num | Index of the controller in the controller manager's list | Integer | 3 | Not Null, Min: 0 |
 | team | Proto team field; the controller manager sets it to 0 at discovery and nothing updates it (team membership lives on PLAYER) | Integer | 2 | Not Null, Min: 0, Max: 0 |

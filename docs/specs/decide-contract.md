@@ -352,7 +352,7 @@ So a rules decision blocked by the allow-list reads `outcome=act`, `decide.block
 
 `decide.discarded_reason`: `stale_context`, `game_ended`, `target_gone`,
 `kill_switch`, `backend_changed`, `shutdown` (`decision/telemetry.go:57-65`;
-`decide_hook.go:425-435`).
+`decide_hook.go:502-512`).
 
 Outcomes are recorded **only as span attributes**; no metric counts them (the
 dashboard Agent tab reads them from Jaeger, `services/dashboard/src/agent.ts:455-560`).
@@ -376,13 +376,20 @@ There is no separate `rate_limited` reason: HTTP 429 is `error`, with
 `error.type="429"` on the `chat {model}` span.
 
 The reason is recorded as `decide.fallback_reason` with `decide.outcome=fallback` on the `agent.decide`
-span. **Known gap (tracked in #1350):** a same-cycle fallback (`unknown_backend`, `backend_unavailable`,
-`async_not_wired`, `llm_not_eligible`, `llm_budget_exhausted`) runs the rules engine in the same cycle, and when
-the rules emit no decision `OnEvaluate` returns before any `agent.decide` span is emitted (`decision/decision.go:OnEvaluate`,
-`decide_hook.go:decideRemote` → `rulesDecide`). The cycle then leaves no span; `llm_not_eligible` and
-`llm_budget_exhausted` are still counted in `agent_llm_gated_total`, but `unknown_backend`, `backend_unavailable`
-and `async_not_wired` leave neither a span nor a metric, so a misconfigured backend (for example a missing
-`JEV_API_KEY`) is invisible while the rules stay quiet. The behaviour specified above is the intended one.
+span. Every same-cycle fallback is counted in `agent_llm_gated_total{reason}` on every cycle, decided or
+not (`unknown_backend`, `backend_unavailable` and `async_not_wired` since #1377). When the rules emit no decision
+in that cycle (#1350, `decision/decision.go:OnEvaluate`, `decide_hook.go:emitQuietFallback`):
+
+- the three **configuration** fallbacks (`unknown_backend`, `backend_unavailable`, `async_not_wired`;
+  `decide_hook.go:isConfigFallback`) still emit an `agent.decide` span (`decide.outcome=fallback`,
+  `decide.fallback_reason`, `decide.backend=rules`) under its own `agent.signal_received` root, throttled per
+  reason to one per `decision.throttle_seconds` window;
+- `llm_not_eligible` and `llm_budget_exhausted` stay counter-only, so quiet shadow games do not flood Jaeger;
+- the log line `agent.decide.backend_misconfigured` fires on state changes only: WARN (`state=entered`,
+  `reason`) when a game enters a configuration fallback or its reason changes, INFO (`state=cleared`,
+  `previous_reason`) when it clears.
+
+A decided cycle gets its `agent.decide` span every time, unthrottled.
 
 **Not fallbacks** (rules stay quiet that cycle, no decision): the per-game cadence
 gate (`decide_interval`, counted in `agent_llm_gated_total{reason}`), a remote
@@ -609,7 +616,7 @@ Full names in [telemetry.md](telemetry.md#4-agent). Summary:
   when known), [telemetry.md §4.3](telemetry.md#43-decision-attributes) (#1295).
 - Metrics: `gen_ai.client.operation.duration`, `gen_ai.client.token.usage`,
   `agent_llm_gated_total{reason}` (decide path reasons: `llm_not_eligible`, `llm_budget_exhausted`,
-  `decide_interval`, `no_interventions_allowed`), `agent_decisions_total`, `agent_interventions_applied_total`.
+  `unknown_backend`, `backend_unavailable`, `async_not_wired` (#1377), `decide_interval`, `no_interventions_allowed`), `agent_decisions_total`, `agent_interventions_applied_total`.
 
 Known gap: `agent_interventions_applied_total` also counts applies that the gated sink
 turned into no-ops while `interventions_enabled` is off (`actions/gated.go:GatedActionSink.Apply`).
