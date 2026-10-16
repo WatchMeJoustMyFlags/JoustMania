@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from lib.types import Sound
+from services.audio.sound_catalog import build_sound_registry, is_known, relative_path
 
 # Get the assets directory relative to this test file
 ASSETS_DIR = Path(__file__).parent.parent / "assets"
@@ -24,32 +25,7 @@ class TestSoundRegistry:
     @pytest.fixture
     def registry(self):
         """Build a sound registry like the audio service does."""
-        sound_registry: dict[str, tuple[str, str]] = {}
-
-        for base_dir in ["Joust", "Menu", "Zombie", "Fight_Club", "Commander"]:
-            assets_path = ASSETS_DIR / base_dir
-
-            # Scan vox directory (use aaron as reference)
-            vox_dir = assets_path / "vox" / "aaron"
-            if vox_dir.exists():
-                for ogg_file in vox_dir.glob("*.ogg"):
-                    sound_name = ogg_file.stem
-                    if sound_name not in sound_registry:
-                        sound_registry[sound_name] = ("vox", base_dir)
-                    if sound_name.lower() not in sound_registry:
-                        sound_registry[sound_name.lower()] = ("vox", base_dir)
-
-            # Scan sounds directory
-            sounds_dir = assets_path / "sounds"
-            if sounds_dir.exists():
-                for ogg_file in sounds_dir.glob("*.ogg"):
-                    sound_name = ogg_file.stem
-                    if sound_name not in sound_registry:
-                        sound_registry[sound_name] = ("sound", base_dir)
-                    if sound_name.lower() not in sound_registry:
-                        sound_registry[sound_name.lower()] = ("sound", base_dir)
-
-        return sound_registry
+        return build_sound_registry(ASSETS_DIR)
 
     def test_registry_scans_all_directories(self, registry):
         """Verify all asset directories are scanned."""
@@ -72,7 +48,7 @@ class TestSoundRegistry:
         missing = []
         for sound in Sound:
             value = sound.value
-            if value not in registry and value.lower() not in registry:
+            if not is_known(registry, value):
                 missing.append(f"{sound.name}: {value}")
 
         assert not missing, "Missing sounds in registry:\n" + "\n".join(missing)
@@ -180,30 +156,7 @@ class TestSoundEnumValues:
     @pytest.fixture
     def registry(self):
         """Build full registry."""
-        sound_registry: dict[str, tuple[str, str]] = {}
-
-        for base_dir in ["Joust", "Menu", "Zombie", "Fight_Club", "Commander"]:
-            assets_path = ASSETS_DIR / base_dir
-
-            vox_dir = assets_path / "vox" / "aaron"
-            if vox_dir.exists():
-                for ogg_file in vox_dir.glob("*.ogg"):
-                    sound_name = ogg_file.stem
-                    if sound_name not in sound_registry:
-                        sound_registry[sound_name] = ("vox", base_dir)
-                    if sound_name.lower() not in sound_registry:
-                        sound_registry[sound_name.lower()] = ("vox", base_dir)
-
-            sounds_dir = assets_path / "sounds"
-            if sounds_dir.exists():
-                for ogg_file in sounds_dir.glob("*.ogg"):
-                    sound_name = ogg_file.stem
-                    if sound_name not in sound_registry:
-                        sound_registry[sound_name] = ("sound", base_dir)
-                    if sound_name.lower() not in sound_registry:
-                        sound_registry[sound_name.lower()] = ("sound", base_dir)
-
-        return sound_registry
+        return build_sound_registry(ASSETS_DIR)
 
     def test_sfx_beep_points_to_existing_file(self, registry):
         """SFX_BEEP should point to beep_loud (beep.ogg doesn't exist)."""
@@ -260,33 +213,8 @@ class TestActualFileExistence:
 
     def resolve_full_path(self, sound_value: str) -> Path | None:
         """Resolve a sound value to its full file path."""
-        registry: dict[str, tuple[str, str]] = {}
-
-        for base_dir in ["Joust", "Menu", "Zombie", "Fight_Club", "Commander"]:
-            assets_path = ASSETS_DIR / base_dir
-
-            vox_dir = assets_path / "vox" / "aaron"
-            if vox_dir.exists():
-                for ogg_file in vox_dir.glob("*.ogg"):
-                    sound_name = ogg_file.stem
-                    if sound_name not in registry:
-                        registry[sound_name] = ("vox", base_dir)
-
-            sounds_dir = assets_path / "sounds"
-            if sounds_dir.exists():
-                for ogg_file in sounds_dir.glob("*.ogg"):
-                    sound_name = ogg_file.stem
-                    if sound_name not in registry:
-                        registry[sound_name] = ("sound", base_dir)
-
-        entry = registry.get(sound_value) or registry.get(sound_value.lower())
-        if not entry:
-            return None
-
-        sound_type, base_dir = entry
-        if sound_type == "vox":
-            return ASSETS_DIR / base_dir / "vox" / "ivy" / f"{sound_value}.ogg"
-        return ASSETS_DIR / base_dir / "sounds" / f"{sound_value}.ogg"
+        relative = relative_path(build_sound_registry(ASSETS_DIR), sound_value, voice="ivy")
+        return None if relative is None else ASSETS_DIR / relative
 
     def test_all_sound_enum_files_exist(self):
         """Every Sound enum value should resolve to an existing file."""
@@ -315,3 +243,73 @@ class TestActualFileExistence:
         for voice in ["aaron", "ivy"]:
             path = ASSETS_DIR / "Joust" / "vox" / voice / "congratulations.ogg"
             assert path.exists(), f"congratulations.ogg not found for voice '{voice}' at {path}"
+
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+WRITER_GO = REPO_ROOT / "services" / "agent" / "actions" / "writer.go"
+
+
+def _writer_default_audio_cue() -> str:
+    """The agent's play_audio_cue writer default, read from the Go source."""
+    import re
+
+    match = re.search(r'defaultAudioCue\s*=\s*"([^"]+)"', WRITER_GO.read_text())
+    assert match, f"defaultAudioCue not found in {WRITER_GO}"
+    return match.group(1)
+
+
+class TestUC040InterventionSounds:
+    """UC-040 BR-005: every sound id an intervention plays resolves in the registry."""
+
+    @pytest.fixture
+    def registry(self):
+        return build_sound_registry(ASSETS_DIR)
+
+    @pytest.mark.uc("UC-040", flow="A14", br=["BR-005"])
+    def test_every_intervention_sound_id_resolves_to_a_file(self, registry):
+        """UC-040 BR-005: the writer default cue and the shield sound resolve to existing files."""
+        sound_ids = {
+            _writer_default_audio_cue(),
+            Sound.SFX_AGENT_CUE.value,
+            Sound.SFX_SHIELD_UP.value,
+        }
+        for sound_id in sorted(sound_ids):
+            relative = relative_path(registry, sound_id)
+            assert relative is not None, f"{sound_id!r} is not in the sound registry"
+            assert (ASSETS_DIR / relative).is_file(), f"{sound_id!r} -> {relative} missing on disk"
+
+    @pytest.mark.uc("UC-040", flow="main", br=["BR-005"])
+    def test_writer_default_is_the_agent_cue_alias(self):
+        """UC-040 BR-005: the Go writer default and the Sound enum name the same alias."""
+        assert _writer_default_audio_cue() == Sound.SFX_AGENT_CUE.value == "agent_cue"
+
+    @pytest.mark.uc("UC-040", flow="main", br=["BR-005"])
+    def test_agent_cue_plays_the_lobby_ready_ping(self, registry):
+        """UC-040 BR-005: agent_cue is the ping the lobby plays when a controller readies."""
+        assert relative_path(registry, "agent_cue") == relative_path(registry, Sound.SFX_BEEP_LOUD.value)
+        assert relative_path(registry, "agent_cue") == "Joust/sounds/beep_loud.ogg"
+
+    @pytest.mark.uc("UC-040", flow="A14", br=["BR-005"])
+    def test_shield_up_plays_commander_power_ready(self, registry):
+        """UC-040 BR-005: shield_up is an alias of an existing sting, no new asset."""
+        assert relative_path(registry, "shield_up") == "Commander/sounds/power_ready.ogg"
+
+    @pytest.mark.uc("UC-040", flow="main", br=["BR-005"])
+    def test_every_alias_target_is_registered(self, registry):
+        """UC-040 BR-005: an alias names a shipped, voice-independent sound effect."""
+        from services.audio.sound_catalog import SOUND_ALIASES
+
+        for alias, target in SOUND_ALIASES.items():
+            assert (ASSETS_DIR / target).is_file(), f"alias {alias!r} -> {target!r} missing on disk"
+            assert "/vox/" not in target, f"alias {alias!r} must name a voice-independent sound effect"
+
+    @pytest.mark.uc("UC-040", flow="main", br=["BR-005"])
+    def test_cli_exit_code_reports_resolution(self, capsys):
+        """UC-040 BR-005: the pre-flight CLI exits 0 for a resolvable id and 1 for an unknown one."""
+        from services.audio.sound_catalog import main
+
+        assert main(["agent_cue"]) == 0
+        assert "Joust/sounds/beep_loud.ogg" in capsys.readouterr().out
+        assert main(["no_such_sound_xyz"]) == 1
+        assert "not in the sound registry" in capsys.readouterr().out
+        assert main([]) == 2

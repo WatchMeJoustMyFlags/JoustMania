@@ -232,7 +232,7 @@ Game event types actually published are listed in [UC-020](../use_cases/UC-020.m
 
 - Music in a separate process with soxr tempo resampling (also shifts pitch), output via ALSA dmix; ALSA card auto-detected at startup (prefers USB).
 - 8 effect channels; only CRITICAL steals a channel; `play_audio=off` accepts and mutes.
-- Sound ids resolve through the registry built from the asset directories plus aliases (`services/audio/sound_catalog.py`): `agent_cue` → `beep_loud` (the lobby ready ping), `shield_up` → `power_ready`. An id not in the registry logs a WARNING and falls back to the Joust vox path (UC-040 BR-005). `python -m services.audio.sound_catalog <id>` exits 0 when the id resolves to a file (used by `scripts/talk-preflight.sh`).
+- Sound ids resolve through the registry built from the asset directories plus aliases (`services/audio/sound_catalog.py`): `agent_cue` → `Joust/sounds/beep_loud.ogg` (the lobby ready ping), `shield_up` → `Commander/sounds/power_ready.ogg` (an alias names an exact, voice-independent asset path). An id not in the registry logs a WARNING and falls back to the Joust vox path (UC-040 BR-005). `python -m services.audio.sound_catalog <id>` exits 0 when the id resolves to a file (used by `scripts/talk-preflight.sh`).
 
 ### agent
 

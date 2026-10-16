@@ -269,6 +269,10 @@ class Sound(StrEnum):
     SFX_WOLFDOWN = "wolfdown"
     SFX_SHOTGUN_FOUND = "shotgun found"
     SFX_TRAITOR_INTRO = "traitor_intro"
+    # Agent intervention feedback (#1301, UC-040 BR-005): registry ALIASES in
+    # services/audio/sound_catalog.py, not file names.
+    SFX_AGENT_CUE = "agent_cue"  # -> beep_loud, the lobby ready ping
+    SFX_SHIELD_UP = "shield_up"  # -> power_ready (Commander)
 
     # Zombie game sounds (in Zombie/vox/)
     VOX_ZOMBIE_VICTORY = "zombie_victory"

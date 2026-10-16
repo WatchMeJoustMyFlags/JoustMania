@@ -16,7 +16,7 @@ import miniaudio
 from opentelemetry import trace
 
 from proto import audio_pb2, audio_pb2_grpc
-from services.audio import metrics
+from services.audio import metrics, sound_catalog
 from services.audio.music_player import DummyMusicPlayer, MusicPlayer
 
 logger = logging.getLogger(__name__)
@@ -535,13 +535,16 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         Registry values are tuples of (type, base_dir) where:
         - type: "vox" or "sound"
         - base_dir: "Joust", "Menu", "Zombie", "Fight_Club", or "Commander"
+
+        Aliases (``sound_catalog.SOUND_ALIASES``, e.g. ``agent_cue``) are resolved
+        at lookup time, so they always follow the file they name.
         """
         base_assets_dir = Path(__file__).parent / "assets"
 
-        for base_dir in ["Joust", "Menu", "Zombie", "Fight_Club", "Commander"]:
+        for base_dir in sound_catalog.SOUND_BASE_DIRS:
             assets_dir = base_assets_dir / base_dir
             # Scan vox directory (use aaron as reference - all voices should have same files)
-            self._scan_directory_for_sounds(assets_dir / "vox" / "aaron", "vox", base_dir)
+            self._scan_directory_for_sounds(assets_dir / "vox" / sound_catalog.REFERENCE_VOICE, "vox", base_dir)
             # Scan sounds directory
             self._scan_directory_for_sounds(assets_dir / "sounds", "sound", base_dir)
 
@@ -555,10 +558,7 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
             sound_type: Type of sound ("vox" or "sound")
             base_dir: Base directory name (e.g., "Joust", "Menu")
         """
-        if not directory.exists():
-            return
-        for ogg_file in directory.glob("*.ogg"):
-            self._register_sound(ogg_file.stem, sound_type, base_dir)
+        sound_catalog.scan_directory(self.sound_registry, directory, sound_type, base_dir)
 
     def _register_sound(self, sound_name: str, sound_type: str, base_dir: str):
         """Register a sound name in the registry if not already present.
@@ -571,11 +571,7 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
             sound_type: Type of sound ("vox" or "sound")
             base_dir: Base directory name (e.g., "Joust", "Menu")
         """
-        entry = (sound_type, base_dir)
-        if sound_name not in self.sound_registry:
-            self.sound_registry[sound_name] = entry
-        if sound_name.lower() not in self.sound_registry:
-            self.sound_registry[sound_name.lower()] = entry
+        sound_catalog.register_sound(self.sound_registry, sound_name, sound_type, base_dir)
 
     def _resolve_sound_path(self, sound_input: str) -> str:
         """
@@ -616,14 +612,16 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         Returns:
             Resolved path to the sound file
         """
-        registry_entry = self.sound_registry.get(lookup_name) or self.sound_registry.get(lookup_name.lower())
-        if registry_entry:
-            sound_type, base_dir = registry_entry
-            if sound_type == "vox":
-                return f"{base_dir}/vox/{self.menu_voice}/{lookup_name}.ogg"
-            return f"{base_dir}/sounds/{lookup_name}.ogg"
-        # Unknown sound - try Joust vox first with current voice
-        logger.warning(f"Sound '{lookup_name}' not in registry, trying Joust vox path")
+        resolved = sound_catalog.relative_path(self.sound_registry, lookup_name, voice=self.menu_voice)
+        if resolved is not None:
+            return resolved
+        # Unknown sound id: a caller asked for something that will most likely
+        # play nothing (the agent_cue gap in #1301 was invisible at DEBUG). Keep
+        # the legacy Joust-vox fallback, but say so loudly (UC-040 BR-005).
+        logger.warning(
+            f"Unknown sound id '{lookup_name}': not in the sound registry or its aliases; "
+            f"trying Joust/vox/{self.menu_voice}/{lookup_name}.ogg"
+        )
         return f"Joust/vox/{self.menu_voice}/{lookup_name}.ogg"
 
     def _resolve_vox_path(self, sound_input: str) -> str:
