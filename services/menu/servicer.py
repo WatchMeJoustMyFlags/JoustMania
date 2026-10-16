@@ -469,7 +469,10 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             if game_mode is not None and game_name in GAME_MODES:
                 self.current_selection = game_mode
                 self.state_manager.set_game_mode(game_mode)
-                await self.event_publisher.publish("selection_changed", {"game_name": game_mode.name, "source": "web"})
+                payload = {"game_name": game_mode.name, "source": "web"}
+                # UC-011 A1 continues at step 5: both selection events, like admin Cross.
+                await self.event_publisher.publish("selection_changed", payload)
+                await self.event_publisher.publish("game_selection_changed", dict(payload))
                 # Persist to flagd
                 self.user_prefs_writer.update_default_variant("current_game", game_mode.name)
                 voice_file = GAME_MODE_VOICE.get(game_mode.name)
@@ -616,7 +619,9 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
                 # Don't leave the menu stuck in GAME_STARTING if a start aborts.
                 if self.state == menu_pb2.MenuState.GAME_STARTING:
                     self.state = menu_pb2.MenuState.RUNNING
-                    await self.event_publisher.publish("game_start_cancelled", {})
+                # Publish on every roster abort (UC-010 A3) — the ready/auto-start
+                # path is still RUNNING here, only admin force-start is GAME_STARTING.
+                await self.event_publisher.publish("game_start_cancelled", {})
                 # Restore lobby LEDs. The button monitor and lobby music are still
                 # running (we abort before _prepare_game_start), so a full
                 # _restart_lobby would be wrong here — but admin force-start sends a
