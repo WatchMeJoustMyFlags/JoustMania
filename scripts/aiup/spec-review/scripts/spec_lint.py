@@ -662,6 +662,10 @@ def check_requirement_status(project, specs, requirements):
     for rid, uids in linking_use_cases(specs).items():
         if rid not in requirements:
             continue
+        # JoustMania patch: NFRs are measured separately, so their status is
+        # never derived from the use cases that link them.
+        if rid.startswith("NFR-"):
+            continue
         number, status, _ = requirements[rid]
         if normalize(status) not in progress:
             continue
@@ -1657,6 +1661,27 @@ def self_test_planned(validator, bpmn, failures):
                             + str(drift))
 
 
+def self_test_nfr_exempt(validator, bpmn, failures):
+    """JoustMania patch: an NFR's status is never derived (no drift)."""
+    files = dict(CLEAN)
+    files["requirements.md"] = CLEAN["requirements.md"] + (
+        "| NFR-001 | Availability | The system is available 99.5 % of each "
+        "month. | High | Open |\n")
+    files["use_cases/UC-002-reserve-room.md"] = spec_text(
+        "UC-002", "Reserve Room",
+        "\n**Requirements:** [FR-002, NFR-001](../requirements.md)\n",
+        "\n### BR-001: Guest Age\n\nThe guest age rule UC-001 BR-001 "
+        "applies to every reservation.\n", status="Done")
+    with tempfile.TemporaryDirectory() as root:
+        write_fixture(root, files)
+        drift = [f.element for f in lint(root, validator, bpmn)
+                 if f.code == "REQ_STATUS_DRIFT"]
+        if "NFR-001" in drift:
+            failures.append("nfr: NFR-001 status derived from UC-002")
+        if "FR-002" not in drift:
+            failures.append("nfr: FR-002 drift (Open vs Done) not reported")
+
+
 def self_test():
     failures = []
     validator = load_sibling("*use-case-spec/scripts/validate_use_case.py",
@@ -1817,6 +1842,7 @@ def self_test():
             failures.append("baseline: fixed finding not reported as stale")
 
     self_test_planned(validator, bpmn, failures)   # JoustMania patch
+    self_test_nfr_exempt(validator, bpmn, failures)   # JoustMania patch
 
     if failures:
         for failure in failures:
