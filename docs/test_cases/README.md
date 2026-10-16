@@ -22,8 +22,7 @@ Two deliberate deviations from the skill's writing rules:
   steps name flags, game events, span names and attributes, and connect-proxy paths, because those
   identifiers are what the tests observe.
 
-Some flows named here (UC-002 A4, UC-010 A6, UC-020 A4, UC-030 A5, UC-040 A22) are defined in the
-spec catch-up PR #1381.
+Flow ids follow the use cases as of the spec catch-up #1381 (e.g. UC-010 A6, UC-040 A22).
 
 ## How the spec lint uses them
 
