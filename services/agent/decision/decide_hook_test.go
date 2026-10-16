@@ -528,6 +528,7 @@ func assertRulesFallback(t *testing.T, h remoteHarness, span sdktrace.ReadOnlySp
 	}
 }
 
+// NFR: NFR-013
 func TestRemote_TimeoutFallsBackToRules(t *testing.T) {
 	be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.9, "A", 0.5, ""))
 	be.block = true
@@ -536,6 +537,7 @@ func TestRemote_TimeoutFallsBackToRules(t *testing.T) {
 	assertRulesFallback(t, h, span, DecideFallbackTimeout, DecideFallbackTimeout)
 }
 
+// NFR: NFR-013
 func TestRemote_ErrorFallsBackToRules(t *testing.T) {
 	be := newFakeDecideBackend(func(decide.Request) (decide.Response, error) {
 		return decide.Response{}, errors.New("boom")
@@ -641,6 +643,7 @@ func TestRemote_UnknownOrUnavailableFallsBackSynchronously(t *testing.T) {
 
 // TestRemote_InflightRulesDoNotAct: while a call is in flight for the game, a
 // second cycle neither fires another call nor lets rules act.
+// NFR: NFR-012 NFR-013
 func TestRemote_InflightRulesDoNotAct(t *testing.T) {
 	be := newFakeDecideBackend(ffaAnswer("noop", 0.9, "none", 0, ""))
 	be.block = true
@@ -761,6 +764,7 @@ func TestDecideRegistry(t *testing.T) {
 
 // TestRemote_CadenceRulesDoNotAct: between remote calls (the #847 per-game
 // cadence) the remote backend still owns the decision, so rules stay quiet.
+// NFR: NFR-012
 func TestRemote_CadenceRulesDoNotAct(t *testing.T) {
 	be := newFakeDecideBackend(ffaAnswer("noop", 0.9, "none", 0, ""))
 	snap := remoteSnapshot(time.Second)
@@ -999,6 +1003,7 @@ func TestRemote_SpanParentAndFireCycleLink(t *testing.T) {
 // second call. llm.min_decision_interval_seconds is a key REMOVED in #1234; it is
 // kept in the provider deliberately, set huge, to prove a stale flag left in a
 // deployment's agent.json has no effect.
+// NFR: NFR-012
 func TestRemote_RealCadenceFlag(t *testing.T) {
 	str := func(v string) memprovider.InMemoryFlag {
 		return memprovider.InMemoryFlag{State: memprovider.Enabled, DefaultVariant: "v", Variants: map[string]any{"v": v}}

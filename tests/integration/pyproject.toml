@@ -46,6 +46,7 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = [
     "uc(id, flow=, br=, steps=, tc=): traceability tag to a use-case flow / business rule (see .claude/skills/README.md)",
+    "nfr(*ids): traceability tag to the non-functional requirement(s) (NFR-XXX in docs/requirements.md) the test measures or verifies (see .claude/skills/README.md)",
 ]
 # Filter testcontainers internal deprecation warning
 # Bug in testcontainers 4.14.0: they use @wait_container_is_ready() internally
