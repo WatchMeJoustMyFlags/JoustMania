@@ -33,7 +33,7 @@ procfs = "0.18"
 # Hostname for resource attributes
 gethostname = "1.0"
 # Feature flags (OpenFeature + flagd provider)
-open-feature = "0.2"
+open-feature = "0.3"
 open-feature-flagd = { version = "0.1", default-features = false, features = ["rpc"] }
 # Tower middleware for gRPC tracing layer
 tower = "0.5"
