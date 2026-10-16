@@ -1,5 +1,9 @@
 # Post-game retrospective capture (#844)
 
+> **Historical.** This note predates #1234, which removed the LiteLLM gateway,
+> the Ollama/Jetson inference tiers and the in-game `mode` / `model` /
+> `prompt_variant` path. Current state: [agent-inference.md](../agent-inference.md).
+
 When a game ends, the agent has the richest data it will ever have — the full
 elimination sequence, the final duration, the per-player skill spread — and the
 suggestions it could make (calibration tweaks) take effect at the *next* game's

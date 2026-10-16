@@ -239,7 +239,7 @@ type Loop struct {
 	// pile-up guard, the in-flight wait group, this loop's game id, the
 	// re-validation context provider, and the agent root context. The remote decide
 	// path runs on it; a nil ctxProvider makes a remote backend fall back to rules
-	// (decide.fallback_reason=not_wired).
+	// (decide.fallback_reason=async_not_wired).
 	asyncInferState
 
 	// effectSampler is the per-Loop intervention-effect MEASUREMENT machinery (#918):

@@ -73,7 +73,7 @@ def _sc(name):
 def test_allowed_pass_when_applied_counter_moved():
     sc = _sc("statue")  # ambient, send_controller_effect ALLOWED
     obs = vh.Observations(
-        agent_log="ts=… msg=agent.evaluate mode=rules model=phi4-mini\n",
+        agent_log="ts=… msg=agent.evaluate decision_backend=rules\n",
         metrics={
             "sum(agent_evaluations_total)": 12.0,
             vh._intervention_metric("send_controller_effect", False): 3.0,
@@ -87,7 +87,7 @@ def test_allowed_pass_when_applied_counter_moved():
 def test_allowed_anomaly_when_rule_never_fired():
     sc = _sc("statue")
     obs = vh.Observations(
-        agent_log="msg=agent.evaluate mode=rules\n",
+        agent_log="msg=agent.evaluate decision_backend=rules\n",
         metrics={
             "sum(agent_evaluations_total)": 8.0,
             vh._intervention_metric("send_controller_effect", False): 0.0,
@@ -102,7 +102,7 @@ def test_allowed_anomaly_when_rule_never_fired():
 def test_allowed_anomaly_when_unexpectedly_blocked():
     sc = _sc("statue")
     obs = vh.Observations(
-        agent_log="msg=agent.evaluate mode=rules\n"
+        agent_log="msg=agent.evaluate decision_backend=rules\n"
         "msg=agent.decision_blocked intervention=send_controller_effect reason=not_allowed\n",
         metrics={
             "sum(agent_evaluations_total)": 8.0,
@@ -121,7 +121,7 @@ def test_allowed_anomaly_when_unexpectedly_blocked():
 def test_blocked_pass_when_block_observed_in_logs():
     sc = _sc("blocked_ambient")  # adjust_player_sensitivity BLOCKED, not_allowed
     obs = vh.Observations(
-        agent_log="msg=agent.evaluate mode=rules\n"
+        agent_log="msg=agent.evaluate decision_backend=rules\n"
         "msg=agent.decision_blocked intervention=adjust_player_sensitivity reason=not_allowed\n",
         metrics={
             "sum(agent_evaluations_total)": 10.0,
@@ -135,7 +135,7 @@ def test_blocked_pass_when_block_observed_in_logs():
 def test_blocked_anomaly_when_no_block_seen():
     sc = _sc("blocked_ambient")
     obs = vh.Observations(
-        agent_log="msg=agent.evaluate mode=rules\n",
+        agent_log="msg=agent.evaluate decision_backend=rules\n",
         metrics={
             "sum(agent_evaluations_total)": 10.0,
             vh._intervention_metric("adjust_player_sensitivity", True): 0.0,
@@ -149,7 +149,7 @@ def test_blocked_anomaly_when_no_block_seen():
 def test_blocked_pass_via_metric_only_without_log():
     sc = _sc("blocked_none")
     obs = vh.Observations(
-        agent_log="msg=agent.evaluate mode=rules\n",
+        agent_log="msg=agent.evaluate decision_backend=rules\n",
         metrics={
             "sum(agent_evaluations_total)": 5.0,
             vh._intervention_metric("send_controller_effect", True): 1.0,
@@ -160,7 +160,7 @@ def test_blocked_pass_via_metric_only_without_log():
 
 
 # --------------------------------------------------------------------------- #
-# Report logic — mode, heartbeat, edge, span chain, collection errors
+# Report logic — backend, heartbeat, edge, span chain, collection errors
 # --------------------------------------------------------------------------- #
 def test_anomaly_when_no_evaluate_line():
     sc = _sc("statue")
@@ -173,7 +173,7 @@ def test_anomaly_when_no_evaluate_line():
 def test_anomaly_when_zero_evaluations_metric():
     sc = _sc("statue")
     obs = vh.Observations(
-        agent_log="msg=agent.evaluate mode=rules\n",
+        agent_log="msg=agent.evaluate decision_backend=rules\n",
         metrics={
             "sum(agent_evaluations_total)": 0.0,
             vh._intervention_metric("send_controller_effect", False): 0.0,
@@ -188,7 +188,7 @@ def test_anomaly_when_zero_evaluations_metric():
 def test_edge_underpopulated_passes_when_quiet():
     sc = _sc("edge_underpopulated")
     obs = vh.Observations(
-        agent_log="msg=agent.evaluate mode=rules\n",
+        agent_log="msg=agent.evaluate decision_backend=rules\n",
         metrics={"sum(agent_evaluations_total)": 4.0},
     )
     res = vh.evaluate(sc, obs)
@@ -198,7 +198,7 @@ def test_edge_underpopulated_passes_when_quiet():
 def test_edge_underpopulated_anomaly_when_rule_fires():
     sc = _sc("edge_underpopulated")
     obs = vh.Observations(
-        agent_log="msg=agent.evaluate mode=rules\n",
+        agent_log="msg=agent.evaluate decision_backend=rules\n",
         metrics={
             "sum(agent_evaluations_total)": 4.0,
             vh._intervention_metric("adjust_player_sensitivity", False): 2.0,
@@ -219,7 +219,7 @@ def test_collection_error_yields_error_verdict():
 def test_broken_span_chain_flagged():
     sc = _sc("statue")
     obs = vh.Observations(
-        agent_log="msg=agent.evaluate mode=rules\n",
+        agent_log="msg=agent.evaluate decision_backend=rules\n",
         metrics={
             "sum(agent_evaluations_total)": 6.0,
             vh._intervention_metric("send_controller_effect", False): 2.0,
@@ -232,14 +232,14 @@ def test_broken_span_chain_flagged():
     assert any("signal_received" in r for r in res.reasons)
 
 
-def test_mode_mismatch_flagged():
+def test_backend_mismatch_flagged():
     sc = _sc("statue")
-    # craft an expectation of llm; the matrix default is rules, so build a copy
+    # craft an expectation of a remote backend; the matrix default is rules, so build a copy
     import dataclasses
 
-    sc = dataclasses.replace(sc, expect=dataclasses.replace(sc.expect, mode="llm"))
+    sc = dataclasses.replace(sc, expect=dataclasses.replace(sc.expect, backend="claude"))
     obs = vh.Observations(
-        agent_log="msg=agent.evaluate mode=rules\n",
+        agent_log="msg=agent.evaluate decision_backend=rules\n",
         metrics={
             "sum(agent_evaluations_total)": 6.0,
             vh._intervention_metric("send_controller_effect", False): 2.0,
@@ -248,7 +248,7 @@ def test_mode_mismatch_flagged():
     )
     res = vh.evaluate(sc, obs)
     assert res.verdict == vh.ANOMALY
-    assert any("mode=llm" in r for r in res.reasons)
+    assert any("decision_backend=claude" in r for r in res.reasons)
 
 
 # --------------------------------------------------------------------------- #

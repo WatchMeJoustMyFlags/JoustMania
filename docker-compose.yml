@@ -721,26 +721,24 @@ services:
       # the remediation_allowed flag (rollout flagd domain, read from rollout.json).
       # After a rollback, re-expansion is suppressed for the cooldown below.
       - AGENT_ROLLOUT_COOLDOWN_SECONDS=${AGENT_ROLLOUT_COOLDOWN_SECONDS:-30}
-      # ---- Inference backend (#1048, per the #1046 design) ----
-      # The real LLM inference seam for BOTH the proposer and the decision loop.
-      # ONE OpenAI-compatible HTTP client feeds both. Default = stub → no behavior
-      # change (the proposer proposes nothing, the decision chain degrades to rules),
-      # so a plain `up` stays inert. Set AGENT_INFERENCE_BACKEND=openai to point it at
-      # the HOST machine's Ollama (host.docker.internal:11434 via extra_hosts below,
-      # no key needed) or at a gateway/cloud endpoint (set the base URL + API key).
+      # ---- Proposer / retro text backend (#1234) ----
+      # The OFFLINE LLM seams (shadow-experiment proposer, post-game retro), NOT
+      # in-game decisions (those are the decision.backend flag below). Default =
+      # stub: the proposer proposes nothing and the retro is capture-only, so a
+      # plain `up` needs no key. AGENT_INFERENCE_BACKEND=claude calls the Anthropic
+      # API directly with ANTHROPIC_API_KEY (no gateway); without a key it stays
+      # on the stub.
       - AGENT_INFERENCE_BACKEND=${AGENT_INFERENCE_BACKEND:-stub}
-      - AGENT_INFERENCE_BASE_URL=${AGENT_INFERENCE_BASE_URL:-http://host.docker.internal:11434/v1}
-      - AGENT_INFERENCE_MODEL=${AGENT_INFERENCE_MODEL:-phi4-mini}
-      - AGENT_INFERENCE_API_KEY=${AGENT_INFERENCE_API_KEY:-}
-      # HTTP round-trip timeout for a single inference call, in seconds (#1079).
-      # Empty default = inference.DefaultTimeout (120s) — long enough for a local 8B
-      # cold-start, which was being cut off at the old hardcoded 60s. Bump higher
-      # (e.g. 180) for a heavier model / slower box.
+      # Empty defaults = the agent's built-in defaults (claude-opus-5-5, effort
+      # medium, 120s per call).
+      - AGENT_INFERENCE_MODEL=${AGENT_INFERENCE_MODEL:-}
+      - AGENT_INFERENCE_EFFORT=${AGENT_INFERENCE_EFFORT:-}
       - AGENT_INFERENCE_TIMEOUT_SECONDS=${AGENT_INFERENCE_TIMEOUT_SECONDS:-}
       # ---- Decision backends (#1244, epic #1225) ----
       # API keys for the remote in-game decision backends selected by the
       # decision.backend flag (claude / openai / jev; flip with
-      # ./scripts/agent-backend.sh). Keys go straight to the agent, which calls
+      # ./scripts/agent-backend.sh). ANTHROPIC_API_KEY also serves the
+      # proposer/retro backend above. Keys go straight to the agent, which calls
       # the vendor directly: there is no gateway. Read once at agent startup;
       # an empty key makes that backend unavailable and the decision falls
       # back to rules. Never put keys in a flag file or the tracked .env: export
@@ -749,8 +747,9 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - DECISION_OPENAI_API_KEY=${DECISION_OPENAI_API_KEY:-}
       - JEV_API_KEY=${JEV_API_KEY:-}
-      # LIVE per-minute LLM request budget override (#964/#1071). Read in main.go via
-      # SetLLMBudgetOverride; empty default = ignored (the flag-derived cap governs),
+      # LIVE per-minute LLM request budget override (#964/#1071) for remote decide
+      # calls. Read in main.go via SetLLMBudgetOverride; empty default = ignored
+      # (the llm.max_requests_per_minute flag governs),
       # matching the Go "non-positive = ignore" semantics. Declared here so a host
       # `export` or `.env` value actually reaches the container (#1078).
       - AGENT_LLM_MAX_REQUESTS_PER_MINUTE=${AGENT_LLM_MAX_REQUESTS_PER_MINUTE:-}
@@ -798,12 +797,6 @@ services:
     depends_on:
       flagd:
         condition: service_started
-    # Reach the HOST machine's Ollama (#1048): host.docker.internal resolves to the
-    # host gateway so AGENT_INFERENCE_BASE_URL=http://host.docker.internal:11434/v1
-    # hits the host's Ollama from inside the container. Harmless when inference is
-    # stubbed (the default) — nothing dials it.
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     networks:
       - joustmania
     restart: unless-stopped
@@ -818,102 +811,6 @@ services:
         limits:
           memory: 128m
           cpus: '0.5'
-    logging: *default-logging
-
-  # LiteLLM gateway (#1049, per the #1046 design) — the OpenAI-compatible "tool
-  # in the middle". OPT-IN: behind the `gateway` profile, so a plain `up` runs
-  # WITHOUT it (the agent stays on its stub/Ollama-direct default, no behavior
-  # change). Enable with `--profile gateway` (see docs/agent-inference-gateway.md).
-  #
-  # When up, the agent points AGENT_INFERENCE_BASE_URL at http://litellm:4000/v1
-  # (set that + AGENT_INFERENCE_BACKEND=openai on the agent — see the runbook).
-  # Backend selection stays OpenFeature-driven (agent.json `model`); this gateway
-  # only resolves route -> provider and holds the keys (NEVER in the agent).
-  litellm:
-    image: ghcr.io/berriai/litellm:v1.88.2
-    container_name: joustmania-litellm
-    profiles:
-      - gateway
-    command: ["--config", "/etc/litellm/config.yaml", "--port", "4000"]
-    expose:
-      - "4000"
-    ports:
-      # Published so a host-side curl can smoke-test /v1/models and
-      # /v1/chat/completions. Drop this mapping on a hardened fleet host if the
-      # gateway should stay docker-network-internal only.
-      - "4000:4000"
-    environment:
-      # Free local default: where the gateway reaches Ollama. Defaults to the
-      # HOST machine's Ollama via host.docker.internal (extra_hosts below).
-      # Repoint to a LAN Jetson (#738) without editing config.yaml.
-      # ENV-SPECIFIC (#1208): host.docker.internal is correct on Docker Desktop
-      # and Linux-with-host-gateway, but on WSL2 it can resolve to the Docker NAT
-      # gateway (172.17.0.1) rather than the host running Ollama -> connection
-      # REFUSED on the warmup ping. On WSL2, set OLLAMA_BASE_URL to the WSL host's
-      # IP, e.g. `export OLLAMA_BASE_URL=http://192.168.x.x:11434`. See
-      # services/litellm/config.yaml for the full per-environment matrix.
-      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-      # OPTIONAL cloud layer. Leave empty to run Ollama-only; the `claude` route
-      # then errors on use and falls back to local (config.yaml fallbacks). The
-      # key lives HERE in the gateway env ONLY — never in the agent container.
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      # Optional shared key for the proxy's own OpenAI-compatible API. Unset =
-      # open on the internal docker network. When set, the agent must send it via
-      # AGENT_INFERENCE_API_KEY.
-      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-}
-      # OpenTelemetry (#1087): the `otel` callback (config.yaml litellm_settings)
-      # emits one gen_ai span per LLM call to the shared collector -> Jaeger.
-      # LiteLLM's otel integration reads OTEL_EXPORTER + OTEL_ENDPOINT directly;
-      # the underlying OTEL SDK also honours OTEL_EXPORTER_OTLP_ENDPOINT, so set
-      # both to the collector. Service identity matches the stack convention
-      # (name=litellm, namespace=infrastructure). NB: LiteLLM builds its own
-      # Resource via OTELResourceDetector, which reads OTEL_SERVICE_NAME +
-      # OTEL_RESOURCE_ATTRIBUTES but NOT a standalone OTEL_SERVICE_NAMESPACE var —
-      # so service.namespace is carried in OTEL_RESOURCE_ATTRIBUTES here (the
-      # OTEL_SERVICE_NAMESPACE line is kept for convention/parity with the SDK
-      # services and harms nothing).
-      - OTEL_SERVICE_NAME=litellm
-      - OTEL_SERVICE_NAMESPACE=infrastructure
-      - OTEL_EXPORTER=otlp_grpc
-      - OTEL_ENDPOINT=http://otel-collector:4317
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
-      - OTEL_RESOURCE_ATTRIBUTES=service.namespace=infrastructure,host.name=${JOUSTMANIA_HOST:-joustmania}
-      # Inbound W3C trace-context propagation (#1205, epic #1140 disjoint-roots).
-      # The agent injects a `traceparent` header on EVERY outbound inference call
-      # (services/agent/inference/openai.go; the sync/async/retro paths each wrap the
-      # call in a recording client span first so the header carries a live trace-id).
-      # LiteLLM's otel callback extracts that header and parents its "Received Proxy
-      # Server Request" SERVER span UNDER it by default (user_api_key_auth.py ->
-      # create_litellm_proxy_request_started_span -> get_traceparent_from_header), so
-      # the gateway gen_ai span shares ONE trace with the decision that caused it
-      # (decision -> agent.llm.infer.call -> litellm -> ollama). The ONLY switch that
-      # silently re-orphans it — turning every proxy span into its own ROOT regardless
-      # of the inbound header (the verification #11 symptom: a litellm trace whose
-      # `services` set is {litellm} only, top span references:[]) — is
-      # OTEL_IGNORE_CONTEXT_PROPAGATION. Pin it OFF explicitly so a stray env on a
-      # fleet host can never re-break the stitch. (This is INBOUND only; forwarding
-      # traceparent DOWNSTREAM to Ollama is a separate, unrelated knob, left off.)
-      - OTEL_IGNORE_CONTEXT_PROPAGATION=false
-    volumes:
-      - ./services/litellm/config.yaml:/etc/litellm/config.yaml:ro
-    # Reach the HOST machine's Ollama (same mechanism the agent uses, #1048).
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - joustmania
-    restart: unless-stopped
-    healthcheck:
-      # LiteLLM exposes a liveness endpoint at /health/liveliness.
-      test: ["CMD", "curl", "-fsS", "http://localhost:4000/health/liveliness"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-      start_period: 20s
-    deploy:
-      resources:
-        limits:
-          memory: 512m
-          cpus: '1.0'
     logging: *default-logging
 
   # Dashboard (Real-time controller visualization SPA)

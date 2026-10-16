@@ -17,12 +17,9 @@ make dry-run
 
 `./scripts/agent-dryrun-enable.sh on` flips **both** live gates in the ci/ flag
 dir in one step — the master `enabled` kill-switch **and** the
-`experiments_enabled` flag (the LIVE experiment gate post-#1044). With an
-inference backend configured, also exercise `mode=llm`:
-
-```bash
-AGENT_INFERENCE_BACKEND=openai ./scripts/agent-dryrun-enable.sh on   # also flips mode -> llm
-```
+`experiments_enabled` flag (the LIVE experiment gate post-#1044). The in-game
+decision backend is a separate flag (`decision.backend`, default `rules`); flip
+it with `./scripts/agent-backend.sh` (see [agent-inference.md](agent-inference.md)).
 
 Restore the fail-closed defaults afterwards with
 `./scripts/agent-dryrun-enable.sh off`.
@@ -49,7 +46,7 @@ findings):
 | 2 | Agent master kill-switch `agent.json` `enabled` = `off` (fail-closed) | Loop declares + writes targeting then self-aborts: `experiment.torn_down ... reason="kill-switch: agent disabled"` | **Manual opt-in** — `./scripts/agent-dryrun-enable.sh on` (flips the **ci** flag dir only; production default stays `off`) |
 | 3 | The agent compose env did not declare `AGENT_EXPERIMENTS_ENABLED` / `AGENT_EXPERIMENT_SEED_*` | A host `export` never reached the container (needed a custom override) | These vars are now declared (default-off) on the `agent` service in `docker-compose.yml`; the dry-run override turns them on |
 | 5 | **(#1044/#1077)** flagd `experiments_enabled` flag = `off` (fail-closed) **overrides** the `AGENT_EXPERIMENTS_ENABLED=true` env | The loop is constructed but `gated LIVE by agent.json experiments_enabled` — `env_enabled_default=true` is dead config; **zero** `experiment.*` activity | **Manual opt-in** — `./scripts/agent-dryrun-enable.sh on` flips `experiments_enabled` (and `enabled`, row 2) in the **ci** flag dir only; production default stays `off` |
-| 6 | **(#1044/#1077)** flagd `mode` flag = `rules` (fail-closed) | Even with experiments on, the inference backend is never exercised (stays on the rules engine) | `AGENT_INFERENCE_BACKEND=openai ./scripts/agent-dryrun-enable.sh on` flips `mode -> llm` in the ci flag dir; without a backend `rules` is correct (stub) |
+| 6 | **(#1225/#1234)** flagd `decision.backend` flag = `rules` | Decisions come from the rules engine; no model is called. Shadow games stay on rules even with a remote backend (`llm.eligible_game_kinds` defaults to `real`) | `./scripts/agent-backend.sh claude` (needs `ANTHROPIC_API_KEY` in the agent env); `rules` is the correct floor without a key |
 
 And one **silent-ineffective** trap:
 
@@ -82,10 +79,10 @@ real-default change.
    *Flipped together with gate 1 by `./scripts/agent-dryrun-enable.sh on` —
    never default-on.*
 
-   *(Optional) inference backend* — flagd `mode` flag = `llm`. Default `rules`
-   (the stub backend, correct without a backend). When an inference backend is
-   configured, `AGENT_INFERENCE_BACKEND=openai ./scripts/agent-dryrun-enable.sh on`
-   also flips `mode -> llm` so the dry run exercises the LLM decision path.
+   *(Optional) decision backend* — flagd `decision.backend` flag. Default
+   `rules` (no model called). `./scripts/agent-backend.sh claude` switches real
+   games to Claude when the agent has `ANTHROPIC_API_KEY`; shadow games stay on
+   rules.
 
 3. **`code_improvement.*` promotion gates** — separate flags in the agent
    domain (`code_improvement.mode`, `.target`, `.validation_games`,

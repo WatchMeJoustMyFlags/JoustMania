@@ -61,7 +61,7 @@ type asyncInferState struct {
 	gameID string
 	// ctxProvider re-fetches the current GameContext when a remote answer lands. Nil
 	// disables the async path: a remote decision.backend then falls back to rules
-	// (decide.fallback_reason=not_wired). main.go injects the Multiplexer-backed
+	// (decide.fallback_reason=async_not_wired). main.go injects the Multiplexer-backed
 	// provider so production is async.
 	ctxProvider ContextProvider
 	// rootCtx is the agent's root context; every fired remote-call goroutine derives its

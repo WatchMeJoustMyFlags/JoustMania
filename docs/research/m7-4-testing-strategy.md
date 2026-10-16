@@ -1,5 +1,9 @@
 # Research: Testing & Mocking Strategy for the Agent Self-Improvement Pipeline (#931 / #935 / #936)
 
+> **Historical.** This note predates #1234, which removed the LiteLLM gateway,
+> the Ollama/Jetson inference tiers and the in-game `mode` / `model` /
+> `prompt_variant` path. Current state: [agent-inference.md](../agent-inference.md).
+
 How to make the whole **propose → validate → promote** pipeline testable by
 mocking every external/expensive surface, plus a decisive verdict on adopting
 Microcks. One analysis for three issues because the mockable surfaces span the
