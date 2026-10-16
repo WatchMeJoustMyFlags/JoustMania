@@ -58,7 +58,7 @@ stay traceable; their detailed journeys are backlog (#1361).
 | [TC-012](TC-012-pattern-game-replay.md) | Replay a pattern-driven game exactly | UC-046, UC-003, UC-030 | Medium | Automated | `test_pattern_game_replays_identically`; script in CI #1366 |
 | [TC-013](TC-013-shadow-game-alongside-real-game.md) | Shadow game alongside a real FFA game | UC-010, UC-003, UC-020, UC-040, UC-027, UC-043 | High | Draft | Partly (`test_concurrent_games`, `test_gameid_intervention_isolation`); #1404 |
 | [TC-014](TC-014-progressive-rollout-and-rollback.md) | Progressive rollout with automatic rollback | UC-050, UC-051, UC-045, UC-041 | High | Draft | Manual (real controllers); mock support + e2e #1390 |
-| [TC-015](TC-015-canary-and-chaos-by-hand.md) | Canary a backend and inject chaos by hand | UC-052, UC-035 | Medium | Draft | Manual; #1364, #1365 |
+| [TC-015](TC-015-canary-and-chaos-by-hand.md) | Canary a backend and inject chaos by hand | UC-052, UC-035 | Medium | Draft | Manual; contract tests for routes and alerts; #1364 |
 | [TC-016](TC-016-talk-demo-rehearsal.md) | Talk demo rehearsal | UC-070, UC-044, UC-045, UC-040, UC-042, UC-035 | Medium | Draft | Manual; script tests, #1366 |
 | [TC-017](TC-017-non-ffa-modes-round-backlog.md) | One round of every non-FFA mode (backlog) | UC-021 to UC-026, UC-030 | Low | Draft | Partly (`test_parallel_lifecycle`); backlog #1361 |
 

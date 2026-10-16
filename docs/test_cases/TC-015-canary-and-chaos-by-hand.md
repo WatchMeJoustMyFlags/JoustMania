@@ -39,4 +39,5 @@
 
 ## Automation
 
-- **Manual** (needs real controllers for the chaos adapter). Planned handler tests for `/canary/*` and `/chaos/*`: #1364; Prometheus alert and envoy routing checks: #1365.
+- **Manual** (needs real controllers for the chaos adapter). Planned handler tests for `/canary/*` and `/chaos/*`: #1364.
+- Contract-level coverage (no live stack, no controllers): `tests/contract/test_envoy_routing.py` checks the envoy routes for `/grafana/`, `/prometheus/` and `/chaos/` (steps 3, 5, 6; `/canary/` has no envoy route, so steps 1 and 7 call the connect-proxy from inside the network, UC-052 A2); `tests/contract/test_alert_rules.py` runs promtool over `tests/contract/prometheus/alerts_test.yml` and shows the controller alerts (`ControllerDisconnected`, `PoorFrameConsistency`, `HighInputLatency`, among others) fire on their condition and stay quiet otherwise (UC-035 A2, step 5). Neither test injects a fault or watches a live alert.
