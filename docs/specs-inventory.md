@@ -174,6 +174,7 @@ spec PRs. Verified against `main` @ 2d162b33; "verified by reading" means not ru
 | D-A10 | `code_improvement.engine` selects the proposer backend | Recorded on the span only; `AGENT_INFERENCE_BACKEND` selects. | misleading flag |
 | D-A11 | Stale comment "propose → validate → promote is a documented follow-up" (`main.go:818`) | Cohort → promote is wired (`registry.go:1386`); only the M7-7 validator is unwired (#964). | stale comment |
 | D-A12 | `remediation_allowed` is a flagd flag | Read from `rollout.json` directly (defaultVariant only), bypassing OpenFeature (`actions/remediation_reader.go`); rollout cooldown is in memory only. | design inconsistency |
+| D-A13 | FR-041 and `gamecontext/gamekind.go`: an empty or unknown `game_kind` never counts as real (fail closed) | `gameKindOrDefault` in `services/agent/experiment_loop.go` (@ 7d25ade4) mapped an empty kind to `real`, so an unlabeled non-experiment game seeded the recent-real verdict baseline and an unlabeled experiment-game sample was stored as real. | **Resolved by this PR** (bug: only an explicit `real` / `primary` label seeds the baseline; tests `services/agent/experiment_fitness_store_test.go::TestOnGameEnd_EmptyOrUnknownKindNotInRealBaseline`, `TestRecordFinalizedFitness_EmptyKindNotLabeledReal`) |
 
 ### 4.7 Decide contract (D-K)
 

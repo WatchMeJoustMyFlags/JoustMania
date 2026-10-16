@@ -88,6 +88,52 @@ func TestOnGameEnd_ShadowWithoutExperimentNotInRealBaseline(t *testing.T) {
 	}
 }
 
+// TestOnGameEnd_EmptyOrUnknownKindNotInRealBaseline (FR-041, UC-041): a game with
+// no game_kind label (or an unrecognised one) and no ExperimentID must NOT seed the
+// recent-real baseline. Only an explicit real (or telemetry "primary") label counts
+// as real; empty and unknown kinds fail closed.
+func TestOnGameEnd_EmptyOrUnknownKindNotInRealBaseline(t *testing.T) {
+	for _, kind := range []string{"", "bogus"} {
+		t.Run("UC-041/kind="+kind, func(t *testing.T) {
+			store := experiment.NewFitnessStore(0)
+			loop := loopWithStore(store)
+
+			gc := realEnduranceGC("game_unlabeled", 600)
+			gc.GameKind = kind
+			loop.onGameEnd(gc)
+
+			if got := store.RecentReal(decision.ObjectiveEndurance, 8); len(got) != 0 {
+				t.Fatalf("game_kind %q must not seed the real baseline, got %d samples", kind, len(got))
+			}
+			if store.Len() != 0 {
+				t.Fatalf("game_kind %q must not be recorded at all, got %d samples", kind, store.Len())
+			}
+		})
+	}
+}
+
+// TestRecordFinalizedFitness_EmptyKindNotLabeledReal (FR-041): a finalized
+// experiment-game sample with no game_kind keeps the empty label, so the store's
+// recent-real baseline never picks it up.
+func TestRecordFinalizedFitness_EmptyKindNotLabeledReal(t *testing.T) {
+	store := experiment.NewFitnessStore(0)
+	loop := loopWithStore(store)
+
+	gc := gamecontext.GameContext{SessionID: "game_exp_unlabeled"}
+	loop.recordFinalizedFitness(gc, decision.ObjectiveEndurance, 0.9, 600)
+
+	sample, ok := store.Get("game_exp_unlabeled")
+	if !ok {
+		t.Fatal("experiment-game fitness sample not recorded")
+	}
+	if sample.GameKind == experiment.GameKindReal {
+		t.Fatalf("an unlabeled sample must not be labeled real, got %q", sample.GameKind)
+	}
+	if got := store.RecentReal(decision.ObjectiveEndurance, 8); len(got) != 0 {
+		t.Fatalf("an unlabeled sample must not reach the real baseline, got %d", len(got))
+	}
+}
+
 // TestRecordFinalizedRealFitness_SkipsMissingSignalObjective: a real game whose
 // signals don't support an objective (e.g. no duration → endurance skipped) does NOT
 // fabricate a sample for it (the #731 honesty contract).

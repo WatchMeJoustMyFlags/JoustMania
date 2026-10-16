@@ -989,7 +989,7 @@ func (e *experimentLoop) recordFinalizedFitness(gc gamecontext.GameContext, obje
 		GameID:    gc.SessionID,
 		Fitness:   fitness,
 		Objective: objective,
-		GameKind:  gameKindOrDefault(gc),
+		GameKind:  normalizedGameKind(gc),
 		DurationS: duration,
 	})
 }
@@ -1011,7 +1011,7 @@ func (e *experimentLoop) recordFinalizedRealFitness(gc gamecontext.GameContext, 
 	// labeled real may seed the recent-real baseline. An agent-spawned shadow game
 	// never reaches here (it carries an ExperimentID), but a defensively-labeled
 	// shadow game with no ExperimentID must not pollute the real baseline.
-	if gameKindOrDefault(gc) != experiment.GameKindReal {
+	if normalizedGameKind(gc) != experiment.GameKindReal {
 		return
 	}
 	eval := decision.EvaluateFitness(gc, decision.DefaultStaticConfig().FitnessThresholds)
@@ -1029,20 +1029,15 @@ func (e *experimentLoop) recordFinalizedRealFitness(gc gamecontext.GameContext, 
 	}
 }
 
-// gameKindOrDefault returns the game's kind label in the flag-evaluation
+// normalizedGameKind returns the game's kind label in the flag-evaluation
 // vocabulary (gamecontext.NormalizeGameKind: telemetry "primary" -> "real",
-// #1249), defaulting an empty label to "real": the coordinator labels a
-// player-facing game "primary" (normalised to "real" at ingest) but an older/edge
-// datapoint may omit the label, and the conservative default for the baseline is to
-// treat an unlabeled, non-experiment game as real (it has no ExperimentID and was
-// not agent-spawned). An agent shadow game ALWAYS carries an ExperimentID, so it is
-// never mislabeled real by this default.
-func gameKindOrDefault(gc gamecontext.GameContext) string {
-	kind := gamecontext.NormalizeGameKind(gc.GameKind)
-	if kind == "" {
-		return experiment.GameKindReal
-	}
-	return kind
+// #1249). An empty or unknown label is passed through unchanged and is NOT real:
+// only a game explicitly labeled real (or "primary") may seed the recent-real
+// baseline (FR-041, fail closed). An unlabeled game may be a shadow game whose
+// signals carried no game_kind, so treating it as real would let shadow fitness
+// pollute the baseline the verdict anchors on.
+func normalizedGameKind(gc gamecontext.GameContext) string {
+	return gamecontext.NormalizeGameKind(gc.GameKind)
 }
 
 // onGameTerminal is the #1014 terminal-outcome backstop, invoked by a spawned
