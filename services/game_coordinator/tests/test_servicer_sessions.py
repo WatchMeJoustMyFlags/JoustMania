@@ -1313,7 +1313,7 @@ class _HoldGame:
     async def run(self):
         await self._done.wait()
 
-    def force_end(self):
+    def force_end(self, reason=""):
         self._done.set()
 
     finish = force_end
