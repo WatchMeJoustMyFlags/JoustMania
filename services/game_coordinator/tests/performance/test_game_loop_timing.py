@@ -17,6 +17,7 @@ The pipeline per iteration:
 """
 
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -44,13 +45,8 @@ MEAN_ITERATION_BUDGET_MS = 16.67
 JITTER_BUDGET_MS = MEAN_ITERATION_BUDGET_MS / 4
 
 
-@pytest.mark.nfr("NFR-004")
 class TestGameLoopTiming:
-    """Test per-iteration timing of the game loop.
-
-    NFR-004 (partial): the per-frame processing cost the game adds on top of
-    the frame-count latency measured in TestDeathDetectionLatency.
-    """
+    """Test per-iteration timing of the game loop."""
 
     @pytest.mark.asyncio
     async def test_iteration_timing_4_players(self):
@@ -231,7 +227,9 @@ class TestGameLoopTiming:
         it failed on shared runners and WSL with no real regression (#1283:
         CV 1.196 at mean 0.033 ms). The assertion is now on robust absolute
         statistics: the p99 frame stays well inside the frame budget and the
-        p99 - p50 spread stays under a quarter frame.
+        p99 - p50 spread stays under a quarter frame. Frames are timed with
+        thread CPU time (time.thread_time), so preemption by other processes is
+        excluded; wall-clock frame cost is covered by the iteration timing tests.
         """
         import statistics
 
@@ -249,11 +247,13 @@ class TestGameLoopTiming:
         for _ in range(num_iterations):
             mock_data = generate_mock_accel(num_controllers, movement="gentle")
 
-            with measure_time() as timer:
-                for controller_data in mock_data:
-                    await game._process_controller_state(controller_data)
-
-            frame_times.append(timer.elapsed_ms)
+            # Thread CPU time, not wall time: time spent preempted by other
+            # processes on a shared runner is not jitter of the game loop's own
+            # work, and under load it alone can approach the jitter budget.
+            started = time.thread_time()
+            for controller_data in mock_data:
+                await game._process_controller_state(controller_data)
+            frame_times.append((time.thread_time() - started) * 1000.0)
 
         ordered = sorted(frame_times)
         p50 = statistics.median(ordered)
@@ -276,6 +276,7 @@ class TestGameLoopTiming:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.nfr("NFR-004")  # the cost of a death frame, on top of TestDeathDetectionLatency's frame count
     async def test_death_processing_overhead(self):
         """Measure overhead of death processing vs normal frame processing.
 

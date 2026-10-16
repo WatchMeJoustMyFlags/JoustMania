@@ -18,8 +18,9 @@ class FlagConfigWriter:
     Read-modify-write for a single flagd flag file.
 
     Each instance manages one flag file (e.g., game.json).
-    Writes directly to the file (not via temp + rename) because
-    os.replace() fails with EBUSY on Docker bind mounts.
+    Writes directly to the file (in place, not via temp + rename) because a
+    rename fails with EBUSY on a single-file Docker bind mount, or leaves the
+    container pinned to the old inode.
 
     flagd (v0.16, in docker) has no inotify watch: it stats the file every
     1 s and reloads on an mtime change, so readers see the change 0-1 s later

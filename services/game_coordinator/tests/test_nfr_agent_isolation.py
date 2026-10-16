@@ -3,13 +3,23 @@
 NFR-013 holds by structure: the coordinator never calls the agent service or a
 model, it only reacts to flag changes, so a remote decision adds 0 ms to the game
 loop. This test pins that structure so a later change cannot quietly add such a
-call: it parses every production module of the coordinator and checks its imports.
+call. It parses every production module of the coordinator, plus every ``lib``
+module they import (followed transitively through ``lib``), and checks:
 
 - No LLM SDK and no HTTP client library is imported.
 - The only gRPC stubs imported are the ones for the coordinator's known
   dependencies (controller manager, audio), its own service and its health
   server. The agent has no gRPC API at all (it only receives OTLP), so any new
   stub is a new outbound dependency that needs a spec change first.
+- No dynamic import (``importlib.import_module`` / ``__import__``), which would
+  hide an import from this scan.
+
+Blind spots (what this static scan cannot see):
+- third-party packages are not followed: an allowed dependency (grpc,
+  openfeature, opentelemetry) is trusted not to call the agent or a model;
+- a raw socket, a subprocess, or a gRPC channel used with a generic stub
+  (``channel.unary_unary("/agent...")``) is not detected;
+- the ``proto`` package itself is not scanned, only which stubs are imported.
 
 The agent side of NFR-013 (asynchronous call, one in flight, timeout and error
 fall back to rules) is covered by the Go tests tagged ``// NFR: NFR-013`` in
@@ -22,6 +32,8 @@ from pathlib import Path
 import pytest
 
 SERVICE_DIR = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = SERVICE_DIR.parent.parent
+LIB_DIR = PROJECT_ROOT / "lib"
 
 FORBIDDEN_IMPORT_PREFIXES = (
     "anthropic",
@@ -47,9 +59,13 @@ def _production_modules() -> list[Path]:
     return [p for p in SERVICE_DIR.rglob("*.py") if not skipped & set(p.relative_to(SERVICE_DIR).parts)]
 
 
-def _imports(path: Path) -> set[str]:
+def _parse(path: Path) -> ast.Module:
+    return ast.parse(path.read_text(), filename=str(path))
+
+
+def _imports(tree: ast.Module) -> set[str]:
     names: set[str] = set()
-    for node in ast.walk(ast.parse(path.read_text(), filename=str(path))):
+    for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             names |= {alias.name for alias in node.names}
         elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
@@ -58,11 +74,61 @@ def _imports(path: Path) -> set[str]:
     return names
 
 
+def _dynamic_imports(tree: ast.Module) -> list[int]:
+    """Line numbers of importlib.import_module(...) / __import__(...) calls."""
+    lines = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else func.id if isinstance(func, ast.Name) else ""
+        if name in {"import_module", "__import__"}:
+            lines.append(node.lineno)
+    return lines
+
+
+def _lib_module_path(dotted: str) -> Path | None:
+    """Map ``lib.a.b`` (module or ``module.symbol``) to its file under lib/, if any."""
+    parts = dotted.split(".")[1:]
+    while parts:
+        candidate = LIB_DIR.joinpath(*parts)
+        if candidate.with_suffix(".py").is_file():
+            return candidate.with_suffix(".py")
+        if (candidate / "__init__.py").is_file():
+            return candidate / "__init__.py"
+        parts = parts[:-1]
+    return None
+
+
+def _scanned_modules() -> dict[str, ast.Module]:
+    """The coordinator's production modules plus the lib modules reachable from them."""
+    trees = {str(p.relative_to(PROJECT_ROOT)): _parse(p) for p in _production_modules()}
+    queue = list(trees.values())
+    while queue:
+        for name in _imports(queue.pop()):
+            if not name.startswith("lib."):
+                continue
+            path = _lib_module_path(name)
+            if path is None:
+                continue
+            key = str(path.relative_to(PROJECT_ROOT))
+            if key not in trees:
+                trees[key] = _parse(path)
+                queue.append(trees[key])
+    return trees
+
+
 @pytest.fixture(scope="module")
-def imports_by_module() -> dict[str, set[str]]:
-    modules = _production_modules()
-    assert len(modules) > 10, f"expected the coordinator's production modules under {SERVICE_DIR}"
-    return {str(p.relative_to(SERVICE_DIR)): _imports(p) for p in modules}
+def scanned() -> dict[str, ast.Module]:
+    trees = _scanned_modules()
+    assert sum(k.startswith("services/") for k in trees) > 10, f"expected the coordinator's modules under {SERVICE_DIR}"
+    assert any(k.startswith("lib/") for k in trees), "expected lib modules reached from the coordinator"
+    return trees
+
+
+@pytest.fixture(scope="module")
+def imports_by_module(scanned) -> dict[str, set[str]]:
+    return {module: _imports(tree) for module, tree in scanned.items()}
 
 
 @pytest.mark.nfr("NFR-013")
@@ -81,3 +147,9 @@ def test_coordinator_grpc_stubs_are_known_dependencies_only(imports_by_module):
     assert "proto.controller_manager_pb2_grpc" in stubs, "scan found no gRPC stubs; is the import parsing broken?"
     unexpected = stubs - ALLOWED_GRPC_STUBS
     assert not unexpected, f"game coordinator imports a new gRPC client {sorted(unexpected)} (NFR-013)"
+
+
+@pytest.mark.nfr("NFR-013")
+def test_no_dynamic_imports_hide_dependencies(scanned):
+    offenders = {module: lines for module, tree in scanned.items() if (lines := _dynamic_imports(tree))}
+    assert not offenders, f"dynamic imports hide dependencies from the NFR-013 scan: {offenders}"

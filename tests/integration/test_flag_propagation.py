@@ -13,8 +13,10 @@ side by side:
 
 How:
 - A dedicated probe flag (``nfr014_propagation_probe``) is added to
-  ``observability.json``; no service reads it, so the measurement has no side
-  effects. The file is snapshotted and restored byte for byte.
+  ``observability.json``. No service reads that flag, but each write still makes
+  flagd reload the whole flag set, so every observability-domain reader gets a
+  PROVIDER_CONFIGURATION_CHANGED event and re-reads values that did not change.
+  The file is snapshotted and restored byte for byte.
 - Each sample writes a new nonce IN PLACE (open/truncate/write, the repo
   convention: a temp+rename write breaks single-file bind mounts), then polls
   both readers every 5 ms until they serve the nonce. Latency = first poll that
@@ -26,7 +28,8 @@ How:
   spaced writes would phase-lock and report one point of the distribution.
 
 The assertion bounds are deliberately loose (CI runners are shared); the printed
-distribution is the measurement.
+distribution, every raw sample included, is the measurement. A failure says
+whether a write was never reloaded (missed reload) or reloaded too slowly.
 """
 
 import json
@@ -77,13 +80,18 @@ def _percentile(ordered: list[float], pct: float) -> float:
 
 def measure_flag_propagation(
     docker_compose, samples: int = SAMPLES
-) -> dict[str, list[float]]:
-    """Return per-reader latencies (seconds) for ``samples`` in-place flag edits."""
+) -> dict[str, list[float | None]]:
+    """Return per-reader latencies (seconds) for ``samples`` in-place flag edits.
+
+    A sample is ``None`` for a reader that did not serve the edit within
+    SAMPLE_TIMEOUT_SECONDS: flagd's file watcher missed that write (no reload
+    observed), which is a different failure from a slow reload.
+    """
     path = active_flag_file(FLAG_SET)
     with open(path) as f:
         original_text = f.read()
     base_doc = json.loads(original_text)
-    latencies: dict[str, list[float]] = {"in_process": [], "rpc": []}
+    latencies: dict[str, list[float | None]] = {"in_process": [], "rpc": []}
 
     try:
         with (
@@ -114,39 +122,58 @@ def measure_flag_propagation(
                 written_at = _write_in_place(path, _with_probe(base_doc, nonce))
                 pending = dict(readers)
                 deadline = written_at + SAMPLE_TIMEOUT_SECONDS
-                while pending:
-                    now = time.monotonic()
-                    assert now < deadline, (
-                        f"readers {sorted(pending)} did not serve the edit within {SAMPLE_TIMEOUT_SECONDS}s"
-                    )
+                while pending and time.monotonic() < deadline:
                     for name, reader in list(pending.items()):
                         if reader.get_string_value(PROBE_FLAG, "", None) == nonce:
                             latencies[name].append(time.monotonic() - written_at)
                             del pending[name]
                     time.sleep(POLL_INTERVAL_SECONDS)
+                for name in pending:
+                    latencies[name].append(None)
     finally:
         _write_in_place(path, original_text)
 
     return latencies
 
 
+def format_distribution(latencies: dict[str, list[float | None]]) -> str:
+    """Summary line plus every raw sample per reader, for the CI log."""
+    lines = [
+        f"--- NFR-014 flag propagation, {SAMPLES} in-place edits of {FLAG_SET}.json ---"
+    ]
+    for name, values in latencies.items():
+        seen = sorted(v for v in values if v is not None)
+        raw = " ".join("MISS" if v is None else f"{v * 1000:.0f}" for v in values)
+        if seen:
+            lines.append(
+                f"  {name:<10} n={len(seen)} misses={len(values) - len(seen)}  min {seen[0] * 1000:.0f} ms"
+                f"  median {statistics.median(seen) * 1000:.0f} ms  p90 {_percentile(seen, 0.9) * 1000:.0f} ms"
+                f"  max {seen[-1] * 1000:.0f} ms"
+            )
+        else:
+            lines.append(f"  {name:<10} n=0 misses={len(values)}")
+        lines.append(f"  {name:<10} raw ms: {raw}")
+    return "\n".join(lines)
+
+
 @pytest.mark.nfr("NFR-014")
-def test_flag_file_edit_reaches_readers_within_poll_bound(docker_compose):
+def test_flag_file_edit_reaches_readers_within_poll_bound(docker_compose, capsys):
     latencies = measure_flag_propagation(docker_compose)
-
-    print(
-        f"\n--- NFR-014 flag propagation, {SAMPLES} in-place edits of {FLAG_SET}.json ---"
-    )
-    for name, values in latencies.items():
-        ordered = sorted(values)
-        print(
-            f"  {name:<10} min {ordered[0] * 1000:6.0f} ms  median {statistics.median(ordered) * 1000:6.0f} ms  "
-            f"p90 {_percentile(ordered, 0.9) * 1000:6.0f} ms  max {ordered[-1] * 1000:6.0f} ms"
-        )
+    report = format_distribution(latencies)
+    # Write past pytest's capture so a passing CI run's log carries the measurement too.
+    with capsys.disabled():
+        print("\n" + report)
 
     for name, values in latencies.items():
-        assert len(values) == SAMPLES
-        assert statistics.median(values) < MEDIAN_BOUND_SECONDS, (
-            f"{name}: median {statistics.median(values):.3f}s"
+        missed = [i for i, v in enumerate(values) if v is None]
+        assert not missed, (
+            f"{name}: no reload observed for sample(s) {missed} within {SAMPLE_TIMEOUT_SECONDS}s "
+            f"(missed reload, not a slow one)\n{report}"
         )
-        assert max(values) < MAX_BOUND_SECONDS, f"{name}: max {max(values):.3f}s"
+        seen = [v for v in values if v is not None]
+        assert statistics.median(seen) < MEDIAN_BOUND_SECONDS, (
+            f"{name}: slow propagation, median {statistics.median(seen):.3f}s >= {MEDIAN_BOUND_SECONDS}s\n{report}"
+        )
+        assert max(seen) < MAX_BOUND_SECONDS, (
+            f"{name}: slow propagation, max {max(seen):.3f}s >= {MAX_BOUND_SECONDS}s\n{report}"
+        )
