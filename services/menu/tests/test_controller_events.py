@@ -89,7 +89,6 @@ class TestControllerEventLoopDispatch:
     """Test event dispatching."""
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-002", flow="main", steps=[6])
     async def test_dispatch_connect_event(self, event_loop_instance, mock_callbacks, mock_metrics):
         """Connect events should call on_connect callback."""
         event = MagicMock()
@@ -420,7 +419,7 @@ class TestHandlerErrorIsolation:
     """#1272: one handler exception must not drop the stream or wipe the lobby."""
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-011", flow="A2", br=["BR-003"])
+    @pytest.mark.uc("UC-011", flow="main", br=["BR-003"])
     async def test_dispatch_safely_swallows_and_counts(self, event_loop_instance, mock_callbacks, mock_metrics):
         """A raising callback is logged and counted, not propagated."""
         mock_callbacks.on_button.side_effect = AttributeError("boom")
@@ -431,7 +430,7 @@ class TestHandlerErrorIsolation:
         mock_metrics.button_event_errors_total.labels.return_value.inc.assert_called_once()
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-011", flow="A2", br=["BR-003"])
+    @pytest.mark.uc("UC-011", flow="main", br=["BR-003"])
     async def test_handler_exception_keeps_stream_and_ready_state(self, mock_metrics):
         """A handler raising mid-stream leaves the stream up and READY controllers READY.
 

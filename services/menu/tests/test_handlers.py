@@ -142,7 +142,7 @@ class TestConnectedHandler:
         mock_state_manager.led.set_connected_color.assert_called_once_with("serial1", "JoustFFA")
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-010", flow="main", steps=[1, 2])
+    @pytest.mark.uc("UC-010", flow="main", steps=[2])
     async def test_handle_button_trigger(self, handler, mock_state_manager):
         """Trigger press should transition to READY."""
         mock_state_manager.register_handler(handler)

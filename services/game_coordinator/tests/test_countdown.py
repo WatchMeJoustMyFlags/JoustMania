@@ -74,6 +74,30 @@ class TestCountdown:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="main", steps=[6])
+    async def test_default_phase_is_750_ms(self):
+        """UC-010 step 6 / NFR-005: with the default config each phase (effect and beep gap) lasts 750 ms."""
+        assert GamePerformanceConfig().countdown_phase_duration_ms == 750
+        events = EventCollector()
+        game = await _game(events)
+        manager = create_autospec(RuntimeConfigManager, instance=True)
+        manager.get_config.return_value = GamePerformanceConfig()
+
+        with (
+            patch("services.game_coordinator.games.base.get_config_manager", return_value=manager),
+            patch.object(game, "_play_sound", AsyncMock()),
+            patch("services.game_coordinator.games.base.asyncio.sleep", AsyncMock()) as sleep,
+        ):
+            await game._countdown()
+
+        effects = [c.args[0].game_effect for c in game.gameplay_stream.write.await_args_list]
+        assert {e.duration_ms for e in effects} == {750}
+        assert events.get_events_of_type("countdown_start")[0] == {"phase_duration_ms": 750}
+        # 3 beeps, each followed by 750 ms of 50 ms waits.
+        assert sleep.await_count == 3 * 15
+        assert {c.args[0] for c in sleep.await_args_list} == {0.05}
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="main", steps=[6])
     async def test_zero_phase_duration_skips_countdown(self):
         """countdown_phase_duration_ms=0 skips effects and sounds but still brackets start/end."""
         events = EventCollector()
