@@ -1,0 +1,54 @@
+# Test Cases (AIUP test-case layer)
+
+End-to-end journeys that chain several use cases, in the format of the AIUP `test-case` skill
+(`aiup-core` plugin; template: Overview, Roles, Preconditions, Flow, Validation, Postconditions).
+A test case is the document an end-to-end test automates (`/integration-test TC-XXX`); the test then
+carries `@pytest.mark.uc("UC-xxx", flow=..., tc="TC-XXX")` per use-case flow it exercises and a
+`# Step <n>: <name>` comment per Flow row (see [.claude/skills/README.md](../../.claude/skills/README.md)).
+
+JoustMania additions to the template:
+
+- **`**Use cases:**`** in the Overview lists every linked use case with the flows the journey exercises.
+- **`## Automation`** names the tests that implement the journey (path::test), what they do not cover, and
+  the issue that plans the rest. `Manual` means the journey needs real hardware or real model backends.
+
+## How the spec lint uses them
+
+`scripts/aiup/spec-review/scripts/spec_lint.py` (the Spec Gate) reads every `TC-*.md` here: ids must be
+unique and every `[UC-xxx](../use_cases/UC-xxx.md)` link must resolve. `--trace` shows the requirement
+coverage stage "Every use case in a test case": a requirement reaches it when every active use case that
+lists it is linked from at least one test case. "Verified" is a separate stage: it is derived from the use
+cases' status (`Tested`), which `/coverage-check` grants only when every main scenario and alternative flow
+has a tagged test. A test case alone never makes a requirement Verified.
+
+## Scope
+
+Free-for-All is the current focus: TC-001 to TC-016 are FFA journeys or mode-independent (agent, rollout,
+canary, talk). The other game modes (UC-021 to UC-026) are covered by one backlog journey, TC-017, so they
+stay traceable; their detailed journeys are backlog (#1361).
+
+## Index
+
+| ID | Journey | Use cases | Priority | Status | Automation |
+|---|---|---|---|---|---|
+| [TC-001](TC-001-ffa-game-night-hardware.md) | FFA game night on real controllers | UC-001, UC-002, UC-010, UC-020, UC-030, UC-031 | Critical | Draft | Manual (hardware); mock twin TC-002 |
+| [TC-002](TC-002-ffa-mock-game-to-winner.md) | FFA game to a winner on mock controllers | UC-003, UC-002, UC-011, UC-010, UC-020, UC-030 | Critical | Automated | `test_full_game_lifecycle[JoustFFA]`; event gaps #1360 |
+| [TC-003](TC-003-ffa-player-disconnects.md) | Player disconnects during an FFA game | UC-003, UC-010, UC-020, UC-030, UC-002 | High | Draft | Planned #1360 |
+| [TC-004](TC-004-operator-stops-ffa-game.md) | Operator stops an FFA game | UC-010, UC-020, UC-027 | High | Draft | Partly (`test_concurrent_games`); #1360 |
+| [TC-005](TC-005-host-tunes-and-force-starts.md) | Host tunes the game in admin mode and force-starts | UC-012, UC-011, UC-014, UC-010 | High | Automated | `test_admin_flow` (per step); gaps #1359 |
+| [TC-006](TC-006-host-restricts-agent-from-controller.md) | Host restricts the agent from the controller | UC-012, UC-013, UC-040, UC-045 | Critical | Draft | Partly (`test_intervention_flow`); #1359, #1363 |
+| [TC-007](TC-007-agent-intervenes-in-ffa-game.md) | Agent intervenes in an FFA game on rules | UC-010, UC-041, UC-040, UC-020, UC-030, UC-031, UC-035 | Critical | Draft | Partly (`test_decide_backend_e2e`, `test_intervention_smoke`, `test_f6_flow`); #1362, #1363, #1365 |
+| [TC-008](TC-008-remote-backend-confidence-routing.md) | Switch to a remote backend and route by confidence | UC-044, UC-040, UC-020 | Critical | Automated | `test_decide_backend_e2e` (openai fake); Jev/Claude #1363 |
+| [TC-009](TC-009-kill-switch-during-ffa-game.md) | Kill switch during an FFA game | UC-045, UC-040, UC-044 | Critical | Automated | `test_kill_switch_discards_inflight_answer`; resume #1363 |
+| [TC-010](TC-010-ffa-game-end-retro-and-proposal.md) | FFA game end: retro, summary, proposal | UC-020, UC-041, UC-042, UC-043 | High | Draft | Partly; #1362 |
+| [TC-011](TC-011-shadow-experiment-to-verdict.md) | Shadow experiment runs to a verdict | UC-043, UC-046, UC-003, UC-041, UC-040 | High | Automated | `test_experiment_cohort_loop`; promotion #1362 |
+| [TC-012](TC-012-pattern-game-replay.md) | Replay a pattern-driven game exactly | UC-046, UC-003, UC-030 | Medium | Automated | `test_pattern_game_replays_identically`; script in CI #1366 |
+| [TC-013](TC-013-shadow-game-alongside-real-game.md) | Shadow game alongside a real FFA game | UC-010, UC-003, UC-020, UC-040, UC-027, UC-043 | High | Draft | Partly (`test_concurrent_games`, `test_gameid_intervention_isolation`); #1360, #1362 |
+| [TC-014](TC-014-progressive-rollout-and-rollback.md) | Progressive rollout with automatic rollback | UC-050, UC-051, UC-045, UC-041 | High | Draft | Planned #1390 |
+| [TC-015](TC-015-canary-and-chaos-by-hand.md) | Canary a backend and inject chaos by hand | UC-052, UC-035 | Medium | Draft | Manual; #1364, #1365 |
+| [TC-016](TC-016-talk-demo-rehearsal.md) | Talk demo rehearsal | UC-070, UC-044, UC-045, UC-040, UC-042, UC-035 | Medium | Draft | Manual; script tests, #1366 |
+| [TC-017](TC-017-non-ffa-modes-round-backlog.md) | One round of every non-FFA mode (backlog) | UC-021 to UC-026, UC-030 | Low | Draft | Partly (`test_parallel_lifecycle`); backlog #1361 |
+
+Status follows the skill: `Automated` = an end-to-end test implements the journey (gaps listed in the
+file), `Draft` = not or only partly automated, or written for review. None of the existing tests carries
+`tc="TC-XXX"` yet; tagging is part of #1356.
