@@ -9,7 +9,8 @@
 # Checks:
 #   1. the stack containers are running (and healthy where they have a check)
 #   2. the flag file the helper scripts edit is the one flagd and the agent mount
-#   3. the stage baseline of the decision.* + safety flags (defaultVariant)
+#   3. the stage baseline of the decision.* + safety flags (defaultVariant),
+#      and the interventions.json next to it back at its neutral variants
 #   4. which decision backends have an API key in the agent container
 #      (presence only; values are never printed)
 #   5. Jaeger reachable and holding agent.decide spans from the last N minutes
@@ -108,6 +109,10 @@ else
 fi
 if [[ "${docker_ok}" -eq 1 && -n "${flag_dir}" ]]; then
   for name in joustmania-flagd joustmania-agent; do
+    if ! docker inspect -f '{{.Id}}' "${name}" >/dev/null 2>&1; then
+      fail "${name}: container not found, cannot check its flag mount"
+      continue
+    fi
     src="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/etc/flagd"}}{{.Source}}{{end}}{{end}}' "${name}" 2>/dev/null)" || src=""
     if [[ -z "${src}" ]]; then
       fail "${name}: no /etc/flagd mount found"
@@ -125,6 +130,7 @@ if [[ -f "${FLAG_FILE}" ]]; then
   # The python prints the result lines itself (PASS/WARN/FAIL prefix); count them.
   flag_out="$(python3 - "${FLAG_FILE}" "${EXPECT_BACKEND}" <<'PY'
 import json
+import os
 import sys
 
 path, expect_backend = sys.argv[1], sys.argv[2]
@@ -184,7 +190,35 @@ print(f"INFO  decision.openai.base_url = {shown(base_url)}; variants: {', '.join
 
 budget = flags.get("llm.max_requests_per_minute")
 if budget is not None:
-    print(f"INFO  llm.max_requests_per_minute = {shown(budget)} (global remote-call budget)")
+    print(f"INFO  llm.max_requests_per_minute = {shown(budget)} "
+          "(global remote-call budget; ignored when AGENT_LLM_MAX_REQUESTS_PER_MINUTE is set)")
+
+# interventions.json (same dir): what the agent applied during a run stays there.
+# Neutral = the shipped default: "none" if the flag has it, else "default", else "off".
+ivpath = os.path.join(os.path.dirname(path), "interventions.json")
+try:
+    with open(ivpath) as fh:
+        ivflags = json.load(fh).get("flags", {})
+except FileNotFoundError:
+    print(f"WARN  {ivpath} not found")
+    ivflags = None
+except ValueError as exc:
+    print(f"FAIL  cannot parse {ivpath}: {exc} (flagd rejects the whole file)")
+    ivflags = None
+if ivflags is not None:
+    dirty = []
+    for key, flag in ivflags.items():
+        variants = flag.get("variants", {})
+        neutral = next((v for v in ("none", "default", "off") if v in variants), None)
+        if neutral is not None and flag.get("defaultVariant") != neutral:
+            dirty.append(f"{key}={flag.get('defaultVariant')}")
+        if flag.get("targeting"):
+            dirty.append(f"{key}(targeting)")
+    if dirty:
+        print(f"WARN  interventions.json not neutral: {', '.join(dirty)} "
+              f"(reset: git checkout {ivpath})")
+    else:
+        print("PASS  interventions.json at neutral variants")
 PY
 )"
   while IFS= read -r line; do
@@ -211,10 +245,12 @@ if [[ "${docker_ok}" -eq 1 ]]; then
     if key_set JEV_API_KEY; then info "jev: JEV_API_KEY present"; else info "jev: JEV_API_KEY absent (expected while Jev is a stub)"; fi
     # Not a secret: the per-minute budget override, read at agent start.
     budget_override="$(grep -E '^AGENT_LLM_MAX_REQUESTS_PER_MINUTE=' <<<"${agent_env}" | head -1 | cut -d= -f2-)"
-    if [[ "${budget_override}" =~ ^[0-9]+$ && "${budget_override}" -ge 20 ]]; then
-      pass "AGENT_LLM_MAX_REQUESTS_PER_MINUTE=${budget_override} (covers one game at a 3 s cadence)"
+    if [[ "${budget_override}" =~ ^[0-9]+$ && "${budget_override}" -ge 30 ]]; then
+      pass "AGENT_LLM_MAX_REQUESTS_PER_MINUTE=${budget_override} (one game at a 3 s cadence + retros; the flag is ignored)"
+    elif [[ "${budget_override}" =~ ^[0-9]+$ && "${budget_override}" -gt 0 ]]; then
+      warn "AGENT_LLM_MAX_REQUESTS_PER_MINUTE=${budget_override} overrides the flag but is below the recommended 30/min; only decision.min_interval_ms can relieve it live"
     else
-      warn "AGENT_LLM_MAX_REQUESTS_PER_MINUTE='${budget_override}': the llm.max_requests_per_minute flag governs; below 20/min remote decisions fall back with llm_budget_exhausted"
+      warn "AGENT_LLM_MAX_REQUESTS_PER_MINUTE unset: the llm.max_requests_per_minute flag governs; below 20/min remote decisions fall back with llm_budget_exhausted"
     fi
   fi
 fi
@@ -228,7 +264,7 @@ else
     pass "Jaeger API reachable"
     end_us="$(($(date +%s) * 1000000))"
     start_us="$((end_us - MINUTES * 60 * 1000000))"
-    traces="$(curl -fs --max-time 15 "${BASE_URL}/jaeger/api/traces?service=agent&operation=agent.decide&start=${start_us}&end=${end_us}&limit=20" 2>/dev/null)" || traces=""
+    traces="$(curl -fs --max-time 15 "${BASE_URL}/jaeger/api/traces?service=agent&operation=agent.decide&start=${start_us}&end=${end_us}&limit=5" 2>/dev/null)" || traces=""
     summary="$(python3 -c '
 import json, sys
 try:
@@ -277,7 +313,8 @@ print(len(spans), tags.get("decide.backend"), tags.get("decide.outcome"), tags.g
   ref_url=""
   for url in ${CLOCK_URLS}; do
     date_hdr="$(curl -sSI --max-time 5 "${url}" 2>/dev/null | tr -d '\r' | awk 'tolower($1) == "date:" { sub(/^[^:]*:[ ]*/, ""); print; exit }')"
-    if [[ -n "${date_hdr}" ]] && ref_epoch="$(date -u -d "${date_hdr}" +%s 2>/dev/null)"; then
+    # python parses the RFC 7231 date the same way on Linux and macOS (BSD date has no -d).
+    if [[ -n "${date_hdr}" ]] && ref_epoch="$(python3 -c 'import sys, email.utils; print(int(email.utils.parsedate_to_datetime(sys.argv[1]).timestamp()))' "${date_hdr}" 2>/dev/null)"; then
       ref_url="${url}"
       break
     fi
@@ -286,15 +323,15 @@ print(len(spans), tags.get("decide.backend"), tags.get("decide.outcome"), tags.g
   if [[ -z "${ref_epoch}" ]]; then
     warn "no reference host answered (${CLOCK_URLS}); offline? check the clock by hand: date -u"
   else
-    skew=$(($(date -u +%s) - ref_epoch))
+    skew=$(($(date +%s) - ref_epoch))
     abs_skew="${skew#-}"
     if [[ "${abs_skew}" -gt "${MAX_SKEW}" ]]; then
-      warn "clock skew ${skew}s vs ${ref_url} (> ${MAX_SKEW}s): fix NTP before the talk (Jaeger windows and Grafana assume a sane clock)"
+      warn "clock skew ${skew}s vs ${ref_url} (> ${MAX_SKEW}s): fix NTP before the talk (Jaeger lookback searches and Grafana assume a sane clock)"
     else
       pass "clock skew ${skew}s vs ${ref_url}"
     fi
-    # The same request proves the hosted backend's network path for claude.
-    info "outbound HTTPS works (${ref_url} answered)"
+    # Outbound HTTPS from this host works; it does not prove a backend key or model works.
+    info "outbound HTTPS works from this host (${ref_url} answered)"
   fi
 fi
 

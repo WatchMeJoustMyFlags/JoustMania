@@ -15,6 +15,7 @@ trap 'rm -rf "${WORK}"' EXIT
 mkdir -p "${WORK}/bin" "${WORK}/flags"
 export AGENT_FLAG_FILE="${WORK}/flags/agent.json"
 export TALK_CLOCK_URLS="https://clock.test"
+REAL_DATE="$(command -v date)"
 export PATH="${WORK}/bin:${PATH}"
 SECRET="sk-test-DO-NOT-PRINT-123"
 
@@ -23,6 +24,7 @@ cat >"${WORK}/bin/docker" <<'SH'
 #!/usr/bin/env bash
 [[ "$1" == "info" ]] && exit 0
 if [[ "$1" == "inspect" ]]; then
+  [[ -n "${STUB_MISSING:-}" && "$4" == "${STUB_MISSING}" ]] && exit 1
   fmt="$3"
   case "${fmt}" in
     *State.Status*) echo "running healthy" ;;
@@ -47,11 +49,35 @@ done
 exit 0
 SH
 printf '#!/usr/bin/env bash\necho yes\n' >"${WORK}/bin/timedatectl"
+# date stub: freezes `date +%s` (no second-boundary flakes), real date otherwise.
+cat >"${WORK}/bin/date" <<SH
+#!/usr/bin/env bash
+if [[ "\$*" == "+%s" ]]; then echo 1760000000; exit 0; fi
+exec "${REAL_DATE}" "\$@"
+SH
 chmod +x "${WORK}/bin/"*
 export STUB_SECRET="${SECRET}"
 export STUB_MOUNT="${WORK}/flags"
 
+iv_fixture() {
+  python3 - "${WORK}/flags/interventions.json" "$@" <<'PY'
+import json, sys
+path, overrides = sys.argv[1], dict(a.split("=", 1) for a in sys.argv[2:])
+def f(variants, default):
+    return {"state": "ENABLED", "variants": {v: v for v in variants}, "defaultVariant": default}
+flags = {
+    "shield_seconds": f(["none", "short", "default", "long"], "none"),
+    "player_handicap_factor": f(["default", "help"], "default"),
+    "auto_rubberband": f(["off", "gentle"], "off"),
+}
+for key, variant in overrides.items():
+    flags[key]["defaultVariant"] = variant
+json.dump({"flags": flags}, open(path, "w"), indent=2)
+PY
+}
+
 fixture() {
+  iv_fixture
   python3 - "${AGENT_FLAG_FILE}" "$@" <<'PY'
 import json, sys
 path, overrides = sys.argv[1], dict(a.split("=", 1) for a in sys.argv[2:])
@@ -95,12 +121,13 @@ check() { if has "$2"; then ok "$1"; else not_ok "$1 (missing: $2)"; fi; }
 
 # --- happy path -------------------------------------------------------------
 fixture
-STUB_BUDGET=20 run_preflight
+STUB_BUDGET=30 run_preflight
 if [[ "${RC}" -eq 0 ]]; then ok "baseline stack exits 0"; else not_ok "baseline stack exits 0 (rc=${RC}): ${OUT}"; fi
 check "flagd mount matches" "PASS  joustmania-flagd: mounts ${WORK}/flags"
 check "claude key present" "PASS  claude: ANTHROPIC_API_KEY present"
 check "empty openai key is missing" "WARN  openai: DECISION_OPENAI_API_KEY missing"
-check "budget override passes" "PASS  AGENT_LLM_MAX_REQUESTS_PER_MINUTE=20"
+check "budget override passes" "PASS  AGENT_LLM_MAX_REQUESTS_PER_MINUTE=30"
+check "interventions neutral" "PASS  interventions.json at neutral variants"
 check "jaeger newest span summarised" "newest: backend=claude outcome=held"
 check "vendor variant listed" "decision.openai.model variants available: vendor"
 check "clock in sync" "PASS  clock skew 0s"
@@ -113,7 +140,7 @@ run_preflight
 if [[ "${RC}" -eq 1 ]]; then ok "drift exits 1"; else not_ok "drift exits 1 (rc=${RC})"; fi
 check "kill switch off fails" "FAIL  enabled = off (false), stage baseline is on"
 check "strict threshold fails" "FAIL  decision.act_confidence_threshold = strict (0.95), stage baseline is default"
-check "low budget warns" "WARN  AGENT_LLM_MAX_REQUESTS_PER_MINUTE=''"
+check "unset budget warns" "WARN  AGENT_LLM_MAX_REQUESTS_PER_MINUTE unset"
 if [[ "$(cat "${AGENT_FLAG_FILE}")" == "${before}" ]]; then ok "flag file untouched"; else not_ok "flag file untouched"; fi
 
 # --- expected backend override ---------------------------------------------
@@ -126,6 +153,17 @@ fixture
 STUB_MOUNT=/somewhere/else STUB_SKEW=300 run_preflight
 check "mount mismatch fails" "FAIL  joustmania-flagd: mounts /somewhere/else"
 check "skew warns" "WARN  clock skew 300s"
+
+# --- interventions left over from a run ------------------------------------
+fixture
+iv_fixture shield_seconds=default auto_rubberband=gentle
+run_preflight
+check "applied interventions warn" "WARN  interventions.json not neutral: shield_seconds=default, auto_rubberband=gentle"
+
+# --- container missing -----------------------------------------------------
+fixture
+STUB_MISSING=joustmania-agent run_preflight
+check "missing container named" "FAIL  joustmania-agent: container not found, cannot check its flag mount"
 
 # --- usage -----------------------------------------------------------------
 run_preflight --minutes abc
