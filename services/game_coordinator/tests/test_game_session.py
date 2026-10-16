@@ -786,7 +786,8 @@ class TestGameSessionForceEnd:
 
         assert ok is True
         assert error == ""
-        mock_game.force_end.assert_called_once()
+        # The reason reaches the game so its outcome is force_ended (#1328).
+        mock_game.force_end.assert_called_once_with("user requested")
         assert session.game_state == game_coordinator_pb2.GameState.ENDED
         session.event_bus.publish.assert_awaited()
 
