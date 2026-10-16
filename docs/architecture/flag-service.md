@@ -1,7 +1,9 @@
 # Flag service: in-memory runtime flags as a gRPC sync source for flagd
 
 > Architecture note. Status: **planned** (epic #1407). Written 2026-10-16 against `main`; revised the same day
-> with the maintainer's decisions on the review of PR #1417 (§1, decisions D3, D4, D10 to D13).
+> with the maintainer's decisions on the review of PR #1417 (§1, decisions D3, D4, D10 to D13), and again with
+> the decisions on the re-review (N1 to N6: sync fan-out §5.4, event-list reader §6, persistence on request D10
+> and §10.1, read-only mounts at the checkpoint §12). Implementation starts in the same PR (#1408 to #1410).
 > Spec rows: [UC-053](../use_cases/UC-053.md), FR-120 to FR-129, NFR-050 to NFR-053, C-030 to C-033
 > ([requirements](../requirements.md)); [services.md §7](../specs/services.md#7-flag-service-planned-epic-1407),
 > [flags.md §13](../specs/flags.md#13-mutable-flag-registry), [telemetry.md §10](../specs/telemetry.md#10-flag-service-planned-epic-1407),
@@ -57,7 +59,7 @@ game-scoped state dies with its game.
 | D7 | **One-shot interventions stay flags**, as a per-game **event list** object (`{"epoch","seq","events"}`), rendered on `gameId` only with the serial in the payload (§6). | decided by default (maintainer did not object) |
 | D8 | A **mutable-flag registry** declares every runtime-mutable flag and its bounds; every other flag is read-only baseline ([flags.md §13](../specs/flags.md#13-mutable-flag-registry)). | decided by the maintainer |
 | D9 | Every write is an OTel span and a metric ([telemetry.md §10](../specs/telemetry.md#10-flag-service-planned-epic-1407)). | decided by the maintainer |
-| D10 | **Admin settings are persisted** to a service-owned state file (`/var/lib/flag-service/admin.json` on the `flag-service-state` volume), never to `services/flagd/*.json`. They survive restarts (FR-018 stays). | decided by the maintainer |
+| D10 | **Admin settings are persisted on request** to a service-owned state file (`FLAG_SERVICE_STATE_FILE`, default `/var/lib/flag-service/admin.json` on the stack's own `flag-service-state` volume), never to `services/flagd/*.json`. A write persists only when it says so (`"persist": true`) and the registry allows it for that flag; the menu admin asks for it, stage scripts, the harness and tests do not. Persisted values survive restarts (FR-018 stays). Details §10.1. | decided by the maintainer (persistence on request: re-review N4) |
 | D11 | **No roles, no tokens, no authorization.** This is a local party game: a write is validated only against the registry (mutable? in bounds?), the game scope (is the game registered?) and the sync stream (is flagd connected?). The `writer` field is an informational label for the trace. Authorization is out of scope by decision. | decided by the maintainer |
 | D12 | **Full migration before the talk**, then delete the file-write paths, nonce baselines and prune logic. No file-based fallback. A readiness checkpoint at T−14 days is a stabilisation gate (§12). | decided by the maintainer |
 | D13 | **Overlays substitute `defaultVariant`**, so baseline targeting (for example the Werewolf rule on `sensitivity`) still wins, as it does today (§10). | decided by default |
@@ -89,10 +91,12 @@ services keep the in-process resolver against `flagd:8015` with `flagSetId=<set>
 and rust-hid keep the RPC resolver on 8013 (no selector; keys are unique across sets, §5.2), and the
 agent's pattern digest keeps OFREP on 8016 with `Flagd-Selector: flagSetId=<set>`.
 
-The flag directory is mounted **read-only** into the flag service only. The menu, the agent and the
-connect-proxy lose their writable `./services/flagd` mounts (today nothing is mounted `:ro`, and the
-`:ro` claims in `services/agent/experiment/*.go` comments are stale), and the `flag-dir-init` busybox
-containers that make the directory group-writable are removed, so C-033 is enforced by the filesystem.
+The flag service mounts the flag directory **read-only** from the start. In the end state the menu, the
+agent and the connect-proxy lose their writable `./services/flagd` mounts (today nothing else is mounted `:ro`,
+and the `:ro` claims in `services/agent/experiment/*.go` comments are stale), and the `flag-dir-init` busybox
+containers that make the directory group-writable are removed, so C-033 is enforced by the filesystem. That
+removal waits for the **last** file writer to move: it is an item of the readiness checkpoint #1414, done after
+every set is cut over, not part of any one set's cutover (re-review N3).
 
 ## 3. Today: the writer and reader inventory
 
@@ -142,7 +146,7 @@ Non-writers (checked): the game coordinator (it keeps the in-memory nonce baseli
 | W8, W11, R6 | Stage scripts, their tests, pre-flight | `curl -X PUT http://localhost/flags/agent/decision.backend -d '{"variant":"jev"}'` through envoy; `talk-stage.sh reset` becomes `DELETE /agent?writer=stage` (clears stage overlays); the script tests stub the HTTP endpoint instead of copying files | #1412 |
 | W9 | Validation harness | `PUT` per scenario, `DELETE` after | #1412 |
 | W10 | Integration fixtures | a `flag_service` fixture over HTTP; overlays cleared with `DELETE` between tests; no snapshots, no `_branches`, no `_reload_marker`, no `wait_flag_file_restored` | with the cutover of the set they write (#1411, #1412, #1415, #1420); shared fixture in #1413 |
-| W12 | `flag-dir-init` | removed; flag mounts read-only, on the flag service only | #1420 |
+| W12 | `flag-dir-init` | removed; flag mounts read-only, on the flag service only, once every set is cut over | #1414 checklist |
 
 ## 5. flagd integration
 
@@ -200,6 +204,11 @@ If a future flagd stopped honouring per-flag `flagSetId`, flagd would read each 
 source address** on the same service (one network alias per set, e.g. `flagset-agent:50064`, or one
 port per set), because flagd keys the full replace by source URI. Not needed today (§5.2).
 
+The same per-set source addresses are the **fallback if the sync fan-out is too costly** (§5.4): with one
+source, every write re-inserts every flag, so flagd wakes every set's watcher. If #1413 measures the fan-out
+beyond NFR-050 with flagd at `cpus: 0.25`, flagd gets one source per set (`flagset-<set>:50064` aliases) and a
+write wakes only its own set.
+
 ### 5.4 Proto, keepalive, start-up, outage
 
 - **Proto.** `flagd.sync.v1` ([sync.proto](https://github.com/open-feature/flagd-schemas/blob/main/protobuf/flagd/sync/v1/sync.proto),
@@ -225,8 +234,11 @@ port per set), because flagd keys the full replace by source URI. Not needed tod
 - **Outage and restart.** When the stream drops, flagd keeps serving its last snapshot and retries
   after 4 s, 16 s, 64 s, then every 60 s; the first message after a reconnect is a full replace.
   - A flag-service outage is invisible to readers; writes fail closed at the writer (500 ms deadline).
-  - While a served set has **no open sync stream**, the service rejects writes with
-    `503 no_sync_stream` (review Important 3): a write flagd cannot see must not look accepted.
+  - While flagd has **no open sync stream**, the service rejects flag writes with
+    `503 no_sync_stream` (review Important 3): a write flagd cannot see must not look accepted. The game
+    lifecycle calls (`PUT` / `DELETE /games/{gameId}`, `PUT /coordinators/{instance}/games`) are **exempt**:
+    they change no flag value flagd must see first, and a coordinator must be able to register its games
+    while flagd reconnects (re-review N6).
   - An **unplanned** restart leaves flagd on the old snapshot until it reconnects (at most about 64 s
     after the service is healthy again); `flagservice_sync_streams` makes it visible.
   - A **planned** restart restarts flagd too (compose `depends_on ... restart: true` and
@@ -235,6 +247,18 @@ port per set), because flagd keys the full replace by source URI. Not needed tod
   streams has no debounce, only channel hops and a JSON parse of the snapshot. The whole merged
   configuration (about 150 flags) is re-sent per write; NFR-051 bounds its size. NFR-050 sets the target,
   #1413 measures it.
+- **Fan-out (re-review N1).** flagd's `Store.Update` re-inserts every flag of the source on each update, so
+  with one source every write wakes the watcher of **every** set: each Python in-process domain provider then
+  fires `PROVIDER_CONFIGURATION_CHANGED`, and OpenFeature's API-level handlers run once per domain. The
+  decision is to keep the one source and absorb the fan-out in the readers:
+  - the game coordinator's `evaluate_all` is **single-flight**: a change event that arrives while a pass runs
+    marks the pass dirty and the running pass loops once more, so N overlapping events cost at most two passes;
+  - the pass advances the last-applied `(epoch, seq)` of an event list, and the last-applied variant of a grant,
+    **under the lock before** it dispatches, so a second pass can never apply the same event or grant again;
+  - #1413 measures the fan-out against NFR-050 with flagd at `cpus: 0.25` (its compose limit); if it is too
+    costly, flagd moves to the per-set source addresses of §5.3.
+- **Single stream.** flagd opens one `SyncFlags` stream that carries every served set; the stream count, the
+  `503 no_sync_stream` check and the `flagservice_sync_streams` gauge are about that one stream, not per set.
 - **Version.** flagd v0.16.0 stays pinned; v0.17.0 and v0.18.0 (CBOR fractional hashing) are separate
   upgrades.
 
@@ -260,12 +284,23 @@ states.
   (`{"serial":"MOCK0003"}`, `{"serial":"...","effect":"rumble"}`), so one game's events are one value and
   a burst of events for different players never collapses (review Important 1 and C2).
 - `POST /interventions/{flag}` with `scope.game_id` appends an event and returns its `seq`.
-- **Coordinator changes** (#1410 lands the reader, #1411 switches the flags): per (game, flag) it keeps
-  the last `(epoch, seq)` it applied, starting at `("", 0)` when the game registers; on each
-  configuration change it evaluates the flag with `{gameId}` and applies, in order, every event with
-  `seq` above the last one; when `epoch` changes (service restart) it resets its last seq to 0, which is
-  safe because a new epoch starts with an empty list. The nonce parsing, `_UnknownNonce` and the
-  per-game nonce baseline go away (#1416). Today's change detection is replaced, not kept.
+- **Coordinator changes** (#1410 lands the reader behind a switch, default off; #1411 switches the flags
+  and turns it on): per (game, flag) it keeps the last `(epoch, seq)` it applied, starting at `("", 0)` when
+  the game registers; on each configuration change it evaluates the flag with `{gameId}` and applies, in
+  order, every event with `seq` above the last one. The nonce parsing, `_UnknownNonce` and the per-game nonce
+  baseline go away (#1416). Today's change detection is replaced, not kept. The reader **never replays**
+  (re-review N2):
+  - a **failed read** (an `error_code` is set or the reason is `ERROR`) does nothing: it neither applies nor
+    moves the last-applied `(epoch, seq)`. The OpenFeature default `{"epoch":"","seq":0,"events":[]}` is never
+    mistaken for a new epoch;
+  - only a **non-empty, different epoch** resets the last seq to 0 (a service restart; a new epoch starts with
+    an empty list). An empty epoch is the baseline value: nothing to apply, nothing reset;
+  - a value whose `seq` is below the last applied one within the same epoch is ignored;
+  - when the oldest event in the list is newer than `last + 1` (more than K = 16 events arrived between two
+    reads), the reader applies what it has, logs the gap and counts it in
+    `game_intervention_event_gaps_total{flag}`;
+  - the last-applied `(epoch, seq)` advances under the manager's lock **before** the events are dispatched,
+    and `evaluate_all` is single-flight (§5.4), so overlapping passes cannot apply an event twice.
 - Grants (`shield_seconds`, `partial_shield_seconds`, `soft_penalty_action`) stay per-player state flags
   rendered on `gameId` + `targetingKey`, with a fresh opaque variant per grant (`r<epoch>_<n>`). The
   coordinator fires a grant when a player's variant changes during the game; the first value it sees
@@ -381,6 +416,25 @@ write it re-renders the merged configuration and pushes it to every open stream.
 }
 ```
 
+### 10.1 Admin persistence (re-review N4)
+
+- **On request only.** A `PUT` persists only with `"persist": true` in the body, and only for a flag whose
+  registry row allows it (`persist: yes`, a stack overlay); otherwise `400 malformed`. The menu admin sends
+  `"persist": true`; the stage scripts, the validation harness and the tests never do, so their overlays stay
+  in memory and die with a restart. `ttl_seconds` together with `"persist": true` is `400 malformed`.
+- **One state file per stack.** `FLAG_SERVICE_STATE_FILE` names it; each compose stack that runs the service
+  gets its own named volume (`flag-service-state`, project-scoped by compose), so the CI, dry-run and
+  decide-e2e stacks never read the production stack's admin settings.
+- **Atomic write.** The service writes a temporary file in the same directory and renames it over the state
+  file (the state file is on a named volume, not a single-file bind mount, so rename is safe). A failed write
+  is logged and counted in `flagservice_admin_persist_errors_total`; the value still applies in memory.
+- **Corrupt file.** A state file that does not parse is moved aside to `admin.json.corrupt-<unix ts>`; the
+  service logs it, counts it in `flagservice_admin_state_corrupt_total`, starts from the baseline and **never
+  refuses to start** because of it.
+- **Stale entries.** At load, an entry for a flag that is unknown, no longer persistable, or whose variant is
+  no longer declared (or value no longer in bounds) is dropped with a warning; the rest load.
+- **`DELETE` of a persisted value** removes it from the state file. Fixtures `DELETE` every value they set.
+
 Size is bounded by live games × players × mutable flags (NFR-051), not by history. Readers that
 evaluate an intervention flag without `gameId` (the menu's display of `global_sensitivity_override`,
 `services/menu/handlers/admin.py:1260`) resolve the baseline; #1410 lists them.
@@ -393,6 +447,7 @@ evaluate an intervention flag without `gameId` (the menu's display of `global_se
 | flagd exits if the service is down at its start; `readyz` broken with several gRPC sources (#1985) | `depends_on: service_healthy` on the service, `restart: unless-stopped`; no flagd `readyz` check |
 | A duplicate flag key across sets would collide in the merged payload | explicit file list, refuse to start on a duplicate; fallback §5.3 |
 | Whole configuration re-sent per write | about 150 flags today; NFR-051 bounds the snapshot at 1 MiB; measured in #1413 |
+| One source: every write wakes every set's watcher and every Python domain provider (fan-out) | single-flight `evaluate_all` in the coordinator, last-applied state advanced before dispatch; #1413 measures against NFR-050 with flagd at `cpus: 0.25`; fallback: per-set source addresses (§5.3) |
 | Anyone on the LAN can change flags | accepted by decision (D11): local party game |
 | A promoted default disappears on restart; the #1065 revert cooldown is lost | intended for the default (the PR route persists it); #1415 re-implements the cooldown |
 | One more container on the Pi (NFR-020) | Go binary, memory limit 64 MiB (NFR-051); also in `docker-compose.lite.yml` |
@@ -408,7 +463,8 @@ fallback.
 **Cutover per flag set.** flagd takes the `file:` sources of the sets not yet migrated and the one gRPC
 source side by side; the service includes a set in its payload only once it is listed in
 `FLAG_SERVICE_SETS`. A set moves in the same PR that moves **all** of its writers and readers (code,
-scripts, fixtures), so the suite stays green after every step.
+scripts, fixtures), so the suite stays green after every step. Until a set is cut over, the pre-flight
+(`scripts/talk-preflight.sh`) keeps reading that set's file; it switches to `GET /{set}` set by set.
 
 | Set | Writers and readers that move with it | Sub-issue |
 |---|---|---|
@@ -416,7 +472,8 @@ scripts, fixtures), so the suite stays green after every step.
 | `interventions`, `rollout` | W1, W2, R1; fixtures in `test_intervention_flow.py`, `test_parallel_intervention_flow.py`, `test_intervention_smoke.py`, `test_gameid_intervention_isolation.py`, `test_rollout_plumbing.py` | #1411 |
 | `agent` | W8, W9, W11, R6, the menu's `interventions_allowed`; agent-set fixtures | #1412 |
 | `game`, `user` | W3, W4, W5, the rest of W6, R2 to R5; `test_admin_flow.py`, `test_experiment_shadow_isolation.py`, the game part of `test_intervention_smoke.py`, `test_experiment_cohort_loop.py` | #1415 |
-| `controller` | W7; W12 removed; every flag mount read-only | #1420 |
+| `controller` | W7 | #1420 |
+| (after every cutover) | W12 removed; the writable flag mounts of menu, agent and connect-proxy removed; every flag mount read-only | #1414 checklist |
 
 | Order | Sub-issue | Scope | Depends on |
 |---|---|---|---|
@@ -426,9 +483,9 @@ scripts, fixtures), so the suite stays green after every step.
 | 4 | #1411 | Agent writer and remediation reader; cut over `interventions`, `rollout`; edge flags become object event lists; coordinator switches to the event lists and the variant-change grants | #1410 |
 | 5 | #1412 | Stage scripts, script tests, pre-flight, harness, menu kill switch; envoy `/flags/` route; cut over `agent` | #1410 |
 | 6 | #1413 | Integration tests for UC-053, shared `flag_service` fixture, NFR measurements, alerts | #1411 |
-| 7 | #1414 | **Readiness checkpoint at T−14 days**: every set on the service, the full suite green, a talk rehearsal on the Raspberry Pi 5 with real controllers | #1408 to #1413, #1415, #1420 |
+| 7 | #1414 | **Readiness checkpoint at T−14 days**: every set on the service; then remove `flag-dir-init` and the writable flag mounts (every mount read-only); the full suite green; a talk rehearsal on the Raspberry Pi 5 with real controllers | #1408 to #1413, #1415, #1420 |
 | 8a | #1415 | `game`, `user`: experiments, declarer, gate, vocabulary, promotion (+ #1065 cooldown), menu admin with persistence, their fixtures | #1410 |
-| 8b | #1420 | `controller`: connect-proxy canary and chaos; remove `flag-dir-init`; every flag mount read-only | #1410 |
+| 8b | #1420 | `controller`: connect-proxy canary and chaos | #1410 |
 | 9 | #1416 | Delete the file-write paths, nonce and grant baselines, `_prune_stale_buckets`, the interim pruning of #1418, `_branches` / `_reload_marker`, direct file reads | #1414 passed |
 
 The list order is the issue order; #1415 and #1420 run in parallel with #1411 to #1413 (they touch other

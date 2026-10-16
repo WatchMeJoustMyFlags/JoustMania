@@ -229,8 +229,8 @@ A named value of a flag.
 ### MUTABLE_FLAG_POLICY
 
 **Planned** (epic #1407, UC-053, FR-122). One row of the flag service's mutable-flag registry
-([flags.md §13](specs/flags.md#13-mutable-flag-registry)): a flag that may change at runtime, by whom and within
-which bounds, and whether it persists. A flag without a policy is read-only baseline. There are no writer roles (local game, architecture note D11).
+([flags.md §13](specs/flags.md#13-mutable-flag-registry)): a flag that may change at runtime, within which
+bounds, and whether a write may persist it. A flag without a policy is read-only baseline. There are no writer roles (local game, architecture note D11).
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
@@ -238,16 +238,17 @@ which bounds, and whether it persists. A flag without a policy is read-only base
 | flag_set_id | Its flag set | String | 20 | Not Null, Foreign Key (FLAG_SET.flag_set_id) |
 | kind | How values are written and rendered | String | 8 | Not Null, Values: state, level, grant, event, overlay |
 | scope | Where a write applies | String | 16 | Not Null, Values: stack, game, game+serial, experiment+arm, real, fraction |
-| persist | Admin setting kept in the service's state file across restarts | Boolean | | Not Null, Default: false |
+| persist | Admin setting: a write that asks for it (`"persist": true`) is kept in the service's state file across restarts | Boolean | | Not Null, Default: false |
 | allowed_variants | Declared variants a write may select | String | 400 | Optional |
 | min_value | Inclusive lower bound of a numeric value | Decimal | 10,3 | Optional |
 | max_value | Inclusive upper bound of a numeric value | Decimal | 10,3 | Optional, >= min_value |
-| payload_schema | Format of a composite string value (e.g. `<seconds>:<factor>`) | String | 100 | Optional |
+| payload_schema | Format of a composite string value (e.g. `<seconds>:<factor>`), or `free string` | String | 100 | Optional |
 
 ### GAME_SCOPE
 
 **Planned** (FR-125). The flag service's in-memory record of one live game, registered by the game coordinator
-at admission and dropped at the game's end, on `SyncLiveGames` or after the maximum game age.
+at admission and dropped at the game's end, by a reconcile call of its coordinator instance, or after the
+maximum game age.
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
@@ -265,7 +266,8 @@ at admission and dropped at the game's end, on `SyncLiveGames` or after the maxi
 ### FLAG_OVERLAY
 
 **Planned** (FR-124, FR-126 to FR-128). One runtime value the flag service holds on top of the baseline, in memory
-(C-030); a value of a `persist` flag is also written to the service's own state file.
+(C-030); a stack overlay written with `"persist": true` (registry `persist`) is also written to the service's
+own state file.
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|

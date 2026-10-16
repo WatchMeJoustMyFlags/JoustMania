@@ -563,7 +563,7 @@ elimination order, winner and decisions are the evidence that the game played ou
 | `flagservice.game.register` | internal | `game.id`, `game.kind`, `player.count`, `experiment.id`, `experiment.arm`, `flagservice.coordinator_instance`, `flagservice.result` | `PUT /games/{gameId}` |
 | `flagservice.game.end` | internal | `game.id`, `flagservice.reason` (`ended`, `reconciled`, `expired`), `flagservice.dropped_values`, `flagservice.coordinator_instance` | `DELETE /games/{gameId}`, a scope dropped by the reconcile call or by expiry |
 | `flagservice.sync.push` | internal, linked to the triggering `flagservice.write` | `flagservice.snapshot_version`, `flagservice.snapshot_bytes`, `flagservice.streams`, `flagservice.epoch` | each merged configuration sent to the open sync streams |
-| `flagservice.baseline.load` | internal | `feature_flag.set.id` (one event per set), `flagservice.flags`, `flagservice.admin_values` (restored from `admin.json`), `flagservice.epoch`, `flagservice.result` | start |
+| `flagservice.baseline.load` | internal | `feature_flag.set.id` (one event per set), `flagservice.flags`, `flagservice.admin_values` (restored from the state file), `flagservice.admin_dropped` (stale entries dropped), `flagservice.epoch`, `flagservice.result` | start |
 
 ### 10.2 Metrics
 
@@ -576,10 +576,12 @@ elimination order, winner and decisions are the evidence that the game played ou
 | `flagservice_game_scopes_expired_total` | counter | | scopes dropped by expiry (UC-053 A10) |
 | `flagservice_scope_values` | gauge | `flag_set` | game-scoped and experiment values held (NFR-051) |
 | `flagservice_snapshot_bytes` | gauge | | size of the last merged configuration (NFR-051) |
-| `flagservice_sync_streams` | gauge | | open `SyncFlags` streams; 0 means flagd is not connected and writes return 503 `no_sync_stream` |
-| `flagservice_sync_rejected_total` | counter | `reason` | rejected `SyncFlags` / `FetchAllFlags` calls; `reason="unknown_selector"` means a misconfigured client or flagd |
+| `flagservice_sync_streams` | gauge | | open `SyncFlags` streams. flagd opens **one** stream that carries every served set, so the value is 1 per connected flagd (no per-set label); 0 means flagd is not connected and flag writes return 503 `no_sync_stream` |
+| `flagservice_sync_rejected_total` | counter | `reason` | rejected `SyncFlags` / `FetchAllFlags` calls; `reason="unknown_selector"` (unknown selector key) or `"unknown_flag_set"` (a set that is not served) means a misconfigured client or flagd |
 | `flagservice_overlays` | gauge | `flag_set`, `persisted` | stack overlays in effect |
-| `flagservice_admin_persist_errors_total` | counter | | failed writes of `admin.json` (the value still applies in memory) |
+| `flagservice_admin_persist_errors_total` | counter | | failed writes of the state file (the value still applies in memory) |
+| `flagservice_admin_state_corrupt_total` | counter | | state files that did not parse at start and were moved aside to `admin.json.corrupt-<ts>`; the service started from the baseline |
+| `game_intervention_event_gaps_total` | counter | `flag` | game-coordinator: an event list read whose oldest event is newer than the last applied seq + 1 (more than K events between two reads, architecture note §6) |
 
 Labels never carry `game_id`, `serial` or the free-text `writer` (unbounded cardinality); those live on the
 spans. The names follow §8: service prefix `flagservice_`, counters end `_total`, histograms in seconds.

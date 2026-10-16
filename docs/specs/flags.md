@@ -398,11 +398,15 @@ value with a fresh variant per write (the coordinator fires on a variant change)
 `experiment_id` and `arm`; `real` = the real default (promotion); `fraction` = `fractional` on `targetingKey`.
 Game-scoped values are dropped when the game ends (FR-125).
 
-**Persist:** `yes` = an admin setting, written to the service's own state file and restored at start (FR-018,
-C-030); every other value lives in memory only.
+**Persist:** `yes` = an admin setting that **may** be persisted: a write that asks for it (`"persist": true`, the
+menu admin) is written to the service's own state file and restored at start (FR-018, C-030); the same flag
+written without it (a stage script, a test) stays in memory. `no` = a write asking to persist is `400 malformed`.
+Every value not persisted lives in memory only (architecture note §10.1).
 
-**Bounds** are the declared variants of the baseline file unless a range or payload schema is given. Ranges are
-inclusive; #1409 pins each range against the reader's own clamp before the registry ships.
+**Bounds** are the declared variants of the baseline file unless a range, a payload schema or `free string` is
+given. Ranges are inclusive; #1409 pins each range against the reader's own clamp before the registry ships.
+`free string` accepts any string value up to 512 characters (a declared variant name still selects that
+variant); it exists for values only a test fixture or an operator knows, such as a fake server's URL (re-review N5).
 
 ### 13.1 `interventions` (all writes are game-scoped)
 
@@ -443,8 +447,10 @@ it writes; the coordinator's re-check (decide-contract §11) is unchanged.
 | `decision.backend` | overlay | stack | `rules`, `claude`, `openai`, `jev` | no | `agent-backend.sh`, `talk-stage.sh` |
 | `decision.act_confidence_threshold`, `decision.jev.act_confidence_threshold` | overlay | stack | declared variants | no | `agent-backend.sh`, `talk-stage.sh` |
 | `decision.capture_content` | overlay | stack | `on`, `off` | no | `agent-backend.sh` |
-| `decision.claude.model`, `decision.openai.model`, `decision.openai.reasoning_effort`, `decision.jev.model` | overlay | stack | declared variants | no | `agent-backend.sh` |
-| `decision.openai.base_url`, `decision.min_interval_ms`, `decision.openai.timeout_ms` | overlay | stack | declared variants | no | integration fixtures (`configure_agent`) |
+| `decision.claude.model`, `decision.openai.reasoning_effort`, `decision.jev.model` | overlay | stack | declared variants | no | `agent-backend.sh` |
+| `decision.openai.model` | overlay | stack | free string | no | `agent-backend.sh`, integration fixtures (`configure_agent`, fake model name) |
+| `decision.openai.base_url` | overlay | stack | free string | no | integration fixtures (`configure_agent`, fake server URL) |
+| `decision.min_interval_ms`, `decision.openai.timeout_ms` | overlay | stack | int 100 to 60000 | no | integration fixtures (`configure_agent`) |
 | `llm.max_requests_per_minute` | overlay | stack | declared variants (incl. `stage`) | no | `talk-stage.sh` |
 | `policy.max_interventions_per_minute`, `policy.coordinator_backstop_per_minute` | overlay | stack | int 1 to 100 | no | integration fixtures (`set_policy_budget`, pinned to 50) |
 | `fitness.accelerate.target_session_seconds` | overlay | stack | declared variants | no | validation harness |
