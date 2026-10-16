@@ -128,7 +128,10 @@ if mode == "reset":
             if neutral is not None and flag.get("defaultVariant") != neutral:
                 ivchanges.append(f"{key}: {flag.get('defaultVariant')} -> {neutral}")
                 flag["defaultVariant"] = neutral
-            if flag.pop("targeting", None):
+            # Only agent-written targeting goes; the shipped empty "targeting": {}
+            # placeholders stay as they are.
+            if flag.get("targeting"):
+                del flag["targeting"]
                 ivchanges.append(f"{key}: targeting removed")
         if ivchanges:
             write_in_place(ivpath, iv)

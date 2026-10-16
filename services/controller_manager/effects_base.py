@@ -243,39 +243,6 @@ class ControllerEffectsBase(ABC):
             # End at full brightness
             await self._set_led_color(serial, color)
 
-    async def _effect_shield(
-        self,
-        serial: str,
-        color: tuple[int, int, int],
-        duration_ms: int,
-        partial: bool = False,
-        on_blink=None,
-    ) -> None:
-        """SHIELD / PARTIAL_SHIELD effect (#1301): render :func:`shield_frame` at 20 Hz.
-
-        Ends when the schedule is over; the caller restores the base colour.
-        ``on_blink`` (optional, sync) is called once when the blink window starts.
-        """
-        interval = 0.05  # 20 Hz, same as the other animated effects
-        total_s = duration_ms / 1000.0
-        start = self._clock.time()
-        blink_start = max(0.0, total_s - SHIELD_BLINK_WINDOW_S)
-        blink_reported = False
-        try:
-            while True:
-                elapsed = self._clock.time() - start
-                frame = shield_frame(elapsed, total_s, color, partial)
-                if frame is None:
-                    return
-                if on_blink is not None and not blink_reported and elapsed >= blink_start:
-                    blink_reported = True
-                    on_blink()
-                await self._set_led_color(serial, frame)
-                await self._clock.sleep(interval)
-        except asyncio.CancelledError:
-            logger.debug(f"SHIELD effect cancelled for {serial}")
-            raise
-
     def cancel_controller_effect(self, serial: str):
         """Cancel any active effect on a controller.
 

@@ -1,5 +1,5 @@
 """
-Shield feedback LED effect (#1301, UC-040 A16 / A17, BR-008 to BR-010).
+Shield feedback LED layer (#1301, UC-040 A16 / A17, BR-008 to BR-010).
 
 The schedule is a pure function (``shield_frame``) rendered by the controller
 manager's effect loop, so the game coordinator sends one command per grant.
@@ -123,11 +123,21 @@ def manager(backend, clock):
 async def _shield(manager, effect=controller_manager_pb2.GAME_EFFECT_SHIELD, duration_ms=3000):
     ok = await manager.handle_game_effect(serial=SERIAL, effect=effect, duration_ms=duration_ms)
     assert ok
-    return manager.active_effects[SERIAL].task
+    await asyncio.sleep(0)  # let the renderer paint its first frame
+    return manager._shield_tasks.get(SERIAL)
+
+
+async def _spin(n=20):
+    for _ in range(n):
+        await asyncio.sleep(0)
+
+
+def _is_shield_frame(color):
+    return color != PLAYER and color[0] == color[1] == color[2]
 
 
 class TestUC040ShieldEffect:
-    """UC-040 A16 / A17: the controller manager renders, restores and cancels the shield."""
+    """UC-040 A16 / A17: the controller manager renders, restores and ends the shield layer."""
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A16", br=["BR-008"])
@@ -139,9 +149,10 @@ class TestUC040ShieldEffect:
         assert backend.history[0] == WHITE
         assert OFF in backend.history  # blinked
         assert backend.colors[SERIAL] == PLAYER  # restored
-        assert SERIAL not in manager.active_effects
+        assert not manager.shield_active(SERIAL)
         assert SERIAL not in manager._shield_tasks
         assert manager.current_colors[SERIAL] == PLAYER
+        assert backend.effect_active[SERIAL] is False
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A16", br=["BR-009"])
@@ -157,32 +168,31 @@ class TestUC040ShieldEffect:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A16", br=["BR-010"])
     async def test_extending_restarts_the_fade_from_full(self, manager, backend, clock):
-        """UC-040 BR-010: a new SHIELD command replaces the running one and starts at full colour."""
+        """UC-040 BR-010: a new SHIELD restarts the layer's schedule at full colour, same renderer."""
         clock.enable_blocking()
         first = await _shield(manager, duration_ms=5000)
-        for _ in range(5):
-            await asyncio.sleep(0)
-        clock.release_one()  # let the first effect advance and dim
-        await asyncio.sleep(0)
+        for _ in range(30):  # let the fade advance
+            clock.release_all()
+            await _spin(3)
+        assert backend.colors[SERIAL][0] < 250
         backend.history.clear()
 
         second = await _shield(manager, duration_ms=8000)
-        await asyncio.sleep(0)
+        clock.release_all()
+        await _spin(3)
 
-        assert first.cancelled() or first.done()
-        assert manager.active_effects[SERIAL].task is second
-        assert manager._shield_tasks[SERIAL] is second
-        assert WHITE in backend.history  # restarted at full brightness
+        assert second is first  # one renderer, layer restarted
+        assert manager._shield_layers[SERIAL]["full"].total_s == 8.0
+        assert max(f[0] for f in backend.history) >= 250
         clock.disable_blocking()
-        await second
+        await manager.end_shield_effect(SERIAL)
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A17", br=["BR-010"])
     async def test_zero_duration_ends_shield_and_restores(self, manager, backend, clock):
-        """UC-040 A17: SHIELD with duration 0 (game end) cancels the task and restores the base colour."""
+        """UC-040 A17: SHIELD with duration 0 (game end) cancels the renderer and restores the base colour."""
         clock.enable_blocking()
         task = await _shield(manager, duration_ms=10_000)
-        await asyncio.sleep(0)
 
         ok = await manager.handle_game_effect(
             serial=SERIAL, effect=controller_manager_pb2.GAME_EFFECT_SHIELD, duration_ms=0
@@ -190,7 +200,7 @@ class TestUC040ShieldEffect:
 
         assert ok
         assert task.cancelled()
-        assert SERIAL not in manager.active_effects
+        assert not manager.shield_active(SERIAL)
         assert SERIAL not in manager._shield_tasks
         assert backend.colors[SERIAL] == PLAYER
 
@@ -211,42 +221,143 @@ class TestUC040ShieldEffect:
         await other
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A17", br=["BR-010"])
-    async def test_death_effect_replaces_the_shield(self, manager, backend, clock):
-        """UC-040 A17: the death effect cancels the shield task; nothing is leaked."""
+    @pytest.mark.uc("UC-040", flow="A16", br=["BR-010"])
+    async def test_rumble_neither_ends_nor_orphans_the_shield(self, manager, backend, clock):
+        """UC-040 BR-010: a rumble (no LED) leaves the shield layer reachable; end_shield_effect still ends it."""
         clock.enable_blocking()
-        shield_task = await _shield(manager, duration_ms=10_000)
-        await asyncio.sleep(0)
+        task = await _shield(manager, duration_ms=10_000)
 
-        death = asyncio.create_task(
-            manager.handle_game_effect(serial=SERIAL, effect=controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH)
-        )
-        for _ in range(10):
-            await asyncio.sleep(0)
-        clock.disable_blocking()
-        with contextlib.suppress(asyncio.TimeoutError):
-            await asyncio.wait_for(death, timeout=3)
+        assert await manager.handle_game_effect(serial=SERIAL, effect=controller_manager_pb2.GAME_EFFECT_RUMBLE)
 
-        assert shield_task.cancelled()
-        assert SERIAL not in manager._shield_tasks
-        fade = manager.active_effects.get(SERIAL)
-        if fade is not None:
-            await fade.task
-        assert backend.colors[SERIAL] == OFF  # dead: black, not the shield colour
+        assert manager.shield_active(SERIAL)
+        assert manager._shield_tasks[SERIAL] is task and not task.done()
+        assert SERIAL not in manager.active_effects  # no re-typed placeholder left behind
+        assert await manager.end_shield_effect(SERIAL) is True
+        assert task.cancelled()
+        assert backend.colors[SERIAL] == PLAYER
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A17", br=["BR-010"])
-    async def test_new_base_colour_ends_the_shield(self, manager, backend, clock):
-        """UC-040 A17: a new base colour (lobby reset) cancels the shield and shows at once."""
-        clock.enable_blocking()
-        task = await _shield(manager, duration_ms=10_000)
-        await asyncio.sleep(0)
+    async def test_death_after_rumble_is_not_overwritten_by_the_shield(self, manager, backend):
+        """UC-040 A17: shield -> rumble -> death: the death fade ends black, no shield frame after it."""
+        await _shield(manager, duration_ms=10_000)
+        await manager.handle_game_effect(serial=SERIAL, effect=controller_manager_pb2.GAME_EFFECT_RUMBLE)
+        await _spin(5)
+
+        await manager.handle_game_effect(serial=SERIAL, effect=controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH)
+        death_start = backend.history.index((255, 0, 0))
+        fade = manager.active_effects.get(SERIAL)
+        if fade is not None:
+            await fade.task
+        await _spin(20)
+
+        after_death = backend.history[death_start:]
+        assert not any(_is_shield_frame(c) and c != OFF for c in after_death), after_death
+        assert backend.colors[SERIAL] == OFF
+        assert not manager.shield_active(SERIAL)
+        assert SERIAL not in manager._shield_tasks
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A16", br=["BR-010"])
+    async def test_warning_overlays_then_the_shield_resumes(self, manager, backend):
+        """UC-040 BR-010: a PLAYER_WARNING flash overlays the shield, then the shield schedule resumes."""
+        await _shield(manager, duration_ms=10_000)
+        await _spin(5)
+
+        await manager.handle_game_effect(serial=SERIAL, effect=controller_manager_pb2.GAME_EFFECT_PLAYER_WARNING)
+        overlay = manager.active_effects[SERIAL].task
+        await overlay
+        assert manager.shield_active(SERIAL)
+        backend.history.clear()
+        await _spin(10)
+
+        assert backend.history, "the shield renderer paints again after the overlay"
+        assert all(_is_shield_frame(c) or c == OFF for c in backend.history), backend.history
+        assert PLAYER not in backend.history  # no restore flash between overlay and shield
+        await manager.end_shield_effect(SERIAL)
+        assert backend.colors[SERIAL] == PLAYER
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A16", br=["BR-010"])
+    async def test_base_colour_change_keeps_the_shield_and_is_restored_after(self, manager, backend):
+        """UC-040 BR-010: a new base colour does not end the shield; it is shown when the shield ends."""
+        task = await _shield(manager, duration_ms=2000)
 
         await manager.apply_base_color(SERIAL, LOBBY, label="test")
 
-        assert task.cancelled()
+        assert manager.shield_active(SERIAL) and not task.done()
+        assert backend.colors[SERIAL] != LOBBY  # still painting the shield
+        await task
         assert backend.colors[SERIAL] == LOBBY
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A16", br=["BR-009", "BR-010"])
+    async def test_partial_resumes_after_the_full_shield_ends(self, manager, backend):
+        """UC-040 BR-010: full takes precedence over partial; the partial resumes when full ends."""
+        task = await _shield(manager, effect=controller_manager_pb2.GAME_EFFECT_PARTIAL_SHIELD, duration_ms=10_000)
+        await _shield(manager, duration_ms=2000)
+        assert manager._shield_tasks[SERIAL] is task
+        for _ in range(10_000):  # fake time runs out the 2 s full shield
+            if "full" not in manager._shield_layers[SERIAL]:
+                break
+            await asyncio.sleep(0)
+        assert "full" not in manager._shield_layers[SERIAL]
+        backend.history.clear()
+        await _spin(10)
+
+        assert backend.history and max(c[0] for c in backend.history) <= 128  # partial frames only
+        assert set(manager._shield_layers[SERIAL]) == {"partial"}
+        await task
+        assert backend.colors[SERIAL] == PLAYER
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A17", br=["BR-010"])
+    async def test_partial_zero_ends_only_the_partial_layer(self, manager, clock):
+        """UC-040 A17: PARTIAL_SHIELD 0 ends the partial layer; a full shield keeps painting."""
+        clock.enable_blocking()
+        await _shield(manager, effect=controller_manager_pb2.GAME_EFFECT_PARTIAL_SHIELD, duration_ms=10_000)
+        await _shield(manager, duration_ms=10_000)
+
+        await manager.handle_game_effect(
+            serial=SERIAL, effect=controller_manager_pb2.GAME_EFFECT_PARTIAL_SHIELD, duration_ms=0
+        )
+
+        assert set(manager._shield_layers[SERIAL]) == {"full"}
+        clock.disable_blocking()
+        await manager.end_shield_effect(SERIAL)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A17", br=["BR-010"])
+    async def test_death_during_an_overlay_ends_everything(self, manager, backend):
+        """UC-040 A17: shield + warning overlay + death: black at the end, no shield, no task."""
+        await _shield(manager, duration_ms=10_000)
+        await manager.handle_game_effect(serial=SERIAL, effect=controller_manager_pb2.GAME_EFFECT_PLAYER_WARNING)
+        overlay = manager.active_effects[SERIAL].task
+
+        await manager.handle_game_effect(serial=SERIAL, effect=controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH)
+        fade = manager.active_effects.get(SERIAL)
+        if fade is not None:
+            await fade.task
+        await _spin(20)
+
+        assert overlay.done()
+        assert backend.colors[SERIAL] == OFF
+        assert not manager.shield_active(SERIAL)
         assert SERIAL not in manager._shield_tasks
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A17", br=["BR-010"])
+    async def test_winner_rainbow_ends_the_shield(self, manager, clock):
+        """UC-040 A17: the winner rainbow replaces the shield."""
+        clock.enable_blocking()
+        task = await _shield(manager, duration_ms=10_000)
+        await manager.handle_game_effect(serial=SERIAL, effect=controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW)
+        assert task.cancelled()
+        assert not manager.shield_active(SERIAL)
+        clock.disable_blocking()
+        rainbow = manager.active_effects.get(SERIAL)
+        if rainbow is not None:
+            await rainbow.task
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A17", br=["BR-010"])
@@ -254,7 +365,6 @@ class TestUC040ShieldEffect:
         """UC-040 A17: a disconnected controller leaves no shield task behind."""
         clock.enable_blocking()
         task = await _shield(manager, duration_ms=10_000)
-        await asyncio.sleep(0)
 
         manager.tracked_controllers.pop(SERIAL)  # the discovery loop drops it first
         manager.clear_controller(SERIAL)
@@ -263,6 +373,7 @@ class TestUC040ShieldEffect:
 
         assert task.cancelled()
         assert SERIAL not in manager._shield_tasks
+        assert not manager.shield_active(SERIAL)
         assert SERIAL not in manager.current_colors
 
 
@@ -284,7 +395,6 @@ class TestUC040LiveLedColourInStream:
 
         clock.enable_blocking()
         await _shield(manager, duration_ms=5000)
-        await asyncio.sleep(0)
         first = cache.build_or_get_cached_state(SERIAL, info)
         assert (first.color.r, first.color.g, first.color.b) == WHITE
 

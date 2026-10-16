@@ -81,6 +81,30 @@ before="$(cat "${AGENT_FLAG_FILE}")"
 "${HELPER}" reset >/dev/null
 [[ "$(cat "${AGENT_FLAG_FILE}")" == "${before}" ]] && ok "reset is idempotent" || not_ok "reset is idempotent"
 
+# --- reset keeps the shipped empty targeting placeholders --------------------
+fresh
+"${HELPER}" reset >/dev/null
+if diff -q "${REPO_ROOT}/services/flagd/ci/interventions.json" "${WORK}/interventions.json" >/dev/null; then
+  ok "reset leaves the shipped interventions.json byte-identical (targeting {} kept)"
+else
+  not_ok "reset leaves the shipped interventions.json byte-identical: $(diff "${REPO_ROOT}/services/flagd/ci/interventions.json" "${WORK}/interventions.json" | head -5)"
+fi
+python3 - "${WORK}/interventions.json" <<'PY2'
+import json, sys
+path = sys.argv[1]
+data = json.load(open(path))
+data["flags"]["shield_seconds"]["targeting"] = {"if": [{"==": [{"var": "targetingKey"}, "MOCK0001"]}, "agent_MOCK0001", None]}
+json.dump(data, open(path, "w"), indent=2)
+PY2
+out="$("${HELPER}" reset)"
+[[ "${out}" == *"shield_seconds: targeting removed"* ]] && ok "reset removes agent-written targeting" || not_ok "reset removes agent-written targeting: ${out}"
+python3 - "${WORK}/interventions.json" "${REPO_ROOT}/services/flagd/ci/interventions.json" <<'PY2' && ok "other flags keep their empty targeting placeholder" || not_ok "other flags keep their empty targeting placeholder"
+import json, sys
+now, shipped = (json.load(open(p))["flags"] for p in sys.argv[1:])
+kept = [k for k, f in shipped.items() if f.get("targeting") == {} and k != "shield_seconds"]
+sys.exit(0 if kept and all(now[k].get("targeting") == {} for k in kept) else 1)
+PY2
+
 # --- the reset baseline passes the pre-flight's flag section ---------------
 # docker and curl stubbed to "unavailable": only the flag-file section runs, and
 # no real container is ever inspected or exec'd.

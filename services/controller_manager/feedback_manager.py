@@ -11,6 +11,7 @@ Phase 57: Backend abstraction for platform independence.
 import asyncio
 import contextlib
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from opentelemetry.context import Context
@@ -19,7 +20,12 @@ from lib.colors import Colors
 from lib.telemetry import extract_trace_context, get_tracer
 from proto import controller_manager_pb2
 from services.controller_manager import metrics
-from services.controller_manager.effects_base import ActiveEffect, ControllerEffectsBase
+from services.controller_manager.effects_base import (
+    SHIELD_BLINK_WINDOW_S,
+    ActiveEffect,
+    ControllerEffectsBase,
+    shield_frame,
+)
 
 if TYPE_CHECKING:
     from services.controller_manager.backend import ControllerBackend
@@ -172,6 +178,33 @@ def _on_game_flags_changed(event_details) -> None:
         logger.warning(f"Failed to refresh winner_rainbow_duration_ms from flagd: {e}")
 
 
+@dataclass
+class ShieldLayer:
+    """One agent shield on one controller (#1301, UC-040 BR-008..BR-010).
+
+    The shield is a persistent LED LAYER, not a replaceable effect: short LED
+    effects overlay it and it resumes after them (``shield_frame`` is a pure
+    function of the time since ``start``).
+    """
+
+    start: float
+    total_s: float
+    color: tuple[int, int, int]
+    partial: bool
+    blink_reported: bool = False
+
+    def remaining(self, now: float) -> float:
+        return self.start + self.total_s - now
+
+
+# Effects that never touch the LED: they neither overlay nor end a shield, and
+# skip the active-effect placeholder entirely (#1301).
+NON_LED_EFFECTS = frozenset({controller_manager_pb2.GAME_EFFECT_RUMBLE})
+SHIELD_EFFECTS = frozenset(
+    {controller_manager_pb2.GAME_EFFECT_SHIELD, controller_manager_pb2.GAME_EFFECT_PARTIAL_SHIELD}
+)
+
+
 class FeedbackManager(ControllerEffectsBase):
     """
     Manages LED colors, vibration, and visual effects on controllers.
@@ -205,14 +238,13 @@ class FeedbackManager(ControllerEffectsBase):
         # Effects that can be cancelled by a base_color message
         self.cancellable_effects: set[int] = {
             controller_manager_pb2.GAME_EFFECT_FORCE_START_CHARGE,
-            # A new base colour (lobby reset, team swap) ends the shield
-            # feedback at once (#1301, UC-040 BR-010).
-            controller_manager_pb2.GAME_EFFECT_SHIELD,
-            controller_manager_pb2.GAME_EFFECT_PARTIAL_SHIELD,
         }
 
-        # Running shield effect task per controller (#1301): lets a zero-duration
-        # SHIELD command end exactly the shield, never another effect.
+        # Agent shield layers per controller ("full" / "partial") and the one
+        # renderer task per controller that paints the top layer (#1301). The
+        # shield is NOT an active_effects entry: other effects overlay it, a new
+        # base colour only changes what is restored after it (UC-040 BR-010).
+        self._shield_layers: dict[str, dict[str, ShieldLayer]] = {}
         self._shield_tasks: dict[str, asyncio.Task] = {}
 
         # Vibration duration tasks
@@ -355,19 +387,17 @@ class FeedbackManager(ControllerEffectsBase):
         duration_ms: int,
         speed: int,
         restore_color: tuple[int, int, int] | None,
-        trace_context: Context | None = None,
     ) -> None:
         """
         Play an effect and restore to base color when done.
 
         Args:
             serial: Controller serial
-            effect_type: "flash", "pulse", "rainbow", "fade_out", "fade_in", "shield", "partial_shield"
+            effect_type: "flash", "pulse", "rainbow", "fade_out", "fade_in"
             color: RGB color for effect
             duration_ms: Effect duration
             speed: Effect speed (1-10)
             restore_color: Color to restore to after effect (None = no restore)
-            trace_context: Parent context for effects that record a span (shield)
         """
         # Cancel any existing effect, preserving the effect_type if already set
         # (handle_game_effect sets effect_type before calling handler)
@@ -401,22 +431,15 @@ class FeedbackManager(ControllerEffectsBase):
                         await self._effect_fade_out(serial, color, duration_ms)
                     case "fade_in":
                         await self._effect_fade_in(serial, color, duration_ms)
-                    case "shield" | "partial_shield":
-                        await self._run_shield_effect(
-                            serial, color, duration_ms, effect_type == "partial_shield", trace_context
-                        )
             except asyncio.CancelledError:
                 raise
             finally:
-                # Clear effect active flag
-                self.backend.set_effect_active(serial, False)
                 # Remove from active_effects so new base colors can be applied immediately
                 async with self.effect_lock:
                     self.active_effects.pop(serial, None)
-                # Use current base_colors (may have changed during effect) if restore requested
-                current_restore = self.base_colors.get(serial) if restore_color else None
-                if current_restore:
-                    await self._set_led_color(serial, current_restore)
+                # Restore the current base colour, or hand the LED back to an
+                # active agent shield (#1301, UC-040 BR-010).
+                await self._finish_effect(serial, bool(restore_color))
 
         task = asyncio.create_task(effect_with_restore())
         async with self.effect_lock:
@@ -462,8 +485,10 @@ class FeedbackManager(ControllerEffectsBase):
         with tracer.start_as_current_span("effect_player_death", context=trace_context) as span:
             span.set_attribute(CONTROLLER_SERIAL_ATTR, serial)
 
-            # Cancel any active effect (e.g., warning flash) immediately for clean transition
+            # Cancel any active effect (e.g., warning flash) and the agent shield
+            # immediately for a clean transition (#1301, UC-040 A17)
             span.add_event("cancel_existing_effect")
+            await self.end_shield_effect(serial, restore=False)
             await self.cancel_effect(serial)
 
             # Short, sharp rumble (default 150ms feels snappier than 250ms)
@@ -500,6 +525,8 @@ class FeedbackManager(ControllerEffectsBase):
         (base_colors may be updated DURING the effect, e.g., menu sends lobby color)
         """
         duration_ms = get_winner_rainbow_duration_ms()
+        # The winner rainbow ends an agent shield (#1301, UC-040 A17).
+        await self.end_shield_effect(serial, restore=False)
         with tracer.start_as_current_span("effect_winner_rainbow", context=trace_context) as span:
             span.set_attribute(CONTROLLER_SERIAL_ATTR, serial)
             span.set_attribute("effect.duration_ms", duration_ms)
@@ -571,8 +598,6 @@ class FeedbackManager(ControllerEffectsBase):
         effect_speed = speed if speed > 0 else 5
         intensity = min(255, effect_speed * 50)
         await self.set_vibration(serial, intensity, effect_duration)
-        async with self.effect_lock:
-            self.active_effects.pop(serial, None)
 
     async def _game_effect_pulse(
         self,
@@ -604,77 +629,136 @@ class FeedbackManager(ControllerEffectsBase):
         effect_speed = speed if speed > 0 else 5
         await self.play_effect_with_restore(serial, "flash", effect_color, effect_duration, effect_speed, restore_color)
 
-    async def _game_effect_shield(
-        self,
-        serial: str,
-        restore_color: tuple | None,
-        color: tuple | None = None,
-        duration_ms: int = 0,
-        trace_context: Context | None = None,
-        partial: bool = False,
-        **_kwargs,
-    ) -> None:
-        """Agent shield feedback (#1301, UC-040 BR-008): fade, last-second blink, restore."""
-        if duration_ms <= 0:
-            # handle_game_effect routes duration 0 to end_shield_effect; keep the
-            # handler safe if it is ever called directly.
-            await self.end_shield_effect(serial)
+    # =========================================================================
+    # Agent shield layer (#1301, UC-040 A16 / A17, BR-008..BR-010)
+    # =========================================================================
+
+    def shield_active(self, serial: str) -> bool:
+        """Whether a shield layer is live (painted, or waiting under an overlay)."""
+        return bool(self._shield_layers.get(serial))
+
+    def _overlay_active(self, serial: str) -> bool:
+        """A real (not placeholder) effect currently owns the LED."""
+        active = self.active_effects.get(serial)
+        return active is not None and not active.task.done()
+
+    def _top_shield(self, serial: str, now: float) -> ShieldLayer | None:
+        """The shield layer to paint now: full over partial; expired layers are dropped."""
+        layers = self._shield_layers.get(serial)
+        if not layers:
+            return None
+        for kind in [k for k, layer in layers.items() if layer.remaining(now) <= 0]:
+            del layers[kind]
+        return layers.get("full") or layers.get("partial")
+
+    async def _finish_effect(self, serial: str, restore: bool) -> None:
+        """After an effect: hand the LED back to the shield, else restore the base colour."""
+        if self.shield_active(serial):
+            # The shield renderer paints its current frame on its next tick.
             return
-        shield_color = color if color else Colors.White.value
-        await self.play_effect_with_restore(
-            serial,
-            "partial_shield" if partial else "shield",
-            shield_color,
-            duration_ms,
-            0,
-            restore_color or True,
-            trace_context=trace_context,
-        )
+        self.backend.set_effect_active(serial, False)
+        current_restore = self.base_colors.get(serial) if restore else None
+        if current_restore:
+            await self._set_led_color(serial, current_restore)
 
-    async def _game_effect_partial_shield(self, serial: str, restore_color: tuple | None, **kwargs) -> None:
-        """Partial shield feedback (#1301, UC-040 BR-009): slow dim breathing, then restore."""
-        kwargs.pop("partial", None)
-        await self._game_effect_shield(serial, restore_color, partial=True, **kwargs)
-
-    async def _run_shield_effect(
+    async def start_shield_effect(
         self,
         serial: str,
-        color: tuple[int, int, int],
         duration_ms: int,
-        partial: bool,
-        trace_context: Context | None,
+        partial: bool = False,
+        color: tuple[int, int, int] | None = None,
+        trace_context: Context | None = None,
     ) -> None:
-        """Run the shield schedule inside a ``controller.shield_effect`` span."""
-        task = asyncio.current_task()
-        if task is not None:
-            self._shield_tasks[serial] = task
+        """Start or restart (extend) a shield layer; its schedule starts again at t=0."""
+        kind = "partial" if partial else "full"
+        self._shield_layers.setdefault(serial, {})[kind] = ShieldLayer(
+            start=self._clock.time(),
+            total_s=duration_ms / 1000.0,
+            color=color if color else Colors.White.value,
+            partial=partial,
+        )
+        task = self._shield_tasks.get(serial)
+        if task is None or task.done():
+            self.backend.set_effect_active(serial, True)
+            self._shield_tasks[serial] = asyncio.create_task(self._shield_render_loop(serial, kind, trace_context))
+        else:
+            # The running renderer picks the new layer up on its next tick.
+            logger.debug(f"Shield layer {kind} (re)started on {serial} for {duration_ms}ms")
+
+    async def _shield_render_loop(self, serial: str, kind: str, trace_context: Context | None) -> None:
+        """Paint the top shield layer at 20 Hz while no overlay effect owns the LED."""
+        interval = 0.05
         with tracer.start_as_current_span("controller.shield_effect", context=trace_context) as span:
             span.set_attribute(CONTROLLER_SERIAL_ATTR, serial)
-            span.set_attribute("shield.kind", "partial" if partial else "full")
-            span.set_attribute("effect.duration_ms", duration_ms)
+            span.set_attribute("shield.kind", kind)
+            first = self._shield_layers.get(serial, {}).get(kind)
+            if first is not None:
+                span.set_attribute("effect.duration_ms", int(first.total_s * 1000))
             end_reason = "cancelled"
             try:
-                await self._effect_shield(
-                    serial, color, duration_ms, partial=partial, on_blink=lambda: span.add_event("shield_blink")
-                )
-                end_reason = "expired"
+                while True:
+                    now = self._clock.time()
+                    layer = self._top_shield(serial, now)
+                    if layer is None:
+                        end_reason = "expired"
+                        break
+                    elapsed = now - layer.start
+                    if not layer.blink_reported and elapsed >= max(0.0, layer.total_s - SHIELD_BLINK_WINDOW_S):
+                        layer.blink_reported = True
+                        span.add_event("shield_blink", {"shield.kind": "partial" if layer.partial else "full"})
+                    if not self._overlay_active(serial):
+                        frame = shield_frame(elapsed, layer.total_s, layer.color, layer.partial)
+                        if frame is not None:
+                            await self._set_led_color(serial, frame)
+                    await self._clock.sleep(interval)
             finally:
                 span.add_event("shield_end", {"shield.end_reason": end_reason})
-                if self._shield_tasks.get(serial) is task:
+                if self._shield_tasks.get(serial) is asyncio.current_task():
                     self._shield_tasks.pop(serial, None)
+        # Expired naturally: hand the LED back, unless an overlay owns it (its
+        # own finish restores the base colour then).
+        self._shield_layers.pop(serial, None)
+        if not self._overlay_active(serial):
+            await self._finish_effect(serial, restore=True)
 
-    async def end_shield_effect(self, serial: str) -> bool:
-        """End a running shield effect now (#1301, UC-040 A17); other effects are untouched.
+    async def end_shield_effect(self, serial: str, partial_only: bool = False, restore: bool = True) -> bool:
+        """End shield layers now (#1301, UC-040 A17); other effects are untouched.
 
-        Cancelling the effect task runs its restore, so the controller shows its
-        current base colour afterwards. Returns True if a shield was ended.
+        ``partial_only`` ends just the partial layer (a full shield keeps
+        painting). With no layer left the renderer is cancelled and, if
+        ``restore`` and no overlay owns the LED, the base colour is shown.
+        Returns True if a layer was ended.
         """
-        shield_task = self._shield_tasks.get(serial)
-        active = self.active_effects.get(serial)
-        if shield_task is None or active is None or active.task is not shield_task:
+        layers = self._shield_layers.get(serial)
+        if not layers:
             return False
-        await self.cancel_effect(serial)
+        if partial_only:
+            if layers.pop("partial", None) is None:
+                return False
+            if layers:
+                return True  # the full shield keeps painting
+        self._shield_layers.pop(serial, None)
+        task = self._shield_tasks.pop(serial, None)
+        if task is not None and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        if not self._overlay_active(serial):
+            if restore:
+                await self._finish_effect(serial, restore=True)
+            else:
+                self.backend.set_effect_active(serial, False)
         return True
+
+    async def _handle_shield_command(
+        self, serial: str, effect: int, duration_ms: int, color: tuple | None, trace_context: Context | None
+    ) -> None:
+        partial = effect == controller_manager_pb2.GAME_EFFECT_PARTIAL_SHIELD
+        if duration_ms <= 0:
+            # SHIELD 0 ends every shield layer (game end); PARTIAL_SHIELD 0 only the partial one.
+            await self.end_shield_effect(serial, partial_only=partial)
+            return
+        await self.start_shield_effect(serial, duration_ms, partial=partial, color=color, trace_context=trace_context)
 
     # =========================================================================
     # Effect dispatch
@@ -700,8 +784,6 @@ class FeedbackManager(ControllerEffectsBase):
             controller_manager_pb2.GAME_EFFECT_RUMBLE: self._effect_rumble,
             controller_manager_pb2.GAME_EFFECT_PULSE: self._game_effect_pulse,
             controller_manager_pb2.GAME_EFFECT_FLASH: self._game_effect_flash,
-            controller_manager_pb2.GAME_EFFECT_SHIELD: self._game_effect_shield,
-            controller_manager_pb2.GAME_EFFECT_PARTIAL_SHIELD: self._game_effect_partial_shield,
         }
 
     async def handle_game_effect(
@@ -747,15 +829,12 @@ class FeedbackManager(ControllerEffectsBase):
                 logger.warning("No controllers found for game effect")
                 return False
 
-            # A zero-duration shield ends a running shield and touches nothing
-            # else: route it before the placeholder below re-types the active
-            # effect (#1301, UC-040 A17).
-            if (
-                effect in (controller_manager_pb2.GAME_EFFECT_SHIELD, controller_manager_pb2.GAME_EFFECT_PARTIAL_SHIELD)
-                and duration_ms <= 0
-            ):
+            # The agent shield is a layer, not an active effect: route it before
+            # the placeholder below, which re-types a running effect (#1301,
+            # UC-040 BR-010).
+            if effect in SHIELD_EFFECTS:
                 for target_serial in serials:
-                    await self.end_shield_effect(target_serial)
+                    await self._handle_shield_command(target_serial, effect, duration_ms, color, parent_context)
                 return True
 
             handlers = self._get_effect_handlers()
@@ -768,6 +847,11 @@ class FeedbackManager(ControllerEffectsBase):
 
             for target_serial in serials:
                 restore_color = self.base_colors.get(target_serial)
+                if effect in NON_LED_EFFECTS:
+                    # Rumble never touches the LED: it must not re-type, pop or
+                    # orphan whatever effect is running (#1301).
+                    await handler(serial=target_serial, duration_ms=duration_ms, speed=speed)
+                    continue
                 # Store effect_type; if there's already an ActiveEffect, update its type.
                 # The handler will replace the full ActiveEffect when it creates its task.
                 async with self.effect_lock:
@@ -849,7 +933,10 @@ class FeedbackManager(ControllerEffectsBase):
         await self.cancel_if_cancellable(serial)
         async with self.effect_lock:
             self.base_colors[serial] = color
-            if serial not in self.active_effects:
+            if self.shield_active(serial):
+                # Restored when the agent shield ends (#1301, UC-040 BR-010).
+                logger.info(f"[{label}] Base color for {serial} stored; shown after the agent shield")
+            elif serial not in self.active_effects:
                 await self.set_controller_color(serial, color)
                 logger.info(f"[{label}] Applied base color for {serial}: {color}")
             else:
@@ -863,7 +950,10 @@ class FeedbackManager(ControllerEffectsBase):
         if serial in self.active_effects:
             self.active_effects[serial].task.cancel()
             del self.active_effects[serial]
-        self._shield_tasks.pop(serial, None)
+        self._shield_layers.pop(serial, None)
+        shield_task = self._shield_tasks.pop(serial, None)
+        if shield_task is not None:
+            shield_task.cancel()
         self.current_colors.pop(serial, None)
         self._color_gauges.pop(serial, None)
 
@@ -942,12 +1032,8 @@ class FeedbackManager(ControllerEffectsBase):
                 span.add_event("countdown_cancelled")
                 raise
             finally:
-                # Clear effect active flag and tracking
-                self.backend.set_effect_active(serial, False)
                 # Remove from active_effects so new base colors can be applied immediately
                 async with self.effect_lock:
                     self.active_effects.pop(serial, None)
-                # Restore to base color
-                current_restore = self.base_colors.get(serial) if restore_color else None
-                if current_restore:
-                    await self._set_led_color(serial, current_restore)
+                # Restore to base color (or hand back to an agent shield, #1301)
+                await self._finish_effect(serial, bool(restore_color))

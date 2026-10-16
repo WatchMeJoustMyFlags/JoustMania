@@ -32,7 +32,7 @@ if [[ "$1" == "inspect" ]]; then
   [[ -n "${STUB_MISSING:-}" && "$4" == "${STUB_MISSING}" ]] && exit 1
   fmt="$3"
   case "${fmt}" in
-    *State.Status*) echo "running healthy" ;;
+    *State.Status*) if [[ -n "${STUB_AUDIO_DOWN:-}" && "$4" == "joustmania-audio" ]]; then echo "exited"; else echo "running healthy"; fi ;;
     *Mounts*) echo "${STUB_MOUNT}" ;;
     *Config.Env*) printf '%s\n' "PATH=/usr/bin" "ANTHROPIC_API_KEY=${STUB_CLAUDE_KEY-${STUB_SECRET}}" "JEV_API_KEY=${STUB_JEV_KEY-${STUB_SECRET}}" "DECISION_OPENAI_API_KEY=" "AGENT_INFERENCE_BACKEND=${STUB_INFERENCE-claude}" "AGENT_LLM_MAX_REQUESTS_PER_MINUTE=${STUB_BUDGET:-}" ;;
   esac
@@ -262,6 +262,12 @@ fixture
 STUB_BUDGET=30 STUB_CUE_FAIL=1 run_preflight
 if [[ "${RC}" -eq 1 ]]; then ok "unresolved audio cue exits 1"; else not_ok "unresolved audio cue exits 1 (rc=${RC})"; fi
 check "unresolved audio cue fails" "FAIL  audio cue 'agent_cue' does not resolve in joustmania-audio"
+if has "audio container not running"; then not_ok "running container is not reported as down"; else ok "running container is not reported as down"; fi
+
+fixture
+STUB_BUDGET=30 STUB_AUDIO_DOWN=1 run_preflight
+check "stopped audio container is named, not an old image" "FAIL  audio cue 'agent_cue' not checked: audio container not running (joustmania-audio: exited)"
+if has "older than #1301"; then not_ok "stopped container does not blame the image"; else ok "stopped container does not blame the image"; fi
 
 # --- usage -----------------------------------------------------------------
 run_preflight --minutes abc

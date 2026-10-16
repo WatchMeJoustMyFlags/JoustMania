@@ -111,7 +111,7 @@ class TestUC040ShieldFeedback:
         assert [e[1] for e in effects] == [SHIELD, SHIELD]
         assert effects[1][2] > effects[0][2]
         assert 7900 <= effects[1][2] <= 8000
-        assert play.await_count == 2
+        assert play.await_count == 1  # the extension restarts the LED silently
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A16", br=["BR-010"])
@@ -165,6 +165,62 @@ class TestUC040ShieldFeedback:
             await game.grant_shield("p1", 5.0)
             await game.grant_partial_shield("p2", 5.0)
         assert set(asyncio.all_tasks()) == before
+
+
+class TestUC040ShieldFeedbackChannels:
+    """UC-040 BR-010: sound only on unprotected -> protected; channels fail independently."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A16", br=["BR-007", "BR-010"])
+    async def test_sound_only_on_the_unprotected_to_protected_transition(self, game):
+        """UC-040 BR-010: first grant plays shield_up; extensions resend the LED with no sound."""
+        with patch.object(game, "_play_sound", new_callable=AsyncMock) as play:
+            await game.grant_shield("p1", 3.0)
+            await game.grant_shield("p1", 6.0)
+            await game.grant_partial_shield("p1", 9.0)  # still protected: silent too
+
+        assert [e[1] for e in game.gameplay_stream.effects()] == [SHIELD, SHIELD, PARTIAL]
+        play.assert_awaited_once_with(Sound.SFX_SHIELD_UP, priority=2, volume=1.0)
+        assert len(_shielded_events(game)) == 3
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A16", br=["BR-007", "BR-010"])
+    async def test_sound_again_after_the_protection_lapsed(self, game):
+        """UC-040 BR-010: a grant after the previous shield expired is a new transition."""
+        player = game.players["p1"]
+        player.grace_until = time.time() - 1  # an earlier shield has expired
+        with patch.object(game, "_play_sound", new_callable=AsyncMock) as play:
+            await game.grant_shield("p1", 3.0)
+        play.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A16", br=["BR-010"])
+    async def test_led_failure_still_plays_sound_and_publishes(self, game):
+        """UC-040 BR-010: a broken stream skips only the LED channel."""
+        game.gameplay_stream = RecordingStream(fail=True)
+        with patch.object(game, "_play_sound", new_callable=AsyncMock) as play:
+            assert await game.grant_shield("p1", 5.0) is True
+        play.assert_awaited_once()
+        assert len(_shielded_events(game)) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A16", br=["BR-010"])
+    async def test_sound_failure_still_sends_led_and_publishes(self, game):
+        """UC-040 BR-010: a failing audio call skips only the sound channel."""
+        with patch.object(game, "_play_sound", new_callable=AsyncMock, side_effect=RuntimeError("audio down")):
+            assert await game.grant_shield("p1", 5.0) is True
+        assert [e[1] for e in game.gameplay_stream.effects()] == [SHIELD]
+        assert len(_shielded_events(game)) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A16", br=["BR-010"])
+    async def test_event_failure_does_not_fail_the_shield(self, game):
+        """UC-040 BR-010: a failing publisher skips only the event."""
+        game.event_publisher.side_effect = RuntimeError("bus closed")
+        with patch.object(game, "_play_sound", new_callable=AsyncMock) as play:
+            assert await game.grant_shield("p1", 5.0) is True
+        play.assert_awaited_once()
+        assert [e[1] for e in game.gameplay_stream.effects()] == [SHIELD]
 
 
 class TestUC040ShieldFeedbackEnds:

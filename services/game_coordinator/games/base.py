@@ -2022,6 +2022,9 @@ class BaseGameMode(ABC):
             )
             return True
 
+        # Sound only on the unprotected -> protected transition (#1301, UC-040
+        # BR-010); an extension restarts the LED fade silently.
+        was_protected = self._shield_protected(player, time.time())
         player.grace_until = new_grace
         logger.info(f"Shield granted to {serial} for {seconds:.1f}s (grace_until={new_grace:.2f})")
 
@@ -2032,7 +2035,7 @@ class BaseGameMode(ABC):
             )
 
         # Perceptible feedback for the remaining protection (#1301, UC-040 A16).
-        await self._send_shield_feedback(player, new_grace - time.time(), partial=False)
+        await self._send_shield_feedback(player, new_grace - time.time(), partial=False, sound=not was_protected)
 
         return True
 
@@ -2093,6 +2096,7 @@ class BaseGameMode(ABC):
         # is longer and whichever active boost is higher, so repeated arming never
         # reduces in-flight protection.
         changed = True
+        was_protected = self._shield_protected(player, time.time())
         if time.time() < player.partial_shield_until:
             changed = new_until > player.partial_shield_until or boost > player.partial_shield_boost
             new_until = max(new_until, player.partial_shield_until)
@@ -2114,16 +2118,25 @@ class BaseGameMode(ABC):
         # Weaker perceptible feedback, only when the arming changed the window or
         # the boost (#1301, UC-040 A16, BR-009/BR-010).
         if changed:
-            await self._send_shield_feedback(player, new_until - time.time(), partial=True)
+            await self._send_shield_feedback(player, new_until - time.time(), partial=True, sound=not was_protected)
 
         return True
 
-    async def _send_shield_feedback(self, player: "Player", remaining_s: float, *, partial: bool) -> None:
-        """Shield sound + controller-rendered LED effect + ``player_shielded`` event (#1301).
+    def _shield_protected(self, player: "Player", now: float) -> bool:
+        """Whether any shield protection (grace / invincibility / partial shield) is active."""
+        return now < self.effective_grace_until(player) or now < player.partial_shield_until
+
+    async def _send_shield_feedback(
+        self, player: "Player", remaining_s: float, *, partial: bool, sound: bool = True
+    ) -> None:
+        """Shield LED effect + shield sound + ``player_shielded`` event (#1301).
 
         UC-040 A16 / BR-008..BR-010. One command per grant: the controller manager
         renders the fade / last-second blink / restore, so nothing is streamed and
-        no task is kept here. Best-effort: feedback never fails the intervention.
+        no task is kept here. ``sound`` is False for an extension of an already
+        protected player (the LED restarts silently). Each channel is tried on
+        its own, so one failing channel never skips the others; feedback never
+        fails the intervention.
         """
         if remaining_s <= 0:
             return
@@ -2131,18 +2144,19 @@ class BaseGameMode(ABC):
         duration_ms = int(round(remaining_s * 1000))
         until = time.time() + remaining_s
         kind = "partial" if partial else "full"
-        try:
-            self._shield_feedback_until[serial] = until
-            if player.span:
+        self._shield_feedback_until[serial] = until
+        if player.span:
+            with contextlib.suppress(Exception):
                 player.span.add_event(
                     "shield_feedback",
                     attributes={
                         "shield.kind": kind,
                         "shield.duration_ms": duration_ms,
-                        "shield.sound": Sound.SFX_SHIELD_UP.value,
+                        "shield.sound": Sound.SFX_SHIELD_UP.value if sound else "none",
                     },
                 )
-            if self.gameplay_stream:
+        if self.gameplay_stream:
+            try:
                 from proto import controller_manager_pb2
 
                 trace_parent, trace_state = inject_trace_context(player.span)
@@ -2161,7 +2175,14 @@ class BaseGameMode(ABC):
                         )
                     )
                 )
-            await self._play_sound(Sound.SFX_SHIELD_UP, priority=2, volume=0.5 if partial else 1.0)
+            except Exception as e:
+                logger.warning(f"Shield LED feedback for {serial} failed (protection unaffected): {e}")
+        if sound:
+            try:
+                await self._play_sound(Sound.SFX_SHIELD_UP, priority=2, volume=0.5 if partial else 1.0)
+            except Exception as e:
+                logger.warning(f"Shield sound for {serial} failed (protection unaffected): {e}")
+        try:
             await self.event_publisher(
                 GameEvent.PLAYER_SHIELDED,
                 {
@@ -2172,7 +2193,7 @@ class BaseGameMode(ABC):
                 },
             )
         except Exception as e:
-            logger.warning(f"Shield feedback for {serial} failed (protection unaffected): {e}")
+            logger.warning(f"player_shielded event for {serial} failed (protection unaffected): {e}")
 
     async def _end_shield_feedback(self) -> None:
         """End every shield effect still running before the end-of-game effects (#1301, UC-040 A17).

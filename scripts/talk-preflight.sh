@@ -340,7 +340,16 @@ if [[ -z "${cue}" ]]; then
   cue="agent_cue"
   info "defaultAudioCue not found in ${WRITER_GO}; checking ${cue}"
 fi
+audio_state=""
 if [[ "${docker_ok}" -eq 1 ]]; then
+  audio_state="$(docker inspect -f '{{.State.Status}}' joustmania-audio 2>/dev/null)" || audio_state=""
+  audio_state="${audio_state%% *}"
+fi
+if [[ "${docker_ok}" -eq 1 && "${audio_state}" != "running" ]]; then
+  # Not an old image: there is nothing to ask. The container section above
+  # already names it; say why the cue cannot be checked.
+  fail "audio cue '${cue}' not checked: audio container not running (joustmania-audio: ${audio_state:-not found})"
+elif [[ "${docker_ok}" -eq 1 ]]; then
   # The running image, not the checkout: a stale image is exactly the trap.
   if cue_out="$(docker exec joustmania-audio python -m services.audio.sound_catalog "${cue}" 2>&1)"; then
     pass "audio cue ${cue_out}"
