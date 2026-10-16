@@ -662,9 +662,10 @@ def check_requirement_status(project, specs, requirements):
     for rid, uids in linking_use_cases(specs).items():
         if rid not in requirements:
             continue
-        # JoustMania patch: NFRs are measured separately, so their status is
-        # never derived from the use cases that link them.
-        if rid.startswith("NFR-"):
+        # JoustMania patch: status derivation applies to FRs only. NFRs are
+        # measured separately and constraints are verified by review and the
+        # technical specs, so neither status is derived from use cases.
+        if not rid.startswith("FR-"):
             continue
         number, status, _ = requirements[rid]
         if normalize(status) not in progress:
@@ -1662,22 +1663,24 @@ def self_test_planned(validator, bpmn, failures):
 
 
 def self_test_nfr_exempt(validator, bpmn, failures):
-    """JoustMania patch: an NFR's status is never derived (no drift)."""
+    """JoustMania patch: only FR statuses are derived (no NFR/C drift)."""
     files = dict(CLEAN)
     files["requirements.md"] = CLEAN["requirements.md"] + (
         "| NFR-001 | Availability | The system is available 99.5 % of each "
-        "month. | High | Open |\n")
+        "month. | High | Open |\n"
+        "| C-001 | Hosting | The system runs on one host. | High | Open |\n")
     files["use_cases/UC-002-reserve-room.md"] = spec_text(
         "UC-002", "Reserve Room",
-        "\n**Requirements:** [FR-002, NFR-001](../requirements.md)\n",
+        "\n**Requirements:** [FR-002, NFR-001, C-001](../requirements.md)\n",
         "\n### BR-001: Guest Age\n\nThe guest age rule UC-001 BR-001 "
         "applies to every reservation.\n", status="Done")
     with tempfile.TemporaryDirectory() as root:
         write_fixture(root, files)
         drift = [f.element for f in lint(root, validator, bpmn)
                  if f.code == "REQ_STATUS_DRIFT"]
-        if "NFR-001" in drift:
-            failures.append("nfr: NFR-001 status derived from UC-002")
+        for rid in ("NFR-001", "C-001"):
+            if rid in drift:
+                failures.append("nfr: " + rid + " status derived from UC-002")
         if "FR-002" not in drift:
             failures.append("nfr: FR-002 drift (Open vs Done) not reported")
 

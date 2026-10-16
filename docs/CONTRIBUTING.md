@@ -164,8 +164,8 @@ The `Spec Gate` job in `ci.yml` (#1263, required through `CI Complete`) has two 
    local patches: the requirement Status column is read by its header because our
    tables have a Notes column after it; FRs on a use case's `**Planned:**` line
    count as covered for `FR_UNCOVERED` without feeding the derived status checked by
-   `REQ_STATUS_DRIFT`; and NFRs are exempt from `REQ_STATUS_DRIFT`, since they are
-   measured separately). `scripts/aiup/spec-lint-gate.sh` runs it over `docs/`:
+   `REQ_STATUS_DRIFT`; and `REQ_STATUS_DRIFT` checks FRs only, since NFRs are
+   measured separately and constraints are verified by review and the technical specs). `scripts/aiup/spec-lint-gate.sh` runs it over `docs/`:
    - **Every error fails**: `DUPLICATE_ID`, `SPEC_MISSING`, `NOT_IN_DIAGRAM`,
      `DANGLING_REF`, and use case files the AIUP format cannot parse. Errors are
      checked without the baseline, so they cannot be baselined.
