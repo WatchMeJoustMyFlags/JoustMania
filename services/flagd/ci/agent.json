@@ -573,6 +573,16 @@
       },
       "defaultVariant": "latest"
     },
+    "decision.jev.act_confidence_threshold": {
+      "state": "ENABLED",
+      "variants": {
+        "inherit": -1.0,
+        "gate": 0.6,
+        "default": 0.8,
+        "strict": 0.95
+      },
+      "defaultVariant": "gate"
+    },
     "decision.jev.timeout_ms": {
       "state": "ENABLED",
       "variants": {

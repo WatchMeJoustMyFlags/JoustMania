@@ -14,7 +14,8 @@
 #   ./scripts/agent-backend.sh claude                # decision.backend -> claude
 #   ./scripts/agent-backend.sh claude sonnet         # ... and decision.claude.model -> sonnet
 #   ./scripts/agent-backend.sh rules                 # back to the deterministic rules backend
-#   ./scripts/agent-backend.sh threshold strict      # decision.act_confidence_threshold -> strict
+#   ./scripts/agent-backend.sh threshold strict      # decision.act_confidence_threshold -> strict (global: claude/openai)
+#   ./scripts/agent-backend.sh jev-threshold inherit # decision.jev.act_confidence_threshold -> inherit (use the global)
 #   ./scripts/agent-backend.sh capture on            # decision.capture_content -> on
 #   ./scripts/agent-backend.sh effort low            # decision.openai.reasoning_effort -> low
 #
@@ -38,6 +39,7 @@ usage() {
 usage: $0 [status]
        $0 {rules|claude|openai|jev} [model-variant]
        $0 threshold {low|gate|default|strict}
+       $0 jev-threshold {inherit|gate|default|strict}
        $0 capture {on|off}
        $0 effort {auto|none|minimal|low|omit}
 EOF
@@ -53,7 +55,7 @@ case "${action}" in
   rules|claude|openai|jev)
     [[ $# -le 2 ]] || usage
     ;;
-  threshold|capture|effort)
+  threshold|jev-threshold|capture|effort)
     [[ $# -eq 2 ]] || usage
     ;;
   *)
@@ -123,6 +125,7 @@ if action == "status":
     else:
         print(f"model     = {current(f'decision.{backend}.model')}")
     print(f"threshold = {current('decision.act_confidence_threshold')}")
+    print(f"jev thr.  = {current('decision.jev.act_confidence_threshold')}")
     print(f"capture   = {current('decision.capture_content')}")
     if backend == "openai":
         print(f"effort    = {current('decision.openai.reasoning_effort')}")
@@ -138,6 +141,12 @@ if action == "threshold":
     value = set_variant("decision.act_confidence_threshold", args[1])
     write_in_place()
     print(f"agent act threshold -> {args[1]} ({value})  ({path})")
+elif action == "jev-threshold":
+    # Jev's own bar (#1287): its confidence is the calibrated gate p_yes, so it
+    # has its own threshold; "inherit" makes jev use the global one.
+    value = set_variant("decision.jev.act_confidence_threshold", args[1])
+    write_in_place()
+    print(f"agent jev act threshold -> {args[1]} ({value})  ({path})")
 elif action == "effort":
     value = set_variant("decision.openai.reasoning_effort", args[1])
     write_in_place()

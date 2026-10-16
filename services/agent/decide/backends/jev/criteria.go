@@ -21,7 +21,7 @@ import (
 // state clearly calls for it": whether to act is the gate noul's question
 // (#1281), and that sentence biased it toward no (measured p_yes 0.48 -> 0.55
 // near the threshold with the same criteria). Jev's restraint now comes from
-// the gate's calibrated p_yes and decision.act_confidence_threshold.
+// the gate's calibrated p_yes and decision.jev.act_confidence_threshold.
 const gameDescription = "JoustMania FFA (free for all), a motion-controlled party game played with PS Move " +
 	"controllers. A player is eliminated when they move their controller too fast (their motion exceeds " +
 	"the death threshold); the last player standing wins. Players are identified by controller serial. " +

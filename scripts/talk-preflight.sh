@@ -150,6 +150,8 @@ BASELINE = {
     "experiments_enabled": "off",
     "decision.backend": expect_backend,
     "decision.act_confidence_threshold": "default",
+    # Jev's own bar (#1287): the calibrated gate p_yes acts at 0.6.
+    "decision.jev.act_confidence_threshold": "gate",
     "decision.capture_content": "on",
     "decision.min_interval_ms": "default",
     "decision.claude.model": "haiku",

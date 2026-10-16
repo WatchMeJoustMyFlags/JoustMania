@@ -559,7 +559,7 @@ func TestContract_ActRound(t *testing.T) {
 // TestContract_GateThreshold: the round acts iff p_yes > 0.5 (decide.Validate's
 // argmax rule on the synthesised distribution); a closed gate makes no details
 // call. The acting confidence is p_yes, which the decision hook then compares
-// with decision.act_confidence_threshold.
+// with decision.jev.act_confidence_threshold (#1287).
 // Spec: decide-contract.md §3.1, UC-040 A13, FR-047.
 func TestContract_GateThreshold(t *testing.T) {
 	for _, c := range []struct {

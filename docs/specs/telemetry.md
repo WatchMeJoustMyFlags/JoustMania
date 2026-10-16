@@ -131,7 +131,7 @@ connect-proxy: `otelhttp` server spans (`/health` filtered) and `otelgrpc` clien
 | `chat {model}` (decide) | `gen_ai.operation.name=chat`, `gen_ai.provider.name` (`anthropic`; openai-compatible: derived from the base URL host; `jev`), `gen_ai.request.model`, `gen_ai.request.max_tokens`, `gen_ai.output.type=json`, `gen_ai.request.temperature`, `gen_ai.request.reasoning.level`, `gen_ai.response.id` / `.model` / `.finish_reasons`, `gen_ai.usage.input_tokens` / `.output_tokens` / cache / reasoning tokens, `error.type` |
 | `chat {model}` (jev) | `gen_ai.provider.name=jev`, request / response model, usage tokens, `gen_ai.response.id` from the `x-typesafe-request-id` header, plus `jev.native_confidence` (JSON map of Jev's native confidences, PR #1261) and `jev.stage` = `intervention` / `details` / `single` (one span per HTTP call of the two-stage round, PR #1265); a gated stage-1 span adds `jev.gate.p_yes` (the gate noul's P(yes)), `jev.stage1.choice` and `jev.stage1.distribution` (Jev's real pick and JSON distribution over the interventions, noop excluded; the `ffa.intervention` answer in `decide.answers` is synthesised from them, #1281) |
 | `chat {model}` (retro / proposer) | same minus `gen_ai.output.type`; no content capture; no client metrics |
-| `agent.decide` | `gen_ai.agent.name=joustmania-agent`, `gen_ai.conversation.id=<game id>`, `gen_ai.request.model`; event `gen_ai.evaluation.result` (`gen_ai.evaluation.name=act_confidence_threshold`, score value, label `pass` / `fail`, explanation). No `gen_ai.operation.name` (semconv suggests `invoke_agent`). |
+| `agent.decide` | `gen_ai.agent.name=joustmania-agent`, `gen_ai.conversation.id=<game id>`, `gen_ai.request.model`; event `gen_ai.evaluation.result` (`gen_ai.evaluation.name=act_confidence_threshold`, score value, label `pass` / `fail`, explanation naming the effective threshold and its flag). No `gen_ai.operation.name` (semconv suggests `invoke_agent`). |
 | `agent.llm.retro` | `gen_ai.operation.name=chat`, `gen_ai.request.model` |
 
 Content capture: `gen_ai.system_instructions`, `gen_ai.input.messages`, `gen_ai.output.messages` only when
@@ -144,7 +144,7 @@ Metrics `gen_ai.client.operation.duration` (s) and `gen_ai.client.token.usage` c
 ### 4.3 Decision attributes
 
 `decide.*` (backend, backend.requested, fallback_reason, state.digest, questions, answers, confidence,
-confidence.min, act_confidence_threshold, latency_ms, outcome, rationale, invalid_reason, discarded_reason,
+confidence.min, act_confidence_threshold, act_confidence_threshold.source (#1287), latency_ms, outcome, rationale, invalid_reason, discarded_reason,
 response_format) are specified in [decide-contract.md §12](decide-contract.md#12-telemetry).
 `decision.*`: `decision.action`, `.reason`, `.objective_served`, `.blocked`, `.block_reason`,
 `.intervention_id`. `intervention.*`: `id`, `type`, `objective`, `signal`, `fitness_baseline`,

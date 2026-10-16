@@ -71,10 +71,16 @@ const (
 	AttrDecideConfidence = "decide.confidence"
 	// AttrDecideConfidenceMin is the minimum confidence over all answers.
 	AttrDecideConfidenceMin = "decide.confidence.min"
-	// AttrDecideActThreshold is decision.act_confidence_threshold as read when the
-	// answer landed. Present only when the confidence router ran (outcome act or
-	// held): the rules path and rules fallbacks do not route by confidence.
+	// AttrDecideActThreshold is the EFFECTIVE act threshold as read when the answer
+	// landed: the answering backend's own decision.<backend>.act_confidence_threshold
+	// when it has one (jev, #1287), else decision.act_confidence_threshold. Present
+	// only when the confidence router ran (outcome act or held): the rules path and
+	// rules fallbacks do not route by confidence.
 	AttrDecideActThreshold = "decide.act_confidence_threshold"
+	// AttrDecideActThresholdSource names the flag AttrDecideActThreshold came from:
+	// "jev" (decision.jev.act_confidence_threshold) or "global"
+	// (decision.act_confidence_threshold). Present exactly when the threshold is.
+	AttrDecideActThresholdSource = "decide.act_confidence_threshold.source"
 	// AttrDecideLatencyMs is the backend call latency (ranking time for rules).
 	AttrDecideLatencyMs = "decide.latency_ms"
 	// AttrDecideOutcome is one of the DecideOutcome* values.
@@ -157,6 +163,9 @@ type decideRecord struct {
 	start, end     time.Time
 	outcome        string
 	threshold      float64
+	// thresholdSource is flags.ActThresholdSourceGlobal or the backend name whose
+	// own threshold flag applied (see flags.DecisionBackend.ActThreshold).
+	thresholdSource string
 	// routed is true when the confidence router ran (outcome act or held): only
 	// then is the gen_ai.evaluation.result event recorded.
 	routed          bool
@@ -384,8 +393,8 @@ func (l *Loop) runDecideRemote(root context.Context, fired flags.Snapshot, backe
 		model:     cfg.Model,
 		req:       buildDecideRequest(c, fired.InterventionsAllowed, false),
 		start:     start,
-		threshold: fired.Decision.ActConfidenceThreshold,
 	}
+	rec.threshold, rec.thresholdSource = fired.Decision.ActThreshold(rec.used)
 	defer func() { l.endDecideSpan(span, rec, c) }()
 
 	callCtx, cancel := context.WithTimeout(spanCtx, timeout)
@@ -438,7 +447,10 @@ func (l *Loop) runDecideRemote(root context.Context, fired flags.Snapshot, backe
 
 	// Re-read the LIVE flags: the safety gates apply as they are now.
 	live := l.Flags.Evaluate(root)
-	rec.threshold = live.Decision.ActConfidenceThreshold
+	// The effective threshold for the answering backend, from the LIVE flags: a
+	// flip of decision.jev.act_confidence_threshold (or the global) mid-flight
+	// applies to the in-flight answer.
+	rec.threshold, rec.thresholdSource = live.Decision.ActThreshold(rec.used)
 	if !live.Enabled {
 		rec.outcome, rec.discardedReason = DecideOutcomeDiscarded, DecideDiscardKillSwitch
 		return
@@ -497,7 +509,9 @@ func (l *Loop) decideRemoteFallback(ctx context.Context, snapshot flags.Snapshot
 }
 
 // decideRemoteApply maps a validated remote answer to a Decision and routes it by
-// confidence: at or above decision.act_confidence_threshold it goes through the
+// confidence: at or above the effective act threshold (rec.threshold: the
+// backend's own decision.<backend>.act_confidence_threshold, else the global
+// decision.act_confidence_threshold) it goes through the
 // normal permission chain (runDecision: allow-list, battery, rate limit) and the
 // action sink; below it is held.
 func (l *Loop) decideRemoteApply(ctx context.Context, snapshot flags.Snapshot, current gamecontext.GameContext, ok bool, rec *decideRecord, state *LayerState) {
@@ -656,7 +670,9 @@ func (l *Loop) setDecideAttributes(span trace.Span, rec *decideRecord, c gamecon
 		attribute.String(AttrDecideOutcome, rec.outcome),
 	}
 	if rec.routed {
-		attrs = append(attrs, attribute.Float64(AttrDecideActThreshold, rec.threshold))
+		attrs = append(attrs,
+			attribute.Float64(AttrDecideActThreshold, rec.threshold),
+			attribute.String(AttrDecideActThresholdSource, rec.thresholdSource))
 	}
 	if rec.model != "" {
 		attrs = append(attrs, semconv.GenAIRequestModel(rec.model))
@@ -690,7 +706,7 @@ func (l *Loop) setDecideAttributes(span trace.Span, rec *decideRecord, c gamecon
 			semconv.GenAIEvaluationScoreValue(rec.confidence),
 			semconv.GenAIEvaluationScoreLabel(label),
 			semconv.GenAIEvaluationExplanation("confidence "+fmtFloat(rec.confidence)+" "+cmp+
-				" threshold "+fmtFloat(rec.threshold)),
+				" threshold "+fmtFloat(rec.threshold)+" ("+thresholdFlag(rec.thresholdSource)+")"),
 		))
 	}
 }
@@ -754,6 +770,15 @@ func minConfidence(answers []decide.Answer) float64 {
 		}
 	}
 	return m
+}
+
+// thresholdFlag is the flag key an act-threshold source names, for the
+// gen_ai.evaluation.result explanation.
+func thresholdFlag(source string) string {
+	if source == "" || source == flags.ActThresholdSourceGlobal {
+		return "decision.act_confidence_threshold"
+	}
+	return "decision." + source + ".act_confidence_threshold"
 }
 
 func fmtFloat(v float64) string { return strconv.FormatFloat(v, 'f', 3, 64) }

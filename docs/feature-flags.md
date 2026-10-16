@@ -342,7 +342,8 @@ Selects who answers the in-game decide contract (epic #1225). The legacy
 | Flag | Type | Values | Description |
 |------|------|--------|-------------|
 | `decision.backend` | string | `rules`, `claude`, `openai`, `jev` | Who decides; `rules` is the default and the fallback floor |
-| `decision.act_confidence_threshold` | number | 0..1 | Below it a remote answer is held, not acted on |
+| `decision.act_confidence_threshold` | number | 0..1 | Below it a remote answer is held, not acted on (claude/openai; jev when its own flag is `inherit`) |
+| `decision.jev.act_confidence_threshold` | number | 0..1, or -1 = inherit | Jev's own act threshold (default 0.6, calibrated for the gate p_yes, #1287) |
 | `decision.<backend>.model` / `.timeout_ms` | string / int | per backend | Model and per-call budget of a remote backend |
 | `llm.eligible_game_kinds` | string | `real`, `real,shadow`, `""` | Game kinds that may call a remote backend |
 | `llm.max_requests_per_minute` | int | 3, 6, 12 | Global per-minute cap on remote decide calls and post-game retros |
