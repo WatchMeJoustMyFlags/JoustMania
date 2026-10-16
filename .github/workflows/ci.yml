@@ -496,8 +496,8 @@ jobs:
 
   # Telemetry producer/consumer contract (#1357): static scan of Python/Go/Rust
   # metric and span producers vs the agent extractors, Grafana dashboards and
-  # Prometheus alerts, plus `promtool check rules` (docker, pinned image tag in
-  # tests/contract/test_telemetry_contract.py). Runs in ~15 s, no service build.
+  # Prometheus alerts, plus `promtool check rules` (docker, the Prometheus image
+  # tag docker-compose.yml runs). Runs in ~15 s, no service build.
   telemetry-contract:
     name: Telemetry Contract
     runs-on: ubuntu-latest
