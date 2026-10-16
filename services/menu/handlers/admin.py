@@ -192,16 +192,28 @@ class AdminModeHandler:
         """
         await self.enter(serial)
 
-    async def on_exit(self, _serial: str) -> None:
+    async def on_exit(self, serial: str) -> None:
         """
         Called when a controller exits admin mode (ControllerHandler protocol).
 
-        Delegates to the existing exit method.
+        Delegates to the existing exit method, but only for the controller that
+        owns the admin session — another controller leaving ADMIN must never end
+        (or send the exit effect for) the active admin's session.
 
         Args:
-            serial: Controller serial number (unused - uses internal state)
+            serial: Controller serial number
         """
+        if self.is_held_by_other(serial):
+            logger.warning(f"Ignoring admin on_exit for {serial}: session owned by {self.controller_serial}")
+            return
         await self.exit()
+
+    def is_held_by_other(self, serial: str) -> bool:
+        """True if admin mode is active on a controller other than ``serial``.
+
+        UC-012 precondition: only one controller may be in admin mode at a time.
+        """
+        return self.active and self.controller_serial is not None and self.controller_serial != serial
 
     # Helper properties for StateManager access
 
@@ -427,6 +439,11 @@ class AdminModeHandler:
             serial: Controller serial number
             button: Button name (trigger, move, cross, circle, square, triangle, ps)
         """
+        # Only the controller that owns the admin session may issue admin commands.
+        if self.is_held_by_other(serial):
+            logger.warning(f"Ignoring admin button {button} from {serial}: session owned by {self.controller_serial}")
+            return
+
         # Check for admin mode timeout (60 seconds)
         if time.time() - self.entry_time > 60:
             logger.info("Admin mode timed out after 60 seconds")
