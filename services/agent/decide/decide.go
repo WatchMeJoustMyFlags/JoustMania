@@ -132,6 +132,9 @@ type Response struct {
 	Answers []Answer `json:"answers"`
 	// Backend is the Name() of the backend that produced the answers.
 	Backend string `json:"backend"`
+	// Rationale is an optional one-line "why" from the backend. It is
+	// untrusted model text: truncate before putting it on spans or logs.
+	Rationale string `json:"rationale,omitempty"`
 }
 
 // Backend is a decision backend. Decide must honor ctx cancellation; callers
