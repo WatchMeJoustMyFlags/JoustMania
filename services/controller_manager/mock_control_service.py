@@ -9,7 +9,6 @@ import asyncio
 import contextlib
 import logging
 import time
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import grpc
@@ -18,7 +17,7 @@ from opentelemetry.trace import Status, StatusCode
 
 from lib.controller_constants import AxisKey, ButtonKey, StateKey
 from proto import controller_manager_mock_pb2, controller_manager_mock_pb2_grpc
-from services.controller_manager.multiplexer.motion_patterns import LoadResult, load_pattern_set
+from services.controller_manager.multiplexer.motion_patterns import validate_archetype
 
 if TYPE_CHECKING:
     from services.controller_manager.multiplexer.mock_adapter import MockAdapter
@@ -108,17 +107,14 @@ DEATH_IDLE_FALLBACK_SECONDS = 30.0
 class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServiceServicer):
     """Service for controlling mock controllers during integration tests."""
 
-    def __init__(self, backend: "MockAdapter", patterns_dir: Path | None = None):
+    def __init__(self, backend: "MockAdapter"):
         """
         Initialize mock control service.
 
         Args:
             backend: MockAdapter instance to control
-            patterns_dir: Parameter-set directory (UC-046); None = the shipped
-                services/controller_manager/patterns/.
         """
         self.backend = backend
-        self.patterns_dir = patterns_dir
         self.auto_end_task: asyncio.Task | None = None  # Background task for auto-ending games
         logger.info("MockControllerService initialized")
 
@@ -436,10 +432,11 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
         """Add multiple mock controllers at once.
 
         request.reserved/request.tag apply to every added controller. With
-        request.pattern_set the set is validated and slot i is installed on the
-        i-th returned serial (UC-046 step 4); an unknown or invalid set adds nothing.
+        request.archetype the agent-pinned parameters are validated and slot i is
+        installed on the i-th returned serial (UC-046 step 4); invalid parameters
+        add nothing. The controller manager never reads flagd for archetypes.
         """
-        if request.pattern_set:
+        if request.archetype:
             return self._add_pattern_controllers(request)
         try:
             serials = []
@@ -513,73 +510,45 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
     # Motion patterns (UC-046, #1258)
     # ------------------------------------------------------------------
 
-    def _load(self, set_id: str) -> LoadResult:
-        return load_pattern_set(set_id, directory=self.patterns_dir)
-
-    def GetMotionPatternSet(self, request, _context):
-        """Resolve and validate a parameter set (UC-046 step 2, A2, A3)."""
-        result = self._load(request.name)
-        ps = result.pattern_set
-        return controller_manager_mock_pb2.GetMotionPatternSetResponse(
-            found=result.found,
-            valid=result.valid,
-            set_id=ps.set_id if ps else request.name,
-            version=ps.version if ps else 0,
-            description=ps.description if ps else "",
-            slot_count=ps.slot_count if ps else 0,
-            stream_rate_hz=ps.stream_rate_hz if ps else 0,
-            max_game_seconds=ps.max_game_seconds if ps else 0,
-            validation_errors=result.errors,
-        )
-
     def _add_pattern_controllers(self, request):
-        """AddControllers with a pattern set: validate, reserve one controller per slot, install."""
+        """AddControllers with an archetype: validate, reserve one controller per player, install."""
         with tracer.start_as_current_span("controller.mock.pattern_install") as span:
-            span.set_attribute("pattern.set", request.pattern_set)
+            span.set_attribute("pattern.archetype", request.archetype)
             span.set_attribute("mock.tag", request.tag)
-            result = self._load(request.pattern_set)
-            ps = result.pattern_set
-            if not result.valid or ps is None:
-                span.set_attribute("pattern.validation_errors", list(result.errors))
-                span.set_status(Status(StatusCode.ERROR, "invalid pattern set"))
-                error = f"pattern set {request.pattern_set!r} rejected: " + "; ".join(result.errors)
+            archetype, errors = validate_archetype(request.archetype, request.archetype_params)
+            if archetype is None:
+                span.set_attribute("pattern.validation_errors", errors)
+                span.set_status(Status(StatusCode.ERROR, "invalid archetype"))
+                error = f"archetype {request.archetype!r} rejected: " + "; ".join(errors)
                 return controller_manager_mock_pb2.AddControllersResponse(success=False, error=error)
-            span.set_attribute("pattern.set_version", ps.version)
-            span.set_attribute("pattern.stream_rate_hz", ps.stream_rate_hz)
-            span.set_attribute("pattern.max_game_seconds", ps.max_game_seconds)
-            span.set_attribute("pattern.slot_count", ps.slot_count)
-            if request.count != ps.slot_count:
-                error = f"count {request.count} != slot count {ps.slot_count} of {ps.set_id}"
+            span.set_attribute("pattern.stream_rate_hz", archetype.stream_rate_hz)
+            span.set_attribute("pattern.players", archetype.players)
+            span.set_attribute("pattern.params", archetype.canonical_json())
+            if request.count != archetype.players:
+                error = f"count {request.count} != players {archetype.players} of {archetype.name}"
                 span.set_status(Status(StatusCode.ERROR, error))
                 return controller_manager_mock_pb2.AddControllersResponse(success=False, error=error)
             serials = [
-                self.backend.add_controller(reserved=request.reserved, tag=request.tag) for _ in range(ps.slot_count)
+                self.backend.add_controller(reserved=request.reserved, tag=request.tag)
+                for _ in range(archetype.players)
             ]
-            self.backend.install_pattern(serials, ps)
+            self.backend.install_pattern(serials, archetype)
             for slot, serial in enumerate(serials):
-                span.add_event(
-                    "pattern.slot",
-                    {
-                        "pattern.slot_index": slot,
-                        "controller.serial": serial,
-                        "pattern.params": ps.slots[slot].canonical_json(),
-                    },
-                )
-            logger.info(f"Mock: Added pattern controllers {serials} for {ps.set_id} (tag={request.tag!r})")
+                span.add_event("pattern.slot", {"pattern.slot_index": slot, "controller.serial": serial})
+            logger.info(f"Mock: Added pattern controllers {serials} for {archetype.name} (tag={request.tag!r})")
             return controller_manager_mock_pb2.AddControllersResponse(
                 success=True,
                 serials=serials,
-                pattern_set_id=ps.set_id,
-                pattern_set_version=ps.version,
-                stream_rate_hz=ps.stream_rate_hz,
-                max_game_seconds=ps.max_game_seconds,
+                archetype=archetype.name,
+                stream_rate_hz=archetype.stream_rate_hz,
+                players=archetype.players,
             )
 
     def _pattern_release(self, serial: str, record: dict):
         """Emit controller.mock.pattern_release and return the replay record."""
         with tracer.start_as_current_span("controller.mock.pattern_release") as span:
             span.set_attribute("controller.serial", serial)
-            span.set_attribute("pattern.set", record["set_id"])
+            span.set_attribute("pattern.archetype", record["archetype"])
             span.set_attribute("pattern.slot_index", record["slot"])
             span.set_attribute("pattern.frames_delivered", record["frames_delivered"])
             span.set_attribute("pattern.signal_hash", f"{record['signal_hash']:016x}")
@@ -592,5 +561,5 @@ class MockControllerService(controller_manager_mock_pb2_grpc.MockControllerServi
             signal_hash=record["signal_hash"],
             frame_overruns=record["frame_overruns"],
             signal_checkpoints=record["signal_checkpoints"],
-            pattern_set_id=record["set_id"],
+            archetype=record["archetype"],
         )

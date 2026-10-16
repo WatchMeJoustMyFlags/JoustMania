@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 
 from lib.controller_constants import AxisKey, ButtonKey, StateKey
 from services.controller_manager.multiplexer.adapter import ControllerIOAdapter
-from services.controller_manager.multiplexer.motion_patterns import PatternSet, SignalHasher
+from services.controller_manager.multiplexer.motion_patterns import Archetype, SignalHasher
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ class PatternRuntime:
     of the game's stream is f(0), f(1/r), f(2/r), ... whatever the host load.
     """
 
-    pattern_set: PatternSet
+    archetype: Archetype
     slot: int
     frame_index: int = 0
     owner: str | None = None
@@ -42,12 +42,12 @@ class PatternRuntime:
     hasher: SignalHasher = field(init=False)
 
     def __post_init__(self) -> None:
-        self.hasher = SignalHasher(self.pattern_set.stream_rate_hz)
+        self.hasher = SignalHasher(self.archetype.stream_rate_hz)
 
     def record(self) -> dict:
         """The replay record of UC-046 step 8 (RemoveController / pattern_release)."""
         return {
-            "set_id": self.pattern_set.set_id,
+            "archetype": self.archetype.name,
             "slot": self.slot,
             "frames_delivered": self.hasher.frames,
             "signal_hash": self.hasher.value,
@@ -113,7 +113,7 @@ def _create_controller_state(serial: str, reserved: bool = False, tag: str = "")
         # SimulateMovement or ResetController. None = unscripted (pure noise).
         "held_accel": None,
         # Installed motion pattern (UC-046, #1258). While set, the gameplay send
-        # path delivers f(k / r) instead of the polled acceleration (BR-012).
+        # path delivers intensity(k / r) instead of the polled acceleration (BR-012).
         "pattern": None,
     }
 
@@ -287,13 +287,13 @@ class MockAdapter(ControllerIOAdapter):
 
     # -- Motion patterns (UC-046, #1258) --
 
-    def install_pattern(self, serials: list[str], pattern_set: PatternSet) -> None:
-        """Bind slot i of ``pattern_set`` to ``serials[i]`` (UC-046 step 4, BR-006)."""
-        if len(serials) != pattern_set.slot_count:
-            raise ValueError(f"{pattern_set.set_id} has {pattern_set.slot_count} slots, got {len(serials)} serials")
+    def install_pattern(self, serials: list[str], archetype: Archetype) -> None:
+        """Bind slot i of ``archetype`` to ``serials[i]`` (UC-046 step 4, BR-006)."""
+        if len(serials) != archetype.players:
+            raise ValueError(f"{archetype.name} has {archetype.players} players, got {len(serials)} serials")
         for slot, serial in enumerate(serials):
             controller = self.controllers[serial]
-            controller["pattern"] = PatternRuntime(pattern_set=pattern_set, slot=slot)
+            controller["pattern"] = PatternRuntime(archetype=archetype, slot=slot)
             controller["held_accel"] = None
 
     def has_pattern(self, serial: str) -> bool:
@@ -312,7 +312,7 @@ class MockAdapter(ControllerIOAdapter):
         filter becomes its owner; only the owner advances k (UC-046 BR-001), so a
         dashboard stream (no filter) never perturbs the game's signal and just sees
         the last delivered value. Precedence (BR-012): an active SimulateDeath latch
-        is delivered first, then f(k / r); k advances on every owned frame and the
+        is delivered first, then intensity(k / r); k advances on every owned frame and the
         signal hash covers the delivered magnitude.
         """
         controller = self.controllers.get(serial)
@@ -331,7 +331,7 @@ class MockAdapter(ControllerIOAdapter):
             accel = dict(death)
             value = math.sqrt(sum(v * v for v in death.values()))
         else:
-            value = pattern.pattern_set.value(pattern.slot, pattern.frame_index)
+            value = pattern.archetype.value(pattern.slot, pattern.frame_index)
             accel = {AxisKey.X: 0.0, AxisKey.Y: 0.0, AxisKey.Z: value}
         pattern.hasher.update(value)
         pattern.frame_index += 1
@@ -343,7 +343,7 @@ class MockAdapter(ControllerIOAdapter):
         for serial in serials:
             pattern = self.pattern_info(serial)
             if pattern is not None:
-                return pattern.pattern_set.stream_rate_hz
+                return pattern.archetype.stream_rate_hz
         return None
 
     def record_pattern_overrun(self, subscriber_id: str) -> int:

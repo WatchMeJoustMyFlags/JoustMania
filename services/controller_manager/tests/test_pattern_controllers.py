@@ -12,7 +12,22 @@ from services.controller_manager.mock_control_service import MockControllerServi
 from services.controller_manager.multiplexer import motion_patterns as mp
 from services.controller_manager.multiplexer.mock_adapter import MockAdapter
 
-SET_ID = "ffa_cascade_v1"
+ARCHETYPE = "unit_cascade"
+PARAMS = {
+    "players": 4,
+    "stream_rate_hz": 30,
+    "base": 1.0,
+    "drift": 0.01,
+    "amp": 0.1,
+    "period_s": 3.0,
+    "phase": 0.0,
+    "burst_h": 0.5,
+    "burst_period_s": 4.0,
+    "d_base": 0.0,
+    "d_drift": 0.01,
+    "d_amp": 0.0,
+    "d_phase": 0.25,
+}
 
 
 class _Ctx:
@@ -41,13 +56,19 @@ def service(adapter):
 
 @pytest.fixture
 def pattern_set():
-    return mp.load_pattern_set(SET_ID).pattern_set
+    archetype, errors = mp.validate_archetype(ARCHETYPE, PARAMS)
+    assert errors == []
+    return archetype
 
 
-def _add_pattern(service, set_id=SET_ID, count=4):
+def _add_pattern(service, params=None, count=4):
     return service.AddControllers(
         controller_manager_mock_pb2.AddControllersRequest(
-            count=count, reserved=True, tag="agent:t", pattern_set=set_id
+            count=count,
+            reserved=True,
+            tag="agent:t",
+            archetype=ARCHETYPE,
+            archetype_params=json.dumps(PARAMS if params is None else params),
         ),
         None,
     )
@@ -150,7 +171,7 @@ class TestUC046GameplayStream:
 
     @pytest.mark.uc("UC-046", flow="main", steps=[5], br=["BR-001"])
     def test_delivered_frames_carry_the_pattern(self, servicer, adapter, pattern_set):
-        """UC-046 step 5: each delivered frame of a pattern controller carries (0, 0, f(k / r))."""
+        """UC-046 step 5: each delivered frame of a pattern controller carries (0, 0, intensity(k / r))."""
         serials = [adapter.add_controller(reserved=True) for _ in range(4)]
         adapter.install_pattern(serials, pattern_set)
         servicer.state_cache_manager.build_or_get_cached_state = MagicMock(side_effect=self._state)
@@ -167,7 +188,7 @@ class TestUC046GameplayStream:
 
     @pytest.mark.uc("UC-046", flow="main", steps=[4], br=["BR-001"])
     def test_stream_rate_pinned_to_the_set(self, servicer, adapter, pattern_set):
-        """UC-046 step 4 / FR-103: a stream naming pattern controllers runs at the set's rate."""
+        """UC-046 step 4 / FR-103: a stream naming pattern controllers runs at the archetype's rate."""
         serials = [adapter.add_controller(reserved=True) for _ in range(4)]
         adapter.install_pattern(serials, pattern_set)
         other = adapter.add_controller()
@@ -177,55 +198,30 @@ class TestUC046GameplayStream:
 
 
 class TestUC046MockRpcs:
-    @pytest.mark.uc("UC-046", flow="main", steps=[2], br=["BR-003"])
-    def test_get_motion_pattern_set_valid(self, service):
-        """UC-046 step 2: the agent resolves a set id through GetMotionPatternSet."""
-        resp = service.GetMotionPatternSet(controller_manager_mock_pb2.GetMotionPatternSetRequest(name=SET_ID), None)
-        assert resp.found and resp.valid
-        assert (resp.set_id, resp.version, resp.slot_count, resp.stream_rate_hz, resp.max_game_seconds) == (
-            SET_ID,
-            1,
-            4,
-            30,
-            40,
-        )
-        assert list(resp.validation_errors) == []
-
     @pytest.mark.uc("UC-046", flow="A2", br=["BR-003"])
-    def test_get_motion_pattern_set_unknown_and_invalid(self, tmp_path, adapter):
-        """UC-046 A2: an unknown or invalid set answers with the failed rules."""
-        doc = json.loads((mp.PATTERNS_DIR / f"{SET_ID}.json").read_text())
-        doc["name"], doc["max_game_seconds"] = "never_ends", 10  # deaths after T: V8 fails
-        (tmp_path / "never_ends_v1.json").write_text(json.dumps(doc))
-        svc = MockControllerService(adapter, patterns_dir=tmp_path)
-        unknown = svc.GetMotionPatternSet(controller_manager_mock_pb2.GetMotionPatternSetRequest(name="nope_v1"), None)
-        assert not unknown.found and not unknown.valid
-        invalid = svc.GetMotionPatternSet(
-            controller_manager_mock_pb2.GetMotionPatternSetRequest(name="never_ends_v1"), None
-        )
-        assert invalid.found and not invalid.valid
-        assert any(e.startswith("V8") for e in invalid.validation_errors)
-        rejected = _add_pattern(svc, "never_ends_v1")
+    def test_invalid_archetype_adds_nothing(self, service, adapter):
+        """UC-046 A2: invalid parameters are rejected with the failed rules and reserve no controller."""
+        rejected = _add_pattern(service, params={**PARAMS, "period_s": 0.0})
         assert not rejected.success
-        assert "V8" in rejected.error
+        assert "period_s" in rejected.error
+        broken = service.AddControllers(
+            controller_manager_mock_pb2.AddControllersRequest(count=4, archetype=ARCHETYPE, archetype_params="{"),
+            None,
+        )
+        assert not broken.success
         assert adapter.controllers == {}
 
     @pytest.mark.uc("UC-046", flow="main", steps=[3, 4], br=["BR-006"])
     def test_add_controllers_installs_the_set(self, service, adapter):
-        """UC-046 steps 3-4: AddControllers(pattern_set) reserves one controller per slot and echoes the set."""
+        """UC-046 steps 3-4: AddControllers(archetype) reserves one controller per player and echoes the archetype."""
         resp = _add_pattern(service)
         assert resp.success
-        assert (resp.pattern_set_id, resp.pattern_set_version, resp.stream_rate_hz, resp.max_game_seconds) == (
-            SET_ID,
-            1,
-            30,
-            40,
-        )
+        assert (resp.archetype, resp.stream_rate_hz, resp.players) == (ARCHETYPE, 30, 4)
         assert [adapter.pattern_info(s).slot for s in resp.serials] == [0, 1, 2, 3]
         assert all(adapter.controllers[s]["reserved"] for s in resp.serials)
         wrong = _add_pattern(service, count=3)
         assert not wrong.success
-        assert "slot count" in wrong.error
+        assert "players" in wrong.error
 
     @pytest.mark.uc("UC-046", flow="main", steps=[6], br=["BR-004"])
     def test_scripted_motion_refused_for_pattern_controllers(self, service, adapter):
@@ -267,8 +263,8 @@ class TestUC046MockRpcs:
             expected.update(pattern_set.value(2, k))
         resp = service.RemoveController(controller_manager_mock_pb2.RemoveControllerRequest(serial=serials[2]), None)
         assert resp.success
-        assert (resp.pattern_set_id, resp.pattern_slot, resp.frames_delivered, resp.frame_overruns) == (
-            SET_ID,
+        assert (resp.archetype, resp.pattern_slot, resp.frames_delivered, resp.frame_overruns) == (
+            ARCHETYPE,
             2,
             65,
             1,
@@ -278,4 +274,4 @@ class TestUC046MockRpcs:
         assert len(resp.signal_checkpoints) == 2
         plain = adapter.add_controller()
         plain_resp = service.RemoveController(controller_manager_mock_pb2.RemoveControllerRequest(serial=plain), None)
-        assert plain_resp.success and plain_resp.pattern_set_id == ""
+        assert plain_resp.success and plain_resp.archetype == ""
