@@ -28,6 +28,53 @@ class ActiveEffect:
     effect_type: int  # GameEffect enum value
 
 
+# Agent shield LED schedule (#1301, UC-040 BR-006 / BR-007). Pure function of the
+# elapsed time so it is testable without a clock and identical on real and mock
+# controllers.
+SHIELD_BLINK_WINDOW_S = 1.0  # last second blinks
+SHIELD_BLINK_HZ = 4.0
+SHIELD_FADE_FLOOR = 0.30  # full shield fades 100% -> 30% before the blink window
+PARTIAL_SHIELD_BREATH_HZ = 0.5
+PARTIAL_SHIELD_MIN = 0.10
+PARTIAL_SHIELD_MAX = 0.50
+
+
+def _scale(color: tuple[int, int, int], factor: float) -> tuple[int, int, int]:
+    return tuple(int(round(c * factor)) for c in color)  # type: ignore[return-value]
+
+
+def shield_frame(
+    elapsed_s: float, total_s: float, color: tuple[int, int, int], partial: bool = False
+) -> tuple[int, int, int] | None:
+    """LED colour of a shield effect ``elapsed_s`` into a ``total_s`` shield.
+
+    Returns None once the shield is over (``elapsed_s >= total_s``): the caller
+    restores the player's base colour.
+
+    - Full shield (BR-006): brightness falls linearly 100% -> 30% over the first
+      ``total_s - 1`` seconds, then the last second blinks at 4 Hz between full
+      colour and off. A shield of 1 s or less blinks for its whole duration.
+    - Partial shield (BR-007): breathes at 0.5 Hz between 10% and 50% until the
+      last second, which blinks at 4 Hz between 50% and off.
+    """
+    if elapsed_s >= total_s:
+        return None
+    elapsed_s = max(0.0, elapsed_s)
+    blink_start = max(0.0, total_s - SHIELD_BLINK_WINDOW_S)
+    if elapsed_s >= blink_start:
+        # On for the first half of each blink period, off for the second half.
+        phase = ((elapsed_s - blink_start) * SHIELD_BLINK_HZ) % 1.0
+        if phase >= 0.5:
+            return (0, 0, 0)
+        return _scale(color, PARTIAL_SHIELD_MAX if partial else 1.0)
+    if partial:
+        # Sine breathing that starts at the bottom of the range: 10% -> 50% -> 10%.
+        wave = (1 - math.cos(2 * math.pi * PARTIAL_SHIELD_BREATH_HZ * elapsed_s)) / 2
+        return _scale(color, PARTIAL_SHIELD_MIN + (PARTIAL_SHIELD_MAX - PARTIAL_SHIELD_MIN) * wave)
+    fraction = elapsed_s / blink_start  # blink_start > 0 here
+    return _scale(color, 1.0 - (1.0 - SHIELD_FADE_FLOOR) * fraction)
+
+
 class ControllerEffectsBase(ABC):
     """Base class providing controller effect animations.
 
@@ -195,6 +242,39 @@ class ControllerEffectsBase(ABC):
         finally:
             # End at full brightness
             await self._set_led_color(serial, color)
+
+    async def _effect_shield(
+        self,
+        serial: str,
+        color: tuple[int, int, int],
+        duration_ms: int,
+        partial: bool = False,
+        on_blink=None,
+    ) -> None:
+        """SHIELD / PARTIAL_SHIELD effect (#1301): render :func:`shield_frame` at 20 Hz.
+
+        Ends when the schedule is over; the caller restores the base colour.
+        ``on_blink`` (optional, sync) is called once when the blink window starts.
+        """
+        interval = 0.05  # 20 Hz, same as the other animated effects
+        total_s = duration_ms / 1000.0
+        start = self._clock.time()
+        blink_start = max(0.0, total_s - SHIELD_BLINK_WINDOW_S)
+        blink_reported = False
+        try:
+            while True:
+                elapsed = self._clock.time() - start
+                frame = shield_frame(elapsed, total_s, color, partial)
+                if frame is None:
+                    return
+                if on_blink is not None and not blink_reported and elapsed >= blink_start:
+                    blink_reported = True
+                    on_blink()
+                await self._set_led_color(serial, frame)
+                await self._clock.sleep(interval)
+        except asyncio.CancelledError:
+            logger.debug(f"SHIELD effect cancelled for {serial}")
+            raise
 
     def cancel_controller_effect(self, serial: str):
         """Cancel any active effect on a controller.

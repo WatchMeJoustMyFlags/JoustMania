@@ -379,6 +379,7 @@ class GameEvent(StrEnum):
     PLAYER_REVIVE = "player_revive"
     PLAYER_OUT = "player_out"  # Player eliminated (no more lives)
     PLAYER_ANALYTICS = "player_analytics"  # Analytics summary for a player at game end
+    PLAYER_SHIELDED = "player_shielded"  # Agent shield feedback started (#1301, UC-040 A14)
 
     # Game phase events
     COUNTDOWN_START = "countdown_start"

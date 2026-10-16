@@ -726,6 +726,9 @@ class BaseGameMode(ABC):
         self.start_time = None
         self.running = False
         self.gameplay_stream = None  # Phase 46: Bidirectional stream for feedback commands
+        # Shield feedback still running per serial: wall-clock end time (#1301,
+        # UC-040 A14/A15). Only a record for the game-end clear; no task.
+        self._shield_feedback_until: dict[str, float] = {}
 
         # Settings - sensitivity is now passed via StartGameConfig.
         #
@@ -1984,9 +1987,10 @@ class BaseGameMode(ABC):
         one. If the player is already shielded past ``now + seconds`` the existing
         (longer) grace is kept; a shorter request never shortens it.
 
-        A visible pulse effect (``GAME_EFFECT_PULSE``) is sent to the controller
-        so the shield is observable, reusing the same gameplay-stream effect
-        mechanism as warnings/deaths.
+        Shield feedback (#1301, UC-040 A14): the ``shield_up`` sound, a
+        ``GAME_EFFECT_SHIELD`` for the remaining protection (rendered by the
+        controller manager: fade, last-second blink, restore) and a
+        ``player_shielded`` event. A kept (no-op) grant sends no feedback.
 
         Args:
             serial: Controller serial number.
@@ -2027,20 +2031,8 @@ class BaseGameMode(ABC):
                 attributes={"shield_seconds": seconds, **player_identity_attributes(serial, player.name)},
             )
 
-        # Visible pulse effect so the shield is observable on the controller.
-        if self.gameplay_stream:
-            from proto import controller_manager_pb2
-
-            trace_parent, trace_state = inject_trace_context(player.span)
-            effect_cmd = controller_manager_pb2.GameplayStreamControl(
-                game_effect=controller_manager_pb2.GameEffectCommand(
-                    serial=serial,
-                    effect=controller_manager_pb2.GAME_EFFECT_PULSE,
-                    trace_parent=trace_parent,
-                    trace_state=trace_state,
-                )
-            )
-            await self.gameplay_stream.write(effect_cmd)
+        # Perceptible feedback for the remaining protection (#1301, UC-040 A14).
+        await self._send_shield_feedback(player, new_grace - time.time(), partial=False)
 
         return True
 
@@ -2100,7 +2092,9 @@ class BaseGameMode(ABC):
         # Extend-not-shorten / strengthen-not-weaken: keep whichever active window
         # is longer and whichever active boost is higher, so repeated arming never
         # reduces in-flight protection.
+        changed = True
         if time.time() < player.partial_shield_until:
+            changed = new_until > player.partial_shield_until or boost > player.partial_shield_boost
             new_until = max(new_until, player.partial_shield_until)
             boost = max(boost, player.partial_shield_boost)
         player.partial_shield_until = new_until
@@ -2117,23 +2111,96 @@ class BaseGameMode(ABC):
                 },
             )
 
-        # Visible pulse effect so the partial shield is observable (same mechanism
-        # as grant_shield's pulse).
-        if self.gameplay_stream:
-            from proto import controller_manager_pb2
-
-            trace_parent, trace_state = inject_trace_context(player.span)
-            effect_cmd = controller_manager_pb2.GameplayStreamControl(
-                game_effect=controller_manager_pb2.GameEffectCommand(
-                    serial=serial,
-                    effect=controller_manager_pb2.GAME_EFFECT_PULSE,
-                    trace_parent=trace_parent,
-                    trace_state=trace_state,
-                )
-            )
-            await self.gameplay_stream.write(effect_cmd)
+        # Weaker perceptible feedback, only when the arming changed the window or
+        # the boost (#1301, UC-040 A14, BR-007/BR-008).
+        if changed:
+            await self._send_shield_feedback(player, new_until - time.time(), partial=True)
 
         return True
+
+    async def _send_shield_feedback(self, player: "Player", remaining_s: float, *, partial: bool) -> None:
+        """Shield sound + controller-rendered LED effect + ``player_shielded`` event (#1301).
+
+        UC-040 A14 / BR-006..BR-008. One command per grant: the controller manager
+        renders the fade / last-second blink / restore, so nothing is streamed and
+        no task is kept here. Best-effort: feedback never fails the intervention.
+        """
+        if remaining_s <= 0:
+            return
+        serial = player.serial
+        duration_ms = int(round(remaining_s * 1000))
+        until = time.time() + remaining_s
+        kind = "partial" if partial else "full"
+        try:
+            self._shield_feedback_until[serial] = until
+            if player.span:
+                player.span.add_event(
+                    "shield_feedback",
+                    attributes={
+                        "shield.kind": kind,
+                        "shield.duration_ms": duration_ms,
+                        "shield.sound": Sound.SFX_SHIELD_UP.value,
+                    },
+                )
+            if self.gameplay_stream:
+                from proto import controller_manager_pb2
+
+                trace_parent, trace_state = inject_trace_context(player.span)
+                await self.gameplay_stream.write(
+                    controller_manager_pb2.GameplayStreamControl(
+                        game_effect=controller_manager_pb2.GameEffectCommand(
+                            serial=serial,
+                            effect=(
+                                controller_manager_pb2.GAME_EFFECT_PARTIAL_SHIELD
+                                if partial
+                                else controller_manager_pb2.GAME_EFFECT_SHIELD
+                            ),
+                            duration_ms=duration_ms,
+                            trace_parent=trace_parent,
+                            trace_state=trace_state,
+                        )
+                    )
+                )
+            await self._play_sound(Sound.SFX_SHIELD_UP, priority=2, volume=0.5 if partial else 1.0)
+            await self.event_publisher(
+                GameEvent.PLAYER_SHIELDED,
+                {
+                    "serial": serial,
+                    "kind": kind,
+                    "seconds": f"{remaining_s:.1f}",
+                    "until_ms": str(int(until * 1000)),
+                },
+            )
+        except Exception as e:
+            logger.warning(f"Shield feedback for {serial} failed (protection unaffected): {e}")
+
+    async def _end_shield_feedback(self) -> None:
+        """End every shield effect still running before the end-of-game effects (#1301, UC-040 A15).
+
+        A zero-duration SHIELD ends only a running shield on the controller (the
+        controller manager never cancels another effect for it) and restores the
+        base colour. Best-effort; clears the record either way.
+        """
+        now = time.time()
+        running = [serial for serial, until in self._shield_feedback_until.items() if until > now]
+        self._shield_feedback_until.clear()
+        if not running or not self.gameplay_stream:
+            return
+        try:
+            from proto import controller_manager_pb2
+
+            for serial in running:
+                await self.gameplay_stream.write(
+                    controller_manager_pb2.GameplayStreamControl(
+                        game_effect=controller_manager_pb2.GameEffectCommand(
+                            serial=serial,
+                            effect=controller_manager_pb2.GAME_EFFECT_SHIELD,
+                            duration_ms=0,
+                        )
+                    )
+                )
+        except Exception as e:
+            logger.warning(f"Ending shield feedback failed: {e}")
 
     # Soft-penalty defaults (#1134, #1103 Phase 3). The tighten factor is the
     # MIRROR of the partial_shield boost: a factor BELOW 1.0 weakens the player's
@@ -2819,6 +2886,9 @@ class BaseGameMode(ABC):
                 # Stop game music first (inside teardown_phase so StopMusic span is a child)
                 await self._stop_game_music()
 
+                # Shield LEDs end with the game, before the winner effects (#1301).
+                await self._end_shield_feedback()
+
                 await self._end_game_impl()
 
                 # Cleanup stream reference after winner effects are sent
@@ -2987,6 +3057,7 @@ class BaseGameMode(ABC):
         sound: str | Sound,
         priority: int = 2,
         parent_context: otel_context.Context | None = None,
+        volume: float = 1.0,
     ):
         """
         Play sound via Audio service (Phase 29).
@@ -2997,6 +3068,7 @@ class BaseGameMode(ABC):
             parent_context: Explicit parent context. When set, overrides
                 game_cycle_context so the sound span is parented to a specific
                 span (e.g., a player lifecycle span for death explosions).
+            volume: Playback volume 0.0-1.0 (default 1.0).
         """
         if not self.audio_client:
             return
@@ -3006,7 +3078,7 @@ class BaseGameMode(ABC):
 
             # Convert Sound enum to string value if needed
             sound_name = sound.value if isinstance(sound, Sound) else sound
-            request = audio_pb2.PlaySoundRequest(file_path=sound_name, volume=1.0, priority=priority)
+            request = audio_pb2.PlaySoundRequest(file_path=sound_name, volume=volume, priority=priority)
 
             # Use explicit parent if provided, otherwise fall back to game_cycle
             ctx = parent_context or self.game_cycle_context

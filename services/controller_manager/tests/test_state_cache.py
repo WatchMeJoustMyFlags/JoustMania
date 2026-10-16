@@ -126,7 +126,7 @@ class TestStateCacheSnapshotHash:
 
         result = cache._snapshot_hash("serial_1", info)
 
-        assert result == "80|2"
+        assert result == "80|2|None"  # no LED written yet (#1301)
 
     def test_snapshot_hash_deterministic(self):
         """Same input should produce same hash."""

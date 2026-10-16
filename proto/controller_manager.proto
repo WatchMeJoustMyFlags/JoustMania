@@ -210,6 +210,13 @@ enum GameEffect {
   GAME_EFFECT_RUMBLE = 11;          // Vibrate only (for secret signaling like traitor/werewolf)
   GAME_EFFECT_PULSE = 12;           // Pulse with color, restore to base (for confirmations/announcements)
   GAME_EFFECT_FLASH = 13;           // Brief flash with color, restore to base
+  // Agent shield (#1301, UC-040 BR-006/BR-008): shield colour (default white) fades 100%->30%
+  // over duration_ms minus the last 1000ms, blinks 4 Hz in the last 1000ms, then restores the
+  // base color. duration_ms=0 ends a running shield effect now. Cancelled by a new base color.
+  GAME_EFFECT_SHIELD = 14;
+  // Partial shield (#1301, UC-040 BR-007): the weaker variant, a slow 0.5 Hz breathing at
+  // 10-50% brightness, last-second blink at 50%, then restore. duration_ms=0 ends it.
+  GAME_EFFECT_PARTIAL_SHIELD = 15;
 }
 
 // Trigger a game effect via stream
