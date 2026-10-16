@@ -144,6 +144,7 @@ dry-run:
 lint:
 	uv run ruff check .
 	./scripts/tests/test-agent-backend.sh >/dev/null
+	./scripts/tests/test-talk-preflight.sh >/dev/null
 
 .PHONY: format
 format:
