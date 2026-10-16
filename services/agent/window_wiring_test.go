@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"sync"
 	"testing"
 
+	"github.com/joustmania/agent/experiment"
 	"github.com/joustmania/agent/patterngame"
 )
 
@@ -26,7 +28,7 @@ func (w *fakeWindow) Forget(id string) {
 	w.forgotten = append(w.forgotten, id)
 }
 
-// UC: UC-042 BR-006
+// UC: UC-042 BR-005 BR-006
 func TestPatternEndChain_KeepsRegistryAndForwardsToWindow(t *testing.T) {
 	t.Run("UC-042/BR-006 registry first, then window", func(t *testing.T) {
 		var calls []string
@@ -48,6 +50,7 @@ func TestPatternEndChain_KeepsRegistryAndForwardsToWindow(t *testing.T) {
 		}
 	})
 	t.Run("UC-042/BR-006 built loop forwards pattern ends to the window", func(t *testing.T) {
+		t.Setenv("AGENT_EXPERIMENT_DIR", t.TempDir())
 		w := &fakeWindow{}
 		loop := buildExperimentLoop(nil, nil, nil, "/nonexistent/game.json", w, testLogger())
 		if loop.spawner.onPatternEnd == nil || loop.spawner.onPatternStart == nil {
@@ -58,6 +61,25 @@ func TestPatternEndChain_KeepsRegistryAndForwardsToWindow(t *testing.T) {
 		defer w.mu.Unlock()
 		if len(w.patterns) != 1 || w.patterns[0] != "game_p1" {
 			t.Errorf("window received %v, want [game_p1]", w.patterns)
+		}
+	})
+	t.Run("UC-042/BR-005 built loop evicts a torn-down experiment's linked set", func(t *testing.T) {
+		t.Setenv("AGENT_EXPERIMENT_DIR", t.TempDir())
+		w := &fakeWindow{}
+		loop := buildExperimentLoop(nil, nil, nil, "/nonexistent/game.json", w, testLogger())
+		id, err := loop.registry.Declare(experiment.Intent{
+			FlagKey: "invincibility_seconds", ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 3,
+		})
+		if err != nil {
+			t.Fatalf("declare: %v", err)
+		}
+		if err := loop.registry.Abort(context.Background(), id, "test"); err != nil {
+			t.Fatalf("abort: %v", err)
+		}
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		if len(w.forgotten) != 1 || w.forgotten[0] != id {
+			t.Errorf("window forgot %v, want [%s]", w.forgotten, id)
 		}
 	})
 }
