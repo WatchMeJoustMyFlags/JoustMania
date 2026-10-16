@@ -384,6 +384,7 @@ class TestMultiSession:
         assert "already in progress" in error.lower()
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-027", flow="main", steps=[2], br=["BR-001"])
     async def test_force_end_targets_primary_only(self, servicer, cap_two):
         """ForceEndGame (no game_id) ends the primary and frees the primary slot."""
         with _NO_THREAD:
@@ -738,6 +739,7 @@ class TestGameIdRouting:
         assert collected[0].game_id == "game_doesnotexist"
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-027", flow="main", steps=[2], br=["BR-001"])
     async def test_force_end_by_game_id_targets_only_that_session(self, servicer, cap_two):
         """ForceEndGame(game_id=shadow) ends only the shadow, leaving the primary."""
         with _NO_THREAD:
@@ -755,6 +757,7 @@ class TestGameIdRouting:
         assert servicer._primary_game_id == gid1
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-027", flow="A1")
     async def test_force_end_unknown_game_id_returns_failure(self, servicer):
         """ForceEndGame with an unknown game_id returns success=False."""
         resp = await servicer.ForceEndGame(

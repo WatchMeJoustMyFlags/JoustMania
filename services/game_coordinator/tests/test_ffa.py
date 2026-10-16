@@ -58,6 +58,7 @@ class TestFFAGameMode:
         return game, mock_controller_manager, event_collector
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="main", steps=[1])
     async def test_player_initialization(self, ffa_game):
         """Test that players are initialized correctly."""
         game, mock_controller_manager, _ = ffa_game
@@ -74,6 +75,7 @@ class TestFFAGameMode:
             assert player.team == 0  # FFA: all players on team 0
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="main", steps=[5])
     async def test_kill_player_marks_dead(self, ffa_game):
         """Test that _kill_player_impl marks player as dead."""
         game, mock_controller_manager, event_collector = ffa_game
@@ -92,6 +94,7 @@ class TestFFAGameMode:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-046", flow="main", steps=[8], br=["BR-014"])
+    @pytest.mark.uc("UC-020", flow="main", steps=[5])
     async def test_kill_publishes_player_death_in_order(self, ffa_game):
         """UC-046 BR-014 / UC-020 step 5: each FFA death is published as player_death, in order."""
         game, mock_controller_manager, event_collector = ffa_game
@@ -105,6 +108,7 @@ class TestFFAGameMode:
         assert [d["alive_remaining"] for d in deaths] == ["3", "2"]
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="main", steps=[6], br=["BR-001"])
     async def test_win_condition_last_player(self, ffa_game):
         """Test that win condition triggers when one player remains."""
         game, mock_controller_manager, _ = ffa_game
@@ -123,6 +127,7 @@ class TestFFAGameMode:
         assert await game._check_win_condition()
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="main", br=["BR-001"])
     async def test_win_condition_two_alive(self, ffa_game):
         """Test that win condition does NOT trigger with 2+ players alive."""
         game, mock_controller_manager, _ = ffa_game
@@ -172,6 +177,7 @@ class TestFFAGameMode:
         assert len(alive_serials) == 3
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="main", steps=[1])
     async def test_unique_color_assignment(self, ffa_game):
         """Test that _assign_ffa_colors gives each player a distinct color."""
         game, mock_controller_manager, _ = ffa_game
@@ -189,6 +195,7 @@ class TestFFAGameMode:
         assert len(colors) == len(game.players)
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="main", steps=[6])
     async def test_end_game_impl_winner_state(self, ffa_game):
         """Test that winner is correctly identified in _end_game_impl."""
         game, mock_controller_manager, event_collector = ffa_game

@@ -73,6 +73,8 @@ class TestHandleDisconnect:
         return game, event_collector
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="A2")
+    @pytest.mark.uc("UC-030", flow="A5")
     async def test_disconnect_kills_alive_player(self, game_with_players):
         """Disconnecting an alive player should kill them."""
         game, _ = game_with_players
@@ -94,6 +96,8 @@ class TestHandleDisconnect:
         assert game.dead_count == initial + 1
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="A2")
+    @pytest.mark.uc("UC-030", flow="A5")
     async def test_disconnect_sends_death_effect(self, game_with_players):
         """Disconnect should send death effect via gameplay stream."""
         game, _ = game_with_players
@@ -139,6 +143,7 @@ class TestHandleDisconnect:
         assert len(game.gameplay_stream.messages) == initial_messages
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="A5")
     async def test_disconnect_adds_span_event(self, game_with_players):
         """Disconnect should add player_disconnected event to span."""
         from unittest.mock import MagicMock
@@ -188,6 +193,7 @@ class TestProcessGameplayUpdateWithDisconnects:
         return game, event_collector
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="A5")
     async def test_disconnect_event_processed_before_controllers(self, game_with_players):
         """Disconnect events should be processed before controller state data."""
         game, _ = game_with_players
@@ -228,6 +234,8 @@ class TestProcessGameplayUpdateWithDisconnects:
         assert call_order[1] == ("controller", "player_1")
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="A2", br=["BR-001"])
+    @pytest.mark.uc("UC-030", flow="A5")
     async def test_disconnect_triggers_win_condition_check(self, game_with_players):
         """Win condition should be checked after each disconnect."""
         game, _ = game_with_players
@@ -276,6 +284,7 @@ class TestTwoPlayerDisconnectScenario:
     """Tests for the 2-player scenario where disconnect should end the game."""
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", flow="A2", br=["BR-001"])
     async def test_two_player_game_ends_on_disconnect(self):
         """In a 2-player game, one disconnect should end the game with the other winning."""
         mock_cm = MockControllerManagerService(num_controllers=2)
