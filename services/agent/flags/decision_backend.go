@@ -25,6 +25,7 @@ const (
 	keyDecisionBackend                = "decision.backend"
 	keyDecisionActConfidenceThreshold = "decision.act_confidence_threshold"
 	keyDecisionCaptureContent         = "decision.capture_content"
+	keyDecisionMinIntervalMs          = "decision.min_interval_ms"
 	keyDecisionClaudeModel            = "decision.claude.model"
 	keyDecisionClaudeTimeoutMs        = "decision.claude.timeout_ms"
 	keyDecisionOpenAIBaseURL          = "decision.openai.base_url"
@@ -55,6 +56,11 @@ const (
 	// DefaultDecisionCaptureContent is off: GenAI content capture (prompts,
 	// completions, rationale as message parts) is opt-in per the GenAI semconv.
 	DefaultDecisionCaptureContent = false
+	// DefaultDecisionMinIntervalMs is the per-game cadence of remote decide calls
+	// (decision.min_interval_ms): at most one call per game per interval. It
+	// replaces llm.min_decision_interval_seconds while decision.backend != rules;
+	// llm.max_requests_per_minute stays the global spend bound.
+	DefaultDecisionMinIntervalMs = 3000
 	// DefaultDecisionClaudeModel is the claude backend's model (variant "haiku").
 	DefaultDecisionClaudeModel = "claude-haiku-4-5-20251001"
 	// DefaultDecisionOpenAIBaseURL is the openai backend's endpoint.
@@ -92,9 +98,13 @@ type DecisionBackend struct {
 	ActConfidenceThreshold float64
 	// CaptureContent is decision.capture_content (GenAI content capture opt-in).
 	CaptureContent bool
-	Claude         RemoteBackendConfig
-	OpenAI         RemoteBackendConfig
-	Jev            RemoteBackendConfig
+	// MinInterval is decision.min_interval_ms: the per-game cadence of remote
+	// decide calls. Zero disables the cadence floor; a negative value falls back
+	// to the default.
+	MinInterval time.Duration
+	Claude      RemoteBackendConfig
+	OpenAI      RemoteBackendConfig
+	Jev         RemoteBackendConfig
 }
 
 // IsRules reports whether the rules engine is the selected backend. A zero-value
@@ -127,6 +137,7 @@ func (f *Flags) DecisionBackend(ctx context.Context) DecisionBackend {
 		Backend:                normalizeBackendName(f.stringFlag(ctx, keyDecisionBackend, DefaultDecisionBackend)),
 		ActConfidenceThreshold: f.actConfidenceThreshold(ctx),
 		CaptureContent:         f.boolFlag(ctx, keyDecisionCaptureContent, DefaultDecisionCaptureContent),
+		MinInterval:            f.minIntervalFlag(ctx),
 		Claude: RemoteBackendConfig{
 			Model:   f.stringFlag(ctx, keyDecisionClaudeModel, DefaultDecisionClaudeModel),
 			Timeout: f.timeoutMsFlag(ctx, keyDecisionClaudeTimeoutMs),
@@ -160,6 +171,15 @@ func (f *Flags) actConfidenceThreshold(ctx context.Context) float64 {
 		return DefaultDecisionActConfidenceThreshold
 	}
 	return v
+}
+
+func (f *Flags) minIntervalFlag(ctx context.Context) time.Duration {
+	ms := f.intFlag(ctx, keyDecisionMinIntervalMs, DefaultDecisionMinIntervalMs)
+	if ms < 0 {
+		f.log.Warn("flags interval negative, using default", "key", keyDecisionMinIntervalMs, "value", ms, "default", DefaultDecisionMinIntervalMs)
+		ms = DefaultDecisionMinIntervalMs
+	}
+	return time.Duration(ms) * time.Millisecond
 }
 
 func (f *Flags) timeoutMsFlag(ctx context.Context, key string) time.Duration {

@@ -16,6 +16,7 @@ func defaultDecisionBackend() DecisionBackend {
 		Backend:                DefaultDecisionBackend,
 		ActConfidenceThreshold: DefaultDecisionActConfidenceThreshold,
 		CaptureContent:         DefaultDecisionCaptureContent,
+		MinInterval:            DefaultDecisionMinIntervalMs * time.Millisecond,
 		Claude:                 RemoteBackendConfig{Model: DefaultDecisionClaudeModel, Timeout: timeout},
 		OpenAI:                 RemoteBackendConfig{BaseURL: DefaultDecisionOpenAIBaseURL, Timeout: timeout},
 		Jev:                    RemoteBackendConfig{Timeout: timeout},
@@ -47,6 +48,7 @@ func TestDecisionBackend_FlagdShape(t *testing.T) {
 			keyDecisionClaudeTimeoutMs: 1500,
 			keyDecisionOpenAITimeoutMs: 5000,
 			keyDecisionJevTimeoutMs:    2000,
+			keyDecisionMinIntervalMs:   1500,
 		},
 		floats: map[string]float64{keyDecisionActConfidenceThreshold: 0.95},
 	}
@@ -55,6 +57,7 @@ func TestDecisionBackend_FlagdShape(t *testing.T) {
 		Backend:                DecisionBackendClaude,
 		ActConfidenceThreshold: 0.95,
 		CaptureContent:         true,
+		MinInterval:            1500 * time.Millisecond,
 		Claude:                 RemoteBackendConfig{Model: "claude-sonnet-5-5", Timeout: 1500 * time.Millisecond},
 		OpenAI:                 RemoteBackendConfig{BaseURL: "https://example.test/v1", Model: "gpt-x", Timeout: 5 * time.Second},
 		Jev:                    RemoteBackendConfig{BaseURL: "https://jev.test", Model: "jev-1", Timeout: 2 * time.Second},
@@ -76,7 +79,7 @@ func TestDecisionBackend_FlagdShape(t *testing.T) {
 func TestDecisionBackend_BadValuesFallBack(t *testing.T) {
 	stub := stubEvaluator{
 		strings: map[string]string{keyDecisionBackend: "   "},
-		ints:    map[string]int64{keyDecisionClaudeTimeoutMs: 0, keyDecisionOpenAITimeoutMs: -5},
+		ints:    map[string]int64{keyDecisionClaudeTimeoutMs: 0, keyDecisionOpenAITimeoutMs: -5, keyDecisionMinIntervalMs: -1},
 		floats:  map[string]float64{keyDecisionActConfidenceThreshold: 1.5},
 	}
 	got := New(stub, nil).DecisionBackend(context.Background())
@@ -92,7 +95,7 @@ func TestDecisionBackend_DefaultsOnError(t *testing.T) {
 		keyDecisionBackend, keyDecisionActConfidenceThreshold, keyDecisionCaptureContent,
 		keyDecisionClaudeModel, keyDecisionClaudeTimeoutMs, keyDecisionOpenAIBaseURL,
 		keyDecisionOpenAIModel, keyDecisionOpenAITimeoutMs, keyDecisionJevBaseURL,
-		keyDecisionJevModel, keyDecisionJevTimeoutMs,
+		keyDecisionJevModel, keyDecisionJevTimeoutMs, keyDecisionMinIntervalMs,
 	} {
 		stub.errs[k] = boom
 	}
@@ -122,6 +125,7 @@ func TestDecisionBackend_FlagFilesMatchDefaults(t *testing.T) {
 		keyDecisionJevBaseURL:             DefaultDecisionJevBaseURL,
 		keyDecisionJevModel:               DefaultDecisionJevModel,
 		keyDecisionJevTimeoutMs:           float64(DefaultDecisionTimeoutMs),
+		keyDecisionMinIntervalMs:          float64(DefaultDecisionMinIntervalMs),
 	}
 	for path, capture := range map[string]bool{
 		filepath.Join("..", "..", "flagd", "agent.json"):       DefaultDecisionCaptureContent,

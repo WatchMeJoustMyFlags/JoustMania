@@ -215,6 +215,10 @@ type Loop struct {
 	// game has its own cadence clock. Zero value = no attempt yet (first eligible
 	// cycle always passes cadence).
 	lastLLMAttempt time.Time
+	// lastDecideAttempt is the time this game's most recent remote decide call was
+	// admitted (#1226): the decision.min_interval_ms cadence clock, guarded by
+	// llmGate like lastLLMAttempt.
+	lastDecideAttempt time.Time
 	// budget is the GLOBAL per-minute LLM request cap shared across ALL loops
 	// (#847). It is injected via SetLLMBudget from the one instance main.go
 	// constructs and closes over in the Loop factory, so concurrent games draw down

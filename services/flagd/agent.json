@@ -656,6 +656,15 @@
         "patient": 5000
       },
       "defaultVariant": "default"
+    },
+    "decision.min_interval_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "fast": 1500,
+        "default": 3000,
+        "slow": 10000
+      },
+      "defaultVariant": "default"
     }
   }
 }

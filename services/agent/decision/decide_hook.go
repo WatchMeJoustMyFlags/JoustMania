@@ -72,7 +72,9 @@ const (
 	AttrDecideConfidence = "decide.confidence"
 	// AttrDecideConfidenceMin is the minimum confidence over all answers.
 	AttrDecideConfidenceMin = "decide.confidence.min"
-	// AttrDecideActThreshold is decision.act_confidence_threshold this cycle.
+	// AttrDecideActThreshold is decision.act_confidence_threshold as read when the
+	// answer landed. Present only when the confidence router ran (outcome act or
+	// held): the rules path and rules fallbacks do not route by confidence.
 	AttrDecideActThreshold = "decide.act_confidence_threshold"
 	// AttrDecideLatencyMs is the backend call latency (ranking time for rules).
 	AttrDecideLatencyMs = "decide.latency_ms"
@@ -83,8 +85,11 @@ const (
 	// AttrDecideInvalidReason names the cross-question inconsistency behind
 	// outcome=invalid.
 	AttrDecideInvalidReason = "decide.invalid_reason"
-	// AttrDecideDiscardedReason names the re-validation failure behind
-	// outcome=discarded (stale_context / game_ended / target_gone).
+	// AttrDecideDiscardedReason names why nothing acted although an answer exists:
+	// stale_context / game_ended / target_gone (re-validation against the current
+	// context), kill_switch / backend_changed (live flags at landing) or shutdown.
+	// It accompanies outcome=discarded, and can also appear with outcome=fallback
+	// when the rules fallback itself found the game gone or ended.
 	AttrDecideDiscardedReason = "decide.discarded_reason"
 )
 
@@ -225,15 +230,23 @@ func (l *Loop) rulesDecide(ctx context.Context, snapshot flags.Snapshot, c gamec
 // decideRemote is decide() for decision.backend != rules. It never blocks: it
 // either fires the remote call asynchronously and returns no decision (the async
 // path owns this context), returns nothing because a call is in flight or the
-// per-game cadence has not elapsed (the remote backend owns the decision; rules
-// do not also act), or falls back to rules synchronously when the backend cannot
-// be called at all (unknown/unavailable backend, not eligible, budget exhausted).
+// per-game cadence (decision.min_interval_ms) has not elapsed (the remote backend
+// owns the decision; rules do not also act), or falls back to rules synchronously
+// when the backend cannot be called at all (unknown/unavailable backend, async not
+// wired, game kind not eligible, global budget exhausted).
 func (l *Loop) decideRemote(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext, trig EvalTrigger) ([]Decision, *decideRecord) {
-	// A call is already in flight for this game: it owns this context. Checked
-	// first so a skipped cycle neither builds a backend nor charges the gate.
-	if l.inflight.Load() {
+	// Claim the per-game inflight slot FIRST: a cycle that loses the claim (a call
+	// is in flight) builds no backend and charges neither cadence nor budget.
+	if !l.inflight.CompareAndSwap(false, true) {
 		return nil, nil
 	}
+	fired := false
+	defer func() {
+		if !fired {
+			l.inflight.Store(false)
+		}
+	}()
+
 	requested := requestedBackend(snapshot)
 	backend, reason := l.decideBackends.Resolve(snapshot.Decision)
 	if backend == nil {
@@ -245,18 +258,51 @@ func (l *Loop) decideRemote(ctx context.Context, snapshot flags.Snapshot, c game
 	if !l.remoteDecideAdmitted(snapshot, c) {
 		return nil, nil
 	}
-	// The #847 call gate bounds API spend: eligibility (shadow games stay
-	// rules-only), per-game cadence, global per-minute budget. Cadence is not a
-	// failure (the remote backend decides at its cadence), so it yields no
-	// decision; ineligible or out-of-budget cycles degrade to rules.
-	if gate := l.gateLLM(ctx, snapshot, c); gate != "" {
-		if gate == FallbackInterval {
-			return nil, nil
-		}
+	switch gate := l.gateRemoteDecide(ctx, snapshot, c); gate {
+	case "":
+	case DecideGateInterval:
+		// Not a failure: the remote backend decides at its cadence and rules stay
+		// quiet in between. No span per blocked cycle; the gated counter and a
+		// debug log say why.
+		l.Log.Debug("agent.decide.cadence_wait", "session_id", c.SessionID, "backend", requested,
+			"min_interval", snapshot.Decision.MinInterval)
+		return nil, nil
+	default:
 		return l.rulesDecide(ctx, snapshot, c, requested, gate)
 	}
-	l.fireDecideAsync(ctx, snapshot, backend, requested, c, trig)
+	fired = true
+	l.launchDecideAsync(ctx, snapshot, backend, requested, c, trig)
 	return nil, nil
+}
+
+// DecideGateInterval is the agent_llm_gated_total reason (and debug log) for a
+// remote decide cycle held back by decision.min_interval_ms.
+const DecideGateInterval = "decide_interval"
+
+// gateRemoteDecide is the call gate for remote decide calls: eligibility
+// (llm.eligible_game_kinds, so shadow games stay rules-only), the per-game cadence
+// decision.min_interval_ms (INSTEAD of llm.min_decision_interval_seconds), and the
+// GLOBAL per-minute budget llm.max_requests_per_minute shared with the legacy llm
+// path (the spend bound). Cadence and budget are charged only on admission, and
+// only after the caller won the inflight claim. It returns "" when admitted.
+func (l *Loop) gateRemoteDecide(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext) string {
+	if !snapshot.LLMGate.EligibleFor(c.GameKind) {
+		l.recordGated(ctx, FallbackNotEligible)
+		return FallbackNotEligible
+	}
+	l.llmGate.Lock()
+	defer l.llmGate.Unlock()
+	t := l.nowOrDefault()()
+	if iv := snapshot.Decision.MinInterval; iv > 0 && !l.lastDecideAttempt.IsZero() && t.Sub(l.lastDecideAttempt) < iv {
+		l.recordGated(ctx, DecideGateInterval)
+		return DecideGateInterval
+	}
+	if l.budget == nil || !l.budget.allow(t, l.budgetCap(snapshot.LLMGate.MaxRequestsPerMinute)) {
+		l.recordGated(ctx, FallbackBudgetExhausted)
+		return FallbackBudgetExhausted
+	}
+	l.lastDecideAttempt = t
+	return ""
 }
 
 // remoteDecideAdmitted is the seam for a remote-decision admission gate (#1231).
@@ -267,15 +313,12 @@ func (l *Loop) remoteDecideAdmitted(flags.Snapshot, gamecontext.GameContext) boo
 	return true
 }
 
-// fireDecideAsync launches one remote decide call off the loop (#1226), reusing
-// the #917 async machinery: the per-game inflight CAS (at most one call per game,
-// shared with the legacy llm path), inferWG (AwaitInflight joins it), rootCtx
-// (shutdown cancels it) and the fire-cycle anchor span the async root Links to.
-// It returns false when another call won the inflight claim.
-func (l *Loop) fireDecideAsync(ctx context.Context, snapshot flags.Snapshot, backend decide.Backend, requested string, c gamecontext.GameContext, trig EvalTrigger) bool {
-	if !l.inflight.CompareAndSwap(false, true) {
-		return false
-	}
+// launchDecideAsync launches one remote decide call off the loop (#1226), reusing
+// the #917 async machinery: the per-game inflight slot (already claimed by the
+// caller, released when the goroutine ends), inferWG (AwaitInflight joins it),
+// rootCtx (shutdown cancels it) and the fire-cycle anchor span the async root
+// Links to.
+func (l *Loop) launchDecideAsync(ctx context.Context, snapshot flags.Snapshot, backend decide.Backend, requested string, c gamecontext.GameContext, trig EvalTrigger) {
 	_, anchor := l.startSignalReceivedSpan(ctx, c, trig)
 	fireSC := anchor.SpanContext()
 	anchor.End()
@@ -290,16 +333,34 @@ func (l *Loop) fireDecideAsync(ctx context.Context, snapshot flags.Snapshot, bac
 		defer l.inflight.Store(false)
 		l.runDecideRemote(root, snapshot, backend, requested, c, fireSC)
 	}()
-	return true
 }
 
+// Discard reasons specific to the remote decide path (decide.discarded_reason).
+const (
+	// decideDiscardShutdown: the agent shut down while the call was in flight.
+	decideDiscardShutdown = "shutdown"
+	// DecideDiscardKillSwitch: the enabled kill switch was off when the answer
+	// landed. Nothing acts, not even the rules fallback.
+	DecideDiscardKillSwitch = "kill_switch"
+	// DecideDiscardBackendChanged: decision.backend changed while the call was in
+	// flight; the answer of the old backend is dropped.
+	DecideDiscardBackendChanged = "backend_changed"
+)
+
 // runDecideRemote is the fired goroutine: call the backend under its timeout,
-// validate, then route the answer (act / held / noop / invalid) or fall back to
-// rules for the CURRENT context. Everything is recorded on one agent.decide span.
-func (l *Loop) runDecideRemote(root context.Context, snapshot flags.Snapshot, backend decide.Backend, requested string, c gamecontext.GameContext, fireSC trace.SpanContext) {
+// validate, re-read the LIVE flags, then route the answer (act / held / noop /
+// invalid) or fall back to rules for the CURRENT context. Everything is recorded
+// on one agent.decide span.
+//
+// Every safety gate is evaluated against the flags as they are when the answer
+// LANDS, not when the call fired: the enabled kill switch, decision.backend, the
+// act threshold, interventions_allowed and the policy gates all come from a fresh
+// Flags.Evaluate, so flipping a flag mid-flight takes effect on the in-flight
+// answer too.
+func (l *Loop) runDecideRemote(root context.Context, fired flags.Snapshot, backend decide.Backend, requested string, c gamecontext.GameContext, fireSC trace.SpanContext) {
 	now := l.nowOrDefault()
 	start := now()
-	cfg, _ := snapshot.Decision.Remote(requested)
+	cfg, _ := fired.Decision.Remote(requested)
 	timeout := cfg.Timeout
 	if timeout <= 0 {
 		timeout = flags.DefaultDecisionTimeoutMs * time.Millisecond
@@ -320,9 +381,9 @@ func (l *Loop) runDecideRemote(root context.Context, snapshot flags.Snapshot, ba
 		requested: requested,
 		used:      backend.Name(),
 		model:     cfg.Model,
-		req:       buildDecideRequest(c, snapshot.InterventionsAllowed, false),
+		req:       buildDecideRequest(c, fired.InterventionsAllowed, false),
 		start:     start,
-		threshold: snapshot.Decision.ActConfidenceThreshold,
+		threshold: fired.Decision.ActConfidenceThreshold,
 	}
 	defer func() { l.endDecideSpan(span, rec, c) }()
 
@@ -331,6 +392,13 @@ func (l *Loop) runDecideRemote(root context.Context, snapshot flags.Snapshot, ba
 	timedOut := err != nil && (errors.Is(err, context.DeadlineExceeded) || callCtx.Err() == context.DeadlineExceeded)
 	cancel()
 	rec.end = now()
+
+	// Shutdown first: a call cancelled by the agent's root context is neither a
+	// backend error nor a fallback. Record it, act on nothing.
+	if root.Err() != nil {
+		rec.outcome, rec.discardedReason = DecideOutcomeDiscarded, decideDiscardShutdown
+		return
+	}
 
 	switch {
 	case timedOut:
@@ -353,21 +421,27 @@ func (l *Loop) runDecideRemote(root context.Context, snapshot flags.Snapshot, ba
 			"error", rec.err)
 	}
 
-	if root.Err() != nil {
-		// Agent shutdown: record what happened, act on nothing.
-		rec.outcome, rec.discardedReason = DecideOutcomeDiscarded, decideDiscardShutdown
+	// Re-read the LIVE flags: the safety gates apply as they are now.
+	live := l.Flags.Evaluate(root)
+	rec.threshold = live.Decision.ActConfidenceThreshold
+	if !live.Enabled {
+		rec.outcome, rec.discardedReason = DecideOutcomeDiscarded, DecideDiscardKillSwitch
+		return
+	}
+	if requestedBackend(live) != requested {
+		rec.outcome, rec.discardedReason = DecideOutcomeDiscarded, DecideDiscardBackendChanged
 		return
 	}
 
 	// Re-read the CURRENT context: the call took up to the timeout, so the game may
 	// have ended or the target may be gone (#917 re-validation).
 	current, ok := l.ctxProvider.Current(l.gameID)
-	state := newLayerState(snapshot)
+	state := newLayerState(live)
 	if rec.fallbackReason != "" {
-		l.decideRemoteFallback(spanCtx, snapshot, current, ok, rec, &state)
+		l.decideRemoteFallback(spanCtx, live, current, ok, rec, &state)
 		return
 	}
-	l.decideRemoteApply(spanCtx, snapshot, current, ok, rec, &state)
+	l.decideRemoteApply(spanCtx, live, current, ok, rec, &state)
 }
 
 // decideRemoteFallback runs the rules engine for the current context after the
@@ -467,10 +541,6 @@ var playerTargetedInterventions = map[string]bool{
 	InterventionSoftPenalty:             true,
 }
 
-// decideDiscardShutdown is decide.discarded_reason when the agent shut down while
-// the call was in flight.
-const decideDiscardShutdown = "shutdown"
-
 // Cross-question inconsistencies (decide.invalid_reason).
 const (
 	invalidNoopWithTarget          = "noop_with_target"
@@ -569,7 +639,9 @@ func (l *Loop) setDecideAttributes(span trace.Span, rec *decideRecord, c gamecon
 		attribute.String(AttrDecideQuestions, questionsJSON(rec.req.Questions)),
 		attribute.Int64(AttrDecideLatencyMs, rec.end.Sub(rec.start).Milliseconds()),
 		attribute.String(AttrDecideOutcome, rec.outcome),
-		attribute.Float64(AttrDecideActThreshold, rec.threshold),
+	}
+	if rec.routed {
+		attrs = append(attrs, attribute.Float64(AttrDecideActThreshold, rec.threshold))
 	}
 	if rec.model != "" {
 		attrs = append(attrs, semconv.GenAIRequestModel(rec.model))

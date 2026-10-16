@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/open-feature/go-sdk/openfeature"
+	"github.com/open-feature/go-sdk/openfeature/memprovider"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
@@ -213,10 +215,13 @@ func TestDefaultRulesPath_DecideSpan(t *testing.T) {
 	if as[0].Choice != InterventionAdjustMusicTempo {
 		t.Errorf("rules answer = %q, want the top-ranked adjust_music_tempo", as[0].Choice)
 	}
-	for _, key := range []string{AttrDecideConfidence, AttrDecideConfidenceMin, AttrDecideLatencyMs, AttrDecideActThreshold} {
+	for _, key := range []string{AttrDecideConfidence, AttrDecideConfidenceMin, AttrDecideLatencyMs} {
 		if _, ok := attrValue(span, key); !ok {
 			t.Errorf("attribute %s missing", key)
 		}
+	}
+	if _, ok := attrValue(span, AttrDecideActThreshold); ok {
+		t.Error("rules do not route by confidence: no decide.act_confidence_threshold")
 	}
 	if len(span.Events()) != 0 {
 		t.Error("rules path does not route by confidence: no gen_ai.evaluation.result event")
@@ -319,7 +324,28 @@ func remoteSnapshot(timeout time.Duration) flags.Snapshot {
 	return s
 }
 
+// lockedFlags is a mutex-guarded flag source, so a test can flip flags while a
+// remote call is in flight (the landing goroutine re-reads them).
+type lockedFlags struct {
+	mu   sync.Mutex
+	snap flags.Snapshot
+}
+
+func (f *lockedFlags) Evaluate(context.Context) flags.Snapshot {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.snap
+}
+
+func (f *lockedFlags) mutate(fn func(*flags.Snapshot)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	fn(&f.snap)
+}
+
 type remoteHarness struct {
+	flags    *lockedFlags
+	cancel   context.CancelFunc
 	loop     *Loop
 	sr       *tracetest.SpanRecorder
 	sink     *capturingSink
@@ -331,6 +357,8 @@ type remoteHarness struct {
 func newRemoteHarness(t *testing.T, snap flags.Snapshot, be decide.Backend) remoteHarness {
 	t.Helper()
 	l, sr := decideRecordingLoop(t, snap)
+	fl := &lockedFlags{snap: snap}
+	l.Flags = fl
 	clock := time.Unix(10_000, 0)
 	engine := newTestEngine(DefaultStaticConfig(), &clock)
 	l.Rules = engine
@@ -355,7 +383,7 @@ func newRemoteHarness(t *testing.T, snap flags.Snapshot, be decide.Backend) remo
 		reg.Register(flags.DecisionBackendClaude, func(flags.DecisionBackend) decide.Backend { return be })
 	}
 	l.SetDecideRegistry(reg)
-	return remoteHarness{loop: l, sr: sr, sink: sink, engine: engine, provider: provider, clock: &clock}
+	return remoteHarness{flags: fl, cancel: cancel, loop: l, sr: sr, sink: sink, engine: engine, provider: provider, clock: &clock}
 }
 
 // run fires one cycle and waits for the async decision to land.
@@ -686,7 +714,7 @@ func TestDecideRegistry(t *testing.T) {
 func TestRemote_CadenceRulesDoNotAct(t *testing.T) {
 	be := newFakeDecideBackend(ffaAnswer("noop", 0.9, "none", 0, ""))
 	snap := remoteSnapshot(time.Second)
-	snap.LLMGate.MinDecisionInterval = time.Minute
+	snap.Decision.MinInterval = time.Minute
 	h := newRemoteHarness(t, snap, be)
 	h.run(t)
 	advance(h.clock, 2*time.Second) // rules would be due again
@@ -713,5 +741,227 @@ func TestRemote_ShadowGameFallsBackToRules(t *testing.T) {
 	ds := spansByName(h.sr.Ended(), SpanDecide)
 	if len(ds) != 1 || strAttr(t, ds[0], AttrDecideFallbackReason) != FallbackNotEligible {
 		t.Fatal("shadow fallback must record fallback_reason=llm_not_eligible")
+	}
+}
+
+// ---- live flags at landing (PR #1240 review blocker) ----
+
+// fireAndMutate fires one remote call, lets the test change state while it is in
+// flight, then releases it (unless it is meant to time out) and waits.
+func fireAndMutate(t *testing.T, be *fakeDecideBackend, timeout time.Duration, mutate func(h remoteHarness)) (remoteHarness, sdktrace.ReadOnlySpan) {
+	t.Helper()
+	be.block = true
+	h := newRemoteHarness(t, remoteSnapshot(timeout), be)
+	h.loop.OnEvaluate(context.Background(), remoteContext(), testTrigger())
+	<-be.started
+	mutate(h)
+	if timeout >= time.Minute {
+		close(be.release)
+	}
+	h.loop.AwaitInflight()
+	ds := spansByName(h.sr.Ended(), SpanDecide)
+	if len(ds) != 1 {
+		t.Fatalf("agent.decide spans = %d, want 1", len(ds))
+	}
+	return h, ds[0]
+}
+
+func assertDiscarded(t *testing.T, h remoteHarness, span sdktrace.ReadOnlySpan, reason string) {
+	t.Helper()
+	if g := strAttr(t, span, AttrDecideOutcome); g != DecideOutcomeDiscarded {
+		t.Fatalf("outcome = %q, want discarded", g)
+	}
+	if g := strAttr(t, span, AttrDecideDiscardedReason); g != reason {
+		t.Fatalf("discarded_reason = %q, want %q", g, reason)
+	}
+	if got := h.sink.decisions(); len(got) != 0 {
+		t.Fatalf("applied %+v, want nothing", got)
+	}
+	if n := len(spansByName(h.sr.Ended(), SpanDecision)); n != 0 {
+		t.Fatalf("agent.decision spans = %d, want 0", n)
+	}
+}
+
+func TestRemote_KillSwitchAtLanding(t *testing.T) {
+	be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.95, "A", 0.5, "x"))
+	h, span := fireAndMutate(t, be, time.Hour, func(h remoteHarness) {
+		h.flags.mutate(func(s *flags.Snapshot) { s.Enabled = false })
+	})
+	assertDiscarded(t, h, span, DecideDiscardKillSwitch)
+}
+
+func TestRemote_KillSwitchSuppressesTimeoutFallback(t *testing.T) {
+	be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.95, "A", 0.5, "x"))
+	h, span := fireAndMutate(t, be, 30*time.Millisecond, func(h remoteHarness) {
+		h.flags.mutate(func(s *flags.Snapshot) { s.Enabled = false })
+	})
+	assertDiscarded(t, h, span, DecideDiscardKillSwitch)
+	if g := strAttr(t, span, AttrDecideFallbackReason); g != DecideFallbackTimeout {
+		t.Fatalf("fallback_reason = %q, want timeout still recorded", g)
+	}
+}
+
+func TestRemote_AllowListAtLanding(t *testing.T) {
+	be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.95, "A", 0.5, "x"))
+	h, span := fireAndMutate(t, be, time.Hour, func(h remoteHarness) {
+		h.flags.mutate(func(s *flags.Snapshot) { s.InterventionsAllowed = []string{"noop"} })
+	})
+	if got := h.sink.decisions(); len(got) != 0 {
+		t.Fatalf("applied %+v although grant_shield was removed from the allow-list mid-flight", got)
+	}
+	if g := strAttr(t, span, AttrDecideOutcome); g != DecideOutcomeAct {
+		t.Fatalf("outcome = %q, want act (blocked by the permission chain)", g)
+	}
+	dec := spansByName(h.sr.Ended(), SpanDecision)
+	if len(dec) != 1 || strAttr(t, dec[0], AttrDecisionBlockReason) != string(ReasonNotAllowed) {
+		t.Fatal("agent.decision must be blocked with not_allowed by the LIVE allow-list")
+	}
+}
+
+func TestRemote_ThresholdRaisedMidFlight(t *testing.T) {
+	be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.9, "A", 0.5, "x"))
+	h, span := fireAndMutate(t, be, time.Hour, func(h remoteHarness) {
+		h.flags.mutate(func(s *flags.Snapshot) { s.Decision.ActConfidenceThreshold = 0.95 })
+	})
+	if g := strAttr(t, span, AttrDecideOutcome); g != DecideOutcomeHeld {
+		t.Fatalf("outcome = %q, want held under the live strict threshold", g)
+	}
+	if v, _ := attrValue(span, AttrDecideActThreshold); v.AsFloat64() != 0.95 {
+		t.Fatalf("threshold attr = %v, want 0.95", v.AsFloat64())
+	}
+	if len(h.sink.decisions()) != 0 {
+		t.Fatal("held answer applied")
+	}
+}
+
+func TestRemote_BackendChangedMidFlight(t *testing.T) {
+	be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.95, "A", 0.5, "x"))
+	h, span := fireAndMutate(t, be, time.Hour, func(h remoteHarness) {
+		h.flags.mutate(func(s *flags.Snapshot) { s.Decision.Backend = flags.DecisionBackendRules })
+	})
+	assertDiscarded(t, h, span, DecideDiscardBackendChanged)
+}
+
+func TestRemote_ShutdownDiscards(t *testing.T) {
+	be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.95, "A", 0.5, "x"))
+	h, span := fireAndMutate(t, be, 30*time.Second, func(h remoteHarness) { h.cancel() })
+	assertDiscarded(t, h, span, decideDiscardShutdown)
+	if _, ok := attrValue(span, "error.type"); ok {
+		t.Fatal("a shutdown-cancelled call must not record error.type")
+	}
+	if span.Status().Code != 0 {
+		t.Fatalf("span status = %v, want unset", span.Status())
+	}
+	if g := strAttr(t, span, AttrDecideFallbackReason); g != "" {
+		t.Fatalf("fallback_reason = %q, want empty", g)
+	}
+}
+
+func TestRemote_TargetGone(t *testing.T) {
+	be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.95, "A", 0.5, "x"))
+	h, span := fireAndMutate(t, be, time.Hour, func(h remoteHarness) {
+		c := remoteContext()
+		c.Players["A"].Active = boolPtr(false)
+		h.provider.set(remoteGameID, c)
+	})
+	assertDiscarded(t, h, span, DiscardTargetGone)
+}
+
+func TestRemote_AsyncNotWiredFallsBack(t *testing.T) {
+	be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.95, "A", 0.5, "x"))
+	h := newRemoteHarness(t, remoteSnapshot(time.Second), be)
+	h.loop.SetContextProvider(nil)
+	state := h.loop.OnEvaluate(context.Background(), remoteContext(), testTrigger())
+	if be.callCount() != 0 || len(state.Outcomes) == 0 {
+		t.Fatal("without async wiring rules must decide synchronously, no remote call")
+	}
+	ds := spansByName(h.sr.Ended(), SpanDecide)
+	if len(ds) != 1 || strAttr(t, ds[0], AttrDecideFallbackReason) != DecideFallbackNotWired {
+		t.Fatal("fallback_reason must be async_not_wired")
+	}
+	if _, ok := attrValue(ds[0], AttrDecideActThreshold); ok {
+		t.Fatal("a rules decision does not route by confidence: no threshold attribute")
+	}
+}
+
+func TestRemote_SpanParentAndFireCycleLink(t *testing.T) {
+	const (
+		traceID = "4bf92f3577b34da6a3ce929d0e0e4736"
+		rootID  = "00f067aa0ba902b7"
+		phaseID = "b7ad6b7169203331"
+	)
+	be := newFakeDecideBackend(ffaAnswer("noop", 0.95, "none", 0, ""))
+	h := newRemoteHarness(t, remoteSnapshot(time.Second), be)
+	c := remoteContext()
+	c.GameTraceID, c.GameTraceSpanID, c.GameplayPhaseSpanID = traceID, rootID, phaseID
+	h.loop.OnEvaluate(context.Background(), c, testTrigger())
+	h.loop.AwaitInflight()
+
+	spans := h.sr.Ended()
+	ds := spansByName(spans, SpanDecide)
+	anchors := spansByName(spans, SignalReceived)
+	if len(ds) != 1 || len(anchors) != 1 {
+		t.Fatalf("decide=%d anchors=%d, want 1 each", len(ds), len(anchors))
+	}
+	span := ds[0]
+	if span.Parent().TraceID().String() != traceID || span.Parent().SpanID().String() != phaseID {
+		t.Fatalf("parent = %v, want the gameplay_phase span %s", span.Parent(), phaseID)
+	}
+	links := span.Links()
+	if len(links) != 1 || links[0].SpanContext.SpanID() != anchors[0].SpanContext().SpanID() {
+		t.Fatalf("links = %+v, want one Link to the fire-cycle agent.signal_received", links)
+	}
+}
+
+// TestRemote_RealCadenceFlag drives the remote path through the real flags
+// wrapper (in-memory OpenFeature provider): decision.min_interval_ms gates the
+// second call, llm.min_decision_interval_seconds is NOT consulted.
+func TestRemote_RealCadenceFlag(t *testing.T) {
+	str := func(v string) memprovider.InMemoryFlag {
+		return memprovider.InMemoryFlag{State: memprovider.Enabled, DefaultVariant: "v", Variants: map[string]any{"v": v}}
+	}
+	num := func(v any) memprovider.InMemoryFlag {
+		return memprovider.InMemoryFlag{State: memprovider.Enabled, DefaultVariant: "v", Variants: map[string]any{"v": v}}
+	}
+	provider := memprovider.NewInMemoryProvider(map[string]memprovider.InMemoryFlag{
+		"enabled":                           num(true),
+		"interventions_allowed":             str("noop,grant_shield,adjust_music_tempo"),
+		"llm.eligible_game_kinds":           str("real"),
+		"llm.max_requests_per_minute":       num(100),
+		"llm.min_decision_interval_seconds": num(3600.0), // must be ignored
+		"decision.backend":                  str("claude"),
+		"decision.min_interval_ms":          num(1500),
+	})
+	const domain = "decide-hook-real-cadence"
+	if err := openfeature.SetNamedProviderAndWait(domain, provider); err != nil {
+		t.Fatal(err)
+	}
+	real := flags.New(openfeature.GetApiInstance().GetNamedClient(domain), nil)
+	if got := real.Evaluate(context.Background()).Decision.MinInterval; got != 1500*time.Millisecond {
+		t.Fatalf("MinInterval = %v, want 1.5s from the flag", got)
+	}
+
+	be := newFakeDecideBackend(ffaAnswer("noop", 0.95, "none", 0, ""))
+	h := newRemoteHarness(t, remoteSnapshot(time.Second), be)
+	h.loop.Flags = real
+	loopNow := time.Unix(20_000, 0)
+	h.loop.now = func() time.Time { return loopNow }
+
+	cycle := func() {
+		state := h.loop.OnEvaluate(context.Background(), remoteContext(), testTrigger())
+		h.loop.AwaitInflight()
+		if len(state.Outcomes) != 0 || len(h.sink.decisions()) != 0 {
+			t.Fatal("rules acted on the remote path")
+		}
+	}
+	cycle()
+	cycle() // inside the 1.5s cadence
+	if be.callCount() != 1 {
+		t.Fatalf("calls = %d, want 1 (second cycle inside decision.min_interval_ms)", be.callCount())
+	}
+	loopNow = loopNow.Add(1600 * time.Millisecond)
+	cycle()
+	if be.callCount() != 2 {
+		t.Fatalf("calls = %d, want 2 after the cadence elapsed", be.callCount())
 	}
 }
