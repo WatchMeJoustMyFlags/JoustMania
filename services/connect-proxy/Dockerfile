@@ -55,6 +55,10 @@ COPY services/connect-proxy/*.go ./
 # Download dependencies (after proto files are in place)
 RUN go mod tidy && go mod download
 
+# Run the unit tests (canary handlers, #1364). The generated proto packages
+# only exist inside this build, so the image build is where they can run.
+RUN go vet ./... && go test ./...
+
 # Build the binary (cross-compile for target architecture)
 RUN CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}" go build -ldflags="-s -w" -o /connect-proxy .
 
