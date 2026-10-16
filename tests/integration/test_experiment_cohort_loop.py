@@ -67,7 +67,7 @@ Per the issue ("small N, short tick, assert KEY observable transitions, not a
 long soak") the loop is driven DOWN via the LIVE agent.json tuning flags
 (verdict min-N/min-pairs=1, fast tick, a small games-budget backstop) plus a
 small seed target-N. The HARD gates assert the reliably-observable core:
-inference-absent stub backend, graceful degradation to ``mode=rules``,
+inference-absent stub backend, graceful degradation to the rules backend,
 experiment.declared, and paired (CRN control + experimental) shadow games that
 each conclude WITH a fitness scalar.
 
@@ -129,9 +129,9 @@ AGENT_COORDINATOR_COMPOSE_FILE = "docker-compose.agent-coordinator.yml"
 AGENT_COORDINATOR_SERVICE = "agent-game-coordinator"
 
 # Exact lifecycle log strings emitted by services/agent (load-bearing assertions).
-LOG_BACKEND_SELECTED = "Inference backend selected"  # main.go:573 (#1048)
+LOG_BACKEND_SELECTED = "Proposer/retro inference backend selected"  # main.go
 LOG_BACKEND_STUB = "backend=stub"  # graceful degradation: no inference wired
-LOG_MODE_RULES = "mode=rules"  # agent.evaluate degrades to rules with no backend
+LOG_MODE_RULES = "decision_backend=rules"  # agent.evaluate (#1234: no mode=)
 LOG_DECLARED = "experiment.declared"  # registry.go:511
 LOG_GAME_CONCLUDED = "experiment.game_concluded"  # registry.go:1027 (carries fitness=)
 LOG_CONCLUDED = "experiment.concluded"  # registry.go (always logged; carries outcome=)
@@ -418,11 +418,11 @@ def test_experiment_is_declared(agent_experiment_stack):
 def test_inference_absent_degrades_to_rules(agent_experiment_stack):
     """The no-inference graceful-degradation guarantee, asserted explicitly
     (issue #1069 note): with no backend wired, the agent runs its decision loop
-    in ``mode=rules`` — it does NOT crash, hang, or skip decisions waiting on an
+    on the rules backend (``decision_backend=rules``) — it does NOT crash, hang, or skip decisions waiting on an
     LLM. The shadow games the cohort loop spawns drive agent.evaluate cycles, so
-    a ``mode=rules`` line appears once the first game is live."""
+    a ``decision_backend=rules`` line appears once the first game is live."""
     assert _poll_log_contains(LOG_MODE_RULES, CONCLUDE_TIMEOUT), (
-        "agent never reached mode=rules (no-inference degradation); log tail:\n"
+        "agent never reached decision_backend=rules (no-inference degradation); log tail:\n"
         + _agent_logs()[-3000:]
     )
     assert "panic:" not in _agent_logs(), "agent panicked on the rules path"
