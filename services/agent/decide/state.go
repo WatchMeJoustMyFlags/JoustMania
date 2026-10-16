@@ -24,6 +24,7 @@ func BuildState(c gamecontext.GameContext) State {
 		Players:        buildPlayers(c),
 		ElapsedSeconds: elapsedSeconds(c),
 	}
+	st.Leader, st.Struggling = applyDangerSignals(st.Players, c.Session.DeathThreshold)
 	st.Narrative = renderNarrative(c, st)
 	st.Digest = digest(st)
 	return st
@@ -90,9 +91,16 @@ func renderNarrative(c gamecontext.GameContext, st State) string {
 		" eliminated=" + strconv.Itoa(len(c.Session.EliminationSequence)))
 	writeOpt(&b, "tempo", c.Session.MusicTempo)
 	writeOpt(&b, "death_threshold", c.Session.DeathThreshold)
+	if st.Leader != "" {
+		b.WriteString(" leader=" + st.Leader)
+	}
+	if st.Struggling != "" {
+		b.WriteString(" struggling=" + st.Struggling)
+	}
 	b.WriteString("\n")
 
 	b.WriteString("players:\n")
+	ranked := st.RankedCount()
 	for _, p := range st.Players {
 		status := "alive"
 		if !p.Alive {
@@ -109,6 +117,7 @@ func renderNarrative(c gamecontext.GameContext, st State) string {
 		if src := c.Players[p.Serial]; src != nil && len(src.History) > 0 {
 			b.WriteString(" movement=" + gamecontext.RenderSparkline(src.History, c.Session.DeathThreshold))
 		}
+		b.WriteString(dangerNarrative(p, ranked))
 		b.WriteString("\n")
 	}
 
@@ -138,8 +147,12 @@ func digest(st State) string {
 			" variance=" + exact(p.Variance) +
 			" skill=" + exact(p.Skill) +
 			" battery_pct=" + exact(p.BatteryPct) +
-			" elimination_order=" + strconv.Itoa(p.EliminationOrder) + "\n")
+			" elimination_order=" + strconv.Itoa(p.EliminationOrder) +
+			" intensity_rank=" + strconv.Itoa(p.IntensityRank) +
+			" threshold_margin=" + exact(p.ThresholdMargin) +
+			" danger=" + strconv.Quote(p.Danger) + "\n")
 	}
+	b.WriteString("leader=" + strconv.Quote(st.Leader) + " struggling=" + strconv.Quote(st.Struggling) + "\n")
 	b.WriteString("narrative=" + strconv.Quote(st.Narrative) + "\n")
 	sum := sha256.Sum256([]byte(b.String()))
 	return hex.EncodeToString(sum[:])

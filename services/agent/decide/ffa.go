@@ -24,6 +24,35 @@ const OptionNoop = "noop"
 // question stays answerable when no player is alive.
 const TargetNone = "none"
 
+// playerTargeted are the interventions applied to ONE player (their ffa.target
+// is an alive serial); every other intervention is session-scoped and takes
+// TargetNone. It mirrors decision's playerTargetedInterventions (the action
+// sink's TargetSerial users); a test in package decision keeps the two in sync.
+var playerTargeted = map[string]bool{
+	"send_controller_effect":    true,
+	"eliminate_player":          true,
+	"revive_player":             true,
+	"adjust_player_sensitivity": true,
+	"set_player_handicap":       true,
+	"grant_shield":              true,
+	"partial_shield":            true,
+	"soft_penalty":              true,
+}
+
+// PlayerTargeted reports whether intervention is applied to one player (its
+// ffa.target must be a serial) rather than to the whole session.
+func PlayerTargeted(intervention string) bool { return playerTargeted[intervention] }
+
+// PlayerTargetedInterventions returns the player-targeted interventions, sorted.
+func PlayerTargetedInterventions() []string {
+	out := make([]string, 0, len(playerTargeted))
+	for k := range playerTargeted {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // Bounds is the numeric range of one intervention's Decision.Value.
 type Bounds struct {
 	Min, Max float64
@@ -110,6 +139,10 @@ func ResolveMagnitude(intervention string, score float64) (value float64, ok boo
 	v := b.Min + score*(b.Max-b.Min)
 	if b.Integer {
 		v = math.Round(v)
+	} else {
+		// Drop float noise from the normalize/resolve round trip (0.7 + 0.25*0.8
+		// is 0.8999999999999999), so Decision.Value reads like the flag variant.
+		v = math.Round(v*1e9) / 1e9
 	}
 	return v, true
 }

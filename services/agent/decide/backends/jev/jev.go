@@ -13,8 +13,8 @@
 // (decision.jev.base_url / .model / .timeout_ms, decision.capture_content) and
 // env (JEV_API_KEY) on every call.
 //
-// Telemetry mirrors the claude and openai backends: one CLIENT span per call
-// named "chat {model}" (just "chat" without a model) with the OTel GenAI
+// Telemetry mirrors the claude and openai backends: one CLIENT span per HTTP
+// call (two for an acting FFA round, tagged jev.stage) named "chat {model}" (just "chat" without a model) with the OTel GenAI
 // semantic conventions (v1.41.0) and gen_ai.provider.name=jev (a custom value;
 // semconv has no well-known one), opt-in content capture, and the GenAI client
 // metrics.
@@ -126,6 +126,12 @@ var ErrUnavailable = errors.New("jev: backend unavailable (no JEV_API_KEY)")
 // Decide asks Jev to answer req.Questions about req.State. It reads only
 // req.State and req.Questions (wire.go's encodeRequest). Every failure is a
 // clean error; it never panics. Invalid answers wrap decide.ErrInvalid.
+//
+// An FFA request is a two-stage round (stages.go, #1262): one call for the
+// intervention and, only when the intervention needs them, a second call for
+// target and magnitude conditioned on it. Both calls share one Config.Timeout
+// deadline and each gets its own chat span (jev.stage). A failed second call
+// fails the round (the caller falls back to rules); no half answer is returned.
 func (b *Backend) Decide(ctx context.Context, req decide.Request) (decide.Response, error) {
 	if !b.Available() {
 		return decide.Response{}, ErrUnavailable
@@ -137,7 +143,37 @@ func (b *Backend) Decide(ctx context.Context, req decide.Request) (decide.Respon
 	ctx, cancel := context.WithTimeout(ctx, b.cfg.Timeout)
 	defer cancel()
 
-	out, err := encodeRequest(b.cfg.Model, req)
+	first, details, stage := splitStages(req)
+	firstResp, err := b.call(ctx, stage, first, "")
+	if err != nil {
+		return decide.Response{}, err
+	}
+	if stage == StageSingle {
+		return firstResp, nil
+	}
+	iv, _ := firstResp.Find(decide.QuestionFFAIntervention)
+	plan := planDetails(req.State, iv, details)
+	var detailAnswers []decide.Answer
+	if len(plan.ask.Questions) > 0 {
+		detailResp, err := b.call(ctx, StageDetails, plan.ask, plan.intervention)
+		if err != nil {
+			return decide.Response{}, fmt.Errorf("jev: details stage after %q: %w", plan.intervention, err)
+		}
+		detailAnswers = detailResp.Answers
+	}
+	resp, err := mergeAnswers(req, firstResp.Answers, detailAnswers, plan.local)
+	if err != nil {
+		return decide.Response{}, err
+	}
+	resp.Rationale = rationale(resp)
+	return resp, nil
+}
+
+// call is one HTTP round trip to Jev for sub (one chat span, tagged with
+// stage). chosen is the intervention the details stage is conditioned on ("" for
+// the other stages).
+func (b *Backend) call(ctx context.Context, stage string, sub decide.Request, chosen string) (decide.Response, error) {
+	out, err := encodeRequest(b.cfg.Model, sub, chosen)
 	if err != nil {
 		return decide.Response{}, err
 	}
@@ -145,7 +181,7 @@ func (b *Backend) Decide(ctx context.Context, req decide.Request) (decide.Respon
 	spanName := "chat " + b.cfg.Model
 	ctx, span := otel.Tracer(instrumentationName).Start(ctx, spanName,
 		trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(b.requestAttributes()...),
+		trace.WithAttributes(append(b.requestAttributes(), attribute.String(AttrStage, stage))...),
 	)
 	defer span.End()
 	if b.cfg.CaptureContent {
@@ -173,7 +209,7 @@ func (b *Backend) Decide(ctx context.Context, req decide.Request) (decide.Respon
 		return decide.Response{}, fmt.Errorf("jev: status %d: %s", r.Status, scrub(clip(string(r.Body), 256)))
 	}
 
-	res, errType, err := decodeResponse(req, r.Body)
+	res, errType, err := decodeResponse(sub, chosen, r.Body)
 	b.finish(ctx, span, start, &res, errType)
 	if err != nil {
 		return decide.Response{}, err

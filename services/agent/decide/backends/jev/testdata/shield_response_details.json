@@ -1,0 +1,38 @@
+{
+  "model": "jev-1.13.0",
+  "answers": {
+    "ffa.magnitude": {
+      "type": "score",
+      "score": 1.37,
+      "confidence": 0.17,
+      "legend": {
+        "0": "The lowest setting: 3 seconds (shortest shield).",
+        "1": "A low setting: 4.75 seconds.",
+        "2": "A middle setting: 6.5 seconds.",
+        "3": "A high setting: 8.25 seconds.",
+        "4": "The highest setting: 10 seconds (longest shield)."
+      },
+      "probabilities": {
+        "0": 0.27,
+        "1": 0.27,
+        "2": 0.31,
+        "3": 0.12,
+        "4": 0.03
+      }
+    },
+    "ffa.target": {
+      "type": "choice",
+      "choice": "MOCK0003",
+      "confidence": 0.98,
+      "probabilities": {
+        "MOCK0002": 0.0,
+        "MOCK0003": 0.99,
+        "MOCK0004": 0.01
+      }
+    }
+  },
+  "usage": {
+    "input_tokens": 1433,
+    "output_tokens": 75
+  }
+}

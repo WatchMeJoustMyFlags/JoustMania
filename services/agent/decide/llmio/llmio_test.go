@@ -316,3 +316,24 @@ func TestSupported(t *testing.T) {
 		t.Errorf("noul: err = %v", err)
 	}
 }
+
+// TestRender_DangerSignals: the State's precomputed danger signals (#1262)
+// reach the LLM prompt through the narrative, and the static system prompt
+// explains them.
+func TestRender_DangerSignals(t *testing.T) {
+	req := decide.Request{State: decide.State{
+		Players:   []decide.PlayerState{{Serial: "P1", Alive: true}},
+		Narrative: "session: alive=2 death_threshold=2.30 leader=P2 struggling=P1\nplayers:\n  P1 alive intensity=2.20 danger=near_threshold margin=0.10 intensity_rank=1/2\n",
+	}}
+	p := Render(req)
+	for _, want := range []string{"struggling=P1", "danger=near_threshold margin=0.10 intensity_rank=1/2"} {
+		if !strings.Contains(p.User, want) {
+			t.Errorf("user message missing %q", want)
+		}
+	}
+	for _, want := range []string{`"danger" is safe, elevated or near_threshold`, `"intensity_rank"`, `"leader"`} {
+		if !strings.Contains(p.System, want) {
+			t.Errorf("system prompt missing %q", want)
+		}
+	}
+}

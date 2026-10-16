@@ -1,0 +1,29 @@
+{
+  "model": "jev-1.13.0",
+  "answers": {
+    "ffa.intervention": {
+      "type": "choice",
+      "choice": "noop",
+      "confidence": 0.61,
+      "probabilities": {
+        "noop": 0.64,
+        "adjust_global_difficulty": 0.01,
+        "adjust_global_sensitivity": 0.01,
+        "adjust_music_tempo": 0.0,
+        "adjust_player_sensitivity": 0.15,
+        "adjust_volume": 0.0,
+        "eliminate_player": 0.03,
+        "end_game": 0.0,
+        "grant_shield": 0.12,
+        "play_audio_cue": 0.02,
+        "revive_player": 0.0,
+        "send_controller_effect": 0.01,
+        "set_pacing_profile": 0.01
+      }
+    }
+  },
+  "usage": {
+    "input_tokens": 1523,
+    "output_tokens": 146
+  }
+}

@@ -1,0 +1,125 @@
+package decide
+
+import (
+	"math"
+	"strings"
+	"testing"
+)
+
+func TestClassifyDanger(t *testing.T) {
+	thr := fptr(2.0)
+	for _, c := range []struct {
+		intensity *float64
+		threshold *float64
+		want      string
+	}{
+		{fptr(0), thr, DangerSafe},
+		{fptr(1.19), thr, DangerSafe},
+		{fptr(1.2), thr, DangerElevated}, // 0.6 exactly
+		{fptr(1.69), thr, DangerElevated},
+		{fptr(1.7), thr, DangerNearThreshold}, // 0.85 exactly
+		{fptr(2.5), thr, DangerNearThreshold}, // over the threshold
+		{nil, thr, ""},
+		{fptr(1), nil, ""},
+		{fptr(1), fptr(0), ""},
+		{fptr(math.NaN()), thr, ""},
+		{fptr(1), fptr(math.Inf(1)), ""},
+	} {
+		if got := classifyDanger(c.intensity, c.threshold); got != c.want {
+			t.Errorf("classifyDanger(%v, %v) = %q, want %q", deref64(c.intensity), deref64(c.threshold), got, c.want)
+		}
+	}
+}
+
+func deref64(v *float64) any {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
+func TestApplyDangerSignals(t *testing.T) {
+	players := []PlayerState{
+		{Serial: "A", Alive: true, Intensity: fptr(0.6)},
+		{Serial: "B", Alive: true, Intensity: fptr(2.2)},
+		{Serial: "C", Alive: true, Intensity: fptr(1.4)},
+		{Serial: "D", Alive: false, Intensity: fptr(3.0)}, // out: never ranked
+		{Serial: "E", Alive: true},                        // unobserved
+	}
+	leader, struggling := applyDangerSignals(players, fptr(2.3))
+	if leader != "A" || struggling != "B" {
+		t.Errorf("leader/struggling = %q/%q", leader, struggling)
+	}
+	wantRank := map[string]int{"A": 3, "B": 1, "C": 2, "D": 0, "E": 0}
+	wantDanger := map[string]string{"A": DangerSafe, "B": DangerNearThreshold, "C": DangerElevated}
+	for _, p := range players {
+		if p.IntensityRank != wantRank[p.Serial] || p.Danger != wantDanger[p.Serial] {
+			t.Errorf("%s: rank %d danger %q", p.Serial, p.IntensityRank, p.Danger)
+		}
+	}
+	if m := players[1].ThresholdMargin; m == nil || *m != 0.1 {
+		t.Errorf("B margin = %v, want 0.1", deref64(m))
+	}
+	if players[3].ThresholdMargin != nil || players[4].ThresholdMargin != nil {
+		t.Error("out / unobserved players carry no margin")
+	}
+}
+
+func TestApplyDangerSignals_NoHints(t *testing.T) {
+	t.Run("ties", func(t *testing.T) {
+		ps := []PlayerState{
+			{Serial: "A", Alive: true, Intensity: fptr(2.1)},
+			{Serial: "B", Alive: true, Intensity: fptr(2.1)},
+		}
+		leader, struggling := applyDangerSignals(ps, fptr(2.3))
+		if leader != "" || struggling != "" || ps[0].IntensityRank != 1 || ps[1].IntensityRank != 1 {
+			t.Errorf("ties: %q/%q ranks %d/%d", leader, struggling, ps[0].IntensityRank, ps[1].IntensityRank)
+		}
+	})
+	t.Run("nobody in danger", func(t *testing.T) {
+		ps := []PlayerState{{Serial: "A", Alive: true, Intensity: fptr(0.2)}, {Serial: "B", Alive: true, Intensity: fptr(0.5)}}
+		if leader, struggling := applyDangerSignals(ps, fptr(2.3)); leader != "A" || struggling != "" {
+			t.Errorf("%q/%q", leader, struggling)
+		}
+	})
+	t.Run("unknown threshold", func(t *testing.T) {
+		ps := []PlayerState{{Serial: "A", Alive: true, Intensity: fptr(0.2)}, {Serial: "B", Alive: true, Intensity: fptr(2.5)}}
+		leader, struggling := applyDangerSignals(ps, nil)
+		if leader != "A" || struggling != "" || ps[1].Danger != "" || ps[1].IntensityRank != 1 {
+			t.Errorf("%q/%q %+v", leader, struggling, ps[1])
+		}
+	})
+	t.Run("single player", func(t *testing.T) {
+		ps := []PlayerState{{Serial: "A", Alive: true, Intensity: fptr(2.2)}}
+		if leader, struggling := applyDangerSignals(ps, fptr(2.3)); leader != "" || struggling != "" || ps[0].Danger != DangerNearThreshold {
+			t.Errorf("%q/%q %+v", leader, struggling, ps[0])
+		}
+	})
+}
+
+// TestBuildState_DangerSignals: the signals reach the state, the narrative
+// (which every LLM backend reads) and the digest.
+func TestBuildState_DangerSignals(t *testing.T) {
+	c := sampleCtx()
+	st := BuildState(c)
+	if st.Leader != "A" || st.Struggling != "" {
+		t.Errorf("leader/struggling = %q/%q", st.Leader, st.Struggling)
+	}
+	for _, want := range []string{
+		"death_threshold=2.30 leader=A\n",
+		" danger=safe margin=1.90 intensity_rank=2/2\n",
+		"  B alive intensity=1.10 skill=0.30 danger=safe margin=1.20 intensity_rank=1/2\n",
+	} {
+		if !strings.Contains(st.Narrative, want) {
+			t.Errorf("narrative missing %q:\n%s", want, st.Narrative)
+		}
+	}
+	c.Players["B"].MovementIntensity = fptr(2.0)
+	st2 := BuildState(c)
+	if st2.Struggling != "B" || !strings.Contains(st2.Narrative, "struggling=B") || !strings.Contains(st2.Narrative, "danger=near_threshold margin=0.30") {
+		t.Errorf("near-threshold B not surfaced:\n%s", st2.Narrative)
+	}
+	if st2.Digest == st.Digest {
+		t.Error("digest must change with the danger signals")
+	}
+}
