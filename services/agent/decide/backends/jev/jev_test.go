@@ -25,7 +25,6 @@ import (
 
 	"github.com/joustmania/agent/decide"
 	"github.com/joustmania/agent/decide/llmio"
-	"github.com/joustmania/agent/gamecontext"
 )
 
 var recorder = tracetest.NewSpanRecorder()
@@ -42,24 +41,6 @@ func attrs(s sdktrace.ReadOnlySpan) map[string]attribute.Value {
 		out[string(kv.Key)] = kv.Value
 	}
 	return out
-}
-
-// testRequest is the request the fixtures in testdata/ answer.
-func testRequest() decide.Request {
-	st := decide.State{
-		GameID:    "game_abc",
-		GameKind:  "real",
-		Narrative: "game: id=game_abc kind=real\n",
-		Players: []decide.PlayerState{
-			{Serial: "MOCK0001", Alive: true},
-			{Serial: "MOCK0002", Alive: true},
-		},
-	}
-	return decide.Request{
-		State:     st,
-		Questions: decide.FFAQuestions(st, []string{"grant_shield"}),
-		Context:   &gamecontext.GameContext{SessionID: "CONTEXT-SENTINEL"},
-	}
 }
 
 type fakeAPI struct {
@@ -89,6 +70,7 @@ func newFakeAPI(t *testing.T, status int, body []byte, delay time.Duration) *fak
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(requestIDHeader, "req_test_001")
 		w.WriteHeader(status)
 		_, _ = w.Write(body)
 	}))
@@ -130,7 +112,7 @@ func TestDecide_HappyPathSpan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
-	if a, _ := resp.Find(decide.QuestionFFAIntervention); a.Choice != "grant_shield" {
+	if a, _ := resp.Find(decide.QuestionFFAIntervention); a.Choice != decide.OptionNoop {
 		t.Errorf("answer = %+v", a)
 	}
 	if strings.Contains(string(api.lastBody.Load().([]byte)), "CONTEXT-SENTINEL") {
@@ -153,25 +135,24 @@ func TestDecide_HappyPathSpan(t *testing.T) {
 	}
 	a := attrs(s)
 	want := map[string]any{
-		"gen_ai.operation.name":                "chat",
-		"gen_ai.provider.name":                 "jev",
-		"gen_ai.request.model":                 fixtureModel,
-		"gen_ai.response.model":                "jev-test-model-2026-10",
-		"gen_ai.response.id":                   "jev-resp-001",
-		"gen_ai.request.max_tokens":            int64(wireMaxTokens),
-		"gen_ai.request.temperature":           0.0,
-		"gen_ai.output.type":                   "json",
-		"gen_ai.usage.input_tokens":            int64(850),
-		"gen_ai.usage.output_tokens":           int64(160),
-		"gen_ai.usage.reasoning.output_tokens": int64(30),
-		"server.address":                       "127.0.0.1",
+		"gen_ai.operation.name":      "chat",
+		"gen_ai.provider.name":       "jev",
+		"gen_ai.request.model":       fixtureModel,
+		"gen_ai.response.model":      "jev-1.13.0",
+		"gen_ai.response.id":         "req_test_001",
+		"gen_ai.output.type":         "json",
+		"gen_ai.usage.input_tokens":  int64(2184),
+		"gen_ai.usage.output_tokens": int64(225),
+		"server.address":             "127.0.0.1",
+		AttrNativeConfidence:         `{"ffa.intervention":0.75,"ffa.magnitude":0.13,"ffa.target":0.17}`,
 	}
 	for k, v := range want {
 		if got, ok := a[k]; !ok || got.AsInterface() != v {
 			t.Errorf("%s = %v, want %v", k, a[k].AsInterface(), v)
 		}
 	}
-	for _, k := range []string{"gen_ai.input.messages", "gen_ai.output.messages", "gen_ai.system_instructions", "error.type"} {
+	for _, k := range []string{"gen_ai.input.messages", "gen_ai.output.messages", "gen_ai.system_instructions",
+		"error.type", "gen_ai.request.max_tokens", "gen_ai.request.temperature"} {
 		if _, ok := a[k]; ok {
 			t.Errorf("%s must not be set (capture off, success)", k)
 		}
@@ -181,22 +162,25 @@ func TestDecide_HappyPathSpan(t *testing.T) {
 	}
 }
 
-func TestDecide_NoModelSpanName(t *testing.T) {
+// TestDecide_DefaultModel: the API requires a model, so an unset one is
+// DefaultModel on the wire, the span and Model().
+func TestDecide_DefaultModel(t *testing.T) {
 	api := newFakeAPI(t, 200, loadFixture(t, "response_ok.json"), 0)
-	if _, err := api.backend("", false).Decide(context.Background(), testRequest()); err != nil {
+	b := api.backend("  ", false)
+	if _, err := b.Decide(context.Background(), testRequest()); err != nil {
 		t.Fatal(err)
 	}
-	s := api.lastSpan(t)
-	if s.Name() != "chat" {
-		t.Errorf("span name = %q, want chat", s.Name())
+	if b.Model() != DefaultModel {
+		t.Errorf("Model() = %q", b.Model())
 	}
-	if _, ok := attrs(s)["gen_ai.request.model"]; ok {
-		t.Error("gen_ai.request.model set without a model")
+	s := api.lastSpan(t)
+	if s.Name() != "chat "+DefaultModel || attrs(s)["gen_ai.request.model"].AsString() != DefaultModel {
+		t.Errorf("span = %q / %v", s.Name(), attrs(s)["gen_ai.request.model"].AsString())
 	}
 	var body map[string]any
 	_ = json.Unmarshal(api.lastBody.Load().([]byte), &body)
-	if _, ok := body["model"]; ok {
-		t.Error("model sent although none is configured")
+	if body["model"] != DefaultModel {
+		t.Errorf("model on the wire = %v", body["model"])
 	}
 }
 
@@ -206,19 +190,19 @@ func TestDecide_ContentCapture(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := attrs(api.lastSpan(t))
-	if !strings.Contains(a["gen_ai.input.messages"].AsString(), "ffa.intervention") || a["gen_ai.system_instructions"].AsString() == "" {
+	if !strings.Contains(a["gen_ai.input.messages"].AsString(), "ffa.intervention") {
 		t.Errorf("input content = %v", a["gen_ai.input.messages"].AsString())
+	}
+	if _, ok := a["gen_ai.system_instructions"]; ok {
+		t.Error("Jev has no system prompt; gen_ai.system_instructions must not be set")
 	}
 	var out []llmio.Message
 	if err := json.Unmarshal([]byte(a["gen_ai.output.messages"].AsString()), &out); err != nil || len(out) != 1 {
 		t.Fatalf("output.messages = %v (%v)", a["gen_ai.output.messages"].AsString(), err)
 	}
 	p := out[0].Parts
-	if len(p) != 3 || p[0].Type != "reasoning" || p[1].Type != "reasoning" || p[2].Type != "text" || out[0].FinishReason != "stop" {
+	if len(p) != 1 || p[0].Type != "text" || !strings.Contains(p[0].Content, `"probabilities"`) || out[0].FinishReason != "stop" {
 		t.Errorf("output message = %+v", out[0])
-	}
-	if !strings.HasPrefix(p[0].Content, "Two players left") || !strings.HasPrefix(p[1].Content, "MOCK0002 is one move") {
-		t.Errorf("reasoning parts = %+v", p[:2])
 	}
 }
 
@@ -234,8 +218,13 @@ func TestDecide_Failures(t *testing.T) {
 	}{
 		{name: "garbage body", status: 200, body: []byte("not json"), errType: "invalid_response", isInvalid: true},
 		{name: "oversized body", status: 200, body: []byte(`{"x":"` + strings.Repeat("x", 1<<20) + `"}`), errType: "response_too_large", isInvalid: true},
-		{name: "rate limited", status: 429, body: []byte(`{"error":{"message":"slow down"}}`), errType: "429"},
-		{name: "server error", status: 500, body: []byte(`{"error":{"message":"boom"}}`), errType: "500"},
+		{name: "rate limited", status: 429, body: []byte(`{"detail":{"error_type":"rate_limit_error","message":"slow down"}}`), errType: "429"},
+		{name: "overloaded", status: 529, body: []byte(`{"detail":{"error_type":"overloaded_error","message":"busy"}}`), errType: "529"},
+		{name: "server error", status: 500, body: []byte(`{"detail":"boom"}`), errType: "500"},
+		{name: "bad request", status: 400, body: []byte(`{"detail":"bad"}`), errType: "400"},
+		{name: "context too long", status: 400, body: []byte(`{"detail":{"error_type":"max_tokens_exceeded","message":"too long"}}`), errType: "max_tokens_exceeded"},
+		{name: "payload too large", status: 413, body: []byte(`{}`), errType: "413"},
+		{name: "unsupported encoding", status: 415, body: []byte(`{}`), errType: "415"},
 		{name: "timeout", status: 200, body: []byte(`{}`), delay: 2 * time.Second, timeout: 100 * time.Millisecond, errType: "timeout"},
 	}
 	for _, tc := range cases {
@@ -270,19 +259,16 @@ func TestDecide_Failures(t *testing.T) {
 	}
 }
 
-// TestAvailable: the stub state. Without JEV_API_KEY (or a base URL) the
-// backend is unavailable and never touches the network, so the decision
-// wiring falls back to rules with fallback_reason=unavailable.
+// TestAvailable: without JEV_API_KEY the backend is unavailable and never
+// touches the network, so the decision wiring falls back to rules with
+// fallback_reason=unavailable. The base URL and model have defaults.
 func TestAvailable(t *testing.T) {
 	api := newFakeAPI(t, 200, loadFixture(t, "response_ok.json"), 0)
-	cases := map[string]Config{
-		"zero config":   {},
-		"no key":        {BaseURL: api.srv.URL + "/api", Model: "m"},
-		"blank key":     {APIKey: " ", BaseURL: api.srv.URL + "/api"},
-		"no base url":   {APIKey: "k", Model: "m"},
-		"blank baseurl": {APIKey: "k", BaseURL: " "},
-	}
-	for name, cfg := range cases {
+	for name, cfg := range map[string]Config{
+		"zero config": {},
+		"no key":      {BaseURL: api.srv.URL + "/api", Model: "m"},
+		"blank key":   {APIKey: " ", BaseURL: api.srv.URL + "/api"},
+	} {
 		t.Run(name, func(t *testing.T) {
 			b := New(cfg)
 			if b.Available() {
@@ -296,14 +282,18 @@ func TestAvailable(t *testing.T) {
 	if api.calls.Load() != 0 {
 		t.Error("unavailable backend made an HTTP call")
 	}
-	if !New(Config{APIKey: "k", BaseURL: "https://jev.example/v1"}).Available() {
-		t.Error("key + base URL (no model) must be available")
+	b := New(Config{APIKey: "k"})
+	if !b.Available() || b.cfg.BaseURL != DefaultBaseURL || b.Model() != DefaultModel {
+		t.Errorf("key alone: available=%v base=%q model=%q", b.Available(), b.cfg.BaseURL, b.Model())
+	}
+	if b.host != "api.typesafe.ai" || b.port != 443 {
+		t.Errorf("server = %s:%d", b.host, b.port)
 	}
 	var nilBackend *Backend
 	if nilBackend.Available() {
 		t.Error("nil backend available")
 	}
-	b := New(Config{})
+	b = New(Config{})
 	if b.Name() != Name || b.cfg.Timeout != DefaultTimeout {
 		t.Errorf("defaults = %s %v", b.Name(), b.cfg.Timeout)
 	}

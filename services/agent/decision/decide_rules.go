@@ -229,8 +229,8 @@ func answerMagnitude(q decide.Question, iv interventionPick) decide.Answer {
 }
 
 // neutralAnswer answers a question the adapter has no opinion on: the first
-// option with a uniform distribution, or the low end of a score range, at
-// confidence 0. Unknown kinds get an empty answer (Validate rejects the Request
+// option with a uniform distribution, the low end of a score range, or an even
+// 0.5 for a noul, at confidence 0. Unknown kinds get an empty answer (Validate rejects the Request
 // itself in that case).
 func neutralAnswer(q decide.Question) decide.Answer {
 	a := decide.Answer{QuestionID: q.ID}
@@ -246,6 +246,9 @@ func neutralAnswer(q decide.Question) decide.Answer {
 		}
 	case decide.KindScore:
 		a.Score = q.Range[0]
+	case decide.KindNoul:
+		even := 0.5
+		a.Noul = &even
 	}
 	return a
 }

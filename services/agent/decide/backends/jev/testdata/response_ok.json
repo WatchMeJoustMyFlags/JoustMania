@@ -1,22 +1,59 @@
 {
-  "_fixture": "HAND-WRITTEN placeholder, NOT recorded Jev traffic. Shape ASSUMED OpenAI-compatible (see wire.go). Replace with recorded Jev traffic once the API docs arrive (#1229).",
-  "id": "jev-resp-001",
-  "object": "chat.completion",
-  "model": "jev-test-model-2026-10",
-  "choices": [
-    {
-      "index": 0,
-      "message": {
-        "role": "assistant",
-        "content": "{\"answers\":[{\"id\":\"ffa.intervention\",\"choice\":\"grant_shield\",\"score\":0,\"probabilities\":[{\"option\":\"grant_shield\",\"p\":0.75},{\"option\":\"noop\",\"p\":0.25}],\"confidence\":0.88},{\"id\":\"ffa.target\",\"choice\":\"MOCK0002\",\"score\":0,\"probabilities\":[{\"option\":\"MOCK0002\",\"p\":0.9},{\"option\":\"MOCK0001\",\"p\":0.1}],\"confidence\":0.8},{\"id\":\"ffa.magnitude\",\"choice\":\"\",\"score\":0.5,\"probabilities\":[],\"confidence\":0.65}],\"rationale\":\"MOCK0002 is one move from elimination; a short shield keeps the duel alive.\"}",
-        "reasoning_content": "Two players left, MOCK0002 is close to the threshold."
+  "model": "jev-1.13.0",
+  "answers": {
+    "ffa.intervention": {
+      "type": "choice",
+      "choice": "noop",
+      "confidence": 0.75,
+      "probabilities": {
+        "noop": 0.77,
+        "adjust_global_difficulty": 0.02,
+        "adjust_global_sensitivity": 0.01,
+        "adjust_music_tempo": 0.0,
+        "adjust_player_sensitivity": 0.08,
+        "adjust_volume": 0.0,
+        "eliminate_player": 0.04,
+        "end_game": 0.0,
+        "grant_shield": 0.05,
+        "play_audio_cue": 0.01,
+        "revive_player": 0.0,
+        "send_controller_effect": 0.0,
+        "set_pacing_profile": 0.02
+      }
+    },
+    "ffa.magnitude": {
+      "type": "score",
+      "score": 2.19,
+      "confidence": 0.13,
+      "legend": {
+        "0": "The lowest setting of the chosen lever: adjust_global_difficulty 0.5 factor (easiest game); adjust_global_sensitivity 0 level (everyone easiest to eliminate); adjust_music_tempo 1 tempo (slowest music, eliminations come fastest); adjust_player_sensitivity 0.7 factor (player most protected); adjust_volume 0.3 volume (quietest); grant_shield 3 seconds (shortest shield).",
+        "1": "A low setting of the chosen lever: adjust_global_difficulty 0.875 factor; adjust_global_sensitivity 1 level; adjust_music_tempo 1.07 tempo; adjust_player_sensitivity 0.9 factor; adjust_volume 0.475 volume; grant_shield 4.75 seconds.",
+        "2": "A middle setting of the chosen lever: adjust_global_difficulty 1.25 factor; adjust_global_sensitivity 2 level; adjust_music_tempo 1.15 tempo; adjust_player_sensitivity 1.1 factor; adjust_volume 0.65 volume; grant_shield 6.5 seconds.",
+        "3": "A high setting of the chosen lever: adjust_global_difficulty 1.62 factor; adjust_global_sensitivity 3 level; adjust_music_tempo 1.23 tempo; adjust_player_sensitivity 1.3 factor; adjust_volume 0.825 volume; grant_shield 8.25 seconds.",
+        "4": "The highest setting of the chosen lever: adjust_global_difficulty 2 factor (hardest game); adjust_global_sensitivity 4 level (everyone hardest to eliminate); adjust_music_tempo 1.3 tempo (fastest music, most movement tolerated); adjust_player_sensitivity 1.5 factor (player most handicapped); adjust_volume 1 volume (loudest); grant_shield 10 seconds (longest shield)."
       },
-      "finish_reason": "stop"
+      "probabilities": {
+        "0": 0.12,
+        "1": 0.19,
+        "2": 0.29,
+        "3": 0.19,
+        "4": 0.21
+      }
+    },
+    "ffa.target": {
+      "type": "choice",
+      "choice": "MOCK0003",
+      "confidence": 0.17,
+      "probabilities": {
+        "none": 0.38,
+        "MOCK0002": 0.02,
+        "MOCK0003": 0.38,
+        "MOCK0004": 0.22
+      }
     }
-  ],
+  },
   "usage": {
-    "prompt_tokens": 850,
-    "completion_tokens": 160,
-    "completion_tokens_details": {"reasoning_tokens": 30}
+    "input_tokens": 2184,
+    "output_tokens": 225
   }
 }

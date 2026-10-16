@@ -21,7 +21,7 @@ func defaultDecisionBackend() DecisionBackend {
 			Timeout: DefaultDecisionClaudeTimeoutMs * time.Millisecond},
 		OpenAI: RemoteBackendConfig{BaseURL: DefaultDecisionOpenAIBaseURL, Timeout: timeout,
 			ReasoningEffort: DefaultDecisionOpenAIReasoningEffort},
-		Jev: RemoteBackendConfig{Timeout: timeout},
+		Jev: RemoteBackendConfig{BaseURL: DefaultDecisionJevBaseURL, Model: DefaultDecisionJevModel, Timeout: timeout},
 	}
 }
 

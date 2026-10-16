@@ -560,16 +560,17 @@
     "decision.jev.base_url": {
       "state": "ENABLED",
       "variants": {
-        "unset": ""
+        "default": "https://api.typesafe.ai/v1"
       },
-      "defaultVariant": "unset"
+      "defaultVariant": "default"
     },
     "decision.jev.model": {
       "state": "ENABLED",
       "variants": {
-        "unset": ""
+        "latest": "jev-latest",
+        "pinned": "jev-1.13.0"
       },
-      "defaultVariant": "unset"
+      "defaultVariant": "latest"
     },
     "decision.jev.timeout_ms": {
       "state": "ENABLED",

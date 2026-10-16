@@ -862,3 +862,15 @@ func TestScrubErrorBody(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+// TestDecide_NoulUnsupported: a noul question (#1229) is rejected before any
+// network I/O with an error wrapping decide.ErrInvalid.
+func TestDecide_NoulUnsupported(t *testing.T) {
+	api := newFakeAPI(t, fixed(200, completion("stop", answerJSON, nil)))
+	req := testRequest()
+	req.Questions = append(req.Questions, decide.Question{ID: "close", Kind: decide.KindNoul, Text: "Is the game close?"})
+	_, err := api.backend("gpt-4.1-mini", false).Decide(context.Background(), req)
+	if !errors.Is(err, decide.ErrInvalid) || !errors.Is(err, llmio.ErrUnsupportedKind) || api.calls.Load() != 0 {
+		t.Errorf("err = %v, calls = %d", err, api.calls.Load())
+	}
+}

@@ -9,6 +9,14 @@
 // choice questions, a probability distribution over the options in which the
 // choice is the most probable option.
 //
+// A noul question (KindNoul) is a yes/no question answered with P(yes) in
+// Answer.Noul. Its Confidence is backend-defined like every other; the jev
+// backend uses |2p-1| (TypeSafe's documented choice formula for two outcomes).
+//
+// Only the routing answer's confidence (ffa.intervention, what the router
+// gates on) is required to follow the "acting is right" semantics below; other
+// answers (target, magnitude, noul) may carry backend-native confidence.
+//
 // Confidence is the backend's confidence that ACTING on the answer is right. Its
 // derivation is backend-defined (the rules adapter uses 1 - p(noop) for an
 // intervention, a model may report its own), but it is always in [0,1] and is
@@ -34,8 +42,7 @@ import (
 
 // QuestionKind is the type of answer a Question expects. It is an OPEN string
 // type so more kinds can be added later without breaking the wire shape; Validate
-// rejects kinds it does not know. (The original brief also listed a "Noul" kind;
-// it was dropped because nobody knew what it meant.)
+// rejects kinds it does not know.
 type QuestionKind string
 
 const (
@@ -44,6 +51,13 @@ const (
 	KindChoice QuestionKind = "choice"
 	// KindScore asks for a number within Question.Range (inclusive).
 	KindScore QuestionKind = "score"
+	// KindNoul is a yes/no question answered with the probability of "yes"
+	// (Answer.Noul), the "noul" primitive of TypeSafe's Jev API (#1229). It
+	// carries only Text. Not every backend supports it: the LLM backends
+	// (claude, openai) reject a Request containing one with an error wrapping
+	// ErrInvalid, and the rules adapter answers it neutrally (0.5, confidence 0).
+	// No FFA question uses it yet.
+	KindNoul QuestionKind = "noul"
 )
 
 // Question is one typed question a backend must answer.
@@ -70,6 +84,10 @@ type Answer struct {
 	Probabilities map[string]float64 `json:"probabilities,omitempty"`
 	// Score is the value of a KindScore question, within its Range.
 	Score float64 `json:"score"`
+	// Noul is the probability, in [0,1], that the answer to a KindNoul
+	// question is "yes". It is nil for every other kind (and omitted from JSON,
+	// so choice/score answers serialize exactly as before).
+	Noul *float64 `json:"noul,omitempty"`
 	// Confidence is the backend's confidence that acting on this answer is right,
 	// in [0,1] (see the package doc).
 	Confidence float64 `json:"confidence"`

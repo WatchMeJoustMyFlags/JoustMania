@@ -19,6 +19,8 @@
 package llmio
 
 import (
+	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -132,3 +134,23 @@ func indentContinuation(s string) string {
 }
 
 func fmtNum(v float64) string { return strconv.FormatFloat(v, 'g', -1, 64) }
+
+// ErrUnsupportedKind is wrapped (together with decide.ErrInvalid) by Supported
+// when a Request asks a question kind the LLM prompt cannot express.
+var ErrUnsupportedKind = errors.New("unsupported question kind")
+
+// Supported reports an error for a Request containing a question kind the
+// shared LLM prompt and AnswerSchema cannot express: a noul question
+// (decide.KindNoul, #1229), whose P(yes) has no field in the structured answer
+// (no FFA question asks one yet). The LLM backends call it before any network
+// I/O so such a Request fails fast with an error wrapping decide.ErrInvalid
+// (the decision wiring then falls back to rules). Other malformed questions are
+// left to decide.Validate, as before.
+func Supported(req decide.Request) error {
+	for _, q := range req.Questions {
+		if q.Kind == decide.KindNoul {
+			return fmt.Errorf("%w: %w %q (question %q)", decide.ErrInvalid, ErrUnsupportedKind, string(q.Kind), clipRunes(q.ID, 64))
+		}
+	}
+	return nil
+}

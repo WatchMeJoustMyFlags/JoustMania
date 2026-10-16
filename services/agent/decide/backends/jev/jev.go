@@ -1,12 +1,12 @@
 // Package jev is the "jev" decision backend of epic #1225 (#1229): TypeSafe's
-// hosted Jev API, called directly (no gateway).
+// hosted Jev model (System One API, https://docs.typesafe.ai/api), called
+// directly (no gateway, no SDK: TypeSafe ships Python/JS SDKs only).
 //
-// STATUS: STUB. We have neither an API key nor API docs yet. Available() is
-// false until both Config.APIKey (JEV_API_KEY) and Config.BaseURL
-// (decision.jev.base_url) are set, so with decision.backend=jev the decision
-// wiring falls back to rules with fallback_reason=unavailable. The wire format
-// is isolated in wire.go and is currently an ASSUMED OpenAI-compatible shape;
-// see wire.go and README.md for what is needed from Jev.
+// Available() is false until Config.APIKey (JEV_API_KEY) is set, so with
+// decision.backend=jev and no key the decision wiring falls back to rules with
+// fallback_reason=unavailable. The base URL and model default to
+// DefaultBaseURL / DefaultModel. The wire format (typed state + questions, typed
+// answers with probabilities and confidence) lives in wire.go and criteria.go.
 //
 // It is pure: it reads no flags and does not import package decision. The
 // caller (decision wiring, #1226) builds a Config from flags
@@ -49,6 +49,13 @@ const ProviderName = "jev"
 // DefaultTimeout is the per-call budget when Config.Timeout is not positive.
 const DefaultTimeout = 2500 * time.Millisecond
 
+// DefaultBaseURL is the Jev API root when Config.BaseURL is empty.
+const DefaultBaseURL = "https://api.typesafe.ai/v1"
+
+// DefaultModel is the model when Config.Model is empty: TypeSafe's alias for
+// the latest stable Jev (the API requires a model).
+const DefaultModel = "jev-latest"
+
 // instrumentationName scopes the tracer and meter.
 const instrumentationName = "github.com/joustmania/agent/decide/backends/jev"
 
@@ -58,10 +65,11 @@ var metrics = chathttp.NewMetrics(instrumentationName)
 type Config struct {
 	// APIKey is the Jev API key (JEV_API_KEY). Empty = unavailable.
 	APIKey string
-	// BaseURL is the Jev API root (decision.jev.base_url). Empty = unavailable.
+	// BaseURL is the Jev API root (decision.jev.base_url). Empty means
+	// DefaultBaseURL.
 	BaseURL string
-	// Model is the Jev model id, if Jev has model selection
-	// (decision.jev.model). Optional.
+	// Model is the Jev model id or alias (decision.jev.model), e.g.
+	// "jev-latest" or a pinned "jev-1.13.0". Empty means DefaultModel.
 	Model string
 	// Timeout bounds one Decide call; not positive means DefaultTimeout.
 	Timeout time.Duration
@@ -79,11 +87,17 @@ type Backend struct {
 	port int
 }
 
-// New builds a Backend. It never fails; an incomplete Config makes Available
-// false and Decide return ErrUnavailable.
+// New builds a Backend. It never fails; a Config without an API key makes
+// Available false and Decide return ErrUnavailable.
 func New(cfg Config) *Backend {
 	cfg.BaseURL = strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
+	if cfg.BaseURL == "" {
+		cfg.BaseURL = DefaultBaseURL
+	}
 	cfg.Model = strings.TrimSpace(cfg.Model)
+	if cfg.Model == "" {
+		cfg.Model = DefaultModel
+	}
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = DefaultTimeout
 	}
@@ -97,18 +111,17 @@ func New(cfg Config) *Backend {
 // Name implements decide.Backend.
 func (b *Backend) Name() string { return Name }
 
-// Model is the configured model id (trimmed; empty when unset).
+// Model is the configured model id (trimmed; DefaultModel when unset).
 func (b *Backend) Model() string { return b.cfg.Model }
 
-// Available reports whether the backend is configured: an API key and a base
-// URL. Without them the caller falls back to rules (fallback_reason
-// unavailable).
+// Available reports whether the backend is configured: an API key. Without it
+// the caller falls back to rules (fallback_reason unavailable).
 func (b *Backend) Available() bool {
-	return b != nil && strings.TrimSpace(b.cfg.APIKey) != "" && b.cfg.BaseURL != ""
+	return b != nil && strings.TrimSpace(b.cfg.APIKey) != ""
 }
 
 // ErrUnavailable is returned by Decide when Available is false.
-var ErrUnavailable = errors.New("jev: backend unavailable (no JEV_API_KEY or base URL)")
+var ErrUnavailable = errors.New("jev: backend unavailable (no JEV_API_KEY)")
 
 // Decide asks Jev to answer req.Questions about req.State. It reads only
 // req.State and req.Questions (wire.go's encodeRequest). Every failure is a
@@ -129,23 +142,23 @@ func (b *Backend) Decide(ctx context.Context, req decide.Request) (decide.Respon
 		return decide.Response{}, err
 	}
 
-	spanName := "chat"
-	if b.cfg.Model != "" {
-		spanName += " " + b.cfg.Model
-	}
+	spanName := "chat " + b.cfg.Model
 	ctx, span := otel.Tracer(instrumentationName).Start(ctx, spanName,
 		trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(b.requestAttributes(out)...),
+		trace.WithAttributes(b.requestAttributes()...),
 	)
 	defer span.End()
 	if b.cfg.CaptureContent {
-		span.SetAttributes(llmio.InputContentAttributes(out.Content)...)
+		span.SetAttributes(semconv.GenAIInputMessagesKey.String(llmio.InputMessagesJSON(out.Content)))
 	}
 
 	start := time.Now()
 	header := http.Header{}
 	setAuth(header, b.cfg.APIKey)
-	status, raw, err := chathttp.Post(ctx, b.cfg.HTTPClient, b.cfg.BaseURL+wirePath, header, out.Body, chathttp.MaxResponseBytes)
+	r, err := chathttp.PostResponse(ctx, b.cfg.HTTPClient, b.cfg.BaseURL+wirePath, header, out.Body, chathttp.MaxResponseBytes)
+	if id := r.Header.Get(requestIDHeader); id != "" {
+		span.SetAttributes(semconv.GenAIResponseID(id))
+	}
 
 	switch {
 	case errors.Is(err, chathttp.ErrTooLarge):
@@ -155,12 +168,12 @@ func (b *Backend) Decide(ctx context.Context, req decide.Request) (decide.Respon
 		errType := chathttp.TransportErrorType(ctx, err)
 		b.finish(ctx, span, start, nil, errType)
 		return decide.Response{}, fmt.Errorf("jev: %s: %w", errType, err)
-	case status < 200 || status > 299:
-		b.finish(ctx, span, start, nil, chathttp.StatusErrorType(status))
-		return decide.Response{}, fmt.Errorf("jev: status %d: %s", status, scrub(clip(string(raw), 256)))
+	case r.Status < 200 || r.Status > 299:
+		b.finish(ctx, span, start, nil, statusErrorType(r.Status, r.Body))
+		return decide.Response{}, fmt.Errorf("jev: status %d: %s", r.Status, scrub(clip(string(r.Body), 256)))
 	}
 
-	res, errType, err := decodeResponse(req, raw)
+	res, errType, err := decodeResponse(req, r.Body)
 	b.finish(ctx, span, start, &res, errType)
 	if err != nil {
 		return decide.Response{}, err
@@ -168,25 +181,22 @@ func (b *Backend) Decide(ctx context.Context, req decide.Request) (decide.Respon
 	return res.Response, nil
 }
 
-func (b *Backend) requestAttributes(out wireRequestOut) []attribute.KeyValue {
-	attrs := []attribute.KeyValue{
+func (b *Backend) requestAttributes() []attribute.KeyValue {
+	return []attribute.KeyValue{
 		semconv.GenAIOperationNameChat,
 		semconv.GenAIProviderNameKey.String(ProviderName),
 		semconv.GenAIOutputTypeJSON,
+		semconv.GenAIRequestModel(b.cfg.Model),
 		semconv.ServerAddress(b.host),
 		semconv.ServerPort(b.port),
 	}
-	if b.cfg.Model != "" {
-		attrs = append(attrs, semconv.GenAIRequestModel(b.cfg.Model))
-	}
-	if out.MaxTokens > 0 {
-		attrs = append(attrs, semconv.GenAIRequestMaxTokens(out.MaxTokens))
-	}
-	if out.Temperature != nil {
-		attrs = append(attrs, semconv.GenAIRequestTemperature(*out.Temperature))
-	}
-	return attrs
 }
+
+// AttrNativeConfidence is the chat-span attribute carrying Jev's own
+// confidence per question id as a JSON object (e.g.
+// {"ffa.intervention":0.31,"ffa.magnitude":0.62}). The decide answers carry the
+// confidence decide uses, which differs for ffa.intervention (see wire.go).
+const AttrNativeConfidence = "jev.native_confidence"
 
 // finish records the response attributes, content (when captured), error and
 // GenAI client metrics. res is nil when no 2xx body was decoded.
@@ -195,28 +205,25 @@ func (b *Backend) finish(ctx context.Context, span trace.Span, start time.Time, 
 	mc := chathttp.Call{Provider: ProviderName, RequestModel: b.cfg.Model, Host: b.host, Port: b.port}
 	if res != nil {
 		mc.ResponseModel = res.Model
-		if res.ID != "" {
-			span.SetAttributes(semconv.GenAIResponseID(res.ID))
-		}
 		if res.Model != "" {
 			span.SetAttributes(semconv.GenAIResponseModel(res.Model))
 		}
-		if len(res.FinishReasons) > 0 {
-			span.SetAttributes(semconv.GenAIResponseFinishReasons(res.FinishReasons...))
+		if nc := nativeConfidenceJSON(res.NativeConfidence); nc != "" {
+			span.SetAttributes(attribute.String(AttrNativeConfidence, nc))
 		}
 		if u := res.Usage; u != nil {
 			span.SetAttributes(
 				semconv.GenAIUsageInputTokens(u.InputTokens),
 				semconv.GenAIUsageOutputTokens(u.OutputTokens),
 			)
-			if u.ReasoningTokens > 0 {
-				span.SetAttributes(semconv.GenAIUsageReasoningOutputTokens(u.ReasoningTokens))
-			}
 			metrics.RecordTokens(ctx, mc, u.InputTokens, u.OutputTokens)
 		}
-		if b.cfg.CaptureContent && (res.Text != "" || len(res.Reasoning) > 0) {
-			span.SetAttributes(llmio.OutputContentAttribute(
-				llmio.OutputMessage(res.Text, res.Reasoning, res.Response.Rationale, res.OutputFinishReason)))
+		if b.cfg.CaptureContent && res.Text != "" {
+			finish := llmio.FinishStop
+			if errType != "" {
+				finish = llmio.FinishError
+			}
+			span.SetAttributes(llmio.OutputContentAttribute(llmio.OutputMessage(res.Text, nil, "", finish)))
 		}
 	}
 	if errType != "" {
@@ -226,8 +233,9 @@ func (b *Backend) finish(ctx context.Context, span trace.Span, start time.Time, 
 	metrics.RecordDuration(ctx, mc, errType, duration)
 }
 
-// secretPattern matches credential-looking substrings ("sk-...", "Bearer ...").
-var secretPattern = regexp.MustCompile(`(?i)(sk-[a-z0-9_\-]{6,}|bearer\s+[a-z0-9._\-]+)`)
+// secretPattern matches credential-looking substrings ("sk-...", TypeSafe's
+// "apikey_...", "Bearer ...").
+var secretPattern = regexp.MustCompile(`(?i)(sk-[a-z0-9_\-]{6,}|apikey_[a-z0-9_\-]{6,}|bearer\s+[a-z0-9._\-]+)`)
 
 // scrub redacts credential-looking substrings from vendor error text. The
 // result is still untrusted: callers must not record error strings verbatim on
