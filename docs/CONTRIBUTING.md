@@ -102,9 +102,10 @@ The spec PR can precede the code PR (useful for review of intent), but a code PR
 that changes behaviour without a spec change is incomplete.
 
 **Fixing a logged discrepancy.** A `D-*` row in
-[specs-inventory.md](specs-inventory.md#4-discrepancies-found) records a place where the code is wrong
-against the spec. The fixing PR updates the status of the affected requirement and marks the row
-`Resolved by #N`; the spec text itself already describes the target.
+[specs-inventory.md](specs-inventory.md#4-discrepancies-found) is either a `stale doc` (the doc is
+wrong: fix or banner it) or a `bug` / `likely bug` (the code is wrong). A PR that fixes a bug row marks
+it `Resolved by #N`, updates the status of the affected requirement, and rewrites any use-case or spec
+text that still describes the buggy behaviour (e.g. UC-040 A11 for D-A9).
 
 **Hotfixes** may merge code first; the spec follow-up PR lands within 3 days and the gap is logged in
 the inventory until then.
