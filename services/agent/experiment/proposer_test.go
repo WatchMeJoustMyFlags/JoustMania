@@ -69,6 +69,18 @@ func gameVocab(t *testing.T, path string) func() map[string]struct{} {
 	}
 }
 
+// findSpan returns the first recorded span with the given name, or fails.
+func findSpan(t *testing.T, rec *tracetest.SpanRecorder, name string) trace.ReadOnlySpan {
+	t.Helper()
+	for _, s := range rec.Ended() {
+		if s.Name() == name {
+			return s
+		}
+	}
+	t.Fatalf("span %q not found", name)
+	return nil
+}
+
 // proposerWithRecorder wires a Proposer over a temp game.json + the given fake
 // backend, with an in-memory span recorder and a frozen clock the test advances.
 func proposerWithRecorder(t *testing.T, backend Backend) (*Proposer, string, *tracetest.SpanRecorder, *fakeClock) {

@@ -387,9 +387,6 @@ type Registry struct {
 //     DEFAULT (the non-experimental value): a silent, non-experimental no-op
 //     experiment that produces no arm differentiation. Production always injects
 //     #977's writer; a nil writer is a test/degraded shape only.
-//
-// (Named RegistryConfig to avoid colliding with the M7-7 validation Config in
-// validate.go.)
 type RegistryConfig struct {
 	// Root is the journal experiments root (journal.DirFromEnv() in production; a
 	// t.TempDir in tests). Empty ⇒ journal.DefaultDir.

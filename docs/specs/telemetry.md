@@ -107,7 +107,7 @@ connect-proxy: `otelhttp` server spans (`/health` filtered) and `otelgrpc` clien
 | `experiment.fitness`, `experiment.evaluate`, `experiment.verdict` | children of `agent.experiment` | `experiment_loop.go:869-967` |
 | `agent.infrastructure.decision` | per active infra cycle | `decision/infra_loop.go:478` |
 | `agent.shadow_game.run` | legacy single shadow game | `gamerunner/runner.go:335` |
-| `code_improvement.proposed`, `code_improvement.propose_attempt`, `code_improvement.synthetic_validation`, `code_improvement.apply` / `.discard`, `code_improvement.promote` | proposal, validation, promotion. `propose_attempt` carries `code_improvement.outcome` = `proposed` / `no_backend` / `undecodable` / `blocked` / `disabled` (+ `code_improvement.reason` when the kill switch flipped during the model call, #1270); `gated`, `llm_gated` and a `disabled` cycle before the call emit no span | `experiment/gate.go:117`, `experiment/proposer.go`, `experiment/validate.go:309-419`, `promote/promote.go:424` |
+| `code_improvement.proposed`, `code_improvement.propose_attempt`, `code_improvement.promote` | proposal, promotion. `propose_attempt` carries `code_improvement.outcome` = `proposed` / `no_backend` / `undecodable` / `blocked` / `disabled` (+ `code_improvement.reason` when the kill switch flipped during the model call, #1270); `gated`, `llm_gated` and a `disabled` cycle before the call emit no span | `experiment/gate.go:117`, `experiment/proposer.go`, `promote/promote.go:424` |
 | `chat {model}` | CLIENT; decide backends (claude, openai, jev) and the retro / proposer backend | `decide/backends/*/`, `inference/claude.go:182` |
 
 ```text

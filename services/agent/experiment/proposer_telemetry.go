@@ -15,7 +15,7 @@ package experiment
 //     trace shows the whole propose→gate flow.
 //
 // Kept in a separate file from telemetry.go so the merged Gate/Writer ownership
-// (gate.go/proposal.go/validate.go are owned elsewhere) is untouched; the consts
+// (gate.go/proposal.go are owned elsewhere) is untouched; the consts
 // reuse the AttrFlagKey/AttrRationale/AttrReason keys from telemetry.go so the two
 // spans share one attribute vocabulary.
 const (
@@ -34,11 +34,9 @@ const (
 	// the rescope has no source diff, this is the compact "set flag=value for
 	// shadow games" summary plus the rationale.
 	AttrProposedDiffSummary = "code_improvement.proposed_diff_summary"
-	// NOTE: the cycle outcome rides on the EXISTING AttrOutcome key
-	// ("code_improvement.outcome", defined in validate_telemetry.go) — the propose
-	// and validate stages share one outcome attribute vocabulary so a dashboard can
-	// enumerate every code_improvement.* cycle result on one key. The propose-side
-	// values are the ProposeOutcome* constants (proposed/gated/no_backend/
-	// undecodable/blocked); the validate-side values are the Outcome* constants
-	// (promote/discard/revert). The span NAME distinguishes the stage.
+	// AttrOutcome is the propose cycle's result, one of the ProposeOutcome*
+	// constants (proposed/gated/no_backend/undecodable/blocked/disabled). The
+	// promoter records its own outcome on the same key (promote.AttrOutcome); the
+	// span NAME distinguishes the stage.
+	AttrOutcome = "code_improvement.outcome"
 )

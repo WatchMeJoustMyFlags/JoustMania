@@ -187,8 +187,7 @@ func rolloutActuator(rootCtx context.Context, gate actions.RolloutGate, logger *
 //
 // NOTE on the live trigger: the propose→validate→PROMOTE pipeline that CALLS
 // Promote on a validated experiment is the documented follow-up (the proposer is
-// #931, parallel; the SyntheticRunner/Watcher live wiring reuses M7-7's seams where
-// merged). buildPromoter wires the env-gated promotion SURFACE; the autonomous
+// #931; the live validation stage is #964). buildPromoter wires the env-gated promotion SURFACE; the autonomous
 // watch+revert seams (Watcher/RealDefaultReverter) are nil until the live real-game
 // fitness source (promote.RealGameFitness, reading the #731 evaluator / gamewindow)
 // is wired.
@@ -854,7 +853,7 @@ func main() {
 	// operator can flip code_improvement.mode (issue→pr→autonomous) at runtime with
 	// no restart. The live propose→validate→PROMOTE trigger that calls
 	// promoter.Promote on a validated experiment is the documented follow-up (the
-	// proposer is #931; the autonomous watch+revert reuses M7-7's seams); here the
+	// proposer is #931; the live validation stage is #964); here the
 	// gated promotion surface is constructed and held so the wiring + the env gate
 	// are in place and observable.
 	// FitnessStore (#965/#1017): the finalized-per-game fitness store. It is built HERE

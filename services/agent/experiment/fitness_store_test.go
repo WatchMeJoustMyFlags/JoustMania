@@ -6,7 +6,7 @@ import (
 )
 
 // fitness_store_test.go covers the #965 finalized-per-game fitness store: the
-// instrumentation that turns the Validator's injected fitness reads into real ones.
+// instrumentation behind the recent-real anchor.
 
 // TestFitnessStore_RecordAndGet: a recorded sample is read back by game_id.
 func TestFitnessStore_RecordAndGet(t *testing.T) {
@@ -107,27 +107,5 @@ func TestFitnessStore_RecentRealRespectsN(t *testing.T) {
 	}
 	if got := s.RecentReal("endurance", 3); len(got) != 3 {
 		t.Fatalf("RecentReal(n=3) returned %d, want 3", len(got))
-	}
-}
-
-// TestRunGameIDsRoundTrip: NewRun encodes game_ids into Run.ID and RunGameIDs
-// decodes them, dropping empty fragments.
-func TestRunGameIDsRoundTrip(t *testing.T) {
-	ids := []string{"game_aaa", "game_bbb", "game_ccc"}
-	run := NewRun(ids)
-	if run.Games != 3 {
-		t.Errorf("run.Games = %d, want 3", run.Games)
-	}
-	got := RunGameIDs(run)
-	if len(got) != 3 || got[0] != "game_aaa" || got[2] != "game_ccc" {
-		t.Errorf("RunGameIDs = %v, want %v", got, ids)
-	}
-	// Empty run → no ids.
-	if got := RunGameIDs(Run{}); got != nil {
-		t.Errorf("RunGameIDs(empty) = %v, want nil", got)
-	}
-	// Stray separators are dropped.
-	if got := RunGameIDs(Run{ID: "game_x,,game_y,"}); len(got) != 2 {
-		t.Errorf("RunGameIDs with stray seps = %v, want 2 ids", got)
 	}
 }

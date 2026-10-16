@@ -54,18 +54,6 @@ const (
 	keyBluetoothMaxDroppedEventsPct = "fitness.bluetooth.max_dropped_events_pct"
 	keyBluetoothMinMovementUpdateHz = "fitness.bluetooth.min_movement_update_hz"
 
-	// M7-7 synthetic validation gate flags (#935). Read live (never cached) so a
-	// stage retune of the validation cadence/bar takes effect on the next
-	// validation cycle — same contract as the #847 llm.* numeric gate flags, and
-	// the numeric ones use the TYPED getters (the flagd numeric-flag gotcha: a
-	// numeric flag read via ObjectValue silently TYPE_MISMATCHes to its default —
-	// see llmGate). They govern experiment.Validator: how many synthetic/shadow
-	// games to validate an experiment against, the fitness improvement required to
-	// promote it, and whether a degrading experiment is rolled back.
-	keyValidationGames             = "code_improvement.validation_games"
-	keyFitnessImprovementThreshold = "code_improvement.fitness_improvement_threshold"
-	keyRevertOnDegradation         = "code_improvement.revert_on_degradation"
-
 	// M7-4 propose-stage flags (#931). Read live (never cached) so a retune of the
 	// propose engine / cadence takes effect on the next propose cycle — same
 	// contract as the #847 llm.* gate flags and the #935 validation flags. They
@@ -212,28 +200,6 @@ const (
 	// DefaultBluetoothMinMovementUpdateHz: an update rate below this fails infra
 	// fitness (fitness.bluetooth.min_movement_update_hz).
 	DefaultBluetoothMinMovementUpdateHz = 10.0
-
-	// M7-7 synthetic validation defaults (#935), mirroring the
-	// services/flagd/agent.json code_improvement.* defaultVariants. Applied when
-	// flagd is unreachable or a flag is undefined.
-
-	// DefaultValidationGames is how many synthetic/shadow games an experiment is
-	// validated against (code_improvement.validation_games). 5 matches the #935
-	// suggested default — enough games to smooth single-game variance, few enough
-	// to keep a validation cycle cheap.
-	DefaultValidationGames = 5
-	// DefaultFitnessImprovementThreshold is the minimum fitness improvement
-	// (after-before) an experiment must EXCEED to be promoted
-	// (code_improvement.fitness_improvement_threshold). 0.05 (a 5% fitness-point
-	// improvement on the 0..1 progress scale, see decision/fitness.go) is a
-	// conservative bar: a noisy near-zero delta does not graduate. Tunable live.
-	DefaultFitnessImprovementThreshold = 0.05
-	// DefaultRevertOnDegradation is fail-safe-leaning: roll back an experiment that
-	// degrades shadow fitness (code_improvement.revert_on_degradation). Shadow
-	// scoping means a degrading experiment never reached real players, so this is
-	// hygiene rather than safety, but defaulting it on keeps the shadow surface
-	// clean for the next proposal.
-	DefaultRevertOnDegradation = true
 
 	// M7-4 propose-stage defaults (#931), mirroring the services/flagd/agent.json
 	// code_improvement.* defaultVariants. Applied when flagd is unreachable or a
@@ -460,42 +426,12 @@ func (f *Flags) Lifecycle(ctx context.Context) Lifecycle {
 	}
 }
 
-// ValidationConfig is the M7-7 synthetic validation gate configuration (#935):
-// how many synthetic games to validate an experiment against, the fitness
-// improvement bar to promote it, and whether to revert a degrading experiment.
-// It mirrors the experiment.Config shape (the experiment package stays free of an
-// OpenFeature dependency — the caller resolves the flags here and passes the value
-// in, the same "package owns logic, caller owns flagd" split the Gate/Writer use).
-type ValidationConfig struct {
-	// ValidationGames is code_improvement.validation_games (default 5).
-	ValidationGames int
-	// ImprovementThreshold is code_improvement.fitness_improvement_threshold
-	// (default 0.05): the minimum fitness improvement to promote an experiment.
-	ImprovementThreshold float64
-	// RevertOnDegradation is code_improvement.revert_on_degradation (default true):
-	// roll back an experiment that degrades shadow fitness.
-	RevertOnDegradation bool
-}
-
-// Validation evaluates the three M7-7 synthetic-validation flags (#935) for one
-// validation cycle. Read live (never cached) so a stage retune takes effect on
-// the next cycle. Each flag falls back to its safe default on any evaluation
-// error (flagd unreachable / undefined). The numeric flags use the TYPED getters
-// (the flagd numeric-flag gotcha — see llmGate); the boolean uses BooleanValue.
-func (f *Flags) Validation(ctx context.Context) ValidationConfig {
-	return ValidationConfig{
-		ValidationGames:      f.intFlag(ctx, keyValidationGames, DefaultValidationGames),
-		ImprovementThreshold: f.floatFlag(ctx, keyFitnessImprovementThreshold, DefaultFitnessImprovementThreshold),
-		RevertOnDegradation:  f.boolFlag(ctx, keyRevertOnDegradation, DefaultRevertOnDegradation),
-	}
-}
-
 // CodeImprovementConfig is the M7-4 propose-stage configuration (#931): which
 // inference backend generates the experiment proposal, and the cadence floor
 // between proposals. It mirrors experiment.ProposerConfig (the experiment package
 // stays free of an OpenFeature dependency — the caller resolves the flags here
 // and maps them, the same "package owns logic, caller owns flagd" split the
-// Gate/Writer/Validator use).
+// Gate/Writer use).
 type CodeImprovementConfig struct {
 	// Engine is code_improvement.engine (default "stub"). It is recorded on the
 	// propose span only; the propose backend itself is selected by the
@@ -523,7 +459,7 @@ func (f *Flags) CodeImprovement(ctx context.Context) CodeImprovementConfig {
 // mirrors the promote.Config shape (the promote package stays free of an
 // OpenFeature dependency — the caller resolves the flags here, adds the kill-switch
 // from the Snapshot, and passes the value in: the same "package owns logic, caller
-// owns flagd" split the Gate/Writer/Validator use). The SAFE defaults are applied
+// owns flagd" split the Gate/Writer use). The SAFE defaults are applied
 // on any flagd error: mode→issue (never autonomous), target→local (never github).
 type PromotionConfig struct {
 	// Mode is code_improvement.mode (default issue).

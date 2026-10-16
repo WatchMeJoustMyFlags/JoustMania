@@ -97,14 +97,6 @@ func (p *flagPatternPinner) Pin(ctx context.Context) patterngame.Pin {
 	return pin
 }
 
-// PinAny resolves the selection without the verdict_min_pairs size check, for
-// the M7-7 validation batch (any valid archetype will do).
-func (p *flagPatternPinner) PinAny(ctx context.Context) patterngame.Pin {
-	pin := patterngame.Resolve(ctx, p.flags, p.mode, 0, "")
-	p.logActive(pin)
-	return pin
-}
-
 // logActive logs the archetype selection once at INFO (flags.md §3.1).
 func (p *flagPatternPinner) logActive(pin patterngame.Pin) {
 	if p.log == nil || !pin.Active() {
