@@ -30,13 +30,11 @@ import telemetry_inventory as ti
 
 # (a) Agent-ingested metric names with no recording producer.
 AGENT_METRIC_KNOWN_GAPS = {
-    "game_player_deaths_total": "#1334 (defined, never incremented; fix in PR #1376)",
     "game_current_mode": "#1336 (defined, never set; fix in PR #1379)",
 }
 
 # (b) Metrics referenced by dashboards/alerts that no code records.
 CONSUMED_METRIC_KNOWN_GAPS = {
-    "controller_input_lag_seconds": "#1335 (HighInputLatency + backend-comparison panels; fix in PR #1376)",
     "games_force_ended_total": "#1275 (GameCrashRate alert, D-T3)",
     "joustmania_service_update_pending": "#1275 (ServiceUpdatePending alert, D-T3)",
 }
@@ -64,10 +62,8 @@ DEAD_DEFINITION_KNOWN_GAPS = {
     "python_hid_open_total": "#1322 item 7",
     "python_hid_poll_duration_seconds": "#1322 item 7",
     "python_hid_sensor_data_total": "#1322 item 7",
-    # consumed ones, tracked above with their own issue
-    "game_player_deaths_total": "#1334",
+    # consumed one, tracked above with its own issue
     "game_current_mode": "#1336",
-    "controller_input_lag_seconds": "#1335",
 }
 
 # Metrics produced outside this repo's code (not gaps). Matched by exact name or prefix.
