@@ -667,11 +667,11 @@ async def test_grant_read_error_mid_game_keeps_the_baseline():
 
     h.flags.failing = {"shield_seconds"}
     await h.flag_change()
-    _grant(h, "shield_seconds", "p2", "n2")  # written while flagd errored
+    _grant(h, "shield_seconds", "p1", "n2")  # a new decision while flagd errored
     h.flags.failing = set()
     await h.flag_change()
     await h.flag_change()
-    assert game.grants("shield_seconds") == ["p1", "p2"]
+    assert game.grants("shield_seconds") == ["p1", "p1"]
 
 
 @pytest.mark.uc("UC-040", flow="A19", br=["BR-012"])
