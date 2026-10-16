@@ -89,6 +89,7 @@ class TestIdleHandler:
         await handler.on_exit("serial1")
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A2")
     async def test_handle_button_transitions_to_connected(self, mock_state_manager):
         """Any button press in idle should transition to CONNECTED."""
         handler = IdleHandler()
@@ -99,6 +100,7 @@ class TestIdleHandler:
         mock_state_manager.transition_to.assert_awaited_once_with("serial1", ControllerState.CONNECTED)
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A2")
     async def test_handle_button_calls_wake_callback(self, mock_state_manager):
         """Button press should call wake callback."""
         wake_callback = AsyncMock()
@@ -195,6 +197,8 @@ class TestIdleMonitorEnterIdle:
 
     @pytest.mark.asyncio
     @patch("services.menu.idle_monitor.metrics")
+    @pytest.mark.uc("UC-010", flow="A2")
+    @pytest.mark.uc("UC-002", flow="A3")
     async def test_enter_idle_transitions_controllers(self, mock_metrics, idle_monitor, mock_state_manager):
         """Entering idle should transition CONNECTED controllers to IDLE."""
         mock_state_manager.controller_states = {
@@ -212,6 +216,7 @@ class TestIdleMonitorEnterIdle:
 
     @pytest.mark.asyncio
     @patch("services.menu.idle_monitor.metrics")
+    @pytest.mark.uc("UC-010", flow="A2")
     async def test_enter_idle_skips_ready_admin(self, mock_metrics, idle_monitor, mock_state_manager):
         """Entering idle should NOT transition READY or ADMIN controllers."""
         mock_state_manager.controller_states = {
@@ -241,6 +246,8 @@ class TestIdleMonitorEnterIdle:
 
     @pytest.mark.asyncio
     @patch("services.menu.idle_monitor.metrics")
+    @pytest.mark.uc("UC-010", flow="A2")
+    @pytest.mark.uc("UC-002", flow="A3")
     async def test_enter_idle_selects_sentinels(self, mock_metrics, idle_monitor, mock_state_manager):
         """Sentinels should be selected on idle entry."""
         mock_state_manager.controller_states = {
@@ -261,6 +268,7 @@ class TestIdleMonitorWakeAll:
 
     @pytest.mark.asyncio
     @patch("services.menu.idle_monitor.metrics")
+    @pytest.mark.uc("UC-010", flow="A2")
     async def test_wake_all_transitions_idle_to_connected(self, mock_metrics, idle_monitor, mock_state_manager):
         """wake_all should transition all IDLE controllers to CONNECTED."""
         idle_monitor._idle_active = True

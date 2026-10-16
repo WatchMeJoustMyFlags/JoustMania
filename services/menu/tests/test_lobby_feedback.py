@@ -114,6 +114,7 @@ class TestLobbySelectButton:
     """UC-011 A2 / FR-011 (#1272): SELECT in the lobby through the real servicer wiring."""
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-011", flow="A2")
     async def test_select_updates_the_selection_the_start_path_reads(self, menu_servicer):
         """SELECT cycles the mode the coordinator start path reads and persists it."""
         from unittest.mock import AsyncMock
