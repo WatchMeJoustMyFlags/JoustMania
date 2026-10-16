@@ -4,6 +4,16 @@ Multiplayer motion-controlled party game system using PS Move controllers.
 
 **Main branch: `main`**
 
+## Spec-driven development (AIUP)
+
+Specs are the source of truth; code and tests follow from them. Start at [docs/README.md](docs/README.md).
+
+- **Before any feature or bugfix that changes behaviour**, update the spec FIRST, in the same PR (or a preceding one): [docs/requirements.md](docs/requirements.md) (FR/NFR/C), the affected [docs/use_cases/UC-xxx.md](docs/use_cases/) (+ [docs/use_cases.puml](docs/use_cases.puml) for a new UC), and the matching technical spec in [docs/specs/](docs/specs/) (`services.md`, `flags.md`, `telemetry.md`, `decide-contract.md`). New flag, span, metric, RPC or decide field = spec row first.
+- **Use the AIUP skills** (`aiup-core` plugin) and follow their formats: `requirements` (catalog), `entity-model` (ER + 5-column attribute tables), `use-case-diagram` (PlantUML), `use-case-spec` (one UC per file). Never renumber IDs; retire with status `Rejected` / `Obsolete`.
+- **Spec describes what the code does.** Planned work carries its issue number and status `Open`/`In Progress`. If code and spec disagree, fix one of them or log it under "Discrepancies found" in [docs/specs-inventory.md](docs/specs-inventory.md).
+- **Pure refactors** (no observable behaviour change: same RPCs, flags, spans, metrics, outcomes) need no spec change; say `Spec changes: none: refactor, no behaviour change` in the PR body.
+- Every PR fills the **Spec changes** section of the PR template. Workflow details: [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md#spec-driven-development-aiup).
+
 ## Session Management
 
 When resuming from a previous session, ask the user to confirm the current task before reading files or starting work. Do not assume context from prior sessions without verification.
@@ -70,6 +80,7 @@ When editing YAML config files (Docker Compose, OTEL Collector, dashboards), val
 ## Key Documentation
 
 - [Northstar](docs/NORTHSTAR.md) - The "dark factory" goal and its hard constraints; read before agent work
+- [Docs index](docs/README.md) - Start here: vision → requirements → use cases → specs → runbooks → research
 - [Contributing Guide](docs/CONTRIBUTING.md) - Development workflow, CI checks, code style
 - [Development Guide](docs/DEVELOPMENT.md) - Building, running, debugging services
 - [Architecture](docs/ARCHITECTURE.md) - System design and service interactions
