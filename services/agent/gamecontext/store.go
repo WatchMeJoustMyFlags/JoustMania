@@ -497,9 +497,12 @@ func (s *Store) SetGameActive(active bool) {
 }
 
 // SetGameKind records the game kind ("real"/"shadow") from the game_kind
-// datapoint label or the game.kind span attribute (#845). An empty kind is
-// ignored so an unlabeled signal never clobbers a previously observed kind.
+// datapoint label or the game.kind span attribute (#845). The kind is normalised
+// (NormalizeGameKind: telemetry "primary" -> "real", #1249) so GameContext.GameKind
+// is always in the flag-evaluation vocabulary. An empty kind is ignored so an
+// unlabeled signal never clobbers a previously observed kind.
 func (s *Store) SetGameKind(kind string) {
+	kind = NormalizeGameKind(kind)
 	if kind == "" {
 		return
 	}

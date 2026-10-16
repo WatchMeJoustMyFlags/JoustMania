@@ -130,7 +130,9 @@ type GameContext struct {
 	// game), "shadow" (a parallel evaluation game), or "" (unknown — not yet
 	// observed on any labeled signal). Source: the game_kind datapoint label on
 	// game_active / game_active_players / game_duration_seconds, or the game.kind
-	// attribute on the game-session / player_lifecycle spans (#845).
+	// attribute on the game-session / player_lifecycle spans (#845). Always in the
+	// flag-evaluation vocabulary: the coordinator's telemetry "primary" is
+	// normalised to "real" at ingest (NormalizeGameKind, #1249).
 	GameKind string
 	// ExperimentID / Arm are the experiment attribution within a shadow session
 	// (#975, epic #982): which experiment this game belongs to ("exp_<id>" or "" —

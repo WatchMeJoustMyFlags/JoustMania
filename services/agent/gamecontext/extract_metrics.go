@@ -125,10 +125,12 @@ func gameIDOf(attrs pcommon.Map) string {
 	return ""
 }
 
-// gameKindOf reads the game_kind datapoint label; empty when absent.
+// gameKindOf reads the game_kind datapoint label, normalised to the
+// flag-evaluation vocabulary (NormalizeGameKind: "primary" -> "real"); empty
+// when absent.
 func gameKindOf(attrs pcommon.Map) string {
 	if v, ok := attrs.Get(attrGameKind); ok {
-		return v.AsString()
+		return NormalizeGameKind(v.AsString())
 	}
 	return ""
 }
