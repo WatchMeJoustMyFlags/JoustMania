@@ -379,7 +379,7 @@ func newRemoteHarness(t *testing.T, snap flags.Snapshot, be decide.Backend) remo
 	})
 	reg := NewDecideRegistry()
 	if be != nil {
-		reg.Register(flags.DecisionBackendClaude, func(flags.DecisionBackend) decide.Backend { return be })
+		reg.Register(be.Name(), func(flags.DecisionBackend) decide.Backend { return be })
 	}
 	l.SetDecideRegistry(reg)
 	return remoteHarness{flags: fl, cancel: cancel, loop: l, sr: sr, sink: sink, engine: engine, provider: provider, clock: &clock}
@@ -820,8 +820,14 @@ func TestRemote_PrimaryLabelledGameIsEligible(t *testing.T) {
 // flight, then releases it (unless it is meant to time out) and waits.
 func fireAndMutate(t *testing.T, be *fakeDecideBackend, timeout time.Duration, mutate func(h remoteHarness)) (remoteHarness, sdktrace.ReadOnlySpan) {
 	t.Helper()
+	return fireAndMutateSnapshot(t, be, remoteSnapshot(timeout), timeout, mutate)
+}
+
+// fireAndMutateSnapshot is fireAndMutate with a caller-built flag snapshot.
+func fireAndMutateSnapshot(t *testing.T, be *fakeDecideBackend, snap flags.Snapshot, timeout time.Duration, mutate func(h remoteHarness)) (remoteHarness, sdktrace.ReadOnlySpan) {
+	t.Helper()
 	be.block = true
-	h := newRemoteHarness(t, remoteSnapshot(timeout), be)
+	h := newRemoteHarness(t, snap, be)
 	h.loop.OnEvaluate(context.Background(), remoteContext(), testTrigger())
 	<-be.started
 	mutate(h)

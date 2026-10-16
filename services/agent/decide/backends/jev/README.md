@@ -70,8 +70,8 @@ The `ffa.intervention` answer `Decide` returns is **synthesised**
 {noop: 1 - p_yes, <Jev's pick among the interventions>: p_yes, every other option: 0}
 ```
 
-- the acting confidence `1 - p(noop)` equals **p_yes**, so the existing
-  `decision.act_confidence_threshold` gates the gate (no change in `decision/`);
+- the acting confidence `1 - p(noop)` equals **p_yes**, so Jev's own
+  `decision.jev.act_confidence_threshold` (default 0.6, #1287) gates the gate;
 - `gateAnswer` makes the choice the intervention **iff p_yes > 0.5** (a strict
   `>`: exactly 0.5 is `noop`), else `noop` (confidence `1 - p_yes`); a closed
   gate makes no details call. `decide.Validate` only accepts the result (the
@@ -112,11 +112,12 @@ Stage-1 pick among the interventions: calm `set_pacing_profile`, dragging
 `play_audio_cue`, collapsing and near-threshold `adjust_player_sensitivity`
 (0.24 to 0.45), `grant_shield` second.
 
-**Threshold.** No state reaches the default `decision.act_confidence_threshold`
-0.8, so with the default every gated Jev round is `noop` or `held`. The new
-variant **`gate` = 0.6** separates the states: near-threshold and collapsing
-act, calm and dragging do not (`scripts/agent-backend.sh threshold gate`). It is
-not the default: the flag is global, so it also applies to claude and openai.
+**Threshold.** No state reaches the global `decision.act_confidence_threshold`
+default 0.8, which claude and openai keep. A bar of **0.6** separates the states:
+near-threshold and collapsing act, calm and dragging do not. Jev therefore has
+its own flag `decision.jev.act_confidence_threshold`, default variant `gate`
+(0.6) (#1287; `scripts/agent-backend.sh jev-threshold inherit|gate|default|strict`;
+`inherit` uses the global flag).
 Dragging stays low because Jev does not compute "nobody eliminated for 130 s"
 from the timeline; a precomputed pace signal in `decide.State` is the follow-up.
 

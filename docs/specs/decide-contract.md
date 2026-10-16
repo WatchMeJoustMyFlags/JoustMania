@@ -174,8 +174,8 @@ The `ffa.intervention` answer the backend returns is **synthesised** (`stages.go
 `{noop: 1 − p_yes, argmax_iv: p_yes, every other option: 0}`, where `argmax_iv` is Jev's stage-1 pick.
 Consequences:
 
-- **Confidence = p_yes** when acting (1 − p_yes for noop), so the unchanged `decision.act_confidence_threshold`
-  routing (§5) gates the gate. Nothing in `decision/` changes.
+- **Confidence = p_yes** when acting (1 − p_yes for noop), so the confidence routing (§5) gates the gate,
+  against Jev's own `decision.jev.act_confidence_threshold` (default 0.6, #1287).
 - **Choice = argmax_iv iff p_yes > 0.5**, else `noop`, decided by `gateAnswer`'s strict `>` (exactly 0.5 is
   `noop`; `decide.Validate` only accepts the result within its 1e-3 argmax tolerance); a closed gate makes no
   details call.
@@ -192,10 +192,11 @@ Consequences:
   `about_to_end` noul 0.62 → 0.60).
 
 **Calibration** (live, jev-1.13.0, 2026-10-16, `TestLiveGate`, shipped wording, 2 runs): calm 0.16 / 0.16,
-dragging 0.36 / 0.35, collapsing 0.67 / 0.68, near-threshold 0.72 / 0.71. None reaches the default threshold
-0.8; the new variant `decision.act_confidence_threshold=gate` (0.6) makes near-threshold and collapsing act and
-leaves calm and dragging as noop. `gate` is not the default (the flag is global and also gates claude and
-openai). Dragging stays low because Jev does not derive "nobody eliminated for 130 s" from the timeline; a
+dragging 0.36 / 0.35, collapsing 0.67 / 0.68, near-threshold 0.72 / 0.71. None reaches the global default
+threshold 0.8. A threshold of 0.6 makes near-threshold and collapsing act and leaves calm and dragging as noop,
+so Jev has its **own** threshold `decision.jev.act_confidence_threshold`, default variant `gate` (0.6), and acts
+out of the box (#1287); claude and openai keep the global `decision.act_confidence_threshold` (default 0.8),
+whose `gate` variant (0.6) remains but no longer affects Jev unless Jev's flag is `inherit`. Dragging stays low because Jev does not derive "nobody eliminated for 130 s" from the timeline; a
 precomputed pace signal is a follow-up.
 
 ### 3.2 Jev score levels (#1281)
@@ -285,11 +286,19 @@ Blocked decisions are recorded on the `agent.decision` span
   1 − p(noop) when an intervention is chosen, p(noop) when `noop` is chosen
   (`decision/decide_rules.go:21-42,147-229`).
 - **Remote:** the model reports `confidence` per answer.
-- **Routing (remote path only)** uses the `ffa.intervention` confidence against
-  `decision.act_confidence_threshold` (default 0.8, variants low 0.5 / gate 0.6 / strict 0.95; NaN or out of range → default),
-  read **live at landing** (`decide_hook.go:440-441,517-522`):
-  ≥ threshold → `act`; < threshold → `held` (no action). The rules path does not
-  route by confidence.
+- **Routing (remote path only)** uses the `ffa.intervention` confidence against the
+  **effective threshold** for the backend that answered (`flags.DecisionBackend.ActThreshold`,
+  `flags/decision_backend.go:190`; #1287):
+  - backend `jev`: `decision.jev.act_confidence_threshold` (default variant `gate` 0.6; variants
+    inherit −1 / gate 0.6 / default 0.8 / strict 0.95). Jev's confidence is the calibrated gate p_yes (§3.1),
+    not a self-report, so it has its own bar. The `inherit` sentinel (−1), and NaN or any other value outside
+    [0,1], use the global flag instead; a flagd error yields 0.6 (the defaultVariant);
+  - every other backend (claude, openai): the global `decision.act_confidence_threshold` (default 0.8,
+    variants low 0.5 / gate 0.6 / strict 0.95; NaN or out of range → default).
+
+  Both flags are read **live at landing** (`decide_hook.go:453,532`), so flipping either mid-flight applies to
+  the in-flight answer: ≥ threshold → `act`; < threshold → `held` (no action). The span records the effective
+  threshold and its source (§12). The rules path does not route by confidence.
 - `held` answers are not queued anywhere on `main` (the epic #1225 body proposed a
   shadow-candidate queue; not implemented).
 
@@ -385,6 +394,7 @@ No p50 / p95 from production `agent.decide` spans has been published yet (#1231)
 |---|---|---|
 | `enabled` → off | HTTP call is **not** cancelled; on landing the live flags are re-read and the answer is `discarded/kill_switch`; the rules fallback is suppressed too | `decide_hook.go:339-360,439-445`; `TestRemote_KillSwitchAtLanding`, `TestRemote_KillSwitchSuppressesTimeoutFallback`; e2e `tests/integration/test_decide_backend_e2e.py::test_kill_switch_discards_inflight_answer` |
 | `decision.backend` changed | `discarded/backend_changed` | `decide_hook.go:446-449`; `TestRemote_BackendChangedMidFlight` |
+| `decision.act_confidence_threshold` / `decision.jev.act_confidence_threshold` changed | the effective threshold for the answering backend is re-read at landing (§5); the answer is `act` or `held` against the new value | `decide_hook.go:453`; `TestRemote_ThresholdRaisedMidFlight`, `TestThreshold_JevRaisedMidFlightAppliesAtLanding`, `TestThreshold_JevInheritFlippedMidFlightAppliesAtLanding` |
 | `interventions_allowed` narrowed | outcome stays `act`; the permission chain blocks `not_allowed` | `TestRemote_AllowListAtLanding` |
 | `interventions_enabled` → off | not checked by the decide hook; the gated sink writes nothing | `actions/gated.go:31-67` |
 | agent shutdown | `discarded/shutdown` | `decide_hook.go:397-402` |
@@ -458,11 +468,15 @@ Full names in [telemetry.md](telemetry.md#4-agent). Summary:
   Always: `gen_ai.agent.name=joustmania-agent`, `gen_ai.conversation.id=<game id>`,
   `game.id`, `session.id`, `game.kind`, `decide.backend`, `decide.backend.requested`,
   `decide.fallback_reason`, `decide.state.digest`, `decide.questions`,
-  `decide.latency_ms`, `decide.outcome`. Conditional: `decide.act_confidence_threshold`,
+  `decide.latency_ms`, `decide.outcome`. Conditional: `decide.act_confidence_threshold` (the EFFECTIVE
+  threshold, §5) and `decide.act_confidence_threshold.source` (`jev` = `decision.jev.act_confidence_threshold`,
+  `global` = `decision.act_confidence_threshold`; #1287), both only when routed,
   `gen_ai.request.model`, `decide.answers`, `decide.confidence`, `decide.confidence.min`,
   `decide.rationale`, `decide.invalid_reason`, `decide.discarded_reason`, `error.type`.
   Event `gen_ai.evaluation.result` (`gen_ai.evaluation.name=act_confidence_threshold`,
-  score value, label `pass`/`fail`) when routed (`decide_hook.go:44-127,622-706`).
+  score value, label `pass`/`fail`, explanation `confidence 0.720 >= threshold 0.600
+  (decision.jev.act_confidence_threshold)` naming the flag the threshold came from) when routed
+  (`decide_hook.go:44-127,622-706`).
 - **`decide.answers`** is the JSON array of `decide.Answer` values (capped at the span-JSON size limit, with a
   truncation marker), one object per question:
   `{"question_id": "ffa.intervention", "choice": "grant_shield", "probabilities": {"noop": 0.3, "grant_shield": 0.7}, "score": 0, "confidence": 0.7}`,
@@ -486,7 +500,7 @@ turned into no-ops while `interventions_enabled` is off (`actions/gated.go:60-65
 A new question kind, outcome, fallback reason, discarded reason, span attribute or
 default changes this file first (see [CONTRIBUTING](../CONTRIBUTING.md#spec-driven-development-aiup)).
 The contract tests live in `decide/*_test.go`, `decide/backends/*/contract_test.go`
-and `decision/decide_hook_test.go`.
+and `decision/decide_hook_test.go` (per-backend threshold: `decision/decide_hook_threshold_test.go`).
 
 **Traceability:** FR-044, FR-045, FR-046, FR-047, FR-048, FR-049, FR-050, FR-051, FR-052, FR-053, FR-054 / UC-040, UC-044, UC-045 /
 `services/agent/decide/`, `services/agent/decision/decide_hook.go`, `decide_registry.go`, `decide_rules.go`, `decision.go`, `services/agent/decide_backends.go`, `services/agent/actions/`, `services/game_coordinator/interventions.py` /

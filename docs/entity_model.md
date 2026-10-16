@@ -215,7 +215,8 @@ One agent decision cycle for a game (`services/agent/decision/decision.go`, `dec
 | fallback_reason | Why rules decided instead | String | 22 | Optional, Values: unknown_backend, backend_unavailable, async_not_wired, llm_not_eligible, llm_budget_exhausted, timeout, invalid_answer, error |
 | discarded_reason | Why a valid answer was dropped | String | 16 | Optional, Values: stale_context, game_ended, target_gone, kill_switch, backend_changed, shutdown |
 | confidence | Routing confidence of `ffa.intervention` | Decimal | 4,3 | Optional, Min: 0, Max: 1 |
-| act_confidence_threshold | Threshold read at landing | Decimal | 4,3 | Optional, Min: 0, Max: 1 |
+| act_confidence_threshold | Effective threshold read at landing (the answering backend's own, else the global) | Decimal | 4,3 | Optional, Min: 0, Max: 1 |
+| act_confidence_threshold_source | Flag the threshold came from | String | 6 | Optional, Values: jev, global |
 | blocked | Permission chain blocked the decision | Boolean | 1 | Not Null |
 | block_reason | Permission block | String | 18 | Optional, Values: not_allowed, battery_threshold, rate_limit |
 | state_digest | SHA-256 of the canonical state | String | 64 | Not Null |

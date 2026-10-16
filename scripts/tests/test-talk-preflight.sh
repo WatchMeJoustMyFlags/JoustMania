@@ -92,6 +92,7 @@ flags = {
     "experiments_enabled": f(onoff, "off"),
     "decision.backend": f({"rules": "rules", "claude": "claude"}, "rules"),
     "decision.act_confidence_threshold": f({"default": 0.8, "strict": 0.95}, "default"),
+    "decision.jev.act_confidence_threshold": f({"inherit": -1.0, "gate": 0.6, "strict": 0.95}, "gate"),
     "decision.capture_content": f(onoff, "on"),
     "decision.min_interval_ms": f({"default": 3000}, "default"),
     "decision.claude.model": f({"haiku": "h", "sonnet": "s"}, "haiku"),
@@ -134,12 +135,13 @@ check "clock in sync" "PASS  clock skew 0s"
 if has "${SECRET}"; then not_ok "key value never printed"; else ok "key value never printed"; fi
 
 # --- drift from the stage baseline -----------------------------------------
-fixture enabled=off decision.act_confidence_threshold=strict
+fixture enabled=off decision.act_confidence_threshold=strict decision.jev.act_confidence_threshold=inherit
 before="$(cat "${AGENT_FLAG_FILE}")"
 run_preflight
 if [[ "${RC}" -eq 1 ]]; then ok "drift exits 1"; else not_ok "drift exits 1 (rc=${RC})"; fi
 check "kill switch off fails" "FAIL  enabled = off (false), stage baseline is on"
 check "strict threshold fails" "FAIL  decision.act_confidence_threshold = strict (0.95), stage baseline is default"
+check "jev threshold inherit fails" "FAIL  decision.jev.act_confidence_threshold = inherit (-1.0), stage baseline is gate"
 check "unset budget warns" "WARN  AGENT_LLM_MAX_REQUESTS_PER_MINUTE unset"
 if [[ "$(cat "${AGENT_FLAG_FILE}")" == "${before}" ]]; then ok "flag file untouched"; else not_ok "flag file untouched"; fi
 

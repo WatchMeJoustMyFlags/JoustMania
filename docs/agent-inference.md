@@ -24,7 +24,8 @@ an invalid answer, or the game is not eligible, the rules engine decides and the
 | Flag | Meaning |
 |------|---------|
 | `decision.backend` | `rules` / `claude` / `openai` / `jev` |
-| `decision.act_confidence_threshold` | below it a remote answer is held, not acted on |
+| `decision.act_confidence_threshold` | below it a remote answer is held, not acted on (claude/openai) |
+| `decision.jev.act_confidence_threshold` | Jev's own act threshold (default 0.6; `inherit` = the global one, #1287) |
 | `decision.min_interval_ms` | per-game cadence of remote calls |
 | `decision.claude.model`, `decision.claude.timeout_ms` | Claude backend |
 | `decision.openai.base_url`, `.model`, `.timeout_ms`, `.reasoning_effort` | any hosted OpenAI-compatible endpoint |

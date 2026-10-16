@@ -22,19 +22,20 @@ import (
 // numeric flag read via ObjectValue silently TYPE_MISMATCHes to its default
 // (#903/#1127).
 const (
-	keyDecisionBackend                = "decision.backend"
-	keyDecisionActConfidenceThreshold = "decision.act_confidence_threshold"
-	keyDecisionCaptureContent         = "decision.capture_content"
-	keyDecisionMinIntervalMs          = "decision.min_interval_ms"
-	keyDecisionClaudeModel            = "decision.claude.model"
-	keyDecisionClaudeTimeoutMs        = "decision.claude.timeout_ms"
-	keyDecisionOpenAIBaseURL          = "decision.openai.base_url"
-	keyDecisionOpenAIModel            = "decision.openai.model"
-	keyDecisionOpenAITimeoutMs        = "decision.openai.timeout_ms"
-	keyDecisionOpenAIReasoningEffort  = "decision.openai.reasoning_effort"
-	keyDecisionJevBaseURL             = "decision.jev.base_url"
-	keyDecisionJevModel               = "decision.jev.model"
-	keyDecisionJevTimeoutMs           = "decision.jev.timeout_ms"
+	keyDecisionBackend                   = "decision.backend"
+	keyDecisionActConfidenceThreshold    = "decision.act_confidence_threshold"
+	keyDecisionCaptureContent            = "decision.capture_content"
+	keyDecisionMinIntervalMs             = "decision.min_interval_ms"
+	keyDecisionClaudeModel               = "decision.claude.model"
+	keyDecisionClaudeTimeoutMs           = "decision.claude.timeout_ms"
+	keyDecisionOpenAIBaseURL             = "decision.openai.base_url"
+	keyDecisionOpenAIModel               = "decision.openai.model"
+	keyDecisionOpenAITimeoutMs           = "decision.openai.timeout_ms"
+	keyDecisionOpenAIReasoningEffort     = "decision.openai.reasoning_effort"
+	keyDecisionJevBaseURL                = "decision.jev.base_url"
+	keyDecisionJevModel                  = "decision.jev.model"
+	keyDecisionJevTimeoutMs              = "decision.jev.timeout_ms"
+	keyDecisionJevActConfidenceThreshold = "decision.jev.act_confidence_threshold"
 )
 
 // Decision-backend names (the decision.backend variants).
@@ -54,6 +55,15 @@ const (
 	// DefaultDecisionActConfidenceThreshold is the confidence at or above which a
 	// remote answer is acted on; below it the answer is held (no action).
 	DefaultDecisionActConfidenceThreshold = 0.8
+	// DefaultDecisionJevActConfidenceThreshold is the jev backend's own act
+	// threshold (decision.jev.act_confidence_threshold, variant "gate", #1287).
+	// Jev's confidence is the calibrated gate p_yes (calm ~0.16, dragging ~0.35,
+	// collapsing ~0.68, near-threshold ~0.72), not a self-report, so it acts at
+	// 0.6 out of the box while claude/openai keep the global 0.8.
+	DefaultDecisionJevActConfidenceThreshold = 0.6
+	// ActConfidenceThresholdInherit is the "inherit" variant of a per-backend act
+	// threshold: the backend uses decision.act_confidence_threshold.
+	ActConfidenceThresholdInherit = -1.0
 	// DefaultDecisionCaptureContent is off: GenAI content capture (prompts,
 	// completions, rationale as message parts) is opt-in per the GenAI semconv.
 	DefaultDecisionCaptureContent = false
@@ -119,6 +129,17 @@ type RemoteBackendConfig struct {
 	// (decision.openai.reasoning_effort; lowercase, trimmed, never empty).
 	// Only the openai backend has the flag; it is empty for claude and jev.
 	ReasoningEffort string
+	// ActConfidenceThreshold is the backend's own act threshold
+	// (decision.<backend>.act_confidence_threshold, in [0,1]); it applies only
+	// when HasActConfidenceThreshold is true, otherwise the backend inherits
+	// decision.act_confidence_threshold. Only jev has the flag (#1287); the zero
+	// value (claude, openai, hand-built test snapshots) inherits.
+	ActConfidenceThreshold float64
+	// HasActConfidenceThreshold reports whether ActConfidenceThreshold applies:
+	// true when the backend's own flag resolved to a value in [0,1], false for
+	// the "inherit" sentinel, an out-of-range value or a backend without the flag
+	// (then DecisionBackend.ActThreshold returns the global threshold).
+	HasActConfidenceThreshold bool
 }
 
 // DecisionBackend is the decision-backend flag group (#1226).
@@ -160,13 +181,30 @@ func (d DecisionBackend) Remote(name string) (RemoteBackendConfig, bool) {
 	return RemoteBackendConfig{}, false
 }
 
+// Act-threshold sources (decide.act_confidence_threshold.source): the global
+// decision.act_confidence_threshold, or the answering backend's own flag (the
+// backend name, e.g. "jev").
+const ActThresholdSourceGlobal = "global"
+
+// ActThreshold returns the act-confidence threshold that applies to an answer from
+// the named backend, and where it came from: the backend's own
+// decision.<backend>.act_confidence_threshold when it has one (source = the
+// backend name), else the global decision.act_confidence_threshold (source
+// "global"). Rules and unknown names always get the global.
+func (d DecisionBackend) ActThreshold(backend string) (float64, string) {
+	if cfg, ok := d.Remote(backend); ok && cfg.HasActConfidenceThreshold {
+		return cfg.ActConfidenceThreshold, backend
+	}
+	return d.ActConfidenceThreshold, ActThresholdSourceGlobal
+}
+
 // DecisionBackend resolves the decision-backend flag group. Evaluate calls it every
 // cycle; it is exported so a caller can read just this group. Every flag falls back
 // to its default on any evaluation error; an out-of-range threshold or a
 // non-positive timeout also falls back (a bad flag edit must never stall a game or
 // make every answer actionable).
 func (f *Flags) DecisionBackend(ctx context.Context) DecisionBackend {
-	return DecisionBackend{
+	d := DecisionBackend{
 		Backend:                normalizeBackendName(f.stringFlag(ctx, keyDecisionBackend, DefaultDecisionBackend)),
 		ActConfidenceThreshold: f.actConfidenceThreshold(ctx),
 		CaptureContent:         f.boolFlag(ctx, keyDecisionCaptureContent, DefaultDecisionCaptureContent),
@@ -188,6 +226,9 @@ func (f *Flags) DecisionBackend(ctx context.Context) DecisionBackend {
 			Timeout: f.timeoutMsFlag(ctx, keyDecisionJevTimeoutMs, DefaultDecisionTimeoutMs),
 		},
 	}
+	d.Jev.ActConfidenceThreshold, d.Jev.HasActConfidenceThreshold = f.backendActConfidenceThreshold(
+		ctx, keyDecisionJevActConfidenceThreshold, DefaultDecisionJevActConfidenceThreshold)
+	return d
 }
 
 func normalizeBackendName(v string) string {
@@ -215,6 +256,24 @@ func (f *Flags) actConfidenceThreshold(ctx context.Context) float64 {
 		return DefaultDecisionActConfidenceThreshold
 	}
 	return v
+}
+
+// backendActConfidenceThreshold reads a per-backend act threshold. The "inherit"
+// sentinel (ActConfidenceThresholdInherit) returns has=false: the backend uses the
+// global flag. NaN or a value outside [0,1] also inherits the global (logged): a
+// bad edit must never make every answer of one backend actionable. An evaluation
+// error (flagd down, flag undefined) yields def, mirroring the defaultVariant.
+func (f *Flags) backendActConfidenceThreshold(ctx context.Context, key string, def float64) (float64, bool) {
+	v := f.floatFlag(ctx, key, def)
+	if v == ActConfidenceThresholdInherit {
+		return 0, false
+	}
+	if math.IsNaN(v) || v < 0 || v > 1 {
+		f.log.Warn("flags threshold outside [0,1], inheriting decision.act_confidence_threshold",
+			"key", key, "value", v)
+		return 0, false
+	}
+	return v, true
 }
 
 func (f *Flags) minIntervalFlag(ctx context.Context) time.Duration {
