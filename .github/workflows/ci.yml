@@ -540,7 +540,43 @@ jobs:
           IMAGE_TAG: latest
         run: bash scripts/ci/check-image-freshness.sh
 
-      # Fast path: pull latest images, overlay current source.
+      # #1254: the Go agent has no dev mount, so on the fast path it would run the
+      # published :latest, which can lag the code under test: a PR changing only
+      # services/agent/**/*.go never matches integration_deps, and :latest is only
+      # pushed by the agent publish job AFTER main's integration tests finish, so
+      # any run starting in that window (2026-10-16: ~15 min after #1252) tests
+      # new agent assertions against the old binary. Build the agent from this
+      # checkout instead, under the exact ref compose resolves, and load it
+      # locally. The suite's session `compose pull` skips the profile-gated
+      # agent, and the tests that start it use pull_policy "missing", so they run
+      # this HEAD build. Unconditional on the fast path: with the shared gha
+      # cache an unchanged agent is a cache hit (seconds); a Go change costs ~1.5
+      # min (amd64 only). The full-build path already builds the agent at HEAD.
+      - name: Resolve agent image ref (fast path)
+        id: agent_image
+        if: needs.changes.outputs.integration_deps != 'true' && needs.changes.outputs.force_full != 'true'
+        env:
+          IMAGE_TAG: latest
+        run: |
+          ref="$(docker compose -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.ci.yml \
+            --profile agent config --format json | jq -r '.services.agent.image')"
+          echo "Agent image ref: ${ref}"
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+
+      - name: Build agent at HEAD (fast path)
+        if: needs.changes.outputs.integration_deps != 'true' && needs.changes.outputs.force_full != 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: services/agent/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ steps.agent_image.outputs.ref }}
+          # Read-only: the publish job (docker-build-extra) owns the agent scope.
+          cache-from: type=gha,scope=agent
+
+      # Fast path: pull latest images, overlay current source (agent: HEAD build above).
       # PYTEST_EXTRA="--reruns 1" (#925): tolerate a single integration flake so
       # one flake no longer skips image publish. Generic — reruns ANY failure
       # once, never quarantines a test by name.
@@ -620,6 +656,9 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
 
   # Build non-Python services (Go/Node.js/Rust)
+  # Publish (incl. :latest on main) is gated on integration-test ONLY (implicit
+  # success() on `needs`), not on CI Complete: an unrelated red job such as Rust
+  # Checks does not stop :latest from moving (#1254).
   docker-build-extra:
     name: Build ${{ matrix.service }}
     runs-on: ubuntu-latest
