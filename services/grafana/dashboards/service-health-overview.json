@@ -249,7 +249,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "gRPC errors in last 5 minutes",
+      "description": "Failed outbound gRPC calls from the Python services in the last 5 minutes (grpc_client_errors_total). Counts unary calls and stream setup failures; errors in the middle of a stream are not counted (#1426).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -309,7 +309,7 @@
           "refId": "A"
         }
       ],
-      "title": "gRPC Errors (5m)",
+      "title": "gRPC client errors (5m, Python outbound unary calls)",
       "type": "stat"
     },
     {
@@ -1340,7 +1340,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "gRPC error rate by service",
+      "description": "Failed outbound gRPC calls per second from the Python services, by callee service (the service label is the service being called, not the caller). Errors in the middle of a stream are not counted (#1426).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1419,11 +1419,11 @@
             "uid": "prometheus"
           },
           "expr": "sum by(service) (rate(grpc_client_errors_total[1m]))",
-          "legendFormat": "{{job}}",
+          "legendFormat": "{{service}}",
           "refId": "A"
         }
       ],
-      "title": "gRPC Error Rate",
+      "title": "gRPC client errors (Python outbound unary calls)",
       "type": "timeseries"
     },
     {
@@ -1527,7 +1527,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Error rate of outbound gRPC client calls by service, method, and status code",
+      "description": "Failed outbound gRPC calls per second from the Python services, by callee service, method and status code (the service label is the callee).",
       "fieldConfig": {
         "defaults": {
           "color": {

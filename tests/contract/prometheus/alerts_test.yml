@@ -277,3 +277,29 @@ tests:
             exp_annotations:
               summary: "Game loop running below its configured rate"
               description: "Game game_a (primary) loop is running at 50Hz, below 90% of the configured game_loop.update_frequency_hz."
+  # Two coordinators: each game is compared with ITS coordinator's rate. The real
+  # coordinator runs 30 Hz and its primary game 29 Hz; agent-game-coordinator runs
+  # 60 Hz. Matching on(job) keeps the 30 Hz game quiet (a max() would fire).
+  - interval: 30s
+    input_series:
+      - series: 'game_current_update_frequency_hz{job="game-coordinator-service"}'
+        values: '30x20'
+      - series: 'game_current_update_frequency_hz{job="agent-game-coordinator-service"}'
+        values: '60x20'
+      - series: 'game_actual_update_frequency_hz{job="game-coordinator-service",game_kind="primary",game_id="game_a"}'
+        values: '29x20'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: LowGameLoopHz
+        exp_alerts: []
+  # Exact 90 % boundary: 27 Hz at 30 Hz configured is not below the threshold.
+  - interval: 30s
+    input_series:
+      - series: 'game_current_update_frequency_hz{job="game-coordinator"}'
+        values: '30x20'
+      - series: 'game_actual_update_frequency_hz{job="game-coordinator",game_kind="primary",game_id="game_a"}'
+        values: '27x20'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: LowGameLoopHz
+        exp_alerts: []
