@@ -87,7 +87,7 @@ onoff = {"on": True, "off": False}
 flags = {
     "enabled": f(onoff, "on"),
     "interventions_enabled": f(onoff, "on"),
-    "interventions_allowed": f({"none": "", "ambient": "play_audio_cue"}, "ambient"),
+    "interventions_allowed": f({"none": "", "probe": "noop", "ambient": "play_audio_cue"}, "ambient"),
     "rollout_enabled": f(onoff, "off"),
     "experiments_enabled": f(onoff, "off"),
     "decision.backend": f({"rules": "rules", "claude": "claude"}, "rules"),
@@ -190,6 +190,19 @@ check "missing blackhole variant fails" "FAIL  decision.jev.base_url has no blac
 fixture decision.backend=claude
 TALK_EXPECT_BACKEND=claude run_preflight
 check "TALK_EXPECT_BACKEND honoured" "PASS  decision.backend = claude"
+
+if has "allows no intervention"; then not_ok "remote backend + ambient does not warn"; else ok "remote backend + ambient does not warn"; fi
+
+# --- remote backend with nothing allowed (#1298) ----------------------------
+fixture decision.backend=claude interventions_allowed=none
+TALK_EXPECT_BACKEND=claude STUB_BUDGET=30 run_preflight
+check "remote backend + none warns" "WARN  decision.backend = claude but interventions_allowed = none (\"\") allows no intervention"
+fixture decision.backend=claude interventions_allowed=probe
+TALK_EXPECT_BACKEND=claude STUB_BUDGET=30 run_preflight
+check "remote backend + probe (noop only) warns" "WARN  decision.backend = claude but interventions_allowed = probe"
+fixture interventions_allowed=none
+STUB_BUDGET=30 run_preflight
+if has "allows no intervention"; then not_ok "rules backend + none does not warn"; else ok "rules backend + none does not warn"; fi
 
 # --- wrong flag dir + clock skew --------------------------------------------
 fixture

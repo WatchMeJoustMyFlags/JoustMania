@@ -196,6 +196,10 @@ type Loop struct {
 	// lastDecideAttempt is the time this game's most recent remote decide call was
 	// admitted (#1226): the decision.min_interval_ms cadence clock.
 	lastDecideAttempt time.Time
+	// skippingNoInterventions is true while this game's remote decide cycles are
+	// gated because the allow-list is empty (#1298). Guarded by llmGate; it only
+	// drives the log-on-state-change debug line.
+	skippingNoInterventions bool
 	// budget is the GLOBAL per-minute LLM request cap shared across ALL loops and
 	// the post-game retro (#847): llm.max_requests_per_minute bounds remote decide
 	// calls and retro calls together. It is injected via SetLLMBudget from the one instance main.go
@@ -669,6 +673,11 @@ func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, c gamecontex
 	if !snapshot.Decision.IsRules() {
 		return l.decideRemote(ctx, snapshot, c, trig)
 	}
+	// The remote call gate is not reached on rules: leave the empty-allow-list
+	// state so its "entering" debug line fires again on a later remote cycle (#1298).
+	l.llmGate.Lock()
+	l.noteNoInterventions(c, false)
+	l.llmGate.Unlock()
 	return l.rulesDecide(ctx, snapshot, c, flags.DecisionBackendRules, "")
 }
 
