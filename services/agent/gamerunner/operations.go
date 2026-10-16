@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
@@ -16,6 +18,7 @@ import (
 
 	mockpb "github.com/joustmania/agent/gen/controller_manager_mock"
 	gcpb "github.com/joustmania/agent/gen/game_coordinator"
+	"github.com/joustmania/agent/patterngame"
 )
 
 // ErrGameInProgress is the sentinel the coordinator's single-game cap surfaces:
@@ -39,15 +42,20 @@ func (r *Runner) reserveControllers(ctx context.Context, cl *clients, spec Spec)
 	defer cancel()
 
 	resp, err := cl.mock.AddControllers(rpcCtx, &mockpb.AddControllersRequest{
-		Count:    int32(spec.Players),
-		Reserved: true,
-		Tag:      spec.Tag(),
+		Count:      int32(spec.Players),
+		Reserved:   true,
+		Tag:        spec.Tag(),
+		PatternSet: spec.Pattern.ID, // "" = random noise (UC-046 A1)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("AddControllers: %w", err)
 	}
 	if !resp.GetSuccess() {
 		return nil, fmt.Errorf("AddControllers rejected: %s", resp.GetError())
+	}
+	if spec.IsPattern() && resp.GetPatternSetId() != spec.Pattern.ID {
+		return resp.GetSerials(), fmt.Errorf("AddControllers installed pattern %q, want %q",
+			resp.GetPatternSetId(), spec.Pattern.ID)
 	}
 	serials := resp.GetSerials()
 	if len(serials) != spec.Players {
@@ -139,13 +147,106 @@ func (r *Runner) missingControllers(ctx context.Context, cl *clients, want []str
 }
 
 // removeControllers removes each serial best-effort. Cleanup must not fail the
-// run, so errors are logged and swallowed.
-func (r *Runner) removeControllers(ctx context.Context, cl *clients, serials []string) {
+// run, so errors are logged and swallowed. For pattern controllers it returns the
+// replay records the controller manager answers with (UC-046 step 8).
+func (r *Runner) removeControllers(ctx context.Context, cl *clients, serials []string) []patterngame.SlotRecord {
+	var slots []patterngame.SlotRecord
 	for _, serial := range serials {
-		_, err := cl.mock.RemoveController(ctx, &mockpb.RemoveControllerRequest{Serial: serial})
+		resp, err := cl.mock.RemoveController(ctx, &mockpb.RemoveControllerRequest{Serial: serial})
 		if err != nil {
 			r.log.Warn("shadow game cleanup: RemoveController failed", "serial", serial, "error", err)
+			continue
 		}
+		if resp.GetPatternSetId() != "" {
+			slots = append(slots, patterngame.SlotRecord{
+				Slot:            int(resp.GetPatternSlot()),
+				Serial:          serial,
+				FramesDelivered: resp.GetFramesDelivered(),
+				SignalHash:      resp.GetSignalHash(),
+				Checkpoints:     resp.GetSignalCheckpoints(),
+				FrameOverruns:   resp.GetFrameOverruns(),
+			})
+		}
+	}
+	return slots
+}
+
+// withPatternPlayers sets Players to the set's slot count for a pattern game.
+func withPatternPlayers(spec Spec) Spec {
+	if spec.IsPattern() && spec.Pattern.SlotCount > 0 {
+		spec.Players = spec.Pattern.SlotCount
+	}
+	return spec
+}
+
+// registerPattern records a started pattern game with the tracker and returns the
+// channel that force-ends it (kill switch, UC-046 A12). nil for a noise game.
+func (r *Runner) registerPattern(spec Spec, gameID string, serials []string) <-chan struct{} {
+	if !spec.IsPattern() || r.tracker == nil {
+		return nil
+	}
+	abort := make(chan struct{})
+	var once sync.Once
+	r.tracker.Register(patterngame.Info{
+		GameID:       gameID,
+		Set:          spec.Pattern,
+		Seed:         spec.Seed,
+		Serials:      append([]string(nil), serials...),
+		FlagDigest:   spec.FlagDigest,
+		ExperimentID: spec.ExperimentID,
+		Arm:          spec.Arm,
+		PairIndex:    spec.PairIndex,
+		Abort:        func() { once.Do(func() { close(abort) }) },
+	})
+	r.tracker.CheckConcurrency(gameID)
+	return abort
+}
+
+// finishPattern turns the removed controllers' records into the game's replay record.
+func (r *Runner) finishPattern(spec Spec, gameID string, outcome Outcome, slots []patterngame.SlotRecord) (patterngame.Record, bool) {
+	if !spec.IsPattern() || r.tracker == nil || gameID == "" {
+		return patterngame.Record{}, false
+	}
+	return r.tracker.Finish(gameID, outcome == OutcomeCompleted, slots)
+}
+
+// addPatternGameEvent stamps the telemetry.md §9 experiment.pattern_game attributes.
+func addPatternGameEvent(span trace.Span, spec Spec, gameID string, serials []string) {
+	span.AddEvent("experiment.pattern_game", trace.WithAttributes(PatternGameAttributes(spec, gameID, serials)...))
+}
+
+// PatternGameAttributes are the attributes of experiment.pattern_game (telemetry.md §9).
+func PatternGameAttributes(spec Spec, gameID string, serials []string) []attribute.KeyValue {
+	return []attribute.KeyValue{
+		attribute.String("game.id", gameID),
+		attribute.String("experiment.arm", spec.Arm),
+		attribute.Int("experiment.pair_index", spec.PairIndex),
+		attribute.String("pattern.set", spec.Pattern.ID),
+		attribute.Int("pattern.set_version", spec.Pattern.Version),
+		attribute.String("game.rng_seed", fmt.Sprintf("%d", spec.Seed)),
+		attribute.Int("pattern.stream_rate_hz", spec.Pattern.StreamRateHz),
+		attribute.StringSlice("pattern.slot_serials", serials),
+		attribute.String("pattern.flag_digest", spec.FlagDigest),
+	}
+}
+
+// addPatternEndedEvent stamps experiment.pattern_game_ended on the run span.
+func addPatternEndedEvent(span trace.Span, rec patterngame.Record) {
+	span.AddEvent("experiment.pattern_game_ended", trace.WithAttributes(PatternEndedAttributes(rec)...))
+}
+
+// PatternEndedAttributes are the attributes of experiment.pattern_game_ended (telemetry.md §9).
+func PatternEndedAttributes(rec patterngame.Record) []attribute.KeyValue {
+	return []attribute.KeyValue{
+		attribute.String("game.id", rec.GameID),
+		attribute.String("pattern.set", rec.Set.ID),
+		attribute.IntSlice("pattern.elimination_order", rec.EliminationOrder),
+		attribute.Int("pattern.winner_slot", rec.WinnerSlot),
+		attribute.StringSlice("pattern.signal_hashes", rec.SignalHashes()),
+		attribute.Bool("pattern.replay_exact", rec.Exact()),
+		attribute.StringSlice("pattern.non_exact_reasons", rec.NonExactReasons),
+		attribute.StringSlice("pattern.decisions", rec.DecisionSequence()),
+		attribute.String("pattern.flag_digest", rec.FlagDigest),
 	}
 }
 
@@ -389,8 +490,10 @@ func (r *Runner) awaitTerminal(
 	cl *clients,
 	stream grpc.ServerStreamingClient[gcpb.GameEvent],
 	gameID string,
+	timeout time.Duration,
+	abort <-chan struct{},
 ) (terminal string, eventsSeen int, outcome Outcome) {
-	deadline := time.NewTimer(r.cfg.GameTimeout)
+	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 
 	// Recv blocks, so run it on a goroutine and select against the timeout.
@@ -426,11 +529,26 @@ func (r *Runner) awaitTerminal(
 				return terminal, eventsSeen, OutcomeForceEnded
 			}
 			r.log.Warn("shadow game timed out, force-ending", "game_id", gameID,
-				"timeout", r.cfg.GameTimeout)
+				"timeout", timeout)
 			r.forceEnd(ctx, cl, gameID)
 			forced = true
 			// Allow a short grace for the force-end terminal event to arrive.
 			deadline.Reset(r.cfg.RPCTimeout)
+		case <-abort:
+			// Kill switch (UC-046 A12): force-end now; a nil channel never fires.
+			abort = nil
+			if !forced {
+				r.log.Info("pattern game aborted, force-ending", "game_id", gameID)
+				r.forceEnd(ctx, cl, gameID)
+				forced = true
+				if !deadline.Stop() {
+					select {
+					case <-deadline.C:
+					default:
+					}
+				}
+				deadline.Reset(r.cfg.RPCTimeout)
+			}
 		case res := <-events:
 			if res.err == io.EOF {
 				// Stream closed without a terminal event; treat a prior

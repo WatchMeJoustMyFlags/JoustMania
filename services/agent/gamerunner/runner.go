@@ -37,6 +37,7 @@ import (
 
 	mockpb "github.com/joustmania/agent/gen/controller_manager_mock"
 	gcpb "github.com/joustmania/agent/gen/game_coordinator"
+	"github.com/joustmania/agent/patterngame"
 )
 
 // tracerName names the OTel tracer for shadow-game spans.
@@ -206,6 +207,28 @@ type Spec struct {
 	// nothing, byte-unchanged from before. Honored coordinator-side ONLY for a
 	// shadow session (the hard real-protection invariant, epic #982 decision 7).
 	Seed uint64
+
+	// Pattern, when Pattern.ID is set, makes this a pattern game (UC-046): the
+	// controllers are reserved with the set installed (Players = its slot count),
+	// the runner sends no SimulateMovement / SimulateDeath (BR-004), awaits the game
+	// for max_game_seconds + 15 s before force-ending it (A9), and builds the replay
+	// record from the controllers' RemoveController answers.
+	Pattern patterngame.SetInfo
+	// FlagDigest is UC-046 BR-011's digest of the flag files at spawn.
+	FlagDigest string
+	// PairIndex is the experiment pair (-1 / 0 for a one-shot game).
+	PairIndex int
+}
+
+// IsPattern reports whether the spec runs a pattern game.
+func (s Spec) IsPattern() bool { return s.Pattern.ID != "" }
+
+// gameTimeout is the await bound: the config timeout, or T + 15 s for a pattern game.
+func (s Spec) gameTimeout(def time.Duration) time.Duration {
+	if s.IsPattern() && s.Pattern.MaxGameSeconds > 0 {
+		return time.Duration(s.Pattern.MaxGameSeconds+patterngame.ForceEndGraceSeconds) * time.Second
+	}
+	return def
 }
 
 // Tag returns the reservation tag for this run's controllers.
@@ -229,6 +252,8 @@ type Result struct {
 	EventsSeen int
 	// Duration is wall-clock time from start to terminal/cleanup.
 	Duration time.Duration
+	// Pattern is the replay record of a pattern game (nil otherwise).
+	Pattern *patterngame.Record
 }
 
 // dialer abstracts grpc.NewClient so tests can inject in-process connections.
@@ -254,6 +279,11 @@ func defaultDialer(target string) (grpc.ClientConnInterface, func() error, error
 // only ever called for an EXPERIMENT-bound game (StartExperimentGame).
 type TerminalCallback func(gameID string, outcome Outcome)
 
+// PatternCallback receives the replay record of a finished pattern game (UC-046
+// step 8). It is called after the controllers are removed and before the
+// TerminalCallback.
+type PatternCallback func(rec patterngame.Record)
+
 // Runner drives shadow games against a coordinator + mock control service.
 type Runner struct {
 	cfg    Config
@@ -263,7 +293,15 @@ type Runner struct {
 	// onTerminal, when set, is called once an experiment game reaches a terminal
 	// outcome. nil ⇒ no callback (the #778 one-shot runner does not use it).
 	onTerminal TerminalCallback
+	onPattern  PatternCallback
+	tracker    *patterngame.Tracker
 }
+
+// SetPatternCallback registers the UC-046 replay-record hook.
+func (r *Runner) SetPatternCallback(cb PatternCallback) { r.onPattern = cb }
+
+// SetTracker overrides the pattern-game tracker (tests); default patterngame.Default.
+func (r *Runner) SetTracker(t *patterngame.Tracker) { r.tracker = t }
 
 // New builds a Runner with the given config. log may be nil (slog.Default used).
 func New(cfg Config, log *slog.Logger) *Runner {
@@ -271,10 +309,11 @@ func New(cfg Config, log *slog.Logger) *Runner {
 		log = slog.Default()
 	}
 	return &Runner{
-		cfg:    cfg.withDefaults(),
-		log:    log,
-		tracer: otel.Tracer(tracerName),
-		dial:   defaultDialer,
+		cfg:     cfg.withDefaults(),
+		log:     log,
+		tracer:  otel.Tracer(tracerName),
+		dial:    defaultDialer,
+		tracker: patterngame.Default,
 	}
 }
 
@@ -330,8 +369,13 @@ func (r *Runner) RunShadowGame(ctx context.Context, spec Spec) (Result, error) {
 	if spec.GameName == "" {
 		return result, errors.New("gamerunner: spec.GameName is required")
 	}
+	spec = withPatternPlayers(spec)
 	if spec.Players < 2 {
 		return result, fmt.Errorf("gamerunner: spec.Players must be >= 2, got %d", spec.Players)
+	}
+	if spec.IsPattern() && spec.GameName != patterngame.SupportedMode {
+		return result, fmt.Errorf("gamerunner: %s: mode %s (pattern games are %s only)",
+			patterngame.DiscardModeUnsupported, spec.GameName, patterngame.SupportedMode)
 	}
 
 	ctx, span := r.tracer.Start(ctx, "agent.shadow_game.run", trace.WithAttributes(
@@ -398,8 +442,13 @@ func (r *Runner) StartExperimentGame(startCtx, driveCtx context.Context, spec Sp
 	if spec.GameName == "" {
 		return "", errors.New("gamerunner: spec.GameName is required")
 	}
+	spec = withPatternPlayers(spec)
 	if spec.Players < 2 {
 		return "", fmt.Errorf("gamerunner: spec.Players must be >= 2, got %d", spec.Players)
+	}
+	if spec.IsPattern() && spec.GameName != patterngame.SupportedMode {
+		return "", fmt.Errorf("gamerunner: %s: mode %s (pattern games are %s only)",
+			patterngame.DiscardModeUnsupported, spec.GameName, patterngame.SupportedMode)
 	}
 
 	cl, err := r.connect()
@@ -450,17 +499,23 @@ func (r *Runner) StartExperimentGame(startCtx, driveCtx context.Context, spec Sp
 		}()
 
 		defer cl.close()
+		abortCh := r.registerPattern(spec, gameID, serials)
 		defer func() {
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), r.cfg.RPCTimeout)
-			r.removeControllers(cleanupCtx, cl, serials)
+			slots := r.removeControllers(cleanupCtx, cl, serials)
 			cancel()
+			if rec, ok := r.finishPattern(spec, gameID, finalOutcome, slots); ok && r.onPattern != nil {
+				r.onPattern(rec)
+			}
 		}()
 
 		runDrive, stopDrive := context.WithCancel(driveCtx)
 		defer stopDrive()
-		go r.driveGame(runDrive, cl, serials)
+		if !spec.IsPattern() {
+			go r.driveGame(runDrive, cl, serials)
+		}
 
-		terminal, _, outcome := r.awaitTerminal(driveCtx, cl, stream, gameID)
+		terminal, _, outcome := r.awaitTerminal(driveCtx, cl, stream, gameID, spec.gameTimeout(r.cfg.GameTimeout), abortCh)
 		finalOutcome = outcome
 		stopDrive()
 		r.log.Debug("experiment shadow game finished",
@@ -474,8 +529,8 @@ func (r *Runner) StartExperimentGame(startCtx, driveCtx context.Context, spec Sp
 // run is the core flow, assuming clients are connected. Cleanup of reserved
 // controllers is unconditional (deferred) so an error after reservation never
 // leaks controllers.
-func (r *Runner) run(ctx context.Context, cl *clients, spec Spec, span trace.Span) (Result, error) {
-	result := Result{GameName: spec.GameName, Outcome: OutcomeError}
+func (r *Runner) run(ctx context.Context, cl *clients, spec Spec, span trace.Span) (result Result, err error) {
+	result = Result{GameName: spec.GameName, Outcome: OutcomeError}
 
 	// (a) Reserve mock controllers, hidden from the menu via reserved+tag.
 	serials, err := r.reserveControllers(ctx, cl, spec)
@@ -489,13 +544,21 @@ func (r *Runner) run(ctx context.Context, cl *clients, spec Spec, span trace.Spa
 
 	// ALWAYS remove the reserved controllers, success or failure. Uses a fresh
 	// context so cleanup still runs if ctx was cancelled (timeout / shutdown).
+	gameID := ""
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), r.cfg.RPCTimeout)
 		defer cancel()
-		r.removeControllers(cleanupCtx, cl, serials)
+		slots := r.removeControllers(cleanupCtx, cl, serials)
 		span.AddEvent("controllers_removed", trace.WithAttributes(
 			attribute.Int("shadow_game.removed_count", len(serials)),
 		))
+		if rec, ok := r.finishPattern(spec, gameID, result.Outcome, slots); ok {
+			result.Pattern = &rec
+			addPatternEndedEvent(span, rec)
+			if r.onPattern != nil {
+				r.onPattern(rec)
+			}
+		}
 	}()
 
 	// (b+c) Headless start + capture game_id from the first stamped event.
@@ -505,15 +568,22 @@ func (r *Runner) run(ctx context.Context, cl *clients, spec Spec, span trace.Spa
 	}
 	result.GameID = gameID
 	r.log.Debug("shadow game started", "run_id", spec.RunID, "game_id", gameID, "mode", spec.GameName)
+	abortCh := r.registerPattern(spec, gameID, serials)
+	if spec.IsPattern() {
+		addPatternGameEvent(span, spec, gameID, serials)
+	}
 
 	// (d) Drive the game to its win condition in the background while (e) we
-	// await the terminal event on the stream.
+	// await the terminal event on the stream. A pattern game is never driven:
+	// its players die organically (UC-046 BR-004).
 	driveCtx, stopDrive := context.WithCancel(ctx)
 	defer stopDrive()
-	go r.driveGame(driveCtx, cl, serials)
+	if !spec.IsPattern() {
+		go r.driveGame(driveCtx, cl, serials)
+	}
 
 	// (e) Await a terminal event; force-end on timeout.
-	terminal, eventsSeen, outcome := r.awaitTerminal(ctx, cl, stream, gameID)
+	terminal, eventsSeen, outcome := r.awaitTerminal(ctx, cl, stream, gameID, spec.gameTimeout(r.cfg.GameTimeout), abortCh)
 	result.EventsSeen = eventsSeen
 	result.TerminalEvent = terminal
 	result.Outcome = outcome
