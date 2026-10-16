@@ -1,0 +1,83 @@
+# JoustMania documentation: start here
+
+JoustMania uses **spec-driven development** with the AI Unified Process (AIUP): the documents in sections 1
+to 4 are the source of truth, and code and tests follow from them. Change the spec first; see
+[CONTRIBUTING § Spec-driven development](CONTRIBUTING.md#spec-driven-development-aiup).
+
+## 1. Why: vision
+
+| Document | What it answers |
+|---|---|
+| [vision.md](vision.md) | What JoustMania is, for whom, the party-game vision and the talk |
+| [NORTHSTAR.md](NORTHSTAR.md) | Where the self-improving agent is heading, authority tiers, hard constraints (authoritative) |
+| [OWNERSHIP_MODEL.md](OWNERSHIP_MODEL.md) | Who owns which setting: human admin vs agent (authoritative contract) |
+
+## 2. What: requirements and domain
+
+| Document | What it answers |
+|---|---|
+| [requirements.md](requirements.md) | Every functional requirement (FR), measurable quality (NFR) and constraint (C), with status |
+| [entity_model.md](entity_model.md) | Domain entities: controller, game session, player, flag, decision, intervention, experiment, rollout |
+
+## 3. How it behaves: use cases
+
+[use_cases.puml](use_cases.puml) is the overview diagram (render it with PlantUML). One file per use case:
+
+| Area | Use cases |
+|---|---|
+| Pairing and controllers | [UC-001](use_cases/UC-001.md) pair over USB, [UC-002](use_cases/UC-002.md) connect and join, [UC-003](use_cases/UC-003.md) mock controllers |
+| Lobby and admin | [UC-010](use_cases/UC-010.md) ready up and start, [UC-011](use_cases/UC-011.md) select mode, [UC-012](use_cases/UC-012.md) admin settings, [UC-013](use_cases/UC-013.md) agent kill switch on the controller, [UC-014](use_cases/UC-014.md) force start |
+| Playing | [UC-020](use_cases/UC-020.md) FFA, [UC-021](use_cases/UC-021.md) teams, [UC-022](use_cases/UC-022.md) hidden roles, [UC-023](use_cases/UC-023.md) zombies, [UC-024](use_cases/UC-024.md) swapper, [UC-025](use_cases/UC-025.md) 1v1, [UC-026](use_cases/UC-026.md) non-stop, [UC-027](use_cases/UC-027.md) force end, [UC-030](use_cases/UC-030.md) death detection, [UC-031](use_cases/UC-031.md) audio |
+| Observability | [UC-035](use_cases/UC-035.md) observe the system |
+| Agent | [UC-040](use_cases/UC-040.md) decide an intervention, [UC-041](use_cases/UC-041.md) observe a game, [UC-042](use_cases/UC-042.md) retro and proposals, [UC-043](use_cases/UC-043.md) shadow experiments and promotion, [UC-044](use_cases/UC-044.md) switch backend live, [UC-045](use_cases/UC-045.md) kill switch |
+| Infrastructure | [UC-050](use_cases/UC-050.md) progressive rollout, [UC-051](use_cases/UC-051.md) automatic rollback, [UC-052](use_cases/UC-052.md) manual canary and chaos |
+| Talk | [UC-070](use_cases/UC-070.md) present the demo |
+
+## 4. Exact contracts: technical specs
+
+| Document | What it answers |
+|---|---|
+| [specs/services.md](specs/services.md) | Services, ports, every gRPC RPC, HTTP endpoints, dependencies |
+| [specs/flags.md](specs/flags.md) | Every flag: type, variants, default, readers, writers, reload behaviour |
+| [specs/telemetry.md](specs/telemetry.md) | Span names, attributes, metrics, game events, log lines others depend on |
+| [specs/decide-contract.md](specs/decide-contract.md) | The decision backend contract: questions, validation, confidence, outcomes, fallbacks |
+| [specs-inventory.md](specs-inventory.md) | Every older doc's status and the **discrepancies found** between docs and code |
+
+## 5. How to: guides and runbooks
+
+| Document | Use it to |
+|---|---|
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Set up, follow the spec-first workflow, pass CI |
+| [DEVELOPMENT.md](DEVELOPMENT.md) | Build, run and debug (partly stale, see the inventory) |
+| [DOCKER_WORKFLOW.md](DOCKER_WORKFLOW.md) | Compose and image workflow (partly stale) |
+| [hardware-setup-guide.md](hardware-setup-guide.md), [25-controller-setup.md](25-controller-setup.md) | Set up a Pi 5 with many controllers |
+| [controller-guide.md](controller-guide.md) | Player button reference (stale; the use cases are authoritative) |
+| [CONTROLLER_CONNECTIVITY.md](CONTROLLER_CONNECTIVITY.md) | Troubleshoot Bluetooth (stale) |
+| [AUDIO.md](AUDIO.md) | Audio setup |
+| [observability-quickstart.md](observability-quickstart.md) | Performance tooling (stale metric names) |
+| [CANARY_RUNBOOK.md](CANARY_RUNBOOK.md) | Manual backend canary |
+| [architecture/controller-backends.md](architecture/controller-backends.md) | Controller-manager backend layering |
+| [agent-act-runbook.md](agent-act-runbook.md) | Take the agent from inert to acting |
+| [agent-demo-runbook.md](agent-demo-runbook.md) | Run the three-act demo |
+| [agent-dry-run-runbook.md](agent-dry-run-runbook.md) | Run the experiment loop as a dry run |
+| [agent-inference.md](agent-inference.md) | Configure model backends and keys |
+| [agent-trace-viz.md](agent-trace-viz.md) | Show agent traces on stage |
+| Talk runbook | `docs/talk/two-standards-runbook.md`, in PR #1256 |
+
+Service READMEs (`services/*/README.md`) hold code-level detail; where they disagree with the specs, the
+specs win and the [inventory](specs-inventory.md#3-service-tool-and-test-docs) records the difference.
+
+## 6. Why it is like this: research and design history
+
+Kept for the reasoning; they do not describe the current system.
+
+| Document | Topic |
+|---|---|
+| [design/agent-experiment-cohorts.md](design/agent-experiment-cohorts.md) | Cohort experiment framework design (#982) |
+| [research/722-intervention-surface.md](research/722-intervention-surface.md) | Intervention vocabulary |
+| [research/739-prompt-capture.md](research/739-prompt-capture.md) | In-game prompt capture spike (retired) |
+| [research/774-shadow-games.md](research/774-shadow-games.md) | Shadow games |
+| [research/844-post-game-retro.md](research/844-post-game-retro.md) | Post-game retro |
+| [research/m7-4-testing-strategy.md](research/m7-4-testing-strategy.md) | Testing propose / validate / promote |
+| [research/spike-survival-calibration-1125.md](research/spike-survival-calibration-1125.md) | Fitness calibration |
+| [CADDY_PROXY.md](CADDY_PROXY.md), [controller-feedback.md](controller-feedback.md), [led-feedback.md](led-feedback.md), [ARCHITECTURE.md](ARCHITECTURE.md) | Superseded docs (bannered) |

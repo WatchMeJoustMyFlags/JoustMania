@@ -1,3 +1,5 @@
+> **Superseded** by [docs/specs/telemetry.md](../../../docs/specs/telemetry.md#32-game-coordinator) (2026-10-16); kept for history.
+
 # Per-Player OpenTelemetry Tracing
 
 ## Overview

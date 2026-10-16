@@ -1,3 +1,5 @@
+> **Superseded** by [docs/specs/services.md](../docs/specs/services.md#3-grpc-services-36-rpcs) for the RPC inventory; the generation steps here still apply (2026-10-16); kept for history.
+
 # JoustMania Protocol Buffer Schemas
 
 This directory contains all protocol buffer (protobuf) schemas for the JoustMania microservices architecture. It serves as the **single source of truth** for all gRPC service contracts.

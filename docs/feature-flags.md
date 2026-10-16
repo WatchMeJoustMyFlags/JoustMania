@@ -1,3 +1,5 @@
+> **Superseded** by [docs/specs/flags.md](specs/flags.md) for the flag catalog; the architecture prose here is still useful background (2026-10-16); kept for history.
+
 # Feature Flags with Event-Driven Updates
 
 ## Overview

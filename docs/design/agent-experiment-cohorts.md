@@ -1,3 +1,5 @@
+> **Superseded** by [UC-043](../use_cases/UC-043.md), [entity_model.md](../entity_model.md#experiment) and [flags.md](../specs/flags.md#3-agent) (the design shipped in epic #982) (2026-10-16); kept for history.
+
 # Design: Agent Experiment / Cohort Attribution Framework
 
 **Status:** Design artifact (no implementation) — accompanies epic #982, sub-issues #975–#983.
