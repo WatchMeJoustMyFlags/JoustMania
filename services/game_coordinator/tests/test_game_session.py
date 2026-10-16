@@ -696,6 +696,74 @@ class TestGameDurationGaugeLive:
         assert recorded and recorded[-1][0] == game_coordinator_pb2.GameState.ENDED
 
 
+class TestGameDurationGaugeTickerFailure:
+    """#1305 M2: a failing duration ticker never turns a finished game into game_error."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-041", flow="main", br=["BR-003"])
+    @patch("services.game_coordinator.game_session.DURATION_GAUGE_INTERVAL_S", 0.01)
+    @patch("services.game_coordinator.game_session.metrics")
+    @patch("services.game_coordinator.game_session.GameFactory")
+    @patch("services.game_coordinator.game_session.tracer")
+    async def test_ticker_set_raising_still_ends_game_with_final_value(
+        self, mock_tracer_mod, mock_factory, mock_metrics
+    ):
+        """UC-041 BR-003: live sets raise, the game still ends normally and the final value is set."""
+        session = _make_session()
+        session.game_running = True
+        session.game_start_time = time.time() - 5.0
+        mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
+        mock_factory.create_game.return_value = TestGameDurationGaugeLive._game_that_runs(session)
+        attempts = []
+        final_values = []
+
+        def flaky_set(value):
+            attempts.append(session.game_state)
+            if session.game_state == game_coordinator_pb2.GameState.RUNNING:
+                raise RuntimeError("exporter exploded")
+            final_values.append(value)
+
+        mock_metrics.game_duration_seconds.labels.return_value.set.side_effect = flaky_set
+
+        await session._run_game_loop_async()
+
+        assert attempts.count(game_coordinator_pb2.GameState.RUNNING) >= 2, "ticker must keep running after a failure"
+        published = [c.args[0] for c in session.event_bus.publish.call_args_list]
+        assert "game_error" not in published
+        assert len(final_values) == 1 and final_values[0] >= 5.0
+        assert session.game_state == game_coordinator_pb2.GameState.ENDED
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-041", flow="main", br=["BR-003"])
+    @patch("services.game_coordinator.game_session.metrics")
+    @patch("services.game_coordinator.game_session.GameFactory")
+    @patch("services.game_coordinator.game_session.tracer")
+    async def test_ticker_crash_is_not_reported_as_game_error(self, mock_tracer_mod, mock_factory, mock_metrics):
+        """UC-041 BR-003: even a ticker that dies outright is logged, not published as game_error."""
+        session = _make_session()
+        mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
+        ticker_ran = []
+
+        async def run():
+            await asyncio.sleep(0.02)  # let the ticker start and die first
+
+        game = MagicMock()
+        game.run = run
+        mock_factory.create_game.return_value = game
+
+        async def crashing_ticker():
+            ticker_ran.append(True)
+            raise RuntimeError("ticker died")
+
+        with patch.object(session, "_publish_duration_while_running", crashing_ticker):
+            await session._run_game_loop_async()
+
+        assert ticker_ran, "the crashing ticker must actually have run"
+        published = [c.args[0] for c in session.event_bus.publish.call_args_list]
+        assert "game_error" not in published
+        mock_metrics.game_duration_seconds.labels.return_value.set.assert_called()
+
+
 class TestGameSessionForceEnd:
     @pytest.mark.asyncio
     async def test_force_end_no_game(self):

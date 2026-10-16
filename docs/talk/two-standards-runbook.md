@@ -273,6 +273,22 @@ Say "around 0.7 near the threshold", and measure it in rehearsal (section 9). Th
 `decision.act_confidence_threshold` (default 0.8) governs claude and openai
 only; it moves Jev's bar only when Jev's flag is `inherit`.
 
+**Duration-driven decisions (#1305).** Since #1305 the agent sees the real elapsed game time (before, `elapsed_s` was 0 for the whole game), so the
+duration-gated rules fire in real games. With the defaults (accelerate target 60 s, endurance minimum 120 s,
+variance window 10 s):
+
+| Elapsed | Rule | Intervention | Needs |
+|---|---|---|---|
+| under 120 s, with eliminations | R1 / R2 endurance | slow the tempo / calming audio cue | `standard` (tempo), `ambient` (cue) |
+| from 10 s | R8 statue | controller effect on a player with near-zero movement variance (held mock controllers) | `ambient` |
+| after 60 s | R5 accelerate | speed up the tempo | `standard` |
+| after 90 s (3+ players) | R6 accelerate | eliminate the least-moving player | `full` |
+| after 120 s, accelerate dominant | R7 accelerate | end the game | `full` |
+
+Jev and Claude also get the real `elapsed_s` now, so their pacing answers can change after 60/90/120 s.
+`full` (and `shadow_experimental`) lets the agent eliminate players and end the game: do not leave it set on a
+real game unless that is the point of the beat.
+
 ---
 
 ## 2. Talk timing (30-minute slot, about 15 minutes live)

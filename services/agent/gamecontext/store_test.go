@@ -660,6 +660,55 @@ func TestStore_ElapsedDuration(t *testing.T) {
 		}
 	})
 
+	t.Run("UC-041/A3 elapsed never steps back when a lagging gauge returns", func(t *testing.T) {
+		clk, s := start()
+		clk.advance(10 * time.Second)
+		if got := duration(t, s.Snapshot()); got != 10 {
+			t.Fatalf("elapsed = %v, want 10 (fallback)", got)
+		}
+		// A fresh gauge arrives one export interval behind the derived value.
+		s.ApplyMetrics(metricsWith(metricDuration, 9, nil))
+		if got := duration(t, s.Snapshot()); got != 10 {
+			t.Fatalf("elapsed = %v, want 10 (high-water mark, not the lagging 9)", got)
+		}
+		clk.advance(2 * time.Second)
+		s.ApplyMetrics(metricsWith(metricDuration, 11.5, nil))
+		if got := duration(t, s.Snapshot()); got != 11.5 {
+			t.Fatalf("elapsed = %v, want 11.5 (gauge has overtaken the mark)", got)
+		}
+	})
+
+	t.Run("UC-041/BR-003 game end uses the start-end bracket over a short live gauge", func(t *testing.T) {
+		clk, s := start()
+		var ended *GameContext
+		s.OnGameEnd = func(gc GameContext) { ended = &gc }
+		clk.advance(45 * time.Second)
+		// The final set lost the race: only the last live value (44) was seen.
+		s.ApplyMetrics(metricsWith(metricDuration, 44, nil))
+		s.ApplyMetrics(metricsWith(metricGameActive, 0, nil))
+		if ended == nil {
+			t.Fatal("OnGameEnd did not fire")
+		}
+		if got := duration(t, *ended); got != 45 {
+			t.Fatalf("end snapshot elapsed = %v, want the 45s bracket", got)
+		}
+		if got := duration(t, s.Snapshot()); got != 45 {
+			t.Fatalf("post-game snapshot elapsed = %v, want 45 (consumers agree)", got)
+		}
+	})
+
+	t.Run("UC-041/A3 a new game resets the high-water mark", func(t *testing.T) {
+		clk, s := start()
+		clk.advance(50 * time.Second)
+		_ = s.Snapshot() // mark at 50
+		s.ApplyMetrics(metricsWith(metricGameActive, 0, nil))
+		s.ApplyMetrics(metricsWith(metricGameActive, 1, nil))
+		clk.advance(3 * time.Second)
+		if got := duration(t, s.Snapshot()); got != 3 {
+			t.Fatalf("elapsed = %v, want 3 (new game, mark reset)", got)
+		}
+	})
+
 	t.Run("UC-041/A3 a new game restarts the fallback clock", func(t *testing.T) {
 		clk, s := start()
 		clk.advance(20 * time.Second)

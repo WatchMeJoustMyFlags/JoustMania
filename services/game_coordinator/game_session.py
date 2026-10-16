@@ -253,9 +253,17 @@ class GameSession:
         elapsed time of 0 for the whole game. Runs for real and shadow sessions
         alike; cancelled by the game loop when ``game.run()`` returns.
         """
+        warned = False
         while self.game_running:
             if self.game_state == game_coordinator_pb2.GameState.RUNNING:
-                self._set_duration_gauge()
+                try:
+                    self._set_duration_gauge()
+                except Exception as e:
+                    # A metrics failure must not stop the ticker or fail the game;
+                    # warn once per game, then keep trying quietly.
+                    log = logger.debug if warned else logger.warning
+                    log(f"Could not update game_duration_seconds for game {self.game_id}: {e}")
+                    warned = True
             await asyncio.sleep(DURATION_GAUGE_INTERVAL_S)
 
     def on_event_state_sync(self, event_type: str) -> None:
@@ -487,8 +495,13 @@ class GameSession:
                     await game.run()
                 finally:
                     duration_ticker.cancel()
-                    with suppress(asyncio.CancelledError):
+                    try:
                         await duration_ticker
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception as e:
+                        # Telemetry must never turn a finished game into game_error.
+                        logger.warning(f"Duration ticker for game {self.game_id} failed: {e}")
                 logger.info(f"{self.game_name} game completed")
 
             except Exception as e:
@@ -537,7 +550,10 @@ class GameSession:
                         game_kind=self.game_kind,
                     ).inc()
                 # Final value: the gauge holds the whole game's duration at end.
-                self._set_duration_gauge()
+                try:
+                    self._set_duration_gauge()
+                except Exception as e:
+                    logger.warning(f"Could not set final game_duration_seconds for game {self.game_id}: {e}")
 
                 # Cleanup channels
                 await self.clients.close()

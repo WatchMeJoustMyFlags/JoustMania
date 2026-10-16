@@ -163,9 +163,10 @@ Renaming any of these breaks the agent silently: update this table and the extra
 **Elapsed game time.** The agent's in-game elapsed time (`elapsed_s` in the decide state, `duration` in the rules
 and the `agent.evaluate` log line) is `game_duration_seconds` while that gauge is fresh, i.e. its value advanced
 within the last 5 s. When the gauge is missing or stale during an active game, the agent derives the elapsed time
-from when it saw `game_active` go 0 → 1, never going below the last gauge value. Once the game is no longer active
-the observed gauge is used unchanged (UC-041 A3, BR-003; `services/agent/gamecontext/store.go`
-`effectiveDurationLocked`).
+from when it saw `game_active` go 0 → 1, never going below the last gauge value. Within a game the value never
+decreases. At game end the duration every game-end consumer (experiment conclusion, retro, summary, proposer) sees is
+the larger of the gauge and the agent's own start → end time, because the coordinator's final set can arrive after
+`game_active` 0 (UC-041 A3, BR-003; `services/agent/gamecontext/store.go` `effectiveDurationLocked`).
 
 **Traceability:** FR-040 to FR-049, FR-056, FR-063, FR-071, FR-072 / UC-040 to UC-045, UC-050, UC-051 / `services/agent/decision/`, `services/agent/experiment/`, `services/agent/gamecontext/` / `services/agent/decision/*_test.go` (trace_link, signal_telemetry, gameplay_phase_parent), `tests/integration/test_decide_backend_e2e.py`, `tests/integration/test_experiment_cohort_loop.py`.
 

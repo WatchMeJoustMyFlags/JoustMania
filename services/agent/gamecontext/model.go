@@ -84,7 +84,10 @@ type SessionSignals struct {
 	// ~1 Hz while the game is RUNNING and sets the final value at game end, #1305).
 	// While the game is active, Snapshot() falls back to the time since StartedAt
 	// when the gauge is missing or has not advanced for durationStaleAfter (see
-	// Store.effectiveDurationLocked), so in-game consumers never see a stuck 0.
+	// Store.effectiveDurationLocked), so in-game consumers never see a stuck 0;
+	// the in-game value never decreases within a game. In the game-end snapshot it
+	// is the larger of the gauge and the agent's own start->end bracket, so every
+	// game-end consumer sees the same duration.
 	DurationSeconds *float64
 
 	// StartedAt is when the agent saw this session's game_active go 0 -> 1 (agent

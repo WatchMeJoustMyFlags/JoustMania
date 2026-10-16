@@ -26,6 +26,10 @@ type Store struct {
 	// the value is frozen, so arrival time alone cannot tell a live gauge from a
 	// stuck one; the value advancing can.
 	durationAdvancedAt time.Time
+	// elapsedHighWater is the largest in-game elapsed value a snapshot has carried
+	// for the current game (#1305), so elapsed never decreases within a game. Reset
+	// when a new game starts and on session-grace exit.
+	elapsedHighWater float64
 
 	// history is the bounded per-partition rolling narrative (#916): a fixed-
 	// capacity ring buffer of timestamped state deltas, eliminations, and phase
@@ -414,27 +418,52 @@ func (s *Store) SetSessionDuration(v float64) {
 // (#1305). While the game is active the game_duration_seconds gauge wins when it
 // is fresh (advanced within durationStaleAfter); when it is missing or stale and a
 // start was observed, the elapsed time is derived from StartedAt (never below a
-// stale gauge value). Outside an active game the observed gauge is returned
-// unchanged, so the game-end snapshot carries the coordinator's final value.
-// Caller holds s.mu.
+// stale gauge value). A per-game high-water mark keeps the in-game value
+// monotonic, so switching from the derived value back to a fresh gauge that lags
+// it by an export interval never steps elapsed backwards.
+//
+// Once the game has ended, the value is the larger of the observed gauge and the
+// agent's own start->end bracket (endedAt - StartedAt): the coordinator's final set
+// can lose the race against game_active=0, leaving only the last live (short)
+// value, and every game-end consumer (experiment conclusion, retro, summary,
+// proposer) reads this one snapshot, so they all agree. Outside a bracketed game
+// the observed gauge is returned unchanged. Caller holds s.mu.
 func (s *Store) effectiveDurationLocked() *float64 {
 	sess := s.ctx.Session
+	if sess.StartedAt.IsZero() {
+		return sess.DurationSeconds
+	}
 	active := sess.GameActive != nil && *sess.GameActive
-	if !active || sess.StartedAt.IsZero() {
-		return sess.DurationSeconds
+	if !active {
+		if s.endedAt.IsZero() {
+			return sess.DurationSeconds
+		}
+		bracket := s.endedAt.Sub(sess.StartedAt).Seconds()
+		if bracket <= 0 || (sess.DurationSeconds != nil && *sess.DurationSeconds >= bracket) {
+			return sess.DurationSeconds
+		}
+		return ptr(bracket)
 	}
+
 	now := s.now()
-	if sess.DurationSeconds != nil && now.Sub(s.durationAdvancedAt) <= durationStaleAfter {
-		return sess.DurationSeconds
+	var elapsed float64
+	switch {
+	case sess.DurationSeconds != nil && now.Sub(s.durationAdvancedAt) <= durationStaleAfter:
+		elapsed = *sess.DurationSeconds
+	default:
+		elapsed = now.Sub(sess.StartedAt).Seconds()
+		if sess.DurationSeconds != nil && *sess.DurationSeconds > elapsed {
+			elapsed = *sess.DurationSeconds
+		}
 	}
-	derived := now.Sub(sess.StartedAt).Seconds()
-	if derived < 0 {
-		derived = 0
+	if elapsed < s.elapsedHighWater {
+		elapsed = s.elapsedHighWater
 	}
-	if sess.DurationSeconds != nil && *sess.DurationSeconds > derived {
-		return sess.DurationSeconds
+	if elapsed < 0 {
+		elapsed = 0
 	}
-	return ptr(derived)
+	s.elapsedHighWater = elapsed
+	return ptr(elapsed)
 }
 
 // SetActivePlayerCount records the active player count.
@@ -511,6 +540,7 @@ func (s *Store) SetGameActive(active bool) {
 		s.ctx.Session.DurationSeconds = nil
 		s.ctx.Session.StartedAt = s.now()
 		s.durationAdvancedAt = time.Time{}
+		s.elapsedHighWater = 0
 		s.elimOrder = make(map[string]int)
 		s.endedAt = time.Time{}
 		// New session: clear the prior game's narrative and open the new one with a
@@ -861,6 +891,7 @@ func (s *Store) EvictStale() {
 	if !s.endedAt.IsZero() && now.Sub(s.endedAt) > sessionGrace {
 		s.ctx.Session = SessionSignals{GameActive: ptr(false)}
 		s.durationAdvancedAt = time.Time{}
+		s.elapsedHighWater = 0
 		s.ctx.SessionID = ""
 		s.ctx.GameKind = ""
 		s.ctx.ExperimentID = ""
