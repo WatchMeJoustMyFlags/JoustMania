@@ -172,7 +172,11 @@ type Loop struct {
 	// mu guards the log-throttle state and lastLayer below.
 	mu      sync.Mutex
 	lastLog time.Time
-	now     func() time.Time
+	// lastQuietFallback throttles the agent.decide span of a same-cycle fallback
+	// on which the rules emitted nothing (emitQuietFallback). Its own timestamp,
+	// so the evaluate log line does not use up the window.
+	lastQuietFallback time.Time
+	now               func() time.Time
 	// throttle bounds how often the evaluate log line and agent.disabled span are
 	// emitted. The STATIC fallback value, set via SetThrottle; a zero value means
 	// DefaultThrottleInterval. Used only when throttleSource is nil.
@@ -570,7 +574,12 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 	// arriving but nothing fires" distinguishable from "metrics aren't arriving".
 	if len(decisions) == 0 {
 		l.recordEvaluation(ctx, trig.Signal, "idle")
-		l.setLastLayer(state) // no decision, no trace
+		// A same-cycle fallback is still recorded when the rules then emit nothing
+		// (UC-040 A3, decide contract §7), throttled; otherwise no decision, no trace.
+		if decideRec != nil && decideRec.fallbackReason != "" {
+			l.emitQuietFallback(ctx, decideRec, c, trig)
+		}
+		l.setLastLayer(state)
 		return state
 	}
 	l.recordEvaluation(ctx, trig.Signal, "decided")
@@ -920,6 +929,12 @@ func (l *Loop) batteryBlocks(snapshot flags.Snapshot, c gamecontext.GameContext,
 // OnEvaluate runs concurrently from the trace and metrics Export handler
 // goroutines.
 func (l *Loop) shouldLog() bool {
+	return l.throttleAllows(&l.lastLog)
+}
+
+// throttleAllows reports whether the throttle window since *last has elapsed
+// and, if so, moves *last to now. last must be a field guarded by l.mu.
+func (l *Loop) throttleAllows(last *time.Time) bool {
 	now := l.now
 	if now == nil {
 		now = time.Now
@@ -940,10 +955,10 @@ func (l *Loop) shouldLog() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	t := now()
-	if t.Sub(l.lastLog) < throttle {
+	if t.Sub(*last) < throttle {
 		return false
 	}
-	l.lastLog = t
+	*last = t
 	return true
 }
 

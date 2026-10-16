@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -293,9 +294,14 @@ func (l *Loop) decideRemote(ctx context.Context, snapshot flags.Snapshot, c game
 	requested := requestedBackend(snapshot)
 	backend, reason := l.decideBackends.Resolve(snapshot.Decision)
 	if backend == nil {
+		// Counted every cycle, like the eligibility and budget gates, so a
+		// misconfigured backend (e.g. JEV_API_KEY missing) shows up in metrics
+		// even while the rules engine is quiet.
+		l.recordGated(ctx, reason)
 		return l.rulesDecide(ctx, snapshot, c, requested, reason)
 	}
 	if !l.asyncEnabled() {
+		l.recordGated(ctx, DecideFallbackNotWired)
 		return l.rulesDecide(ctx, snapshot, c, requested, DecideFallbackNotWired)
 	}
 	if !l.remoteDecideAdmitted(snapshot, c) {
@@ -320,6 +326,31 @@ func (l *Loop) decideRemote(ctx context.Context, snapshot flags.Snapshot, c game
 	fired = true
 	l.launchDecideAsync(ctx, snapshot, backend, requested, c, trig)
 	return nil, nil
+}
+
+// emitQuietFallback records a same-cycle fallback on which the rules engine
+// emitted nothing (UC-040 A3, decide contract §7): an agent.decide span with
+// outcome=fallback and the fallback reason, under its own agent.signal_received
+// root like a decided cycle's, plus a log line. A decided cycle already carries
+// that span; without this a quiet cycle left no trace, so for example a missing
+// API key was invisible until a rule fired. Throttled to one per throttle window
+// (decision.throttle_seconds) because it can fire on every 10-60 Hz cycle; the
+// agent_llm_gated_total counter still counts every cycle.
+func (l *Loop) emitQuietFallback(ctx context.Context, rec *decideRecord, c gamecontext.GameContext, trig EvalTrigger) {
+	if !l.throttleAllows(&l.lastQuietFallback) {
+		return
+	}
+	level := slog.LevelDebug
+	switch rec.fallbackReason {
+	case DecideFallbackUnknownBackend, DecideFallbackUnavailable, DecideFallbackNotWired:
+		// Configuration problems: the requested backend can never decide.
+		level = slog.LevelWarn
+	}
+	l.Log.Log(ctx, level, "agent.decide.fallback", "session_id", c.SessionID,
+		"backend", rec.requested, "reason", rec.fallbackReason)
+	rootCtx, root := l.startSignalReceivedSpan(ctx, c, trig)
+	l.emitDecideSpan(rootCtx, rec, c)
+	root.End()
 }
 
 // DecideGateInterval is the agent_llm_gated_total reason (and debug log) for a
