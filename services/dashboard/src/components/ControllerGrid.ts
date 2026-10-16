@@ -31,7 +31,16 @@ export class ControllerGrid {
     this.container.innerHTML = `<div class="loading">${message}</div>`;
   }
 
-  render(controllers: GameplayData[], shields: ShieldStore | null = null, nowMs: number = Date.now()) {
+  /**
+   * `alive` overrides the alive/dead badge per serial: the followed shadow
+   * game's roster (UC-070 BR-005); without an entry the controller's team decides.
+   */
+  render(
+    controllers: GameplayData[],
+    shields: ShieldStore | null = null,
+    nowMs: number = Date.now(),
+    alive: ReadonlyMap<string, boolean> | null = null,
+  ) {
     if (this.isLoading) {
       this.isLoading = false;
       this.container.innerHTML = "";
@@ -60,7 +69,7 @@ export class ControllerGrid {
       }
 
       // Update card with new data
-      card.update(controller, shields?.get(controller.serial, nowMs) ?? null, nowMs);
+      card.update(controller, shields?.get(controller.serial, nowMs) ?? null, nowMs, alive?.get(controller.serial));
     }
 
     // Show empty state if no controllers

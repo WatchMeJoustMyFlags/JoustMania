@@ -13,6 +13,8 @@ import { AgentView } from "./components/AgentView.js";
 import { DecideStore, fetchAgentView, fetchDecideFeed } from "./agent.js";
 import { createPoller } from "./poller.js";
 import { ShieldStore } from "./shield.js";
+import { NO_FOLLOW, chooseFollow, followBanner, visibleTiles } from "./follow.js";
+import type { FollowState } from "./follow.js";
 import type { Poller } from "./poller.js";
 import type { GameplayData } from "./gen/controller_manager_pb.js";
 
@@ -36,6 +38,12 @@ const DECIDE_POLL_MS = 1500;
 const DECIDE_MAX_BACKOFF_MS = 10_000;
 const DECIDE_TIMEOUT_MS = 4000;
 
+// Poll cadence for the followed game (UC-070 BR-005, #1316): ListGames +
+// GetGameState on the game coordinator, two small unary calls. Decides whether
+// the dashboard follows a shadow game (no real game live) and which one.
+const FOLLOW_POLL_MS = 2000;
+const FOLLOW_TIMEOUT_MS = 3000;
+
 // State
 interface AppState {
   controllers: Map<string, GameplayData>;
@@ -57,6 +65,15 @@ const state: AppState = {
 
 // Agent shields per controller, from player_shielded game events (#1301)
 const shields = new ShieldStore();
+
+// The followed game (UC-070 BR-005): a live shadow game when no real game is.
+// Its shields come from its own event stream, kept apart from the real game's.
+let follow: FollowState = NO_FOLLOW;
+const shadowShields = new ShieldStore();
+let shadowStream: { gameId: string; abort: AbortController } | null = null;
+
+// agent.decide rows across polls; the follow poller tells it which game to describe.
+const decideStore = new DecideStore();
 
 // Components
 let controllerGrid: ControllerGrid;
@@ -101,6 +118,9 @@ async function init() {
 
   // Start polling the agent.decide spans (Jaeger), independently of Loki
   startDecidePolling();
+
+  // Start following the live game (real, else the newest live shadow game)
+  startFollowPolling();
 
   console.log("Dashboard initialized");
 }
@@ -163,7 +183,7 @@ async function startControllerStream() {
       state.totalPlayers = update.controllers.length;
 
       // Render controllers
-      controllerGrid.render(Array.from(state.controllers.values()), shields);
+      renderGrid();
       gameStatus.updatePlayerCount(state.totalPlayers, state.alivePlayers);
     }
   } catch (error) {
@@ -291,7 +311,7 @@ function startAgentPolling() {
 // query window (DecideStore), per-request timeout and backoff. Independent of the
 // Loki poll so either backend being down leaves the other panel live.
 function startDecidePolling() {
-  const store = new DecideStore();
+  const store = decideStore;
   decidePoller = createPoller({
     baseMs: DECIDE_POLL_MS,
     maxMs: DECIDE_MAX_BACKOFF_MS,
@@ -318,6 +338,88 @@ function startDecidePolling() {
   });
 
   decidePoller.poke();
+}
+
+// The controller tiles: the followed shadow game's players only, or everything
+// but the players of live shadow games (UC-070 BR-005, follow.ts).
+function renderGrid() {
+  const tiles = visibleTiles(Array.from(state.controllers.values()), follow);
+  const following = follow.shadowGameId !== "";
+  controllerGrid.render(
+    tiles.map((t) => t.controller),
+    following ? shadowShields : shields,
+    Date.now(),
+    following ? follow.shadowPlayers : null,
+  );
+}
+
+function renderFollowBanner() {
+  const banner = document.getElementById("follow-banner");
+  if (!banner) return;
+  const text = followBanner(follow);
+  banner.hidden = text === "";
+  banner.innerHTML = text
+    ? `<span class="decide-game decide-game-shadow">shadow</span> ${escapeText(text)}`
+    : "";
+}
+
+function escapeText(text: string): string {
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// Fold the followed shadow game's own events (shields, deaths) until it is no
+// longer followed. The primary stream never carries a shadow game's events.
+function followShadowEvents(gameId: string) {
+  shadowStream?.abort.abort();
+  shadowStream = null;
+  if (!gameId) return;
+  const abort = new AbortController();
+  const current = { gameId, abort };
+  shadowStream = current;
+  (async () => {
+    try {
+      for await (const event of gameClient.streamGameEvents({ gameId }, abort.signal)) {
+        shadowShields.apply(event);
+      }
+    } catch (error) {
+      if (!abort.signal.aborted) console.error("Shadow game event stream error:", error);
+    } finally {
+      // Ended on its own: the next follow poll reopens it if still followed.
+      if (shadowStream === current) shadowStream = null;
+    }
+  })();
+}
+
+function startFollowPolling() {
+  const tick = async () => {
+    if (!document.hidden) {
+      const abort = new AbortController();
+      const timer = setTimeout(() => abort.abort(), FOLLOW_TIMEOUT_MS);
+      try {
+        const [primary, list] = await Promise.all([
+          gameClient.getGameState({}, abort.signal),
+          gameClient.listGames(abort.signal),
+        ]);
+        follow = chooseFollow(primary.gameInfo, list.games ?? [], follow.shadowGameId);
+      } catch (error) {
+        console.error("Follow poll error:", error);
+        follow = NO_FOLLOW;
+      } finally {
+        clearTimeout(timer);
+      }
+      if (follow.shadowGameId !== (shadowStream?.gameId ?? "")) {
+        shadowShields.apply({ eventType: "game_ended", data: {} });
+        followShadowEvents(follow.shadowGameId);
+      }
+      decideStore.setFollow({ realGameLive: follow.realGameLive, followGameId: follow.shadowGameId });
+      renderFollowBanner();
+      if (state.isStreaming) renderGrid();
+    }
+    setTimeout(tick, FOLLOW_POLL_MS);
+  };
+  tick();
 }
 
 // Handle game events

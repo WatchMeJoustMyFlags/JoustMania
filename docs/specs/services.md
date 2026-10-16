@@ -50,7 +50,7 @@ coordinator and the mock control API to run shadow games, the named exception in
 | audio | Python | 50056 gRPC | 50056 via override | Music with tempo (separate process, soxr), 8 effect channels (miniaudio), ALSA | `services/audio/` |
 | agent | Go | 4317 OTLP gRPC (receiver); 13134 HTTP `/healthz`, `/experiments` | no | Observe via OTLP, decide, write interventions / rollout / experiment targeting, run experiments and promotion | `services/agent/` |
 | connect-proxy | Go | 8080 HTTP | no | Connect (browser) ↔ gRPC bridge; `/canary/*`, `/chaos/*` flag-file endpoints | `services/connect-proxy/` |
-| dashboard | TypeScript | 8080 HTTP (static-web-server) | no | SPA: controllers, Agent, Experiments, Metrics, Traces tabs | `services/dashboard/` |
+| dashboard | TypeScript | 8080 HTTP (static-web-server) | no | SPA: controllers, Agent, Experiments, Metrics, Traces tabs; follows the newest live shadow game when no real game is live (`ListGames`, `GetGameState`, `StreamGameEvents(game_id)`; UC-070 BR-005) | `services/dashboard/` |
 | envoy | config | 80 HTTP; 9901 admin | **80** | Single entry point / reverse proxy | `services/envoy/envoy.yaml` |
 | flagd | binary v0.16.0 | 8013 RPC eval, 8014 mgmt, 8015 sync | 8015 (8013 via override) | Serve the flag files | `docker-compose.yml:75-118` |
 | otel-collector | custom contrib build | 4317 / 4318 OTLP, 8889 Prometheus exporter | 4317, 8889 | Receive OTLP + container logs + host metrics; export to Jaeger, VictoriaMetrics, Prometheus, Loki, agent | `services/otel-collector/config.yaml` |
@@ -87,7 +87,7 @@ observability; still runs rust-hid and the pairing daemon, so the Pi reads real 
 | `StreamButtonEvents` | bidi stream | `ButtonEventStreamControl` → `ButtonEvent` | Button press / release events to the client; the client sends base LED colours and effects back | `proto/controller_manager.proto:11` |
 | `StreamGameplayData` | bidi stream | `GameplayStreamControl` → `GameplayDataUpdate` | Motion data at the requested rate; the client changes filters, colours and effects mid-stream | `proto/controller_manager.proto:15` |
 | `RenameController` | unary | `RenameControllerRequest` → `RenameControllerResponse` | Rename a controller (set custom human-readable name) | `proto/controller_manager.proto:18` |
-| `GetConnectedControllers` | unary | `GetConnectedControllersRequest` → `GetConnectedControllersResponse` | Query the controller manager's authoritative live roster on demand (#1153). Unlike the event-piggybacked connected_serials (only refreshed on the next CONNECT/DISCONNECT), this returns the current connected set synchronously so a client (the menu) can reconcile ghosts after a missed disconnect. | `proto/controller_manager.proto:24` |
+| `GetConnectedControllers` | unary | `GetConnectedControllersRequest` → `GetConnectedControllersResponse` | Query the controller manager's authoritative live roster on demand (#1153). Unlike the event-piggybacked connected_serials (only refreshed on the next CONNECT/DISCONNECT), this returns the current connected set synchronously so a client (the menu) can reconcile ghosts after a missed disconnect. Also read by `scripts/talk-preflight.sh` through envoy to count real controllers (UC-070 BR-006). | `proto/controller_manager.proto:24` |
 
 ### `controller_manager_mock.MockControllerService` (proto/controller_manager_mock.proto)
 
@@ -125,7 +125,7 @@ archetypes: the agent resolves and pins the parameters and passes them in `AddCo
 | `ForceEndGame` | unary | `ForceEndGameRequest` → `ForceEndGameResponse` | Force end current game | `proto/game_coordinator.proto:10` |
 | `StreamGameEvents` | server stream | `StreamEventsRequest` → `GameEvent` | Stream game events (deaths, scoring, etc.) If start_config is provided, starts a new game before streaming events. If start_config is empty, subscribes to current/upcoming game events. | `proto/game_coordinator.proto:15` |
 | `GetGameState` | unary | `GetGameStateRequest` → `GetGameStateResponse` | Get current game state (for testing/observability) | `proto/game_coordinator.proto:18` |
-| `ListGames` | unary | `ListGamesRequest` → `ListGamesResponse` | List all live game sessions (primary + shadow). Lets agents and tests enumerate concurrent games and learn their game_ids. | `proto/game_coordinator.proto:22` |
+| `ListGames` | unary | `ListGamesRequest` → `ListGamesResponse` | List all live game sessions (primary + shadow). Lets agents and tests enumerate concurrent games and learn their game_ids; the dashboard uses it to pick the shadow game it follows (UC-070 BR-005). | `proto/game_coordinator.proto:22` |
 
 ### `joustmania.menu.MenuService` (proto/menu.proto)
 

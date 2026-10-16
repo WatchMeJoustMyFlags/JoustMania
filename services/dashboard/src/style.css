@@ -1267,3 +1267,14 @@ body {
 .decide-game-real { background: rgba(33, 150, 243, 0.25); color: #cfe6ff; }
 .decide-game-shadow { background: rgba(255, 255, 255, 0.06); color: var(--text-secondary); border: 1px dashed rgba(255, 255, 255, 0.35); }
 .decide-game-unknown { background: rgba(255, 255, 255, 0.06); color: var(--text-secondary); }
+
+/* Screen-only fallback (UC-070 A9, #1316): the followed shadow game above the tiles */
+.follow-banner {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border: 1px dashed rgba(255, 255, 255, 0.35);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+.follow-banner[hidden] { display: none; }

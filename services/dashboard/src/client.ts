@@ -17,6 +17,7 @@ import type {
   ProcessInputRequest,
   ProcessInputResponse,
 } from "./gen/menu_pb.js";
+import type { GetGameStateResponseLike, ListGamesResponseLike } from "./follow.js";
 
 const BASE_URL = import.meta.env.DEV ? "" : globalThis.location.origin;
 
@@ -24,7 +25,8 @@ const BASE_URL = import.meta.env.DEV ? "" : globalThis.location.origin;
 async function unaryCall<Req, Res>(
   service: string,
   method: string,
-  request: Req
+  request: Req,
+  signal?: AbortSignal
 ): Promise<Res> {
   const url = `${BASE_URL}/${service}/${method}`;
   const response = await fetch(url, {
@@ -33,6 +35,7 @@ async function unaryCall<Req, Res>(
       "Content-Type": "application/json",
     },
     body: JSON.stringify(request),
+    signal,
   });
 
   if (!response.ok) {
@@ -46,7 +49,8 @@ async function unaryCall<Req, Res>(
 async function* serverStream<Req, Res>(
   service: string,
   method: string,
-  request: Req
+  request: Req,
+  signal?: AbortSignal
 ): AsyncGenerator<Res> {
   const url = `${BASE_URL}/${service}/${method}`;
   const response = await fetch(url, {
@@ -56,6 +60,7 @@ async function* serverStream<Req, Res>(
       Accept: "application/json",
     },
     body: JSON.stringify(request),
+    signal,
   });
 
   if (!response.ok) {
@@ -114,11 +119,31 @@ export const gameClient = {
       request
     );
   },
-  streamGameEvents(request: StreamEventsRequest) {
+  // `gameId` subscribes to one game's bus (a shadow game, UC-070 BR-005);
+  // `signal` ends the stream when the dashboard stops following that game.
+  streamGameEvents(request: StreamEventsRequest, signal?: AbortSignal) {
     return serverStream<StreamEventsRequest, GameEvent>(
       "joustmania.game_coordinator.GameCoordinatorService",
       "StreamGameEvents",
-      request
+      request,
+      signal
+    );
+  },
+  // Empty gameId = the primary (real) game's slot.
+  getGameState(request: { gameId?: string }, signal?: AbortSignal): Promise<GetGameStateResponseLike> {
+    return unaryCall(
+      "joustmania.game_coordinator.GameCoordinatorService",
+      "GetGameState",
+      request,
+      signal
+    );
+  },
+  listGames(signal?: AbortSignal): Promise<ListGamesResponseLike> {
+    return unaryCall(
+      "joustmania.game_coordinator.GameCoordinatorService",
+      "ListGames",
+      {},
+      signal
     );
   },
 };

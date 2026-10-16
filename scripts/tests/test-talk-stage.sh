@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Self-contained tests for scripts/talk-stage.sh (#1301, UC-070 BR-003, A7, A8).
+# Self-contained tests for scripts/talk-stage.sh (#1301, #1316, UC-070 BR-003, BR-007, A7, A8, A9).
 #
 # Runs the helper against temp copies of the shipped CI flag files (agent.json
 # and interventions.json), never the real services/flagd/ci/ files.
@@ -49,7 +49,7 @@ for f in services/flagd/ci/agent.json services/flagd/agent.json; do
 import json, sys
 flags = json.load(open(sys.argv[1]))["flags"]
 base = json.load(open(sys.argv[2]))
-bad = [f"{k}={v}" for sec in ("checked", "reset_also") for k, v in base[sec].items()
+bad = [f"{k}={v}" for sec in ("checked", "reset_also", "fallback") for k, v in base[sec].items()
        if v not in flags.get(k, {}).get("variants", {})]
 print(" ".join(bad))
 PY
@@ -147,6 +147,45 @@ fresh
 "${HELPER}" reset >/dev/null
 if "${HELPER}" permissions nonsense 1 >/dev/null 2>&1; then not_ok "unknown variant refused"; else ok "unknown variant refused"; fi
 expect "unknown variant leaves the baseline" interventions_allowed standard
+
+# --- fallback on / off / reset (UC-070 A9, BR-007, #1316) --------------------
+fresh
+"${HELPER}" reset >/dev/null
+inode_before="$(stat -c %i "${AGENT_FLAG_FILE}")"
+out="$("${HELPER}" fallback on)"
+expect "fallback on: shadow games eligible for remote backends" llm.eligible_game_kinds real_and_shadow
+expect "fallback on: experiment loop on" experiments_enabled on
+expect "fallback on: the agent declares experiments" experiment_dynamic_enabled on
+expect "fallback on: other baseline flags untouched" interventions_allowed standard
+[[ "$(stat -c %i "${AGENT_FLAG_FILE}")" == "${inode_before}" ]] && ok "fallback on writes in place (same inode)" || not_ok "fallback on writes in place"
+[[ "${out}" == *"set    llm.eligible_game_kinds: real_only -> real_and_shadow"* ]] && ok "fallback on reports what it changed" || not_ok "fallback on reports what it changed: ${out}"
+[[ "${out}" != *"WARN"* ]] && ok "fallback on: shipped selection includes calm_long (no warning)" || not_ok "fallback on: no calm_long warning: ${out}"
+out="$("${HELPER}" status)"
+[[ "${out}" == *"fallback: on"* ]] && ok "status names the fallback" || not_ok "status names the fallback: ${out}"
+before="$(cat "${AGENT_FLAG_FILE}")"
+"${HELPER}" fallback on >/dev/null
+[[ "$(cat "${AGENT_FLAG_FILE}")" == "${before}" ]] && ok "fallback on is idempotent" || not_ok "fallback on is idempotent"
+"${HELPER}" fallback off >/dev/null
+expect "fallback off: real games only" llm.eligible_game_kinds real_only
+expect "fallback off: experiment loop off" experiments_enabled off
+expect "fallback off: dynamic declarer off" experiment_dynamic_enabled off
+[[ "$(stat -c %i "${AGENT_FLAG_FILE}")" == "${inode_before}" ]] && ok "fallback off writes in place (same inode)" || not_ok "fallback off writes in place"
+out="$("${HELPER}" status)"
+[[ "${out}" == "at the stage baseline" ]] && ok "status after fallback off" || not_ok "status after fallback off: ${out}"
+"${HELPER}" fallback on >/dev/null
+setv "${AGENT_FLAG_FILE}" experiment.mock_archetypes quick_cascade
+"${HELPER}" reset >/dev/null
+expect "reset after fallback on: real games only" llm.eligible_game_kinds real_only
+expect "reset after fallback on: experiment loop off" experiments_enabled off
+expect "reset after fallback on: dynamic declarer off" experiment_dynamic_enabled off
+expect "reset restores the archetype selection with calm_long" experiment.mock_archetypes all
+setv "${AGENT_FLAG_FILE}" experiment.mock_archetypes quick_cascade
+out="$("${HELPER}" fallback on)"
+[[ "${out}" == *"WARN   experiment.mock_archetypes = quick_cascade"*"no calm_long"* ]] && ok "fallback on warns without calm_long" || not_ok "fallback on warns without calm_long: ${out}"
+rc=0; "${HELPER}" fallback maybe >/dev/null 2>&1 || rc=$?
+[[ "${rc}" -eq 2 ]] && ok "fallback needs on|off" || not_ok "fallback needs on|off (rc=${rc})"
+rc=0; "${HELPER}" fallback >/dev/null 2>&1 || rc=$?
+[[ "${rc}" -eq 2 ]] && ok "fallback without state is a usage error" || not_ok "fallback without state is a usage error (rc=${rc})"
 
 # --- usage -----------------------------------------------------------------
 rc=0; "${HELPER}" >/dev/null 2>&1 || rc=$?

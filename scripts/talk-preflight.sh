@@ -28,6 +28,12 @@
 #   5. Jaeger reachable and holding agent.decide spans from the last N minutes
 #   6. the dashboard reachable through envoy
 #   7. the clock: local time vs the HTTP Date header of a reachable host
+#   8. real PS Move controllers: at least TALK_MIN_CONTROLLERS non-mock
+#      controllers connected, as controller-manager reports them through envoy
+#      (UC-070 BR-006). FAIL, or WARN while the screen-only fallback is on
+#      (llm.eligible_game_kinds=real_and_shadow, `talk-stage.sh fallback on`,
+#      UC-070 A9); with the fallback on, section 3 expects the baseline's
+#      `fallback` variants and a calm_long archetype in the selection
 #
 # Usage:
 #   ./scripts/talk-preflight.sh                  # all checks
@@ -43,6 +49,7 @@
 #   TALK_CLOCK_URLS      space-separated URLs whose Date header is the time
 #                        reference (default: api.anthropic.com, cloudflare, google)
 #   TALK_MAX_SKEW        allowed clock skew in seconds (default 60)
+#   TALK_MIN_CONTROLLERS real PS Move controllers needed on stage (default 2)
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -55,6 +62,7 @@ BASELINE_FILE="${TALK_BASELINE_FILE:-${SCRIPT_DIR}/talk-baseline.json}"
 WRITER_GO="${REPO_ROOT}/services/agent/actions/writer.go"
 CLOCK_URLS="${TALK_CLOCK_URLS:-https://api.anthropic.com https://www.cloudflare.com https://www.google.com}"
 MAX_SKEW="${TALK_MAX_SKEW:-60}"
+MIN_CONTROLLERS="${TALK_MIN_CONTROLLERS:-2}"
 MINUTES=15
 
 usage() {
@@ -203,6 +211,29 @@ BASELINE = dict(stage["checked"])
 BASELINE["decision.backend"] = expect_backend
 PERCEPTIBLE = stage.get("perceptible_interventions", [])
 RESET_HINT = "reset: ./scripts/talk-stage.sh reset"
+
+# Screen-only fallback (UC-070 A9, BR-006, #1316): while llm.eligible_game_kinds
+# is at its fallback variant, the fallback section replaces the stage baseline
+# of its flags, so a half-applied fallback still FAILs.
+FALLBACK = stage.get("fallback", {})
+FALLBACK_KEY = "llm.eligible_game_kinds"
+fallback_on = bool(FALLBACK) and (flags.get(FALLBACK_KEY) or {}).get("defaultVariant") == FALLBACK.get(FALLBACK_KEY)
+if fallback_on:
+    BASELINE.update(FALLBACK)
+    RESET_HINT = "fallback: ./scripts/talk-stage.sh fallback on; leave it: fallback off"
+    print("WARN  screen-only fallback is ON (talk-stage.sh fallback on): shadow games stand in for real "
+          "players and remote backends decide on them too (cost bounded by llm.max_requests_per_minute); "
+          "turn it off with ./scripts/talk-stage.sh fallback off")
+    want_archetype = stage.get("fallback_archetype", "calm_long")
+    selection = flags.get("experiment.mock_archetypes") or {}
+    names = str(selection.get("variants", {}).get(selection.get("defaultVariant")) or "")
+    if want_archetype in [n.strip() for n in names.split(",")]:
+        print(f"PASS  experiment.mock_archetypes = {selection.get('defaultVariant')} includes {want_archetype} "
+              "(a shadow game runs to the cap)")
+    else:
+        print(f"WARN  experiment.mock_archetypes = {selection.get('defaultVariant')} ({names or 'nothing'}) has no "
+              f"{want_archetype}: every shadow game may end and leave the screen empty "
+              "(./scripts/talk-stage.sh reset restores 'all', then fallback on)")
 
 
 def shown(flag):
@@ -471,6 +502,55 @@ print(len(spans), tags.get("decide.backend"), tags.get("decide.outcome"), tags.g
     fi
     # Outbound HTTPS from this host works; it does not prove a backend key or model works.
     info "outbound HTTPS works from this host (${ref_url} answered)"
+  fi
+
+  # --- 8. real PS Move controllers ---------------------------------------------
+  section "real controllers (controller-manager via ${BASE_URL}/)"
+  # Read the fallback state from the flag file (the same rule as section 3).
+  fallback_on="$(python3 -c '
+import json, sys
+try:
+    flags = json.load(open(sys.argv[1]))["flags"]
+    want = json.load(open(sys.argv[2])).get("fallback", {}).get("llm.eligible_game_kinds")
+    print("1" if want and flags["llm.eligible_game_kinds"]["defaultVariant"] == want else "0")
+except (OSError, ValueError, KeyError, TypeError):
+    print("0")
+' "${FLAG_FILE}" "${BASELINE_FILE}" 2>/dev/null)"
+  # short_of <message>: FAIL on stage, WARN while the fallback carries the talk.
+  short_of() {
+    if [[ "${fallback_on}" == "1" ]]; then
+      warn "$* (fallback on: the talk runs on shadow games, UC-070 A9)"
+    else
+      fail "$* (pair them, see docs/hardware-setup-guide.md; or ./scripts/talk-stage.sh fallback on)"
+    fi
+  }
+  if ! [[ "${MIN_CONTROLLERS}" =~ ^[0-9]+$ ]]; then
+    fail "TALK_MIN_CONTROLLERS=${MIN_CONTROLLERS} is not a number"
+  else
+    roster="$(curl -fs --max-time 5 -X POST -H 'Content-Type: application/json' -d '{}' \
+      "${BASE_URL}/joustmania.controller_manager.ControllerManagerService/GetConnectedControllers" 2>/dev/null)" || roster=""
+    # Mock serials are MOCK0001 / mock_controller_N (mock_adapter.py); reserved
+    # (pattern) controllers are never listed. Anything else is a real controller.
+    counted="$(python3 -c '
+import json, re, sys
+try:
+    body = json.load(sys.stdin)
+except ValueError:
+    print("ERR"); sys.exit(0)
+if not isinstance(body, dict):
+    print("ERR"); sys.exit(0)
+serials = body.get("connectedSerials") or [c.get("serial", "") for c in body.get("controllers") or []]
+real = [s for s in serials if s and not re.match(r"(?i)mock", s)]
+print(len(real), len(serials) - len(real), " ".join(real) or "-")
+' <<<"${roster}")"
+    read -r n_real n_mock real_serials <<<"${counted}"
+    if [[ -z "${roster}" || "${n_real}" == "ERR" || -z "${n_real}" ]]; then
+      short_of "controller-manager not reachable at ${BASE_URL} (GetConnectedControllers): cannot count real controllers"
+    elif [[ "${n_real}" -ge "${MIN_CONTROLLERS}" ]]; then
+      pass "${n_real} real controller(s) connected (need ${MIN_CONTROLLERS}): ${real_serials}"
+    else
+      short_of "${n_real} real controller(s) connected, need ${MIN_CONTROLLERS} (${n_mock} mock not counted)"
+    fi
   fi
 fi
 

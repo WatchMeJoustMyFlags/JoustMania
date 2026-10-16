@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Stage helper for the "Two Standards Walk Into an Agent" talk (#743, #1301).
-# Runbook: docs/talk/two-standards-runbook.md. Use case: UC-070 (BR-003, A7, A8).
+# Runbook: docs/talk/two-standards-runbook.md. Use case: UC-070 (BR-003, A7, A8, A9).
 #
 # The stage baseline (scripts/talk-baseline.json) is the flag state every act
 # beat starts from; the shipped flag files keep their own, fail-closed defaults.
@@ -18,8 +18,18 @@
 #       restore the baseline variant. The restore also runs when the beat is
 #       interrupted (Ctrl-C, closed terminal, TERM). Only SIGKILL skips it: then
 #       run `reset` (the pre-flight FAILs until you do).
+#   ./scripts/talk-stage.sh fallback on|off
+#       The screen-only fallback when Bluetooth fails at the venue (UC-070 A9,
+#       #1316). `on` applies the `fallback` section of the baseline
+#       (llm.eligible_game_kinds=real_and_shadow, experiments_enabled=on,
+#       experiment_dynamic_enabled=on): the experiment loop declares experiments
+#       and runs archetype shadow games, and remote backends may decide on them;
+#       the dashboard follows the newest live shadow game. `off` restores the
+#       stage baseline of those flags (so does `reset`). The archetype selection
+#       must include calm_long (a game that runs to the cap; `on` warns otherwise).
 #   ./scripts/talk-stage.sh status
-#       Show which baseline flags differ from the stage baseline.
+#       Show which baseline flags differ from the stage baseline, and whether
+#       the fallback is on.
 #
 # Environment:
 #   AGENT_FLAG_FILE     flag file to edit (default services/flagd/ci/agent.json;
@@ -39,6 +49,7 @@ usage() {
   cat >&2 <<EOF
 usage: $0 reset
        $0 permissions <interventions_allowed-variant> [seconds]
+       $0 fallback on|off
        $0 status
 EOF
   exit 2
@@ -81,6 +92,13 @@ def set_variant(flags, key, variant, changes, problems):
 data = load(path)
 flags = data.get("flags", {})
 
+fallback = baseline.get("fallback", {})
+
+
+def fallback_on():
+    return bool(fallback) and all(flags.get(k, {}).get("defaultVariant") == v for k, v in fallback.items())
+
+
 if mode == "status":
     drift = [
         f"{k} = {flags.get(k, {}).get('defaultVariant')} (stage: {v})"
@@ -88,6 +106,35 @@ if mode == "status":
         if flags.get(k, {}).get("defaultVariant") != v
     ]
     print("\n".join(drift) if drift else "at the stage baseline")
+    if fallback_on():
+        print("fallback: on (screen-only shadow games; ./scripts/talk-stage.sh fallback off)")
+    sys.exit(0)
+
+if mode == "fallback":
+    (state,) = args
+    changes, problems = [], []
+    for key, variant in fallback.items():
+        stage_variant = baseline["checked"].get(key, baseline["reset_also"].get(key))
+        target = variant if state == "on" else stage_variant
+        set_variant(flags, key, target, changes, problems)
+    if problems:
+        sys.exit("; ".join(problems))
+    if changes:
+        write_in_place(path, data)
+    for line in changes:
+        print(f"set    {line}")
+    if state == "on":
+        # A game must always be in progress (UC-070 BR-007): the selection needs
+        # a long-running archetype.
+        sel = flags.get("experiment.mock_archetypes", {})
+        names = str(sel.get("variants", {}).get(sel.get("defaultVariant")) or "")
+        want = baseline.get("fallback_archetype", "calm_long")
+        if want not in [n.strip() for n in names.split(",")]:
+            print(f"WARN   experiment.mock_archetypes = {sel.get('defaultVariant')} ({names or 'nothing'}) has no "
+                  f"{want}: shadow games may all end and leave the screen empty (reset restores 'all')")
+        print("fallback on: shadow games start on the next experiment tick; the dashboard follows the newest one")
+    else:
+        print("fallback off: stage baseline restored for " + ", ".join(fallback))
     sys.exit(0)
 
 if mode == "set":
@@ -155,6 +202,10 @@ case "${action}" in
   status)
     [[ $# -eq 1 ]] || usage
     flags status
+    ;;
+  fallback)
+    [[ $# -eq 2 && ( "$2" == "on" || "$2" == "off" ) ]] || usage
+    flags fallback "$2"
     ;;
   permissions)
     [[ $# -ge 2 && $# -le 3 ]] || usage

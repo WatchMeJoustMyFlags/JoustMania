@@ -594,7 +594,7 @@ export interface DecideCurrent {
   model: string;
   /** Threshold of the newest span, else the newest one that carried it. */
   threshold: number | null;
-  /** Game the strip describes: the newest non-shadow game, else the newest row's. */
+  /** Game the strip describes (see currentFrom, UC-070 BR-005). */
   gameId: string;
   gameKind: string;
   /** True when `threshold` came from an older span than the newest one. */
@@ -819,15 +819,28 @@ export function isShadowGame(kind: string): boolean {
 }
 
 /**
- * The current-backend strip. It describes the newest NON-shadow game (the one
- * on stage): shadow games are rules-only (not eligible for remote backends), so a
- * shadow decide must never flip the strip back to "rules". Without any
- * non-shadow row it falls back to the game of the newest row. `rows` must be
- * newest first.
+ * What the dashboard follows (UC-070 BR-005, follow.ts): whether a real game is
+ * live (null = unknown) and the followed shadow game ("" = none).
  */
-export function currentFrom(rows: DecideRow[]): DecideCurrent | null {
+export interface DecideFollow {
+  realGameLive: boolean | null;
+  followGameId: string;
+}
+
+/**
+ * The current-backend strip. By default it describes the newest NON-shadow game
+ * (the one on stage): a shadow decide must never flip the strip while the real
+ * game is on. When no real game is live (the screen-only fallback, UC-070 A9) it
+ * describes the followed shadow game, else the newest shadow row's game, so an
+ * older real game's rows do not hold the strip. Without any non-shadow row it
+ * falls back to the game of the newest row. `rows` must be newest first.
+ */
+export function currentFrom(rows: DecideRow[], follow?: DecideFollow): DecideCurrent | null {
   if (rows.length === 0) return null;
-  const anchor = rows.find((r) => !isShadowGame(r.gameKind)) ?? rows[0];
+  const followed = follow?.followGameId ? rows.find((r) => r.gameId === follow.followGameId) : undefined;
+  const shadowFallback =
+    follow?.realGameLive === false ? rows.find((r) => isShadowGame(r.gameKind)) : undefined;
+  const anchor = followed ?? shadowFallback ?? rows.find((r) => !isShadowGame(r.gameKind)) ?? rows[0];
   const gameRows = rows.filter((r) => r.gameId === anchor.gameId);
   const newest = gameRows[0] ?? anchor;
   let threshold = newest.threshold;
@@ -889,6 +902,7 @@ export function decideQueryParams(startMs: number | null): URLSearchParams {
 export class DecideStore {
   private readonly rows = new Map<string, DecideRow>();
   private newestMs: number | null = null;
+  private follow: DecideFollow = { realGameLive: null, followGameId: "" };
 
   constructor(private readonly max = MAX_DECIDE_ROWS) {}
 
@@ -913,9 +927,14 @@ export class DecideStore {
     return this.rows.size;
   }
 
+  /** The game the dashboard follows (UC-070 BR-005); used by the next feed(). */
+  setFollow(follow: DecideFollow): void {
+    this.follow = { ...follow };
+  }
+
   feed(): DecideFeed {
     const rows = this.sorted();
-    return { rows, current: currentFrom(rows) };
+    return { rows, current: currentFrom(rows, this.follow) };
   }
 
   private sorted(): DecideRow[] {
