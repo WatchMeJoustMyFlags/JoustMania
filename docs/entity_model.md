@@ -439,4 +439,5 @@ The identifiers that tie a game's telemetry together (`services/game_coordinator
 | game_id | Game | String | 17 | Primary Key, Foreign Key (GAME_SESSION.game_id) |
 | game_trace_id | Trace id of the game's root span | String | 32 | Not Null, Format: 32 hex |
 | game_trace_span_id | Span id of the game root | String | 16 | Not Null, Format: 16 hex |
-| gameplay_phase_span_id | Span id of `gameplay_phase`, the remote parent of in-game agent spans | String | 16 | Optional, Format: 16 hex |
+| gameplay_phase_span_id | Span id of `gameplay_phase`, the first fallback parent of in-game agent spans | String | 16 | Optional, Format: 16 hex |
+| game_cycle_span_id | Span id of `game_cycle`, the remote parent of in-game agent spans (UC-041 BR-004, #1325) | String | 16 | Optional, Format: 16 hex |
