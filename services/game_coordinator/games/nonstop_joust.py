@@ -250,6 +250,15 @@ class NonstopJoustGame(BaseGameMode):
         # Call parent for standard acceleration processing
         await super()._process_controller_state(controller_state)
 
+    def _player_death_event_attributes(self, serial: str) -> dict:
+        """NonStop attributes on the base kill path's player_death event (#1327).
+
+        Recorded before ``_kill_player_impl`` counts the death, so ``deaths``
+        includes this one (the same value the event-bus ``player_death`` carries).
+        """
+        player = self.players[serial]
+        return {"kills": player.kills, "deaths": player.deaths + 1, "score": player.score}
+
     async def _kill_player_impl(self, serial: str, accel_mag: float):
         """
         Kill a player and start respawn timer (DON'T end span).
@@ -268,18 +277,9 @@ class NonstopJoustGame(BaseGameMode):
 
         logger.info(f"Player died: {serial} (kills: {player.kills}, deaths: {player.deaths}, score: {player.score})")
 
-        # Add death event to player's lifecycle span (DON'T end span)
-        if player.span:
-            player.span.add_event(
-                "player_death",
-                attributes={
-                    "accel_magnitude": accel_mag,
-                    "sensitivity": self.sensitivity.name,
-                    "kills": player.kills,
-                    "deaths": player.deaths,
-                    "score": player.score,
-                },
-            )
+        # The span stays open (respawn). The player_death span event (with kills /
+        # deaths / score, via _player_death_event_attributes) was recorded by the
+        # base kill path (#1327); the event-bus publish below is a separate channel.
 
         # Publish death event (unique to Nonstop)
         await self.event_publisher(

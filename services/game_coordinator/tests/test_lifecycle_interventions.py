@@ -680,12 +680,10 @@ class TestAppliedInterventionEventsNamePlayer:
         p2 = game.players["p2"]
         span = p2.span  # _kill_player may close and clear the span
         await handle_eliminate_player(make_ctx("eliminate_player", "n1:p2", game, payload="p2", target="p2"))
-        # The base kill path's player_death (the one with death.reason) names the
-        # player; a mode may add its own secondary player_death event.
+        # Exactly one player_death per death (#1327): the base kill path's, which
+        # names the player and carries death.reason.
         deaths = [
-            c.kwargs["attributes"]
-            for c in span.add_event.call_args_list
-            if c.args and c.args[0] == "player_death" and "death.reason" in c.kwargs["attributes"]
+            c.kwargs["attributes"] for c in span.add_event.call_args_list if c.args and c.args[0] == "player_death"
         ]
         assert len(deaths) == 1
         attrs = deaths[0]

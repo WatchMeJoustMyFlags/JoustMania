@@ -365,6 +365,22 @@ class TraitorGame(TeamsGameBase):
 
         return False
 
+    def _player_death_event_attributes(self, serial: str) -> dict:
+        """Traitor attributes on the base kill path's player_death event (#1327).
+
+        ``team_eliminated`` refers to the SECRET team (the team that wins).
+        """
+        player = self.players[serial]
+        secret_alive = any(
+            p.alive and p.secret_team == player.secret_team for s, p in self.players.items() if s != serial
+        )
+        return {
+            "team_eliminated": not secret_alive,
+            "is_traitor": player.is_traitor,
+            "visible_team": player.team,
+            "secret_team": player.secret_team,
+        }
+
     def _get_alive_teams(self) -> set[int]:
         """
         Get set of secret teams with alive players.
@@ -381,7 +397,7 @@ class TraitorGame(TeamsGameBase):
                 alive_teams.add(traitor_player.secret_team)
         return alive_teams
 
-    async def _kill_player_impl(self, serial: str, accel_mag: float):
+    async def _kill_player_impl(self, serial: str, accel_mag: float):  # noqa: ARG002
         """
         Handle player death with traitor-aware team elimination detection.
 
@@ -393,11 +409,7 @@ class TraitorGame(TeamsGameBase):
         player.alive = False
 
         alive_count = len([p for p in self.players.values() if p.alive])
-        alive_teams = self._get_alive_teams()
-
-        # Check if this death eliminated the player's secret team
         traitor_player = player
-        team_eliminated = traitor_player.secret_team not in alive_teams
 
         logger.info(
             f"Player died: {serial} (visible team {player.team}, "
@@ -405,20 +417,10 @@ class TraitorGame(TeamsGameBase):
             f"{alive_count} players remaining"
         )
 
-        # Add death event to player's lifecycle span
+        # End the lifecycle span. The player_death event (with the traitor
+        # attributes, via _player_death_event_attributes) was recorded by the
+        # base kill path (#1327).
         if player.span:
-            player.span.add_event(
-                "player_death",
-                attributes={
-                    "accel_magnitude": accel_mag,
-                    "sensitivity": self.sensitivity.name,
-                    "alive_count": alive_count,
-                    "team_eliminated": team_eliminated,
-                    "is_traitor": traitor_player.is_traitor,
-                    "visible_team": player.team,
-                    "secret_team": traitor_player.secret_team,
-                },
-            )
             player.span.set_status(Status(StatusCode.OK))
             player.span.end()
             player.span = None  # Mark as closed to prevent double-ending
