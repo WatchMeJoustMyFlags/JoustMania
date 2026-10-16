@@ -511,3 +511,104 @@ async def test_servicer_primes_at_start_so_first_change_fresh_edge_fires(game_ki
         _assert_fired(flag_key, end_game_fn, game, times=1)
     finally:
         mgr.stop()
+
+
+# --------------------------------------------------------------------------- #
+# A session retired WHILE evaluate_all is suspended inside it (handler awaits)
+# must not get a fresh, empty baseline for its remaining specs (#1299 review)
+# --------------------------------------------------------------------------- #
+@pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
+@pytest.mark.asyncio
+async def test_retire_mid_evaluation_does_not_replay_stale_end_game():
+    """Shadow S retires while evaluate_all awaits S's eliminate handler; S's
+    later end_game spec must not see an empty bucket and fire the stale nonce
+    (end_game_fn ends the PRIMARY, so this would end the real game)."""
+    h = Harness()
+    h.flags.values["end_game"] = "5-old:"
+    game = h.start_game("shadow_s")
+    original_kill = game._kill_player
+
+    async def kill_and_retire(serial, accel, reason=None):
+        h.mgr.forget_session("shadow_s")  # the servicer retires S concurrently
+        h.end_game("shadow_s")
+        await original_kill(serial, accel, reason)
+
+    game._kill_player = kill_and_retire
+    h.flags.values["eliminate_player"] = "4-new:p2"  # fresh write during S
+    await h.flag_change()
+
+    assert game.killed == ["p2"]
+    h.end_game_fn.assert_not_awaited()
+    assert "shadow_s" not in h.mgr._last_nonce
+    assert "shadow_s" not in h.mgr._last_state_value
+
+
+@pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
+@pytest.mark.asyncio
+async def test_retire_mid_evaluation_does_not_apply_later_state_flags():
+    """Same race for state flags: once S is forgotten mid-pass, a later state
+    flag is not applied to the dead game and no bucket is re-created."""
+    h = Harness()
+    h.start_game("shadow_s")
+
+    async def tempo_handler_that_retires(_ctx):
+        h.mgr.forget_session("shadow_s")
+        h.end_game("shadow_s")
+
+    h.mgr.register_handler("music_tempo_override", tempo_handler_that_retires)
+    h.flags.values["music_tempo_override"] = 1.3  # first spec in registry order
+    h.flags.values["global_difficulty_factor"] = 1.5  # later state spec
+    await h.flag_change()
+
+    assert len(h.applied("shadow_s", "music_tempo_override")) == 1
+    assert h.applied("shadow_s", "global_difficulty_factor") == []
+    assert "shadow_s" not in h.mgr._last_state_value
+    assert "shadow_s" not in h.mgr._last_nonce
+
+
+# --------------------------------------------------------------------------- #
+# The servicer forgets a session's baseline on every retire path
+# --------------------------------------------------------------------------- #
+def _assert_forgotten(mgr, game_id):
+    assert game_id not in mgr._pending_primed
+    assert game_id not in mgr._last_nonce
+    assert game_id not in mgr._last_state_value
+
+
+@pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
+@pytest.mark.parametrize("game_kind", GAME_KINDS)
+@pytest.mark.asyncio
+async def test_servicer_retire_forgets_intervention_baseline(game_kind):
+    servicer, _flags, _end_game_fn, _game = await _start_through_servicer(game_kind, {"end_game": "1-x:"})
+    mgr = servicer.intervention_manager
+    try:
+        game_id = next(iter(servicer.sessions))
+        assert game_id in mgr._pending_primed
+        assert game_id in mgr._last_nonce
+        servicer._retire_session(game_id)
+        _assert_forgotten(mgr, game_id)
+    finally:
+        mgr.stop()
+
+
+@pytest.mark.uc("UC-040", flow="A15", br=["BR-006"])
+@pytest.mark.asyncio
+async def test_servicer_ended_session_sweep_forgets_intervention_baseline():
+    """A naturally ENDED session is swept at the next admission; its baseline
+    goes with it (covers a game that errored before it was ever built)."""
+    servicer, _flags, _end_game_fn, _game = await _start_through_servicer("shadow", {"end_game": "1-x:"})
+    mgr = servicer.intervention_manager
+    try:
+        ended_id = next(iter(servicer.sessions))
+        servicer.sessions[ended_id].game_state = game_coordinator_pb2.GameState.ENDED
+        with (
+            patch("services.game_coordinator.servicer._shadow_policy", lambda: "allow"),
+            patch.object(game_session_mod.GameSession, "start_thread", lambda _self: None),
+        ):
+            ok, new_id = await servicer._start_game_from_config(_start_config("shadow"), _MockSpan())
+        assert ok, new_id
+        assert ended_id not in servicer.sessions
+        _assert_forgotten(mgr, ended_id)
+        assert new_id in mgr._pending_primed
+    finally:
+        mgr.stop()

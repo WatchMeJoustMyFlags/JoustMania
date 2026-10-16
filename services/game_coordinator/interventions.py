@@ -957,6 +957,14 @@ class InterventionManager:
     def _state_bucket(self, game_id: str) -> dict[str, object]:
         return self._last_state_value.setdefault(game_id, {})
 
+    # Mid-pass accessors: never (re)create a bucket. ``None`` means the session
+    # was forgotten (retired) while evaluate_all was suspended in it (#1299).
+    def _existing_nonce_bucket(self, game_id: str) -> "dict[str, str | _UnknownNonce] | None":
+        return self._last_nonce.get(game_id)
+
+    def _existing_state_bucket(self, game_id: str) -> dict[str, object] | None:
+        return self._last_state_value.get(game_id)
+
     def _prune_stale_buckets(self, live_ids: set[str]) -> None:
         """Drop change-detection state for sessions that are no longer live.
 
@@ -1014,15 +1022,23 @@ class InterventionManager:
         every flag with that session's ``{gameId, targetingKey}`` context and
         applying/publishing on that session.
 
-        Un-targeted flags resolve to their default for shadow games (no-op) and
-        to the configured value for the primary, so a flag with no ``gameId``
-        targeting rule behaves exactly as before — touching only the primary.
+        A flag with no ``gameId`` targeting rule (the agent writes none) resolves
+        to the same value for every live session, primary and shadow alike.
         """
         self._refresh_budget()
         sessions = self._live_sessions()
         self._prune_stale_buckets({s.game_id for s in sessions})
         for session in sessions:
+            # Create both buckets once, at the start of this session's
+            # iteration. Inside the pass they are only read with .get(): if the
+            # servicer retires the session while a handler is awaited
+            # (forget_session), the remaining specs see no bucket and skip,
+            # instead of starting from an empty baseline and replaying a stale
+            # nonce (#1299).
             self._ensure_edge_baseline(session)
+            with self._lock:
+                self._nonce_bucket(session.game_id)
+                self._state_bucket(session.game_id)
             for spec in INTERVENTION_SPECS:
                 try:
                     await self._evaluate_one(spec, session)
@@ -1081,7 +1097,9 @@ class InterventionManager:
             empty_payload = payload.strip().lower() in _EDGE_EMPTY_VALUES
             is_noop = no_nonce or (spec.payload_required and empty_payload)
             with self._lock:
-                bucket = self._nonce_bucket(session.game_id)
+                bucket = self._existing_nonce_bucket(session.game_id)
+                if bucket is None:
+                    return  # session retired mid-pass: never fire into it
                 last = bucket.get(spec.flag_key)
                 bucket[spec.flag_key] = nonce
             # An unknown baseline (read failed at priming) adopts this value
@@ -1095,7 +1113,9 @@ class InterventionManager:
             raw = self._read_flag(spec, session)
             # State-shaped: only act on value change away from the none-value.
             with self._lock:
-                bucket = self._state_bucket(session.game_id)
+                bucket = self._existing_state_bucket(session.game_id)
+                if bucket is None:
+                    return  # session retired mid-pass
                 last = bucket.get(spec.flag_key)
                 changed = raw != last
                 bucket[spec.flag_key] = raw
@@ -1150,7 +1170,9 @@ class InterventionManager:
         game = session.game
         if game is None:
             with self._lock:
-                self._state_bucket(session.game_id)[spec.flag_key] = None
+                bucket = self._existing_state_bucket(session.game_id)
+                if bucket is not None:
+                    bucket[spec.flag_key] = None
             return
 
         # Read each serial with a TYPE-APPROPRIATE getter keyed off the spec's
@@ -1178,7 +1200,9 @@ class InterventionManager:
         change_key = tuple(sorted(active.items()))
 
         with self._lock:
-            bucket = self._state_bucket(session.game_id)
+            bucket = self._existing_state_bucket(session.game_id)
+            if bucket is None:
+                return  # session retired mid-pass
             last = bucket.get(spec.flag_key)
             changed = change_key != last
             bucket[spec.flag_key] = change_key
