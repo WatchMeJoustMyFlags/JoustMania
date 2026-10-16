@@ -1,0 +1,1230 @@
+{
+  "version": 1,
+  "findings": [
+    {
+      "fingerprint": "32e190ae6fb0488f148a75fb0991cf6870bdec90",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "C-002",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-040 Tested, UC-045 Tested)"
+    },
+    {
+      "fingerprint": "350e5a714d794cadc5b53bf627351d0a14e6f0a6",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "C-003",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-043 Tested)"
+    },
+    {
+      "fingerprint": "37b78ce3333f7caece4f4beab5ee5dedc0750173",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "C-005",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-043 Tested, UC-044 Tested)"
+    },
+    {
+      "fingerprint": "c7d3027ec860904f092942cec8246cc603d1f4f9",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "C-007",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-043 Tested)"
+    },
+    {
+      "fingerprint": "0c93b72ba71c96a89d1cbf542137260050d9bd40",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "C-008",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-012 Tested, UC-013 Tested)"
+    },
+    {
+      "fingerprint": "f67162fb50cb140eb9cc9446125e194af92db66d",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "C-016",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-044 Tested)"
+    },
+    {
+      "fingerprint": "bbbd69c4590ac34e9b7ab11570ed303ecbb8d2bf",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-008",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-012 Tested)"
+    },
+    {
+      "fingerprint": "d0be1d1e752c7a0cbdb34182d93a3a5047718d42",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-010",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-010 Tested)"
+    },
+    {
+      "fingerprint": "992d27ee0f54f204f30192ec2dbeb2190d1c712c",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-012",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-010 Tested)"
+    },
+    {
+      "fingerprint": "c27bf2d18d3c50725b0366279a3e6195487e801a",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-014",
+      "message": "status 'Open' but its use cases make it 'Verified' (UC-012 Tested)"
+    },
+    {
+      "fingerprint": "1c5d0e4c0548925f593927e93360d895373e3841",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-015",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-010 Tested)"
+    },
+    {
+      "fingerprint": "1e1a6fad17878b0e79a55195eac636ac129ee820",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-016",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-012 Tested)"
+    },
+    {
+      "fingerprint": "449d3c676a01b1c0ad6deae588cc813f30632cee",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-017",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-012 Tested)"
+    },
+    {
+      "fingerprint": "82be18a99263d75b41080f9f83454219330e566d",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-027",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-010 Tested, UC-020 Tested, UC-021 Tested)"
+    },
+    {
+      "fingerprint": "95f7c8f60defda7a5d23f081913db0f8b344ccd2",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-031",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-030 Tested)"
+    },
+    {
+      "fingerprint": "f18a3afaca6901284c80be8bced2940c00adc204",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-032",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-020 Tested, UC-030 Tested)"
+    },
+    {
+      "fingerprint": "a73dd3188803ae6078e88c272ce2974ae8a64d18",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-033",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-023 Tested, UC-024 Tested, UC-025 Tested, UC-026 Tested, UC-030 Tested)"
+    },
+    {
+      "fingerprint": "a6e6c2c6b6bdc6fdbaf47b99bddbd6a9ea7994a9",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-034",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-030 Tested)"
+    },
+    {
+      "fingerprint": "47c291bea4f448935df167ba4b5f6a0209f608a2",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-040",
+      "message": "status 'Verified' but its use cases make it 'Implemented' (UC-041 Implemented)"
+    },
+    {
+      "fingerprint": "1d9c7868834ac34bf822c0e8e79d672bba71cabb",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-042",
+      "message": "status 'Verified' but its use cases make it 'Implemented' (UC-045 Tested, UC-070 Implemented)"
+    },
+    {
+      "fingerprint": "423caad0c03235efa59f01e0164961e854d4fe20",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-043",
+      "message": "status 'Verified' but its use cases make it 'Implemented' (UC-035 Implemented)"
+    },
+    {
+      "fingerprint": "c847244d0cb08a7ab9432663e3cb06db75464408",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-045",
+      "message": "status 'Verified' but its use cases make it 'Implemented' (UC-044 Tested, UC-070 Implemented)"
+    },
+    {
+      "fingerprint": "4fb3c06540ea49814d6efc8fe54f5cfc270c78d5",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-051",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-040 Tested, UC-045 Tested)"
+    },
+    {
+      "fingerprint": "58bf2f7de5ee51e222a90248ab39a3c8f84798e6",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-052",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-040 Tested)"
+    },
+    {
+      "fingerprint": "b51204d2d692353cfacf83423d8071e9ece6ba5f",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-055",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-043 Tested)"
+    },
+    {
+      "fingerprint": "daf6fd281b4a2522fa0a2c5290b5d5dba5c00668",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-056",
+      "message": "status 'Verified' but its use cases make it 'Implemented' (UC-042 Implemented)"
+    },
+    {
+      "fingerprint": "4fcb5541c11fba1adf9526801623517d2f0c3dca",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-057",
+      "message": "status 'Verified' but its use cases make it 'Implemented' (UC-042 Implemented)"
+    },
+    {
+      "fingerprint": "1091cc9098526d5c9b4af7d89baba46028a9997d",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-063",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-043 Tested)"
+    },
+    {
+      "fingerprint": "e26bfd3f598e9bd03afa7d3cb4a9a2bbeb80a3de",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-064",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-043 Tested)"
+    },
+    {
+      "fingerprint": "989d1950d8291e18a3e6a98f3a326830ca213914",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-065",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-043 Tested)"
+    },
+    {
+      "fingerprint": "58b1203515baa07523c88e3ae52e7e885124adb7",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-066",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-043 Tested, UC-045 Tested)"
+    },
+    {
+      "fingerprint": "6957725a9830c41cd2d43003412640ad5be078c7",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-067",
+      "message": "status 'Open' but its use cases make it 'Verified' (UC-043 Tested)"
+    },
+    {
+      "fingerprint": "ca1dfd2a2955417c7f24d8c12cf8a8ed4b9fb73c",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-068",
+      "message": "status 'Open' but its use cases make it 'Verified' (UC-043 Tested)"
+    },
+    {
+      "fingerprint": "e0599ff9e42b49dcca6f411cec0389f1632a4206",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-069",
+      "message": "status 'Open' but its use cases make it 'Verified' (UC-040 Tested)"
+    },
+    {
+      "fingerprint": "8f0177fc83c6fdd5c5ac9b4db1da3484e11233e5",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-071",
+      "message": "status 'Verified' but its use cases make it 'Implemented' (UC-050 Tested, UC-070 Implemented)"
+    },
+    {
+      "fingerprint": "07b644067fdcd1e1b10a23ef4af7ea55952b0073",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-072",
+      "message": "status 'Verified' but its use cases make it 'Implemented' (UC-051 Tested, UC-070 Implemented)"
+    },
+    {
+      "fingerprint": "ebc56919ac53b9f1945b086caacfd379eb557edd",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-074",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-050 Tested)"
+    },
+    {
+      "fingerprint": "30c0eb6f1b3cd4ffc0f53480b32d7455d63eebbb",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "FR-093",
+      "message": "status 'Verified' but its use cases make it 'Implemented' (UC-070 Implemented)"
+    },
+    {
+      "fingerprint": "107da052eec62274fc75068dbc2c9eaee0fa2193",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "NFR-003",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-030 Tested)"
+    },
+    {
+      "fingerprint": "560eb582bddd2ae30b817b0392fb11ab7ed69fda",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "NFR-004",
+      "message": "status 'Open' but its use cases make it 'Verified' (UC-030 Tested)"
+    },
+    {
+      "fingerprint": "162233ab46d052b82c92c92ea8ddce98d38591b7",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "NFR-005",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-010 Tested)"
+    },
+    {
+      "fingerprint": "82cfbea9a5ab9654ac7a9cde483022456d260745",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "NFR-006",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-012 Tested)"
+    },
+    {
+      "fingerprint": "c06f17f16b25d10ca9f9e7efc91039a5c5935a84",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "NFR-010",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-040 Tested)"
+    },
+    {
+      "fingerprint": "bff58dc9f8b921bf5f812b96230ac8b9d4049d0e",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "NFR-014",
+      "message": "status 'Open' but its use cases make it 'Verified' (UC-044 Tested)"
+    },
+    {
+      "fingerprint": "a77f0e6f0ef2984168f98cf8e9163d42e7b35fc0",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "NFR-015",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-040 Tested)"
+    },
+    {
+      "fingerprint": "c04048c283d927a7555ecbff60b66119140d8b22",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "NFR-016",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-050 Tested, UC-051 Tested)"
+    },
+    {
+      "fingerprint": "dbfd193cb0fd9eb3928c1a096b7f4094ef1a283d",
+      "code": "REQ_STATUS_DRIFT",
+      "path": "requirements.md",
+      "element": "NFR-017",
+      "message": "status 'Implemented' but its use cases make it 'Verified' (UC-050 Tested, UC-051 Tested)"
+    },
+    {
+      "fingerprint": "03e4772b46750db642a9f2fefd7c5be20a6a224a",
+      "code": "WEAK_WORD",
+      "path": "requirements.md",
+      "element": "",
+      "message": "weak word 'TBD': make it measurable, definite, or remove it"
+    },
+    {
+      "fingerprint": "476ca524d19f48939816dbeefc969cf928789c9d",
+      "code": "WEAK_WORD",
+      "path": "requirements.md",
+      "element": "FR-035",
+      "message": "weak word 'fast': make it measurable, definite, or remove it"
+    },
+    {
+      "fingerprint": "0408e268137aa7eed3404c4bf6064dd891e6e3ea",
+      "code": "WEAK_WORD",
+      "path": "requirements.md",
+      "element": "NFR-004",
+      "message": "weak word 'TBD': make it measurable, definite, or remove it"
+    },
+    {
+      "fingerprint": "ab608e964548f195e1ee7161b62524b4dad4ff28",
+      "code": "WEAK_WORD",
+      "path": "requirements.md",
+      "element": "NFR-004",
+      "message": "weak word 'fast': make it measurable, definite, or remove it"
+    },
+    {
+      "fingerprint": "16575c764d964fa5fb4736a7acb2df257b64ccb0",
+      "code": "WEAK_WORD",
+      "path": "requirements.md",
+      "element": "NFR-014",
+      "message": "weak word 'TBD': make it measurable, definite, or remove it"
+    },
+    {
+      "fingerprint": "eb35d161d2899c9a5eef4a6d4d008f0102f47512",
+      "code": "WEAK_WORD",
+      "path": "requirements.md",
+      "element": "NFR-020",
+      "message": "weak word 'TBD': make it measurable, definite, or remove it"
+    },
+    {
+      "fingerprint": "621c5af6a9ca141497854ac9e73f685b1dbcffb7",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-002.md",
+      "element": "UC-002",
+      "message": "'A2: Operator renames the controller' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "247df724355a7cc863a2c2e286890999389c5776",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-002.md",
+      "element": "UC-002",
+      "message": "'A3: Lobby idle' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "9f54c1f5de0aca1db194cca5a023408a5e4f29ed",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-002.md",
+      "element": "UC-002",
+      "message": "trigger of 'A1: Controller disconnects' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "4bd601fa7238439a63cbbf99de2958c525a68761",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-002.md",
+      "element": "UC-002",
+      "message": "trigger of 'A2: Operator renames the controller' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "0350e13bb39ae6a4187e8fe08f3bf540dd2adb4e",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-002.md",
+      "element": "UC-002",
+      "message": "trigger of 'A3: Lobby idle' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "169f14a8e3e821c8f6a1cb2457fa7512710977fa",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-003.md",
+      "element": "UC-003",
+      "message": "'A2: Shadow games' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "2d57de807ba38ec339de7a88e54f1fb3f174dca9",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-003.md",
+      "element": "UC-003",
+      "message": "trigger of 'A2: Shadow games' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "0f66c7aa6a2f83689eeecac17747a15746891509",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-010.md",
+      "element": "UC-010",
+      "message": "trigger of 'A1: Player un-readies' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "0ce461105c40fe6ebdacd1c23549f4ddbc3b7037",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-010.md",
+      "element": "UC-010",
+      "message": "trigger of 'A2: Lobby goes idle' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "e751c25404f89a5795bfe1d17e140a4662952a34",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-011.md",
+      "element": "UC-011",
+      "message": "trigger of 'A1: Select via the web command' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "662ca7e348bbd7a92a34ca4b71693f622f3d1451",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-011.md",
+      "element": "UC-011",
+      "message": "trigger of 'A2: Select from the lobby with the SELECT button' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "c90c512f4761a19a214ff1fff7e34b3a7c1506c2",
+      "code": "UNEXPECTED_CONTENT",
+      "path": "use_cases/UC-011.md",
+      "element": "UC-011",
+      "message": "A handler error while processing a button press is logged and counted (`menu_button_event_errors_total`); it does not drop the button stream or clear the lobby's ready state (#1272)."
+    },
+    {
+      "fingerprint": "883951a7064f1ad7161f5b285a3198252d0aa109",
+      "code": "FLOW_INCOMPLETE",
+      "path": "use_cases/UC-012.md",
+      "element": "UC-012",
+      "message": "alternative flow 'A6: Agent control and force start' is missing: flow field line (**Flow:**), numbered steps"
+    },
+    {
+      "fingerprint": "8f1c09b9d3b949d48aa5101ecdcf6ee90a373d35",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-012.md",
+      "element": "UC-012",
+      "message": "'A3: Toggle instructions' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "6d8e90ca3fd0eba45e94296c70a6c10059e02dd7",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-012.md",
+      "element": "UC-012",
+      "message": "'A4: Timeout' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "60fe1ee3345a32c0b526d50e7a6eebdda36aba63",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-012.md",
+      "element": "UC-012",
+      "message": "'A5: Write fails' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "74123ff7360f1e48189d3f0f9b951b2854f45934",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-012.md",
+      "element": "UC-012",
+      "message": "trigger of 'A2: Show battery levels' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "0ff771898cd109ae65cacd91ac5a2368c8de6d27",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-012.md",
+      "element": "UC-012",
+      "message": "trigger of 'A3: Toggle instructions' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "35abd83b96534d482b129600e291ed2890d64921",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-012.md",
+      "element": "UC-012",
+      "message": "trigger of 'A4: Timeout' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "1c76d69df18df32c142cd35ba40a492837a91c0a",
+      "code": "WEAK_WORD",
+      "path": "use_cases/UC-012.md",
+      "element": "UC-012",
+      "message": "weak word 'fast': make it measurable, definite, or remove it"
+    },
+    {
+      "fingerprint": "3faa6d48d1c2830c647b21b721f9ffdccd738421",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-014.md",
+      "element": "UC-014",
+      "message": "'A3: Fewer than two players' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "6cf55563287b3a9cab98bf95671dd4b297bddd13",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-020.md",
+      "element": "UC-020",
+      "message": "'A3: Agent intervention' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "c44352fccc4c8f4f6b229bae279ab89f08ba683e",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-020.md",
+      "element": "UC-020",
+      "message": "trigger of 'A3: Agent intervention' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "9a480149623e1a00e809160c82e14c2f367914b3",
+      "code": "WEAK_WORD",
+      "path": "use_cases/UC-020.md",
+      "element": "UC-020",
+      "message": "weak word 'fast': make it measurable, definite, or remove it"
+    },
+    {
+      "fingerprint": "a79ac1659cdc03d26e7b029c3e45489a99b0a3ae",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-022.md",
+      "element": "UC-022",
+      "message": "'A1: Werewolf' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "a10daa50be025a578ee3c8827123c9817fe8dce9",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-022.md",
+      "element": "UC-022",
+      "message": "'A2: Tie' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "b7b8a9f2e25a26ba8c561809c5126baf399e0e28",
+      "code": "SECTION_MISSING",
+      "path": "use_cases/UC-022.md",
+      "element": "UC-022",
+      "message": "template section missing: ## Main Success Scenario"
+    },
+    {
+      "fingerprint": "1680c23a58163299f8cd66e840ac6401030c5a54",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-022.md",
+      "element": "UC-022",
+      "message": "trigger of 'A2: Tie' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "9e8bb82fca65c9886a800236c6aa8205dcf9eab5",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-023.md",
+      "element": "UC-023",
+      "message": "'A1: All humans converted' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "b6695ba360cae029869fc25d77673df5d63e5bc5",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-024.md",
+      "element": "UC-024",
+      "message": "'A1: Disconnect' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "41c102e5872591de203696b46c0af9ba0c90d903",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-025.md",
+      "element": "UC-025",
+      "message": "'A2: Fight Club' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "0ba33cc301e1fac8008dc3c11b12d51ca55af0aa",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-025.md",
+      "element": "UC-025",
+      "message": "'A3: No winner' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "ca60123588f116c508dc01b59822ce13f3214874",
+      "code": "SECTION_MISSING",
+      "path": "use_cases/UC-025.md",
+      "element": "UC-025",
+      "message": "template section missing: ## Main Success Scenario"
+    },
+    {
+      "fingerprint": "677f9676c7f20fe95697ba65a3ec26aa261582a9",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-025.md",
+      "element": "UC-025",
+      "message": "trigger of 'A3: No winner' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "4cad50aea2ef4709d5a413b8bc357f36ac2245e2",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-026.md",
+      "element": "UC-026",
+      "message": "'A1: Unlimited time' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "c66b82044abbb82450dd2abab404693ba30e3402",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-026.md",
+      "element": "UC-026",
+      "message": "trigger of 'A1: Unlimited time' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "45a5e6bf56a7b4009451f45c51b0eb043cd30bd7",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-027.md",
+      "element": "UC-027",
+      "message": "'A1: Unknown game id' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "21195a3a065fd54c697d242b02185f492df0461f",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-027.md",
+      "element": "UC-027",
+      "message": "'A2: Game already ending' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "2cb72f7299deca74ceeaca3a54edf74111352550",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-027.md",
+      "element": "UC-027",
+      "message": "'A3: Agent ends the game' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "b021467deee3f863316e75b8ccc1bd751ea7c7e9",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-027.md",
+      "element": "UC-027",
+      "message": "trigger of 'A3: Agent ends the game' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "f80c892b67900176d2974a669c354dbe6718f37e",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-030.md",
+      "element": "UC-030",
+      "message": "'A4: Below the warning threshold' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "66351efa9d6d4715e0f084bed1fac65998f73cbd",
+      "code": "WEAK_WORD",
+      "path": "use_cases/UC-030.md",
+      "element": "UC-030",
+      "message": "weak word 'fast': make it measurable, definite, or remove it"
+    },
+    {
+      "fingerprint": "66351efa9d6d4715e0f084bed1fac65998f73cbd",
+      "code": "WEAK_WORD",
+      "path": "use_cases/UC-030.md",
+      "element": "UC-030",
+      "message": "weak word 'fast': make it measurable, definite, or remove it"
+    },
+    {
+      "fingerprint": "66351efa9d6d4715e0f084bed1fac65998f73cbd",
+      "code": "WEAK_WORD",
+      "path": "use_cases/UC-030.md",
+      "element": "UC-030",
+      "message": "weak word 'fast': make it measurable, definite, or remove it"
+    },
+    {
+      "fingerprint": "115f2894973bc3d5ff8265c781f4c69b3f60b162",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-031.md",
+      "element": "UC-031",
+      "message": "'A1: Audio muted' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "12548c27cac94e5b387e2fb4304512357eb2b246",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-031.md",
+      "element": "UC-031",
+      "message": "'A2: All channels busy' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "4f7fc7cebbc86f2ef0afabf59a19e1b728c5cbe5",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-031.md",
+      "element": "UC-031",
+      "message": "'A3: Agent changes tempo or volume' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "8141458b68b1616d9b1a293f543055c8a0e583fa",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-031.md",
+      "element": "UC-031",
+      "message": "'A4: Voice change' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "46ea0f9679c7f5425c1099c529192afbe742ba96",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-031.md",
+      "element": "UC-031",
+      "message": "trigger of 'A1: Audio muted' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "77ee7bf15b810ce384ef912582c2b16b1f561e11",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-031.md",
+      "element": "UC-031",
+      "message": "trigger of 'A3: Agent changes tempo or volume' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "546be1e823f2d61ad95513943e42a701f176e2e6",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-031.md",
+      "element": "UC-031",
+      "message": "trigger of 'A4: Voice change' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "858716b020615301df760124efe62e3c85d0a084",
+      "code": "WEAK_WORD",
+      "path": "use_cases/UC-031.md",
+      "element": "UC-031",
+      "message": "weak word 'fast': make it measurable, definite, or remove it"
+    },
+    {
+      "fingerprint": "effe647585f0eef47369afe4d32837c0b1f45f7a",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-035.md",
+      "element": "UC-035",
+      "message": "'A1: Experiment dossier' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "d9896bb43862e4f4918d5d10912c871a0b820634",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-035.md",
+      "element": "UC-035",
+      "message": "'A2: Alert fires' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "1541384e8a7f5cb5679ff60d084989a21e31e419",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-035.md",
+      "element": "UC-035",
+      "message": "'A3: Telemetry backend down' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "3d3f1972e6dafb02edb4f021af9e3fec2a292ed2",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-035.md",
+      "element": "UC-035",
+      "message": "trigger of 'A1: Experiment dossier' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "3e5cb9b83e9e6a8b0d1ac3c715a4bf579add28c2",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-035.md",
+      "element": "UC-035",
+      "message": "trigger of 'A2: Alert fires' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "d723eddeaba2d7b070f9b083ba5c03ab1ad32570",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-035.md",
+      "element": "UC-035",
+      "message": "trigger of 'A3: Telemetry backend down' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "b308d0de4e96dd22c174f7b82782fb3afed593b0",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-040.md",
+      "element": "UC-040",
+      "message": "'A10: Blocked' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "68947afb96110bb5c34f0988fc7c14b28add9915",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-040.md",
+      "element": "UC-040",
+      "message": "'A11: Actuation gate off' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "ca094fec4a96549c99a5eb63b83981a55005988a",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-040.md",
+      "element": "UC-040",
+      "message": "'A12: Noul questions' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "346b83db3e3bc79f68c3cd0ceecbe40b2da4a06b",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-040.md",
+      "element": "UC-040",
+      "message": "'A3: Backend unavailable, ineligible or over budget → rules now' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "0f74a3c590fe80e2fdc93436324727e01799206c",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-040.md",
+      "element": "UC-040",
+      "message": "'A4: Cadence or in-flight gate' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "edd7dc889fe82c4d1836c76bdaa554b2f9196e8e",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-040.md",
+      "element": "UC-040",
+      "message": "'A5: Low confidence → held' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "aff4967630dbf92260124991d9bada9fab014caa",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-040.md",
+      "element": "UC-040",
+      "message": "'A6: Kill switch mid-flight → discarded' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "d362ea244feca21089cd54596da3ed1c5d515b4e",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-040.md",
+      "element": "UC-040",
+      "message": "'A7: Situation changed → discarded' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "0edbc74c8498d71094c8600af5325dd436fffc87",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-040.md",
+      "element": "UC-040",
+      "message": "'A8: Inconsistent answers → invalid' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "d098ce0fb8b06989227123ec61cb207f3fddd69e",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-040.md",
+      "element": "UC-040",
+      "message": "'A9: Noop' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "e72f169094610d35e15d7e8ade18d8d5db2903fe",
+      "code": "SECTION_MISSING",
+      "path": "use_cases/UC-040.md",
+      "element": "UC-040",
+      "message": "template section missing: ## Main Success Scenario"
+    },
+    {
+      "fingerprint": "0ccd639f5888b02074b0644d6d20ffb9ea2f7f20",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-040.md",
+      "element": "UC-040",
+      "message": "trigger of 'A12: Noul questions' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "f16d0a08be059b6a8fa2ed2502242ce788159ada",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-040.md",
+      "element": "UC-040",
+      "message": "trigger of 'A2: Remote timeout, error or invalid answer → rules fallback' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "e98238e93d5902583dbe545f242ebd05e80153a8",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-040.md",
+      "element": "UC-040",
+      "message": "trigger of 'A3: Backend unavailable, ineligible or over budget → rules now' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "213eda8472f21d63fbd7ab6dfa335611c656e3de",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-041.md",
+      "element": "UC-041",
+      "message": "'A1: Infrastructure signals' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "2e0ad9175ca3cb9fc21bc4f5e978e041b8939193",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-041.md",
+      "element": "UC-041",
+      "message": "'A2: Stale data' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "6f41ad8b8c95e17727bb1dd33de99e2ea3bc81e6",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-041.md",
+      "element": "UC-041",
+      "message": "trigger of 'A1: Infrastructure signals' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "3d7a578fb594700c74f90f7e567f32cde8a509af",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-041.md",
+      "element": "UC-041",
+      "message": "trigger of 'A2: Stale data' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "93acfd851a4c5cb6ad5d4d5b01b10a53d254cdb7",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-042.md",
+      "element": "UC-042",
+      "message": "'A1: Shadow game' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "cad227516a115f3a7342a9f19dd066c31b6b11b9",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-042.md",
+      "element": "UC-042",
+      "message": "'A2: Budget exhausted or no backend' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "ac046021ed173a3e17fa03545d89a58774d161da",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-042.md",
+      "element": "UC-042",
+      "message": "'A3: Retro-seeded theses' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "6d0137e5ddb6d0f777f4fd66577aa143a6866610",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-042.md",
+      "element": "UC-042",
+      "message": "'A4: Gate rejects the proposal' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "43b2c9e1a5c2ff51da0820365b1bd8220f0b565d",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-042.md",
+      "element": "UC-042",
+      "message": "'A5: Agent or experiments switched off' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "63a416c3aea0f0a7363f6556bbb2a4d75918cbb8",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-042.md",
+      "element": "UC-042",
+      "message": "trigger of 'A2: Budget exhausted or no backend' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "c46f6aa2d09dcac78216f8190052a66cd4efd463",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-042.md",
+      "element": "UC-042",
+      "message": "trigger of 'A3: Retro-seeded theses' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "eb6c9aa81a428315a7fd883c6e4482f95c9f72de",
+      "code": "ACTOR_MISMATCH",
+      "path": "use_cases/UC-043.md",
+      "element": "UC-043",
+      "message": "use_cases.puml connects actor 'Maintainer' to UC-043, but the specification lists it as neither a primary nor a secondary actor"
+    },
+    {
+      "fingerprint": "db75a05c312aff0e4ef2913deef53c2201141265",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-043.md",
+      "element": "UC-043",
+      "message": "'A1: Kill switch or experiments off' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "a25ba4e77c5b50d5b4698d39ee151d528abf740e",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-043.md",
+      "element": "UC-043",
+      "message": "'A2: Real game starts' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "9838ab6b4ef42de3348d2103d7595daf17477102",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-043.md",
+      "element": "UC-043",
+      "message": "'A3: Inconclusive or discard' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "2b58e96847473140c3161d8c19a31e1598fc4f31",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-043.md",
+      "element": "UC-043",
+      "message": "'A4: Promotion inert' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "c1d06d9053ba3547d3ccdac88fbcd8fa86bcb22a",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-043.md",
+      "element": "UC-043",
+      "message": "'A5: Validation stage (planned)' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "c3d6a16ee992006836756cec675410f0319da4f3",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-043.md",
+      "element": "UC-043",
+      "message": "'A6: Candidate game code (planned)' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "039d60e11de9fa68faaa01731a4c2b61e834983b",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-043.md",
+      "element": "UC-043",
+      "message": "trigger of 'A1: Kill switch or experiments off' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "dd552b5e17f2bb249be272001726ad345b190494",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-043.md",
+      "element": "UC-043",
+      "message": "trigger of 'A6: Candidate game code (planned)' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "129f359e51d974035794c6e8f38a17a264ac3985",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-044.md",
+      "element": "UC-044",
+      "message": "'A1: Missing key or model' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "e3d774a1150149824920108e470622372e320d9b",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-044.md",
+      "element": "UC-044",
+      "message": "'A2: Switch while a call is in flight' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "3684cf821a3b80d5499dbcf4e60792f349c9b0fc",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-044.md",
+      "element": "UC-044",
+      "message": "'A3: Tune without switching' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "f847d65326cf6c286c0b818a02eae09b2b46b767",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-044.md",
+      "element": "UC-044",
+      "message": "'A4: Wrong flag file' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "3b271401a062fe8b59f6abbd57e23198f9a29c2b",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-044.md",
+      "element": "UC-044",
+      "message": "trigger of 'A3: Tune without switching' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "541bdc66cd99c6aadc7e45540c96fa6623f342fa",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-045.md",
+      "element": "UC-045",
+      "message": "'A1: Observe without acting' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "4ee5bc2e25a2fef735d7e9728d1f1b18469f6d01",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-045.md",
+      "element": "UC-045",
+      "message": "'A2: Narrow the allow-list' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "2e63777687e13244e571c34324525f59207c779e",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-045.md",
+      "element": "UC-045",
+      "message": "'A3: Flagd unreachable' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "bc6ddd2bff43be3f34c595570e678cdaba80fbb0",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-045.md",
+      "element": "UC-045",
+      "message": "trigger of 'A2: Narrow the allow-list' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "bc7c85d8208e4cc14e1e86588fed49f7dfc5dd58",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-045.md",
+      "element": "UC-045",
+      "message": "trigger of 'A3: Flagd unreachable' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "1d3bebfd7f0ecccb4e43041a738f1987d4cb6bcf",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-050.md",
+      "element": "UC-050",
+      "message": "'A1: Immediate strategy' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "1278ef9f217cd5f9af07e31c6901316f71074558",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-050.md",
+      "element": "UC-050",
+      "message": "'A2: Fitness fails' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "5247301cf09008124ad483d15ca9a3161d5f9898",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-050.md",
+      "element": "UC-050",
+      "message": "'A3: Dry run' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "62c032cb46122a4f9d9809179c83eebce5c3ea4a",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-050.md",
+      "element": "UC-050",
+      "message": "'A4: Manual override' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "f77f1e80d3d90c55502585878a40baad8027de95",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-050.md",
+      "element": "UC-050",
+      "message": "trigger of 'A4: Manual override' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "e5aec9a4487cdc9d4acc26935116c434e13fadde",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-051.md",
+      "element": "UC-051",
+      "message": "'A1: Remediation not allowed' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "bca6d4756cf16d83a9d48ecdd29d0a4233110ee3",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-051.md",
+      "element": "UC-051",
+      "message": "'A2: Agent restarts during cooldown' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "2178d2582996549ef124284ffedfbec432609f01",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-052.md",
+      "element": "UC-052",
+      "message": "'A1: Inject chaos' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "05246427f03586129529253de80752c09a7f15d6",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-052.md",
+      "element": "UC-052",
+      "message": "'A2: Through envoy' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "6204d3f696cce85a05e958c0bdffc75bf2233652",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-052.md",
+      "element": "UC-052",
+      "message": "trigger of 'A1: Inject chaos' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "df8c1cd377fc1f51f1f1f9de6d0c6bea5661f190",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-052.md",
+      "element": "UC-052",
+      "message": "trigger of 'A2: Through envoy' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "5abf8a3b521b034510fb70d2f4bc8d03f8dc70e7",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-070.md",
+      "element": "UC-070",
+      "message": "'A1: Infrastructure beat (optional)' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "3ac83498cd89b79be4d2a4cf672ceb44664e1611",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-070.md",
+      "element": "UC-070",
+      "message": "'A2: Experiment beat' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "349feed4a88c93292c3927881b349c4fdedaeba6",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-070.md",
+      "element": "UC-070",
+      "message": "'A3: Remote decisions time out' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "2fc829eb164098c1a1a4e2a338b24408c4b1c697",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-070.md",
+      "element": "UC-070",
+      "message": "'A4: Budget exhausted' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "72df46e2f757f6535d2f719c951d57f568225671",
+      "code": "FLOW_TERMINATION",
+      "path": "use_cases/UC-070.md",
+      "element": "UC-070",
+      "message": "'A5: Second vendor not configured' does not end with 'Use case continues at step N.' or 'Use case ends.'"
+    },
+    {
+      "fingerprint": "dadfa5dcb9e934bab5aca6819b17df1244aa2988",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-070.md",
+      "element": "UC-070",
+      "message": "trigger of 'A1: Infrastructure beat (optional)' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "ac34922728a2a321f25847b06cc24f4ac76ff0ba",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-070.md",
+      "element": "UC-070",
+      "message": "trigger of 'A2: Experiment beat' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "b56d7274275fc9004d2542d5db80ca89e2c50dde",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-070.md",
+      "element": "UC-070",
+      "message": "trigger of 'A3: Remote decisions time out' does not reference a main-scenario step as '(step N)'"
+    },
+    {
+      "fingerprint": "605ad16d8c6f25a2003f79caad6d5f802a20f0e2",
+      "code": "TRIGGER_STEP_REF",
+      "path": "use_cases/UC-070.md",
+      "element": "UC-070",
+      "message": "trigger of 'A4: Budget exhausted' does not reference a main-scenario step as '(step N)'"
+    }
+  ]
+}
