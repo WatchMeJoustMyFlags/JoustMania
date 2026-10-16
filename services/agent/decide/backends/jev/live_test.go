@@ -42,7 +42,7 @@ func TestLiveDecide(t *testing.T) {
 		req    decide.Request
 		record string // fixture prefix of the cold round, "" = not recorded
 	}{
-		{"near-threshold", testRequest(), "noop_"},
+		{"near-threshold", testRequest(), "gate_"},
 		{"calm", calmRequest(), ""},
 		{"dragging", draggingRequest(), ""},
 		{"too-fast", tooFastRequest(), ""},
@@ -106,53 +106,46 @@ func TestLiveDecide(t *testing.T) {
 	record(t, "response_noul.json", ex.response)
 }
 
-// TestLiveDetails measures the acting round for the near-threshold state.
-// Jev's stage 1 answers noop there (it did on every state we tried), so this
-// replays exactly what Decide does after a grant_shield stage-1 answer: the
-// intervention call, then the details call conditioned on grant_shield, on one
-// connection pool (cold, then warm). It logs whether Jev picks the player about
-// to be eliminated and how long a shield it chooses, then the details answer
-// for adjust_player_sensitivity. The cold grant_shield details exchange is
-// recorded as the shield_ fixtures.
+// TestLiveDetails records the details stage for the near-threshold state
+// after a grant_shield and an adjust_player_sensitivity stage-1 answer, exactly
+// as Decide conditions it, whatever the gate answers (one stage-1 call, then
+// the conditioned details calls on the same connection pool). It logs whether
+// Jev picks the player about to be eliminated and the level it picks. The
+// grant_shield exchange is recorded as the shield_ fixtures, the
+// adjust_player_sensitivity one as balance_. The act-round latency is measured
+// by TestLiveDecide (the near-threshold state acts since the gate, #1281).
 func TestLiveDetails(t *testing.T) {
 	key := liveKey(t)
 	rec := newRecordingTransport(key)
 	b := liveBackend(key, rec)
 	req := testRequest()
-	first, _, _ := splitStages(req)
-	for i, label := range []string{"cold", "warm"} {
-		start := time.Now()
-		if _, err := b.call(context.Background(), StageIntervention, first, ""); err != nil {
-			t.Fatalf("%s stage 1: %v", label, err)
-		}
-		stage1 := time.Since(start)
-		resp, _ := liveDetails(t, b, req, "grant_shield")
-		ex := rec.last()
-		t.Logf("act round %s: stage1=%v details=%v total=%v", label, stage1, ex.elapsed, time.Since(start))
-		logDetails(t, "grant_shield", resp)
-		if i == 0 {
-			record(t, "shield_request_details.json", ex.request)
-			record(t, "shield_response_details.json", ex.response)
-		}
+	start := time.Now()
+	if _, err := b.call(context.Background(), StageIntervention, splitStages(req).first, ""); err != nil {
+		t.Fatalf("stage 1: %v", err)
 	}
-	// Two-way levers (#1262 review I1): the direction comes from the chosen
+	stage1 := time.Since(start)
+	resp, _ := liveDetails(t, b, req, "grant_shield")
+	ex := rec.last()
+	t.Logf("act round (cold): stage1=%v details=%v total=%v", stage1, ex.elapsed, time.Since(start))
+	logDetails(t, "grant_shield", resp)
+	record(t, "shield_request_details.json", ex.request)
+	record(t, "shield_response_details.json", ex.response)
+
+	// Two-way lever (#1262 review I1): the direction comes from the chosen
 	// target in Go, Jev answers the strength per side; log both sides and the
 	// resolved magnitude.
-	for i, iv := range []string{"adjust_player_sensitivity", "set_player_handicap"} {
-		resp, raw := liveDetails(t, b, req, iv)
-		for _, a := range raw.Answers {
-			if dir := strengthDirection(a.QuestionID); dir != "" {
-				v, _ := decide.ResolveMagnitude(iv, a.Score)
-				t.Logf("  %s %s strength: %v (confidence %.2f)", iv, dir, v, a.Confidence)
-			}
-		}
-		logDetails(t, iv, resp)
-		if i == 0 {
-			ex := rec.last()
-			record(t, "balance_request_details.json", ex.request)
-			record(t, "balance_response_details.json", ex.response)
+	iv := "adjust_player_sensitivity"
+	resp, raw := liveDetails(t, b, req, iv)
+	for _, a := range raw.Answers {
+		if dir := strengthDirection(a.QuestionID); dir != "" {
+			v, _ := decide.ResolveMagnitude(iv, a.Score)
+			t.Logf("  %s %s strength: %v (confidence %.2f)", iv, dir, v, a.Confidence)
 		}
 	}
+	logDetails(t, iv, resp)
+	ex = rec.last()
+	record(t, "balance_request_details.json", ex.request)
+	record(t, "balance_response_details.json", ex.response)
 }
 
 // liveDetails runs the details call for iv and returns the resolved answers
@@ -182,11 +175,13 @@ func logDetails(t *testing.T, iv string, resp decide.Response) {
 	}
 }
 
-// TestLiveOptionOrder measures Jev 1.13's documented first-option bias on our
-// ffa.intervention question (#1262): the same intervention-stage request with
-// noop first (production order) and noop last, JEV_ORDER_REPEATS times each
-// (default 2), on the near-threshold and the calm state. It logs p(noop) and
-// the choice per run.
+// TestLiveOptionOrder measures Jev 1.13's documented first-option bias on the
+// gated stage-1 ffa.intervention question (#1262, #1281): the same stage-1
+// request with the allow-list's first intervention first (production order)
+// and moved last, JEV_ORDER_REPEATS times each (default 2), on the
+// near-threshold and the calm state. It logs the moved option's probability,
+// the choice and p_yes per run. Before the gate it measured noop first vs
+// last (README).
 func TestLiveOptionOrder(t *testing.T) {
 	key := liveKey(t)
 	repeats := 2
@@ -198,11 +193,11 @@ func TestLiveOptionOrder(t *testing.T) {
 		name string
 		req  decide.Request
 	}{{"near-threshold", testRequest()}, {"calm", calmRequest()}} {
-		first, _, _ := splitStages(sc.req)
-		for _, order := range []string{"noop-first", "noop-last"} {
-			req := first
-			if order == "noop-last" {
-				req = withNoopLast(first)
+		first := splitStages(sc.req).first
+		for _, order := range []string{"production", "first-last"} {
+			req, moved := withFirstInterventionLast(first)
+			if order == "production" {
+				req = first
 			}
 			for r := 0; r < repeats; r++ {
 				resp, err := b.call(context.Background(), StageIntervention, req, "")
@@ -210,23 +205,27 @@ func TestLiveOptionOrder(t *testing.T) {
 					t.Fatalf("%s %s: %v", sc.name, order, err)
 				}
 				iv, _ := resp.Find(decide.QuestionFFAIntervention)
-				t.Logf("%s %s #%d: choice=%s p(noop)=%.2f top=%v", sc.name, order, r+1, iv.Choice, iv.Probabilities[decide.OptionNoop], topProbabilities(iv.Probabilities, 3))
+				gate, _ := resp.Find(GateQuestionID)
+				t.Logf("%s %s #%d: p_yes=%.2f choice=%s p(%s)=%.2f top=%v", sc.name, order, r+1, *gate.Noul, iv.Choice, moved, iv.Probabilities[moved], topProbabilities(iv.Probabilities, 3))
 			}
 		}
 	}
 }
 
-// withNoopLast returns req with ffa.intervention's noop option moved last.
-func withNoopLast(req decide.Request) decide.Request {
+// withFirstInterventionLast returns the gated stage-1 req with
+// ffa.intervention's first option moved last, and that option.
+func withFirstInterventionLast(req decide.Request) (decide.Request, string) {
 	out := decide.Request{State: req.State}
+	moved := ""
 	for _, q := range req.Questions {
 		if q.ID == decide.QuestionFFAIntervention {
+			moved = q.Options[0]
 			opts := append([]string{}, q.Options[1:]...)
-			q.Options = append(opts, q.Options[0])
+			q.Options = append(opts, moved)
 		}
 		out.Questions = append(out.Questions, q)
 	}
-	return out
+	return out, moved
 }
 
 func resolvedMagnitude(resp decide.Response) (float64, bool) {

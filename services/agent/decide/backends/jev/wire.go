@@ -22,14 +22,19 @@ package jev
 //	KindChoice -> "choice": criteria = ordered {option: description} (criteria.go);
 //	              answer {choice, probabilities (every option, sum 1), confidence}.
 //	KindScore  -> "score":  criteria = an ordered ladder of N level
-//	              descriptions; Jev's fractional score s in [0, N-1] is
-//	              SNAPPED to the nearest level round(s) (TypeSafe: score levels
-//	              are not calibrated for interpolation), and that level's
-//	              position maps onto Question.Range: lo + l/(N-1)*(hi-lo). A
+//	              descriptions; the answer is Jev's MOST LIKELY level (argmax
+//	              of its per-level probabilities, a tie going to the gentler
+//	              level: mostLikelyLevel), not the expected score s in [0, N-1]
+//	              (#1281: s lands between modes, e.g. 0.29 / 0.28 / 0.30 gives
+//	              s=1.3, rounded to level 1 although level 2 is most likely).
+//	              Only without level probabilities is s rounded to the nearest
+//	              level. The level's position maps onto Question.Range:
+//	              lo + l/(N-1)*(hi-lo). A
 //	              details-stage ffa.magnitude uses the chosen intervention's own
 //	              levels (criteria.go magnitudeLevels), so its answer is the
 //	              normalized position of a concrete value of that lever.
-//	KindNoul   -> "noul":   no criteria; answer {noul: P(yes)}.
+//	KindNoul   -> "noul":   criteria {true, false} when criteria.go has them
+//	              (the gate, #1281), else none; answer {noul: P(yes)}.
 //
 // Confidence. decide's contract is "confidence that ACTING on the answer is
 // right"; Jev's is the peakedness of the distribution (choice:
@@ -132,8 +137,8 @@ type jevState struct {
 type jevQuestion struct {
 	Type         string `json:"type"`
 	Instructions string `json:"instructions"`
-	// Criteria is an orderedCriteria (choice), a []string ladder (score) or nil
-	// (noul).
+	// Criteria is an orderedCriteria (choice), a []string ladder (score), a
+	// noulCriterion (a noul with criteria, e.g. the gate) or nil.
 	Criteria any `json:"criteria,omitempty"`
 }
 
@@ -205,7 +210,11 @@ func encodeQuestion(q decide.Question, req decide.Request, chosen string) (jevQu
 		instructions, ladder := scoreLadder(q, req, chosen)
 		return jevQuestion{Type: typeScore, Instructions: instructions, Criteria: ladder}, nil
 	case decide.KindNoul:
-		return jevQuestion{Type: typeNoul, Instructions: q.Text}, nil
+		jq := jevQuestion{Type: typeNoul, Instructions: q.Text}
+		if c, ok := noulCriteria[q.ID]; ok {
+			jq.Criteria = c
+		}
+		return jq, nil
 	default:
 		return jevQuestion{}, fmt.Errorf("unsupported question kind %q", clip(string(q.Kind), 32))
 	}
@@ -265,8 +274,10 @@ type jevResponse struct {
 }
 
 type jevAnswer struct {
-	Type          string             `json:"type"`
-	Choice        *string            `json:"choice"`
+	Type   string  `json:"type"`
+	Choice *string `json:"choice"`
+	// Probabilities is per option (choice) or per level index "0".."N-1"
+	// (score).
 	Probabilities map[string]float64 `json:"probabilities"`
 	Confidence    *float64           `json:"confidence"`
 	Score         *float64           `json:"score"`
@@ -366,7 +377,7 @@ func toAnswer(q decide.Question, ja jevAnswer, chosen string) (decide.Answer, *f
 		if ja.Type != typeScore || ja.Score == nil || ja.Confidence == nil {
 			return a, nil, fmt.Errorf("want a score answer with score and confidence, got type %q", clip(ja.Type, 32))
 		}
-		s, err := scoreToRange(*ja.Score, q, chosen)
+		s, err := scoreToRange(*ja.Score, ja.Probabilities, q, chosen)
 		if err != nil {
 			return a, nil, err
 		}
@@ -442,8 +453,9 @@ func renormalize(in map[string]float64) map[string]float64 {
 // scoreEpsilon tolerates float noise at the ends of Jev's [0, N-1] score.
 const scoreEpsilon = 1e-6
 
-// snapLevel rounds Jev's fractional score s in [0, n-1] to the nearest level
-// (half rounds up, math.Round).
+// snapLevel range-checks Jev's expected score s in [0, n-1] and rounds it to
+// the nearest level (half rounds up, math.Round). It is the fallback when an
+// answer carries no level probabilities.
 func snapLevel(s float64, n int) (int, error) {
 	top := float64(n - 1)
 	if !isFinite(s) || s < -scoreEpsilon || s > top+scoreEpsilon {
@@ -452,23 +464,87 @@ func snapLevel(s float64, n int) (int, error) {
 	return int(math.Max(0, math.Min(top, math.Round(s)))), nil
 }
 
-// scoreToRange snaps Jev's score to the nearest level of q's ladder and maps
-// that level onto q.Range. For a details-stage ffa.magnitude the ladder is the
+// mostLikelyLevel is the level with the highest probability in probs (keys
+// "0".."n-1", Jev's per-level distribution). A tie goes to the gentler level
+// (gentler(i, j) reports whether level i is gentler than level j). probs must
+// cover exactly the n levels with finite non-negative values.
+func mostLikelyLevel(probs map[string]float64, n int, gentler func(i, j int) bool) (int, error) {
+	if len(probs) != n {
+		return 0, fmt.Errorf("level probabilities cover %d levels, want %d", len(probs), n)
+	}
+	best, pBest := -1, 0.0
+	for i := 0; i < n; i++ {
+		p, ok := probs[strconv.Itoa(i)]
+		if !ok {
+			return 0, fmt.Errorf("no probability for level %d", i)
+		}
+		if !isFinite(p) || p < 0 {
+			return 0, fmt.Errorf("level %d probability %v", i, p)
+		}
+		switch {
+		case best < 0, p > pBest+levelTieTolerance:
+			best, pBest = i, p
+		case math.Abs(p-pBest) <= levelTieTolerance && gentler(i, best):
+			best, pBest = i, p
+		}
+	}
+	return best, nil
+}
+
+// levelTieTolerance: level probabilities this close are a tie. Jev rounds to
+// two decimals, so a real tie is exact; this only absorbs float noise.
+const levelTieTolerance = 1e-9
+
+// lowerIsGentler is the tie-break of a ladder without a neutral: the lower
+// level (a shorter shield, a quieter volume, a lower position).
+func lowerIsGentler(i, j int) bool { return i < j }
+
+// nearerNeutral is the tie-break on intervention iv's own levels: the value
+// nearer the lever's neutral ("no change"), so the smaller change; the lower
+// level when the lever has no neutral or both are equally near. For a
+// two-way lever's half-ladder (weakest first) that is the weaker strength.
+func nearerNeutral(iv string, levels []float64) func(i, j int) bool {
+	b, _ := decide.MagnitudeBounds(iv)
+	if !b.HasNeutral {
+		return lowerIsGentler
+	}
+	return func(i, j int) bool {
+		di, dj := math.Abs(levels[i]-b.Neutral), math.Abs(levels[j]-b.Neutral)
+		if math.Abs(di-dj) > 1e-9 {
+			return di < dj
+		}
+		return i < j
+	}
+}
+
+// pickLevel returns the level of a score answer on an n-level ladder: Jev's
+// most likely level when the answer carries level probabilities, else the
+// expected score s rounded to the nearest level. s is range-checked either way.
+func pickLevel(s float64, probs map[string]float64, n int, gentler func(i, j int) bool) (int, error) {
+	l, err := snapLevel(s, n)
+	if err != nil || len(probs) == 0 {
+		return l, err
+	}
+	return mostLikelyLevel(probs, n, gentler)
+}
+
+// scoreToRange picks Jev's most likely level of q's ladder (pickLevel) and
+// maps it onto q.Range. For a details-stage ffa.magnitude the ladder is the
 // chosen intervention's own values: the answer is that value's normalized
 // position (decide.NormalizeMagnitude), so decide.ResolveMagnitude returns
 // exactly the level's value (integer levers included). Every other score
 // question uses the evenly spaced scoreLevels ladder: lo + l/(N-1)*(hi-lo).
-func scoreToRange(s float64, q decide.Question, chosen string) (float64, error) {
+func scoreToRange(s float64, probs map[string]float64, q decide.Question, chosen string) (float64, error) {
 	lo, hi := q.Range[0], q.Range[1]
 	if levels := conditionedLevels(q, chosen); levels != nil {
-		l, err := snapLevel(s, len(levels))
+		l, err := pickLevel(s, probs, len(levels), nearerNeutral(chosen, levels))
 		if err != nil {
 			return 0, err
 		}
 		norm, _ := decide.NormalizeMagnitude(chosen, levels[l])
 		return math.Max(lo, math.Min(hi, lo+norm*(hi-lo))), nil
 	}
-	l, err := snapLevel(s, scoreLevels)
+	l, err := pickLevel(s, probs, scoreLevels, lowerIsGentler)
 	if err != nil {
 		return 0, err
 	}
@@ -476,10 +552,9 @@ func scoreToRange(s float64, q decide.Question, chosen string) (float64, error) 
 	return math.Max(lo, math.Min(hi, v)), nil
 }
 
-// nativeConfidenceJSON renders the per-question native confidences as a
-// compact JSON object with sorted keys, for the jev.native_confidence span
-// attribute.
-func nativeConfidenceJSON(m map[string]float64) string {
+// floatMapJSON renders m as a compact JSON object with sorted keys, for the
+// jev.native_confidence and jev.stage1.distribution span attributes.
+func floatMapJSON(m map[string]float64) string {
 	if len(m) == 0 {
 		return ""
 	}

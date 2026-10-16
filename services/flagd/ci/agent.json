@@ -491,6 +491,7 @@
       "state": "ENABLED",
       "variants": {
         "low": 0.5,
+        "gate": 0.6,
         "default": 0.8,
         "strict": 0.95
       },

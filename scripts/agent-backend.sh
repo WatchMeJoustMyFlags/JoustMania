@@ -37,7 +37,7 @@ usage() {
   cat >&2 <<EOF
 usage: $0 [status]
        $0 {rules|claude|openai|jev} [model-variant]
-       $0 threshold {low|default|strict}
+       $0 threshold {low|gate|default|strict}
        $0 capture {on|off}
        $0 effort {auto|none|minimal|low|omit}
 EOF
