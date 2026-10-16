@@ -50,7 +50,8 @@ groups:
           description: "Memory usage is {{$value | humanize1024}}B (>500MB threshold)."
 
       - alert: LowGameLoopHz
-        expr: game_actual_update_frequency_hz < 55
+        # Primary (real) game only: shadow games on a loaded Pi dip below 55 Hz by design.
+        expr: game_actual_update_frequency_hz{game_kind="primary"} < 55
         for: 30s
         labels:
           severity: warning

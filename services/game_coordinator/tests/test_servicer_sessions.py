@@ -1299,3 +1299,107 @@ class _ValidParentSpan(_MockSpan):
 
     def get_span_context(self):
         return _ValidParentSpanContext()
+
+
+class _HoldGame:
+    """Minimal built game: runs until force_end() or finish() (same event loop)."""
+
+    def __init__(self):
+        self._done = asyncio.Event()
+
+    def get_game_name(self):
+        return "FFA"
+
+    async def run(self):
+        await self._done.wait()
+
+    def force_end(self):
+        self._done.set()
+
+    finish = force_end
+
+
+class TestGameModeSeriesLifecycle:
+    """game_current_mode (mode, game_kind, game_id) exists while the game runs and
+    is gone after force-end, natural end and retire (FR-041, #1336)."""
+
+    @pytest.fixture
+    def harness(self, monkeypatch):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from services.game_coordinator import metrics
+
+        gauge = metrics.current_game_mode
+        monkeypatch.setattr(gauge, "_instrument_initialized", True)
+        monkeypatch.setattr(gauge, "_values", {})
+        monkeypatch.setattr(gauge, "_metrics", {})
+        games, tasks = [], []
+
+        def create_game(**_kwargs):
+            games.append(_HoldGame())
+            return games[-1]
+
+        def start_in_loop(session):
+            # Run the real session loop as a task on this loop instead of a thread.
+            clients = MagicMock()
+            clients.connect = AsyncMock()
+            clients.close = AsyncMock()
+            clients.is_connected = True
+            session.clients = clients
+            session.game_running = True
+            tasks.append(asyncio.get_running_loop().create_task(session._run_game_loop_async()))
+
+        monkeypatch.setattr(game_session_mod.GameFactory, "create_game", staticmethod(create_game))
+        monkeypatch.setattr(game_session_mod.GameSession, "start_thread", start_in_loop)
+        return gauge, games, tasks
+
+    @staticmethod
+    async def _wait_for(predicate):
+        for _ in range(200):
+            if predicate():
+                return
+            await asyncio.sleep(0.005)
+        raise AssertionError("condition not reached")
+
+    @pytest.mark.uc("UC-041", flow="main", steps=[5])
+    @pytest.mark.asyncio
+    async def test_mode_series_live_then_gone_after_force_end_and_retire(self, harness):
+        gauge, _games, tasks = harness
+        servicer = GameCoordinatorServicer()
+        ok, game_id = await servicer._start_game_from_config(_config(game_name="JoustFFA"), _MockSpan())
+        assert ok, game_id
+        await self._wait_for(lambda: gauge._values)
+        assert {dict(k)["mode"]: dict(k)["game_id"] for k in gauge._values} == {"FFA": game_id}
+
+        resp = await servicer.ForceEndGame(
+            game_coordinator_pb2.ForceEndGameRequest(game_id=game_id, reason="test"), MockGrpcContext()
+        )
+        assert resp.success is True
+        await asyncio.gather(*tasks)
+        assert game_id not in servicer.sessions  # force-end retires eagerly
+        assert gauge._values == {}
+
+    @pytest.mark.uc("UC-041", flow="main", steps=[5])
+    @pytest.mark.asyncio
+    async def test_mode_series_gone_after_natural_end_before_retire(self, harness):
+        gauge, games, tasks = harness
+        servicer = GameCoordinatorServicer()
+        ok, game_id = await servicer._start_game_from_config(_config(), _MockSpan())
+        assert ok, game_id
+        await self._wait_for(lambda: gauge._values)
+
+        games[0].finish()
+        await asyncio.gather(*tasks)
+        # Natural end: still registered (retired lazily on the next start) but
+        # the mode series is already gone.
+        assert game_id in servicer.sessions
+        assert gauge._values == {}
+
+        # Retire (via the next start's sweep) is an idempotent backstop.
+        ok2, game_id2 = await servicer._start_game_from_config(_config(serials=("b1", "b2")), _MockSpan())
+        assert ok2, game_id2
+        assert game_id not in servicer.sessions
+        await self._wait_for(lambda: gauge._values)
+        assert {dict(k)["game_id"] for k in gauge._values} == {game_id2}
+        games[1].finish()
+        await asyncio.gather(*tasks)

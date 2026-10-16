@@ -284,3 +284,39 @@ class TestGameStateGaugesPerGame:
         metrics.clear_session_player_analytics(list(real.players), game_id="game_real", game_kind="primary")
         for gauge in GAME_STATE_GAUGES:
             assert _series_by_game(gauge) == {}, gauge.name
+
+    @pytest.mark.uc("UC-041", flow="main", steps=[5])
+    @pytest.mark.asyncio
+    async def test_game_that_raises_removes_its_own_series(self, live_gauges):
+        """run()'s finally removes this game's game-state series even on error,
+        and leaves a concurrent game's series alone."""
+        other = _make_ffa("game_other", "shadow")
+        other._emit_sensitivity_metric()
+        other._emit_music_tempo_metric()
+
+        game = FFAGame(
+            controller_manager_client=MockControllerManagerService(
+                num_controllers=2, death_schedule={}, max_duration=10.0
+            ),
+            event_publisher=EventCollector().publish,
+            audio_client=None,
+            game_id="game_boom",
+            initial_players=[game_coordinator_pb2.Player(serial="p1"), game_coordinator_pb2.Player(serial="p2")],
+        )
+        game.music_speed = 1.0
+        game._emit_music_tempo_metric()
+
+        sensitivity_seen = []
+
+        async def boom():
+            sensitivity_seen.extend(_series_by_game(metrics.game_sensitivity))
+            raise RuntimeError("boom")
+
+        # Fails right after the init phase emitted game_sensitivity.
+        game._initialize_players = boom
+        with pytest.raises(RuntimeError, match="boom"):
+            await game.run()
+
+        assert "game_boom" in sensitivity_seen  # was set before the failure
+        for gauge in (metrics.music_tempo, metrics.game_sensitivity):
+            assert set(_series_by_game(gauge)) == {"game_other"}, gauge.name

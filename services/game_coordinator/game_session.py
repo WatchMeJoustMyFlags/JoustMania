@@ -136,6 +136,11 @@ class GameSession:
         # Captured/cleared in lockstep with game_trace_id so retire removes the
         # exact gauge series.
         self.gameplay_phase_span_id = ""
+
+        # Mode label of this game's game_current_mode series: the built game's
+        # get_game_name(), the same value as the game.mode span attribute. "" until
+        # the game is built (publish_game_mode) and again once the series is removed.
+        self.game_mode = ""
         # Hex span_id of this session's game_cycle span (#1325, UC-041 BR-004).
         # game_cycle is the child of gameplay_phase the agent parents its in-game
         # spans under (UC-040 BR-013). Empty until base.py opens game_cycle and
@@ -189,8 +194,7 @@ class GameSession:
         # Per-game mode marker and game-state gauges (FR-041). The game removes
         # its game-state series when run() ends; removing them again here is
         # idempotent and catches a game that never reached its own cleanup.
-        with suppress(KeyError, ValueError):
-            metrics.current_game_mode.remove(self.game_name, self.game_kind, self.game_id)
+        self._remove_game_mode()
         metrics.clear_game_state_gauges(self.game_kind, self.game_id)
 
         if self.game_trace_id:
@@ -246,17 +250,29 @@ class GameSession:
         """
         self._republish_trace_correlation("game_cycle_span_id", game_cycle_span_id)
 
-    def publish_game_mode(self) -> None:
+    def publish_game_mode(self, mode: str) -> None:
         """Set this game's game_current_mode series to 1 (FR-041).
 
-        One series per game (mode, game_kind, game_id) so the agent attributes
-        the mode to the right game; ``clear_metrics`` removes it at retire.
+        ``mode`` is the built game's ``get_game_name()`` ("FFA", "Zombie", ...),
+        the same vocabulary as the game.mode span attribute, so the agent sees one
+        consistent mode (not the menu enum name in ``game_name``). One series per
+        game (mode, game_kind, game_id); removed when the game loop ends and again
+        at retire.
         """
+        self.game_mode = mode
         metrics.current_game_mode.labels(
-            mode=self.game_name,
+            mode=mode,
             game_kind=self.game_kind,
             game_id=self.game_id,
         ).set(1)
+
+    def _remove_game_mode(self) -> None:
+        """Remove this game's game_current_mode series (idempotent)."""
+        if not self.game_mode:
+            return
+        with suppress(KeyError, ValueError):
+            metrics.current_game_mode.remove(self.game_mode, self.game_kind, self.game_id)
+        self.game_mode = ""
 
     def publish_gameplay_phase_span_id(self, gameplay_phase_span_id: str) -> None:
         """Re-emit the correlation gauge carrying the gameplay_phase span_id (#1195).
@@ -533,6 +549,7 @@ class GameSession:
                 # before the final value is set below so a late tick cannot
                 # overwrite it.
                 self.current_game = game
+                self.publish_game_mode(game.get_game_name())
                 duration_ticker = asyncio.create_task(self._publish_duration_while_running())
                 try:
                     await game.run()
@@ -563,6 +580,10 @@ class GameSession:
                     # one — otherwise it would occupy a concurrency slot
                     # forever (#775 natural-end retirement relies on this).
                     self.game_state = game_coordinator_pb2.GameState.ENDED
+
+                # The game is over: its mode series goes now, not at retire, so
+                # it never reads 1 between games (retire removes it again).
+                self._remove_game_mode()
 
                 # Update lifecycle metrics for THIS session's kind (#775) +
                 # experiment attribution (#975). experiment_id/arm are "" for a

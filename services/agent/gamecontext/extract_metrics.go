@@ -429,6 +429,8 @@ func (s *Store) applyDataPoint(name string, dp pmetric.NumberDataPoint) bool {
 // this call (the Multiplexer routes on GameID); adoptGame stays the per-store
 // enrichment step within the already-selected partition.
 func (s *Store) adoptGame(labels gameLabels) {
+	// Partial labels are safe: every setter below ignores "", so a signal without
+	// experiment_id/arm (tempo, thresholds, mode) never clears the attribution.
 	s.AdoptSessionID(labels.GameID)
 	s.SetGameKind(labels.GameKind)
 	s.SetExperimentID(labels.ExperimentID)
