@@ -138,8 +138,9 @@ def measure_flag_propagation(
 
 def format_distribution(latencies: dict[str, list[float | None]]) -> str:
     """Summary line plus every raw sample per reader, for the CI log."""
+    samples = max((len(v) for v in latencies.values()), default=0)
     lines = [
-        f"--- NFR-014 flag propagation, {SAMPLES} in-place edits of {FLAG_SET}.json ---"
+        f"--- NFR-014 flag propagation, {samples} in-place edits of {FLAG_SET}.json ---"
     ]
     for name, values in latencies.items():
         seen = sorted(v for v in values if v is not None)
