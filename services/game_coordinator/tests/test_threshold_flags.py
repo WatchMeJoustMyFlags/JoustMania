@@ -56,6 +56,7 @@ ZOMBIE_JSON_DEFAULT = {
 # ========================================================================
 
 
+@pytest.mark.uc("UC-030", flow="main", br=["BR-001"])
 def test_game_json_default_matches_module_constants():
     """The flag's default variant must equal the hardcoded module constants."""
     assert GAME_JSON_DEFAULT["slow_warning"] == SLOW_WARNING
@@ -64,6 +65,7 @@ def test_game_json_default_matches_module_constants():
     assert GAME_JSON_DEFAULT["fast_max"] == FAST_MAX
 
 
+@pytest.mark.uc("UC-030", flow="main", br=["BR-001"])
 def test_default_flag_reproduces_current_behavior():
     """Resolving the game.json default yields exactly the module constants."""
     resolved = resolve_base_thresholds(GAME_JSON_DEFAULT)
@@ -223,6 +225,7 @@ def test_base_init_reads_flag_once():
     assert threshold_calls[0].args == ("game", "thresholds", {})
 
 
+@pytest.mark.uc("UC-030", flow="main", br=["BR-001"])
 def test_base_init_applies_flag_override():
     custom = {
         "slow_warning": [1.0, 1.1, 1.2, 1.3, 1.4],

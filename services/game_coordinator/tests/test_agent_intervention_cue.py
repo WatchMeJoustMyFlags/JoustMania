@@ -75,6 +75,7 @@ def test_cue_enabled_reads_user_flag():
 # Emission
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
+@pytest.mark.uc("UC-031", flow="main", br=["BR-002"])
 async def test_broadcast_cue_pulses_all_alive_players():
     from proto import controller_manager_pb2
 

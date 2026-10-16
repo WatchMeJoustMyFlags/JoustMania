@@ -80,6 +80,37 @@ class TestAudioHelper:
             assert mock_stub.PlaySound.call_args.args[0].volume == pytest.approx(0.55)
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-031", flow="main", steps=[1])
+    async def test_lobby_music_starts_at_lobby_music_volume(self):
+        """UC-031 step 1: lobby music plays at audio_volume.lobby_music (volume set before the music starts)."""
+        from proto import audio_pb2
+
+        client = MagicMock()
+        client.get_float_value.side_effect = lambda name, default: (
+            0.25 if name == "audio_volume.lobby_music" else default
+        )
+        audio = AudioHelper(MagicMock(), user_prefs_client=client)
+        calls: list = []
+
+        class RecordingStub:
+            def __init__(self, _channel):
+                pass
+
+            async def SetVolume(self, request):  # noqa: N802 - gRPC stub name
+                calls.append(("SetVolume", request.volume))
+                return audio_pb2.SetVolumeResponse(success=True)
+
+            async def PlayMusic(self, request):  # noqa: N802 - gRPC stub name
+                calls.append(("PlayMusic", request.file_pattern))
+                return audio_pb2.PlayMusicResponse(track_id="lobby-1", success=True)
+
+        with patch("proto.audio_pb2_grpc.AudioServiceStub", RecordingStub):
+            await audio.start_lobby_music()
+
+        assert calls == [("SetVolume", pytest.approx(0.25)), ("PlayMusic", "Menu/music/*.ogg")]
+        assert audio.lobby_music_track_id == "lobby-1"
+
+    @pytest.mark.asyncio
     async def test_play_sound_string(self, audio):
         """play_sound should handle string sound paths."""
         with patch("proto.audio_pb2_grpc.AudioServiceStub") as mock_stub_class:

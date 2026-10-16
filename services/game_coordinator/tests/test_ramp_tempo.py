@@ -260,6 +260,7 @@ async def test_check_music_speed_drives_ramp_toward_target_and_holds():
 
 
 @pytest.mark.asyncio
+@pytest.mark.uc("UC-031", flow="A3")
 async def test_active_ramp_suspends_natural_schedule():
     """While a ramp holds at target, the natural slow/fast schedule must not fire."""
     game = make_game()
@@ -275,6 +276,7 @@ async def test_active_ramp_suspends_natural_schedule():
 
 
 @pytest.mark.asyncio
+@pytest.mark.uc("UC-031", flow="A3")
 async def test_override_wins_over_ramp():
     """A hard tempo_override takes precedence over a ramp (existing precedence)."""
     game = make_game()

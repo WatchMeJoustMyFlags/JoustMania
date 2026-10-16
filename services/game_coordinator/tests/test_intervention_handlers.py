@@ -182,6 +182,7 @@ async def test_audio_cue_no_game_is_noop():
 # volume_override
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
+@pytest.mark.uc("UC-031", flow="A3")
 async def test_volume_override_applies_value():
     from proto import audio_pb2
 
@@ -198,6 +199,7 @@ async def test_volume_override_applies_value():
 
 
 @pytest.mark.asyncio
+@pytest.mark.uc("UC-031", flow="A3")
 async def test_volume_override_restores_game_volume_on_revert():
     game = FakeGame()
     mgr, _ = make_manager(interventions={"volume_override": 0.3}, game=game)

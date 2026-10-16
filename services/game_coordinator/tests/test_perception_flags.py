@@ -15,6 +15,8 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from services.game_coordinator.games.analytics import PlayerAnalytics, Playstyle
 from services.game_coordinator.games.base import BaseGameMode
 from services.game_coordinator.games.ffa import FFAGame
@@ -203,6 +205,7 @@ def test_read_ema_weight_default_when_no_agent_client():
 # =============================================================================
 
 
+@pytest.mark.uc("UC-030", flow="main", steps=[4])
 def test_ema_weight_frozen_at_game_init():
     """A running game reads ema_weight ONCE at init; changing the flag mid-game
     does not alter the running game's smoothing weight (#722 §5)."""

@@ -5,6 +5,8 @@ Unit tests for AudioManager.
 import os
 from unittest.mock import patch
 
+import pytest
+
 from services.audio.music_player import DummyMusicPlayer
 
 
@@ -72,6 +74,7 @@ class TestAudioManagerPlaySound:
 
     @patch("services.audio.metrics.audio_channel_saturation_total")
     @patch("services.audio.metrics.audio_sounds_played_total")
+    @pytest.mark.uc("UC-031", flow="A2")
     def test_play_sound_no_channel_increments_saturation(self, mock_played, mock_saturation):
         """All channels busy increments no_channel and saturation metrics."""
         from services.audio.servicer import AudioManager
@@ -126,6 +129,7 @@ class TestAudioManagerPlaySound:
 class TestAudioManagerFindChannel:
     """Tests for AudioManager._find_channel."""
 
+    @pytest.mark.uc("UC-031", flow="main", steps=[5])
     def test_find_free_channel(self):
         from services.audio.servicer import AudioManager
 
@@ -144,6 +148,7 @@ class TestAudioManagerFindChannel:
         channel = manager._find_channel(force_priority=False)
         assert channel is None
 
+    @pytest.mark.uc("UC-031", flow="A2")
     def test_find_channel_force_priority_steal(self):
         from services.audio.servicer import AudioManager
 
@@ -154,6 +159,7 @@ class TestAudioManagerFindChannel:
         channel = manager._find_channel(force_priority=True, priority=3)
         assert channel is not None
 
+    @pytest.mark.uc("UC-031", flow="A2")
     def test_find_channel_force_priority_no_steal_same_priority(self):
         from services.audio.servicer import AudioManager
 

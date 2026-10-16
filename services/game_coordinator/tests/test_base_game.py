@@ -112,6 +112,7 @@ class TestThresholdCalculation:
             game_id="test_threshold",
         )
 
+    @pytest.mark.uc("UC-030", flow="main", steps=[5])
     def test_slow_music_uses_slow_thresholds(self, game):
         """At SLOW_MUSIC_SPEED, thresholds should match SLOW_* arrays."""
         from lib.types import Sensitivity
@@ -130,6 +131,7 @@ class TestThresholdCalculation:
             assert expected_warn == SLOW_WARNING[sens_idx], f"Sensitivity {sens.name}"
             assert expected_death == SLOW_MAX[sens_idx], f"Sensitivity {sens.name}"
 
+    @pytest.mark.uc("UC-030", flow="main", steps=[5])
     def test_fast_music_uses_fast_thresholds(self, game):
         """At FAST_MUSIC_SPEED, thresholds should match FAST_* arrays."""
         from lib.types import Sensitivity
@@ -148,6 +150,7 @@ class TestThresholdCalculation:
             assert expected_warn == FAST_WARNING[sens_idx], f"Sensitivity {sens.name}"
             assert expected_death == FAST_MAX[sens_idx], f"Sensitivity {sens.name}"
 
+    @pytest.mark.uc("UC-030", flow="main", steps=[5])
     def test_mid_tempo_interpolates_thresholds(self, game):
         """At midpoint tempo, thresholds should be midpoint of slow/fast."""
         from lib.types import Sensitivity
@@ -219,6 +222,7 @@ class TestWarningBehavior:
         return game
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="main", steps=[8])
     async def test_warning_does_not_prevent_death(self, game_with_player):
         """Player CAN die even when in warning state - warnings are just feedback."""
         game = game_with_player
@@ -252,6 +256,7 @@ class TestWarningBehavior:
         assert len(kill_called) > 0, "Player should die even during warning state"
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="main", steps=[7])
     async def test_warning_sets_warning_until(self, game_with_player):
         """Warning should set warning_until for feedback duration."""
         game = game_with_player
@@ -273,6 +278,7 @@ class TestWarningBehavior:
         assert player.warning_until <= after_time + WARNING_DURATION + 0.1
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="main", steps=[7])
     async def test_no_repeated_warnings_during_warning_state(self, game_with_player):
         """Should not trigger new warning while already in warning state."""
         game = game_with_player
@@ -343,6 +349,7 @@ class TestGracePeriodSpikeMemory:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="A1")
     async def test_spike_during_grace_does_not_kill_after_grace(self, game_with_player):
         """Lethal frames during grace must not leave EMA memory that kills
         the player on the first calm frame after grace expires."""
@@ -372,6 +379,7 @@ class TestGracePeriodSpikeMemory:
         assert not kill_called, "Calm frame after grace must not kill — EMA held stale spike memory"
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="A1")
     async def test_sustained_motion_past_grace_still_kills(self, game_with_player):
         """Grace forgives the spike, not ongoing violent motion: if lethal
         acceleration continues past grace expiry, the player dies."""
@@ -456,6 +464,7 @@ class TestDeathDetection:
         assert player.alive is True, f"Player should survive at {safe_accel}g (threshold: {SLOW_MAX[sens_idx]}g)"
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="main", steps=[8])
     async def test_above_threshold_dies(self, game_with_player):
         """Player should die with acceleration above death threshold."""
         from lib.types import Sensitivity
@@ -613,6 +622,7 @@ class TestEMAFilter:
         return game
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="main", steps=[4])
     async def test_ema_primed_with_first_reading(self, game_with_player):
         """First reading should prime EMA instead of smoothing from 0."""
         game = game_with_player
@@ -635,6 +645,7 @@ class TestEMAFilter:
         assert player.smoothed_accel == pytest.approx(1.0, abs=0.01)
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="main", steps=[4])
     async def test_ema_smooths_subsequent_readings(self, game_with_player):
         """Subsequent readings should be smoothed with 80/20 weighting."""
         game = game_with_player

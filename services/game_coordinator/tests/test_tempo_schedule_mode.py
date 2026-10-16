@@ -23,6 +23,8 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 # Setup paths for imports
 test_dir = Path(__file__).parent
 service_dir = test_dir.parent
@@ -122,6 +124,7 @@ def test_get_music_change_time_uses_seam():
     assert abs(result - (before + 7.5)) < 0.05
 
 
+@pytest.mark.uc("UC-031", flow="main", steps=[3])
 def test_default_rule_stays_within_windows():
     """Default rule keeps drawing within the same constant ranges as pre-#1109."""
     from services.game_coordinator.games.base import (
@@ -148,6 +151,7 @@ def test_default_rule_stays_within_windows():
 # ========================================================================
 
 
+@pytest.mark.uc("UC-031", flow="A5")
 def test_agent_mode_no_directive_falls_back_to_default_rule():
     """``agent`` with no directive draws the same delay as the default rule."""
     game = _make_ffa()
@@ -163,6 +167,7 @@ def test_agent_mode_no_directive_falls_back_to_default_rule():
         assert agent_delay == rule_delay
 
 
+@pytest.mark.uc("UC-031", flow="A5")
 def test_agent_mode_honors_directive():
     """A present, non-negative directive is used verbatim (no RNG draw)."""
     game = _make_ffa()
@@ -211,6 +216,7 @@ def test_apply_unknown_mode_resolves_to_rule():
 # ========================================================================
 
 
+@pytest.mark.uc("UC-031", flow="A5")
 def test_listener_switches_mode_live_midgame():
     """Flipping the flag via the PROVIDER_CONFIGURATION_CHANGED handler switches
     a RUNNING game's source mode without a restart.

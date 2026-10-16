@@ -18,6 +18,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 # Setup paths for imports
 test_dir = Path(__file__).parent
 service_dir = test_dir.parent
@@ -145,6 +147,7 @@ def test_valid_custom_windows_resolve():
 # ========================================================================
 
 
+@pytest.mark.uc("UC-031", flow="main", steps=[3])
 def test_default_instance_reproduces_scheduling_ranges():
     """With default windows, _get_music_change_time stays within constant ranges."""
     game = _make_ffa()
@@ -168,6 +171,7 @@ def test_default_instance_reproduces_scheduling_ranges():
             assert lo - 0.001 <= delay <= hi + 0.001
 
 
+@pytest.mark.uc("UC-031", flow="main", steps=[3])
 def test_end_game_windows_used_when_all_dead():
     """game_percent=1.0 -> end-game windows bound the delay."""
     game = _make_ffa()
