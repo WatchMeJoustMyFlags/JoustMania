@@ -289,10 +289,10 @@ class TestUpdateControllerStatesWiring:
         assert loop._hw_drops["AA"] == 1  # the None
 
 
-@pytest.mark.uc("UC-051", flow="main", steps=[1])
 class TestUnstableAdapterDegradationEndToEnd:
     """Drive a real UnstableAdapter through the accumulator; all 3 thresholds break."""
 
+    @pytest.mark.uc("UC-051", flow="main", steps=[1])
     def test_unstable_routed_serial_violates_all_thresholds(self):
         from services.controller_manager.multiplexer.unstable_adapter import UnstableAdapter
 

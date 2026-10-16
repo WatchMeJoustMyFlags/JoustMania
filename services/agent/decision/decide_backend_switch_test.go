@@ -80,6 +80,9 @@ func TestRemote_BackendSwitchAppliesNextCycle(t *testing.T) {
 			t.Fatalf("cycle 3: remote calls = %d, want still 1 after switching back to rules", n)
 		}
 		spans, _ = newDecideSpans(h, seen)
+		if len(spans) != 1 {
+			t.Fatalf("cycle 3: agent.decide spans = %d, want 1 (rules decides again)", len(spans))
+		}
 		for _, s := range spans {
 			if got := strAttr(t, s, AttrDecideBackendRequested); got != "rules" {
 				t.Fatalf("cycle 3: decide.backend.requested = %q, want rules", got)

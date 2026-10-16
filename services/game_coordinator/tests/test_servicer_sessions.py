@@ -1157,7 +1157,7 @@ class TestExperimentSpawnBinding:
         assert session.experiment_id == ""
         assert session.arm == ""
 
-    @pytest.mark.uc("UC-043", br=["BR-001"])
+    @pytest.mark.uc("UC-043", flow="main", br=["BR-001"])
     @pytest.mark.asyncio
     async def test_real_start_drops_experiment_fields_invariant(self, servicer):
         """HARD INVARIANT (#982): a menu-origin (real/primary) start that
@@ -1180,7 +1180,7 @@ class TestExperimentSpawnBinding:
         assert session.experiment_id == ""
         assert session.arm == ""
 
-    @pytest.mark.uc("UC-043", br=["BR-001"])
+    @pytest.mark.uc("UC-043", flow="main", br=["BR-001"])
     @pytest.mark.asyncio
     async def test_rng_seed_applies_to_shadow_and_is_dropped_for_real(self, servicer):
         """UC-043 BR-001: the paired CRN ``rng_seed`` seeds a shadow session, and a

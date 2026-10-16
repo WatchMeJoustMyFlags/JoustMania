@@ -857,7 +857,7 @@ class TestResolveAdapterForSerial:
 
     @pytest.mark.uc("UC-002", flow="main", steps=[3])
     @pytest.mark.uc("UC-050", flow="A4")
-    @pytest.mark.uc("UC-052", br=["BR-001"])
+    @pytest.mark.uc("UC-052", flow="main", br=["BR-001"])
     def test_explicit_targeting_beats_rollout(self):
         """Explicit TARGETING_MATCH takes precedence over an active rollout."""
         a_py = _make_adapter("python")
