@@ -100,6 +100,41 @@ func (r *ObjectiveRules) Evaluate(_ context.Context, c gamecontext.GameContext) 
 	}
 	r.lastEval = now
 
+	ranked, weights, fitEval := r.rankLocked(c, now)
+	r.lastFitness = fitEval
+
+	// Emission is bounded to maxDecisionsPerEval per evaluation. The weighted
+	// per-minute budget (policy.max_interventions_per_minute) is NOT enforced
+	// here any more: the unified rate limiter moved to the decision loop's
+	// permission chain (ratelimit.go) so the budget is spent only on decisions
+	// that survive the allow-list and battery gates. cd.cost is still used by
+	// scoreAndSort for deterministic cheaper-first tie-breaking.
+	var out []Decision
+	for _, sc := range ranked {
+		if len(out) == maxDecisionsPerEval {
+			break
+		}
+		cd := sc.candidate
+		d := cd.decision
+		d.Objectives = weights
+		out = append(out, d)
+		if cd.difficulty {
+			// Difficulty interventions invalidate the movement-variance
+			// baseline: players change behavior in response (#722 §5).
+			r.lastDifficultyAt = now
+		}
+	}
+	return out
+}
+
+// rankLocked runs the rule set against c and returns every candidate that
+// survives the policy filters and minScore, scored and in emission order, plus
+// the weights and fitness evaluation used. It is the side-effect-light core
+// shared by Evaluate and the decide rules backend (decide_rules.go): it draws
+// R9's chaos roll from r.rng but does NOT touch lastEval, lastFitness or
+// lastDifficultyAt — those belong to the caller that actually emits. Caller
+// holds r.mu.
+func (r *ObjectiveRules) rankLocked(c gamecontext.GameContext, now time.Time) ([]scoredCandidate, map[string]float64, FitnessEvaluation) {
 	weights := normalizedWeights(r.objectives.Objectives())
 	pol := r.policy.Policy()
 	fit := r.fitness.Fitness()
@@ -107,9 +142,8 @@ func (r *ObjectiveRules) Evaluate(_ context.Context, c gamecontext.GameContext) 
 	// Evaluate the per-objective fitness functions against the live context and
 	// the flag-resolved thresholds (#731). The evaluation both steers selection
 	// (failing fitness amplifies the candidates serving that objective) and is
-	// retained for the span's cycle-level fitness.evaluated attribute.
+	// retained by Evaluate for the span's cycle-level fitness.evaluated attribute.
 	fitEval := EvaluateFitness(c, fit)
-	r.lastFitness = fitEval
 
 	// R9's randomness is drawn here so the rule functions stay pure.
 	roll, rollTarget := r.chaosRoll(c)
@@ -121,29 +155,7 @@ func (r *ObjectiveRules) Evaluate(_ context.Context, c gamecontext.GameContext) 
 
 	cands = applyBatteryPolicy(cands, c, pol, weights)
 	cands = r.applyVarianceCooldown(cands, now, pol)
-	cands = scoreAndSort(cands, weights, fitEval)
-
-	// Emission is bounded to maxDecisionsPerEval per evaluation. The weighted
-	// per-minute budget (policy.max_interventions_per_minute) is NOT enforced
-	// here any more: the unified rate limiter moved to the decision loop's
-	// permission chain (ratelimit.go) so the budget is spent only on decisions
-	// that survive the allow-list and battery gates. cd.cost is still used by
-	// scoreAndSort for deterministic cheaper-first tie-breaking.
-	var out []Decision
-	for _, cd := range cands {
-		if len(out) == maxDecisionsPerEval {
-			break
-		}
-		d := cd.decision
-		d.Objectives = weights
-		out = append(out, d)
-		if cd.difficulty {
-			// Difficulty interventions invalidate the movement-variance
-			// baseline: players change behavior in response (#722 §5).
-			r.lastDifficultyAt = now
-		}
-	}
-	return out
+	return scoreAndSort(cands, weights, fitEval), weights, fitEval
 }
 
 // chaosRoll draws R9's randomness: a roll in [0,1) and a random active player.
@@ -251,19 +263,15 @@ func (r *ObjectiveRules) applyVarianceCooldown(cands []candidate, now time.Time,
 // fitness up to doubles the effective urgency of endurance candidates, which can
 // flip the selected winner between objectives without ever blocking a candidate
 // outright.
-func scoreAndSort(cands []candidate, weights map[string]float64, fit FitnessEvaluation) []candidate {
-	type scored struct {
-		candidate
-		score float64
-	}
-	kept := make([]scored, 0, len(cands))
+func scoreAndSort(cands []candidate, weights map[string]float64, fit FitnessEvaluation) []scoredCandidate {
+	kept := make([]scoredCandidate, 0, len(cands))
 	for _, cd := range cands {
 		amp := 1 + fit.Pressure(cd.objective)
 		s := clamp01(cd.urgency) * weights[cd.objective] * amp
 		if s < minScore {
 			continue
 		}
-		kept = append(kept, scored{cd, s})
+		kept = append(kept, scoredCandidate{cd, s})
 	}
 	sort.SliceStable(kept, func(i, j int) bool {
 		if kept[i].score != kept[j].score {
@@ -277,9 +285,12 @@ func scoreAndSort(cands []candidate, weights map[string]float64, fit FitnessEval
 		}
 		return kept[i].decision.TargetSerial < kept[j].decision.TargetSerial
 	})
-	out := make([]candidate, len(kept))
-	for i, s := range kept {
-		out[i] = s.candidate
-	}
-	return out
+	return kept
+}
+
+// scoredCandidate is a candidate that survived scoreAndSort, with the score it
+// was ranked by (urgency x weight x fitness amplification, >= minScore).
+type scoredCandidate struct {
+	candidate
+	score float64
 }
