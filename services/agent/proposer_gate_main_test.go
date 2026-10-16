@@ -31,6 +31,7 @@ func (f fakeProposerGateFlags) ExperimentsEnabled(_ context.Context, def bool) b
 
 func boolPtr(b bool) *bool { return &b }
 
+// UC: UC-042 A5 BR-002
 func TestProposerPermit(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -58,6 +59,7 @@ func TestProposerPermit(t *testing.T) {
 
 // The permit is read at USE time: flipping the source after construction changes
 // the next answer (no startup caching).
+// UC: UC-042 A5 BR-002
 func TestProposerPermit_ReadsLive(t *testing.T) {
 	src := &liveGateFlags{enabled: true, experiments: true}
 	permit := proposerPermit(src, false)
@@ -89,6 +91,7 @@ func realOnlyGate(maxPerMinute int) snapshotFlags {
 
 // With the stub backend no admission is installed, so a propose cycle never
 // charges the shared LLM budget; with a real backend each model call takes a slot.
+// UC: UC-042 A2 BR-001
 func TestProposerAdmissionFor_StubNeverChargesBudget(t *testing.T) {
 	budget := decision.NewLLMBudget()
 	src := realOnlyGate(1)
@@ -112,6 +115,7 @@ func TestProposerAdmissionFor_StubNeverChargesBudget(t *testing.T) {
 	}
 }
 
+// UC: UC-042 A2 BR-001
 func TestProposerAdmissionFor_RealBackendChargesSharedBudget(t *testing.T) {
 	budget := decision.NewLLMBudget()
 	src := realOnlyGate(1)

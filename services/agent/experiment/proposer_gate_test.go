@@ -46,6 +46,7 @@ func (a *fakeAdmission) calls() int {
 	return len(a.kinds)
 }
 
+// UC: UC-042 A5 BR-002
 func TestProposeOnce_KillSwitchOrExperimentsOffDoesNothing(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -88,6 +89,7 @@ func TestProposeOnce_KillSwitchOrExperimentsOffDoesNothing(t *testing.T) {
 
 // A disabled cycle must not consume the cadence window: the first cycle after the
 // agent is switched back on proposes immediately.
+// UC: UC-042 A5
 func TestProposeOnce_DisabledCycleDoesNotAdvanceCadence(t *testing.T) {
 	backend := &fakeProposerBackend{response: validReply}
 	p, _, _, _ := proposerWithRecorder(t, backend)
@@ -105,6 +107,7 @@ func TestProposeOnce_DisabledCycleDoesNotAdvanceCadence(t *testing.T) {
 // The kill switch is re-read right before the write: a flip to off while the model
 // call is in flight still prevents the game.json write, and the reason lands on the
 // attempt span.
+// UC: UC-042 A5 BR-002
 func TestProposeOnce_SwitchedOffDuringInferenceDoesNotWrite(t *testing.T) {
 	var on atomic.Bool
 	on.Store(true)
@@ -151,6 +154,7 @@ func (b *switchingBackend) Infer(context.Context, llm.Prompt) (string, error) {
 
 // A refused LLM admission (budget exhausted / not eligible) skips the model call,
 // writes nothing, reports the gate reason, and rolls the cadence window back.
+// UC: UC-042 A2 BR-002
 func TestProposeOnce_LLMAdmissionRefusedSkipsCall(t *testing.T) {
 	backend := &fakeProposerBackend{response: validReply}
 	p, path, rec, _ := proposerWithRecorder(t, backend)

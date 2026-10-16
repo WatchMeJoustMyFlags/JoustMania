@@ -31,6 +31,7 @@ func proposerLoop(t *testing.T) *experimentLoop {
 // TestRetroProposer_DisabledByDefault: with AGENT_EXPERIMENT_PROPOSER_ENABLED unset,
 // a recorded suggestion is NEVER turned into an experiment — the loop's autonomous
 // cadence is unchanged for anyone who has not opted in.
+// UC: UC-042 A3
 func TestRetroProposer_DisabledByDefault(t *testing.T) {
 	t.Setenv(envProposerEnabled, "") // explicitly unset
 	loop := proposerLoop(t)
@@ -61,6 +62,7 @@ func TestRetroProposer_NilProposerOrSelector_NoOp(t *testing.T) {
 // TestRetroProposer_EnabledDeclaresFromSuggestion: opted in, a recorded suggestion
 // becomes a STARTED experiment whose thesis is seeded from the retro, on a flag the
 // dynamic selector chose.
+// UC: UC-042 A3
 func TestRetroProposer_EnabledDeclaresFromSuggestion(t *testing.T) {
 	t.Setenv(envProposerEnabled, "true")
 	loop := proposerLoop(t)

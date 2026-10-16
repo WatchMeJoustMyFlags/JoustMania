@@ -539,6 +539,7 @@ func TestUnknownIntervention(t *testing.T) {
 // `noop` intervention succeeds (it is NOT an unknown-intervention error) and
 // writes nothing — every flag round-trips byte-for-byte. Probe mode can thus
 // exercise the full ACT path harmlessly.
+// UC: UC-040 A23
 func TestNoopDispatchIsByteStableSuccess(t *testing.T) {
 	w, path := newTestWriter(t)
 	before := readAllFlagsRaw(t, path)

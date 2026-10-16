@@ -445,6 +445,7 @@ func TestRulesAnswer_ExactMinScoreTie(t *testing.T) {
 // TestRulesBackend_NoulIsNeutral: the rules adapter has no view on a noul
 // question (#1229): it answers an even 0.5 at confidence 0, and the response
 // still validates.
+// UC: UC-040 A12
 func TestRulesBackend_NoulIsNeutral(t *testing.T) {
 	fx := decideFixtures()[0]
 	clock := time.Unix(10_000, 0)

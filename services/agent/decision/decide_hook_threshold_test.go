@@ -64,6 +64,7 @@ func assertThreshold(t *testing.T, span sdktrace.ReadOnlySpan, want float64, sou
 	t.Error("no gen_ai.evaluation.result explanation")
 }
 
+// UC: UC-040 main A13
 func TestThreshold_JevActsAtGateByDefault(t *testing.T) {
 	h := newRemoteHarness(t, defaultThresholdSnapshot(flags.DecisionBackendJev, time.Second), jevBackend(nearThresholdConfidence))
 	span := h.run(t)
@@ -77,6 +78,7 @@ func TestThreshold_JevActsAtGateByDefault(t *testing.T) {
 	assertEvaluation(t, span, evaluationLabelPass, nearThresholdConfidence)
 }
 
+// UC: UC-040 A5
 func TestThreshold_ClaudeHeldAtGlobalByDefault(t *testing.T) {
 	be := newFakeDecideBackend(ffaAnswer("grant_shield", nearThresholdConfidence, "A", 0.5, "x"))
 	h := newRemoteHarness(t, defaultThresholdSnapshot(flags.DecisionBackendClaude, time.Second), be)
@@ -91,6 +93,7 @@ func TestThreshold_ClaudeHeldAtGlobalByDefault(t *testing.T) {
 	assertEvaluation(t, span, evaluationLabelFail, nearThresholdConfidence)
 }
 
+// UC: UC-040 A5 A13
 func TestThreshold_JevInheritUsesGlobal(t *testing.T) {
 	snap := defaultThresholdSnapshot(flags.DecisionBackendJev, time.Second)
 	snap.Decision.Jev.HasActConfidenceThreshold = false // the "inherit" variant
@@ -102,6 +105,7 @@ func TestThreshold_JevInheritUsesGlobal(t *testing.T) {
 	assertThreshold(t, span, flags.DefaultDecisionActConfidenceThreshold, flags.ActThresholdSourceGlobal)
 }
 
+// UC: UC-040 A13
 func TestThreshold_JevGlobalFlipDoesNotApplyWithOwnThreshold(t *testing.T) {
 	// The presenter lowering the global bar for Claude must not move Jev's, and
 	// vice versa: with its own threshold Jev ignores the global entirely.
@@ -115,6 +119,7 @@ func TestThreshold_JevGlobalFlipDoesNotApplyWithOwnThreshold(t *testing.T) {
 	assertThreshold(t, span, flags.DefaultDecisionJevActConfidenceThreshold, flags.DecisionBackendJev)
 }
 
+// UC: UC-040 A5 A13
 func TestThreshold_JevRaisedMidFlightAppliesAtLanding(t *testing.T) {
 	be := jevBackend(nearThresholdConfidence)
 	h, span := fireAndMutateSnapshot(t, be, defaultThresholdSnapshot(flags.DecisionBackendJev, time.Hour), time.Hour,
@@ -130,6 +135,7 @@ func TestThreshold_JevRaisedMidFlightAppliesAtLanding(t *testing.T) {
 	assertThreshold(t, span, 0.95, flags.DecisionBackendJev)
 }
 
+// UC: UC-040 A5 A13
 func TestThreshold_JevInheritFlippedMidFlightAppliesAtLanding(t *testing.T) {
 	be := jevBackend(nearThresholdConfidence)
 	_, span := fireAndMutateSnapshot(t, be, defaultThresholdSnapshot(flags.DecisionBackendJev, time.Hour), time.Hour,

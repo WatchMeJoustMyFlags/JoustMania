@@ -52,6 +52,7 @@ func spanAttr(s sdktrace.ReadOnlySpan, key string) (attribute.Value, bool) {
 
 // TestCoordinator_WritesFileAndSpan: a real game end writes a summary file AND
 // emits exactly one agent.game.summary span carrying the key counts.
+// UC: UC-042 main
 func TestCoordinator_WritesFileAndSpan(t *testing.T) {
 	c, sr, _ := recordingCoordinator(t)
 	snap := representativeGame(t)
@@ -126,6 +127,7 @@ func TestCoordinator_LinksToGameTrace(t *testing.T) {
 
 // TestCoordinator_RunsForShadowGames: the builder runs for synthetic (shadow)
 // games too (#928 — both real AND shadow).
+// UC: UC-042 A1
 func TestCoordinator_RunsForShadowGames(t *testing.T) {
 	c, sr, _ := recordingCoordinator(t)
 	c.OnGameEnd(gamecontext.GameContext{

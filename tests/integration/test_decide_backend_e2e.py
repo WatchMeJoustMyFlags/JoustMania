@@ -535,6 +535,7 @@ async def _assert_nothing_applied(
 
 
 @pytest.mark.asyncio
+@pytest.mark.uc("UC-040", flow="A1")
 async def test_rules_backend_default_unchanged(
     decide_flags, docker_compose, ensure_game_stopped
 ):
@@ -602,6 +603,7 @@ async def test_rules_backend_default_unchanged(
 
 
 @pytest.mark.asyncio
+@pytest.mark.uc("UC-040", flow="main")
 async def test_openai_high_confidence_acts(
     decide_flags, docker_compose, ensure_game_stopped
 ):
@@ -706,6 +708,7 @@ async def test_openai_high_confidence_acts(
 
 
 @pytest.mark.asyncio
+@pytest.mark.uc("UC-040", flow="A5")
 async def test_openai_low_confidence_held(
     decide_flags, docker_compose, ensure_game_stopped
 ):
@@ -775,6 +778,7 @@ async def test_openai_low_confidence_held(
 
 
 @pytest.mark.asyncio
+@pytest.mark.uc("UC-040", flow="A2")
 async def test_openai_garbage_falls_back_to_rules(
     decide_flags, docker_compose, ensure_game_stopped
 ):
@@ -819,6 +823,7 @@ async def test_openai_garbage_falls_back_to_rules(
 
 
 @pytest.mark.asyncio
+@pytest.mark.uc("UC-040", flow="A6")
 async def test_kill_switch_discards_inflight_answer(
     decide_flags, docker_compose, ensure_game_stopped
 ):

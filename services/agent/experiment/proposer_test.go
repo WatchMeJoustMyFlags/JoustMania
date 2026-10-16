@@ -117,6 +117,7 @@ func experimentVariantValue(t *testing.T, path, flagKey string) (string, bool) {
 	return string(v), ok
 }
 
+// UC: UC-042 main
 func TestProposeOnce_ValidProposalWritesShadowExperiment(t *testing.T) {
 	backend := &fakeProposerBackend{
 		response: `{"flag":"death_grace_period_seconds","value":0.75,"rationale":"longer grace may extend sessions"}`,
@@ -230,6 +231,7 @@ func TestProposeOnce_TypeMismatchBlockedByGate(t *testing.T) {
 	assertSpanAttr(t, attemptSpan, AttrOutcome, string(ProposeBlocked))
 }
 
+// UC: UC-042 A2
 func TestProposeOnce_NoBackendDegradesToNothing(t *testing.T) {
 	// The sentinel-stub case: Backend.Infer errors (no text backend configured,
 	// AGENT_INFERENCE_BACKEND=stub). The Proposer degrades to NO proposal, NO error.
@@ -251,6 +253,7 @@ func TestProposeOnce_NoBackendDegradesToNothing(t *testing.T) {
 	assertSpanAttr(t, span, AttrOutcome, string(ProposeNoBackend))
 }
 
+// UC: UC-042 main
 func TestProposeOnce_CadenceGatesSecondCycleWithinInterval(t *testing.T) {
 	backend := &fakeProposerBackend{
 		response: `{"flag":"death_grace_period_seconds","value":0.75,"rationale":"longer grace"}`,

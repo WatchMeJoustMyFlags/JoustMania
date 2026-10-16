@@ -74,6 +74,7 @@ func TestLLMAdmission_AdmitsAndChargesSharedBudget(t *testing.T) {
 	}
 }
 
+// UC: UC-042 A2 BR-001
 func TestLLMAdmission_BudgetExhaustedGates(t *testing.T) {
 	budget := NewLLMBudget()
 	a, reader := admissionUnderTest(t, []string{"real"}, 1, 0, budget)
@@ -91,6 +92,7 @@ func TestLLMAdmission_BudgetExhaustedGates(t *testing.T) {
 	}
 }
 
+// UC: UC-042 A1
 func TestLLMAdmission_NotEligibleGatesWithoutCharging(t *testing.T) {
 	budget := NewLLMBudget()
 	a, reader := admissionUnderTest(t, []string{"real"}, 5, 0, budget)

@@ -210,6 +210,7 @@ func TestReview_PreservesExistingTargetingForReal(t *testing.T) {
 
 // ---- Blocked: proposals that would change real resolution ------------------
 
+// UC: UC-042 A4
 func TestReview_BlocksUnknownFlag(t *testing.T) {
 	g, path, rec := gateWithRecorder(t)
 	before := mustRead(t, path)
@@ -220,6 +221,7 @@ func TestReview_BlocksUnknownFlag(t *testing.T) {
 	assertSpan(t, rec, SpanProposed, true, ReasonUnknownFlag)
 }
 
+// UC: UC-042 A4
 func TestReview_BlocksNonGamePath(t *testing.T) {
 	// A Writer mispointed at agent.json must be denied by the Gate (belt to the
 	// :ro mount), and nothing written.
@@ -304,6 +306,7 @@ func TestResolveFlag_UnknownOperatorFailsClosed(t *testing.T) {
 // applyProposal — so we assert the checks themselves catch a hand-built bad
 // after-state.
 
+// UC: UC-042 A4
 func TestCheckVariantsAndDefault_DetectsDefaultChange(t *testing.T) {
 	before := mustFlag(t, `{"variants":{"a":1,"b":2},"defaultVariant":"a"}`)
 	after := mustFlag(t, `{"variants":{"a":1,"b":2,"agent_experiment":9},"defaultVariant":"b"}`)
@@ -320,6 +323,7 @@ func TestCheckVariantsAndDefault_DetectsExistingVariantMutation(t *testing.T) {
 	}
 }
 
+// UC: UC-042 A4
 func TestCheckTargeting_DetectsNonShadowScope(t *testing.T) {
 	// A targeting that selects the experimental variant for everyone (no shadow
 	// condition) must be rejected.
@@ -338,6 +342,7 @@ func TestCheckTargeting_DetectsRealLeakInElse(t *testing.T) {
 	}
 }
 
+// UC: UC-042 A4
 func TestCheckRealResolution_DetectsChange(t *testing.T) {
 	// before: real => a(=1). after: a non-shadow targeting flips real to b(=2).
 	before := mustFlag(t, `{"variants":{"a":1,"b":2},"defaultVariant":"a"}`)
